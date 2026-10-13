@@ -20,6 +20,7 @@ from workflows import (
     linux_job_problems,
     linux_verify_log_problems,
     read_workflow,
+    required_check_problems,
     tool_cache_problems,
     verify_log_problems,
     workflow_guard_problems,
@@ -111,7 +112,9 @@ class WorkflowsFixtures(GitTestCase):
 
 
 LEGS = (
-    "env:\n  TOOL_VERSION: '1.2.3'\n\njobs:\n  suite:\n    runs-on: windows-latest\n    strategy:\n      matrix:\n"
+    "env:\n  TOOL_VERSION: '1.2.3'\n\njobs:\n  suite:\n"
+    "    name: Windows shard ${{ matrix.shard }}, Python ${{ matrix.python-version }}\n"
+    "    runs-on: windows-latest\n    strategy:\n      matrix:\n"
     "        shard: ['1/2', '2/2']\n    steps:\n"
     "      - uses: actions/setup-python@SHA # v1\n        with:\n          cache: pip\n"
     "          cache-dependency-path: requirements-dev.txt\n"
@@ -124,7 +127,7 @@ LEGS = (
 
 
 class LegFixtures(GitTestCase):
-    def test_each_leg_runs_its_own_shard_and_the_aggregate_needs_every_leg(self) -> None:
+    def test_each_leg_is_named_as_a_windows_leg_and_runs_its_own_shard(self) -> None:
         self.assertEqual([], leg_problems(LEGS, 2))
         for drifted, problem in (
             (LEGS, "expected ['1/3', '2/3', '3/3']"),
@@ -133,7 +136,9 @@ class LegFixtures(GitTestCase):
             (LEGS.replace(" --shard $env:SHARD", ""), "does not run its leg's --shard"),
             (LEGS.replace("SHARD: ${{ matrix.shard }}", "SHARD: 1/2"), "does not run its leg's --shard"),
             (LEGS.replace("tests/run_validation.py", "tests/other.py"), "no step runs"),
-            (LEGS.replace("    needs: suite\n", "    needs: other\n"), "does not need the suite"),
+            # The name the seconds recorder reads, which says Windows beside the Linux job.
+            (LEGS.replace("Windows shard ${{ matrix.shard }}, ", "Shard ${{ matrix.shard }} on "), "are named"),
+            (LEGS.replace("    name: Windows shard", "    name: Windows Shard"), "are named"),
         ):
             with self.subTest(problem=problem):
                 count = 3 if problem.startswith("expected") else 2
@@ -157,7 +162,7 @@ class LegFixtures(GitTestCase):
 
 LINUX = (
     "jobs:\n  suite:\n    runs-on: windows-latest\n"
-    "  linux:\n    runs-on: ubuntu-latest\n    steps:\n"
+    "  linux:\n    name: Validation on Linux\n    runs-on: ubuntu-latest\n    steps:\n"
     "      - uses: actions/checkout@SHA # v1\n        with:\n          fetch-depth: 0\n"
     "      - uses: actions/setup-python@SHA # v1\n        with:\n          python-version: '3.11'\n"
     "          cache: pip\n          cache-dependency-path: requirements-dev.txt\n"
@@ -178,13 +183,13 @@ LINUX = (
 
 
 class LinuxJobFixtures(GitTestCase):
-    def test_the_linux_job_reports_the_whole_run_outside_the_required_check(self) -> None:
+    def test_the_linux_job_runs_the_whole_run_named_as_linux(self) -> None:
         self.assertEqual([], linux_job_problems(LINUX))
         for drifted, problem in (
             (LINUX.replace("  linux:\n", "  other:\n"), "there is no linux job"),
             (LINUX.replace("runs-on: ubuntu-latest", "runs-on: ubuntu-22.04"), "not ubuntu-latest"),
-            (LINUX.replace("    needs: suite\n", "    needs: [suite, linux]\n"), "part of the required check"),
-            (LINUX.replace("    needs: suite\n", "    needs: linux\n"), "part of the required check"),
+            (LINUX.replace("    name: Validation on Linux\n", "    name: Validation on Ubuntu\n"), "say Linux"),
+            (LINUX.replace("    name: Validation on Linux\n", ""), "say Linux"),
             (LINUX.replace("          fetch-depth: 0\n", "          fetch-depth: 1\n"), "the whole history"),
             (LINUX.replace("'3.11'", "'3.x'"), "sets up Python"),
             (LINUX.replace("          cache: pip\n", ""), "sets up Python"),
@@ -204,6 +209,39 @@ class LinuxJobFixtures(GitTestCase):
         ):
             with self.subTest(problem=problem):
                 problems = linux_job_problems(drifted)
+                self.assertTrue(any(problem in found for found in problems), problems)
+
+
+REQUIRED_CHECK = (
+    "jobs:\n  suite:\n    runs-on: windows-latest\n  linux:\n    runs-on: ubuntu-latest\n"
+    "  validate:\n    name: Validation\n    if: ${{ !cancelled() }}\n    needs: [suite, linux]\n    steps:\n"
+    "      - name: Require every leg to pass\n        env:\n          WINDOWS: ${{ needs.suite.result }}\n"
+    "          LINUX: ${{ needs.linux.result }}\n        run: |\n"
+    '          test "$WINDOWS" = success\n          test "$LINUX" = success\n'
+)
+
+
+class RequiredCheckFixtures(GitTestCase):
+    def test_the_one_required_check_fails_unless_every_platform_passes(self) -> None:
+        self.assertEqual([], required_check_problems(REQUIRED_CHECK, ("suite", "linux")))
+        for drifted, problem in (
+            # The shape before the Linux job joined the check: it reported, and a red run could still merge.
+            (
+                REQUIRED_CHECK.replace("    needs: [suite, linux]\n", "    needs: suite\n")
+                .replace("          LINUX: ${{ needs.linux.result }}\n", "")
+                .replace('          test "$LINUX" = success\n', ""),
+                "does not need the linux job",
+            ),
+            (REQUIRED_CHECK.replace("    needs: [suite, linux]\n", "    needs: linux\n"), "the suite job"),
+            (REQUIRED_CHECK.replace('          test "$LINUX" = success\n', ""), "linux job's result"),
+            (REQUIRED_CHECK.replace("${{ needs.linux.result }}", "${{ needs.suite.result }}"), "linux job's result"),
+            (REQUIRED_CHECK.replace('"$WINDOWS" = success', '"$WINDOWS" != cancelled'), "suite job's result"),
+            (REQUIRED_CHECK.replace("    if: ${{ !cancelled() }}\n", ""), "skip the check"),
+            (REQUIRED_CHECK.replace("    if: ${{ !cancelled() }}\n", "    if: ${{ success() }}\n"), "skip the check"),
+            (REQUIRED_CHECK.replace("    name: Validation\n", "    name: Validation on Windows\n"), "required check"),
+        ):
+            with self.subTest(problem=problem):
+                problems = required_check_problems(drifted, ("suite", "linux"))
                 self.assertTrue(any(problem in found for found in problems), problems)
 
 

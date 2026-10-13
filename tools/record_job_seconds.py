@@ -3,20 +3,20 @@
 Usage:
   python tools/record_job_seconds.py [--count N] [RUN_ID ...]
 
-tests/run_validation.py deals its jobs across the validate workflow's legs by tests/validation/job_seconds.json, so
-each leg gets about the same seconds of work. One run's job times differ a lot from the next run's, so this script
+tests/run_validation.py deals its jobs across the validate workflow's Windows legs by tests/validation/job_seconds.json,
+so each leg gets about the same seconds of work. One run's job times differ a lot from the next run's, so this script
 rewrites that table from several runs and takes each job's median: it reads the logs of every leg of each run through
-`gh run view --log`, takes each `ok <seconds>s <job>` line the runner printed, and sums a suite's shards under the
-suite's path. A job a run reports more than once, as a weekly run's second interpreter and second validation step do,
-counts at its mean within that run. RUN_ID names the runs to read; without any, the latest successful push runs of
-validate.yml on main are read, DEFAULT_RUN_COUNT of them or --count. The newest run decides which jobs the table names:
-a job it does not report, such as a suite since renamed or removed, is left out, and a job it reports that older runs
-lack takes the median of the runs that have it. A run that is not a completed, successful run of the Validation
-workflow is refused, since a failed or cancelled run leaves jobs out; so is a successful run whose log lacks a leg, as
-a rerun of one failed leg can leave, and a run whose log gh cannot read, such as one past the retention period. One
-refused run refuses the record and the table is left alone. The release procedure in docs/releasing.md runs it before
-tagging, so the legs are rebalanced once a release and never by a pull request's live timings. It exits 0 when it wrote
-the table and 2 when it could not read the runs.
+`gh run view --log`, takes each `ok <seconds>s <job>` line the runner printed on a leg, never the unsharded Linux job's,
+and sums a suite's shards under the suite's path. A job a run reports more than once, as a weekly run's second
+interpreter and second validation step do, counts at its mean within that run. RUN_ID names the runs to read; without
+any, the latest successful push runs of validate.yml on main are read, DEFAULT_RUN_COUNT of them or --count. The newest
+run decides which jobs the table names: a job it does not report, such as a suite since renamed or removed, is left out,
+and a job it reports that older runs lack takes the median of the runs that have it. A run that is not a completed,
+successful run of the Validation workflow is refused, since a failed or cancelled run leaves jobs out; so is a
+successful run whose log lacks a leg, as a rerun of one failed leg can leave, and a run whose log gh cannot read, such
+as one past the retention period. One refused run refuses the record and the table is left alone. The release procedure
+in docs/releasing.md runs it before tagging, so the legs are rebalanced once a release and never by a pull request's
+live timings. It exits 0 when it wrote the table and 2 when it could not read the runs.
 """
 
 from __future__ import annotations
@@ -48,16 +48,18 @@ DEFAULT_RUN_COUNT = 5
 # What job_pool.py prints for each job that passed, after the timestamp gh puts before every log line.
 OK_LINE = re.compile(r"^\S+ ok +(\d+(?:\.\d+)?)s (.+?)\s*$")
 SHARD_SUFFIX = re.compile(r" \[shard \d+/\d+\]$")
-# A leg's name in the log, from the workflow's matrix job name `Shard <shard> on Python <version>`.
-LEG_NAME = re.compile(r"^Shard (\d+)/(\d+) on ")
+# A leg's name in the log, from the workflow's matrix job name `Windows shard <shard>, Python <version>`. The Linux
+# job runs every job unsharded beside the legs, so its lines are not a leg's and its seconds are not dealt.
+LEG_NAME = re.compile(r"^Windows shard (\d+)/(\d+), ")
 
 
 def job_seconds_from_log(log: str) -> dict[str, float]:
-    """Each job's seconds by name from `gh run view --log` output, whose lines are `<leg>\\t<step>\\t<text>`."""
+    """Each job's seconds by name from the legs' lines of `gh run view --log` output, whose lines are
+    `<job>\\t<step>\\t<text>`."""
     reported: defaultdict[str, list[float]] = defaultdict(list)
     for line in log.splitlines():
         fields = line.split("\t", 2)
-        found = OK_LINE.match(fields[-1]) if len(fields) == 3 else None
+        found = OK_LINE.match(fields[-1]) if len(fields) == 3 and LEG_NAME.match(fields[0]) else None
         if found:
             reported[found.group(2)].append(float(found.group(1)))
     totals: defaultdict[str, float] = defaultdict(float)

@@ -18,11 +18,14 @@ from github_client import CommandResult, GitHubClient
 
 from tools import record_job_seconds
 
-LEG_1 = "Shard 1/4 on Python 3.11\tRun repository validation\t2026-10-10T06:17:04.4226827Z "
-LEG_2 = "Shard 2/4 on Python 3.11\tUNKNOWN STEP\t2026-10-10T06:17:05.0000000Z "
-LEG_3 = "Shard 3/4 on Python 3.11\tRun repository validation\t2026-10-10T06:17:07.0000000Z "
-LEG_4 = "Shard 4/4 on Python 3.11\tRun repository validation\t2026-10-10T06:17:08.0000000Z "
-LATEST = "Shard 1/4 on Python 3.x\tUNKNOWN STEP\t2026-10-10T06:17:06.0000000Z "
+LEG_1 = "Windows shard 1/4, Python 3.11\tRun repository validation\t2026-10-10T06:17:04.4226827Z "
+LEG_2 = "Windows shard 2/4, Python 3.11\tUNKNOWN STEP\t2026-10-10T06:17:05.0000000Z "
+LEG_3 = "Windows shard 3/4, Python 3.11\tRun repository validation\t2026-10-10T06:17:07.0000000Z "
+LEG_4 = "Windows shard 4/4, Python 3.11\tRun repository validation\t2026-10-10T06:17:08.0000000Z "
+LATEST = "Windows shard 1/4, Python 3.x\tUNKNOWN STEP\t2026-10-10T06:17:06.0000000Z "
+# The jobs beside the legs: the Linux job runs every job unsharded, and the aggregate job runs none.
+LINUX = "Validation on Linux\tRun repository validation\t2026-10-10T06:17:09.0000000Z "
+AGGREGATE = "Validation\tRequire every leg to pass\t2026-10-10T06:17:10.0000000Z "
 # Lines as gh prints them: the leg, the step, then the timestamp before each line the runner wrote.
 LOG = "\n".join(
     [
@@ -42,6 +45,11 @@ LOG = "\n".join(
         f"{LEG_2}Shard 2/4: 16 policy checks and 3 suite jobs in 82s: validation passed.",
         f"{LEG_3}Shard 3/4: 16 policy checks and 0 suite jobs in 1s: validation passed.",
         f"{LEG_4}Shard 4/4: 16 policy checks and 0 suite jobs in 1s: validation passed.",
+        # The Linux job's seconds are not a Windows leg's, so none of them is counted.
+        f"{LINUX}ok   90.0s tests/deployer/test_render.py [shard 1/3]",
+        f"{LINUX}ok    9.0s static type check (mypy skills/skill-core/scripts)",
+        f"{LINUX}ok    7.0s tests/linux_only.py",
+        f"{AGGREGATE}ok    1.0s a line the aggregate job printed",
     ]
 )
 LEGS = (LEG_1, LEG_2, LEG_3, LEG_4)
@@ -136,6 +144,12 @@ class ParseTests(unittest.TestCase):
         gap = log_of({"tests/a.py": 1.0}, (LEG_1, *LEGS[2:]))
         self.assertEqual("lacks leg 2/4", record_job_seconds.leg_problem(gap))
         self.assertEqual("names no one set of legs", record_job_seconds.leg_problem("no leg\tstep\ttext"))
+        # The Linux job alone is no leg, and neither is a leg under the name the workflow gave it before it said
+        # Windows.
+        self.assertEqual("names no one set of legs", record_job_seconds.leg_problem(f"{LINUX}ok 1.0s tests/a.py"))
+        old_names = "Shard 1/1 on Python 3.11\tRun repository validation\t2026-10-10T06:17:04Z ok 1.0s tests/a.py"
+        self.assertEqual("names no one set of legs", record_job_seconds.leg_problem(old_names))
+        self.assertEqual({}, record_job_seconds.job_seconds_from_log(old_names))
 
 
 class MainTests(unittest.TestCase):

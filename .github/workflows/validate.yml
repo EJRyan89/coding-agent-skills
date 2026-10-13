@@ -28,7 +28,8 @@ concurrency:
 
 jobs:
   suite:
-    name: Shard ${{ matrix.shard }} on Python ${{ matrix.python-version }}
+    # The name says Windows beside the Linux job; tools/record_job_seconds.py reads each leg's shard from it.
+    name: Windows shard ${{ matrix.shard }}, Python ${{ matrix.python-version }}
     runs-on: windows-latest
     timeout-minutes: 30
     strategy:
@@ -154,8 +155,8 @@ jobs:
           python -B tests/run_validation.py --full -v --shard $env:SHARD
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-  # The whole validation run on Linux, the platform being ported to, in one leg. It reports on every run, but the
-  # `validate` job does not need it, so branch protection, which requires only `Validation`, never waits on it.
+  # The whole validation run on Linux in one leg. The `validate` job needs it as it needs the Windows legs, so a red
+  # Linux run fails the required check.
   linux:
     name: Validation on Linux
     runs-on: ubuntu-latest
@@ -210,18 +211,21 @@ jobs:
           python @arguments
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-  # Branch protection requires the single check named `Validation`, this job's name, so every leg reports through this
-  # job: a matrix job's result is success only when every one of its legs succeeded.
+  # Branch protection requires the single check named `Validation`, this job's name, so every leg on each platform
+  # reports through this job: a matrix job's result is success only when every one of its legs succeeded. It runs
+  # when a leg fails, since a skipped required check would count as passing.
   validate:
     name: Validation
     if: ${{ !cancelled() }}
-    needs: suite
+    needs: [suite, linux]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require every leg to pass
         env:
-          RESULT: ${{ needs.suite.result }}
+          WINDOWS: ${{ needs.suite.result }}
+          LINUX: ${{ needs.linux.result }}
         run: |
-          echo "Validation legs: $RESULT"
-          test "$RESULT" = success
+          echo "Windows legs: $WINDOWS; Linux: $LINUX"
+          test "$WINDOWS" = success
+          test "$LINUX" = success
