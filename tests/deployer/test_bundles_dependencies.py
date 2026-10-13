@@ -514,6 +514,73 @@ class OptInTests(DeployerTestCase):
         self.deploy_ok("--all")
         self.assertEqual(["everyday"], self.installed())
 
+    def regrouped(self, bundles: dict[str, Any], opt_in_skills: dict[str, str] | None = None) -> dict[str, list[str]]:
+        """Deploy opt-in bundle pack [fmt, x] by request, regroup the source, making each skill opt_in_skills names an
+        opt-in root with the content it gives, and return the next --all's report.
+
+        The dry run and the deployment must select and report the same items.
+        """
+        self.make_source_json(bundles={"pack": {"members": ["fmt", "x"], "opt_in": True}})
+        self.make_skill("x", "X")
+        self.deploy_ok("--all", "--include", "pack")
+        self.assertEqual(["everyday", "fmt", "x"], self.installed())
+        self.assertEqual({"pack": ["fmt", "x"]}, self.manifest()["sources"]["test/skills"]["requested_bundle_members"])
+        self.make_source_json(bundles=bundles)
+        for name, content in (opt_in_skills or {}).items():
+            self.make_skill(name, content, opt_in=True)
+        dry_run = self.report_groups(self.deploy_ok("--all", "--dry-run").output, "DRY RUN")
+        deployed = self.report_groups(self.deploy_ok("--all").output, "DEPLOYED")
+        self.assertEqual(dry_run, deployed)
+        return deployed
+
+    def test_a_requested_bundle_the_source_renames_stays_in_all_under_its_new_name(self) -> None:
+        report = self.regrouped({"pack2": {"members": ["fmt", "x"], "opt_in": True}})
+        self.assertEqual({"UNCHANGED": ["everyday", "fmt", "x"]}, report)
+        self.assertEqual(["everyday", "fmt", "x"], self.installed())
+        self.assertRegex(
+            self.deploy("--dry-run", stdin="\n").output, r"(?m)^  \[\*\] [0-9]+\. pack2 \(bundle, opt-in\)$"
+        )
+        entry = self.manifest()["sources"]["test/skills"]
+        self.assertEqual(["pack2"], entry["requested_bundles"])
+        self.assertEqual({"pack2": ["fmt", "x"]}, entry["requested_bundle_members"])
+        self.assertEqual(["everyday"], entry["requested_skills"])
+
+    def test_a_skill_that_leaves_a_requested_bundle_for_an_opt_in_root_of_its_own_stays_in_all(self) -> None:
+        report = self.regrouped({"pack": {"members": ["x"], "opt_in": True}}, {"fmt": "Format"})
+        self.assertEqual({"UNCHANGED": ["everyday", "fmt", "x"]}, report)
+        self.assertEqual(["everyday", "fmt", "x"], self.installed())
+        menu = self.deploy("--dry-run", stdin="\n").output
+        self.assertRegex(menu, r"(?m)^  \[\*\] [0-9]+\. pack \(bundle, opt-in\)$")
+        self.assertRegex(menu, r"(?m)^  \[\*\] [0-9]+\. fmt \(opt-in\)$")
+        entry = self.manifest()["sources"]["test/skills"]
+        self.assertEqual(["pack"], entry["requested_bundles"])
+        self.assertEqual({"pack": ["x"]}, entry["requested_bundle_members"])
+        self.assertEqual(["everyday", "fmt"], entry["requested_skills"])
+
+    def test_a_bundle_request_recorded_before_its_members_were_stands_for_the_bundle_the_source_defines(self) -> None:
+        self.deploy_ok("--all", "--include", "pack")
+        data = self.manifest()
+        del data["sources"]["test/skills"]["requested_bundle_members"]
+        self.write_manifest(data)
+        report = self.report_groups(self.deploy_ok("--all").output, "DEPLOYED")
+        self.assertEqual({"UNCHANGED": ["everyday", "fmt"]}, report)
+        self.assertEqual({"pack": ["fmt"]}, self.manifest()["sources"]["test/skills"]["requested_bundle_members"])
+
+    def test_a_bundle_member_installed_only_as_a_dependency_stays_unchosen_when_the_source_regroups_it(self) -> None:
+        self.dependency_member_fixture()
+        self.deploy_ok("--all")
+        self.assertEqual({}, self.manifest()["sources"]["test/skills"]["requested_bundle_members"])
+        self.make_source_json(bundles={"pack2": {"members": ["fmt", "extra"], "opt_in": True}})
+        result = self.deploy_ok("--all").output
+        self.assertIn("Selected 1 item (2 skills):\n  everyday\n    fmt (dependency)\n", result)
+        self.assertEqual({"UNCHANGED": ["everyday", "fmt"]}, self.report_groups(result, "DEPLOYED"))
+        self.make_source_json(bundles={"pack": {"members": ["extra"], "opt_in": True}})
+        self.make_skill("fmt", "Format", opt_in=True)
+        result = self.deploy_ok("--all").output
+        self.assertIn("Selected 1 item (2 skills):\n  everyday\n    fmt (dependency)\n", result)
+        self.assertEqual(["everyday", "fmt"], self.installed())
+        self.assertEqual(["everyday"], self.manifest()["sources"]["test/skills"]["requested_skills"])
+
     def test_menu_selection_installs_an_opt_in_item(self) -> None:
         self.deploy_ok(stdin=f"{self.selection_number('lint')} {self.selection_number('everyday')}\n")
         self.assertEqual(["everyday", "lint"], self.installed())

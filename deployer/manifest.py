@@ -49,6 +49,9 @@ class Ownership:
     shared_roles: dict[str, str] = field(default_factory=dict)
     requested_skills: set[str] = field(default_factory=set)
     requested_bundles: set[str] = field(default_factory=set)
+    # requested bundle -> the members the deployment that recorded the request expanded it to; an entry written
+    # before members were recorded has none
+    requested_bundle_members: dict[str, set[str]] = field(default_factory=dict)
 
     def of(self, kind: ItemKind) -> dict[str, str]:
         return self.hashes[kind.key]
@@ -122,6 +125,9 @@ class Manifest:
                     owned.shared_roles[name] = details.get("role", "owner")
         owned.requested_skills = set(entry.get("requested_skills", []))
         owned.requested_bundles = set(entry.get("requested_bundles", []))
+        owned.requested_bundle_members = {
+            name: set(members) for name, members in (entry.get("requested_bundle_members") or {}).items()
+        }
         return owned
 
     def entry(self, source_id: str, kind: str, name: str) -> dict[str, Any] | None:
@@ -198,6 +204,15 @@ def _validate(data: dict[str, Any], path: Path) -> None:
                 isinstance(value, str) and is_valid_name(value) for value in values
             ):
                 raise DeployError("ERROR: Manifest selection fields are malformed")
+        members = entry.get("requested_bundle_members", {})
+        if not isinstance(members, dict) or not all(
+            isinstance(name, str)
+            and is_valid_name(name)
+            and isinstance(values, list)
+            and all(isinstance(value, str) and is_valid_name(value) for value in values)
+            for name, values in members.items()
+        ):
+            raise DeployError("ERROR: Manifest selection fields are malformed")
         for kind in KINDS:
             items = entry.get(kind.key, {})
             if not isinstance(items, dict):
