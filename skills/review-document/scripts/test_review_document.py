@@ -621,6 +621,15 @@ class ExtractedDocumentTests(PipelineTestCase):
 LIMITS = b"# Limits\n\nTen exports a day.\n"
 QUEUE_PLAN = b"# Queue plan\n\nOne queue per tenant.\n"
 EDITED = COMMITTED.replace(b"30 days", b"90 days")
+# The reasons code-review-core's unsafe-path rules give, written here rather than read from it.
+RESERVED_CHARACTER = (
+    'a reserved character (< > : " | ? *) or a control character in a segment: Windows refuses it in a name'
+)
+DEVICE_NAME = "a reserved device name as a segment, with or without an extension: Windows opens the device, not a file"
+TRAILING_DOT_OR_SPACE = (
+    "a segment ending in a dot or a space: Windows drops it, so the file would be written under another name"
+)
+MANIFEST = ".review-document/specialists.json"
 NO_DOCUMENT = (
     "octo-org/widgets#7 changes no document review-document reviews: no changed file is a Markdown, plain-text, Word, "
     "or PDF document"
@@ -910,6 +919,82 @@ class PullRequestTests(PipelineTestCase):
                 self.assertEqual((1, [f"FAILED {reason}"]), (code, lines))
                 self.assert_reads_only(stub)
         self.assertFalse(self.output.exists())
+
+    def test_a_document_path_the_snapshot_path_rules_refuse_is_skipped_before_it_is_read(self) -> None:
+        refused = {
+            "C:/x.md": RESERVED_CHARACTER,
+            "docs/C:/x.md": RESERVED_CHARACTER,
+            "docs/C:x/x.md": RESERVED_CHARACTER,
+            "a:b.md": RESERVED_CHARACTER,
+            "docs/x.md:notes.md": RESERVED_CHARACTER,
+            "CON.md": DEVICE_NAME,
+            "docs/nul/x.md": DEVICE_NAME,
+            "docs/Com1.plan.txt": DEVICE_NAME,
+            "notes./x.md": TRAILING_DOT_OR_SPACE,
+            "notes /x.md": TRAILING_DOT_OR_SPACE,
+        }
+        trees = self.stub().trees
+        trees[HEAD].update(dict.fromkeys(refused, QUEUE_PLAN))
+        trees[HEAD][".Review-Document/x.md"] = QUEUE_PLAN
+        pages = [
+            [changed("docs/design/retention.md", "modified")],
+            [changed(path, "added") for path in [*refused, ".Review-Document/x.md"]],
+        ]
+        stub = StubGitHub(pages, trees)
+        self.assertEqual(
+            [
+                f"PULL octo-org/widgets#7 base {MERGE_BASE} head {HEAD}",
+                *self.block(1, "docs/design/retention.md", f"committed {MERGE_BASE}"),
+                *(f"SKIPPED {path} is not a path a fixture can hold: {reason}" for path, reason in refused.items()),
+                "SKIPPED .Review-Document/x.md is where the fixture keeps its reviewer manifest",
+            ],
+            self.build_pull(stub),
+        )
+        self.assertEqual([f"docs/design/retention.md@{HEAD}", f"docs/design/retention.md@{MERGE_BASE}"], stub.reads())
+        self.assertEqual(
+            {"1/fixture/pull.json"}
+            | {
+                f"1/fixture/{tree}/{path}"
+                for tree in ("base", "head")
+                for path in ("docs/design/retention.md", MANIFEST)
+            },
+            {path.relative_to(self.output).as_posix() for path in self.output.rglob("*") if path.is_file()},
+        )
+
+    def test_a_document_path_too_long_for_the_fixture_folder_is_refused_before_its_fixture_is_written(self) -> None:
+        # Longer than an extended Windows path, so no fixture folder on any platform leaves it room.
+        relative = "/".join(["d" * 200] * 170) + ".md"
+        trees = self.stub().trees
+        trees[HEAD][relative] = QUEUE_PLAN
+        stub = StubGitHub([[changed(relative, "added")]], trees)
+        code, lines = run_main("build", "octo-org/widgets#7", "--output", str(self.output), github=stub.client())
+        self.assertEqual(
+            (
+                1,
+                [
+                    f"FAILED {relative} is not a path a fixture can hold: a path longer than the room the snapshot "
+                    "root leaves a file"
+                ],
+            ),
+            (code, lines),
+        )
+        self.assertFalse(self.output.exists())
+
+    def test_a_path_that_would_land_outside_the_fixture_is_refused_with_the_path_rules_out_of_the_way(self) -> None:
+        # A rooted path on every platform, and on Windows a path naming a drive other than the fixture's, which resets
+        # the join to that drive.
+        drive = "R:" if self.root.drive.upper() == "Q:" else "Q:"
+        windows = [f"{drive}outside/x.md", f"{drive}/outside/x.md", f"docs/{drive}/x.md", f"docs/{drive}x/x.md"]
+        escaping = ["/outside/x.md", *(windows if sys.platform == "win32" else [])]
+        root = self.root / "fixture" / "head"
+        for relative in escaping:
+            with self.subTest(relative), mock.patch.object(review_document, "unsafe_path_reason", return_value=None):
+                with self.assertRaises(review_document.DocumentError) as caught:
+                    review_document.write_file(root, relative, QUEUE_PLAN)
+                self.assertEqual(
+                    f"{relative} is not a path a fixture can hold: it lands outside the fixture", str(caught.exception)
+                )
+        self.assertFalse(root.exists())
 
     def test_the_record_names_the_pull_request_and_its_commits_and_no_prompt_holds_its_authored_text(self) -> None:
         stub = self.stub()
