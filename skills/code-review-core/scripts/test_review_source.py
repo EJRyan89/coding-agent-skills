@@ -35,6 +35,7 @@ from review_runtime import (
     search_source,
     verify_source_snapshot,
 )
+from test_review_runtime_validation import directory_link
 
 REPOSITORY = "example/one"
 UNCHANGED = "def helper(value):\n    return value * 2\n"
@@ -366,11 +367,7 @@ class LazySnapshotTests(LazySnapshotFixture):
     def test_a_reparse_point_in_the_snapshot_refuses_every_fetch(self) -> None:
         elsewhere = self.root / "elsewhere"
         elsewhere.mkdir()
-        subprocess.run(
-            ["cmd", "/c", "mklink", "/J", str(self.source / "src" / "deep"), str(elsewhere)],
-            check=True,
-            capture_output=True,
-        )
+        directory_link(self.source / "src" / "deep", elsewhere)
         with self.assertRaisesRegex(RuntimeContractError, "reparse-point directory"):
             self.fetch("src/deep/nested/store.py")
         self.assertEqual([], list(elsewhere.iterdir()), "nothing is written through the junction")

@@ -35,6 +35,7 @@ from review_config import (
 from review_runtime import RuntimeContractError, RuntimeContractFieldError
 from review_state import StateError
 from skill_roots import sibling_scripts
+from test_review_config_validation import native
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
@@ -433,9 +434,9 @@ class ConfigOperationSetTests(GitTestCase):
             "default_repository_set": "primary",
             "repository_sets": {"primary": ["owner/one"], "tracked": ["owner/one", "owner/two"]},
             "repositories": {"owner/one": generic, "owner/two": generic},
-            "archive_root": "C:/A",
-            "summary_root": "C:/S",
-            "dashboard_file": "C:/D.md",
+            "archive_root": native("C:/A"),
+            "summary_root": native("C:/S"),
+            "dashboard_file": native("C:/D.md"),
         }
         value.update(extra)
         return validate_config(value)

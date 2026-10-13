@@ -45,6 +45,9 @@ from review_reviewers import MissingSkillError
 from review_runtime import RuntimeContractError
 from review_specialists import parse_unified_diff, patch_fingerprints
 
+# The command name the skills' scripts write for Python into the commands they hand an agent.
+PYTHON = "python" if sys.platform == "win32" else "python3"
+
 SCRIPTS = Path(__file__).resolve().parent
 CORE = SCRIPTS.parent
 REPOSITORY = "example/one"
@@ -757,12 +760,12 @@ def source_contract(run: str, role: str) -> str:
         "- SOURCE_ROOT starts with only the changed files and the analyzer settings, so a file missing\n"
         "  there may still be in the head commit. To read any other file, run this command with its\n"
         "  repository-relative path in place of <path>, then Read the file it prints:\n"
-        f'  python -B "{script}" source-file --run "{run}" --role "{role}" --path="<path>"\n'
+        f'  {PYTHON} -B "{script}" source-file --run "{run}" --role "{role}" --path="<path>"\n'
         "  It prints SOURCE_FILE <file>, EXCLUDED <path> <reason> for a file left out of the review\n"
         "  (judge it from the diff), or FAILED when the commit has no such file. To search the code,\n"
         "  run this command with an extended regular expression in place of <pattern>, rather than\n"
         "  Grep or Glob over SOURCE_ROOT:\n"
-        f'  python -B "{script}" source-search --run "{run}" --role "{role}" --pattern="<pattern>"\n'
+        f'  {PYTHON} -B "{script}" source-search --run "{run}" --role "{role}" --pattern="<pattern>"\n'
         "  The path or pattern may not hold a double quote, backtick, dollar sign, or backslash; write\n"
         "  [.] for a literal dot.\n"
     )
@@ -812,7 +815,7 @@ def plan_prompt(
         + CONTRACT_RULES
         + "Before replying, check RESULT_FILE with this command, "
         + ("one of the three commands you may run:\n" if lazy else "the one command you may run:\n")
-        + f'python -B "<core>/scripts/review_pipeline.py" validate-result --run "{run}" --role "{role}"\n'
+        + f'{PYTHON} -B "<core>/scripts/review_pipeline.py" validate-result --run "{run}" --role "{role}"\n'
         "It prints VALID, or INVALID with the reason. On INVALID, fix RESULT_FILE and run it again; stop\n"
         "after two fixes.\n"
         f"After writing RESULT_FILE, reply with exactly: WROTE {run}/work/{role}.result.json\n"
@@ -934,7 +937,7 @@ def entrypoint_prompt(
         "never contain spaces.\n"
         "Before replying, check RESULT_FILE with this command, "
         + ("one of the three commands you may run:\n" if lazy else "the one command you may run:\n")
-        + f'python -B "<core>/scripts/review_pipeline.py" validate-result --run "{run}" --role "{role}"\n'
+        + f'{PYTHON} -B "<core>/scripts/review_pipeline.py" validate-result --run "{run}" --role "{role}"\n'
         "It prints VALID, or INVALID with the reason. On INVALID, fix RESULT_FILE and run it again; stop\n"
         "after two fixes.\n"
         f"After writing RESULT_FILE, reply with exactly: WROTE {run}/result.json\n"

@@ -50,6 +50,9 @@ from review_state import load_state
 from test_job_tree import SHORT_LIMIT_SECONDS, SignalledTree, ended
 from test_review_documents import StubPdftotext, paragraph, pdf_document, table, without_pdftotext, word_document
 
+# The command name the skills' scripts write for Python into the commands they hand an agent.
+PYTHON = "python" if sys.platform == "win32" else "python3"
+
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 # How skill-core's JobTree refuses a command no Windows job object can hold, after ending it.
 UNHELD = "it could not join a Windows job object: AssignProcessToJobObject failed: Access is denied. (Windows error 5)"
@@ -1148,7 +1151,7 @@ class SymbolicLinkTests(PipelineFixture):
 
 class SelfCheckTests(PipelineFixture):
     def self_check(self, run: Path, role: str) -> str:
-        return f'python -B "{SCRIPT_DIRECTORY / "review_pipeline.py"}" validate-result --run "{run}" --role "{role}"'
+        return f'{PYTHON} -B "{SCRIPT_DIRECTORY / "review_pipeline.py"}" validate-result --run "{run}" --role "{role}"'
 
     def test_reviewer_prompt_names_the_self_check_and_it_runs_from_a_shell(self) -> None:
         ready = self.prepare()
@@ -1424,6 +1427,27 @@ class WaitReviewersTests(PipelineFixture):
 
 
 class UnfinalizedTests(PipelineFixture):
+    def hold(self, run: Path) -> Callable[[], None]:
+        """Keep `run` from being removed until the returned function releases it: on Windows by a file held open in
+        it, as antivirus or the exiting Copilot CLI host holds one, and elsewhere, where an open file holds nothing, by
+        a folder in it whose mode denies removing what it holds."""
+        if sys.platform == "win32":
+            held = (run / "held.log").open("w", encoding="utf-8")
+            held.write("still open")
+            self.addCleanup(held.close)
+            return held.close
+        folder = run / "held"
+        folder.mkdir()
+        (folder / "held.log").write_text("still held", encoding="utf-8")
+        folder.chmod(0o555)
+
+        def release() -> None:
+            with contextlib.suppress(FileNotFoundError):
+                folder.chmod(0o755)
+
+        self.addCleanup(release)
+        return release
+
     """A run that never reached finalize is the pull request's failure, so the session never reports success."""
 
     def test_a_prepared_run_is_unfinalized_until_finalize_records_it(self) -> None:
@@ -1458,8 +1482,8 @@ class UnfinalizedTests(PipelineFixture):
         run = ready["run"]
         slept: list[float] = []
         self.services.sleep = slept.append
-        with (run / "held.log").open("w", encoding="utf-8") as held:
-            held.write("still open")
+        release = self.hold(run)
+        try:
             code, out, err = self.run_main("finalize", "--run", str(run))
             self.assertEqual((0, ""), (code, err))
             directory = pull_directory(self.archive, REPOSITORY, 12)
@@ -1484,18 +1508,19 @@ class UnfinalizedTests(PipelineFixture):
                 (1, f"FAILED {run} {run} is already recorded\n", ""), self.run_main("finalize", "--run", str(run))
             )
             self.assertEqual(1, archived_record(self.archive, 12)["review"]["version"], "recorded once")
+        finally:
+            release()
 
     def test_a_held_file_released_during_the_wait_lets_the_run_be_removed(self) -> None:
         ready = self.prepare()
         self.write_role_result(ready["roles"][0], findings=[self.finding()])
         run = ready["run"]
-        held = (run / "held.log").open("w", encoding="utf-8")
-        self.addCleanup(held.close)
+        held = self.hold(run)
         slept: list[float] = []
 
         def release(seconds: float) -> None:
             slept.append(seconds)
-            held.close()
+            held()
 
         self.services.sleep = release
         code, out, err = self.run_main("finalize", "--run", str(run))
@@ -2231,7 +2256,7 @@ class RepositoryReviewerTests(PipelineFixture):
         self.assertEqual(1, prompt.count(f"reply with exactly: WROTE {ready['result_path']}\n"), prompt)
         script = SCRIPT_DIRECTORY / "review_pipeline.py"
         self.assertIn(
-            f'one of the three commands you may run:\npython -B "{script}" validate-result --run "{ready["run"]}" '
+            f'one of the three commands you may run:\n{PYTHON} -B "{script}" validate-result --run "{ready["run"]}" '
             '--role "fixture-review"\nIt prints VALID',
             prompt,
         )
@@ -4341,7 +4366,7 @@ class FixtureCanaryTests(PipelineFixture):
         event = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(self.root), "agent_id": "a1"}
         self.assertIsNone(guard.decide(event), command)
         arguments = re.fullmatch(
-            r'python -B "[^"]+" (\S+) --run "([^"]+)" --role "([^"]+)" (--[a-z]+)="([^"]*)"', command
+            re.escape(PYTHON) + r' -B "[^"]+" (\S+) --run "([^"]+)" --role "([^"]+)" (--[a-z]+)="([^"]*)"', command
         )
         if arguments is None:
             raise AssertionError(f"not a source command: {command}")

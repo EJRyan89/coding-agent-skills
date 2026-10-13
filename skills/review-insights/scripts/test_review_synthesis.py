@@ -27,6 +27,9 @@ from review_flags import add_flag, load_store, resolve_flag
 from review_records import build_record, write_record_pair
 from test_review_insights import DECIDED_AT, InsightFixture, covered, record
 
+# The command name the skills' scripts write for Python into the commands they hand an agent.
+PYTHON = "python" if sys.platform == "win32" else "python3"
+
 GUIDE = "docs/guide.md"
 REPOSITORY_ADAPTER = {
     "name": "repository-reviewer",
@@ -236,7 +239,7 @@ class InputTests(SynthesisFixture):
         self.assertIn(f"- Read only `{directory / rs.INPUT_NAME}`.", prompt)
         self.assertIn(f"- Write only `{directory / rs.RESULT_NAME}`", prompt)
         self.assertIn(
-            f'`python -B "{ri.SCRIPT}" synthesize --report "{json_path}" --result "{directory / rs.RESULT_NAME}" '
+            f'`{PYTHON} -B "{ri.SCRIPT}" synthesize --report "{json_path}" --result "{directory / rs.RESULT_NAME}" '
             "--check`",
             prompt,
         )

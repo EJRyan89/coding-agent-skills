@@ -22,6 +22,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+import job_tree
 import review_hosts
 from git_test_base import GitTestCase
 from review_hosts import HostSuperseded, ProcessResult, run_copilot
@@ -1026,37 +1027,70 @@ class CopilotProcessTests(GitTestCase):
         child = json.loads(diagnostic.read_text(encoding="utf-8"))["child"]
         self.assertTrue(ended(child), "the program Copilot started is gone too")
 
-    def test_a_copilot_no_job_object_holds_is_ended_before_it_runs(self) -> None:
-        signal = self.folder / "copilot-started"
-        processes: list[subprocess.Popen[bytes]] = []
-        popen = subprocess.Popen
+    if sys.platform == "win32":
 
-        def start(command: list[str], **options: Any) -> subprocess.Popen[bytes]:
-            process: subprocess.Popen[bytes] = popen(command, **options)
-            processes.append(process)
-            return process
+        def test_a_copilot_no_job_object_holds_is_ended_before_it_runs(self) -> None:
+            signal = self.folder / "copilot-started"
+            processes: list[subprocess.Popen[bytes]] = []
+            popen = subprocess.Popen
 
-        with (
-            mock.patch("job_tree._kernel32", return_value=FailingKernel("AssignProcessToJobObject")),
-            mock.patch("bounded_process.subprocess.Popen", side_effect=start),
-            self.assertRaises(RuntimeContractError) as raised,
-        ):
-            review_hosts._run_bounded(
-                review_hosts.subprocess_runner,
-                [sys.executable, "-c", f"open({str(signal)!r}, 'w').close()\nimport time\ntime.sleep(120)\n"],
-                self.folder,
-                self.environment,
-                self.folder / "copilot-diagnostic.txt",
-                stdin="prompt",
+            def start(command: list[str], **options: Any) -> subprocess.Popen[bytes]:
+                process: subprocess.Popen[bytes] = popen(command, **options)
+                processes.append(process)
+                return process
+
+            with (
+                mock.patch("job_tree._kernel32", return_value=FailingKernel("AssignProcessToJobObject")),
+                mock.patch("bounded_process.subprocess.Popen", side_effect=start),
+                self.assertRaises(RuntimeContractError) as raised,
+            ):
+                review_hosts._run_bounded(
+                    review_hosts.subprocess_runner,
+                    [sys.executable, "-c", f"open({str(signal)!r}, 'w').close()\nimport time\ntime.sleep(120)\n"],
+                    self.folder,
+                    self.environment,
+                    self.folder / "copilot-diagnostic.txt",
+                    stdin="prompt",
+                )
+            self.assertRegex(
+                str(raised.exception),
+                r"^GitHub Copilot CLI could not run: it could not join a Windows job object: "
+                r"AssignProcessToJobObject failed: .+ \(Windows error 5\)$",
             )
-        self.assertRegex(
-            str(raised.exception),
-            r"^GitHub Copilot CLI could not run: it could not join a Windows job object: "
-            r"AssignProcessToJobObject failed: .+ \(Windows error 5\)$",
-        )
-        self.assertEqual(1, len(processes))
-        self.assertIsNotNone(processes[0].returncode, "Copilot was ended and reaped before the refusal")
-        self.assertFalse(signal.exists(), "Copilot was ended before it ran")
+            self.assertEqual(1, len(processes))
+            self.assertIsNotNone(processes[0].returncode, "Copilot was ended and reaped before the refusal")
+            self.assertFalse(signal.exists(), "Copilot was ended before it ran")
+
+    else:
+
+        def test_a_copilot_that_leads_no_process_group_of_its_own_is_ended_and_refused(self) -> None:
+            processes: list[subprocess.Popen[bytes]] = []
+            popen = subprocess.Popen
+
+            def start(command: list[str], **options: Any) -> subprocess.Popen[bytes]:
+                process: subprocess.Popen[bytes] = popen(command, **options)
+                processes.append(process)
+                return process
+
+            with (
+                mock.patch.object(job_tree.os, "getpgid", return_value=0),
+                mock.patch("bounded_process.subprocess.Popen", side_effect=start),
+                self.assertRaises(RuntimeContractError) as raised,
+            ):
+                review_hosts._run_bounded(
+                    review_hosts.subprocess_runner,
+                    [sys.executable, "-c", "import time\ntime.sleep(120)\n"],
+                    self.folder,
+                    self.environment,
+                    self.folder / "copilot-diagnostic.txt",
+                    stdin="prompt",
+                )
+            self.assertEqual(
+                "GitHub Copilot CLI could not run: it was not started as the leader of a process group of its own",
+                str(raised.exception),
+            )
+            self.assertEqual(1, len(processes))
+            self.assertIsNotNone(processes[0].returncode, "Copilot was ended and reaped before the refusal")
 
 
 if __name__ == "__main__":

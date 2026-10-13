@@ -935,9 +935,13 @@ class SourceSnapshotVerificationTests(GitTestCase):
         )
 
 
-def _junction(link: Path, target: Path) -> None:
-    """A directory junction, a reparse point any Windows user can make, where a symbolic link needs a privilege."""
-    subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], check=True, capture_output=True)
+def directory_link(link: Path, target: Path) -> None:
+    """A link at `link` to the directory `target` that any user can make: on Windows a directory junction, a reparse
+    point no privilege guards where a symbolic link needs one, and elsewhere a symbolic link."""
+    if sys.platform == "win32":
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], check=True, capture_output=True)
+    else:
+        link.symlink_to(target, target_is_directory=True)
 
 
 class SnapshotLinkTests(GitTestCase):
@@ -975,7 +979,7 @@ class SnapshotLinkTests(GitTestCase):
     def link_src_outside(self) -> None:
         """src/ becomes a junction to a folder outside the root that holds an identical src/app.py."""
         shutil.rmtree(self.root / "src")
-        _junction(self.root / "src", self.outside)
+        directory_link(self.root / "src", self.outside)
         self.assertEqual(APP, (self.root / "src" / "app.py").read_bytes())
 
     def test_the_snapshot_without_links_verifies(self) -> None:
@@ -983,7 +987,7 @@ class SnapshotLinkTests(GitTestCase):
             self.assertEqual(_snapshot().metadata, self.verify(contents))
 
     def test_a_junction_folder_made_below_the_root_is_refused_and_not_entered(self) -> None:
-        _junction(self.root / "linked", self.outside)
+        directory_link(self.root / "linked", self.outside)
         self.assert_refused(f"Source snapshot contains a reparse-point directory: {self.root / 'linked'}")
 
     def test_a_listed_file_whose_folder_is_a_junction_is_refused_though_its_bytes_match(self) -> None:
@@ -997,7 +1001,7 @@ class SnapshotLinkTests(GitTestCase):
             self.assert_refused(f"Source snapshot path escapes its root: {self.root / 'src' / 'app.py'}")
 
     def test_an_unlisted_folder_that_resolves_outside_the_root_is_refused_when_no_reparse_point_is_seen(self) -> None:
-        _junction(self.root / "linked", self.outside)
+        directory_link(self.root / "linked", self.outside)
         with mock.patch.object(review_runtime, "_is_reparse_point", lambda path, metadata=None: False):
             self.assert_refused(f"Source snapshot path escapes its root: {self.root / 'linked'}")
 

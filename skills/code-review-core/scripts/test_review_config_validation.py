@@ -25,6 +25,19 @@ from review_config import (
 Mutation = Callable[[Any], Any]
 Case = tuple[str, Mutation, type[Exception], str]
 
+WINDOWS = sys.platform == "win32"
+# How a configured absolute path must be written on this platform, as validate_absolute_path names it.
+ABSOLUTE_PATH = "an absolute drive-letter path" if WINDOWS else "an absolute path"
+
+
+def native(path: str) -> str:
+    """A drive-letter fixture path as this platform writes an absolute one: itself on Windows, and elsewhere the same
+    path under a folder named for the drive, with forward slashes, so `C:\\reviews` is `/C/reviews`."""
+    if WINDOWS:
+        return path
+    return "/" + path[0] + path[2:].replace("\\", "/")
+
+
 REPO = ("repositories", "owner/repo")
 REVIEWER = (*REPO, "reviewer")
 FIELD = "repositories.owner/repo"
@@ -68,9 +81,9 @@ def _config() -> dict[str, Any]:
         "repository_sets": {"main": ["owner/repo"]},
         "default_repository_set": "main",
         "repositories": {"owner/repo": _generic_entry()},
-        "archive_root": "C:\\reviews\\archive",
-        "summary_root": "C:\\reviews\\summaries",
-        "dashboard_file": "C:\\reviews\\dashboard.md",
+        "archive_root": native("C:\\reviews\\archive"),
+        "summary_root": native("C:\\reviews\\summaries"),
+        "dashboard_file": native("C:\\reviews\\dashboard.md"),
     }
 
 
@@ -95,9 +108,9 @@ def _expected() -> dict[str, Any]:
                 "snapshot_exclude": [],
             }
         },
-        "archive_root": "C:\\reviews\\archive",
-        "summary_root": "C:\\reviews\\summaries",
-        "dashboard_file": "C:\\reviews\\dashboard.md",
+        "archive_root": native("C:\\reviews\\archive"),
+        "summary_root": native("C:\\reviews\\summaries"),
+        "dashboard_file": native("C:\\reviews\\dashboard.md"),
         "operation_repository_sets": {},
         "runtime": "auto",
         "reviewer_effort": None,
@@ -122,7 +135,7 @@ def _full_config() -> dict[str, Any]:
         "repository_sets": {"work": ["Owner/Repo", "owner/tools"], "solo": ["owner/generic"]},
         "repositories": {
             "OWNER/REPO": {
-                "checkout_path": "C:/src/repo/",
+                "checkout_path": native("C:/src/repo/"),
                 "reviewer": {
                     "manifest": True,
                     "skill": ".claude/skills/review",
@@ -137,9 +150,9 @@ def _full_config() -> dict[str, Any]:
                     "protocol_version": 1,
                     "scope": "repository",
                     "skill": "skills/review",
-                    "manifest": "C:/manifests/./tools.json",
+                    "manifest": native("C:/manifests/./tools.json"),
                 },
-                "checkout_path": "C:\\src\\tools",
+                "checkout_path": native("C:\\src\\tools"),
             },
             "owner/committed": {
                 "reviewer": {
@@ -148,17 +161,17 @@ def _full_config() -> dict[str, Any]:
                     "trusted_ref": "refs/heads/main",
                     "manifest_path": "review/manifest.json",
                 },
-                "checkout_path": "C:\\src\\committed",
+                "checkout_path": native("C:\\src\\committed"),
             },
             "owner/generic": {
                 "reviewer": {"id": "generic", "protocol_version": 1, "scope": "generic"},
-                "checkout_path": "D:\\src\\generic",
+                "checkout_path": native("D:\\src\\generic"),
             },
         },
-        "archive_root": "C:/reviews/archive/",
-        "local_mirror_root": "C:\\mirror",
-        "summary_root": "C:\\reviews\\summaries",
-        "dashboard_file": "C:\\notes\\..\\reviews\\dashboard.md",
+        "archive_root": native("C:/reviews/archive/"),
+        "local_mirror_root": native("C:\\mirror"),
+        "summary_root": native("C:\\reviews\\summaries"),
+        "dashboard_file": native("C:\\notes\\..\\reviews\\dashboard.md"),
         "github_login": "octo-cat",
         "runtime": "codex",
         "verdict_policy": {"should_fix_threshold": 2, "request_changes_for": ["MUST_FIX", "SHOULD_FIX"]},
@@ -191,7 +204,7 @@ def _full_expected() -> dict[str, Any]:
                     "skill": ".claude/skills/review",
                     "manifest": True,
                 },
-                "checkout_path": "C:\\src\\repo",
+                "checkout_path": native("C:\\src\\repo"),
                 "snapshot_exclude": [],
             },
             "owner/tools": {
@@ -202,9 +215,9 @@ def _full_expected() -> dict[str, Any]:
                     "scope": "repository",
                     "manifest_path": None,
                     "skill": "skills/review",
-                    "manifest": "C:\\manifests\\tools.json",
+                    "manifest": native("C:\\manifests\\tools.json"),
                 },
-                "checkout_path": "C:\\src\\tools",
+                "checkout_path": native("C:\\src\\tools"),
                 "snapshot_exclude": [],
             },
             "owner/committed": {
@@ -217,7 +230,7 @@ def _full_expected() -> dict[str, Any]:
                     "skill": None,
                     "manifest": None,
                 },
-                "checkout_path": "C:\\src\\committed",
+                "checkout_path": native("C:\\src\\committed"),
                 "snapshot_exclude": [],
             },
             "owner/generic": {
@@ -230,14 +243,14 @@ def _full_expected() -> dict[str, Any]:
                     "skill": None,
                     "manifest": None,
                 },
-                "checkout_path": "D:\\src\\generic",
+                "checkout_path": native("D:\\src\\generic"),
                 "snapshot_exclude": [],
             },
         },
-        "archive_root": "C:\\reviews\\archive",
-        "local_mirror_root": "C:\\mirror",
-        "summary_root": "C:\\reviews\\summaries",
-        "dashboard_file": "C:\\reviews\\dashboard.md",
+        "archive_root": native("C:\\reviews\\archive"),
+        "local_mirror_root": native("C:\\mirror"),
+        "summary_root": native("C:\\reviews\\summaries"),
+        "dashboard_file": native("C:\\reviews\\dashboard.md"),
         "github_login": "octo-cat",
         "runtime": "codex",
         "verdict_policy": {"request_changes_for": ["MUST_FIX", "SHOULD_FIX"], "should_fix_threshold": 2},
@@ -260,11 +273,11 @@ def _rich_config() -> dict[str, Any]:
     config = _config()
     config["repositories"]["owner/tools"] = {
         "reviewer": {"id": "tools", "protocol_version": 1, "skill": "skills/review", "manifest": True},
-        "checkout_path": "C:\\src\\tools",
+        "checkout_path": native("C:\\src\\tools"),
     }
     config["repositories"]["owner/committed"] = {
         "reviewer": {"id": "committed", "protocol_version": 1, "manifest_path": "review/manifest.json"},
-        "checkout_path": "C:\\src\\committed",
+        "checkout_path": native("C:\\src\\committed"),
     }
     config["runtime"] = "codex"
     config["reviewer_effort"] = "high"
@@ -272,7 +285,7 @@ def _rich_config() -> dict[str, Any]:
     config["verdict_policy"] = {"request_changes_for": ["MUST_FIX", "SHOULD_FIX"], "should_fix_threshold": 2}
     config["operation_repository_sets"] = {"update-pr-tracker": "main"}
     config["model_names"] = {"model-x": "Model X"}
-    config["local_mirror_root"] = "C:\\mirror"
+    config["local_mirror_root"] = native("C:\\mirror")
     config["github_login"] = "octo-cat"
     # The markers stay at their defaults, which one fault below repeats; the accepted cases cover custom markers.
     config["dashboard"] = {
@@ -335,12 +348,12 @@ def _chain(*mutations: Mutation) -> Mutation:
 # The one repository's reviewer, switched from generic to its repository's own skill, with the checkout it needs.
 REPOSITORY_REVIEWER = _chain(
     _set(REVIEWER, {"id": "repo-review", "protocol_version": 1, "skill": "skills/review"}),
-    _set((*REPO, "checkout_path"), "C:\\src\\repo"),
+    _set((*REPO, "checkout_path"), native("C:\\src\\repo")),
 )
 # The same reviewer described by a manifest committed to the repository instead.
 MANIFEST_PATH_REVIEWER = _chain(
     _set(REVIEWER, {"id": "repo-review", "protocol_version": 1, "manifest_path": "review/manifest.json"}),
-    _set((*REPO, "checkout_path"), "C:\\src\\repo"),
+    _set((*REPO, "checkout_path"), native("C:\\src\\repo")),
 )
 
 
@@ -355,7 +368,7 @@ def _repository_expected(**reviewer: Any) -> Mutation:
         "manifest": None,
     }
     fields.update(reviewer)
-    return _set(REPO, {"reviewer": fields, "checkout_path": "C:\\src\\repo", "snapshot_exclude": []})
+    return _set(REPO, {"reviewer": fields, "checkout_path": native("C:\\src\\repo"), "snapshot_exclude": []})
 
 
 # Snapshot exclusion patterns validate_config accepts as given: a root file, any depth, a whole folder, character
@@ -451,8 +464,8 @@ ACCEPTED: list[tuple[str, Mutation, Mutation]] = [
     ),
     (
         "generic reviewer with a checkout",
-        _set((*REPO, "checkout_path"), "C:/src/repo/"),
-        _set((*REPO, "checkout_path"), "C:\\src\\repo"),
+        _set((*REPO, "checkout_path"), native("C:/src/repo/")),
+        _set((*REPO, "checkout_path"), native("C:\\src\\repo")),
     ),
     (
         "generic reviewer with explicit nulls",
@@ -478,8 +491,8 @@ ACCEPTED: list[tuple[str, Mutation, Mutation]] = [
     ),
     (
         "repository reviewer with a manifest path",
-        _chain(REPOSITORY_REVIEWER, _set((*REVIEWER, "manifest"), "c:/manifests/../kept/m.json")),
-        _repository_expected(manifest="c:\\kept\\m.json"),
+        _chain(REPOSITORY_REVIEWER, _set((*REVIEWER, "manifest"), native("c:/manifests/../kept/m.json"))),
+        _repository_expected(manifest=native("c:\\kept\\m.json")),
     ),
     (
         "repository reviewer with an untrimmed trusted ref",
@@ -551,16 +564,16 @@ ACCEPTED: list[tuple[str, Mutation, Mutation]] = [
     (
         "paths normalized",
         _chain(
-            _set(("archive_root",), "C:/a/../b"),
-            _set(("summary_root",), "d:\\x\\.\\y\\"),
-            _set(("dashboard_file",), "C:\\r\\\\d.md"),
-            _set(("local_mirror_root",), "E:/m"),
+            _set(("archive_root",), native("C:/a/../b")),
+            _set(("summary_root",), native("d:\\x\\.\\y\\")),
+            _set(("dashboard_file",), native("C:\\r\\\\d.md")),
+            _set(("local_mirror_root",), native("E:/m")),
         ),
         _chain(
-            _set(("archive_root",), "C:\\b"),
-            _set(("summary_root",), "d:\\x\\y"),
-            _set(("dashboard_file",), "C:\\r\\d.md"),
-            _set(("local_mirror_root",), "E:\\m"),
+            _set(("archive_root",), native("C:\\b")),
+            _set(("summary_root",), native("d:\\x\\y")),
+            _set(("dashboard_file",), native("C:\\r\\d.md")),
+            _set(("local_mirror_root",), native("E:\\m")),
         ),
     ),
     ("github_login kept as written", _set(("github_login",), " x "), _set(("github_login",), " x ")),
@@ -647,21 +660,34 @@ def _unknown(path: str, *fields: str) -> str:
 def _path_faults(field: str, path: tuple[str, ...], *, nullable: bool = False) -> list[Case]:
     """Every outcome of validate_absolute_path for one field."""
     kind = "a non-empty string or null" if nullable else "a non-empty string"
-    drive = f"{field} must be an absolute drive-letter path"
+    absolute = f"{field} must be {ABSOLUTE_PATH}"
     root = f"{field} must not be a filesystem root"
     faults: list[Case] = [
         (f"{field} empty", _set(path, ""), F, _wrong(field, kind, "")),
         (f"{field} not a string", _set(path, 1), F, _wrong(field, kind, 1)),
         (f"{field} false", _set(path, False), F, _wrong(field, kind, False)),
-        (f"{field} relative", _set(path, "reviews"), C, drive),
-        (f"{field} rooted without a drive", _set(path, "\\reviews"), C, drive),
-        (f"{field} drive-relative", _set(path, "C:reviews"), C, drive),
-        (f"{field} UNC", _set(path, "\\\\server\\share\\reviews"), C, drive),
-        (f"{field} extended-length", _set(path, "\\\\?\\C:\\reviews"), C, drive),
-        (f"{field} root", _set(path, "C:\\"), C, root),
-        (f"{field} root with a slash", _set(path, "C:/"), C, root),
-        (f"{field} root after normalization", _set(path, "C:\\reviews\\.."), C, root),
+        (f"{field} relative", _set(path, "reviews"), C, absolute),
+        # A drive-relative path is relative on every platform.
+        (f"{field} drive-relative", _set(path, "C:reviews"), C, absolute),
     ]
+    if WINDOWS:
+        faults += [
+            (f"{field} rooted without a drive", _set(path, "\\reviews"), C, absolute),
+            (f"{field} UNC", _set(path, "\\\\server\\share\\reviews"), C, absolute),
+            (f"{field} extended-length", _set(path, "\\\\?\\C:\\reviews"), C, absolute),
+            (f"{field} root", _set(path, "C:\\"), C, root),
+            (f"{field} root with a slash", _set(path, "C:/"), C, root),
+            (f"{field} root after normalization", _set(path, "C:\\reviews\\.."), C, root),
+        ]
+    else:
+        faults += [
+            # Off Windows a backslash is a character of a name and a drive-letter path a relative one.
+            (f"{field} with backslashes", _set(path, "\\reviews"), C, absolute),
+            (f"{field} drive-letter", _set(path, "C:/reviews"), C, absolute),
+            (f"{field} two leading slashes", _set(path, "//server/share/reviews"), C, absolute),
+            (f"{field} root", _set(path, "/"), C, root),
+            (f"{field} root after normalization", _set(path, "/reviews/.."), C, root),
+        ]
     if not nullable:
         faults.append((f"{field} null", _set(path, None), F, _wrong(field, kind, None)))
     return faults
@@ -1060,7 +1086,7 @@ REJECTED: list[Case] = [
         "reviewer.manifest the string true",
         _chain(REPOSITORY_REVIEWER, _set((*REVIEWER, "manifest"), "true")),
         C,
-        f"{FIELD}.reviewer.manifest must be an absolute drive-letter path",
+        f"{FIELD}.reviewer.manifest must be {ABSOLUTE_PATH}",
     ),
     (
         "checkout missing for a repository reviewer",
@@ -1633,7 +1659,7 @@ STAGES: list[Case] = [
         "checkout",
         _set((*REPO, "checkout_path"), "relative"),
         C,
-        f"{FIELD}.checkout_path must be an absolute drive-letter path",
+        f"{FIELD}.checkout_path must be {ABSOLUTE_PATH}",
     ),
     (
         "snapshot_exclude not an array",
@@ -1773,7 +1799,7 @@ STAGES: list[Case] = [
         F,
         "config.archive_root must be a non-empty string, found integer 1",
     ),
-    ("archive_root", _set(("archive_root",), "relative"), C, "archive_root must be an absolute drive-letter path"),
+    ("archive_root", _set(("archive_root",), "relative"), C, f"archive_root must be {ABSOLUTE_PATH}"),
     (
         "local_mirror_root not a string",
         _set(("local_mirror_root",), 1),
@@ -1784,7 +1810,7 @@ STAGES: list[Case] = [
         "local_mirror_root",
         _set(("local_mirror_root",), "relative"),
         C,
-        "local_mirror_root must be an absolute drive-letter path",
+        f"local_mirror_root must be {ABSOLUTE_PATH}",
     ),
     (
         "summary_root not a string",
@@ -1792,7 +1818,7 @@ STAGES: list[Case] = [
         F,
         "config.summary_root must be a non-empty string, found integer 1",
     ),
-    ("summary_root", _set(("summary_root",), "relative"), C, "summary_root must be an absolute drive-letter path"),
+    ("summary_root", _set(("summary_root",), "relative"), C, f"summary_root must be {ABSOLUTE_PATH}"),
     (
         "dashboard_file not a string",
         _set(("dashboard_file",), 1),
@@ -1803,7 +1829,7 @@ STAGES: list[Case] = [
         "dashboard_file",
         _set(("dashboard_file",), "relative"),
         C,
-        "dashboard_file must be an absolute drive-letter path",
+        f"dashboard_file must be {ABSOLUTE_PATH}",
     ),
     (
         "github_login",
@@ -1877,13 +1903,13 @@ SKILL_STAGES: list[Case] = [
         "manifest",
         _set((*REVIEWER, "manifest"), "relative"),
         C,
-        f"{FIELD}.reviewer.manifest must be an absolute drive-letter path",
+        f"{FIELD}.reviewer.manifest must be {ABSOLUTE_PATH}",
     ),
     (
         "checkout",
         _set((*REPO, "checkout_path"), "relative"),
         C,
-        f"{FIELD}.checkout_path must be an absolute drive-letter path",
+        f"{FIELD}.checkout_path must be {ABSOLUTE_PATH}",
     ),
     (
         "checkout required",
@@ -1904,7 +1930,7 @@ MANIFEST_PATH_STAGES: list[Case] = [
         "checkout",
         _set((*REPO, "checkout_path"), "relative"),
         C,
-        f"{FIELD}.checkout_path must be an absolute drive-letter path",
+        f"{FIELD}.checkout_path must be {ABSOLUTE_PATH}",
     ),
     (
         "checkout required",
@@ -2048,7 +2074,7 @@ class ConfigValidationTests(unittest.TestCase):
         config = _config()
         config["repositories"]["owner/repo"]["checkout_path"] = "relative"
         config["repositories"]["owner/later"] = {"reviewer": None}
-        self.assert_refused(config, C, f"{FIELD}.checkout_path must be an absolute drive-letter path")
+        self.assert_refused(config, C, f"{FIELD}.checkout_path must be {ABSOLUTE_PATH}")
         config = _config()
         config["repositories"] = {"owner/later": {"reviewer": None}, **config["repositories"]}
         config["repositories"]["owner/repo"]["checkout_path"] = "relative"

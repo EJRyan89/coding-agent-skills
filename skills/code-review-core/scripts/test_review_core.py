@@ -117,6 +117,7 @@ from review_runtime import (
     verify_source_snapshot,
 )
 from review_state import StateError, StateFieldError, empty_state, load_state, update_state, validate_state
+from test_review_config_validation import ABSOLUTE_PATH, native
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
@@ -185,13 +186,13 @@ def valid_config() -> dict:
                     "scope": "generic",
                     "manifest_path": None,
                 },
-                "checkout_path": "C:\\Repos\\One",
+                "checkout_path": native("C:\\Repos\\One"),
             }
         },
-        "archive_root": "C:\\Reviews\\Archive",
-        "local_mirror_root": "C:\\Reviews\\Mirror",
-        "summary_root": "C:\\Reviews\\Summaries",
-        "dashboard_file": "C:\\Reviews\\Dashboard.md",
+        "archive_root": native("C:\\Reviews\\Archive"),
+        "local_mirror_root": native("C:\\Reviews\\Mirror"),
+        "summary_root": native("C:\\Reviews\\Summaries"),
+        "dashboard_file": native("C:\\Reviews\\Dashboard.md"),
         "github_login": "reviewer",
         "runtime": "auto",
         "verdict_policy": {
@@ -322,7 +323,7 @@ class ConfigurationTests(GitTestCase):
             {"manifest_path": ".review/adapter.json"},
             {"skill": ".claude/agents/review.md"},
             {"skill": ".claude/agents/review.md", "manifest": True},
-            {"skill": ".claude/agents/review.md", "manifest": "C:\\Reviewers\\one\\manifest.json"},
+            {"skill": ".claude/agents/review.md", "manifest": native("C:\\Reviewers\\one\\manifest.json")},
         ):
             with self.subTest(fields=fields):
                 reviewer = validate_config(reviewer_config(**fields))["repositories"]["example/one"]["reviewer"]
@@ -335,7 +336,7 @@ class ConfigurationTests(GitTestCase):
             ({"manifest": True}, "needs skill"),
             ({"manifest_path": ".review/adapter.json", "skill": "review.md"}, "cannot also set skill or manifest"),
             ({"skill": "../outside.md"}, "skill is unsafe"),
-            ({"skill": "review.md", "manifest": "relative/manifest.json"}, "absolute drive-letter path"),
+            ({"skill": "review.md", "manifest": "relative/manifest.json"}, ABSOLUTE_PATH),
             (
                 {"skill": "review.md", "manifest": False},
                 field_pattern(

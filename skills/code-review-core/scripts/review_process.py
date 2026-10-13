@@ -103,5 +103,7 @@ SHELL_SCRIPT_SUFFIXES = frozenset({".bat", ".cmd", ".ps1"})
 
 
 def shell_script(path: str) -> bool:
-    """Whether Windows would start `path` through a shell, as it does npm's `copilot.cmd`, rather than as a program."""
-    return Path(path).suffix.casefold() in SHELL_SCRIPT_SUFFIXES
+    """Whether Windows would start `path` through a shell, as it does npm's `copilot.cmd`, rather than as a program.
+    Elsewhere none is: the kernel starts a script by its `#!` line and hands it the arguments as they are, so no shell
+    parses its command line."""
+    return sys.platform == "win32" and Path(path).suffix.casefold() in SHELL_SCRIPT_SUFFIXES

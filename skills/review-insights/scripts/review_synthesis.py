@@ -29,6 +29,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from executable_locator import PYTHON
 from flat_text import flat_text
 from review_io import PersistenceError, atomic_write_text, read_json
 from review_records import ANALYZER_COVERAGES, SEVERITIES, SEVERITY_RANK, is_suite_profile, valid_analyzer
@@ -363,7 +364,7 @@ def write_prompt(directory: Path, *, script: Path, report_path: Path, repositori
             span=span,
             input=directory / INPUT_NAME,
             result=directory / RESULT_NAME,
-            check=f'python -B "{script}" synthesize --report "{report_path}" --result "{directory / RESULT_NAME}" '
+            check=f'{PYTHON} -B "{script}" synthesize --report "{report_path}" --result "{directory / RESULT_NAME}" '
             "--check",
             types=", ".join(f"`{item}`" for item in TYPES),
             coverages=", ".join(f"`{item}`" for item in ANALYZER_COVERAGES),
