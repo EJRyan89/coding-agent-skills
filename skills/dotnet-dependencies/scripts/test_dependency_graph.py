@@ -341,6 +341,11 @@ class GraphTests(Fixture):
         root = self.mixed_solution()
         for run, reason in (
             (lambda arguments, timeout: Completed(1, "boom"), "dotnet nuget why answered nothing (exit code 1)"),
+            # A run that fails after printing a heading and part of a tree is no answer either.
+            (
+                lambda arguments, timeout: Completed(1, SDK_CORE_TEXT),
+                "dotnet nuget why exited with code 1 after printing part of an answer",
+            ),
             (
                 lambda arguments, timeout: Completed(-1, "", timed_out=True),
                 f"dotnet nuget why did not finish within {dependency_graph.DEFAULT_TIMEOUT_SECONDS} seconds",
@@ -655,6 +660,38 @@ class GraphTests(Fixture):
         )
         self.assertEqual(1, len([row for row in self.lines(rows, "PATH") if "Web" in row[0]]))
 
+    def test_with_the_sdk_answering_every_chain_within_the_limit_is_printed(self) -> None:
+        # The walk's package chain is the one the SDK printed, so it is printed as `sdk` and the assembly chain past
+        # the limit is the one cut.
+        root = self.mixed_solution()
+        reference = '<Reference Include="Lantern.Json"><HintPath>lib\\Lantern.Json.dll</HintPath></Reference>'
+        self.write(
+            "src/Harbor.Core/Harbor.Core.csproj", CORE_PROJECT.replace("</ItemGroup>", f"{reference}</ItemGroup>")
+        )
+        self.write("src/Harbor.Core/obj/project.assets.json", json.dumps(CORE_ASSETS))
+        original = dependency_graph.PATH_LIMIT
+        dependency_graph.PATH_LIMIT = 1
+        self.addCleanup(setattr, dependency_graph, "PATH_LIMIT", original)
+        _, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=self.with_dotnet)
+        core = "src/Harbor.Core/Harbor.Core.csproj"
+        self.assertEqual(
+            [[core, "net8.0", "Lantern.Json", "sdk", "Quill.Http (v1.2.0) > Lantern.Json (v12.0.3)"]],
+            [row for row in self.lines(rows, "PATH") if row[0] == core],
+        )
+        self.assertEqual(
+            [[core, "net8.0", "Lantern.Json", "1"]], [row for row in self.lines(rows, "TRUNCATED") if row[0] == core]
+        )
+        dependency_graph.PATH_LIMIT = 2
+        _, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=self.with_dotnet)
+        self.assertEqual(
+            [
+                [core, "net8.0", "Lantern.Json", "sdk", "Quill.Http (v1.2.0) > Lantern.Json (v12.0.3)"],
+                [core, "net8.0", "Lantern.Json", "graph", "Lantern.Json (assembly)"],
+            ],
+            [row for row in self.lines(rows, "PATH") if row[0] == core],
+        )
+        self.assertEqual([], [row for row in self.lines(rows, "TRUNCATED") if row[0] == core])
+
 
 API_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><TargetFrameworks>net8.0;net9.0</TargetFrameworks></PropertyGroup>
@@ -702,6 +739,62 @@ BUNDLE_SDK_TEXT = (
     "  [net9.0]\r\n"
     "  └── Lantern.Bundle (v1.0.0)\r\n"
     "\r\n"
+)
+# A conditional reference that only one framework of the restore holds; the other framework restored no package.
+TUPLE_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFrameworks>net8.0;net472</TargetFrameworks></PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Lantern.Tuple" Version="4.5.0" Condition="'$(TargetFramework)'=='net472'" />
+  </ItemGroup>
+</Project>
+"""
+TUPLE_ASSETS = {
+    "version": 3,
+    "targets": {
+        "net8.0": {},
+        "net472": {"Lantern.Tuple/4.5.0": {"type": "package", "compile": {"lib/net47/Lantern.Tuple.dll": {}}}},
+    },
+    "project": {
+        "frameworks": {
+            "net8.0": {},
+            "net472": {"dependencies": {"Lantern.Tuple": {"target": "Package", "version": "[4.5.0, )"}}},
+        }
+    },
+}
+# A restored project that reaches a packages.config project and an SDK-style project through ProjectReference.
+APP_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net472</TargetFramework></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\\Harbor.Legacy\\Harbor.Legacy.csproj" />
+    <ProjectReference Include="..\\Harbor.Shared\\Harbor.Shared.csproj" />
+  </ItemGroup>
+</Project>
+"""
+APP_ASSETS = {
+    "version": 3,
+    "targets": {
+        "net472": {
+            "Lantern.Json/12.0.3": {"type": "package", "compile": {"lib/net45/Lantern.Json.dll": {}}},
+            "Harbor.Legacy/1.0.0": {"type": "project"},
+            "Harbor.Shared/1.0.0": {"type": "project", "dependencies": {"Lantern.Json": "12.0.3"}},
+        }
+    },
+    "project": {"frameworks": {"net472": {}}},
+}
+LEGACY_PROJECT = """<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup><TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion></PropertyGroup>
+</Project>
+"""
+SHARED_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net472</TargetFramework></PropertyGroup>
+  <ItemGroup><PackageReference Include="Lantern.Json" Version="12.0.3" /></ItemGroup>
+</Project>
+"""
+# The SDK prints a project reference at the project's own version.
+APP_SDK_TEXT = (
+    "Project 'Harbor.App' has the following dependency graph(s) for 'Lantern.Json':\r\n\r\n  [net472]\r\n"
+    "  └── Harbor.Shared (v1.0.0)\r\n      └── Lantern.Json (v12.0.3)\r\n\r\n"
 )
 
 
@@ -785,6 +878,86 @@ class FrameworkAndAssemblyTests(Fixture):
             answers["sdk"],
         )
         self.assertEqual([[*row[:3], "graph", row[4]] for row in answers["sdk"]], answers["graph"])
+
+    def test_a_framework_whose_restore_holds_no_package_is_labelled_with_none(self) -> None:
+        self.write("src/Harbor.Tuple/Harbor.Tuple.csproj", TUPLE_PROJECT)
+        self.write("src/Harbor.Tuple/obj/project.assets.json", json.dumps(TUPLE_ASSETS))
+        self.write("Harbor.sln", solution("src\\Harbor.Tuple\\Harbor.Tuple.csproj"))
+        label = "src/Harbor.Tuple/Harbor.Tuple.csproj"
+        why = [[label, "net472", "Lantern.Tuple", "graph", "Lantern.Tuple (v4.5.0)"]]
+        where = [[label, "net472", "Lantern.Tuple", "package", "4.5.0", "Lantern.Tuple (v4.5.0)"]]
+        _, rows = self.run_main("why", "Lantern.Tuple", "--root", str(self.root))
+        self.assertEqual(why, self.lines(rows, "PATH"))
+        _, rows = self.run_main("where", "Lantern.Tuple", "--root", str(self.root))
+        self.assertEqual(where, self.lines(rows, "WHERE"))
+        # A restore that records no project section leaves each framework the references whose conditions hold for
+        # it; one whose condition the reader cannot evaluate is reported for each framework, never guessed.
+        debug = "'$(Configuration)'=='Debug'"
+        self.write(
+            "src/Harbor.Tuple/Harbor.Tuple.csproj",
+            TUPLE_PROJECT.replace(
+                "</ItemGroup>",
+                f'  <PackageReference Include="Beacon.Debug" Version="1.0.0" Condition="{debug}" />\n  </ItemGroup>',
+            ),
+        )
+        self.write("src/Harbor.Tuple/obj/project.assets.json", json.dumps({**TUPLE_ASSETS, "project": {}}))
+        code, rows = self.run_main("why", "Lantern.Tuple", "--root", str(self.root))
+        self.assertEqual(why, self.lines(rows, "PATH"))
+        self.assertEqual(
+            [
+                [label, f"the condition {debug} on PackageReference Beacon.Debug cannot be evaluated for {framework}"]
+                for framework in ("net8.0", "net472")
+            ],
+            self.lines(rows, "UNREADABLE"),
+        )
+        self.assertEqual(1, code)
+
+    def test_a_package_chain_the_sdk_cannot_see_is_kept_and_dotnet_changes_only_the_source(self) -> None:
+        app = self.write("src/Harbor.App/Harbor.App.csproj", APP_PROJECT)
+        self.write("src/Harbor.App/obj/project.assets.json", json.dumps(APP_ASSETS))
+        self.write("src/Harbor.Legacy/Harbor.Legacy.csproj", LEGACY_PROJECT)
+        self.write(
+            "src/Harbor.Legacy/packages.config",
+            '<packages><package id="Legacy.Pkg" version="1.0.0" targetFramework="net472" /></packages>',
+        )
+        self.write(
+            "packages/Legacy.Pkg.1.0.0/Legacy.Pkg.nuspec",
+            "<package><metadata><id>Legacy.Pkg</id><version>1.0.0</version></metadata></package>",
+        )
+        self.write("src/Harbor.Shared/Harbor.Shared.csproj", SHARED_PROJECT)
+        self.write("Harbor.sln", solution("src\\Harbor.App\\Harbor.App.csproj"))
+        # packages.config dependencies do not flow into a PackageReference restore, so the SDK finds no Legacy.Pkg;
+        # it finds Lantern.Json through Harbor.Shared, printing the project at its own version.
+        sdk, with_sdk = self.sdk_services({(same_path(app), "lantern.json"): APP_SDK_TEXT})
+        expected = {
+            "Legacy.Pkg": [
+                [
+                    "src/Harbor.App/Harbor.App.csproj",
+                    "net472",
+                    "graph",
+                    "Harbor.Legacy (project) > Legacy.Pkg (v1.0.0)",
+                ],
+                ["src/Harbor.Legacy/Harbor.Legacy.csproj", "-", "graph", "Legacy.Pkg (v1.0.0)"],
+            ],
+            "Lantern.Json": [
+                [
+                    "src/Harbor.App/Harbor.App.csproj",
+                    "net472",
+                    "sdk",
+                    "Harbor.Shared (project) > Lantern.Json (v12.0.3)",
+                ],
+                ["src/Harbor.Shared/Harbor.Shared.csproj", "-", "graph", "Lantern.Json (v12.0.3)"],
+            ],
+        }
+        for name, lines in expected.items():
+            with self.subTest(name=name):
+                _, rows = self.run_main("why", name, "--root", str(self.root), services=with_sdk)
+                self.assertEqual([[*line[:2], name, *line[2:]] for line in lines], self.lines(rows, "PATH"))
+                self.assertEqual([["2", "1", "0"]], self.lines(rows, "SUMMARY"))
+                _, rows = self.run_main("why", name, "--root", str(self.root))
+                self.assertEqual([[*line[:2], name, "graph", line[3]] for line in lines], self.lines(rows, "PATH"))
+                self.assertEqual([["2", "1", "0"]], self.lines(rows, "SUMMARY"))
+        self.assertEqual({str(app)}, {command[3] for command in sdk.commands})
 
     def test_every_framework_of_a_restore_answers_and_labels_its_lines(self) -> None:
         self.api_solution()
@@ -907,7 +1080,20 @@ class FrameworkAndAssemblyTests(Fixture):
         projects = []
         for folder, package in (("src/Api", "Lantern.Bundle"), ("tools/Api", "Quill.Http")):
             projects.append(self.write(f"{folder}/Shop.csproj", shop.format(package=package)))
-            self.write(f"{folder}/obj/project.assets.json", json.dumps(CORE_ASSETS))
+            # Each restore holds the chain its SDK answer prints, so the walk finds it too and it is printed once.
+            assets = {
+                "version": 3,
+                "targets": {
+                    "net8.0": {
+                        f"{package}/1.0.0": {"type": "package", "dependencies": {"Lantern.Json": "12.0.3"}},
+                        "Lantern.Json/12.0.3": {"type": "package"},
+                    }
+                },
+                "project": {
+                    "frameworks": {"net8.0": {"dependencies": {package: {"target": "Package", "version": "[1.0.0, )"}}}}
+                },
+            }
+            self.write(f"{folder}/obj/project.assets.json", json.dumps(assets))
         self.write("Shop.sln", solution("src\\Api\\Shop.csproj", "tools\\Api\\Shop.csproj"))
         chain = (
             "Project 'Shop' has the following dependency graph(s) for 'Lantern.Json':\r\n\r\n  [net8.0]\r\n"

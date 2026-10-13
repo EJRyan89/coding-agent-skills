@@ -195,6 +195,29 @@ class RuntimeCanaryTestCase(GitTestCase):
         discovery_only: bool = False,
         **options: str,
     ) -> list[str]:
+        code, lines = self.outcome(runner, skills, runtimes, sources, environment, installed, discovery_only, **options)
+        # A deployment that stops exits 1 too, but it prints none of these lines, so it fails here.
+        skipped = {line.split()[1] for line in lines if line.startswith("SKIPPED ")}
+        failed = set(runtimes) <= skipped or any(
+            line.startswith(("UNDISCOVERED ", "DISCOVERY_FAILED "))
+            or (line.startswith("MATRIX ") and " DISAGREES " in line)
+            for line in lines
+        )
+        self.assertEqual(1 if failed else 0, code, "\n".join(lines))
+        return lines
+
+    def outcome(
+        self,
+        runner: FakeRuntimes,
+        skills: Sequence[str] = (FIXTURE,),
+        runtimes: tuple[str, ...] = ("codex",),
+        sources: list[Path] | None = None,
+        environment: dict[str, str] | None = None,
+        installed: tuple[str, ...] = runtime_canary.RUNTIMES,
+        discovery_only: bool = False,
+        **options: str,
+    ) -> tuple[int, list[str]]:
+        """The canary's exit code and printed lines, for a test that states the code it expects."""
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             code = runtime_canary.canary(
@@ -210,13 +233,7 @@ class RuntimeCanaryTestCase(GitTestCase):
                 timeout=60,
                 **options,
             )
-        lines = output.getvalue().splitlines()
-        # A deployment that stops exits 1 too, but it prints neither line, so it fails here.
-        failed = any(
-            line.startswith("UNDISCOVERED ") or (line.startswith("MATRIX ") and " DISAGREES " in line) for line in lines
-        )
-        self.assertEqual(1 if failed else 0, code, output.getvalue())
-        return lines
+        return code, output.getvalue().splitlines()
 
     def skill_dir(self, name: str = FIXTURE) -> str:
         return forward(self.home / ".claude" / "skills" / name)
@@ -576,7 +593,8 @@ class RunTests(RuntimeCanaryTestCase):
             return real(path)
 
         with mock.patch.object(runtime_canary, "read_records", denied):
-            lines = self.canary(runner, runtimes=("codex", "copilot"))
+            code, lines = self.outcome(runner, runtimes=("codex", "copilot"))
+        self.assertEqual(1, code, lines)
         probe = forward(self.home / ".runtime-canary" / "probe.jsonl")
         self.assertIn(
             f'RUNTIME codex {FIXTURE} FAILED "cannot read what the run recorded in {probe}: '
@@ -1213,8 +1231,52 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
             raise discovery.ListingError("no answer within 60 seconds")
 
         with mock.patch.object(runner, "talk", fail):
-            lines = self.canary(runner, discovery_only=True)
+            code, lines = self.outcome(runner, discovery_only=True)
         self.assertIn('DISCOVERY_FAILED codex "cannot read its skill list: no answer within 60 seconds"', lines)
+        self.assertEqual(1, code, lines)
+
+    def unreadable(self, runner: FakeRuntimes, runtime: str) -> Callable[..., list[str]]:
+        """The runner's listing, except that the named runtime cannot give one."""
+        listing: Callable[..., list[str]] = runner.talk
+
+        def talk(arguments: list[str], *rest: object) -> list[str]:
+            if Path(arguments[0]).name == runtime:
+                raise discovery.ListingError("stub listing unavailable")
+            return listing(arguments, *rest)
+
+        return talk
+
+    def test_a_listing_one_runtime_cannot_give_fails_the_run_and_the_other_runtime_is_still_reported(self) -> None:
+        adapters = forward(self.home / ".agents" / "skills")
+        script = f"{self.skill_dir()}/scripts/canary_probe.py"
+        for discovery_only in (True, False):
+            with self.subTest(discovery_only=discovery_only):
+                runner = FakeRuntimes()
+                runner.listings["copilot"] = [(FIXTURE, f"{adapters}/{FIXTURE}", True)]
+                runner.actions = {runtime: run_python(script, "--help") for runtime in ("codex", "copilot")}
+                with mock.patch.object(runner, "talk", self.unreadable(runner, "codex")):
+                    code, lines = self.outcome(runner, runtimes=("codex", "copilot"), discovery_only=discovery_only)
+                self.assertEqual(1, code, lines)
+                self.assertIn('DISCOVERY_FAILED codex "cannot read its skill list: stub listing unavailable"', lines)
+                self.assertIn(f'DISCOVERED copilot {FIXTURE} "{adapters}/{FIXTURE}"', lines)
+                self.assertFalse([line for line in lines if " DISAGREES " in line], lines)
+                if not discovery_only:
+                    for runtime in ("codex", "copilot"):
+                        self.assertIn(f"MATRIX {runtime} {FIXTURE} AGREES full", lines)
+
+    def test_a_run_whose_every_listing_is_readable_exits_0(self) -> None:
+        adapters = forward(self.home / ".agents" / "skills")
+        script = f"{self.skill_dir()}/scripts/canary_probe.py"
+        for discovery_only in (True, False):
+            with self.subTest(discovery_only=discovery_only):
+                runner = FakeRuntimes()
+                runner.listings = {
+                    runtime: [(FIXTURE, f"{adapters}/{FIXTURE}", True)] for runtime in ("codex", "copilot")
+                }
+                runner.actions = {runtime: run_python(script, "--help") for runtime in ("codex", "copilot")}
+                code, lines = self.outcome(runner, runtimes=("codex", "copilot"), discovery_only=discovery_only)
+                self.assertEqual(0, code, lines)
+                self.assertFalse([line for line in lines if line.startswith("DISCOVERY_FAILED ")], lines)
 
     def test_a_runtime_not_on_path_is_skipped_and_the_others_run_without_tokens(self) -> None:
         names = {name for name in os.environ if "TOKEN" in name or name.endswith("API_KEY")}
@@ -1227,6 +1289,18 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
         )
         self.assertIn('SKIPPED claude "claude is not installed"', lines)
         self.assertEqual({"codex", "copilot"}, {Path(call[1][0]).name for call in runner.calls if call[0] == "run"})
+
+    def test_a_run_that_skips_every_runtime_checked_nothing_and_fails(self) -> None:
+        adapters = forward(self.home / ".agents" / "skills")
+        for installed, code in (((), 1), (("codex",), 0)):
+            with self.subTest(installed=installed):
+                runner = FakeRuntimes()
+                runner.listings["codex"] = [(FIXTURE, f"{adapters}/{FIXTURE}", True)]
+                result, lines = self.outcome(
+                    runner, runtimes=("codex", "copilot"), installed=installed, discovery_only=True
+                )
+                self.assertEqual(code, result, lines)
+                self.assertIn('SKIPPED copilot "copilot is not installed"', lines)
 
     def test_output_starts_with_the_home_and_each_deployment(self) -> None:
         lines = self.canary(FakeRuntimes(), discovery_only=True)

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
@@ -164,6 +166,15 @@ class RangeEntriesTests(FixtureRepository):
         self.git("merge", "-q", "--no-ff", "-m", f"Merge side\n\n{BODY}", "side")
         headings = [item.entry.heading for item in release_notes.range_entries(self.root, "v0.1.0", "HEAD")]
         self.assertEqual(["An entry written by hand", "A skill is added"], headings)
+
+    def test_the_entries_are_the_checkouts_whatever_repository_git_dir_names(self) -> None:
+        self.history()
+        other = self.root.parent / "another repository"
+        subprocess.run(["git", "init", "-q", "-b", "main", str(other)], check=True)
+        subprocess.run(["git", "-C", str(other), "commit", "-q", "--allow-empty", "-m", "Another (#9)"], check=True)
+        with mock.patch.dict(os.environ, {"GIT_DIR": str(other / ".git")}):
+            entries = release_notes.range_entries(self.root, "v0.1.0", "HEAD")
+        self.assertEqual(["#5", "#3"], [item.pull_request for item in entries])
 
     def test_an_entry_released_with_the_previous_tag_is_not_read_again(self) -> None:
         self.commit("Move a heading (#2)", notes=f"{INTRO}\n## Unreleased\n\n{RELEASED.replace('## v0.1.0', '')}")

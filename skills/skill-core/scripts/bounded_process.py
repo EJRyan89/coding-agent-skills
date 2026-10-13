@@ -2,7 +2,10 @@
 
 The command reads no stdin, or only the input its caller gives in full up front, and its environment turns off every
 prompt git, Git Credential Manager, and gh would otherwise show, so an expired credential fails at once instead of
-waiting for an answer nobody gives.
+waiting for an answer nobody gives. Its environment also leaves out git's repository-selecting variables, such as
+`GIT_DIR` and `GIT_INDEX_FILE`, which a git hook exports and a shell may pass on: a command names its repository by the
+directory it runs in or names, as `git -C` and gh in its working directory do, and reads that repository, its index,
+and its objects, never one a variable points at.
 
 Output goes to temporary files, not pipes. A command that times out is killed, but a process it started, such as
 `git-remote-https` or a credential helper, can outlive it and hold a pipe open, and reading a pipe to its end would
@@ -40,6 +43,29 @@ CHUNK_BYTES = 64 * 1024
 QUEUED_CHUNKS = 16  # how far a streaming command's reader runs ahead of its caller
 POLL_SECONDS = 0.1
 NON_INTERACTIVE = {"GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never", "GH_PROMPT_DISABLED": "1"}
+# git's repository-selecting variables: each points a git command at a repository, work tree, index, object store,
+# configuration file, or set of refs other than those of the directory it runs in. They are the list git clears itself
+# before it works in another repository (`git rev-parse --local-env-vars`) and GIT_NAMESPACE, but not the command-scope
+# settings in that list, GIT_CONFIG_PARAMETERS and GIT_CONFIG_COUNT, which configure git as a user's settings do rather
+# than choose a repository.
+REPOSITORY_VARIABLES = frozenset(
+    {
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_CONFIG",
+        "GIT_DIR",
+        "GIT_GRAFT_FILE",
+        "GIT_IMPLICIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_NAMESPACE",
+        "GIT_NO_REPLACE_OBJECTS",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_PREFIX",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_SHALLOW_FILE",
+        "GIT_WORK_TREE",
+    }
+)
 # Ends a stream cut at an output limit, so whoever reads it learns that more was written than it holds.
 CUT_NOTE = "\n[output cut: {cut} bytes past the first {limit} not kept]\n"
 
@@ -63,9 +89,14 @@ class ProcessTree(Protocol):
         ...
 
 
+def without_repository_variables(environment: Mapping[str, str]) -> dict[str, str]:
+    """`environment` without git's repository-selecting variables, each matched in any case, as Windows reads a name."""
+    return {name: value for name, value in environment.items() if name.upper() not in REPOSITORY_VARIABLES}
+
+
 def non_interactive_environment() -> dict[str, str]:
-    """This process's environment with every prompt turned off."""
-    return {**os.environ, **NON_INTERACTIVE}
+    """This process's environment with every prompt turned off and git's repository-selecting variables removed."""
+    return {**without_repository_variables(os.environ), **NON_INTERACTIVE}
 
 
 def run_bounded(
@@ -85,8 +116,8 @@ def run_bounded(
     With `stdout`, the command writes there and the result's stdout is empty, and `stderr` likewise; given the same
     file, the two streams arrive in it in the order the command wrote them. With `cwd`, it runs in that directory.
     With `input_bytes`, its stdin is exactly those bytes and then closed; the time limit covers reading them. With
-    `env`, that is the command's whole environment and no prompt is turned off for it; otherwise it is this process's
-    environment with every prompt turned off. With `output_limit`, at most that many bytes of each stream are read
+    `env`, that is the command's whole environment and no prompt is turned off for it; otherwise it is
+    `non_interactive_environment()`. With `output_limit`, at most that many bytes of each stream are read
     back, and a stream that held more ends with CUT_NOTE. With `tree`, the command starts as the tree says, and every
     process it started is ended once it has finished or been killed.
     Raises OSError when the command cannot start (FileNotFoundError when it does not exist), and
@@ -154,7 +185,7 @@ def streaming(
 
     With `timeout`, the whole session, from starting the command to closing it, lasts at most that many seconds, as
     `Streaming` describes. With `env`, that is the command's whole environment and no prompt is turned off for it;
-    otherwise it is this process's environment with every prompt turned off. Raises OSError when the command cannot
+    otherwise it is `non_interactive_environment()`. Raises OSError when the command cannot
     start (FileNotFoundError when it does not exist). With `merge_stderr`, both output streams go through the bounded
     stdout reader, rather than keeping diagnostics in a file.
     """

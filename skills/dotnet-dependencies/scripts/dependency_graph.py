@@ -16,7 +16,8 @@ forward slashes:
     PROJECT       <project> <sdk|legacy> <assets|nuspec|direct> <listed|referenced>
                   where package-to-package edges came from: obj/project.assets.json, the packages' nuspecs in the
                   packages folder or the NuGet cache, or neither, leaving the direct references alone
-    UNREADABLE    <file> <reason>                            a file the readers refused; its facts are missing
+    UNREADABLE    <file> <reason>                            a file the readers refused, or a condition they
+                  cannot evaluate; its facts are missing
     SDK_FAILED    <project> <name> <reason>                  `dotnet nuget why` failed; the graph walk answered
     PATH          <project> <frameworks> <name> <sdk|graph> <hop> > <hop> ...    one chain, each hop
                   `name (vversion)`, `name (project)`, `name (vversion, assembly)`, or `name (assembly)` for an
@@ -33,16 +34,20 @@ forward slashes:
                   where <projects>; conflicts <names in conflict> <stale redirects>; graph <nodes> <edges>
 
 <frameworks> names the target frameworks of the project's restore that hold the line, joined by `;`, or `-` for a
-project with no restore, whose facts are not kept per framework. A line that holds for several frameworks is
-printed once. Two frameworks of one project resolving different versions build apart and are not a conflict.
+project with no restore, whose facts are not kept per framework. A line that holds for several frameworks is printed
+once. Two frameworks of one project resolving different versions build apart and are not a conflict. A framework's
+direct packages are those its restore recorded; for a framework the restore's project section does not name, they
+are the project file's PackageReference items whose conditions hold for it, and an item whose condition the reader
+cannot evaluate is left out and reported as an UNREADABLE line naming the condition.
 
 `why` asks `dotnet nuget why` for a project that is SDK-style, uses PackageReference, has an obj/project.assets.json
-no older than the project file, and only when dotnet is installed. The SDK looks up package ids, so the graph walk
-runs for every project too: for a project the SDK answered it adds the chains that end in an assembly or a project,
-and for every other project it answers alone, so whether dotnet is installed changes only which source a package
-chain names. The script changes nothing on disk but the graph file, runs no restore or build, and exits 1 when it
-printed a CONFLICT, REDIRECT_STALE, or UNREADABLE line, else 0; a FAILED <reason> line and exit 1 when the root
-cannot be resolved, and a usage error exits 2.
+no older than the project file, and only when dotnet is installed. A run that fails, even after printing part of an
+answer, is an SDK_FAILED line. The graph walk runs for every project too: for a project the SDK answered, a chain
+the SDK printed too is named `sdk` and keeps the walk's hops, and the walk adds every chain the SDK cannot see, such
+as one ending in an assembly or one through a packages.config project; for every other project it answers alone. So
+whether dotnet is installed changes only which source a chain the SDK sees names. The script changes nothing on disk
+but the graph file, runs no restore or build, and exits 1 when it printed a CONFLICT, REDIRECT_STALE, or UNREADABLE
+line, else 0; a FAILED <reason> line and exit 1 when the root cannot be resolved, and a usage error exits 2.
 """
 
 from __future__ import annotations
@@ -67,12 +72,14 @@ from msbuild_reader import (
     ASSETS_FILE,
     CONFIG_FILES,
     PACKAGES_CONFIG,
+    Assets,
     PackageNode,
     PackageRef,
     ProjectFile,
     Unreadable,
     central_versions_file,
     package_assemblies,
+    packages_for,
     read_assets,
     read_central_versions,
     read_nuspec,
@@ -330,6 +337,18 @@ def closure_from_nuspecs(graph: Graph, project: Project, direct: list[PackageRef
     project.edges = "nuspec" if target.nodes else "direct"
 
 
+def direct_references(graph: Graph, project: Project, assets: Assets, framework: str) -> list[PackageRef]:
+    """A framework's direct packages: those its restore recorded, an empty list included, else the project file's
+    references whose conditions hold for it, each item whose condition cannot be evaluated reported and left out."""
+    if framework in assets.direct:
+        return assets.direct[framework]
+    references, unevaluated = packages_for(project.file.package_items, framework)
+    for item, condition in unevaluated:
+        reason = f"the condition {condition} on PackageReference {item.id} cannot be evaluated for {framework}"
+        graph.refuse(Unreadable(project.file.path, reason))
+    return references
+
+
 def closure_from_assets(graph: Graph, project: Project, assets_path: Path, services: Services) -> None:
     """One target per framework the assets file restored, each with its own packages and direct references; the
     project keeps its direct target when the file cannot be read or restored no framework."""
@@ -344,7 +363,7 @@ def closure_from_assets(graph: Graph, project: Project, assets_path: Path, servi
         Target(
             framework,
             {package.casefold(): node for package, node in nodes.items()},
-            assets.direct.get(framework) or list(project.file.packages),
+            direct_references(graph, project, assets, framework),
         )
         for framework, nodes in assets.nodes.items()
     ]
@@ -573,25 +592,52 @@ def sdk_answers(
     }
 
 
+def same_chain(walked: tuple[Hop, ...], printed: SdkPath) -> bool:
+    """Whether a chain of the graph walk is one the SDK printed: the same names in order, at the same versions, but
+    for a project, which the SDK prints at the project's own version."""
+    return len(walked) == len(printed.hops) and all(
+        kind in ("package", "project")
+        and name.casefold() == sdk_name.casefold()
+        and (kind == "project" or version == sdk_version)
+        for (kind, name, version), (sdk_name, sdk_version) in zip(walked, printed.hops, strict=True)
+    )
+
+
 def project_paths(graph: Graph, project: Project, name: str, sdk: list[SdkPath] | None, out: Emitter) -> int:
-    """Print the chains from the project to the name, labelled with their frameworks; return how many lines. With
-    the SDK's chains, the graph walk adds only the chains that end in an assembly or a project, which the SDK cannot
-    see; without them, the walk answers alone."""
-    rows: list[tuple[str, Row]] = [
-        (chain.framework or NO_FRAMEWORK, ("sdk", " > ".join(hop_text(("package", *hop)) for hop in chain.hops)))
-        for chain in sdk or []
-    ]
+    """Print the chains from the project to the name, labelled with their frameworks; return how many lines. Each
+    chain the SDK printed is named `sdk`, with the walk's hops when the walk found it too, so a project hop reads
+    alike from both; every chain only the walk found, such as one ending in an assembly or one through a
+    packages.config project, which the SDK cannot see, is named `graph`. Without the SDK's chains, the walk answers
+    alone."""
+    walked: list[tuple[str, tuple[Hop, ...]]] = []
     truncated: list[str] = []
     for target in project.targets:
         finder = PathFinder(graph, name, target.framework)
         finder.from_project(project, (), frozenset())
-        rows += [
-            (target.framework, ("graph", " > ".join(hop_text(hop) for hop in chain)))
-            for chain in finder.found
-            if sdk is None or chain[-1][0] != "package"
-        ]
+        walked += [(target.framework, chain) for chain in finder.found]
         if finder.truncated:
             truncated.append(target.framework)
+    rows: list[tuple[str, Row]] = []
+    claimed: set[int] = set()
+    for answer in sdk or []:
+        framework = answer.framework or NO_FRAMEWORK
+        match = next(
+            (
+                index
+                for index, (walked_framework, chain) in enumerate(walked)
+                if index not in claimed and walked_framework == framework and same_chain(chain, answer)
+            ),
+            None,
+        )
+        hops = tuple(("package", *hop) for hop in answer.hops) if match is None else walked[match][1]
+        if match is not None:
+            claimed.add(match)
+        rows.append((framework, ("sdk", " > ".join(hop_text(hop) for hop in hops))))
+    rows += [
+        (framework, ("graph", " > ".join(hop_text(hop) for hop in chain)))
+        for index, (framework, chain) in enumerate(walked)
+        if index not in claimed
+    ]
     printed = labelled(rows)
     for frameworks, (source, chain) in printed:
         out.line("PATH", graph.label(project), frameworks, name, source, chain)
