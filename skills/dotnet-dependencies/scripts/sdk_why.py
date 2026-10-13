@@ -1,12 +1,13 @@
 """Run `dotnet nuget why` for the projects the SDK can answer, and read its tree back into paths.
 
-The command takes one package and any number of projects, and prints a block per project: a heading naming the
+The command is run once per project, with the project and one package, and prints a block: a heading naming the
 project by its file stem, then for each target framework a tree of the dependency chains that reach the package,
 drawn with box-drawing branches and the package highlighted with a terminal color. The heading wraps at the console
 width even when the output is a pipe, the tree lines are padded to it instead, and the command exits 0 whether it
 found the package, found no dependency on it, or found no assets file for a project, so the text alone says which.
 The parser strips the colors, reads a chain's depth from the column of its branch, and keeps every chain that ends
-at the package; a project with no heading in the output was not answered, and the caller walks its own graph.
+at the package; a project with no heading in the output was not answered, and the caller walks its own graph. The
+answer is keyed by the project path the run was for, never by the heading's stem, which two projects may share.
 """
 
 from __future__ import annotations
@@ -83,20 +84,28 @@ class SdkPath:
 
 @dataclass
 class WhyAnswer:
-    """What one run answered: the chains per project stem, which stems it answered, and why a run failed."""
+    """What the runs answered, per project path: the chains, the projects answered, and why each failed run failed."""
+
+    paths: dict[Path, list[SdkPath]] = field(default_factory=dict)
+    answered: set[Path] = field(default_factory=set)
+    failures: dict[Path, str] = field(default_factory=dict)
+
+
+@dataclass
+class ParsedWhy:
+    """One run's output read back: the chains per heading's project stem, and the stems it answered."""
 
     paths: dict[str, list[SdkPath]] = field(default_factory=dict)
     answered: set[str] = field(default_factory=set)
-    failure: str | None = None
 
 
-def why_command(projects: Sequence[Path], package: str) -> list[str]:
-    return ["dotnet", "nuget", "why", *(str(project) for project in projects), package]
+def why_command(project: Path, package: str) -> list[str]:
+    return ["dotnet", "nuget", "why", str(project), package]
 
 
-def parse_why(text: str, package: str) -> WhyAnswer:
+def parse_why(text: str, package: str) -> ParsedWhy:
     """The chains to `package` in a run's output, per project stem, and the stems the run answered."""
-    answer = WhyAnswer()
+    answer = ParsedWhy()
     target = package.casefold()
     project: str | None = None
     framework = ""
@@ -131,22 +140,23 @@ def run_why(projects: Sequence[Path], package: str, services: Services, timeout:
     """Ask the SDK why each project depends on `package`, one run per project: the command's usage shows several
     projects, but it refuses a second path as an unrecognized argument.
 
-    A run that times out, cannot start, or answers no project sets `failure` and leaves that project to the graph
-    walk; the other projects keep their answers.
+    A run that times out, cannot start, or answers nothing records the project's failure and leaves that project to
+    the graph walk; the other projects keep their answers.
     """
     answer = WhyAnswer()
     for project in projects:
         try:
-            result = services.run(why_command([project], package), timeout)
+            result = services.run(why_command(project, package), timeout)
         except OSError as error:
-            answer.failure = f"dotnet nuget why could not start: {error}"
+            answer.failures[project] = f"dotnet nuget why could not start: {error}"
             continue
         part = parse_why(result.text, package)
-        answer.paths.update(part.paths)
-        answer.answered |= part.answered
         if result.timed_out:
-            answer.failure = f"dotnet nuget why did not finish within {timeout:g} seconds"
+            answer.failures[project] = f"dotnet nuget why did not finish within {timeout:g} seconds"
         elif not part.answered:
             reason = "no restored assets file" if NO_ASSETS in result.text else f"exit code {result.returncode}"
-            answer.failure = f"dotnet nuget why answered nothing for {project.name} ({reason})"
+            answer.failures[project] = f"dotnet nuget why answered nothing ({reason})"
+        else:
+            answer.answered.add(project)
+            answer.paths[project] = [chain for chains in part.paths.values() for chain in chains]
     return answer
