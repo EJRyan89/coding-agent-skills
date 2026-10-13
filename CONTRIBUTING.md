@@ -58,6 +58,19 @@ Validation runs `Invoke-ScriptAnalyzer -Severity Warning,Error` on every `.ps1` 
 
 Run the validation entry point from PowerShell or Git Bash, and use Git Bash for Bash scripts. Follow `.editorconfig` and `.gitattributes`; do not commit generated build, test, Python-cache, IDE, deployment, or personal configuration artifacts.
 
+### Validating on Linux
+
+The port to Linux is under way: validation starts on Linux and CI runs it there in a reporting job, which the code-review skills do not yet pass. On Linux, validation uses the system Bash and the first `pwsh` and `shellcheck` on `PATH`. On Debian or Ubuntu, with PowerShell 7 installed from [Microsoft's package repository](https://learn.microsoft.com/powershell/scripting/install/install-ubuntu) or with `sudo snap install powershell --classic`, these commands install the rest from the checkout's root, the development dependencies into a virtual environment outside the checkout, since Debian and Ubuntu manage their own Python's packages, and serve as a cloud session's start hook:
+
+```bash
+sudo apt-get update && sudo apt-get install --yes git shellcheck python3-venv
+pwsh -NoProfile -Command 'Install-Module PSScriptAnalyzer -Scope CurrentUser -Force'
+python3 -m venv ~/.venvs/coding-agent-skills
+~/.venvs/coding-agent-skills/bin/python -m pip install -r requirements-dev.txt
+```
+
+Then run validation with that environment's interpreter, `~/.venvs/coding-agent-skills/bin/python -B tests/run_validation.py`.
+
 ## Working in a worktree
 
 Each task gets its own git worktree, so agent sessions working in parallel never share a working tree. The main checkout, the hub, stays on `main`, stays clean, and is never edited. From the hub, bring `main` up to date and create the task's worktree, with the type its pull request's title will carry as the kind, such as `feat` or `fix`:
@@ -121,7 +134,7 @@ Function complexity (C901) and length in statements (PLR0915) are the exception:
 
 The bandit security rules (`S`) are selected except S603 and S607, which flag every subprocess call made without a shell and every program started by its PATH name. The repository runs declared tools as argument lists found on PATH, which the checks under [Commands skills may run](docs/adding-a-skill.md#commands-skills-may-run) hold instead, so those two describe the design and are left unselected rather than suppressed on every call.
 
-Validation type-checks with `mypy` at its default strictness and with the `[tool.mypy]` configuration in `pyproject.toml`, once on `deployer/`, `tools/`, `deploy.py`, and `tests/` together and once on each shipped or repository skill's `scripts/` directory from inside it, and names each error. Fix it, or, where an error must stay, write `# type: ignore[<code>]  # <reason>` on its line; validation fails on a `type: ignore` without its codes and reason. Regression suites are type-checked too, so a fixture that is malformed on purpose is typed as the loose shape it is, never silenced. `mypy_path` lists each `skills/<name>/scripts` directory a module or suite puts on `sys.path`, and each test directory whose suites import a module beside them by its bare name; validation fails until the list matches.
+Validation type-checks with `mypy` at its default strictness and with the `[tool.mypy]` configuration in `pyproject.toml`, once on `deployer/`, `tools/`, `deploy.py`, and `tests/` together and once on each shipped or repository skill's `scripts/` directory from inside it, and names each error. The configuration sets no platform, so mypy checks each module as the host running it sees it, and code for another platform carries a `type: ignore` naming that platform. Fix it, or, where an error must stay, write `# type: ignore[<code>]  # <reason>` on its line; validation fails on a `type: ignore` without its codes and reason. Regression suites are type-checked too, so a fixture that is malformed on purpose is typed as the loose shape it is, never silenced. `mypy_path` lists each `skills/<name>/scripts` directory a module or suite puts on `sys.path`, and each test directory whose suites import a module beside them by its bare name; validation fails until the list matches.
 
 ## How `main` is protected
 
