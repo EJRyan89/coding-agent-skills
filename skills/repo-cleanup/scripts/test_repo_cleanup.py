@@ -1222,7 +1222,8 @@ class SweepTests(Fixture):
             # Elsewhere an argument carries the decoded name back as Git's own bytes, so git finds the ref, a
             # branch that was never pushed.
             self.assertIn("  Local-only (kept):       1 — caf�", self.summary(lines))
-        self.assertEqual([], facts(lines, "CONFIRM_LOCAL"))
+        # Only a branch git found can be confirmed as local to delete.
+        self.assertEqual([] if sys.platform == "win32" else [["caf�"]], facts(lines, "CONFIRM_LOCAL"))
         plan = json.loads((self.root / "plans" / "my repo.json").read_text(encoding="utf-8"))
         self.assertEqual(["caf\udce9"], [branch["name"] for branch in plan["branches"]], "the plan keeps Git's bytes")
 

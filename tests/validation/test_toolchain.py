@@ -132,6 +132,9 @@ class ToolchainFixtures(GitTestCase):
             ),
         )
 
+    # The status is the one Windows set on Git Bash before it printed anything; the fixtures read it as Windows does, on
+    # every platform, and test_platform_support holds how a signal ends a process elsewhere.
+    @mock.patch.object(platform_support, "WINDOWS", True)
     def test_a_probe_ended_before_output_is_named_rather_than_read_as_a_missing_module(self) -> None:
         with (
             mock.patch.object(toolchain, "find_powershell", return_value="C:/tools/pwsh.exe"),

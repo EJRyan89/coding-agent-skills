@@ -424,7 +424,9 @@ class ResolveTests(GitTestCase):
         services.gh = lambda directory: limited
         with mock.patch("time.sleep") as sleep:
             self.assertEqual([["origin/main"]], self.values(self.resolve(services=services), "BASE"))
-        sleep.assert_not_called()
+        # No rate limit is waited out. Off Windows, a timed wait for git to exit polls in pauses of at most a twentieth
+        # of a second, which are no backoff.
+        self.assertEqual([], [call for call in sleep.call_args_list if call.args[0] > 0.05])
         self.assertEqual(1, sum(1 for call in services.calls if call[0] == "gh"))
 
     def test_a_malformed_pull_request_base_falls_back_to_origin_main(self) -> None:

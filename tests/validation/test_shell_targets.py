@@ -324,6 +324,9 @@ class ShellTargetsFixtures(GitTestCase):
 class ProgramEndingFixtures(GitTestCase):
     """Each program a shell or analyzer job starts is recognized when it is ended before its first line of output."""
 
+    # The status is the one Windows set on Git Bash before it printed anything; the fixtures read it as Windows does, on
+    # every platform, and test_platform_support holds how a signal ends a process elsewhere.
+    @mock.patch.object(platform_support, "WINDOWS", True)
     def test_bash_starts_as_a_plain_shell_and_its_ending_names_the_status_and_the_command(self) -> None:
         bash = "C:/Program Files/Git/bin/bash.exe"
         started: list[list[str]] = []
@@ -347,6 +350,9 @@ class ProgramEndingFixtures(GitTestCase):
             str(raised.exception),
         )
 
+    # The status is the one Windows set on Git Bash before it printed anything; the fixtures read it as Windows does, on
+    # every platform, and test_platform_support holds how a signal ends a process elsewhere.
+    @mock.patch.object(platform_support, "WINDOWS", True)
     def test_the_analyzer_and_markdown_shellcheck_report_an_ending_before_output(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

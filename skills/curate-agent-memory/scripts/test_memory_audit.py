@@ -151,6 +151,7 @@ class MemoryAuditTests(GitTestCase):
     else:
 
         def test_a_case_variant_of_the_index_is_a_memory_of_its_own(self) -> None:
+            write(self.memory_dir / memory_audit.INDEX_NAME, "# Memory Index\n")
             write(self.memory_dir / "memory.md", memory("variant", "Variant body."))
             result = self.run_audit()
             self.assertTrue(result["index"]["exists"])

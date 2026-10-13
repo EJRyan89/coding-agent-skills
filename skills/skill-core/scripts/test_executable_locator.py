@@ -37,7 +37,8 @@ class LocatorTestCase(unittest.TestCase):
         self.local = root / "local app data"
         self.links = self.local / "Microsoft" / "WinGet" / "Links" if WINDOWS else root / "later on path"
         self.path_folder.mkdir()
-        self.links.mkdir(parents=True)
+        self.local.mkdir()
+        self.links.mkdir(parents=True, exist_ok=True)
         variables = (
             {"PATH": str(self.path_folder), "PATHEXT": ".COM;.EXE", "LOCALAPPDATA": str(self.local)}
             if WINDOWS
