@@ -10,7 +10,7 @@ hooks:
       hooks:
         - type: command
           command: >-
-            python -I -B -c "import json, os, runpy, sys;
+            {{PYTHON}} -I -B -c "import json, os, runpy, sys;
             sys.excepthook = lambda kind, error, trace: (sys.__excepthook__(kind, error, trace),
             print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'deny',
             'permissionDecisionReason': 'Code-review reviewer boundary: the guard could not run (' + kind.__name__ + ').'}}),

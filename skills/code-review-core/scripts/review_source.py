@@ -28,14 +28,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from console import run_main
+from executable_locator import PYTHON
 from review_guard import ROLE_ID, RUN_FILE, RUN_PREFIX, read_log
 from review_io import PersistenceError, read_json
 from review_runtime import RuntimeContractError, fetch_source_file, search_source
 from typed_fields import FieldError, FieldReader
 
 SCRIPT = Path(__file__).resolve()
-FILE_COMMAND = 'python -B "{script}" source-file --run "{run}" --role "{role}" --path="<path>"'
-SEARCH_COMMAND = 'python -B "{script}" source-search --run "{run}" --role "{role}" --pattern="<pattern>"'
+# Python named as review-prs's rendered grant names it, by the platform's command.
+FILE_COMMAND = PYTHON + ' -B "{script}" source-file --run "{run}" --role "{role}" --path="<path>"'
+SEARCH_COMMAND = PYTHON + ' -B "{script}" source-search --run "{run}" --role "{role}" --pattern="<pattern>"'
 
 
 class SourceError(ValueError):

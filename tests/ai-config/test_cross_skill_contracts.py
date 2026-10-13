@@ -30,6 +30,10 @@ from review_config import COMPUTED_DASHBOARD_STATES
 
 from deployer import platform_support
 
+# The variable that names the home a runtime reads skills from, and the one a shell may set that it ignores: on Windows
+# the profile folder whatever HOME says, and HOME on Unix whatever a profile variable says.
+HOME_VARIABLE, IGNORED_HOME_VARIABLE = ("USERPROFILE", "HOME") if sys.platform == "win32" else ("HOME", "USERPROFILE")
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -335,7 +339,7 @@ class CrossSkillContractTests(GitTestCase):
                 # Python finds the profile folder in either shell; -I keeps the working directory off sys.path.
                 # A guard that cannot run would exit 1, which lets the call through, so the hook denies it instead.
                 "          command: >-",
-                '            python -I -B -c "import json, os, runpy, sys;',
+                '            {{PYTHON}} -I -B -c "import json, os, runpy, sys;',
                 "            sys.excepthook = lambda kind, error, trace: (sys.__excepthook__(kind, error, trace),",
                 "            print(json.dumps({'hookSpecificOutput': "
                 "{'hookEventName': 'PreToolUse', 'permissionDecision':"
@@ -389,7 +393,7 @@ class CrossSkillContractTests(GitTestCase):
         from deployer import platform_support
 
         return {
-            "Git Bash": (platform_support.find_bash(), ["-c", command]),
+            "Git Bash" if sys.platform == "win32" else "Bash": (platform_support.find_bash(), ["-c", command]),
             "PowerShell": (platform_support.find_pwsh(os.environ.get("PATH", "")), ["-NoProfile", "-Command", command]),
         }
 
@@ -397,7 +401,8 @@ class CrossSkillContractTests(GitTestCase):
         frontmatter, _ = frontmatter_and_body(
             (REPOSITORY_ROOT / "agents/code-review-reviewer.md").read_text(encoding="utf-8")
         )
-        lines = frontmatter.splitlines()
+        # As the deployer renders it, with Python named as this platform names it.
+        lines = frontmatter.replace("{{PYTHON}}", platform_support.PYTHON).splitlines()
         start = lines.index("          command: >-") + 1
         folded = [line.strip() for line in lines[start:] if line.startswith("            ")]
         command = " ".join(folded)  # a folded block scalar joins its lines with single spaces
@@ -502,7 +507,7 @@ class CrossSkillContractTests(GitTestCase):
                 "coreless": (coreless, "No module named 'console'", "ModuleNotFoundError"),
             }
             for case, (profile, traceback, error) in cases.items():
-                environment = {**os.environ, "USERPROFILE": str(profile)}
+                environment = {**os.environ, HOME_VARIABLE: str(profile)}
                 for shell, (executable, arguments) in self.reviewer_hook_shells(command).items():
                     with self.subTest(case=case, shell=shell):
                         if executable is None:
@@ -531,8 +536,9 @@ class CrossSkillContractTests(GitTestCase):
                         )
 
     def test_the_reviewer_hook_runs_the_deployed_guard_whatever_home_says(self) -> None:
-        # Claude Code runs hooks in Git Bash, whose $HOME follows HOME, or in PowerShell when it finds no Git Bash.
-        # The deployer and Claude Code both use the profile folder, so the hook must find the guard there in both.
+        # Claude Code runs hooks in Git Bash, whose $HOME follows HOME, or in PowerShell when it finds no Git Bash,
+        # and elsewhere in a shell. The deployer and Claude Code both use the home docs/design.md names, the profile
+        # folder on Windows and HOME on Unix, so the hook must find the guard there in every shell.
         command = self.reviewer_hook_command()
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -540,11 +546,11 @@ class CrossSkillContractTests(GitTestCase):
             guard = profile / ".claude/skills/code-review-core/scripts/review_guard.py"
             guard.parent.mkdir(parents=True)
             guard.write_bytes((REPOSITORY_ROOT / "skills/code-review-core/scripts/review_guard.py").read_bytes())
-            # The guard imports skill-core's runner, the flattener the runner imports, and its typed-field reader from
-            # the sibling skill the deployer installs beside it.
+            # The guard imports skill-core's runner, the flattener the runner imports, its typed-field reader, and the
+            # locator that names Python's command from the sibling skill the deployer installs beside it.
             core = profile / ".claude/skills/skill-core/scripts"
             core.mkdir(parents=True)
-            for module in ("console.py", "flat_text.py", "typed_fields.py"):
+            for module in ("console.py", "executable_locator.py", "flat_text.py", "typed_fields.py"):
                 (core / module).write_bytes((REPOSITORY_ROOT / "skills/skill-core/scripts" / module).read_bytes())
             # A session's working directory is untrusted: its modules must never shadow the standard library or the
             # core.
@@ -563,11 +569,11 @@ class CrossSkillContractTests(GitTestCase):
             ):
                 (cwd / f"{module}.py").write_text("print('HIJACKED')\nraise SystemExit(0)\n", encoding="utf-8")
             other = root / "other home"
-            environment = {
-                **os.environ,
-                "USERPROFILE": str(profile),
-                "HOME": "/" + other.as_posix()[0].lower() + other.as_posix()[2:],
-            }
+            # Git Bash spells the other home as MSYS2 does.
+            ignored = (
+                "/" + other.as_posix()[0].lower() + other.as_posix()[2:] if sys.platform == "win32" else str(other)
+            )
+            environment = {**os.environ, HOME_VARIABLE: str(profile), IGNORED_HOME_VARIABLE: ignored}
             # A subagent's event carries its agent ID; a reviewer that has read no prompt yet may read nothing else.
             event = json.dumps(
                 {

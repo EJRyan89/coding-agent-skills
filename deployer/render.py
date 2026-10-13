@@ -336,9 +336,13 @@ def render(
     derived = {key: config[key] for key in DERIVED_VARIABLES}
     for asset in owned_shared:
         staged.shared[asset] = render_file(asset, (skills_src / asset).read_bytes(), derived)
-    # Agent definitions take no variables: their frontmatter (tools, model) is executable configuration.
+    # Agent definitions take no configured or path variables: their frontmatter (tools, model, hooks) is executable
+    # configuration. They take the interpreter alone, a value from a fixed set, so a hook names Python as the platform
+    # does; any other token is left for reject_unexpanded_tokens to refuse.
+    interpreter = {key: config[key] for key in INTERPRETER_VARIABLES}
     for file_name in agents:
-        staged.agents[file_name] = source.agents[file_name[: -len(".md")]].read_bytes()
+        content = source.agents[file_name[: -len(".md")]].read_bytes()
+        staged.agents[file_name] = render_file(f"{AGENT_STAGING}/{file_name}", content, interpreter)
     return staged
 
 

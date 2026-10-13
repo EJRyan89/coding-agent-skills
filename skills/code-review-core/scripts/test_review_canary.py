@@ -25,6 +25,7 @@ from git_client import subprocess_runner
 from git_test_base import GitTestCase
 from review_canary import FixtureError, FixtureFieldError, fixture_change, validate_fixture_pull, validate_prior_record
 from review_operation import PULL_FIELDS, validate_canary_pull
+from test_review_runtime_validation import directory_link
 from typed_fields import FieldError
 
 PULL: dict[str, Any] = {
@@ -437,11 +438,7 @@ class FixtureChangeTests(GitTestCase):
         outside = self.root / "outside"
         write_tree(outside, {"inner.txt": b"outside\n"})
         directory = write_fixture(self.root / "fixture", {"a.txt": b"a\n"}, {"src/a.txt": b"b\n"})
-        subprocess.run(
-            ["cmd", "/c", "mklink", "/J", str(directory / "head" / "src" / "linked"), str(outside)],
-            check=True,
-            capture_output=True,
-        )
+        directory_link(directory / "head" / "src" / "linked", outside)
         with (
             self.assertRaisesRegex(FixtureError, "The fixture holds a link or special file: src/linked$"),
             fixture_change(directory, subprocess_runner),

@@ -212,11 +212,12 @@ def _path_limits() -> tuple[int, int]:
 
 def _long_paths_enabled() -> bool:
     """Whether Windows lets this process use paths over MAX_PATH. The system setting and the interpreter's manifest
-    must both allow it, and ntdll answers for the two; without the answer the shorter limits hold."""
+    must both allow it, and ntdll answers for the two; without the answer the shorter limits hold, as they do on every
+    other platform, so a snapshot holds the paths a Windows reviewer could write wherever it is made."""
     import ctypes
 
     try:
-        query = ctypes.WinDLL("ntdll").RtlAreLongPathsEnabled
+        query = ctypes.WinDLL("ntdll").RtlAreLongPathsEnabled  # type: ignore[attr-defined]  # Windows only
     except (AttributeError, OSError):
         return False
     query.restype = ctypes.c_ubyte

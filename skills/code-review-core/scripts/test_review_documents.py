@@ -166,9 +166,10 @@ sys.exit(rule["status"])
 """
 
 
-# The program extensions a stub's environment gives the locator, so the path it finds a stub at is known.
-STUB_PATHEXT = ".COM;.EXE;.BAT;.CMD"
-STUB_EXTENSION = ".CMD"
+# The program extensions a stub's environment gives the locator, so the path it finds a stub at is known: a batch
+# file's on Windows, and none elsewhere, where the stub is a shell script its mode makes executable.
+STUB_PATHEXT = ".COM;.EXE;.BAT;.CMD" if sys.platform == "win32" else ""
+STUB_EXTENSION = ".CMD" if sys.platform == "win32" else ""
 
 
 def path_without_pdftotext() -> str:
@@ -195,7 +196,12 @@ class StubPdftotext:
         test.addCleanup(shutil.rmtree, self.folder, True)
         program = self.folder / "stub_pdftotext.py"
         program.write_text(STUB_PROGRAM, encoding="utf-8")
-        (self.folder / "pdftotext.cmd").write_text(f'@"{sys.executable}" "{program}" %*\r\n', encoding="ascii")
+        if sys.platform == "win32":
+            (self.folder / "pdftotext.cmd").write_text(f'@"{sys.executable}" "{program}" %*\r\n', encoding="ascii")
+        else:
+            launcher = self.folder / "pdftotext"
+            launcher.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{program}" "$@"\n', encoding="utf-8")
+            launcher.chmod(0o755)
         # The path the locator finds it at, with the extension as PATHEXT spells it.
         self.program = self.folder / f"pdftotext{STUB_EXTENSION}"
         self.answer(*rules, **default)

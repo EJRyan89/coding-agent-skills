@@ -21,6 +21,7 @@ import review_guard as guard
 import review_pipeline as rp
 from git_test_base import GitTestCase
 from review_source import source_commands
+from test_review_runtime_validation import directory_link
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 AGENT = "a71dab35ebc1b97eb"  # the form Claude Code gives an agent ID
@@ -148,10 +149,21 @@ class ReadTests(GuardFixture):
             with self.subTest(tool=tool, input=tool_input):
                 self.assert_denied(self.decide(tool, **tool_input))
 
-    def test_a_shell_style_drive_path_is_understood(self) -> None:
-        self.claim()
-        drive, rest = str(self.checkout).replace("\\", "/").split(":", 1)
-        self.assertIsNotNone(self.decide("Read", file_path=f"/{drive.lower()}{rest}/app/Collections.cs"))
+    if sys.platform == "win32":
+
+        def test_a_shell_style_drive_path_is_understood(self) -> None:
+            self.claim()
+            drive, rest = str(self.checkout).replace("\\", "/").split(":", 1)
+            self.assertIsNotNone(self.decide("Read", file_path=f"/{drive.lower()}{rest}/app/Collections.cs"))
+
+    else:
+
+        def test_a_drive_letter_path_is_a_relative_one_and_denied(self) -> None:
+            # Off Windows no shell spells a drive, so `C:/...` names a folder `C:` below the working directory.
+            self.claim()
+            source = self.run_directory / "source" / "app" / "Service.cs"
+            self.assertIsNone(self.decide("Read", file_path=str(source)))
+            self.assertIsNotNone(self.decide("Read", file_path=f"C:{source}"))
 
     def test_nested_run_like_source_folders_do_not_redefine_the_claimed_root(self) -> None:
         nested = self.run_directory / "source" / "code-review-run-authored"
@@ -191,7 +203,7 @@ class ReadTests(GuardFixture):
         outside = make_run(self.root / f"{self.run_directory.name}-outside", ["csharp-review"])
         (outside / "Service.cs").write_text("class Outside {}\n", encoding="utf-8")
         link = self.run_directory / "source" / "code-review-run-linked"
-        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)], capture_output=True, check=True)
+        directory_link(link, outside)
         for path in (outside, link, self.run_directory / "source" / ".." / ".." / outside.name):
             for tool, tool_input in (
                 ("Read", {"file_path": str(path / "Service.cs")}),
