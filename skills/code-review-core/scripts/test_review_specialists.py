@@ -269,6 +269,22 @@ class DiffAndRoutingTests(GitTestCase):
         self.assertNotIn("compat-review", rs.route(sharing, changed, lambda name: False))
         self.assertEqual(["README.md"], rs.uncovered(sharing, ["README.md"]), "it alone matching is no match")
 
+    def test_a_file_a_sharing_specialist_reviews_is_not_left_unreviewed(self) -> None:
+        value = manifest()
+        value["specialists"][2] = {**value["specialists"][2], "include": [r"\.cs$"], "shares_files": True}
+        sharing = validate_adapter_manifest(value)
+        changed = ["db/Procs.sql", "src/A.cs", "src/Generated/B.cs", "README.md"]
+        outside = rs.uncovered(sharing, changed)
+        self.assertEqual(["src/Generated/B.cs", "README.md"], outside)
+        # Open, it reviews the generated file, so only README.md is left; closed, it reviews nothing, so both are.
+        self.assertEqual(["README.md"], rs.unreviewed(sharing, outside, rs.route(sharing, changed, lambda name: True)))
+        self.assertEqual(
+            ["src/Generated/B.cs", "README.md"],
+            rs.unreviewed(sharing, outside, rs.route(sharing, changed, lambda name: False)),
+        )
+        # A specialist that does not share its files reviews nothing uncovered, so it leaves the list as it is.
+        self.assertEqual(outside, rs.unreviewed(sharing, outside, {"csharp-review": outside}))
+
     def test_the_reads_of_the_conditions_routing_would_run(self) -> None:
         def declared(**conditions: dict[str, Any]) -> dict[str, Any]:
             value = manifest()
