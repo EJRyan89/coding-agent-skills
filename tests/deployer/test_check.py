@@ -32,7 +32,7 @@ import review_hosts
 import review_runtime
 import run_dotnet_format
 from git_test_base import GitTestCase
-from harness import REPOSITORY_ROOT, SOURCE_ID, DeployerTestCase, Result, forward
+from harness import DEPLOY_COMMAND, REPOSITORY_ROOT, SOURCE_ID, DeployerTestCase, Result, forward
 from pdf_tool import MINIMUMS, PdfIdentity, PdfToolRefused, parse_banner
 
 from deployer import platform_support, tools
@@ -461,7 +461,7 @@ class CheckCommandTests(DeployerTestCase):
         result = self.check(Machine(), "--all")
         self.assertEqual(2, result.code)
         self.assertIn(
-            "ERROR: unrecognized arguments: --all\nRun 'python deploy.py check --help' for usage.", result.output
+            f"ERROR: unrecognized arguments: --all\nRun '{DEPLOY_COMMAND} check --help' for usage.", result.output
         )
         result = self.check(Machine(), "--help")
         self.assertEqual(0, result.code)
@@ -481,7 +481,7 @@ class DeployWarningTests(DeployerTestCase):
                 "\nWARNING: Selected skills use tools that are not installed:\n"
                 "  gh (used by reporter)\n"
                 "Those skills will fail until the tools are installed.\n"
-                "Run 'python deploy.py check' for details.\n",
+                f"Run '{DEPLOY_COMMAND} check' for details.\n",
                 output,
             )
             self.assertNotIn("copilot", output)

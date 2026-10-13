@@ -16,7 +16,7 @@ Codex CLI has no command that lists skills, so the verifier starts `codex app-se
 
 On Windows, Codex looks for personal skills in your Windows profile folder, whatever `HOME` or `USERPROFILE` says. The deployer therefore installs into the profile folder that `USERPROFILE` names even when `HOME` points somewhere else, as it does by default in MSYS2. A deployment, a dry run included, and `python deploy.py check` name that folder on their `Home:` line and warn when `HOME` differs. If `USERPROFILE` itself has been changed, the adapters land where Codex never looks, and the verifier reports them as `NOT FOUND`.
 
-On Linux, Codex looks for personal skills under `HOME`, where the deployer installs, so the same check reads the same adapters; the [`deployable` workflow](../.github/workflows/deployable.yml) runs it on a fresh Ubuntu runner as it does on a fresh Windows one.
+On Linux, Codex looks for personal skills under `HOME`, where the deployer installs, so the same check, run as `python3 deploy.py verify`, reads the same adapters; the [`deployable` workflow](../.github/workflows/deployable.yml) runs it on a fresh Ubuntu runner as it does on a fresh Windows one.
 
 `codex debug prompt-input` also lists skills, but only those the model may choose for itself, so it leaves out user-only skills such as `update-coding-agent-skills`.
 

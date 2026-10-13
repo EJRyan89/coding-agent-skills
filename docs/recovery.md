@@ -1,6 +1,6 @@
 # Recovery
 
-The deployer changes your home directory only through a journaled transaction, so an interrupted or failed deployment is put right by the next run. This page explains the state it keeps, what that next run does, and what to do in the few cases it stops and asks you to decide. Every deployer message that sends you here names the section to read. When a message alone does not show the cause, rerun the command with `--debug`, or with `DEPLOYER_DEBUG=1` set, to print the traceback after it.
+The deployer changes your home directory only through a journaled transaction, so an interrupted or failed deployment is put right by the next run. This page explains the state it keeps, what that next run does, and what to do in the few cases it stops and asks you to decide. Every deployer message that sends you here names the section to read. When a message alone does not show the cause, rerun the command with `--debug`, or with `DEPLOYER_DEBUG=1` set, to print the traceback after it. On Linux, run each `python deploy.py` command on this page as `python3 deploy.py`, as [Installation](installation.md#on-linux) says; the deployer's own messages already name it so there.
 
 ## Where the deployer keeps its state
 

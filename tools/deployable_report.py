@@ -41,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-c
 from console import run_main
 
 from deployer import discovery, manifest, platform_support, tools, verify
+from deployer.arguments import PROG, VERIFY_COMMAND_LINE
 from deployer.errors import DeployError, print_error
 from deployer.paths import Paths
 
@@ -87,9 +88,7 @@ def check_runtimes(
     names = verify.adapter_names(manifest.load(paths.manifest_file))
     if not names:
         where = platform_support.normalize(paths.adapter_dest_dir)
-        raise DeployError(
-            f"ERROR: No runtime adapters are deployed in {where}.", "Deploy first with 'python deploy.py'."
-        )
+        raise DeployError(f"ERROR: No runtime adapters are deployed in {where}.", f"Deploy first with '{PROG}'.")
     results: list[RuntimeResult] = []
     # An empty working directory, so no project skill stands in for an adapter.
     workdir = Path(tempfile.mkdtemp(prefix="deployable-report-"))
@@ -129,7 +128,7 @@ def check_layout(paths: Paths, find: Find | None = None) -> RuntimeResult:
     agents = sorted({name for entry in entries for name in (entry.get("agents") or {})})
     if not skills:
         where = platform_support.normalize(paths.dest_dir)
-        raise DeployError(f"ERROR: No skills are deployed in {where}.", "Deploy first with 'python deploy.py'.")
+        raise DeployError(f"ERROR: No skills are deployed in {where}.", f"Deploy first with '{PROG}'.")
     problems = [] if find(CLAUDE) else ["not installed"]
     for name in skills:
         file = paths.dest_dir / name / "SKILL.md"
@@ -292,7 +291,7 @@ def main(argv: list[str] | None = None) -> int:
         commands.choices[name].add_argument("--label", required=True)
     commands.choices["verify"].add_argument("--deploy-verify-exit", type=int, required=True)
     commands.choices["verify"].add_argument(
-        "--deploy-verify-log", required=True, help="the saved output of python deploy.py verify"
+        "--deploy-verify-log", required=True, help=f"the saved output of {VERIFY_COMMAND_LINE}"
     )
     commands.choices["summary"].add_argument("--note", action="append", default=[])
     commands.choices["summary"].add_argument("--summary", default="")
