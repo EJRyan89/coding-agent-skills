@@ -74,7 +74,7 @@ class RealDiffTests(GitTestCase):
         self.assertEqual([SPACED, ACCENTED], [unquote(line.split(" ", 2)[2]) for line in headers])
 
 
-class DecoderTests(unittest.TestCase):
+class DecoderTests(GitTestCase):
     def test_each_escape_git_writes_is_undone(self) -> None:
         self.assertEqual('a\x07\x08\t\n\x0b\x0c\r"\\b', unquote('"a\\a\\b\\t\\n\\v\\f\\r\\"\\\\b"'))
         self.assertEqual("é", unquote('"\\303\\251"'))
