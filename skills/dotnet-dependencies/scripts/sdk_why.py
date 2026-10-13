@@ -6,7 +6,8 @@ drawn with box-drawing branches and the package highlighted with a terminal colo
 width even when the output is a pipe, the tree lines are padded to it instead, and the command exits 0 whether it
 found the package, found no dependency on it, or found no assets file for a project, so the text alone says which.
 The parser strips the colors, reads a chain's depth from the column of its branch, and keeps every chain that ends
-at the package; a project with no heading in the output was not answered, and the caller walks its own graph. The
+at the package; a project with no heading in the output, or whose run exited nonzero after printing one, was not
+answered, and the caller walks its own graph. The
 answer is keyed by the project path the run was for, never by the heading's stem, which two projects may share.
 """
 
@@ -140,8 +141,8 @@ def run_why(projects: Sequence[Path], package: str, services: Services, timeout:
     """Ask the SDK why each project depends on `package`, one run per project: the command's usage shows several
     projects, but it refuses a second path as an unrecognized argument.
 
-    A run that times out, cannot start, or answers nothing records the project's failure and leaves that project to
-    the graph walk; the other projects keep their answers.
+    A run that times out, cannot start, exits nonzero, or answers nothing records the project's failure and leaves
+    that project to the graph walk, whatever part of an answer it printed first; the other projects keep theirs.
     """
     answer = WhyAnswer()
     for project in projects:
@@ -153,6 +154,10 @@ def run_why(projects: Sequence[Path], package: str, services: Services, timeout:
         part = parse_why(result.text, package)
         if result.timed_out:
             answer.failures[project] = f"dotnet nuget why did not finish within {timeout:g} seconds"
+        elif part.answered and result.returncode != 0:
+            answer.failures[project] = (
+                f"dotnet nuget why exited with code {result.returncode} after printing part of an answer"
+            )
         elif not part.answered:
             reason = "no restored assets file" if NO_ASSETS in result.text else f"exit code {result.returncode}"
             answer.failures[project] = f"dotnet nuget why answered nothing ({reason})"

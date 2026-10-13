@@ -330,6 +330,9 @@ def choose_scope(
 
     A file counts as changed when its patch fingerprint differs from the previous review's, or it was not in
     that review. A previous review recorded without fingerprints cannot be compared, so it gets a full pass.
+    An incremental pass also reviews in full each file of the pull request the previous record left unreviewed,
+    changed or not: no reviewer has seen it, so a reviewer that covers it on this head reviews it, and one that
+    does not leaves it in this record's `uncovered_files` too.
     """
     earlier = previous["review"].get("patches")
     changed = (
@@ -363,7 +366,10 @@ def choose_scope(
             used, reason = "full", f"at least {thresholds['full_lines']} changed lines differ"
         else:
             used, reason = "incremental", "the change since then is under the full-review thresholds"
-    return {**scope, "used": used, "reason": reason}, (changed if used == "incremental" else None)
+    if used != "incremental" or changed is None:
+        return {**scope, "used": used, "reason": reason}, None
+    unseen = (previous["review"].get("coverage") or {}).get("uncovered_files", [])
+    return {**scope, "used": used, "reason": reason}, changed | {path for path in unseen if path in patches}
 
 
 def _skip(selector: str, reason: str) -> dict[str, Any]:
