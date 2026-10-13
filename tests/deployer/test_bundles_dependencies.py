@@ -459,6 +459,61 @@ class OptInTests(DeployerTestCase):
         self.assertEqual(["pack"], entry["requested_bundles"])
         self.assertEqual(["everyday"], entry["requested_skills"])
 
+    def dependency_member_fixture(self) -> None:
+        """An opt-in bundle one of whose members another, everyday, skill depends on."""
+        self.make_source_json(bundles={"pack": {"members": ["fmt", "extra"], "opt_in": True}})
+        self.make_skill("everyday", "Everyday", skill_deps=["fmt"])
+        self.make_skill("extra", "Extra")
+
+    def test_a_bundle_member_installed_only_as_a_dependency_leaves_the_opt_in_bundle_out_of_all(self) -> None:
+        self.dependency_member_fixture()
+        selected = "Selected 1 item (2 skills):\n  everyday\n    fmt (dependency)\n"
+        self.assertIn(selected, self.deploy_ok("--all").output)
+        self.assertEqual(["everyday", "fmt"], self.installed())
+        menu = self.deploy("--dry-run", stdin="\n").output
+        self.assertRegex(menu, r"(?m)^  \[ \] [0-9]+\. pack \(bundle, opt-in\)$")
+        self.assertRegex(menu, r"(?m)^  \[\*\] [0-9]+\. everyday$")
+        dry_run = self.deploy_ok("--all", "--dry-run").output
+        deployed = self.deploy_ok("--all").output
+        for output, title in ((dry_run, "DRY RUN"), (deployed, "DEPLOYED")):
+            with self.subTest(title=title):
+                self.assertIn(selected, output)
+                self.assertNotIn("pack (bundle)", output)
+                self.assertEqual({"UNCHANGED": ["everyday", "fmt"]}, self.report_groups(output, title))
+        self.assertEqual(["everyday", "fmt"], self.installed())
+        entry = self.manifest()["sources"]["test/skills"]
+        self.assertEqual([], entry["requested_bundles"])
+        self.assertEqual(["everyday"], entry["requested_skills"])
+
+    def test_an_opt_in_bundle_requested_beside_a_skill_depending_on_its_member_stays_in_all(self) -> None:
+        self.dependency_member_fixture()
+        self.deploy_ok("--all", "--include", "pack")
+        self.assertEqual(["everyday", "extra", "fmt"], self.installed())
+        menu = self.deploy("--dry-run", stdin="\n").output
+        self.assertRegex(menu, r"(?m)^  \[\*\] [0-9]+\. pack \(bundle, opt-in\)$")
+        selected = "Selected 2 items (3 skills):\n  pack (bundle)\n    extra\n    fmt\n  everyday\n"
+        dry_run = self.deploy_ok("--all", "--dry-run").output
+        deployed = self.deploy_ok("--all").output
+        for output, title in ((dry_run, "DRY RUN"), (deployed, "DEPLOYED")):
+            with self.subTest(title=title):
+                self.assertIn(selected, output)
+                self.assertEqual({"UNCHANGED": ["everyday", "extra", "fmt"]}, self.report_groups(output, title))
+        self.assertEqual(["everyday", "extra", "fmt"], self.installed())
+        self.assertEqual(["pack"], self.manifest()["sources"]["test/skills"]["requested_bundles"])
+
+    def test_an_opt_in_skill_installed_only_as_a_dependency_is_not_made_a_requested_root(self) -> None:
+        self.make_skill("everyday", "Everyday", skill_deps=["lint"])
+        self.assertIn(
+            "Selected 1 item (2 skills):\n  everyday\n    lint (dependency)\n", self.deploy_ok("--all").output
+        )
+        self.assertRegex(self.deploy("--dry-run", stdin="\n").output, r"(?m)^  \[ \] [0-9]+\. lint \(opt-in\)$")
+        self.deploy_ok("--all")
+        self.assertEqual(["everyday"], self.manifest()["sources"]["test/skills"]["requested_skills"])
+        # Once nothing needs it, the dependency goes with the skill that pulled it in.
+        self.make_skill("everyday", "Everyday")
+        self.deploy_ok("--all")
+        self.assertEqual(["everyday"], self.installed())
+
     def test_menu_selection_installs_an_opt_in_item(self) -> None:
         self.deploy_ok(stdin=f"{self.selection_number('lint')} {self.selection_number('everyday')}\n")
         self.assertEqual(["everyday", "lint"], self.installed())

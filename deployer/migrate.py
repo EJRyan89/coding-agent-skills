@@ -14,7 +14,7 @@ from .report import ReportLine, print_report
 KINDS_ALLOWED = {
     "_migration_candidates": "this source takes over a shared asset only if it owns one, an agent only from its "
     "agents, and a skill only from its skills",
-    "migrate": "only a skill is requested by name, so only a skill's request moves with it",
+    "migrate": "a request names a skill or a bundle of skills, so only a moved skill carries a request with it",
 }
 
 
@@ -108,8 +108,17 @@ def migrate(context: Context, old: str) -> None:
             if kind is SKILL and name in old_entry.get("requested_skills", []):
                 new_entry["requested_skills"] = sorted(set(new_entry.get("requested_skills", [])) | {name})
                 old_entry["requested_skills"] = [value for value in old_entry["requested_skills"] if value != name]
-    # A bundle request alone does not keep the old source: it names no item, and the new source counts a bundle whose
-    # members it owns as chosen. Nor does an old entry's selected_skills, which nothing reads any more.
+    # A bundle's request comes with any member that moved, when this source defines the bundle, since --all keeps an
+    # opt-in bundle only when it is requested. The old entry keeps its request too: the bundle may hold members that
+    # stay with the old source, and its next deployment refuses the moved ones as another source's rather than
+    # removing the rest as no longer selected.
+    moved = set(candidates[SKILL.key])
+    bundles = [
+        name for name in old_entry.get("requested_bundles", []) if moved & set(context.source.bundles.get(name, ()))
+    ]
+    new_entry["requested_bundles"] = sorted(set(new_entry.get("requested_bundles", [])) | set(bundles))
+    # A bundle request alone does not keep the old source: it names no item, and any member that moved carried it
+    # here. Nor does an old entry's selected_skills, which nothing reads any more.
     if not any(old_entry.get(key) for key in (*(kind.key for kind in KINDS), "requested_skills")):
         del data.sources[old]
     data.save()

@@ -56,7 +56,7 @@ def select(context: Context) -> Selection | None:
         suffix = f" ({', '.join(labels)})" if labels else ""
         mark = "*" if currently_chosen(src, context.owned, name, kind) else " "
         print(f"  [{mark}] {index}. {name}{suffix}", file=sys.stderr)
-    print("[*] = currently deployed", file=sys.stderr)
+    print("[*] = chosen in an earlier deployment", file=sys.stderr)
     print("Enter numbers separated by spaces, 'all', or 'none'. Ctrl+C cancels.", file=sys.stderr)
     print("Selection: ", end="", file=sys.stderr, flush=True)
     try:

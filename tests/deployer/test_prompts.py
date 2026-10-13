@@ -47,7 +47,7 @@ class PromptStreamTests(DeployerTestCase):
         for prompt in (
             "Select what to deploy:",
             "  [ ] 1. alpha",
-            "[*] = currently deployed",
+            "[*] = chosen in an earlier deployment",
             "Enter numbers separated by spaces, 'all', or 'none'. Ctrl+C cancels.",
             "Selection: ",
         ):

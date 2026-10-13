@@ -1321,13 +1321,13 @@ class DryRunRecoveryTests(RecoveryTestCase):
 
 
 class MigrationTests(DeployerTestCase):
-    def old_source_with_agent(self, bundles: dict | None = None) -> None:
+    def old_source_with_agent(self, bundles: dict | None = None, *arguments: str) -> None:
         """Deploy alpha, its runtime adapter, and its agent from test/old, then make this source define them."""
         self.make_source_json("test/old", bundles=bundles)
         self.make_agent("reviewer")
         self.make_skill("alpha", "Alpha", agent_deps=["reviewer"])
         self.make_config("test/old")
-        self.deploy_from(self.snapshot_source("old"), "--all")
+        self.deploy_from(self.snapshot_source("old"), "--all", *arguments)
         self.make_source_json(bundles=bundles)
         self.make_config()
 
@@ -1349,6 +1349,26 @@ class MigrationTests(DeployerTestCase):
         self.assertEqual(["test/skills"], list(self.manifest()["sources"]))
         result = self.deploy_ok("--all")
         self.assertIn("  pack (bundle)\n", result.output)
+
+    def test_a_requested_opt_in_bundle_moves_with_its_members_and_stays_in_all(self) -> None:
+        self.old_source_with_agent({"pack": {"members": ["alpha"], "opt_in": True}}, "--include", "pack")
+        self.make_skill("beta", "Beta")
+        self.assertEqual(["pack"], self.manifest()["sources"]["test/old"]["requested_bundles"])
+        self.deploy_ok("--migrate-from", "test/old")
+        self.assertEqual(["test/skills"], list(self.manifest()["sources"]))
+        self.assertEqual(["pack"], self.manifest()["sources"]["test/skills"]["requested_bundles"])
+        result = self.deploy_ok("--all")
+        self.assertIn("Selected 2 items (2 skills):\n  pack (bundle)\n    alpha\n  beta\n", result.output)
+        self.assertEqual(["alpha", "beta"], sorted(self.owned("skills")))
+
+    def test_a_bundle_request_stays_with_the_old_source_when_none_of_its_members_moves(self) -> None:
+        self.old_source_with_agent({"pack": {"members": ["alpha"], "opt_in": True}}, "--include", "pack")
+        self.make_source_json(bundles={"pack": {"members": ["beta"], "opt_in": True}})
+        self.make_skill("beta", "Beta")
+        self.make_skill("alpha", "Alpha", agent_deps=["reviewer"])
+        self.deploy_ok("--migrate-from", "test/old")
+        self.assertEqual([], self.manifest()["sources"]["test/skills"]["requested_bundles"])
+        self.assertNotIn("pack (bundle)", self.deploy_ok("--all", "--dry-run").output)
 
     def test_migration_transfers_the_skill_and_shared_intersection(self) -> None:
         self.make_source_json("new/source", shared_assets={"shared-doc.md": "owner"})
