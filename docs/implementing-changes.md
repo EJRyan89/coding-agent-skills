@@ -25,9 +25,10 @@ with `path:`). [Parallel sessions](parallel-sessions.md) explains why and how a 
 ## Validation
 
 Validation is continuous integration's job: the `Validation` check runs `python -B tests/run_validation.py`, split
-across its legs, in full on every push and on every pull request that is not documentation-only. A documentation-only
-pull request runs the subset the runner selects (the policy checks, the suites that name a changed file, and the
-Markdown fence checks), and a pull request merges only when the check passes. Locally, run what the change touches:
+across its Windows legs and whole on Linux, in full on every push and on every pull request that is not
+documentation-only. A documentation-only pull request runs the subset the runner selects (the policy checks, the suites
+that name a changed file, and the Markdown fence checks), and a pull request merges only when the check passes on both
+platforms. Locally, run what the change touches:
 
 - `python -m ruff format --check` and `python -m ruff check` on the changed Python paths;
 - `python -B tests/run_validation.py -k <pattern>` for the policies and suites that name the touched files, with

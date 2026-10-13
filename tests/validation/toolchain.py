@@ -241,5 +241,6 @@ class ToolchainPolicies(unittest.TestCase):
         self.assertRegex(
             dependabot, r"(?m)^  - package-ecosystem: pip\n    directory: /\n    schedule:\n      interval: weekly$"
         )
-        # The aggregate job keeps the single required status check context that branch protection names.
-        self.assertRegex(workflow, r"(?m)^  validate:\n(?:    .*\n)*?    needs: suite$")
+        # The aggregate job keeps the single required status check context that branch protection names, over the
+        # Windows legs and the Linux job alike.
+        self.assertRegex(workflow, r"(?m)^  validate:\n(?:    .*\n)*?    needs: \[suite, linux\]$")

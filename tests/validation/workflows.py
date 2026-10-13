@@ -304,12 +304,19 @@ def _steps(job: dict[str, Node]) -> list[dict[str, Node]]:
     return [step for step in steps if isinstance(step, dict)] if isinstance(steps, list) else []
 
 
+# The legs' name, which says their platform beside the Linux job's and from which tools/record_job_seconds.py reads
+# each leg's shard index and count.
+LEG_NAME = "Windows shard ${{ matrix.shard }}, Python ${{ matrix.python-version }}"
+
+
 def leg_problems(workflow: str, legs: int) -> list[str]:
-    """Report how validate.yml's `suite` job departs from `legs` legs on windows-latest, each running its own shard
-    of the validation run, every one of them required through the `validate` job."""
+    """Report how validate.yml's `suite` job departs from `legs` legs on windows-latest named as Windows legs, each
+    running its own shard of the validation run."""
     tree = read_workflow(workflow)
     suite = _mapping(tree, "jobs", "suite")
     problems: list[str] = []
+    if suite.get("name") != LEG_NAME:
+        problems.append(f"the suite's legs are named {suite.get('name')!r}, not {LEG_NAME!r}")
     expected = [f"{index}/{legs}" for index in range(1, legs + 1)]
     shards = _mapping(suite, "strategy", "matrix").get("shard")
     if shards != expected:
@@ -322,8 +329,29 @@ def leg_problems(workflow: str, legs: int) -> list[str]:
     for step in runs:
         if _mapping(step, "env").get("SHARD") != "${{ matrix.shard }}" or "$env:SHARD" not in str(step.get("run")):
             problems.append(f"the step {step.get('name')} does not run its leg's --shard from matrix.shard")
-    if _mapping(tree, "jobs", "validate").get("needs") != "suite":
-        problems.append("the validate job does not need the suite job, so a leg could fail without failing it")
+    return problems
+
+
+def required_check_problems(workflow: str, jobs: tuple[str, ...]) -> list[str]:
+    """Report how validate.yml's `validate` job departs from the one required check over `jobs`: named `Validation`,
+    as branch protection requires it, needing each of them, running when one fails, since a skipped required check
+    counts as passing, and failing unless each one's result is success."""
+    validate = _mapping(read_workflow(workflow), "jobs", "validate")
+    problems: list[str] = []
+    if validate.get("name") != "Validation":
+        problems.append(f"the validate job is named {validate.get('name')!r}, not the required check 'Validation'")
+    if validate.get("if") != "${{ !cancelled() }}":
+        problems.append("the validate job does not run when a job it needs fails, so a red job would skip the check")
+    needs = validate.get("needs")
+    needed = [needs] if isinstance(needs, str) else needs if isinstance(needs, list) else []
+    steps = _steps(validate)
+    for job in jobs:
+        if job not in needed:
+            problems.append(f"the validate job does not need the {job} job, so it could fail without failing the check")
+        result = f"${{{{ needs.{job}.result }}}}"
+        names = [name for step in steps for name, value in _mapping(step, "env").items() if value == result]
+        if not any(f'test "${name}" = success' in str(step.get("run", "")) for step in steps for name in names):
+            problems.append(f"no step of the validate job fails unless the {job} job's result is success")
     return problems
 
 
@@ -341,10 +369,10 @@ LINUX_VALIDATION_LINES = (
 
 
 def linux_job_problems(workflow: str) -> list[str]:
-    """Report how validate.yml's `linux` job departs from one unsharded validation run on ubuntu-latest, reporting
-    outside the required check: the checkout's whole history, Python at the floor with pip's cache keyed on
-    requirements-dev.txt, ShellCheck from Ubuntu's archive, PSScriptAnalyzer at the workflow's pin, and the Windows
-    legs' validation step without its shard, since the `validate` job does not need it."""
+    """Report how validate.yml's `linux` job departs from one unsharded validation run on ubuntu-latest, named as
+    the Linux run: the checkout's whole history, Python at the floor with pip's cache keyed on requirements-dev.txt,
+    ShellCheck from Ubuntu's archive, PSScriptAnalyzer at the workflow's pin, and the Windows legs' validation step
+    without its shard. `required_check_problems` holds it inside the required check."""
     tree = read_workflow(workflow)
     linux = _mapping(tree, "jobs", "linux")
     if not linux:
@@ -352,9 +380,8 @@ def linux_job_problems(workflow: str) -> list[str]:
     problems: list[str] = []
     if linux.get("runs-on") != "ubuntu-latest":
         problems.append(f"the linux job runs on {linux.get('runs-on')}, not ubuntu-latest")
-    needs = _mapping(tree, "jobs", "validate").get("needs")
-    if needs == "linux" or (isinstance(needs, list) and "linux" in needs):
-        problems.append("the validate job needs the linux job, which would make it part of the required check")
+    if "Linux" not in str(linux.get("name", "")):
+        problems.append(f"the linux job is named {linux.get('name')!r}, which does not say Linux")
     steps = _steps(linux)
     checkouts = [_mapping(step, "with") for step in steps if str(step.get("uses", "")).startswith("actions/checkout@")]
     if checkouts != [{"fetch-depth": "0"}]:
@@ -628,12 +655,11 @@ class WorkflowsPolicies(unittest.TestCase):
             ),
         )
 
-    def test_validate_workflow_reports_the_whole_run_on_linux_outside_the_required_check(self) -> None:
+    def test_validate_workflow_runs_the_whole_run_on_linux_inside_the_required_check(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
-        self.assertEqual(
-            [],
-            linux_job_problems(workflow),
-        )
+        self.assertEqual([], linux_job_problems(workflow))
+        # Every supported platform gates a merge through the one check branch protection requires.
+        self.assertEqual([], required_check_problems(workflow, ("suite", "linux")))
 
     def test_deployable_workflow_installs_the_runtime_versions_the_readme_lists_for_the_fresh_runner(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
