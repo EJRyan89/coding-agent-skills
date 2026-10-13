@@ -2,7 +2,7 @@
 name: curate-agent-memory
 description: "Audit and clean up Claude Code auto-memory for a project: find stale, duplicated, or misplaced memories, move durable rules to their proper home, and apply only the changes the user approves. Use it when asked to review, tidy, or prune a project's memories."
 argument-hint: "[repository path] [--memory-dir DIR]"
-allowed-tools: ["Bash(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "Read", "Edit", "Grep", "AskUserQuestion", "Skill"]
+allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "Read", "Edit", "Grep", "AskUserQuestion", "Skill"]
 ---
 
 # Curate agent memory
@@ -17,7 +17,7 @@ Everything later deletes or rewrites files, so the target must be the store Clau
 - **Memory directory**: use `--memory-dir` when given. Otherwise resolve it. The command below resolves it for the current repository; when the user named another repository, add `--repo "<repository>"`:
 
   ```bash
-  python -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" resolve
+  {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" resolve
   ```
 
   It prints `REPO <root>`, the repository to use from here on; then `MEMORY_DIR <path>`, `SOURCE <where it came from>`, and `EXISTS yes` or `EXISTS no`, or `NO_MEMORY_DIR` when the settings name no usable directory; a `CANDIDATE <dir>` line for each memory directory it found when the resolved one does not exist; and a `NOTE` line for each caveat, such as the `--settings` launch flag it cannot see. `FAILED not inside a Git repository` means you must pass `--repo`.
@@ -27,7 +27,7 @@ Everything later deletes or rewrites files, so the target must be the store Clau
 ## Step 2: Run the mechanical audit
 
 ```bash
-python -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" audit --memory-dir "<memory dir>" --repo "<repository>"
+{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" audit --memory-dir "<memory dir>" --repo "<repository>"
 ```
 
 It prints `REPORT <path>`, a new JSON file in the system temporary directory; read that file. `FAILED <reason>` means it wrote no report; show the reason. Its overlaps (up to three passages in the repository's or the user's guidance per memory) are candidates only; the script cannot tell whether a passage states the same rule.
@@ -65,7 +65,7 @@ Ask which groups to apply with a multi-select question, one option per non-empty
 - Only then delete or rewrite the memories those changes cover. When rewriting one, keep its frontmatter `name` and `description` accurate: the index is built from them. Delete approved memories by file name, never with another command:
 
   ```bash
-  python -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" delete --memory-dir "<memory dir>" "<file>.md" ...
+  {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" delete --memory-dir "<memory dir>" "<file>.md" ...
   ```
 
   It checks every name before deleting any, and prints `DELETED <file>` for each file it deletes. A lone `FAILED <memory dir> ...` line, here or from `reindex`, means the directory holds no `MEMORY.md` or lies inside a skills directory, so it changed nothing; show it and go back to Step 1. `FAILED <file>: <reason>` lines with no `DELETED` line mean it refused those names and deleted nothing; show the reasons and fix the list. A `FAILED` line after `DELETED` lines means the deletion stopped part way: the `DELETED` files are gone and the rest remain, so show the reason and rerun with the remaining files.
@@ -73,7 +73,7 @@ Ask which groups to apply with a multi-select question, one option per non-empty
 - When any memory changed or the "Rebuild index" group was approved, rebuild `MEMORY.md` last instead of editing it by hand:
 
   ```bash
-  python -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" reindex --memory-dir "<memory dir>" --write
+  {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" reindex --memory-dir "<memory dir>" --write
   ```
 
   It writes the index from the memory files and prints `WROTE <path>`, or `UNCHANGED`; report its `DROPPED` and `ADDED` lines. `OVER_LIMIT` (it still writes the index) or `NEAR_LIMIT` means the index still needs merging or moving entries. A last `FAILED <reason>` means it could not write the index; show the reason.

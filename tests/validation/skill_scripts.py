@@ -197,9 +197,9 @@ PROGRAM_CONVERSIONS = frozenset(
     }
 )
 PATH_METHODS = frozenset({"absolute", "resolve"})
-# The interpreter running the script, which "Commands skills may run" calls python.
+# The interpreter running the script, which "Commands skills may run" calls by the platform's Python command.
 INTERPRETER = "sys.executable"
-INTERPRETER_PROGRAM = "python"
+INTERPRETER_PROGRAM = platform_support.PYTHON
 # A module states why it starts a command whose program the policy cannot read beside the code, as a module-level
 # COMMANDS_ALLOWED = {scope: reason}, where a scope is the function or class holding what cannot be read, by qualified
 # name, or a module-level assignment's target. An allowance the module no longer needs is reported.

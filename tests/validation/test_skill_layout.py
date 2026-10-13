@@ -37,6 +37,8 @@ from skill_layout import (
 )
 from validation_support import REPOSITORY_SKILLS, SKILL_GUIDE, write_fixture_tree
 
+from deployer import platform_support
+
 
 class SkillTreeFixtures(GitTestCase):
     def test_an_executable_outside_a_skills_scripts_fails_in_every_kind_of_skill(self) -> None:
@@ -220,6 +222,8 @@ class SkillLayoutFixtures(GitTestCase):
             )
 
     def test_script_language_policy_detects_a_missing_interpreter_and_a_stale_guide(self) -> None:
+        # The command that runs .py scripts here: python on Windows and python3 elsewhere.
+        python = "python" if platform_support.WINDOWS else "python3"
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "docs").mkdir()
@@ -237,12 +241,12 @@ class SkillLayoutFixtures(GitTestCase):
                     f"{SKILL_GUIDE} does not name `.js` as unsupported",
                     f"{SKILL_GUIDE} does not name `.ts` as unsupported",
                 ],
-                script_language_problems(root, {"bash", "python"}),
+                script_language_problems(root, {"bash", python}),
             )
             guide.write_text("# Adding a skill\n", encoding="utf-8")
             self.assertEqual(
                 [f"{SKILL_GUIDE} does not state which languages a skill's executable files may use"],
-                script_language_problems(root, {"bash", "python", "pwsh"}),
+                script_language_problems(root, {"bash", python, "pwsh"}),
             )
 
     def test_skill_path_policy_detects_install_paths_bare_scripts_and_undeclared_siblings(self) -> None:

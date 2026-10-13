@@ -890,7 +890,10 @@ class DerivedAllowlistTests(GitTestCase):
                     config.derived_values(Path(f"{profiles}/a{character}b"), source)
                 with self.assertRaisesRegex(DeployError, re.escape(f"disallowed character '{character}'")):
                     config.derived_values(Path(f"{profiles}/a"), source / f"a{character}b")
-        self.assertEqual({"HOME", "SOURCE_ROOT"}, set(config.derived_values(Path(f"{profiles}/a"), source)))
+        derived = config.derived_values(Path(f"{profiles}/a"), source)
+        self.assertEqual({"HOME", "SOURCE_ROOT", "PYTHON"}, set(derived))
+        # The interpreter is the platform's Python command, never a path, so no allowlist of path characters holds it.
+        self.assertEqual("python" if platform_support.WINDOWS else "python3", derived["PYTHON"])
 
     if not platform_support.WINDOWS:
 

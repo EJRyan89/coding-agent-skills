@@ -20,7 +20,14 @@ PROMPTS: dict[str, str] = {
 # do. Nobody chooses a home folder's name to suit the deployer, so letters of any script are allowed, but nothing a
 # shell, PowerShell, YAML, or Markdown gives a meaning to.
 ALLOW_DERIVED_PATH = r"[\w /:.@()-]"
-DERIVED_VARIABLES: dict[str, str] = {"HOME": ALLOW_DERIVED_PATH, "SOURCE_ROOT": ALLOW_DERIVED_PATH}
+DERIVED_VARIABLES: dict[str, str] = {
+    "HOME": ALLOW_DERIVED_PATH,
+    "SOURCE_ROOT": ALLOW_DERIVED_PATH,
+    "PYTHON": "[a-z0-9]",
+}
+# The derived variables that name a program a command starts, rather than a path: each renders unquoted as a command
+# word, so its value is one of a fixed set, never a configured one.
+INTERPRETER_VARIABLES: dict[str, frozenset[str]] = {"PYTHON": frozenset({"python", "python3"})}
 DERIVED_PROBLEM = "Derived paths may contain only letters, digits, spaces, and / : . @ _ ( ) -."
 DERIVED_SOURCES: dict[str, tuple[str, str]] = {
     "HOME": ("the home folder", "Skills cannot be deployed into a home folder whose path has other characters."),
@@ -28,6 +35,7 @@ DERIVED_SOURCES: dict[str, tuple[str, str]] = {
         "the source checkout",
         "Move the checkout to a path without other characters, then deploy from there.",
     ),
+    "PYTHON": ("the Python command", "This platform's Python command is not one the deployer renders."),
 }
 # A --canary-home deployment never reads the configuration; each configured directory is this folder of the
 # throwaway home instead, so nothing a canary run does reaches the user's real directories.
@@ -157,12 +165,20 @@ def canary(source_id: str, home: Path, source_dir: Path) -> dict[str, str]:
 
 
 def derived_values(home: Path, source_dir: Path) -> dict[str, str]:
-    """HOME and SOURCE_ROOT for this run, refused when either has a character outside its allowlist."""
+    """HOME, SOURCE_ROOT, and PYTHON for this run, refused when one has a character outside its allowlist or an
+    interpreter is not one of its fixed set."""
     values = {
         # Lexical, as recorded in the manifest: Path.absolute keeps ".." and Path.resolve follows junctions.
         "HOME": platform_support.normalize(os.path.abspath(home)),  # noqa: PTH100 - lexical, as the comment says
         "SOURCE_ROOT": platform_support.normalize(os.path.abspath(source_dir)),  # noqa: PTH100 - lexical, as above
+        "PYTHON": platform_support.PYTHON,
     }
+    for key, names in INTERPRETER_VARIABLES.items():
+        if values[key] not in names:
+            description, remedy = DERIVED_SOURCES[key]
+            raise DeployError(
+                f"ERROR: {key} ({description}) is {values[key]!r}, not one of {', '.join(sorted(names))}", remedy
+            )
     for key, value in values.items():
         found = _disallowed(DERIVED_VARIABLES[key], value)
         if found is not None:

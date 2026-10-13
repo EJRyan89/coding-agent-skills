@@ -1,7 +1,7 @@
 ---
 name: audit-ai-config
 description: "Read-only assessment of a repository's AI agent configuration for Claude Code, Codex, and Copilot that reports findings and never writes files. Use it when asked to audit or check a repository's agent instructions or setup, not to create or change them."
-allowed-tools: ["Bash(python -B \"${CLAUDE_SKILL_DIR}/scripts/audit_ai_config.py\" *)", "PowerShell(python -B \"${CLAUDE_SKILL_DIR}/scripts/audit_ai_config.py\" *)", "Bash(git rev-parse --show-toplevel)", "PowerShell(git rev-parse --show-toplevel)", "Read", "Glob", "AskUserQuestion"]
+allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/audit_ai_config.py\" *)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/audit_ai_config.py\" *)", "Bash(git rev-parse --show-toplevel)", "PowerShell(git rev-parse --show-toplevel)", "Read", "Glob", "AskUserQuestion"]
 ---
 
 # Audit AI Agent Configuration
@@ -13,7 +13,7 @@ Assess a repository's AI agent configuration across Claude Code, Codex, and Copi
 Confirm the target is a Git repository (`git rev-parse --show-toplevel`); if it is not, ask the user which repository to audit. Then run, from anywhere:
 
 ```bash
-python -B "${CLAUDE_SKILL_DIR}/scripts/audit_ai_config.py" --root "<repository root>"
+{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/audit_ai_config.py" --root "<repository root>"
 ```
 
 Add `--json` when the user wants machine-readable output.
@@ -49,7 +49,7 @@ Only when the user explicitly authorizes it for a trusted repository, because bo
 2. Handshake each stdio MCP server, which starts it, sends `initialize` and `tools/list`, and stops it without invoking a tool:
 
    ```bash
-   python -B "${CLAUDE_SKILL_DIR}/scripts/mcp_handshake.py" --root "<repository root>"
+   {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/mcp_handshake.py" --root "<repository root>"
    ```
 
    The skill does not pre-approve this command, because it starts commands the repository configures, so the user approves it when it runs.
