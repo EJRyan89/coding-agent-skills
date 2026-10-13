@@ -33,7 +33,16 @@ from review_canary import fixture_change, validate_fixture_pull
 from review_config import write_config
 from review_github import GitHubClient
 from review_runtime import validate_adapter_manifest
-from test_review_documents import StubPdftotext, paragraph, pdf_document, table, without_pdftotext, word_document
+from test_review_documents import (
+    INSTALL,
+    NOT_INSTALLED,
+    StubPdftotext,
+    paragraph,
+    pdf_document,
+    table,
+    without_pdftotext,
+    word_document,
+)
 
 SCRIPT = Path(review_document.__file__).resolve()
 SKILLS_ROOT = SCRIPT.parents[2]
@@ -468,9 +477,7 @@ class ExtractedDocumentTests(DocumentTestCase):
         draft.write_bytes(pdf_document(["Keep one queue."]))
         without_pdftotext(self)
         code, lines = run_main("build", str(draft), "--output", str(self.output))
-        reason = (
-            "is a document whose text could not be extracted: pdftotext, which extracts a PDF's text, is not installed"
-        )
+        reason = f"is a document whose text could not be extracted: {NOT_INSTALLED}"
         self.assertEqual((1, [f"FAILED {draft} {reason}"]), (code, lines))
         self.assertFalse(self.output.exists())
 
@@ -513,7 +520,7 @@ class ExtractedDocumentTests(DocumentTestCase):
         self.assertTrue(
             lines[0].endswith(
                 f"is a document whose text could not be extracted: no supported pdftotext: skipped {stub.program} "
-                "(Xpdf 4.00, older than Xpdf 4.06); install Xpdf 4.06 or newer or Poppler 26.10.0 or newer"
+                f"(Xpdf 4.00, older than Xpdf 4.06); {INSTALL}"
             ),
             lines[0],
         )

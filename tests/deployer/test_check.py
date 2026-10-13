@@ -40,6 +40,19 @@ from deployer.check import _tool_line
 
 XPDF_4_06 = "pdftotext version 4.06\nCopyright 1996-2025 Glyph & Cog, LLC\n"
 XPDF_4_00 = "pdftotext version 4.00\nCopyright 1996-2017 Glyph & Cog, LLC\n"
+# The banner of a distribution's Poppler, which keeps its upstream version while it backports fixes.
+DISTRIBUTION_POPPLER = (
+    "pdftotext version 24.02.0\nCopyright 2005-2024 The Poppler Developers - http://poppler.freedesktop.org\n"
+    "Copyright 1996-2011, 2022 Glyph & Cog, LLC\n"
+)
+# What check and each refusal add to the providers' floors: nothing on Windows, and on Linux, where a distribution's
+# Poppler keeps a version below its floor as it backports fixes, the Xpdf command-line tools.
+LINUX_HINT = (
+    "a distribution's Poppler keeps a version below its floor as it backports fixes, so install the Xpdf command-line "
+    "tools from https://www.xpdfreader.com/download.html"
+)
+HINT = "" if sys.platform == "win32" else f"; {LINUX_HINT}"
+INSTALL = f"install Xpdf 4.06 or newer or Poppler 26.10.0 or newer{HINT}"
 BUNDLE = {"operations": {"members": ["reviewer"]}}
 INSTALLED = {
     "shellcheck": ("C:/tools/shellcheck.exe", "ShellCheck - shell script analysis tool\nversion: 0.11.0\n"),
@@ -262,11 +275,12 @@ class CheckCommandTests(DeployerTestCase):
         groups = self.report_groups(self.check(Machine()).output, "CHECK")
         self.assertIn("pdftotext Xpdf 4.06 (used by operations)", groups["OPTIONAL"])
         groups = self.report_groups(self.check(Machine(missing=("pdftotext",))).output, "CHECK")
-        self.assertIn("pdftotext (not installed; used by operations)", groups["OPTIONAL"])
+        self.assertIn(f"pdftotext (not installed; used by operations{HINT})", groups["OPTIONAL"])
         self.assertNotIn("MISSING", groups)
         for banner, provider, version, floor in (
             (XPDF_4_00, "Xpdf", "4.00", "4.06"),
             ("pdftotext version 0.86.1\nCopyright 2005-2020 The Poppler Developers\n", "Poppler", "0.86.1", "26.10.0"),
+            (DISTRIBUTION_POPPLER, "Poppler", "24.02.0", "26.10.0"),
             (
                 "pdftotext version 26.09.0\nCopyright 2005-2026 The Poppler Developers\n",
                 "Poppler",
@@ -279,8 +293,7 @@ class CheckCommandTests(DeployerTestCase):
                 self.assertEqual(
                     [
                         f"pdftotext {provider} {version} (no supported pdftotext: skipped C:/tools/pdftotext.exe "
-                        f"({provider} {version}, older than {provider} {floor}); install Xpdf 4.06 or newer or "
-                        "Poppler 26.10.0 or newer)"
+                        f"({provider} {version}, older than {provider} {floor}); {INSTALL})"
                     ],
                     groups["OUTDATED"],
                 )
@@ -305,7 +318,7 @@ class CheckCommandTests(DeployerTestCase):
                 "pdftotext",
                 "UNUSABLE",
                 "no supported pdftotext: skipped C:/tools/pdftotext.exe (version probe failed with exit status 1); "
-                "install Xpdf 4.06 or newer or Poppler 26.10.0 or newer",
+                f"{INSTALL}",
             ),
             (line.name, line.action, line.detail),
         )
@@ -584,7 +597,8 @@ class VersionTests(GitTestCase):
 
     def test_the_pdftotext_entry_sets_nothing_the_probe_does_not_read(self) -> None:
         # pdf_tool owns the probe's arguments and each provider's exit statuses, so the entry names only where to
-        # find the tool and its floors; every other field is the default.
+        # find the tool, its floors, and, off Windows, the install hint pdf_tool's refusals give; every other field is
+        # the default.
         entry = tools.SKILL_TOOLS["pdftotext"]
         default = tools.Tool("pdftotext", "pdftotext", entry.locate)
         changed = {
@@ -592,7 +606,8 @@ class VersionTests(GitTestCase):
             for field in dataclasses.fields(tools.Tool)
             if getattr(entry, field.name) != getattr(default, field.name)
         }
-        self.assertEqual({"provider_minimum"}, changed)
+        self.assertEqual({"provider_minimum"} | ({"install_hint"} if HINT else set()), changed)
+        self.assertEqual(None if sys.platform == "win32" else LINUX_HINT, entry.install_hint)
         self.assertNotIn("version_statuses", {field.name for field in dataclasses.fields(tools.Tool)})
         with (
             mock.patch("deployer.platform_support.find_executables", return_value=["C:/tools/pdftotext.exe"]),
@@ -749,10 +764,7 @@ class SharedLocatorTests(LocatorFixture):
     def test_an_unsupported_pdftotext_only_there_gets_the_same_refusal_from_both(self) -> None:
         program = self.parser(self.links, XPDF_4_00)
         line, refusal = self.check_and_extract()
-        unsupported = (
-            f"no supported pdftotext: skipped {program} (Xpdf 4.00, older than Xpdf 4.06); "
-            "install Xpdf 4.06 or newer or Poppler 26.10.0 or newer"
-        )
+        unsupported = f"no supported pdftotext: skipped {program} (Xpdf 4.00, older than Xpdf 4.06); {INSTALL}"
         self.assertEqual(("pdftotext Xpdf 4.00", "OUTDATED", unsupported), line)
         self.assertEqual(unsupported, refusal)
         self.assertEqual(2, len(self.probed))
@@ -780,7 +792,7 @@ class SharedLocatorTests(LocatorFixture):
         line, refusal = self.check_and_extract()
         unsupported = (
             f"no supported pdftotext: skipped {bundled} (Xpdf 4.00, older than Xpdf 4.06), {linked} (Poppler 0.86.1, "
-            "older than Poppler 26.10.0); install Xpdf 4.06 or newer or Poppler 26.10.0 or newer"
+            f"older than Poppler 26.10.0); {INSTALL}"
         )
         self.assertEqual(("pdftotext Xpdf 4.00", "OUTDATED", unsupported), line)
         self.assertEqual(unsupported, refusal)
@@ -788,8 +800,8 @@ class SharedLocatorTests(LocatorFixture):
 
     def test_with_no_pdftotext_in_either_both_say_it_is_not_installed(self) -> None:
         line, refusal = self.check_and_extract()
-        self.assertEqual(("pdftotext", "OPTIONAL", "not installed; used by operations"), line)
-        self.assertEqual("pdftotext, which extracts a PDF's text, is not installed", refusal)
+        self.assertEqual(("pdftotext", "OPTIONAL", f"not installed; used by operations{HINT}"), line)
+        self.assertEqual(f"pdftotext, which extracts a PDF's text, is not installed{HINT}", refusal)
         self.assertEqual(([], []), (self.probed, self.started))
 
 

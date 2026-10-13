@@ -21,6 +21,22 @@ POPPLER = (
 )
 
 
+# What a refusal tells the user to install: each provider's floor, and on Linux, where a distribution's Poppler keeps a
+# version below its floor as it backports fixes, the Xpdf command-line tools Xpdf publishes for it.
+LINUX_HINT = (
+    "a distribution's Poppler keeps a version below its floor as it backports fixes, so install the Xpdf command-line "
+    "tools from https://www.xpdfreader.com/download.html"
+)
+INSTALL = "install Xpdf 4.06 or newer or Poppler 26.10.0 or newer" + (
+    "" if sys.platform == "win32" else f"; {LINUX_HINT}"
+)
+# The banner of a distribution's Poppler, which keeps its upstream version while it backports fixes.
+DISTRIBUTION_POPPLER = (
+    "pdftotext version 24.02.0\nCopyright 2005-2024 The Poppler Developers - http://poppler.freedesktop.org\n"
+    "Copyright 1996-2011, 2022 Glyph & Cog, LLC\n"
+)
+
+
 class PdfPolicyTests(unittest.TestCase):
     def test_vendor_banners_have_separate_floors_and_expected_exit_statuses(self) -> None:
         for banner, version, provider, status in (
@@ -179,8 +195,8 @@ class SelectPdftotextTests(unittest.TestCase):
             )
         self.assertEqual(
             r"no supported pdftotext: skipped C:\Program Files\Git\mingw64\bin\pdftotext.exe (Xpdf 4.00, older than "
-            r"Xpdf 4.06), C:\Tools\Poppler\pdftotext.exe (Poppler 0.86.1, older than Poppler 26.10.0); install Xpdf "
-            "4.06 or newer or Poppler 26.10.0 or newer",
+            r"Xpdf 4.06), C:\Tools\Poppler\pdftotext.exe (Poppler 0.86.1, older than Poppler 26.10.0); "
+            f"{INSTALL}",
             str(raised.exception),
         )
         self.assertEqual(pdf_tool.PdfIdentity("Xpdf", (4, 0)), raised.exception.identity)
@@ -192,7 +208,7 @@ class SelectPdftotextTests(unittest.TestCase):
             self.select([GIT_BUNDLED], {GIT_BUNDLED: (XPDF.format(version="4.00"), 99)})
         self.assertEqual(
             r"no supported pdftotext: skipped C:\Program Files\Git\mingw64\bin\pdftotext.exe (Xpdf 4.00, older than "
-            "Xpdf 4.06); install Xpdf 4.06 or newer or Poppler 26.10.0 or newer",
+            f"Xpdf 4.06); {INSTALL}",
             str(raised.exception),
         )
 
@@ -201,8 +217,8 @@ class SelectPdftotextTests(unittest.TestCase):
             self.select([GIT_BUNDLED, SUPPORTED], {GIT_BUNDLED: ("pdftotext version 26.10.0\n", 0)})
         self.assertEqual(
             r"no supported pdftotext: skipped C:\Program Files\Git\mingw64\bin\pdftotext.exe (provider/version is "
-            r"unidentifiable), C:\Tools\Xpdf\pdftotext.exe (version probe could not be started); install Xpdf 4.06 "
-            "or newer or Poppler 26.10.0 or newer",
+            r"unidentifiable), C:\Tools\Xpdf\pdftotext.exe (version probe could not be started); "
+            f"{INSTALL}",
             str(raised.exception),
         )
         self.assertIsNone(raised.exception.identity)
@@ -214,9 +230,44 @@ class SelectPdftotextTests(unittest.TestCase):
         ):
             pdf_tool.select_pdftotext([SUPPORTED], mock.Mock(side_effect=AssertionError("probed")))
         self.assertEqual(
-            r"no supported pdftotext: skipped C:\Tools\Xpdf\pdftotext.exe (could not be accessed); install Xpdf 4.06 "
-            "or newer or Poppler 26.10.0 or newer",
+            r"no supported pdftotext: skipped C:\Tools\Xpdf\pdftotext.exe (could not be accessed); "
+            f"{INSTALL}",
             str(raised.exception),
+        )
+
+    if sys.platform == "win32":
+
+        def test_the_refusal_names_each_providers_floor_as_what_to_install(self) -> None:
+            with self.assertRaises(pdf_tool.PdfToolRefused) as raised:
+                self.select([POPPLER_OLD], {POPPLER_OLD: (DISTRIBUTION_POPPLER, 0)})
+            self.assertEqual(
+                r"no supported pdftotext: skipped C:\Tools\Poppler\pdftotext.exe (Poppler 24.02.0, older than Poppler "
+                "26.10.0); install Xpdf 4.06 or newer or Poppler 26.10.0 or newer",
+                str(raised.exception),
+            )
+            self.assertIsNone(pdf_tool.INSTALL_HINT, "Windows needs no word beyond the floors")
+
+    else:
+
+        def test_a_distributions_poppler_is_refused_naming_its_version_and_floor_and_the_xpdf_tools(self) -> None:
+            with self.assertRaises(pdf_tool.PdfToolRefused) as raised:
+                self.select(["/usr/bin/pdftotext"], {"/usr/bin/pdftotext": (DISTRIBUTION_POPPLER, 0)})
+            self.assertEqual(
+                "no supported pdftotext: skipped /usr/bin/pdftotext (Poppler 24.02.0, older than Poppler 26.10.0); "
+                f"install Xpdf 4.06 or newer or Poppler 26.10.0 or newer; {LINUX_HINT}",
+                str(raised.exception),
+            )
+            self.assertEqual(pdf_tool.PdfIdentity("Poppler", (24, 2, 0)), raised.exception.identity)
+
+    def test_the_xpdf_tools_behind_a_distributions_poppler_are_chosen_and_the_poppler_named(self) -> None:
+        # The Xpdf command-line tools a user puts on PATH after the distribution's package, as on Linux.
+        xpdf, poppler = "/opt/xpdf-tools/bin64/pdftotext", "/usr/bin/pdftotext"
+        selection, _ = self.select(
+            [poppler, xpdf], {poppler: (DISTRIBUTION_POPPLER, 0), xpdf: (XPDF.format(version="4.06"), 99)}
+        )
+        self.assertEqual((str(Path(xpdf).resolve()), "Xpdf"), (selection.path, selection.identity.provider))
+        self.assertEqual(
+            f"skipped {poppler} (Poppler 24.02.0, older than Poppler 26.10.0)", pdf_tool.skipped_text(selection.skipped)
         )
 
     def test_nothing_to_choose_from_is_the_callers_error(self) -> None:

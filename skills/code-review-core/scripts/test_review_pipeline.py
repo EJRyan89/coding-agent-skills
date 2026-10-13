@@ -48,7 +48,15 @@ from review_process import ProcessStatus
 from review_runtime import RuntimeContractError, RuntimeContractFieldError, validate_adapter_manifest
 from review_state import load_state
 from test_job_tree import SHORT_LIMIT_SECONDS, SignalledTree, ended
-from test_review_documents import StubPdftotext, paragraph, pdf_document, table, without_pdftotext, word_document
+from test_review_documents import (
+    NOT_INSTALLED,
+    StubPdftotext,
+    paragraph,
+    pdf_document,
+    table,
+    without_pdftotext,
+    word_document,
+)
 
 # The command name the skills' scripts write for Python into the commands they hand an agent.
 PYTHON = "python" if sys.platform == "win32" else "python3"
@@ -4354,8 +4362,7 @@ class FixtureCanaryTests(PipelineFixture):
         snapshot = json.loads((source / "source-snapshot.json").read_text(encoding="utf-8"))
         self.assertEqual("unextractable", snapshot["excluded_paths"]["docs/spec.pdf"])
         self.assertIn(
-            'the text of document "docs/spec.pdf" could not be extracted '
-            "(pdftotext, which extracts a PDF's text, is not installed)",
+            f'the text of document "docs/spec.pdf" could not be extracted ({NOT_INSTALLED})',
             "\n".join(state["notes"]),
         )
         _, record = self.canary_record(self.finish(state, findings=[]))

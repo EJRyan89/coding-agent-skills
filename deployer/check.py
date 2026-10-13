@@ -81,7 +81,8 @@ def _tool_line(tool: tools.Tool, optional: bool, roots: list[str]) -> ReportLine
     used_by = f"used by {', '.join([*roots, *tool.other_uses])}"
     probe = tools.probe(tool)
     if probe.path is None:
-        missing = ("OPTIONAL", f"not installed; {used_by}") if optional else ("MISSING", used_by)
+        hint = "" if tool.install_hint is None else f"; {tool.install_hint}"
+        missing = ("OPTIONAL", f"not installed; {used_by}{hint}") if optional else ("MISSING", f"{used_by}{hint}")
         return ReportLine(tool.label, *missing)
     if probe.refusal is not None:
         return ReportLine(
