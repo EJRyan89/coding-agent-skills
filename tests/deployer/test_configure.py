@@ -75,19 +75,65 @@ class ConfigureTests(DeployerTestCase):
         self.assertEqual(before, self.digest())
         self.assertEqual([self.config_file().name], [path.name for path in self.config_file().parent.iterdir()])
 
-    def test_windows_style_path_input_is_normalized(self) -> None:
-        self.make_source_json()
-        repos = self.root / "My Repos"
-        repos.mkdir()
-        windows = str(repos).replace("/", "\\")
-        for typed in (windows, f'"{windows}"', f"{windows}\\", f"  {windows}/  "):
-            with self.subTest(typed=typed):
-                result = self.configure(stdin=f"{typed}\n")
-                self.assertEqual(0, result.code, result.output)
-                self.assertEqual(
-                    f"_source_id=test/skills\nREPOS_ROOT={forward(repos)}\n".encode(),
-                    self.config_file().read_bytes(),
-                )
+    if platform_support.WINDOWS:
+
+        def test_windows_style_path_input_is_normalized(self) -> None:
+            self.make_source_json()
+            repos = self.root / "My Repos"
+            repos.mkdir()
+            windows = str(repos).replace("/", "\\")
+            for typed in (windows, f'"{windows}"', f"{windows}\\", f"  {windows}/  "):
+                with self.subTest(typed=typed):
+                    result = self.configure(stdin=f"{typed}\n")
+                    self.assertEqual(0, result.code, result.output)
+                    self.assertEqual(
+                        f"_source_id=test/skills\nREPOS_ROOT={forward(repos)}\n".encode(),
+                        self.config_file().read_bytes(),
+                    )
+
+        def test_drive_root_is_still_rejected_after_normalization(self) -> None:
+            self.make_source_json()
+            drive = forward(self.root)[:2]
+            result = self.configure(stdin=f"{drive}\\\n")
+            self.assertEqual(1, result.code)
+            self.assertIn(f"ERROR: REPOS_ROOT must not be a filesystem root (got: {drive}/)", result.output)
+            self.assertFalse(self.config_file().exists())
+
+    else:
+
+        def test_typed_path_input_loses_its_quotes_spaces_and_trailing_slashes(self) -> None:
+            self.make_source_json()
+            repos = self.root / "My Repos"
+            repos.mkdir()
+            typed_path = str(repos)
+            for typed in (typed_path, f'"{typed_path}"', f"{typed_path}//", f"  {typed_path}/  "):
+                with self.subTest(typed=typed):
+                    result = self.configure(stdin=f"{typed}\n")
+                    self.assertEqual(0, result.code, result.output)
+                    self.assertEqual(
+                        f"_source_id=test/skills\nREPOS_ROOT={repos}\n".encode(),
+                        self.config_file().read_bytes(),
+                    )
+
+        def test_a_backslash_is_a_character_of_the_name_and_refused(self) -> None:
+            # Off Windows a backslash separates nothing, so the value is refused rather than read as another path.
+            self.make_source_json()
+            typed = str(self.root / "My Repos").replace("/", "\\")
+            result = self.configure(stdin=f"{typed}\n")
+            self.assertEqual(1, result.code)
+            self.assertIn(
+                "ERROR: Config key REPOS_ROOT contains disallowed character '\\' at position 0", result.output
+            )
+            self.assertFalse(self.config_file().exists())
+
+        def test_the_root_is_still_rejected_after_normalization(self) -> None:
+            self.make_source_json()
+            for typed in ("/", "//", "///"):
+                with self.subTest(typed=typed):
+                    result = self.configure(stdin=f"{typed}\n")
+                    self.assertEqual(1, result.code)
+                    self.assertIn("ERROR: REPOS_ROOT must not be a filesystem root (got: /)", result.output)
+                    self.assertFalse(self.config_file().exists())
 
     def test_missing_directory_is_rejected_when_configuring(self) -> None:
         self.make_source_json()
@@ -98,14 +144,6 @@ class ConfigureTests(DeployerTestCase):
         self.assertEqual(1, result.code)
         self.assertIn(f"ERROR: REPOS_ROOT directory does not exist: {missing}", result.output)
         self.assertEqual(before, self.digest())
-
-    def test_drive_root_is_still_rejected_after_normalization(self) -> None:
-        self.make_source_json()
-        drive = forward(self.root)[:2]
-        result = self.configure(stdin=f"{drive}\\\n")
-        self.assertEqual(1, result.code)
-        self.assertIn(f"ERROR: REPOS_ROOT must not be a filesystem root (got: {drive}/)", result.output)
-        self.assertFalse(self.config_file().exists())
 
     def test_directory_variables_are_configured_variables(self) -> None:
         self.assertEqual(("REPOS_ROOT",), config.DIRECTORY_VARIABLES)
