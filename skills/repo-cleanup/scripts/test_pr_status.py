@@ -774,8 +774,11 @@ class RewrittenBranchClassificationTests(SquashFixture):
         self.git("-C", str(self.other), "push", "origin", "--delete", "topic")
         self.git("-C", str(self.clone), "fetch", "--prune", "origin")
         self.git("-C", str(self.other), "fetch", "origin")
-        self.git("-C", str(self.other), "cherry-pick", self.tip)
+        # -x changes the message, so the cherry-pick is never the tip's own commit again, as a run within the same
+        # second as the tip's commit would otherwise make it: same tree, parent, author, message, and committer date.
+        self.git("-C", str(self.other), "cherry-pick", "-x", self.tip)
         squash = self.git("-C", str(self.other), "rev-parse", "HEAD")
+        self.assertNotEqual(self.tip, squash)
         self.git("-C", str(self.other), "push", "origin", "main")
         self.reword_tip()
         self.assertEqual("UNMATCHED", self.state(squash))
