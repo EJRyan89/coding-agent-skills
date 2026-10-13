@@ -144,9 +144,19 @@ class ManifestTests(GitTestCase):
                 "documentation-drift",
                 "untested-changes",
             },
+            "skills/skill-core/scripts/executable_locator.py": {
+                "trust-boundary",
+                "documentation-drift",
+                "untested-changes",
+            },
             "skills/skill-core/scripts/git_client.py": {"trust-boundary", "documentation-drift", "untested-changes"},
             "skills/skill-core/scripts/github_client.py": {"trust-boundary", "documentation-drift", "untested-changes"},
             "skills/skill-core/scripts/job_tree.py": {"trust-boundary", "documentation-drift", "untested-changes"},
+            "skills/skill-core/scripts/process_identity.py": {
+                "trust-boundary",
+                "documentation-drift",
+                "untested-changes",
+            },
             "skills/skill-core/scripts/pdf_tool.py": {
                 "trust-boundary",
                 "upgrade-notes",
@@ -231,10 +241,12 @@ class ManifestTests(GitTestCase):
             "skills/skill-core/scripts/" + name + ".py"
             for name in (
                 "bounded_process",
+                "executable_locator",
                 "git_client",
                 "github_client",
                 "job_tree",
                 "pdf_tool",
+                "process_identity",
                 "typed_fields",
                 "xml_reader",
             )

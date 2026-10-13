@@ -68,7 +68,7 @@
         "^docs/code-review-operations-contract\\.md$",
         "^skills/code-review-core/scripts/review_(?:analyzers|documents|github|guard|hosts|pipeline|process|records|runtime|source|specialists)\\.py$",
         "^skills/code-review-core/scripts/test_adversarial_inputs\\.py$",
-        "^skills/skill-core/scripts/(?:bounded_process|git_client|github_client|job_tree|pdf_tool|typed_fields|xml_reader)\\.py$"
+        "^skills/skill-core/scripts/(?:bounded_process|executable_locator|git_client|github_client|job_tree|pdf_tool|process_identity|typed_fields|xml_reader)\\.py$"
       ],
       "exclude": [],
       "resources": ["docs/code-review-operations-contract.md"],
