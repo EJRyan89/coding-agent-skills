@@ -3727,6 +3727,86 @@ class ReviewerSourceTests(PipelineFixture):
             report,
         )
 
+    def sharing_manifest(self, **settings: Any) -> None:
+        """Configure a manifest whose Python specialist takes app/service.py, which the fixture's head changes
+        beside CLAUDE.md, and whose other specialist shares its files and matches only CLAUDE.md."""
+        sharer = {
+            "id": "instructions-sharer",
+            "category": "Instructions",
+            "profile": ".claude/agents/python-reviewer.md",
+            "include": [r"^CLAUDE\.md$"],
+            "exclude": [],
+            "resources": [],
+            "when": None,
+            "shares_files": True,
+        }
+        python = {
+            "id": "python-reviewer",
+            "category": "Python",
+            "profile": ".claude/agents/python-reviewer.md",
+            "include": [r"\.py$"],
+            "exclude": [],
+            "resources": [],
+            "when": "window",
+        }
+        manifest = self.local_manifest(specialists=[python, sharer], **settings)
+        self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(manifest)))
+
+    def test_a_file_a_sharing_specialist_reviews_is_never_reported_unreviewed(self) -> None:
+        self.sharing_manifest(uncovered="ignore")
+        code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
+        self.assertEqual(0, code, err)
+        lines = out.splitlines()
+        self.assertEqual(
+            ["ROUTE python-reviewer files=1", "ROUTE instructions-sharer files=1", "UNCOVERED CLAUDE.md", "VALID"],
+            lines[lines.index("ROUTE python-reviewer files=1") :],
+        )
+        code, out, err = self.run_main("prepare", "--pull", SELECTOR)
+        self.assertEqual(0, code, err)
+        self.assertFalse([line for line in out.splitlines() if "No reviewer reviews" in line], out)
+        run = Path(out.splitlines()[0].removeprefix(f"RUN {SELECTOR} "))
+        plan = json.loads((run / "work" / "plan.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            ([("python-reviewer", ["app/service.py"]), ("instructions-sharer", ["CLAUDE.md"])], []),
+            ([(role["id"], role["files"]) for role in plan["roles"]], plan["uncovered_files"]),
+        )
+        for role in rp.load_run(run)["roles"]:
+            self.write_role_result(role)
+        code, out, err = self.run_main("finalize", "--run", str(run))
+        self.assertEqual(0, code, err)
+        self.assertIn(f"RECORDED {SELECTOR} verdict=APPROVED findings=0", out)
+        # A record carries coverage only for a gap, so a fully reviewed change has none.
+        self.assertNotIn("coverage", archived_record(self.archive, 12)["review"])
+        recorded = next(line for line in out.splitlines() if line.startswith("RECORDED "))
+        self.assertNotIn("Not reviewed", Path(recorded.split(" ", 4)[4]).read_text(encoding="utf-8"))
+
+    def test_reviewing_uncovered_files_the_generic_reviewer_still_takes_a_file_a_specialist_shares(self) -> None:
+        self.sharing_manifest()
+        code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
+        self.assertEqual(0, code, err)
+        lines = out.splitlines()
+        self.assertEqual(
+            [
+                "ROUTE python-reviewer files=1",
+                "ROUTE instructions-sharer files=1",
+                "UNCOVERED CLAUDE.md",
+                "GENERIC files=1 (no specialist covers them; the generic reviewer reviews them)",
+                "VALID",
+            ],
+            lines[lines.index("ROUTE python-reviewer files=1") :],
+        )
+        ready = self.prepare()
+        plan = json.loads((ready["run"] / "work" / "plan.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            [
+                ("python-reviewer", ["app/service.py"]),
+                ("instructions-sharer", ["CLAUDE.md"]),
+                ("generic-review", ["CLAUDE.md"]),
+            ],
+            [(role["id"], role["files"]) for role in plan["roles"]],
+        )
+        self.assertEqual([], ready["uncovered_files"])
+
     def test_local_manifest_problems_fail_closed(self) -> None:
         manifest = self.local_manifest()
         (manifest.parent / "window.py").unlink()
