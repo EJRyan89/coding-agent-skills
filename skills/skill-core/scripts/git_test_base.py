@@ -7,8 +7,8 @@ gives git a temporary home of its own instead:
 
 - `HOME` names that home, where git looks for the user's files when nothing else names them;
 - `GIT_CONFIG_GLOBAL` names a `.gitconfig` in it holding the fixture identity, `core.hooksPath` set to an empty
-  directory, and any settings the caller adds; `GIT_CONFIG_NOSYSTEM` and `GIT_ATTR_NOSYSTEM` keep the installation's
-  configuration and attributes out;
+  directory, git's automatic maintenance turned off, and any settings the caller adds; `GIT_CONFIG_NOSYSTEM` and
+  `GIT_ATTR_NOSYSTEM` keep the installation's configuration and attributes out;
 - `GIT_TERMINAL_PROMPT` is 0 and `GIT_EDITOR` is `:`, which git takes as no editor, so nothing waits on a person;
 - every other variable named `GIT_*` is removed, except `GIT_EXEC_PATH`, which picks the git installation, and
   `GIT_BASH`, this repository's own name for Git Bash; so is `XDG_CONFIG_HOME`, under which git finds its attributes
@@ -46,6 +46,17 @@ KEPT_GIT_VARIABLES = frozenset({"GIT_EXEC_PATH", "GIT_BASH"})
 # Variables outside GIT_* removed as well: the directory git finds its user attributes and ignore files under.
 REMOVED_VARIABLES = frozenset({"XDG_CONFIG_HOME"})
 SETTING_PART = re.compile(r"[A-Za-z][A-Za-z0-9-]*")
+# Git's automatic maintenance, off, so nothing git starts outlives the command that started it: after a commit or a
+# fetch git otherwise starts `git maintenance run --auto`, detached where the platform allows, which writes
+# .git/objects/maintenance.lock while a suite snapshots or removes the fixture. `maintenance.auto` stops that start,
+# `gc.auto` stops the packing of `gc --auto` from any command that still runs it, and the two `autoDetach` settings
+# keep whatever runs in the foreground: git reads `gc.autoDetach` when `maintenance.autoDetach` is unset or unknown.
+NO_AUTOMATIC_MAINTENANCE = {
+    "maintenance.auto": "false",
+    "maintenance.autoDetach": "false",
+    "gc.auto": "0",
+    "gc.autoDetach": "false",
+}
 
 
 @dataclass(frozen=True)
@@ -95,6 +106,7 @@ def isolated_git(settings: Mapping[str, str] | None = None) -> Iterator[GitHome]
         hooks.mkdir()
         config = home / ".gitconfig"
         values = {"user.name": FIXTURE_NAME, "user.email": FIXTURE_EMAIL, "core.hooksPath": str(hooks)}
+        values.update(NO_AUTOMATIC_MAINTENANCE)
         config.write_text(config_text({**values, **(settings or {})}), encoding="utf-8")
         patch = {
             "HOME": str(home),

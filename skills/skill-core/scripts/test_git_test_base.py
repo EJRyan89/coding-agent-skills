@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -68,14 +69,38 @@ KEPT = {
     "HOMEPATH": "home path",
 }
 HOME_VARIABLES = ("HOME", "GIT_CONFIG_GLOBAL")
+# The settings that turn git's automatic maintenance off, as the global configuration of an isolated home holds them.
+MAINTENANCE_OFF = {
+    "maintenance.auto": "false",
+    "maintenance.autoDetach": "false",
+    "gc.auto": "0",
+    "gc.autoDetach": "false",
+}
+MAINTENANCE_OFF_TEXT = (
+    '[maintenance]\n\tauto = "false"\n\tautoDetach = "false"\n[gc]\n\tauto = "0"\n\tautoDetach = "false"\n'
+)
 
 
 def environment_of(names: list[str]) -> dict[str, str | None]:
     return {name: os.environ.get(name) for name in names}
 
 
-def git(*arguments: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", *arguments], capture_output=True, text=True, encoding="utf-8", check=False)
+def git(*arguments: str, environment: Mapping[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *arguments],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**os.environ, **environment} if environment else None,
+        check=False,
+    )
+
+
+def maintenance_started(trace: Path) -> list[list[str]]:
+    """The command line of each maintenance or gc process git started, from a GIT_TRACE2_EVENT trace."""
+    events = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()]
+    started = [event["argv"] for event in events if event.get("event") == "child_start"]
+    return [argv for argv in started if "maintenance" in argv or "gc" in argv]
 
 
 class ConfigTextTests(GitTestCase):
@@ -147,7 +172,7 @@ class IsolatedGitTests(GitTestCase):
             self.assertEqual(
                 '[user]\n\tname = "Fixture"\n\temail = "fixture@example.invalid"\n'
                 f"[core]\n\thooksPath = {git_test_base._quoted(str(isolated.hooks))}\n"
-                '[init]\n\tdefaultBranch = "main"\n',
+                f'{MAINTENANCE_OFF_TEXT}[init]\n\tdefaultBranch = "main"\n',
                 isolated.config.read_text(encoding="utf-8"),
             )
             self.assertEqual(
@@ -172,6 +197,61 @@ class IsolatedGitTests(GitTestCase):
             raise LookupError("inside")
         self.assertEqual(before, dict(os.environ))
         self.assertFalse(isolated.home.exists())
+
+
+class AutomaticMaintenanceTests(GitTestCase):
+    """Nothing git starts in a fixture outlives the command that started it, so a suite sees the same tree each time."""
+
+    class_fixture_reads: ClassVar[dict[str, str]]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.class_fixture_reads = {name: git("config", "--global", "--get", name).stdout for name in MAINTENANCE_OFF}
+
+    def test_the_global_configuration_turns_automatic_maintenance_off_for_a_test_and_a_class_fixture(self) -> None:
+        expected = {name: f"{value}\n" for name, value in MAINTENANCE_OFF.items()}
+        self.assertEqual(expected, {name: git("config", "--global", "--get", name).stdout for name in MAINTENANCE_OFF})
+        self.assertEqual(expected, self.class_fixture_reads)
+
+    def test_a_fixture_commit_and_fetch_start_no_maintenance_and_leave_no_lock(self) -> None:
+        root = self.git_home.home / "fixture"
+        origin, clone = root / "origin", root / "clone"
+        trace = self.git_home.home / "trace.json"
+        traced = {"GIT_TRACE2_EVENT": str(trace)}
+        self.assertEqual(0, git("init", "-q", str(origin)).returncode)
+        for message in ("first", "second"):
+            (origin / "file.txt").write_text(f"{message}\n", encoding="utf-8")
+            self.assertEqual(0, git("-C", str(origin), "add", "file.txt").returncode)
+            self.assertEqual(0, git("-C", str(origin), "commit", "-q", "-m", message, environment=traced).returncode)
+            if not clone.exists():
+                self.assertEqual(0, git("clone", "-q", str(origin), str(clone), environment=traced).returncode)
+        self.assertEqual(0, git("-C", str(clone), "fetch", "-q", environment=traced).returncode)
+        self.assertEqual([], maintenance_started(trace))
+        left = [path.name for path in root.rglob("*") if path.name in ("maintenance.lock", "gc.pid", "gc.log")]
+        self.assertEqual([], left)
+
+    def test_the_trace_sees_the_maintenance_a_commit_starts_when_it_is_on(self) -> None:
+        repository = self.git_home.home / "fixture"
+        trace = self.git_home.home / "trace.json"
+        self.assertEqual(0, git("init", "-q", str(repository)).returncode)
+        on = ("-c", "maintenance.auto=true", "-c", "maintenance.autoDetach=false", "-c", "gc.autoDetach=false")
+        committed = git(
+            "-C",
+            str(repository),
+            *on,
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "m",
+            environment={"GIT_TRACE2_EVENT": str(trace)},
+        )
+        self.assertEqual(0, committed.returncode, committed.stderr)
+        started = maintenance_started(trace)
+        self.assertTrue(started)
+        self.assertEqual(["maintenance", "run"], started[0][1:3])
+        self.assertIn("--auto", started[0])
 
 
 class GitTestCaseTests(GitTestCase):
