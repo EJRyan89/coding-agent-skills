@@ -16,7 +16,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 
 import job_tree
 from git_test_base import GitTestCase
-from harness import DeployerTestCase, Result, forward, make_directory_link, remove_directory_link
+from harness import (
+    DEPLOY_COMMAND,
+    DeployerTestCase,
+    Result,
+    forward,
+    make_directory_link,
+    remove_directory_link,
+)
 from test_job_tree import ended
 
 from deployer import discovery, platform_support, verify
@@ -627,7 +634,7 @@ class VerifyCommandTests(DeployerTestCase):
         self.assertEqual(1, result.code, result.output)
         self.assertIn(
             f"ERROR: No runtime adapters are deployed in {forward(self.agents_dir)}.\n"
-            "Deploy first with 'python deploy.py'.\n",
+            f"Deploy first with '{DEPLOY_COMMAND}'.\n",
             result.output,
         )
         self.assertEqual([], self.runtimes.calls)

@@ -19,7 +19,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 from git_test_base import GitTestCase
-from harness import DeployerTestCase
+from harness import DEPLOY_COMMAND, DeployerTestCase
 
 from deployer import hashing, manifest, migrate, plan, report, selection
 from deployer.context import Context, Options, Selection
@@ -583,7 +583,7 @@ class ContextStepTests(GitTestCase):
                 "Skills requiring these:",
                 "  alpha -> REPOS_ROOT",
                 "  beta -> REPOS_ROOT",
-                "Run 'python deploy.py configure' to set them.",
+                f"Run '{DEPLOY_COMMAND} configure' to set them.",
             ],
             list(raised.exception.lines),
         )

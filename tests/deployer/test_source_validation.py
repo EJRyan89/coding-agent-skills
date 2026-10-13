@@ -12,7 +12,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 from git_test_base import GitTestCase
-from harness import DeployerTestCase, Result, forward, make_directory_link, tree_state
+from harness import DEPLOY_COMMAND, DeployerTestCase, Result, forward, make_directory_link, tree_state
 
 from deployer import config, names, platform_support, source
 from deployer.errors import DeployError
@@ -759,7 +759,7 @@ class CanaryHomeTests(LinkedWorktreeTestCase):
         result = self.run_from(directory, "--canary-home", value, "--all")
         self.assertEqual(2, result.code, result.output)
         self.assertEqual(
-            f"\nERROR: {message}\nRun 'python deploy.py --help' for usage.\n\n",
+            f"\nERROR: {message}\nRun '{DEPLOY_COMMAND} --help' for usage.\n\n",
             result.output,
         )
         self.assertEqual(before, tree_state(self.root), result.output)

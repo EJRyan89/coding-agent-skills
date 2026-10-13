@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 from harness import (
+    DEPLOY_COMMAND,
     FAILS_PARTWAY,
     RECOVERS,
     REPOSITORY_ROOT,
@@ -123,7 +124,7 @@ class RecoveryTests(RecoveryTestCase):
                 self.assertEqual(2, result.code, result.output)
                 self.assertEqual(
                     "\nERROR: --include names no bundle or skill in this source: missing\n"
-                    "Run 'python deploy.py --help' for usage.\n\n",
+                    f"Run '{DEPLOY_COMMAND} --help' for usage.\n\n",
                     result.output,
                 )
         recovered = self.deploy_ok("--all")
@@ -144,7 +145,7 @@ class RecoveryTests(RecoveryTestCase):
         self.sentinel()
         expected = (
             "\nERROR: --force-item names 'gamma', which this run does not install.\n"
-            "Name one of: alpha.\nRun 'python deploy.py --help' for usage.\n\n"
+            f"Name one of: alpha.\nRun '{DEPLOY_COMMAND} --help' for usage.\n\n"
         )
         for arguments in (("--all",), (), ("--all", "--dry-run"), ("--dry-run",)):
             with self.subTest(arguments=arguments):

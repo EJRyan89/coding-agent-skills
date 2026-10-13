@@ -31,7 +31,7 @@ from . import (
     source_ref,
 )
 from . import selection as selection_module
-from .arguments import USAGE_ERROR, VERIFY_COMMAND_LINE, parse_command, usage_error
+from .arguments import PROG, USAGE_ERROR, VERIFY_COMMAND_LINE, parse_command, usage_error
 from .context import Context, Options
 from .errors import Cancelled, DeployError, debug_requested, fail, print_error, print_traceback, see_recovery
 from .kinds import ADAPTER_KIND, AGENT_KIND, BY_LABEL, DEPENDENCY_KINDS, KINDS, SHARED, SKILL
@@ -209,8 +209,8 @@ def _refuse_unpinning(context: Context, replaced_pin: str | None) -> None:
         return
     raise DeployError(
         f"ERROR: Refusing to replace {replaced_pin} without --unpin.",
-        "To move it to this checkout's HEAD, rerun with --unpin, as in 'python deploy.py --all --unpin'; to keep the "
-        "pin, change nothing, or deploy another commit with --at.",
+        f"To move it to this checkout's HEAD, rerun with --unpin, as in '{PROG} --all --unpin'; to keep the pin, "
+        "change nothing, or deploy another commit with --at.",
         see_recovery(source_ref.EARLIER_COMMIT),
     )
 

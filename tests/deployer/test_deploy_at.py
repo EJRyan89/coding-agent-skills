@@ -14,7 +14,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 from git_test_base import GitTestCase
-from harness import REPOSITORY_ROOT, SOURCE_ID, DeployerTestCase, Result, git
+from harness import DEPLOY_COMMAND, REPOSITORY_ROOT, SOURCE_ID, DeployerTestCase, Result, git
 
 from deployer import fsops, platform_support, source_ref, tools
 from deployer.errors import DeployError
@@ -34,7 +34,7 @@ class RefValidationTests(GitTestCase):
                 (
                     f"ERROR: --at must name a branch, tag, or commit of this checkout (got: {ref!r})",
                     "A ref may not start with '-' and may hold only letters, digits, and . _ / @ { } ~ ^ + -.",
-                    "Run 'python deploy.py --help' for usage.",
+                    f"Run '{DEPLOY_COMMAND} --help' for usage.",
                 ),
                 raised.exception.lines,
             )
@@ -136,8 +136,8 @@ class DeployAtTests(DeployerTestCase):
         return (
             f"ERROR: Refusing to replace the deployment pinned with --at v1.0.0 to v1.0.0 ({self.release}) without "
             "--unpin.\n"
-            "To move it to this checkout's HEAD, rerun with --unpin, as in 'python deploy.py --all --unpin'; to keep "
-            "the pin, change nothing, or deploy another commit with --at.\n"
+            f"To move it to this checkout's HEAD, rerun with --unpin, as in '{DEPLOY_COMMAND} --all --unpin'; to "
+            "keep the pin, change nothing, or deploy another commit with --at.\n"
             'See "Deploying an earlier commit" in docs/recovery.md.\n'
         )
 

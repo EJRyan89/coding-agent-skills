@@ -12,7 +12,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 from git_test_base import GitTestCase
-from harness import FAILS_PARTWAY, REPOSITORY_ROOT, TAKES_THE_LOCK, DeployerTestCase, forward
+from harness import DEPLOY_COMMAND, FAILS_PARTWAY, REPOSITORY_ROOT, TAKES_THE_LOCK, DeployerTestCase, forward
 
 from deployer import errors, fsops, platform_support
 from deployer.errors import DeployError
@@ -23,7 +23,7 @@ NAME_RULES = (
     "not a Windows device name such as con or nul, and, for a skill, without the reserved words anthropic or claude; "
     'see "Files" in docs/adding-a-skill.md.'
 )
-RESET = "Run 'python deploy.py configure --reset' to write a new configuration for this source."
+RESET = f"Run '{DEPLOY_COMMAND} configure --reset' to write a new configuration for this source."
 SEE_OWNERSHIP = 'See "Ownership held by another source" in docs/recovery.md.'
 SEE_RECOVERY_FAILED = 'See "When recovery fails" in docs/recovery.md.'
 SEE_BACKUPS = 'See "Backups" in docs/recovery.md.'
@@ -174,7 +174,7 @@ class ConfigurationRemedyTests(RemedyTestCase):
         self.assert_lines(
             result.output,
             "ERROR: Config key GH_ORG is not a recognized variable",
-            "Run 'python deploy.py configure' to drop it.",
+            f"Run '{DEPLOY_COMMAND} configure' to drop it.",
         )
         self.assertNotIn(RESET, result.output)
 
@@ -187,7 +187,7 @@ class ConfigurationRemedyTests(RemedyTestCase):
         self.assert_lines(
             result.output,
             f"ERROR: REPOS_ROOT must not be a filesystem root (got: {root})",
-            "Run 'python deploy.py configure' to change it.",
+            f"Run '{DEPLOY_COMMAND} configure' to change it.",
         )
 
 
@@ -205,7 +205,7 @@ class OwnershipRemedyTests(RemedyTestCase):
         self.assert_lines(
             result.output,
             "ERROR: Skill 'alpha' is owned by source 'test/source-a'.",
-            "To take it over, run 'python deploy.py --migrate-from test/source-a', then rerun this deployment.",
+            f"To take it over, run '{DEPLOY_COMMAND} --migrate-from test/source-a', then rerun this deployment.",
             SEE_OWNERSHIP,
         )
         self.deploy_ok("--migrate-from", "test/source-a")

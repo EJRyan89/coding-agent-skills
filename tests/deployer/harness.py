@@ -38,6 +38,9 @@ REPORT_GROUP = re.compile(r"([A-Z][A-Z ]*[A-Z]) \(([0-9]+)\):")
 RECOVERS = "recovery of an earlier run changes what it can before it stops"
 FAILS_PARTWAY = "the deployment fails after it began changing the home and keeps its evidence"
 TAKES_THE_LOCK = "the lock is taken, or a stale one reclaimed, before the failure"
+# The command line every deploy.py hint and usage line names, pinned as each platform's literal: Windows runs
+# Python as python, and Linux as python3, where a distribution may install no python command.
+DEPLOY_COMMAND = "python deploy.py" if platform_support.WINDOWS else "python3 deploy.py"
 
 
 def forward(path: Path) -> str:
