@@ -494,16 +494,17 @@ class InstallationGuideTests(GitTestCase):
 
 class StandardCommandTests(GitTestCase):
     def test_standard_commands_are_the_documented_set(self) -> None:
-        # "Commands skills may run" in docs/adding-a-skill.md lists these; the Windows part comes from platform_support.
+        # "Commands skills may run" in docs/adding-a-skill.md lists these; the platform's part comes from
+        # platform_support: Python as python, Windows PowerShell, and cygpath on Windows, and python3 elsewhere.
+        platform = {"python", "powershell", "cygpath"} if platform_support.WINDOWS else {"python3"}
         self.assertEqual(
             frozenset(
                 {
-                    "python",
+                    *platform,
                     "git",
                     "bash",
                     "sh",
                     "pwsh",
-                    "powershell",
                     "awk",
                     "basename",
                     "cat",
@@ -512,7 +513,6 @@ class StandardCommandTests(GitTestCase):
                     "cp",
                     "curl",
                     "cut",
-                    "cygpath",
                     "date",
                     "diff",
                     "dirname",

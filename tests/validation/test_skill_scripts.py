@@ -35,6 +35,8 @@ from skill_scripts import (
 )
 from validation_support import REPOSITORY_ROOT, write_fixture_tree
 
+from deployer import platform_support
+
 
 def mark_skills(root: Path) -> Path:
     """Give each skills/<name> folder with a scripts/ directory the SKILL.md that makes it a skill, and return root."""
@@ -493,7 +495,16 @@ class SkillScriptsFixtures(GitTestCase):
                     unreadable(path, 20, "the program in `handle`, which the module binds to nothing it reads"),
                     *(
                         f"skill alpha runs {name}, which a standard install lacks; see {COMMANDS_DOC}"
-                        for name in ("jq", "node", "perl", "python", "rg", "ruby", "yq")
+                        # sys.executable is the platform's Python command.
+                        for name in (
+                            "jq",
+                            "node",
+                            "perl",
+                            "python" if platform_support.WINDOWS else "python3",
+                            "rg",
+                            "ruby",
+                            "yq",
+                        )
                     ),
                 ],
                 skill_command_problems(root, {"gh"}, {"git"}),
@@ -522,7 +533,7 @@ class SkillScriptsFixtures(GitTestCase):
             ) as built:
                 # The policies read core's github.py for each skill that reaches it, and the client policy reads every
                 # script again, yet each content is read once in the run.
-                self.assertEqual([], skill_command_problems(root, {"copilot", "gh"}, {"git", "python"}))
+                self.assertEqual([], skill_command_problems(root, {"copilot", "gh"}, {"git", platform_support.PYTHON}))
                 client_command_problems(root)
                 self.assertEqual(3, built.call_count)
                 github = root / "skills" / "core" / "scripts" / "github.py"

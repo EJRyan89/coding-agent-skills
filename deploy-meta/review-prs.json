@@ -1,5 +1,5 @@
 {
-    "required_vars": [],
+    "required_vars": ["PYTHON"],
     "shared_deps": ["runtime-compatibility.md"],
     "skill_deps": ["code-review-core"],
     "tools": ["copilot", "gh"],

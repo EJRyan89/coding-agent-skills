@@ -315,8 +315,13 @@ class ShellPathTests(GitTestCase):
 
 
 class StandardCommandTests(GitTestCase):
-    def test_windows_adds_python_windows_powershell_and_cygpath(self) -> None:
-        self.assertEqual(frozenset({"python", "powershell", "cygpath"}), platform_support.STANDARD_COMMANDS)
+    def test_windows_adds_python_windows_powershell_and_cygpath_and_elsewhere_python3(self) -> None:
+        expected = {"python", "powershell", "cygpath"} if platform_support.WINDOWS else {"python3"}
+        self.assertEqual(frozenset(expected), platform_support.STANDARD_COMMANDS)
+
+    def test_python_is_named_python_on_windows_and_python3_elsewhere(self) -> None:
+        self.assertEqual("python" if platform_support.WINDOWS else "python3", platform_support.PYTHON)
+        self.assertIn(platform_support.PYTHON, platform_support.STANDARD_COMMANDS)
 
 
 class InstallHintTests(GitTestCase):

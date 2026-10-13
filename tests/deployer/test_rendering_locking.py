@@ -38,6 +38,47 @@ class RenderedExecutableTests(DeployerTestCase):
         self.assertEqual(0, result.returncode, result.output)
         self.assertEqual(forward(repos), result.output.strip())
 
+    def test_the_interpreter_renders_as_the_platform_names_it_and_executes_with_spaces(self) -> None:
+        # The command word renders unquoted, as Python's command on this platform, beside a quoted spaced value.
+        program = '{{PYTHON}} -c "import sys; print(sys.argv[1])" "{{REPOS_ROOT}}"'
+        self.make_source_json()
+        directory = self.make_skill(
+            "alpha",
+            f"Interpreter fixture\n\n```bash\n{program}\n```\n\n```powershell\n{program}\n```",
+            ["PYTHON", "REPOS_ROOT"],
+        )
+        self.write(directory / "run.sh", f"#!/usr/bin/env bash\n{program}\n")
+        self.write(directory / "run.ps1", f"{program}\n")
+        repos = self.root / "Repos With Spaces"
+        self.make_config(repos_root=repos)
+        self.deploy_ok("--all")
+        python = "python" if platform_support.WINDOWS else "python3"
+        rendered = f'{python} -c "import sys; print(sys.argv[1])" "{forward(repos)}"'
+        self.assertIn(f"```bash\n{rendered}\n```\n\n```powershell\n{rendered}\n```", self.skill_text("alpha"))
+        bash = platform_support.find_bash()
+        pwsh = platform_support.find_pwsh(os.environ.get("PATH", ""))
+        if bash is None or pwsh is None:
+            self.fail("Bash and PowerShell 7 are validation prerequisites")
+        from_bash = platform_support.run_tool([bash, forward(self.skills_dir / "alpha" / "run.sh")])
+        from_pwsh = platform_support.run_tool(
+            [pwsh, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(self.skills_dir / "alpha" / "run.ps1")]
+        )
+        self.assertEqual((0, 0), (from_bash.returncode, from_pwsh.returncode), from_bash.output + from_pwsh.output)
+        self.assertEqual(forward(repos), from_bash.output.strip())
+        self.assertEqual(forward(repos), from_pwsh.output.strip())
+
+    def test_an_interpreter_outside_its_fixed_set_is_refused_wherever_it_would_render(self) -> None:
+        self.make_source_json()
+        self.make_skill("alpha", "```bash\n{{PYTHON}} -V\n```", ["PYTHON"])
+        self.make_config()
+        for name in ("pythonw", "python3.11", "py", ""):
+            with self.subTest(name=name), mock.patch.object(platform_support, "PYTHON", name):
+                self.deploy_fails(
+                    "--all",
+                    pattern=re.escape(f"ERROR: PYTHON (the Python command) is {name!r}, not one of python, python3"),
+                )
+        self.assertFalse((self.skills_dir / "alpha").exists())
+
     def test_source_root_renders_the_deploying_clone_and_executes_with_spaces(self) -> None:
         self.make_source_json()
         directory = self.make_skill(

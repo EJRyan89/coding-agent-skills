@@ -21,14 +21,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 
 from markdown_sections import markdown_section as markdown_section
 
-from deployer import render
+from deployer import platform_support, render
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 SKILLS_ROOT = REPOSITORY_ROOT / "skills"
 REPOSITORY_SKILLS = ".claude/skills"
 # A skill's executable files are Bash, Python, and PowerShell, each run by a standard command in deployer/tools.py.
-SCRIPT_INTERPRETERS = {".bash": "bash", ".sh": "bash", ".py": "python", ".ps1": "pwsh"}
+SCRIPT_INTERPRETERS = {".bash": "bash", ".sh": "bash", ".py": platform_support.PYTHON, ".ps1": "pwsh"}
 EXECUTABLE_SCRIPT_EXTENSIONS = set(SCRIPT_INTERPRETERS)
 # No runtime these need is a deployment prerequisite and the renderer cannot validate them, so a skill holds none.
 UNSUPPORTED_SCRIPT_EXTENSIONS = {".cjs", ".js", ".mjs", ".ts"}

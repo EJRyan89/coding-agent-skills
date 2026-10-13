@@ -2,7 +2,7 @@
 name: analyze-skill-cost
 description: "Audit an agent skill for cost and efficiency: token footprint, tool calls, deterministic work left to prose, subagent overhead, runtime adapters, model, and allowed-tools. Read-only findings report. Use it when asked what a skill costs, why it is slow or expensive, or to check one before shipping it."
 argument-hint: "<SkillName>"
-allowed-tools: ["Bash(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "Read", "Grep"]
+allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "Read", "Grep"]
 ---
 
 Audit a named agent skill for cost and efficiency regressions and render a bucketed findings report. Read-only — no edits, no prompts.
@@ -16,7 +16,7 @@ Trim leading/trailing whitespace. If empty, print `usage: analyze-skill-cost <Sk
 ## Step 1 — Locate the skill
 
 ```bash
-python -B "${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py" locate "<SKILL_NAME>"
+{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py" locate "<SKILL_NAME>"
 ```
 
 It searches `{{HOME}}/.claude/skills/`, the current repository's `.agents/skills/` and `.claude/skills/`, and, in a skill source tree, `skills/` (`SCOPE source`, preferred over the deployed copy).
@@ -29,7 +29,7 @@ It searches `{{HOME}}/.claude/skills/`, the current repository's `.agents/skills
 ## Step 2 — Inventory and token estimate
 
 ```bash
-python -B "${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py" inventory "<SKILL_DIR>"
+{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py" inventory "<SKILL_DIR>"
 ```
 
 `FILE` lines list every file by category; a `doc` file is Markdown other than the main `SKILL.md`. `TOTAL` lines fill the report's Scope, and so do `DECLARED <kind> <name>` lines, or `DECLARED_UNREADABLE <path>` when the skill's metadata is not valid JSON. `NO_MAIN` means the folder lost its `SKILL.md`: stop and report it. Step 4 judges the rest.
@@ -54,7 +54,7 @@ Judge content, not size: a long body whose every section earns its space passes,
 Pass the main file followed by every `doc` path:
 
 ```bash
-python -B "${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py" scan "<SKILL_FILE>" "<doc path>"
+{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py" scan "<SKILL_FILE>" "<doc path>"
 ```
 
 Each `CUE <file> <line> <cue> <text>` is a candidate, not a finding. Read it in context and keep only real findings, anchored as `file:line`. Frontmatter is skipped, and only `wide-glob`, `generated-code`, and `shell-file-command` apply inside fenced blocks.
@@ -86,7 +86,7 @@ When Step 5 printed an `agent` or `subagent-reply` cue or a `RUNTIME_PROMPT` lin
 ## Step 7 — Model, allowed-tools, and listing
 
 ```bash
-python -B "${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py" tools "<SKILL_FILE>"
+{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py" tools "<SKILL_FILE>"
 ```
 
 `MODEL none` means the caller's model applies. A tool is `USED` only where the body names it in a tool-use context (a code span, call syntax, "tool" or "call", or a shell fence); a sentence that starts with "Read" is not a use. `IMPLIED` means prose names the tool's action ("read", "search", "ask", "subagent") without naming the tool; a prohibition ("do not read") and a prompt quoted for a subagent never count. The bullets below say what each other line means for the report.
@@ -103,7 +103,7 @@ Allowed-tools grants. `ALLOWED` lines fill the Scope. `NO_ALLOWED_TOOLS` renders
 
 - `UNUSED_ALLOWED <tool>` → SUGGESTION "remove from `allowed-tools`", after confirming the body does not need it in words the heuristic misses (invoking another skill by name needs skill invocation).
 - `MISSING_ALLOWED <tool> <line>` → for Claude, **MUST FIX** when that line tells the agent to use the tool, since the skill then prompts mid-run; ignore a line that only mentions it, such as a rubric or a counter-example. For another runtime, check that the compatibility contract provides a usable first-class mapping instead of requiring Claude tool names in native metadata.
-- `UNSCOPED_ALLOWED <entry>` → **MUST FIX**: it pre-approves every shell command. Recommend patterns for the commands the fences run, written as they are, such as `Bash(python -B "${CLAUDE_SKILL_DIR}/scripts/*)` with the same `PowerShell(...)` pattern.
+- `UNSCOPED_ALLOWED <entry>` → **MUST FIX**: it pre-approves every shell command. Recommend patterns for the commands the fences run, written as they are, such as `Bash({{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/*)` with the same `PowerShell(...)` pattern.
 - `UNPAIRED_ALLOWED <entry>` → **MUST FIX** for a skill that runs on Windows, SUGGESTION otherwise: add the other shell's identical pattern, or the user is prompted, or denied in a non-interactive run, whenever the model picks that shell.
 - `UNGRANTED <tool> <line> <command>` → **MUST FIX** when the command runs the skill's own or a sibling's scripts; correct the pattern rather than widen it. For any other command, SUGGESTION to grant it exactly as written, unless it runs code from the target repository or acts outside the conversation, which should keep prompting.
 - `IDLE_ALLOWED <entry>` → **MUST FIX**: the pattern matches no command in a shell fence or code span, so it pre-approves a command the skill never asks for, such as one a repository leaves to prompt. Remove it, or show the command it is for.

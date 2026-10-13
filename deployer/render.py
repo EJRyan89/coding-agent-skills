@@ -14,7 +14,7 @@ from pathlib import Path
 import frontmatter
 
 from . import fsops, hashing, platform_support
-from .config import DERIVED_VARIABLES
+from .config import DERIVED_VARIABLES, INTERPRETER_VARIABLES
 from .errors import DeployError
 from .source import AGENT_SKILLS_RULE, XML_TAG_REMEDY, Source, xml_tag
 
@@ -106,6 +106,12 @@ def _write(target: Path, content: bytes) -> None:
 
 
 def _escape(key: str, value: str, context: str, logical: str) -> str:
+    # An interpreter renders as a bare command word, so it is held to its fixed set in every context, never escaped.
+    if key in INTERPRETER_VARIABLES and value not in INTERPRETER_VARIABLES[key]:
+        raise DeployError(
+            f"ERROR: Variable {key} cannot be substituted into {logical}: {value!r} is not one of "
+            f"{', '.join(sorted(INTERPRETER_VARIABLES[key]))}"
+        )
     if context in ("json", "toml"):
         return json.dumps(value, ensure_ascii=False)[1:-1]
     unsafe = UNSAFE_CHARACTERS.get(context, "")

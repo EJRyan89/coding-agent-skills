@@ -1,5 +1,5 @@
 {
-    "required_vars": ["HOME"],
+    "required_vars": ["HOME", "PYTHON"],
     "shared_deps": ["runtime-compatibility.md"],
     "skill_deps": ["skill-core"],
     "runtime_support": {"claude-code": "full", "codex": "full", "copilot-cli": "full"}

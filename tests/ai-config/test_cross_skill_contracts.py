@@ -28,6 +28,8 @@ import review_source
 from git_test_base import GitTestCase
 from review_config import COMPUTED_DASHBOARD_STATES
 
+from deployer import platform_support
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -745,15 +747,16 @@ class CrossSkillContractTests(GitTestCase):
         value = skill_frontmatter.read(skill / "SKILL.md").value("allowed-tools")
         if not isinstance(value, list):
             self.fail(f"review-prs grants no list of tools: {value!r}")
+        # Each grant as the deployer renders it here, with Python named as this platform names it.
         grants = [
-            entry.removeprefix(f"{shell}(").removesuffix(")")
+            entry.removeprefix(f"{shell}(").removesuffix(")").replace("{{PYTHON}}", platform_support.PYTHON)
             for entry in value
             for shell in ("Bash", "PowerShell")
             if entry.startswith(f"{shell}(")
         ]
         self.assertEqual(2, len(grants), value)
         _, body = frontmatter_and_body((skill / "SKILL.md").read_text(encoding="utf-8-sig"))
-        started = re.search(r'python -B "(\$\{CLAUDE_SKILL_DIR\}[^"]+)" prepare ', body)
+        started = re.search(r'\{\{PYTHON\}\} -B "(\$\{CLAUDE_SKILL_DIR\}[^"]+)" prepare ', body)
         if started is None:
             self.fail("review-prs names no prepare command")
         run = Path(tempfile.gettempdir()) / "code-review-run-example"

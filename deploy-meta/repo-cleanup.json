@@ -1,5 +1,5 @@
 {
-    "required_vars": ["REPOS_ROOT"],
+    "required_vars": ["REPOS_ROOT", "PYTHON"],
     "shared_deps": ["runtime-compatibility.md"],
     "skill_deps": ["skill-core"],
     "tools": ["gh"],
