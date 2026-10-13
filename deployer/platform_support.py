@@ -273,7 +273,7 @@ def is_link(path: Path) -> bool:
 
 def is_reparse_point(path: Path) -> bool:
     try:
-        attributes = os.lstat(path).st_file_attributes
+        attributes = os.lstat(path).st_file_attributes  # type: ignore[attr-defined]  # Windows only, and AttributeError elsewhere
     except (AttributeError, OSError):
         return False
     return bool(attributes & FILE_ATTRIBUTE_REPARSE_POINT)

@@ -77,7 +77,7 @@ def _windows_status(pid: int) -> ProcessStatus:
     import ctypes
     from ctypes import wintypes
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]  # Windows only
     kernel32.OpenProcess.restype = wintypes.HANDLE
     kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     query_limited_information = 0x1000
@@ -85,7 +85,7 @@ def _windows_status(pid: int) -> ProcessStatus:
     still_active = 259
     handle = kernel32.OpenProcess(query_limited_information, False, pid)
     if not handle:
-        return ProcessStatus(ctypes.get_last_error() == access_denied, None)
+        return ProcessStatus(ctypes.get_last_error() == access_denied, None)  # type: ignore[attr-defined]  # Windows only
     try:
         exit_code = wintypes.DWORD()
         if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
