@@ -363,6 +363,16 @@ class CheckCommandTests(DeployerTestCase):
         # The dependency is installed, so the tools it runs are needed, named by the root that installed it.
         self.assertIn("gh 2.97.0 (used by opt-in pack, plain, reporter)", groups["FOUND"])
 
+    def test_a_member_requested_through_a_bundle_the_source_renames_still_needs_its_tools(self) -> None:
+        self.make_source_json(bundles={"pack": {"members": ["reviewer", "formatter"], "opt_in": True}})
+        self.make_config()
+        machine = Machine(missing=("dotnet-format",))
+        with machine.patches():
+            self.deploy_ok("--all", "--include", "pack")
+        self.make_source_json(bundles={"pack2": {"members": ["reviewer", "formatter"], "opt_in": True}})
+        groups = self.report_groups(self.check(machine).output, "CHECK")
+        self.assertEqual(["dotnet-format (used by pack2)"], groups["MISSING"])
+
     def test_the_runtimes_verify_lists_are_reported_whether_or_not_a_skill_declares_them(self) -> None:
         # deploy.py verify runs Codex CLI and Copilot CLI, so check reports both even when no skill runs either.
         set_tools(self, "core", ["gh"])

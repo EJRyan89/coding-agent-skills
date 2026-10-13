@@ -113,6 +113,7 @@ def _commit_manifest(context: Context, entries: list[PlanEntry], run_id: str, co
         **({"source_ref": context.pin.ref} if context.pin is not None else {}),
         "deployed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "requested_bundles": list(context.selection.bundles),
+        "requested_bundle_members": {name: sorted(context.source.bundles[name]) for name in context.selection.bundles},
         "requested_skills": list(context.selection.skills),
         **{kind.key: dict(sorted(recorded[kind.key].items())) for kind in KINDS},
     }
