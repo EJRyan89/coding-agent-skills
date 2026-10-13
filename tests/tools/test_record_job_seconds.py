@@ -53,6 +53,11 @@ LOG = "\n".join(
     ]
 )
 LEGS = (LEG_1, LEG_2, LEG_3, LEG_4)
+# The legs as the workflow named them before the Linux job joined the required check.
+OLD_LEGS = tuple(
+    f"Shard {index}/4 on Python 3.11\tRun repository validation\t2026-10-09T06:17:0{index}.0000000Z "
+    for index in range(1, 5)
+)
 
 
 def log_of(seconds: dict[str, float], legs: Sequence[str] = LEGS) -> str:
@@ -144,12 +149,28 @@ class ParseTests(unittest.TestCase):
         gap = log_of({"tests/a.py": 1.0}, (LEG_1, *LEGS[2:]))
         self.assertEqual("lacks leg 2/4", record_job_seconds.leg_problem(gap))
         self.assertEqual("names no one set of legs", record_job_seconds.leg_problem("no leg\tstep\ttext"))
-        # The Linux job alone is no leg, and neither is a leg under the name the workflow gave it before it said
-        # Windows.
+        # The Linux job and the aggregate job are no legs.
         self.assertEqual("names no one set of legs", record_job_seconds.leg_problem(f"{LINUX}ok 1.0s tests/a.py"))
-        old_names = "Shard 1/1 on Python 3.11\tRun repository validation\t2026-10-10T06:17:04Z ok 1.0s tests/a.py"
-        self.assertEqual("names no one set of legs", record_job_seconds.leg_problem(old_names))
-        self.assertEqual({}, record_job_seconds.job_seconds_from_log(old_names))
+        self.assertEqual(set(), record_job_seconds.legs_seen(f"{LINUX}ok 1.0s tests/a.py\n{AGGREGATE}ok 1.0s x"))
+
+    def test_a_leg_under_the_name_it_had_before_the_rename_is_a_leg(self) -> None:
+        old = log_of({"tests/a.py": 4.0, "tests/b.py": 2.5}, OLD_LEGS)
+        self.assertEqual({(1, 4), (2, 4), (3, 4), (4, 4)}, record_job_seconds.legs_seen(old))
+        self.assertEqual("", record_job_seconds.leg_problem(old))
+        self.assertEqual({"tests/a.py": 4.0, "tests/b.py": 2.5}, record_job_seconds.job_seconds_from_log(old))
+        self.assertEqual("lacks leg 4/4", record_job_seconds.leg_problem(log_of({"tests/a.py": 1.0}, OLD_LEGS[:3])))
+        self.assertEqual((2, 4), record_job_seconds.leg_of("Windows shard 2/4, Python 3.x"))
+        self.assertEqual((3, 4), record_job_seconds.leg_of("Shard 3/4 on Python 3.11"))
+        # Only the two shapes the workflow gave its legs: a near miss is no leg.
+        for job in (
+            "Shard 1/4, Python 3.11",
+            "Windows shard 1/4 on Python 3.11",
+            "windows shard 1/4, Python 3.11",
+            "Linux shard 1/4, Python 3.11",
+            "Shard 1/4 on 3.11",
+        ):
+            with self.subTest(job=job):
+                self.assertIsNone(record_job_seconds.leg_of(job))
 
 
 class MainTests(unittest.TestCase):
@@ -218,6 +239,39 @@ class MainTests(unittest.TestCase):
         self.assertEqual(0, code)
         seconds = json.loads(table.read_text(encoding="utf-8"))["seconds"]
         self.assertEqual({"tests/a.py": 20.0, "tests/new.py": 10.0}, seconds)
+
+    def test_runs_from_both_sides_of_the_legs_rename_are_combined(self) -> None:
+        stub = self.runs_stub(
+            {
+                1: log_of({"tests/a.py": 10.0, "tests/b.py": 3.0}, OLD_LEGS),
+                2: log_of({"tests/a.py": 30.0, "tests/b.py": 5.0}, OLD_LEGS),
+                3: log_of({"tests/a.py": 20.0, "tests/b.py": 4.0}),
+                4: log_of({"tests/a.py": 50.0, "tests/b.py": 9.0}),
+                5: log_of({"tests/a.py": 40.0, "tests/b.py": 6.0}),
+            }
+        )
+        code, output, errors, table = self.run_main(["1", "2", "3", "4", "5"], stub)
+        self.assertEqual((0, ""), (code, errors))
+        self.assertEqual(
+            {"runs": [1, 2, 3, 4, 5], "seconds": {"tests/a.py": 30.0, "tests/b.py": 5.0}},
+            json.loads(table.read_text(encoding="utf-8")),
+        )
+        self.assertIn("as the median of 5 runs (1, 2, 3, 4, 5)", output)
+
+    def test_a_run_whose_log_names_no_leg_by_either_name_is_refused_for_that_cause(self) -> None:
+        for log in (
+            f"{LINUX}ok   90.0s tests/a.py\n{AGGREGATE}ok    1.0s tests/a.py",
+            "Shard 1/4, Python 3.11\tRun repository validation\t2026-10-10T06:17:04Z ok 1.0s tests/a.py",
+            "",
+        ):
+            with self.subTest(log=log):
+                code, _, errors, table = self.run_main(["8"], self.runs_stub({8: log}))
+                self.assertEqual((2, False), (code, table.exists()))
+                self.assertIn("run 8's log names no job as a leg", errors)
+                # The message names the shapes it looked for, and blames no missing -v.
+                self.assertIn("`Windows shard <n>/<count>, Python <version>`", errors)
+                self.assertIn("`Shard <n>/<count> on Python <version>`", errors)
+                self.assertNotIn("-v", errors)
 
     def test_a_job_renamed_or_removed_after_the_older_runs_is_not_recorded(self) -> None:
         stub = self.runs_stub(
@@ -309,10 +363,12 @@ class MainTests(unittest.TestCase):
         code, _, errors, table = self.run_main([], Stub({"gh run list": "[]"}))
         self.assertEqual((2, False), (code, table.exists()))
         self.assertIn("no successful push run of validate.yml on main", errors)
-        quiet = Stub({"gh run view 6 --json": SUCCESS, "gh run view 6 --log": f"{LEG_1}Shard 1/4: nothing printed"})
+        # Every leg ran, and none printed a job's seconds, as a run without -v does.
+        nothing = "\n".join(f"{leg}Shard {index}/4: nothing printed" for index, leg in enumerate(LEGS, 1))
+        quiet = Stub({"gh run view 6 --json": SUCCESS, "gh run view 6 --log": nothing})
         code, _, errors, table = self.run_main(["6"], quiet)
         self.assertEqual((2, False), (code, table.exists()))
-        self.assertIn("run 6 reported no passing jobs", errors)
+        self.assertIn("run 6's legs reported no passing jobs; run validation with -v", errors)
 
     def test_the_table_it_writes_is_the_one_validation_reads(self) -> None:
         table = record_job_seconds.TABLE.relative_to(record_job_seconds.REPOSITORY_ROOT)
