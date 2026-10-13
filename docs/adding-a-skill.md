@@ -78,9 +78,9 @@ Carrying the field would approve either nothing or every Python command, so a Co
 
 ### Paths to a skill's own files
 
-A skill names its own files, and a sibling skill's, through `${CLAUDE_SKILL_DIR}`, never through a rendered install path such as `{{HOME}}/.claude/skills/<name>/`:
+A skill names its own files, and a sibling skill's, through `${CLAUDE_SKILL_DIR}`, never through a rendered install path such as `{{HOME}}/.claude/skills/<name>/`. As a skill's Markdown writes it, in a Bash fence before the deployer renders `{{PYTHON}}`:
 
-```bash
+```text
 {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/tool.py" report
 {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/../code-review-core/scripts/review_pipeline.py" check --run "<run>"
 ```
