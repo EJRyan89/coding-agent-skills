@@ -16,8 +16,10 @@ runtime-canary-probe, then each SKILL given. It prints one fact per line:
   SKIPPED <runtime> "<reason>"                  the runtime is not installed where `deploy.py check` looks
   DISCOVERED <runtime> <skill> ["<path>"]       the runtime lists the canary's copy, enabled
   SHADOWED <runtime> <skill> "<path>"           it also lists another enabled copy, such as an installed adapter
+  PROJECT_COPY <runtime> <skill> "<path>"       it lists the canary home's own deployed skill as a project skill
   DISABLED <runtime> <skill> "<path>"           it lists this copy turned off in its settings
   UNDISCOVERED <runtime> <skill> ["<reason>"]   it does not list the canary's copy enabled; the canary exits 1
+  DISCOVERY_NOT_ATTEMPTED <runtime> <skill> "<reason>"  the deployer gave the skill no adapter, so none is looked for
   DISCOVERY_FAILED <runtime> "<reason>"
   SUPPLIED <runtime> "<key>=<value>"            a setting the canary passes in place of the configuration it ignores
   RUNTIME <runtime> <skill> RAN "<script>" "<cwd>" [exit=<n>] [timed-out] KEPT "<ambient>"
@@ -55,6 +57,13 @@ capabilities lie past the first script the canary asks for, and `none` is NOT_AT
 line per RUNTIME line compares the two, and the canary exits 1 when any disagrees or a skill declares nothing, so the
 matrix cannot claim more than a run shows. It also exits 1 on any UNDISCOVERED line, --discovery-only included.
 
+Discovery is held to what `deploy.py verify` holds: the adapters the canary home's manifest records. A skill deployed
+with none, as the deployer deploys a hidden dependency such as code-review-core, is DISCOVERY_NOT_ATTEMPTED, never
+UNDISCOVERED; a release covers it through the skills that declare it in skill_deps. Since each runtime runs with the
+home as its working directory, one may list the home's own .claude/skills copy of a skill as a project skill, as
+Copilot does for a skill with no adapter. That copy is PROJECT_COPY, not SHADOWED: no session started outside the
+home sees it, and it fails nothing.
+
 This is a manual check, never part of tests/run_validation.py: each run calls a model, and a model may choose
 not to run the command. See .claude/skills/runtime-canary/SKILL.md.
 """
@@ -81,7 +90,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-c
 import frontmatter
 from console import run_main
 
-from deployer import discovery, pipeline, platform_support, runtime_support
+from deployer import discovery, manifest, pipeline, platform_support, runtime_support, verify
 from deployer import source as deploy_source
 from deployer.errors import DeployError
 from deployer.paths import Paths
@@ -317,6 +326,16 @@ def dependencies(sources: list[Path]) -> dict[str, list[str]]:
 Declarations = Mapping[str, Mapping[str, runtime_support.Support] | None]
 
 
+def without_adapter(home: Path) -> dict[str, str]:
+    """Each skill deployed into the canary home with no runtime adapter, as the deployer deploys a hidden dependency,
+    with why no runtime is asked to list it. `deploy.py verify` looks for the adapters the manifest records and no
+    other, so neither does the canary."""
+    owned = manifest.load(Paths(REPOSITORY_ROOT, home).manifest_file)
+    adapters = set(verify.adapter_names(owned))
+    reason = "the deployer gave it no runtime adapter, so deploy.py verify expects no runtime to list it"
+    return {name: reason for name in sorted(set(owned.skill_owners) - adapters)}
+
+
 def declarations(sources: list[Path]) -> dict[str, dict[str, runtime_support.Support] | None]:
     """Each skill in the sources with its declared runtime support, or None when it declares none."""
     declared: dict[str, dict[str, runtime_support.Support] | None] = {}
@@ -489,10 +508,16 @@ def blocked_cause(runtime: str, codex_sandbox: str) -> str:
     )
 
 
-def discovery_lines(runtime: str, skills: list[str], found: discovery.Listing, home: Path) -> list[str]:
+def discovery_lines(
+    runtime: str, skills: list[str], found: discovery.Listing, home: Path, unadapted: Mapping[str, str] | None = None
+) -> list[str]:
     """DISCOVERED for the canary's copy listed enabled, as `deploy.py verify` requires for FOUND, SHADOWED for each
-    other enabled copy, DISABLED for each copy the runtime lists turned off, and UNDISCOVERED without the first."""
+    other enabled copy, PROJECT_COPY for the home's own deployed copy listed as a project skill, DISABLED for each copy
+    the runtime lists turned off, and UNDISCOVERED without the first, or DISCOVERY_NOT_ATTEMPTED for a skill unadapted
+    names, which the deployer gave no adapter."""
     adapters = home / ".agents" / "skills"
+    deployed = home / ".claude" / "skills"
+    unadapted = unadapted or {}
     lines = []
     for skill in skills:
         copies = found.get(skill, [])
@@ -501,9 +526,13 @@ def discovery_lines(runtime: str, skills: list[str], found: discovery.Listing, h
         for copy in copies:
             if not copy.enabled:
                 lines.append(f"DISABLED {runtime} {skill} {quote(forward(copy.directory))}")
+            elif inside(copy.directory, deployed):
+                lines.append(f"PROJECT_COPY {runtime} {skill} {quote(forward(copy.directory))}")
             elif copy.directory not in canary:
                 lines.append(f"SHADOWED {runtime} {skill} {quote(forward(copy.directory))}")
-        if not canary:
+        if skill in unadapted:
+            lines.append(f"DISCOVERY_NOT_ATTEMPTED {runtime} {skill} {quote(unadapted[skill])}")
+        elif not canary:
             lines.append(f"UNDISCOVERED {runtime} {skill}")
     return lines
 
@@ -663,6 +692,7 @@ def check_runtime(
     codex_sandbox: str = DEFAULT_CODEX_SANDBOX,
     talk: discovery.Converse | None = None,
     declared: Declarations | None = None,
+    unadapted: Mapping[str, str] | None = None,
 ) -> list[str]:
     lines = []
     # Claude Code has no listing; its run reports the skills it found.
@@ -670,7 +700,7 @@ def check_runtime(
         listing_environment = environment(base, home / STATE / "scripts" / "listing.jsonl", home)
         try:
             found = discovery.list_skills(runtime, executable, home, listing_environment, timeout, talk)
-            lines += discovery_lines(runtime, skills, found, home)
+            lines += discovery_lines(runtime, skills, found, home, unadapted)
         except discovery.ListingError as exc:
             lines.append(f"DISCOVERY_FAILED {runtime} {quote(f'cannot read its skill list: {exc}')}")
     if discovery_only:
@@ -728,6 +758,7 @@ def canary(
     ordered = [FIXTURE_SKILL, *(skill for skill in dict.fromkeys(skills) if skill != FIXTURE_SKILL)]
     closure = dependencies(sources)
     declared = declarations(sources)
+    unadapted = without_adapter(home)
     printed = []
     for runtime in runtimes:
         executable = which(runtime)
@@ -747,6 +778,7 @@ def canary(
             codex_sandbox,
             talk,
             declared,
+            unadapted,
         ):
             print(line, flush=True)
             printed.append(line)

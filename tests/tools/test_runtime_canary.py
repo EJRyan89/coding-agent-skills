@@ -32,6 +32,9 @@ from tools.runtime_canary import Completed
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 FIXTURE = "runtime-canary-probe"
+HIDDEN_REASON = "A hidden dependency no runtime starts."
+# What the canary says of a skill the deployer gave no adapter, pinned here rather than read from the tool.
+NO_ADAPTER = "the deployer gave it no runtime adapter, so deploy.py verify expects no runtime to list it"
 # What a RAN line adds for a Python script that exits 0: the recorder sees a Python script end only from 3.12.
 PYTHON_EXIT = " exit=0" if sys.version_info >= (3, 12) else ""
 # A line Codex 0.160 wrote to stderr when its execution policy refused the canary's first command.
@@ -132,9 +135,11 @@ class RuntimeCanaryTestCase(GitTestCase):
     def tearDown(self) -> None:
         self._temporary.cleanup()
 
-    def make_source(self, user_only: bool = False) -> Path:
+    def make_source(self, user_only: bool = False, hidden: bool = False) -> Path:
         """A source whose alpha runs its own scripts/tool.py, whose beta runs alpha's, declared in skill_deps, and
         whose gamma runs its own scripts/tool.sh with Bash. Each declares the runtime support its frontmatter implies.
+        With hidden, alpha also declares core, a hidden dependency that declares none for every runtime, as
+        code-review-core does, so the deployer gives it no adapter.
         """
         support = runtime_support.declaration({"user-only-start"} if user_only else set())
         source = self.root / "source"
@@ -162,6 +167,21 @@ class RuntimeCanaryTestCase(GitTestCase):
                 )
             else:
                 (source / "skills" / name / "scripts" / "tool.py").write_text("print('tool')\n", encoding="utf-8")
+        if hidden:
+            (source / "skills" / "core").mkdir()
+            (source / "skills" / "core" / "SKILL.md").write_bytes(
+                b"---\nname: core\ndescription: Internal support.\ndisable-model-invocation: true\n"
+                b"user-invocable: false\n---\n\n# Core\n"
+            )
+            none = {"level": "none", "needs": [], "reason": HIDDEN_REASON}
+            (source / "deploy-meta" / "core.json").write_text(
+                json.dumps({"selectable": False, "runtime_support": dict.fromkeys(runtime_support.RUNTIMES, none)}),
+                encoding="utf-8",
+            )
+            alpha = source / "deploy-meta" / "alpha.json"
+            alpha.write_text(
+                json.dumps({**json.loads(alpha.read_text(encoding="utf-8")), "skill_deps": ["core"]}), encoding="utf-8"
+            )
         return source
 
     def canary(
@@ -225,6 +245,17 @@ class DeploymentTests(RuntimeCanaryTestCase):
         )
         # Every root, opt-in ones too, so any shipped skill can be canaried.
         self.assertTrue((self.home / ".claude" / "skills" / "dotnet-format" / "SKILL.md").is_file())
+        # The hidden dependencies are deployed with no adapter, and they are the skills the canary asks no runtime
+        # to list; every other skill has its adapter.
+        unadapted = runtime_canary.without_adapter(self.home)
+        self.assertLessEqual({"code-review-core", "skill-core"}, set(unadapted))
+        self.assertEqual({NO_ADAPTER}, set(unadapted.values()))
+        for name in ("code-review-core", "skill-core"):
+            self.assertTrue((self.home / ".claude" / "skills" / name / "SKILL.md").is_file())
+            self.assertFalse((self.home / ".agents" / "skills" / name).exists())
+        for name in ("review-prs", "dotnet-format", FIXTURE):
+            self.assertNotIn(name, unadapted)
+            self.assertTrue((self.home / ".agents" / "skills" / name / "SKILL.md").is_file())
 
     def test_the_probe_records_where_it_ran_from_its_own_location(self) -> None:
         self.assertEqual(0, runtime_canary.deploy(self.home, runtime_canary.FIXTURE_SOURCE)[0])
@@ -1036,6 +1067,77 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
         listings = [call for call in runner.calls if call[0] == "listing"]
         self.assertEqual([[forward(self.root / "bin" / "codex"), "app-server"]], [call[1] for call in listings])
         self.assertEqual(self.home, listings[0][2])
+
+    def test_a_hidden_dependency_is_not_attempted_for_discovery_and_the_canary_exits_0(self) -> None:
+        adapters = forward(self.home / ".agents" / "skills")
+        core = forward(self.home / ".claude" / "skills" / "core")
+        source = self.make_source(hidden=True)
+        runner = FakeRuntimes()
+        # Codex lists no copy of core; Copilot lists the home's own deployed copy as a project skill, since it runs in
+        # the home, as Copilot CLI did in the v0.7.0 release canary.
+        runner.listings["codex"] = [(FIXTURE, f"{adapters}/{FIXTURE}", True)]
+        runner.listings["copilot"] = [(FIXTURE, f"{adapters}/{FIXTURE}", True), ("core", core, True)]
+        for runtime in ("codex", "copilot"):
+            runner.actions[runtime] = run_python(f"{self.skill_dir()}/scripts/canary_probe.py", "--help")
+
+        lines = self.canary(runner, ["core"], ("codex", "copilot"), sources=[runtime_canary.FIXTURE_SOURCE, source])
+
+        self.assertFalse([line for line in lines if line.startswith(("UNDISCOVERED ", "SHADOWED "))], lines)
+        self.assertEqual(
+            [
+                f'DISCOVERY_NOT_ATTEMPTED codex core "{NO_ADAPTER}"',
+                f'PROJECT_COPY copilot core "{core}"',
+                f'DISCOVERY_NOT_ATTEMPTED copilot core "{NO_ADAPTER}"',
+            ],
+            [line for line in lines if " core " in line and not line.startswith(("RUNTIME ", "MATRIX "))],
+        )
+        for runtime in ("codex", "copilot"):
+            self.assertIn(f'RUNTIME {runtime} core NOT_ATTEMPTED "{HIDDEN_REASON}"', lines)
+            self.assertIn(f"MATRIX {runtime} core AGREES none", lines)
+        # No model run is spent on core: only the fixture runs.
+        prompts = [arguments[-1] for kind, arguments, _, _ in runner.calls if kind == "run"]
+        self.assertEqual(2, len(prompts))
+        self.assertFalse([prompt for prompt in prompts if "core" in prompt.split()[0]])
+
+    def test_a_hidden_dependency_in_a_discovery_only_run_exits_0(self) -> None:
+        adapters = forward(self.home / ".agents" / "skills")
+        runner = FakeRuntimes()
+        runner.listings["codex"] = [(FIXTURE, f"{adapters}/{FIXTURE}", True)]
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = runtime_canary.canary(
+                ["core"],
+                ["codex"],
+                self.home,
+                sources=[runtime_canary.FIXTURE_SOURCE, self.make_source(hidden=True)],
+                runner=runner,
+                talk=runner.talk,
+                which=lambda name: forward(self.root / "bin" / name),
+                base_environment=dict(os.environ),
+                discovery_only=True,
+                timeout=60,
+            )
+        self.assertEqual(0, code, output.getvalue())
+        self.assertIn(f'DISCOVERY_NOT_ATTEMPTED codex core "{NO_ADAPTER}"', output.getvalue().splitlines())
+
+    def test_a_skill_with_an_adapter_the_runtime_does_not_list_is_still_undiscovered(self) -> None:
+        # A missing adapter the manifest records is a deployment problem, so a hidden dependency beside it does not
+        # excuse it, and the project copy of the home's skill does not stand in for the adapter.
+        runner = FakeRuntimes()
+        alpha = forward(self.home / ".claude" / "skills" / "alpha")
+        runner.listings["copilot"] = [("alpha", alpha, True)]
+        lines = self.canary(
+            runner,
+            ["alpha", "core"],
+            ("copilot",),
+            discovery_only=True,
+            sources=[runtime_canary.FIXTURE_SOURCE, self.make_source(hidden=True)],
+        )
+        self.assertIn(f'PROJECT_COPY copilot alpha "{alpha}"', lines)
+        self.assertIn("UNDISCOVERED copilot alpha", lines)
+        self.assertIn(f"UNDISCOVERED copilot {FIXTURE}", lines)
+        self.assertIn(f'DISCOVERY_NOT_ATTEMPTED copilot core "{NO_ADAPTER}"', lines)
+        self.assertNotIn("UNDISCOVERED copilot core", lines)
 
     def test_a_copy_the_runtime_lists_disabled_is_neither_discovered_nor_a_shadow(self) -> None:
         adapters = forward(self.home / ".agents" / "skills")
