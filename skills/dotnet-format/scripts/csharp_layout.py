@@ -41,7 +41,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from console import run_main
-from dotnet_format_targets import read_file_list, read_text, same_path, solution_projects
+from dotnet_format_targets import read_file_list
+from dotnet_solution import read_text, same_path, solution_projects
 
 LINE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+\Z")
 DIRECTIVE = re.compile(r"[ \t]*#[ \t]*([A-Za-z]+)")

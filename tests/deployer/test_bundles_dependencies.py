@@ -11,7 +11,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 import frontmatter
-from harness import DeployerTestCase, forward
+from harness import REPOSITORY_ROOT, DeployerTestCase, forward
 
 BUNDLE = {"operations": {"members": ["alpha", "beta"]}}
 
@@ -438,6 +438,27 @@ class OptInTests(DeployerTestCase):
         self.deploy_ok(stdin="all\n")
         self.assertEqual(["everyday", "fmt", "lint"], self.installed())
 
+    def test_a_skill_that_joins_a_bundle_keeps_being_deployed_and_the_bundle_completes(self) -> None:
+        # Deployed on its own, before the bundle and the skill that joins it existed.
+        self.make_source_json()
+        self.remove_skill("fmt")
+        self.deploy_ok("--all", "--include", "lint")
+        self.assertEqual(["everyday", "lint"], self.installed())
+        # The next source puts it in an opt-in bundle with a new skill; --include names the bundle now.
+        self.make_source_json(bundles={"pack": {"members": ["lint", "fmt"], "opt_in": True}})
+        self.make_skill("lint", "Lint")
+        self.make_skill("fmt", "Format")
+        self.deploy_fails(
+            "--all", "--include", "lint", pattern="--include names no bundle or skill in this source: lint"
+        )
+        menu = self.deploy("--dry-run", stdin="\n").output
+        self.assertRegex(menu, r"(?m)^  \[\*\] [0-9]+\. pack \(bundle, opt-in\)$")
+        self.deploy_ok("--all")
+        self.assertEqual(["everyday", "fmt", "lint"], self.installed())
+        entry = self.manifest()["sources"]["test/skills"]
+        self.assertEqual(["pack"], entry["requested_bundles"])
+        self.assertEqual(["everyday"], entry["requested_skills"])
+
     def test_menu_selection_installs_an_opt_in_item(self) -> None:
         self.deploy_ok(stdin=f"{self.selection_number('lint')} {self.selection_number('everyday')}\n")
         self.assertEqual(["everyday", "lint"], self.installed())
@@ -460,6 +481,31 @@ class OptInTests(DeployerTestCase):
                     f"\nERROR: {message}\nRun 'python deploy.py --help' for usage.\n\n",
                     result.output,
                 )
+
+
+class RepositoryBundleTests(DeployerTestCase):
+    def test_the_dotnet_bundle_installs_both_dotnet_skills_as_one_opt_in_root(self) -> None:
+        source_id = json.loads((REPOSITORY_ROOT / "source.json").read_text(encoding="utf-8"))["id"]
+        self.make_config(source_id)
+        repository = self.repository_source()
+        self.deploy_fails(
+            "--all", "--include", "dotnet-format", source=repository, pattern="--include names no bundle or skill"
+        )
+        menu = self.deploy("--dry-run", stdin="\n", source=repository).output
+        self.assertRegex(menu, r"(?m)^  \[ \] [0-9]+\. dotnet \(bundle, opt-in\)$")
+        self.assertNotRegex(menu, r"(?m)^  \[ \] [0-9]+\. dotnet-(format|dependencies)")
+        result = self.deploy_from(repository, "--all", "--include", "dotnet")
+        self.assertIn("  dotnet (bundle)\n    dotnet-dependencies\n    dotnet-format\n", result.output)
+        for name in ("dotnet-format", "dotnet-dependencies"):
+            self.assertTrue((self.skills_dir / name / "scripts").is_dir(), name)
+            self.assertTrue((self.agents_dir / name / "SKILL.md").is_file(), name)
+        entry = self.manifest()["sources"][source_id]
+        self.assertEqual(["code-review-operations", "dotnet"], entry["requested_bundles"])
+        self.assertIn("dotnet-dependencies", entry["skills"])
+        self.assertEqual(["skill-core"], entry["skills"]["dotnet-dependencies"]["skill_deps"])
+        # A later --all keeps the bundle without naming it again.
+        groups = self.report_groups(self.deploy_from(repository, "--all", "--dry-run").output, "DRY RUN")
+        self.assertNotIn("REMOVE", groups, groups)
 
 
 if __name__ == "__main__":

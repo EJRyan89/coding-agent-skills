@@ -10,6 +10,13 @@
                 "flag-review-finding",
                 "review-document"
             ]
+        },
+        "dotnet": {
+            "members": [
+                "dotnet-format",
+                "dotnet-dependencies"
+            ],
+            "opt_in": true
         }
     },
     "shared_assets": {

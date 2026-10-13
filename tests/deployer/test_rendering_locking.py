@@ -136,7 +136,7 @@ class RenderedExecutableTests(DeployerTestCase):
     def test_bundled_skill_directory_paths_resolve_in_the_deployed_layout(self) -> None:
         source_id = json.loads((REPOSITORY_ROOT / "source.json").read_text(encoding="utf-8"))["id"]
         self.make_config(source_id)
-        self.deploy_from(self.repository_source(), "--all", "--include", "dotnet-format")
+        self.deploy_from(self.repository_source(), "--all", "--include", "dotnet")
         referenced = 0
         for document in sorted(self.skills_dir.glob("*/**/*.md")):
             skill = document.relative_to(self.skills_dir).parts[0]
@@ -162,7 +162,7 @@ class RenderedExecutableTests(DeployerTestCase):
         source_id = json.loads((REPOSITORY_ROOT / "source.json").read_text(encoding="utf-8"))["id"]
         self.make_config(source_id)
         repository = self.repository_source()
-        self.deploy_from(repository, "--all", "--include", "dotnet-format")
+        self.deploy_from(repository, "--all", "--include", "dotnet")
         for relative in (
             "audit-ai-config/scripts/audit_ai_config.py",
             "dotnet-format/scripts/dotnet_format_targets.py",
@@ -217,7 +217,7 @@ class RenderedExecutableTests(DeployerTestCase):
             if not path.name.startswith("test_")
             and re.search(r'^if __name__ == "__main__":', path.read_text(encoding="utf-8"), re.MULTILINE)
         )
-        self.assertEqual(17, len(entry_points), entry_points)
+        self.assertEqual(18, len(entry_points), entry_points)
         for entry_point in entry_points:
             with self.subTest(entry_point=entry_point.as_posix()):
                 hook = entry_point.name == "review_guard.py"  # a hook reads its event on stdin and takes no options
@@ -244,7 +244,7 @@ class RenderedExecutableTests(DeployerTestCase):
             if "skill-core" in document.get("skill_deps", []):
                 document["skill_deps"].remove("skill-core")
                 path.write_text(json.dumps(document), encoding="utf-8")
-        self.deploy_from(repository, "--all", "--include", "dotnet-format")
+        self.deploy_from(repository, "--all", "--include", "dotnet")
         self.assertFalse((self.skills_dir / "skill-core").exists())
         shutil.move(core, repository / "skills" / "skill-core")
         for path, text in metadata.items():
@@ -950,7 +950,7 @@ class DryRunTests(DeployerTestCase):
         source_id = json.loads((REPOSITORY_ROOT / "source.json").read_text(encoding="utf-8"))["id"]
         self.make_config(source_id)
         repository = self.repository_source()
-        self.deploy_from(repository, "--all", "--include", "dotnet-format")
+        self.deploy_from(repository, "--all", "--include", "dotnet")
         for directory in (*self.skills_dir.iterdir(), *self.agents_dir.iterdir()):
             if directory.is_dir():
                 self.append(directory / "SKILL.md", "local edit\n")
