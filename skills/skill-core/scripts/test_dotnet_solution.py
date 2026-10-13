@@ -13,7 +13,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dotnet_solution
 from dotnet_solution import (
     is_solution,
-    listed_projects,
     read_listed_projects,
     read_text,
     same_path,
@@ -59,7 +58,7 @@ class SolutionReaderTests(unittest.TestCase):
         solution.write_bytes(SLN.encode("utf-8-sig"))
         self.assertEqual(
             ["src\\Harbor.Web\\Harbor.Web.csproj", "Solution Items", "src\\Harbor.Core\\Harbor.Core.csproj"],
-            listed_projects(solution),
+            read_listed_projects(solution),
         )
         # A caller that wants project files alone filters them: a solution folder has no path that exists.
         self.assertEqual(
@@ -74,25 +73,19 @@ class SolutionReaderTests(unittest.TestCase):
     def test_utf16_sln_is_read(self) -> None:
         solution = self.root / "Harbor.sln"
         solution.write_bytes(b"\xff\xfe" + SLN.encode("utf-16-le"))
-        self.assertEqual(3, len(listed_projects(solution)))
+        self.assertEqual(3, len(read_listed_projects(solution)))
         self.assertTrue(read_text(solution).startswith("Microsoft Visual Studio"))
 
     def test_slnx_lists_each_project_element_path_in_any_folder(self) -> None:
         solution = self.root / "Harbor.slnx"
         solution.write_text(SLNX, encoding="utf-8")
         self.assertEqual(
-            ["src\\Harbor.Web\\Harbor.Web.csproj", "src/Harbor.Core/Harbor.Core.csproj"], listed_projects(solution)
+            ["src\\Harbor.Web\\Harbor.Web.csproj", "src/Harbor.Core/Harbor.Core.csproj"],
+            read_listed_projects(solution),
         )
         self.assertEqual(2, len(solution_projects(solution)))
 
-    def test_slnx_with_a_doctype_or_malformed_xml_lists_nothing(self) -> None:
-        solution = self.root / "Harbor.slnx"
-        solution.write_text("<!DOCTYPE x>" + SLNX, encoding="utf-8")
-        self.assertEqual([], listed_projects(solution))
-        solution.write_text("<Solution><Project Path='a.csproj'>", encoding="utf-8")
-        self.assertEqual([], listed_projects(solution))
-
-    def test_the_strict_reader_refuses_a_slnx_it_cannot_read_and_lists_an_empty_one_as_empty(self) -> None:
+    def test_a_slnx_it_cannot_read_is_refused_and_an_empty_one_lists_nothing(self) -> None:
         solution = self.root / "Harbor.slnx"
         for text, reason in (
             ("<!DOCTYPE x>" + SLNX, "DOCTYPE"),
@@ -100,14 +93,12 @@ class SolutionReaderTests(unittest.TestCase):
         ):
             with self.subTest(reason=reason or "malformed"):
                 solution.write_text(text, encoding="utf-8")
-                with self.assertRaises(XmlRefused) as refused:
-                    read_listed_projects(solution)
-                self.assertIn(reason, str(refused.exception))
+                for reader in (read_listed_projects, solution_projects):
+                    with self.assertRaises(XmlRefused) as refused:
+                        reader(solution)
+                    self.assertIn(reason, str(refused.exception))
         solution.write_text("<Solution />", encoding="utf-8")
-        self.assertEqual([], read_listed_projects(solution))
-        sln = self.root / "Harbor.sln"
-        sln.write_bytes(SLN.encode("utf-8-sig"))
-        self.assertEqual(listed_projects(sln), read_listed_projects(sln))
+        self.assertEqual(([], set()), (read_listed_projects(solution), solution_projects(solution)))
 
     def test_is_solution_matches_either_suffix_in_any_case(self) -> None:
         self.assertTrue(is_solution(Path("Harbor.SLN")))

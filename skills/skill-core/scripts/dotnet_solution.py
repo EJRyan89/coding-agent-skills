@@ -13,7 +13,7 @@ import os
 import re
 from pathlib import Path
 
-from xml_reader import XmlRefused, read_xml
+from xml_reader import read_xml
 
 SOLUTION_PROJECT = re.compile(r'^\s*Project\("[^"]*"\)\s*=\s*"[^"]*"\s*,\s*"([^"]+)"')
 SOLUTION_SUFFIXES = (".sln", ".slnx")
@@ -47,15 +47,7 @@ def read_listed_projects(solution: Path) -> list[str]:
     return [match.group(1) for line in text.splitlines() if (match := SOLUTION_PROJECT.match(line))]
 
 
-def listed_projects(solution: Path) -> list[str]:
-    """The project paths a solution lists, as `read_listed_projects` reads them, except that a refused .slnx lists
-    none, as a .sln line that does not match lists nothing."""
-    try:
-        return read_listed_projects(solution)
-    except XmlRefused:
-        return []
-
-
 def solution_projects(solution: Path) -> set[str]:
-    """Normalized absolute paths of the projects a solution lists."""
-    return {same_path(solution.parent / path.replace("\\", "/")) for path in listed_projects(solution)}
+    """Normalized absolute paths of the projects a solution lists; a .slnx that cannot be read raises `XmlRefused`,
+    as `read_listed_projects` does, so it is never taken for a solution that lists no project."""
+    return {same_path(solution.parent / path.replace("\\", "/")) for path in read_listed_projects(solution)}

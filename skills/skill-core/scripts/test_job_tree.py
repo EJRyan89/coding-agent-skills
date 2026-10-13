@@ -32,6 +32,8 @@ RELEASE_SECONDS = 10.0
 SHORT_LIMIT_SECONDS = 1
 REFUSAL_MARGIN_SECONDS = 30
 ACCESS_DENIED = 5
+# What a kernel call that does not report failure by returning no result returns when it fails: (DWORD)-1.
+FAILED_RESULTS = {"ResumeThread": 0xFFFFFFFF}
 # Starts a program that holds the file named by its first argument open and then creates "<file>.ready", and waits
 # for it to be ready; with a second argument, it then runs on, as a command that hangs does, and otherwise it exits.
 LAUNCHER_PROGRAM = (
@@ -61,6 +63,16 @@ GROUP_LAUNCHER = (
     "if len(sys.argv) > 2: time.sleep(120)\n"
 )
 SLEEPER = [sys.executable, "-c", "import time; time.sleep(120)"]
+# Starts a program that runs on, writes its PID to the file named by its first argument, and exits at once, leaving
+# that program running.
+QUICK_LAUNCHER = (
+    "import subprocess, sys\n"
+    "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+    "open(sys.argv[1], 'w').write(str(child.pid))\n"
+)
+# The longest PausedTree waits before it holds the command: long enough for a command that runs meanwhile to start its
+# program and exit.
+PAUSE_SECONDS = 2.0
 
 
 def group_stat(pid: int, command: str, state: str, group: int) -> bytes:
@@ -135,9 +147,31 @@ class SignalledTree(NativeTree):
         test.assertLess(refused - self.released, SHORT_LIMIT_SECONDS + REFUSAL_MARGIN_SECONDS, "refused at its limit")
 
 
+class PausedTree(NativeTree):
+    """Holds the command as this platform's tree does, but only once the command has created `started`, or
+    PAUSE_SECONDS on, whichever is sooner: a pause between its start and its joining the tree, in which a command
+    already running outside the tree would start a program the tree never holds. `ran_before_held` says whether the
+    command created `started` during the pause."""
+
+    def __init__(self, started: Path) -> None:
+        super().__init__()
+        self.started = started
+        self.ran_before_held: bool | None = None
+
+    @contextmanager
+    def hold(self, process: subprocess.Popen[Any]) -> Iterator[None]:
+        deadline = time.monotonic() + PAUSE_SECONDS
+        while not self.started.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.ran_before_held = self.started.exists()
+        with super().hold(process):
+            yield
+
+
 class FailingKernel:
     """kernel32 as job_tree calls it, with each call named in `failing` failing as a kernel call does: it returns no
-    result and leaves ACCESS_DENIED as the thread's last error. The arguments of each failed call are kept in order."""
+    result, or the value FAILED_RESULTS gives for a call that reports failure otherwise, and leaves ACCESS_DENIED as the
+    thread's last error. The arguments of each failed call are kept in order."""
 
     def __init__(self, *failing: str) -> None:
         self.real = job_tree._kernel32()
@@ -152,7 +186,7 @@ class FailingKernel:
         def fail(*arguments: Any) -> int:
             self.failed.setdefault(name, []).append(arguments)
             job_tree.ctypes.set_last_error(ACCESS_DENIED)  # type: ignore[attr-defined]  # Windows only
-            return 0
+            return FAILED_RESULTS.get(name, 0)
 
         return fail
 
@@ -212,7 +246,19 @@ if sys.platform == "win32":
 
         def test_a_command_no_job_can_hold_is_killed_before_it_starts_a_program(self) -> None:
             command = [sys.executable, "-c", LAUNCHER_PROGRAM, str(self.held), "hang"]
-            for call in ("CreateJobObjectW", "SetInformationJobObject", "OpenProcess", "AssignProcessToJobObject"):
+            joining = "it could not join a Windows job object"
+            resuming = "it could not be resumed in its Windows job object"
+            for call, refusal in (
+                ("CreateJobObjectW", joining),
+                ("SetInformationJobObject", joining),
+                ("OpenProcess", joining),
+                ("AssignProcessToJobObject", joining),
+                ("CreateToolhelp32Snapshot", resuming),
+                ("Thread32First", resuming),
+                ("Thread32Next", resuming),
+                ("OpenThread", resuming),
+                ("ResumeThread", resuming),
+            ):
                 with (
                     self.subTest(failing=call),
                     mock.patch.object(job_tree, "_kernel32", return_value=FailingKernel(call)),
@@ -220,11 +266,53 @@ if sys.platform == "win32":
                 ):
                     run_bounded(command, STARTUP_SECONDS, tree=JobTree())
                 self.assertRegex(
-                    str(raised.exception),
-                    rf"^it could not join a Windows job object: {call} failed: .+ \(Windows error {ACCESS_DENIED}\)$",
+                    str(raised.exception), rf"^{refusal}: {call} failed: .+ \(Windows error {ACCESS_DENIED}\)$"
                 )
                 time.sleep(1)
                 self.assertFalse(self.ready.exists(), "the command was killed before it started its program")
+
+        def test_a_command_that_cannot_be_resumed_once_it_joined_is_killed_with_its_job(self) -> None:
+            process = subprocess.Popen(SLEEPER, **JobTree().start_options())
+            self.addCleanup(process.wait)
+            self.addCleanup(process.kill)
+            with (
+                mock.patch.object(job_tree, "resume", side_effect=OSError("no thread of process 1 was listed")),
+                mock.patch.object(job_tree, "_end_job", wraps=job_tree._end_job) as end_job,
+                self.assertRaisesRegex(
+                    JobRefused, "^it could not be resumed in its Windows job object: no thread of process 1 was listed$"
+                ),
+                JobTree().hold(process),
+            ):
+                self.fail("a command that cannot be resumed is never held")
+            self.assertIsNotNone(process.poll(), "the refused command was killed")
+            end_job.assert_called_once()
+
+        def test_a_command_already_gone_when_it_would_be_resumed_is_held_in_its_job(self) -> None:
+            process = subprocess.Popen([sys.executable, "-c", "pass"])
+            process.wait(timeout=STARTUP_SECONDS)
+            with (
+                mock.patch.object(job_tree, "job_holding", return_value=7),
+                mock.patch.object(job_tree, "resume", side_effect=OSError("no thread of process 1 was listed")),
+                mock.patch.object(job_tree, "_end_job") as end_job,
+                JobTree().hold(process),
+            ):
+                end_job.assert_not_called()
+            end_job.assert_called_once_with(7)
+
+        def test_a_command_started_by_its_tree_runs_only_once_it_has_joined(self) -> None:
+            started = Path(f"{self.held}.started")
+            process = subprocess.Popen(
+                [sys.executable, "-c", "import sys; open(sys.argv[1], 'w').close()", str(started)],
+                **JobTree().start_options(),
+            )
+            self.addCleanup(process.wait)
+            self.addCleanup(process.kill)
+            time.sleep(PAUSE_SECONDS)
+            self.assertIsNone(process.poll(), "the command waits, suspended, to join its job")
+            self.assertFalse(started.exists(), "the command has not run before it joined")
+            with JobTree().hold(process):
+                self.assertEqual(0, process.wait(timeout=STARTUP_SECONDS))
+            self.assertTrue(started.exists(), "the command ran once it joined")
 
         def test_a_job_that_cannot_end_its_processes_ends_them_as_it_closes(self) -> None:
             command = [sys.executable, "-c", LAUNCHER_PROGRAM, str(self.held)]
@@ -342,9 +430,9 @@ if sys.platform == "win32":
 class ProcessTreeTests(unittest.TestCase):
     """What each tree asks of the command's start, and which one this platform uses, on every platform."""
 
-    def test_the_hidden_window_is_a_start_option(self) -> None:
-        self.assertEqual({}, JobTree().start_options())
-        self.assertEqual({"creationflags": 0x08000000}, JobTree(hidden_window=True).start_options())
+    def test_a_job_tree_starts_the_command_suspended_and_hides_its_window_when_asked(self) -> None:
+        self.assertEqual({"creationflags": 0x00000004}, JobTree().start_options())
+        self.assertEqual({"creationflags": 0x08000004}, JobTree(hidden_window=True).start_options())
 
     def test_a_group_tree_starts_the_command_as_the_leader_of_a_session_and_hides_nothing(self) -> None:
         for hidden in (False, True):
@@ -379,15 +467,42 @@ class ProcessTreeTests(unittest.TestCase):
     def test_the_windows_job_values(self) -> None:
         # Pinned against the values winnt.h and the job object documentation give, not the module's own names.
         self.assertEqual(
-            (0x0001, 0x0100, 9, 0x00002000, 0x08000000),
+            (0x0001, 0x0100, 9, 0x00002000, 0x08000000, 0x00000004, 0x0002, 0x00000004, 18, 0xFFFFFFFF),
             (
                 job_tree.PROCESS_TERMINATE,
                 job_tree.PROCESS_SET_QUOTA,
                 job_tree.JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
                 job_tree.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
                 job_tree.CREATE_NO_WINDOW,
+                job_tree.CREATE_SUSPENDED,
+                job_tree.THREAD_SUSPEND_RESUME,
+                job_tree.TH32CS_SNAPTHREAD,
+                job_tree.ERROR_NO_MORE_FILES,
+                job_tree.RESUME_FAILED,
             ),
         )
+
+    def test_a_thread_entry_is_laid_out_as_tlhelp32_declares_it(self) -> None:
+        self.assertEqual(28, ctypes.sizeof(job_tree._ThreadEntry))
+
+
+class HeldFromTheStartTests(unittest.TestCase):
+    """A command is in its tree before it runs, on every platform, so a program it starts and leaves at once is ended
+    with the tree however long the command takes to join it."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="held-from-the-start-test.")
+        self.addCleanup(temporary.cleanup)
+        self.started = Path(temporary.name) / "child.pid"
+
+    def test_a_program_started_by_a_command_that_exits_before_it_joins_is_ended_with_the_tree(self) -> None:
+        tree = PausedTree(self.started)
+        finished = run_bounded([sys.executable, "-c", QUICK_LAUNCHER, str(self.started)], STARTUP_SECONDS, tree=tree)
+        self.assertEqual(0, finished.returncode)
+        if sys.platform == "win32":
+            self.assertFalse(tree.ran_before_held, "the command waited, suspended, to join its job")
+        child = int(self.started.read_text(encoding="utf-8"))
+        self.assertTrue(ended(child, 0), "the program the command started has ended with the tree")
 
 
 if sys.platform != "win32":
