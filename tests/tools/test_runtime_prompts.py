@@ -51,9 +51,7 @@ class RuntimePromptsTestCase(GitTestCase):
         runtime_prompts.write(self.root, renderers)
         self.assertEqual([], runtime_prompts.problems(self.root, renderers))
         sample = self.root / "docs" / "runtime-prompts" / "alpha" / "reviewer.txt"
-        self.assertEqual(
-            "Review it.\nRead <temp>/run and <source>/skills/x.md.\n", sample.read_text(encoding="utf-8")
-        )
+        self.assertEqual("Review it.\nRead <temp>/run and <source>/skills/x.md.\n", sample.read_text(encoding="utf-8"))
 
         sample.write_text("Review it, by hand.\n", encoding="utf-8")
         extra = self.root / "docs" / "runtime-prompts" / "gamma" / "old.txt"
