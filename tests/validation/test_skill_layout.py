@@ -52,8 +52,8 @@ class SkillTreeFixtures(GitTestCase):
                     "skills/alpha/scripts/nested/run.sh": "",
                     "skills/alpha/tool.py": "",
                     "skills/alpha/references/notes.md": "",
-                    "skills/group/inner/SKILL.md": "",
-                    "skills/group/inner/helper.ps1": "",
+                    "skills/beta/SKILL.md": "",
+                    "skills/beta/helper.ps1": "",
                     ".claude/skills/local/SKILL.md": "",
                     ".claude/skills/local/run.sh": "",
                     ".claude/skills/local/scripts/run.sh": "",
@@ -63,43 +63,50 @@ class SkillTreeFixtures(GitTestCase):
                 [
                     "skills/alpha/tool.py is an executable file outside its skill's scripts/; move it to "
                     "skills/alpha/scripts/",
-                    "skills/group/inner/helper.ps1 is an executable file outside its skill's scripts/; move it to "
-                    "skills/group/inner/scripts/",
+                    "skills/beta/helper.ps1 is an executable file outside its skill's scripts/; move it to "
+                    "skills/beta/scripts/",
                     ".claude/skills/local/run.sh is an executable file outside its skill's scripts/; move it to "
                     ".claude/skills/local/scripts/",
                 ],
                 script_layout_problems(root),
             )
 
-    def test_every_directory_under_skills_is_a_skill_or_a_category_of_skills(self) -> None:
+    def test_every_directory_under_skills_is_a_skill_or_a_shared_asset(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             write_fixture_tree(
                 root,
                 {
+                    "source.json": json.dumps({"shared_assets": {"shared.md": "owner", "templates": "owner"}}),
                     "skills/alpha/SKILL.md": "",
                     "skills/alpha/scripts/run.py": "",
                     "skills/shared.md": "",
+                    # A shared asset source.json declares may be a directory.
+                    "skills/templates/one/page.md": "",
+                    # A category of skills is no longer a layout the deployer reads.
                     "skills/group/inner/SKILL.md": "",
-                    "skills/group/other/SKILL.md": "",
-                    "skills/mixed/inner/SKILL.md": "",
-                    "skills/mixed/stray/notes.md": "",
                     "skills/nested/SKILL.md": "",
                     "skills/nested/child/SKILL.md": "",
-                    "skills/deep/a/b/SKILL.md": "",
                     "skills/empty/notes.md": "",
                 },
             )
             self.assertEqual(
                 [
-                    "skills/deep/a holds no SKILL.md, but skills/deep is a category, so it must be a skill",
-                    "skills/empty holds no SKILL.md, so it is neither a skill nor a category of skills",
-                    "skills/mixed/stray holds no SKILL.md, but skills/mixed is a category, so it must be a skill",
-                    "skills/nested/child/SKILL.md is a skill inside the skill skills/nested",
-                    "skills/deep/a/b/SKILL.md is deeper than skills/<category>/<name>",
+                    "skills/empty holds no SKILL.md and source.json declares no such shared asset",
+                    "skills/group holds no SKILL.md and source.json declares no such shared asset",
+                    "skills/group/inner/SKILL.md is deeper than skills/<name>",
+                    "skills/nested/child/SKILL.md is deeper than skills/<name>",
                 ],
                 skill_tree_problems(root),
             )
+
+    def test_a_flat_skills_directory_has_no_tree_problems(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root, {"skills/alpha/SKILL.md": "", "skills/beta/scripts/run.py": "", "skills/beta/SKILL.md": ""}
+            )
+            self.assertEqual([], skill_tree_problems(root))
 
 
 class SkillLayoutFixtures(GitTestCase):
@@ -110,8 +117,7 @@ class SkillLayoutFixtures(GitTestCase):
             files = {
                 "source.json": json.dumps(source),
                 "skills/alpha/SKILL.md": "Read runtime-compatibility.md before you start.\n",
-                # A skill in a category is held as well.
-                "skills/tools/beta/SKILL.md": "First read ../runtime-compatibility.md.\n",
+                "skills/beta/SKILL.md": "First read ../runtime-compatibility.md.\n",
                 # Only Markdown guidance is the adapter's to point to.
                 "skills/gamma/SKILL.md": "Load helper.json for the table.\n",
                 "skills/delta/SKILL.md": "Nothing shared here.\n",
@@ -120,7 +126,7 @@ class SkillLayoutFixtures(GitTestCase):
             self.assertEqual(
                 [
                     "skills/alpha/SKILL.md points to runtime-compatibility.md; the runtime adapter does that",
-                    "skills/tools/beta/SKILL.md points to runtime-compatibility.md; the runtime adapter does that",
+                    "skills/beta/SKILL.md points to runtime-compatibility.md; the runtime adapter does that",
                 ],
                 shared_guidance_problems(root),
             )
@@ -373,7 +379,7 @@ class SkillLayoutFixtures(GitTestCase):
             write("skills/analyze-skill-cost/SKILL.md", "Recommend `scripts/`.\n")
             write("skills/core/SKILL.md", "# core\n")
             write("skills/hollow/notes.md", "Read {{HOME}}/.claude/skills/core/x.\n")
-            write("skills/group/inner/SKILL.md", "Read `scripts/run.py`.\n")
+            write("skills/inner/SKILL.md", "Read `scripts/run.py`.\n")
             write("agents/a.md", "Run ${CLAUDE_SKILL_DIR}/../core/x and ${CLAUDE_SKILL_DIR}/gone.md.\n")
             write("agents/b.md", 'command: "$HOME/x"\n')
             doc = '"Paths to a skill\'s own files" in docs/adding-a-skill.md'
@@ -388,7 +394,7 @@ class SkillLayoutFixtures(GitTestCase):
                     f"skills/alpha/SKILL.md:3 names skill inner by its install path; see {doc}",
                     f"skills/alpha/SKILL.md:7 runs a script by a bare relative path; see {doc}",
                     f"skills/alpha/SKILL.md:13 runs a script by a bare relative path; see {doc}",
-                    f"skills/group/inner/SKILL.md:1 names `scripts/run.py` by a bare relative path; see {doc}",
+                    f"skills/inner/SKILL.md:1 names `scripts/run.py` by a bare relative path; see {doc}",
                 ],
                 skill_path_problems(root),
             )

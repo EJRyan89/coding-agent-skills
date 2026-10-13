@@ -80,7 +80,7 @@ def allowed_tools(text: str) -> list[str]:
 
 def pinned_models(root: Path) -> dict[str, str]:
     """Each shipped and repository skill under root that pins a model, by its SKILL.md path, with the model."""
-    paths = [*(root / "skills").glob("**/SKILL.md"), *(root / ".claude/skills").glob("*/SKILL.md")]
+    paths = [*(root / "skills").glob("*/SKILL.md"), *(root / ".claude/skills").glob("*/SKILL.md")]
     models = {path.relative_to(root).as_posix(): skill_frontmatter.read(path).string("model") for path in sorted(paths)}
     return {name: model for name, model in models.items() if model is not None}
 
@@ -302,7 +302,7 @@ class CrossSkillContractTests(GitTestCase):
             root = Path(directory)
             for path, model in (
                 ("skills/shipped", "haiku"),
-                ("skills/category/nested", "sonnet"),
+                ("skills/other", "sonnet"),
                 (".claude/skills/repository", "opus"),
             ):
                 (root / path).mkdir(parents=True)
@@ -312,7 +312,7 @@ class CrossSkillContractTests(GitTestCase):
             self.assertEqual(
                 {
                     ".claude/skills/repository/SKILL.md": "opus",
-                    "skills/category/nested/SKILL.md": "sonnet",
+                    "skills/other/SKILL.md": "sonnet",
                     "skills/shipped/SKILL.md": "haiku",
                 },
                 pinned_models(root),
