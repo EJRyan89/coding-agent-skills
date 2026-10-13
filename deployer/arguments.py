@@ -8,8 +8,11 @@ import sys
 from typing import Any, NoReturn
 
 from .errors import DEBUG_VARIABLE, DeployError, print_error
+from .platform_support import PYTHON
 
-PROG = "python deploy.py"
+# deploy.py run by the command that runs Python here, so every command line the deployer prints is one the platform
+# runs: python on Windows, and python3 on Linux, where a distribution may install no python command.
+PROG = f"{PYTHON} deploy.py"
 CONFIGURE_COMMAND = "configure"
 CONFIGURE_COMMAND_LINE = f"{PROG} {CONFIGURE_COMMAND}"
 CHECK_COMMAND = "check"

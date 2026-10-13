@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 
-from harness import DeployerTestCase, tree_state
+from harness import DEPLOY_COMMAND, DeployerTestCase, tree_state
 
 # Every option and command the hand-written usage named before the subparsers replaced it, per help page.
 OLD_USAGE_NAMES = {
@@ -41,7 +41,7 @@ class RoutingTests(DeployerTestCase):
             with self.subTest(command=command):
                 result = self.run_cli(*command, "--help")
                 self.assertEqual(0, result.code, result.output)
-                prog = " ".join(("python deploy.py", *command))
+                prog = " ".join((DEPLOY_COMMAND, *command))
                 self.assertIn(f"usage: {prog} ", result.output)
                 for name in names:
                     self.assertIn(name, result.output)
@@ -50,7 +50,7 @@ class RoutingTests(DeployerTestCase):
         result = self.run_cli("deploy")
         self.assertEqual(2, result.code, result.output)
         self.assertIn("ERROR: argument COMMAND: invalid choice: 'deploy'", result.output)
-        self.assertIn("Run 'python deploy.py --help' for usage.", result.output)
+        self.assertIn(f"Run '{DEPLOY_COMMAND} --help' for usage.", result.output)
         self.assertNotIn("Traceback", result.output)
 
     def test_deploy_options_cannot_go_with_a_command(self) -> None:
@@ -60,7 +60,7 @@ class RoutingTests(DeployerTestCase):
                 self.assertEqual(2, result.code, result.output)
                 self.assertIn(
                     f"ERROR: {arguments[0]} cannot be combined with the {arguments[1]} command\n"
-                    "Run 'python deploy.py --help' for usage.",
+                    f"Run '{DEPLOY_COMMAND} --help' for usage.",
                     result.output,
                 )
 
@@ -78,7 +78,7 @@ class RoutingTests(DeployerTestCase):
 class DeployUsageErrorTests(DeployerTestCase):
     """A deploy command line that cannot run is refused before anything changes, as every usage error is: exit 2."""
 
-    HELP = "Run 'python deploy.py --help' for usage."
+    HELP = f"Run '{DEPLOY_COMMAND} --help' for usage."
 
     def setUp(self) -> None:
         super().setUp()
