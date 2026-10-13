@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import sys
@@ -27,35 +26,25 @@ REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 RUN_FAILURES = frozenset({"prerequisite", "execution", "timeout"})
 # A branch name git accepts in a reference, apart from the sequences `..` and `@{`, which _usable_base_name refuses.
 BASE_NAME_PATTERN = re.compile(r"[^\s\x00-\x1f\x7f~^:?*\[\\]+")
-# The patch the content proof compares, from git's plumbing, which no diff setting colors, hands to an external
-# program, or converts: every byte of each changed line, binary content included, and each file named as itself.
-PATCH_ARGUMENTS = (
-    "diff-tree",
-    "-r",
-    "-p",
-    "--binary",
-    "--no-color",
-    "--no-ext-diff",
-    "--no-textconv",
-    "--no-renames",
-    "--unified=3",
-)
-# The patch lines that say where a change sits rather than what it is: a file's object names and a hunk's line numbers.
-INDEX_LINE = re.compile(rb"index [0-9a-f]+\.\.[0-9a-f]+( [0-7]+)?")
-HUNK_LINE = re.compile(rb"@@ -[0-9]+(,[0-9]+)? \+[0-9]+(,[0-9]+)? @@.*")
+# The change the content proof compares: git's plumbing lists each changed file with its mode and object name before
+# and after, which name the file's whole content, and writes no patch, so no context, diff setting, external program,
+# or environment variable such as GIT_DIFF_OPTS shapes it; -z names each file as itself, unquoted.
+CHANGE_ARGUMENTS = ("diff-tree", "-r", "-z", "--raw", "--no-abbrev", "--no-renames", "--ignore-submodules=none")
+# One file's entry in that listing, before its name: both modes, both object names, and the kind of change.
+CHANGE_ENTRY = re.compile(rb":[0-7]{6} [0-7]{6} [0-9a-f]{40,64} [0-9a-f]{40,64} [A-Z]")
 
 InBase = Callable[[str], bool]
-# Whether a branch tip's whole change since it left the base is the patch a merge commit made.
-SamePatch = Callable[[str, str], bool]
+# Whether a branch tip's whole change since it left the base is the change a merge commit made.
+SameChange = Callable[[str, str], bool]
 
 
 @dataclass(frozen=True)
 class BaseTests:
     """The proofs one fetched base branch gives: whether it contains a commit, and whether a tip's whole change
-    since it left the base is the patch a merge commit made."""
+    since it left the base is the change a merge commit made."""
 
     contains: InBase
-    same_patch: SamePatch
+    same_change: SameChange
 
 
 # The tests of a base branch by its name, or None for a base not fetched locally, which proves nothing.
@@ -124,60 +113,68 @@ def base_contains(repository_root: str, base_ref: str, git: GitClient | None = N
     return contains
 
 
-def change_identity(patch: bytes) -> str | None:
-    """A digest of what a patch changes, or None for an empty patch.
+Change = frozenset[tuple[bytes, bytes]]
 
-    Leaves out each `index` line, whose object names follow the files' whole content, and each hunk's line numbers
-    and function context, which follow where the change sits; every other byte, whitespace included, counts.
+
+def change_identity(listing: bytes) -> Change | None:
+    """Each file a `CHANGE_ARGUMENTS` listing names, with its modes and object names before and after, or None for an
+    empty listing; a listing in any other shape is a QueryError.
+
+    The object names stand for each file's whole content, so two changes are the same only when every file they touch
+    held the same bytes before and holds the same bytes after, whitespace included; the order of the files is left
+    out.
     """
-    if not patch:
+    if not listing:
         return None
-    kept = []
-    for line in patch.split(b"\n"):
-        if INDEX_LINE.fullmatch(line):
-            continue
-        kept.append(b"@@" if HUNK_LINE.fullmatch(line) else line)
-    return hashlib.sha256(b"\n".join(kept)).hexdigest()
+    fields = listing.split(b"\0")
+    if fields[-1] or len(fields) % 2 == 0:
+        raise QueryError(f"git diff-tree listed a change in an unexpected shape: {listing[:200]!r}")
+    entries = list(zip(fields[:-1:2], fields[1:-1:2], strict=True))
+    if not all(CHANGE_ENTRY.fullmatch(entry) and path for entry, path in entries):
+        raise QueryError(f"git diff-tree listed a change in an unexpected shape: {listing[:200]!r}")
+    return frozenset(entries)
 
 
-def patch_match(repository_root: str, base_ref: str, git: GitClient | None = None) -> SamePatch:
-    """A test of whether a branch tip's whole change since it left base_ref is the patch a merge commit made.
+def change_match(repository_root: str, base_ref: str, git: GitClient | None = None) -> SameChange:
+    """A test of whether a branch tip's whole change since it left base_ref is the change a merge commit made.
 
     Compares the change from the merge base of base_ref and the tip to the tip with the change from the merge
     commit's first parent to the merge commit, so a tip amended or rebased after its pull request merged still
-    matches the squash commit. Each change is its patch with only the object names and hunk line numbers left out,
-    so a base that moved elsewhere before the merge still matches, while every other byte counts: unlike git
-    patch-id, which ignores whitespace, a later change of indentation, of a space inside a string, or of a line
-    ending is a change. A tip sharing no history with base_ref, a merge commit missing locally, or an empty change on
-    either side is no match; a merge base or diff that fails for any other reason, such as a base_ref that does not
-    resolve, is a QueryError. The tip's change is read once, however many merge commits it is compared with.
+    matches the squash commit. Each change is every file it touches with that file's whole content before and after,
+    so a base that moved in other files before the merge still matches, while every byte of a touched file counts:
+    whitespace, line endings, and where in the file a change sits. The same edit made at another place, however
+    alike the lines around it, is another change, and so is a touched file the base changed elsewhere before the
+    merge, which keeps the branch rather than guess. A tip sharing no history with base_ref, a merge commit missing
+    locally, or an empty change on either side is no match; a merge base or diff that fails for any other reason,
+    such as a base_ref that does not resolve, is a QueryError. The tip's change is read once, however many merge
+    commits it is compared with.
     """
     client = git or GitClient()
-    tips: dict[str, str | None] = {}
+    tips: dict[str, Change | None] = {}
 
-    def patch_id(start: str, end: str) -> str | None:
-        diff = _git_output(client, repository_root, [*PATCH_ARGUMENTS, start, end])
+    def change(start: str, end: str) -> Change | None:
+        diff = _git_output(client, repository_root, [*CHANGE_ARGUMENTS, start, end])
         if diff.returncode != 0:
             raise QueryError(f"cannot diff {start} {end}: {(diff.stderr or '').strip()}")
         return change_identity(diff.output_bytes())
 
-    def tip_patch_id(tip: str) -> str | None:
+    def tip_change(tip: str) -> Change | None:
         found = _git_output(client, repository_root, ["merge-base", base_ref, tip])
         if found.returncode == 1:
             return None  # no merge base: the tip never left base_ref, so no change of it is a change since then
         fork_point = found.stdout.strip()
         if found.returncode != 0 or not SHA_PATTERN.fullmatch(fork_point):
             raise QueryError(f"cannot find the merge base of {base_ref} and {tip}: {(found.stderr or '').strip()}")
-        return patch_id(fork_point, tip)
+        return change(fork_point, tip)
 
-    def same_patch(tip: str, merge_commit: str) -> bool:
+    def same_change(tip: str, merge_commit: str) -> bool:
         if tip not in tips:
-            tips[tip] = tip_patch_id(tip)
+            tips[tip] = tip_change(tip)
         if tips[tip] is None or not _commit_present(client, repository_root, merge_commit):
             return False
-        return tips[tip] == patch_id(f"{merge_commit}^", merge_commit)
+        return tips[tip] == change(f"{merge_commit}^", merge_commit)
 
-    return same_patch
+    return same_change
 
 
 def fetched_bases(repository_root: str, git: GitClient | None = None) -> Bases:
@@ -194,7 +191,7 @@ def fetched_bases(repository_root: str, git: GitClient | None = None) -> Bases:
             resolved = _git_output(client, repository_root, ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"])
             fetched = resolved.returncode == 0 and SHA_PATTERN.fullmatch(resolved.stdout.strip()) is not None
             known[base] = (
-                BaseTests(base_contains(repository_root, ref, client), patch_match(repository_root, ref, client))
+                BaseTests(base_contains(repository_root, ref, client), change_match(repository_root, ref, client))
                 if fetched
                 else None
             )
@@ -380,11 +377,11 @@ def _proven_merged(
     default_base: str | None,
 ) -> bool:
     """Whether one of the merged same-repository pull requests proves the branch merged without ending at its tip,
-    each judged against its own base: by its commits, and then by its merge commit's patch."""
+    each judged against its own base: by its commits, and then by its merge commit's change."""
     judged = [(pull, tests) for pull in merged if (tests := _base_tests(pull, bases, default_base)) is not None]
     if _merged_after_update(judged, repository, head_sha, runner):
         return True
-    return _merged_by_patch(judged, head_sha)
+    return _merged_by_change(judged, head_sha)
 
 
 def _merged_after_update(
@@ -409,11 +406,11 @@ def _merge_commit(pull: dict[str, Any]) -> str | None:
     return oid if isinstance(oid, str) and SHA_PATTERN.fullmatch(oid) else None
 
 
-def _merged_by_patch(judged: list[tuple[dict[str, Any], BaseTests]], head_sha: str) -> bool:
+def _merged_by_change(judged: list[tuple[dict[str, Any], BaseTests]], head_sha: str) -> bool:
     """Whether a merged pull request's merge commit made the branch's whole change since it left that pull request's
     base, in listing order."""
     for pull, tests in judged:
         merge_commit = _merge_commit(pull)
-        if merge_commit is not None and tests.same_patch(head_sha, merge_commit):
+        if merge_commit is not None and tests.same_change(head_sha, merge_commit):
             return True
     return False

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -26,9 +27,9 @@ from pr_status import (
     base_contains,
     branch_tips,
     change_identity,
+    change_match,
     classify,
     fetched_bases,
-    patch_match,
 )
 
 TIP = "a" * 40
@@ -88,9 +89,9 @@ def in_release(sha: str) -> bool:
     return sha in (BASE, RELEASE_BASE)
 
 
-def main_only(same_patch: Callable[[str, str], bool] = never) -> Bases:
+def main_only(same_change: Callable[[str, str], bool] = never) -> Bases:
     """The tests of a fetched main and no other base."""
-    return {"main": BaseTests(in_main, same_patch)}.get
+    return {"main": BaseTests(in_main, same_change)}.get
 
 
 def listing(*pulls: dict) -> str:
@@ -512,16 +513,16 @@ class ClassifySequenceTests(GitTestCase):
             self.outcome(first, second, bases=main_only(), commits={4: unrelated, 5: unrelated}),
         )
 
-    def test_a_merge_commit_whose_patch_is_the_branches_proves_a_rewritten_tip_merged(self) -> None:
+    def test_a_merge_commit_whose_change_is_the_branches_proves_a_rewritten_tip_merged(self) -> None:
         squashed = dict(pull("MERGED", OLD), number=7, mergeCommit={"oid": SQUASH})
         other = dict(squashed, mergeCommit={"oid": OTHER_SQUASH})
         asked: list[tuple[str, str]] = []
 
-        def same_patch(tip: str, merge_commit: str) -> bool:
+        def same_change(tip: str, merge_commit: str) -> bool:
             asked.append((tip, merge_commit))
             return (tip, merge_commit) == (TIP, SQUASH)
 
-        # The commit walk is tried first for every pull request, and the patch only once it proves no merge.
+        # The commit walk is tried first for every pull request, and the change only once it proves no merge.
         walked = [LIST_CALL, commits_call(7)]
         cases: tuple[tuple[str, tuple[dict, ...], dict, list[list[str]], list[tuple[str, str]]], ...] = (
             ("MERGED", (squashed,), {}, walked, [(TIP, SQUASH)]),
@@ -535,9 +536,9 @@ class ClassifySequenceTests(GitTestCase):
             ("UNMATCHED", (dict(squashed, mergeCommit={"oid": OTHER_SQUASH.upper()}),), {}, walked, []),
             ("UNMATCHED", (dict(squashed, mergeCommit=SQUASH),), {}, walked, []),
             ("UNMATCHED", (other,), {}, walked, [(TIP, OTHER_SQUASH)]),
-            # An exact match is MERGED before any commit is read or patch compared.
+            # An exact match is MERGED before any commit is read or change compared.
             ("MERGED", (squashed, pull("MERGED")), {}, [LIST_CALL], []),
-            # A proof from the patch comes before an exact CLOSED match; a patch that differs leaves CLOSED.
+            # A proof from the change comes before an exact CLOSED match; a change that differs leaves CLOSED.
             ("MERGED", (pull("CLOSED"), squashed), {}, walked, [(TIP, SQUASH)]),
             ("CLOSED", (pull("CLOSED"), other), {}, walked, [(TIP, OTHER_SQUASH)]),
             # Merged pull requests are compared in listing order until one proves the merge.
@@ -546,7 +547,7 @@ class ClassifySequenceTests(GitTestCase):
         )
         for expected, pulls, arguments, calls, compared in cases:
             asked.clear()
-            options = {"bases": main_only(same_patch), "commits": {7: history((OLD, BASE))}, **arguments}
+            options = {"bases": main_only(same_change), "commits": {7: history((OLD, BASE))}, **arguments}
             with self.subTest(expected=expected, pulls=pulls, arguments=arguments):
                 self.assertEqual((expected, calls), self.outcome(*pulls, **options))
                 self.assertEqual(compared, asked)
@@ -562,16 +563,16 @@ class ClassifySequenceTests(GitTestCase):
     def test_each_pull_request_is_judged_against_its_own_base(self) -> None:
         asked: list[tuple[str, str, str]] = []
 
-        def patch_on(base: str) -> Callable[[str, str], bool]:
-            def same_patch(tip: str, merge_commit: str) -> bool:
+        def change_on(base: str) -> Callable[[str, str], bool]:
+            def same_change(tip: str, merge_commit: str) -> bool:
                 asked.append((base, tip, merge_commit))
                 return (base, tip, merge_commit) == ("release/1.0", TIP, RELEASE_SQUASH)
 
-            return same_patch
+            return same_change
 
         bases: Bases = {
-            "main": BaseTests(in_main, patch_on("main")),
-            "release/1.0": BaseTests(in_release, patch_on("release/1.0")),
+            "main": BaseTests(in_main, change_on("main")),
+            "release/1.0": BaseTests(in_release, change_on("release/1.0")),
         }.get
         into_main = dict(pull("MERGED", OLD), number=7, mergeCommit={"oid": SQUASH})
         into_release = dict(pull("MERGED", OLD, base="release/1.0"), number=8, mergeCommit={"oid": RELEASE_SQUASH})
@@ -657,7 +658,7 @@ class ClassifySequenceTests(GitTestCase):
         }.get
         commits = {7: UPDATED}
         cases: tuple[tuple[str, tuple[dict, ...], str | None, list[list[str]]], ...] = (
-            # An exact match, the walk, and the patch each pass the gate when the base holds the upstream.
+            # An exact match, the walk, and the change each pass the gate when the base holds the upstream.
             ("MERGED", (pull("MERGED"),), MAIN_NOW, [LIST_CALL]),
             ("MERGED", (dict(pull("MERGED", UPDATE), number=7),), MAIN_NOW, [LIST_CALL, commits_call(7)]),
             ("MERGED", (squashed,), MAIN_NOW, [LIST_CALL, commits_call(7)]),
@@ -802,8 +803,8 @@ class SquashFixture(GitFixture):
         self.git("-C", str(self.clone), "switch", "main")
         return extended
 
-    def same_patch(self, tip: str, merge_commit: str, base_ref: str = BASE_REF) -> bool:
-        return patch_match(str(self.clone), base_ref)(tip, merge_commit)
+    def same_change(self, tip: str, merge_commit: str, base_ref: str = BASE_REF) -> bool:
+        return change_match(str(self.clone), base_ref)(tip, merge_commit)
 
 
 class PatchMatchTests(SquashFixture):
@@ -811,8 +812,8 @@ class PatchMatchTests(SquashFixture):
         squash = self.squash_merge()
         rewritten = self.reword_tip()
         self.assertNotEqual(self.tip, rewritten)
-        self.assertTrue(self.same_patch(rewritten, squash))
-        self.assertTrue(self.same_patch(self.tip, squash), "the tip the pull request ended at matches too")
+        self.assertTrue(self.same_change(rewritten, squash))
+        self.assertTrue(self.same_change(self.tip, squash), "the tip the pull request ended at matches too")
 
     def test_a_tip_rebased_onto_a_moved_main_matches_the_squash_commit(self) -> None:
         self.change(self.other, "elsewhere.txt", "unrelated\n", "main moves on")
@@ -824,15 +825,15 @@ class PatchMatchTests(SquashFixture):
         self.git("-C", str(self.clone), "switch", "main")
         squash = self.squash_merge()
         self.assertNotEqual(self.tip, rebased)
-        self.assertTrue(self.same_patch(rebased, squash))
+        self.assertTrue(self.same_change(rebased, squash))
 
     def test_a_later_commit_with_real_changes_does_not_match(self) -> None:
         squash = self.squash_merge()
-        self.assertFalse(self.same_patch(self.extend_topic(), squash))
+        self.assertFalse(self.same_change(self.extend_topic(), squash))
 
     def test_a_squash_commit_the_clone_has_not_fetched_does_not_match(self) -> None:
         squash = self.squash_merge(fetch=False)
-        self.assertFalse(self.same_patch(self.reword_tip(), squash))
+        self.assertFalse(self.same_change(self.reword_tip(), squash))
 
     def test_an_empty_change_on_either_side_never_matches(self) -> None:
         squash = self.squash_merge()
@@ -840,14 +841,14 @@ class PatchMatchTests(SquashFixture):
         empty_tip = self.commit(self.clone, "nothing")
         empty_merge = self.commit(self.clone, "nothing merged")
         self.git("-C", str(self.clone), "switch", "main")
-        self.assertFalse(self.same_patch(empty_tip, squash))
-        self.assertFalse(self.same_patch(self.tip, empty_merge))
-        self.assertFalse(self.same_patch(empty_tip, empty_merge))
+        self.assertFalse(self.same_change(empty_tip, squash))
+        self.assertFalse(self.same_change(self.tip, empty_merge))
+        self.assertFalse(self.same_change(empty_tip, empty_merge))
 
     def test_an_unresolvable_base_fails_closed(self) -> None:
         squash = self.squash_merge()
         with self.assertRaisesRegex(QueryError, "cannot find the merge base of refs/remotes/origin/missing"):
-            self.same_patch(self.tip, squash, "refs/remotes/origin/missing")
+            self.same_change(self.tip, squash, "refs/remotes/origin/missing")
 
     def test_a_tip_sharing_no_history_with_the_base_is_no_match(self) -> None:
         squash = self.squash_merge()
@@ -858,9 +859,9 @@ class PatchMatchTests(SquashFixture):
                 name.unlink()
         orphan = self.change(self.clone, "feature.txt", "the feature\n", "the feature, rooted elsewhere")
         self.git("-C", str(self.clone), "switch", "main")
-        self.assertFalse(self.same_patch(orphan, squash), "no merge base is no match, not a failure")
+        self.assertFalse(self.same_change(orphan, squash), "no merge base is no match, not a failure")
 
-    def test_the_branch_patch_is_computed_once_per_tip(self) -> None:
+    def test_the_branch_change_is_read_once_per_tip(self) -> None:
         squash = self.squash_merge()
         fork_point = self.git("-C", str(self.clone), "merge-base", self.BASE_REF, self.tip)
         commands: list[tuple[str, ...]] = []
@@ -871,9 +872,9 @@ class PatchMatchTests(SquashFixture):
                     commands.append(tuple(command[command.index(verb) :]))
             return subprocess_runner(command, timeout, input_bytes=input_bytes)
 
-        same_patch = patch_match(str(self.clone), self.BASE_REF, GitClient(runner, input_runner=runner))
-        self.assertTrue(same_patch(self.tip, squash))
-        self.assertTrue(same_patch(self.tip, squash))
+        same_change = change_match(str(self.clone), self.BASE_REF, GitClient(runner, input_runner=runner))
+        self.assertTrue(same_change(self.tip, squash))
+        self.assertTrue(same_change(self.tip, squash))
         self.assertEqual(
             [
                 ("merge-base", self.BASE_REF, self.tip),
@@ -894,8 +895,8 @@ class PatchMatchTests(SquashFixture):
                 self.git("-C", str(self.clone), "config", key, value)
                 try:
                     self.assertIn(printed, self.git("-C", str(self.clone), "diff", f"{squash}^", squash))
-                    self.assertTrue(self.same_patch(rewritten, squash))
-                    self.assertTrue(self.same_patch(self.tip, squash))
+                    self.assertTrue(self.same_change(rewritten, squash))
+                    self.assertTrue(self.same_change(self.tip, squash))
                 finally:
                     self.git("-C", str(self.clone), "config", "--unset", key)
 
@@ -947,48 +948,47 @@ class WhitespaceFixture(SquashFixture):
         return ids.stdout.decode("ascii").split()[0]
 
 
-PATCH = (
-    b"diff --git a/demo.py b/demo.py\n"
-    b"index 1a2b3c4..5d6e7f8 100644\n"
-    b"--- a/demo.py\n"
-    b"+++ b/demo.py\n"
-    b"@@ -10,3 +10,4 @@ def f(flag):\n"
-    b"     if flag:\n"
-    b"         return 1\n"
-    b"+    return 3\n"
-    b"     return 2\n"
-)
+DEMO_ENTRY = b":100644 100644 " + b"1" * 40 + b" " + b"2" * 40 + b" M\0demo.py\0"
+NOTES_ENTRY = b":000000 100644 " + b"0" * 40 + b" " + b"3" * 40 + b" A\0notes/a b.txt\0"
 
 
 class ChangeIdentityTests(GitTestCase):
-    def test_where_a_change_sits_is_left_out_and_every_other_byte_counts(self) -> None:
-        moved = PATCH.replace(b"index 1a2b3c4..5d6e7f8", b"index 9a8b7c6..0d1e2f3").replace(
-            b"@@ -10,3 +10,4 @@ def f(flag):", b"@@ -40,3 +40,4 @@ class Demo:"
-        )
-        self.assertEqual(change_identity(PATCH), change_identity(moved), "object names and line numbers are left out")
+    def test_every_file_with_its_content_before_and_after_counts_and_only_their_order_is_left_out(self) -> None:
+        listing = DEMO_ENTRY + NOTES_ENTRY
+        self.assertEqual(change_identity(listing), change_identity(NOTES_ENTRY + DEMO_ENTRY), "order is left out")
         for changed in (
-            PATCH.replace(b"+    return 3", b"+        return 3"),
-            PATCH.replace(b"+    return 3", b"+    return  3"),
-            PATCH.replace(b"+    return 3\n", b"+    return 3\r\n"),
-            PATCH.replace(b"+    return 3", b"+    return 4"),
-            PATCH.replace(b"         return 1", b"         return 5"),
-            PATCH.replace(b"100644", b"100755").replace(b"index", b"old mode 100644\nnew mode 100755\nindex"),
+            DEMO_ENTRY.replace(b"1" * 40, b"4" * 40) + NOTES_ENTRY,
+            DEMO_ENTRY.replace(b"2" * 40, b"4" * 40) + NOTES_ENTRY,
+            DEMO_ENTRY.replace(b":100644 100644", b":100644 100755") + NOTES_ENTRY,
+            DEMO_ENTRY.replace(b"demo.py", b"other.py") + NOTES_ENTRY,
+            DEMO_ENTRY,
         ):
             with self.subTest(changed=changed):
-                self.assertNotEqual(change_identity(PATCH), change_identity(changed))
-        self.assertIsNone(change_identity(b""), "an empty patch is no change")
+                self.assertNotEqual(change_identity(listing), change_identity(changed))
+        self.assertIsNone(change_identity(b""), "an empty listing is no change")
+
+    def test_a_listing_in_any_other_shape_fails_closed(self) -> None:
+        for listing in (
+            DEMO_ENTRY[:-1],
+            DEMO_ENTRY + b"stray",
+            DEMO_ENTRY.replace(b"\0demo.py\0", b"\0\0"),
+            DEMO_ENTRY.replace(b"1" * 40, b"1" * 7),
+            b"diff --git a/demo.py b/demo.py\n@@ -1 +1 @@\n-old\n+new\n",
+        ):
+            with self.subTest(listing=listing), self.assertRaisesRegex(QueryError, "unexpected shape"):
+                change_identity(listing)
 
 
 class WhitespaceTests(WhitespaceFixture):
     def test_a_tip_whose_only_later_change_is_whitespace_does_not_match(self) -> None:
-        self.assertTrue(self.same_patch(self.tip, self.squash), "the tip the pull request ended at matches")
+        self.assertTrue(self.same_change(self.tip, self.squash), "the tip the pull request ended at matches")
         landed = self.stable_patch_id(f"{self.squash}^", self.squash)
         for variant, content in WHITESPACE_ONLY.items():
             with self.subTest(variant=variant):
                 amended = self.amend(content)
                 fork_point = self.git("-C", str(self.clone), "merge-base", self.BASE_REF, amended)
                 self.assertEqual(landed, self.stable_patch_id(fork_point, amended), "patch-id cannot tell them apart")
-                self.assertFalse(self.same_patch(amended, self.squash))
+                self.assertFalse(self.same_change(amended, self.squash))
 
     def test_a_branch_whose_only_later_change_is_whitespace_stays_unmatched(self) -> None:
         def state() -> str:
@@ -1003,6 +1003,138 @@ class WhitespaceTests(WhitespaceFixture):
             with self.subTest(variant=variant):
                 self.amend(content)
                 self.assertEqual("UNMATCHED", state())
+
+
+def numbered(*lines: str) -> bytes:
+    return "".join(f"{line}\n" for line in lines).encode("utf-8")
+
+
+# The same edit at two places whose surrounding lines differ: retries is 1 on lines 2 and 7.
+SPREAD = numbered("name = 'demo'", "retries = 1", "color = 'blue'", "size = 3", "", "", "retries = 1", "mode = 'fast'")
+# The same edit at two places within one function, each with the same three lines before and after it.
+REPEATED_BLOCK = numbered(
+    "def run():",
+    *("    step()", "    step()", "    step()", "    count = 7", "    step()", "    step()", "    step()"),
+    *("    log('halfway')", "    log('still going')", "    log('nearly there')"),
+    *("    step()", "    step()", "    step()", "    count = 7", "    step()", "    step()", "    step()"),
+)
+# The same edit in two functions whose bodies are the same, so only each hunk's function context tells them apart.
+TWIN_FUNCTIONS = numbered(
+    *("def first():", "    value = 1", "    value = 1", "    value = 1", "    value = 7"),
+    *("    value = 1", "    value = 1", "    value = 1", "", ""),
+    *("def second():", "    value = 1", "    value = 1", "    value = 1", "    value = 7"),
+    *("    value = 1", "    value = 1", "    value = 1"),
+)
+
+
+def edit_at(content: bytes, old: bytes, new: bytes, occurrence: int) -> bytes:
+    """`content` with the `occurrence`th (from 0) of `old` replaced by `new`."""
+    parts = content.split(old)
+    return old.join(parts[: occurrence + 1]) + new + old.join(parts[occurrence + 1 :])
+
+
+class MovedEditTests(SquashFixture):
+    """main holds a module; a branch off it changes one place in it and is squash-merged, and its local tip is then
+    amended to make the same edit at another place instead, so its work never landed."""
+
+    def land(self, before: bytes, landed: bytes) -> tuple[str, str]:
+        """Commit `before` as the module on main, then squash-merge a branch `moved` that makes it `landed`: the tip the
+        pull request ended at and the squash commit."""
+        (self.clone / "module.py").write_bytes(before)
+        self.git("-C", str(self.clone), "add", "module.py")
+        self.commit(self.clone, "add the module")
+        self.git("-C", str(self.clone), "push", "origin", "main")
+        self.git("-C", str(self.clone), "switch", "-c", "moved")
+        (self.clone / "module.py").write_bytes(landed)
+        self.git("-C", str(self.clone), "commit", "-am", "change the module")
+        tip = self.git("-C", str(self.clone), "rev-parse", "HEAD")
+        self.git("-C", str(self.clone), "push", "-u", "origin", "moved")
+        self.git("-C", str(self.other), "fetch", "origin")
+        self.git("-C", str(self.other), "merge", "--ff-only", "origin/main")
+        self.git("-C", str(self.other), "merge", "--squash", "origin/moved")
+        squash = self.commit(self.other, "Squash-merge moved")
+        self.git("-C", str(self.other), "push", "origin", "main")
+        self.git("-C", str(self.other), "push", "origin", "--delete", "moved")
+        self.git("-C", str(self.clone), "fetch", "--prune", "origin")
+        self.git("-C", str(self.clone), "switch", "main")
+        return tip, squash
+
+    def moved_edit(self, before: bytes, landed: bytes, moved: bytes) -> tuple[str, str, str]:
+        """The tip the pull request ended at, the squash commit, and the tip amended to make the module `moved`."""
+        tip, squash = self.land(before, landed)
+        self.git("-C", str(self.clone), "switch", "moved")
+        (self.clone / "module.py").write_bytes(moved)
+        self.git("-C", str(self.clone), "commit", "--amend", "-am", "change the module elsewhere")
+        amended = self.git("-C", str(self.clone), "rev-parse", "HEAD")
+        self.git("-C", str(self.clone), "switch", "main")
+        return tip, squash, amended
+
+    def state(self, tip: str, squash: str) -> str:
+        head, upstream = branch_tips(str(self.clone), "moved")
+        run = router(listing(dict(pull("MERGED", tip), mergeCommit={"oid": squash})), history((tip, BASE)))
+        return classify("owner/repo", "moved", head, upstream, run, fetched_bases(str(self.clone)), "main")
+
+    def hunk(self, start: str, end: str) -> str:
+        """The first hunk header of git's patch from start to end, asking for three lines of context."""
+        patch = self.git("-C", str(self.clone), "diff-tree", "-r", "-p", "--unified=3", start, end)
+        return next(line for line in patch.splitlines() if line.startswith("@@"))
+
+    def test_the_same_edit_among_other_lines_stays_unmatched_whatever_git_diff_opts_says(self) -> None:
+        tip, squash, amended = self.moved_edit(
+            SPREAD,
+            edit_at(SPREAD, b"retries = 1", b"retries = 5", 0),
+            edit_at(SPREAD, b"retries = 1", b"retries = 5", 1),
+        )
+        fork_point = self.git("-C", str(self.clone), "merge-base", self.BASE_REF, amended)
+        self.assertTrue(self.same_change(tip, squash), "the tip the pull request ended at matches")
+        with mock.patch.dict(os.environ, {"GIT_DIFF_OPTS": "--unified=0"}):
+            self.assertEqual(
+                " -7 +7 ", self.hunk(fork_point, amended).split("@@")[1], "the variable strips the context"
+            )
+            self.assertEqual(" -2 +2 ", self.hunk(f"{squash}^", squash).split("@@")[1])
+            self.assertFalse(self.same_change(amended, squash))
+            self.assertTrue(self.same_change(tip, squash))
+            self.assertEqual("UNMATCHED", self.state(tip, squash))
+        self.assertEqual("UNMATCHED", self.state(tip, squash))
+
+    def test_the_same_edit_with_the_same_lines_around_it_stays_unmatched(self) -> None:
+        tip, squash, amended = self.moved_edit(
+            REPEATED_BLOCK,
+            edit_at(REPEATED_BLOCK, b"count = 7", b"count = 8", 0),
+            edit_at(REPEATED_BLOCK, b"count = 7", b"count = 8", 1),
+        )
+        fork_point = self.git("-C", str(self.clone), "merge-base", self.BASE_REF, amended)
+        landed, local = self.hunk(f"{squash}^", squash), self.hunk(fork_point, amended)
+        self.assertNotEqual(landed, local)
+        self.assertEqual(landed.split("@@")[2], local.split("@@")[2], "the same function context")
+        self.assertFalse(self.same_change(amended, squash))
+        self.assertEqual("UNMATCHED", self.state(tip, squash))
+
+    def test_the_same_edit_in_another_function_with_the_same_body_stays_unmatched(self) -> None:
+        tip, squash, amended = self.moved_edit(
+            TWIN_FUNCTIONS,
+            edit_at(TWIN_FUNCTIONS, b"value = 7", b"value = 8", 0),
+            edit_at(TWIN_FUNCTIONS, b"value = 7", b"value = 8", 1),
+        )
+        fork_point = self.git("-C", str(self.clone), "merge-base", self.BASE_REF, amended)
+        self.assertEqual(" def first():", self.hunk(f"{squash}^", squash).split("@@")[2])
+        self.assertEqual(" def second():", self.hunk(fork_point, amended).split("@@")[2])
+        self.assertFalse(self.same_change(amended, squash))
+        self.assertEqual("UNMATCHED", self.state(tip, squash))
+
+    def test_a_file_the_base_changed_elsewhere_before_the_merge_keeps_a_rewritten_tip(self) -> None:
+        tip, squash = self.land(SPREAD, edit_at(SPREAD, b"retries = 1", b"retries = 5", 0))
+        self.assertTrue(self.same_change(tip, squash))
+        # A second pull request changes the module's last line on main, and the branch's change lands after it.
+        self.git("-C", str(self.other), "reset", "--hard", f"{squash}^")
+        (self.other / "module.py").write_bytes(SPREAD.replace(b"fast", b"slow"))
+        self.git("-C", str(self.other), "commit", "-am", "slow the demo")
+        self.git("-C", str(self.other), "cherry-pick", "-x", squash)
+        later = self.git("-C", str(self.other), "rev-parse", "HEAD")
+        self.git("-C", str(self.other), "push", "--force", "origin", "main")
+        self.git("-C", str(self.clone), "fetch", "origin")
+        rewritten = self.git("-C", str(self.clone), "commit-tree", f"{tip}^{{tree}}", "-p", f"{tip}^", "-m", "x")
+        self.assertFalse(self.same_change(rewritten, later), "the module held other bytes before the merge")
 
 
 class ReleaseBaseFixture(SquashFixture):
@@ -1049,10 +1181,10 @@ class ReleaseBaseTests(ReleaseBaseFixture):
     def test_a_fix_into_a_release_branch_matches_on_its_own_base_and_not_on_main(self) -> None:
         for base, (tip, squash, reworded) in self.fixes.items():
             with self.subTest(base=base):
-                self.assertTrue(self.same_patch(reworded, squash, f"refs/remotes/origin/{base}"))
-                self.assertTrue(self.same_patch(tip, squash, f"refs/remotes/origin/{base}"))
+                self.assertTrue(self.same_change(reworded, squash, f"refs/remotes/origin/{base}"))
+                self.assertTrue(self.same_change(tip, squash, f"refs/remotes/origin/{base}"))
                 # Shared history: main's diff takes in the release-only commit. No shared history: no merge base.
-                self.assertFalse(self.same_patch(reworded, squash))
+                self.assertFalse(self.same_change(reworded, squash))
 
     def test_fetched_bases_resolve_each_base_once_and_give_none_for_a_missing_one(self) -> None:
         resolved: list[str] = []
@@ -1077,7 +1209,7 @@ class ReleaseBaseTests(ReleaseBaseFixture):
         if release is not None:  # the isinstance assertion above holds; this narrows the type for the checker
             self.assertTrue(release.contains(squash))
             self.assertFalse(release.contains(reworded))
-            self.assertTrue(release.same_patch(reworded, squash))
+            self.assertTrue(release.same_change(reworded, squash))
         self.assertIsNone(bases("hotfix"), "a branch origin no longer has is not a fetched base")
         self.assertIsNone(bases("a..b"))
 
@@ -1154,11 +1286,11 @@ class BranchClassificationTests(GitFixture):
 class RewrittenBranchClassificationTests(SquashFixture):
     """A squash-merged branch whose local tip was rewritten after the pull request ended, as pull_state reads it."""
 
-    def state(self, squash: str, with_patch: bool = True) -> str:
+    def state(self, squash: str, with_change: bool = True) -> str:
         head, upstream = branch_tips(str(self.clone), "topic")
         run = router(listing(dict(pull("MERGED", self.tip), mergeCommit={"oid": squash})), history((self.tip, BASE)))
         bases: Bases = fetched_bases(str(self.clone))
-        if not with_patch:
+        if not with_change:
             bases = {"main": BaseTests(base_contains(str(self.clone), self.BASE_REF), never)}.get
         return classify("owner/repo", "topic", head, upstream, run, bases, "main")
 
@@ -1166,7 +1298,7 @@ class RewrittenBranchClassificationTests(SquashFixture):
         squash = self.squash_merge()
         self.reword_tip()
         self.assertEqual("MERGED", self.state(squash))
-        self.assertEqual("UNMATCHED", self.state(squash, with_patch=False))
+        self.assertEqual("UNMATCHED", self.state(squash, with_change=False))
 
     def test_a_later_commit_with_real_changes_leaves_the_branch_unmatched(self) -> None:
         squash = self.squash_merge()
