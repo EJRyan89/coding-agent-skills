@@ -31,7 +31,7 @@ REPOSITORY_TOOL_COMMAND = re.compile(r"^python (?:-B )?(?:tools|tests)/")
 
 
 def shipped_skill_files(root: Path) -> list[Path]:
-    """Each shipped skill's SKILL.md, a skill in a category included: a skill directory with deploy-meta."""
+    """Each shipped skill's SKILL.md: a skill directory with deploy-meta."""
     skills = skills_by_name(root)
     found = (skills[metadata.stem] for metadata in (root / "deploy-meta").glob("*.json") if metadata.stem in skills)
     return sorted((directory / "SKILL.md" for directory in found), key=lambda path: path.parent.name)
