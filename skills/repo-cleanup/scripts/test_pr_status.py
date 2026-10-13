@@ -960,7 +960,7 @@ PATCH = (
 )
 
 
-class ChangeIdentityTests(unittest.TestCase):
+class ChangeIdentityTests(GitTestCase):
     def test_where_a_change_sits_is_left_out_and_every_other_byte_counts(self) -> None:
         moved = PATCH.replace(b"index 1a2b3c4..5d6e7f8", b"index 9a8b7c6..0d1e2f3").replace(
             b"@@ -10,3 +10,4 @@ def f(flag):", b"@@ -40,3 +40,4 @@ class Demo:"
