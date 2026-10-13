@@ -354,14 +354,24 @@ class HandshakeTests(unittest.TestCase):
         )
 
     def test_a_relative_command_resolves_against_the_configured_directory_not_the_callers(self) -> None:
-        launcher = self.root / "tools" / "fake server.cmd"
-        launcher.write_text(f'@"{sys.executable}" "%~dp0fake server.py" %*\n', encoding="utf-8")
+        # A launcher as each platform runs one: a batch file on Windows, and an executable shell script elsewhere.
+        if sys.platform == "win32":
+            name = "fake server.cmd"
+            launcher = self.root / "tools" / name
+            launcher.write_text(f'@"{sys.executable}" "%~dp0fake server.py" %*\n', encoding="utf-8")
+        else:
+            name = "fake server"
+            launcher = self.root / "tools" / name
+            launcher.write_text(
+                f'#!/bin/sh\nexec "{sys.executable}" "$(dirname "$0")/fake server.py" "$@"\n', encoding="utf-8"
+            )
+            launcher.chmod(0o755)
         self._write(
             ".mcp.json",
             "mcpServers",
             {
-                "rooted": {"command": "tools/fake server.cmd", "args": ["ok"]},
-                "local": {"command": "./fake server.cmd", "args": ["ok"], "cwd": "tools"},
+                "rooted": {"command": f"tools/{name}", "args": ["ok"]},
+                "local": {"command": f"./{name}", "args": ["ok"], "cwd": "tools"},
             },
         )
         elsewhere = Path(self.temp.name) / "elsewhere"
