@@ -22,15 +22,19 @@ Some skills need more when you use them, not when you deploy them:
 | Codex CLI 0.88.0 or newer (optional) | Verifying Codex skill discovery |
 | GitHub Copilot CLI 1.0.88 or newer (optional) | Verifying Copilot skill discovery, and the bounded Copilot code-review host |
 | .NET SDK and the `dotnet-format` global tool; .NET SDK 9.0.200 or newer for a `.slnx` solution | `dotnet-format`, which checks for them and reports the install command |
-
-`python deploy.py check` and the skills find each of these tools the same way: the first on your `PATH`, else the one in WinGet's Links folder (`%LOCALAPPDATA%\Microsoft\WinGet\Links`), where WinGet puts a portable install that may not be on `PATH`; on Linux, `PATH` alone. A skill runs the tool at the path it found, so a tool `check` reports is the one the skill starts.
 | `pdftotext` from Xpdf or Poppler, meeting its [provider-specific support floor](dependency-updates.md#runtime-tool-floors) (optional) | The code-review skills, to review a PDF a pull request changes; a missing, unsupported, or unidentifiable parser leaves that review `INCOMPLETE` |
 
+`python deploy.py check` and the skills find each of these tools the same way: the first on your `PATH`, else the one in WinGet's Links folder (`%LOCALAPPDATA%\Microsoft\WinGet\Links`), where WinGet puts a portable install that may not be on `PATH`; on Linux, `PATH` alone. A skill runs the tool at the path it found, so a tool `check` reports is the one the skill starts.
+
 For PDF review, an old `pdftotext` bundled with Git for Windows may no longer meet its provider's floor. Install a supported parser from a source you trust and put its directory on the reviewing process's `PATH`, then run `python deploy.py check` in that environment. The [Xpdf command-line tools](https://www.xpdfreader.com/download.html) and [Poppler project](https://poppler.freedesktop.org/) remain supported providers; the project does not install or update them for you. `check` and every extraction look at each `pdftotext` on `PATH`, then in WinGet's Links folder, take the first one that meets its floor, and name each one they passed over and where it was found, so Git's bundled copy, which Git Bash puts ahead of the Windows `PATH`, is skipped rather than blocking a supported one further down. Runtime extraction checks again, so a later `PATH` change or downgrade is checked rather than trusted. A standalone `review-document` refuses before creating its fixture; a pull request records an explicit PDF coverage gap.
+
+On Linux, a distribution's `pdftotext`, from its `poppler-utils` package, keeps a version below Poppler's floor as the distribution backports fixes, so it is refused like any other parser below its floor, and `check` and every refusal there name the Xpdf command-line tools. Download the Linux build of the [Xpdf command-line tools](https://www.xpdfreader.com/download.html), unpack it, and put its `bin64` folder on `PATH`; since `check` and every extraction take the first parser that meets its floor, the Xpdf tools are used wherever they stand on `PATH`, and the distribution's copy is named as skipped.
 
 None of the agent runtimes is needed to deploy. The deployer keeps its files under `~/.claude` even when Claude Code is not installed, because the skills' authoritative copies live there and the Codex and Copilot adapters point to them.
 
 ## Installing the tools
+
+### On Windows
 
 Use whichever installer your machine allows. [winget](https://learn.microsoft.com/windows/package-manager/winget/) comes with Windows 10 and 11; [Chocolatey](https://chocolatey.org/install) and [Scoop](https://scoop.sh/) are separate installs, and Chocolatey needs an administrator shell. Every tool can also be downloaded from its official site.
 
@@ -47,13 +51,32 @@ Use whichever installer your machine allows. [winget](https://learn.microsoft.co
 
 The deployer finds Git Bash in `C:\Program Files\Git`, or next to the `git` on your `PATH`, which covers Scoop and per-user Git installs. It never uses another `bash`, such as WSL's. If Git isn't on your `PATH`, set `GIT_BASH` to its `bin\bash.exe`.
 
-The deployer core also runs on Linux, though Linux is not yet a supported platform (see the [README](../README.md#supported-platforms-and-runtimes)). There it uses the first `bash` and `pwsh` on your `PATH`, and a configured directory is an absolute path such as `/home/you/GitHub`. On Debian and Ubuntu, `sudo apt install git shellcheck python3` installs Git, ShellCheck, and Python beside the system Bash. PowerShell 7 is not in their archives: install it from [Microsoft's package repository](https://learn.microsoft.com/powershell/scripting/install/install-ubuntu), or with `sudo snap install powershell --classic`. On Linux the home is `HOME`.
+### On Linux
+
+The deployer and the whole validation suite run on Linux, and the [`deployable` workflow](../.github/workflows/deployable.yml) deploys onto a fresh Ubuntu runner; the [README](../README.md#supported-platforms-and-runtimes) says where Linux support stands. Install the tools from your distribution's archive where it has them, or from the vendor's own package repository where it does not:
+
+| Tool | Debian and Ubuntu (`sudo apt install`) | Fedora (`sudo dnf install`) | Official download |
+|---|---|---|---|
+| Python | `python3` | `python3` | [python.org](https://www.python.org/downloads/source/) |
+| Git and Bash | `git`; Bash comes with the system | `git`; Bash comes with the system | [git-scm.com](https://git-scm.com/downloads/linux) |
+| ShellCheck | `shellcheck` | `ShellCheck` | [GitHub releases](https://github.com/koalaman/shellcheck/releases) |
+| PowerShell 7 | from [Microsoft's package repository](https://learn.microsoft.com/powershell/scripting/install/install-ubuntu), or `sudo snap install powershell --classic` | from [Microsoft's package repository](https://learn.microsoft.com/powershell/scripting/install/install-rhel) | [GitHub releases](https://github.com/PowerShell/PowerShell/releases) |
+| GitHub CLI | from [GitHub's package repository](https://github.com/cli/cli/blob/trunk/docs/install_linux.md), whose release meets the floor where an archive's may not | `gh` | [cli.github.com](https://cli.github.com/) |
+| Node.js, for the npm installs below | from [NodeSource](https://github.com/nodesource/distributions) or a version manager when the archive's `nodejs` is older than Copilot CLI needs | `nodejs` | [nodejs.org](https://nodejs.org/) |
+| Claude Code | none | none | `npm install -g @anthropic-ai/claude-code` with Node.js |
+| Codex CLI | none | none | `npm install -g @openai/codex` with Node.js, or [GitHub releases](https://github.com/openai/codex/releases) |
+| GitHub Copilot CLI | none | none | `npm install -g @github/copilot` with Node.js 22 or newer, or [GitHub releases](https://github.com/github/copilot-cli/releases) |
+| `pdftotext` | none: the archive's `poppler-utils` is below Poppler's floor | none, for the same reason | the [Xpdf command-line tools](https://www.xpdfreader.com/download.html), as [Requirements](#requirements) describes |
+
+On a release whose `python3` is older than the deployer's floor, `check` says so; install a newer Python from python.org or with a version manager. On Linux the deployer uses the first `bash` and `pwsh` on your `PATH`, your home is `HOME`, and a configured directory is an absolute path such as `/home/you/GitHub`. Linux distributions name Python `python3`, so run every command on this page as `python3`, as in `python3 deploy.py check`; the skills' own commands already name it so there.
+
+### After installing
 
 **After installing a tool, open a new terminal.** Windows only updates `PATH` for programs started after the installation. An editor or agent application that was already running, including one minimized to the system tray, must be fully quit and restarted before its terminals can find the new tool. Run `python deploy.py check` to see what is installed. The validation suite checks for its tools before running any test, and the deployer checks before changing any file; both list every missing tool with its install command. Deploying also warns when a selected skill uses a tool that is not installed.
 
 ## Codex CLI settings
 
-Codex CLI on Windows needs two machine settings before it can run a skill's scripts. Until both are in place, every skill script fails in Codex, with `blocked by policy` or `The file cannot be accessed by the system`:
+Codex CLI on Windows needs two machine settings before it can run a skill's scripts; on Linux it needs neither. Until both are in place, every skill script fails in Codex, with `blocked by policy` or `The file cannot be accessed by the system`:
 
 - add a `[windows]` sandbox setting to `~/.codex/config.toml`, as [Windows sandbox mode](codex-support.md#windows-sandbox-mode) shows; and
 - turn off the `python.exe` and `python3.exe` app execution aliases.
@@ -62,7 +85,7 @@ Windows registers `python.exe` and `python3.exe` as app execution aliases in `%L
 
 ## Deploying
 
-Clone the repository and run every command from its directory, in PowerShell or Git Bash:
+Clone the repository and run every command from its directory, in PowerShell or Git Bash on Windows, or in any shell on Linux with `python3` in place of `python`:
 
 ```bash
 python deploy.py check
@@ -73,7 +96,7 @@ python deploy.py --all
 
 `check` lists every tool the deployer and the skills need, with its version and which skills use it, and changes nothing. It also lists Git and Claude Code with their versions, so its output is what a bug report asks for. Its `Deployed commit` line names the commit the skills were last deployed from, with the nearest tag when Git can describe it, such as `v0.1.0-14-g71ad815 (<full hash>)`, or `unknown` before the first deployment that records one. `deploy.py` is the only script you run to deploy; run `python deploy.py --help` for every option.
 
-`configure` prompts for the root directory containing your local repositories; rerun it to change the value, or add `--reset` to start from an empty configuration. At any prompt, Enter keeps the current value and Ctrl+C cancels without saving. Configured paths must be absolute drive-letter paths of directories that already exist. `configure` accepts them as you would type or paste them, such as `C:\GitHub` or `"C:\GitHub\"`, and stores them with forward slashes, such as `C:/GitHub`.
+`configure` prompts for the root directory containing your local repositories; rerun it to change the value, or add `--reset` to start from an empty configuration. At any prompt, Enter keeps the current value and Ctrl+C cancels without saving. Configured paths must be absolute paths of directories that already exist: drive-letter paths on Windows, and paths from the root, such as `/home/you/GitHub`, on Linux. On Windows `configure` accepts them as you would type or paste them, such as `C:\GitHub` or `"C:\GitHub\"`, and stores them with forward slashes, such as `C:/GitHub`.
 
 Every prompt, `configure`'s and the deployment's selection menu alike, goes to stderr, and results go to stdout, so a script that reads `deploy.py`'s output never receives a question.
 

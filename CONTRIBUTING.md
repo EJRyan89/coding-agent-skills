@@ -28,10 +28,10 @@ Validation reads both: the runner compares with `origin/main` to find a document
 
 ## Development environment
 
-Development and deployment are currently supported on Windows only. Contributors need:
+Development and deployment are supported on Windows, and the whole validation runs on Linux too, where [Validating on Linux](#validating-on-linux) sets it up; the README says where Linux support stands. Contributors need:
 
 - Python 3.11.4 or newer;
-- Git for Windows, for Git Bash;
+- Git for Windows, for Git Bash, or on Linux Git and the system's Bash;
 - ShellCheck;
 - PowerShell 7 (`pwsh`);
 - the PSScriptAnalyzer module;
@@ -60,7 +60,7 @@ Run the validation entry point from PowerShell or Git Bash, and use Git Bash for
 
 ### Validating on Linux
 
-The port to Linux is under way: validation starts on Linux and CI runs it there in a reporting job, which the code-review skills do not yet pass. On Linux, validation uses the system Bash and the first `pwsh` and `shellcheck` on `PATH`. On Debian or Ubuntu, with PowerShell 7 installed from [Microsoft's package repository](https://learn.microsoft.com/powershell/scripting/install/install-ubuntu) or with `sudo snap install powershell --classic`, these commands install the rest from the checkout's root, the development dependencies into a virtual environment outside the checkout, since Debian and Ubuntu manage their own Python's packages, and serve as a cloud session's start hook:
+Validation runs on Linux as it does on Windows, and CI runs the whole of it there in the `Validation on Linux` job on every push and pull request. On Linux, validation uses the system Bash and the first `pwsh` and `shellcheck` on `PATH`. On Debian or Ubuntu, with PowerShell 7 installed from [Microsoft's package repository](https://learn.microsoft.com/powershell/scripting/install/install-ubuntu) or with `sudo snap install powershell --classic`, these commands install the rest from the checkout's root, the development dependencies into a virtual environment outside the checkout, since Debian and Ubuntu manage their own Python's packages, and serve as a cloud session's start hook:
 
 ```bash
 sudo apt-get update && sudo apt-get install --yes git shellcheck python3-venv
