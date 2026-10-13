@@ -46,21 +46,19 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from console import run_main
+from dotnet_solution import is_solution, read_text, same_path, solution_projects
 from executable_locator import find_executable
 from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult, classify_failure
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_client import Runner as GhRunner
-from xml_reader import XmlRefused, read_xml
 
 WEB_PROJECT = re.compile(
     r"Microsoft\.NET\.Sdk\.Web|<WebApplication>|<WebSiteType>|349c5851-65df-11da-9384-00065b846f21",
     re.IGNORECASE,
 )
-SOLUTION_PROJECT = re.compile(r'^\s*Project\("[^"]*"\)\s*=\s*"[^"]*"\s*,\s*"([^"]+)"')
 IGNORED_DIRECTORIES = frozenset({".git", "bin", "obj", "node_modules"})
 REMOTE_REFS = "refs/remotes/origin/"
-SOLUTION_SUFFIXES = (".sln", ".slnx")
 
 
 def gh_runner_in(directory: Path) -> GhRunner:
@@ -86,14 +84,6 @@ class Failed(Exception):
     """The targets could not be resolved; the message says why."""
 
 
-def read_text(path: Path) -> str:
-    """Read an MSBuild or solution file whatever its encoding; only ASCII syntax matters here."""
-    data = path.read_bytes()
-    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
-        return data.decode("utf-16", errors="replace")
-    return data.decode("utf-8-sig", errors="replace")
-
-
 def read_file_list(path: Path) -> list[str]:
     """The paths a FILE_LIST names, one per line, without blank lines or a byte order mark.
 
@@ -108,10 +98,6 @@ def read_file_list(path: Path) -> list[str]:
     if not files:
         raise ValueError(f"{path} lists no files")
     return files
-
-
-def same_path(path: Path) -> str:
-    return os.path.normcase(os.path.normpath(str(path)))
 
 
 def relative(path: Path, root: Path) -> str:
@@ -229,29 +215,6 @@ def owning_projects(root: Path, file: Path) -> list[Path]:
 
 def is_web_project(project: Path) -> bool:
     return bool(WEB_PROJECT.search(read_text(project)))
-
-
-def is_solution(path: Path) -> bool:
-    return path.name.casefold().endswith(SOLUTION_SUFFIXES)
-
-
-def listed_projects(solution: Path) -> list[str]:
-    """The project paths a solution lists, as written: `Project(...) = "name", "path"` lines in a .sln, and the Path
-    of each Project element in a .slnx. A .slnx that is not well-formed XML, or declares a DOCTYPE or an entity,
-    lists none, as a .sln line that does not match lists nothing."""
-    text = read_text(solution)
-    if solution.name.casefold().endswith(".slnx"):
-        try:
-            document = read_xml(text)
-        except XmlRefused:
-            return []
-        return [path for element in document.iter("Project") if (path := element.get("Path"))]
-    return [match.group(1) for line in text.splitlines() if (match := SOLUTION_PROJECT.match(line))]
-
-
-def solution_projects(solution: Path) -> set[str]:
-    """Normalized absolute paths of the projects a solution lists."""
-    return {same_path(solution.parent / path.replace("\\", "/")) for path in listed_projects(solution)}
 
 
 def nearest_solutions(root: Path, cwd: Path) -> list[Path]:

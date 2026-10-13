@@ -9,10 +9,10 @@ Portable agent skills for Claude Code, Codex, and GitHub Copilot CLI, with a gua
 | [`analyze-skill-cost`](docs/skills.md#analyze-skill-cost) | Audits an agent skill for token, tool-call, delegation, adapter, and model-selection efficiency. |
 | [`audit-ai-config`](docs/skills.md#audit-ai-config) | Audits a repository's AI-agent configuration, read-only and deterministically. |
 | [`curate-agent-memory`](docs/skills.md#curate-agent-memory) | Audits a project's Claude Code auto-memory and, with approval, moves durable rules to where they belong. |
-| [`dotnet-format`](docs/skills.md#dotnet-format) | Runs formatting and analyzer checks against changed C# files. Opt-in. |
 | [`github-activity-report`](docs/skills.md#github-activity-report) | Reports one user's pull requests, commits, and reviews in one GitHub organization, month by month. |
 | [`repo-cleanup`](docs/skills.md#repo-cleanup) | Performs guarded Git repository housekeeping. |
 | [`update-coding-agent-skills`](docs/skills.md#update-coding-agent-skills) | Fast-forwards the clone the skills were deployed from to `origin/main` and redeploys them. |
+| `dotnet` | An opt-in bundle installed together: [`dotnet-format`](docs/skills.md#dotnet-format), which runs formatting and analyzer checks against changed C# files, and [`dotnet-dependencies`](docs/skills.md#dotnet-dependencies), which answers why a package or assembly is in a solution, where it is used, and which versions conflict. |
 | [`code-review-operations`](docs/code-review-operations.md) | A bundle installed together: [`review-prs`](docs/skills.md#review-prs), [`update-pr-tracker`](docs/skills.md#update-pr-tracker), [`review-insights`](docs/skills.md#review-insights), [`flag-review-finding`](docs/skills.md#flag-review-finding), and [`review-document`](docs/skills.md#review-document). |
 
 [Skills](docs/skills.md) explains how to start each skill, its arguments with examples, and what it needs installed. Most skills run fully on Claude Code, Codex CLI, and GitHub Copilot CLI; [Runtime support](docs/skills.md#runtime-support) lists the exceptions and what each one loses: the code reviews on Codex and Copilot, and user-only skills in a headless Copilot session.
@@ -52,7 +52,7 @@ python deploy.py --all --dry-run
 python deploy.py --all
 ```
 
-On Linux, run them as `python3`. `check` reports missing tools, `configure` asks for the directory holding your local repositories, and `--all` deploys every skill except opt-in ones such as `dotnet-format`, which you add with `--include dotnet-format`.
+On Linux, run them as `python3`. `check` reports missing tools, `configure` asks for the directory holding your local repositories, and `--all` deploys every skill except opt-in ones such as the `dotnet` bundle, which you add with `--include dotnet`.
 
 If you use Codex CLI, make its two [Windows settings](docs/installation.md#codex-cli-settings) before starting a skill. If you use Codex or Copilot CLI, `python deploy.py verify` checks that each finds the deployed skills.
 

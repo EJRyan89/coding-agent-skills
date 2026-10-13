@@ -30,7 +30,8 @@ When a required argument is missing, a skill asks for it rather than guessing.
 | [`analyze-skill-cost`](#analyze-skill-cost) | You or the agent | By default | Nothing extra |
 | [`audit-ai-config`](#audit-ai-config) | You or the agent | By default | Nothing extra |
 | [`curate-agent-memory`](#curate-agent-memory) | You or the agent | By default | Nothing extra |
-| [`dotnet-format`](#dotnet-format) | You or the agent | Opt-in | `dotnet` (optional), `dotnet-format`, `gh` (optional) |
+| [`dotnet-dependencies`](#dotnet-dependencies) | You or the agent | Opt-in, `dotnet` bundle | `dotnet` (optional) |
+| [`dotnet-format`](#dotnet-format) | You or the agent | Opt-in, `dotnet` bundle | `dotnet` (optional), `dotnet-format`, `gh` (optional) |
 | [`flag-review-finding`](#flag-review-finding) | You or the agent | `code-review-operations` bundle | Nothing extra |
 | [`github-activity-report`](#github-activity-report) | You or the agent | By default | `gh` |
 | [`repo-cleanup`](#repo-cleanup) | You | By default | `gh`, the `REPOS_ROOT` setting |
@@ -53,6 +54,7 @@ Which runtimes run each skill. **Full** means every step runs there as it does i
 | [`analyze-skill-cost`](#analyze-skill-cost) | Full | Full | Full |
 | [`audit-ai-config`](#audit-ai-config) | Full | Full | Full |
 | [`curate-agent-memory`](#curate-agent-memory) | Full | Full | Full |
+| [`dotnet-dependencies`](#dotnet-dependencies) | Full | Full | Full |
 | [`dotnet-format`](#dotnet-format) | Full | Full | Full |
 | [`flag-review-finding`](#flag-review-finding) | Full | Full | Full |
 | [`github-activity-report`](#github-activity-report) | Full | Full | Full |
@@ -139,6 +141,33 @@ It looks for the directory in Claude Code's documented order: `autoMemoryDirecto
 /curate-agent-memory C:\GitHub\widgets
 ```
 
+## `dotnet-dependencies`
+
+<!-- generated:dotnet-dependencies -->
+Answer why a package or assembly is in a legacy or SDK-style C# solution, which projects reference an assembly, and where versions and binding redirects conflict, from a read-only dependency graph of the solution's project files. Use it when asked why a package is referenced, what pulls a dependency in, which projects use an assembly, or whether versions or binding redirects disagree, and not to restore, build, or change references.
+
+```text
+/dotnet-dependencies <why <name>...|where <assembly>|conflicts|graph> [--project <path>]
+```
+
+Started by you or the agent. Opt-in with the `dotnet` bundle: deploy it with `--include dotnet`. Needs `dotnet` (optional).
+<!-- /generated:dotnet-dependencies -->
+
+Start it in the directory holding the solution (`.sln` or `.slnx`), or in a directory of `.csproj` files when there is no solution; `--root <path>` names another solution or directory, and `--project <path>` narrows any query to one project. It reads project files only: `.csproj` (old-style `Reference` elements with their `HintPath` and version, `ProjectReference`, and SDK-style `PackageReference` with a `Version` or a central `Directory.Packages.props` version), `packages.config`, each package's `.nuspec` in the `packages` folder or the NuGet cache, a restore's `obj/project.assets.json`, and the binding redirects in `web.config` and `app.config`. It runs no restore or build and writes nothing but the file `graph` names. C# projects only; other project types are not read.
+
+The first word is the query:
+
+- `why <name> [<name> ...]` prints every chain from each project to each name, a package id or an assembly name, with the version at each hop. For a project that is SDK-style, uses `PackageReference`, and has a restore no older than its project file, the chains come from `dotnet nuget why` when `dotnet` is installed, marked `sdk`; every other project, and every project when `dotnet` is absent, is walked from the files, marked `graph`. `why --all --project <path>` lists everything one project reaches, direct and transitive, with the first reference that brings each in.
+- `where <assembly>` names each project whose references resolve to the assembly and how: an old-style `Reference` with a `HintPath`, a framework or GAC reference without one (marked `framework`, so a redirect that targets one is still checked), a package whose restore or unpacked folder ships the assembly, or a project reference whose assembly name matches.
+- `conflicts` names each package or assembly wanted at two or more versions across the solution, one line per project on each side with what brings the version in, and each binding redirect whose `newVersion` is not a version the project references, or whose assembly the project no longer references. It exits 1 when it printed one.
+- `graph` writes the whole graph as a Mermaid diagram, or as Graphviz with `--format dot`, to a file in a new temporary directory, or to `--output <file>` outside the skills directories, and prints the path.
+
+A file the script cannot read, such as one that is not well-formed XML or declares a `DOCTYPE` or an entity, costs its own facts and is reported as one `UNREADABLE` line; every other file still answers. Each `PROJECT` line says where the project's package-to-package edges came from: `assets`, `nuspec`, or `direct` when only the references the project file states are known. Example:
+
+```text
+/dotnet-dependencies why Newtonsoft.Json --project src/Shop.Web/Shop.Web.csproj
+```
+
 ## `dotnet-format`
 
 <!-- generated:dotnet-format -->
@@ -148,7 +177,7 @@ Run dotnet format (whitespace + style + analyzers) and region layout checks on C
 /dotnet-format
 ```
 
-Started by you or the agent. Opt-in: deploy it with `--include dotnet-format`. Needs `dotnet` (optional), `dotnet-format`, and `gh` (optional). Takes no arguments.
+Started by you or the agent. Opt-in with the `dotnet` bundle: deploy it with `--include dotnet`. Needs `dotnet` (optional), `dotnet-format`, and `gh` (optional). Takes no arguments.
 <!-- /generated:dotnet-format -->
 
 Start it inside the repository, on the branch to check. It first runs `git fetch origin` to bring the remote's branches up to date; when the fetch fails, such as offline, it says so and compares with origin as last fetched. It compares with the pull request's base branch, found with `gh`, else the remote's default branch (`origin/HEAD`), else `origin/main`, else `origin/master`, and checks every committed, uncommitted, and untracked `.cs` file that differs. It uses the nearest solution (`.sln` or `.slnx`) to the current directory that owns a changed file, else the repository's solution whose projects own the most, and stops rather than pick one that owns none. Between solutions that own as many changed files it takes the shallowest, then a `.sln` over a `.slnx`. Files outside that solution, such as scripts or `.cs` files no project compiles, get only the layout checks. It reports violations and asks before fixing them, and asks before adding any missing `.editorconfig` settings. For a `.sln` it runs the `dotnet-format` global tool (`dotnet tool install -g dotnet-format`), not the SDK's built-in `dotnet format`, which can fail with `TypeInitializationException` against .NET Framework solutions on newer SDKs. That global tool is deprecated: its NuGet package, last released as 5.1.250801, is marked legacy and unmaintained because `dotnet format` ships in the .NET SDK from .NET 6 on. It cannot open a `.slnx`, so for a `.slnx` the skill runs the SDK's `dotnet format`, which needs the .NET SDK 9.0.200 or newer, and stops when `dotnet` is not installed rather than fall back to the global tool. A changed-file list too long for one Windows command line is formatted in several runs, and all of a check's or a fix's runs stop after 570 seconds together, even when the formatter leaves a build host running.

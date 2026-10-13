@@ -149,7 +149,12 @@ def warn_ignored_home(home: Path) -> None:
 
 
 def currently_chosen(src: source.Source, owned: manifest.Ownership, name: str, kind: str) -> bool:
-    """Whether a menu item is currently deployed from this source."""
+    """Whether a menu item is currently deployed from this source.
+
+    A bundle counts as deployed once any member is: a bundle is atomic, so a skill that was deployed on its own and
+    then joined a bundle keeps being deployed by `--all`, which completes the bundle, instead of being removed as
+    no longer selected.
+    """
     if kind == "bundle":
-        return name in owned.requested_bundles or all(member in owned.skills for member in src.bundles[name])
+        return name in owned.requested_bundles or any(member in owned.skills for member in src.bundles[name])
     return name in owned.requested_skills or name in owned.skills
