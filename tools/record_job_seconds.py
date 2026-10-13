@@ -7,13 +7,15 @@ tests/run_validation.py deals its jobs across the validate workflow's Windows le
 so each leg gets about the same seconds of work. One run's job times differ a lot from the next run's, so this script
 rewrites that table from several runs and takes each job's median: it reads the logs of every leg of each run through
 `gh run view --log`, takes each `ok <seconds>s <job>` line the runner printed on a leg, never the unsharded Linux job's,
+under the legs' name or the one they had before the Linux job joined the required check, so the median spans the rename,
 and sums a suite's shards under the suite's path. A job a run reports more than once, as a weekly run's second
 interpreter and second validation step do, counts at its mean within that run. RUN_ID names the runs to read; without
 any, the latest successful push runs of validate.yml on main are read, DEFAULT_RUN_COUNT of them or --count. The newest
 run decides which jobs the table names: a job it does not report, such as a suite since renamed or removed, is left out,
 and a job it reports that older runs lack takes the median of the runs that have it. A run that is not a completed,
 successful run of the Validation workflow is refused, since a failed or cancelled run leaves jobs out; so is a
-successful run whose log lacks a leg, as a rerun of one failed leg can leave, and a run whose log gh cannot read, such
+successful run whose log names no job as a leg under either name, one whose log lacks a leg, as a rerun of one failed
+leg can leave, and a run whose log gh cannot read, such
 as one past the retention period. One refused run refuses the record and the table is left alone. The release procedure
 in docs/releasing.md runs it before tagging, so the legs are rebalanced once a release and never by a pull request's
 live timings. It exits 0 when it wrote the table and 2 when it could not read the runs.
@@ -48,9 +50,21 @@ DEFAULT_RUN_COUNT = 5
 # What job_pool.py prints for each job that passed, after the timestamp gh puts before every log line.
 OK_LINE = re.compile(r"^\S+ ok +(\d+(?:\.\d+)?)s (.+?)\s*$")
 SHARD_SUFFIX = re.compile(r" \[shard \d+/\d+\]$")
-# A leg's name in the log, from the workflow's matrix job name `Windows shard <shard>, Python <version>`. The Linux
-# job runs every job unsharded beside the legs, so its lines are not a leg's and its seconds are not dealt.
-LEG_NAME = re.compile(r"^Windows shard (\d+)/(\d+), ")
+# A leg's name in the log, from the workflow's matrix job name: `Windows shard <shard>, Python <version>`, and before
+# the Linux job joined the required check, `Shard <shard> on Python <version>`, so the median of the latest runs spans
+# the rename. The Linux job runs every job unsharded beside the legs, so its lines are not a leg's and its seconds are
+# not dealt.
+LEG_NAMES = (re.compile(r"^Windows shard (\d+)/(\d+), Python "), re.compile(r"^Shard (\d+)/(\d+) on Python "))
+LEG_SHAPES = "`Windows shard <n>/<count>, Python <version>` or `Shard <n>/<count> on Python <version>`"
+
+
+def leg_of(job: str) -> tuple[int, int] | None:
+    """The leg's index and the matrix's count when the job is named as a leg, else None."""
+    for pattern in LEG_NAMES:
+        found = pattern.match(job)
+        if found:
+            return int(found.group(1)), int(found.group(2))
+    return None
 
 
 def job_seconds_from_log(log: str) -> dict[str, float]:
@@ -59,7 +73,7 @@ def job_seconds_from_log(log: str) -> dict[str, float]:
     reported: defaultdict[str, list[float]] = defaultdict(list)
     for line in log.splitlines():
         fields = line.split("\t", 2)
-        found = OK_LINE.match(fields[-1]) if len(fields) == 3 and LEG_NAME.match(fields[0]) else None
+        found = OK_LINE.match(fields[-1]) if len(fields) == 3 and leg_of(fields[0]) else None
         if found:
             reported[found.group(2)].append(float(found.group(1)))
     totals: defaultdict[str, float] = defaultdict(float)
@@ -68,13 +82,14 @@ def job_seconds_from_log(log: str) -> dict[str, float]:
     return {name: round(seconds, 1) for name, seconds in totals.items() if round(seconds, 1) > 0}
 
 
+def legs_seen(log: str) -> set[tuple[int, int]]:
+    """Each leg a log has a line from, as its index and the matrix's count."""
+    return {leg for leg in (leg_of(line.split("\t", 1)[0]) for line in log.splitlines()) if leg}
+
+
 def leg_problem(log: str) -> str:
     """What a log lacks of the matrix's legs, or an empty string when it reports every leg."""
-    seen: set[tuple[int, int]] = set()
-    for line in log.splitlines():
-        found = LEG_NAME.match(line.split("	", 1)[0])
-        if found:
-            seen.add((int(found.group(1)), int(found.group(2))))
+    seen = legs_seen(log)
     counts = {count for _, count in seen}
     if len(counts) != 1:
         return "names no one set of legs"
@@ -133,16 +148,22 @@ def run_seconds(client: GitHubClient, run: int) -> dict[str, float]:
             kind="refused",
         )
     log = client.run(["run", "view", str(run), "--log"]).stdout
-    seconds = job_seconds_from_log(log)
-    if not seconds:
+    if not legs_seen(log):
         raise GitHubError(
-            f"run {run} reported no passing jobs; run validation with -v, as the validate workflow does", kind="refused"
+            f"run {run}'s log names no job as a leg, {LEG_SHAPES}; record from runs of the validate workflow's legs",
+            kind="refused",
         )
     problem = leg_problem(log)
     if problem:
         raise GitHubError(
             f"run {run}'s log {problem}, as a rerun of a failed leg leaves; record from runs whose every leg ran in "
             "one attempt",
+            kind="refused",
+        )
+    seconds = job_seconds_from_log(log)
+    if not seconds:
+        raise GitHubError(
+            f"run {run}'s legs reported no passing jobs; run validation with -v, as the validate workflow does",
             kind="refused",
         )
     return seconds
