@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -52,6 +53,12 @@ class ConditionTests(unittest.TestCase):
         self.root.mkdir()
         self.diff = Path(temporary.name) / "diff.patch"
         self.output = Path(temporary.name) / "passages.txt"
+
+    def names(self, diff: str) -> list[doc_passages.Name]:
+        """The names the condition looks for in a diff whose paths all stay in the snapshot."""
+        files, refused = doc_passages.read_files(diff, self.root)
+        self.assertEqual([], refused)
+        return doc_passages.names_to_find(files)
 
     def document(self, path: str, text: str) -> None:
         target = self.root / path
@@ -189,10 +196,8 @@ class ConditionTests(unittest.TestCase):
             "skills/x/scripts/a.test.sh",
         ):
             with self.subTest(path=path):
-                self.assertEqual([], doc_passages.names_to_find(changed(path, ("", ["+def sweep_all():"]))))
-        self.assertEqual(
-            ["contest.sh"], [name.text for name in doc_passages.names_to_find(changed("tools/contest.sh"))]
-        )
+                self.assertEqual([], self.names(changed(path, ("", ["+def sweep_all():"]))))
+        self.assertEqual(["contest.sh"], [name.text for name in self.names(changed("tools/contest.sh"))])
 
     def test_a_header_s_tab_and_quoting_are_not_part_of_the_path(self) -> None:
         diff = (
@@ -203,8 +208,85 @@ class ConditionTests(unittest.TestCase):
         )
         self.assertEqual(
             [("report age.py", "script"), ("résumé.sh", "script"), ("report age", "module")],
-            [(name.text, name.kind) for name in doc_passages.names_to_find(diff)],
+            [(name.text, name.kind) for name in self.names(diff)],
         )
+
+    def test_a_pure_rename_looks_for_the_old_names_and_the_new(self) -> None:
+        self.document("docs/guide.md", "Run `python -B tools/old_name.py` first.\n")
+        diff = (
+            "diff --git a/tools/old_name.py b/tools/new_name.py\nsimilarity index 100%\n"
+            "rename from tools/old_name.py\nrename to tools/new_name.py\n"
+        )
+        self.assertEqual(
+            [
+                ("new_name.py", "script", "tools/new_name.py", None),
+                ("old_name.py", "script", "tools/new_name.py", "tools/old_name.py"),
+                ("new_name", "module", "tools/new_name.py", None),
+                ("old_name", "module", "tools/new_name.py", "tools/old_name.py"),
+            ],
+            [(name.text, name.kind, name.hunk.path, name.renamed_from) for name in self.names(diff)],
+        )
+        self.assertEqual(
+            (
+                0,
+                "PASSAGES 1 given=1\n",
+                "PASSAGE docs/guide.md:1 names old_name.py (script in tools/new_name.py, renamed from "
+                "tools/old_name.py), hunk (no hunk) at new lines 0-0\nRun `python -B tools/old_name.py` first.\n",
+            ),
+            self.run_condition(diff),
+        )
+
+    def test_a_rename_with_an_edit_looks_for_the_old_names_with_the_edit_s_hunk(self) -> None:
+        self.document("docs/guide.md", "The `old_name.report` call writes it.\n")
+        diff = (
+            "diff --git a/tools/old_name.py b/tools/new_name.py\nsimilarity index 90%\n"
+            "rename from tools/old_name.py\nrename to tools/new_name.py\nindex 1111111..2222222 100644\n"
+            "--- a/tools/old_name.py\n+++ b/tools/new_name.py\n@@ -3,2 +3,2 @@\n x = 1\n-y = 2\n+y = 3\n"
+        )
+        self.assertEqual(
+            ["new_name.py", "old_name.py", "new_name", "old_name"], [name.text for name in self.names(diff)]
+        )
+        self.assertEqual(
+            (
+                0,
+                "PASSAGES 1 given=1\n",
+                "PASSAGE docs/guide.md:1 names old_name (module in tools/new_name.py, renamed from "
+                "tools/old_name.py), hunk @@ -3,2 +3,2 @@ at new lines 3-4\nThe `old_name.report` call writes it.\n",
+            ),
+            self.run_condition(diff),
+        )
+
+    def test_a_line_inside_a_hunk_is_content_however_it_begins(self) -> None:
+        # An added `++ "x` line reads `+++ "x` and a removed `-- b/y` line reads `--- b/y`: neither is a header,
+        # so neither is decoded nor names a file.
+        diff = changed(
+            "tools/quoted_text.py", ("", ['+++ "oops', "+++ b/tools/elsewhere.py", "--- a/tools/gone.py"])
+        ) + changed("tools/next_tool.py", ("", ["+def write_all():"]))
+        self.assertEqual(
+            [
+                ("write_all", "function"),
+                ("quoted_text.py", "script"),
+                ("next_tool.py", "script"),
+                ("quoted_text", "module"),
+                ("next_tool", "module"),
+            ],
+            [(name.text, name.kind) for name in self.names(diff)],
+        )
+
+    def test_a_changed_path_that_could_name_a_file_outside_the_snapshot_is_refused(self) -> None:
+        self.document("docs/guide.md", "Run `outside.py` and `report_tool.py`.\n")
+        for path in ("tools\\..\\..\\outside.py", "../outside.py", "C:/outside.py", "/outside.py"):
+            quoted = '"b/' + path.replace("\\", "\\\\") + '"' if "\\" in path else f"b/{path}"
+            section = f"diff --git a/x b/x\n--- a/x\n+++ {quoted}\n@@ -1 +1 @@\n-x = 1\n+x = 2\n"
+            with self.subTest(path=path):
+                self.assertEqual(
+                    (
+                        0,
+                        f"REFUSED {json.dumps(path)}: a path that could name a file outside the snapshot\n"
+                        "PASSAGES 1 given=1\n",
+                    ),
+                    self.run_condition(section + changed("tools/report_tool.py", ("", ["+y = 2"])))[:2],
+                )
 
     def test_a_condition_run_without_its_inputs_fails_the_review(self) -> None:
         code, out, written = self.run_condition("", environment={})
