@@ -866,6 +866,7 @@ def fixture_pull_fixtures() -> list[dict[str, Any]]:
         pull,
         {**pull, "threads": []},
         {**pull, "manifest_path": "review/specialists.json", "body": "## Upgrade note\n\nNone\n"},
+        {**pull, "threads": [], "manifest_path": "review/specialists.json", "document_stage": "draft"},
     ]
 
 
