@@ -217,7 +217,7 @@ A repository reviewer's manifest, validated by `validate_adapter_manifest` in `r
 | `resources` | array | yes | Distinct files any specialist may read. |
 | `specialists` | array | yes | The specialists, at least one. |
 | `conditions` | object | yes | Keyed by condition name, a slug; each value is a [condition](#condition-specialists-manifestconditionscondition). May be empty. |
-| `uncovered` | string | no | One of `review` or `ignore`. What happens to changed files no specialist matches when some do, even if every matching specialist's condition is closed: `review`, the default, gives them to the generic reviewer, and `ignore` leaves them unreviewed and lists them in the record. Files matched only by closed-condition specialists stay skipped; a specialist that shares its files matches none for this. When no specialist matches at all, the generic reviewer reviews the whole change regardless of this setting. |
+| `uncovered` | string | no | One of `review` or `ignore`. What happens to changed files no specialist matches when some do, even if every matching specialist's condition is closed: `review`, the default, gives them to the generic reviewer, and `ignore` gives them to no generic reviewer and lists in the record those no specialist that shares its files reviews on an open condition, which are left unreviewed. Files matched only by closed-condition specialists stay skipped; a specialist that shares its files matches none for this. When no specialist matches at all, the generic reviewer reviews the whole change regardless of this setting. |
 | `finding_categories` | array | no | Distinct one-line names (matched without regard to case) of at most 60 characters, without backticks, quotes, or pipes; at least one. When given, every role names one per finding as its `category`, which the record keeps; without it, a finding's category is its specialist's `category`. |
 | `fallback_finding_category` | string | no | A name that `finding_categories` lists, such as Other: the category reviewers are told to use only when no other fits. A finding must still name a listed category. |
 
@@ -410,7 +410,7 @@ A review version's JSON record, the archive's source of truth, validated by `val
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
 | `unavailable_sources` | array | yes | Distinct changed files whose source the snapshot could not provide, so reviewers saw only their diff, and changed paths no reviewer prompt can carry safely, which no reviewer was given. One makes the verdict `INCOMPLETE` unless findings request changes. |
-| `uncovered_files` | array | no | Distinct changed files no specialist covers, left unreviewed because the manifest sets `uncovered` to `ignore`. A deliberate opt-out that does not change the verdict. |
+| `uncovered_files` | array | no | Distinct changed files no specialist covers and no specialist that shares its files reviews, left unreviewed because the manifest sets `uncovered` to `ignore`. A deliberate opt-out that does not change the verdict. |
 
 #### Reviewer that ran (`record.review.reviewers[]`)
 

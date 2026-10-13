@@ -184,6 +184,7 @@ from review_specialists import (
     split_unified_diff,
     symbolic_links,
     uncovered,
+    unreviewed,
 )
 from review_state import StateError, default_state_path, load_state, update_state, utc_today
 from typed_fields import FieldError, FieldReader
@@ -1696,7 +1697,9 @@ def _routing_lines(manifest: dict[str, Any], changed: list[str], routing: _Routi
         return lines
     lines.extend(f"UNCOVERED {path}" for path in outside)
     if outside and manifest.get("uncovered", "review") == "ignore":
-        lines.append(f"UNREVIEWED files={len(outside)} (the manifest sets uncovered to ignore; the record lists them)")
+        left = unreviewed(manifest, outside, routes)
+        if left:
+            lines.append(f"UNREVIEWED files={len(left)} (the manifest sets uncovered to ignore; the record lists them)")
     elif outside:
         lines.append(f"GENERIC files={len(outside)} (no specialist covers them; the generic reviewer reviews them)")
     return lines
