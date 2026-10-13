@@ -16,7 +16,7 @@ from pathlib import Path
 
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
 from shell_targets import run_git_bash, shell_quote
-from skill_scripts import command_reader
+from skill_scripts import STANDARD_STREAMS, command_reader
 from toolchain import find_powershell
 from validation_support import (
     PYTHON_ENTRY_POINT,
@@ -541,6 +541,106 @@ def git_isolation_problems(root: Path) -> list[str]:
     return problems
 
 
+# What the validation pool's thread reads while the policy checks run on the main thread: it starts each job from a
+# copy of os.environ and prints each result to sys.stdout, so a policy check that changes either reaches the pool.
+RUNNER = "tests/run_validation.py"
+SHARED_STATE_CALLS = frozenset(
+    {"contextlib.redirect_stdout", "contextlib.redirect_stderr", "os.putenv", "os.unsetenv", "os.chdir"}
+)
+ENVIRONMENT_CHANGES = frozenset({"update", "pop", "popitem", "clear", "setdefault", "__setitem__", "__delitem__"})
+PATCHED_TARGETS = frozenset({*STANDARD_STREAMS, "os.environ"})
+
+
+def _constant(node: ast.expr | None) -> str | None:
+    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+
+def _changed_target(node: ast.AST, aliases: dict[str, str]) -> bool:
+    """Whether an assignment or deletion target is a standard stream, os.environ, or an entry of os.environ."""
+    if isinstance(node, ast.Subscript):
+        return qualified_name(node.value, aliases) == "os.environ"
+    return qualified_name(node, aliases) in PATCHED_TARGETS
+
+
+def _shares_state(node: ast.AST, aliases: dict[str, str]) -> str:
+    """What a node changes of the state the pool reads, or an empty string."""
+    if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Delete)):
+        targets = node.targets if isinstance(node, (ast.Assign, ast.Delete)) else [node.target]
+        changed = [ast.unparse(target) for target in targets if _changed_target(target, aliases)]
+        return f"changes {changed[0]}" if changed else ""
+    if not isinstance(node, ast.Call):
+        return ""
+    called = qualified_name(node.func, aliases)
+    first = node.args[0] if node.args else None
+    second = node.args[1] if len(node.args) > 1 else None
+    if called in SHARED_STATE_CALLS:
+        return f"calls {called}"
+    function = node.func
+    if (
+        isinstance(function, ast.Attribute)
+        and function.attr in ENVIRONMENT_CHANGES
+        and qualified_name(function.value, aliases) == "os.environ"
+    ):
+        return f"calls os.environ.{function.attr}"
+    patched = ""
+    if called in {"unittest.mock.patch.dict", "mock.patch.dict"} and first is not None:
+        patched = qualified_name(first, aliases)
+    elif called in {"unittest.mock.patch.object", "mock.patch.object", "setattr", "builtins.setattr"}:
+        attribute = _constant(second)
+        patched = f"{qualified_name(first, aliases)}.{attribute}" if first is not None and attribute else ""
+    elif called in {"unittest.mock.patch", "mock.patch"}:
+        patched = _constant(first) or ""
+    return f"patches {patched}" if patched in PATCHED_TARGETS else ""
+
+
+def shared_state_lines(source: str) -> list[tuple[int, str]]:
+    """Each line on which a module swaps a standard stream or changes os.environ or the working directory, and how,
+    resolved through its imports."""
+    tree = ast.parse(source)
+    aliases = import_aliases(tree)
+    found = {
+        (node.lineno, change)
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.stmt, ast.expr)) and (change := _shares_state(node, aliases))
+    }
+    return sorted(found)
+
+
+def policy_module_files(root: Path) -> list[Path]:
+    """The runner and every module whose policy checks it runs in its own process, from POLICY_MODULES in the
+    runner."""
+    runner = root / RUNNER
+    for node in ast.parse(runner.read_text(encoding="utf-8")).body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "POLICY_MODULES" for target in node.targets
+        ):
+            names = [item.id for item in getattr(node.value, "elts", []) if isinstance(item, ast.Name)]
+            return [runner, *(root / "tests" / "validation" / f"{name}.py" for name in names)]
+    raise AssertionError(f"{RUNNER} names no POLICY_MODULES")
+
+
+def pool_shared_state_problems(root: Path) -> list[str]:
+    """Report a policy check that swaps a standard stream, changes os.environ, or moves the working directory.
+
+    The runner runs the policy checks on its main thread while the pool's thread starts jobs from os.environ and
+    prints their results to sys.stdout, so such a change reaches a job that starts, or a line printed, meanwhile: a
+    job gets a partial environment, or a result goes missing from the output a CI log keeps. Take the stream or the
+    environment as a parameter instead, or move the check into a regression suite, which runs in its own process.
+    """
+    problems: list[str] = []
+    for path in policy_module_files(root):
+        name = path.relative_to(root).as_posix()
+        if not path.is_file():
+            problems.append(f"{name}: a policy module {RUNNER} runs is missing")
+            continue
+        for line, change in shared_state_lines(path.read_text(encoding="utf-8")):
+            problems.append(
+                f"{name}:{line} {change}, which the validation pool reads while the policy checks run; take it as a "
+                "parameter, or move the check into a regression suite"
+            )
+    return problems
+
+
 class SuiteDiscoveryPolicies(unittest.TestCase):
     def test_scripted_skills_have_regression_suites(self) -> None:
         self.assertEqual([], unsuited_script_problems(REPOSITORY_ROOT))
@@ -576,3 +676,6 @@ class SuiteDiscoveryPolicies(unittest.TestCase):
 
     def test_every_suite_that_runs_git_isolates_it(self) -> None:
         self.assertEqual([], git_isolation_problems(REPOSITORY_ROOT))
+
+    def test_no_policy_check_changes_what_the_pool_reads(self) -> None:
+        self.assertEqual([], pool_shared_state_problems(REPOSITORY_ROOT))

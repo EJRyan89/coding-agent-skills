@@ -24,12 +24,16 @@ check passes.
 --shard 2/4 runs the second of four legs, as CI's runners do: once -k or the documentation path has selected the
 policy checks and suite jobs, tests/validation/job_selection.py deals them across the legs the same way on every leg,
 so the legs together run exactly what one run would, each once.
+
+The policy checks, this module's own among them, run on the main thread while the pool's thread starts jobs from
+os.environ and prints each result to sys.stdout, so no policy check swaps a standard stream or changes the
+environment; main takes its streams and environment as parameters for its own checks instead, and
+suite_discovery.pool_shared_state_problems holds the rule.
 """
 
 from __future__ import annotations
 
 import argparse
-import contextlib
 import fnmatch
 import io
 import os
@@ -38,7 +42,9 @@ import sys
 import tempfile
 import time
 import unittest
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any, NamedTuple, NoReturn, TextIO
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -190,26 +196,26 @@ class DocumentationDecision(unittest.TestCase):
 class PullRequestBodyOption(unittest.TestCase):
     def test_a_body_that_is_not_a_file_is_a_usage_error_before_any_check_runs(self) -> None:
         missing = REPOSITORY_ROOT / "tests" / "no such body.md"
+        error = io.StringIO()
         with (
             mock.patch.object(upgrade_notes, "pull_request_body", None),
             mock.patch(f"{__name__}.tool_versions") as versions,
-            contextlib.redirect_stderr(io.StringIO()) as error,
             self.assertRaises(SystemExit) as raised,
         ):
-            main(["--pr-body", str(missing)])
+            main(["--pr-body", str(missing)], errors=error)
         self.assertEqual(2, raised.exception.code)
         self.assertIn(f"--pr-body is not a file: {missing}", error.getvalue())
         versions.assert_not_called()
 
     def test_a_title_that_is_not_a_file_is_a_usage_error_before_any_check_runs(self) -> None:
         missing = REPOSITORY_ROOT / "tests" / "no such title.txt"
+        error = io.StringIO()
         with (
             mock.patch.object(pull_request_title, "pull_request_title", None),
             mock.patch(f"{__name__}.tool_versions") as versions,
-            contextlib.redirect_stderr(io.StringIO()) as error,
             self.assertRaises(SystemExit) as raised,
         ):
-            main(["--pr-title", str(missing)])
+            main(["--pr-title", str(missing)], errors=error)
         self.assertEqual(2, raised.exception.code)
         self.assertIn(f"--pr-title is not a file: {missing}", error.getvalue())
         versions.assert_not_called()
@@ -237,18 +243,19 @@ class ShardOption(unittest.TestCase):
                 shard_option(text)
 
     def test_a_shard_outside_its_count_is_a_usage_error_before_any_check_runs(self) -> None:
-        with (
-            mock.patch(f"{__name__}.tool_versions") as versions,
-            contextlib.redirect_stderr(io.StringIO()) as error,
-            self.assertRaises(SystemExit) as raised,
-        ):
-            main(["--shard", "5/4"])
+        error = io.StringIO()
+        with mock.patch(f"{__name__}.tool_versions") as versions, self.assertRaises(SystemExit) as raised:
+            main(["--shard", "5/4"], errors=error)
         self.assertEqual(2, raised.exception.code)
         self.assertIn("argument --shard: expected <index>/<count>", error.getvalue())
         versions.assert_not_called()
 
 
 class TerminationReport(unittest.TestCase):
+    """main's report of a retried job and a terminated one, read through the stream and the environment main is
+    given. This check runs beside the pool, which starts each job from os.environ and prints to sys.stdout, so it
+    changes neither."""
+
     def test_a_retry_and_a_termination_reach_the_output_and_the_step_summary(self) -> None:
         ended = "bash.exe was ended with status 0x80000004 before its first line of output: bash.exe -c 'x'"
         retried, terminated = (Job(label, label, 1, lambda: None) for label in ("suite b.sh", "suite a.sh"))
@@ -260,6 +267,15 @@ class TerminationReport(unittest.TestCase):
             ],
             [Retry(retried, ended, "passed")],
         )
+        stdout, environment = sys.stdout, dict(os.environ)
+        seen: list[tuple[bool, bool]] = []
+
+        def pool_runs(*_: object) -> tuple[unittest.TestResult, PoolResult]:
+            # What a pool job would start from and print to, at the moment the pool runs.
+            seen.append((sys.stdout is stdout, dict(os.environ) == environment))
+            return unittest.TestResult(), pool
+
+        printed = io.StringIO()
         with tempfile.TemporaryDirectory() as temporary:
             summary = Path(temporary) / "step summary.md"
             with (
@@ -268,12 +284,16 @@ class TerminationReport(unittest.TestCase):
                 mock.patch(f"{__name__}.tool_versions", return_value={}),
                 mock.patch(f"{__name__}.report_prerequisite_problems", return_value=False),
                 mock.patch(f"{__name__}.all_jobs", return_value=[retried, terminated]),
-                mock.patch(f"{__name__}.run_beside", return_value=(unittest.TestResult(), pool)),
-                mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary)}),
-                contextlib.redirect_stdout(io.StringIO()) as printed,
+                mock.patch(f"{__name__}.run_beside", side_effect=pool_runs),
             ):
-                self.assertEqual(1, main(["-k", "suite ?.sh"]))
+                code = main(
+                    ["-k", "suite ?.sh"], out=printed, environment={**environment, "GITHUB_STEP_SUMMARY": str(summary)}
+                )
             text = summary.read_text(encoding="utf-8")
+        self.assertEqual(1, code)
+        self.assertEqual([(True, True)], seen)
+        self.assertIs(stdout, sys.stdout)
+        self.assertEqual(environment, dict(os.environ))
         self.assertIn(f"\nRETRIED suite b.sh\n{'-' * 70}\n{ended}\nStarted once more, it passed.\n", printed.getvalue())
         self.assertIn(
             f"\nFAILED suite a.sh\n{'-' * 70}\n"
@@ -311,17 +331,32 @@ def deal_to_leg(
     return leg_checks, leg_suites, line
 
 
-def run_policies(policies: unittest.TestSuite, verbose: bool) -> unittest.TestResult:
+def run_policies(policies: unittest.TestSuite, verbose: bool, out: TextIO) -> unittest.TestResult:
     """Run the policy checks into a buffer and print their report in one block once they finish."""
     report = io.StringIO()
     result = unittest.TextTestRunner(stream=report, verbosity=2 if verbose else 1).run(policies)
     with OUTPUT_LOCK:
-        print(f"Policy checks:\n{report.getvalue()}", end="", flush=True)
+        print(f"Policy checks:\n{report.getvalue()}", end="", file=out, flush=True)
     return result
 
 
-def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the repository's policy checks and regression suites.")
+class UsageParser(argparse.ArgumentParser):
+    """An argument parser that writes a usage error to the stream it is given, so the runner's own checks read the
+    error without swapping sys.stderr beside the pool."""
+
+    def __init__(self, *, errors: TextIO | None = None, **options: Any) -> None:
+        super().__init__(**options)
+        self.errors = errors
+
+    def error(self, message: str) -> NoReturn:
+        stream = sys.stderr if self.errors is None else self.errors
+        self.print_usage(stream)
+        stream.write(f"{self.prog}: error: {message}\n")
+        raise SystemExit(2)
+
+
+def parse_arguments(argv: list[str] | None, errors: TextIO | None = None) -> argparse.Namespace:
+    parser = UsageParser(errors=errors, description="Run the repository's policy checks and regression suites.")
     parser.add_argument(
         "-k",
         dest="patterns",
@@ -358,8 +393,71 @@ def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     return arguments
 
 
-def main(argv: list[str] | None = None) -> int:
-    arguments = parse_arguments(argv)
+class Run(NamedTuple):
+    """What a run's report says besides its results: how its jobs were chosen, its leg, its tools, and its seconds."""
+
+    mode: str
+    leg: str | None
+    versions: dict[str, tuple[int, ...] | None]
+    seconds: float
+
+
+def report_run(
+    policy_result: unittest.TestResult,
+    pool: PoolResult,
+    jobs: int,
+    run: Run,
+    out: TextIO,
+    environment: Mapping[str, str],
+) -> bool:
+    """Print each retried and failed job and the closing line to out, append the step summary to the file environment
+    names, and return whether the run passed."""
+    failures, retries = pool
+    retried = {retry.job.label: f"{retry.ending}\nStarted once more, it {retry.result}." for retry in retries}
+    for label, note in retried.items():
+        print(f"\n{'=' * 70}\nRETRIED {label}\n{'-' * 70}\n{note}", file=out, flush=True)
+    for failure in failures:
+        print(f"\n{'=' * 70}\nFAILED {failure.job.label}\n{'-' * 70}\n{failure.report}", file=out, flush=True)
+    passed = policy_result.wasSuccessful() and not failures
+    print(
+        f"\n{f'Shard {run.leg}: ' if run.leg else ''}{policy_result.testsRun} policy checks and {jobs} suite jobs in "
+        f"{run.seconds:.0f}s: "
+        + ("validation passed." if passed else f"validation FAILED ({len(failures)} suite jobs failed)."),
+        file=out,
+    )
+    failed = [f"policy {test.id().rsplit('.', 1)[-1]}" for test, _ in policy_result.failures + policy_result.errors]
+    failed += [failure.job.label for failure in failures]
+    details = {failure.job.label: failure.report for failure in failures if failure.raised or failure.terminated}
+    summary = step_summary(
+        tools.python_version(),
+        run.versions,
+        run.mode,
+        policy_result.testsRun,
+        jobs,
+        run.seconds,
+        failed,
+        details,
+        run.leg,
+        retried,
+    )
+    append_step_summary(environment, summary)
+    return passed
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    out: TextIO | None = None,
+    errors: TextIO | None = None,
+    environment: Mapping[str, str] | None = None,
+) -> int:
+    """Run the validation. Its own output goes to out, a usage error or an empty selection to errors, and it reads the
+    base branch, the worker count, and the step summary's path from environment: sys.stdout, sys.stderr, and
+    os.environ unless given."""
+    out = sys.stdout if out is None else out
+    errors = sys.stderr if errors is None else errors
+    environment = os.environ if environment is None else environment
+    arguments = parse_arguments(argv, errors)
     upgrade_notes.pull_request_body = arguments.pr_body
     pull_request_title.pull_request_title = arguments.pr_title
     versions = tool_versions()
@@ -377,7 +475,7 @@ def main(argv: list[str] | None = None) -> int:
         jobs = [job for job in all_jobs() if any(fnmatch.fnmatchcase(job.name, pattern) for pattern in patterns)]
         mode = f"Selected by -k {' '.join(arguments.patterns)}."
     else:
-        base = f"origin/{os.environ.get('GITHUB_BASE_REF') or 'main'}"
+        base = f"origin/{environment.get('GITHUB_BASE_REF') or 'main'}"
         paths = None if arguments.full else changed_paths(REPOSITORY_ROOT, base)
         only, reason = (False, "--full was given") if arguments.full else documentation_only(paths)
         if only and paths is not None:
@@ -392,52 +490,33 @@ def main(argv: list[str] | None = None) -> int:
         else:
             jobs = all_jobs()
             mode = f"Full validation: {reason}."
-        print(mode, flush=True)
+        print(mode, file=out, flush=True)
     if not policies.countTestCases() and not jobs:
-        print(f"No policy check or suite matches {' '.join(arguments.patterns)}.", file=sys.stderr)
+        print(f"No policy check or suite matches {' '.join(arguments.patterns)}.", file=errors)
         return 2
     leg = f"{arguments.shard[0]}/{arguments.shard[1]}" if arguments.shard else None
     if arguments.shard:
         policies, jobs, share = deal_to_leg(policies, jobs, arguments.shard)
         mode = f"{mode} {share}"
-        print(share, flush=True)
+        print(share, file=out, flush=True)
 
-    workers = worker_count()
+    workers = worker_count(environment)
     print(
         f"Running {policies.countTestCases()} policy checks beside {len(jobs)} suite jobs on {workers} workers.",
+        file=out,
         flush=True,
     )
-    policy_result, (failures, retries) = run_beside(
-        lambda: run_policies(policies, arguments.verbose), jobs, arguments.verbose, workers
+    policy_result, pool = run_beside(
+        lambda: run_policies(policies, arguments.verbose, out), jobs, arguments.verbose, workers
     )
-    retried = {retry.job.label: f"{retry.ending}\nStarted once more, it {retry.result}." for retry in retries}
-    for label, note in retried.items():
-        print(f"\n{'=' * 70}\nRETRIED {label}\n{'-' * 70}\n{note}", flush=True)
-    for failure in failures:
-        print(f"\n{'=' * 70}\nFAILED {failure.job.label}\n{'-' * 70}\n{failure.report}", flush=True)
-    passed = policy_result.wasSuccessful() and not failures
-    seconds = time.perf_counter() - started
-    print(
-        f"\n{f'Shard {leg}: ' if leg else ''}{policy_result.testsRun} policy checks and {len(jobs)} suite jobs in "
-        f"{seconds:.0f}s: "
-        + ("validation passed." if passed else f"validation FAILED ({len(failures)} suite jobs failed).")
-    )
-    failed = [f"policy {test.id().rsplit('.', 1)[-1]}" for test, _ in policy_result.failures + policy_result.errors]
-    failed += [failure.job.label for failure in failures]
-    details = {failure.job.label: failure.report for failure in failures if failure.raised or failure.terminated}
-    summary = step_summary(
-        tools.python_version(),
-        versions,
-        mode,
-        policy_result.testsRun,
+    passed = report_run(
+        policy_result,
+        pool,
         len(jobs),
-        seconds,
-        failed,
-        details,
-        leg,
-        retried,
+        Run(mode, leg, versions, time.perf_counter() - started),
+        out,
+        environment,
     )
-    append_step_summary(os.environ, summary)
     return 0 if passed else 1
 
 

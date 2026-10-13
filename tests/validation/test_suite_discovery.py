@@ -23,6 +23,7 @@ from suite_discovery import (
     SHARD_RUNNER,
     TESTS_PER_SHARD,
     git_isolation_problems,
+    pool_shared_state_problems,
     recorded_cost_problems,
     recorded_shard_problems,
     regression_suites,
@@ -473,6 +474,94 @@ class GitIsolationPolicy(GitTestCase):
                 ],
                 git_isolation_problems(root),
             )
+
+
+class PoolSharedStatePolicy(GitTestCase):
+    RUNNER = "import alpha\nimport beta\n\nPOLICY_MODULES = (alpha, beta)\n"
+
+    def problems(self, files: Mapping[str, str]) -> list[str]:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(root, {"tests/run_validation.py": self.RUNNER, "tests/validation/beta.py": "", **files})
+            return pool_shared_state_problems(root)
+
+    def test_a_policy_check_that_swaps_a_stream_or_changes_the_environment_is_reported(self) -> None:
+        alpha = (
+            "import contextlib\n"
+            "import io\n"
+            "import os as system\n"
+            "import sys\n"
+            "from contextlib import redirect_stderr as quiet\n"
+            "from unittest import mock\n"
+            "\n"
+            "def check():\n"
+            "    with contextlib.redirect_stdout(io.StringIO()):\n"
+            "        pass\n"
+            "    with quiet(io.StringIO()):\n"
+            "        pass\n"
+            "    with mock.patch.dict(system.environ, {'A': 'b'}):\n"
+            "        pass\n"
+            "    with mock.patch.object(sys, 'stdout', io.StringIO()):\n"
+            "        pass\n"
+            "    with mock.patch('os.environ', {}):\n"
+            "        pass\n"
+            "    system.environ['A'] = 'b'\n"
+            "    del system.environ['A']\n"
+            "    system.environ.update(A='b')\n"
+            "    sys.stderr = io.StringIO()\n"
+            "    setattr(sys, 'stdin', None)\n"
+            "    system.chdir('..')\n"
+        )
+        problems = self.problems({"tests/validation/alpha.py": alpha})
+        self.assertEqual(
+            [
+                "tests/validation/alpha.py:9 calls contextlib.redirect_stdout",
+                "tests/validation/alpha.py:11 calls contextlib.redirect_stderr",
+                "tests/validation/alpha.py:13 patches os.environ",
+                "tests/validation/alpha.py:15 patches sys.stdout",
+                "tests/validation/alpha.py:17 patches os.environ",
+                "tests/validation/alpha.py:19 changes system.environ['A']",
+                "tests/validation/alpha.py:20 changes system.environ['A']",
+                "tests/validation/alpha.py:21 calls os.environ.update",
+                "tests/validation/alpha.py:22 changes sys.stderr",
+                "tests/validation/alpha.py:23 patches sys.stdin",
+                "tests/validation/alpha.py:24 calls os.chdir",
+            ],
+            [problem.split(",", 1)[0] for problem in problems],
+        )
+        self.assertIn("which the validation pool reads while the policy checks run", problems[0])
+
+    def test_the_runner_itself_is_read_and_a_missing_policy_module_is_reported(self) -> None:
+        runner = self.RUNNER + "import contextlib, io\n\ndef f():\n    contextlib.redirect_stderr(io.StringIO())\n"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(root, {"tests/run_validation.py": runner, "tests/validation/alpha.py": ""})
+            problems = pool_shared_state_problems(root)
+        self.assertEqual(2, len(problems), problems)
+        self.assertTrue(problems[0].startswith("tests/run_validation.py:8 calls contextlib.redirect_stderr"))
+        self.assertEqual(
+            "tests/validation/beta.py: a policy module tests/run_validation.py runs is missing", problems[1]
+        )
+
+    def test_reading_the_state_or_taking_it_as_a_parameter_passes(self) -> None:
+        alpha = (
+            "import io\n"
+            "import os\n"
+            "import sys\n"
+            "from unittest import mock\n"
+            "\n"
+            "def main(out=None, environment=None):\n"
+            "    out = sys.stdout if out is None else out\n"
+            "    environment = os.environ if environment is None else environment\n"
+            "    merged = dict(os.environ)\n"
+            "    merged['A'] = 'b'\n"
+            "    print(os.environ.get('A'), file=out)\n"
+            "    with mock.patch.dict(merged, {'B': 'c'}), mock.patch.object(io, 'StringIO'):\n"
+            "        pass\n"
+            "    with mock.patch('module.attribute'):\n"
+            "        pass\n"
+        )
+        self.assertEqual([], self.problems({"tests/validation/alpha.py": alpha}))
 
 
 if __name__ == "__main__":
