@@ -64,6 +64,7 @@ from review_operation import parse_pull_selector
 from review_runtime import (
     DEFAULT_DOCUMENT_STAGE,
     DOCUMENT_STAGES,
+    HELD_TEXT_FOLDER,
     MAX_CHANGED_FILE_BYTES,
     PathRoom,
     blob_matches,
@@ -87,9 +88,6 @@ BINARY_PROBE = 8000
 LOCAL_OWNER = "review-document.local"
 LOOSE_REPOSITORY = f"{LOCAL_OWNER}/document"
 REPORT_NAME = "report.md"
-# No bound on a path's length: a pull request's path is judged by its name before the folder of its fixture is known,
-# and by its length in the room that folder leaves when the fixture is written.
-ANY_LENGTH = PathRoom(sys.maxsize, sys.maxsize)
 
 
 class DocumentError(ValueError):
@@ -323,10 +321,23 @@ def reviewed_by_design(relative: str) -> bool:
     return document_format(relative) is not None or PurePosixPath(relative).suffix.lower() in DESIGN_SUFFIXES
 
 
-def in_manifest_folder(relative: str) -> bool:
-    """Whether `relative` is in the manifest's folder, in any case, since a case-insensitive file system merges the
-    spellings."""
-    return relative.casefold().startswith(MANIFEST_PATH.split("/")[0] + "/")
+def refuse_reserved(relative: str) -> None:
+    """Refuse a path in a folder the review keeps for itself, in any case, since a case-insensitive file system
+    merges the spellings: the fixture's manifest folder, and the folder where the snapshot holds a document's
+    extracted text, which no repository path may be in."""
+    folder = relative.split("/", 1)[0].casefold()
+    if folder == MANIFEST_PATH.split("/")[0]:
+        raise DocumentError(f"{relative} is where the fixture keeps its reviewer manifest")
+    if folder == HELD_TEXT_FOLDER:
+        raise DocumentError(f"{relative} is where the source snapshot keeps a document's extracted text")
+
+
+def refuse_unwritable(fixture: Path, relative: str) -> None:
+    """Refuse a document the fixture at `fixture` cannot hold, by its path in the room the fixture's folder leaves
+    it and by the reviewer manifest's, before anything of the fixture is written."""
+    fixture_target(fixture / "head", relative)
+    if reviewed_by_design(relative):
+        fixture_target(fixture / "head", MANIFEST_PATH)
 
 
 def write_fixture(fixture: Path, document: Document, pull: dict[str, Any], stage: str | None) -> list[str]:
@@ -334,7 +345,7 @@ def write_fixture(fixture: Path, document: Document, pull: dict[str, Any], stage
     the lines that name it. A document the design reviewer reviews is recorded at `stage`, review by default."""
     relative, base = document.relative, document.base
     design = reviewed_by_design(relative)
-    fixture_target(fixture / "head", relative)
+    refuse_unwritable(fixture, relative)
     for tree in ("base", "head"):
         (fixture / tree).mkdir(parents=True)
     if base.content is not None:
@@ -378,8 +389,7 @@ def build(
     form = document_format(path.name)
     content = document_bytes(path, form)
     location = locate(path, git)
-    if in_manifest_folder(location.relative):
-        raise DocumentError(f"{location.relative} is where the fixture keeps its reviewer manifest")
+    refuse_reserved(location.relative)
     base = choose_base(requested, location, git, text=form is None)
     document = Document(location.relative, content, form, base)
     refuse_unchanged(document, "uncommitted change")
@@ -443,18 +453,18 @@ def pull_blob(github: GitHubClient, repository: str, commit: str, path: str) -> 
     return content
 
 
-def pull_document(github: GitHubClient, pull: Pull, change: Change, requested: str | None) -> Document:
+def pull_document(github: GitHubClient, pull: Pull, change: Change, requested: str | None, fixture: Path) -> Document:
     """A changed document of the pull request, read at its head and, unless the whole document was asked for, at the
-    merge base. Refused, naming the document, when it cannot be reviewed."""
+    merge base. Refused, naming the document, when it cannot be reviewed, its path by every rule a fixture's path
+    must meet, in the room the folder of its fixture, `fixture`, leaves it, before any of it is read."""
     relative = change.path
     # A git path may hold a control character, such as a line break, which would break a printed line.
     unprintable = any(ord(character) < 32 or character == "\x7f" for character in relative)
     parts = relative.split("/")
     if unprintable or "\\" in relative or any(part in ("", ".", "..") for part in parts):
         raise DocumentError(f"{relative} is not a path a fixture can hold")
-    refuse_path(relative, ANY_LENGTH)
-    if in_manifest_folder(relative):
-        raise DocumentError(f"{relative} is where the fixture keeps its reviewer manifest")
+    fixture_target(fixture / "head", relative)
+    refuse_reserved(relative)
     if change.status == "removed":
         raise DocumentError(f"{relative} is removed in the pull request")
     form = document_format(relative)
@@ -486,6 +496,43 @@ def routed_changes(changes: list[Change], selector: str, wanted: str | None) -> 
     return chosen
 
 
+def fixture_folder(root: Path, index: int) -> Path:
+    """The folder of a pull request's `index`-th fixture, counted from one, in the output directory `root`."""
+    return root / str(index) / "fixture"
+
+
+def refuse_crowded(root: Path, count: int) -> None:
+    """Refuse an output directory that leaves the last of `count` fixtures no room for the reviewer manifest every
+    fixture of a pull request's documents holds, before any document is read."""
+    reason = unsafe_path_reason(MANIFEST_PATH, path_room(fixture_folder(root, count) / "head"))
+    if reason is not None:
+        raise DocumentError(
+            f"{root} leaves a fixture no room for its reviewer manifest, {MANIFEST_PATH}: {reason}; "
+            "name a shorter --output"
+        )
+
+
+def pull_documents(
+    github: GitHubClient, pull: Pull, routed: list[Change], requested: str | None, wanted: str | None, root: Path
+) -> tuple[list[Document], list[str]]:
+    """The documents of `routed` that can be reviewed, each judged in the folder of the fixture it is given, and the
+    reason each other one is skipped. With `wanted`, a document that cannot be reviewed fails the build, and so does
+    a pull request with none left."""
+    documents: list[Document] = []
+    skipped: list[str] = []
+    for change in routed:
+        try:
+            documents.append(pull_document(github, pull, change, requested, fixture_folder(root, len(documents) + 1)))
+        except DocumentError as exc:
+            if wanted is not None:
+                raise
+            skipped.append(flat_text(str(exc)))
+    if not documents:
+        selector = f"{pull.repository}#{pull.number}"
+        raise DocumentError(f"{selector} changes no document that can be reviewed: {'; '.join(skipped)}")
+    return documents, skipped
+
+
 def build_pull(
     reference: tuple[str, int],
     requested: str | None,
@@ -496,7 +543,8 @@ def build_pull(
 ) -> list[str]:
     """One fixture for each document the pull request changes, or for the one `wanted` names, each in its own
     numbered folder of the output directory and each at `stage`. Without `wanted`, a document that cannot be reviewed
-    is skipped, unless none can."""
+    is skipped, unless none can. Every document is judged, its path in the room its fixture's folder leaves it
+    among the rest, before any fixture is written."""
     directory = output_directory(output)
     repository, number = reference
     selector = f"{repository}#{number}"
@@ -508,23 +556,19 @@ def build_pull(
         added = next((change.path for change in routed if change.status == "added"), None)
         if added is not None:
             raise DocumentError(f"--base committed has nothing to compare with: {added} is added in the pull request")
-    documents: list[Document] = []
     lines = [f"PULL {selector} base {pull.base} head {pull.head}"]
-    skipped: list[str] = []
-    for change in routed:
-        try:
-            documents.append(pull_document(github, pull, change, requested))
-        except DocumentError as exc:
-            if wanted is not None:
-                raise
-            skipped.append(flat_text(str(exc)))
-    if not documents:
-        raise DocumentError(f"{selector} changes no document that can be reviewed: {'; '.join(skipped)}")
     root = output_root(directory)
+    try:
+        refuse_crowded(root, len(routed))
+        documents, skipped = pull_documents(github, pull, routed, requested, wanted, root)
+    except BaseException:
+        if directory is None:
+            shutil.rmtree(root, ignore_errors=True)
+        raise
     for index, document in enumerate(documents, start=1):
         whole = document.base.commit is None
         lines += write_fixture(
-            root / str(index) / "fixture",
+            fixture_folder(root, index),
             document,
             {
                 "repository": repository,
