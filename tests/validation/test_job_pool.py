@@ -32,10 +32,17 @@ from job_pool import (
     worker_count,
 )
 
+from deployer import platform_support
+
 # Stand-ins for the program a job starts, Bash among them. Windows reports a process that exits with -2147483644 as
-# 0x80000004, the status Git Bash was ended with on the hosted runners before it printed anything.
-ENDED = [sys.executable, "-c", "import os; os._exit(-2147483644)"]
-ENDED_AFTER_OUTPUT = [sys.executable, "-c", "import os; print('ran', flush=True); os._exit(-2147483644)"]
+# 0x80000004, the status Git Bash was ended with on the hosted runners before it printed anything; elsewhere a process
+# a signal ends, here SIGKILL, is the one ended rather than exiting, and Python reports it as -9.
+if platform_support.WINDOWS:
+    ENDING, STATUS, CODE = "os._exit(-2147483644)", "0x80000004", "2147483652"
+else:
+    ENDING, STATUS, CODE = "os.kill(os.getpid(), 9)", "SIGKILL", "-9"
+ENDED = [sys.executable, "-c", f"import os; {ENDING}"]
+ENDED_AFTER_OUTPUT = [sys.executable, "-c", f"import os; print('ran', flush=True); {ENDING}"]
 FAILS_AFTER_OUTPUT = [sys.executable, "-c", "import sys; print('1 test failed', flush=True); sys.exit(1)"]
 PASSES = [sys.executable, "-c", "pass"]
 
@@ -204,10 +211,10 @@ class TerminationFixtures(GitTestCase):
     def test_a_program_ended_before_any_output_is_a_termination_naming_its_status_and_command(self) -> None:
         with self.assertRaises(Terminated) as raised:
             run_process(ENDED)
-        self.assertEqual("0x80000004", raised.exception.status)
+        self.assertEqual(STATUS, raised.exception.status)
         self.assertEqual(" ".join(ENDED), raised.exception.command)
         self.assertEqual(
-            f"{Path(sys.executable).name} was ended with status 0x80000004 before its first line of output: "
+            f"{Path(sys.executable).name} was ended with status {STATUS} before its first line of output: "
             f"{' '.join(ENDED)}",
             str(raised.exception),
         )
@@ -216,7 +223,7 @@ class TerminationFixtures(GitTestCase):
     def test_a_program_ended_after_its_output_began_is_a_failed_check_naming_the_status(self) -> None:
         with self.assertRaises(AssertionError) as raised:
             run_process(ENDED_AFTER_OUTPUT)
-        self.assertIn("exit code 2147483652 (status 0x80000004, ended after its output began)", str(raised.exception))
+        self.assertIn(f"exit code {CODE} (status {STATUS}, ended after its output began)", str(raised.exception))
         self.assertIn("ran", str(raised.exception))
 
     def test_a_job_ended_before_output_is_started_once_more_and_reported_when_it_passes(self) -> None:
@@ -225,13 +232,13 @@ class TerminationFixtures(GitTestCase):
             failures, retries = run_jobs([job], verbose=False, workers=1)
         self.assertEqual([ENDED, PASSES], started)
         self.assertEqual([], failures)
-        ending = f"{Path(sys.executable).name} was ended with status 0x80000004 before its first line of output: "
+        ending = f"{Path(sys.executable).name} was ended with status {STATUS} before its first line of output: "
         self.assertEqual([Retry(job, f"{ending}{' '.join(ENDED)}", "passed")], retries)
         self.assertRegex(
             printed.getvalue(),
-            r"\ARETRY +[0-9.]+s bash suite: .+ was ended with status 0x80000004 before its first line of output: .+; "
+            rf"\ARETRY +[0-9.]+s bash suite: .+ was ended with status {STATUS} before its first line of output: .+; "
             r"a termination, not a failed check, so it starts once more\n"
-            r"ok +[0-9.]+s bash suite \(retried after status 0x80000004\)\n\Z",
+            rf"ok +[0-9.]+s bash suite \(retried after status {STATUS}\)\n\Z",
         )
 
     def test_a_second_ending_is_a_failed_job_that_names_each_status(self) -> None:
@@ -248,9 +255,9 @@ class TerminationFixtures(GitTestCase):
                 "check, so nothing in it reached a verdict:\n  "
             )
         )
-        self.assertEqual(2, failure.report.count(f"with status 0x80000004 before its first line of output: {ENDED[0]}"))
+        self.assertEqual(2, failure.report.count(f"with status {STATUS} before its first line of output: {ENDED[0]}"))
         self.assertEqual(["was ended again"], [retry.result for retry in retries])
-        self.assertRegex(printed.getvalue(), r"\nFAIL +[0-9.]+s bash suite \(retried after status 0x80000004\)\n\Z")
+        self.assertRegex(printed.getvalue(), rf"\nFAIL +[0-9.]+s bash suite \(retried after status {STATUS}\)\n\Z")
 
     def test_a_job_that_wrote_output_is_never_started_again(self) -> None:
         failing, failing_started = job_running("fails", FAILS_AFTER_OUTPUT, PASSES)
@@ -272,7 +279,7 @@ class TerminationFixtures(GitTestCase):
         self.assertEqual(["failed"], [retry.result for retry in retries])
         report = failures[0].report
         self.assertTrue(report.startswith("Started once more after: "), report)
-        self.assertIn("with status 0x80000004 before its first line of output", report)
+        self.assertIn(f"with status {STATUS} before its first line of output", report)
         self.assertIn("\nThe retry failed:\nCommand failed with exit code 1: ", report)
         self.assertIn("1 test failed", report)
 

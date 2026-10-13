@@ -21,8 +21,7 @@ def find_git_bash() -> str:
     if found:
         return found
     raise AssertionError(
-        "Git Bash was not found. Install Git for Windows or set GIT_BASH; "
-        "Git Bash is required for repository validation."
+        f"{platform_support.BASH_MISSING} {platform_support.BASH_NAME} is required for repository validation."
     )
 
 

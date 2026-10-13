@@ -6,6 +6,7 @@ import errno
 import os
 import re
 import shutil
+import signal
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -43,6 +44,10 @@ TOOL_DEADLINE_SECONDS = 600
 TOOL_DEADLINE_SECTION = "A tool that does not finish"
 # What the Bash that checks rendered scripts is called here: Git for Windows' on Windows, and the system's elsewhere.
 BASH_NAME = "Git Bash" if WINDOWS else "Bash"
+# Why no Bash was found, as the validation runner says it.
+BASH_MISSING = (
+    "Git Bash was not found. Install Git for Windows or set GIT_BASH;" if WINDOWS else "No bash was found on PATH."
+)
 WINDOWS_INSTALL_HINTS = {
     "Git Bash": "winget install --id Git.Git",
     "ShellCheck": "winget install --id koalaman.shellcheck",
@@ -354,8 +359,16 @@ TERMINATION_STATUS_FLOOR = 0x80000000
 
 
 def termination_status(returncode: int) -> str | None:
-    """The status, in hexadecimal, of a process ended by an exception or by another process rather than by the
-    program, or None for a program's own exit code."""
+    """How a process was ended by an exception or by another process rather than by the program, or None for a
+    program's own exit code: on Windows the status in hexadecimal, and elsewhere the signal, which Python reports as
+    the negated signal number, by its name."""
+    if not WINDOWS:
+        if returncode >= 0:
+            return None
+        try:
+            return signal.Signals(-returncode).name
+        except ValueError:
+            return f"signal {-returncode}"
     return f"0x{returncode:08X}" if returncode >= TERMINATION_STATUS_FLOOR else None
 
 
