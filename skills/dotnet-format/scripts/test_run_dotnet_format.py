@@ -21,6 +21,12 @@ import run_dotnet_format as formatter
 from git_test_base import GitTestCase
 
 INSTALL_HINT = "dotnet-format is not installed; install it with: dotnet tool install -g dotnet-format"
+# A file outside the repository as dotnet-format names it on this platform, and as the formatter reports it.
+OUTSIDE_FILE, OUTSIDE_REPORTED = (
+    ("C:\\elsewhere\\Generated.cs", "C:/elsewhere/Generated.cs")
+    if sys.platform == "win32"
+    else ("/elsewhere/Generated.cs", "/elsewhere/Generated.cs")
+)
 
 
 def sample_log(root: Path) -> str:
@@ -40,7 +46,7 @@ def sample_log(root: Path) -> str:
             f"  {app / 'Program.cs'}(14,9): warning RCS0041: Remove new line between 'if' keyword and 'else' "
             f"keyword {project}",
             f"  {app / 'My Folder' / 'Util.cs'}(3,1): info IDE0005: Using directive is unnecessary. {project}",
-            "  C:\\elsewhere\\Generated.cs(1,1): warning CA1822: Mark members as static",
+            f"  {OUTSIDE_FILE}(1,1): warning CA1822: Mark members as static",
             "  Warning: Program.cs(1,1) is not an issue line",
             "  Formatted code file 'Program.cs'.",
             "  Format complete in 5123ms.",
@@ -54,7 +60,7 @@ SAMPLE_DIAGNOSTICS = [
     ["DIAGNOSTIC", "src/App/Program.cs", "30", "2", "error", "FINALNEWLINE"],
     ["DIAGNOSTIC", "src/App/Program.cs", "14", "9", "warning", "RCS0041"],
     ["DIAGNOSTIC", "src/App/My Folder/Util.cs", "3", "1", "info", "IDE0005"],
-    ["DIAGNOSTIC", "C:/elsewhere/Generated.cs", "1", "1", "warning", "CA1822"],
+    ["DIAGNOSTIC", OUTSIDE_REPORTED, "1", "1", "warning", "CA1822"],
     ["SUMMARY", "5", "3", "CA1822,FINALNEWLINE,IDE0005,RCS0041,WHITESPACE"],
 ]
 
@@ -228,6 +234,14 @@ class SubprocessRunnerTests(GitTestCase):
         self.assertIn(b"loading", result.output)
 
 
+def install(folder: Path, name: str) -> Path:
+    """A program as its installer leaves it: `<name>.exe` on Windows, and an executable `<name>` elsewhere."""
+    program = folder / (f"{name}.exe" if sys.platform == "win32" else name)
+    program.write_bytes(b"fixture")
+    program.chmod(0o755)
+    return program
+
+
 class LocatedFormatterTests(GitTestCase):
     """The formatter is found by skill-core's locator, as `deploy.py check` finds it, and run by that absolute path.
     The environment is sanitized: PATH is one empty folder and the local application data folder a fresh one, so the
@@ -239,14 +253,20 @@ class LocatedFormatterTests(GitTestCase):
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
         self.path_folder = root / "on path"
-        self.links = root / "local app data" / "Microsoft" / "WinGet" / "Links"
+        if sys.platform == "win32":
+            self.links = root / "local app data" / "Microsoft" / "WinGet" / "Links"
+            environment = {
+                "PATH": str(self.path_folder),
+                "PATHEXT": ".com;.exe",
+                "LOCALAPPDATA": str(root / "local app data"),
+            }
+        else:
+            # No package manager links commands into a folder of its own off Windows, so the folder PATH names
+            # after the first stands in for one: the place the locator looks once the first has no such program.
+            self.links = root / "later on path"
+            environment = {"PATH": os.pathsep.join((str(self.path_folder), str(self.links)))}
         self.path_folder.mkdir()
         self.links.mkdir(parents=True)
-        environment = {
-            "PATH": str(self.path_folder),
-            "PATHEXT": ".com;.exe",
-            "LOCALAPPDATA": str(root / "local app data"),
-        }
         patch = mock.patch.dict(os.environ, environment)
         patch.start()
         self.addCleanup(patch.stop)
@@ -267,16 +287,14 @@ class LocatedFormatterTests(GitTestCase):
         ):
             with self.subTest(name=name):
                 self.assertIsNone(services.which(name))
-                program = self.links / f"{name}.exe"
-                program.write_bytes(b"fixture")
+                program = install(self.links, name)
                 self.assertEqual(str(program), services.which(name))
                 self.assertEqual(str(program), self.started(arguments))
                 self.assertTrue(Path(self.started(arguments)).is_absolute())
 
     def test_a_formatter_on_path_comes_before_the_links_folder(self) -> None:
-        (self.links / "dotnet-format.exe").write_bytes(b"fixture")
-        on_path = self.path_folder / "dotnet-format.exe"
-        on_path.write_bytes(b"fixture")
+        install(self.links, "dotnet-format")
+        on_path = install(self.path_folder, "dotnet-format")
         self.assertEqual(str(on_path), formatter.Services().which("dotnet-format"))
         self.assertEqual(str(on_path), self.started(["dotnet-format", "App.sln"]))
 

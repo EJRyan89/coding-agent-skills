@@ -136,7 +136,7 @@ import sys
 import tempfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -473,8 +473,15 @@ def expectation(spec: Any, mode: str) -> Expectation:
 
 def _document(directory: Path, value: Any, what: str) -> Path:
     """A file a document scenario names by its path from the scenario's folder. The path may lead to another
-    scenario's file under the same scenarios root, so one document serves several skills' scenarios uncopied."""
-    if not isinstance(value, str) or not value or "\\" in value or value.startswith("/") or Path(value).anchor:
+    scenario's file under the same scenarios root, so one document serves several skills' scenarios uncopied. A path
+    either platform reads as absolute, a drive's included, is refused on both, since a scenario runs on each."""
+    if (
+        not isinstance(value, str)
+        or not value
+        or "\\" in value
+        or PurePosixPath(value).anchor
+        or PureWindowsPath(value).anchor
+    ):
         raise ScenarioError(f"{what} must be a relative path, not {quote(str(value))}")
     root = directory.parents[1].resolve()
     path = (directory / value).resolve()

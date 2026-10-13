@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -49,6 +50,8 @@ PULL_FIXTURE = SCENARIOS / "clean-change"
 # The design document review-document samples, reviewed whole by the design-review specialist.
 DESIGN_DOCUMENT = SCENARIOS / "design-clean" / "head" / "docs" / "design" / "export-download-links.md"
 WRITE_HINT = "run python tools/runtime_prompts.py --write"
+# A placeholder for the throwaway folder or the checkout and the rest of the path that follows it.
+PLACEHOLDER_PATH = re.compile(r"(<temp>|<source>)([\\/][^\s`'\"<>]*)")
 
 
 class RenderError(RuntimeError):
@@ -183,6 +186,8 @@ def normalized(text: str, directory: Path) -> str:
     """The prompt with the throwaway folder as <temp> and this checkout as <source>; fails on any path left."""
     for path, placeholder in ((directory, "<temp>"), (REPOSITORY_ROOT, "<source>")):
         text = text.replace(str(path), placeholder).replace(path.as_posix(), placeholder)
+    # The rest of each such path with forward slashes, so a sample reads the same whatever separator renders it.
+    text = PLACEHOLDER_PATH.sub(lambda match: match.group(1) + match.group(2).replace("\\", "/"), text)
     temporary = Path(tempfile.gettempdir()).resolve()
     for left in (str(temporary), temporary.as_posix()):
         if left.casefold() in text.casefold():

@@ -214,9 +214,18 @@ class FileGuardTests(WorktreesTestCase):
             with self.subTest(path=str(path)):
                 self.assertIsNone(self.edit(path))
 
-    def test_git_bash_paths_are_understood(self) -> None:
-        drive, rest = str(self.hub / "README.md").replace("\\", "/").split(":", 1)
-        self.assertEqual("deny", self.edit(f"/{drive.lower()}{rest}"))
+    if platform_support.WINDOWS:
+
+        def test_git_bash_paths_are_understood(self) -> None:
+            drive, rest = str(self.hub / "README.md").replace("\\", "/").split(":", 1)
+            self.assertEqual("deny", self.edit(f"/{drive.lower()}{rest}"))
+
+    else:
+
+        def test_a_path_is_read_as_it_is_written(self) -> None:
+            # Off Windows /c/... names a directory of its own, never a drive.
+            self.assertEqual("deny", self.edit(str(self.hub / "README.md")))
+            self.assertIsNone(self.edit(f"/c{self.hub / 'README.md'}"))
 
     def test_guard_is_inert_unless_this_clone_opts_in(self) -> None:
         for value in (None, "false"):
@@ -245,6 +254,7 @@ class HookCommandTests(WorktreesTestCase):
         record = self.root / "python-arguments.txt"
         record.unlink(missing_ok=True)
         (shims / "python").write_text('#!/bin/sh\nprintf \'%s\\n\' "$@" > "$SHIM_RECORD"\n', encoding="utf-8")
+        (shims / "python").chmod(0o755)  # Bash runs a program off Windows only when it is executable
         environment = {
             **self.environment,
             "CLAUDE_PROJECT_DIR": str(self.hub),
@@ -345,9 +355,10 @@ class CommandNameTests(GitTestCase):
         cases = {
             "git": "git",
             "GIT.EXE": "git",
-            "C:\\Program Files\\Git\\cmd\\git.exe": "git",
             "/c/Program Files/Git/cmd/Git.Exe": "git",
             "codex.cmd": "codex.cmd",
+            # Only Windows separates a path with a backslash.
+            **({"C:\\Program Files\\Git\\cmd\\git.exe": "git"} if platform_support.WINDOWS else {}),
         }
         for word, expected in cases.items():
             with self.subTest(word=word):
@@ -661,7 +672,9 @@ class CommandReadingTests(WorktreesTestCase):
         environment.pop("UNSET_TASK_TREE", None)
         command = (
             f"git -C '{self.tree}' commit; git \"--work-tree={self.tree}\" add .; git --work-tree '{self.tree}' rm x;"
-            ' git --git-dir=.git mv a b; git -C $env:TASK_TREE reset; git -C "$env:TASK_TREE\\.." restore x;'
+            ' git --git-dir=.git mv a b; git -C $env:TASK_TREE reset; git -C "$env:TASK_TREE'
+            + os.sep
+            + '.." restore x;'
             " git -C \"$env:UNSET_TASK_TREE\" revert x; $env:GIT_WORK_TREE = 'elsewhere'; git clean -fd"
         )
         self.assertEqual(
@@ -679,7 +692,11 @@ class CommandReadingTests(WorktreesTestCase):
         command = (
             'git commit -m @"\nIt\'s a "quoted" message; cd elsewhere\n"@\n'
             'git add `"odd name`" || git rm x | Out-Null && git mv a b # git reset in a comment\n'
-            "& 'C:\\Program Files\\Git\\cmd\\git.exe' stash"
+            + (
+                "& 'C:\\Program Files\\Git\\cmd\\git.exe' stash"
+                if platform_support.WINDOWS
+                else "& '/usr/bin/git' stash"
+            )
         )
         self.assertEqual(self.at(self.hub, "commit", "add", "rm", "mv", "stash"), self.read(command))
 
@@ -849,7 +866,13 @@ class PowerShellGuardTests(WorktreesTestCase):
         git = shutil.which("git")
         if git is None:
             self.fail("git is not on PATH")
-        path = os.pathsep.join([str(Path(git).parent), str(self.root / "no-such-directory")])
+        folder = Path(git).parent
+        if not platform_support.WINDOWS:
+            # The system's folder holds pwsh beside git, so a folder of git alone stands in for it.
+            folder = self.root / "git only"
+            folder.mkdir()
+            (folder / "git").symlink_to(git)
+        path = os.pathsep.join([str(folder), str(self.root / "no-such-directory")])
         self.assertIsNone(self.powershell("git switch feat/demo", self.hub, {**self.environment, "PATH": path}))
         self.assertIn("could not find pwsh", self.stderr)
 

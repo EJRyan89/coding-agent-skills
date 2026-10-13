@@ -60,9 +60,8 @@ max-statements = 50
 # each skill's scripts/ directory from inside it. Default strictness; no module, suite, or import is exempt.
 [tool.mypy]
 python_version = "3.11"
-# The deployer and the skills support Windows only, so mypy checks them as Windows sees them on any host. Revisit
-# when deployer/platform_support.py gains another platform.
-platform = "win32"
+# No platform is set, so mypy checks each module as the host running validation sees it: a Windows leg checks the
+# Windows branches and a Linux one the others, and code for the other platform carries its `type: ignore` reason.
 # tests/ imports tools/skill_reference.py both as tools.skill_reference and by path; module names follow the paths, and
 # a module in a mypy_path directory below is named by its bare name, as the code that puts it on sys.path imports it.
 explicit_package_bases = true

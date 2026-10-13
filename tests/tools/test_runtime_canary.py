@@ -479,6 +479,8 @@ class RunTests(RuntimeCanaryTestCase):
                     runtime_canary.recorded_scripts(runtime_canary.read_records(log)),
                 )
 
+    # Codex is given a Windows sandbox mode only on Windows; the case holds on every platform as Windows runs it.
+    @mock.patch.object(runtime_canary, "CODEX_HAS_WINDOWS_SANDBOX", True)
     def test_a_command_the_codex_policy_refused_is_blocked_not_failed(self) -> None:
         runner = FakeRuntimes()
         runner.actions["codex"] = lambda *_: Completed(
@@ -606,6 +608,8 @@ class RunTests(RuntimeCanaryTestCase):
             lines,
         )
 
+    # Codex is given a Windows sandbox mode only on Windows; the case holds on every platform as Windows runs it.
+    @mock.patch.object(runtime_canary, "CODEX_HAS_WINDOWS_SANDBOX", True)
     def test_each_run_keeps_its_sign_in_and_drops_ambient_configuration(self) -> None:
         runner = FakeRuntimes()
         base = {**os.environ, "PYTHONPATH": "existing", "HOME": "real-home-left-alone"}
@@ -682,6 +686,8 @@ class RunTests(RuntimeCanaryTestCase):
             copilot[1:],
         )
 
+    # Codex is given a Windows sandbox mode only on Windows; the case holds on every platform as Windows runs it.
+    @mock.patch.object(runtime_canary, "CODEX_HAS_WINDOWS_SANDBOX", True)
     def test_codex_is_given_the_windows_sandbox_mode_its_ignored_configuration_would_set(self) -> None:
         for sandbox in ("elevated", "unelevated"):
             with self.subTest(sandbox=sandbox):
@@ -708,6 +714,14 @@ class RunTests(RuntimeCanaryTestCase):
         # Discovery runs no model, so nothing is supplied.
         lines = self.canary(FakeRuntimes(), discovery_only=True)
         self.assertFalse([line for line in lines if line.startswith("SUPPLIED ")])
+
+    @mock.patch.object(runtime_canary, "CODEX_HAS_WINDOWS_SANDBOX", False)
+    def test_off_windows_codex_is_given_no_windows_sandbox_and_a_refusal_names_no_cause(self) -> None:
+        self.assertEqual([], runtime_canary.supplied("codex", "elevated"))
+        self.assertEqual("", runtime_canary.blocked_cause("codex", "elevated"))
+        codex = runtime_canary.run_command("codex", "codex", FIXTURE, self.home, "elevated")
+        self.assertNotIn("-c", codex)
+        self.assertFalse([word for word in codex if "windows.sandbox" in word])
 
     def test_the_codex_sandbox_option_defaults_to_elevated_and_takes_only_known_modes(self) -> None:
         for arguments, expected in (([], "elevated"), (["--codex-sandbox", "unelevated"], "unelevated")):

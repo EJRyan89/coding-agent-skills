@@ -306,10 +306,10 @@ class PythonChecksPolicies(unittest.TestCase):
     def test_type_check_configuration_is_pinned(self) -> None:
         configuration = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["mypy"]
         self.assertEqual("3.11", configuration["python_version"])
-        self.assertEqual("win32", configuration["platform"])
         self.assertIs(True, configuration["explicit_package_bases"])
-        # Default strictness, and no module, suite, or import is exempt.
-        self.assertEqual(["explicit_package_bases", "mypy_path", "platform", "python_version"], sorted(configuration))
+        # Default strictness, and no module, suite, or import is exempt. No platform: each host checks the code as it
+        # runs there, so every platform's branches are checked on the platform that runs them.
+        self.assertEqual(["explicit_package_bases", "mypy_path", "python_version"], sorted(configuration))
 
     def test_mypy_path_names_each_scripts_directory_put_on_sys_path(self) -> None:
         self.assertEqual([], mypy_path_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))

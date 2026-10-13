@@ -35,15 +35,20 @@ SECONDARY_LIMIT = "gh: You have exceeded a secondary rate limit. (HTTP 403)"
 def sanitized_environment(test: unittest.TestCase) -> tuple[Path, Path]:
     """A PATH of one empty temporary folder and a fresh local application data folder for the rest of a test, so the
     only gh the locator finds is one the test puts in the first or in WinGet's Links folder under the second; returns
-    the two folders."""
+    the two folders. Off Windows, where no package manager links commands into a folder of its own, the second is the
+    folder PATH names after the first, the place the locator looks next."""
     temporary = tempfile.TemporaryDirectory(prefix="gh locator ")
     test.addCleanup(temporary.cleanup)
     root = Path(temporary.name)
     path_folder = root / "on path"
-    links = root / "local app data" / "Microsoft" / "WinGet" / "Links"
+    if sys.platform == "win32":
+        links = root / "local app data" / "Microsoft" / "WinGet" / "Links"
+        environment = {"PATH": str(path_folder), "PATHEXT": ".com;.exe", "LOCALAPPDATA": str(root / "local app data")}
+    else:
+        links = root / "later on path"
+        environment = {"PATH": os.pathsep.join((str(path_folder), str(links)))}
     path_folder.mkdir()
     links.mkdir(parents=True)
-    environment = {"PATH": str(path_folder), "PATHEXT": ".com;.exe", "LOCALAPPDATA": str(root / "local app data")}
     patch = mock.patch.dict(os.environ, environment)
     patch.start()
     test.addCleanup(patch.stop)
@@ -51,8 +56,10 @@ def sanitized_environment(test: unittest.TestCase) -> tuple[Path, Path]:
 
 
 def install_gh(folder: Path) -> Path:
-    program = folder / "gh.exe"
+    """A GitHub CLI as its installer leaves it: `gh.exe` on Windows, and an executable `gh` elsewhere."""
+    program = folder / ("gh.exe" if sys.platform == "win32" else "gh")
     program.write_bytes(b"fixture")
+    program.chmod(0o755)
     return program
 
 

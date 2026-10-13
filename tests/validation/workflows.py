@@ -327,10 +327,24 @@ def leg_problems(workflow: str, legs: int) -> list[str]:
     return problems
 
 
-def linux_job_problems(workflow: str, command: str) -> list[str]:
-    """Report how validate.yml's `linux` job departs from a reporting run of `command` on ubuntu-latest: Python at the
-    floor with pip's cache keyed on requirements-dev.txt, ShellCheck from Ubuntu's archive, PSScriptAnalyzer at the
-    workflow's pin, and no part in the required check, since the `validate` job does not need it."""
+# What the linux job's validation step runs, as the Windows legs' step does but on one leg: every suite outside a
+# pull request, and a pull request's body and title as files written from the event payload.
+LINUX_VALIDATION_LINES = (
+    "$arguments = @('-B', 'tests/run_validation.py', '-v')",
+    "if ($env:GITHUB_EVENT_NAME -ne 'pull_request') { $arguments += '--full' }",
+    "[System.IO.File]::WriteAllText($bodyFile, [string]$payload.pull_request.body)",
+    "$arguments += @('--pr-body', $bodyFile)",
+    "[System.IO.File]::WriteAllText($titleFile, [string]$payload.pull_request.title)",
+    "$arguments += @('--pr-title', $titleFile)",
+    "python @arguments",
+)
+
+
+def linux_job_problems(workflow: str) -> list[str]:
+    """Report how validate.yml's `linux` job departs from one unsharded validation run on ubuntu-latest, reporting
+    outside the required check: the checkout's whole history, Python at the floor with pip's cache keyed on
+    requirements-dev.txt, ShellCheck from Ubuntu's archive, PSScriptAnalyzer at the workflow's pin, and the Windows
+    legs' validation step without its shard, since the `validate` job does not need it."""
     tree = read_workflow(workflow)
     linux = _mapping(tree, "jobs", "linux")
     if not linux:
@@ -342,6 +356,9 @@ def linux_job_problems(workflow: str, command: str) -> list[str]:
     if needs == "linux" or (isinstance(needs, list) and "linux" in needs):
         problems.append("the validate job needs the linux job, which would make it part of the required check")
     steps = _steps(linux)
+    checkouts = [_mapping(step, "with") for step in steps if str(step.get("uses", "")).startswith("actions/checkout@")]
+    if checkouts != [{"fetch-depth": "0"}]:
+        problems.append(f"the linux job checks out {checkouts}, not the whole history with fetch-depth 0")
     python = [_mapping(step, "with") for step in steps if str(step.get("uses", "")).startswith("actions/setup-python@")]
     if python != [{"python-version": "3.11", "cache": "pip", "cache-dependency-path": "requirements-dev.txt"}]:
         problems.append(f"the linux job sets up Python as {python}, not 3.11 with pip's cache on requirements-dev.txt")
@@ -353,9 +370,19 @@ def linux_job_problems(workflow: str, command: str) -> list[str]:
     ):
         if not any(install in script for script in scripts):
             problems.append(f"no step of the linux job runs {install!r}")
-    runs = [script.strip() for script in scripts if "tests/run_validation.py" in script]
-    if runs != [command]:
-        problems.append(f"the linux job runs {runs}, expected [{command!r}]")
+    runs = [step for step in steps if "tests/run_validation.py" in str(step.get("run", ""))]
+    if len(runs) != 1:
+        problems.append(f"the linux job has {len(runs)} steps that run tests/run_validation.py, not one")
+    for step in runs:
+        script = str(step.get("run", ""))
+        if step.get("shell") != "pwsh":
+            problems.append(f"the step {step.get('name')} runs in {step.get('shell')}, not pwsh as the legs' does")
+        if "--shard" in script:
+            problems.append(f"the step {step.get('name')} runs a shard, not the whole run")
+        lines = {line.strip() for line in script.splitlines()}
+        for expected in LINUX_VALIDATION_LINES:
+            if expected not in lines:
+                problems.append(f"the step {step.get('name')} does not run {expected!r}")
     return problems
 
 
@@ -519,14 +546,11 @@ class WorkflowsPolicies(unittest.TestCase):
             ),
         )
 
-    def test_validate_workflow_reports_the_deployer_suites_on_linux_outside_the_required_check(self) -> None:
+    def test_validate_workflow_reports_the_whole_run_on_linux_outside_the_required_check(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
         self.assertEqual(
             [],
-            linux_job_problems(
-                workflow,
-                "python -B tests/run_validation.py -v -k deployer -k platform_support -k job_tree -k process_identity",
-            ),
+            linux_job_problems(workflow),
         )
 
     def test_deployable_workflow_installs_the_runtime_versions_the_readme_lists_for_the_fresh_runner(self) -> None:

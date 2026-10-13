@@ -1215,9 +1215,15 @@ class SweepTests(Fixture):
         code, lines = self.sweep(None, "my repo")
         self.assertEqual(0, code, lines)
         self.assertEqual([], [line for line in lines if re.search("[\udc80-\udcff]", line)], "all printable as UTF-8")
-        # gh and git are given the name Python decoded, which matches no ref, so the branch is kept unverified.
-        self.assertIn("  PR status unverified:    1 — caf� (", self.summary(lines))
-        self.assertEqual([], facts(lines, "CONFIRM_LOCAL"))
+        if sys.platform == "win32":
+            # gh and git are given the name Python decoded, which matches no ref, so the branch is kept unverified.
+            self.assertIn("  PR status unverified:    1 — caf� (", self.summary(lines))
+        else:
+            # Elsewhere an argument carries the decoded name back as Git's own bytes, so git finds the ref, a
+            # branch that was never pushed.
+            self.assertIn("  Local-only (kept):       1 — caf�", self.summary(lines))
+        # Only a branch git found can be confirmed as local to delete.
+        self.assertEqual([] if sys.platform == "win32" else [["caf�"]], facts(lines, "CONFIRM_LOCAL"))
         plan = json.loads((self.root / "plans" / "my repo.json").read_text(encoding="utf-8"))
         self.assertEqual(["caf\udce9"], [branch["name"] for branch in plan["branches"]], "the plan keeps Git's bytes")
 

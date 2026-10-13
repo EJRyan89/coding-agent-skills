@@ -25,6 +25,7 @@ from validation_support import (
     fence_holders,
     is_executable_script,
     is_test_script,
+    path_order,
     scripts_entries,
     scripts_put_on_path,
     skill_directories,
@@ -108,7 +109,7 @@ def deploy_variable_problems(
     required_anywhere: set[str] = set()
     used_anywhere: set[str] = set()
     skills = skills_by_name(root)
-    for metadata in sorted((root / "deploy-meta").glob("*.json")):
+    for metadata in sorted((root / "deploy-meta").glob("*.json"), key=path_order):
         skill = metadata.stem
         required = set(json.loads(metadata.read_text(encoding="utf-8")).get("required_vars", []))
         required_anywhere |= required
@@ -276,13 +277,15 @@ def skill_path_problems(root: Path) -> list[str]:
 def _path_documents(root: Path) -> list[tuple[Path, set[str] | None, Path | None]]:
     """Each agent, then each skill's Markdown with the skills it declares and its directory, a grouped one included."""
     documents: list[tuple[Path, set[str] | None, Path | None]] = [
-        (path, None, None) for path in sorted((root / "agents").glob("*.md"))
+        (path, None, None) for path in sorted((root / "agents").glob("*.md"), key=path_order)
     ]
     skills = skills_by_name(root)
     for metadata in sorted((root / "deploy-meta").glob("*.json")):
         declared: set[str] = set(json.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", []))
         if (skill_directory := skills.get(metadata.stem)) is not None:
-            documents += [(path, declared, skill_directory) for path in sorted(skill_directory.rglob("*.md"))]
+            documents += [
+                (path, declared, skill_directory) for path in sorted(skill_directory.rglob("*.md"), key=path_order)
+            ]
     return documents
 
 

@@ -946,7 +946,7 @@ class SkillScriptsFixtures(GitTestCase):
                 "& 'gh' api user\n"
                 "dotnet-format.exe --version\n"
                 "Invoke-Helper 1\n"
-                "ls\n"
+                "gci\n"
                 ".\\local.ps1\n"
                 "& $env:TOOL\n"
                 "nonesuch --flag\n"

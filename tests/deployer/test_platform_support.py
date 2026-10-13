@@ -500,7 +500,33 @@ class ProcessStatusTests(GitTestCase):
         self.assertIs(platform_support.ProcessStatus, sys.modules["process_identity"].ProcessStatus)
 
 
+class SignalTerminationTests(GitTestCase):
+    """Off Windows, Python reports a process a signal ended by the negated signal number."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        patcher = mock.patch.object(platform_support, "WINDOWS", False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_signal_is_named(self) -> None:
+        self.assertEqual("SIGTERM", platform_support.termination_status(-15))
+        self.assertEqual("SIGINT", platform_support.termination_status(-2))
+        self.assertEqual("signal 250", platform_support.termination_status(-250))
+
+    def test_a_program_s_own_exit_code_is_not_a_termination(self) -> None:
+        for returncode in (0, 1, 2, 127, 255, 2_147_483_652):
+            with self.subTest(returncode=returncode):
+                self.assertIsNone(platform_support.termination_status(returncode))
+
+
 class TerminationStatusTests(GitTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        patcher = mock.patch.object(platform_support, "WINDOWS", True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_the_floor_is_the_lowest_ntstatus_with_a_severity_bit(self) -> None:
         self.assertEqual(2_147_483_648, platform_support.TERMINATION_STATUS_FLOOR)
 

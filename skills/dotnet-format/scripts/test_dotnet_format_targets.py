@@ -318,7 +318,8 @@ class ResolveTests(GitTestCase):
         repo.write("Lib/Lib.csproj", SDK_PROJECT)
         repo.write("Lib/Code.cs")
         repo.write("A.sln", solution("Other\\Other.csproj"))
-        repo.write("B.sln", solution("lib\\LIB.csproj"))
+        # A solution names a project in any case only where the file system folds case, as Windows' does.
+        repo.write("B.sln", solution("lib\\LIB.csproj" if sys.platform == "win32" else "Lib\\Lib.csproj"))
         repo.commit("solutions")
         self.assertEqual([["B.sln", "1"]], self.values(self.resolve(), "SOLUTION"))
 
@@ -423,7 +424,9 @@ class ResolveTests(GitTestCase):
         services.gh = lambda directory: limited
         with mock.patch("time.sleep") as sleep:
             self.assertEqual([["origin/main"]], self.values(self.resolve(services=services), "BASE"))
-        sleep.assert_not_called()
+        # No rate limit is waited out. Off Windows, a timed wait for git to exit polls in pauses of at most a twentieth
+        # of a second, which are no backoff.
+        self.assertEqual([], [call for call in sleep.call_args_list if call.args[0] > 0.05])
         self.assertEqual(1, sum(1 for call in services.calls if call[0] == "gh"))
 
     def test_a_malformed_pull_request_base_falls_back_to_origin_main(self) -> None:
@@ -761,6 +764,14 @@ class FileListTests(GitTestCase):
             targets.read_file_list(self.path)
 
 
+def install(folder: Path, name: str) -> Path:
+    """A program as its installer leaves it: `<name>.exe` on Windows, and an executable `<name>` elsewhere."""
+    program = folder / (f"{name}.exe" if sys.platform == "win32" else name)
+    program.write_bytes(b"fixture")
+    program.chmod(0o755)
+    return program
+
+
 class LocatedToolsTests(GitTestCase):
     """gh and the .NET SDK are found by skill-core's locator, as `deploy.py check` finds them, and gh runs at that
     absolute path. The environment is sanitized: PATH is one empty folder and the local application data folder a
@@ -772,14 +783,20 @@ class LocatedToolsTests(GitTestCase):
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
         self.path_folder = root / "on path"
-        self.links = root / "local app data" / "Microsoft" / "WinGet" / "Links"
+        if sys.platform == "win32":
+            self.links = root / "local app data" / "Microsoft" / "WinGet" / "Links"
+            environment = {
+                "PATH": str(self.path_folder),
+                "PATHEXT": ".com;.exe",
+                "LOCALAPPDATA": str(root / "local app data"),
+            }
+        else:
+            # No package manager links commands into a folder of its own off Windows, so the folder PATH names
+            # after the first stands in for one: the place the locator looks once the first has no such program.
+            self.links = root / "later on path"
+            environment = {"PATH": os.pathsep.join((str(self.path_folder), str(self.links)))}
         self.path_folder.mkdir()
         self.links.mkdir(parents=True)
-        environment = {
-            "PATH": str(self.path_folder),
-            "PATHEXT": ".com;.exe",
-            "LOCALAPPDATA": str(root / "local app data"),
-        }
         patch = mock.patch.dict(os.environ, environment)
         patch.start()
         self.addCleanup(patch.stop)
@@ -789,18 +806,17 @@ class LocatedToolsTests(GitTestCase):
         for name in ("gh", "dotnet"):
             with self.subTest(name=name):
                 self.assertIsNone(services.which(name))
-                program = self.links / f"{name}.exe"
-                program.write_bytes(b"fixture")
+                program = install(self.links, name)
                 self.assertEqual(str(program), services.which(name))
         finished = bounded_process.Finished(0, b"{}", b"")
         with mock.patch.object(github_client, "run_bounded", return_value=finished) as run:
             services.gh(self.path_folder)(["gh", "pr", "view", "--json", "baseRefName"])
-        self.assertEqual([str(self.links / "gh.exe"), "pr", "view", "--json", "baseRefName"], run.call_args.args[0])
+        linked = str(self.links / ("gh.exe" if sys.platform == "win32" else "gh"))
+        self.assertEqual([linked, "pr", "view", "--json", "baseRefName"], run.call_args.args[0])
 
     def test_a_tool_on_path_comes_before_the_links_folder(self) -> None:
-        (self.links / "gh.exe").write_bytes(b"fixture")
-        on_path = self.path_folder / "gh.exe"
-        on_path.write_bytes(b"fixture")
+        install(self.links, "gh")
+        on_path = install(self.path_folder, "gh")
         self.assertEqual(str(on_path), targets.Services().which("gh"))
 
 
