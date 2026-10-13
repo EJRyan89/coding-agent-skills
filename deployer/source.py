@@ -210,18 +210,9 @@ def _discover_directories(paths: Paths) -> dict[str, Path]:
         found_dir = skill_md.parent
         relative = found_dir.relative_to(skills_src).parts
         shown = platform_support.normalize(skill_md)
-        if len(relative) not in (1, 2):
-            raise DeployError(
-                f"ERROR: SKILL.md must be directly under skills/<name> or skills/<category>/<name>: {shown}"
-            )
-        if len(relative) == 2 and (skills_src / relative[0] / "SKILL.md").is_file():
-            raise DeployError(f"ERROR: Skill directory '{relative[0]}' contains another SKILL.md: {shown}")
+        if len(relative) != 1:
+            raise DeployError(f"ERROR: SKILL.md must be directly under skills/<name>: {shown}")
         name = found_dir.name
-        if name in directories:
-            raise DeployError(
-                f"ERROR: Duplicate skill directory name '{name}': "
-                f"{platform_support.normalize(directories[name])} and {platform_support.normalize(found_dir)}"
-            )
         if not (paths.meta_dir / f"{name}.json").is_file():
             raise DeployError(f"ERROR: Skill '{name}' has no matching deploy-meta/{name}.json")
         directories[name] = found_dir

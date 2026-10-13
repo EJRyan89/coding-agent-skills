@@ -165,14 +165,13 @@ class DeployerTestCase(GitTestCase):
         shared_deps: tuple[str, ...] | list[str] = (),
         skill_deps: tuple[str, ...] | list[str] = (),
         selectable: bool = True,
-        category: str | None = None,
         opt_in: bool = False,
         agent_deps: tuple[str, ...] | list[str] = (),
         description: str | None = None,
         user_only: bool = False,
     ) -> Path:
         """A skill whose description is the raw YAML scalar given; only the user may start it when user_only."""
-        directory = self.source / "skills" / (f"{category}/{name}" if category else name)
+        directory = self.source / "skills" / name
         directory.mkdir(parents=True, exist_ok=True)
         description = description or f'"Test skill {name}"'
         flags = "disable-model-invocation: true\n" if user_only else ""

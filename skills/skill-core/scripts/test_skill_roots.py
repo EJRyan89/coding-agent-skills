@@ -56,19 +56,7 @@ class SiblingScriptsTests(unittest.TestCase):
         self.assertEqual(self.root / "source tree" / "skills" / "shared-dep" / "scripts", sibling_scripts("shared-dep"))
         self.assertEqual(scripts, sibling_scripts("shared-dep"))
 
-    def test_a_categorized_checkout_finds_the_sibling_in_its_category(self) -> None:
-        skills = self.root / "source tree" / "skills"
-        self.make_skill(skills / "skill-core")
-        self.make_skill(skills / "review tools" / "shared-dep")
-        # A category is a plain folder: one without SKILL.md beside a skill of that name is not the sibling.
-        (skills / "other" / "shared-dep" / "scripts").mkdir(parents=True)
-        self.use_skills_root(skills)
-        self.assertEqual(
-            self.root / "source tree" / "skills" / "review tools" / "shared-dep" / "scripts",
-            sibling_scripts("shared-dep"),
-        )
-
-    def test_a_deployed_home_finds_the_flattened_sibling(self) -> None:
+    def test_a_deployed_home_finds_the_sibling_beside_skill_core(self) -> None:
         deployed = self.root / "a home" / ".claude" / "skills"
         self.make_skill(deployed / "skill-core")
         self.make_skill(deployed / "shared-dep")
@@ -81,21 +69,14 @@ class SiblingScriptsTests(unittest.TestCase):
         skills = self.root / "skills"
         self.make_skill(skills / "skill-core")
         (skills / "no-scripts").mkdir()
+        # The skills directory is flat, so a skill nested under another folder is no sibling.
+        self.make_skill(skills / "a category" / "nested-dep")
         self.use_skills_root(skills)
-        for name in ("shared-dep", "no-scripts"):
+        for name in ("shared-dep", "no-scripts", "nested-dep"):
             with self.subTest(name=name), self.assertRaises(MissingSibling) as caught:
                 sibling_scripts(name)
             self.assertEqual(name, caught.exception.name)
             self.assertIn(f"skill {name} has no scripts under {skills}", str(caught.exception))
-
-    def test_a_sibling_in_two_categories_raises_naming_both(self) -> None:
-        skills = self.root / "skills"
-        first = self.make_skill(skills / "one" / "shared-dep")
-        second = self.make_skill(skills / "two" / "shared-dep")
-        self.use_skills_root(skills)
-        with self.assertRaises(MissingSibling) as caught:
-            sibling_scripts("shared-dep")
-        self.assertIn(f"{first}, {second}", str(caught.exception))
 
     def test_a_script_whose_sibling_is_absent_exits_1_without_a_traceback(self) -> None:
         deployed = self.root / "a home" / ".claude" / "skills"

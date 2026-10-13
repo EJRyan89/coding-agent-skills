@@ -153,21 +153,19 @@ class PythonChecksFixtures(GitTestCase):
             "skills/suites/scripts/test_run.py": "",
             "skills/shell/SKILL.md": "",
             "skills/shell/scripts/test_run.sh": "",
-            # A category holds skills, as deployer/source.py reads skills/<category>/<name>.
-            "skills/group/inner/SKILL.md": "",
-            "skills/group/inner/scripts/run.py": "",
             # A repository skill's scripts are checked like a shipped skill's.
             ".claude/skills/local/SKILL.md": "",
             ".claude/skills/local/scripts/run.py": "",
-            # A folder without SKILL.md is no skill.
+            # A folder without SKILL.md is no skill, and the skills directory is flat, so neither is one under it.
             "skills/loose/scripts/run.py": "",
+            "skills/group/inner/SKILL.md": "",
+            "skills/group/inner/scripts/run.py": "",
         }
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             write_fixture_tree(root, files)
             self.assertEqual(
                 [
-                    root / "skills/group/inner/scripts",
                     root / "skills/module/scripts",
                     root / "skills/suites/scripts",
                     root / ".claude/skills/local/scripts",
