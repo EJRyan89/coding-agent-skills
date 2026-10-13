@@ -73,6 +73,13 @@ class SkillScriptTargetFixtures(GitTestCase):
 
 
 class ShellTargetsFixtures(GitTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        # The fixtures name Windows' install commands on every platform; test_platform_support pins each platform's.
+        patcher = mock.patch.object(platform_support, "INSTALL_HINTS", platform_support.WINDOWS_INSTALL_HINTS)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_markdown_bash_fences_outside_skills_and_tests_are_shellcheck_targets(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

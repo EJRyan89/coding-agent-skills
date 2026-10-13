@@ -153,48 +153,55 @@ class LegFixtures(GitTestCase):
                 self.assertTrue(any(problem in found for found in problems), problems)
 
 
-LINUX_COMMAND = "python -B tests/run_validation.py -k deployer"
 LINUX = (
     "jobs:\n  suite:\n    runs-on: windows-latest\n"
     "  linux:\n    runs-on: ubuntu-latest\n    steps:\n"
+    "      - uses: actions/checkout@SHA # v1\n        with:\n          fetch-depth: 0\n"
     "      - uses: actions/setup-python@SHA # v1\n        with:\n          python-version: '3.11'\n"
     "          cache: pip\n          cache-dependency-path: requirements-dev.txt\n"
     "      - run: |\n          sudo apt-get update\n          sudo apt-get install --yes shellcheck\n"
     "      - shell: pwsh\n"
     "        run: Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION -Force\n"
     "      - run: python -m pip install -r requirements-dev.txt\n"
-    "      - name: Run\n        run: python -B tests/run_validation.py -k deployer\n"
+    "      - name: Run\n        shell: pwsh\n        run: |\n"
+    "          $arguments = @('-B', 'tests/run_validation.py', '-v')\n"
+    "          if ($env:GITHUB_EVENT_NAME -ne 'pull_request') { $arguments += '--full' }\n"
+    "          [System.IO.File]::WriteAllText($bodyFile, [string]$payload.pull_request.body)\n"
+    "          $arguments += @('--pr-body', $bodyFile)\n"
+    "          [System.IO.File]::WriteAllText($titleFile, [string]$payload.pull_request.title)\n"
+    "          $arguments += @('--pr-title', $titleFile)\n"
+    "          python @arguments\n"
     "  validate:\n    needs: suite\n"
 )
 
 
 class LinuxJobFixtures(GitTestCase):
-    def test_the_linux_job_reports_its_suites_outside_the_required_check(self) -> None:
-        self.assertEqual([], linux_job_problems(LINUX, LINUX_COMMAND))
+    def test_the_linux_job_reports_the_whole_run_outside_the_required_check(self) -> None:
+        self.assertEqual([], linux_job_problems(LINUX))
         for drifted, problem in (
             (LINUX.replace("  linux:\n", "  other:\n"), "there is no linux job"),
             (LINUX.replace("runs-on: ubuntu-latest", "runs-on: ubuntu-22.04"), "not ubuntu-latest"),
             (LINUX.replace("    needs: suite\n", "    needs: [suite, linux]\n"), "part of the required check"),
             (LINUX.replace("    needs: suite\n", "    needs: linux\n"), "part of the required check"),
+            (LINUX.replace("          fetch-depth: 0\n", "          fetch-depth: 1\n"), "the whole history"),
             (LINUX.replace("'3.11'", "'3.x'"), "sets up Python"),
             (LINUX.replace("          cache: pip\n", ""), "sets up Python"),
             (LINUX.replace("install --yes shellcheck", "install shellcheck"), "sudo apt-get install --yes shellcheck"),
             (LINUX.replace("-RequiredVersion $env:PSSCRIPTANALYZER_VERSION ", ""), "Install-Module PSScriptAnalyzer"),
             (LINUX.replace("      - run: python -m pip install -r requirements-dev.txt\n", ""), "requirements-dev"),
-            (
-                LINUX.replace("-k deployer\n", "-k deploy\n"),
-                "expected ['python -B tests/run_validation.py -k deployer']",
-            ),
+            (LINUX.replace("        shell: pwsh\n        run: |", "        shell: bash\n        run: |"), "not pwsh"),
+            (LINUX.replace("'-v')", "'-v', '--shard', $env:SHARD)"), "runs a shard"),
+            (LINUX.replace("{ $arguments += '--full' }", "{ }"), "--full"),
+            (LINUX.replace("          $arguments += @('--pr-title', $titleFile)\n", ""), "--pr-title"),
             (
                 LINUX.replace(
-                    "      - name: Run\n",
-                    "      - name: Run\n        run: python tests/run_validation.py\n      - name: Again\n",
+                    "      - name: Run\n", "      - run: python tests/run_validation.py\n      - name: Run\n"
                 ),
-                "the linux job runs",
+                "not one",
             ),
         ):
             with self.subTest(problem=problem):
-                problems = linux_job_problems(drifted, LINUX_COMMAND)
+                problems = linux_job_problems(drifted)
                 self.assertTrue(any(problem in found for found in problems), problems)
 
 

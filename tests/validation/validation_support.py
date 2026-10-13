@@ -565,6 +565,12 @@ def is_test_script(path: Path) -> bool:
     return any(fnmatch.fnmatchcase(name, pattern) for pattern in TEST_NAME_PATTERNS for name in names)
 
 
+def path_order(path: PurePath) -> tuple[str, ...]:
+    """A path's place in a listing that is the same on every platform: its parts compared without regard to case, as
+    Windows compares paths, so a policy reports in one order wherever it runs."""
+    return tuple(part.casefold() for part in path.parts)
+
+
 def relative(path: Path) -> str:
     return path.relative_to(REPOSITORY_ROOT).as_posix()
 

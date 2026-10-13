@@ -31,6 +31,13 @@ from deployer import platform_support
 
 
 class ToolchainFixtures(GitTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        # The fixtures name Windows' install commands on every platform; test_platform_support pins each platform's.
+        patcher = mock.patch.object(platform_support, "INSTALL_HINTS", platform_support.WINDOWS_INSTALL_HINTS)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_prerequisite_check_reports_every_missing_tool(self) -> None:
         def raises() -> str:
             raise AssertionError("not found")
