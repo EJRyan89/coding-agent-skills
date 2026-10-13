@@ -627,6 +627,27 @@ class StateAndLockTests(GitTestCase):
                     pass
                 self.assertTrue(path.exists())
 
+    BACKDATED_SECONDS = 61  # past the lock's grace period
+
+    def _backdate(self, path: Path) -> int:
+        """Move `path`'s modification time back BACKDATED_SECONDS and half a second more, so no rounding between the
+        clocks reports less, and return it in nanoseconds."""
+        old = time.time_ns() - (self.BACKDATED_SECONDS * 2 + 1) * 500_000_000
+        os.utime(path, ns=(old, old))
+        return old
+
+    def _assert_reclaimed_after(self, warning: str, path: Path, reason: str, backdated: int) -> None:
+        """`warning` is the one warning reclaiming the lock at `path` for `reason`, whose `{age}` is the age it
+        reports, and that age is at least BACKDATED_SECONDS and no more than the time since `backdated`: a bound
+        that moves with the runner's speed, never a fixed window."""
+        stated = re.escape(reason).replace(re.escape("{age}"), r"(\d+)")
+        match = re.fullmatch(rf"WARNING: Reclaimed the stale lock {re.escape(str(path))}: {stated}\.\n", warning)
+        if match is None:
+            self.fail(f"Not one warning reclaiming {path} for {reason!r}: {warning!r}")
+        elapsed = (time.time_ns() - backdated) // 1_000_000_000
+        self.assertGreaterEqual(int(match[1]), self.BACKDATED_SECONDS, warning)
+        self.assertLessEqual(int(match[1]), elapsed + 1, warning)
+
     def _old_lock(self, path: Path, owner: dict) -> None:
         path.mkdir()
         atomic_write_json(
@@ -742,15 +763,12 @@ class StateAndLockTests(GitTestCase):
             with self.assertRaisesRegex(PersistenceError, "Timed out"), ResourceLock(path, timeout_seconds=0.1):
                 pass
             self.assertTrue(path.is_dir(), "a lock without an owner file is kept during the grace period")
-            old = time.time() - 61
-            os.utime(path, (old, old))
+            backdated = self._backdate(path)
             errors = io.StringIO()
             with contextlib.redirect_stderr(errors), ResourceLock(path, timeout_seconds=0.5):
                 self.assertEqual(os.getpid(), read_json(path / "owner.json")["pid"])
-            self.assertRegex(
-                errors.getvalue(),
-                rf"^WARNING: Reclaimed the stale lock {re.escape(str(path))}: it has had no owner file for 6[01] "
-                r"seconds\.\n$",
+            self._assert_reclaimed_after(
+                errors.getvalue(), path, "it has had no owner file for {age} seconds", backdated
             )
             self.assertEqual([], list(Path(temporary).iterdir()))
 
@@ -902,15 +920,15 @@ class StateAndLockTests(GitTestCase):
                 with self.assertRaisesRegex(PersistenceError, "Timed out"), ResourceLock(path, timeout_seconds=0.1):
                     pass
                 self.assertEqual(content, owner.read_bytes(), "a torn owner file is kept during the grace period")
-                old = time.time() - 61
-                os.utime(owner, (old, old))
+                backdated = self._backdate(owner)
                 errors = io.StringIO()
                 with contextlib.redirect_stderr(errors), ResourceLock(path, timeout_seconds=0.5):
                     self.assertEqual(os.getpid(), read_json(owner)["pid"])
-                self.assertRegex(
+                self._assert_reclaimed_after(
                     errors.getvalue(),
-                    rf"^WARNING: Reclaimed the stale lock {re.escape(str(path))}: its owner file has not been a "
-                    r"valid owner record for 6[01] seconds\.\n$",
+                    path,
+                    "its owner file has not been a valid owner record for {age} seconds",
+                    backdated,
                 )
                 self.assertEqual([], list(Path(temporary).iterdir()))
 
