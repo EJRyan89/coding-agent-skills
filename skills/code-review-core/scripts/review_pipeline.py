@@ -52,6 +52,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 from console import run_main
 from git_client import Runner, subprocess_runner
+from process_identity import ProcessStatus, process_status
 from review_analyzers import reads_settings
 from review_archive import ArchiveError, archive_head, commit_record, pull_records
 from review_canary import FixtureError, fixture_change, validate_prior_record
@@ -110,7 +111,7 @@ from review_operation import (
     validate_canary_pull,
     validate_pull,
 )
-from review_process import ProcessStatus, process_status, start_detached
+from review_process import start_detached
 from review_records import (
     RE_REVIEW_SCOPES,
     RecordError,

@@ -13,7 +13,9 @@ from .errors import DeployError
 ALLOW_PATH = "[A-Za-z0-9 /:.@_()-]"
 CONFIGURED_VARIABLES: dict[str, str] = {"REPOS_ROOT": ALLOW_PATH}
 DIRECTORY_VARIABLES = ("REPOS_ROOT",)
-PROMPTS: dict[str, str] = {"REPOS_ROOT": "root directory for your git repositories, such as C:/GitHub"}
+PROMPTS: dict[str, str] = {
+    "REPOS_ROOT": f"root directory for your git repositories, such as {platform_support.EXAMPLE_DIRECTORY}"
+}
 # Rendering escapes a value only for the contexts it knows, so derived values pass an allowlist as configured ones
 # do. Nobody chooses a home folder's name to suit the deployer, so letters of any script are allowed, but nothing a
 # shell, PowerShell, YAML, or Markdown gives a meaning to.
@@ -111,7 +113,7 @@ def _validate_absolute_directory(key: str, value: str) -> None:
     if not value:
         return
     if not platform_support.is_absolute(value):
-        raise DeployError(f"ERROR: {key} must be an absolute Windows path (got: {value})")
+        raise DeployError(f"ERROR: {key} must be {platform_support.ABSOLUTE_PATH} (got: {value})")
     if platform_support.is_filesystem_root(value):
         raise DeployError(f"ERROR: {key} must not be a filesystem root (got: {value})")
     if not Path(value).is_dir():

@@ -154,6 +154,44 @@ jobs:
           python -B tests/run_validation.py --full -v --shard $env:SHARD
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+  # The deployer's suites on Linux, the platform being ported to. It reports on every run, but the `validate` job does
+  # not need it, so branch protection, which requires only `Validation`, never waits on it.
+  linux:
+    name: Deployer suites on Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      # The image has Bash and PowerShell 7; ShellCheck comes from Ubuntu's archive, whose release the toolchain
+      # check holds to the pin's floor, and PSScriptAnalyzer at the pin the Windows legs install.
+      - name: Install ShellCheck
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes shellcheck
+
+      - name: Install PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION -Scope CurrentUser -Force -ErrorAction Stop
+
+      - name: Install development dependencies
+        shell: bash
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Run the deployer's suites
+        shell: bash
+        run: python -B tests/run_validation.py -v -k deployer -k platform_support -k job_tree -k process_identity
+
   # Branch protection requires the single check named `Validation`, this job's name, so every leg reports through this
   # job: a matrix job's result is success only when every one of its legs succeeded.
   validate:

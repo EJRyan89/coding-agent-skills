@@ -9,9 +9,9 @@ Every deployment needs:
 | Tool | Why |
 |---|---|
 | Python 3.11.4 or newer | Runs the deployer. The deployer and the `audit-ai-config` engine use only the standard library. |
-| Git for Windows | Its Bash checks the syntax of rendered Bash scripts and Bash blocks in Markdown; several skills run Bash commands. |
+| Git for Windows, or on Linux Git and Bash | The Bash, Git for Windows' on Windows and the system's on Linux, checks the syntax of rendered Bash scripts and Bash blocks in Markdown; several skills run Bash commands. |
 | ShellCheck | Lints the same rendered Bash content. Deployment stops if it is missing. CI uses 0.9.0 and checks the latest release weekly; newer releases also work. |
-| PowerShell | Parses rendered `.ps1` files regardless of extension case. Windows PowerShell 5.1 is enough for deployment; the validation suite needs PowerShell 7 (`pwsh`). |
+| PowerShell | Parses rendered `.ps1` files regardless of extension case. Windows PowerShell 5.1 is enough for deployment on Windows; Linux and the validation suite need PowerShell 7 (`pwsh`). |
 
 Some skills need more when you use them, not when you deploy them:
 
@@ -23,7 +23,7 @@ Some skills need more when you use them, not when you deploy them:
 | GitHub Copilot CLI 1.0.88 or newer (optional) | Verifying Copilot skill discovery, and the bounded Copilot code-review host |
 | .NET SDK and the `dotnet-format` global tool; .NET SDK 9.0.200 or newer for a `.slnx` solution | `dotnet-format`, which checks for them and reports the install command |
 
-`python deploy.py check` and the skills find each of these tools the same way: the first on your `PATH`, else the one in WinGet's Links folder (`%LOCALAPPDATA%\Microsoft\WinGet\Links`), where WinGet puts a portable install that may not be on `PATH`. A skill runs the tool at the path it found, so a tool `check` reports is the one the skill starts.
+`python deploy.py check` and the skills find each of these tools the same way: the first on your `PATH`, else the one in WinGet's Links folder (`%LOCALAPPDATA%\Microsoft\WinGet\Links`), where WinGet puts a portable install that may not be on `PATH`; on Linux, `PATH` alone. A skill runs the tool at the path it found, so a tool `check` reports is the one the skill starts.
 | `pdftotext` from Xpdf or Poppler, meeting its [provider-specific support floor](dependency-updates.md#runtime-tool-floors) (optional) | The code-review skills, to review a PDF a pull request changes; a missing, unsupported, or unidentifiable parser leaves that review `INCOMPLETE` |
 
 For PDF review, an old `pdftotext` bundled with Git for Windows may no longer meet its provider's floor. Install a supported parser from a source you trust and put its directory on the reviewing process's `PATH`, then run `python deploy.py check` in that environment. The [Xpdf command-line tools](https://www.xpdfreader.com/download.html) and [Poppler project](https://poppler.freedesktop.org/) remain supported providers; the project does not install or update them for you. `check` and every extraction look at each `pdftotext` on `PATH`, then in WinGet's Links folder, take the first one that meets its floor, and name each one they passed over and where it was found, so Git's bundled copy, which Git Bash puts ahead of the Windows `PATH`, is skipped rather than blocking a supported one further down. Runtime extraction checks again, so a later `PATH` change or downgrade is checked rather than trusted. A standalone `review-document` refuses before creating its fixture; a pull request records an explicit PDF coverage gap.
@@ -46,6 +46,8 @@ Use whichever installer your machine allows. [winget](https://learn.microsoft.co
 | GitHub Copilot CLI | `GitHub.Copilot` | `github-copilot-cli` (community-maintained) | `copilot-cli` | `npm install -g @github/copilot` with Node.js 22 or newer, or [GitHub releases](https://github.com/github/copilot-cli/releases); the code-review host needs WinGet's or the release's program ([Copilot support](copilot-support.md#bounded-code-review-host)) |
 
 The deployer finds Git Bash in `C:\Program Files\Git`, or next to the `git` on your `PATH`, which covers Scoop and per-user Git installs. It never uses another `bash`, such as WSL's. If Git isn't on your `PATH`, set `GIT_BASH` to its `bin\bash.exe`.
+
+The deployer core also runs on Linux, though Linux is not yet a supported platform (see the [README](../README.md#supported-platforms-and-runtimes)). There it uses the first `bash` and `pwsh` on your `PATH`, and a configured directory is an absolute path such as `/home/you/GitHub`. On Debian and Ubuntu, `sudo apt install git shellcheck python3` installs Git, ShellCheck, and Python beside the system Bash. PowerShell 7 is not in their archives: install it from [Microsoft's package repository](https://learn.microsoft.com/powershell/scripting/install/install-ubuntu), or with `sudo snap install powershell --classic`. On Linux the home is `HOME`.
 
 **After installing a tool, open a new terminal.** Windows only updates `PATH` for programs started after the installation. An editor or agent application that was already running, including one minimized to the system tray, must be fully quit and restarted before its terminals can find the new tool. Run `python deploy.py check` to see what is installed. The validation suite checks for its tools before running any test, and the deployer checks before changing any file; both list every missing tool with its install command. Deploying also warns when a selected skill uses a tool that is not installed.
 

@@ -44,6 +44,23 @@ def forward(path: Path) -> str:
     return str(path).replace("\\", "/")
 
 
+def make_directory_link(link: Path, target: Path) -> None:
+    """A link to a directory, of the kind each platform makes without privileges: a junction on Windows, a symbolic
+    link elsewhere. The deployer refuses both as a link."""
+    if platform_support.WINDOWS:
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], check=True, capture_output=True)
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+def remove_directory_link(link: Path) -> None:
+    """Remove a link make_directory_link made, never the directory it points to."""
+    if platform_support.WINDOWS:
+        link.rmdir()
+    else:
+        link.unlink()
+
+
 def tree_state(root: Path) -> dict[str, str]:
     """Each directory, file, and link under root by relative path: a file by a hash of its bytes, a link by its target.
 

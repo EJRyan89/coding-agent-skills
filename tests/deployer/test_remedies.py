@@ -181,11 +181,12 @@ class ConfigurationRemedyTests(RemedyTestCase):
     def test_invalid_directory_names_configure(self) -> None:
         self.make_source_json()
         self.make_skill("alpha", "Test {{REPOS_ROOT}}", ["REPOS_ROOT"])
-        self.write(self.config_file(), "_source_id=test/skills\nREPOS_ROOT=C:/\n")
+        root = "C:/" if platform_support.WINDOWS else "/"
+        self.write(self.config_file(), f"_source_id=test/skills\nREPOS_ROOT={root}\n")
         result = self.deploy_fails("--all", pattern="must not be a filesystem root")
         self.assert_lines(
             result.output,
-            "ERROR: REPOS_ROOT must not be a filesystem root (got: C:/)",
+            f"ERROR: REPOS_ROOT must not be a filesystem root (got: {root})",
             "Run 'python deploy.py configure' to change it.",
         )
 

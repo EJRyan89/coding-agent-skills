@@ -9,17 +9,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from harness import FAILS_PARTWAY, SOURCE_ID, DeployerTestCase, forward
+from harness import FAILS_PARTWAY, SOURCE_ID, DeployerTestCase, forward, make_directory_link, remove_directory_link
 
 from deployer import fsops, hashing
 from deployer.errors import DeployError
 from deployer.paths import validate_managed_roots
 
 SKILL_ROOTS = Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts" / "skill_roots.py"
-
-
-def make_junction(link, target) -> None:
-    subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], check=True, capture_output=True)
 
 
 class RemovalTests(DeployerTestCase):
@@ -488,7 +484,7 @@ class DestinationLinkTests(DeployerTestCase):
         self.deploy_ok("--all")
         outside = self.root / "outside"
         self.write(outside / "data.txt", "outside data\n")
-        make_junction(self.skills_dir / "alpha" / "linked", outside)
+        make_directory_link(self.skills_dir / "alpha" / "linked", outside)
         for arguments in (("--all",), ("--all", "--force"), ("--all", "--dry-run")):
             with self.subTest(arguments=arguments):
                 self.deploy_fails(*arguments, pattern="Destination 'alpha' contains a symlink or junction")
@@ -503,7 +499,7 @@ class DestinationLinkTests(DeployerTestCase):
         outside = self.root / "outside"
         self.write(outside / "SKILL.md", "not managed\n")
         shutil.rmtree(self.skills_dir / "alpha")
-        make_junction(self.skills_dir / "alpha", outside)
+        make_directory_link(self.skills_dir / "alpha", outside)
         self.remove_skill("alpha")
         self.deploy_fails("--all", pattern="Destination 'alpha' contains a symlink or junction")
         self.assertEqual("not managed\n", (outside / "SKILL.md").read_text(encoding="utf-8"))
@@ -522,7 +518,7 @@ class ManagedRootTests(DeployerTestCase):
         if directory.exists():
             shutil.rmtree(directory)
         directory.parent.mkdir(parents=True, exist_ok=True)
-        make_junction(directory, target)
+        make_directory_link(directory, target)
 
     def assert_linked_root_blocks_deployment(self, directory: Path) -> None:
         outside = self.fixture()
@@ -549,7 +545,7 @@ class ManagedRootTests(DeployerTestCase):
         self.fixture()
         real_home = self.root / "real home"
         shutil.move(self.home, real_home)
-        make_junction(self.home, real_home)
+        make_directory_link(self.home, real_home)
         try:
             before = sorted(path.relative_to(real_home) for path in real_home.rglob("*"))
             for arguments in (("--all",), ("--all", "--dry-run")):
@@ -560,7 +556,7 @@ class ManagedRootTests(DeployerTestCase):
             self.assertIn(f"Deployment path contains a symlink or junction: {forward(self.home)}\n", result.output)
             self.assertEqual(before, sorted(path.relative_to(real_home) for path in real_home.rglob("*")))
         finally:
-            self.home.rmdir()  # removes the junction only, never the directory it points to
+            remove_directory_link(self.home)
 
     def test_a_home_that_is_a_file_is_rejected(self) -> None:
         shutil.rmtree(self.home)
@@ -581,7 +577,7 @@ class ManagedRootTests(DeployerTestCase):
     def test_removing_a_link_never_touches_its_target(self) -> None:
         outside = self.fixture()
         link = self.root / "link"
-        make_junction(link, outside)
+        make_directory_link(link, outside)
         fsops.remove(link)
         self.assertFalse(link.exists())
         self.assertEqual("external data\n", (outside / "20260101-000000-keep" / "data.txt").read_text(encoding="utf-8"))

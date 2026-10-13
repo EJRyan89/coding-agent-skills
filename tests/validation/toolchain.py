@@ -85,7 +85,7 @@ def find_mypy() -> str | None:
 
 
 PREREQUISITES: tuple[tuple[str, str, Callable[[], str | None]], ...] = (
-    ("Git Bash", "Git Bash", find_git_bash),
+    (platform_support.BASH_NAME, platform_support.BASH_NAME, find_git_bash),
     ("ShellCheck", "ShellCheck", find_shellcheck),
     ("PSScriptAnalyzer", "PSScriptAnalyzer", find_psscriptanalyzer),
     ("PowerShell 7 (pwsh)", "PowerShell", find_powershell),

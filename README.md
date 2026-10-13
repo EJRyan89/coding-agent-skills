@@ -19,7 +19,7 @@ Portable agent skills for Claude Code, Codex, and GitHub Copilot CLI, with a gua
 
 ## Supported platforms and runtimes
 
-The deployer supports Windows only; macOS and Linux support is planned. On those systems, and in WSL, it stops before changing anything.
+The deployer supports Windows only; macOS and Linux support is planned. On macOS it stops before changing anything. On Linux, WSL included, its core already runs, but Linux is not supported until full validation and the runtime check pass there.
 
 Install the runtimes you use. None of them is needed to deploy, so you can use the skills from Codex or Copilot without installing Claude Code; [Runtime support](docs/skills.md#runtime-support) says which skills run there in part.
 

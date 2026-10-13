@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
+from bounded_process import ProcessTree
+
 from . import platform_support
 
 # Each runtime's listing names its field skills, a word the manifest also uses as a key; neither listing is a manifest.
@@ -72,10 +74,11 @@ def converse(
 ) -> list[str]:
     lines: queue.Queue[str | None] = queue.Queue()
     with tempfile.TemporaryFile() as errors, contextlib.ExitStack() as held:
-        process, stdin, stdout = _start(arguments, cwd, environment, errors)
+        tree = platform_support.process_tree()
+        process, stdin, stdout = _start(arguments, cwd, environment, errors, tree)
         # Leaving the tree ends whatever the program started, such as the runtime a launcher script runs, which a kill
         # of the program alone would leave running.
-        _hold(held, process, stdin, stdout)
+        _hold(held, tree, process, stdin, stdout)
         reader = threading.Thread(target=_read_lines, args=(stdout, lines), daemon=True)
         reader.start()
         received: list[str] = []
@@ -94,9 +97,9 @@ def converse(
 
 
 def _start(
-    arguments: list[str], cwd: Path, environment: Mapping[str, str], errors: IO[bytes]
+    arguments: list[str], cwd: Path, environment: Mapping[str, str], errors: IO[bytes], tree: ProcessTree
 ) -> tuple[subprocess.Popen[str], IO[str], IO[str]]:
-    """The started program and its stdin and stdout pipes, its stderr going to errors."""
+    """The started program and its stdin and stdout pipes, its stderr going to errors, started as `tree` holds it."""
     try:
         process = subprocess.Popen(
             arguments,
@@ -108,6 +111,7 @@ def _start(
             text=True,
             encoding="utf-8",
             errors="replace",
+            **tree.start_options(),
         )
     except OSError as exc:
         raise ListingError(f"cannot start it: {exc}") from exc
@@ -120,10 +124,12 @@ def _start(
     return process, stdin, stdout
 
 
-def _hold(held: contextlib.ExitStack, process: subprocess.Popen[str], stdin: IO[str], stdout: IO[str]) -> None:
-    """Hold the started program in a process tree until `held` closes; one that cannot be held is ended."""
+def _hold(
+    held: contextlib.ExitStack, tree: ProcessTree, process: subprocess.Popen[str], stdin: IO[str], stdout: IO[str]
+) -> None:
+    """Hold the started program in `tree` until `held` closes; one that cannot be held is ended."""
     try:
-        held.enter_context(platform_support.process_tree().hold(process))
+        held.enter_context(tree.hold(process))
     except OSError as exc:
         for pipe in (stdin, stdout):
             with contextlib.suppress(OSError):

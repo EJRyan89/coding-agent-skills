@@ -58,7 +58,7 @@ class ProcessTree(Protocol):
         """Keyword arguments for subprocess.Popen that start the command as the tree needs."""
         ...
 
-    def hold(self, process: subprocess.Popen[bytes]) -> AbstractContextManager[object]:
+    def hold(self, process: subprocess.Popen[Any]) -> AbstractContextManager[object]:
         """Entered once the command has started; leaving it ends every process of the tree still running."""
         ...
 

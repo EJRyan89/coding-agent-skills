@@ -12,14 +12,10 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 from git_test_base import GitTestCase
-from harness import DeployerTestCase, Result, forward, tree_state
+from harness import DeployerTestCase, Result, forward, make_directory_link, tree_state
 
-from deployer import config, names, source
+from deployer import config, names, platform_support, source
 from deployer.errors import DeployError
-
-
-def make_junction(link, target) -> None:
-    subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], check=True, capture_output=True)
 
 
 class ConfigValidationTests(DeployerTestCase):
@@ -141,15 +137,25 @@ class ConfigValidationTests(DeployerTestCase):
     def test_repos_root_filesystem_root_is_rejected(self) -> None:
         self.make_source_json()
         self.make_skill("alpha", "Test {{REPOS_ROOT}}", ["REPOS_ROOT"])
-        self.write(self.config_file(), "_source_id=test/skills\nREPOS_ROOT=C:/\n")
-        self.deploy_fails("--all", pattern="must not be a filesystem root")
+        root = "C:/" if platform_support.WINDOWS else "/"
+        self.write(self.config_file(), f"_source_id=test/skills\nREPOS_ROOT={root}\n")
+        self.deploy_fails("--all", pattern=re.escape(f"must not be a filesystem root (got: {root})"))
+
+    def test_a_configured_path_of_the_other_platforms_form_is_rejected(self) -> None:
+        self.make_source_json()
+        self.make_skill("alpha", "Test {{REPOS_ROOT}}", ["REPOS_ROOT"])
+        value, kind = (
+            ("/srv/repos", "an absolute Windows path") if platform_support.WINDOWS else ("C:/repos", "an absolute path")
+        )
+        self.write(self.config_file(), f"_source_id=test/skills\nREPOS_ROOT={value}\n")
+        self.deploy_fails("--all", pattern=re.escape(f"ERROR: REPOS_ROOT must be {kind} (got: {value})"))
 
     def test_unsupported_platform_is_rejected_before_any_work(self) -> None:
         self.make_source_json()
         self.make_skill("alpha", "Test")
         self.make_config()
-        with mock.patch("deployer.platform_support.sys.platform", "linux"):
-            self.deploy_fails("--all", pattern="supports Windows only")
+        with mock.patch("deployer.platform_support.sys.platform", "darwin"):
+            self.deploy_fails("--all", pattern="supports Windows and Linux only")
         self.assertFalse((self.skills_dir / "alpha").exists())
 
     def test_missing_required_variable_names_the_skill(self) -> None:
@@ -400,15 +406,16 @@ class MetadataValidationTests(DeployerTestCase):
         self.make_source_json(bundles={"pack": {"members": ["alpha"], "opt_in": "yes"}})
         self.deploy_fails("--all", pattern="Bundle 'pack' opt_in must be true or false")
 
-    def test_windows_junction_in_source_is_rejected(self) -> None:
+    def test_a_directory_link_in_source_is_rejected(self) -> None:
         self.make_source_json()
         directory = self.make_skill("alpha", "Alpha content")
         outside = self.root / "outside-source"
         outside.mkdir()
         self.write(outside / "data.txt", "outside\n")
-        make_junction(directory / "external", outside)
+        make_directory_link(directory / "external", outside)
         self.make_config()
-        self.deploy_fails("--all", pattern="(?i)Reparse point found")
+        # Windows makes the link a junction, a reparse point that is no symlink; elsewhere it is a symlink.
+        self.deploy_fails("--all", pattern="(?i)Reparse point found" if platform_support.WINDOWS else "Symlink found")
         self.assertFalse((self.skills_dir / "alpha").exists())
 
 
@@ -834,7 +841,7 @@ class CanaryHomeTests(LinkedWorktreeTestCase):
         target = self.root / "target"
         target.mkdir()
         junction = self.root / "junction"
-        make_junction(junction, target)
+        make_directory_link(junction, target)
         (self.root / "file").write_text("", encoding="utf-8")
         for value, message in (
             ("relative-home", "--canary-home must be an absolute path (got: relative-home)"),
@@ -871,18 +878,25 @@ class CanaryHomeTests(LinkedWorktreeTestCase):
 
 class DerivedAllowlistTests(GitTestCase):
     def test_derived_paths_admit_letters_of_any_script_and_path_punctuation_only(self) -> None:
-        source = Path("C:/src")
+        # A home and a checkout as each platform names them absolutely, which abspath leaves as they are.
+        profiles, source = ("D:/profiles", Path("C:/src")) if platform_support.WINDOWS else ("/home", Path("/src"))
         for name in ("Jos\u00e9", "\u0141ukasz M\u00fcller", "\u7530\u4e2d", "first.last@corp", "a_b-c (2)"):
             with self.subTest(allowed=name):
-                home = f"D:/profiles/{name}"
+                home = f"{profiles}/{name}"
                 self.assertEqual(home, config.derived_values(Path(home), source)["HOME"])
         for character in "'\"$`&;#%!^=+,~[]{}":
             with self.subTest(refused=character):
                 with self.assertRaisesRegex(DeployError, re.escape(f"disallowed character '{character}'")):
-                    config.derived_values(Path(f"D:/profiles/a{character}b"), source)
+                    config.derived_values(Path(f"{profiles}/a{character}b"), source)
                 with self.assertRaisesRegex(DeployError, re.escape(f"disallowed character '{character}'")):
-                    config.derived_values(Path("D:/profiles/a"), Path(f"C:/src/a{character}b"))
-        self.assertEqual({"HOME", "SOURCE_ROOT"}, set(config.derived_values(Path("D:/profiles/a"), source)))
+                    config.derived_values(Path(f"{profiles}/a"), source / f"a{character}b")
+        self.assertEqual({"HOME", "SOURCE_ROOT"}, set(config.derived_values(Path(f"{profiles}/a"), source)))
+
+    if not platform_support.WINDOWS:
+
+        def test_a_backslash_in_a_derived_path_is_a_character_of_the_name_and_refused(self) -> None:
+            with self.assertRaisesRegex(DeployError, re.escape("HOME (the home folder) contains disallowed character")):
+                config.derived_values(Path("/home/a\\b"), Path("/src"))
 
 
 if __name__ == "__main__":

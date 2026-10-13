@@ -7,7 +7,7 @@ from unittest import mock
 
 from harness import DeployerTestCase, forward
 
-from deployer import config
+from deployer import config, platform_support
 
 
 class ConfigureTests(DeployerTestCase):
@@ -37,8 +37,9 @@ class ConfigureTests(DeployerTestCase):
         self.make_config()
         result = self.configure(stdin="\n")
         self.assertEqual(0, result.code, result.output)
+        example = "C:/GitHub" if platform_support.WINDOWS else "/home/you/GitHub"
         self.assertIn(
-            "REPOS_ROOT: root directory for your git repositories, such as C:/GitHub\n"
+            f"REPOS_ROOT: root directory for your git repositories, such as {example}\n"
             f"  Current: {forward(self.repos)}\n"
             "  New value (Enter keeps the current value, Ctrl+C cancels): ",
             result.output,

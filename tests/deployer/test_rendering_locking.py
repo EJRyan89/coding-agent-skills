@@ -310,10 +310,16 @@ class RenderedExecutableTests(DeployerTestCase):
             side_effect=lambda name: None if name == "shellcheck" else real(name),
         ):
             result = self.deploy_fails("--all", pattern="Tools required to validate the rendered skills were not found")
-        self.assertIn("  - ShellCheck (lints rendered Bash): winget install --id koalaman.shellcheck", result.output)
-        self.assertIn("open a new terminal", result.output)
-        self.assertIn('For Chocolatey, Scoop, or direct downloads, see "Installing the tools" in', result.output)
-        self.assertNotIn("Git Bash (", result.output)
+        if platform_support.WINDOWS:
+            self.assertIn(
+                "  - ShellCheck (lints rendered Bash): winget install --id koalaman.shellcheck", result.output
+            )
+            self.assertIn("open a new terminal", result.output)
+            self.assertIn('For Chocolatey, Scoop, or direct downloads, see "Installing the tools" in', result.output)
+        else:
+            self.assertIn("  - ShellCheck (lints rendered Bash): sudo apt install shellcheck", result.output)
+            self.assertIn('or direct downloads, see "Installing the tools" in', result.output)
+        self.assertNotIn("Bash (checks", result.output)
         self.assertFalse((self.skills_dir / "alpha").exists())
 
     def test_every_missing_validation_tool_is_reported_at_once(self) -> None:
@@ -327,11 +333,17 @@ class RenderedExecutableTests(DeployerTestCase):
             mock.patch("deployer.platform_support.find_powershell", return_value=None),
         ):
             result = self.deploy_fails("--all", pattern="Tools required to validate the rendered skills were not found")
-        for line in (
+        windows = (
             "  - Git Bash (checks rendered Bash syntax): winget install --id Git.Git",
             "  - ShellCheck (lints rendered Bash): winget install --id koalaman.shellcheck",
             "  - PowerShell (parses rendered .ps1 files): winget install --id Microsoft.PowerShell",
-        ):
+        )
+        linux = (
+            "  - Bash (checks rendered Bash syntax): sudo apt install bash",
+            "  - ShellCheck (lints rendered Bash): sudo apt install shellcheck",
+            "  - PowerShell (parses rendered .ps1 files): sudo snap install powershell --classic",
+        )
+        for line in windows if platform_support.WINDOWS else linux:
             self.assertIn(line, result.output)
         self.assertFalse((self.skills_dir / "alpha").exists())
 
