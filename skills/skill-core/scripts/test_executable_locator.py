@@ -19,9 +19,15 @@ from executable_locator import find_executable, find_executables, link_folders, 
 PROGRAM = "fixture-locator-tool"
 
 
+WINDOWS = sys.platform == "win32"
+# The file a program named PROGRAM is installed as: WinGet's `.exe` on Windows, and the bare name elsewhere.
+PROGRAM_FILE = f"{PROGRAM}.exe" if WINDOWS else PROGRAM
+
+
 class LocatorTestCase(unittest.TestCase):
     """A sanitized environment: PATH is one empty folder and the local application data folder is a fresh one, so
-    nothing on the machine running the test is found."""
+    nothing on the machine running the test is found. Off Windows, where no package manager links commands into a
+    folder of its own, `links` is the folder PATH names after the first, the place the locator looks next."""
 
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="executable locator ")
@@ -29,18 +35,22 @@ class LocatorTestCase(unittest.TestCase):
         root = Path(temporary.name)
         self.path_folder = root / "on path"
         self.local = root / "local app data"
-        self.links = self.local / "Microsoft" / "WinGet" / "Links"
+        self.links = self.local / "Microsoft" / "WinGet" / "Links" if WINDOWS else root / "later on path"
         self.path_folder.mkdir()
         self.links.mkdir(parents=True)
-        environment = mock.patch.dict(
-            os.environ, {"PATH": str(self.path_folder), "PATHEXT": ".COM;.EXE", "LOCALAPPDATA": str(self.local)}
+        variables = (
+            {"PATH": str(self.path_folder), "PATHEXT": ".COM;.EXE", "LOCALAPPDATA": str(self.local)}
+            if WINDOWS
+            else {"PATH": os.pathsep.join((str(self.path_folder), str(self.links))), "LOCALAPPDATA": str(self.local)}
         )
+        environment = mock.patch.dict(os.environ, variables)
         environment.start()
         self.addCleanup(environment.stop)
 
     def program(self, folder: Path) -> Path:
-        program = folder / f"{PROGRAM}.exe"
+        program = folder / PROGRAM_FILE
         program.write_bytes(b"")
+        program.chmod(0o755)
         return program
 
 
@@ -64,7 +74,7 @@ class FindExecutableTests(LocatorTestCase):
         self.assertIsNone(find_executable(PROGRAM))
 
     def test_a_folder_in_the_links_folder_is_not_a_program(self) -> None:
-        (self.links / f"{PROGRAM}.exe").mkdir()
+        (self.links / PROGRAM_FILE).mkdir()
         self.assertIsNone(find_executable(PROGRAM))
 
     def test_without_an_absolute_local_application_data_folder_nothing_relative_is_searched(self) -> None:
@@ -73,7 +83,10 @@ class FindExecutableTests(LocatorTestCase):
         os.chdir(self.local)
         self.program(self.links)
         for value in ("", "relative"):
-            with self.subTest(value=value), mock.patch.dict(os.environ, {"LOCALAPPDATA": value}):
+            with (
+                self.subTest(value=value),
+                mock.patch.dict(os.environ, {"LOCALAPPDATA": value, "PATH": str(self.path_folder)}),
+            ):
                 self.assertEqual([], link_folders())
                 self.assertIsNone(find_executable(PROGRAM))
         with mock.patch.dict(os.environ):
@@ -97,7 +110,9 @@ class FindExecutablesTests(LocatorTestCase):
         linked = self.program(self.links)
         with mock.patch.dict(os.environ, {"PATH": os.pathsep.join((str(self.path_folder), str(second)))}):
             found = find_executables(PROGRAM)
-            self.assertEqual([first_program, second_program, linked], [Path(path) for path in found])
+            # Off Windows the folder after PATH's first is on PATH only as the fixture puts it, so not here.
+            expected = [first_program, second_program, linked] if WINDOWS else [first_program, second_program]
+            self.assertEqual(expected, [Path(path) for path in found])
             self.assertEqual(found[0], find_executable(PROGRAM), "the first candidate is the one found")
 
     def test_a_links_folder_that_is_also_on_path_yields_its_program_once(self) -> None:
@@ -128,27 +143,53 @@ class LocatedCommandTests(LocatorTestCase):
 
 
 class PathProgramsTests(unittest.TestCase):
-    def test_every_match_on_path_in_order_by_the_extension_rules_of_shutil_which(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            first, second, third = (Path(temporary) / f"folder {index}" for index in range(3))
-            for folder in (first, second, third):
-                folder.mkdir()
-            (first / "copilot").write_bytes(b"no extension, so not a Windows command")
-            (first / "copilot.cmd").write_bytes(b"fixture")
-            (first / "copilot.exe").write_bytes(b"fixture")
-            (second / "copilot.exe").mkdir()
-            (third / "copilot.bat").write_bytes(b"fixture")
-            path = os.pathsep.join(("", str(first), str(second), str(first), str(third)))
-            with mock.patch.dict(os.environ, {"PATH": path, "PATHEXT": ".EXE;.BAT;.CMD"}):
-                self.assertEqual(
-                    [str(first / "copilot.EXE"), str(first / "copilot.CMD"), str(third / "copilot.BAT")],
-                    path_programs("copilot"),
-                    "PATHEXT's order within a folder, PATH's across them; a folder once; no directory",
-                )
-                self.assertEqual(shutil.which("copilot", path=str(first)), path_programs("copilot")[0])
-                self.assertEqual([str(third / "copilot.bat")], path_programs("copilot.bat"), "a name with one")
-            with mock.patch.dict(os.environ, {"PATH": "", "PATHEXT": ".EXE"}):
-                self.assertEqual([], path_programs("copilot"))
+    if not WINDOWS:
+
+        def test_every_executable_match_on_path_in_order(self) -> None:
+            with tempfile.TemporaryDirectory() as temporary:
+                first, second, third = (Path(temporary) / f"folder {index}" for index in range(3))
+                for folder in (first, second, third):
+                    folder.mkdir()
+                for program in (first / "copilot", third / "copilot"):
+                    program.write_bytes(b"#!/bin/sh\n")
+                    program.chmod(0o755)
+                (first / "copilot.exe").write_bytes(b"an extension is part of the name here")
+                (first / "copilot.exe").chmod(0o755)
+                (second / "copilot").mkdir()
+                (third / "plain").write_bytes(b"not executable")
+                path = os.pathsep.join(("", str(first), str(second), str(first), str(third)))
+                with mock.patch.dict(os.environ, {"PATH": path}):
+                    self.assertEqual(
+                        [str(first / "copilot"), str(third / "copilot")],
+                        path_programs("copilot"),
+                        "PATH's order across folders; a folder once; no directory",
+                    )
+                    self.assertEqual(shutil.which("copilot", path=str(first)), path_programs("copilot")[0])
+                    self.assertEqual([], path_programs("plain"), "a file that is not executable is no program")
+
+    else:
+
+        def test_every_match_on_path_in_order_by_the_extension_rules_of_shutil_which(self) -> None:
+            with tempfile.TemporaryDirectory() as temporary:
+                first, second, third = (Path(temporary) / f"folder {index}" for index in range(3))
+                for folder in (first, second, third):
+                    folder.mkdir()
+                (first / "copilot").write_bytes(b"no extension, so not a Windows command")
+                (first / "copilot.cmd").write_bytes(b"fixture")
+                (first / "copilot.exe").write_bytes(b"fixture")
+                (second / "copilot.exe").mkdir()
+                (third / "copilot.bat").write_bytes(b"fixture")
+                path = os.pathsep.join(("", str(first), str(second), str(first), str(third)))
+                with mock.patch.dict(os.environ, {"PATH": path, "PATHEXT": ".EXE;.BAT;.CMD"}):
+                    self.assertEqual(
+                        [str(first / "copilot.EXE"), str(first / "copilot.CMD"), str(third / "copilot.BAT")],
+                        path_programs("copilot"),
+                        "PATHEXT's order within a folder, PATH's across them; a folder once; no directory",
+                    )
+                    self.assertEqual(shutil.which("copilot", path=str(first)), path_programs("copilot")[0])
+                    self.assertEqual([str(third / "copilot.bat")], path_programs("copilot.bat"), "a name with one")
+                with mock.patch.dict(os.environ, {"PATH": "", "PATHEXT": ".EXE"}):
+                    self.assertEqual([], path_programs("copilot"))
 
 
 class LinkFoldersTests(LocatorTestCase):
@@ -158,7 +199,10 @@ class LinkFoldersTests(LocatorTestCase):
 
     def test_another_platform_has_no_link_folder_yet(self) -> None:
         self.program(self.links)
-        with mock.patch.object(executable_locator.sys, "platform", "linux"):
+        with (
+            mock.patch.object(executable_locator.sys, "platform", "linux"),
+            mock.patch.dict(os.environ, {"PATH": str(self.path_folder)}),
+        ):
             self.assertEqual([], link_folders())
             self.assertIsNone(find_executable(PROGRAM))
 

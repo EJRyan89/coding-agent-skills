@@ -303,6 +303,7 @@ class AcceptanceTests(GitTestCase):
         hooks.mkdir(parents=True)
         for name in ("pre-commit", "commit-msg", "post-commit"):
             (hooks / name).write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+            (hooks / name).chmod(0o755)  # git runs a hook only when it is executable, off Windows
         self.hooked = self.root / "hooked.gitconfig"
         self.hooked.write_text(
             config_text({"user.name": "User", "user.email": "user@example.invalid", "core.hooksPath": str(hooks)}),
