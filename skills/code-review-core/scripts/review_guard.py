@@ -47,6 +47,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from console import run_main
+from executable_locator import PYTHON
 from typed_fields import FieldError, FieldReader
 
 EXIT_CONTRACT_EXEMPT = "Claude Code PreToolUse hook protocol: prints a JSON decision and always exits 0"
@@ -62,16 +63,18 @@ WRITE_TOOLS = {"Write", "Edit"}
 # quote and leave what follows outside quotes, though the path still normalizes to the known script or run.
 SHELL_BREAKS = r'"`$\r\n\u201c\u201d\u201e'
 QUOTED_VALUE = rf"[^{SHELL_BREAKS}]*[^{SHELL_BREAKS}\\]"
+# Each command names Python as review-prs's rendered grant does, by the platform's command.
 SELF_CHECK = re.compile(
-    rf'^python -B "(?P<script>{QUOTED_VALUE})" validate-result --run "(?P<run>{QUOTED_VALUE})" '
+    rf'^{re.escape(PYTHON)} -B "(?P<script>{QUOTED_VALUE})" validate-result --run "(?P<run>{QUOTED_VALUE})" '
     rf'--role "(?P<role>[a-z0-9][a-z0-9-]*)"$'
 )
 # The two commands review_source.py gives a lazy snapshot's reviewer. The script and the run must be the known ones;
 # the path or pattern, the one value the reviewer chooses, holds no backslash at all, so it can never end up outside
 # its quotes.
 SOURCE_COMMAND = re.compile(
-    rf'^python -B "(?P<script>{QUOTED_VALUE})" (?P<command>source-file|source-search) --run "(?P<run>{QUOTED_VALUE})" '
-    rf'--role "(?P<role>[a-z0-9][a-z0-9-]*)" --(?P<option>path|pattern)="[^{SHELL_BREAKS}\\]+"$'
+    rf'^{re.escape(PYTHON)} -B "(?P<script>{QUOTED_VALUE})" (?P<command>source-file|source-search) '
+    rf'--run "(?P<run>{QUOTED_VALUE})" --role "(?P<role>[a-z0-9][a-z0-9-]*)" '
+    rf'--(?P<option>path|pattern)="[^{SHELL_BREAKS}\\]+"$'
 )
 SOURCE_OPTIONS = {"source-file": "path", "source-search": "pattern"}
 SOURCE_SCRIPT = SCRIPT_DIRECTORY / "review_source.py"
@@ -126,7 +129,8 @@ def _path(value: Any, cwd: Path) -> Path:
         value = READ.string(value, "the path")
     except FieldError as exc:
         raise Denied("give an absolute path inside the review run") from exc
-    match = SHELL_DRIVE.match(value)
+    # Git Bash names a drive as /c/, which only Windows means; elsewhere /c/ is a directory of its own.
+    match = SHELL_DRIVE.match(value) if sys.platform == "win32" else None
     text = f"{match.group(1)}:/{value[match.end() :]}" if match else value
     path = Path(text)
     if not path.is_absolute():

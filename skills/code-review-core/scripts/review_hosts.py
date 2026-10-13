@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 from bounded_process import run_bounded
 from executable_locator import find_executables
-from job_tree import JobRefused, JobTree
+from job_tree import JobRefused, process_tree
 from review_io import ResourceLock, atomic_write_json, atomic_write_text, read_diff, read_json
 from review_process import ProcessStatus, same_process, shell_script
 from review_runtime import (
@@ -90,8 +90,8 @@ COMMANDS_ALLOWED = {
 def subprocess_runner(arguments: Sequence[str], cwd: Path, environment: Mapping[str, str], stdin: str) -> ProcessResult:
     """Run Copilot CLI with `stdin` as all it reads, without a window, keeping at most COPILOT_OUTPUT_BYTES of each
     output stream with the cut named; at COPILOT_TIMEOUT_SECONDS it is killed and subprocess.TimeoutExpired raised.
-    Every process it started is ended with it either way, and one no Windows job object can hold is ended before it
-    runs and refused with JobRefused."""
+    Every process it started is ended with it either way, held in this platform's process tree, and one the tree
+    cannot hold is ended before it runs and refused with JobRefused."""
     finished = run_bounded(
         arguments,
         COPILOT_TIMEOUT_SECONDS,
@@ -99,7 +99,7 @@ def subprocess_runner(arguments: Sequence[str], cwd: Path, environment: Mapping[
         env=environment,
         input_bytes=stdin.encode("utf-8"),
         output_limit=COPILOT_OUTPUT_BYTES,
-        tree=JobTree(hidden_window=True),
+        tree=process_tree(hidden_window=True),
     )
     return ProcessResult(finished.returncode, _text(finished.stdout), _text(finished.stderr))
 
@@ -220,7 +220,7 @@ def _run_bounded(
     stdin: str = "",
 ) -> ProcessResult:
     """Run Copilot; a timeout keeps its partial output and becomes a contract error, and so does a Copilot that no
-    Windows job object could hold, which was ended before it ran."""
+    process tree could hold, which was ended before it ran."""
     try:
         return runner(arguments, cwd, environment, stdin)
     except JobRefused as exc:

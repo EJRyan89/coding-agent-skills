@@ -38,6 +38,7 @@ import review_hosts
 import review_pipeline
 import review_synthesis
 from console import run_main
+from executable_locator import PYTHON
 from git_client import GitClient
 
 from tools import skill_evals
@@ -188,6 +189,8 @@ def normalized(text: str, directory: Path) -> str:
         text = text.replace(str(path), placeholder).replace(path.as_posix(), placeholder)
     # The rest of each such path with forward slashes, so a sample reads the same whatever separator renders it.
     text = PLACEHOLDER_PATH.sub(lambda match: match.group(1) + match.group(2).replace("\\", "/"), text)
+    # A command a prompt hands the reviewer names Python by the platform's command; a sample names it as Windows does.
+    text = text.replace(f'{PYTHON} -B "', 'python -B "')
     temporary = Path(tempfile.gettempdir()).resolve()
     for left in (str(temporary), temporary.as_posix()):
         if left.casefold() in text.casefold():

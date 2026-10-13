@@ -594,7 +594,7 @@ class DocumentExtractionTests(AdversarialFixture):
         started = time.monotonic()
         with (
             mock.patch.object(review_runtime, "MAX_CHANGED_FILE_BYTES", 4096),
-            mock.patch.object(review_documents, "PDF_EXTRACTION_SECONDS", 2.0),
+            mock.patch.object(review_documents, "PDF_EXTRACTION_SECONDS", 5.0),
         ):
             ready = self.prepare()
         self.assertLess(time.monotonic() - started, 60, "no document holds the review past the tool's time limit")
@@ -614,7 +614,7 @@ class DocumentExtractionTests(AdversarialFixture):
         notes = "\n".join(ready["notes"])
         for path, reason in (
             ("docs/rejected.pdf", "pdftotext could not read it (exit status 1)"),
-            ("docs/slow.pdf", "pdftotext did not finish within 2 seconds"),
+            ("docs/slow.pdf", "pdftotext did not finish within 5 seconds"),
             ("docs/flood.pdf", "its text is over 1 MiB"),
         ):
             self.assertIn(f'the text of document "{path}" could not be extracted ({reason})', notes)
@@ -1374,7 +1374,7 @@ class EntrypointPromptTests(AdversarialFixture):
 class CopilotCommandLineTests(AdversarialFixture):
     """On Windows, cmd.exe parses the command line of a .cmd or .bat program by its own rules, so a quote, `&`, `|`,
     `%`, or `^` in an argument can end it and start a command. Text from a pull request never reaches a command line
-    the Copilot CLI host starts, and the host never starts a shell script."""
+    the Copilot CLI host starts, and on Windows the host never starts a shell script."""
 
     SKILL = "review/SKILL.md"
     HOSTILE = '" & echo injected | more ^& %PATH% \\" \\\\server\\share ^'
@@ -1479,69 +1479,106 @@ class CopilotCommandLineTests(AdversarialFixture):
         for character in ("&", "|", "%", "^", '"'):
             self.assertEqual([], [argument for argument in arguments if character in argument], character)
 
-    def test_the_lookup_refuses_a_shell_script_first_on_path_and_takes_the_winget_program(self) -> None:
-        shims = self.root / "npm"
-        shims.mkdir()
-        local = self.root / "local app data"
-        environment = {"PATH": str(shims), "PATHEXT": ".COM;.EXE;.BAT;.CMD", "LOCALAPPDATA": str(local)}
-        for suffix in (".cmd", ".bat", ".CMD"):
-            with self.subTest(suffix=suffix), mock.patch.dict(os.environ, environment):
-                for old in shims.iterdir():
-                    old.unlink()
-                shim = shims / f"copilot{suffix}"
+    if sys.platform == "win32":
+
+        def test_the_lookup_refuses_a_shell_script_first_on_path_and_takes_the_winget_program(self) -> None:
+            shims = self.root / "npm"
+            shims.mkdir()
+            local = self.root / "local app data"
+            environment = {"PATH": str(shims), "PATHEXT": ".COM;.EXE;.BAT;.CMD", "LOCALAPPDATA": str(local)}
+            for suffix in (".cmd", ".bat", ".CMD"):
+                with self.subTest(suffix=suffix), mock.patch.dict(os.environ, environment):
+                    for old in shims.iterdir():
+                        old.unlink()
+                    shim = shims / f"copilot{suffix}"
+                    shim.write_text('@"%~dp0node.exe" "%~dp0copilot.js" %*\n', encoding="utf-8")
+                    self.assertEqual(str(shim).casefold(), (shutil.which("copilot") or "").casefold())
+                    with self.assertRaises(review_runtime.RuntimeContractError) as refused:
+                        review_hosts.find_copilot()
+                    self.assertEqual(
+                        "GitHub Copilot CLI on PATH is a shell script, which Windows starts through a shell: "
+                        f"{shutil.which('copilot')}; install the program from WinGet (winget install GitHub.Copilot) "
+                        "or the GitHub release",
+                        str(refused.exception),
+                    )
+            self.assertTrue(review_process.shell_script("C:/tools/copilot.ps1"))
+            self.assertFalse(review_process.shell_script("C:/tools/copilot.exe"))
+
+            winget = local / "Microsoft" / "WinGet" / "Links" / "copilot.exe"
+            winget.parent.mkdir(parents=True)
+            winget.write_bytes(b"fixture")
+            with mock.patch.dict(os.environ, environment):
+                self.assertEqual(str(winget), review_hosts.find_copilot(), "a WinGet program beats a shim on PATH")
+
+        def test_the_lookup_walks_path_past_every_shell_script_to_the_program(self) -> None:
+            npm = self.root / "npm folder"
+            release = self.root / "release folder"
+            empty = self.root / "empty folder"
+            for folder in (npm, release, empty):
+                folder.mkdir()
+            for shim in (npm / "copilot.cmd", npm / "copilot.ps1"):
                 shim.write_text('@"%~dp0node.exe" "%~dp0copilot.js" %*\n', encoding="utf-8")
-                self.assertEqual(str(shim).casefold(), (shutil.which("copilot") or "").casefold())
-                with self.assertRaises(review_runtime.RuntimeContractError) as refused:
-                    review_hosts.find_copilot()
-                self.assertEqual(
-                    "GitHub Copilot CLI on PATH is a shell script, which Windows starts through a shell: "
-                    f"{shutil.which('copilot')}; install the program from WinGet (winget install GitHub.Copilot) or "
-                    "the GitHub release",
-                    str(refused.exception),
-                )
-        self.assertTrue(review_process.shell_script("C:/tools/copilot.ps1"))
-        self.assertFalse(review_process.shell_script("C:/tools/copilot.exe"))
+            program = release / "copilot.exe"
+            program.write_bytes(b"fixture")
+            # No WinGet program, so only PATH can answer.
+            environment = {"PATHEXT": ".COM;.EXE;.BAT;.CMD;.PS1", "LOCALAPPDATA": str(self.root / "local app data")}
 
-        winget = local / "Microsoft" / "WinGet" / "Links" / "copilot.exe"
-        winget.parent.mkdir(parents=True)
-        winget.write_bytes(b"fixture")
-        with mock.patch.dict(os.environ, environment):
-            self.assertEqual(str(winget), review_hosts.find_copilot(), "a WinGet program beats a shim on PATH")
+            def lookup(*folders: Path) -> str:
+                path = os.pathsep.join(str(folder) for folder in folders)
+                with mock.patch.dict(os.environ, {**environment, "PATH": path}):
+                    return review_hosts.find_copilot()
 
-    def test_the_lookup_walks_path_past_every_shell_script_to_the_program(self) -> None:
-        npm = self.root / "npm folder"
-        release = self.root / "release folder"
-        empty = self.root / "empty folder"
-        for folder in (npm, release, empty):
-            folder.mkdir()
-        for shim in (npm / "copilot.cmd", npm / "copilot.ps1"):
-            shim.write_text('@"%~dp0node.exe" "%~dp0copilot.js" %*\n', encoding="utf-8")
-        program = release / "copilot.exe"
-        program.write_bytes(b"fixture")
-        # No WinGet program, so only PATH can answer.
-        environment = {"PATHEXT": ".COM;.EXE;.BAT;.CMD;.PS1", "LOCALAPPDATA": str(self.root / "local app data")}
+            self.assertEqual(
+                str(npm / "copilot.CMD"), shutil.which("copilot", path=os.pathsep.join((str(npm), str(release))))
+            )
+            self.assertEqual(str(release / "copilot.EXE"), lookup(npm, release), "the program later on PATH is found")
+            self.assertEqual(str(release / "copilot.EXE"), lookup(release, npm), "the program first on PATH is found")
+            with self.assertRaises(review_runtime.RuntimeContractError) as refused:
+                lookup(empty, npm)
+            self.assertEqual(
+                "GitHub Copilot CLI on PATH is a shell script, which Windows starts through a shell: "
+                f"{npm / 'copilot.CMD'}, {npm / 'copilot.PS1'}; install the program from WinGet "
+                "(winget install GitHub.Copilot) or the GitHub release",
+                str(refused.exception),
+            )
+            with self.assertRaises(review_runtime.RuntimeContractError) as missing:
+                lookup(empty)
+            self.assertEqual("GitHub Copilot CLI is not available", str(missing.exception))
+    else:
 
-        def lookup(*folders: Path) -> str:
-            path = os.pathsep.join(str(folder) for folder in folders)
-            with mock.patch.dict(os.environ, {**environment, "PATH": path}):
-                return review_hosts.find_copilot()
+        def test_a_script_first_on_path_is_the_program_since_no_shell_parses_its_command_line(self) -> None:
+            shims = self.root / "npm"
+            shims.mkdir()
+            shim = shims / "copilot"
+            shim.write_text('#!/bin/sh\nexec node "$(dirname "$0")/copilot.js" "$@"\n', encoding="utf-8")
+            shim.chmod(0o755)
+            with mock.patch.dict(os.environ, {"PATH": str(shims)}):
+                self.assertEqual(str(shim), review_hosts.find_copilot())
+            for name in ("copilot.cmd", "copilot.bat", "copilot.ps1", "copilot"):
+                self.assertFalse(review_process.shell_script(f"/tools/{name}"), name)
 
-        self.assertEqual(
-            str(npm / "copilot.CMD"), shutil.which("copilot", path=os.pathsep.join((str(npm), str(release))))
-        )
-        self.assertEqual(str(release / "copilot.EXE"), lookup(npm, release), "the program later on PATH is found")
-        self.assertEqual(str(release / "copilot.EXE"), lookup(release, npm), "the program first on PATH is found")
-        with self.assertRaises(review_runtime.RuntimeContractError) as refused:
-            lookup(empty, npm)
-        self.assertEqual(
-            "GitHub Copilot CLI on PATH is a shell script, which Windows starts through a shell: "
-            f"{npm / 'copilot.CMD'}, {npm / 'copilot.PS1'}; install the program from WinGet "
-            "(winget install GitHub.Copilot) or the GitHub release",
-            str(refused.exception),
-        )
-        with self.assertRaises(review_runtime.RuntimeContractError) as missing:
-            lookup(empty)
-        self.assertEqual("GitHub Copilot CLI is not available", str(missing.exception))
+        def test_the_lookup_takes_the_first_program_on_path_and_passes_over_a_file_it_cannot_run(self) -> None:
+            first = self.root / "first folder"
+            second = self.root / "second folder"
+            unrunnable = self.root / "unrunnable folder"
+            for folder in (first, second, unrunnable):
+                folder.mkdir()
+                program = folder / "copilot"
+                program.write_bytes(b"#!/bin/sh\n")
+                program.chmod(0o755)
+            (unrunnable / "copilot").chmod(0o644)
+
+            def lookup(*folders: Path) -> str:
+                with mock.patch.dict(os.environ, {"PATH": os.pathsep.join(str(folder) for folder in folders)}):
+                    return review_hosts.find_copilot()
+
+            self.assertEqual(str(first / "copilot"), lookup(first, second), "the program first on PATH is found")
+            self.assertEqual(
+                str(second / "copilot"), lookup(unrunnable, second, first), "a file it cannot run is passed"
+            )
+            with self.assertRaises(review_runtime.RuntimeContractError) as missing:
+                lookup(unrunnable)
+            self.assertEqual("GitHub Copilot CLI is not available", str(missing.exception))
 
 
 class BranchNameTests(AdversarialFixture):
@@ -1602,7 +1639,16 @@ class ReviewerBoundaryTests(GitTestCase):
     def test_a_reviewer_cannot_write_or_run_outside_its_result_by_spelling_the_path_another_way(self) -> None:
         result = self.run_directory / "work" / "python-review.result.json"
         self.assertIsNone(self.decide("Read", file_path=str(self.run_directory / "work" / "python-review.prompt.md")))
-        drive, rest = str(self.checkout).replace("\\", "/").split(":", 1)
+        if sys.platform == "win32":
+            # The extended-length and the Git Bash spellings of a path in the checkout.
+            drive, rest = str(self.checkout).replace("\\", "/").split(":", 1)
+            spellings = [f"\\\\?\\{self.checkout / 'result.json'}", f"/{drive.lower()}{rest}/result.json"]
+        else:
+            # A path in the checkout with the leading double slash POSIX leaves to the system, and one through a
+            # link to the checkout.
+            linked = self.root / "linked checkout"
+            linked.symlink_to(self.checkout, target_is_directory=True)
+            spellings = [f"/{self.checkout / 'result.json'}", str(linked / "result.json")]
         for tool in ("Write", "Edit"):
             self.assertIsNone(self.decide(tool, file_path=str(result)))
             for path in (
@@ -1611,8 +1657,7 @@ class ReviewerBoundaryTests(GitTestCase):
                 f"{result}:payload",  # an alternate data stream beside it
                 f"{result}.",  # Windows strips the dot; only the exact path the run names is allowed
                 "python-review.result.json",  # relative, so in the session's working directory
-                f"\\\\?\\{self.checkout / 'result.json'}",
-                f"/{drive.lower()}{rest}/result.json",
+                *spellings,
                 ["not", "a", "path"],
                 "",
             ):

@@ -117,8 +117,25 @@ from review_runtime import (
     verify_source_snapshot,
 )
 from review_state import StateError, StateFieldError, empty_state, load_state, update_state, validate_state
+from test_review_config_validation import ABSOLUTE_PATH, native
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
+
+
+@contextlib.contextmanager
+def undeletable(path: Path) -> Iterator[None]:
+    """Keep the file `path` from being deleted for the block: on Windows by holding it open, which denies its deletion,
+    and elsewhere, where an open file holds nothing, by a mode on its folder that denies removing what it holds."""
+    if sys.platform == "win32":
+        with path.open("rb"):
+            yield
+        return
+    path.parent.chmod(0o555)
+    try:
+        yield
+    finally:
+        path.parent.chmod(0o755)
+
 
 # What a typed-field reader expects of a git object id, and what it finds in one with a character outside 0-9a-f.
 OBJECT_ID = "a lowercase hexadecimal digest of 40 or 64 characters"
@@ -185,13 +202,13 @@ def valid_config() -> dict:
                     "scope": "generic",
                     "manifest_path": None,
                 },
-                "checkout_path": "C:\\Repos\\One",
+                "checkout_path": native("C:\\Repos\\One"),
             }
         },
-        "archive_root": "C:\\Reviews\\Archive",
-        "local_mirror_root": "C:\\Reviews\\Mirror",
-        "summary_root": "C:\\Reviews\\Summaries",
-        "dashboard_file": "C:\\Reviews\\Dashboard.md",
+        "archive_root": native("C:\\Reviews\\Archive"),
+        "local_mirror_root": native("C:\\Reviews\\Mirror"),
+        "summary_root": native("C:\\Reviews\\Summaries"),
+        "dashboard_file": native("C:\\Reviews\\Dashboard.md"),
         "github_login": "reviewer",
         "runtime": "auto",
         "verdict_policy": {
@@ -322,7 +339,7 @@ class ConfigurationTests(GitTestCase):
             {"manifest_path": ".review/adapter.json"},
             {"skill": ".claude/agents/review.md"},
             {"skill": ".claude/agents/review.md", "manifest": True},
-            {"skill": ".claude/agents/review.md", "manifest": "C:\\Reviewers\\one\\manifest.json"},
+            {"skill": ".claude/agents/review.md", "manifest": native("C:\\Reviewers\\one\\manifest.json")},
         ):
             with self.subTest(fields=fields):
                 reviewer = validate_config(reviewer_config(**fields))["repositories"]["example/one"]["reviewer"]
@@ -335,7 +352,7 @@ class ConfigurationTests(GitTestCase):
             ({"manifest": True}, "needs skill"),
             ({"manifest_path": ".review/adapter.json", "skill": "review.md"}, "cannot also set skill or manifest"),
             ({"skill": "../outside.md"}, "skill is unsafe"),
-            ({"skill": "review.md", "manifest": "relative/manifest.json"}, "absolute drive-letter path"),
+            ({"skill": "review.md", "manifest": "relative/manifest.json"}, ABSOLUTE_PATH),
             (
                 {"skill": "review.md", "manifest": False},
                 field_pattern(
@@ -788,7 +805,7 @@ class StateAndLockTests(GitTestCase):
             with contextlib.redirect_stderr(errors):
                 lock = ResourceLock(path)
                 lock.__enter__()
-                with (path / "owner.json").open("rb"):  # open() denies deletion while the file is open
+                with undeletable(path / "owner.json"):
                     lock.__exit__(None, None, None)
             self.assertRegex(
                 errors.getvalue(),
@@ -2776,26 +2793,53 @@ class RuntimeContractTests(GitTestCase):
         ):
             resolve_runtime("auto")
 
-    def test_runtime_auto_detection_finds_a_cli_only_in_wingets_links_folder(self) -> None:
-        # A sanitized environment: PATH is one empty folder and the local application data folder a fresh one, so
-        # only the fixture's programs answer, as `deploy.py check` finds them.
-        with tempfile.TemporaryDirectory(prefix="runtime locator ") as temporary:
-            root = Path(temporary)
-            on_path = root / "on path"
-            links = root / "local app data" / "Microsoft" / "WinGet" / "Links"
-            on_path.mkdir()
-            links.mkdir(parents=True)
-            environment = {"PATH": str(on_path), "PATHEXT": ".COM;.EXE", "LOCALAPPDATA": str(root / "local app data")}
-            with mock.patch.dict(os.environ, environment):
-                self.assertRaisesRegex(RuntimeContractError, "No supported", resolve_runtime, "auto")
-                for command, runtime in (("copilot", "copilot-cli"), ("codex", "codex"), ("claude", "claude-code")):
-                    with self.subTest(command=command):
-                        (links / f"{command}.exe").write_bytes(b"fixture")
-                        self.assertEqual(runtime, resolve_runtime("auto"))
-                for program in links.iterdir():
-                    program.unlink()
-                (on_path / "codex.exe").write_bytes(b"fixture")
-                self.assertEqual("codex", resolve_runtime("auto"), "a CLI on PATH is found there")
+    if sys.platform == "win32":
+
+        def test_runtime_auto_detection_finds_a_cli_only_in_wingets_links_folder(self) -> None:
+            # A sanitized environment: PATH is one empty folder and the local application data folder a fresh one, so
+            # only the fixture's programs answer, as `deploy.py check` finds them.
+            with tempfile.TemporaryDirectory(prefix="runtime locator ") as temporary:
+                root = Path(temporary)
+                on_path = root / "on path"
+                links = root / "local app data" / "Microsoft" / "WinGet" / "Links"
+                on_path.mkdir()
+                links.mkdir(parents=True)
+                environment = {
+                    "PATH": str(on_path),
+                    "PATHEXT": ".COM;.EXE",
+                    "LOCALAPPDATA": str(root / "local app data"),
+                }
+                with mock.patch.dict(os.environ, environment):
+                    self.assertRaisesRegex(RuntimeContractError, "No supported", resolve_runtime, "auto")
+                    for command, runtime in (("copilot", "copilot-cli"), ("codex", "codex"), ("claude", "claude-code")):
+                        with self.subTest(command=command):
+                            (links / f"{command}.exe").write_bytes(b"fixture")
+                            self.assertEqual(runtime, resolve_runtime("auto"))
+                    for program in links.iterdir():
+                        program.unlink()
+                    (on_path / "codex.exe").write_bytes(b"fixture")
+                    self.assertEqual("codex", resolve_runtime("auto"), "a CLI on PATH is found there")
+
+    else:
+
+        def test_runtime_auto_detection_finds_a_cli_on_path_and_none_in_a_links_folder(self) -> None:
+            # Off Windows no package manager's link folder is searched, so a CLI only in a WinGet-shaped folder that the
+            # local application data variable names is not found, and one on PATH is.
+            with tempfile.TemporaryDirectory(prefix="runtime locator ") as temporary:
+                root = Path(temporary)
+                on_path = root / "on path"
+                links = root / "local app data" / "Microsoft" / "WinGet" / "Links"
+                on_path.mkdir()
+                links.mkdir(parents=True)
+                for command in ("copilot", "codex", "claude"):
+                    (links / command).write_bytes(b"#!/bin/sh\n")
+                    (links / command).chmod(0o755)
+                environment = {"PATH": str(on_path), "LOCALAPPDATA": str(root / "local app data")}
+                with mock.patch.dict(os.environ, environment):
+                    self.assertRaisesRegex(RuntimeContractError, "No supported", resolve_runtime, "auto")
+                    (on_path / "codex").write_bytes(b"#!/bin/sh\n")
+                    (on_path / "codex").chmod(0o755)
+                    self.assertEqual("codex", resolve_runtime("auto"), "a CLI on PATH is found there")
 
     def test_runtime_auto_prefers_the_stated_host_over_path(self) -> None:
         # A Codex session on a machine that also has claude installed must not resolve to claude-code.
@@ -4365,21 +4409,51 @@ class RuntimeHostTests(GitTestCase):
                     executable="copilot",
                 )
 
-    def test_copilot_version_parser_and_winget_fallback(self) -> None:
-        self.assertEqual((1, 0, 88), parse_copilot_version("GitHub Copilot CLI 1.0.88"))
-        with tempfile.TemporaryDirectory() as temporary:
-            local_app_data = Path(temporary)
-            winget = local_app_data / "Microsoft" / "WinGet" / "Links" / "copilot.exe"
-            winget.parent.mkdir(parents=True)
-            winget.write_bytes(b"fixture")
-            with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data), "PATH": str(winget.parent.parent)}):
-                self.assertEqual(str(winget), find_copilot())
-            on_path = local_app_data / "on path" / "copilot.exe"
-            on_path.parent.mkdir()
-            on_path.write_bytes(b"fixture")
-            environment = {"LOCALAPPDATA": str(local_app_data), "PATH": str(on_path.parent), "PATHEXT": ".EXE"}
-            with mock.patch.dict(os.environ, environment):
-                self.assertEqual(str(on_path.with_suffix(".EXE")), find_copilot(), "the program on PATH comes first")
+    if sys.platform == "win32":
+
+        def test_copilot_version_parser_and_winget_fallback(self) -> None:
+            self.assertEqual((1, 0, 88), parse_copilot_version("GitHub Copilot CLI 1.0.88"))
+            with tempfile.TemporaryDirectory() as temporary:
+                local_app_data = Path(temporary)
+                winget = local_app_data / "Microsoft" / "WinGet" / "Links" / "copilot.exe"
+                winget.parent.mkdir(parents=True)
+                winget.write_bytes(b"fixture")
+                with mock.patch.dict(
+                    os.environ, {"LOCALAPPDATA": str(local_app_data), "PATH": str(winget.parent.parent)}
+                ):
+                    self.assertEqual(str(winget), find_copilot())
+                on_path = local_app_data / "on path" / "copilot.exe"
+                on_path.parent.mkdir()
+                on_path.write_bytes(b"fixture")
+                environment = {"LOCALAPPDATA": str(local_app_data), "PATH": str(on_path.parent), "PATHEXT": ".EXE"}
+                with mock.patch.dict(os.environ, environment):
+                    self.assertEqual(
+                        str(on_path.with_suffix(".EXE")), find_copilot(), "the program on PATH comes first"
+                    )
+
+    else:
+
+        def test_copilot_version_parser_and_path_lookup(self) -> None:
+            self.assertEqual((1, 0, 88), parse_copilot_version("GitHub Copilot CLI 1.0.88"))
+            with tempfile.TemporaryDirectory() as temporary:
+                local_app_data = Path(temporary)
+                winget = local_app_data / "Microsoft" / "WinGet" / "Links" / "copilot"
+                winget.parent.mkdir(parents=True)
+                winget.write_bytes(b"#!/bin/sh\n")
+                winget.chmod(0o755)
+                with (
+                    mock.patch.dict(
+                        os.environ, {"LOCALAPPDATA": str(local_app_data), "PATH": str(winget.parent.parent)}
+                    ),
+                    self.assertRaisesRegex(RuntimeContractError, "^GitHub Copilot CLI is not available$"),
+                ):
+                    find_copilot()  # no link folder is searched off Windows
+                on_path = local_app_data / "on path" / "copilot"
+                on_path.parent.mkdir()
+                on_path.write_bytes(b"#!/bin/sh\n")
+                on_path.chmod(0o755)
+                with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data), "PATH": str(on_path.parent)}):
+                    self.assertEqual(str(on_path), find_copilot(), "the program on PATH is found")
 
     def test_copilot_jsonl_is_diagnostic_not_the_result(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -192,11 +192,14 @@ class RenderedExecutableTests(DeployerTestCase):
                 self.assertNotIn("{{", self.skill_text(name))
         self.assertIn(f'"{forward(repository)}"', self.skill_text("update-coding-agent-skills"))
         self.assertTrue((self.skills_dir / "runtime-compatibility.md").is_file())
-        # The code-review bundle pulls in code-review-core, which ships the reviewer subagent.
+        # The code-review bundle pulls in code-review-core, which ships the reviewer subagent, with its hook naming
+        # Python as this platform does and every other byte as written.
+        source = (REPOSITORY_ROOT / "agents" / "code-review-reviewer.md").read_bytes()
+        python = b"python" if platform_support.WINDOWS else b"python3"
         self.assertEqual(
-            (REPOSITORY_ROOT / "agents" / "code-review-reviewer.md").read_bytes(),
-            (self.claude_agents_dir / "code-review-reviewer.md").read_bytes(),
+            source.replace(b"{{PYTHON}}", python), (self.claude_agents_dir / "code-review-reviewer.md").read_bytes()
         )
+        self.assertIn(b"{{PYTHON}} -I -B -c", source)
         self.assertEqual(["code-review-reviewer.md"], sorted(self.owned("agents", source_id)))
         self.assertIn(
             f"read and apply `{forward(self.home)}/.claude/skills/runtime-compatibility.md`",

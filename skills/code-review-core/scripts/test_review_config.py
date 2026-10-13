@@ -16,7 +16,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import review_config
-from test_review_config_validation import CONTAINER_CASES, _config
+from test_review_config_validation import CONTAINER_CASES, _config, native
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
@@ -35,13 +35,13 @@ def valid_config() -> dict:
                     "scope": "generic",
                     "manifest_path": None,
                 },
-                "checkout_path": "C:\\Repos\\One",
+                "checkout_path": native("C:\\Repos\\One"),
             }
         },
-        "archive_root": "C:\\Reviews\\Archive",
-        "local_mirror_root": "C:\\Reviews\\Mirror",
-        "summary_root": "C:\\Reviews\\Summaries",
-        "dashboard_file": "C:\\Reviews\\Dashboard.md",
+        "archive_root": native("C:\\Reviews\\Archive"),
+        "local_mirror_root": native("C:\\Reviews\\Mirror"),
+        "summary_root": native("C:\\Reviews\\Summaries"),
+        "dashboard_file": native("C:\\Reviews\\Dashboard.md"),
         "github_login": "reviewer",
         "runtime": "auto",
         "verdict_policy": {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3},

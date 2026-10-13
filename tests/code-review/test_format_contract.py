@@ -74,6 +74,16 @@ PROBES: tuple[tuple[str, Any], ...] = (
     ("object", {}),
     ("boolean", True),
 )
+
+
+def native(path: str) -> str:
+    """A drive-letter fixture path as this platform writes an absolute one: itself on Windows, and elsewhere the same
+    path under a folder named for the drive, with forward slashes, so `C:\\Reviews` is `/C/Reviews`."""
+    if sys.platform == "win32":
+        return path
+    return "/" + path[0] + path[2:].replace("\\", "/")
+
+
 # A value of each type, for a documented type no fixture has: the validator must accept it somewhere.
 EXAMPLES = {**dict(PROBES), "number": 0.5}
 UNDOCUMENTED_VALUE = "not-a-documented-value"
@@ -651,9 +661,9 @@ def config_fixtures() -> list[dict[str, Any]]:
                     "scope": "repository",
                     "manifest_path": None,
                     "skill": ".claude/skills/review/SKILL.md",
-                    "manifest": "C:\\Reviews\\reviewers\\one.json",
+                    "manifest": native("C:\\Reviews\\reviewers\\one.json"),
                 },
-                "checkout_path": "C:\\Repos\\One",
+                "checkout_path": native("C:\\Repos\\One"),
             },
             "example/five": {
                 "reviewer": {
@@ -663,7 +673,7 @@ def config_fixtures() -> list[dict[str, Any]]:
                     "skill": ".claude/agents/review.md",
                     "manifest": True,
                 },
-                "checkout_path": "C:\\Repos\\Five",
+                "checkout_path": native("C:\\Repos\\Five"),
                 "snapshot_exclude": ["**/*.resx", "Reports/Generated/**"],
             },
             "example/two": {
@@ -675,7 +685,7 @@ def config_fixtures() -> list[dict[str, Any]]:
                     "skill": None,
                     "manifest": None,
                 },
-                "checkout_path": "C:\\Repos\\Two",
+                "checkout_path": native("C:\\Repos\\Two"),
             },
             "example/three": {"reviewer": {"id": "generic", "protocol_version": 1, "scope": "generic"}},
             "example/four": {
@@ -691,10 +701,10 @@ def config_fixtures() -> list[dict[str, Any]]:
                 "checkout_path": None,
             },
         },
-        "archive_root": "C:\\Reviews\\Archive",
-        "local_mirror_root": "C:\\Reviews\\Mirror",
-        "summary_root": "C:\\Reviews\\Summaries",
-        "dashboard_file": "C:\\Reviews\\Dashboard.md",
+        "archive_root": native("C:\\Reviews\\Archive"),
+        "local_mirror_root": native("C:\\Reviews\\Mirror"),
+        "summary_root": native("C:\\Reviews\\Summaries"),
+        "dashboard_file": native("C:\\Reviews\\Dashboard.md"),
         "github_login": "octocat",
         "runtime": "auto",
         "verdict_policy": {"request_changes_for": ["MUST_FIX", "SHOULD_FIX"], "should_fix_threshold": 3},
@@ -714,9 +724,9 @@ def config_fixtures() -> list[dict[str, Any]]:
         "default_repository_set": "primary",
         "repository_sets": {"primary": ["example/one"]},
         "repositories": {"example/one": {"reviewer": {"id": "generic", "protocol_version": 1, "scope": "generic"}}},
-        "archive_root": "C:\\Reviews\\Archive",
-        "summary_root": "C:\\Reviews\\Summaries",
-        "dashboard_file": "C:\\Reviews\\Dashboard.md",
+        "archive_root": native("C:\\Reviews\\Archive"),
+        "summary_root": native("C:\\Reviews\\Summaries"),
+        "dashboard_file": native("C:\\Reviews\\Dashboard.md"),
     }
     return [full, minimal]
 

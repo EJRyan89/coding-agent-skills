@@ -1,9 +1,10 @@
-"""Process identity and detached starts for the review's processes. Only Windows is implemented.
+"""Process identity and detached starts for the review's processes, on Windows and elsewhere.
 
 A process is identified by its PID and its start time, which skill-core's `process_identity` reads, for the review's
 processes and the deployer's lock alike. Every other operating-system-specific step of the host's lifecycle lives
-here, except where Copilot CLI is found, which is skill-core's `executable_locator`, and the job object that ends a
-condition script's or Copilot CLI's descendants with it, which is skill-core's `job_tree.JobTree`.
+here, except where Copilot CLI is found, which is skill-core's `executable_locator`, and the process tree that ends
+a condition script's or Copilot CLI's descendants with it, which is skill-core's `job_tree.process_tree`: a Windows
+job object, or elsewhere a process group.
 """
 
 from __future__ import annotations
@@ -42,10 +43,14 @@ COMMANDS_ALLOWED = {
 def start_detached(arguments: Sequence[str], cwd: Path, log_path: Path) -> int:
     """Start a process that outlives the command that started it, with its output in a log file; return its PID.
 
-    It gets a hidden console of its own, so neither a console's Ctrl+C nor the end of the shell call that ran
-    dispatch reaches it, and the console programs it starts inherit that console instead of opening a window. It
-    leaves the caller's job object when the job allows that, since a runtime may end a command's whole job.
+    On Windows it gets a hidden console of its own, so neither a console's Ctrl+C nor the end of the shell call that
+    ran dispatch reaches it, and the console programs it starts inherit that console instead of opening a window. It
+    leaves the caller's job object when the job allows that, since a runtime may end a command's whole job. Elsewhere
+    it leads a session of its own, so neither the terminal's signals nor the end of the caller's process group reach
+    it.
     """
+    if sys.platform != "win32":
+        return _start_session(arguments, cwd, log_path)
     with log_path.open("ab") as log:
 
         def start(flags: int) -> subprocess.Popen[bytes]:
@@ -72,11 +77,33 @@ def start_detached(arguments: Sequence[str], cwd: Path, log_path: Path) -> int:
     return pid
 
 
+def _start_session(arguments: Sequence[str], cwd: Path, log_path: Path) -> int:
+    """start_detached off Windows: the process leads a new session, with no terminal, and its output in the log."""
+    with log_path.open("ab") as log:
+        process = subprocess.Popen(
+            list(arguments),
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            close_fds=True,
+            start_new_session=True,
+        )
+    pid = process.pid
+    with warnings.catch_warnings():
+        # Dropping the handle of a process still running warns; outliving this handle is the point.
+        warnings.simplefilter("ignore", ResourceWarning)
+        del process
+    return pid
+
+
 # What Windows starts through a shell rather than as a program: cmd.exe runs a .bat or .cmd file and parses its whole
 # command line by its own rules, which Python's argument quoting does not hold against, and PowerShell runs a .ps1.
 SHELL_SCRIPT_SUFFIXES = frozenset({".bat", ".cmd", ".ps1"})
 
 
 def shell_script(path: str) -> bool:
-    """Whether Windows would start `path` through a shell, as it does npm's `copilot.cmd`, rather than as a program."""
-    return Path(path).suffix.casefold() in SHELL_SCRIPT_SUFFIXES
+    """Whether Windows would start `path` through a shell, as it does npm's `copilot.cmd`, rather than as a program.
+    Elsewhere none is: the kernel starts a script by its `#!` line and hands it the arguments as they are, so no shell
+    parses its command line."""
+    return sys.platform == "win32" and Path(path).suffix.casefold() in SHELL_SCRIPT_SUFFIXES
