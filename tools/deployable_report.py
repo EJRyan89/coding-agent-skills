@@ -198,7 +198,7 @@ def tool_versions(find: Find | None = None, run: RunVersion = _run_version) -> l
 
 def render_summary(passes: list[dict], versions: list[tuple[str, str]], notes: list[str]) -> str:
     lines = [
-        "## Deployability on a fresh Windows runner",
+        f"## Deployability on a fresh {platform_support.PLATFORM_NAME} runner",
         "",
         "### Tool versions",
         "",

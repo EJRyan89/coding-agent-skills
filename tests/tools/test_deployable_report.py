@@ -396,6 +396,8 @@ class DeployableReportTests(GitTestCase):
         text = report.render_summary(
             json.loads(self.results_file.read_text(encoding="utf-8")), versions, ["Codex sandbox set to elevated"]
         )
+        runner = "Windows" if sys.platform == "win32" else "Linux"
+        self.assertTrue(text.startswith(f"## Deployability on a fresh {runner} runner\n"), text)
         for expected in (
             "| Python | 3.11.9 |",
             "| Codex CLI | 0.160.0 |",

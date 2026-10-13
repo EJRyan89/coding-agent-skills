@@ -24,6 +24,8 @@ from .errors import DeployError, see_recovery
 # The platforms the deployer runs on, by sys.platform. macOS is not yet one of them.
 SUPPORTED_PLATFORMS = {"win32": "Windows", "linux": "Linux"}
 WINDOWS = sys.platform == "win32"
+# This platform's name as a person knows it, which a report names it by.
+PLATFORM_NAME = SUPPORTED_PLATFORMS.get(sys.platform, sys.platform)
 WINDOWS_ABSOLUTE = re.compile(r"^[A-Za-z]:/")
 WINDOWS_ROOT = re.compile(r"^[A-Za-z]:/$")
 # A POSIX absolute path: one leading slash, since POSIX leaves the meaning of a path that starts with two to the system.

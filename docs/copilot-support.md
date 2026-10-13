@@ -24,7 +24,7 @@ After deployment, run the read-only discovery check:
 python deploy.py verify
 ```
 
-The verifier runs `copilot skill list --json` from an empty directory, so no repository skill takes part, and compares each manifest-owned adapter with the copy Copilot lists. Copilot lists one copy per name, the one it will use, so an adapter is `FOUND` only when that copy is the adapter and it is enabled. A same-named skill under `~/.copilot/skills` is reported as `SHADOWED`, with its path. The command performs discovery only; it does not start an AI session or consume a model request. It reports Copilot CLI older than 1.0.88 as `OUTDATED` without starting it. It checks Codex the same way when Codex is installed; see [Codex support](codex-support.md#checking-discovery).
+The verifier runs `copilot skill list --json` from an empty directory, so no repository skill takes part, and compares each manifest-owned adapter with the copy Copilot lists. Copilot lists one copy per name, the one it will use, so an adapter is `FOUND` only when that copy is the adapter and it is enabled. A same-named skill under `~/.copilot/skills` is reported as `SHADOWED`, with its path. The command performs discovery only; it does not start an AI session or consume a model request. It reports Copilot CLI older than 1.0.88 as `OUTDATED` without starting it. It checks Codex the same way when Codex is installed; see [Codex support](codex-support.md#checking-discovery). On Linux, Copilot reads personal skills under `HOME`, where the deployer installs, and the check runs the same way; the [`deployable` workflow](../.github/workflows/deployable.yml) runs it on a fresh Ubuntu runner as it does on a fresh Windows one.
 
 ## Headless sessions
 
@@ -46,7 +46,7 @@ An inline reviewer has no reviewer agent and no `PreToolUse` guard: it is the se
 
 ## Bounded code-review host
 
-The bounded host runs a repository entrypoint reviewer. It requires GitHub Copilot CLI 1.0.88 or newer, installed from WinGet or the GitHub release: it runs Copilot CLI's own program, the first on `PATH` or else WinGet's, and passes over a shell script such as the `copilot.cmd` an npm install puts on `PATH`, wherever it stands there, since Windows starts one through `cmd.exe`. With only a shell script on `PATH` and no WinGet program, it refuses and names each script it passed over. It:
+The bounded host runs a repository entrypoint reviewer. It requires GitHub Copilot CLI 1.0.88 or newer, installed from WinGet or the GitHub release: it runs Copilot CLI's own program, the first on `PATH` or else WinGet's, and passes over a shell script such as the `copilot.cmd` an npm install puts on `PATH`, wherever it stands there, since Windows starts one through `cmd.exe`. With only a shell script on `PATH` and no WinGet program, it refuses and names each script it passed over. On Linux it runs the first `copilot` on `PATH`, npm's included: the kernel starts a script by its `#!` line with its arguments as they are, so no shell parses its command line, and its isolated `HOME` is the profile Copilot reads there. The host has not yet run a review against a signed-in Copilot CLI on Linux. It:
 
 - runs from a new isolated workspace with isolated `HOME`, `USERPROFILE`, and `COPILOT_HOME` values;
 - gives Copilot its prompt on standard input, so no review text is part of its command line;

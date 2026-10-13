@@ -19,7 +19,11 @@ Portable agent skills for Claude Code, Codex, and GitHub Copilot CLI, with a gua
 
 ## Supported platforms and runtimes
 
-The deployer supports Windows only; macOS and Linux support is planned. On macOS it stops before changing anything. On Linux, WSL included, its core already runs, but Linux is not supported until full validation and the runtime check pass there.
+| Platform | Where it stands |
+|---|---|
+| Windows | Supported. |
+| Linux, WSL included | The deployer and the whole validation suite run there, and the `deployable` workflow below deploys onto a fresh Ubuntu runner and checks discovery. Not yet supported: no model has run a skill on Linux through the runtime canary. |
+| macOS | Not supported. The deployer stops before changing anything. |
 
 Install the runtimes you use. None of them is needed to deploy, so you can use the skills from Codex or Copilot without installing Claude Code; [Runtime support](docs/skills.md#runtime-support) says which skills run there in part.
 
@@ -29,11 +33,11 @@ Install the runtimes you use. None of them is needed to deploy, so you can use t
 | Codex CLI | 0.160.0 | 0.160.0 | `$<skill>` |
 | GitHub Copilot CLI | 1.0.95 | 1.0.91 | `/<skill>` |
 
-The maintainer's machines ran the [runtime canary](tools/runtime_canary.py) and real skill and review runs. The fresh runner is the [`deployable` workflow](.github/workflows/deployable.yml), which runs weekly and on dispatch; its last dispatched release run passed on 2026-10-12: on a clean GitHub-hosted Windows runner it installs the prerequisites and each CLI, deploys, checks that Codex and Copilot find every skill, uninstalls, and deploys again. Claude Code reads the deployed files directly and cannot list its skills without a session, so for it the runner checks the installed version and that every deployed skill and agent is in place. It starts no model, so it does not show a skill running; that stays a manual check through the canary. See [Releasing](docs/releasing.md#before-tagging).
+The maintainer's machines ran the [runtime canary](tools/runtime_canary.py) and real skill and review runs. The fresh runner is the [`deployable` workflow](.github/workflows/deployable.yml), which runs weekly and on dispatch; its last dispatched release run passed on 2026-10-12: on a clean GitHub-hosted Windows runner it installs the prerequisites and each CLI, deploys, checks that Codex and Copilot find every skill, uninstalls, and deploys again. Claude Code reads the deployed files directly and cannot list its skills without a session, so for it the runner checks the installed version and that every deployed skill and agent is in place. It starts no model, so it does not show a skill running; that stays a manual check through the canary. The workflow runs the same versions the same way on a fresh Ubuntu runner, and the date above is the Windows run's until a dispatched release run includes the Ubuntu one. See [Releasing](docs/releasing.md#before-tagging).
 
 ## Quick start
 
-You need Python 3.11.4 or newer, Git for Windows, ShellCheck, and PowerShell; several skills also use the GitHub CLI. [Installation](docs/installation.md) gives the install commands and explains each step below.
+You need Python 3.11.4 or newer, Git for Windows (on Linux, Git and the system's Bash), ShellCheck, and PowerShell (PowerShell 7 on Linux); several skills also use the GitHub CLI. [Installation](docs/installation.md) gives the install commands and explains each step below.
 
 ```bash
 git clone https://github.com/EJRyan89/coding-agent-skills.git
@@ -48,7 +52,7 @@ python deploy.py --all --dry-run
 python deploy.py --all
 ```
 
-`check` reports missing tools, `configure` asks for the directory holding your local repositories, and `--all` deploys every skill except opt-in ones such as `dotnet-format`, which you add with `--include dotnet-format`.
+On Linux, run them as `python3`. `check` reports missing tools, `configure` asks for the directory holding your local repositories, and `--all` deploys every skill except opt-in ones such as `dotnet-format`, which you add with `--include dotnet-format`.
 
 If you use Codex CLI, make its two [Windows settings](docs/installation.md#codex-cli-settings) before starting a skill. If you use Codex or Copilot CLI, `python deploy.py verify` checks that each finds the deployed skills.
 
@@ -78,7 +82,7 @@ Using the skills:
 | [Skills](docs/skills.md) | Starting each skill, its arguments, and what it needs |
 | [Installation](docs/installation.md) | Requirements, install commands, deploying, updating, and uninstalling |
 | [Code-review operations](docs/code-review-operations.md) | Configuring and running the code-review bundle |
-| [Codex support](docs/codex-support.md) | Discovery and the Windows settings Codex CLI needs |
+| [Codex support](docs/codex-support.md) | Discovery on Windows and Linux, and the Windows settings Codex CLI needs |
 | [Copilot support](docs/copilot-support.md) | Discovery precedence, headless sessions, inline reviews, and the bounded review host |
 | [Recovery](docs/recovery.md) | Interrupted deployments, backups, locks, and ownership conflicts |
 
