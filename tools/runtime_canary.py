@@ -124,6 +124,8 @@ INSTRUCTION = (
 CODEX_SANDBOXES = ("elevated", "unelevated")
 DEFAULT_CODEX_SANDBOX = "elevated"
 CODEX_SUPPORT = "docs/codex-support.md#windows-sandbox-mode"
+# Whether Codex here has a Windows sandbox mode to be given: on Windows only.
+CODEX_HAS_WINDOWS_SANDBOX = platform_support.WINDOWS
 # In Copilot CLI 1.0.91, `copilot -p` neither expands a leading /<skill> for a user-only skill nor lets the model's
 # skill tool start one. Recheck on each Copilot CLI upgrade, and drop this case once a headless run can start one.
 COPILOT_SUPPORT = "docs/copilot-support.md#headless-sessions"
@@ -387,8 +389,9 @@ def prompt(runtime: str, skill: str) -> str:
 
 
 def supplied(runtime: str, codex_sandbox: str) -> list[str]:
-    """The `key=value` settings the canary passes a runtime in place of the user configuration it ignores."""
-    return [f"windows.sandbox={codex_sandbox}"] if runtime == "codex" else []
+    """The `key=value` settings the canary passes a runtime in place of the user configuration it ignores: Codex's
+    Windows sandbox mode on Windows, and nothing elsewhere, where Codex has no Windows sandbox to choose."""
+    return [f"windows.sandbox={codex_sandbox}"] if runtime == "codex" and CODEX_HAS_WINDOWS_SANDBOX else []
 
 
 def run_command(
@@ -478,7 +481,7 @@ def rejections(runtime: str, completed: Completed) -> list[str]:
 
 def blocked_cause(runtime: str, codex_sandbox: str) -> str:
     """The likely reason a runtime's policy refused every command, and where the fix is documented."""
-    if runtime != "codex":
+    if runtime != "codex" or not CODEX_HAS_WINDOWS_SANDBOX:
         return ""
     return (
         f"Codex ran with windows.sandbox={codex_sandbox}, so its Windows sandbox likely did not start; "
@@ -570,7 +573,7 @@ def verdict(
         return f"FAILED {quote(f'ran {ran[0][0]} but it wrote no marker; was the write denied?')}"
     if ran:
         return ran_line(skill, *ran[0], completed.timed_out)
-    installed = installed or Path.home() / ".claude" / "skills"
+    installed = installed or platform_support.home_directory() / ".claude" / "skills"
     for script, _, _ in scripts:
         if inside(script, installed):
             return f"FAILED {quote(f'ran the installed copy {script}, not the canary copy')}"
