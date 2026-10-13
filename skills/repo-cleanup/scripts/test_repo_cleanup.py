@@ -174,7 +174,7 @@ class FakeGitHub:
             return CommandResult(1, "", "HTTP 500")
         return CommandResult(0, json.dumps(self.pulls.get(branch, [])), "")
 
-    def pull(self, branch: str, state: str, sha: str, commits: str = "") -> None:
+    def pull(self, branch: str, state: str, sha: str, commits: str = "", merge_commit: str | None = None) -> None:
         number = sum(len(pulls) for pulls in self.pulls.values()) + 1
         self.pulls.setdefault(branch, []).append(
             {
@@ -183,6 +183,7 @@ class FakeGitHub:
                 "headRefOid": sha,
                 "headRepository": {"name": "repo"},
                 "headRepositoryOwner": {"login": "owner"},
+                "mergeCommit": None if merge_commit is None else {"oid": merge_commit},
             }
         )
         self.commits[number] = commits
@@ -277,6 +278,31 @@ class Fixture(CleanupTestCase):
         self.delete_remotely(name)
         self.github.pull(name, "MERGED", head, commits + "\n")
         return tip
+
+    def rewritten_and_squashed(self, name: str, *, extra_work: bool = False) -> str:
+        """A branch with a file change whose pull request was squash-merged and its remote branch deleted, then
+        whose local tip was reworded without changing its content, and optionally extended with a real change."""
+        git(self.clone, "switch", "--quiet", "-c", name, "main")
+        (self.clone / f"{name}.txt").write_text(f"work on {name}\n", encoding="utf-8")
+        git(self.clone, "add", f"{name}.txt")
+        tip = self.commit(self.clone, f"work on {name}")
+        git(self.clone, "push", "--quiet", "-u", "origin", name)
+        git(self.other, "fetch", "--quiet", "origin")
+        git(self.other, "switch", "--quiet", "main")
+        git(self.other, "merge", "--quiet", "--ff-only", "origin/main")
+        git(self.other, "merge", "--quiet", "--squash", f"origin/{name}")
+        squash = self.commit(self.other, f"Squash-merge {name}")
+        git(self.other, "push", "--quiet", "origin", "main")
+        self.delete_remotely(name)
+        rewritten = git(self.clone, "commit-tree", f"{name}^{{tree}}", "-p", f"{name}^", "-m", f"reworded {name}")
+        git(self.clone, "update-ref", f"refs/heads/{name}", rewritten)
+        if extra_work:
+            (self.clone / f"{name}.txt").write_text(f"more work on {name}\n", encoding="utf-8")
+            git(self.clone, "add", f"{name}.txt")
+            rewritten = self.commit(self.clone, f"more work on {name}")
+        git(self.clone, "switch", "--quiet", "main")
+        self.github.pull(name, "MERGED", tip, merge_commit=squash)
+        return rewritten
 
     # Commands
 
@@ -641,6 +667,20 @@ class PlanApplyTests(Fixture):
         self.assertFalse(updated_tree.exists())
         self.assertEqual(extended, self.tip("extended-gone"), "a later commit with real changes keeps the branch")
         self.assertTrue(extended_tree.exists())
+        summary = "\n".join(fields[0] for fields in facts(applied, "SUMMARY"))
+        self.assertIn("  PR history unmatched:    1 — extended-gone (kept)", summary)
+
+    def test_a_tip_rewritten_after_its_pull_request_squash_merged_is_still_deleted(self) -> None:
+        self.rewritten_and_squashed("reworded-gone")
+        extended = self.rewritten_and_squashed("extended-gone", extra_work=True)
+        planned, applied = self.clean()
+        actions = {fields[0]: (fields[1], fields[2], fields[4]) for fields in facts(planned, "BRANCH")}
+        self.assertEqual(
+            {"reworded-gone": ("gone", "MERGED", "delete"), "extended-gone": ("gone", "UNMATCHED", "keep")}, actions
+        )
+        self.assertEqual([["reworded-gone"]], facts(applied, "DELETED"))
+        self.assertIsNone(self.tip("reworded-gone"))
+        self.assertEqual(extended, self.tip("extended-gone"), "a later commit with real changes keeps the branch")
         summary = "\n".join(fields[0] for fields in facts(applied, "SUMMARY"))
         self.assertIn("  PR history unmatched:    1 — extended-gone (kept)", summary)
 

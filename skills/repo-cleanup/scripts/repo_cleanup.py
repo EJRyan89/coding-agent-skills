@@ -244,8 +244,10 @@ def pull_state(
         head, upstream = pr_status.branch_tips(str(root), branch, services.git)
         if head != sha:
             return "UNKNOWN", "branch moved while planning"
-        in_base = pr_status.base_contains(str(root), f"refs/remotes/origin/{default}", services.git)
-        return pr_status.classify(nwo, branch, head, upstream, services.gh, in_base), ""
+        base_ref = f"refs/remotes/origin/{default}"
+        in_base = pr_status.base_contains(str(root), base_ref, services.git)
+        same_patch = pr_status.patch_match(str(root), base_ref, services.git)
+        return pr_status.classify(nwo, branch, head, upstream, services.gh, in_base, same_patch), ""
     except pr_status.QueryError as exc:
         return "UNKNOWN", str(exc)
 
@@ -615,10 +617,11 @@ def force_delete(services: Services, plan: dict[str, Any], name: str) -> bool:
 
 
 def unmerged(services: Services, plan: dict[str, Any], name: str, sha: str, pr: str) -> bool:
-    """Force-delete an unchanged branch Git calls unmerged only when its pull request merged at this exact tip.
+    """Force-delete an unchanged branch Git calls unmerged only when its pull request status is MERGED.
 
-    That is a squash or rebase merge: GitHub proved the work landed although no commit of the branch is on the
-    default branch. Any other unmerged branch waits for the user's confirmation. False when Git refused a deletion.
+    That is a squash or rebase merge, at this exact tip or of this tip's whole change: GitHub proved the work landed
+    although no commit of the branch is on the default branch. Any other unmerged branch waits for the user's
+    confirmation. False when Git refused a deletion.
     """
     if pr != "MERGED":
         record(plan, "UNMERGED", name, sha)
