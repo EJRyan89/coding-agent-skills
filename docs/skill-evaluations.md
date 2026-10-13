@@ -10,7 +10,8 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   [code-review-operations.md](code-review-operations.md#fixture-canaries)), or, for a skill started on one document's
   path such as `review-document`, a `scenario.json` that names the document. The run writes that document into a
   folder of its own and starts the skill on its path; with a base, the folder is a throwaway git checkout where the
-  base is committed and the document is an uncommitted edit of it, so only the edit is reviewed. A document may be
+  base is committed and the document is an uncommitted edit of it, so only the edit is reviewed. A scenario may name
+  the document's stage, which the skill is started with as `--stage`. A document may be
   another scenario's file, so `review-document` reviews the `review-prs` design documents without copies.
   The checkout's Git commands point at a temporary empty hook directory, so neither global nor template-installed
   user hooks run; the base commit also disables signing, without changing the user's Git configuration.

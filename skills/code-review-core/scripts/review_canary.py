@@ -35,15 +35,16 @@ from github_client import replace_undecodable
 from review_config import ConfigurationError, validate_repository_identity
 from review_io import PersistenceError, read_json
 from review_records import RecordError, validate_record
-from review_runtime import RuntimeContractError, _is_reparse_point, _safe_relative_path
+from review_runtime import DOCUMENT_STAGES, RuntimeContractError, _is_reparse_point, _safe_relative_path
 from typed_fields import FieldError, FieldReader
 
 FIXTURE_SCHEMA_VERSION = 1
 PULL_FILE = "pull.json"
 PULL_FIELDS = frozenset({"schema_version", "repository", "number", "title", "base_ref", "head_ref", "threads"})
 # A reviewer manifest in the base tree, so a fixture can exercise specialists as a configured repository does, and
-# the pull request's description, which reviewers are given as they are a real one's.
-OPTIONAL_PULL_FIELDS = frozenset({"manifest_path", "body"})
+# the pull request's description, which reviewers are given as they are a real one's, and the stage of a design
+# document, one of review_runtime.DOCUMENT_STAGES, which the design-review specialist's prompt names.
+OPTIONAL_PULL_FIELDS = frozenset({"manifest_path", "body", "document_stage"})
 THREAD_FIELDS = frozenset({"author", "path", "line", "outdated", "body", "url"})
 # Who commits the fixture's trees; nothing reads it.
 IDENTITY = ("-c", "user.name=code-review fixture", "-c", "user.email=fixture@example.invalid")
@@ -71,6 +72,7 @@ class FixtureChange:
     undecodable: int  # bytes of the diff that were not UTF-8 and became U+FFFD
     comments: list[dict[str, Any]]  # as the request's github_comments
     manifest_path: str | None = None  # the reviewer manifest in the base tree, or None for the generic reviewer
+    document_stage: str | None = None  # the stage pull.json names, or None
 
 
 def _thread(value: Any, path: str) -> dict[str, Any]:
@@ -96,6 +98,8 @@ def validate_fixture_pull(value: Any) -> dict[str, Any]:
         READ.string(given[name], f"fixture-pull.{name}")
     threads = READ.array(given["threads"], "fixture-pull.threads", _thread)
     READ.string(given.get("body", ""), "fixture-pull.body", empty=True)
+    if "document_stage" in given:
+        READ.one_of(given["document_stage"], "fixture-pull.document_stage", tuple(DOCUMENT_STAGES))
     pull = {**given, "repository": repository, "threads": threads}
     if "manifest_path" in given:
         try:
@@ -269,4 +273,5 @@ def fixture_change(directory: Path, runner: Runner) -> Iterator[FixtureChange]:
             undecodable=undecodable,
             comments=_comments(pull["threads"]),
             manifest_path=pull.get("manifest_path"),
+            document_stage=pull.get("document_stage"),
         )

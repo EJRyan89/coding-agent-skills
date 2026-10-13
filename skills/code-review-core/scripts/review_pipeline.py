@@ -940,9 +940,11 @@ def _write_roles(
     review_files: set[str] | None,
     notes: list[str],
     lazy: bool = False,
+    document_stage: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Each reviewer role with its prompt written: an entrypoint's one, or the specialists plan's. Returns the roles
-    and the changed files the plan leaves unreviewed. A `lazy` snapshot's prompts name its source commands."""
+    and the changed files the plan leaves unreviewed. A `lazy` snapshot's prompts name its source commands, and a
+    `document_stage` reaches the design-review specialist's."""
     script = command_script("review_source.py")
     if kind == "entrypoint":
         if reviewer_root is None or entrypoint is None:
@@ -973,6 +975,7 @@ def _write_roles(
         local_checkout=checkout,
         review_files=review_files,
         source_commands=(lambda identity: source_commands(run, identity, script=script)) if lazy else None,
+        document_stage=document_stage,
     )
     roles = [
         {
@@ -1040,6 +1043,9 @@ class _Review:
     adopt_source: bool = False
     # The repository's configured snapshot_exclude globs; a fixture has none.
     snapshot_exclude: tuple[str, ...] = ()
+    # The stage of a fixture's design document, which the design-review specialist's prompt names; None for a pull
+    # request read from GitHub.
+    document_stage: str | None = None
 
 
 # The reviewer of a fixture whose pull.json names no reviewer manifest.
@@ -1189,6 +1195,7 @@ def prepare_fixture(
             fixture={"directory": str(directory.resolve()), "prior": None if prior is None else str(prior.resolve())},
             prior_record=record,
             adopt_source=True,
+            document_stage=change.document_stage,
         )
         return _prepare_run(
             review,
@@ -1316,6 +1323,7 @@ def _prepare_run(
             review_files=review_files,
             notes=notes,
             lazy=lazy,
+            document_stage=review.document_stage,
         )
         snapshot["seconds"] = snapshot_seconds({**snapshot["seconds"], "prompts": services.timer() - writing})
         state = {

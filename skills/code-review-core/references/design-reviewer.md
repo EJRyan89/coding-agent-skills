@@ -20,3 +20,11 @@ Severity:
 - **SUGGESTION**: wording, order, or detail that would help a reader without changing what is built.
 
 Anchor each finding on the added line where the gap shows: the sentence that relies on the unstated constraint, the rejection without its reason, the unowned question, or the claim that contradicts another part, whose line the body names. Do not report grammar, Markdown formatting, sections a document of its size does not need, or a question the document answers elsewhere.
+
+## Document stage
+
+Your prompt may name the stage the document is at. The stage changes severity, not the questions above; with no stage named, the document is at review.
+
+- **draft**: an early iteration, whose sections may be unwritten and decisions open. A section it does not have yet, an open question without an owner, and a requirement it says it will state later are SUGGESTION. What it has written is judged in full: a contradiction within it stays MUST_FIX, and a requirement the written design already relies on without stating it, and a risk with a concrete path and no mitigation, stay SHOULD_FIX.
+- **review**: meant to be built from as written. The severities above apply as they are.
+- **final**: about to be built, or already approved. A placeholder (`TBD`, `TODO`, or an empty section) and an open question without an owner that decides what is built are MUST_FIX; everything else is as at review.

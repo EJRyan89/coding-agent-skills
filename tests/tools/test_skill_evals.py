@@ -347,6 +347,28 @@ class LoaderTests(GitTestCase):
         self.assertEqual((shared.resolve(), None), (loaded["whole"].document, loaded["whole"].base))
         self.assertEqual("initial", loaded["whole"].mode)
 
+    def test_a_document_scenario_may_name_a_stage_the_skill_is_started_at(self) -> None:
+        for number, (fields, stage) in enumerate(
+            (({"document": "draft.md", "stage": "draft"}, "draft"), ({"document": "draft.md"}, None))
+        ):
+            directory = write_scenario(self.root, f"case{number}", scenario_spec(**fields))
+            (directory / "draft.md").write_text("# Draft\n", encoding="utf-8")
+            (scenario,) = skill_evals.load_scenarios("demo", [f"case{number}"], root=self.root)
+            self.assertEqual(stage, scenario.stage)
+        for number, (fields, message) in enumerate(
+            (
+                ({"document": "draft.md", "stage": "early"}, 'stage must be one of draft, review, final, not "early"'),
+                ({"stage": "draft"}, "must have exactly"),
+            ),
+            start=2,
+        ):
+            with self.subTest(fields=fields):
+                directory = write_scenario(self.root, f"case{number}", scenario_spec(**fields))
+                (directory / "draft.md").write_text("# Draft\n", encoding="utf-8")
+                with self.assertRaises(ScenarioError) as raised:
+                    skill_evals.load_scenarios("demo", [f"case{number}"], root=self.root)
+                self.assertIn(message, str(raised.exception))
+
     def test_a_fixture_scenario_names_no_document(self) -> None:
         write_scenario(self.root, "case", scenario_spec())
         (scenario,) = skill_evals.load_scenarios("demo", root=self.root)
@@ -447,6 +469,23 @@ class NoFindingAboveTests(GitTestCase):
         failure = check(spec, record([finding("a.go", 1, "MUST_FIX"), finding("b.go", 2, "SHOULD_FIX")]))
         self.assertEqual("found MUST_FIX at a.go:1, SHOULD_FIX at b.go:2", failure)
         self.assertEqual("no_finding_above SUGGESTION *", skill_evals.expectation(spec, "initial").label)
+
+    def test_on_listed_lines_of_one_path(self) -> None:
+        spec = {"kind": "no_finding_above", "severity": "SUGGESTION", "paths": ["draft.md"], "lines": [9, 4]}
+        passing = [
+            finding("draft.md", 4, "SUGGESTION"),
+            finding("draft.md", 5, "MUST_FIX"),
+            finding("b.md", 9, "MUST_FIX"),
+        ]
+        self.assertIsNone(check(spec, record(passing)))
+        failure = check(spec, record([finding("draft.md", 9, "SHOULD_FIX"), finding("draft.md", 5, "MUST_FIX")]))
+        self.assertEqual("found SHOULD_FIX at draft.md:9", failure)
+        self.assertEqual("no_finding_above SUGGESTION draft.md:4,9", skill_evals.expectation(spec, "initial").label)
+        for fields in ({"lines": [4]}, {"paths": ["a.md", "b.md"], "lines": [4]}):
+            with self.subTest(fields=fields), self.assertRaisesRegex(ScenarioError, "give exactly one path in paths"):
+                skill_evals.expectation({"kind": "no_finding_above", "severity": "SUGGESTION", **fields}, "initial")
+        with self.assertRaisesRegex(ScenarioError, "lines must be distinct positive line numbers"):
+            skill_evals.expectation({**spec, "lines": [0]}, "initial")
 
 
 class OnlyAtTests(GitTestCase):
@@ -952,8 +991,14 @@ class ReviewDocumentScenarioTests(GitTestCase):
                 "committed-edit": ((REVIEW_DOCUMENT / "committed-edit" / clean.name).resolve(), clean),
                 "word-gaps": ((REVIEW_DOCUMENT / "word-gaps" / "export-retention.docx").resolve(), None),
                 "pdf-gaps": ((REVIEW_DOCUMENT / "pdf-gaps" / "export-retention.pdf").resolve(), None),
+                "design-draft": ((REVIEW_DOCUMENT / "design-draft" / "export-sharing.md").resolve(), None),
+                "design-final": ((REVIEW_DOCUMENT / "design-final" / "export-link-expiry.md").resolve(), None),
             },
             {name: (scenario.document, scenario.base) for name, scenario in self.scenarios.items()},
+        )
+        self.assertEqual(
+            {"design-draft": "draft", "design-final": "final"},
+            {name: scenario.stage for name, scenario in self.scenarios.items() if scenario.stage is not None},
         )
         self.assertEqual({"initial"}, {scenario.mode for scenario in self.scenarios.values()})
 
@@ -1039,7 +1084,13 @@ class ReviewDocumentScenarioTests(GitTestCase):
         for name, scenario in self.scenarios.items():
             expectations = self.specs[name]["expectations"]
             found = [
-                finding(item["path"], item["lines"][0], item["severity"], f"F{index:03}", category=item["category"])
+                finding(
+                    item["path"],
+                    item["lines"][0],
+                    item["severity"],
+                    f"F{index:03}",
+                    category=item.get("category", "other"),
+                )
                 for index, item in enumerate(expectations, 1)
                 if item["kind"] == "finding"
             ]
@@ -1138,6 +1189,13 @@ class DocumentStagingTests(GitTestCase):
         arguments = skill_evals.skill_arguments(self.scenarios["design-clean"], run, self.git)
         self.assertEqual([str(run / "document" / "export-download-links.md")], arguments)
         self.assertEqual(f'/review-document "{arguments[0]}"', skill_evals.prompt("review-document", arguments))
+        arguments = skill_evals.skill_arguments(self.scenarios["design-draft"], self.root / "draft run", self.git)
+        self.assertEqual(
+            [str(self.root / "draft run" / "document" / "export-sharing.md"), "--stage", "draft"], arguments
+        )
+        self.assertEqual(
+            f'/review-document "{arguments[0]}" --stage "draft"', skill_evals.prompt("review-document", arguments)
+        )
         fixture = scenario_of("initial")
         self.assertEqual(
             skill_evals.prepare_arguments(fixture), skill_evals.skill_arguments(fixture, self.root / "other", self.git)
@@ -1320,8 +1378,10 @@ class NoGitHub:
 
 def stub_result(spec: dict[str, Any]) -> dict[str, Any]:
     """A reviewer result that does what the scenario expects: each expected finding at the first of its lines, each
-    expected disposition, and each expected repeat as a finding linked to its entry."""
+    expected disposition, and each expected repeat as a finding linked to its entry. A document scenario's design
+    reviewer gives every finding a category, so one its expectation leaves open is `other`, the fallback."""
     expectations = spec["expectations"]
+    fallback = {"category": "other"} if "document" in spec else {}
     found = [
         {
             "path": item["path"],
@@ -1329,7 +1389,7 @@ def stub_result(spec: dict[str, Any]) -> dict[str, Any]:
             "severity": item["severity"],
             "title": "Planted",
             "body": "x",
-            **({"category": item["category"]} if "category" in item else {}),
+            **({"category": item["category"]} if "category" in item else fallback),
         }
         for item in expectations
         if item["kind"] == "finding"
@@ -1400,9 +1460,9 @@ def spec_of(scenario: Scenario) -> dict[str, Any]:
     return json.loads((scenario.directory / "scenario.json").read_text(encoding="utf-8"))
 
 
-def build_document(path: Path) -> list[str]:
+def build_document(path: Path, stage: str | None = None) -> list[str]:
     """What review-document's build step prints for the document, as the skill's first step runs it."""
-    return review_document.build(path, None, None, GitClient())
+    return review_document.build(path, None, None, GitClient(), stage)
 
 
 def fixture_of(built: Sequence[str]) -> str:
@@ -1475,15 +1535,20 @@ class FixtureCanaryRunTests(GitTestCase):
             "design-gaps": "BASE none the file is outside any git checkout",
             "pdf-gaps": "BASE none the file is outside any git checkout",
             "word-gaps": "BASE none the file is outside any git checkout",
+            "design-draft": "BASE none the file is outside any git checkout",
+            "design-final": "BASE none the file is outside any git checkout",
         }
         for scenario in skill_evals.load_scenarios("review-document"):
             with self.subTest(scenario=scenario.name):
-                (staged,) = skill_evals.skill_arguments(scenario, self.root / scenario.name, GitClient())
-                built = build_document(Path(staged))
+                staged, *stage = skill_evals.skill_arguments(scenario, self.root / scenario.name, GitClient())
+                self.assertEqual([] if scenario.stage is None else ["--stage", scenario.stage], stage)
+                built = build_document(Path(staged), scenario.stage)
                 self.assertEqual(f"DOCUMENT {Path(staged).name}", built[0])
                 self.assertTrue(built[1].startswith(bases[scenario.name]), built)
                 self.assertEqual("ROUTE design-review", built[2])
                 fixture = Path(fixture_of(built))
+                pull = json.loads((fixture / "pull.json").read_text(encoding="utf-8"))
+                self.assertEqual(scenario.stage or "review", pull["document_stage"])
                 # A Word document's or a PDF's bytes are its own; a text document's line endings are read as LF.
                 document = Path(staged).read_bytes()
                 if document_format(Path(staged).name) is None:
@@ -1920,7 +1985,9 @@ class StubClaude:
             files = {key: environment[key] for key in ("CODE_REVIEW_STATE", "CODE_REVIEW_FLAGS")}
             with mock.patch.object(tempfile, "tempdir", environment["TMPDIR"]), mock.patch.dict(os.environ, files):
                 if skill == "review-document":
-                    built = self.built[f"{run.name} {model}"] = build_document(Path(*prepare))
+                    # The document's path, and the stage a staged scenario names, as --stage <stage>.
+                    stage = prepare[prepare.index("--stage") + 1] if "--stage" in prepare else None
+                    built = self.built[f"{run.name} {model}"] = build_document(Path(prepare[0]), stage)
                     prepare = ["--canary", "--fixture", fixture_of(built)]
                 Pipeline(self.test, Path(environment["CODE_REVIEW_CONFIG"])).review(prepare, spec, self.guarded)
         reviewer = self.reviewer or model
@@ -2015,14 +2082,19 @@ class EvaluateTests(GitTestCase):
         scenarios = {
             "committed-edit": "export-download-links.md",
             "design-clean": "export-download-links.md",
+            "design-draft": "export-sharing.md",
+            "design-final": "export-link-expiry.md",
             "design-gaps": "export-retention.md",
             "pdf-gaps": "export-retention.pdf",
             "word-gaps": "export-retention.docx",
         }
+        # A scenario that names a stage starts the skill at it.
+        stages = {"design-draft": ' --stage "draft"', "design-final": ' --stage "final"'}
         prompts = [arguments[2] for arguments, _, _ in claude.calls if arguments[1:] != ["--version"]]
         self.assertEqual(
             [
                 f'/review-document "{self.homes / model / skill_evals.STATE / scenario / "document" / name}"'
+                + stages.get(scenario, "")
                 for scenario, name in scenarios.items()
                 for model in skill_evals.MODELS
             ],
@@ -2050,8 +2122,9 @@ class EvaluateTests(GitTestCase):
         self.assertIn("PASS review-document committed-edit haiku only_at export-download-links.md:17", lines)
         written = self.results.read_text(encoding="utf-8")
         self.assertIn(
-            "| review-document | haiku | claude-haiku-5-5 | 20/20 | committed-edit 3/3, design-clean 2/2, "
-            "design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
+            "| review-document | haiku | claude-haiku-5-5 | 25/25 | committed-edit 3/3, design-clean 2/2, "
+            "design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5 | "
+            "2.1.291 | 2026-10-08 |",
             written,
         )
         self.assertIn("| review-prs | opus | old |", written)

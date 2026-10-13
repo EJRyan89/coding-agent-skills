@@ -30,7 +30,9 @@ The scenario.json:
 
   {"skill": "<skill>", "mode": "initial" | "re-review",
    "prior": "<prior record file in the scenario>"  (re-review only),
-   "document": "<path>",  "base": "<path>"  (a document scenario, initial only; base optional),
+   "document": "<path>",  "base": "<path>",  "stage": "<stage>"
+      (a document scenario, initial only; base optional; stage optional, one of draft, review, and final, which the
+      skill is started with as --stage),
    "reviewer": "<reviewer>"  (a repository reviewer's scenario, whose skill is review-prs),
    "expectations": [<expectation>, ...]}
 
@@ -43,8 +45,9 @@ rank SUGGESTION < SHOULD_FIX < MUST_FIX; `lines` lists the head lines a finding 
   {"kind": "finding", "path": P, "lines": [N, ...], "severity": S, "category": C}
       a finding at P on one of the lines, at least as severe as S, and of category C, matched ignoring case, when
       `category` is given; a scenario whose manifest declares finding_categories names one of them
-  {"kind": "no_finding_above", "severity": S, "paths": [P, ...]}
-      no finding more severe than S on the paths, or on any path when `paths` is left out
+  {"kind": "no_finding_above", "severity": S, "paths": [P, ...], "lines": [N, ...]}
+      no finding more severe than S on the paths, or on any path when `paths` is left out; with `lines`, which takes
+      exactly one path, only on those lines of it, so a document may hold a more severe finding elsewhere
   {"kind": "only_at", "path": P, "lines": [N, ...]}
       every finding, whatever its severity, is at P on one of the lines, as a review of one edited line should be
   {"kind": "verdict", "verdict": "APPROVED" | "CHANGES_REQUESTED" | "INCOMPLETE"}
@@ -151,7 +154,7 @@ from console import run_main
 from git_client import GitClient, GitError
 from review_records import DISPOSITIONS as RECORD_DISPOSITIONS
 from review_records import LEDGER_ID, SEVERITY_RANK
-from review_runtime import RuntimeContractError, declared_reviewer_files, validate_adapter_manifest
+from review_runtime import DOCUMENT_STAGES, RuntimeContractError, declared_reviewer_files, validate_adapter_manifest
 
 from deployer import fsops, platform_support, tools
 from tools import runtime_canary
@@ -249,6 +252,8 @@ class Scenario:
     reviewer: str | None = None
     checkout: Path | None = None
     placed: tuple[str, ...] = ()
+    # The document stage a document scenario starts the skill at, or None for the skill's default.
+    stage: str | None = None
 
 
 @dataclass(frozen=True)
@@ -355,23 +360,31 @@ def finding_expectation(spec: Mapping[str, Any]) -> Expectation:
 
 
 def no_finding_above_expectation(spec: Mapping[str, Any]) -> Expectation:
-    _fields(spec, {"kind", "severity"}, frozenset({"paths"}))
+    _fields(spec, {"kind", "severity"}, frozenset({"paths", "lines"}))
     severity = _choice(spec["severity"], SEVERITIES, "severity")
     paths: tuple[str, ...] | None = None
     if "paths" in spec:
         if not isinstance(spec["paths"], list) or not spec["paths"]:
             raise ScenarioError("paths must be a list of paths; leave it out for every path")
         paths = tuple(_path(path) for path in spec["paths"])
+    lines: tuple[int, ...] | None = None
+    if "lines" in spec:
+        if paths is None or len(paths) != 1:
+            raise ScenarioError("lines are lines of one path: give exactly one path in paths")
+        lines = _lines(spec["lines"])
 
     def check(record: Record) -> str | None:
         above = [
             f"{finding['severity']} at {finding['path']}:{finding['line']}"
             for finding in findings(record)
-            if _rank(finding["severity"]) > _rank(severity) and (paths is None or finding["path"] in paths)
+            if _rank(finding["severity"]) > _rank(severity)
+            and (paths is None or finding["path"] in paths)
+            and (lines is None or finding["line"] in lines)
         ]
         return f"found {', '.join(above)}" if above else None
 
-    return Expectation(f"no_finding_above {severity} {','.join(paths) if paths else '*'}", check)
+    where = _where(paths[0], lines) if paths and lines else ",".join(paths) if paths else "*"
+    return Expectation(f"no_finding_above {severity} {where}", check)
 
 
 def only_at_expectation(spec: Mapping[str, Any]) -> Expectation:
@@ -574,7 +587,9 @@ def load_scenario(skill: str, directory: Path, checkout: Path = REPOSITORY_ROOT)
         mode = _choice(spec.get("mode"), MODES, "mode")
         allowed = SCENARIO_FIELDS | ({"prior"} if mode == "re-review" else set())
         if "document" in spec:
-            allowed |= {"document"} | ({"base"} if "base" in spec else set())
+            allowed |= (
+                {"document"} | ({"base"} if "base" in spec else set()) | ({"stage"} if "stage" in spec else set())
+            )
         if "reviewer" in spec:
             allowed |= {"reviewer"}
         if set(spec) != allowed:
@@ -587,11 +602,13 @@ def load_scenario(skill: str, directory: Path, checkout: Path = REPOSITORY_ROOT)
             raise ScenarioError(f"scenario.json names skill {quote(str(spec['skill']))}, not {skill}")
         document: Path | None = None
         base: Path | None = None
+        stage: str | None = None
         if "document" in spec:
             if mode != "initial":
                 raise ScenarioError("a document scenario is an initial review: its mode is initial")
             document = _document(directory, spec["document"], "document")
             base = _document(directory, spec["base"], "base") if "base" in spec else None
+            stage = _choice(spec["stage"], tuple(DOCUMENT_STAGES), "stage") if "stage" in spec else None
         else:
             _fixture(directory)
         prior = None
@@ -616,6 +633,7 @@ def load_scenario(skill: str, directory: Path, checkout: Path = REPOSITORY_ROOT)
         reviewer,
         checkout if reviewer else None,
         placed,
+        stage,
     )
 
 
@@ -676,10 +694,11 @@ def reviewed_fixture(scenario: Scenario) -> Iterator[Path]:
 
 def skill_arguments(scenario: Scenario, run: Path, git: GitClient, fixture: Path | None = None) -> list[str]:
     """What the skill is started with: a fixture scenario's prepare arguments, on the fixture given when it is a
-    copy, or the path of a document scenario's document, staged in the run's folder."""
+    copy, or the path of a document scenario's document, staged in the run's folder, and its stage, if it names one."""
     if scenario.document is None:
         return prepare_arguments(scenario, fixture)
-    return [str(stage_document(scenario, run / DOCUMENT_FOLDER, git))]
+    staged = str(stage_document(scenario, run / DOCUMENT_FOLDER, git))
+    return [staged] if scenario.stage is None else [staged, "--stage", scenario.stage]
 
 
 def load_scenarios(

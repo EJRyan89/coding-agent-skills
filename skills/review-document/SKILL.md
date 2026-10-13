@@ -1,7 +1,7 @@
 ---
 name: review-document
 description: "Review one document from its file path, such as a design draft on disk or a document with uncommitted edits, or the documents a pull request changes, through the code-review pipeline's design reviewer, and write a validated report and record. Use it when asked to review a design document, a Word or PDF draft, another text file, or a pull request's documents rather than its code."
-argument-hint: "<path> | owner/repo#number [--document PATH] [--base none|committed] [--output DIR]"
+argument-hint: "<path> | owner/repo#number [--document PATH] [--base none|committed] [--stage draft|review|final] [--output DIR]"
 allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/../code-review-core/scripts/*)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/../code-review-core/scripts/*)", "Agent", "Read"]
 ---
 
@@ -13,9 +13,11 @@ Every step is one command, run exactly as shown, in the turn that invoked the sk
 
 **Which base.** By default a file inside a git checkout that is committed there is reviewed against its committed version, so only the uncommitted change is judged; a file outside a checkout, or never committed, is reviewed whole. Pass `--base none` when the user asks for the whole document, or names a committed document with no edits; pass `--base committed` only when the user insists on reviewing just the change, so a file with nothing committed fails instead of being reviewed whole. A pull request's document is reviewed against its version at the pull request's base, so only the pull request's change is judged, and one the pull request adds is reviewed whole; `--base none` reviews each whole.
 
+**Which stage.** The stage sets the bar the design reviewer holds a document to, not what it asks. Pass `--stage draft` when the user says the document is an early draft or iteration, so sections it has not written yet and open questions are suggestions, and `--stage final` when it is about to be built or is approved, so a placeholder is a must-fix; otherwise leave it out, for `review`. Pass only one of those words, never the user's description of the document.
+
 **Which model.** A Markdown, plain-text, Word, or PDF document (`.md`, `.markdown`, `.txt`, `.rst`, `.adoc`, `.docx`, or `.pdf`) goes to the design-review specialist; any other text file goes to the generic code reviewer. The reviewer runs on this session's model. Design review needs Sonnet or stronger: a smaller model over-reported on a clean design document in evaluation. If this session runs on a smaller model, say so before starting and let the user switch.
 
-1. **Build** the fixture from the path, or the pull request in place of it, adding `--document "<path>"`, `--base`, and `--output "<directory>"` only when the user gave them:
+1. **Build** the fixture from the path, or the pull request in place of it, adding `--document "<path>"`, `--base`, `--stage`, and `--output "<directory>"` only when the user gave them:
    ```bash
    {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/review_document.py" build "<path>"
    ```
