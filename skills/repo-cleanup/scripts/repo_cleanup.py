@@ -217,16 +217,81 @@ def name_with_owner(services: Services, root: str | Path) -> str | None:
 # Branches and worktrees -----------------------------------------------------------------------------------------
 
 
-def default_branch(services: Services, root: str | Path) -> str:
-    """The branch origin/HEAD names, else main or master when origin has it."""
+@dataclass(frozen=True)
+class DefaultBranch:
+    """The branch a sweep treats as the default, and `note`, what was done about a dangling origin/HEAD to find it:
+    empty when origin/HEAD named a branch origin has, or was unset."""
+
+    name: str
+    note: str = ""
+
+
+def origin_has(services: Services, root: str | Path, name: str) -> bool:
+    return git(services, root, "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{name}").returncode == 0
+
+
+def origin_head(services: Services, root: str | Path) -> str | None:
+    """The branch refs/remotes/origin/HEAD names, whether or not origin has it, or None when it is unset."""
     head = git(services, root, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
-    name = head.stdout.strip().removeprefix("refs/remotes/origin/") if head.returncode == 0 else ""
-    if name and name != head.stdout.strip():
-        return name
+    target = head.stdout.strip()
+    name = target.removeprefix("refs/remotes/origin/")
+    return name if head.returncode == 0 and name and name != target else None
+
+
+def refresh_origin_head(services: Services, root: str | Path) -> tuple[str | None, str]:
+    """Point origin/HEAD at the branch origin names as its default now, as `git remote set-head origin --auto` does.
+
+    The branch it now names, or None with the reason: origin could not be reached, did not name a default branch, or
+    named one the fetch did not bring. The command asks the remote within the time limit the fetch has.
+    """
+    result = git(services, root, "remote", "set-head", "origin", "--auto")
+    if result.returncode != 0:
+        first = next((line for line in (result.stderr or result.stdout).splitlines() if line.strip()), "")
+        return None, one_line(first).strip() or f"exit status {result.returncode}"
+    name = origin_head(services, root)
+    if name is None or not origin_has(services, root, name):
+        return None, "origin/HEAD still names no branch origin has"
+    return name, ""
+
+
+def current_branch(services: Services, root: str | Path) -> str:
+    head = git(services, root, "symbolic-ref", "--quiet", "--short", "HEAD")
+    return head.stdout.strip() if head.returncode == 0 and head.stdout.strip() else "a detached HEAD"
+
+
+def default_branch(services: Services, root: str | Path) -> DefaultBranch:
+    """The branch origin/HEAD names when origin has it, else main or master when origin has it.
+
+    A dangling origin/HEAD, one naming a branch origin no longer has, is never followed, since a sweep switches the
+    repository to the branch this returns: origin renamed its default branch after the clone, or the clone was taken
+    from a checkout on a topic branch. It is refreshed from origin, and when that fails main or master stands in.
+    When nothing gives a branch origin has, the repository is left on its branch with a CleanupError that names it.
+    """
+    named = origin_head(services, root)
+    if named is not None and origin_has(services, root, named):
+        return DefaultBranch(named)
+    failure = ""
+    if named is not None:
+        refreshed, failure = refresh_origin_head(services, root)
+        if refreshed is not None:
+            return DefaultBranch(refreshed, f"origin/HEAD named {named}, which origin lacks: refreshed it from origin")
     for name in ("main", "master"):
-        if git(services, root, "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{name}").returncode == 0:
-            return name
-    raise CleanupError("cannot determine default branch")
+        if origin_has(services, root, name):
+            if named is None:
+                return DefaultBranch(name)
+            note = (
+                f"origin/HEAD names {named}, which origin lacks: fell back to {name} — refreshing it failed: {failure}"
+            )
+            return DefaultBranch(name, note)
+    why = (
+        f"origin/HEAD names {named}, which origin lacks, refreshing it failed ({failure}),"
+        if named is not None
+        else "origin/HEAD is unset"
+    )
+    raise CleanupError(
+        f"cannot determine default branch: {why} and origin has no main or master; left on "
+        f"{current_branch(services, root)}"
+    )
 
 
 def is_release(branch: str) -> bool:
@@ -319,28 +384,18 @@ def access_failure(error: GitHubError) -> str:
 
 
 def sync(root: str, skip_checkout: bool, services: Services) -> dict[str, Any] | None:
-    """Switch to the default branch, fetch and prune, and fast-forward it.
+    """Fetch and prune, then switch to the default branch and fast-forward it.
 
-    None when it stopped for the user; otherwise what it did to the default branch, for the repository's summary.
+    The default branch is chosen after the fetch, from the remote-tracking refs it left: before it, a branch origin
+    renamed or deleted still has its stale remote-tracking ref. None when it stopped for the user; otherwise what it
+    did to the default branch, for the repository's summary.
     """
     require_repository(root)
-    default = default_branch(services, root)
-    emit("DEFAULT", default)
     dirty = dirty_count(services, root)
     if dirty:
         emit("DIRTY_MAIN", dirty)
         if not skip_checkout:
             return None
-    if skip_checkout:
-        checkout = "skipped"
-        emit("CHECKOUT", checkout)
-    elif git(services, root, "symbolic-ref", "--quiet", "HEAD").stdout.strip() == f"refs/heads/{default}":
-        checkout = "current"
-        emit("CHECKOUT", checkout)
-    else:
-        switched = git(services, root, "switch", "--quiet", default)
-        checkout = "switched" if switched.returncode == 0 else "failed"
-        emit("CHECKOUT", checkout, *([] if switched.returncode == 0 else [reason(switched)]))
     fetched = git(services, root, "fetch", "--all", "--prune", "--quiet")
     if fetched.returncode != 0:
         error = reason(fetched)
@@ -348,10 +403,27 @@ def sync(root: str, skip_checkout: bool, services: Services) -> dict[str, Any] |
         for line in fetch_failed_summary(Path(root).name, error):
             emit("SUMMARY", line)
         return None
+    default = default_branch(services, root)
+    emit("DEFAULT", default.name, *([default.note] if default.note else []))
+    if skip_checkout:
+        checkout = "skipped"
+        emit("CHECKOUT", checkout)
+    elif git(services, root, "symbolic-ref", "--quiet", "HEAD").stdout.strip() == f"refs/heads/{default.name}":
+        checkout = "current"
+        emit("CHECKOUT", checkout)
+    else:
+        switched = git(services, root, "switch", "--quiet", default.name)
+        checkout = "switched" if switched.returncode == 0 else "failed"
+        emit("CHECKOUT", checkout, *([] if switched.returncode == 0 else [reason(switched)]))
     git_output(services, root, "worktree", "prune")
-    outcome, behind = fast_forward_default(services, root, default)
+    outcome, behind = fast_forward_default(services, root, default.name)
     emit("FF_DEFAULT", *outcome)
-    return {"checkout": checkout, "fast_forward": [one_line(field) for field in outcome], "behind": behind}
+    return {
+        "default": dataclasses.asdict(default),
+        "checkout": checkout,
+        "fast_forward": [one_line(field) for field in outcome],
+        "behind": behind,
+    }
 
 
 def fast_forward_default(services: Services, root: str, default: str) -> tuple[tuple[Any, ...], int]:
@@ -422,9 +494,10 @@ def evaluate_worktree(services: Services, tree: Worktree) -> dict[str, Any]:
     return entry
 
 
-def build_plan(root: str, repos_root: str, services: Services) -> dict[str, Any]:
+def build_plan(root: str, repos_root: str, services: Services, chosen: DefaultBranch | None = None) -> dict[str, Any]:
+    """The repository's plan, against `chosen`, the default branch sync found, or the one found now when None."""
     require_repository(root)
-    default = default_branch(services, root)
+    default = (chosen or default_branch(services, root)).name
     nwo = name_with_owner(services, root)
     trees = list_worktrees(services, root)
     located = {tree.branch: tree for tree in trees if tree.branch}
@@ -954,7 +1027,8 @@ def summary_lines(plan: dict[str, Any]) -> list[str]:
 
 
 def default_notes(plan: dict[str, Any]) -> str:
-    """The default branch's status, then what the sweep's sync did to it."""
+    """The default branch's status, then what the sweep's sync did to it, then how it was found when origin/HEAD
+    named a branch origin lacks."""
     synced = plan.get("sync") or {}
     notes = [plan["default"]["status"]]
     if synced.get("fast_forward", [""])[0] == "forwarded":
@@ -963,6 +1037,9 @@ def default_notes(plan: dict[str, Any]) -> str:
         notes.append("switched to it")
     elif synced.get("checkout") == "failed":
         notes.append("switch to it failed")
+    found = (synced.get("default") or {}).get("note")  # absent from a plan an earlier version wrote
+    if found:
+        notes.append(found)
     return "; ".join(notes)
 
 
@@ -1019,7 +1096,7 @@ def sweep_repository(
             dirty = any(line.split("\t")[0] == "DIRTY_MAIN" for line in lines)
             state = "dirty" if dirty else "fetch-failed"
         else:
-            plan = build_plan(root, repos_root, services)
+            plan = build_plan(root, repos_root, services, DefaultBranch(**synced["default"]))
             plan["sync"] = synced
             plan_path = Path(plans) / f"{Path(root).name}.json"
             save_plan(plan_path, plan)
