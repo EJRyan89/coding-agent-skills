@@ -216,7 +216,9 @@ class PullRequestBodyOption(unittest.TestCase):
 
     def test_the_title_reaches_the_title_check(self) -> None:
         title = REPOSITORY_ROOT / "tests" / "run_validation.py"
+        # main sets both files the checks read, so both are restored for the run this check is part of.
         with (
+            mock.patch.object(upgrade_notes, "pull_request_body", upgrade_notes.pull_request_body),
             mock.patch.object(pull_request_title, "pull_request_title", None),
             mock.patch(f"{__name__}.report_prerequisite_problems", return_value=True),
             mock.patch(f"{__name__}.tool_versions"),
