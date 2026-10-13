@@ -35,6 +35,7 @@ SOLUTION_TEXT = (
     f"  \u2514\u2500\u2500 {CYAN}Lantern.Json (v12.0.3){RESET}                                                 \r\n"
     "\r\n"
 )
+CORE_TEXT = SOLUTION_TEXT[SOLUTION_TEXT.index("Project 'Harbor.Core'") :]
 ABSENT_TEXT = "Project 'Harbor.Core' does not have a dependency on 'Nothing.Here'.\r\n"
 NO_ASSETS_TEXT = (
     "\x1b[38;5;9mNo assets file was found for \x1b[0m\r\n"
@@ -47,7 +48,6 @@ class ParseTests(unittest.TestCase):
     def test_chains_are_read_per_project_with_the_depth_from_the_branch_column(self) -> None:
         answer = parse_why(SOLUTION_TEXT, "lantern.json")
         self.assertEqual({"Harbor.Web", "Harbor.Core"}, answer.answered)
-        self.assertIsNone(answer.failure)
         self.assertEqual(
             [
                 SdkPath(
@@ -83,7 +83,8 @@ class ParseTests(unittest.TestCase):
 
 
 class Runs:
-    """A runner that answers each project's command from a table and records every command."""
+    """A runner that answers each project's command from a table, keyed by the project path as given, and records
+    every command."""
 
     def __init__(self, answers: dict[str, Completed]) -> None:
         self.answers = answers
@@ -91,7 +92,7 @@ class Runs:
 
     def __call__(self, arguments: Sequence[str], timeout: float) -> Completed:
         self.commands.append(list(arguments))
-        project = Path(arguments[-2]).stem
+        project = Path(arguments[-2]).as_posix()
         answer = self.answers.get(project)
         if answer is None:
             raise FileNotFoundError(f"no answer for {project}")
@@ -102,36 +103,64 @@ class RunTests(unittest.TestCase):
     def test_the_command_names_dotnet_the_project_and_the_package(self) -> None:
         self.assertEqual(
             ["dotnet", "nuget", "why", str(Path("a/Harbor.Core.csproj")), "Lantern.Json"],
-            why_command([Path("a/Harbor.Core.csproj")], "Lantern.Json"),
+            why_command(Path("a/Harbor.Core.csproj"), "Lantern.Json"),
         )
 
     def test_each_project_runs_alone_and_keeps_its_answer_when_another_fails(self) -> None:
-        runs = Runs(
-            {
-                "Harbor.Core": Completed(0, SOLUTION_TEXT),
-                "Harbor.Tests": Completed(0, NO_ASSETS_TEXT),
-                "Harbor.Slow": Completed(-1, "", timed_out=True),
-            }
-        )
         projects = [
             Path(f"src/{name}/{name}.csproj") for name in ("Harbor.Core", "Harbor.Tests", "Harbor.Slow", "Harbor.Gone")
         ]
+        runs = Runs(
+            {
+                projects[0].as_posix(): Completed(0, CORE_TEXT),
+                projects[1].as_posix(): Completed(0, NO_ASSETS_TEXT),
+                projects[2].as_posix(): Completed(-1, "", timed_out=True),
+            }
+        )
         answer = run_why(projects, "Lantern.Json", Services(run=runs, which=lambda name: None), 30)
         self.assertEqual(4, len(runs.commands))
         self.assertTrue(all(command[:3] == ["dotnet", "nuget", "why"] for command in runs.commands))
-        self.assertEqual({"Harbor.Web", "Harbor.Core"}, answer.answered)
-        self.assertEqual(1, len(answer.paths["Harbor.Core"]))
-        self.assertIn("could not start", answer.failure or "")
+        self.assertEqual({projects[0]}, answer.answered)
+        self.assertEqual({projects[0]}, set(answer.paths))
+        self.assertEqual(1, len(answer.paths[projects[0]]))
+        self.assertEqual(
+            [
+                (projects[1], "dotnet nuget why answered nothing (no restored assets file)"),
+                (projects[2], "dotnet nuget why did not finish within 30 seconds"),
+            ],
+            [(project, reason) for project, reason in answer.failures.items() if project != projects[3]],
+        )
+        self.assertTrue(answer.failures[projects[3]].startswith("dotnet nuget why could not start: "))
 
-    def test_failures_name_the_project_and_the_reason(self) -> None:
+    def test_two_projects_with_one_file_name_keep_their_own_answers(self) -> None:
+        api, tools = Path("src/Api/Shop.csproj"), Path("tools/Api/Shop.csproj")
+        runs = Runs(
+            {
+                api.as_posix(): Completed(0, CORE_TEXT.replace("Harbor.Core", "Shop")),
+                tools.as_posix(): Completed(0, ABSENT_TEXT.replace("Harbor.Core", "Shop")),
+            }
+        )
+        answer = run_why([api, tools], "Lantern.Json", Services(run=runs), 30)
+        self.assertEqual({api, tools}, answer.answered)
+        self.assertEqual([SdkPath("Shop", "net472", (("Lantern.Json", "12.0.3"),))], answer.paths[api])
+        self.assertEqual([], answer.paths[tools])
+
+    def test_failures_name_the_reason_and_leave_the_project_unanswered(self) -> None:
         for text, code, reason in ((NO_ASSETS_TEXT, 0, "no restored assets file"), ("boom", 1, "exit code 1")):
             with self.subTest(reason=reason):
-                runs = Runs({"Harbor.Core": Completed(code, text)})
+                runs = Runs({"Harbor.Core.csproj": Completed(code, text)})
                 answer = run_why([Path("Harbor.Core.csproj")], "Lantern.Json", Services(run=runs), 30)
-                self.assertEqual(f"dotnet nuget why answered nothing for Harbor.Core.csproj ({reason})", answer.failure)
-        runs = Runs({"Harbor.Core": Completed(-1, "", timed_out=True)})
+                self.assertEqual(
+                    {Path("Harbor.Core.csproj"): f"dotnet nuget why answered nothing ({reason})"}, answer.failures
+                )
+                self.assertEqual(set(), answer.answered)
+        # A run that timed out after printing part of an answer is not taken as an answer.
+        runs = Runs({"Harbor.Core.csproj": Completed(-1, CORE_TEXT, timed_out=True)})
         answer = run_why([Path("Harbor.Core.csproj")], "Lantern.Json", Services(run=runs), 7)
-        self.assertEqual("dotnet nuget why did not finish within 7 seconds", answer.failure)
+        self.assertEqual(
+            {Path("Harbor.Core.csproj"): "dotnet nuget why did not finish within 7 seconds"}, answer.failures
+        )
+        self.assertEqual(({}, set()), (answer.paths, answer.answered))
 
     def test_the_default_runner_joins_both_streams_and_reports_a_time_limit(self) -> None:
         result = sdk_why.subprocess_runner(

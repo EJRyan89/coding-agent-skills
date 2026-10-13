@@ -60,6 +60,6 @@ Both print `DELETED`, `UNMERGED`, or `PRESERVED <branch> <reason>` (for a deleti
 
 ## 5. Summary
 
-The sweep (for every repository that is not `quiet`), `delete-local`, and `force-delete` each give the repository's current summary as `SUMMARY <text>` lines. A worktree kept for the ignored files it holds is listed with those paths named; regenerable tool caches, such as Python's bytecode and test caches, never keep a worktree and are deleted with it, which its line in the summary says. Show the text of the last summary printed for each repository exactly as given; `summary --plan "<plan file>"` prints it again. Once a later command's summary for a repository is headed `cleanup complete`, do not report an earlier stop in that repository as outstanding.
+The sweep (for every repository that is not `quiet`), `delete-local`, and `force-delete` each give the repository's current summary as `SUMMARY <text>` lines. Show the text of the last summary printed for each repository exactly as given; `summary --plan "<plan file>"` prints it again. Once a later command's summary for a repository is headed `cleanup complete`, do not report an earlier stop in that repository as outstanding.
 
 Finish with `Processed <N> repositories.` from `SWEPT`, followed by how many were skipped because their fetch failed, the user aborted them, or they reported an `ERROR`.
