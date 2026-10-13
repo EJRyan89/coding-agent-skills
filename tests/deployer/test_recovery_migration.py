@@ -1361,6 +1361,37 @@ class MigrationTests(DeployerTestCase):
         self.assertIn("Selected 2 items (2 skills):\n  pack (bundle)\n    alpha\n  beta\n", result.output)
         self.assertEqual(["alpha", "beta"], sorted(self.owned("skills")))
 
+    def test_a_bundle_request_follows_a_moved_member_this_source_makes_an_opt_in_skill_of_its_own(self) -> None:
+        self.old_source_with_agent({"pack": {"members": ["alpha"], "opt_in": True}}, "--include", "pack")
+        self.assertEqual({"pack": ["alpha"]}, self.manifest()["sources"]["test/old"]["requested_bundle_members"])
+        self.make_source_json()
+        self.make_skill("alpha", "Alpha", agent_deps=["reviewer"], opt_in=True)
+        self.deploy_ok("--migrate-from", "test/old")
+        entry = self.manifest()["sources"]["test/skills"]
+        self.assertEqual([], entry["requested_bundles"])
+        self.assertEqual({}, entry["requested_bundle_members"])
+        self.assertEqual(["alpha"], entry["requested_skills"])
+        self.assertRegex(self.deploy("--dry-run", stdin="\n").output, r"(?m)^  \[\*\] [0-9]+\. alpha \(opt-in\)$")
+        result = self.deploy_ok("--all")
+        self.assertIn("Selected 1 item (1 skill):\n  alpha\n", result.output)
+        self.assertEqual({"UNCHANGED": ["alpha", "reviewer.md (agent)"]}, self.report_groups(result.output, "DEPLOYED"))
+
+    def test_a_bundle_request_follows_a_moved_member_into_the_bundle_this_source_puts_it_in(self) -> None:
+        self.old_source_with_agent({"pack": {"members": ["alpha"], "opt_in": True}}, "--include", "pack")
+        self.make_source_json(bundles={"group": {"members": ["alpha", "beta"], "opt_in": True}})
+        self.make_skill("beta", "Beta")
+        self.deploy_ok("--migrate-from", "test/old")
+        entry = self.manifest()["sources"]["test/skills"]
+        self.assertEqual(["group"], entry["requested_bundles"])
+        self.assertEqual({"group": ["alpha", "beta"]}, entry["requested_bundle_members"])
+        self.assertEqual([], entry["requested_skills"])
+        result = self.deploy_ok("--all")
+        self.assertIn("Selected 1 item (2 skills):\n  group (bundle)\n    alpha\n    beta\n", result.output)
+        self.assertEqual(
+            {"INSTALLED": ["beta"], "UNCHANGED": ["alpha", "reviewer.md (agent)"]},
+            self.report_groups(result.output, "DEPLOYED"),
+        )
+
     def test_a_bundle_request_stays_with_the_old_source_when_none_of_its_members_moves(self) -> None:
         self.old_source_with_agent({"pack": {"members": ["alpha"], "opt_in": True}}, "--include", "pack")
         self.make_source_json(bundles={"pack": {"members": ["beta"], "opt_in": True}})
