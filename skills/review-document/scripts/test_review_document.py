@@ -28,6 +28,7 @@ sys.path.insert(0, str(sibling_scripts("code-review-core")))
 
 import review_document
 import review_pipeline as rp
+import review_runtime
 from flat_text import flat_text
 from git_client import subprocess_runner
 from git_test_base import GitTestCase
@@ -248,6 +249,20 @@ class CheckoutTests(DocumentTestCase):
             (1, ["FAILED --base committed has nothing to compare with: the file is not committed"]), (code, lines)
         )
         self.assertFalse(self.output.exists())
+
+    def test_a_document_in_a_folder_the_review_keeps_is_refused_before_any_fixture(self) -> None:
+        checkout = self.checkout()
+        for relative, reason in (
+            ("source-snapshot-text/plan.md", "is where the source snapshot keeps a document's extracted text"),
+            (".Review-Document/plan.md", "is where the fixture keeps its reviewer manifest"),
+        ):
+            with self.subTest(relative):
+                document = checkout / relative
+                document.parent.mkdir()
+                document.write_bytes(QUEUE_PLAN)
+                code, lines = run_main("build", str(document), "--output", str(self.output))
+                self.assertEqual((1, [f"FAILED {relative} {reason}"]), (code, lines))
+                self.assertFalse(self.output.exists())
 
     def test_an_unchanged_document_is_refused_with_the_way_to_review_it_whole(self) -> None:
         checkout = self.checkout()
@@ -629,11 +644,19 @@ DEVICE_NAME = "a reserved device name as a segment, with or without an extension
 TRAILING_DOT_OR_SPACE = (
     "a segment ending in a dot or a space: Windows drops it, so the file would be written under another name"
 )
+PATH_TOO_LONG = "a path longer than the room the snapshot root leaves a file"
 MANIFEST = ".review-document/specialists.json"
 NO_DOCUMENT = (
     "octo-org/widgets#7 changes no document review-document reviews: no changed file is a Markdown, plain-text, Word, "
     "or PDF document"
 )
+
+
+def long_path(units: int) -> str:
+    """A Markdown document's path of `units` units, of at least 20: folders of 100 units and a file name of 20 to
+    120, so no segment is too long and its folder is shorter than any room the path itself fits."""
+    folders = (units - 20) // 101
+    return ("d" * 100 + "/") * folders + "p" * (units - 101 * folders - 3) + ".md"
 
 
 class PullRequestTests(PipelineTestCase):
@@ -961,24 +984,156 @@ class PullRequestTests(PipelineTestCase):
             {path.relative_to(self.output).as_posix() for path in self.output.rglob("*") if path.is_file()},
         )
 
-    def test_a_document_path_too_long_for_the_fixture_folder_is_refused_before_its_fixture_is_written(self) -> None:
-        # Longer than an extended Windows path, so no fixture folder on any platform leaves it room.
-        relative = "/".join(["d" * 200] * 170) + ".md"
+    def written(self) -> set[str]:
+        """Every file under the output directory, by its path there."""
+        return {path.relative_to(self.output).as_posix() for path in self.output.rglob("*") if path.is_file()}
+
+    def fixture_files(self, index: int, document: str, *, committed: bool) -> set[str]:
+        """The files of fixture `index`, which holds `document` at its head and, when `committed`, at its base."""
+        return {
+            f"{index}/fixture/pull.json",
+            f"{index}/fixture/base/{MANIFEST}",
+            f"{index}/fixture/head/{MANIFEST}",
+            f"{index}/fixture/head/{document}",
+            *([f"{index}/fixture/base/{document}"] if committed else []),
+        }
+
+    def pull_with(self, *paths: str) -> StubGitHub:
+        """The pull request editing docs/design/retention.md and adding a document at each of `paths`."""
         trees = self.stub().trees
-        trees[HEAD][relative] = QUEUE_PLAN
-        stub = StubGitHub([[changed(relative, "added")]], trees)
-        code, lines = run_main("build", "octo-org/widgets#7", "--output", str(self.output), github=stub.client())
+        trees[HEAD].update(dict.fromkeys(paths, QUEUE_PLAN))
+        return StubGitHub(
+            [[changed("docs/design/retention.md", "modified"), *(changed(path, "added") for path in paths)]], trees
+        )
+
+    def test_a_document_too_long_for_its_fixture_folder_is_skipped_and_the_others_are_reviewed(self) -> None:
+        # Without long paths, as on every platform but a Windows that enables them, a whole path holds 259 units, so
+        # the room is what that leaves below the head tree of the fixture a document would be given: the second, since
+        # the first document is reviewed. A path a unit longer is skipped unread, and one that just fits is reviewed.
+        room = 259 - len(str(self.output / "2" / "fixture" / "head")) - 1
+        over, fitting = long_path(room + 1), long_path(room)
+        stub = self.pull_with(over, fitting)
+        with mock.patch.object(review_runtime, "_long_paths_enabled", return_value=False):
+            lines = self.build_pull(stub)
+        self.assertEqual(
+            [
+                f"PULL octo-org/widgets#7 base {MERGE_BASE} head {HEAD}",
+                *self.block(1, "docs/design/retention.md", f"committed {MERGE_BASE}"),
+                *self.block(2, fitting, "none the document is added in the pull request"),
+                f"SKIPPED {over} is not a path a fixture can hold: {PATH_TOO_LONG}",
+            ],
+            lines,
+        )
+        self.assertEqual(
+            [f"docs/design/retention.md@{HEAD}", f"docs/design/retention.md@{MERGE_BASE}", f"{fitting}@{HEAD}"],
+            stub.reads(),
+        )
+        self.assertEqual(
+            self.fixture_files(1, "docs/design/retention.md", committed=True)
+            | self.fixture_files(2, fitting, committed=False),
+            self.written(),
+        )
+
+        # Named with --document, the document fails the build with the reason, and nothing is written.
+        self.output = self.root / "narrowed"
+        with mock.patch.object(review_runtime, "_long_paths_enabled", return_value=False):
+            code, lines = run_main(
+                "build",
+                "octo-org/widgets#7",
+                "--document",
+                over,
+                "--output",
+                str(self.output),
+                github=self.pull_with(over).client(),
+            )
+        self.assertEqual((1, [f"FAILED {over} is not a path a fixture can hold: {PATH_TOO_LONG}"]), (code, lines))
+        self.assertFalse(self.output.exists())
+
+    def test_a_document_too_long_for_its_fixture_folder_with_long_paths_is_skipped(self) -> None:
+        # Where Windows enables long paths, a whole path holds 32,507 units beside the volume's device name.
+        room = 32_507 - len(str(self.output / "2" / "fixture" / "head")) - 1
+        over = long_path(room + 1)
+        stub = self.pull_with(over)
+        with mock.patch.object(review_runtime, "_long_paths_enabled", return_value=True):
+            lines = self.build_pull(stub)
+        self.assertEqual(
+            [
+                f"PULL octo-org/widgets#7 base {MERGE_BASE} head {HEAD}",
+                *self.block(1, "docs/design/retention.md", f"committed {MERGE_BASE}"),
+                f"SKIPPED {over} is not a path a fixture can hold: {PATH_TOO_LONG}",
+            ],
+            lines,
+        )
+        self.assertEqual(self.fixture_files(1, "docs/design/retention.md", committed=True), self.written())
+
+    def test_a_document_in_the_snapshots_text_folder_is_skipped_and_never_written(self) -> None:
+        reserved = ["source-snapshot-text/plan.md", "Source-Snapshot-Text/docs/plan.md"]
+        stub = self.pull_with(*reserved)
+        self.assertEqual(
+            [
+                f"PULL octo-org/widgets#7 base {MERGE_BASE} head {HEAD}",
+                *self.block(1, "docs/design/retention.md", f"committed {MERGE_BASE}"),
+                *(
+                    f"SKIPPED {path} is where the source snapshot keeps a document's extracted text"
+                    for path in reserved
+                ),
+            ],
+            self.build_pull(stub),
+        )
+        self.assertEqual([f"docs/design/retention.md@{HEAD}", f"docs/design/retention.md@{MERGE_BASE}"], stub.reads())
+        self.assertEqual(self.fixture_files(1, "docs/design/retention.md", committed=True), self.written())
+
+        self.output = self.root / "narrowed"
+        code, lines = run_main(
+            "build",
+            "octo-org/widgets#7",
+            "--document",
+            reserved[0],
+            "--output",
+            str(self.output),
+            github=self.pull_with(*reserved).client(),
+        )
+        reason = "is where the source snapshot keeps a document's extracted text"
+        self.assertEqual((1, [f"FAILED {reserved[0]} {reason}"]), (code, lines))
+        self.assertFalse(self.output.exists())
+
+    def test_an_output_with_no_room_for_the_reviewer_manifest_is_refused_before_any_document_is_read(self) -> None:
+        # Without long paths a whole path holds 259 units, so below a head tree of 226 units the manifest's 33 do not
+        # fit beside the separator. The last fixture, the second, is the one judged; the output need not exist yet.
+        name = 226 - len(str(self.root / "o" / "2" / "fixture" / "head")) + 1
+        self.output = self.root / ("o" * name)
+        self.assertEqual(226, len(str(self.output / "2" / "fixture" / "head")))
+        stub = self.pull_with("docs/design/queue plan.md")
+        with mock.patch.object(review_runtime, "_long_paths_enabled", return_value=False):
+            code, lines = run_main("build", "octo-org/widgets#7", "--output", str(self.output), github=stub.client())
         self.assertEqual(
             (
                 1,
                 [
-                    f"FAILED {relative} is not a path a fixture can hold: a path longer than the room the snapshot "
-                    "root leaves a file"
+                    f"FAILED {self.output} leaves a fixture no room for its reviewer manifest, {MANIFEST}: "
+                    f"{PATH_TOO_LONG}; name a shorter --output"
                 ],
             ),
             (code, lines),
         )
+        self.assertEqual([], stub.reads())
         self.assertFalse(self.output.exists())
+
+    def test_a_failed_build_leaves_no_temporary_output_behind(self) -> None:
+        temporary = self.root / "temporary output"
+
+        def mkdtemp(prefix: str) -> str:
+            temporary.mkdir()
+            return str(temporary)
+
+        stub = StubGitHub([[changed("notes/old.md", "removed")]], self.stub().trees)
+        with mock.patch.object(review_document.tempfile, "mkdtemp", side_effect=mkdtemp):
+            code, lines = run_main("build", "octo-org/widgets#7", github=stub.client())
+        reason = (
+            "octo-org/widgets#7 changes no document that can be reviewed: notes/old.md is removed in the pull request"
+        )
+        self.assertEqual((1, [f"FAILED {reason}"]), (code, lines))
+        self.assertFalse(temporary.exists())
 
     def test_a_path_that_would_land_outside_the_fixture_is_refused_with_the_path_rules_out_of_the_way(self) -> None:
         # A rooted path on every platform, and on Windows a path naming a drive other than the fixture's, which resets
