@@ -5,36 +5,44 @@ which versions and binding redirects disagree, and the whole graph as a diagram.
     why --all --project PATH [--root PATH]                  everything one project reaches, with the first hop
     where <assembly> [--root PATH] [--project PATH]         the projects whose references resolve to the assembly
     conflicts [--root PATH] [--project PATH]                versions wanted at odds, and binding redirects to check
-    graph [--format dot|mermaid] [--output FILE] [--root PATH]   the whole graph, written to a file, never printed
+    graph [--format dot|mermaid] [--output FILE] [--root PATH] [--project PATH]   the graph, written to a file
 
 --root is a .sln or .slnx, a directory holding one, or a directory to search for *.csproj files; by default the
-current directory. --project narrows a query to one project of the solution. Output is one tab-separated fact per
-line, paths relative to the solution's directory with forward slashes:
+current directory. --project narrows a query to one project of the solution, and `graph` to that project and the
+projects it reaches. Output is one tab-separated fact per line, paths relative to the solution's directory with
+forward slashes:
 
     ROOT          <solution or directory>
     PROJECT       <project> <sdk|legacy> <assets|nuspec|direct> <listed|referenced>
                   where package-to-package edges came from: obj/project.assets.json, the packages' nuspecs in the
                   packages folder or the NuGet cache, or neither, leaving the direct references alone
     UNREADABLE    <file> <reason>                            a file the readers refused; its facts are missing
-    PATH          <project> <name> <sdk|graph> <hop> > <hop> ...    one chain, each hop `name (vversion)`,
-                  `name (project)`, or `name (vversion, assembly)`; the source says whether `dotnet nuget why`
-                  answered or the graph walk did
-    TRUNCATED     <project> <name> <limit>                   more chains than the limit; the first ones printed
+    SDK_FAILED    <project> <name> <reason>                  `dotnet nuget why` failed; the graph walk answered
+    PATH          <project> <frameworks> <name> <sdk|graph> <hop> > <hop> ...    one chain, each hop
+                  `name (vversion)`, `name (project)`, `name (vversion, assembly)`, or `name (assembly)` for an
+                  assembly a package ships; the source says whether `dotnet nuget why` answered or the graph walk did
+    TRUNCATED     <project> <frameworks> <name> <limit>      more chains than the limit; the first ones printed
     MISSING       <name>                                     no project reaches the name
-    REACHES       <project> <name> <version> <package|project|assembly|framework> <first hop>
-    WHERE         <project> <assembly> <reference|framework|package|project> <version> <via>
-    CONFLICT      <name> <package|assembly> <version> <project> <via>   one line per project on each side
+    REACHES       <project> <frameworks> <name> <version> <package|project|assembly|framework> <first hop>
+    WHERE         <project> <frameworks> <assembly> <reference|framework|package|project> <version> <via>
+    CONFLICT      <name> <package|assembly> <version> <project> <frameworks> <via>   one line per side
     REDIRECT_STALE <project> <config> <assembly> <newVersion> <versions referenced>
     REDIRECT_UNREFERENCED <project> <config> <assembly> <newVersion>
     WROTE         <file> <nodes> <edges>
     SUMMARY       the result: why prints <paths> <names found> <names missing>, or with --all <items reached>;
                   where <projects>; conflicts <names in conflict> <stale redirects>; graph <nodes> <edges>
 
+<frameworks> names the target frameworks of the project's restore that hold the line, joined by `;`, or `-` for a
+project with no restore, whose facts are not kept per framework. A line that holds for several frameworks is
+printed once. Two frameworks of one project resolving different versions build apart and are not a conflict.
+
 `why` asks `dotnet nuget why` for a project that is SDK-style, uses PackageReference, has an obj/project.assets.json
-no older than the project file, and only when dotnet is installed; every other project, and every project when the
-SDK answers nothing, is walked from the graph. The script changes nothing on disk but the graph file, runs no restore
-or build, and exits 1 when it printed a CONFLICT, REDIRECT_STALE, or UNREADABLE line, else 0; a FAILED <reason> line
-and exit 1 when the root cannot be resolved, and a usage error exits 2.
+no older than the project file, and only when dotnet is installed. The SDK looks up package ids, so the graph walk
+runs for every project too: for a project the SDK answered it adds the chains that end in an assembly or a project,
+and for every other project it answers alone, so whether dotnet is installed changes only which source a package
+chain names. The script changes nothing on disk but the graph file, runs no restore or build, and exits 1 when it
+printed a CONFLICT, REDIRECT_STALE, or UNREADABLE line, else 0; a FAILED <reason> line and exit 1 when the root
+cannot be resolved, and a usage error exits 2.
 """
 
 from __future__ import annotations
@@ -46,13 +54,14 @@ import tempfile
 from collections import deque
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
+from itertools import combinations
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from console import run_main
-from dotnet_solution import is_solution, listed_projects, same_path
+from dotnet_solution import is_solution, read_listed_projects, same_path
 from flat_text import flat_text
 from msbuild_reader import (
     ASSETS_FILE,
@@ -62,21 +71,26 @@ from msbuild_reader import (
     PackageRef,
     ProjectFile,
     Unreadable,
+    central_versions_file,
     package_assemblies,
     read_assets,
+    read_central_versions,
     read_nuspec,
     read_packages_config,
     read_project,
     read_redirects,
 )
-from sdk_why import DEFAULT_TIMEOUT_SECONDS, Services, run_why
+from sdk_why import DEFAULT_TIMEOUT_SECONDS, SdkPath, Services, run_why
 from skill_roots import skills_directory_holding
+from xml_reader import XmlRefused
 
 PROJECT_SUFFIX = ".csproj"
 IGNORED_DIRECTORIES = frozenset({".git", "bin", "obj", "node_modules", "packages", ".vs"})
 PATH_LIMIT = 200
 FINDING_KEYS = ("CONFLICT", "REDIRECT_STALE", "UNREADABLE")
+NO_FRAMEWORK = "-"
 Hop = tuple[str, str, str]  # kind (package, project, assembly, framework), name, version or ""
+Row = tuple[str, ...]
 
 
 class Failed(Exception):
@@ -84,18 +98,33 @@ class Failed(Exception):
 
 
 @dataclass
-class Project:
-    """A project of the solution with the package closure its own files give."""
+class Target:
+    """One framework's package closure of a project: the restore's target framework, or `-` for a project with no
+    restore, whose direct references and nuspec edges hold for every framework it builds."""
 
-    file: ProjectFile
-    listed: bool
+    framework: str
     nodes: dict[str, PackageNode] = field(default_factory=dict)  # case-folded id -> node
     direct: list[PackageRef] = field(default_factory=list)
-    edges: str = "direct"
-    sdk_answers: bool = False
 
     def node(self, package: str) -> PackageNode | None:
         return self.nodes.get(package.casefold())
+
+
+@dataclass
+class Project:
+    """A project of the solution with the package closure its own files give, one target per framework. A project
+    whose file could not be read is kept, unreadable, so a reference to it still names it."""
+
+    file: ProjectFile
+    listed: bool
+    readable: bool = True
+    targets: list[Target] = field(default_factory=lambda: [Target(NO_FRAMEWORK)])
+    edges: str = "direct"
+    sdk_answers: bool = False
+
+    def targets_for(self, framework: str) -> list[Target]:
+        """The targets a walk under `framework` enters: the target of that framework, else every one."""
+        return [target for target in self.targets if target.framework == framework] or self.targets
 
 
 @dataclass
@@ -104,6 +133,7 @@ class Graph:
     base: Path
     projects: dict[str, Project] = field(default_factory=dict)  # same_path -> project
     unreadable: list[tuple[Path, str]] = field(default_factory=list)
+    central: dict[str, dict[str, str]] = field(default_factory=dict)  # same_path of a props file -> its versions
 
     def relative(self, path: Path) -> str:
         try:
@@ -119,6 +149,21 @@ class Graph:
 
     def refuse(self, error: Unreadable) -> None:
         self.unreadable.append((error.file, error.reason))
+
+    def central_versions(self, project_dir: Path) -> dict[str, str]:
+        """The central versions that apply in a project's directory, each props file read once; an unreadable one
+        is reported once and gives none, so each project it covers keeps its own facts."""
+        found = central_versions_file(project_dir, self.base)
+        if found is None:
+            return {}
+        key = same_path(found)
+        if key not in self.central:
+            try:
+                self.central[key] = read_central_versions(found)
+            except Unreadable as error:
+                self.refuse(error)
+                self.central[key] = {}
+        return self.central[key]
 
 
 class Emitter:
@@ -150,13 +195,22 @@ def find_projects(directory: Path) -> list[Path]:
 def resolve_root(path: Path, graph_unreadable: list[tuple[Path, str]]) -> tuple[Path, Path, list[Path]]:
     """The solution or directory the graph is built from, the directory paths are shown relative to, and the
     project files to read: a solution's listed .csproj files, the one solution in a directory, or the .csproj files
-    under a directory holding none."""
+    under a directory holding none. A solution that cannot be read is reported unreadable and lists no project, so
+    the answer says why it is empty."""
     path = path.resolve()
     if path.is_file():
         if not is_solution(path):
             raise Failed(f"{path} is not a .sln or .slnx solution")
         projects: list[Path] = []
-        for listed in listed_projects(path):
+        try:
+            entries = read_listed_projects(path)
+        except XmlRefused as error:
+            graph_unreadable.append((path, str(error)))
+            entries = []
+        except OSError as error:
+            graph_unreadable.append((path, error.strerror or str(error)))
+            entries = []
+        for listed in entries:
             if not listed.casefold().endswith(PROJECT_SUFFIX):
                 continue
             candidate = (path.parent / listed.replace("\\", "/")).resolve()
@@ -187,10 +241,11 @@ def load_projects(graph: Graph, listed: Iterable[Path]) -> None:
         if same_path(path) in graph.projects:
             continue
         try:
-            file = read_project(path, graph.base)
+            file = read_project(path, graph.central_versions)
         except Unreadable as error:
             graph.refuse(error)
-            graph.projects[same_path(path)] = Project(ProjectFile(path, "legacy", path.stem, [], [], [], []), is_listed)
+            placeholder = ProjectFile(path, "legacy", path.stem, [], [], [], [])
+            graph.projects[same_path(path)] = Project(placeholder, is_listed, readable=False)
             continue
         graph.projects[same_path(path)] = Project(file, is_listed)
         queue.extend((reference, False) for reference in file.project_refs)
@@ -206,9 +261,9 @@ def read_configs(graph: Graph, project: Project) -> None:
                 graph.refuse(error)
 
 
-def nuget_cache(package_folders: Sequence[Path] = ()) -> list[Path]:
-    """The folders restored packages are kept in: the assets file's, NUGET_PACKAGES, and ~/.nuget/packages."""
-    folders = [*package_folders]
+def nuget_cache() -> list[Path]:
+    """The folders the NuGet cache may be in: NUGET_PACKAGES, and ~/.nuget/packages."""
+    folders: list[Path] = []
     configured = os.environ.get("NUGET_PACKAGES")
     if configured:
         folders.append(Path(configured))
@@ -263,64 +318,69 @@ def nuspec_node(graph: Graph, folders: Sequence[Path], reference: PackageRef) ->
         return None
 
 
-def closure_from_nuspecs(graph: Graph, project: Project, folders: Sequence[Path]) -> None:
-    """Nodes for the project's direct packages from their nuspecs; edges are `nuspec` when any was found."""
-    for reference in project.direct:
+def closure_from_nuspecs(graph: Graph, project: Project, direct: list[PackageRef], folders: Sequence[Path]) -> None:
+    """One target of the direct packages with their nodes from their nuspecs; edges are `nuspec` when any was
+    found."""
+    target = Target(NO_FRAMEWORK, direct=direct)
+    for reference in direct:
         node = nuspec_node(graph, folders, reference)
         if node is not None:
-            project.nodes[reference.id.casefold()] = node
-    project.edges = "nuspec" if project.nodes else "direct"
+            target.nodes[reference.id.casefold()] = node
+    project.targets = [target]
+    project.edges = "nuspec" if target.nodes else "direct"
 
 
-def closure_from_assets(graph: Graph, project: Project, assets_path: Path, services: Services) -> bool:
-    """The project's closure from its assets file; False when the file could not be read."""
+def closure_from_assets(graph: Graph, project: Project, assets_path: Path, services: Services) -> None:
+    """One target per framework the assets file restored, each with its own packages and direct references; the
+    project keeps its direct target when the file cannot be read or restored no framework."""
     try:
         assets = read_assets(assets_path)
     except Unreadable as error:
         graph.refuse(error)
-        return False
-    framework = next((name for name in project.file.frameworks if name in assets.nodes), None)
-    framework = framework or next(iter(assets.nodes), None)
-    if framework is None:
-        return False
-    project.nodes = {package.casefold(): node for package, node in assets.nodes[framework].items()}
-    project.direct = assets.direct.get(framework) or project.file.packages
+        return
+    if not assets.nodes:
+        return
+    project.targets = [
+        Target(
+            framework,
+            {package.casefold(): node for package, node in nodes.items()},
+            assets.direct.get(framework) or list(project.file.packages),
+        )
+        for framework, nodes in assets.nodes.items()
+    ]
     project.edges = "assets"
     fresh = assets_path.stat().st_mtime >= project.file.path.stat().st_mtime
     project.sdk_answers = fresh and services.which("dotnet") is not None
-    return True
 
 
 def build_closure(graph: Graph, project: Project, services: Services) -> None:
-    """Fill the project's direct packages, its package nodes, and where their edges came from."""
+    """Fill the project's targets: the direct packages, their package nodes, and where their edges came from."""
     config = project.file.path.parent / PACKAGES_CONFIG
     if config.is_file():
+        direct: list[PackageRef] = []
         try:
-            project.direct = read_packages_config(config)
+            direct = read_packages_config(config)
         except Unreadable as error:
             graph.refuse(error)
         folder = packages_folder(project.file.path.parent, graph.base)
-        closure_from_nuspecs(graph, project, [folder] if folder else nuget_cache())
+        closure_from_nuspecs(graph, project, direct, [folder] if folder else nuget_cache())
         return
-    project.direct = list(project.file.packages)
+    project.targets = [Target(NO_FRAMEWORK, direct=list(project.file.packages))]
     assets_path = project.file.path.parent / "obj" / ASSETS_FILE
-    if (
-        project.file.style == "sdk"
-        and assets_path.is_file()
-        and closure_from_assets(graph, project, assets_path, services)
-    ):
-        return
-    project.edges = "direct"
+    if project.file.style == "sdk" and assets_path.is_file():
+        closure_from_assets(graph, project, assets_path, services)
 
 
 def build_graph(root: Path, services: Services) -> Graph:
+    """Read the solution's projects and, for each one whose file could be read, its packages and redirects."""
     unreadable: list[tuple[Path, str]] = []
     resolved, base, listed = resolve_root(root, unreadable)
     graph = Graph(resolved, base, unreadable=unreadable)
     load_projects(graph, listed)
     for project in graph.projects.values():
-        build_closure(graph, project, services)
-        read_configs(graph, project)
+        if project.readable:
+            build_closure(graph, project, services)
+            read_configs(graph, project)
     return graph
 
 
@@ -347,9 +407,9 @@ def hop_text(hop: Hop) -> str:
     return f"{name} (v{version}, {kind})" if version else f"{name} ({kind})"
 
 
-def package_hop(project: Project, package: str, requested: str | None) -> Hop:
-    """A package hop with the version the project resolved, else the version it asked for."""
-    node = project.node(package)
+def package_hop(target: Target, package: str, requested: str | None) -> Hop:
+    """A package hop with the version the target resolved, else the version it asked for."""
+    node = target.node(package)
     return ("package", node.id if node else package, node.version if node else requested or "")
 
 
@@ -357,17 +417,32 @@ def assembly_hop(name: str, version: str | None, hint_path: str | None) -> Hop:
     return ("assembly" if hint_path else "framework", name, version or "")
 
 
-class PathFinder:
-    """Every chain from a project to a name, through project references, direct packages, and package edges."""
+def labelled(rows: Iterable[tuple[str, Row]]) -> list[tuple[str, Row]]:
+    """Each distinct row once, in the order first met, with the frameworks that hold it joined by `;`."""
+    merged: dict[Row, list[str]] = {}
+    for framework, row in rows:
+        frameworks = merged.setdefault(row, [])
+        if framework not in frameworks:
+            frameworks.append(framework)
+    return [(";".join(frameworks), row) for row, frameworks in merged.items()]
 
-    def __init__(self, graph: Graph, target: str, limit: int | None = None) -> None:
+
+class PathFinder:
+    """Every chain from a project to a name under one framework, through project references, direct packages,
+    package edges, and the assemblies a package ships. A referenced project is walked under the same framework when
+    it has it, else under each of its own."""
+
+    def __init__(self, graph: Graph, target: str, framework: str, limit: int | None = None) -> None:
         self.graph = graph
         self.target = target.casefold()
+        self.framework = framework
         self.limit = PATH_LIMIT if limit is None else limit
         self.found: list[tuple[Hop, ...]] = []
         self.truncated = False
 
     def record(self, path: tuple[Hop, ...]) -> None:
+        if path in self.found:
+            return
         if len(self.found) < self.limit:
             self.found.append(path)
         else:
@@ -385,28 +460,31 @@ class PathFinder:
                 if child.file.assembly_name.casefold() == self.target or child.file.path.stem.casefold() == self.target:
                     self.record((*path, hop))
                 self.from_project(child, (*path, hop), seen)
-        for direct in project.direct:
-            self.from_package(project, direct.id, direct.version, path, frozenset())
+        for target in project.targets_for(self.framework):
+            for direct in target.direct:
+                self.from_package(target, direct.id, direct.version, path, frozenset())
         for assembly in project.file.assemblies:
             if assembly.name.casefold() == self.target:
                 self.record((*path, assembly_hop(assembly.name, assembly.version, assembly.hint_path)))
 
     def from_package(
-        self, project: Project, package: str, requested: str | None, path: tuple[Hop, ...], seen: frozenset[str]
+        self, owner: Target, package: str, requested: str | None, path: tuple[Hop, ...], seen: frozenset[str]
     ) -> None:
         fold = package.casefold()
         if fold in seen:
             return
-        hop = package_hop(project, package, requested)
-        path = (*path, hop)
+        path = (*path, package_hop(owner, package, requested))
         if fold == self.target:
             self.record(path)
             return
-        node = project.node(package)
+        node = owner.node(package)
         if node is None:
             return
+        shipped = next((name for name in node.assemblies if name.casefold() == self.target), None)
+        if shipped is not None:
+            self.record((*path, ("assembly", shipped, "")))
         for dependency, version in node.dependencies.items():
-            self.from_package(project, dependency, version, path, seen | {fold})
+            self.from_package(owner, dependency, version, path, seen | {fold})
 
 
 @dataclass(frozen=True)
@@ -419,48 +497,50 @@ class Reached:
     first_hop: str
 
 
-def reaches(graph: Graph, project: Project) -> list[Reached]:
-    """Everything the project reaches, breadth first, each name once per version, with the direct reference that
-    brought it in first. A package's edges are its owner project's, so a package met again through another project
-    is walked again there: the two projects may resolve it to different versions."""
+Step = tuple[Hop, Target | None, Project | None]  # the hop, the target a package hop is resolved in, the project
+
+
+def reaches(graph: Graph, project: Project, framework: str) -> list[Reached]:
+    """Everything the project reaches under one framework, breadth first, each name once per version, with the
+    direct reference that brought it in first. A package's edges are its owner project's, so a package met again
+    through another project is walked again there: the two projects may resolve it to different versions."""
     found: dict[tuple[str, str, str], Reached] = {}
-    walked: set[tuple[str, str, str]] = set()
-    queue: deque[tuple[Project, Hop, str]] = deque()
+    walked_projects = {same_path(project.file.path)}
+    walked_packages: set[tuple[int, str]] = set()  # the target's identity and the package's case-folded id
+    queue: deque[tuple[Step, str]] = deque()
 
-    def enqueue(owner: Project, hops: Iterable[Hop], first: str | None) -> None:
-        queue.extend((owner, hop, first or hop_text(hop)) for hop in hops)
+    def own_steps(owner: Project) -> list[Step]:
+        steps: list[Step] = []
+        for reference in owner.file.project_refs:
+            child = graph.project_at(reference)
+            if child is not None:
+                steps.append((("project", child.file.assembly_name, ""), None, child))
+        for target in owner.targets_for(framework):
+            steps += [(package_hop(target, direct.id, direct.version), target, None) for direct in target.direct]
+        steps += [(assembly_hop(item.name, item.version, item.hint_path), None, None) for item in owner.file.assemblies]
+        return steps
 
-    def own_hops(owner: Project) -> list[Hop]:
-        children = [graph.project_at(reference) for reference in owner.file.project_refs]
-        projects: list[Hop] = [("project", child.file.assembly_name, "") for child in children if child is not None]
-        packages = [package_hop(owner, direct.id, direct.version) for direct in owner.direct]
-        assemblies = [assembly_hop(item.name, item.version, item.hint_path) for item in owner.file.assemblies]
-        return [*projects, *packages, *assemblies]
+    def enqueue(steps: Iterable[Step], first: str | None) -> None:
+        queue.extend((step, first or hop_text(step[0])) for step in steps)
 
-    enqueue(project, own_hops(project), None)
+    enqueue(own_steps(project), None)
     while queue:
-        owner, hop, first = queue.popleft()
+        (hop, target, child), first = queue.popleft()
         kind, name, version = hop
         found.setdefault(
             (kind if kind != "framework" else "assembly", name.casefold(), version), Reached(kind, name, version, first)
         )
-        if (same_path(owner.file.path), kind, name.casefold()) in walked:
-            continue
-        walked.add((same_path(owner.file.path), kind, name.casefold()))
-        if kind == "project":
-            child = next(
-                (
-                    item
-                    for item in (graph.project_at(ref) for ref in owner.file.project_refs)
-                    if item is not None and item.file.assembly_name == name
-                ),
-                None,
-            )
-            if child is not None and (same_path(child.file.path), "walked", "") not in walked:
-                walked.add((same_path(child.file.path), "walked", ""))
-                enqueue(child, own_hops(child), first)
-        elif kind == "package" and (node := owner.node(name)) is not None:
-            enqueue(owner, [package_hop(owner, dep, wanted) for dep, wanted in node.dependencies.items()], first)
+        if child is not None and same_path(child.file.path) not in walked_projects:
+            walked_projects.add(same_path(child.file.path))
+            enqueue(own_steps(child), first)
+        elif target is not None and (id(target), name.casefold()) not in walked_packages:
+            walked_packages.add((id(target), name.casefold()))
+            node = target.node(name)
+            if node is not None:
+                enqueue(
+                    [(package_hop(target, dep, wanted), target, None) for dep, wanted in node.dependencies.items()],
+                    first,
+                )
     return list(found.values())
 
 
@@ -474,46 +554,60 @@ def selected_projects(graph: Graph, narrowed: Path | None) -> list[Project]:
     return [project]
 
 
-def sdk_paths(
+def sdk_answers(
     graph: Graph, projects: list[Project], name: str, services: Services, out: Emitter
-) -> tuple[set[str], int]:
-    """Print the SDK's chains for the projects it answers; return the labels it did not answer and the chain count."""
+) -> dict[str, list[SdkPath]]:
+    """The SDK's chains per project it answered, keyed by the project's path; each failed run is printed."""
     candidates = [project for project in projects if project.sdk_answers]
-    unanswered = {graph.label(project) for project in projects if not project.sdk_answers}
     if not candidates:
-        return unanswered, 0
+        return {}
     answer = run_why([project.file.path for project in candidates], name, services, DEFAULT_TIMEOUT_SECONDS)
-    count = 0
     for project in candidates:
-        if project.file.path.stem not in answer.answered:
-            unanswered.add(graph.label(project))
-            continue
-        for chain in answer.paths.get(project.file.path.stem, []):
-            hops = " > ".join(hop_text(("package", hop, version)) for hop, version in chain.hops)
-            out.line("PATH", graph.label(project), name, "sdk", hops)
-            count += 1
-    return unanswered, count
+        failure = answer.failures.get(project.file.path)
+        if failure:
+            out.line("SDK_FAILED", graph.label(project), name, failure)
+    return {
+        same_path(project.file.path): answer.paths[project.file.path]
+        for project in candidates
+        if project.file.path in answer.answered
+    }
 
 
-def graph_paths(graph: Graph, project: Project, name: str, out: Emitter) -> int:
-    """Print the graph walk's chains from the project to the name; return how many."""
-    finder = PathFinder(graph, name)
-    finder.from_project(project, (), frozenset())
-    for chain in finder.found:
-        out.line("PATH", graph.label(project), name, "graph", " > ".join(hop_text(hop) for hop in chain))
-    if finder.truncated:
-        out.line("TRUNCATED", graph.label(project), name, finder.limit)
-    return len(finder.found)
+def project_paths(graph: Graph, project: Project, name: str, sdk: list[SdkPath] | None, out: Emitter) -> int:
+    """Print the chains from the project to the name, labelled with their frameworks; return how many lines. With
+    the SDK's chains, the graph walk adds only the chains that end in an assembly or a project, which the SDK cannot
+    see; without them, the walk answers alone."""
+    rows: list[tuple[str, Row]] = [
+        (chain.framework or NO_FRAMEWORK, ("sdk", " > ".join(hop_text(("package", *hop)) for hop in chain.hops)))
+        for chain in sdk or []
+    ]
+    truncated: list[str] = []
+    for target in project.targets:
+        finder = PathFinder(graph, name, target.framework)
+        finder.from_project(project, (), frozenset())
+        rows += [
+            (target.framework, ("graph", " > ".join(hop_text(hop) for hop in chain)))
+            for chain in finder.found
+            if sdk is None or chain[-1][0] != "package"
+        ]
+        if finder.truncated:
+            truncated.append(target.framework)
+    printed = labelled(rows)
+    for frameworks, (source, chain) in printed:
+        out.line("PATH", graph.label(project), frameworks, name, source, chain)
+    if truncated:
+        out.line("TRUNCATED", graph.label(project), ";".join(truncated), name, PATH_LIMIT)
+    return len(printed)
 
 
 def why_query(graph: Graph, names: list[str], narrowed: Path | None, services: Services, out: Emitter) -> None:
     projects = selected_projects(graph, narrowed)
     paths, found, missing = 0, 0, 0
     for name in names:
-        unanswered, count = sdk_paths(graph, projects, name, services, out)
-        for project in projects:
-            if graph.label(project) in unanswered:
-                count += graph_paths(graph, project, name, out)
+        answered = sdk_answers(graph, projects, name, services, out)
+        count = sum(
+            project_paths(graph, project, name, answered.get(same_path(project.file.path)), out) for project in projects
+        )
         if count:
             found += 1
         else:
@@ -525,33 +619,39 @@ def why_query(graph: Graph, names: list[str], narrowed: Path | None, services: S
 
 def why_all_query(graph: Graph, narrowed: Path, out: Emitter) -> None:
     (project,) = selected_projects(graph, narrowed)
-    reached = reaches(graph, project)
-    for item in sorted(reached, key=lambda item: (item.kind, item.name.casefold(), item.version)):
-        out.line("REACHES", graph.label(project), item.name, item.version or "-", item.kind, item.first_hop)
-    out.line("SUMMARY", len(reached))
+    rows = labelled(
+        (target.framework, (item.name, item.version or "-", item.kind, item.first_hop))
+        for target in project.targets
+        for item in reaches(graph, project, target.framework)
+    )
+    for frameworks, (name, version, kind, first_hop) in sorted(
+        rows, key=lambda row: (row[1][2], row[1][0].casefold(), row[1][1])
+    ):
+        out.line("REACHES", graph.label(project), frameworks, name, version, kind, first_hop)
+    out.line("SUMMARY", len(rows))
 
 
-def resolved_assemblies(graph: Graph, project: Project) -> list[tuple[str, str, str, str]]:
-    """Each assembly the project's references resolve to: name, kind, version, and what brings it in. A package's
-    assemblies are those its restore or its unpacked folder shows, else the package id; the package closure is the
-    project's own (a restore records what flows in through project references too), with the first hop that
-    brings each package in where the graph walk finds one."""
+def resolved_assemblies(graph: Graph, project: Project, target: Target) -> list[tuple[str, str, str, str]]:
+    """Each assembly the project's references resolve to under one target: name, kind, version, and what brings it
+    in. A package's assemblies are those its restore or its unpacked folder shows, else the package id; the package
+    closure is the target's own (a restore records what flows in through project references too), with the first
+    hop that brings each package in where the graph walk finds one."""
     found: list[tuple[str, str, str, str]] = []
     for assembly in project.file.assemblies:
         kind = "reference" if assembly.hint_path else "framework"
         found.append((assembly.name, kind, assembly.version or "-", assembly.hint_path or "-"))
     first_hops = {
         (item.name.casefold(), item.version): item.first_hop
-        for item in reaches(graph, project)
+        for item in reaches(graph, project, target.framework)
         if item.kind == "package"
     }
     packages: dict[str, tuple[str, str]] = {
-        node.id.casefold(): (node.id, node.version) for node in project.nodes.values()
+        node.id.casefold(): (node.id, node.version) for node in target.nodes.values()
     }
-    for direct in project.direct:
+    for direct in target.direct:
         packages.setdefault(direct.id.casefold(), (direct.id, direct.version or ""))
     for fold, (package, version) in packages.items():
-        node = project.node(package)
+        node = target.node(package)
         names = node.assemblies if node and node.assemblies else (package,)
         via = first_hops.get((fold, version)) or hop_text(("package", package, version))
         found += [(name, "package", version or "-", via) for name in names]
@@ -559,20 +659,23 @@ def resolved_assemblies(graph: Graph, project: Project) -> list[tuple[str, str, 
 
 
 def where_query(graph: Graph, assembly: str, narrowed: Path | None, out: Emitter) -> None:
-    target = assembly.casefold()
+    target_name = assembly.casefold()
     projects = 0
     for project in selected_projects(graph, narrowed):
-        matched = False
-        for name, kind, version, via in resolved_assemblies(graph, project):
-            if name.casefold() == target:
-                out.line("WHERE", graph.label(project), name, kind, version, via)
-                matched = True
-        for reference in project.file.project_refs:
-            child = graph.project_at(reference)
-            if child is not None and child.file.assembly_name.casefold() == target:
-                out.line("WHERE", graph.label(project), child.file.assembly_name, "project", "-", graph.label(child))
-                matched = True
-        projects += matched
+        rows: list[tuple[str, Row]] = []
+        for target in project.targets:
+            rows += [
+                (target.framework, (name, kind, version, via))
+                for name, kind, version, via in resolved_assemblies(graph, project, target)
+                if name.casefold() == target_name
+            ]
+            for reference in project.file.project_refs:
+                child = graph.project_at(reference)
+                if child is not None and child.file.assembly_name.casefold() == target_name:
+                    rows.append((target.framework, (child.file.assembly_name, "project", "-", graph.label(child))))
+        for frameworks, row in labelled(rows):
+            out.line("WHERE", graph.label(project), frameworks, *row)
+        projects += bool(rows)
     out.line("SUMMARY", projects)
 
 
@@ -582,29 +685,46 @@ class Want:
     kind: str
     version: str
     project: str
+    framework: str
     via: str
 
 
 def wants(graph: Graph, project: Project) -> list[Want]:
-    """Every package and assembly version the project wants, directly or through what it reaches."""
+    """Every package and assembly version the project wants under each of its frameworks, directly or through what
+    it reaches."""
     label = graph.label(project)
-    found = [
-        Want(item.name, "package", item.version, label, item.first_hop)
-        for item in reaches(graph, project)
-        if item.kind == "package" and item.version
-    ]
-    found += [
-        Want(assembly.name, "assembly", assembly.version, label, assembly.hint_path or "reference")
-        for assembly in project.file.assemblies
-        if assembly.version
-    ]
+    found: list[Want] = []
+    for target in project.targets:
+        found += [
+            Want(item.name, "package", item.version, label, target.framework, item.first_hop)
+            for item in reaches(graph, project, target.framework)
+            if item.kind == "package" and item.version
+        ]
+        found += [
+            Want(
+                assembly.name, "assembly", assembly.version, label, target.framework, assembly.hint_path or "reference"
+            )
+            for assembly in project.file.assemblies
+            if assembly.version
+        ]
     return found
+
+
+def at_odds(items: list[Want]) -> bool:
+    """Whether two wants of one name differ in version where one build may load both: in two projects, or in one
+    project under one framework. Two frameworks of one project are built apart."""
+    return any(
+        first.version != second.version and (first.project != second.project or first.framework == second.framework)
+        for first, second in combinations(items, 2)
+    )
 
 
 def redirect_lines(graph: Graph, project: Project, out: Emitter) -> int:
     """Check each binding redirect against the assembly versions the project references; return the stale count."""
     stale = 0
-    referenced = {name.casefold() for name, _, _, _ in resolved_assemblies(graph, project)}
+    referenced = {
+        name.casefold() for target in project.targets for name, _, _, _ in resolved_assemblies(graph, project, target)
+    }
     for redirect in project.file.redirects:
         fold = redirect.name.casefold()
         versions = sorted(
@@ -629,11 +749,12 @@ def conflicts_query(graph: Graph, narrowed: Path | None, out: Emitter) -> None:
             by_name.setdefault((want.kind, want.name.casefold()), []).append(want)
     names = 0
     for (kind, _), items in sorted(by_name.items(), key=lambda entry: (entry[0][1], entry[0][0])):
-        if len({item.version for item in items}) < 2:
+        if not at_odds(items):
             continue
         names += 1
-        for item in sorted(items, key=lambda want: (want.version, want.project.casefold())):
-            out.line("CONFLICT", item.name, kind, item.version, item.project, item.via)
+        rows = labelled((item.framework, (item.name, item.version, item.project, item.via)) for item in items)
+        for frameworks, (name, version, label, via) in sorted(rows, key=lambda row: (row[1][1], row[1][2].casefold())):
+            out.line("CONFLICT", name, kind, version, label, frameworks, via)
     stale = sum(redirect_lines(graph, project, out) for project in projects)
     out.line("SUMMARY", names, stale)
 
@@ -641,14 +762,28 @@ def conflicts_query(graph: Graph, narrowed: Path | None, out: Emitter) -> None:
 Nodes = dict[str, tuple[str, str]]
 
 
-def package_key(project: Project, package: str, requested: str | None) -> tuple[str, str]:
-    """A package node's key and label, at the version the project resolved or asked for."""
-    _, name, version = package_hop(project, package, requested)
+def package_key(target: Target, package: str, requested: str | None) -> tuple[str, str]:
+    """A package node's key and label, at the version the target resolved or asked for."""
+    _, name, version = package_hop(target, package, requested)
     return f"package:{name.casefold()}@{version}", f"{name} {version}".strip()
 
 
-def graph_edges(graph: Graph) -> tuple[Nodes, list[tuple[str, str]]]:
-    """Every node, keyed, with its label and kind, and every edge between keys, each once."""
+def with_references(graph: Graph, projects: list[Project]) -> list[Project]:
+    """The projects and every project they reach through project references, in label order."""
+    found = {same_path(project.file.path): project for project in projects}
+    queue = deque(projects)
+    while queue:
+        for reference in queue.popleft().file.project_refs:
+            child = graph.project_at(reference)
+            if child is not None and same_path(child.file.path) not in found:
+                found[same_path(child.file.path)] = child
+                queue.append(child)
+    return sorted(found.values(), key=lambda item: graph.label(item).casefold())
+
+
+def graph_edges(graph: Graph, projects: list[Project]) -> tuple[Nodes, list[tuple[str, str]]]:
+    """Every node of the projects, keyed, with its label and kind, and every edge between keys, each once; a
+    package's edges are drawn from every framework's target."""
     nodes: Nodes = {}
     edges: list[tuple[str, str]] = []
 
@@ -656,18 +791,19 @@ def graph_edges(graph: Graph) -> tuple[Nodes, list[tuple[str, str]]]:
         nodes.setdefault(key, (label, kind))
         return key
 
-    for project in sorted(graph.projects.values(), key=lambda item: graph.label(item).casefold()):
+    for project in projects:
         source = add(f"project:{same_path(project.file.path)}", graph.label(project), "project")
         for reference in project.file.project_refs:
             child = graph.project_at(reference)
             if child is not None:
                 edges.append((source, add(f"project:{same_path(child.file.path)}", graph.label(child), "project")))
-        for direct in project.direct:
-            edges.append((source, add(*package_key(project, direct.id, direct.version), "package")))
-        for node in project.nodes.values():
-            owner = add(*package_key(project, node.id, node.version), "package")
-            for dependency, wanted in node.dependencies.items():
-                edges.append((owner, add(*package_key(project, dependency, wanted), "package")))
+        for target in project.targets:
+            for direct in target.direct:
+                edges.append((source, add(*package_key(target, direct.id, direct.version), "package")))
+            for node in target.nodes.values():
+                owner = add(*package_key(target, node.id, node.version), "package")
+                for dependency, wanted in node.dependencies.items():
+                    edges.append((owner, add(*package_key(target, dependency, wanted), "package")))
         for assembly in project.file.assemblies:
             kind = "assembly" if assembly.hint_path else "framework"
             edges.append((source, add(f"{kind}:{assembly.name.casefold()}", assembly.name, kind)))
@@ -708,9 +844,9 @@ def output_path(requested: Path | None, fmt: str) -> Path:
     return Path(tempfile.mkdtemp(prefix="dotnet-dependencies-")) / ("graph.dot" if fmt == "dot" else "graph.mmd")
 
 
-def graph_query(graph: Graph, fmt: str, requested: Path | None, out: Emitter) -> None:
+def graph_query(graph: Graph, narrowed: Path | None, fmt: str, requested: Path | None, out: Emitter) -> None:
     target = output_path(requested, fmt)
-    nodes, edges = graph_edges(graph)
+    nodes, edges = graph_edges(graph, with_references(graph, selected_projects(graph, narrowed)))
     text = render_dot(nodes, edges) if fmt == "dot" else render_mermaid(nodes, edges)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text, encoding="utf-8", newline="\n")
@@ -731,7 +867,7 @@ def parser() -> argparse.ArgumentParser:
     where = commands.add_parser("where", parents=[common, narrowing], help="projects resolving to an assembly")
     where.add_argument("assembly")
     commands.add_parser("conflicts", parents=[common, narrowing], help="versions and redirects at odds")
-    diagram = commands.add_parser("graph", parents=[common], help="write the whole graph as a diagram")
+    diagram = commands.add_parser("graph", parents=[common, narrowing], help="write the graph as a diagram")
     diagram.add_argument("--format", choices=("dot", "mermaid"), default="mermaid")
     diagram.add_argument("--output", type=Path, help="the file to write (default: a new temporary directory)")
     return parsed
@@ -749,7 +885,7 @@ def run(arguments: argparse.Namespace, services: Services, out: Emitter) -> None
     elif arguments.command == "conflicts":
         conflicts_query(graph, arguments.project, out)
     else:
-        graph_query(graph, arguments.format, arguments.output, out)
+        graph_query(graph, arguments.project, arguments.format, arguments.output, out)
 
 
 def main(argv: Sequence[str] | None = None, services: Services | None = None) -> int:

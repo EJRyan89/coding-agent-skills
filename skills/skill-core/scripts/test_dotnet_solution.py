@@ -11,7 +11,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import dotnet_solution
-from dotnet_solution import is_solution, listed_projects, read_text, same_path, solution_projects
+from dotnet_solution import (
+    is_solution,
+    listed_projects,
+    read_listed_projects,
+    read_text,
+    same_path,
+    solution_projects,
+)
+from xml_reader import XmlRefused
 
 SLN = (
     "Microsoft Visual Studio Solution File, Format Version 12.00\r\n"
@@ -83,6 +91,23 @@ class SolutionReaderTests(unittest.TestCase):
         self.assertEqual([], listed_projects(solution))
         solution.write_text("<Solution><Project Path='a.csproj'>", encoding="utf-8")
         self.assertEqual([], listed_projects(solution))
+
+    def test_the_strict_reader_refuses_a_slnx_it_cannot_read_and_lists_an_empty_one_as_empty(self) -> None:
+        solution = self.root / "Harbor.slnx"
+        for text, reason in (
+            ("<!DOCTYPE x>" + SLNX, "DOCTYPE"),
+            ('<Solution><Project Path="a.csproj"></Solution>', ""),
+        ):
+            with self.subTest(reason=reason or "malformed"):
+                solution.write_text(text, encoding="utf-8")
+                with self.assertRaises(XmlRefused) as refused:
+                    read_listed_projects(solution)
+                self.assertIn(reason, str(refused.exception))
+        solution.write_text("<Solution />", encoding="utf-8")
+        self.assertEqual([], read_listed_projects(solution))
+        sln = self.root / "Harbor.sln"
+        sln.write_bytes(SLN.encode("utf-8-sig"))
+        self.assertEqual(listed_projects(sln), read_listed_projects(sln))
 
     def test_is_solution_matches_either_suffix_in_any_case(self) -> None:
         self.assertTrue(is_solution(Path("Harbor.SLN")))

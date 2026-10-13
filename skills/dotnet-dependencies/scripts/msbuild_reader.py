@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -94,11 +95,10 @@ class ProjectFile:
 
 @dataclass(frozen=True)
 class Assets:
-    """What a restore recorded: each framework's resolved packages and projects, and the direct dependencies."""
+    """What a restore recorded: each framework's resolved packages, and the direct dependencies."""
 
     nodes: dict[str, dict[str, PackageNode]]  # framework -> package id (as written) -> node
     direct: dict[str, list[PackageRef]]  # framework -> the packages the project asked for
-    package_folders: tuple[Path, ...]
 
 
 def local_name(element: Element) -> str:
@@ -158,19 +158,27 @@ def frameworks_of(root: Element) -> list[str]:
 
 
 def package_references(root: Element, central: dict[str, str]) -> list[PackageRef]:
-    """Each PackageReference with its Version attribute or child, else the central version, else none."""
+    """Each PackageReference the project includes, with its Version attribute or child, else the central version,
+    else none. Items are read in document order, as MSBuild evaluates them: an Include adds a reference, an Update
+    with a version sets the version of each reference included before it under that id, and a Remove drops them; an
+    Update or a Remove never adds one."""
     found: list[PackageRef] = []
     for element in children(root, "PackageReference"):
-        package = element.get("Include") or element.get("Update")
-        if not package:
-            continue
         version = element.get("Version") or child_text(element, "Version") or element.get("VersionOverride")
-        if version:
-            found.append(PackageRef(package, version, "PackageReference"))
-        elif package.casefold() in central:
-            found.append(PackageRef(package, central[package.casefold()], "central"))
-        else:
-            found.append(PackageRef(package, None, "PackageReference"))
+        if package := element.get("Include"):
+            if version:
+                found.append(PackageRef(package, version, "PackageReference"))
+            elif package.casefold() in central:
+                found.append(PackageRef(package, central[package.casefold()], "central"))
+            else:
+                found.append(PackageRef(package, None, "PackageReference"))
+        elif (package := element.get("Update")) and version:
+            found = [
+                PackageRef(item.id, version, "PackageReference") if item.id.casefold() == package.casefold() else item
+                for item in found
+            ]
+        elif package := element.get("Remove"):
+            found = [item for item in found if item.id.casefold() != package.casefold()]
     return found
 
 
@@ -187,29 +195,36 @@ def assembly_references(root: Element) -> list[AssemblyRef]:
     return found
 
 
-def read_central_versions(project_dir: Path, stop: Path) -> dict[str, str]:
-    """The PackageVersion entries of the nearest Directory.Packages.props from the project's directory up to `stop`,
-    keyed by the case-folded package id; none when there is no such file. An unreadable one is Unreadable."""
+def central_versions_file(project_dir: Path, stop: Path) -> Path | None:
+    """The nearest Directory.Packages.props from the project's directory up to `stop`, or None."""
     directory = project_dir
     while True:
         candidate = directory / CENTRAL_VERSIONS
         if candidate.is_file():
-            root = parse_xml(candidate)
-            return {
-                package.casefold(): version
-                for element in children(root, "PackageVersion")
-                if (package := element.get("Include")) and (version := element.get("Version"))
-            }
+            return candidate
         if directory == stop or directory.parent == directory:
-            return {}
+            return None
         directory = directory.parent
 
 
-def read_project(path: Path, stop: Path) -> ProjectFile:
-    """What the .csproj at `path` says about its dependencies; central versions are looked up to `stop`."""
+def read_central_versions(path: Path) -> dict[str, str]:
+    """The PackageVersion entries of a Directory.Packages.props, keyed by the case-folded package id; an unreadable
+    file is Unreadable."""
+    root = parse_xml(path)
+    return {
+        package.casefold(): version
+        for element in children(root, "PackageVersion")
+        if (package := element.get("Include")) and (version := element.get("Version"))
+    }
+
+
+def read_project(path: Path, central: Callable[[Path], dict[str, str]]) -> ProjectFile:
+    """What the .csproj at `path` says about its dependencies. `central` gives an SDK-style project's central
+    versions from the project's directory, so the caller reads each Directory.Packages.props once and reports an
+    unreadable one once, without costing the project its own facts."""
     root = parse_xml(path)
     style = "sdk" if is_sdk_style(root) else "legacy"
-    central = read_central_versions(path.parent, stop) if style == "sdk" else {}
+    versions = central(path.parent) if style == "sdk" else {}
     return ProjectFile(
         path=path,
         style=style,
@@ -220,7 +235,7 @@ def read_project(path: Path, stop: Path) -> ProjectFile:
             for element in children(root, "ProjectReference")
             if (include := element.get("Include"))
         ],
-        packages=package_references(root, central),
+        packages=package_references(root, versions),
         assemblies=assembly_references(root),
     )
 
@@ -311,8 +326,9 @@ def assets_direct(frameworks: dict[str, Any]) -> dict[str, list[PackageRef]]:
 
 
 def read_assets(path: Path) -> Assets:
-    """What a project.assets.json recorded: each target's packages with their dependencies and assemblies, the
-    direct dependencies per framework, and the package folders the restore read."""
+    """What a project.assets.json recorded: each framework's packages with their dependencies and assemblies, and
+    the direct dependencies per framework. A runtime-specific target, such as `net8.0/win-x64`, repeats its
+    framework's packages and is passed over."""
     try:
         document = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as error:
@@ -338,5 +354,4 @@ def read_assets(path: Path) -> Assets:
                 assets_assemblies(entry),
             )
     frameworks = mapping(mapping(document, "project"), "frameworks")
-    folders = mapping(document, "packageFolders")
-    return Assets(nodes, assets_direct(frameworks), tuple(Path(folder) for folder in folders))
+    return Assets(nodes, assets_direct(frameworks))
