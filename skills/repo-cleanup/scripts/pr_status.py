@@ -16,7 +16,7 @@ from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_client import Runner as GhRunner
 
 LIMIT = 1000
-FIELDS = "number,state,headRefOid,headRepository,headRepositoryOwner"
+FIELDS = "number,state,headRefOid,headRepository,headRepositoryOwner,mergeCommit"
 # GitHub's pull request commits endpoint lists at most this many commits, so a list this long may be truncated.
 COMMIT_LIMIT = 250
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
@@ -25,6 +25,8 @@ REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 RUN_FAILURES = frozenset({"prerequisite", "execution", "timeout"})
 
 InBase = Callable[[str], bool]
+# Whether a branch tip's whole change since it left the base is the patch a merge commit made.
+SamePatch = Callable[[str, str], bool]
 
 
 class QueryError(Exception):
@@ -41,11 +43,17 @@ def _head_repository(pull: dict[str, Any]) -> str | None:
     return f"{login}/{name}".casefold()
 
 
-def _git_output(git: GitClient, repository_root: str, arguments: list[str]) -> GitResult:
+def _git_output(
+    git: GitClient, repository_root: str, arguments: list[str], input_bytes: bytes | None = None
+) -> GitResult:
     try:
-        return git.run(arguments, directory=repository_root)
+        return git.run(arguments, directory=repository_root, input_bytes=input_bytes)
     except GitError as exc:
         raise QueryError(f"could not run git: {exc}") from exc
+
+
+def _commit_present(git: GitClient, repository_root: str, sha: str) -> bool:
+    return _git_output(git, repository_root, ["cat-file", "-e", f"{sha}^{{commit}}"]).returncode == 0
 
 
 def branch_tips(repository_root: str, branch: str, git: GitClient | None = None) -> tuple[str, str | None]:
@@ -75,8 +83,7 @@ def base_contains(repository_root: str, base_ref: str, git: GitClient | None = N
     client = git or GitClient()
 
     def contains(sha: str) -> bool:
-        present = _git_output(client, repository_root, ["cat-file", "-e", f"{sha}^{{commit}}"])
-        if present.returncode != 0:
+        if not _commit_present(client, repository_root, sha):
             return False
         result = _git_output(client, repository_root, ["merge-base", "--is-ancestor", sha, base_ref])
         if result.returncode not in (0, 1):
@@ -84,6 +91,38 @@ def base_contains(repository_root: str, base_ref: str, git: GitClient | None = N
         return result.returncode == 0
 
     return contains
+
+
+def patch_match(repository_root: str, base_ref: str, git: GitClient | None = None) -> SamePatch:
+    """A test of whether a branch tip's whole change since it left base_ref is the patch a merge commit made.
+
+    Compares the stable patch-id of the diff from the merge base of base_ref and the tip to the tip with that of the
+    diff from the merge commit's first parent to the merge commit, so a tip amended or rebased after its pull request
+    merged still matches the squash commit. A merge commit missing locally, or an empty change on either side, is no
+    match; a diff that fails for any other reason, such as a base_ref that does not resolve, is a QueryError. The
+    tip's patch-id is computed once, however many merge commits it is compared with.
+    """
+    client = git or GitClient()
+    tips: dict[str, str | None] = {}
+
+    def patch_id(*revisions: str) -> str | None:
+        diff = _git_output(client, repository_root, ["diff", *revisions])
+        if diff.returncode != 0:
+            raise QueryError(f"cannot diff {' '.join(revisions)}: {(diff.stderr or '').strip()}")
+        ids = _git_output(client, repository_root, ["patch-id", "--stable"], diff.output_bytes())
+        if ids.returncode != 0:
+            raise QueryError(f"cannot compute the patch-id of {' '.join(revisions)}: {(ids.stderr or '').strip()}")
+        words = ids.stdout.split()
+        return words[0] if words and SHA_PATTERN.fullmatch(words[0]) else None
+
+    def same_patch(tip: str, merge_commit: str) -> bool:
+        if tip not in tips:
+            tips[tip] = patch_id(f"{base_ref}...{tip}")
+        if tips[tip] is None or not _commit_present(client, repository_root, merge_commit):
+            return False
+        return tips[tip] == patch_id(f"{merge_commit}^", merge_commit)
+
+    return same_patch
 
 
 def _commit_parents(commit: Any) -> tuple[str, list[str]] | None:
@@ -163,6 +202,7 @@ def classify(
     upstream_sha: str | None = None,
     runner: GhRunner = subprocess_runner,
     in_base: InBase | None = None,
+    same_patch: SamePatch | None = None,
 ) -> str:
     """Return the branch state.
 
@@ -170,7 +210,9 @@ def classify(
     MERGED or CLOSED: a same-repository pull request was merged or closed at exactly the branch's current tip,
     and the fetched upstream, when it exists, has no other commits. Given in_base, a merged same-repository pull
     request also proves the branch MERGED when the tip is one of its commits and every commit after the tip is a
-    merge that only brought in commits reachable from the base, as GitHub's "Update branch" makes.
+    merge that only brought in commits reachable from the base, as GitHub's "Update branch" makes. Given same_patch,
+    a merged same-repository pull request also proves it when its merge commit made the branch's whole change, as a
+    tip amended or rebased after the pull request opened keeps it.
     UNMATCHED: same-repository pull requests exist, but none describes the branch's current work.
     NONE: no same-repository pull request uses this head name.
     """
@@ -181,11 +223,7 @@ def classify(
     same_repository, matched = _matched_states(pulls, repository.casefold(), head_sha, upstream_sha)
     if "MERGED" in matched:
         return "MERGED"
-    if (
-        in_base is not None
-        and upstream_sha in (None, head_sha)
-        and _merged_after_update(pulls, repository, head_sha, runner, in_base)
-    ):
+    if upstream_sha in (None, head_sha) and _proven_merged(pulls, repository, head_sha, runner, in_base, same_patch):
         return "MERGED"
     if "CLOSED" in matched:
         return "CLOSED"
@@ -231,6 +269,21 @@ def _matched_states(
     return same_repository, matched
 
 
+def _proven_merged(
+    pulls: list[dict[str, Any]],
+    repository: str,
+    head_sha: str,
+    runner: GhRunner,
+    in_base: InBase | None,
+    same_patch: SamePatch | None,
+) -> bool:
+    """Whether a merged same-repository pull request proves the branch merged without ending at its tip: by its
+    commits, given in_base, and then by its merge commit's patch, given same_patch."""
+    if in_base is not None and _merged_after_update(pulls, repository, head_sha, runner, in_base):
+        return True
+    return same_patch is not None and _merged_by_patch(pulls, repository, head_sha, same_patch)
+
+
 def _merged_after_update(
     pulls: list[dict[str, Any]], repository: str, head_sha: str, runner: GhRunner, in_base: InBase
 ) -> bool:
@@ -244,6 +297,29 @@ def _merged_after_update(
             and isinstance(number, int)
             and isinstance(pull_head, str)
             and only_base_merged_after(head_sha, pull_head, pull_commits(repository, number, runner), in_base)
+        ):
+            return True
+    return False
+
+
+def _merge_commit(pull: dict[str, Any]) -> str | None:
+    """The pull request's merge commit SHA, or None unless gh listed one as a full lowercase SHA."""
+    merge = pull.get("mergeCommit")
+    oid = merge.get("oid") if isinstance(merge, dict) else None
+    return oid if isinstance(oid, str) and SHA_PATTERN.fullmatch(oid) else None
+
+
+def _merged_by_patch(pulls: list[dict[str, Any]], repository: str, head_sha: str, same_patch: SamePatch) -> bool:
+    """Whether a merged same-repository pull request's merge commit made the branch's whole change, in listing
+    order."""
+    expected = repository.casefold()
+    for pull in pulls:
+        merge_commit = _merge_commit(pull)
+        if (
+            pull["state"] == "MERGED"
+            and _head_repository(pull) == expected
+            and merge_commit is not None
+            and same_patch(head_sha, merge_commit)
         ):
             return True
     return False

@@ -14,9 +14,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from bounded_process import Finished
+from git_client import GitClient, GitResult, subprocess_runner
 from git_test_base import GitTestCase
 from github_client import CommandResult, GitHubError
-from pr_status import COMMIT_LIMIT, LIMIT, QueryError, base_contains, branch_tips, classify
+from pr_status import COMMIT_LIMIT, LIMIT, QueryError, base_contains, branch_tips, classify, patch_match
 
 TIP = "a" * 40
 OLD = "b" * 40
@@ -26,6 +27,8 @@ UPDATE = "e" * 40
 UPDATE_AGAIN = "1" * 40
 WORK = "2" * 40
 FOREIGN = "3" * 40
+SQUASH = "4" * 40
+OTHER_SQUASH = "beef" * 10
 
 
 class Recorder:
@@ -106,7 +109,7 @@ class ClassifyTests(GitTestCase):
         arguments = run.calls[0]
         self.assertEqual(["pr", "list", "--repo", "owner/repo", "--head", "topic", "--state", "all"], arguments[:8])
         fields = arguments[arguments.index("--json") + 1].split(",")
-        for field in ("state", "headRefOid", "headRepository", "headRepositoryOwner"):
+        for field in ("state", "headRefOid", "headRepository", "headRepositoryOwner", "mergeCommit"):
             self.assertIn(field, fields)
         self.assertEqual(str(LIMIT), arguments[arguments.index("--limit") + 1])
 
@@ -315,7 +318,7 @@ LIST_CALL = [
     "--state",
     "all",
     "--json",
-    "number,state,headRefOid,headRepository,headRepositoryOwner",
+    "number,state,headRefOid,headRepository,headRepositoryOwner,mergeCommit",
     "--limit",
     "1000",
 ]
@@ -334,6 +337,7 @@ class ClassifySequenceTests(GitTestCase):
         upstream: str | None = None,
         in_base: Callable[[str], bool] | None = None,
         commits: dict[int, str] | None = None,
+        same_patch: Callable[[str, str], bool] | None = None,
     ) -> tuple[str, list[list[str]]]:
         answers = commits or {}
 
@@ -344,7 +348,8 @@ class ClassifySequenceTests(GitTestCase):
             return subprocess.CompletedProcess(["gh", *arguments], 0, listing(*pulls), "")
 
         run = Recorder(answer)
-        return classify("owner/repo", "topic", TIP, upstream, runner=run, in_base=in_base), run.calls
+        state = classify("owner/repo", "topic", TIP, upstream, runner=run, in_base=in_base, same_patch=same_patch)
+        return state, run.calls
 
     def refusal(
         self, run: Recorder, repository: str = "owner/repo", head: str = TIP, upstream: str | None = None
@@ -472,6 +477,53 @@ class ClassifySequenceTests(GitTestCase):
             self.outcome(first, second, in_base=in_main, commits={4: unrelated, 5: unrelated}),
         )
 
+    def test_a_merge_commit_whose_patch_is_the_branches_proves_a_rewritten_tip_merged(self) -> None:
+        squashed = dict(pull("MERGED", OLD), number=7, mergeCommit={"oid": SQUASH})
+        other = dict(squashed, mergeCommit={"oid": OTHER_SQUASH})
+        asked: list[tuple[str, str]] = []
+
+        def same_patch(tip: str, merge_commit: str) -> bool:
+            asked.append((tip, merge_commit))
+            return (tip, merge_commit) == (TIP, SQUASH)
+
+        walked = {"in_base": in_main, "commits": {7: history((OLD, BASE))}}
+        cases: tuple[tuple[str, tuple[dict, ...], dict, list[list[str]], list[tuple[str, str]]], ...] = (
+            ("MERGED", (squashed,), {}, [LIST_CALL], [(TIP, SQUASH)]),
+            ("MERGED", (squashed,), {"upstream": TIP}, [LIST_CALL], [(TIP, SQUASH)]),
+            # The commit walk is tried first, and the patch only once it does not prove the merge.
+            ("MERGED", (squashed,), walked, [LIST_CALL, commits_call(7)], [(TIP, SQUASH)]),
+            ("UNMATCHED", (squashed,), {"upstream": OLD}, [LIST_CALL], []),
+            ("UNMATCHED", (dict(squashed, state="CLOSED"),), {}, [LIST_CALL], []),
+            ("NONE", (dict(squashed, headRepositoryOwner={"login": "fork"}),), {}, [LIST_CALL], []),
+            ("UNMATCHED", (dict(squashed, mergeCommit=None),), {}, [LIST_CALL], []),
+            ("UNMATCHED", (dict(squashed, mergeCommit={}),), {}, [LIST_CALL], []),
+            ("UNMATCHED", (dict(squashed, mergeCommit={"oid": "short"}),), {}, [LIST_CALL], []),
+            ("UNMATCHED", (dict(squashed, mergeCommit={"oid": OTHER_SQUASH.upper()}),), {}, [LIST_CALL], []),
+            ("UNMATCHED", (dict(squashed, mergeCommit=SQUASH),), {}, [LIST_CALL], []),
+            ("UNMATCHED", (other,), {}, [LIST_CALL], [(TIP, OTHER_SQUASH)]),
+            # An exact match is MERGED before any patch is compared.
+            ("MERGED", (squashed, pull("MERGED")), {}, [LIST_CALL], []),
+            # A proof from the patch comes before an exact CLOSED match; a patch that differs leaves CLOSED.
+            ("MERGED", (pull("CLOSED"), squashed), {}, [LIST_CALL], [(TIP, SQUASH)]),
+            ("CLOSED", (pull("CLOSED"), other), {}, [LIST_CALL], [(TIP, OTHER_SQUASH)]),
+            # Merged pull requests are compared in listing order until one proves the merge.
+            ("MERGED", (other, squashed), {}, [LIST_CALL], [(TIP, OTHER_SQUASH), (TIP, SQUASH)]),
+            ("MERGED", (squashed, other), {}, [LIST_CALL], [(TIP, SQUASH)]),
+        )
+        for expected, pulls, arguments, calls, compared in cases:
+            asked.clear()
+            with self.subTest(expected=expected, pulls=pulls, arguments=arguments):
+                self.assertEqual((expected, calls), self.outcome(*pulls, same_patch=same_patch, **arguments))
+                self.assertEqual(compared, asked)
+
+    def test_without_a_patch_test_a_rewritten_tip_stays_unmatched(self) -> None:
+        squashed = dict(pull("MERGED", OLD), number=7, mergeCommit={"oid": SQUASH})
+        self.assertEqual(("UNMATCHED", [LIST_CALL]), self.outcome(squashed))
+        self.assertEqual(
+            ("UNMATCHED", [LIST_CALL, commits_call(7)]),
+            self.outcome(squashed, in_base=in_main, commits={7: history((OLD, BASE))}),
+        )
+
 
 class GitFixture(GitTestCase):
     def setUp(self) -> None:
@@ -499,6 +551,12 @@ class GitFixture(GitTestCase):
     def commit(self, checkout: Path, message: str) -> str:
         self.git("-C", str(checkout), "commit", "--allow-empty", "-m", message)
         return self.git("-C", str(checkout), "rev-parse", "HEAD")
+
+    def change(self, checkout: Path, name: str, text: str, message: str) -> str:
+        """A commit that writes `text` to the file `name`."""
+        (checkout / name).write_text(text, encoding="utf-8")
+        self.git("-C", str(checkout), "add", name)
+        return self.commit(checkout, message)
 
     def tracking_branch(self) -> str:
         self.git("-C", str(self.clone), "checkout", "-b", "topic")
@@ -552,6 +610,106 @@ class BaseContainsTests(GitFixture):
             base_contains(str(self.clone), "refs/remotes/origin/missing")(base)
 
 
+class SquashFixture(GitFixture):
+    """A topic branch with a file change, pushed from the clone, which another clone squash-merges."""
+
+    BASE_REF = "refs/remotes/origin/main"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.git("-C", str(self.clone), "checkout", "-b", "topic")
+        self.tip = self.change(self.clone, "feature.txt", "the feature\n", "add the feature")
+        self.git("-C", str(self.clone), "push", "-u", "origin", "topic")
+        self.git("-C", str(self.clone), "switch", "main")
+        self.git("clone", "-b", "main", str(self.remote), str(self.other))
+
+    def squash_merge(self, fetch: bool = True) -> str:
+        """Squash-merge the remote topic into main from the other clone and delete the remote branch; the squash
+        commit, which the clone fetches unless `fetch` is false."""
+        self.git("-C", str(self.other), "fetch", "origin")
+        self.git("-C", str(self.other), "merge", "--squash", "origin/topic")
+        squash = self.commit(self.other, "Squash-merge topic")
+        self.git("-C", str(self.other), "push", "origin", "main")
+        self.git("-C", str(self.other), "push", "origin", "--delete", "topic")
+        if fetch:
+            self.git("-C", str(self.clone), "fetch", "--prune", "origin")
+        return squash
+
+    def reword_tip(self) -> str:
+        """Rewrite the topic's tip without changing its content: the same tree and parent, another message."""
+        rewritten = self.git("-C", str(self.clone), "commit-tree", "topic^{tree}", "-p", "topic^", "-m", "reworded")
+        self.git("-C", str(self.clone), "update-ref", "refs/heads/topic", rewritten)
+        return rewritten
+
+    def extend_topic(self) -> str:
+        """A later commit on the topic with a real change."""
+        self.git("-C", str(self.clone), "switch", "topic")
+        extended = self.change(self.clone, "feature.txt", "the feature, extended\n", "extend the feature")
+        self.git("-C", str(self.clone), "switch", "main")
+        return extended
+
+    def same_patch(self, tip: str, merge_commit: str, base_ref: str = BASE_REF) -> bool:
+        return patch_match(str(self.clone), base_ref)(tip, merge_commit)
+
+
+class PatchMatchTests(SquashFixture):
+    def test_a_tip_rewritten_without_changing_its_content_matches_the_squash_commit(self) -> None:
+        squash = self.squash_merge()
+        rewritten = self.reword_tip()
+        self.assertNotEqual(self.tip, rewritten)
+        self.assertTrue(self.same_patch(rewritten, squash))
+        self.assertTrue(self.same_patch(self.tip, squash), "the tip the pull request ended at matches too")
+
+    def test_a_tip_rebased_onto_a_moved_main_matches_the_squash_commit(self) -> None:
+        self.change(self.other, "elsewhere.txt", "unrelated\n", "main moves on")
+        self.git("-C", str(self.other), "push", "origin", "main")
+        self.git("-C", str(self.clone), "fetch", "origin")
+        self.git("-C", str(self.clone), "switch", "topic")
+        self.git("-C", str(self.clone), "rebase", "origin/main")
+        rebased = self.git("-C", str(self.clone), "rev-parse", "HEAD")
+        self.git("-C", str(self.clone), "switch", "main")
+        squash = self.squash_merge()
+        self.assertNotEqual(self.tip, rebased)
+        self.assertTrue(self.same_patch(rebased, squash))
+
+    def test_a_later_commit_with_real_changes_does_not_match(self) -> None:
+        squash = self.squash_merge()
+        self.assertFalse(self.same_patch(self.extend_topic(), squash))
+
+    def test_a_squash_commit_the_clone_has_not_fetched_does_not_match(self) -> None:
+        squash = self.squash_merge(fetch=False)
+        self.assertFalse(self.same_patch(self.reword_tip(), squash))
+
+    def test_an_empty_change_on_either_side_never_matches(self) -> None:
+        squash = self.squash_merge()
+        self.git("-C", str(self.clone), "switch", "-c", "empty", "origin/main")
+        empty_tip = self.commit(self.clone, "nothing")
+        empty_merge = self.commit(self.clone, "nothing merged")
+        self.git("-C", str(self.clone), "switch", "main")
+        self.assertFalse(self.same_patch(empty_tip, squash))
+        self.assertFalse(self.same_patch(self.tip, empty_merge))
+        self.assertFalse(self.same_patch(empty_tip, empty_merge))
+
+    def test_an_unresolvable_base_fails_closed(self) -> None:
+        squash = self.squash_merge()
+        with self.assertRaisesRegex(QueryError, "cannot diff refs/remotes/origin/missing"):
+            self.same_patch(self.tip, squash, "refs/remotes/origin/missing")
+
+    def test_the_branch_patch_is_computed_once_per_tip(self) -> None:
+        squash = self.squash_merge()
+        diffs: list[tuple[str, ...]] = []
+
+        def runner(command: Sequence[str], timeout: float, *, input_bytes: bytes | None = None) -> GitResult:
+            if "diff" in command:
+                diffs.append(tuple(command[command.index("diff") + 1 :]))
+            return subprocess_runner(command, timeout, input_bytes=input_bytes)
+
+        same_patch = patch_match(str(self.clone), self.BASE_REF, GitClient(runner, input_runner=runner))
+        self.assertTrue(same_patch(self.tip, squash))
+        self.assertTrue(same_patch(self.tip, squash))
+        self.assertEqual([(f"{self.BASE_REF}...{self.tip}",), (f"{squash}^", squash), (f"{squash}^", squash)], diffs)
+
+
 class BranchClassificationTests(GitFixture):
     """The branch's tips, the base's history, and its pull requests together, as repo_cleanup's
     pull_state reads them."""
@@ -588,6 +746,39 @@ class BranchClassificationTests(GitFixture):
         self.tracking_branch()
         with self.assertRaisesRegex(QueryError, re.escape("gh pr list failed (1): HTTP 500")):
             self.state(responder("", returncode=1, stderr="HTTP 500"))
+
+
+class RewrittenBranchClassificationTests(SquashFixture):
+    """A squash-merged branch whose local tip was rewritten after the pull request ended, as pull_state reads it."""
+
+    def state(self, squash: str, with_patch: bool = True) -> str:
+        head, upstream = branch_tips(str(self.clone), "topic")
+        run = router(listing(dict(pull("MERGED", self.tip), mergeCommit={"oid": squash})), history((self.tip, BASE)))
+        in_base = base_contains(str(self.clone), self.BASE_REF)
+        same_patch = patch_match(str(self.clone), self.BASE_REF) if with_patch else None
+        return classify("owner/repo", "topic", head, upstream, run, in_base, same_patch)
+
+    def test_a_rewritten_tip_with_the_merged_content_is_merged(self) -> None:
+        squash = self.squash_merge()
+        self.reword_tip()
+        self.assertEqual("MERGED", self.state(squash))
+        self.assertEqual("UNMATCHED", self.state(squash, with_patch=False))
+
+    def test_a_later_commit_with_real_changes_leaves_the_branch_unmatched(self) -> None:
+        squash = self.squash_merge()
+        self.extend_topic()
+        self.assertEqual("UNMATCHED", self.state(squash))
+
+    def test_a_squash_commit_the_clone_has_not_fetched_leaves_the_branch_unmatched(self) -> None:
+        # The remote branch is gone before the squash lands, so the clone sees no upstream and no squash commit.
+        self.git("-C", str(self.other), "push", "origin", "--delete", "topic")
+        self.git("-C", str(self.clone), "fetch", "--prune", "origin")
+        self.git("-C", str(self.other), "fetch", "origin")
+        self.git("-C", str(self.other), "cherry-pick", self.tip)
+        squash = self.git("-C", str(self.other), "rev-parse", "HEAD")
+        self.git("-C", str(self.other), "push", "origin", "main")
+        self.reword_tip()
+        self.assertEqual("UNMATCHED", self.state(squash))
 
 
 if __name__ == "__main__":
