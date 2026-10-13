@@ -7,7 +7,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from pdf_tool import MINIMUMS, PdfIdentity, PdfToolRefused, Skipped, probe_pdftotext, select_pdftotext
+from pdf_tool import INSTALL_HINT, MINIMUMS, PdfIdentity, PdfToolRefused, Skipped, probe_pdftotext, select_pdftotext
 
 from . import platform_support
 
@@ -31,6 +31,9 @@ class Tool:
     # statuses each provider is allowed, so such a tool sets nothing else about its version. It chooses among every
     # program the locator finds by the tool's name, as the extraction does, so `locate` only says one is installed.
     provider_minimum: dict[str, tuple[int, ...]] | None = None
+    # What `deploy.py check` adds when the tool is not installed, as each refusal of it does: the install advice this
+    # platform needs beyond the floors, or None.
+    install_hint: str | None = None
 
 
 POWERSHELL_VERSION = ("-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.ToString()")
@@ -133,6 +136,7 @@ SKILL_TOOLS = {
             "pdftotext",
             lambda: platform_support.find_executable("pdftotext"),
             provider_minimum=MINIMUMS,
+            install_hint=INSTALL_HINT,
         ),
     )
 }

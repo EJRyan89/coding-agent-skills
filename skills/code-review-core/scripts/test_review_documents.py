@@ -172,6 +172,22 @@ STUB_PATHEXT = ".COM;.EXE;.BAT;.CMD" if sys.platform == "win32" else ""
 STUB_EXTENSION = ".CMD" if sys.platform == "win32" else ""
 
 
+# What a refusal adds to each provider's floor on this platform: nothing on Windows, and on Linux, where a
+# distribution's Poppler keeps a version below its floor as it backports fixes, the Xpdf command-line tools.
+LINUX_HINT = (
+    "a distribution's Poppler keeps a version below its floor as it backports fixes, so install the Xpdf command-line "
+    "tools from https://www.xpdfreader.com/download.html"
+)
+HINT = "" if sys.platform == "win32" else f"; {LINUX_HINT}"
+INSTALL = f"install Xpdf 4.06 or newer or Poppler 26.10.0 or newer{HINT}"
+NOT_INSTALLED = f"pdftotext, which extracts a PDF's text, is not installed{HINT}"
+# The banner of a distribution's Poppler, which keeps its upstream version while it backports fixes.
+DISTRIBUTION_POPPLER = (
+    "pdftotext version 24.02.0\nCopyright 2005-2024 The Poppler Developers - http://poppler.freedesktop.org\n"
+    "Copyright 1996-2011, 2022 Glyph & Cog, LLC\n"
+)
+
+
 def path_without_pdftotext() -> str:
     """This process's PATH less every folder that holds a pdftotext, so a test decides which one, if any, runs."""
     folders = os.environ.get("PATH", "").split(os.pathsep)
@@ -521,8 +537,7 @@ class PdfExtractionTests(GitTestCase):
             self.assertEqual(b"[p1 l1] First\n", extract("pdf", PDF))
             self.assertEqual(2, len(first.calls(probes=True)), "the checked executable also extracts")
             self.assertRefused(
-                f"no supported pdftotext: skipped {second.program} (Xpdf 4.00, older than Xpdf 4.06); "
-                "install Xpdf 4.06 or newer or Poppler 26.10.0 or newer"
+                f"no supported pdftotext: skipped {second.program} (Xpdf 4.00, older than Xpdf 4.06); {INSTALL}"
             )
         self.assertEqual([mock.call("pdftotext")] * 2, located.call_args_list)
         self.assertEqual([], second.calls(), "the parser the current lookup finds is checked again")
@@ -550,7 +565,7 @@ class PdfExtractionTests(GitTestCase):
             self.assertRefused(
                 f"no supported pdftotext: skipped {bundled.program} (Xpdf 4.00, older than Xpdf 4.06), "
                 f"{poppler.program} (Poppler 0.86.1, older than Poppler 26.10.0); "
-                "install Xpdf 4.06 or newer or Poppler 26.10.0 or newer"
+                f"{INSTALL}"
             )
         self.assertEqual(([], []), (bundled.calls(), poppler.calls()))
 
@@ -602,10 +617,43 @@ class PdfExtractionTests(GitTestCase):
         xpdf.version("pdftotext version 26.10.0\nCopyright 2005-2026 The Poppler Developers\n", 0)
         self.assertEqual(expected, extract("pdf", PDF), "Poppler")
 
+    if sys.platform == "win32":
+
+        def test_a_poppler_below_its_floor_is_refused_naming_its_version_and_each_providers_floor(self) -> None:
+            stub = StubPdftotext(self, output="must not extract")
+            stub.version(DISTRIBUTION_POPPLER, 0)
+            self.assertRefused(
+                f"no supported pdftotext: skipped {stub.program} (Poppler 24.02.0, older than Poppler 26.10.0); "
+                "install Xpdf 4.06 or newer or Poppler 26.10.0 or newer"
+            )
+            self.assertEqual([], stub.calls())
+
+    else:
+
+        def test_a_distributions_poppler_is_refused_naming_its_version_its_floor_and_the_xpdf_tools(self) -> None:
+            stub = StubPdftotext(self, output="must not extract")
+            stub.version(DISTRIBUTION_POPPLER, 0)
+            self.assertRefused(
+                f"no supported pdftotext: skipped {stub.program} (Poppler 24.02.0, older than Poppler 26.10.0); "
+                f"install Xpdf 4.06 or newer or Poppler 26.10.0 or newer; {LINUX_HINT}"
+            )
+            self.assertEqual([], stub.calls())
+
+    def test_the_xpdf_tools_behind_a_poppler_below_its_floor_extract_and_the_poppler_never_gets_bytes(self) -> None:
+        # A distribution's Poppler first on PATH, and the Xpdf command-line tools a Linux user adds after it.
+        poppler = StubPdftotext(self, output="must not extract")
+        poppler.version(DISTRIBUTION_POPPLER, 0)
+        xpdf = StubPdftotext(self, output="Scope\n\f")
+        path = os.pathsep.join((str(poppler.folder), str(xpdf.folder), path_without_pdftotext()))
+        with mock.patch.dict(os.environ, {"PATH": path}):
+            self.assertEqual(b"[p1 l1] Scope\n", extract("pdf", PDF))
+        self.assertEqual(([], 1), (poppler.calls(), len(poppler.calls(probes=True))))
+        self.assertEqual(1, len(xpdf.calls()))
+
     def test_without_pdftotext_a_pdf_is_refused_with_a_reason_that_names_it(self) -> None:
         without_pdftotext(self)
 
-        self.assertRefused("pdftotext, which extracts a PDF's text, is not installed")
+        self.assertRefused(NOT_INSTALLED)
 
     def test_a_pdf_the_tool_rejects_is_refused(self) -> None:
         StubPdftotext(self, output="partial", status=1)
@@ -1161,7 +1209,7 @@ class PdfSnapshotTests(GitTestCase):
         destination, metadata, refused = self.snapshot("absent")
 
         self.assertEqual("unextractable", metadata["excluded_paths"]["docs/spec.pdf"])
-        self.assertEqual({"docs/spec.pdf": "pdftotext, which extracts a PDF's text, is not installed"}, refused)
+        self.assertEqual({"docs/spec.pdf": NOT_INSTALLED}, refused)
         self.assertNotIn(review_runtime.SNAPSHOT_EXTRACTED, metadata)
         self.assertFalse((destination / "source-snapshot-text").exists())
 

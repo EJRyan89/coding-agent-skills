@@ -4,13 +4,15 @@
 its search order, the first whose provider and version the probe accepts. Each one passed over is named, with what
 the probe found and where, so a parser that comes first only because of where a shell puts it, such as the old Xpdf
 Git for Windows bundles in Git Bash's `/mingw64/bin`, is reported as skipped rather than blocking a supported one
-further down.
+further down. The floors bend for no platform: on Linux a distribution's `pdftotext` is refused like any other below its
+floor, and the refusal points to the Xpdf command-line tools.
 """
 
 from __future__ import annotations
 
 import re
 import subprocess
+import sys
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,6 +40,25 @@ def version_text(provider: str, version: tuple[int, ...]) -> str:
 
 def requirements() -> str:
     return " or ".join(f"{provider} {version_text(provider, floor)} or newer" for provider, floor in MINIMUMS.items())
+
+
+# What a refusal and `deploy.py check` add to the floors on this platform: nothing on Windows, and on Linux, where a
+# distribution's Poppler keeps its upstream version while it backports fixes, so its pdftotext stays below Poppler's
+# floor, the Xpdf command-line tools Xpdf publishes for Linux, which meet Xpdf's.
+INSTALL_HINT = (
+    None
+    if sys.platform == "win32"
+    else (
+        "a distribution's Poppler keeps a version below its floor as it backports fixes, so install the Xpdf "
+        "command-line tools from https://www.xpdfreader.com/download.html"
+    )
+)
+
+
+def install_text() -> str:
+    """What a refusal tells the user to install: each provider's floor, then this platform's hint, if any."""
+    floors = f"install {requirements()}"
+    return floors if INSTALL_HINT is None else f"{floors}; {INSTALL_HINT}"
 
 
 @dataclass(frozen=True)
@@ -174,4 +195,4 @@ def select_pdftotext(found: Iterable[str], probe: Callable[[str], PdfIdentity] =
     if not skipped:
         raise ValueError("select_pdftotext needs at least one pdftotext to choose from")
     identity = next((item.identity for item in skipped if item.identity is not None), None)
-    raise PdfToolRefused(f"no supported pdftotext: {skipped_text(skipped)}; install {requirements()}", identity)
+    raise PdfToolRefused(f"no supported pdftotext: {skipped_text(skipped)}; {install_text()}", identity)
