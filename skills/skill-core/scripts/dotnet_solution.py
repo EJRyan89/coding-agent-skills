@@ -36,18 +36,24 @@ def is_solution(path: Path) -> bool:
     return path.name.casefold().endswith(SOLUTION_SUFFIXES)
 
 
-def listed_projects(solution: Path) -> list[str]:
+def read_listed_projects(solution: Path) -> list[str]:
     """The project paths a solution lists, as written: `Project(...) = "name", "path"` lines in a .sln, and the Path
     of each Project element in a .slnx. A .slnx that is not well-formed XML, or declares a DOCTYPE or an entity,
-    lists none, as a .sln line that does not match lists nothing."""
+    raises `XmlRefused`, so a caller can tell an unreadable solution from one that lists no project."""
     text = read_text(solution)
     if solution.name.casefold().endswith(".slnx"):
-        try:
-            document = read_xml(text)
-        except XmlRefused:
-            return []
+        document = read_xml(text)
         return [path for element in document.iter("Project") if (path := element.get("Path"))]
     return [match.group(1) for line in text.splitlines() if (match := SOLUTION_PROJECT.match(line))]
+
+
+def listed_projects(solution: Path) -> list[str]:
+    """The project paths a solution lists, as `read_listed_projects` reads them, except that a refused .slnx lists
+    none, as a .sln line that does not match lists nothing."""
+    try:
+        return read_listed_projects(solution)
+    except XmlRefused:
+        return []
 
 
 def solution_projects(solution: Path) -> set[str]:
