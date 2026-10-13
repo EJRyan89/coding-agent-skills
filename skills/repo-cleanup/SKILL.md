@@ -2,7 +2,7 @@
 name: repo-cleanup
 description: "Clean up GitHub repos: switch to default branch, prune gone branches, remove stale worktrees, and fast-forward remaining branches. Sweeps all repos under {{REPOS_ROOT}} or targets a single repo by name/path."
 argument-hint: "[<repo-name-or-path>]"
-allowed-tools: ["Bash(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "AskUserQuestion"]
+allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "AskUserQuestion"]
 disable-model-invocation: true
 ---
 
@@ -15,7 +15,7 @@ Every step is one command of `repo_cleanup.py`, run exactly as shown. Do not run
 Pass the user's argument as the target, or omit it to sweep every repository:
 
 ```bash
-python -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" sweep --repos-root "{{REPOS_ROOT}}" "<target>"
+{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" sweep --repos-root "{{REPOS_ROOT}}" "<target>"
 ```
 
 A single line `FAILED <reason>` (for example, the GitHub CLI is not signed in) means nothing ran and nothing was created: report it and stop. Otherwise it first prints `PLANS <directory>`, the new temporary directory that holds each repository's plan file, then one block per repository, starting with `REPO <path> <state>`, then `PLAN <plan file>` once a plan was applied, then only the lines that need you, and ends with `SWEPT <n>` and a count per state. Act on the blocks, not the exit status.
@@ -35,7 +35,7 @@ A `CHECKOUT failed <reason>` line means the switch to the default branch failed;
 For each `dirty` repository, call `AskUserQuestion` with question `"<REPO_NAME>: The main worktree has uncommitted changes. Continue (branch switch will be skipped) or abort this repo?"`, header `"Dirty tree"`, and options `"Continue"` and `"Abort"`. For Abort, report the repository as aborted. For Continue, sweep that repository again without switching its branch, passing its path as the target:
 
 ```bash
-python -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" sweep --repos-root "{{REPOS_ROOT}}" --skip-checkout "<repo>"
+{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" sweep --repos-root "{{REPOS_ROOT}}" --skip-checkout "<repo>"
 ```
 
 It prints the same block as the first sweep, now with the repository's state after cleaning; handle that state as step 2 describes.
@@ -47,13 +47,13 @@ Ask only these questions, and only when the sweep or a later command printed the
 **Local-only and closed branches.** For `CONFIRM_LOCAL <branch>` lines, call `AskUserQuestion` with question `"<REPO_NAME>: These branches have no remote tracking branch, or their pull request closed without merging. Delete or keep each?"` listing the branches, header `"Local branches"`, and options `"Delete all listed"`, `"Keep all"`, and `"Let me choose individually"`; for the last, ask per branch with `"Delete"` and `"Keep"`. Then delete the chosen branches:
 
 ```bash
-python -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" delete-local --plan "<plan file>" --branch "<branch>" --branch "<branch>"
+{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" delete-local --plan "<plan file>" --branch "<branch>" --branch "<branch>"
 ```
 
 **Unmerged branches.** For `UNMERGED <branch> <sha>` lines from the sweep or `delete-local`, call `AskUserQuestion` with question `"<REPO_NAME>: These branches are not fully merged into <DEFAULT_BRANCH>. Force-delete or keep?"` and header `"Unmerged"`. For up to four branches offer `"Force delete"` and `"Keep"` per branch; for more, offer `"Force delete all"`, `"Keep all"`, and `"Choose individually"`. Then force-delete only the confirmed branches:
 
 ```bash
-python -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" force-delete --plan "<plan file>" --branch "<branch>"
+{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" force-delete --plan "<plan file>" --branch "<branch>"
 ```
 
 Both print `DELETED`, `UNMERGED`, or `PRESERVED <branch> <reason>` (for a deletion Git refused, its reason, and the command exits 1), or a last line `FAILED <reason>` when the plan cannot be used or Git could not run; `SUMMARY` lines before it say what was done.

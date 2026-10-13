@@ -24,6 +24,13 @@
 # Exit: 0 deployed; 1 any other status line, or FAILED; 2 usage (the wrong arguments, on stderr).
 set -uo pipefail
 
+# The command that runs Python, as the deployer renders it into the skills: python under Git for Windows, where python3
+# is often a Microsoft Store placeholder, and python3 elsewhere, where a distribution may install no python command.
+case "${OSTYPE:-}" in
+  msys* | cygwin*) PYTHON=python ;;
+  *) PYTHON=python3 ;;
+esac
+
 # Usage is checked before any work, so a usage error never becomes a FAILED line.
 usage() {
   echo "usage: update.sh <clone containing deploy.py> [--cross-major] [--unpin]" >&2
@@ -89,7 +96,7 @@ fi
 # replace a pin without --unpin.
 if [ -z "$UNPIN" ]; then
   PIN_MARK=", pinned with --at "
-  PINNED=$(python "$CLONE/deploy.py" check </dev/null 2>/dev/null | tr -d '\r' | grep -m 1 -e "^Deployed commit: .*$PIN_MARK")
+  PINNED=$("$PYTHON" "$CLONE/deploy.py" check </dev/null 2>/dev/null | tr -d '\r' | grep -m 1 -e "^Deployed commit: .*$PIN_MARK")
   if [ -n "$PINNED" ]; then
     DEPLOYED=${PINNED#Deployed commit: }
     DEPLOYED=${DEPLOYED%"$PIN_MARK"*}
@@ -191,7 +198,7 @@ DEPLOY_OPTIONS=(--all)
 if [ -n "$UNPIN" ]; then
   DEPLOY_OPTIONS+=(--unpin)
 fi
-python "$CLONE/deploy.py" "${DEPLOY_OPTIONS[@]}" </dev/null
+"$PYTHON" "$CLONE/deploy.py" "${DEPLOY_OPTIONS[@]}" </dev/null
 CODE=$?
 if [ "$CODE" -ne 0 ]; then
   echo "DEPLOY_FAILED $CODE"

@@ -85,19 +85,20 @@ class NewSkillTestCase(FixtureRepositoryTestCase):
             "---\nname: widget-report\n"
             'description: "Report \\"widgets\\" in a repository with spaces — use it when asked about them."\n'
             'argument-hint: "ORG [--months N]"\n'
-            'allowed-tools: ["Bash(python -B \\"${CLAUDE_SKILL_DIR}/scripts/*)", '
-            '"PowerShell(python -B \\"${CLAUDE_SKILL_DIR}/scripts/*)", "Read"]\n---\n\n# Widget report\n',
+            'allowed-tools: ["Bash({{PYTHON}} -B \\"${CLAUDE_SKILL_DIR}/scripts/*)", '
+            '"PowerShell({{PYTHON}} -B \\"${CLAUDE_SKILL_DIR}/scripts/*)", "Read"]\n---\n\n# Widget report\n',
             skill_md.read_text(encoding="utf-8"),
         )
         frontmatter = skill_reference.read_frontmatter(skill_md)
         self.assertEqual(DESCRIPTION, frontmatter["description"])
-        own_scripts = 'python -B "${CLAUDE_SKILL_DIR}/scripts/*'
+        own_scripts = '{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/*'
         self.assertEqual(
             [f"Bash({own_scripts})", f"PowerShell({own_scripts})", "Read"],
             fm.read(skill_md).value("allowed-tools"),
         )
         self.assertEqual(
-            {"required_vars": [], "shared_deps": ["runtime-compatibility.md"], "runtime_support": FULL},
+            # The default grant runs Python through the interpreter token, so the skill declares it.
+            {"required_vars": ["PYTHON"], "shared_deps": ["runtime-compatibility.md"], "runtime_support": FULL},
             json.loads((self.root / "deploy-meta" / "widget-report.json").read_text(encoding="utf-8")),
         )
         reference = (self.root / "docs" / "skills.md").read_text(encoding="utf-8")

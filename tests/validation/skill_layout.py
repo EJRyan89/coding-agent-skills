@@ -32,7 +32,7 @@ from validation_support import (
     skills_by_name,
 )
 
-from deployer import render
+from deployer import platform_support, render
 
 MAXIMUM_INLINE_EXECUTABLE_LINES = 5
 
@@ -597,7 +597,8 @@ class SkillLayoutPolicies(unittest.TestCase):
         # the deployment prerequisites, and the renderer, never a one-line change to the runner.
         self.assertEqual({".bash", ".ps1", ".py", ".sh"}, EXECUTABLE_SCRIPT_EXTENSIONS)
         self.assertEqual({".cjs", ".js", ".mjs", ".ts"}, UNSUPPORTED_SCRIPT_EXTENSIONS)
-        self.assertEqual({".bash": "bash", ".sh": "bash", ".py": "python", ".ps1": "pwsh"}, dict(SCRIPT_INTERPRETERS))
+        python = "python" if platform_support.WINDOWS else "python3"
+        self.assertEqual({".bash": "bash", ".sh": "bash", ".py": python, ".ps1": "pwsh"}, dict(SCRIPT_INTERPRETERS))
         self.assertEqual([], unsupported_script_problems(REPOSITORY_ROOT))
 
     def test_script_languages_agree_with_the_tool_catalogue_and_the_skill_guide(self) -> None:

@@ -23,6 +23,7 @@ from git_test_base import GitTestCase
 from job_pool import Terminated
 from shell_targets import (
     PowerShellTarget,
+    interpreter_problems,
     markdown_shell_check,
     markdown_shell_targets,
     powershell_targets,
@@ -114,6 +115,68 @@ class ShellTargetsFixtures(GitTestCase):
         ):
             markdown_shell_check(REPOSITORY_ROOT, [])
         self.assertIn("ShellCheck was not found: winget install --id koalaman.shellcheck", str(raised.exception))
+
+    def test_an_interpreter_token_stands_unquoted_as_a_command_word_but_still_needs_its_fixture(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {"skills/alpha/SKILL.md": "```bash\n{{PYTHON}} -V\n```\n\n```pwsh\n{{PYTHON}} -V\n```\n"},
+            )
+            self.assertEqual(
+                [
+                    "skills/alpha/SKILL.md:2 carries {{PYTHON}} in Bash, but no tests/deployer test named "
+                    "*with_spaces* renders and executes it there",
+                    "skills/alpha/SKILL.md:6 carries {{PYTHON}} in PowerShell, but no tests/deployer test named "
+                    "*with_spaces* renders and executes it there",
+                ],
+                shell_token_problems(root),
+            )
+
+    def test_python_named_by_hand_in_shipped_markdown_shell_or_a_shell_grant_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "skills/alpha/SKILL.md": "---\nname: alpha\n"
+                    'allowed-tools: ["Bash(python -B \\"${CLAUDE_SKILL_DIR}/scripts/*)", '
+                    '"PowerShell({{PYTHON}} -B \\"${CLAUDE_SKILL_DIR}/scripts/*)", "Read"]\n'
+                    "---\n"
+                    "\n"
+                    "Prose may say `python -B x.py`.\n"
+                    "\n"
+                    "```bash\n"
+                    "python -B x.py\n"
+                    '{{PYTHON}} -B "x.py"\n'
+                    "python3 -c pass\n"
+                    "echo pythonic python.exe ./python\n"
+                    "```\n"
+                    "\n"
+                    "```pwsh\n"
+                    "& python script.py\n"
+                    "```\n"
+                    "\n"
+                    "```text\n"
+                    "python x.py\n"
+                    "```\n",
+                    "skills/alpha/references/guide.md": "```bash\npython3 x.py\n```\n",
+                    # A script runs from the checkout in its suite, unrendered, so it names the interpreter itself.
+                    "skills/alpha/scripts/run.sh": "#!/usr/bin/env bash\npython x.py\n",
+                },
+            )
+            doc = '"Template values" in docs/adding-a-skill.md'
+            self.assertEqual(
+                [
+                    f"skills/alpha/SKILL.md:9 names Python by hand in Bash; write {{{{PYTHON}}}}; see {doc}",
+                    f"skills/alpha/SKILL.md:11 names Python by hand in Bash; write {{{{PYTHON}}}}; see {doc}",
+                    f"skills/alpha/SKILL.md:16 names Python by hand in PowerShell; write {{{{PYTHON}}}}; see {doc}",
+                    'skills/alpha/SKILL.md grants Bash(python -B "${CLAUDE_SKILL_DIR}/scripts/*), which names Python '
+                    f"by hand; write {{{{PYTHON}}}}; see {doc}",
+                    f"skills/alpha/references/guide.md:2 names Python by hand in Bash; write {{{{PYTHON}}}}; see {doc}",
+                ],
+                interpreter_problems(root),
+            )
 
     def test_shell_token_policy_detects_unquoted_and_unexecuted_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

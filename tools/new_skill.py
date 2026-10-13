@@ -52,7 +52,8 @@ sys.path.insert(0, str(sibling_scripts("analyze-skill-cost")))
 import skill_inventory
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-OWN_SCRIPTS = 'python -B "${CLAUDE_SKILL_DIR}/scripts/*'
+# A shipped skill runs Python as {{PYTHON}}, which the deployer renders as the platform names it.
+OWN_SCRIPTS = '{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/*'
 DEFAULT_ALLOWED_TOOLS = [f"Bash({OWN_SCRIPTS})", f"PowerShell({OWN_SCRIPTS})", "Read"]
 # A script finds skill-core by this one fixed line, and every other sibling through skill-core's lookup.
 SKILL_CORE = "skill-core"
@@ -127,7 +128,9 @@ def metadata(
     allowed: list[str] | None = None,
     skill_deps: list[str] | None = None,
 ) -> str:
-    document: dict[str, object] = {"required_vars": [], "shared_deps": ["runtime-compatibility.md"]}
+    # A grant that runs Python through the interpreter token needs it rendered, so the skill declares it.
+    interpreter = ["PYTHON"] if any("{{PYTHON}}" in grant for grant in allowed or []) else []
+    document: dict[str, object] = {"required_vars": interpreter, "shared_deps": ["runtime-compatibility.md"]}
     if skill_deps:
         document["skill_deps"] = skill_deps
     if tools:

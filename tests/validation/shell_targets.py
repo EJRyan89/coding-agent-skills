@@ -12,6 +12,7 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
+import frontmatter
 from job_pool import refuse_termination, run_process
 from toolchain import VALIDATION_FLOORS, find_git_bash, find_powershell, find_psscriptanalyzer, find_shellcheck
 from validation_support import (
@@ -23,13 +24,17 @@ from validation_support import (
     repository_skill_directories,
 )
 
-from deployer import platform_support, render, tools
+from deployer import config, platform_support, render, tools
 
 SHELL_LABELS = {"shell": "Bash", "powershell": "PowerShell"}
 SHELL_ESCAPES = {"shell": "\\", "powershell": "`"}
 # The finder whose result runs each context's rendered script, called as a function or a method.
 SHELL_FINDERS = {"find_bash": "shell", "find_pwsh": "powershell", "find_powershell": "powershell"}
 SHELL_WORD_BREAKS = " \t\n;|&()"
+# Python named by hand, as a word of its own, where a shipped skill writes {{PYTHON}} so that the command renders as the
+# platform names it: python on Windows and python3 elsewhere.
+HAND_WRITTEN_INTERPRETER = re.compile(r"(?<![\w./{}-])python3?(?![\w./}-])")
+INTERPRETER_DOC = '"Template values" in docs/adding-a-skill.md'
 
 
 def _shell_units(path: Path) -> list[tuple[str, int, str]]:
@@ -190,7 +195,8 @@ def shell_token_problems(root: Path) -> list[str]:
         for context, start, text in _shell_units(path):
             for offset, token, quoted in _shell_tokens(text, context):
                 line = start + offset
-                if not quoted:
+                # An interpreter is a command word from a fixed set, so it renders unquoted, as a command must.
+                if not quoted and token not in config.INTERPRETER_VARIABLES:
                     unquoted.append(f"{name}:{line} has {{{{{token}}}}} outside quotes in {SHELL_LABELS[context]}")
                 first.setdefault((context, token), (name, line))
     executed = _executed_shell_tokens(root)
@@ -204,6 +210,36 @@ def shell_token_problems(root: Path) -> list[str]:
         "*with_spaces* renders and executes it there"
         for name, line, token, context in missing
     ]
+
+
+def interpreter_problems(root: Path) -> list[str]:
+    """Report Python named by hand in a shipped skill's Markdown Bash or PowerShell, or in a shell grant of its
+    allowed-tools, where {{PYTHON}} belongs so that the command and the grant render as the platform names Python.
+
+    A script under scripts/ runs from the checkout in its suite, unrendered, so it names the interpreter itself.
+    """
+    problems: list[str] = []
+    for path in sorted((root / "skills").rglob("*.md"), key=lambda found: found.relative_to(root).as_posix()):
+        name = path.relative_to(root).as_posix()
+        for context, start, text in _shell_units(path):
+            for offset, line in enumerate(text.split("\n")):
+                if HAND_WRITTEN_INTERPRETER.search(line):
+                    problems.append(
+                        f"{name}:{start + offset} names Python by hand in {SHELL_LABELS[context]}; write "
+                        f"{{{{PYTHON}}}}; see {INTERPRETER_DOC}"
+                    )
+        if path.name != "SKILL.md":
+            continue
+        try:
+            grants = frontmatter.parse(path.read_text(encoding="utf-8")).value("allowed-tools")
+        except frontmatter.FrontmatterError:
+            continue
+        problems += [
+            f"{name} grants {grant}, which names Python by hand; write {{{{PYTHON}}}}; see {INTERPRETER_DOC}"
+            for grant in (grants if isinstance(grants, list) else [])
+            if grant.startswith(("Bash(", "PowerShell(")) and HAND_WRITTEN_INTERPRETER.search(grant)
+        ]
+    return problems
 
 
 def shell_quote(value: str) -> str:
@@ -450,6 +486,14 @@ def shell_suppression_problems(root: Path, files: list[Path]) -> list[str]:
 class ShellTargetsPolicies(unittest.TestCase):
     def test_shell_tokens_are_quoted_and_executed_by_a_fixture(self) -> None:
         self.assertEqual([], shell_token_problems(REPOSITORY_ROOT))
+
+    def test_shipped_skills_name_python_through_the_interpreter_token(self) -> None:
+        self.assertEqual([], interpreter_problems(REPOSITORY_ROOT))
+
+    def test_the_interpreter_token_renders_only_python_or_python3(self) -> None:
+        # Pinned against the names the port renders, not the deployer's own constant.
+        self.assertEqual({"PYTHON": frozenset({"python", "python3"})}, config.INTERPRETER_VARIABLES)
+        self.assertEqual("python" if platform_support.WINDOWS else "python3", platform_support.PYTHON)
 
     def test_repository_suppresses_no_shellcheck_or_psscriptanalyzer_rule(self) -> None:
         self.assertEqual([], shell_suppression_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))

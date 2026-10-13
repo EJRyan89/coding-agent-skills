@@ -80,9 +80,13 @@ LINUX_INSTALL_HELP = (
     "docs/installation.md.",
 )
 INSTALL_HELP = WINDOWS_INSTALL_HELP if WINDOWS else LINUX_INSTALL_HELP
-# Commands this platform provides beyond the portable ones in tools.STANDARD_COMMANDS: Python as python, because
-# python3 is often a Microsoft Store placeholder; Windows PowerShell; and cygpath, which Git for Windows bundles.
-STANDARD_COMMANDS = frozenset({"python", "powershell", "cygpath"})
+# The command that runs Python here, which every shipped skill's fences and grants render from {{PYTHON}}: python on
+# Windows, where python3 is often a Microsoft Store placeholder, and python3 elsewhere, where a distribution may
+# install no python command.
+PYTHON = "python" if WINDOWS else "python3"
+# Commands this platform provides beyond the portable ones in tools.STANDARD_COMMANDS: Python by the name above, and on
+# Windows Windows PowerShell and cygpath, which Git for Windows bundles.
+STANDARD_COMMANDS = frozenset({"python", "powershell", "cygpath"}) if WINDOWS else frozenset({PYTHON})
 
 
 def ensure_supported() -> None:

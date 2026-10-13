@@ -2,7 +2,7 @@
 name: github-activity-report
 description: "Report one user's GitHub contributions in one organization month by month: pull requests authored and merged, commits, pull requests reviewed, and reviews submitted. Use it when asked what someone contributed or reviewed over recent months."
 argument-hint: "ORG USER [--months N]"
-allowed-tools: ["Bash(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)"]
+allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/*)"]
 ---
 
 # GitHub activity report
@@ -14,7 +14,7 @@ Produce a calendar-month contribution table for `USER` in the GitHub organizatio
 The report needs an authenticated GitHub CLI (`gh auth status`) whose token can read the organization's repositories, including SSO authorization when the organization enforces it.
 
 ```bash
-python -B "${CLAUDE_SKILL_DIR}/scripts/github_activity_report.py" --org "<ORG>" --user "<USER>" --months "<N>"
+{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/github_activity_report.py" --org "<ORG>" --user "<USER>" --months "<N>"
 ```
 
 Searches are spaced to stay under GitHub's search rate limits, so a 12-month report takes a few minutes; about three for a user with nearly 2,000 reviewed pull requests. That is longer than many runtimes' default shell-command timeout, so give the command a timeout of at least 10 minutes, or run it in the background and wait for it to exit before reading its output. Do not start a second run while one is still going. Progress goes to stderr; the report goes to stdout.
