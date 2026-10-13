@@ -30,6 +30,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
 
+from bounded_process import without_repository_variables
 from console import run_main
 
 from deployer import platform_support
@@ -147,7 +148,8 @@ class UsageError(Exception):
 
 
 def git(cwd: Path, *arguments: str, environment: Mapping[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    """Runs git on the checkout at cwd, without the location variables that would point it at another one."""
+    """Runs git on the checkout at cwd, without git's repository-selecting variables, which would point it at another
+    repository, index, or object store than the checkout's own."""
     source = os.environ if environment is None else environment
     # Found on this process's PATH, as Windows looks a program up, rather than on the PATH the command is given, as
     # POSIX would: the guard reads that PATH to judge a command, and never to choose which git it runs itself.
@@ -158,7 +160,7 @@ def git(cwd: Path, *arguments: str, environment: Mapping[str, str] | None = None
         text=True,
         encoding="utf-8",
         errors="replace",
-        env={name: value for name, value in source.items() if name.upper() not in LOCATION_VARIABLES},
+        env=without_repository_variables(source),
         check=False,
     )
 

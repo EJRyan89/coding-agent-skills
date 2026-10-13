@@ -16,7 +16,7 @@ from typing import TypedDict
 import executable_locator
 import job_tree
 import process_identity
-from bounded_process import ProcessTree, run_bounded
+from bounded_process import ProcessTree, run_bounded, without_repository_variables
 from job_tree import JobRefused
 
 from .errors import DeployError, see_recovery
@@ -417,7 +417,9 @@ def run_tool(
 ) -> ToolResult:
     """Run a tool with stdout and stderr captured through a file, never inherited pipes, within a deadline.
 
-    The tool and every process it starts are held in one process tree, which ends them all once it has finished.
+    The tool and every process it starts are held in one process tree, which ends them all once it has finished. Its
+    environment is this process's without git's repository-selecting variables, so a git it runs, such as the source
+    commit's, reads the checkout it names, with `environment` added.
     Raises ToolTimedOut when it has not finished within `timeout` seconds, TOOL_DEADLINE_SECONDS unless given, and
     DeployError when it cannot be held with the processes it starts.
     """
@@ -425,7 +427,7 @@ def run_tool(
     import tempfile
 
     seconds = TOOL_DEADLINE_SECONDS if timeout is None else timeout
-    merged = dict(os.environ)
+    merged = without_repository_variables(os.environ)
     if environment:
         merged.update(environment)
     # MSYS tools can reject inherited anonymous pipes with a spurious text/binary mode error.
