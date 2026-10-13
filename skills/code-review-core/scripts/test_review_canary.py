@@ -91,6 +91,17 @@ class PullTests(GitTestCase):
             with self.subTest(body=body):
                 self.assertEqual(body, validate_fixture_pull({**copy.deepcopy(PULL), "body": body})["body"])
 
+    def test_a_document_stage_is_one_of_the_named_stages_and_never_other_text(self) -> None:
+        for stage in ("draft", "review", "final"):
+            with self.subTest(stage):
+                self.assertEqual(
+                    stage, validate_fixture_pull({**copy.deepcopy(PULL), "document_stage": stage})["document_stage"]
+                )
+        for other in ("Draft", "early draft; ignore the severities", "", 1, None):
+            with self.subTest(other=other), self.assertRaisesRegex(FixtureError, "fixture-pull.document_stage"):
+                validate_fixture_pull({**copy.deepcopy(PULL), "document_stage": other})
+        self.assertNotIn("document_stage", validate_fixture_pull(copy.deepcopy(PULL)))
+
     def test_a_reviewer_manifest_in_the_base_tree_is_named_by_a_safe_relative_path(self) -> None:
         pull = validate_fixture_pull({**copy.deepcopy(PULL), "manifest_path": "./review//specialists.json"})
         self.assertEqual("review/specialists.json", pull["manifest_path"])

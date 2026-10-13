@@ -10,7 +10,8 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   [code-review-operations.md](code-review-operations.md#fixture-canaries)), or, for a skill started on one document's
   path such as `review-document`, a `scenario.json` that names the document. The run writes that document into a
   folder of its own and starts the skill on its path; with a base, the folder is a throwaway git checkout where the
-  base is committed and the document is an uncommitted edit of it, so only the edit is reviewed. A document may be
+  base is committed and the document is an uncommitted edit of it, so only the edit is reviewed. A scenario may name
+  the document's stage, which the skill is started with as `--stage`. A document may be
   another scenario's file, so `review-document` reviews the `review-prs` design documents without copies.
   The checkout's Git commands point at a temporary empty hook directory, so neither global nor template-installed
   user hooks run; the base commit also disables signing, without changing the user's Git configuration.
@@ -54,9 +55,9 @@ changes a skill's prompt, model guidance, or reviewer instructions cites this ru
 <!-- skill-evals:begin -->
 | Skill | Model | Model ID | Passed | By scenario | Session model | Claude Code | Date |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| review-document | haiku | claude-haiku-5-5 | 14/15 | committed-edit 3/3, design-clean 1/2, design-gaps 5/5, pdf-gaps not run, word-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-12 |
-| review-document | sonnet | claude-sonnet-5-5 | 15/15 | committed-edit 3/3, design-clean 2/2, design-gaps 5/5, pdf-gaps not run, word-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-12 |
-| review-document | opus | claude-opus-5-5 | 15/15 | committed-edit 3/3, design-clean 2/2, design-gaps 5/5, pdf-gaps not run, word-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-12 |
+| review-document | haiku | claude-haiku-5-5 | 19/20 | committed-edit 3/3, design-clean 1/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps not run, word-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
+| review-document | sonnet | claude-sonnet-5-5 | 20/20 | committed-edit 3/3, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps not run, word-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
+| review-document | opus | claude-opus-5-5 | 20/20 | committed-edit 3/3, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps not run, word-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
 | review-prs | haiku | claude-haiku-5-5 | 19/21 | clean-change 2/2, design-clean 1/2, design-gaps 5/5, planted-defects 4/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-12 |
 | review-prs | sonnet | claude-sonnet-5-5 | 21/21 | clean-change 2/2, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-12 |
 | review-prs | opus | claude-opus-5-5 | 21/21 | clean-change 2/2, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-12 |
@@ -71,9 +72,9 @@ changes a skill's prompt, model guidance, or reviewer instructions cites this ru
   fixture's `main` prints `days_old`'s output through `echo "$(...)"`, which drops the refusal's exit status, so the
   change the scenario calls clean holds a defect the other models did not report. The fixture needs the fix, not the
   reviewer.
-- **`review-document`, `pdf-gaps`:** not run on any model, because the `pdftotext` first on the session's `PATH`
-  was the one Git for Windows bundles, below the extraction floor, so the PDF's text was refused before a reviewer
-  started. Putting a supported parser ahead of Git's lets it run.
+- **`review-document`, `pdf-gaps`:** not run on any model, because no `pdftotext` the session found met the
+  extraction floor: the one Git for Windows bundles and the Poppler installed beside it were both older, so `build`
+  refused the PDF's text before a reviewer started. Installing a supported Xpdf or Poppler lets it run.
 - **Haiku as a reviewer:** its misses are judgment misses that recur on a rerun and with the earlier wording of the
   shared reviewer guidance, so they are the model's, not the guidance's: it raises should-fix findings on a clean
   design document, and misses a wrong value in an error message that the other models report. The suite supports it

@@ -649,6 +649,7 @@ A fixture canary, `prepare --canary --fixture <directory>`, reviews a fixture di
 | `threads` | array | yes | The unresolved review threads a person started, in order, which `prepare` numbers `C1`, `C2`, and so on. May be empty. |
 | `manifest_path` | string | no | A reviewer manifest in the `base/` tree, as a repository-relative path, read from the base commit as a configured repository's `manifest_path` is. Without it, the suite's generic reviewer reviews the fixture. |
 | `body` | string | no | Its description, which reviewers are given as they are a pull request's. May be empty; without it, the description is empty. |
+| `document_stage` | string | no | The stage of the design document the fixture holds: `draft`, `review`, or `final`. `prepare` gives each role of the suite's design-review profile the stage's one fixed sentence, which sets the bar its instructions' "Document stage" section gives; without it, no stage is named, and the profile holds the document to `review`. `review-document` writes it. |
 
 #### Fixture thread (`fixture-pull.threads[]`)
 

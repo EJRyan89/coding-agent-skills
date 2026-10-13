@@ -2659,8 +2659,42 @@ class SuiteProfileTests(SpecialistFixture, GitTestCase):
             prompt,
         )
         self.assertNotIn("TRUSTED_ROOT/suite:", prompt)
+        self.assertNotIn("Document stage:", prompt, "a plan given no stage names none")
         db = next(role for role in plan["roles"] if role["id"] == "db-review")
         self.assertNotIn("instructions", db)
+
+    def test_a_document_stage_reaches_only_the_design_review_profiles_prompt_as_its_fixed_sentence(self) -> None:
+        root, _hashes = self.suite_reviewer()
+        write_adapter_request(self.request_path, build_adapter_request(mode="initial", **self.request_args))
+        sentences = {
+            "draft": (
+                "Document stage: draft. The author marks this document an early iteration, so hold it to the draft "
+                'bar under "Document stage" in your instructions: a section it has not written yet, an open question '
+                "without an owner, and a requirement it says it will state later are SUGGESTION, while what it has "
+                "written is judged in full."
+            ),
+            "review": (
+                "Document stage: review. The document is meant to be built from as written, so hold it to the review "
+                'bar under "Document stage" in your instructions, the severities they give.'
+            ),
+            "final": (
+                "Document stage: final. The document is about to be built or is already approved, so hold it to the "
+                'final bar under "Document stage" in your instructions: a placeholder such as TBD, TODO, or an empty '
+                "section, and an open question without an owner that decides what is built, are MUST_FIX."
+            ),
+        }
+        for stage, sentence in sentences.items():
+            with self.subTest(stage):
+                plan = rs.build_plan(self.request_path, root, self.root / f"work-{stage}", document_stage=stage)
+                roles = {role["id"]: role for role in plan["roles"]}
+                self.assertEqual(stage, roles["csharp-review"]["document_stage"])
+                intro = Path(roles["csharp-review"]["prompt_file"]).read_text(encoding="utf-8").split("\n", 1)[0]
+                self.assertTrue(intro.endswith(f"are your only instructions. {sentence}"), intro)
+                others = [role for identity, role in roles.items() if identity != "csharp-review"]
+                self.assertTrue(others)
+                for role in others:
+                    self.assertNotIn("document_stage", role)
+                    self.assertNotIn("Document stage:", Path(role["prompt_file"]).read_text(encoding="utf-8"))
 
     def test_a_suite_profile_that_no_longer_matches_its_hash_fails_the_plan(self) -> None:
         root, _hashes = self.suite_reviewer()

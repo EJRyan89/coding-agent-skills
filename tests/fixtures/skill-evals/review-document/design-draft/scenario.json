@@ -1,0 +1,11 @@
+{
+  "skill": "review-document",
+  "mode": "initial",
+  "document": "export-sharing.md",
+  "stage": "draft",
+  "expectations": [
+    {"kind": "finding", "path": "export-sharing.md", "lines": [10, 17], "severity": "MUST_FIX", "category": "inconsistency"},
+    {"kind": "no_finding_above", "severity": "SUGGESTION", "paths": ["export-sharing.md"], "lines": [11, 19, 21, 23, 25, 27, 29]},
+    {"kind": "verdict", "verdict": "CHANGES_REQUESTED"}
+  ]
+}

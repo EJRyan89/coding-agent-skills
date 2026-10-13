@@ -28,7 +28,9 @@ A Word document or a PDF, a format `review_documents.document_format` names, is 
 bytes, so the fixture canary's snapshot extracts its text as it does a pull request's; one whose text would not be
 extracted, or whose lines of text the change leaves as they were, labels aside, is refused here first. A Markdown,
 plain-text, Word, or PDF document goes to the suite's design-review specialist, through a specialists manifest in the
-fixture's base tree; any other text file goes to the generic reviewer. Nothing is written to a checkout, and `--output`
+fixture's base tree, and pull.json records its `--stage`, one of code-review-core's DOCUMENT_STAGES and review by
+default, whose fixed sentence prepare puts in that specialist's prompt; any other text file goes to the generic
+reviewer, and a stage given for one is refused. Nothing is written to a checkout, and `--output`
 must name a new or empty directory, so nothing already there is mixed with the review's files or replaced.
 """
 
@@ -59,7 +61,7 @@ from review_github import PULL_PAGE_SIZE, GitHubClient
 from review_github import READ as RESPONSE
 from review_io import PersistenceError, working_path
 from review_operation import parse_pull_selector
-from review_runtime import MAX_CHANGED_FILE_BYTES, blob_matches
+from review_runtime import DEFAULT_DOCUMENT_STAGE, DOCUMENT_STAGES, MAX_CHANGED_FILE_BYTES, blob_matches
 
 # The documents the design-review specialist reviews: Markdown and plain-text markup, matched by suffix, ignoring case.
 DESIGN_SUFFIXES = frozenset({".md", ".markdown", ".txt", ".rst", ".adoc"})
@@ -296,9 +298,9 @@ def in_manifest_folder(relative: str) -> bool:
     return relative.startswith(MANIFEST_PATH.split("/")[0] + "/")
 
 
-def write_fixture(fixture: Path, document: Document, pull: dict[str, Any]) -> list[str]:
+def write_fixture(fixture: Path, document: Document, pull: dict[str, Any], stage: str | None) -> list[str]:
     """Write the one-file fixture of `document` at `fixture`, around the pull request `pull` describes, and return
-    the lines that name it."""
+    the lines that name it. A document the design reviewer reviews is recorded at `stage`, review by default."""
     relative, base = document.relative, document.base
     design = reviewed_by_design(relative)
     for tree in ("base", "head"):
@@ -312,6 +314,7 @@ def write_fixture(fixture: Path, document: Document, pull: dict[str, Any]) -> li
         for tree in ("base", "head"):
             write_file(fixture / tree, MANIFEST_PATH, manifest)
         pull["manifest_path"] = MANIFEST_PATH
+        pull["document_stage"] = stage or DEFAULT_DOCUMENT_STAGE
     (fixture / "pull.json").write_text(json.dumps(pull, indent=2) + "\n", encoding="utf-8")
     return [
         f"DOCUMENT {relative}",
@@ -326,7 +329,18 @@ def output_root(directory: Path | None) -> Path:
     return directory or Path(tempfile.mkdtemp(prefix="review-document-")).resolve()
 
 
-def build(path: Path, requested: str | None, output: Path | None, git: GitClient) -> list[str]:
+def refuse_stage(relative: str, stage: str | None) -> None:
+    """Refuse a stage for a file the generic reviewer reviews, which has no document stage."""
+    if stage is not None and not reviewed_by_design(relative):
+        raise DocumentError(
+            f"--stage applies to {ROUTED_KINDS}, which the design-review specialist reviews; {relative} goes to the "
+            "generic reviewer"
+        )
+
+
+def build(
+    path: Path, requested: str | None, output: Path | None, git: GitClient, stage: str | None = None
+) -> list[str]:
     directory = output_directory(output)
     path = path.resolve()
     form = document_format(path.name)
@@ -337,6 +351,7 @@ def build(path: Path, requested: str | None, output: Path | None, git: GitClient
     base = choose_base(requested, location, git, text=form is None)
     document = Document(location.relative, content, form, base)
     refuse_unchanged(document, "uncommitted change")
+    refuse_stage(location.relative, stage)
     pull = {
         "repository": repository_name(location),
         "number": 1,
@@ -348,7 +363,7 @@ def build(path: Path, requested: str | None, output: Path | None, git: GitClient
         "base_ref": f"committed {base.commit}" if base.commit else "none",
         "head_ref": "working tree",
     }
-    return write_fixture(output_root(directory) / "fixture", document, pull)
+    return write_fixture(output_root(directory) / "fixture", document, pull, stage)
 
 
 def pull_reference(argument: str) -> tuple[str, int] | None:
@@ -439,11 +454,16 @@ def routed_changes(changes: list[Change], selector: str, wanted: str | None) -> 
 
 
 def build_pull(
-    reference: tuple[str, int], requested: str | None, wanted: str | None, output: Path | None, github: GitHubClient
+    reference: tuple[str, int],
+    requested: str | None,
+    wanted: str | None,
+    output: Path | None,
+    github: GitHubClient,
+    stage: str | None = None,
 ) -> list[str]:
     """One fixture for each document the pull request changes, or for the one `wanted` names, each in its own
-    numbered folder of the output directory. Without `wanted`, a document that cannot be reviewed is skipped, unless
-    none can."""
+    numbered folder of the output directory and each at `stage`. Without `wanted`, a document that cannot be reviewed
+    is skipped, unless none can."""
     directory = output_directory(output)
     repository, number = reference
     selector = f"{repository}#{number}"
@@ -481,6 +501,7 @@ def build_pull(
                 "base_ref": "none" if whole else f"committed {pull.base}",
                 "head_ref": f"head {pull.head}",
             },
+            stage,
         )
     return lines + [f"SKIPPED {reason}" for reason in skipped]
 
@@ -513,6 +534,9 @@ def build_parser() -> argparse.ArgumentParser:
         "path", help="the document's path, or a pull request as owner/repo#number or its URL, to review its documents"
     )
     build_command.add_argument("--base", choices=("none", "committed"))
+    build_command.add_argument(
+        "--stage", choices=tuple(DOCUMENT_STAGES), help=f"the document's stage; {DEFAULT_DOCUMENT_STAGE} by default"
+    )
     build_command.add_argument("--document", help="with a pull request, the one changed document to review")
     build_command.add_argument(
         "--output", type=Path, help="the directory for the fixture and the report; a new temporary one by default"
@@ -526,10 +550,10 @@ def build_parser() -> argparse.ArgumentParser:
 def build_command(args: argparse.Namespace, git: GitClient | None, github: GitHubClient | None) -> list[str]:
     reference = pull_reference(args.path)
     if reference is not None:
-        return build_pull(reference, args.base, args.document, args.output, github or GitHubClient())
+        return build_pull(reference, args.base, args.document, args.output, github or GitHubClient(), args.stage)
     if args.document is not None:
         raise DocumentError("--document names a document a pull request changes; name the pull request, not a path")
-    return build(Path(args.path), args.base, args.output, git or GitClient())
+    return build(Path(args.path), args.base, args.output, git or GitClient(), args.stage)
 
 
 def main(arguments: list[str] | None = None, git: GitClient | None = None, github: GitHubClient | None = None) -> int:

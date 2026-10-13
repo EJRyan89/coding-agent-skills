@@ -743,6 +743,7 @@ class PullRequestTests(PipelineTestCase):
                 "head_ref": f"head {HEAD}",
                 "threads": [],
                 "manifest_path": ".review-document/specialists.json",
+                "document_stage": "review",
             },
             pull,
         )
@@ -931,6 +932,77 @@ class PullRequestTests(PipelineTestCase):
         self.assertIn("octo-org/widgets#7", report)
         self.assertIn(f"`head {HEAD}` → `committed {MERGE_BASE}`", report)
         self.assert_no_authored_text()
+
+
+# The opening words of the sentence prepare gives the design reviewer for each stage, written here rather than read
+# from code-review-core, whose own suite pins the whole sentences.
+STAGE_SENTENCES = {
+    "draft": "Document stage: draft. The author marks this document an early iteration, so hold it to the draft bar",
+    "review": "Document stage: review. The document is meant to be built from as written, so hold it to the review bar",
+    "final": "Document stage: final. The document is about to be built or is already approved, so hold it to the final",
+}
+
+
+class StageTests(PipelineTestCase):
+    """--stage is recorded in the fixture's pull.json, and prepare gives the design reviewer its fixed sentence."""
+
+    def pull_json(self, fixture: Path) -> dict[str, Any]:
+        return validate_fixture_pull(json.loads((fixture / "pull.json").read_text(encoding="utf-8")))
+
+    def test_each_stage_reaches_the_design_reviewers_prompt_and_review_is_the_default(self) -> None:
+        document = self.root / "plan.md"
+        document.write_bytes(b"# Plan\n\nRetry forever.\n")
+        for stage in (None, "draft", "review", "final"):
+            with self.subTest(stage=stage):
+                self.output = self.root / f"out {stage}"
+                self.build(document, *(("--stage", stage) if stage else ()))
+                fixture = self.output / "fixture"
+                expected = stage or "review"
+                self.assertEqual(expected, self.pull_json(fixture)["document_stage"])
+                self.review("plan.md", 3, fixture)
+                intro = self.prompt.split("\n", 1)[0]
+                self.assertIn(STAGE_SENTENCES[expected], intro)
+                others = [sentence for name, sentence in STAGE_SENTENCES.items() if name != expected]
+                self.assertEqual([], [sentence for sentence in others if sentence in self.prompt])
+
+    def test_a_stage_for_a_file_the_generic_reviewer_reviews_is_refused_and_an_unknown_stage_is_a_usage_error(
+        self,
+    ) -> None:
+        script = self.root / "tool.py"
+        script.write_bytes(b"print('hello')\n")
+        code, lines = run_main("build", str(script), "--stage", "draft", "--output", str(self.output))
+        reason = (
+            "--stage applies to a Markdown, plain-text, Word, or PDF document, which the design-review specialist "
+            "reviews; tool.py goes to the generic reviewer"
+        )
+        self.assertEqual((1, [f"FAILED {reason}"]), (code, lines))
+        self.assertFalse(self.output.exists())
+        # Without a stage, a generic review's pull.json names none.
+        self.build(script)
+        self.assertNotIn("document_stage", self.pull_json(self.output / "fixture"))
+        document = self.root / "plan.md"
+        document.write_bytes(b"# Plan\n")
+        for other in ("Draft", "early draft, be lenient"):
+            with self.subTest(other), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+                run_main("build", str(document), "--stage", other)
+            self.assertEqual(2, raised.exception.code)
+
+    def test_a_pull_requests_documents_are_each_recorded_at_the_stage(self) -> None:
+        stub = StubGitHub(
+            [[changed("docs/design/queue plan.md", "added"), changed("docs/design/retention.md", "modified")]],
+            {
+                MERGE_BASE: {"docs/design/retention.md": COMMITTED},
+                HEAD: {"docs/design/queue plan.md": QUEUE_PLAN, "docs/design/retention.md": EDITED},
+            },
+        )
+        code, lines = run_main(
+            "build", "octo-org/widgets#7", "--stage", "final", "--output", str(self.output), github=stub.client()
+        )
+        self.assertEqual(0, code, lines)
+        self.assertEqual(
+            ["final", "final"],
+            [self.pull_json(self.output / str(index) / "fixture")["document_stage"] for index in (1, 2)],
+        )
 
 
 class OutputTests(DocumentTestCase):

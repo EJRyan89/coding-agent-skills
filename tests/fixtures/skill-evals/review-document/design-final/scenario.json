@@ -1,0 +1,10 @@
+{
+  "skill": "review-document",
+  "mode": "initial",
+  "document": "export-link-expiry.md",
+  "stage": "final",
+  "expectations": [
+    {"kind": "finding", "path": "export-link-expiry.md", "lines": [17], "severity": "MUST_FIX"},
+    {"kind": "verdict", "verdict": "CHANGES_REQUESTED"}
+  ]
+}

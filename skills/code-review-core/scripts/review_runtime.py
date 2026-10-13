@@ -135,6 +135,29 @@ GENERIC_SPECIALIST = "generic-review"
 # no other file through one.
 SUITE_PROFILES = {"design-review": "design-reviewer.md"}
 SUITE_REFERENCES = Path(__file__).resolve().parents[1] / "references"
+# The specialist a fixture's document stage reaches.
+DESIGN_REVIEW_PROFILE = f"{SUITE_PROFILE_PREFIX}design-review"
+# The stage a fixture's design document is at, which its pull.json may name as `document_stage`, and the one fixed
+# sentence prepare puts in the design-review specialist's prompt for it. The stage is one of these names and never
+# text a user wrote, so nothing but the document reaches a reviewer from the person who asked for the review. Each
+# sentence points at the bar the profile's "Document stage" section sets.
+DOCUMENT_STAGES = {
+    "draft": (
+        "Document stage: draft. The author marks this document an early iteration, so hold it to the draft bar under "
+        '"Document stage" in your instructions: a section it has not written yet, an open question without an owner, '
+        "and a requirement it says it will state later are SUGGESTION, while what it has written is judged in full."
+    ),
+    "review": (
+        "Document stage: review. The document is meant to be built from as written, so hold it to the review bar "
+        'under "Document stage" in your instructions, the severities they give.'
+    ),
+    "final": (
+        "Document stage: final. The document is about to be built or is already approved, so hold it to the final "
+        'bar under "Document stage" in your instructions: a placeholder such as TBD, TODO, or an empty section, and an '
+        "open question without an owner that decides what is built, are MUST_FIX."
+    ),
+}
+DEFAULT_DOCUMENT_STAGE = "review"
 # The snapshot paths a condition may declare it reads: glob patterns, bounded as a repository's snapshot_exclude is.
 MAX_CONDITION_READS = 100
 MAX_READ_PATTERN_LENGTH = 200
