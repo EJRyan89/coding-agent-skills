@@ -652,6 +652,17 @@ class ConfigTests(GitTestCase):
         )
         self.assertEqual([["Roslynator.Formatting.Analyzers", "present"]], self.config()["PACKAGE"])
 
+    def test_a_solution_it_cannot_read_fails_instead_of_searching_only_its_folder(self) -> None:
+        (self.root / "App.slnx").write_text(
+            '<Solution><Project Path="src/App/App.csproj"></Solution>', encoding="utf-8"
+        )
+        status, grouped = self.run_config(solution="App.slnx")
+        self.assertEqual(1, status)
+        (failure,) = [kind for kind in grouped if kind.startswith("FAILED ")]
+        self.assertTrue(failure.startswith(f"FAILED {self.root / 'App.slnx'} cannot be read: "), failure)
+        self.assertIn("not well-formed", failure)
+        self.assertNotIn("SETTING", grouped)
+
     def test_a_single_star_section_does_not_configure_deeper_files(self) -> None:
         settings = "".join(f"{key} = {value}\n" for key, value in layout.SETTINGS)
         (self.root / ".editorconfig").write_text(f"root = true\n\n[src/*.cs]\n{settings}", encoding="utf-8")

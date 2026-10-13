@@ -52,6 +52,7 @@ from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult, classify_failure
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_client import Runner as GhRunner
+from xml_reader import XmlRefused
 
 WEB_PROJECT = re.compile(
     r"Microsoft\.NET\.Sdk\.Web|<WebApplication>|<WebSiteType>|349c5851-65df-11da-9384-00065b846f21",
@@ -247,7 +248,12 @@ def find_solutions(root: Path) -> list[Path]:
 
 
 def owns(solution: Path, owned: list[Path]) -> bool:
-    projects = solution_projects(solution)
+    """Whether the solution lists a project that owns the file; a solution that cannot be read fails, since taking
+    it for one that lists no project would name the wrong cause."""
+    try:
+        projects = solution_projects(solution)
+    except XmlRefused as error:
+        raise Failed(f"{solution} cannot be read: {error}") from None
     return any(same_path(project) in projects for project in owned)
 
 

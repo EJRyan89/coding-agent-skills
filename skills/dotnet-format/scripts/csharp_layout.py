@@ -43,6 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from console import run_main
 from dotnet_format_targets import read_file_list
 from dotnet_solution import read_text, same_path, solution_projects
+from xml_reader import XmlRefused
 
 LINE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+\Z")
 DIRECTIVE = re.compile(r"[ \t]*#[ \t]*([A-Za-z]+)")
@@ -676,9 +677,15 @@ def effective_settings(chain: list[Path], probe: Path) -> dict[str, str]:
 
 
 def package_referenced(root: Path, solution: Path) -> bool:
+    """Whether a project of the solution, or a package file in a folder above one, names the package; a solution
+    that cannot be read fails rather than leaving only its own folder to search."""
+    try:
+        projects = solution_projects(solution)
+    except XmlRefused as error:
+        raise Failed(f"{solution} cannot be read: {error}") from None
     directories: set[Path] = set()
     candidates: list[Path] = []
-    for project in sorted(solution_projects(solution)):
+    for project in sorted(projects):
         path = Path(project)
         if path.is_file():
             candidates.append(path)
