@@ -645,7 +645,7 @@ def _unknown(path: str, *fields: str) -> str:
 
 
 def _path_faults(field: str, path: tuple[str, ...], *, nullable: bool = False) -> list[Case]:
-    """Every outcome of validate_windows_absolute_path for one field."""
+    """Every outcome of validate_absolute_path for one field."""
     kind = "a non-empty string or null" if nullable else "a non-empty string"
     drive = f"{field} must be an absolute drive-letter path"
     root = f"{field} must not be a filesystem root"

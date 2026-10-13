@@ -80,10 +80,9 @@ LINUX_INSTALL_HELP = (
     "docs/installation.md.",
 )
 INSTALL_HELP = WINDOWS_INSTALL_HELP if WINDOWS else LINUX_INSTALL_HELP
-# The command that runs Python here, which every shipped skill's fences and grants render from {{PYTHON}}: python on
-# Windows, where python3 is often a Microsoft Store placeholder, and python3 elsewhere, where a distribution may
-# install no python command.
-PYTHON = "python" if WINDOWS else "python3"
+# The command that runs Python here, which every shipped skill's fences and grants render from {{PYTHON}}: skill-core's,
+# which the skills' scripts write into the commands they hand an agent, so the two always agree.
+PYTHON = executable_locator.PYTHON
 # Commands this platform provides beyond the portable ones in tools.STANDARD_COMMANDS: Python by the name above, and on
 # Windows Windows PowerShell and cygpath, which Git for Windows bundles.
 STANDARD_COMMANDS = frozenset({"python", "powershell", "cygpath"}) if WINDOWS else frozenset({PYTHON})

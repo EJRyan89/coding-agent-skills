@@ -335,7 +335,7 @@ class CrossSkillContractTests(GitTestCase):
                 # Python finds the profile folder in either shell; -I keeps the working directory off sys.path.
                 # A guard that cannot run would exit 1, which lets the call through, so the hook denies it instead.
                 "          command: >-",
-                '            python -I -B -c "import json, os, runpy, sys;',
+                '            {{PYTHON}} -I -B -c "import json, os, runpy, sys;',
                 "            sys.excepthook = lambda kind, error, trace: (sys.__excepthook__(kind, error, trace),",
                 "            print(json.dumps({'hookSpecificOutput': "
                 "{'hookEventName': 'PreToolUse', 'permissionDecision':"
@@ -397,7 +397,8 @@ class CrossSkillContractTests(GitTestCase):
         frontmatter, _ = frontmatter_and_body(
             (REPOSITORY_ROOT / "agents/code-review-reviewer.md").read_text(encoding="utf-8")
         )
-        lines = frontmatter.splitlines()
+        # As the deployer renders it, with Python named as this platform names it.
+        lines = frontmatter.replace("{{PYTHON}}", platform_support.PYTHON).splitlines()
         start = lines.index("          command: >-") + 1
         folded = [line.strip() for line in lines[start:] if line.startswith("            ")]
         command = " ".join(folded)  # a folded block scalar joins its lines with single spaces
@@ -540,11 +541,11 @@ class CrossSkillContractTests(GitTestCase):
             guard = profile / ".claude/skills/code-review-core/scripts/review_guard.py"
             guard.parent.mkdir(parents=True)
             guard.write_bytes((REPOSITORY_ROOT / "skills/code-review-core/scripts/review_guard.py").read_bytes())
-            # The guard imports skill-core's runner, the flattener the runner imports, and its typed-field reader from
-            # the sibling skill the deployer installs beside it.
+            # The guard imports skill-core's runner, the flattener the runner imports, its typed-field reader, and the
+            # locator that names Python's command from the sibling skill the deployer installs beside it.
             core = profile / ".claude/skills/skill-core/scripts"
             core.mkdir(parents=True)
-            for module in ("console.py", "flat_text.py", "typed_fields.py"):
+            for module in ("console.py", "executable_locator.py", "flat_text.py", "typed_fields.py"):
                 (core / module).write_bytes((REPOSITORY_ROOT / "skills/skill-core/scripts" / module).read_bytes())
             # A session's working directory is untrusted: its modules must never shadow the standard library or the
             # core.

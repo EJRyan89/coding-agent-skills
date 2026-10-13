@@ -1511,7 +1511,9 @@ def fake_deploy(home: Path, _source: Path) -> tuple[int, str]:
     script that prints its own path."""
     agents = home / ".claude" / "agents"
     agents.mkdir(parents=True)
-    (agents / "code-review-reviewer.md").write_bytes(REVIEWER_AGENT_SOURCE.read_bytes())
+    # As the deployer renders it, with Python named as this platform names it.
+    rendered = REVIEWER_AGENT_SOURCE.read_bytes().replace(b"{{PYTHON}}", platform_support.PYTHON.encode())
+    (agents / "code-review-reviewer.md").write_bytes(rendered)
     guard = home / ".claude" / "skills" / "code-review-core" / "scripts" / "review_guard.py"
     guard.parent.mkdir(parents=True)
     guard.write_text('print("GUARD", __file__)\n', encoding="utf-8")
@@ -1601,8 +1603,9 @@ class RunPieceTests(GitTestCase):
 
     def test_the_reviewer_agent_gets_the_model_and_nothing_else_changes(self) -> None:
         fake_deploy(self.root, self.root)
+        # The deployed agent, which names Python as rendered, before and after its model is set.
+        before = (self.root / skill_evals.REVIEWER_AGENT).read_text(encoding="utf-8").splitlines()
         self.assertIsNone(skill_evals.set_reviewer_model(self.root, "haiku"))
-        before = REVIEWER_AGENT_SOURCE.read_text(encoding="utf-8").splitlines()
         after = (self.root / skill_evals.REVIEWER_AGENT).read_text(encoding="utf-8").splitlines()
         self.assertEqual(len(before), len(after))
         self.assertEqual(
@@ -1638,7 +1641,11 @@ class RunPieceTests(GitTestCase):
         guard = (self.root / ".claude/skills/code-review-core/scripts/review_guard.py").as_posix()
         self.assertIn(f"runpy.run_path(os.path.expanduser('{guard}'),", hook["command"])
         self.assertNotIn("~/", hook["command"])
-        self.assertTrue(hook["command"].startswith('python -I -B -c "import json, os, runpy, sys; sys.excepthook ='))
+        self.assertTrue(
+            hook["command"].startswith(
+                f'{platform_support.PYTHON} -I -B -c "import json, os, runpy, sys; sys.excepthook ='
+            )
+        )
 
     def test_the_hook_command_runs_the_homes_guard_with_spaces_in_its_path(self) -> None:
         bash = platform_support.find_bash()

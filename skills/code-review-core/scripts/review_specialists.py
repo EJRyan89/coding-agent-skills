@@ -24,7 +24,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from bounded_process import non_interactive_environment, run_bounded
-from job_tree import JobTree
+from job_tree import process_tree
 from review_analyzers import inventory, tool_names
 from review_config import safe_repository_path
 from review_documents import LINE_UNSAFE
@@ -361,7 +361,7 @@ def evaluate_condition(
             cwd=work,
             env=environment,
             output_limit=CONDITION_OUTPUT_BYTES,
-            tree=JobTree(),
+            tree=process_tree(),
         )
     except subprocess.TimeoutExpired as exc:
         raise SpecialistError(f"Condition script timed out: {script}") from exc

@@ -15,6 +15,11 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+# The command name Python answers to here, which the deployer renders into the skills as their interpreter token and
+# the skills' own scripts write into the commands they hand an agent: python on Windows, where python3 is often a
+# Microsoft Store placeholder, and python3 elsewhere, where a distribution may install no python command.
+PYTHON = "python" if sys.platform == "win32" else "python3"
+
 
 def link_folders() -> list[Path]:
     """The folders a package manager links the commands it installs into: WinGet's Links folder on Windows, and none

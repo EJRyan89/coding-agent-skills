@@ -51,6 +51,7 @@ from typing import Any, NamedTuple
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from console import run_main
+from executable_locator import PYTHON
 from git_client import Runner, subprocess_runner
 from process_identity import ProcessStatus, process_status
 from review_analyzers import reads_settings
@@ -200,8 +201,9 @@ RUN_REMOVAL_DELAYS = (0.25, 0.5, 1.0, 2.0)
 # Pull requests one prepare call takes: it bounds the call's duration and the reviewers started together.
 MAX_PREPARE_PULLS = 4
 MAX_RETRIES = 1
-# A reviewer runs this on its own result before replying; check stays authoritative.
-SELF_CHECK_COMMAND = 'python -B "{script}" validate-result --run "{run}" --role "{role}"'
+# A reviewer runs this on its own result before replying; check stays authoritative. Python is named as
+# review-prs's rendered grant names it, by the platform's command.
+SELF_CHECK_COMMAND = PYTHON + ' -B "{script}" validate-result --run "{run}" --role "{role}"'
 
 
 def remove_run(run: Path, *, ignore_errors: bool = False) -> None:

@@ -3595,7 +3595,7 @@ class ReviewerSourceTests(PipelineFixture):
         tree = SignalledTree(started)
         with (
             mock.patch("review_specialists.CONDITION_TIMEOUT_SECONDS", SHORT_LIMIT_SECONDS),
-            mock.patch("review_specialists.JobTree", return_value=tree),
+            mock.patch("review_specialists.process_tree", return_value=tree),
         ):
             code, out, err = self.run_main("prepare", "--pull", SELECTOR)
         refused = time.monotonic()

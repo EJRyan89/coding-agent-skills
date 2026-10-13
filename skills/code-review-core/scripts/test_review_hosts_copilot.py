@@ -1005,7 +1005,7 @@ class CopilotProcessTests(GitTestCase):
         started = time.monotonic()
         with (
             mock.patch.object(review_hosts, "COPILOT_TIMEOUT_SECONDS", SHORT_LIMIT_SECONDS),
-            mock.patch.object(review_hosts, "JobTree", return_value=tree) as made,
+            mock.patch.object(review_hosts, "process_tree", return_value=tree) as made,
             self.assertRaises(RuntimeContractError) as raised,
         ):
             review_hosts._run_bounded(

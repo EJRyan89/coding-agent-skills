@@ -6,6 +6,7 @@ import argparse
 import json
 import ntpath
 import os
+import posixpath
 import re
 import sys
 from collections.abc import Iterable
@@ -115,16 +116,30 @@ def validate_repository_identity(value: object, field: str = "repository") -> st
     return identity.lower()
 
 
-def validate_windows_absolute_path(value: Any, field: str, *, nullable: bool = False) -> str | None:
+def validate_absolute_path(value: Any, field: str, *, nullable: bool = False) -> str | None:
+    """An absolute path of this platform's form, normalized: a drive-letter path on Windows, and elsewhere a POSIX path
+    from one leading slash, never a filesystem root."""
     reader_path = f"config.{field}"
     path = READ.optional(READ.string, value, reader_path) if nullable else READ.string(value, reader_path)
     if path is None:
         return None
+    if sys.platform != "win32":
+        return _posix_absolute_path(path, field)
     normalized = ntpath.normpath(path)
     drive, tail = ntpath.splitdrive(normalized)
     if not drive or not tail.startswith(("\\", "/")) or drive.startswith("\\"):
         raise ConfigurationError(f"{field} must be an absolute drive-letter path")
     if normalized in {f"{drive}\\", f"{drive}/"}:
+        raise ConfigurationError(f"{field} must not be a filesystem root")
+    return normalized
+
+
+def _posix_absolute_path(path: str, field: str) -> str:
+    # POSIX leaves a path that starts with two slashes to the system, so one slash it is.
+    normalized = posixpath.normpath(path)
+    if not normalized.startswith("/") or normalized.startswith("//"):
+        raise ConfigurationError(f"{field} must be an absolute path")
+    if normalized == "/":
         raise ConfigurationError(f"{field} must not be a filesystem root")
     return normalized
 
@@ -167,12 +182,12 @@ def validate_config(value: Any) -> dict[str, Any]:
     normalized["reviewer_effort"] = effort
     normalized["re_review_scope"] = scope
     normalized["model_names"] = normalize_model_names(config.get("model_names", {}))
-    normalized["archive_root"] = validate_windows_absolute_path(config.get("archive_root"), "archive_root")
-    normalized["local_mirror_root"] = validate_windows_absolute_path(
+    normalized["archive_root"] = validate_absolute_path(config.get("archive_root"), "archive_root")
+    normalized["local_mirror_root"] = validate_absolute_path(
         config.get("local_mirror_root"), "local_mirror_root", nullable=True
     )
-    normalized["summary_root"] = validate_windows_absolute_path(config.get("summary_root"), "summary_root")
-    normalized["dashboard_file"] = validate_windows_absolute_path(config.get("dashboard_file"), "dashboard_file")
+    normalized["summary_root"] = validate_absolute_path(config.get("summary_root"), "summary_root")
+    normalized["dashboard_file"] = validate_absolute_path(config.get("dashboard_file"), "dashboard_file")
     normalized["verdict_policy"] = verdict_policy
     READ.optional(READ.string, config.get("github_login"), "config.github_login")
     normalized["dashboard"] = _validate_dashboard(config.get("dashboard", {}))
@@ -227,7 +242,7 @@ def _validate_repository(identity: str, entry_value: Any) -> dict[str, Any]:
     field = f"repositories.{identity}"
     entry = READ.json_object(entry_value, f"config.{field}", optional=REPOSITORY_KEYS)
     reviewer = _validate_reviewer(identity, entry.get("reviewer"))
-    checkout = validate_windows_absolute_path(entry.get("checkout_path"), f"{field}.checkout_path", nullable=True)
+    checkout = validate_absolute_path(entry.get("checkout_path"), f"{field}.checkout_path", nullable=True)
     if reviewer["scope"] == "repository" and checkout is None:
         raise ConfigurationError(f"{field}.checkout_path is required for a repository reviewer")
     exclude = validate_glob_patterns(
@@ -317,7 +332,7 @@ def _validate_reviewer(identity: str, reviewer_value: Any) -> dict[str, Any]:
         if not safe_repository_path(skill):
             raise ConfigurationError(f"{field}.skill is unsafe")
         if manifest is not None and manifest is not True:
-            manifest = validate_windows_absolute_path(manifest, f"{field}.manifest")
+            manifest = validate_absolute_path(manifest, f"{field}.manifest")
     return {
         "id": reviewer_id,
         "protocol_version": 1,

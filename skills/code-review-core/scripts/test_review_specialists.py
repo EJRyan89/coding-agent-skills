@@ -2028,7 +2028,7 @@ class EndToEndTests(SpecialistFixture, GitTestCase):
         began = time.monotonic()
         with (
             mock.patch.object(rs, "CONDITION_TIMEOUT_SECONDS", SHORT_LIMIT_SECONDS),
-            mock.patch.object(rs, "JobTree", return_value=tree),
+            mock.patch.object(rs, "process_tree", return_value=tree),
             mock.patch.object(rs.subprocess, "Popen", side_effect=start),
             self.assertRaises(rs.SpecialistError) as raised,
         ):
