@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 import dependency_graph
 from dependency_graph import Services, main
+from dotnet_solution import same_path
 from sdk_why import Completed
 
 SCRIPT = Path(__file__).resolve().parent / "dependency_graph.py"
@@ -248,32 +249,37 @@ class GraphTests(Fixture):
             [
                 [
                     "src/Harbor.Core/Harbor.Core.csproj",
+                    "net8.0",
                     "Lantern.Json",
                     "graph",
                     "Quill.Http (v1.2.0) > Lantern.Json (v12.0.3)",
                 ],
                 [
                     "src/Harbor.Tests/Harbor.Tests.csproj",
+                    "-",
                     "Lantern.Json",
                     "graph",
                     "Harbor.Core (project) > Quill.Http (v1.2.0) > Lantern.Json (v12.0.3)",
                 ],
-                ["src/Harbor.Tests/Harbor.Tests.csproj", "Lantern.Json", "graph", "Lantern.Json (v13.0.1)"],
+                ["src/Harbor.Tests/Harbor.Tests.csproj", "-", "Lantern.Json", "graph", "Lantern.Json (v13.0.1)"],
                 [
                     "src/Harbor.Web/Harbor.Web.csproj",
+                    "-",
                     "Lantern.Json",
                     "graph",
                     "Harbor.Core (project) > Quill.Http (v1.2.0) > Lantern.Json (v12.0.3)",
                 ],
                 [
                     "src/Harbor.Web/Harbor.Web.csproj",
+                    "-",
                     "Lantern.Json",
                     "graph",
                     "Lantern.Core (v2.0.0) > Lantern.Json (v13.0.1)",
                 ],
-                ["src/Harbor.Web/Harbor.Web.csproj", "Lantern.Json", "graph", "Lantern.Json (v13.0.1)"],
+                ["src/Harbor.Web/Harbor.Web.csproj", "-", "Lantern.Json", "graph", "Lantern.Json (v13.0.1)"],
                 [
                     "src/Harbor.Web/Harbor.Web.csproj",
+                    "-",
                     "Lantern.Json",
                     "graph",
                     "Lantern.Json (v13.0.0.0, assembly)",
@@ -300,13 +306,15 @@ class GraphTests(Fixture):
         self.assertIn(
             [
                 "src/Harbor.Core/Harbor.Core.csproj",
+                "net8.0",
                 "Lantern.Json",
                 "sdk",
                 "Quill.Http (v1.2.0) > Lantern.Json (v12.0.3)",
             ],
             paths,
         )
-        self.assertEqual({"graph"}, {row[2] for row in paths if not row[0].startswith("src/Harbor.Core")})
+        self.assertEqual({"graph"}, {row[3] for row in paths if not row[0].startswith("src/Harbor.Core")})
+        self.assertEqual([], self.lines(rows, "SDK_FAILED"))
         self.assertEqual(7, len(paths))
         self.assertEqual([["Nothing.Here"]], self.lines(rows, "MISSING"))
         self.assertEqual([["7", "1", "1"]], self.lines(rows, "SUMMARY"))
@@ -318,7 +326,7 @@ class GraphTests(Fixture):
         os.utime(assets, (old, old))
         _, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=self.with_dotnet)
         self.assertEqual([], self.sdk.commands)
-        self.assertEqual({"graph"}, {row[2] for row in self.lines(rows, "PATH")})
+        self.assertEqual({"graph"}, {row[3] for row in self.lines(rows, "PATH")})
         assets.unlink()
         _, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=self.with_dotnet)
         self.assertEqual([], self.sdk.commands)
@@ -329,20 +337,33 @@ class GraphTests(Fixture):
         # Without a restore the SDK project's direct references are all the graph knows, stated as `direct`.
         self.assertEqual([], [row for row in self.lines(rows, "PATH") if row[0].startswith("src/Harbor.Core")])
 
-    def test_an_sdk_run_that_answers_nothing_leaves_the_project_to_the_graph(self) -> None:
+    def test_a_failed_sdk_run_is_reported_and_leaves_the_project_to_the_graph(self) -> None:
         root = self.mixed_solution()
-        services = Services(run=lambda arguments, timeout: Completed(1, "boom"), which=self.with_dotnet.which)
-        code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=services)
-        self.assertEqual(0, code)
-        self.assertIn(
-            [
-                "src/Harbor.Core/Harbor.Core.csproj",
-                "Lantern.Json",
-                "graph",
-                "Quill.Http (v1.2.0) > Lantern.Json (v12.0.3)",
-            ],
-            self.lines(rows, "PATH"),
-        )
+        for run, reason in (
+            (lambda arguments, timeout: Completed(1, "boom"), "dotnet nuget why answered nothing (exit code 1)"),
+            (
+                lambda arguments, timeout: Completed(-1, "", timed_out=True),
+                f"dotnet nuget why did not finish within {dependency_graph.DEFAULT_TIMEOUT_SECONDS} seconds",
+            ),
+        ):
+            with self.subTest(reason=reason):
+                services = Services(run=run, which=self.with_dotnet.which)
+                code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=services)
+                # The failure is not a finding in the solution: the graph walk answered the project.
+                self.assertEqual(0, code)
+                self.assertEqual(
+                    [["src/Harbor.Core/Harbor.Core.csproj", "Lantern.Json", reason]], self.lines(rows, "SDK_FAILED")
+                )
+                self.assertIn(
+                    [
+                        "src/Harbor.Core/Harbor.Core.csproj",
+                        "net8.0",
+                        "Lantern.Json",
+                        "graph",
+                        "Quill.Http (v1.2.0) > Lantern.Json (v12.0.3)",
+                    ],
+                    self.lines(rows, "PATH"),
+                )
 
     def test_why_all_lists_everything_one_project_reaches_with_its_first_hop(self) -> None:
         root = self.mixed_solution()
@@ -359,6 +380,7 @@ class GraphTests(Fixture):
             [
                 [
                     "src/Harbor.Web/Harbor.Web.csproj",
+                    "-",
                     "Lantern.Core",
                     "2.0.0.0",
                     "assembly",
@@ -366,6 +388,7 @@ class GraphTests(Fixture):
                 ],
                 [
                     "src/Harbor.Web/Harbor.Web.csproj",
+                    "-",
                     "Lantern.Json",
                     "13.0.0.0",
                     "assembly",
@@ -373,17 +396,25 @@ class GraphTests(Fixture):
                 ],
                 [
                     "src/Harbor.Web/Harbor.Web.csproj",
+                    "-",
                     "Quill.Http",
                     "1.2.0.0",
                     "assembly",
                     "Quill.Http (v1.2.0.0, assembly)",
                 ],
-                ["src/Harbor.Web/Harbor.Web.csproj", "System.Web", "-", "framework", "System.Web (framework)"],
-                ["src/Harbor.Web/Harbor.Web.csproj", "Lantern.Core", "2.0.0", "package", "Lantern.Core (v2.0.0)"],
-                ["src/Harbor.Web/Harbor.Web.csproj", "Lantern.Json", "12.0.3", "package", "Harbor.Core (project)"],
-                ["src/Harbor.Web/Harbor.Web.csproj", "Lantern.Json", "13.0.1", "package", "Lantern.Json (v13.0.1)"],
-                ["src/Harbor.Web/Harbor.Web.csproj", "Quill.Http", "1.2.0", "package", "Quill.Http (v1.2.0)"],
-                ["src/Harbor.Web/Harbor.Web.csproj", "Harbor.Core", "-", "project", "Harbor.Core (project)"],
+                ["src/Harbor.Web/Harbor.Web.csproj", "-", "System.Web", "-", "framework", "System.Web (framework)"],
+                ["src/Harbor.Web/Harbor.Web.csproj", "-", "Lantern.Core", "2.0.0", "package", "Lantern.Core (v2.0.0)"],
+                ["src/Harbor.Web/Harbor.Web.csproj", "-", "Lantern.Json", "12.0.3", "package", "Harbor.Core (project)"],
+                [
+                    "src/Harbor.Web/Harbor.Web.csproj",
+                    "-",
+                    "Lantern.Json",
+                    "13.0.1",
+                    "package",
+                    "Lantern.Json (v13.0.1)",
+                ],
+                ["src/Harbor.Web/Harbor.Web.csproj", "-", "Quill.Http", "1.2.0", "package", "Quill.Http (v1.2.0)"],
+                ["src/Harbor.Web/Harbor.Web.csproj", "-", "Harbor.Core", "-", "project", "Harbor.Core (project)"],
             ],
             self.lines(rows, "REACHES"),
         )
@@ -395,29 +426,52 @@ class GraphTests(Fixture):
         self.assertEqual(0, code)
         self.assertEqual(
             [
-                ["src/Harbor.Core/Harbor.Core.csproj", "Lantern.Json", "package", "12.0.3", "Quill.Http (v1.2.0)"],
-                ["src/Harbor.Tests/Harbor.Tests.csproj", "Lantern.Json", "package", "13.0.1", "Lantern.Json (v13.0.1)"],
+                [
+                    "src/Harbor.Core/Harbor.Core.csproj",
+                    "net8.0",
+                    "Lantern.Json",
+                    "package",
+                    "12.0.3",
+                    "Quill.Http (v1.2.0)",
+                ],
+                [
+                    "src/Harbor.Tests/Harbor.Tests.csproj",
+                    "-",
+                    "Lantern.Json",
+                    "package",
+                    "13.0.1",
+                    "Lantern.Json (v13.0.1)",
+                ],
                 [
                     "src/Harbor.Web/Harbor.Web.csproj",
+                    "-",
                     "Lantern.Json",
                     "reference",
                     "13.0.0.0",
                     "..\\..\\packages\\Lantern.Json.13.0.1\\lib\\net45\\Lantern.Json.dll",
                 ],
-                ["src/Harbor.Web/Harbor.Web.csproj", "Lantern.Json", "package", "13.0.1", "Lantern.Json (v13.0.1)"],
+                [
+                    "src/Harbor.Web/Harbor.Web.csproj",
+                    "-",
+                    "Lantern.Json",
+                    "package",
+                    "13.0.1",
+                    "Lantern.Json (v13.0.1)",
+                ],
             ],
             self.lines(rows, "WHERE"),
         )
         self.assertEqual([["3"]], self.lines(rows, "SUMMARY"))
         _, rows = self.run_main("where", "System.Web", "--root", str(root))
         self.assertEqual(
-            [["src/Harbor.Web/Harbor.Web.csproj", "System.Web", "framework", "-", "-"]], self.lines(rows, "WHERE")
+            [["src/Harbor.Web/Harbor.Web.csproj", "-", "System.Web", "framework", "-", "-"]], self.lines(rows, "WHERE")
         )
         _, rows = self.run_main("where", "Harbor.Core", "--root", str(root))
         self.assertEqual(
             [
                 [
                     "src/Harbor.Tests/Harbor.Tests.csproj",
+                    "-",
                     "Harbor.Core",
                     "project",
                     "-",
@@ -425,6 +479,7 @@ class GraphTests(Fixture):
                 ],
                 [
                     "src/Harbor.Web/Harbor.Web.csproj",
+                    "-",
                     "Harbor.Core",
                     "project",
                     "-",
@@ -440,11 +495,39 @@ class GraphTests(Fixture):
         self.assertEqual(1, code)
         self.assertEqual(
             [
-                ["Lantern.Json", "package", "12.0.3", "src/Harbor.Core/Harbor.Core.csproj", "Quill.Http (v1.2.0)"],
-                ["Lantern.Json", "package", "12.0.3", "src/Harbor.Tests/Harbor.Tests.csproj", "Harbor.Core (project)"],
-                ["Lantern.Json", "package", "12.0.3", "src/Harbor.Web/Harbor.Web.csproj", "Harbor.Core (project)"],
-                ["Lantern.Json", "package", "13.0.1", "src/Harbor.Tests/Harbor.Tests.csproj", "Lantern.Json (v13.0.1)"],
-                ["Lantern.Json", "package", "13.0.1", "src/Harbor.Web/Harbor.Web.csproj", "Lantern.Json (v13.0.1)"],
+                [
+                    "Lantern.Json",
+                    "package",
+                    "12.0.3",
+                    "src/Harbor.Core/Harbor.Core.csproj",
+                    "net8.0",
+                    "Quill.Http (v1.2.0)",
+                ],
+                [
+                    "Lantern.Json",
+                    "package",
+                    "12.0.3",
+                    "src/Harbor.Tests/Harbor.Tests.csproj",
+                    "-",
+                    "Harbor.Core (project)",
+                ],
+                ["Lantern.Json", "package", "12.0.3", "src/Harbor.Web/Harbor.Web.csproj", "-", "Harbor.Core (project)"],
+                [
+                    "Lantern.Json",
+                    "package",
+                    "13.0.1",
+                    "src/Harbor.Tests/Harbor.Tests.csproj",
+                    "-",
+                    "Lantern.Json (v13.0.1)",
+                ],
+                [
+                    "Lantern.Json",
+                    "package",
+                    "13.0.1",
+                    "src/Harbor.Web/Harbor.Web.csproj",
+                    "-",
+                    "Lantern.Json (v13.0.1)",
+                ],
             ],
             self.lines(rows, "CONFLICT"),
         )
@@ -490,7 +573,7 @@ class GraphTests(Fixture):
         )
         # The web project keeps its assembly references though its packages.config was refused.
         self.assertIn(
-            ["src/Harbor.Web/Harbor.Web.csproj", "Lantern.Json", "graph", "Lantern.Json (v13.0.0.0, assembly)"],
+            ["src/Harbor.Web/Harbor.Web.csproj", "-", "Lantern.Json", "graph", "Lantern.Json (v13.0.0.0, assembly)"],
             self.lines(rows, "PATH"),
         )
         self.assertEqual("SUMMARY", rows[-1][0])
@@ -567,10 +650,395 @@ class GraphTests(Fixture):
         self.addCleanup(setattr, dependency_graph, "PATH_LIMIT", original)
         _, rows = self.run_main("why", "Lantern.Json", "--root", str(root))
         self.assertEqual(
-            [["src/Harbor.Web/Harbor.Web.csproj", "Lantern.Json", "1"]],
+            [["src/Harbor.Web/Harbor.Web.csproj", "-", "Lantern.Json", "1"]],
             [row for row in self.lines(rows, "TRUNCATED") if "Web" in row[0]],
         )
         self.assertEqual(1, len([row for row in self.lines(rows, "PATH") if "Web" in row[0]]))
+
+
+API_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFrameworks>net8.0;net9.0</TargetFrameworks></PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Lantern.Bundle" Version="1.0.0" />
+    <Reference Include="Beacon.Legacy"><HintPath>lib\\Beacon.Legacy.dll</HintPath></Reference>
+  </ItemGroup>
+</Project>
+"""
+# A package that ships an assembly named unlike itself, and a framework that reaches a package the other does not.
+API_ASSETS = {
+    "version": 3,
+    "targets": {
+        "net8.0": {
+            "Lantern.Bundle/1.0.0": {
+                "type": "package",
+                "dependencies": {"Lantern.Json": "12.0.3"},
+                "compile": {"lib/net8.0/Beacon.Shared.dll": {}},
+            },
+            "Lantern.Json/12.0.3": {"type": "package", "compile": {"lib/net8.0/Lantern.Json.dll": {}}},
+        },
+        "net9.0": {
+            "Lantern.Bundle/1.0.0": {
+                "type": "package",
+                "dependencies": {"Lantern.Json": "13.0.1", "Only.Second": "2.0.0"},
+                "compile": {"lib/net9.0/Beacon.Shared.dll": {}},
+            },
+            "Lantern.Json/13.0.1": {"type": "package", "compile": {"lib/net9.0/Lantern.Json.dll": {}}},
+            "Only.Second/2.0.0": {"type": "package"},
+        },
+    },
+    "project": {
+        "frameworks": {
+            framework: {"dependencies": {"Lantern.Bundle": {"target": "Package", "version": "[1.0.0, )"}}}
+            for framework in ("net8.0", "net9.0")
+        }
+    },
+}
+BUNDLE_SDK_TEXT = (
+    "Project 'Harbor.Api' has the following dependency graph(s) for 'Lantern.Bundle':\r\n"
+    "\r\n"
+    "  [net8.0]\r\n"
+    "  └── Lantern.Bundle (v1.0.0)\r\n"
+    "\r\n"
+    "  [net9.0]\r\n"
+    "  └── Lantern.Bundle (v1.0.0)\r\n"
+    "\r\n"
+)
+
+
+class TableSdk:
+    """A `dotnet nuget why` that answers from a table keyed by the project path and the package, case-folded, and
+    says every other package is not a dependency."""
+
+    def __init__(self, answers: dict[tuple[str, str], str]) -> None:
+        self.answers = answers
+        self.commands: list[list[str]] = []
+
+    def __call__(self, arguments: Sequence[str], timeout: float) -> Completed:
+        self.commands.append(list(arguments))
+        project, package = Path(arguments[-2]), arguments[-1]
+        text = self.answers.get((same_path(project), package.casefold()))
+        return Completed(0, text or f"Project '{project.stem}' does not have a dependency on '{package}'.\r\n")
+
+
+class FrameworkAndAssemblyTests(Fixture):
+    def api_solution(self) -> Path:
+        project = self.write("src/Harbor.Api/Harbor.Api.csproj", API_PROJECT)
+        self.write("src/Harbor.Api/obj/project.assets.json", json.dumps(API_ASSETS))
+        self.write("Harbor.sln", solution("src\\Harbor.Api\\Harbor.Api.csproj"))
+        return project
+
+    def sdk_services(self, answers: dict[tuple[str, str], str]) -> tuple[TableSdk, Services]:
+        sdk = TableSdk(answers)
+        return sdk, Services(run=sdk, which=self.with_dotnet.which)
+
+    def test_an_assembly_named_unlike_its_package_or_named_by_a_reference_is_found_with_or_without_dotnet(
+        self,
+    ) -> None:
+        project = self.api_solution()
+        sdk, with_sdk = self.sdk_services({})
+        expected = [
+            [
+                "src/Harbor.Api/Harbor.Api.csproj",
+                "net8.0;net9.0",
+                "Beacon.Shared",
+                "graph",
+                "Lantern.Bundle (v1.0.0) > Beacon.Shared (assembly)",
+            ],
+            ["src/Harbor.Api/Harbor.Api.csproj", "net8.0;net9.0", "Beacon.Legacy", "graph", "Beacon.Legacy (assembly)"],
+        ]
+        for services in (self.without_dotnet, with_sdk):
+            with self.subTest(dotnet=services is with_sdk):
+                code, rows = self.run_main(
+                    "why", "Beacon.Shared", "Beacon.Legacy", "--root", str(self.root), services=services
+                )
+                self.assertEqual(0, code)
+                self.assertEqual(expected, self.lines(rows, "PATH"))
+                self.assertEqual([["2", "2", "0"]], self.lines(rows, "SUMMARY"))
+        # The SDK was asked for both names and found no package by either, so the graph walk answered them.
+        self.assertEqual(
+            [[str(project), "Beacon.Shared"], [str(project), "Beacon.Legacy"]], [c[3:] for c in sdk.commands]
+        )
+        _, rows = self.run_main("where", "beacon.shared", "--root", str(self.root))
+        self.assertEqual(
+            [
+                [
+                    "src/Harbor.Api/Harbor.Api.csproj",
+                    "net8.0;net9.0",
+                    "Beacon.Shared",
+                    "package",
+                    "1.0.0",
+                    "Lantern.Bundle (v1.0.0)",
+                ]
+            ],
+            self.lines(rows, "WHERE"),
+        )
+
+    def test_dotnet_changes_only_the_source_of_a_package_chain(self) -> None:
+        project = self.api_solution()
+        _, with_sdk = self.sdk_services({(same_path(project), "lantern.bundle"): BUNDLE_SDK_TEXT})
+        answers: dict[str, list[list[str]]] = {}
+        for source, services in (("sdk", with_sdk), ("graph", self.without_dotnet)):
+            _, rows = self.run_main("why", "Lantern.Bundle", "--root", str(self.root), services=services)
+            answers[source] = self.lines(rows, "PATH")
+        self.assertEqual(
+            [["src/Harbor.Api/Harbor.Api.csproj", "net8.0;net9.0", "Lantern.Bundle", "sdk", "Lantern.Bundle (v1.0.0)"]],
+            answers["sdk"],
+        )
+        self.assertEqual([[*row[:3], "graph", row[4]] for row in answers["sdk"]], answers["graph"])
+
+    def test_every_framework_of_a_restore_answers_and_labels_its_lines(self) -> None:
+        self.api_solution()
+        _, rows = self.run_main("why", "Only.Second", "Lantern.Json", "--root", str(self.root))
+        self.assertEqual(
+            [
+                [
+                    "src/Harbor.Api/Harbor.Api.csproj",
+                    "net9.0",
+                    "Only.Second",
+                    "graph",
+                    "Lantern.Bundle (v1.0.0) > Only.Second (v2.0.0)",
+                ],
+                [
+                    "src/Harbor.Api/Harbor.Api.csproj",
+                    "net8.0",
+                    "Lantern.Json",
+                    "graph",
+                    "Lantern.Bundle (v1.0.0) > Lantern.Json (v12.0.3)",
+                ],
+                [
+                    "src/Harbor.Api/Harbor.Api.csproj",
+                    "net9.0",
+                    "Lantern.Json",
+                    "graph",
+                    "Lantern.Bundle (v1.0.0) > Lantern.Json (v13.0.1)",
+                ],
+            ],
+            self.lines(rows, "PATH"),
+        )
+        _, rows = self.run_main("where", "Only.Second", "--root", str(self.root))
+        self.assertEqual(
+            [
+                [
+                    "src/Harbor.Api/Harbor.Api.csproj",
+                    "net9.0",
+                    "Only.Second",
+                    "package",
+                    "2.0.0",
+                    "Lantern.Bundle (v1.0.0)",
+                ]
+            ],
+            self.lines(rows, "WHERE"),
+        )
+        project = str(self.root / "src" / "Harbor.Api" / "Harbor.Api.csproj")
+        _, rows = self.run_main("why", "--all", "--project", project, "--root", str(self.root))
+        reaches = self.lines(rows, "REACHES")
+        self.assertIn(
+            [
+                "src/Harbor.Api/Harbor.Api.csproj",
+                "net9.0",
+                "Only.Second",
+                "2.0.0",
+                "package",
+                "Lantern.Bundle (v1.0.0)",
+            ],
+            reaches,
+        )
+        self.assertIn(
+            [
+                "src/Harbor.Api/Harbor.Api.csproj",
+                "net8.0;net9.0",
+                "Lantern.Bundle",
+                "1.0.0",
+                "package",
+                "Lantern.Bundle (v1.0.0)",
+            ],
+            reaches,
+        )
+
+    def test_two_frameworks_of_one_project_at_different_versions_are_not_a_conflict(self) -> None:
+        self.api_solution()
+        code, rows = self.run_main("conflicts", "--root", str(self.root))
+        self.assertEqual((0, [], [["0", "0"]]), (code, self.lines(rows, "CONFLICT"), self.lines(rows, "SUMMARY")))
+        # Another project that wants a third version is at odds with each framework.
+        self.write(
+            "src/Harbor.Cli/Harbor.Cli.csproj",
+            '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup>'
+            '<PackageReference Include="Lantern.Json" Version="11.0.0" /></ItemGroup></Project>',
+        )
+        self.write("Harbor.sln", solution("src\\Harbor.Api\\Harbor.Api.csproj", "src\\Harbor.Cli\\Harbor.Cli.csproj"))
+        code, rows = self.run_main("conflicts", "--root", str(self.root))
+        self.assertEqual(
+            [
+                [
+                    "Lantern.Json",
+                    "package",
+                    "11.0.0",
+                    "src/Harbor.Cli/Harbor.Cli.csproj",
+                    "-",
+                    "Lantern.Json (v11.0.0)",
+                ],
+                [
+                    "Lantern.Json",
+                    "package",
+                    "12.0.3",
+                    "src/Harbor.Api/Harbor.Api.csproj",
+                    "net8.0",
+                    "Lantern.Bundle (v1.0.0)",
+                ],
+                [
+                    "Lantern.Json",
+                    "package",
+                    "13.0.1",
+                    "src/Harbor.Api/Harbor.Api.csproj",
+                    "net9.0",
+                    "Lantern.Bundle (v1.0.0)",
+                ],
+            ],
+            self.lines(rows, "CONFLICT"),
+        )
+        self.assertEqual(1, code)
+
+    def test_two_restored_projects_with_one_file_name_keep_their_own_sdk_answers(self) -> None:
+        shop = """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+  <ItemGroup><PackageReference Include="{package}" Version="1.0.0" /></ItemGroup>
+</Project>
+"""
+        projects = []
+        for folder, package in (("src/Api", "Lantern.Bundle"), ("tools/Api", "Quill.Http")):
+            projects.append(self.write(f"{folder}/Shop.csproj", shop.format(package=package)))
+            self.write(f"{folder}/obj/project.assets.json", json.dumps(CORE_ASSETS))
+        self.write("Shop.sln", solution("src\\Api\\Shop.csproj", "tools\\Api\\Shop.csproj"))
+        chain = (
+            "Project 'Shop' has the following dependency graph(s) for 'Lantern.Json':\r\n\r\n  [net8.0]\r\n"
+            "  └── {first} (v1.0.0)\r\n      └── Lantern.Json (v12.0.3)\r\n\r\n"
+        )
+        _, services = self.sdk_services(
+            {
+                (same_path(projects[0]), "lantern.json"): chain.format(first="Lantern.Bundle"),
+                (same_path(projects[1]), "lantern.json"): chain.format(first="Quill.Http"),
+            }
+        )
+        _, rows = self.run_main("why", "Lantern.Json", "--root", str(self.root), services=services)
+        self.assertEqual(
+            [
+                [
+                    "src/Api/Shop.csproj",
+                    "net8.0",
+                    "Lantern.Json",
+                    "sdk",
+                    "Lantern.Bundle (v1.0.0) > Lantern.Json (v12.0.3)",
+                ],
+                [
+                    "tools/Api/Shop.csproj",
+                    "net8.0",
+                    "Lantern.Json",
+                    "sdk",
+                    "Quill.Http (v1.0.0) > Lantern.Json (v12.0.3)",
+                ],
+            ],
+            self.lines(rows, "PATH"),
+        )
+
+    def test_two_referenced_projects_with_one_assembly_name_are_each_walked(self) -> None:
+        shop = '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="{0}" Version="1.0.0" />' + (
+            "</ItemGroup></Project>"
+        )
+        self.write("src/Api/Shop.csproj", shop.format("Lantern.Bundle"))
+        self.write("tools/Api/Shop.csproj", shop.format("Quill.Http"))
+        host = self.write(
+            "src/Host/Harbor.Host.csproj",
+            '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup>'
+            '<ProjectReference Include="..\\Api\\Shop.csproj" />'
+            '<ProjectReference Include="..\\..\\tools\\Api\\Shop.csproj" />'
+            "</ItemGroup></Project>",
+        )
+        self.write("Harbor.sln", solution("src\\Host\\Harbor.Host.csproj"))
+        _, rows = self.run_main("why", "--all", "--project", str(host), "--root", str(self.root))
+        self.assertEqual(
+            [("Lantern.Bundle", "1.0.0"), ("Quill.Http", "1.0.0")],
+            [(row[2], row[3]) for row in self.lines(rows, "REACHES") if row[4] == "package"],
+        )
+
+
+class UnreadableInputTests(Fixture):
+    def test_an_unreadable_central_versions_file_is_reported_once_and_each_project_keeps_its_own_facts(self) -> None:
+        root = self.mixed_solution()
+        self.write("Directory.Packages.props", "<!DOCTYPE x><Project />")
+        code, rows = self.run_main("why", "Quill.Http", "--root", str(root))
+        self.assertEqual(1, code)
+        self.assertEqual(["Directory.Packages.props"], [row[0] for row in self.lines(rows, "UNREADABLE")])
+        self.assertEqual(
+            [
+                ["src/Harbor.Core/Harbor.Core.csproj", "sdk", "assets", "listed"],
+                ["src/Harbor.Tests/Harbor.Tests.csproj", "sdk", "direct", "listed"],
+                ["src/Harbor.Web/Harbor.Web.csproj", "legacy", "nuspec", "listed"],
+            ],
+            self.lines(rows, "PROJECT"),
+        )
+        # The test project still reaches its project reference, and asks for its package at no known version.
+        self.assertIn(
+            [
+                "src/Harbor.Tests/Harbor.Tests.csproj",
+                "-",
+                "Quill.Http",
+                "graph",
+                "Harbor.Core (project) > Quill.Http (v1.2.0)",
+            ],
+            self.lines(rows, "PATH"),
+        )
+        _, rows = self.run_main("why", "Lantern.Json", "--root", str(root))
+        self.assertIn(
+            ["src/Harbor.Tests/Harbor.Tests.csproj", "-", "Lantern.Json", "graph", "Lantern.Json (v?)"],
+            self.lines(rows, "PATH"),
+        )
+
+    def test_a_referenced_project_whose_folder_is_missing_costs_only_its_own_facts(self) -> None:
+        root = self.mixed_solution()
+        self.write(
+            "src/Harbor.Tests/Harbor.Tests.csproj",
+            TESTS_PROJECT.replace("</ItemGroup>", '<ProjectReference Include="../Missing/Gone.csproj" /></ItemGroup>'),
+        )
+        code, rows = self.run_main("why", "Lantern.Json", "--root", str(root))
+        self.assertEqual(1, code)
+        self.assertEqual(["src/Missing/Gone.csproj"], [row[0] for row in self.lines(rows, "UNREADABLE")])
+        self.assertIn(["src/Missing/Gone.csproj", "legacy", "direct", "referenced"], self.lines(rows, "PROJECT"))
+        self.assertEqual(7, len(self.lines(rows, "PATH")))
+        self.assertEqual([["7", "1", "0"]], self.lines(rows, "SUMMARY"))
+        self.assertFalse(any(row[0].startswith("FAILED") for row in rows))
+
+    def test_a_malformed_slnx_is_reported_unreadable_never_answered_as_an_empty_solution(self) -> None:
+        self.mixed_solution().unlink()
+        solution_file = self.write(
+            "Harbor.slnx", '<Solution><Project Path="src/Harbor.Web/Harbor.Web.csproj"></Solution>'
+        )
+        code, rows = self.run_main("conflicts", "--root", str(solution_file))
+        self.assertEqual(1, code)
+        ((file, reason),) = self.lines(rows, "UNREADABLE")
+        self.assertEqual("Harbor.slnx", file)
+        self.assertIn("not well-formed", reason)
+        self.assertEqual([], self.lines(rows, "PROJECT"))
+        self.write("Harbor.slnx", "<Solution />")
+        code, rows = self.run_main("conflicts", "--root", str(solution_file))
+        self.assertEqual((0, []), (code, self.lines(rows, "UNREADABLE")))
+
+
+class GraphNarrowingTests(Fixture):
+    def test_graph_narrowed_to_a_project_holds_it_and_the_projects_it_reaches(self) -> None:
+        root = self.mixed_solution()
+        target = self.root / "out" / "graph.mmd"
+        tests = str(self.root / "src" / "Harbor.Tests" / "Harbor.Tests.csproj")
+        code, rows = self.run_main("graph", "--project", tests, "--output", str(target), "--root", str(root))
+        self.assertEqual(0, code)
+        text = target.read_text(encoding="utf-8")
+        self.assertIn('["src/Harbor.Tests/Harbor.Tests.csproj"]:::project', text)
+        self.assertIn('["src/Harbor.Core/Harbor.Core.csproj"]:::project', text)
+        self.assertIn('["Quill.Http 1.2.0"]:::package', text)
+        self.assertNotIn("Harbor.Web", text)
+        self.assertNotIn("System.Web", text)
+        code, rows = self.run_main("graph", "--project", str(self.root / "nowhere.csproj"), "--root", str(root))
+        self.assertEqual(1, code)
+        self.assertIn("is not a project of", rows[-1][0])
 
 
 class EntryPointTests(Fixture):
@@ -588,7 +1056,7 @@ class EntryPointTests(Fixture):
         self.write("src/Harbor.Web/Harbor.Web.csproj", WEB_PROJECT.replace("System.Web", "Caf\u00e9.Web"))
         result = self.run_script("where", "Caf\u00e9.Web", env={"PYTHONIOENCODING": "cp1252"})
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-        self.assertIn("WHERE\tsrc/Harbor.Web/Harbor.Web.csproj\tCaf\u00e9.Web\tframework".encode(), result.stdout)
+        self.assertIn("WHERE\tsrc/Harbor.Web/Harbor.Web.csproj\t-\tCaf\u00e9.Web\tframework".encode(), result.stdout)
 
     def test_usage_errors_exit_2_and_a_bad_root_prints_failed_and_exits_1(self) -> None:
         result = self.run_script("why")
