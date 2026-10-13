@@ -6,6 +6,7 @@ import json
 import re
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -16,17 +17,32 @@ from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_client import Runner as GhRunner
 
 LIMIT = 1000
-FIELDS = "number,state,headRefOid,headRepository,headRepositoryOwner,mergeCommit"
+FIELDS = "number,state,headRefOid,headRepository,headRepositoryOwner,mergeCommit,baseRefName"
 # GitHub's pull request commits endpoint lists at most this many commits, so a list this long may be truncated.
 COMMIT_LIMIT = 250
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 # GitHubError kinds meaning gh itself did not run to completion: missing, unable to start, or out of time.
 RUN_FAILURES = frozenset({"prerequisite", "execution", "timeout"})
+# A branch name git accepts in a reference, apart from the sequences `..` and `@{`, which _usable_base_name refuses.
+BASE_NAME_PATTERN = re.compile(r"[^\s\x00-\x1f\x7f~^:?*\[\\]+")
 
 InBase = Callable[[str], bool]
 # Whether a branch tip's whole change since it left the base is the patch a merge commit made.
 SamePatch = Callable[[str, str], bool]
+
+
+@dataclass(frozen=True)
+class BaseTests:
+    """The proofs one fetched base branch gives: whether it contains a commit, and whether a tip's whole change
+    since it left the base is the patch a merge commit made."""
+
+    contains: InBase
+    same_patch: SamePatch
+
+
+# The tests of a base branch by its name, or None for a base not fetched locally, which proves nothing.
+Bases = Callable[[str], BaseTests | None]
 
 
 class QueryError(Exception):
@@ -98,9 +114,10 @@ def patch_match(repository_root: str, base_ref: str, git: GitClient | None = Non
 
     Compares the stable patch-id of the diff from the merge base of base_ref and the tip to the tip with that of the
     diff from the merge commit's first parent to the merge commit, so a tip amended or rebased after its pull request
-    merged still matches the squash commit. A merge commit missing locally, or an empty change on either side, is no
-    match; a diff that fails for any other reason, such as a base_ref that does not resolve, is a QueryError. The
-    tip's patch-id is computed once, however many merge commits it is compared with.
+    merged still matches the squash commit. A tip sharing no history with base_ref, a merge commit missing locally,
+    or an empty change on either side is no match; a merge base or diff that fails for any other reason, such as a
+    base_ref that does not resolve, is a QueryError. The tip's patch-id is computed once, however many merge commits
+    it is compared with.
     """
     client = git or GitClient()
     tips: dict[str, str | None] = {}
@@ -115,14 +132,46 @@ def patch_match(repository_root: str, base_ref: str, git: GitClient | None = Non
         words = ids.stdout.split()
         return words[0] if words and SHA_PATTERN.fullmatch(words[0]) else None
 
+    def tip_patch_id(tip: str) -> str | None:
+        found = _git_output(client, repository_root, ["merge-base", base_ref, tip])
+        if found.returncode == 1:
+            return None  # no merge base: the tip never left base_ref, so no change of it is a change since then
+        fork_point = found.stdout.strip()
+        if found.returncode != 0 or not SHA_PATTERN.fullmatch(fork_point):
+            raise QueryError(f"cannot find the merge base of {base_ref} and {tip}: {(found.stderr or '').strip()}")
+        return patch_id(fork_point, tip)
+
     def same_patch(tip: str, merge_commit: str) -> bool:
         if tip not in tips:
-            tips[tip] = patch_id(f"{base_ref}...{tip}")
+            tips[tip] = tip_patch_id(tip)
         if tips[tip] is None or not _commit_present(client, repository_root, merge_commit):
             return False
         return tips[tip] == patch_id(f"{merge_commit}^", merge_commit)
 
     return same_patch
+
+
+def fetched_bases(repository_root: str, git: GitClient | None = None) -> Bases:
+    """The tests each fetched base branch gives, by name, built once per base from `refs/remotes/origin/<name>`.
+
+    A name origin has no fetched branch for, or that resolves to no commit, gives None: such a base proves nothing.
+    """
+    client = git or GitClient()
+    known: dict[str, BaseTests | None] = {}
+
+    def tests(base: str) -> BaseTests | None:
+        if base not in known:
+            ref = f"refs/remotes/origin/{base}"
+            resolved = _git_output(client, repository_root, ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"])
+            fetched = resolved.returncode == 0 and SHA_PATTERN.fullmatch(resolved.stdout.strip()) is not None
+            known[base] = (
+                BaseTests(base_contains(repository_root, ref, client), patch_match(repository_root, ref, client))
+                if fetched
+                else None
+            )
+        return known[base]
+
+    return tests
 
 
 def _commit_parents(commit: Any) -> tuple[str, list[str]] | None:
@@ -201,18 +250,20 @@ def classify(
     head_sha: str,
     upstream_sha: str | None = None,
     runner: GhRunner = subprocess_runner,
-    in_base: InBase | None = None,
-    same_patch: SamePatch | None = None,
+    bases: Bases | None = None,
+    default_base: str | None = None,
 ) -> str:
     """Return the branch state.
 
     OPEN: any pull request with this head name is open.
-    MERGED or CLOSED: a same-repository pull request was merged or closed at exactly the branch's current tip,
-    and the fetched upstream, when it exists, has no other commits. Given in_base, a merged same-repository pull
-    request also proves the branch MERGED when the tip is one of its commits and every commit after the tip is a
-    merge that only brought in commits reachable from the base, as GitHub's "Update branch" makes. Given same_patch,
-    a merged same-repository pull request also proves it when its merge commit made the branch's whole change, as a
-    tip amended or rebased after the pull request opened keeps it.
+    MERGED or CLOSED: a same-repository pull request was merged or closed at exactly the branch's current tip, and the
+    fetched upstream, when it exists, has no newer work: no other commit, or none the pull request's base does not
+    already hold. Given bases, each merged same-repository pull request is judged against its own base branch, the
+    `baseRefName` gh lists, or default_base when that is not a usable name; a base not fetched locally proves
+    nothing. Such a pull request also proves the branch MERGED when the tip is one of its commits and every commit
+    after the tip is a merge that only brought in commits reachable from the base, as GitHub's "Update branch"
+    makes, or when its merge commit made the branch's whole change since the branch left the base, as a tip amended
+    or rebased after the pull request opened keeps it.
     UNMATCHED: same-repository pull requests exist, but none describes the branch's current work.
     NONE: no same-repository pull request uses this head name.
     """
@@ -220,14 +271,20 @@ def classify(
     pulls = _list_pulls(repository, branch, runner)
     if any(pull["state"] == "OPEN" for pull in pulls):
         return "OPEN"
-    same_repository, matched = _matched_states(pulls, repository.casefold(), head_sha, upstream_sha)
-    if "MERGED" in matched:
+    expected = repository.casefold()
+    own = [pull for pull in pulls if _head_repository(pull) == expected]
+    if not own:
+        return "NONE"
+    settled = [pull for pull in own if not _newer_upstream_work(pull, head_sha, upstream_sha, bases, default_base)]
+    exact = {pull["state"] for pull in settled if pull.get("headRefOid") == head_sha}
+    if "MERGED" in exact:
         return "MERGED"
-    if upstream_sha in (None, head_sha) and _proven_merged(pulls, repository, head_sha, runner, in_base, same_patch):
+    merged = [pull for pull in settled if pull["state"] == "MERGED"]
+    if bases is not None and _proven_merged(merged, repository, head_sha, runner, bases, default_base):
         return "MERGED"
-    if "CLOSED" in matched:
+    if "CLOSED" in exact:
         return "CLOSED"
-    return "UNMATCHED" if same_repository else "NONE"
+    return "UNMATCHED"
 
 
 def _check_identities(repository: str, head_sha: str, upstream_sha: str | None) -> None:
@@ -253,50 +310,64 @@ def _list_pulls(repository: str, branch: str, runner: GhRunner) -> list[dict[str
     return pulls
 
 
-def _matched_states(
-    pulls: list[dict[str, Any]], expected: str, head_sha: str, upstream_sha: str | None
-) -> tuple[bool, set[str]]:
-    """Whether any pull request is from this repository, and the states of those at exactly the branch's tip."""
-    same_repository = False
-    matched: set[str] = set()
-    for pull in pulls:
-        state = pull["state"]
-        if _head_repository(pull) != expected:
-            continue
-        same_repository = True
-        if pull.get("headRefOid") == head_sha and upstream_sha in (None, head_sha):
-            matched.add(state)
-    return same_repository, matched
+def _usable_base_name(name: Any) -> bool:
+    """Whether gh listed a base name git could hold as a branch, so `refs/remotes/origin/<name>` names its fetch."""
+    return (
+        isinstance(name, str)
+        and BASE_NAME_PATTERN.fullmatch(name) is not None
+        and ".." not in name
+        and "@{" not in name
+    )
+
+
+def _base_tests(pull: dict[str, Any], bases: Bases | None, default_base: str | None) -> BaseTests | None:
+    """The tests of the pull request's base: its `baseRefName` when that is a usable name, else default_base; None
+    without bases, without a name, or for a base not fetched locally."""
+    if bases is None:
+        return None
+    name = pull.get("baseRefName")
+    if not _usable_base_name(name):
+        name = default_base
+    return bases(name) if name else None
+
+
+def _newer_upstream_work(
+    pull: dict[str, Any], head_sha: str, upstream_sha: str | None, bases: Bases | None, default_base: str | None
+) -> bool:
+    """Whether the fetched upstream holds work the pull request cannot describe: a commit other than the tip that the
+    pull request's base does not already hold, as a branch tracking its base has none."""
+    if upstream_sha in (None, head_sha):
+        return False
+    tests = _base_tests(pull, bases, default_base)
+    return tests is None or not tests.contains(upstream_sha)
 
 
 def _proven_merged(
-    pulls: list[dict[str, Any]],
+    merged: list[dict[str, Any]],
     repository: str,
     head_sha: str,
     runner: GhRunner,
-    in_base: InBase | None,
-    same_patch: SamePatch | None,
+    bases: Bases,
+    default_base: str | None,
 ) -> bool:
-    """Whether a merged same-repository pull request proves the branch merged without ending at its tip: by its
-    commits, given in_base, and then by its merge commit's patch, given same_patch."""
-    if in_base is not None and _merged_after_update(pulls, repository, head_sha, runner, in_base):
+    """Whether one of the merged same-repository pull requests proves the branch merged without ending at its tip,
+    each judged against its own base: by its commits, and then by its merge commit's patch."""
+    judged = [(pull, tests) for pull in merged if (tests := _base_tests(pull, bases, default_base)) is not None]
+    if _merged_after_update(judged, repository, head_sha, runner):
         return True
-    return same_patch is not None and _merged_by_patch(pulls, repository, head_sha, same_patch)
+    return _merged_by_patch(judged, head_sha)
 
 
 def _merged_after_update(
-    pulls: list[dict[str, Any]], repository: str, head_sha: str, runner: GhRunner, in_base: InBase
+    judged: list[tuple[dict[str, Any], BaseTests]], repository: str, head_sha: str, runner: GhRunner
 ) -> bool:
-    """Whether a merged same-repository pull request only merged the base after the tip, read in listing order."""
-    expected = repository.casefold()
-    for pull in pulls:
+    """Whether a merged pull request only merged its base after the tip, read in listing order."""
+    for pull, tests in judged:
         number, pull_head = pull.get("number"), pull.get("headRefOid")
         if (
-            pull["state"] == "MERGED"
-            and _head_repository(pull) == expected
-            and isinstance(number, int)
+            isinstance(number, int)
             and isinstance(pull_head, str)
-            and only_base_merged_after(head_sha, pull_head, pull_commits(repository, number, runner), in_base)
+            and only_base_merged_after(head_sha, pull_head, pull_commits(repository, number, runner), tests.contains)
         ):
             return True
     return False
@@ -309,17 +380,11 @@ def _merge_commit(pull: dict[str, Any]) -> str | None:
     return oid if isinstance(oid, str) and SHA_PATTERN.fullmatch(oid) else None
 
 
-def _merged_by_patch(pulls: list[dict[str, Any]], repository: str, head_sha: str, same_patch: SamePatch) -> bool:
-    """Whether a merged same-repository pull request's merge commit made the branch's whole change, in listing
-    order."""
-    expected = repository.casefold()
-    for pull in pulls:
+def _merged_by_patch(judged: list[tuple[dict[str, Any], BaseTests]], head_sha: str) -> bool:
+    """Whether a merged pull request's merge commit made the branch's whole change since it left that pull request's
+    base, in listing order."""
+    for pull, tests in judged:
         merge_commit = _merge_commit(pull)
-        if (
-            pull["state"] == "MERGED"
-            and _head_repository(pull) == expected
-            and merge_commit is not None
-            and same_patch(head_sha, merge_commit)
-        ):
+        if merge_commit is not None and tests.same_patch(head_sha, merge_commit):
             return True
     return False

@@ -174,7 +174,15 @@ class FakeGitHub:
             return CommandResult(1, "", "HTTP 500")
         return CommandResult(0, json.dumps(self.pulls.get(branch, [])), "")
 
-    def pull(self, branch: str, state: str, sha: str, commits: str = "", merge_commit: str | None = None) -> None:
+    def pull(
+        self,
+        branch: str,
+        state: str,
+        sha: str,
+        commits: str = "",
+        merge_commit: str | None = None,
+        base: str = "main",
+    ) -> None:
         number = sum(len(pulls) for pulls in self.pulls.values()) + 1
         self.pulls.setdefault(branch, []).append(
             {
@@ -184,6 +192,7 @@ class FakeGitHub:
                 "headRepository": {"name": "repo"},
                 "headRepositoryOwner": {"login": "owner"},
                 "mergeCommit": None if merge_commit is None else {"oid": merge_commit},
+                "baseRefName": base,
             }
         )
         self.commits[number] = commits
@@ -302,6 +311,44 @@ class Fixture(CleanupTestCase):
             rewritten = self.commit(self.clone, f"more work on {name}")
         git(self.clone, "switch", "--quiet", "main")
         self.github.pull(name, "MERGED", tip, merge_commit=squash)
+        return rewritten
+
+    def remote_release(self, base: str, *, orphan: bool = False) -> None:
+        """A release branch on the remote, from main with a release-only commit, or sharing no history with it."""
+        if orphan:
+            git(self.other, "checkout", "--quiet", "--orphan", base)
+            git(self.other, "rm", "-r", "--cached", "--quiet", "--ignore-unmatch", ".")
+            for path in self.other.iterdir():
+                if path.is_file():
+                    path.unlink()
+        else:
+            git(self.other, "switch", "--quiet", "-c", base, "main")
+        (self.other / "notes.txt").write_text(f"notes for {base}\n", encoding="utf-8")
+        git(self.other, "add", "notes.txt")
+        self.commit(self.other, f"notes for {base}")
+        git(self.other, "push", "--quiet", "-u", "origin", base)
+        git(self.other, "switch", "--quiet", "main")
+        git(self.clone, "fetch", "--quiet", "origin")
+
+    def squashed_into(self, name: str, base: str) -> str:
+        """A branch off the fetched `base` with a file change, squash-merged into `base` by the collaborator and
+        deleted remotely, then reworded locally without changing its content; the reworded tip."""
+        git(self.clone, "switch", "--quiet", "-c", name, f"origin/{base}")
+        (self.clone / f"{name}.txt").write_text(f"work on {name}\n", encoding="utf-8")
+        git(self.clone, "add", f"{name}.txt")
+        tip = self.commit(self.clone, f"work on {name}")
+        git(self.clone, "push", "--quiet", "-u", "origin", name)
+        git(self.other, "fetch", "--quiet", "origin")
+        git(self.other, "switch", "--quiet", base)
+        git(self.other, "merge", "--quiet", "--squash", f"origin/{name}")
+        squash = self.commit(self.other, f"Squash-merge {name}")
+        git(self.other, "push", "--quiet", "origin", base)
+        git(self.other, "switch", "--quiet", "main")
+        self.delete_remotely(name)
+        rewritten = git(self.clone, "commit-tree", f"{name}^{{tree}}", "-p", f"{name}^", "-m", f"reworded {name}")
+        git(self.clone, "update-ref", f"refs/heads/{name}", rewritten)
+        git(self.clone, "switch", "--quiet", "main")
+        self.github.pull(name, "MERGED", tip, merge_commit=squash, base=base)
         return rewritten
 
     # Commands
@@ -683,6 +730,49 @@ class PlanApplyTests(Fixture):
         self.assertEqual(extended, self.tip("extended-gone"), "a later commit with real changes keeps the branch")
         summary = "\n".join(fields[0] for fields in facts(applied, "SUMMARY"))
         self.assertIn("  PR history unmatched:    1 — extended-gone (kept)", summary)
+
+    def test_a_pull_request_merged_into_another_base_still_deletes_its_branch(self) -> None:
+        self.remote_release("release/1.0")
+        self.remote_release("release/old", orphan=True)
+        self.squashed_into("hotfix-gone", "release/1.0")
+        self.squashed_into("oldfix-gone", "release/old")
+        # A squash-merged branch that tracks main itself, checked out clean, with main's tip as its upstream.
+        tracking = self.rewritten_and_squashed("tracks-main")
+        git(self.clone, "branch", "--set-upstream-to=origin/main", "tracks-main")
+        tracking_tree = self.area / "tracking wt"
+        git(self.clone, "worktree", "add", "--quiet", str(tracking_tree), "tracks-main")
+        extended = self.rewritten_and_squashed("extended-gone", extra_work=True)
+        planned, applied = self.clean()
+        actions = {fields[0]: (fields[1], fields[2], fields[4]) for fields in facts(planned, "BRANCH")}
+        self.assertEqual(
+            {
+                "hotfix-gone": ("gone", "MERGED", "delete"),
+                "oldfix-gone": ("gone", "MERGED", "delete"),
+                "tracks-main": ("tracking", "MERGED", "remove-worktree"),
+                "extended-gone": ("gone", "UNMATCHED", "keep"),
+            },
+            actions,
+        )
+        self.assertEqual(
+            {"hotfix-gone", "oldfix-gone", "tracks-main"}, {fields[0] for fields in facts(applied, "DELETED")}
+        )
+        self.assertEqual(
+            {"tracking wt": "tracks-main"}, {Path(fields[0]).name: fields[1] for fields in facts(applied, "REMOVED")}
+        )
+        for name in ("hotfix-gone", "oldfix-gone", "tracks-main"):
+            self.assertIsNone(self.tip(name))
+        self.assertFalse(tracking_tree.exists())
+        self.assertNotEqual(tracking, extended)
+        self.assertEqual(extended, self.tip("extended-gone"), "a later commit with real changes keeps the branch")
+        summary = "\n".join(fields[0] for fields in facts(applied, "SUMMARY"))
+        self.assertIn("  PR history unmatched:    1 — extended-gone (kept)", summary)
+        self.assertNotIn("PR status unverified:    1", summary)
+        self.assertEqual(
+            {"release/1.0", "release/old"},
+            {branch for branch in git(self.clone, "branch", "-r", "--format=%(refname:lstrip=3)").split("\n")}
+            - {"main", "HEAD"},
+            "the release branches stay on the remote; no local branch of them was made",
+        )
 
     def test_local_only_branches_wait_for_confirmation(self) -> None:
         git(self.clone, "branch", "local-merged", "main")
