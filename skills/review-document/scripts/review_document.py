@@ -61,7 +61,15 @@ from review_github import PULL_PAGE_SIZE, GitHubClient
 from review_github import READ as RESPONSE
 from review_io import PersistenceError, working_path
 from review_operation import parse_pull_selector
-from review_runtime import DEFAULT_DOCUMENT_STAGE, DOCUMENT_STAGES, MAX_CHANGED_FILE_BYTES, blob_matches
+from review_runtime import (
+    DEFAULT_DOCUMENT_STAGE,
+    DOCUMENT_STAGES,
+    MAX_CHANGED_FILE_BYTES,
+    PathRoom,
+    blob_matches,
+    path_room,
+    unsafe_path_reason,
+)
 
 # The documents the design-review specialist reviews: Markdown and plain-text markup, matched by suffix, ignoring case.
 DESIGN_SUFFIXES = frozenset({".md", ".markdown", ".txt", ".rst", ".adoc"})
@@ -79,6 +87,9 @@ BINARY_PROBE = 8000
 LOCAL_OWNER = "review-document.local"
 LOOSE_REPOSITORY = f"{LOCAL_OWNER}/document"
 REPORT_NAME = "report.md"
+# No bound on a path's length: a pull request's path is judged by its name before the folder of its fixture is known,
+# and by its length in the room that folder leaves when the fixture is written.
+ANY_LENGTH = PathRoom(sys.maxsize, sys.maxsize)
 
 
 class DocumentError(ValueError):
@@ -256,8 +267,26 @@ def same_text(form: str, base: bytes, head: bytes) -> bool:
         return False
 
 
-def write_file(root: Path, relative: str, content: bytes) -> None:
+def refuse_path(relative: str, room: PathRoom) -> None:
+    """Refuse a path the snapshot's unsafe-path rules refuse in `room`, naming the rule, since the snapshot made from
+    the fixture would leave the document out, and a name Windows reads as a drive or a device is never written."""
+    reason = unsafe_path_reason(relative, room)
+    if reason is not None:
+        raise DocumentError(f"{relative} is not a path a fixture can hold: {reason}")
+
+
+def fixture_target(root: Path, relative: str) -> Path:
+    """Where the fixture tree at `root` holds `relative`, refused before anything is written when the snapshot's
+    path rules refuse it in the room `root` leaves, or when it would land outside `root`."""
+    refuse_path(relative, path_room(root))
     target = root.joinpath(*PurePosixPath(relative).parts)
+    if not target.resolve().is_relative_to(root.resolve()):
+        raise DocumentError(f"{relative} is not a path a fixture can hold: it lands outside the fixture")
+    return target
+
+
+def write_file(root: Path, relative: str, content: bytes) -> None:
+    target = fixture_target(root, relative)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(content)
 
@@ -295,7 +324,9 @@ def reviewed_by_design(relative: str) -> bool:
 
 
 def in_manifest_folder(relative: str) -> bool:
-    return relative.startswith(MANIFEST_PATH.split("/")[0] + "/")
+    """Whether `relative` is in the manifest's folder, in any case, since a case-insensitive file system merges the
+    spellings."""
+    return relative.casefold().startswith(MANIFEST_PATH.split("/")[0] + "/")
 
 
 def write_fixture(fixture: Path, document: Document, pull: dict[str, Any], stage: str | None) -> list[str]:
@@ -303,6 +334,7 @@ def write_fixture(fixture: Path, document: Document, pull: dict[str, Any], stage
     the lines that name it. A document the design reviewer reviews is recorded at `stage`, review by default."""
     relative, base = document.relative, document.base
     design = reviewed_by_design(relative)
+    fixture_target(fixture / "head", relative)
     for tree in ("base", "head"):
         (fixture / tree).mkdir(parents=True)
     if base.content is not None:
@@ -420,6 +452,7 @@ def pull_document(github: GitHubClient, pull: Pull, change: Change, requested: s
     parts = relative.split("/")
     if unprintable or "\\" in relative or any(part in ("", ".", "..") for part in parts):
         raise DocumentError(f"{relative} is not a path a fixture can hold")
+    refuse_path(relative, ANY_LENGTH)
     if in_manifest_folder(relative):
         raise DocumentError(f"{relative} is where the fixture keeps its reviewer manifest")
     if change.status == "removed":
