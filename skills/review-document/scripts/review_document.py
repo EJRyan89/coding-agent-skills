@@ -1,21 +1,34 @@
-"""Review one document from its file path, as a one-file fixture canary of code-review-core.
+"""Review one document from its file path, or each document a pull request changes, as one-file fixture canaries of
+code-review-core.
 
 Every command prints one fact per line:
   build   Writes a fixture directory (see review_canary.py in code-review-core) that holds the document as one change,
           and prints DOCUMENT <path in the fixture>, BASE committed <commit> | BASE none <reason>,
-          ROUTE design-review | ROUTE generic, FIXTURE <fixture directory>, and OUTPUT <output directory>.
+          ROUTE design-review | ROUTE generic, FIXTURE <fixture directory>, and OUTPUT <output directory>. Given a
+          pull request, it first prints PULL <owner/repo#number> base <commit> head <commit>, then that block for each
+          document it reviews, each in its own fixture, and SKIPPED <path> <reason> for a changed document it cannot.
   report  Copies the report `finalize` recorded into the output directory, never over a file already there, and
           prints REPORT <copy> and RECORD <the record JSON beside the original>.
 A failure prints `FAILED <reason>` and exits 1; a usage error exits 2.
 
-The head is the file as it is on disk. The base is the version committed at HEAD when the file lies in a git checkout
-and is committed there, so the review covers the uncommitted change; otherwise, or with `--base none`, the base has no
-such file and the whole document is reviewed. A Word document or a PDF, a format `review_documents.document_format`
-names, is written to the fixture as its exact bytes, so the fixture canary's snapshot extracts its text as it does a
-pull request's; one whose text would not be extracted, or whose lines of text the change leaves as they were, labels
-aside, is refused here first. A Markdown, plain-text, Word, or PDF document (DESIGN_SUFFIXES, or a document format)
-goes to the suite's design-review specialist, through a specialists manifest in the fixture's base tree; any other
-text file goes to the generic reviewer. Nothing here calls GitHub, nothing is written to the checkout, and `--output`
+For a path, the head is the file as it is on disk. The base is the version committed at HEAD when the file lies in a
+git checkout and is committed there, so the review covers the uncommitted change; otherwise, or with `--base none`, the
+base has no such file and the whole document is reviewed.
+
+A pull request is named as owner/repo#number or by its URL, and validated as review-prs validates its --pull
+selectors. Its changed files are read from GitHub, through code-review-core's GitHubClient and with no checkout, and
+those the design reviewer reviews (DESIGN_SUFFIXES, or a document format) are kept, or the one `--document` names. Each
+one's head is its blob at the pull request's head commit, and its base its blob at the merge base GitHub diffs the pull
+request against, under its old path when it was renamed; a document the pull request adds has no base. The fixture's
+pull.json names the real pull request, so the record's URL is its URL, and the commits; the pull request's title,
+description, branch names, and comments are never read into it, so the only text from GitHub a reviewer reads is the
+documents' own. Nothing is written to GitHub.
+
+A Word document or a PDF, a format `review_documents.document_format` names, is written to the fixture as its exact
+bytes, so the fixture canary's snapshot extracts its text as it does a pull request's; one whose text would not be
+extracted, or whose lines of text the change leaves as they were, labels aside, is refused here first. A Markdown,
+plain-text, Word, or PDF document goes to the suite's design-review specialist, through a specialists manifest in the
+fixture's base tree; any other text file goes to the generic reviewer. Nothing is written to a checkout, and `--output`
 must name a new or empty directory, so nothing already there is mixed with the review's files or replaced.
 """
 
@@ -40,11 +53,20 @@ sys.path.insert(0, str(sibling_scripts("code-review-core")))
 from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError
+from github_client import GitHubError
 from review_documents import ExtractionRefused, document_format, extract, unlabeled
+from review_github import PULL_PAGE_SIZE, GitHubClient
+from review_github import READ as RESPONSE
 from review_io import PersistenceError, working_path
+from review_operation import parse_pull_selector
+from review_runtime import MAX_CHANGED_FILE_BYTES, blob_matches
 
 # The documents the design-review specialist reviews: Markdown and plain-text markup, matched by suffix, ignoring case.
 DESIGN_SUFFIXES = frozenset({".md", ".markdown", ".txt", ".rst", ".adoc"})
+ROUTED_KINDS = "a Markdown, plain-text, Word, or PDF document"
+# A pull request's URL, as GitHub shows it; anything after its number, such as /files, is refused.
+PULL_URL = re.compile(r"(?i:https://github\.com)/([^/]+/[^/]+)/pull/([0-9]+)/?")
+PULL_URL_FORM = "https://github.com/<owner>/<repo>/pull/<number>"
 # Where the fixture keeps its specialists manifest, in both trees, so the manifest is never part of the change.
 MANIFEST_PATH = ".review-document/specialists.json"
 FINDING_CATEGORIES = ["requirement-gap", "alternative-unstated", "risk", "open-question", "inconsistency", "rollout"]
@@ -78,30 +100,64 @@ class Location:
     checkout: Path | None
 
 
+@dataclass(frozen=True)
+class Pull:
+    """The pull request whose documents are reviewed, by the commits its documents are read at: the merge base GitHub
+    diffs it against, and its head."""
+
+    repository: str
+    number: int
+    base: str
+    head: str
+
+
+@dataclass(frozen=True)
+class Change:
+    """A file a pull request changes, as its file listing names it."""
+
+    path: str
+    status: str
+    previous: str | None  # the path it had at the base, for a renamed or copied file
+
+
+@dataclass(frozen=True)
+class Document:
+    """A document a fixture holds: its path, its head's bytes, its format, and its base."""
+
+    relative: str
+    content: bytes
+    form: str | None
+    base: Base
+
+
 def document_bytes(path: Path, form: str | None) -> bytes:
-    """The document's bytes: a text file's with its line endings as LF, or a Word document's or a PDF's exactly, once
-    its text extracts to something to review. Refused when it is empty, binary, or a document whose text is not
-    extracted."""
+    """The document's bytes, as `checked_content` keeps them. Refused when it is not a file."""
     if not path.is_file():
         raise DocumentError(f"{path} is not a file")
-    content = path.read_bytes()
+    return checked_content(str(path), path.read_bytes(), form)
+
+
+def checked_content(name: str, content: bytes, form: str | None) -> bytes:
+    """A document's bytes: a text file's with its line endings as LF, or a Word document's or a PDF's exactly, once
+    its text extracts to something to review. Refused, naming the document as `name`, when it is empty, binary, or a
+    document whose text is not extracted."""
     if not content.strip():
-        raise DocumentError(f"{path} is empty")
+        raise DocumentError(f"{name} is empty")
     if form is not None:
-        if not document_text(path, form, content).strip():
-            raise DocumentError(f"{path} holds no text to review")
+        if not document_text(name, form, content).strip():
+            raise DocumentError(f"{name} holds no text to review")
         return content
     if b"\0" in content[:BINARY_PROBE]:
-        raise DocumentError(f"{path} is not a text file, a Word document, or a PDF")
+        raise DocumentError(f"{name} is not a text file, a Word document, or a PDF")
     return normalized(content)
 
 
-def document_text(path: Path, form: str, content: bytes) -> bytes:
+def document_text(name: str, form: str, content: bytes) -> bytes:
     """A document's text as the snapshot extracts it, refused for the reason the snapshot would give."""
     try:
         return extract(form, content)
     except ExtractionRefused as exc:
-        raise DocumentError(f"{path} is a document whose text could not be extracted: {exc}") from exc
+        raise DocumentError(f"{name} is a document whose text could not be extracted: {exc}") from exc
 
 
 def normalized(content: bytes) -> bytes:
@@ -216,33 +272,72 @@ def output_directory(output: Path | None) -> Path | None:
     return directory
 
 
+def refuse_unchanged(document: Document, change: str, where: str = "") -> None:
+    """Refuse a document whose base is its head, or, for a Word document or a PDF, whose base extracts to the same
+    lines of text. `change` names the change looked for, and `where` where it was looked for."""
+    base, content, form = document.base.content, document.content, document.form
+    if base == content:
+        raise DocumentError(
+            f"{document.relative} has no {change}{where}; pass --base none to review the whole document"
+        )
+    if form is not None and base is not None and same_text(form, base, content):
+        raise DocumentError(
+            f"{document.relative} has no {change} to its text{where}, only to formatting, layout, images, or parts "
+            "whose text is not extracted; pass --base none to review the whole document"
+        )
+
+
+def reviewed_by_design(relative: str) -> bool:
+    """Whether the design-review specialist reviews a document at `relative`, by its suffix ignoring case."""
+    return document_format(relative) is not None or PurePosixPath(relative).suffix.lower() in DESIGN_SUFFIXES
+
+
+def in_manifest_folder(relative: str) -> bool:
+    return relative.startswith(MANIFEST_PATH.split("/")[0] + "/")
+
+
+def write_fixture(fixture: Path, document: Document, pull: dict[str, Any]) -> list[str]:
+    """Write the one-file fixture of `document` at `fixture`, around the pull request `pull` describes, and return
+    the lines that name it."""
+    relative, base = document.relative, document.base
+    design = reviewed_by_design(relative)
+    for tree in ("base", "head"):
+        (fixture / tree).mkdir(parents=True)
+    if base.content is not None:
+        write_file(fixture / "base", relative, base.content)
+    write_file(fixture / "head", relative, document.content)
+    pull = {"schema_version": 1, **pull, "threads": []}
+    if design:
+        manifest = (json.dumps(specialists_manifest(relative), indent=2) + "\n").encode("utf-8")
+        for tree in ("base", "head"):
+            write_file(fixture / tree, MANIFEST_PATH, manifest)
+        pull["manifest_path"] = MANIFEST_PATH
+    (fixture / "pull.json").write_text(json.dumps(pull, indent=2) + "\n", encoding="utf-8")
+    return [
+        f"DOCUMENT {relative}",
+        f"BASE committed {base.commit}" if base.commit else f"BASE none {base.reason}",
+        f"ROUTE {'design-review' if design else 'generic'}",
+        f"FIXTURE {fixture}",
+        f"OUTPUT {fixture.parent}",
+    ]
+
+
+def output_root(directory: Path | None) -> Path:
+    return directory or Path(tempfile.mkdtemp(prefix="review-document-")).resolve()
+
+
 def build(path: Path, requested: str | None, output: Path | None, git: GitClient) -> list[str]:
     directory = output_directory(output)
     path = path.resolve()
     form = document_format(path.name)
     content = document_bytes(path, form)
     location = locate(path, git)
-    if location.relative.startswith(MANIFEST_PATH.split("/")[0] + "/"):
+    if in_manifest_folder(location.relative):
         raise DocumentError(f"{location.relative} is where the fixture keeps its reviewer manifest")
     base = choose_base(requested, location, git, text=form is None)
-    if base.content == content:
-        raise DocumentError(
-            f"{location.relative} has no uncommitted change; pass --base none to review the whole document"
-        )
-    if form is not None and base.content is not None and same_text(form, base.content, content):
-        raise DocumentError(
-            f"{location.relative} has no uncommitted change to its text, only to formatting, layout, images, or parts "
-            "whose text is not extracted; pass --base none to review the whole document"
-        )
-    design = form is not None or path.suffix.lower() in DESIGN_SUFFIXES
-    fixture = (directory or Path(tempfile.mkdtemp(prefix="review-document-")).resolve()) / "fixture"
-    for tree in ("base", "head"):
-        (fixture / tree).mkdir(parents=True)
-    if base.content is not None:
-        write_file(fixture / "base", location.relative, base.content)
-    write_file(fixture / "head", location.relative, content)
-    pull: dict[str, Any] = {
-        "schema_version": 1,
+    document = Document(location.relative, content, form, base)
+    refuse_unchanged(document, "uncommitted change")
+    pull = {
         "repository": repository_name(location),
         "number": 1,
         "title": (
@@ -252,21 +347,142 @@ def build(path: Path, requested: str | None, output: Path | None, git: GitClient
         ),
         "base_ref": f"committed {base.commit}" if base.commit else "none",
         "head_ref": "working tree",
-        "threads": [],
     }
-    if design:
-        manifest = (json.dumps(specialists_manifest(location.relative), indent=2) + "\n").encode("utf-8")
-        for tree in ("base", "head"):
-            write_file(fixture / tree, MANIFEST_PATH, manifest)
-        pull["manifest_path"] = MANIFEST_PATH
-    (fixture / "pull.json").write_text(json.dumps(pull, indent=2) + "\n", encoding="utf-8")
-    return [
-        f"DOCUMENT {location.relative}",
-        f"BASE committed {base.commit}" if base.commit else f"BASE none {base.reason}",
-        f"ROUTE {'design-review' if design else 'generic'}",
-        f"FIXTURE {fixture}",
-        f"OUTPUT {fixture.parent}",
-    ]
+    return write_fixture(output_root(directory) / "fixture", document, pull)
+
+
+def pull_reference(argument: str) -> tuple[str, int] | None:
+    """The pull request `argument` names, as owner/repo#number or its URL, or None for a path. A file that exists is
+    always a path; any other argument holding a `#`, and any URL, must name a pull request."""
+    url = PULL_URL.fullmatch(argument)
+    if url is None:
+        if argument.casefold().startswith(("http://", "https://")):
+            raise DocumentError(f"{argument} is not a pull request URL; name one as {PULL_URL_FORM}")
+        if "#" not in argument or Path(argument).exists():
+            return None
+    try:
+        return parse_pull_selector(f"{url.group(1)}#{url.group(2)}" if url else argument)
+    except ValueError as exc:
+        raise DocumentError(f"{argument} names no pull request: {exc}") from exc
+
+
+def pull_changes(github: GitHubClient, repository: str, number: int) -> list[Change]:
+    """Every file the pull request changes, through every page of its file listing."""
+    pages = github.api_json(f"repos/{repository}/pulls/{number}/files?per_page={PULL_PAGE_SIZE}", paginate=True)
+    listed = RESPONSE.array(
+        pages, "pull file pages", lambda page, path: RESPONSE.array(page, path, RESPONSE.json_object)
+    )
+    changes = []
+    for index, entry in enumerate(file for page in listed for file in page):
+        where = f"pull files[{index}]"
+        changes.append(
+            Change(
+                RESPONSE.string(entry.get("filename"), f"{where}.filename"),
+                RESPONSE.string(entry.get("status"), f"{where}.status"),
+                RESPONSE.optional(RESPONSE.string, entry.get("previous_filename"), f"{where}.previous_filename"),
+            )
+        )
+    return changes
+
+
+def pull_blob(github: GitHubClient, repository: str, commit: str, path: str) -> bytes:
+    """The bytes of the file at `path` in `commit`, once they hash to the blob GitHub names; refused over the size a
+    review reads."""
+    blob, content = github.get_file_blob(repository, commit, path, maximum=MAX_CHANGED_FILE_BYTES)
+    if content is None:
+        raise DocumentError(f"{path} is over the {MAX_CHANGED_FILE_BYTES // (1024 * 1024)} MiB a review reads")
+    if not blob_matches(blob, content):
+        raise GitHubError(f"GitHub did not return blob {blob} for {path}", kind="malformed")
+    return content
+
+
+def pull_document(github: GitHubClient, pull: Pull, change: Change, requested: str | None) -> Document:
+    """A changed document of the pull request, read at its head and, unless the whole document was asked for, at the
+    merge base. Refused, naming the document, when it cannot be reviewed."""
+    relative = change.path
+    # A git path may hold a control character, such as a line break, which would break a printed line.
+    unprintable = any(ord(character) < 32 or character == "\x7f" for character in relative)
+    parts = relative.split("/")
+    if unprintable or "\\" in relative or any(part in ("", ".", "..") for part in parts):
+        raise DocumentError(f"{relative} is not a path a fixture can hold")
+    if in_manifest_folder(relative):
+        raise DocumentError(f"{relative} is where the fixture keeps its reviewer manifest")
+    if change.status == "removed":
+        raise DocumentError(f"{relative} is removed in the pull request")
+    form = document_format(relative)
+    content = checked_content(relative, pull_blob(github, pull.repository, pull.head, relative), form)
+    if requested == "none":
+        return Document(relative, content, form, Base(None, None, "the whole document was asked for"))
+    if change.status == "added":
+        return Document(relative, content, form, Base(None, None, "the document is added in the pull request"))
+    base = pull_blob(github, pull.repository, pull.base, change.previous or relative)
+    document = Document(relative, content, form, Base(base if form else normalized(base), pull.base, "committed"))
+    refuse_unchanged(document, "change", " in the pull request")
+    return document
+
+
+def routed_changes(changes: list[Change], selector: str, wanted: str | None) -> list[Change]:
+    """The changes the design reviewer reviews, or the one `wanted` names."""
+    routed = [change for change in changes if reviewed_by_design(change.path)]
+    if not routed:
+        raise DocumentError(
+            f"{selector} changes no document review-document reviews: no changed file is {ROUTED_KINDS}"
+        )
+    if wanted is None:
+        return routed
+    wanted = wanted.replace("\\", "/")
+    chosen = [change for change in routed if change.path == wanted]
+    if not chosen:
+        named = ", ".join(change.path for change in routed)
+        raise DocumentError(f"{wanted} is not a document {selector} changes; name one of: {named}")
+    return chosen
+
+
+def build_pull(
+    reference: tuple[str, int], requested: str | None, wanted: str | None, output: Path | None, github: GitHubClient
+) -> list[str]:
+    """One fixture for each document the pull request changes, or for the one `wanted` names, each in its own
+    numbered folder of the output directory. Without `wanted`, a document that cannot be reviewed is skipped, unless
+    none can."""
+    directory = output_directory(output)
+    repository, number = reference
+    selector = f"{repository}#{number}"
+    metadata = github.get_pull(repository, number)
+    head = metadata["headRefOid"]
+    pull = Pull(repository, number, github.get_merge_base(repository, metadata["baseRefOid"], head), head)
+    routed = routed_changes(pull_changes(github, repository, number), selector, wanted)
+    if requested == "committed":
+        added = next((change.path for change in routed if change.status == "added"), None)
+        if added is not None:
+            raise DocumentError(f"--base committed has nothing to compare with: {added} is added in the pull request")
+    documents: list[Document] = []
+    lines = [f"PULL {selector} base {pull.base} head {pull.head}"]
+    skipped: list[str] = []
+    for change in routed:
+        try:
+            documents.append(pull_document(github, pull, change, requested))
+        except DocumentError as exc:
+            if wanted is not None:
+                raise
+            skipped.append(flat_text(str(exc)))
+    if not documents:
+        raise DocumentError(f"{selector} changes no document that can be reviewed: {'; '.join(skipped)}")
+    root = output_root(directory)
+    for index, document in enumerate(documents, start=1):
+        whole = document.base.commit is None
+        lines += write_fixture(
+            root / str(index) / "fixture",
+            document,
+            {
+                "repository": repository,
+                "number": number,
+                "title": f"Review of {document.relative} in {selector}: "
+                + ("the whole document" if whole else "its change"),
+                "base_ref": "none" if whole else f"committed {pull.base}",
+                "head_ref": f"head {pull.head}",
+            },
+        )
+    return lines + [f"SKIPPED {reason}" for reason in skipped]
 
 
 def report(fixture: Path, recorded: Path) -> list[str]:
@@ -292,9 +508,12 @@ def report(fixture: Path, recorded: Path) -> list[str]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
-    build_command = commands.add_parser("build", help="write the one-file fixture for a document")
-    build_command.add_argument("path", type=Path)
+    build_command = commands.add_parser("build", help="write the one-file fixture for each document")
+    build_command.add_argument(
+        "path", help="the document's path, or a pull request as owner/repo#number or its URL, to review its documents"
+    )
     build_command.add_argument("--base", choices=("none", "committed"))
+    build_command.add_argument("--document", help="with a pull request, the one changed document to review")
     build_command.add_argument(
         "--output", type=Path, help="the directory for the fixture and the report; a new temporary one by default"
     )
@@ -304,14 +523,20 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(arguments: list[str] | None = None, git: GitClient | None = None) -> int:
+def build_command(args: argparse.Namespace, git: GitClient | None, github: GitHubClient | None) -> list[str]:
+    reference = pull_reference(args.path)
+    if reference is not None:
+        return build_pull(reference, args.base, args.document, args.output, github or GitHubClient())
+    if args.document is not None:
+        raise DocumentError("--document names a document a pull request changes; name the pull request, not a path")
+    return build(Path(args.path), args.base, args.output, git or GitClient())
+
+
+def main(arguments: list[str] | None = None, git: GitClient | None = None, github: GitHubClient | None = None) -> int:
     args = build_parser().parse_args(arguments)
     try:
-        if args.command == "build":
-            lines = build(args.path, args.base, args.output, git or GitClient())
-        else:
-            lines = report(args.fixture, args.report)
-    except (DocumentError, PersistenceError, GitError, OSError) as exc:
+        lines = build_command(args, git, github) if args.command == "build" else report(args.fixture, args.report)
+    except (DocumentError, PersistenceError, GitError, GitHubError, OSError) as exc:
         print(f"FAILED {flat_text(str(exc))}")
         return 1
     print("\n".join(lines))
