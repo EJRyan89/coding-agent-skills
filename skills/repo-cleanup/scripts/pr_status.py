@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sys
@@ -26,6 +27,22 @@ REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 RUN_FAILURES = frozenset({"prerequisite", "execution", "timeout"})
 # A branch name git accepts in a reference, apart from the sequences `..` and `@{`, which _usable_base_name refuses.
 BASE_NAME_PATTERN = re.compile(r"[^\s\x00-\x1f\x7f~^:?*\[\\]+")
+# The patch the content proof compares, from git's plumbing, which no diff setting colors, hands to an external
+# program, or converts: every byte of each changed line, binary content included, and each file named as itself.
+PATCH_ARGUMENTS = (
+    "diff-tree",
+    "-r",
+    "-p",
+    "--binary",
+    "--no-color",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--no-renames",
+    "--unified=3",
+)
+# The patch lines that say where a change sits rather than what it is: a file's object names and a hunk's line numbers.
+INDEX_LINE = re.compile(rb"index [0-9a-f]+\.\.[0-9a-f]+( [0-7]+)?")
+HUNK_LINE = re.compile(rb"@@ -[0-9]+(,[0-9]+)? \+[0-9]+(,[0-9]+)? @@.*")
 
 InBase = Callable[[str], bool]
 # Whether a branch tip's whole change since it left the base is the patch a merge commit made.
@@ -59,11 +76,9 @@ def _head_repository(pull: dict[str, Any]) -> str | None:
     return f"{login}/{name}".casefold()
 
 
-def _git_output(
-    git: GitClient, repository_root: str, arguments: list[str], input_bytes: bytes | None = None
-) -> GitResult:
+def _git_output(git: GitClient, repository_root: str, arguments: list[str]) -> GitResult:
     try:
-        return git.run(arguments, directory=repository_root, input_bytes=input_bytes)
+        return git.run(arguments, directory=repository_root)
     except GitError as exc:
         raise QueryError(f"could not run git: {exc}") from exc
 
@@ -109,28 +124,42 @@ def base_contains(repository_root: str, base_ref: str, git: GitClient | None = N
     return contains
 
 
+def change_identity(patch: bytes) -> str | None:
+    """A digest of what a patch changes, or None for an empty patch.
+
+    Leaves out each `index` line, whose object names follow the files' whole content, and each hunk's line numbers
+    and function context, which follow where the change sits; every other byte, whitespace included, counts.
+    """
+    if not patch:
+        return None
+    kept = []
+    for line in patch.split(b"\n"):
+        if INDEX_LINE.fullmatch(line):
+            continue
+        kept.append(b"@@" if HUNK_LINE.fullmatch(line) else line)
+    return hashlib.sha256(b"\n".join(kept)).hexdigest()
+
+
 def patch_match(repository_root: str, base_ref: str, git: GitClient | None = None) -> SamePatch:
     """A test of whether a branch tip's whole change since it left base_ref is the patch a merge commit made.
 
-    Compares the stable patch-id of the diff from the merge base of base_ref and the tip to the tip with that of the
-    diff from the merge commit's first parent to the merge commit, so a tip amended or rebased after its pull request
-    merged still matches the squash commit. A tip sharing no history with base_ref, a merge commit missing locally,
-    or an empty change on either side is no match; a merge base or diff that fails for any other reason, such as a
-    base_ref that does not resolve, is a QueryError. The tip's patch-id is computed once, however many merge commits
-    it is compared with.
+    Compares the change from the merge base of base_ref and the tip to the tip with the change from the merge
+    commit's first parent to the merge commit, so a tip amended or rebased after its pull request merged still
+    matches the squash commit. Each change is its patch with only the object names and hunk line numbers left out,
+    so a base that moved elsewhere before the merge still matches, while every other byte counts: unlike git
+    patch-id, which ignores whitespace, a later change of indentation, of a space inside a string, or of a line
+    ending is a change. A tip sharing no history with base_ref, a merge commit missing locally, or an empty change on
+    either side is no match; a merge base or diff that fails for any other reason, such as a base_ref that does not
+    resolve, is a QueryError. The tip's change is read once, however many merge commits it is compared with.
     """
     client = git or GitClient()
     tips: dict[str, str | None] = {}
 
-    def patch_id(*revisions: str) -> str | None:
-        diff = _git_output(client, repository_root, ["diff", *revisions])
+    def patch_id(start: str, end: str) -> str | None:
+        diff = _git_output(client, repository_root, [*PATCH_ARGUMENTS, start, end])
         if diff.returncode != 0:
-            raise QueryError(f"cannot diff {' '.join(revisions)}: {(diff.stderr or '').strip()}")
-        ids = _git_output(client, repository_root, ["patch-id", "--stable"], diff.output_bytes())
-        if ids.returncode != 0:
-            raise QueryError(f"cannot compute the patch-id of {' '.join(revisions)}: {(ids.stderr or '').strip()}")
-        words = ids.stdout.split()
-        return words[0] if words and SHA_PATTERN.fullmatch(words[0]) else None
+            raise QueryError(f"cannot diff {start} {end}: {(diff.stderr or '').strip()}")
+        return change_identity(diff.output_bytes())
 
     def tip_patch_id(tip: str) -> str | None:
         found = _git_output(client, repository_root, ["merge-base", base_ref, tip])

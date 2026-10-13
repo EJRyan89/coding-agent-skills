@@ -417,6 +417,15 @@ def uncovered(manifest: dict[str, Any], changed: list[str]) -> list[str]:
     return [path for path in changed if path not in matched]
 
 
+def unreviewed(manifest: dict[str, Any], outside: list[str], routes: dict[str, list[str]]) -> list[str]:
+    """Of the `uncovered` files, those a manifest that sets `uncovered` to `ignore` leaves unreviewed, in their order:
+    each that no specialist sharing its files reviews on an open route. Every one of them stays out of the generic
+    reviewer's files."""
+    sharing = {specialist["id"] for specialist in manifest["specialists"] if specialist.get("shares_files")}
+    reviewed = {path for identity, files in routes.items() if identity in sharing for path in files}
+    return [path for path in outside if path not in reviewed]
+
+
 def condition_reads(manifest: dict[str, Any], changed: list[str]) -> list[str] | None:
     """The snapshot paths the condition scripts routing these changed files runs read, as glob patterns, each once:
     the `reads` of each condition `route` runs for a specialist with a `when` that matches any of them, and empty
@@ -1267,7 +1276,8 @@ def _generic_role(
     # Matching, not routing, determines generic scope: a closed condition deliberately skips its matched files.
     outside = uncovered(manifest, changed)
     matched = len(outside) < len(changed)
-    ignored = outside if matched and manifest.get("uncovered", "review") == "ignore" else []
+    ignore = matched and manifest.get("uncovered", "review") == "ignore"
+    ignored = unreviewed(manifest, outside, routes) if ignore else []
     if ignored:
         notes.append(
             f"No reviewer reviews {len(ignored)} changed file{'s' if len(ignored) != 1 else ''} that no "
@@ -1276,7 +1286,7 @@ def _generic_role(
         )
     if not matched:
         reviewed = _to_review(changed, review_files)
-    elif ignored:
+    elif ignore:
         reviewed = []
     else:
         reviewed = _to_review(outside, review_files)

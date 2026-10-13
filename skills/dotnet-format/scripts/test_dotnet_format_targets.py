@@ -674,7 +674,9 @@ class ResolveTests(GitTestCase):
         repo.commit("solutions")
         self.assertEqual([["Legacy.sln", "1"]], self.values(self.resolve(), "SOLUTION"))
 
-    def test_an_slnx_that_is_not_xml_owns_nothing(self) -> None:
+    def test_an_slnx_it_cannot_read_fails_with_the_reason_and_a_readable_one_owning_nothing_stops(self) -> None:
+        # A solution that is not well-formed XML, or declares a DOCTYPE or an entity, is reported as unreadable:
+        # taking it for one that lists no project would tell the user their file belongs to no solution.
         repo = self.repository
         repo.write("Lib/Lib.csproj", SDK_PROJECT)
         repo.write("Lib/Code.cs")
@@ -685,8 +687,15 @@ class ResolveTests(GitTestCase):
         )
         repo.write("Other.slnx", '<Solution><Project Path="Other/Other.csproj" /><Project /></Solution>\n')
         repo.commit("solutions")
+        for unreadable, reason in (("Broken.slnx", "not well-formed"), ("Entity.slnx", "DOCTYPE")):
+            with self.subTest(solution=unreadable):
+                failure = self.failed()
+                self.assertTrue(failure.startswith(f"{repo.root / unreadable} cannot be read: "), failure)
+                self.assertIn(reason, failure)
+                (repo.root / unreadable).unlink()
+        repo.commit("readable solutions only")
         self.assertEqual(
-            [["changed files do not belong to any solution found: Broken.slnx, Entity.slnx, Other.slnx"]],
+            [["changed files do not belong to any solution found: Other.slnx"]],
             self.values(self.resolve(), "STOP"),
         )
 
