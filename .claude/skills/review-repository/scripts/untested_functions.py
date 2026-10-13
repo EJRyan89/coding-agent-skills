@@ -15,9 +15,10 @@ method is the method's, not its class's; a removed definition is gone and needs 
 new name, changed.
 
 A test is a suite by validation's rule, at the head: a file under tests/ (outside tests/fixtures/) or a skill's
-scripts/ whose name or stem matches SUITE_NAMES, with a SCRIPT_SUFFIXES extension, so a test the pull request deletes
-names nothing. A test names a Python definition only through the module it imports: `module.name`, or `from module
-import name`; a method as an attribute in a test that names its class, and a dunder method by naming its class.
+scripts/ whose name or stem matches SUITE_NAMES in conditions.py, with a SCRIPT_SUFFIXES extension, so a test the
+pull request deletes names nothing. A test names a Python definition only through the module it imports:
+`module.name`, or `from module import name`; a method as an attribute in a test that names its class, and a dunder
+method by naming its class.
 A string or a comment never counts, so neither a patch target nor a note does, and neither does `run` in
 `subprocess.run`, nor a common name in a test of another module. A script's `main` also counts as named when a test
 names the script's file name outside a comment, since that test runs it. A test names a PowerShell or Bash function
@@ -38,7 +39,6 @@ from __future__ import annotations
 
 import argparse
 import ast
-import fnmatch
 import io
 import os
 import re
@@ -50,18 +50,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-core" / "scripts"))
 
+from conditions import DIFF_VARIABLE, OUTPUT_VARIABLE, SCRIPT_SUFFIXES, is_suite
 from console import failed_line, run_main
+from diff_paths import header_path
 
 EXIT_CONTRACT_EXEMPT = (
     "a code-review condition: exit 0 opens its route and 1 closes it, so a failure exits 2, which fails the review "
     "rather than silently closing the route"
 )
-DIFF_VARIABLE = "CODE_REVIEW_DIFF_FILE"
-OUTPUT_VARIABLE = "CODE_REVIEW_CONDITION_OUTPUT"
-SCRIPT_SUFFIXES = (".py", ".ps1", ".sh")
-# Validation's rule for a suite (TEST_NAME_PATTERNS in tests/validation/validation_support.py), matched ignoring case
-# against a file's name or its stem.
-SUITE_NAMES = ("test_*", "test-*", "*_test", "*-test", "*.test.*")
 # Where validation looks for suites: tests/, and each shipped skill's and each repository skill's scripts/.
 SUITE_ROOTS = ("tests", "skills/**/scripts", ".claude/skills/*/scripts")
 # The route's `reads` in specialists.json: each file under a suite root whose name a suite's may be, with any
@@ -121,16 +117,6 @@ class Definition:
     owner: str | None = None  # a method's class
 
 
-def _diff_path(line: str) -> str | None:
-    """The repository path a `+++ b/<path>` line names, or None for /dev/null."""
-    value = line[4:].rstrip("\n")
-    if value.startswith('"') and value.endswith('"'):
-        value = value[1:-1]
-    if value == "/dev/null":
-        return None
-    return value[2:] if value[:2] in {"a/", "b/"} else value
-
-
 def _hunks(lines: list[str]) -> Iterator[tuple[int, list[str]]]:
     """Each hunk of one file's part of a diff: its first head line and its lines, the header first."""
     start: int | None = None
@@ -150,7 +136,7 @@ def read_diff(text: str) -> list[FileChange]:
     sections = re.split(r"^diff --git .*$", text.replace("\r\n", "\n"), flags=re.MULTILINE)
     for section in sections:
         lines = section.split("\n")
-        heads = [_diff_path(line) for line in lines if line.startswith("+++ ")][:1]
+        heads = [header_path(line[4:]) for line in lines if line.startswith("+++ ")][:1]
         if not heads or heads[0] is None:
             continue
         change = FileChange(heads[0])
@@ -179,15 +165,6 @@ def _read_hunk(change: FileChange, line_number: int, lines: list[str]) -> None:
         line_number += 1
     if removed:
         change.removals.append(Removal(line_number, tuple(removed), hunk))
-
-
-def is_suite(relative: str) -> bool:
-    """Whether a repository path names a suite by validation's rule: its name or stem, ignoring case."""
-    name = relative.rsplit("/", 1)[-1].casefold()
-    stem, dot, suffix = name.rpartition(".")
-    if not dot or f".{suffix}" not in SCRIPT_SUFFIXES:
-        return False
-    return any(fnmatch.fnmatchcase(text, pattern) for pattern in SUITE_NAMES for text in (stem, name))
 
 
 def _blank_after(lines: list[str], end: int) -> int:

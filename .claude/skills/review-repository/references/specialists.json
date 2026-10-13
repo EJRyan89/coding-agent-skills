@@ -8,7 +8,9 @@
   "resources": [
     "docs/design.md",
     "docs/adding-a-skill.md",
+    ".claude/skills/review-repository/scripts/conditions.py",
     "skills/skill-core/scripts/console.py",
+    "skills/skill-core/scripts/diff_paths.py",
     "skills/skill-core/scripts/flat_text.py"
   ],
   "finding_categories": [
