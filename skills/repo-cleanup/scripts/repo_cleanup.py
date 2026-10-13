@@ -46,6 +46,12 @@ PLAN_SCHEMA_VERSION = 1
 # cannot hold both, so protection errs toward keeping.
 RELEASE_PREFIX = "release/"
 STALE_STATES = ("MERGED", "CLOSED")
+# Cache directories a tool rebuilds on its next run and nothing else reads: an ignored path inside one carries no
+# work of the user's, so a worktree holding only such paths is removed with them. Any other ignored path, such as a
+# `.env` or build output, preserves the worktree. Add a name here only for a cache whose loss costs nothing but time.
+DISPOSABLE_CACHES = frozenset({"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "node_modules/.cache"})
+# How many paths a report line names before it counts the rest, so a worktree full of them does not flood the line.
+NAMED_PATHS = 5
 KEPT_STATES = {"OPEN": "pr-open", "UNMATCHED": "pr-unmatched", "UNKNOWN": "pr-unknown"}
 WORKTREE_AREA = "Worktrees"
 GITHUB_REMOTE = re.compile(
@@ -682,18 +688,56 @@ def prune_empty_parents(removed: str, boundaries: list[str]) -> list[str]:
     return pruned
 
 
-def ignored_paths(services: Services, path: str) -> str:
-    """Why a worktree's ignored files keep it, or an empty string when it has none.
+def ignored_entries(services: Services, directory: str | Path) -> list[str]:
+    """The ignored paths under the worktree, as `git status --porcelain -z --ignored=matching` lists them, a directory
+    ignored as a whole as one entry ending in a slash.
 
-    git worktree remove counts a worktree holding only ignored files, such as a .env, as clean and deletes them.
+    The matching mode lists each ignored path itself; the default mode folds a directory whose every file is ignored
+    into one entry for the directory, which would hide a cache under an untracked package.
+    """
+    listing = git_output(services, directory, "status", "--porcelain", "-z", "--ignored=matching")
+    return [entry[3:] for entry in listing.split("\0") if entry.startswith("!! ")]
+
+
+def is_disposable(path: str) -> bool:
+    """Whether the ignored path is one of the regenerable caches, or lies inside one."""
+    inside = f"/{path.replace(chr(92), '/').strip('/')}/"
+    return any(f"/{cache}/" in inside for cache in DISPOSABLE_CACHES)
+
+
+def named(paths: list[str]) -> str:
+    """The first paths, comma-separated, then how many more there are."""
+    rest = len(paths) - NAMED_PATHS
+    return ", ".join(paths[:NAMED_PATHS]) + (f", and {rest} more" if rest > 0 else "")
+
+
+def counted(count: int, noun: str) -> str:
+    return f"{count} {noun}{'' if count == 1 else 's'}"
+
+
+def ignored_paths(services: Services, path: str) -> tuple[str, str]:
+    """Why a worktree's ignored files keep it, and what is deleted with it.
+
+    git worktree remove counts a worktree holding only ignored files, such as a .env, as clean and deletes them, so
+    a worktree holding any ignored path outside DISPOSABLE_CACHES is kept, and the reason names the paths. The second
+    string names the caches, present with the reason or, when the caches are all the worktree holds, alone with an
+    empty reason, so the removal can say what it deleted. Both are empty for a worktree with no ignored path.
     """
     try:
-        count = status_codes(services, path, "--ignored").count("!!")
+        entries = ignored_entries(services, path)
     except CleanupError as exc:
-        return str(exc)
-    if not count:
-        return ""
-    return f"worktree {path} holds {count} ignored path{'' if count == 1 else 's'} git worktree remove would delete"
+        return str(exc), ""
+    kept = [entry for entry in entries if not is_disposable(entry)]
+    caches = [entry for entry in entries if is_disposable(entry)]
+    disposed = f"deleted {counted(len(caches), 'regenerable cache')}: {named(caches)}" if caches else ""
+    if not kept:
+        return "", disposed
+    reason = (
+        f"worktree {path} holds {counted(len(kept), 'ignored path')} git worktree remove would delete: {named(kept)}"
+    )
+    if caches:
+        reason += f"; also {counted(len(caches), 'regenerable cache')}: {named(caches)}"
+    return reason, disposed
 
 
 def remove_worktree(
@@ -702,9 +746,9 @@ def remove_worktree(
     """git worktree remove, which refuses a locked worktree or one with changes, then delete_merged on its branch.
 
     With `ask`, the branch is kept and offered for the user's confirmation instead. A worktree with ignored files is
-    kept, since Git would delete them with it.
+    kept, since Git would delete them with it, unless every one is a regenerable cache, which the REMOVED fact names.
     """
-    held = ignored_paths(services, entry["path"])
+    held, disposed = ignored_paths(services, entry["path"])
     if held:
         record(plan, "PRESERVED", entry["branch"], held)
         return False
@@ -712,7 +756,7 @@ def remove_worktree(
     if removed.returncode != 0:
         record(plan, "PRESERVED", entry["branch"], f"Git refused to remove worktree {entry['path']}: {reason(removed)}")
         return False
-    record(plan, "REMOVED", entry["path"], entry["branch"])
+    record(plan, "REMOVED", entry["path"], entry["branch"], *([disposed] if disposed else []))
     if ask:
         record(plan, "CONFIRM_LOCAL", entry["branch"])
     else:
@@ -860,7 +904,7 @@ def summary_items(plan: dict[str, Any]) -> dict[str, list[str]]:
         skipped.insert(0, f"{plan['default']['name']} (behind {synced['behind']}; {synced['fast_forward'][1]})")
     return {
         "Branches deleted": [fields[0] for fields in events(plan, "DELETED")],
-        "Worktrees removed": [f"{path} ({branch})" for path, branch in events(plan, "REMOVED")],
+        "Worktrees removed": [f"{path} ({'; '.join(rest)})" for path, *rest in events(plan, "REMOVED")],
         "Branches fast-forwarded": [fields[0] for fields in events(plan, "FF")],
         "Fast-forward skipped": skipped,
         "Diverged (manual)": [

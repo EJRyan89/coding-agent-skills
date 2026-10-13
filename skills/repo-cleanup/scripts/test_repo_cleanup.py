@@ -774,6 +774,53 @@ class PlanApplyTests(Fixture):
             "the release branches stay on the remote; no local branch of them was made",
         )
 
+    def test_the_summary_names_caches_deleted_with_a_worktree_and_paths_that_keep_one(self) -> None:
+        (self.clone / ".gitignore").write_text("__pycache__/\n.pytest_cache/\n.env\n", encoding="utf-8")
+        git(self.clone, "add", ".gitignore")
+        self.commit(self.clone, "ignore caches and secrets")
+        git(self.clone, "push", "--quiet", "origin", "main")
+        git(self.other, "pull", "--quiet", "--ff-only", "origin", "main")
+        self.finished_branch("cached-gone")
+        self.finished_branch("secret-gone")
+        cached_tree, secret_tree = self.area / "cached wt", self.area / "secret wt"
+        git(self.clone, "worktree", "add", "--quiet", str(cached_tree), "cached-gone")
+        git(self.clone, "worktree", "add", "--quiet", str(secret_tree), "secret-gone")
+        for tree in (cached_tree, secret_tree):
+            (tree / "__pycache__").mkdir()
+            (tree / "__pycache__" / "m.pyc").write_text("x", encoding="utf-8")
+            (tree / ".pytest_cache").mkdir()
+            (tree / ".pytest_cache" / "v").write_text("x", encoding="utf-8")
+        (secret_tree / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+        _, applied = self.clean()
+        self.assertEqual(
+            {"cached wt": "cached-gone"},
+            {Path(fields[0]).name: fields[1] for fields in facts(applied, "REMOVED")},
+        )
+        self.assertEqual(
+            [["deleted 2 regenerable caches: .pytest_cache/, __pycache__/"]],
+            [fields[2:] for fields in facts(applied, "REMOVED")],
+        )
+        [(preserved_branch, preserved_reason)] = facts(applied, "PRESERVED")
+        [(removed_path, *_)] = facts(applied, "REMOVED")
+        self.assertEqual("secret-gone", preserved_branch)
+        self.assertEqual("secret wt", Path(removed_path.replace("cached", "secret")).name)
+        self.assertEqual(
+            f"worktree {removed_path.replace('cached', 'secret')} holds 1 ignored path git worktree remove would "
+            "delete: .env; also 2 regenerable caches: .pytest_cache/, __pycache__/",
+            preserved_reason,
+        )
+        self.assertFalse(cached_tree.exists())
+        self.assertTrue((secret_tree / ".env").is_file())
+        self.assertIsNone(self.tip("cached-gone"))
+        self.assertIsNotNone(self.tip("secret-gone"))
+        summary = "\n".join(fields[0] for fields in facts(applied, "SUMMARY"))
+        self.assertIn(
+            f"  Worktrees removed:       1 — {removed_path} (cached-gone; deleted 2 regenerable caches: "
+            ".pytest_cache/, __pycache__/)",
+            summary,
+        )
+        self.assertIn(f"  Preserved:               1 — secret-gone: {preserved_reason}", summary)
+
     def test_local_only_branches_wait_for_confirmation(self) -> None:
         git(self.clone, "branch", "local-merged", "main")
         git(self.clone, "switch", "--quiet", "-c", "local-work", "main")
@@ -1586,24 +1633,134 @@ class RemoveWorktreeTests(CleanupTestCase):
         self.assertEqual(["PRESERVED", "untracked"], events[0][:2])
         self.assertTrue((path / "draft.txt").is_file())
 
+    def ignore(self, *patterns: str) -> None:
+        (self.repo / ".gitignore").write_text("".join(f"{pattern}\n" for pattern in patterns), encoding="utf-8")
+        git(self.repo, "add", ".gitignore")
+        git(self.repo, "commit", "--quiet", "-m", "ignore paths")
+
+    def fill(self, path: Path, *files: str) -> None:
+        """Write each file, making its directories, so every ignored path exists in the worktree."""
+        for name in files:
+            (path / name).parent.mkdir(parents=True, exist_ok=True)
+            (path / name).write_text("x", encoding="utf-8")
+        self.assertEqual("", git(path, "status", "--porcelain"), "Git calls it clean")
+
     def test_ignored_files_keep_a_worktree_git_would_remove_with_them(self) -> None:
         # git worktree remove counts a worktree holding only ignored files as clean and deletes them.
-        (self.repo / ".gitignore").write_text(".env\nbin/\n", encoding="utf-8")
-        git(self.repo, "add", ".gitignore")
-        git(self.repo, "commit", "--quiet", "-m", "ignore secrets and builds")
+        self.ignore(".env", "bin/")
         path = self.add("ignored")
-        (path / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
-        (path / "bin").mkdir()
-        (path / "bin" / "app.dll").write_text("x", encoding="utf-8")
-        self.assertEqual("", git(path, "status", "--porcelain"), "Git calls it clean")
+        self.fill(path, ".env", "bin/app.dll")
         removed, events, _ = self.remove("ignored")
         self.assertFalse(removed)
         self.assertEqual(
-            [["PRESERVED", "ignored", f"worktree {path} holds 2 ignored paths git worktree remove would delete"]],
+            [
+                [
+                    "PRESERVED",
+                    "ignored",
+                    f"worktree {path} holds 2 ignored paths git worktree remove would delete: .env, bin/",
+                ]
+            ],
             events,
         )
         self.assertTrue((path / ".env").is_file())
         self.assertIsNotNone(self.tip("ignored"))
+
+    def test_a_worktree_holding_only_regenerable_caches_is_removed_with_them(self) -> None:
+        self.ignore("__pycache__/", "*.pyc", ".pytest_cache/", ".mypy_cache/", ".ruff_cache/", "node_modules/.cache/")
+        path = self.add("cached")
+        self.fill(
+            path,
+            "__pycache__/a.cpython-311.pyc",
+            "pkg/__pycache__/b.cpython-311.pyc",
+            ".pytest_cache/v/cache/nodeids",
+            ".mypy_cache/3.11/a.json",
+            ".ruff_cache/0.1/x",
+            "node_modules/.cache/babel/y",
+        )
+        removed, events, _ = self.remove("cached")
+        self.assertTrue(removed)
+        self.assertEqual(
+            [
+                [
+                    "REMOVED",
+                    str(path),
+                    "cached",
+                    "deleted 6 regenerable caches: .mypy_cache/, .pytest_cache/, .ruff_cache/, __pycache__/, "
+                    "node_modules/.cache/, and 1 more",
+                ],
+                ["DELETED", "cached"],
+            ],
+            events,
+        )
+        self.assertFalse(path.exists())
+        self.assertIsNone(self.tip("cached"))
+
+    def test_any_other_ignored_path_beside_caches_keeps_the_worktree_and_both_are_named(self) -> None:
+        self.ignore("__pycache__/", ".pytest_cache/", "node_modules/", ".env", "*.pyc")
+        path = self.add("mixed")
+        # node_modules as a whole is not a cache: its .cache is hidden under it, and the packages are the user's.
+        self.fill(path, "__pycache__/a.pyc", ".pytest_cache/v/n", "node_modules/.cache/y", "node_modules/left-pad/i.js")
+        removed, events, _ = self.remove("mixed")
+        self.assertFalse(removed)
+        self.assertEqual(
+            [
+                [
+                    "PRESERVED",
+                    "mixed",
+                    f"worktree {path} holds 1 ignored path git worktree remove would delete: node_modules/; "
+                    "also 2 regenerable caches: .pytest_cache/, __pycache__/",
+                ]
+            ],
+            events,
+        )
+        self.assertTrue((path / "node_modules" / "left-pad" / "i.js").is_file())
+        shutil.rmtree(path / "node_modules")
+        # A file ignored by its suffix outside a cache is the user's too, however cache-like its name.
+        self.fill(path, ".env", "pkg/__pycache__/c.pyc", "pkg/stray.pyc")
+        self.plan["events"].clear()
+        removed, events, _ = self.remove("mixed")
+        self.assertFalse(removed)
+        self.assertEqual(
+            f"worktree {path} holds 2 ignored paths git worktree remove would delete: .env, pkg/stray.pyc; "
+            "also 3 regenerable caches: .pytest_cache/, __pycache__/, pkg/__pycache__/",
+            events[0][2],
+        )
+        self.assertIsNotNone(self.tip("mixed"))
+
+    def test_a_preserved_line_names_the_first_ignored_paths_and_counts_the_rest(self) -> None:
+        self.ignore("out*/", "*.log")
+        path = self.add("flooded")
+        self.fill(path, *(f"out{index}/built" for index in range(6)), "a.log", "b.log")
+        removed, events, _ = self.remove("flooded")
+        self.assertFalse(removed)
+        self.assertEqual(
+            f"worktree {path} holds 8 ignored paths git worktree remove would delete: "
+            "a.log, b.log, out0/, out1/, out2/, and 3 more",
+            events[0][2],
+        )
+        self.assertEqual(rc.NAMED_PATHS, 5)
+
+    def test_the_disposable_caches_are_exactly_the_documented_set(self) -> None:
+        self.assertEqual(
+            {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "node_modules/.cache"},
+            set(rc.DISPOSABLE_CACHES),
+        )
+        for path, disposable in (
+            ("__pycache__/", True),
+            ("pkg/__pycache__/", True),
+            ("pkg/__pycache__/a.pyc", True),
+            ("node_modules/.cache/", True),
+            ("web/node_modules/.cache/babel/", True),
+            ("node_modules/", False),
+            ("node_modules/left-pad/", False),
+            (".cache/", False),
+            ("my__pycache__/", False),
+            ("__pycache__.bak/", False),
+            (".env", False),
+            ("pytest_cache/", False),
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(disposable, rc.is_disposable(path))
 
     def test_an_unmerged_branch_outlives_its_removed_worktree(self) -> None:
         path = self.add("unmerged")
