@@ -69,6 +69,17 @@ fi
 trap 'rm -f -- "$0"' EXIT
 unset UPDATE_SKILLS_COPY
 
+# git's repository-selecting variables, which a git hook exports and a shell may pass on, would point every
+# `git -C "$CLONE"` below at another repository, index, or object store: those git clears itself before it works in
+# another repository, but for the command-scope settings in its list, and GIT_NAMESPACE. skill-core's bounded_process.py
+# leaves the same out of every command a skill's Python starts.
+for NAME in $(git rev-parse --local-env-vars 2>/dev/null) GIT_NAMESPACE; do
+  case "$NAME" in
+    GIT_CONFIG_PARAMETERS | GIT_CONFIG_COUNT) ;;
+    *) unset "$NAME" ;;
+  esac
+done
+
 CLONE=$1
 if [ ! -f "$CLONE/deploy.py" ]; then
   echo "FAILED no deploy.py in $CLONE"

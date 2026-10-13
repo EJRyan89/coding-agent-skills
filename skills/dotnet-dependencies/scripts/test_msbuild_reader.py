@@ -16,7 +16,9 @@ from msbuild_reader import (
     PackageRef,
     Unreadable,
     central_versions_file,
+    condition_holds,
     package_assemblies,
+    packages_for,
     read_assets,
     read_central_versions,
     read_nuspec,
@@ -58,6 +60,33 @@ SDK_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
     <PackageReference Update="quill.http" Version="1.3.0" />
     <PackageReference Remove="Beacon.Removed" />
   </ItemGroup>
+</Project>
+"""
+CONDITIONAL_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFrameworks>net8.0;net472</TargetFrameworks></PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Quill.Http" Version="1.2.0" />
+    <PackageReference Include="Lantern.Tuple" Version="4.5.0" Condition="'$(TargetFramework)'=='net472'" />
+    <PackageReference Include="Lantern.Span" Version="4.5.5" Condition=" '$(TargetFramework)' != 'net8.0' " />
+  </ItemGroup>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net8.0' Or '$(TargetFramework)' == 'net9.0'">
+    <PackageReference Include="Lantern.Modern" Version="2.0.0" />
+    <PackageReference Update="Quill.Http" Version="1.3.0" />
+  </ItemGroup>
+  <ItemGroup Condition="$(TargetFramework.StartsWith('net4'))">
+    <PackageReference Include="Lantern.Classic" Version="1.0.0" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(Configuration)' == 'Debug'">
+    <PackageReference Include="Beacon.Debug" Version="1.0.0" />
+  </ItemGroup>
+  <Choose>
+    <When Condition="'$(TargetFramework)' == 'net472'">
+      <ItemGroup><PackageReference Include="Lantern.Chosen" Version="1.0.0" /></ItemGroup>
+    </When>
+    <Otherwise>
+      <ItemGroup><PackageReference Include="Lantern.Other" Version="1.0.0" /></ItemGroup>
+    </Otherwise>
+  </Choose>
 </Project>
 """
 CENTRAL = """<Project>
@@ -195,6 +224,73 @@ class ReaderTests(unittest.TestCase):
             ],
             project.packages,
         )
+
+    def test_a_frameworks_references_are_those_whose_conditions_hold_for_it(self) -> None:
+        project = read_project(self.write("src/Harbor.Api/Harbor.Api.csproj", CONDITIONAL_PROJECT), self.central)
+        debug = "'$(Configuration)' == 'Debug'"
+        expected = {
+            "net8.0": [("Quill.Http", "1.3.0"), ("Lantern.Modern", "2.0.0"), ("Lantern.Other", "1.0.0")],
+            "net472": [
+                ("Quill.Http", "1.2.0"),
+                ("Lantern.Tuple", "4.5.0"),
+                ("Lantern.Span", "4.5.5"),
+                ("Lantern.Classic", "1.0.0"),
+                ("Lantern.Chosen", "1.0.0"),
+            ],
+        }
+        for framework, references in expected.items():
+            with self.subTest(framework=framework):
+                found, unevaluated = packages_for(project.package_items, framework)
+                self.assertEqual(references, [(item.id, item.version) for item in found])
+                # A condition on another property is not guessed: the item is left out and named.
+                self.assertEqual([("Beacon.Debug", debug)], [(item.id, text) for item, text in unevaluated])
+        # With no framework, as for a project with no restore, every item counts whatever its condition.
+        self.assertEqual(
+            [
+                "Quill.Http",
+                "Lantern.Tuple",
+                "Lantern.Span",
+                "Lantern.Modern",
+                "Lantern.Classic",
+                "Beacon.Debug",
+                "Lantern.Chosen",
+                "Lantern.Other",
+            ],
+            [item.id for item in project.packages],
+        )
+        self.assertEqual(project.packages, packages_for(project.package_items, None)[0])
+
+    def test_conditions_are_evaluated_only_in_the_forms_the_reader_knows(self) -> None:
+        holds = [
+            ("'$(TargetFramework)'=='net472'", "net472"),
+            ("'$(TargetFramework)' == 'NET472'", "net472"),
+            ("'net8.0' == '$(TargetFramework)'", "net8.0"),
+            ("$(TargetFramework) == 'net8.0'", "net8.0"),
+            ("('$(TargetFramework)' == 'a' or '$(TargetFramework)' == 'b') AND '$(TargetFramework)' != 'c'", "b"),
+            ("$(TargetFramework.StartsWith('net4'))", "net472"),
+            ("'' == ''", "net8.0"),
+        ]
+        fails = [
+            ("'$(TargetFramework)'=='net472'", "net8.0"),
+            ("'$(TargetFramework)' != 'net8.0'", "net8.0"),
+            ("$(TargetFramework.StartsWith('net4'))", "net8.0"),
+            ("'$(TargetFramework)' == 'a' and '$(TargetFramework)' == 'b'", "a"),
+        ]
+        unknown = [
+            ("'$(Configuration)' == 'Debug'", "net8.0"),
+            ("'$(TargetFrameworkIdentifier)' == '.NETFramework'", "net8.0"),
+            ("$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net6.0'))", "net8.0"),
+            ("Exists('packages.lock.json')", "net8.0"),
+            ("'$(TargetFramework)' ==", "net8.0"),
+            ("('$(TargetFramework)' == 'net8.0'", "net8.0"),
+            ("", "net8.0"),
+            # A restore that names the framework by its long name cannot be compared with a short one.
+            ("'$(TargetFramework)' == 'net472'", ".NETFramework,Version=v4.7.2"),
+        ]
+        for expected, cases in ((True, holds), (False, fails), (None, unknown)):
+            for text, framework in cases:
+                with self.subTest(text=text, framework=framework):
+                    self.assertIs(expected, condition_holds(text, framework))
 
     def test_central_versions_stop_at_the_solution_directory(self) -> None:
         props = self.write("Directory.Packages.props", CENTRAL)

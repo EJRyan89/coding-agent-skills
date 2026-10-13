@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import difflib
+import json
 import os
 import shutil
 import subprocess
@@ -59,14 +60,19 @@ class ConditionTests(unittest.TestCase):
             target.write_bytes(text.encode("utf-8"))
 
     def run_condition(
-        self, before: dict[str, str], after: dict[str, str], environment: dict[str, str] | None = None
+        self,
+        before: dict[str, str],
+        after: dict[str, str],
+        environment: dict[str, str] | None = None,
+        extra: str = "",
     ) -> tuple[int, str, str]:
         """The condition's exit status, its stdout, and the file it wrote, or "", run as a review runs it on a head
-        holding `after` with the diff from `before`."""
+        holding `after` with the diff from `before`, and `extra` after it."""
         shutil.rmtree(self.root)
+        self.root.mkdir()
         self.output.unlink(missing_ok=True)
         self.head(after)
-        self.diff.write_bytes(diff_of(before, after).encode("utf-8"))
+        self.diff.write_bytes((diff_of(before, after) + extra).encode("utf-8"))
         given = (
             {"CODE_REVIEW_DIFF_FILE": str(self.diff), "CODE_REVIEW_CONDITION_OUTPUT": str(self.output)}
             if environment is None
@@ -244,6 +250,53 @@ class ConditionTests(unittest.TestCase):
         self.assertTrue(written.endswith("\nOMITTED 5 more entries past the first 20\n"), written[-200:])
         self.assertLess(len(written.encode("utf-8")), 32 * 1024)
         self.assertIn("y…\n", written)
+
+    def test_a_header_is_read_only_before_a_file_s_first_hunk_and_a_quoted_one_is_decoded(self) -> None:
+        # Added lines that begin `++ ` read `+++ ` in the diff, as a removed `-- ` line reads `--- `: content, which
+        # names no file and holds no quoting to decode, however it is written.
+        text = 'TEXT = """\n++ "oops\n++ b/app/other.py\n"""\n' + SERVICE.replace("sum(values)", "sum(values) or 0")
+        name, quoted = "app/résumé.py", "app/r\\303\\251sum\\303\\251.py"
+        diff = diff_of({name: '"""\n-- "gone\n"""\n' + SERVICE}, {name: text})
+        diff = diff.replace(f"--- a/{name}\n", f'--- "a/{quoted}"\n').replace(f"+++ b/{name}\n", f'+++ "b/{quoted}"\n')
+        self.assertIn('\n+++ "oops\n+++ b/app/other.py\n', diff)
+        self.assertIn('\n--- "gone\n', diff)
+        code, out, written = self.run_condition({name: text}, {name: text}, extra=diff)
+        self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
+        self.assertTrue(written.startswith(f"UNTESTED {name}:8 function total, added lines 9, hunk "), written)
+
+    def test_a_changed_path_that_could_name_a_file_outside_the_snapshot_is_refused_and_never_read(self) -> None:
+        outside = self.root.parent / "outside.py"
+        outside.write_text("def private_name_xyz():\n    pass\n", encoding="utf-8")
+        safe = {"app/service.py": SERVICE.replace("sum(values)", "sum(values) or 0")}
+        # This platform's absolute path to the file, in its own form and with forward slashes: a drive and
+        # backslashes on Windows, a root elsewhere.
+        for path in (
+            "tools\\..\\..\\outside.py",
+            "../outside.py",
+            "tools/../../outside.py",
+            str(outside.resolve()),
+            outside.resolve().as_posix(),
+        ):
+            quoted = '"b/' + path.replace("\\", "\\\\") + '"' if "\\" in path else f"b/{path}"
+            section = (
+                f"diff --git a/x b/x\nnew file mode 100644\n--- /dev/null\n+++ {quoted}\n"
+                "@@ -0,0 +1,2 @@\n+def something_else():\n+    pass\n"
+            )
+            with self.subTest(path=path):
+                code, out, written = self.run_condition({"app/service.py": SERVICE}, safe, extra=section)
+                self.assertEqual(
+                    (
+                        0,
+                        f"REFUSED {json.dumps(path)}: a path that could name a file outside the snapshot\n"
+                        "UNTESTED 1 given=1\n",
+                    ),
+                    (code, out),
+                )
+                self.assertTrue(written.startswith("UNTESTED app/service.py:4 function total"), written)
+                self.assertNotIn("private_name_xyz", written)
+                # Alone, it closes the route and writes nothing.
+                code, out, written = self.run_condition({}, {}, extra=section)
+                self.assertEqual((1, "UNTESTED 0 given=0\n", ""), (code, out.splitlines()[-1] + "\n", written))
 
     def test_a_condition_run_without_its_inputs_fails_the_review(self) -> None:
         self.assertEqual(

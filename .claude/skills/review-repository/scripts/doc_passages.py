@@ -5,20 +5,24 @@ request changes, so the reviewer compares each one with the change.
 
 A review runs it as a specialists manifest's condition. Its environment names the pull request's unified diff in
 CODE_REVIEW_DIFF_FILE and the file to write in CODE_REVIEW_CONDITION_OUTPUT. From the diff it takes the names to look
-for: each changed script's file name (`skill_evals.py`) and, for Python, its module name (`skill_evals`), and each
-top-level function or class a hunk adds, removes, or changes inside (`def`/`class` lines and the hunk header's
-function context). It searches the documents under the snapshot (`docs/`, the top-level README.md, CONTRIBUTING.md, and
-CLAUDE.md, and every skill's SKILL.md, but no release's notes or evaluation results) for those names, but only where
-a document writes code: inside a code span or a fenced block. A file name counts as a path's last segment there; a
-module, function, or class name counts as the whole span, a call (`name(`), or a dotted part (`module.name`). Prose
-never counts, nor `main`, which every entry point defines, nor a name shorter than MIN_NAME_LENGTH, so a name that is
-also a common word does not match every sentence that uses the word. A suite's names, by validation's rule, are
-left out.
+for: each changed script's file name (`skill_evals.py`) and, for Python, its module name (`skill_evals`), a renamed
+script's old ones as well as its new, and each top-level function or class a hunk adds, removes, or changes inside
+(`def`/`class` lines and the hunk header's function context). It searches the documents under the snapshot (`docs/`,
+the top-level README.md, CONTRIBUTING.md, and CLAUDE.md, and every skill's SKILL.md, but no release's notes or
+evaluation results) for those names, but only where a document writes code: inside a code span or a fenced block. A
+file name counts as a path's last segment there; a module, function, or class name counts as the whole span, a call
+(`name(`), or a dotted part (`module.name`). Prose never counts, nor `main`, which every entry point defines, nor a
+name shorter than MIN_NAME_LENGTH, so a name that is also a common word does not match every sentence that uses the
+word. A suite's names, by validation's rule, are left out.
 
 It writes each matching passage (a paragraph, a list item, a table row, a heading, or a fenced block) as
-`PASSAGE <document>:<line> names <name> (<kind> in <changed file>), hunk <header> at new lines <first>-<last>`, then
-the passage, at most MAX_PASSAGES of them taken in turn from each name, the names fewest passages name first, with an
-`OMITTED <n>` line for the rest.
+`PASSAGE <document>:<line> names <name> (<kind> in <changed file>), hunk <header> at new lines <first>-<last>`, with
+`, renamed from <old path>` after the changed file when the name is a renamed script's old one, then the passage, at
+most MAX_PASSAGES of them taken in turn from each name, the names fewest passages name first, with an `OMITTED <n>`
+line for the rest.
+
+It reads the diff through conditions.read_files, so a changed file whose path could name a file outside the snapshot
+gives no name, and gets a `REFUSED <path>: ...` line on stdout instead.
 
 Prints `PASSAGES <found> given=<n>`. Exit status 0 means it wrote passages, which opens the route; 1 that no document
 names what changed, which closes it; 2 a usage error or a last line FAILED <reason>, which fails the review.
@@ -36,9 +40,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-core" / "scripts"))
 
-from conditions import DIFF_VARIABLE, OUTPUT_VARIABLE, SCRIPT_SUFFIXES, is_suite
+from conditions import (
+    DIFF_VARIABLE,
+    OUTPUT_VARIABLE,
+    SCRIPT_SUFFIXES,
+    FileDiff,
+    is_suite,
+    read_files,
+    refusal_line,
+)
 from console import failed_line, run_main
-from diff_paths import header_path
 
 EXIT_CONTRACT_EXEMPT = (
     "a code-review condition: exit 0 opens its route and 1 closes it, so a failure exits 2, which fails the review "
@@ -89,6 +100,7 @@ class Name:
     text: str
     kind: str  # "script", "module", "function", or "class"
     hunk: Hunk
+    renamed_from: str | None = None  # the old path of the renamed file the hunk changes, when the name is that path's
 
     def pattern(self) -> re.Pattern[str]:
         word = re.escape(self.text)
@@ -120,36 +132,31 @@ class Passage:
     at: int  # where in the unit's text the name matched
 
 
-def read_diff(text: str) -> tuple[list[str], list[Hunk], list[tuple[str, str, Hunk]]]:
-    """The changed paths in diff order, their hunks, and each top-level definition a hunk adds, removes, or changes
+def read_diff(files: list[FileDiff]) -> tuple[list[tuple[str, str]], list[Hunk], list[tuple[str, str, Hunk]]]:
+    """The paths whose names to look for in diff order, each with the changed file's path, a renamed file's old path
+    after its new one; the changed files' hunks; and each top-level definition a hunk adds, removes, or changes
     inside, as its keyword, its name, and that hunk."""
-    paths: list[str] = []
+    paths: list[tuple[str, str]] = []
     hunks: list[Hunk] = []
     definitions: list[tuple[str, str, Hunk]] = []
-    old: str | None = None
-    path: str | None = None
-    current: Hunk | None = None
-    for line in text.split("\n"):
-        if line.startswith("diff --git "):
-            old = path = current = None
-        elif line.startswith("--- ") and current is None:
-            old = header_path(line[4:])
-        elif line.startswith("+++ ") and current is None:
-            path = header_path(line[4:]) or old
-            if path is not None and path not in paths:
-                paths.append(path)
-        elif (match := HUNK.match(line)) and path is not None:
-            first = int(match.group(1))
-            count = int(match.group(2)) if match.group(2) is not None else 1
-            current = Hunk(path, line.split(" @@", 1)[0] + " @@", first, first + max(count, 1) - 1)
-            hunks.append(current)
-            context = DEFINITION.match(match.group(3))
-            if context:
-                definitions.append((context.group(1), context.group(2), current))
-        elif current is not None and line[:1] in {"+", "-"}:
-            definition = DEFINITION.match(line[1:])
-            if definition:
-                definitions.append((definition.group(1), definition.group(2), current))
+    for file in files:
+        for named in (file.path, file.old):
+            if named is not None and (named, file.path) not in paths:
+                paths.append((named, file.path))
+        current: Hunk | None = None
+        for line in file.lines:
+            if match := HUNK.match(line):
+                first = int(match.group(1))
+                count = int(match.group(2)) if match.group(2) is not None else 1
+                current = Hunk(file.path, line.split(" @@", 1)[0] + " @@", first, first + max(count, 1) - 1)
+                hunks.append(current)
+                context = DEFINITION.match(match.group(3))
+                if context:
+                    definitions.append((context.group(1), context.group(2), current))
+            elif current is not None and line[:1] in {"+", "-"}:
+                definition = DEFINITION.match(line[1:])
+                if definition:
+                    definitions.append((definition.group(1), definition.group(2), current))
     return paths, hunks, definitions
 
 
@@ -157,12 +164,14 @@ def _counts(text: str) -> bool:
     return len(text) >= MIN_NAME_LENGTH and text not in IGNORED_NAMES and not text.startswith("__")
 
 
-def names_to_find(diff: str) -> list[Name]:
+def names_to_find(files: list[FileDiff]) -> list[Name]:
     """Each name a document may use for what the diff changes, once, with the hunk it relates to, in the order a
     passage is matched: the functions and classes, then the script file names, so a path names its file, then the
-    modules. A test file's names are left out: a document names a test as what holds a rule, which validation checks.
+    modules. A renamed script's old names count as well as its new ones, since a document left naming the old file is
+    the drift a rename leaves. A test file's names are left out: a document names a test as what holds a rule, which
+    validation checks.
     """
-    paths, hunks, definitions = read_diff(diff)
+    paths, hunks, definitions = read_diff(files)
     first_hunk: dict[str, Hunk] = {}
     for hunk in hunks:
         first_hunk.setdefault(hunk.path, hunk)
@@ -170,13 +179,14 @@ def names_to_find(diff: str) -> list[Name]:
     for keyword, text, hunk in definitions:
         if hunk.path.endswith(".py") and not is_suite(hunk.path) and _counts(text):
             names.setdefault(text, Name(text, "class" if keyword == "class" else "function", hunk))
-    scripts = [path for path in paths if path.endswith(SCRIPT_SUFFIXES) and not is_suite(path)]
+    scripts = [(named, path) for named, path in paths if named.endswith(SCRIPT_SUFFIXES) and not is_suite(named)]
     for kind in ("script", "module"):
-        for path in scripts:
-            base = path.rsplit("/", 1)[-1]
+        for named, path in scripts:
+            base = named.rsplit("/", 1)[-1]
             text = base if kind == "script" else base[:-3]
-            if kind == "script" or (path.endswith(".py") and _counts(text)):
-                names.setdefault(text, Name(text, kind, first_hunk.get(path, Hunk(path, "(no hunk)", 0, 0))))
+            if kind == "script" or (named.endswith(".py") and _counts(text)):
+                hunk = first_hunk.get(path, Hunk(path, "(no hunk)", 0, 0))
+                names.setdefault(text, Name(text, kind, hunk, None if named == path else named))
     return list(names.values())
 
 
@@ -264,8 +274,9 @@ def render(found: list[Passage]) -> str:
     blocks = []
     for passage in found[:MAX_PASSAGES]:
         name, hunk = passage.name, passage.name.hunk
+        renamed = f", renamed from {name.renamed_from}" if name.renamed_from else ""
         blocks.append(
-            f"PASSAGE {passage.document}:{passage.unit.line} names {name.text} ({name.kind} in {hunk.path}), "
+            f"PASSAGE {passage.document}:{passage.unit.line} names {name.text} ({name.kind} in {hunk.path}{renamed}), "
             f"hunk {hunk.header} at new lines {hunk.first}-{hunk.last}\n{excerpt(passage)}\n"
         )
     if len(found) > MAX_PASSAGES:
@@ -282,7 +293,10 @@ def _run() -> int:
         print(f"FAILED {' and '.join(missing)} not set; a review sets them for a condition")
         return 2
     diff = Path(os.environ[DIFF_VARIABLE]).read_bytes().decode("utf-8", errors="replace")
-    found = passages(arguments.source_root, names_to_find(diff))
+    files, refused = read_files(diff, arguments.source_root)
+    for path in refused:
+        print(refusal_line(path))
+    found = passages(arguments.source_root, names_to_find(files))
     print(f"PASSAGES {len(found)} given={min(len(found), MAX_PASSAGES)}")
     if not found:
         return 1

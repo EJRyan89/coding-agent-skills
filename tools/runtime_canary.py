@@ -13,14 +13,15 @@ runtime-canary-probe, then each SKILL given. It prints one fact per line:
 
   HOME "<dir>"                                  the throwaway home; delete it with --remove-home when done
   DEPLOYED <source id>                          or DEPLOY_FAILED <source id> "<log>", which stops the run
-  SKIPPED <runtime> "<reason>"                  the runtime is not installed where `deploy.py check` looks
+  SKIPPED <runtime> "<reason>"                  the runtime is not installed where `deploy.py check` looks; when every
+                                                runtime is, the canary exits 1
   DISCOVERED <runtime> <skill> ["<path>"]       the runtime lists the canary's copy, enabled
   SHADOWED <runtime> <skill> "<path>"           it also lists another enabled copy, such as an installed adapter
   PROJECT_COPY <runtime> <skill> "<path>"       it lists the canary home's own deployed skill as a project skill
   DISABLED <runtime> <skill> "<path>"           it lists this copy turned off in its settings
   UNDISCOVERED <runtime> <skill> ["<reason>"]   it does not list the canary's copy enabled; the canary exits 1
   DISCOVERY_NOT_ATTEMPTED <runtime> <skill> "<reason>"  the deployer gave the skill no adapter, so none is looked for
-  DISCOVERY_FAILED <runtime> "<reason>"
+  DISCOVERY_FAILED <runtime> "<reason>"         it cannot read the runtime's skill list; the canary exits 1
   SUPPLIED <runtime> "<key>=<value>"            a setting the canary passes in place of the configuration it ignores
   RUNTIME <runtime> <skill> RAN "<script>" "<cwd>" [exit=<n>] [timed-out] KEPT "<ambient>"
   RUNTIME <runtime> <skill> BLOCKED "<policy>" KEPT "<ambient>"
@@ -55,7 +56,9 @@ Each skill's runtime_support in deploy-meta, the matrix docs/skills.md prints, s
 RAN, `partial` must be RAN or, when the runtime lacks user-only-start, UNSUPPORTED, since the limits of the other
 capabilities lie past the first script the canary asks for, and `none` is NOT_ATTEMPTED. After the runs, one MATRIX
 line per RUNTIME line compares the two, and the canary exits 1 when any disagrees or a skill declares nothing, so the
-matrix cannot claim more than a run shows. It also exits 1 on any UNDISCOVERED line, --discovery-only included.
+matrix cannot claim more than a run shows. It also exits 1 on any UNDISCOVERED or DISCOVERY_FAILED line,
+--discovery-only included, since a runtime whose skill list cannot be read is one whose discovery shows nothing, and
+when every runtime it was asked to check is SKIPPED, since then it checked nothing.
 
 Discovery is held to what `deploy.py verify` holds: the adapters the canary home's manifest records. A skill deployed
 with none, as the deployer deploys a hidden dependency such as code-review-core, is DISCOVERY_NOT_ATTEMPTED, never
@@ -760,11 +763,13 @@ def canary(
     declared = declarations(sources)
     unadapted = without_adapter(home)
     printed = []
+    checked = False
     for runtime in runtimes:
         executable = which(runtime)
         if executable is None:
             print(f"SKIPPED {runtime} {quote(f'{runtime} is not installed')}")
             continue
+        checked = True
         for line in check_runtime(
             runtime,
             executable,
@@ -785,8 +790,10 @@ def canary(
     matrix = compare(printed, declared)
     for line in matrix:
         print(line, flush=True)
-    undiscovered = any(line.startswith("UNDISCOVERED ") for line in printed)
-    return 1 if undiscovered or any(" DISAGREES " in line for line in matrix) else 0
+    # A runtime whose skill list could not be read proves nothing about it, so it fails the run as a miss does, and
+    # so does a run that skipped every runtime, as `deploy.py verify` fails when it finds none to verify.
+    unestablished = not checked or any(line.startswith(("UNDISCOVERED ", "DISCOVERY_FAILED ")) for line in printed)
+    return 1 if unestablished or any(" DISAGREES " in line for line in matrix) else 0
 
 
 def create_home() -> Path:

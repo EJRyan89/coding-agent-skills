@@ -487,6 +487,20 @@ expect_not_deployed "unknown option"
 
 # The deploy can back up the installed skill directory the script runs from, and the temporary copy is removed.
 new_clone
+# A repository-selecting variable a shell or a git hook exported does not point the update at another clone.
+new_clone
+OTHER=$CLONE
+OTHER_HEAD=$(head_of "$OTHER" HEAD)
+new_clone
+publish "change while GIT_DIR names another clone"
+export GIT_DIR="$OTHER/.git" GIT_INDEX_FILE="$OTHER/.git/index" GIT_NAMESPACE="elsewhere"
+run_subject "$CLONE"
+unset GIT_DIR GIT_INDEX_FILE GIT_NAMESPACE
+expect_status 0 "repository variables"
+[ "$(head_of "$CLONE" HEAD)" = "$(head_of "$SEED" HEAD)" ] || fail "repository variables: the named clone did not move"
+[ "$(head_of "$OTHER" HEAD)" = "$OTHER_HEAD" ] || fail "repository variables: the other clone moved"
+expect_deployed "repository variables"
+
 INSTALLED="$FIXTURE/installed skill (copy)"
 mkdir -p "$INSTALLED/scripts" "$FIXTURE/tmp"
 cp "$SUBJECT" "$INSTALLED/scripts/update.sh"

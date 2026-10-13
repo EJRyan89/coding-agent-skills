@@ -431,6 +431,16 @@ class PipelineFixture(GitTestCase):
         git(self.checkout, "commit", "-m", "change")
         return git(self.checkout, "rev-parse", "HEAD")
 
+    def push(self, files: dict[str, str], *numbers: int) -> None:
+        head = self.commit(files)
+        for number in numbers or (12,):
+            self.github.pulls[number] = rest_pull(number, head, self.base)
+
+    @staticmethod
+    def planned(run: Path | str) -> list[tuple[str, list[str], bool]]:
+        plan = json.loads((Path(run) / "work" / "plan.json").read_text(encoding="utf-8"))
+        return [(role["id"], role["files"], role["dispositions_only"]) for role in plan["roles"]]
+
     def configure(
         self,
         reviewer: dict[str, Any] | None = None,
@@ -1820,16 +1830,6 @@ class ReReviewTests(PipelineFixture):
             str(raised.exception),
         )
 
-    @staticmethod
-    def planned(run: Path | str) -> list[tuple[str, list[str], bool]]:
-        plan = json.loads((Path(run) / "work" / "plan.json").read_text(encoding="utf-8"))
-        return [(role["id"], role["files"], role["dispositions_only"]) for role in plan["roles"]]
-
-    def push(self, files: dict[str, str], *numbers: int) -> None:
-        head = self.commit(files)
-        for number in numbers or (12,):
-            self.github.pulls[number] = rest_pull(number, head, self.base)
-
     def test_an_incremental_re_review_reviews_only_the_files_that_changed(self) -> None:
         self.record_initial_review()
         first = archived_record(self.archive, 12)["review"]["patches"]
@@ -2018,6 +2018,14 @@ class ReReviewTests(PipelineFixture):
             "auto", previous(), {"img.png": {"sha256": "c" * 64, "lines": 0}}, thresholds=defaults, entrypoint=False
         )
         self.assertEqual(("full", 1, 0, None), (scope["used"], scope["files_changed"], scope["lines_changed"], files))
+        # A file the earlier record left unreviewed is reviewed in full, unchanged, while the pull request changes it;
+        # the scope still counts only the files that differ.
+        unseen = previous("a.py")
+        unseen["review"]["coverage"] = {"unavailable_sources": [], "uncovered_files": ["b.py", "gone.py"]}
+        for requested, used, review_files in (("incremental", "incremental", {"a.py", "b.py"}), ("full", "full", None)):
+            with self.subTest(unseen=requested):
+                scope, files = rp.choose_scope(requested, unseen, patches, thresholds=defaults, entrypoint=False)
+                self.assertEqual((used, review_files, 1), (scope["used"], files, scope["files_changed"]))
 
     def test_a_re_review_needs_a_scope_and_only_a_re_review_takes_one(self) -> None:
         for arguments in (
@@ -3727,9 +3735,10 @@ class ReviewerSourceTests(PipelineFixture):
             report,
         )
 
-    def sharing_manifest(self, **settings: Any) -> None:
+    def sharing_manifest(self, *, sharer_when: str | None = None, **settings: Any) -> None:
         """Configure a manifest whose Python specialist takes app/service.py, which the fixture's head changes
-        beside CLAUDE.md, and whose other specialist shares its files and matches only CLAUDE.md."""
+        beside CLAUDE.md, and whose other specialist shares its files and matches only CLAUDE.md. `sharer_when`
+        puts the sharing specialist, rather than the Python one, behind the window condition."""
         sharer = {
             "id": "instructions-sharer",
             "category": "Instructions",
@@ -3737,7 +3746,7 @@ class ReviewerSourceTests(PipelineFixture):
             "include": [r"^CLAUDE\.md$"],
             "exclude": [],
             "resources": [],
-            "when": None,
+            "when": sharer_when,
             "shares_files": True,
         }
         python = {
@@ -3747,7 +3756,7 @@ class ReviewerSourceTests(PipelineFixture):
             "include": [r"\.py$"],
             "exclude": [],
             "resources": [],
-            "when": "window",
+            "when": None if sharer_when else "window",
         }
         manifest = self.local_manifest(specialists=[python, sharer], **settings)
         self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(manifest)))
@@ -3779,6 +3788,58 @@ class ReviewerSourceTests(PipelineFixture):
         self.assertNotIn("coverage", archived_record(self.archive, 12)["review"])
         recorded = next(line for line in out.splitlines() if line.startswith("RECORDED "))
         self.assertNotIn("Not reviewed", Path(recorded.split(" ", 4)[4]).read_text(encoding="utf-8"))
+
+    def test_an_incremental_re_review_lists_a_never_reviewed_file_until_a_sharing_specialist_reviews_it(self) -> None:
+        self.sharing_manifest(sharer_when="window", uncovered="ignore")
+
+        def review(scope: str | None) -> tuple[list[tuple[str, list[str], bool]], dict[str, Any] | None, str]:
+            """Prepare and finalize one version: its planned roles, its record's coverage, and its report."""
+            arguments = ["--pull", SELECTOR] if scope is None else ["--re-review", SELECTOR, "--scope", scope]
+            code, out, err = self.run_main("prepare", *arguments)
+            self.assertEqual(0, code, err)
+            run = next(line.split(" ", 2)[2] for line in out.splitlines() if line.startswith("RUN "))
+            planned = self.planned(run)
+            for role in rp.load_run(Path(run))["roles"]:
+                self.write_role_result(role)
+            code, out, err = self.run_main("finalize", "--run", run)
+            self.assertEqual(0, code, err)
+            recorded = next(line for line in out.splitlines() if line.startswith("RECORDED "))
+            report = Path(recorded.split(" ", 4)[4]).read_text(encoding="utf-8")
+            return planned, archived_record(self.archive, 12)["review"].get("coverage"), report
+
+        not_reviewed = (
+            "> **Not reviewed:** no specialist covers these changed files, and the reviewer manifest sets "
+            "`uncovered` to `ignore`, so no reviewer saw them: `CLAUDE.md`."
+        )
+        # Version 1, a full review with the sharing specialist's condition closed: nobody reviews CLAUDE.md.
+        self.push({"app/service.py": "def total(items):\n    return sum(items) or 0\n"})
+        planned, coverage, report = review(None)
+        self.assertEqual([("python-reviewer", ["app/service.py"], False)], planned)
+        self.assertEqual({"unavailable_sources": [], "uncovered_files": ["CLAUDE.md"]}, coverage)
+        self.assertIn(not_reviewed, report)
+        # Version 2 changes only app/service.py and the condition stays closed: CLAUDE.md is still unreviewed.
+        self.push({"app/service.py": "def total(items):\n    return sum(items) or 0.0\n"})
+        planned, coverage, report = review("incremental")
+        self.assertEqual([("python-reviewer", ["app/service.py"], False)], planned)
+        self.assertEqual({"unavailable_sources": [], "uncovered_files": ["CLAUDE.md"]}, coverage)
+        self.assertIn(not_reviewed, report)
+        # Version 3 changes only app/service.py and opens the condition: the sharing specialist reviews the
+        # unchanged CLAUDE.md in full on this head before the record stops listing it.
+        self.push(
+            {"app/service.py": "def total(items):\n    if not items:\n        return 0.0\n    return sum(items)\n"}
+        )
+        planned, coverage, report = review("incremental")
+        self.assertEqual(
+            [("python-reviewer", ["app/service.py"], False), ("instructions-sharer", ["CLAUDE.md"], False)], planned
+        )
+        self.assertIsNone(coverage)
+        self.assertNotIn("Not reviewed", report)
+        # Version 4 changes only app/service.py, so CLAUDE.md, which version 3 reviewed, is not reviewed again.
+        self.push({"app/service.py": "def total(items):\n    if not items:\n        return 0\n    return sum(items)\n"})
+        planned, coverage, report = review("incremental")
+        self.assertEqual([("python-reviewer", ["app/service.py"], False)], planned)
+        self.assertIsNone(coverage)
+        self.assertNotIn("Not reviewed", report)
 
     def test_reviewing_uncovered_files_the_generic_reviewer_still_takes_a_file_a_specialist_shares(self) -> None:
         self.sharing_manifest()

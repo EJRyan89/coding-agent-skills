@@ -272,6 +272,25 @@ class BoundedProcessTests(unittest.TestCase):
             bounded_process.NON_INTERACTIVE,
         )
 
+    def test_the_default_environment_leaves_out_every_repository_selecting_variable_in_any_case(self) -> None:
+        kept = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "a.b", "GIT_CONFIG_VALUE_0": "c", "GIT_SSH_COMMAND": "ssh"}
+        selecting = {name: "elsewhere" for name in bounded_process.REPOSITORY_VARIABLES}
+        with mock.patch.dict(os.environ, {**selecting, **kept}):
+            environment = bounded_process.non_interactive_environment()
+        self.assertEqual(set(), set(selecting) & set(environment))
+        self.assertEqual(kept, {name: environment[name] for name in kept})
+        self.assertEqual(
+            {"PATH": "a path"}, bounded_process.without_repository_variables({"git_dir": "x", "PATH": "a path"})
+        )
+
+    def test_a_command_started_with_the_default_environment_sees_no_repository_selecting_variable(self) -> None:
+        program = "import os; print(sorted(name for name in os.environ if name.upper().startswith('GIT_')))"
+        with mock.patch.dict(os.environ, {"GIT_DIR": "elsewhere", "GIT_INDEX_FILE": "another index"}):
+            finished = run_bounded([sys.executable, "-c", program], 60)
+        self.assertNotIn(b"GIT_DIR", finished.stdout)
+        self.assertNotIn(b"GIT_INDEX_FILE", finished.stdout)
+        self.assertIn(b"GIT_TERMINAL_PROMPT", finished.stdout)
+
 
 # Answers each request line on stdin with "<line> answered" and the environment's prompt switches, then exits.
 ANSWERING_PROGRAM = (
