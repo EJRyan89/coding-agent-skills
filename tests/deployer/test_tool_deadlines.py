@@ -46,7 +46,8 @@ def timed_out_lines(tool: str, seconds: float) -> list[str]:
 
 
 class Stubs:
-    """Stand-in tools under a test's folder: a batch file, as a launcher is, that runs Python."""
+    """Stand-in tools under a test's folder that run Python as a launcher does: a batch file on Windows, and a shell
+    script elsewhere."""
 
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -55,8 +56,13 @@ class Stubs:
         self.program.write_text(HANGING_PROGRAM, encoding="utf-8")
 
     def tool(self, name: str, command: str) -> str:
-        path = self.root / f"{name}.cmd"
-        path.write_text(f"@{command}\r\n", encoding="utf-8")
+        if platform_support.WINDOWS:
+            path = self.root / f"{name}.cmd"
+            path.write_text(f"@{command}\r\n", encoding="utf-8")
+            return str(path)
+        path = self.root / name
+        path.write_bytes(f"#!/bin/sh\n{command}\n".encode())
+        path.chmod(0o755)
         return str(path)
 
     def hanging(self, name: str) -> str:
@@ -134,21 +140,41 @@ class RunToolTests(DeadlineCase):
         self.assertEqual(SHORT_DEADLINE, raised.exception.seconds)
         self.assert_ended(self.stubs.started())
 
-    def test_a_tool_that_cannot_be_held_with_what_it_starts_is_ended_and_refused(self) -> None:
-        refusal = OSError("AssignProcessToJobObject failed: Access is denied. (Windows error 5)")
-        with (
-            mock.patch.object(job_tree, "job_holding", side_effect=refusal),
-            self.assertRaises(errors.DeployError) as raised,
-        ):
-            platform_support.run_tool([sys.executable, "-c", "import time; time.sleep(120)"])
-        self.assertEqual(
-            [
-                f"ERROR: {Path(sys.executable).name} could not be run with an end to every process it starts: it "
-                "could not join a Windows job object: AssignProcessToJobObject failed: Access is denied. (Windows "
-                "error 5)."
-            ],
-            list(raised.exception.lines),
-        )
+    if platform_support.WINDOWS:
+
+        def test_a_tool_that_cannot_be_held_with_what_it_starts_is_ended_and_refused(self) -> None:
+            refusal = OSError("AssignProcessToJobObject failed: Access is denied. (Windows error 5)")
+            with (
+                mock.patch.object(job_tree, "job_holding", side_effect=refusal),
+                self.assertRaises(errors.DeployError) as raised,
+            ):
+                platform_support.run_tool([sys.executable, "-c", "import time; time.sleep(120)"])
+            self.assertEqual(
+                [
+                    f"ERROR: {Path(sys.executable).name} could not be run with an end to every process it starts: it "
+                    "could not join a Windows job object: AssignProcessToJobObject failed: Access is denied. (Windows "
+                    "error 5)."
+                ],
+                list(raised.exception.lines),
+            )
+
+    else:
+
+        def test_a_tool_that_cannot_be_held_with_what_it_starts_is_ended_and_refused(self) -> None:
+            # Started without a session of its own, the tool shares the deployer's process group, so ending a group
+            # could not end what it starts without ending the deployer.
+            with (
+                mock.patch.object(job_tree.GroupTree, "start_options", return_value={}),
+                self.assertRaises(errors.DeployError) as raised,
+            ):
+                platform_support.run_tool([sys.executable, "-c", "import time; time.sleep(120)"])
+            self.assertEqual(
+                [
+                    f"ERROR: {Path(sys.executable).name} could not be run with an end to every process it starts: it "
+                    "was not started as the leader of a process group of its own."
+                ],
+                list(raised.exception.lines),
+            )
 
 
 class DeploymentDeadlineTests(DeadlineCase):

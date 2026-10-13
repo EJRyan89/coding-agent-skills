@@ -1,9 +1,10 @@
-"""A command and every process it starts, held in one Windows job object: a `ProcessTree` for `run_bounded`.
+"""A command and every process it starts, held together so that ending the tree ends them all: a `ProcessTree` for
+`run_bounded`. `process_tree` gives this platform's: a Windows job object, `JobTree`, or elsewhere a process group of a
+session of its own, `GroupTree`.
 
 Leaving `JobTree.hold` ends every process of the job still running, and the job ends them too if this process dies
 first, since it kills its processes when its last handle closes. A process joins the job right after it starts, before
-it has loaded enough to start a program of its own, and every process it then starts joins with it. Only Windows is
-implemented.
+it has loaded enough to start a program of its own, and every process it then starts joins with it.
 
 A command still running that cannot join is killed and refused with `JobRefused`, never run without the job: its
 caller relies on ending everything it starts. One already gone when it would join has nothing left to hold.
@@ -12,16 +13,26 @@ Leaving `hold` returns only once every process of the job has ended and Windows 
 working directory and open files among them, so a caller may remove the folder the command ran in at once. Ending a
 job is asynchronous, so `hold` waits for each process, up to KILL_WAIT_SECONDS; a job whose processes it cannot list,
 end, or see end in that time leaves `hold` with an OSError saying they may still run.
+
+A `GroupTree` starts the command as the leader of a new session, so the command and every process it starts that does
+not leave the group share one process group, which the command cannot fail to join. Leaving `hold` kills the group
+and returns once no process of it is running but the ones that have ended and wait only to be reaped, up to
+KILL_WAIT_SECONDS, or with an OSError saying they may still run. Unlike a job, the group does not outlive this process:
+a process killed outright leaves its group running.
 """
 
 from __future__ import annotations
 
 import ctypes
 import functools
+import os
+import signal
 import subprocess
+import sys
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 
 PROCESS_TERMINATE = 0x0001
@@ -37,6 +48,11 @@ CREATE_NO_WINDOW = 0x08000000
 KILL_WAIT_SECONDS = 10.0
 # Processes a job's first listing has room for; a longer listing is asked for again with room for all.
 LISTED_PROCESSES = 64
+# Seconds between two looks at whether a killed process group still has a process running.
+GROUP_POLL_SECONDS = 0.05
+# Where Linux reports each process, and the states, in its stat file, of one that has ended and waits to be reaped.
+PROC = "/proc"
+ENDED_STATES = frozenset({b"Z", b"X", b"x"})
 
 
 class JobRefused(OSError):
@@ -241,3 +257,87 @@ def job_holding(pid: int) -> int:
         if process:
             kernel32.CloseHandle(process)
     return int(job)
+
+
+class GroupTree:
+    """The process tree of one command where there are no job objects: see the module's description. `hidden_window`
+    is taken for the surface `JobTree` has and changes nothing, since a program here opens no window by starting."""
+
+    hidden_window = False
+
+    def __init__(self, *, hidden_window: bool = False) -> None:
+        self.hidden_window = hidden_window
+
+    def start_options(self) -> dict[str, Any]:
+        return {"start_new_session": True}
+
+    @contextmanager
+    def hold(self, process: subprocess.Popen[Any]) -> Iterator[None]:
+        # The command leads its own session, so its process group's ID is its PID, which names no other process while
+        # its caller's Popen has not reaped it, nor any other group while one of the group's processes runs.
+        try:
+            leads = os.getpgid(process.pid) == process.pid  # type: ignore[attr-defined]  # Unix only
+        except ProcessLookupError:
+            leads = True  # already reaped, so nothing of it is left to hold but what end_group finds
+        if not leads and process.poll() is None:
+            process.kill()
+            process.wait(timeout=KILL_WAIT_SECONDS)
+            raise JobRefused("it was not started as the leader of a process group of its own")
+        try:
+            yield
+        finally:
+            end_group(process.pid)
+
+
+def end_group(group: int) -> None:
+    """Kill every process of the process group `group`, and return once none is running; raises OSError when they
+    cannot be killed or have not ended within KILL_WAIT_SECONDS."""
+    try:
+        os.killpg(group, signal.SIGKILL)  # type: ignore[attr-defined]  # Unix only
+    except ProcessLookupError:
+        return  # no process of the group is left
+    except OSError as error:
+        raise OSError(f"The group's processes may still run: killpg failed: {error}") from error
+    deadline = time.monotonic() + KILL_WAIT_SECONDS
+    while running := group_members(group):
+        if time.monotonic() >= deadline:
+            raise OSError(
+                f"The group's processes may still run: process {running[0]} had not ended {KILL_WAIT_SECONDS:g} "
+                "seconds on"
+            )
+        time.sleep(GROUP_POLL_SECONDS)
+
+
+def group_members(group: int) -> list[int]:
+    """The IDs of the processes of `group` still running, as /proc lists them: a process that has ended and waits only
+    to be reaped holds nothing and runs nothing, so it is not one. Without /proc, the group itself is asked with a
+    signal of none, which counts such a process as running."""
+    try:
+        entries = [entry.name for entry in Path(PROC).iterdir()]
+    except OSError:
+        try:
+            os.killpg(group, 0)  # type: ignore[attr-defined]  # Unix only
+        except ProcessLookupError:
+            return []
+        return [group]
+    running: list[int] = []
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            text = (Path(PROC) / entry / "stat").read_bytes()
+        except OSError:
+            continue  # it ended meanwhile
+        # After the command name, in parentheses, come the state, the parent's ID, and the process group's ID.
+        fields = text[text.rfind(b")") + 1 :].split()
+        if len(fields) > 2 and fields[0] not in ENDED_STATES and fields[2] == str(group).encode():
+            running.append(int(entry))
+    return running
+
+
+def process_tree(*, hidden_window: bool = False) -> JobTree | GroupTree:
+    """A tree for one command and every process it starts, as this platform holds one: a job object on Windows, and a
+    process group elsewhere."""
+    if sys.platform == "win32":
+        return JobTree(hidden_window=hidden_window)
+    return GroupTree(hidden_window=hidden_window)

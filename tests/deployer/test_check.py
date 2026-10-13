@@ -151,6 +151,9 @@ class CheckCommandTests(DeployerTestCase):
     def test_everything_installed_is_ready_to_deploy(self) -> None:
         result = self.check(Machine())
         self.assertEqual(0, result.code, result.output)
+        # Windows checks rendered Bash with Git for Windows' Bash, and every other platform with the system's.
+        bash = "  Bash (needed to deploy; C:/Program Files/Git/bin/bash.exe)\n"
+        before, after = ("", bash.replace("Bash", "Git Bash", 1)) if platform_support.WINDOWS else (bash, "")
         self.assertEqual(
             "\n"
             "Source: Test Skills (test/skills)\n"
@@ -160,8 +163,9 @@ class CheckCommandTests(DeployerTestCase):
             "=== CHECK ===\n"
             "\n"
             "FOUND (7):\n"
+            f"{before}"
             "  Git 2.54.0 (used by every skill)\n"
-            "  Git Bash (needed to deploy; C:/Program Files/Git/bin/bash.exe)\n"
+            f"{after}"
             "  PowerShell 7.6.6 (needed to deploy)\n"
             "  Python 3.12.1 (needed to deploy; 3.11.4 or newer)\n"
             "  ShellCheck 0.11.0 (needed to deploy)\n"
@@ -182,7 +186,8 @@ class CheckCommandTests(DeployerTestCase):
         result = self.check(Machine(missing=("shellcheck",)))
         self.assertEqual(1, result.code, result.output)
         groups = self.report_groups(result.output, "CHECK")
-        self.assertEqual(["ShellCheck (needed to deploy; winget install --id koalaman.shellcheck)"], groups["MISSING"])
+        hint = "winget install --id koalaman.shellcheck" if platform_support.WINDOWS else "sudo apt install shellcheck"
+        self.assertEqual([f"ShellCheck (needed to deploy; {hint})"], groups["MISSING"])
         self.assertTrue(
             result.output.endswith(
                 'Install the missing tools before deploying; see "Installing the tools" in\n'
@@ -653,7 +658,9 @@ class VersionTests(GitTestCase):
 
 class LocatorFixture(GitTestCase):
     """A sanitized fixture: PATH is one empty folder, and the local application data folder is a fresh one with an
-    empty WinGet Links folder, so the only programs `check` and a skill find are the ones a test installs."""
+    empty WinGet Links folder, so the only programs `check` and a skill find are the ones a test installs. Off
+    Windows, where no package manager links commands into a folder of its own, `links` is the folder PATH names
+    after the first, the place the locator looks once the first has no such program."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -662,18 +669,31 @@ class LocatorFixture(GitTestCase):
         root = Path(temporary.name).resolve()
         self.path_folder = root / "on path"
         self.path_folder.mkdir()
-        self.links = root / "local app data" / "Microsoft" / "WinGet" / "Links"
+        if platform_support.WINDOWS:
+            self.links = root / "local app data" / "Microsoft" / "WinGet" / "Links"
+            variables = {
+                "PATH": str(self.path_folder),
+                "PATHEXT": ".com;.exe",
+                "LOCALAPPDATA": str(root / "local app data"),
+            }
+        else:
+            self.links = root / "later on path"
+            variables = {"PATH": f"{self.path_folder}{os.pathsep}{self.links}"}
         self.links.mkdir(parents=True)
-        environment = mock.patch.dict(
-            os.environ,
-            {"PATH": str(self.path_folder), "PATHEXT": ".com;.exe", "LOCALAPPDATA": str(root / "local app data")},
-        )
+        environment = mock.patch.dict(os.environ, variables)
         environment.start()
         self.addCleanup(environment.stop)
 
     def install(self, folder: Path, name: str) -> Path:
-        program = folder / f"{name}.exe"
+        """A program as this platform's package manager installs it: `<name>.exe` on Windows, and elsewhere an
+        executable file named `name`."""
+        if platform_support.WINDOWS:
+            program = folder / f"{name}.exe"
+            program.write_bytes(b"")
+            return program
+        program = folder / name
         program.write_bytes(b"")
+        program.chmod(0o755)
         return program
 
 

@@ -19,7 +19,8 @@ from typing import IO, Any, TypeVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
-from review_process import ProcessStatus, process_status, same_process
+from process_identity import ProcessStatus, process_status
+from review_process import same_process
 from skill_roots import skills_directory_holding
 from typed_fields import FieldError, FieldReader
 

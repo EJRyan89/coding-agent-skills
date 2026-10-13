@@ -36,7 +36,7 @@ class Tool:
 POWERSHELL_VERSION = ("-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.ToString()")
 
 DEPLOY_TOOLS = (
-    Tool("git-bash", "Git Bash", lambda: platform_support.find_bash(), version_arguments=()),
+    Tool("git-bash", platform_support.BASH_NAME, lambda: platform_support.find_bash(), version_arguments=()),
     Tool("shellcheck", "ShellCheck", lambda: platform_support.find_executable("shellcheck")),
     Tool("powershell", "PowerShell", lambda: platform_support.find_powershell(), POWERSHELL_VERSION),
 )

@@ -263,23 +263,6 @@ class HomeTests(DeployerTestCase):
                 self.assertIn(f"\nHome: {forward(self.home)}\n", result.output)
                 self.assertNotIn("WARNING", result.output)
 
-    def test_home_naming_another_directory_is_warned_about_before_anything_changes(self) -> None:
-        with self.environment(str(self.other)):
-            for result in (self.deploy_ok("--all", "--dry-run"), self.check(), self.deploy_ok("--all")):
-                with self.subTest(output=result.output[:40]):
-                    self.assertIn(f"\nHome: {forward(self.home)}\n", result.output)
-                    self.assertIn(self.warning, unwrapped(result.output))
-            # The warning comes before the run reports anything it changed.
-            output = self.deploy_ok("--all").output
-            self.assertLess(output.index("WARNING: HOME"), output.index("=== DEPLOYED ==="))
-        self.assertTrue((self.skills_dir / "alpha" / "SKILL.md").is_file())
-        self.assertFalse(self.other.exists())
-
-    def test_home_equal_to_the_profile_folder_is_not_warned_about(self) -> None:
-        for home in (str(self.home), forward(self.home).upper(), shell_path(self.home)):
-            with self.subTest(home=home), self.environment(home):
-                self.assertNotIn("WARNING", self.deploy_ok("--all", "--dry-run").output)
-
     def test_a_canary_run_names_its_home_and_ignores_home(self) -> None:
         canary = self.root / "canary"
         canary.mkdir()
@@ -288,17 +271,55 @@ class HomeTests(DeployerTestCase):
         self.assertIn(f"\nHome: {forward(canary)}\n", output)
         self.assertNotIn("WARNING", output)
 
-    def test_the_entry_point_deploys_into_the_profile_folder_whatever_home_says(self) -> None:
-        source_id = json.loads((REPOSITORY_ROOT / "source.json").read_text(encoding="utf-8"))["id"]
-        self.make_config(source_id)
-        result = platform_support.run_tool(
-            [sys.executable, "-B", str(REPOSITORY_ROOT / "deploy.py"), "--all", "--dry-run"],
-            {"HOME": shell_path(self.other), "USERPROFILE": str(self.home)},
-        )
-        self.assertEqual(0, result.returncode, result.output)
-        self.assertIn(f"\nHome: {forward(self.home)}\n", result.output.replace("\r\n", "\n"))
-        self.assertIn(self.warning, unwrapped(result.output))
-        self.assertFalse(self.other.exists())
+    if platform_support.WINDOWS:
+
+        def test_home_naming_another_directory_is_warned_about_before_anything_changes(self) -> None:
+            with self.environment(str(self.other)):
+                for result in (self.deploy_ok("--all", "--dry-run"), self.check(), self.deploy_ok("--all")):
+                    with self.subTest(output=result.output[:40]):
+                        self.assertIn(f"\nHome: {forward(self.home)}\n", result.output)
+                        self.assertIn(self.warning, unwrapped(result.output))
+                # The warning comes before the run reports anything it changed.
+                output = self.deploy_ok("--all").output
+                self.assertLess(output.index("WARNING: HOME"), output.index("=== DEPLOYED ==="))
+            self.assertTrue((self.skills_dir / "alpha" / "SKILL.md").is_file())
+            self.assertFalse(self.other.exists())
+
+        def test_home_equal_to_the_profile_folder_is_not_warned_about(self) -> None:
+            for home in (str(self.home), forward(self.home).upper(), shell_path(self.home)):
+                with self.subTest(home=home), self.environment(home):
+                    self.assertNotIn("WARNING", self.deploy_ok("--all", "--dry-run").output)
+
+        def test_the_entry_point_deploys_into_the_profile_folder_whatever_home_says(self) -> None:
+            source_id = json.loads((REPOSITORY_ROOT / "source.json").read_text(encoding="utf-8"))["id"]
+            self.make_config(source_id)
+            result = platform_support.run_tool(
+                [sys.executable, "-B", str(REPOSITORY_ROOT / "deploy.py"), "--all", "--dry-run"],
+                {"HOME": shell_path(self.other), "USERPROFILE": str(self.home)},
+            )
+            self.assertEqual(0, result.returncode, result.output)
+            self.assertIn(f"\nHome: {forward(self.home)}\n", result.output.replace("\r\n", "\n"))
+            self.assertIn(self.warning, unwrapped(result.output))
+            self.assertFalse(self.other.exists())
+
+    else:
+
+        def test_home_is_the_home_so_no_other_value_is_warned_about(self) -> None:
+            for home in (str(self.other), str(self.home)):
+                with self.subTest(home=home), self.environment(home):
+                    self.assertNotIn("WARNING", self.deploy_ok("--all", "--dry-run").output)
+
+        def test_the_entry_point_deploys_into_home_whatever_a_profile_variable_says(self) -> None:
+            source_id = json.loads((REPOSITORY_ROOT / "source.json").read_text(encoding="utf-8"))["id"]
+            self.make_config(source_id)
+            result = platform_support.run_tool(
+                [sys.executable, "-B", str(REPOSITORY_ROOT / "deploy.py"), "--all", "--dry-run"],
+                {"HOME": str(self.home), "USERPROFILE": str(self.other)},
+            )
+            self.assertEqual(0, result.returncode, result.output)
+            self.assertIn(f"\nHome: {forward(self.home)}\n", result.output)
+            self.assertNotIn("WARNING", result.output)
+            self.assertFalse(self.other.exists())
 
 
 if __name__ == "__main__":

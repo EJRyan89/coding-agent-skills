@@ -1,0 +1,147 @@
+"""Regression tests for the one probe of whether a process runs and when it started."""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import process_identity
+from process_identity import ProcessStatus, proc_status, process_status
+
+# Seconds a started child gets to come up, and an ended one to be reported as ended, on a loaded machine.
+SETTLE_SECONDS = 20.0
+SLEEPER = [sys.executable, "-c", "import time; time.sleep(120)"]
+
+
+def stat_line(pid: int, command: str, state: str, start_time: int) -> bytes:
+    """A /proc/<pid>/stat line as Linux writes it, with every field this probe does not read as zero."""
+    before_start = " ".join(["0"] * 18)  # the parent's ID through the item before the start time, fields 4 to 21
+    return f"{pid} ({command}) {state} {before_start} {start_time} 0 0\n".encode()
+
+
+class ProcessStatusTests(unittest.TestCase):
+    """The probe on the platform the suite runs on, against real processes."""
+
+    def test_this_process_is_alive_with_a_stable_start_time(self) -> None:
+        status = process_status(os.getpid())
+        self.assertTrue(status.alive)
+        self.assertIsInstance(status.start_time, int)
+        self.assertEqual(status, process_status(os.getpid()), "the start time is stable")
+
+    def test_a_running_child_is_alive_and_started_after_this_process(self) -> None:
+        child = subprocess.Popen(SLEEPER)
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        status = process_status(child.pid)
+        own = process_status(os.getpid())
+        if status.start_time is None or own.start_time is None:
+            self.fail("a running process reports its start time")
+        self.assertTrue(status.alive)
+        self.assertGreaterEqual(status.start_time, own.start_time)
+
+    def test_an_exited_child_is_not_alive(self) -> None:
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
+        child.wait(timeout=SETTLE_SECONDS)
+        self.assertEqual(ProcessStatus(False, None), process_status(child.pid))
+
+    def test_no_process_has_a_pid_of_zero_or_below(self) -> None:
+        for pid in (0, -1):
+            with self.subTest(pid=pid):
+                self.assertFalse(process_status(pid).alive)
+
+    if sys.platform != "win32":
+
+        def test_a_child_that_has_ended_but_is_not_yet_reaped_is_not_alive(self) -> None:
+            child = subprocess.Popen([sys.executable, "-c", "pass"])
+            self.addCleanup(child.wait)
+            stat = Path(f"/proc/{child.pid}/stat")
+            deadline = time.monotonic() + SETTLE_SECONDS
+            while b") Z " not in stat.read_bytes():
+                if time.monotonic() >= deadline:
+                    self.fail("the child never became a zombie")
+                time.sleep(0.05)
+            self.assertEqual(ProcessStatus(False, None), process_status(child.pid))
+
+
+class ProcStatusTests(unittest.TestCase):
+    """How /proc is read, from stat files written as Linux writes them, on every platform."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="process-identity-test.")
+        self.addCleanup(temporary.cleanup)
+        self.proc = Path(temporary.name)
+        patcher = mock.patch.object(process_identity, "PROC", self.proc)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def write_stat(self, pid: int, content: bytes) -> None:
+        (self.proc / str(pid)).mkdir()
+        (self.proc / str(pid) / "stat").write_bytes(content)
+
+    def test_the_start_time_is_the_twenty_second_field(self) -> None:
+        self.write_stat(4242, stat_line(4242, "python3", "S", 987654))
+        self.assertEqual(ProcessStatus(True, 987654), proc_status(4242))
+
+    def test_a_command_name_with_spaces_and_parentheses_is_passed_over(self) -> None:
+        self.write_stat(4242, stat_line(4242, "deploy (x) S 1 2", "R", 31337))
+        self.assertEqual(ProcessStatus(True, 31337), proc_status(4242))
+
+    def test_a_zombie_or_a_dead_process_has_ended(self) -> None:
+        for pid, state in ((4243, "Z"), (4244, "X"), (4245, "x")):
+            with self.subTest(state=state):
+                self.write_stat(pid, stat_line(pid, "python3", state, 5))
+                self.assertEqual(ProcessStatus(False, None), proc_status(pid))
+
+    def test_a_stat_file_it_cannot_read_reports_the_process_alive_with_no_start_time(self) -> None:
+        # A directory where the stat file should be fails to read as an unreadable file does.
+        (self.proc / "4246" / "stat").mkdir(parents=True)
+        self.assertEqual(ProcessStatus(True, None), proc_status(4246))
+
+    def test_a_stat_file_it_cannot_parse_reports_the_process_alive_with_no_start_time(self) -> None:
+        for pid, content in (
+            (4247, b""),
+            (4248, b"4248 no parentheses S 0 0\n"),
+            (4249, b"4249 (python3) S 1 2 3\n"),
+            (4250, stat_line(4250, "python3", "S", 0).replace(b" 0 0 0\n", b" soon 0 0\n")),
+        ):
+            with self.subTest(content=content):
+                self.write_stat(pid, content)
+                self.assertEqual(ProcessStatus(True, None), proc_status(pid))
+
+    def test_a_pid_proc_does_not_list_is_asked_of_the_kernel(self) -> None:
+        for raised, expected in (
+            (ProcessLookupError(3, "No such process"), ProcessStatus(False, None)),
+            (PermissionError(1, "Operation not permitted"), ProcessStatus(True, None)),
+            (None, ProcessStatus(True, None)),
+        ):
+            with (
+                self.subTest(raised=raised),
+                mock.patch.object(process_identity.os, "kill", side_effect=raised) as kill,
+            ):
+                self.assertEqual(expected, proc_status(4251))
+            kill.assert_called_once_with(4251, 0)
+
+    if sys.platform != "win32":
+        # Windows' os.kill ends the process whatever the signal, so the kernel is asked only where a signal of none
+        # asks without sending anything.
+
+        def test_without_proc_a_running_process_is_never_reported_gone(self) -> None:
+            with mock.patch.object(process_identity, "PROC", self.proc / "not mounted"):
+                self.assertEqual(ProcessStatus(True, None), proc_status(os.getpid()))
+
+    def test_no_signal_is_sent_for_a_pid_of_zero_or_below(self) -> None:
+        with mock.patch.object(process_identity.os, "kill") as kill:
+            self.assertEqual(ProcessStatus(False, None), proc_status(0))
+        kill.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

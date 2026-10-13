@@ -1,70 +1,26 @@
 """Process identity and detached starts for the review's processes. Only Windows is implemented.
 
-A process is identified by its PID and its start time, as the deployer's lock does in
-deployer/platform_support.py; a deployed skill cannot import the deployer, so this is its own copy. Every
-operating-system-specific step of the host's lifecycle lives here, except where Copilot CLI is found, which is
-skill-core's `executable_locator`, and the job object that ends a condition script's or Copilot CLI's descendants with
-it, which is skill-core's `job_tree.JobTree`.
+A process is identified by its PID and its start time, which skill-core's `process_identity` reads, for the review's
+processes and the deployer's lock alike. Every other operating-system-specific step of the host's lifecycle lives
+here, except where Copilot CLI is found, which is skill-core's `executable_locator`, and the job object that ends a
+condition script's or Copilot CLI's descendants with it, which is skill-core's `job_tree.JobTree`.
 """
 
 from __future__ import annotations
 
 import subprocess
+import sys
 import warnings
 from collections.abc import Sequence
-from dataclasses import dataclass
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+
+from process_identity import ProcessStatus
 
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 CREATE_NO_WINDOW = 0x08000000
-
-
-@dataclass(frozen=True)
-class ProcessStatus:
-    alive: bool
-    start_time: int | None
-
-
-# Definitions that tests/run_validation.py allows to be copied in another file, with the reason.
-DUPLICATION_ALLOWED = {
-    "process_status": "a permanent copy of deployer/platform_support.py's: a deployed skill cannot import the "
-    "deployer, and the deployer cannot import a skill; this policy keeps the two identical",
-}
-
-
-def process_status(pid: int) -> ProcessStatus:
-    """Report whether a process is running and, when readable, its creation time."""
-    import ctypes
-    from ctypes import wintypes
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.OpenProcess.restype = wintypes.HANDLE
-    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    query_limited_information = 0x1000
-    access_denied = 5
-    still_active = 259
-    handle = kernel32.OpenProcess(query_limited_information, False, pid)
-    if not handle:
-        return ProcessStatus(ctypes.get_last_error() == access_denied, None)
-    try:
-        exit_code = wintypes.DWORD()
-        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
-            return ProcessStatus(True, None)
-        if exit_code.value != still_active:
-            return ProcessStatus(False, None)
-        creation, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
-        if not kernel32.GetProcessTimes(
-            handle,
-            ctypes.byref(creation),
-            ctypes.byref(exited),
-            ctypes.byref(kernel),
-            ctypes.byref(user),
-        ):
-            return ProcessStatus(True, None)
-        return ProcessStatus(True, (creation.dwHighDateTime << 32) | creation.dwLowDateTime)
-    finally:
-        kernel32.CloseHandle(handle)
 
 
 def same_process(status: ProcessStatus, recorded_start: int | None) -> bool | None:

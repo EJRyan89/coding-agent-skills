@@ -167,9 +167,10 @@ def prepare_backup_destination(paths: Paths, run_id: str, item: str, root: str) 
     reject_links("contains")
     fsops.make_directories(run_backups)
     reject_links("became")
-    base_canonical = platform_support.canonical_directory(base).casefold()
+    # Compared as the file system holding the root compares names: without regard to case only where it folds.
+    base_canonical = platform_support.name_key(platform_support.canonical_directory(base), base)
     parent_canonical = platform_support.canonical_directory(run_backups)
-    if not parent_canonical.casefold().startswith(base_canonical + "/"):
+    if not platform_support.name_key(parent_canonical, base).startswith(base_canonical + "/"):
         raise DeployError(f"ERROR: Backup path resolves outside deployment root: {parent_canonical}")
     return run_backups / item
 

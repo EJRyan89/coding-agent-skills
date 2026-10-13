@@ -1,4 +1,4 @@
-"""Operating-system specific behavior. Only Windows is implemented."""
+"""Operating-system specific behavior: Windows, and Linux in the deployer core."""
 
 from __future__ import annotations
 
@@ -13,13 +13,21 @@ from pathlib import Path
 from typing import TypedDict
 
 import executable_locator
-from bounded_process import run_bounded
-from job_tree import JobRefused, JobTree
+import job_tree
+import process_identity
+from bounded_process import ProcessTree, run_bounded
+from job_tree import JobRefused
 
 from .errors import DeployError, see_recovery
 
+# The platforms the deployer runs on, by sys.platform. macOS is not yet one of them.
+SUPPORTED_PLATFORMS = {"win32": "Windows", "linux": "Linux"}
+WINDOWS = sys.platform == "win32"
 WINDOWS_ABSOLUTE = re.compile(r"^[A-Za-z]:/")
 WINDOWS_ROOT = re.compile(r"^[A-Za-z]:/$")
+# A POSIX absolute path: one leading slash, since POSIX leaves the meaning of a path that starts with two to the system.
+POSIX_ABSOLUTE = re.compile(r"^/(?!/)")
+POSIX_ROOT = re.compile(r"^/$")
 GIT_BASH_DRIVE = re.compile(r"^/([A-Za-z])(?:/(.*))?$", re.DOTALL)
 DRIVE_PATH = re.compile(r"^([A-Za-z]):(.*)$", re.DOTALL)
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
@@ -33,7 +41,9 @@ COMMAND_LINE_LIMIT = 32_767
 TOOL_DEADLINE_SECONDS = 600
 # The recovery guide's section a refusal for a tool that ran out of time points at.
 TOOL_DEADLINE_SECTION = "A tool that does not finish"
-INSTALL_HINTS = {
+# What the Bash that checks rendered scripts is called here: Git for Windows' on Windows, and the system's elsewhere.
+BASH_NAME = "Git Bash" if WINDOWS else "Bash"
+WINDOWS_INSTALL_HINTS = {
     "Git Bash": "winget install --id Git.Git",
     "ShellCheck": "winget install --id koalaman.shellcheck",
     "PowerShell": "winget install --id Microsoft.PowerShell",
@@ -43,26 +53,46 @@ INSTALL_HINTS = {
     # Validation-only too. -Force upgrades an older install and answers the untrusted-PSGallery prompt.
     "PSScriptAnalyzer": "pwsh -Command 'Install-Module PSScriptAnalyzer -Scope CurrentUser -Force'",
 }
-INSTALL_HELP = (
+# Debian and Ubuntu's commands; PowerShell is not in their own archives, so its hint is the snap Microsoft publishes.
+LINUX_INSTALL_HINTS = {
+    "Bash": "sudo apt install bash",
+    "ShellCheck": "sudo apt install shellcheck",
+    "PowerShell": "sudo snap install powershell --classic",
+    "ruff": "python3 -m pip install -r requirements-dev.txt",
+    "mypy": "python3 -m pip install -r requirements-dev.txt",
+    "PSScriptAnalyzer": "pwsh -Command 'Install-Module PSScriptAnalyzer -Scope CurrentUser -Force'",
+}
+INSTALL_HINTS = WINDOWS_INSTALL_HINTS if WINDOWS else LINUX_INSTALL_HINTS
+WINDOWS_INSTALL_HELP = (
     'For Chocolatey, Scoop, or direct downloads, see "Installing the tools" in',
     "docs/installation.md. To use Git Bash from another location, set GIT_BASH",
     "to its bash.exe.",
     "After installing, open a new terminal. Applications that were already running,",
     "including ones minimized to the system tray, keep the old PATH until restarted.",
 )
+LINUX_INSTALL_HELP = (
+    'For other distributions, Microsoft\'s package repository, or direct downloads, see "Installing the tools" in',
+    "docs/installation.md.",
+)
+INSTALL_HELP = WINDOWS_INSTALL_HELP if WINDOWS else LINUX_INSTALL_HELP
 # Commands this platform provides beyond the portable ones in tools.STANDARD_COMMANDS: Python as python, because
 # python3 is often a Microsoft Store placeholder; Windows PowerShell; and cygpath, which Git for Windows bundles.
 STANDARD_COMMANDS = frozenset({"python", "powershell", "cygpath"})
 
 
 def ensure_supported() -> None:
-    if sys.platform != "win32":
-        raise DeployError(f"ERROR: The deployer currently supports Windows only (detected platform: {sys.platform}).")
+    if sys.platform not in SUPPORTED_PLATFORMS:
+        raise DeployError(
+            f"ERROR: The deployer currently supports {' and '.join(SUPPORTED_PLATFORMS.values())} only "
+            f"(detected platform: {sys.platform})."
+        )
 
 
 def normalize(path: str | os.PathLike[str]) -> str:
-    """Render a path with forward slashes, the form used in config values and output."""
-    return os.fspath(path).replace("\\", "/")
+    """Render a path with forward slashes, the form used in config values and output. Only Windows separates with a
+    backslash; elsewhere it is a character of the name, and is kept."""
+    text = os.fspath(path)
+    return text.replace("\\", "/") if WINDOWS else text
 
 
 def normalize_path_input(value: str) -> str:
@@ -71,22 +101,25 @@ def normalize_path_input(value: str) -> str:
     if len(stripped) >= 2 and stripped[0] == stripped[-1] == '"':
         stripped = stripped[1:-1]
     normalized = normalize(stripped)
-    # Keep a drive root such as C:/ intact so it is still rejected as a filesystem root.
-    while len(normalized) > 3 and normalized.endswith("/"):
+    # Keep a root, C:/ or /, intact so it is still rejected as a filesystem root.
+    root_length = 3 if WINDOWS else 1
+    while len(normalized) > root_length and normalized.endswith("/"):
         normalized = normalized[:-1]
     return normalized
 
 
 def from_shell_path(value: str) -> str:
-    """Translate a Git Bash drive path such as /c/Tools into C:/Tools; leave every other path unchanged."""
-    match = GIT_BASH_DRIVE.match(value)
+    """Translate a Git Bash drive path such as /c/Tools into C:/Tools; leave every other path unchanged, and every
+    path off Windows, where /c/Tools is a directory of its own."""
+    match = GIT_BASH_DRIVE.match(value) if WINDOWS else None
     return f"{match.group(1).upper()}:/{match.group(2) or ''}" if match else value
 
 
 def to_shell_path(value: str) -> str:
-    """Translate a drive-letter path such as C:/Tools into Git Bash's /c/Tools; leave every other path unchanged."""
+    """Translate a drive-letter path such as C:/Tools into Git Bash's /c/Tools; leave every other path unchanged, and
+    every path off Windows, where the shell reads paths as they are."""
     normalized = normalize(value)
-    match = DRIVE_PATH.match(normalized)
+    match = DRIVE_PATH.match(normalized) if WINDOWS else None
     return f"/{match.group(1).lower()}{match.group(2)}" if match else normalized
 
 
@@ -95,14 +128,15 @@ RUNTIME_HOME = "the Windows profile folder"
 
 
 def home_directory(environment: Mapping[str, str] | None = None) -> Path:
-    """The home the runtimes read skills from: on Windows the profile folder, whatever HOME says.
+    """The home the runtimes read skills from: on Windows the profile folder, whatever HOME says, and elsewhere HOME.
 
     Claude Code, Codex, and Copilot CLI all read the profile folder on Windows, while Git Bash may set HOME to
-    another directory and MSYS2 does by default. Without USERPROFILE, Path.home() follows HOME on other systems.
+    another directory and MSYS2 does by default. Elsewhere every runtime reads HOME. Without the variable, the home is
+    Python's, which on Unix is the user's entry in the password database.
     """
     environment = os.environ if environment is None else environment
-    profile = environment.get("USERPROFILE")
-    return Path(profile) if profile else Path.home()
+    value = environment.get("USERPROFILE" if WINDOWS else "HOME")
+    return Path(value) if value else Path.home()
 
 
 def ignored_home_variable(home: Path, environment: Mapping[str, str] | None = None) -> str | None:
@@ -122,13 +156,62 @@ def same_directory(first: Path, second: Path) -> bool:
     return os.path.normcase(os.path.realpath(first)) == os.path.normcase(os.path.realpath(second))
 
 
-def name_key(name: str) -> str:
-    """The form in which the file system compares a name: two item names with one key are one file or directory.
+def name_key(name: str, directory: str | os.PathLike[str] | None = None) -> str:
+    """The form in which the file system compares a name in `directory`: two names with one key are one file there.
 
-    NTFS compares names without regard to case, so Windows folds case. A case-sensitive file system returns the name
-    unchanged.
+    Case sensitivity belongs to the file system, not the platform: NTFS folds case, while Linux's file systems, and a
+    Windows directory marked case-sensitive, do not. So `directory` is asked, through folds_case, and a name in one that
+    does not fold is its own key. Without a directory, case is folded, the answer that refuses more names as one.
     """
+    if directory is not None and not folds_case(directory):
+        return name
     return name.casefold()
+
+
+# Each directory's answer to folds_case once the file system has given one, by its absolute path.
+_FOLDS_CASE: dict[str, bool] = {}
+
+
+def folds_case(directory: str | os.PathLike[str]) -> bool:
+    """Whether the file system compares the names in `directory` without regard to case.
+
+    It is asked of an entry whose name has an ASCII letter: the entry is looked up again by the name with each such
+    letter's case swapped, and the directory folds when that finds the same file. The answer is kept for the rest of
+    the run. A directory that cannot be listed, or holds no such entry yet, is taken to fold, the answer that refuses
+    more, and is asked again next time.
+    """
+    key = os.path.abspath(directory)  # noqa: PTH100 - a lexical key, as derived paths are
+    if key in _FOLDS_CASE:
+        return _FOLDS_CASE[key]
+    answer = _asked_folds_case(Path(key))
+    if answer is None:
+        return True
+    _FOLDS_CASE[key] = answer
+    return answer
+
+
+def _asked_folds_case(directory: Path) -> bool | None:
+    """The file system's answer for `directory`, or None when no entry of it can give one."""
+    try:
+        names = sorted(entry.name for entry in os.scandir(directory))
+    except OSError:
+        return None
+    for name in names:
+        swapped = "".join(character.swapcase() if character.isascii() else character for character in name)
+        if swapped == name:
+            continue
+        try:
+            found = os.lstat(directory / name)
+        except OSError:
+            continue  # removed meanwhile
+        try:
+            other = os.lstat(directory / swapped)
+        except FileNotFoundError:
+            return False
+        except OSError:
+            continue
+        return (other.st_dev, other.st_ino) == (found.st_dev, found.st_ino)
+    return None
 
 
 # The extension Windows finds a program by when its caller leaves it off, so git and git.exe start one program.
@@ -143,12 +226,21 @@ def program_name(name: str) -> str:
     return name
 
 
+# A configured directory is an absolute path of this platform's form, which errors name: a drive-letter path on
+# Windows and a POSIX path elsewhere. The character allowlist that applies to it is the configuration's own.
+ABSOLUTE = WINDOWS_ABSOLUTE if WINDOWS else POSIX_ABSOLUTE
+ROOT = WINDOWS_ROOT if WINDOWS else POSIX_ROOT
+ABSOLUTE_PATH = "an absolute Windows path" if WINDOWS else "an absolute path"
+# The directory a prompt for one gives as its example.
+EXAMPLE_DIRECTORY = "C:/GitHub" if WINDOWS else "/home/you/GitHub"
+
+
 def is_absolute(value: str) -> bool:
-    return bool(WINDOWS_ABSOLUTE.match(value))
+    return bool(ABSOLUTE.match(value))
 
 
 def is_filesystem_root(value: str) -> bool:
-    return bool(WINDOWS_ROOT.fullmatch(value))
+    return bool(ROOT.fullmatch(value))
 
 
 def canonical_directory(path: str | os.PathLike[str]) -> str:
@@ -194,7 +286,10 @@ def find_executables(name: str) -> list[str]:
 
 
 def find_bash() -> str | None:
-    """Find Git for Windows' Bash; never another bash on PATH, such as WSL's."""
+    """Find the Bash that checks rendered scripts: on Windows Git for Windows' Bash, never another bash on PATH, such
+    as WSL's, and elsewhere the system's, the first bash on PATH."""
+    if not WINDOWS:
+        return find_executable("bash")
     configured = os.environ.get("GIT_BASH")
     if configured and Path(configured).is_file():
         return configured
@@ -221,6 +316,9 @@ def _bash_beside_git() -> str | None:
 
 
 def find_powershell() -> str | None:
+    """PowerShell 7, or on Windows Windows PowerShell when it is not installed."""
+    if not WINDOWS:
+        return shutil.which("pwsh")
     return shutil.which("pwsh") or shutil.which("powershell")
 
 
@@ -229,7 +327,7 @@ def find_pwsh(search_path: str) -> str | None:
     return shutil.which("pwsh", path=search_path) if search_path else None
 
 
-class HiddenWindow(TypedDict):
+class HiddenWindow(TypedDict, total=False):
     """The subprocess.run keyword hidden_window gives, typed so that `**hidden_window()` checks as that keyword."""
 
     creationflags: int
@@ -238,9 +336,10 @@ class HiddenWindow(TypedDict):
 def hidden_window() -> HiddenWindow:
     """Keyword arguments for subprocess.run that start a console program without a window of its own.
 
-    A hook runs without a console, so a console program it starts would otherwise flash a window.
+    A hook runs without a console on Windows, so a console program it starts would otherwise flash a window. Elsewhere
+    a program opens no window by starting, so there are none.
     """
-    return {"creationflags": CREATE_NO_WINDOW}
+    return {"creationflags": CREATE_NO_WINDOW} if WINDOWS else {}
 
 
 def install_hint(tool: str) -> str:
@@ -273,9 +372,11 @@ def command_line_length(arguments: list[str]) -> int:
     return len(subprocess.list2cmdline(arguments))
 
 
-def process_tree() -> JobTree:
-    """A tree for one command and every process it starts, which ends them all when it is left: a job object."""
-    return JobTree()
+def process_tree() -> ProcessTree:
+    """A tree for one command and every process it starts, which ends them all when it is left: skill-core's, a job
+    object on Windows and a process group elsewhere. A caller that starts the command itself starts it with the tree's
+    start_options."""
+    return job_tree.process_tree()
 
 
 class ToolTimedOut(DeployError):
@@ -325,10 +426,9 @@ def run_tool(
         return ToolResult(finished.returncode, captured.read().decode("utf-8", "replace"))
 
 
-@dataclass(frozen=True)
-class ProcessStatus:
-    alive: bool
-    start_time: int | None
+# Whether a process is running and when it started, which the lock judges a holder by: skill-core's one probe, which
+# the code-review pipeline also uses, and which reports a process it cannot read as running.
+ProcessStatus = process_identity.ProcessStatus
 
 
 def current_process_id() -> int:
@@ -340,42 +440,8 @@ FSOPS_ALLOWED = {
     "tempfile.TemporaryFile": "run_tool captures a tool's output in an unnamed file under the system temporary "
     "directory, outside every managed root, which closing it deletes; it changes no deployed state",
 }
-# Definitions that tests/run_validation.py allows to be copied in another file, with the reason.
-DUPLICATION_ALLOWED = {
-    "process_status": "skills/code-review-core/scripts/review_process.py carries a permanent copy: a deployed skill "
-    "cannot import the deployer, and the deployer cannot import a skill; this policy keeps the two identical",
-}
 
 
 def process_status(pid: int) -> ProcessStatus:
-    """Report whether a process is running and, when readable, its creation time."""
-    import ctypes
-    from ctypes import wintypes
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.OpenProcess.restype = wintypes.HANDLE
-    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    query_limited_information = 0x1000
-    access_denied = 5
-    still_active = 259
-    handle = kernel32.OpenProcess(query_limited_information, False, pid)
-    if not handle:
-        return ProcessStatus(ctypes.get_last_error() == access_denied, None)
-    try:
-        exit_code = wintypes.DWORD()
-        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
-            return ProcessStatus(True, None)
-        if exit_code.value != still_active:
-            return ProcessStatus(False, None)
-        creation, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
-        if not kernel32.GetProcessTimes(
-            handle,
-            ctypes.byref(creation),
-            ctypes.byref(exited),
-            ctypes.byref(kernel),
-            ctypes.byref(user),
-        ):
-            return ProcessStatus(True, None)
-        return ProcessStatus(True, (creation.dwHighDateTime << 32) | creation.dwLowDateTime)
-    finally:
-        kernel32.CloseHandle(handle)
+    """Report whether a process is running and, when readable, its start time."""
+    return process_identity.process_status(pid)

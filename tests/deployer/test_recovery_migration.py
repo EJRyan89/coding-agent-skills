@@ -12,7 +12,16 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from harness import FAILS_PARTWAY, RECOVERS, REPOSITORY_ROOT, DeployerTestCase, Result, forward, tree_state
+from harness import (
+    FAILS_PARTWAY,
+    RECOVERS,
+    REPOSITORY_ROOT,
+    DeployerTestCase,
+    Result,
+    forward,
+    make_directory_link,
+    tree_state,
+)
 
 from deployer import fsops, hashing, journal, platform_support, render
 from deployer.paths import CANARY_MARKER, CANARY_MARKER_TEXT
@@ -435,11 +444,7 @@ class RecoveryTests(RecoveryTestCase):
         backup_hash = hashing.hash_path(self.skills_dir / "alpha")
         (self.skills_dir / "alpha").rename(self.skills_dir / "alpha.deploying-bak")
         (self.skills_dir / ".backups").mkdir()
-        subprocess.run(
-            ["cmd", "/c", "mklink", "/J", str(self.skills_dir / ".backups" / run_id), str(sentinel.parent)],
-            check=True,
-            capture_output=True,
-        )
+        make_directory_link(self.skills_dir / ".backups" / run_id, sentinel.parent)
         data = self.manifest()
         data["last_run_id"] = run_id
         self.write_manifest(data)

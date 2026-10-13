@@ -11,14 +11,11 @@ from ctypes import wintypes
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 
-from review_process import (
-    ProcessStatus,
-    process_status,
-    same_process,
-    start_detached,
-)
+from process_identity import ProcessStatus, process_status
+from review_process import same_process, start_detached
 
 # Prints a line, then sleeps until it is terminated, so its liveness can be probed from outside.
 SLEEPER = (

@@ -327,6 +327,38 @@ def leg_problems(workflow: str, legs: int) -> list[str]:
     return problems
 
 
+def linux_job_problems(workflow: str, command: str) -> list[str]:
+    """Report how validate.yml's `linux` job departs from a reporting run of `command` on ubuntu-latest: Python at the
+    floor with pip's cache keyed on requirements-dev.txt, ShellCheck from Ubuntu's archive, PSScriptAnalyzer at the
+    workflow's pin, and no part in the required check, since the `validate` job does not need it."""
+    tree = read_workflow(workflow)
+    linux = _mapping(tree, "jobs", "linux")
+    if not linux:
+        return ["there is no linux job"]
+    problems: list[str] = []
+    if linux.get("runs-on") != "ubuntu-latest":
+        problems.append(f"the linux job runs on {linux.get('runs-on')}, not ubuntu-latest")
+    needs = _mapping(tree, "jobs", "validate").get("needs")
+    if needs == "linux" or (isinstance(needs, list) and "linux" in needs):
+        problems.append("the validate job needs the linux job, which would make it part of the required check")
+    steps = _steps(linux)
+    python = [_mapping(step, "with") for step in steps if str(step.get("uses", "")).startswith("actions/setup-python@")]
+    if python != [{"python-version": "3.11", "cache": "pip", "cache-dependency-path": "requirements-dev.txt"}]:
+        problems.append(f"the linux job sets up Python as {python}, not 3.11 with pip's cache on requirements-dev.txt")
+    scripts = [str(step.get("run", "")) for step in steps]
+    for install in (
+        "sudo apt-get install --yes shellcheck",
+        "Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION ",
+        "python -m pip install -r requirements-dev.txt",
+    ):
+        if not any(install in script for script in scripts):
+            problems.append(f"no step of the linux job runs {install!r}")
+    runs = [script.strip() for script in scripts if "tests/run_validation.py" in script]
+    if runs != [command]:
+        problems.append(f"the linux job runs {runs}, expected [{command!r}]")
+    return problems
+
+
 def tool_cache_problems(workflow: str, caches: dict[str, str]) -> list[str]:
     """Report how validate.yml's tool caches depart from `caches`: each `actions/cache` key, mapped to the install
     command that runs when it misses. Every version a key names is a workflow-level `env` pin, so the install and
@@ -484,6 +516,16 @@ class WorkflowsPolicies(unittest.TestCase):
                         "Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION "
                     ),
                 },
+            ),
+        )
+
+    def test_validate_workflow_reports_the_deployer_suites_on_linux_outside_the_required_check(self) -> None:
+        workflow = (REPOSITORY_ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
+        self.assertEqual(
+            [],
+            linux_job_problems(
+                workflow,
+                "python -B tests/run_validation.py -v -k deployer -k platform_support -k job_tree -k process_identity",
             ),
         )
 

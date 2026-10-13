@@ -379,7 +379,7 @@ def _extract_units(staged: Staged, workspace: Path) -> list[ShellUnit]:
 
 
 TOOL_PURPOSES = {
-    "Git Bash": "checks rendered Bash syntax",
+    platform_support.BASH_NAME: "checks rendered Bash syntax",
     "ShellCheck": "lints rendered Bash",
     "PowerShell": "parses rendered .ps1 files",
 }
@@ -389,7 +389,7 @@ def _require_tools(units: list[ShellUnit], has_powershell: bool) -> dict[str, st
     """Locate every validation tool this content needs, reporting all missing tools at once."""
     found: dict[str, str | None] = {}
     if units:
-        found["Git Bash"] = platform_support.find_bash()
+        found[platform_support.BASH_NAME] = platform_support.find_bash()
         found["ShellCheck"] = platform_support.find_executable("shellcheck")
     if has_powershell:
         found["PowerShell"] = platform_support.find_powershell()
@@ -505,7 +505,7 @@ def validate_executables(staged: Staged) -> None:
         powershell_files = _powershell_files(staged)
         tools = _require_tools(units, bool(powershell_files))
         if units:
-            _check_bash_syntax(units, tools["Git Bash"])
+            _check_bash_syntax(units, tools[platform_support.BASH_NAME])
             _run_shellcheck(units, tools["ShellCheck"])
         if powershell_files:
             _parse_powershell(powershell_files, workspace, tools["PowerShell"])

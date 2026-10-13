@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 
 import job_tree
 from git_test_base import GitTestCase
-from harness import DeployerTestCase, Result, forward
+from harness import DeployerTestCase, Result, forward, make_directory_link, remove_directory_link
 from test_job_tree import ended
 
 from deployer import discovery, platform_support, verify
@@ -98,20 +98,85 @@ class AdapterLineTests(GitTestCase):
 
 
 class ParsingTests(GitTestCase):
-    def test_copilot_paths_are_skill_directories_with_forward_slashes(self) -> None:
-        found = discovery.parse_copilot(
-            copilot_answer(
-                ("alpha", "C:\\Users\\YourName\\a dir\\.agents\\skills\\alpha", True),
-                ("beta", "C:\\Users\\YourName\\a dir\\.agents\\skills\\beta", False),
+    if platform_support.WINDOWS:
+
+        def test_copilot_paths_are_skill_directories_with_forward_slashes(self) -> None:
+            found = discovery.parse_copilot(
+                copilot_answer(
+                    ("alpha", "C:\\Users\\YourName\\a dir\\.agents\\skills\\alpha", True),
+                    ("beta", "C:\\Users\\YourName\\a dir\\.agents\\skills\\beta", False),
+                )
             )
-        )
-        self.assertEqual(
-            {
-                "alpha": [Listed("C:/Users/YourName/a dir/.agents/skills/alpha", True)],
-                "beta": [Listed("C:/Users/YourName/a dir/.agents/skills/beta", False)],
-            },
-            found,
-        )
+            self.assertEqual(
+                {
+                    "alpha": [Listed("C:/Users/YourName/a dir/.agents/skills/alpha", True)],
+                    "beta": [Listed("C:/Users/YourName/a dir/.agents/skills/beta", False)],
+                },
+                found,
+            )
+
+        def test_codex_paths_are_the_directories_of_their_skill_files_and_every_copy_is_kept(self) -> None:
+            found = discovery.parse_codex(
+                [
+                    json.dumps({"id": 0, "result": {"codexHome": "C:/x"}}),
+                    json.dumps({"method": "skills/changed"}),
+                    codex_answer(
+                        ("alpha", "C:\\Users\\YourName\\a dir\\.agents\\skills\\alpha\\SKILL.md", True),
+                        ("alpha", "C:\\Users\\YourName\\a dir\\.codex\\skills\\alpha\\SKILL.md", True),
+                        ("beta", "C:/home/.agents/skills/beta/SKILL.md", False),
+                    ),
+                ]
+            )
+            self.assertEqual(
+                {
+                    "alpha": [
+                        Listed("C:/Users/YourName/a dir/.agents/skills/alpha", True),
+                        Listed("C:/Users/YourName/a dir/.codex/skills/alpha", True),
+                    ],
+                    "beta": [Listed("C:/home/.agents/skills/beta", False)],
+                },
+                found,
+            )
+
+    else:
+
+        def test_copilot_paths_are_skill_directories_as_listed(self) -> None:
+            found = discovery.parse_copilot(
+                copilot_answer(
+                    ("alpha", "/home/you/a dir/.agents/skills/alpha/", True),
+                    ("beta", "/home/you/a dir/.agents/skills/beta", False),
+                )
+            )
+            self.assertEqual(
+                {
+                    "alpha": [Listed("/home/you/a dir/.agents/skills/alpha", True)],
+                    "beta": [Listed("/home/you/a dir/.agents/skills/beta", False)],
+                },
+                found,
+            )
+
+        def test_codex_paths_are_the_directories_of_their_skill_files_and_every_copy_is_kept(self) -> None:
+            found = discovery.parse_codex(
+                [
+                    json.dumps({"id": 0, "result": {"codexHome": "/home/you/.codex"}}),
+                    json.dumps({"method": "skills/changed"}),
+                    codex_answer(
+                        ("alpha", "/home/you/a dir/.agents/skills/alpha/SKILL.md", True),
+                        ("alpha", "/home/you/a dir/.codex/skills/alpha/SKILL.md", True),
+                        ("beta", "/home/you/.agents/skills/beta/SKILL.md", False),
+                    ),
+                ]
+            )
+            self.assertEqual(
+                {
+                    "alpha": [
+                        Listed("/home/you/a dir/.agents/skills/alpha", True),
+                        Listed("/home/you/a dir/.codex/skills/alpha", True),
+                    ],
+                    "beta": [Listed("/home/you/.agents/skills/beta", False)],
+                },
+                found,
+            )
 
     def test_copilot_entries_without_a_name_or_path_are_ignored_and_a_skills_object_is_accepted(self) -> None:
         output = json.dumps(
@@ -130,29 +195,6 @@ class ParsingTests(GitTestCase):
         for output in ("", "Error: not signed in", json.dumps({"skills": "none"})):
             with self.subTest(output=output), self.assertRaises(ListingError):
                 discovery.parse_copilot(output)
-
-    def test_codex_paths_are_the_directories_of_their_skill_files_and_every_copy_is_kept(self) -> None:
-        found = discovery.parse_codex(
-            [
-                json.dumps({"id": 0, "result": {"codexHome": "C:/x"}}),
-                json.dumps({"method": "skills/changed"}),
-                codex_answer(
-                    ("alpha", "C:\\Users\\YourName\\a dir\\.agents\\skills\\alpha\\SKILL.md", True),
-                    ("alpha", "C:\\Users\\YourName\\a dir\\.codex\\skills\\alpha\\SKILL.md", True),
-                    ("beta", "C:/home/.agents/skills/beta/SKILL.md", False),
-                ),
-            ]
-        )
-        self.assertEqual(
-            {
-                "alpha": [
-                    Listed("C:/Users/YourName/a dir/.agents/skills/alpha", True),
-                    Listed("C:/Users/YourName/a dir/.codex/skills/alpha", True),
-                ],
-                "beta": [Listed("C:/home/.agents/skills/beta", False)],
-            },
-            found,
-        )
 
     def test_a_codex_error_or_missing_answer_is_a_listing_error(self) -> None:
         cases = {
@@ -269,14 +311,15 @@ class ConverseTests(DeployerTestCase):
         self.assertEqual([True, True], [ended(pid, 10) for pid in started])
 
     def test_a_program_that_cannot_be_held_with_what_it_starts_is_ended_and_a_listing_error(self) -> None:
-        refusal = OSError("AssignProcessToJobObject failed: Access is denied. (Windows error 5)")
-        with (
-            mock.patch.object(job_tree, "job_holding", side_effect=refusal),
-            self.assertRaisesRegex(
-                ListingError,
-                r"^cannot end what it starts: it could not join a Windows job object: AssignProcessToJobObject",
-            ),
-        ):
+        if platform_support.WINDOWS:
+            refusal = OSError("AssignProcessToJobObject failed: Access is denied. (Windows error 5)")
+            held = mock.patch.object(job_tree, "job_holding", side_effect=refusal)
+            reason = r"it could not join a Windows job object: AssignProcessToJobObject"
+        else:
+            # Started without a session of its own, it shares this process's group, which ending would end too.
+            held = mock.patch.object(job_tree.GroupTree, "start_options", return_value={})
+            reason = r"it was not started as the leader of a process group of its own$"
+        with held, self.assertRaisesRegex(ListingError, rf"^cannot end what it starts: {reason}"):
             self.talk(self.program("import time\ntime.sleep(120)\n"), ['{"id": 0}'], answered=discovery.codex_answered)
 
     def test_a_program_that_cannot_start_is_a_listing_error(self) -> None:
@@ -465,7 +508,9 @@ class VerifyCommandTests(DeployerTestCase):
 
     def test_copilot_listing_another_copy_in_place_of_the_adapter_is_shadowed(self) -> None:
         personal = forward(self.home / ".copilot" / "skills" / "alpha")
-        self.answer(copilot=[("alpha", personal, True), ("beta", self.adapter("beta").upper(), True)])
+        # Windows compares a listed directory with the adapter's without regard to case, as NTFS names it.
+        beta = self.adapter("beta").upper() if platform_support.WINDOWS else self.adapter("beta")
+        self.answer(copilot=[("alpha", personal, True), ("beta", beta, True)])
         result = self.verify()
         self.assertEqual(1, result.code, result.output)
         self.assertEqual(
@@ -477,14 +522,13 @@ class VerifyCommandTests(DeployerTestCase):
         # Copilot CLI lists a profile folder by its 8.3 short name on some machines (RUNNER~1 for
         # runneradmin). A junction is the same directory under another name, which a textual comparison misses.
         alias = self.home.parent / "Alias Of Home"
-        subprocess.run(["cmd", "/c", "mklink", "/J", str(alias), str(self.home)], check=True, capture_output=True)
+        make_directory_link(alias, self.home)
         try:
             through_alias = [(name, forward(alias / ".agents" / "skills" / name), True) for name in ("alpha", "beta")]
             self.answer(copilot=through_alias)
             result = self.verify()
         finally:
-            # Removes the junction only, never the directory it points to.
-            alias.rmdir()
+            remove_directory_link(alias)
         self.assertEqual(0, result.code, result.output)
         self.assertEqual({"FOUND": ["alpha", "beta"]}, self.groups(result.output, "COPILOT CLI"))
 

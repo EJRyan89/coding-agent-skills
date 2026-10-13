@@ -199,9 +199,18 @@ class FilesystemOperationTests(GitTestCase):
             extracted,
         )
 
+    if not platform_support.WINDOWS:
+
+        def test_extract_archive_keeps_a_drive_qualified_name_inside_the_destination_where_it_is_relative(self) -> None:
+            # Off Windows C: is a directory name like any other, so the member lands under the destination.
+            destination = self.root / "tree"
+            fsops.extract_archive(self.archive("C:/Windows/notes.md"), destination)
+            self.assertEqual("C:/Windows/notes.md", (destination / "C:" / "Windows" / "notes.md").read_text("utf-8"))
+
     def test_extract_archive_refuses_a_drive_qualified_name_and_one_leading_outside_the_destination(self) -> None:
+        drive = (("C:/Windows/notes.md", tarfile.AbsolutePathError),) if platform_support.WINDOWS else ()
         for name, refusal in (
-            ("C:/Windows/notes.md", tarfile.AbsolutePathError),
+            *drive,
             ("../notes.md", tarfile.OutsideDestinationError),
             ("/../notes.md", tarfile.OutsideDestinationError),
             ("skills/../../notes.md", tarfile.OutsideDestinationError),

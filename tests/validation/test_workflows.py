@@ -16,6 +16,7 @@ from git_test_base import GitTestCase
 from workflows import (
     WorkflowSyntaxError,
     leg_problems,
+    linux_job_problems,
     read_workflow,
     tool_cache_problems,
     verify_log_problems,
@@ -149,6 +150,51 @@ class LegFixtures(GitTestCase):
         ):
             with self.subTest(problem=problem):
                 problems = tool_cache_problems(drifted, caches)
+                self.assertTrue(any(problem in found for found in problems), problems)
+
+
+LINUX_COMMAND = "python -B tests/run_validation.py -k deployer"
+LINUX = (
+    "jobs:\n  suite:\n    runs-on: windows-latest\n"
+    "  linux:\n    runs-on: ubuntu-latest\n    steps:\n"
+    "      - uses: actions/setup-python@SHA # v1\n        with:\n          python-version: '3.11'\n"
+    "          cache: pip\n          cache-dependency-path: requirements-dev.txt\n"
+    "      - run: |\n          sudo apt-get update\n          sudo apt-get install --yes shellcheck\n"
+    "      - shell: pwsh\n"
+    "        run: Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION -Force\n"
+    "      - run: python -m pip install -r requirements-dev.txt\n"
+    "      - name: Run\n        run: python -B tests/run_validation.py -k deployer\n"
+    "  validate:\n    needs: suite\n"
+)
+
+
+class LinuxJobFixtures(GitTestCase):
+    def test_the_linux_job_reports_its_suites_outside_the_required_check(self) -> None:
+        self.assertEqual([], linux_job_problems(LINUX, LINUX_COMMAND))
+        for drifted, problem in (
+            (LINUX.replace("  linux:\n", "  other:\n"), "there is no linux job"),
+            (LINUX.replace("runs-on: ubuntu-latest", "runs-on: ubuntu-22.04"), "not ubuntu-latest"),
+            (LINUX.replace("    needs: suite\n", "    needs: [suite, linux]\n"), "part of the required check"),
+            (LINUX.replace("    needs: suite\n", "    needs: linux\n"), "part of the required check"),
+            (LINUX.replace("'3.11'", "'3.x'"), "sets up Python"),
+            (LINUX.replace("          cache: pip\n", ""), "sets up Python"),
+            (LINUX.replace("install --yes shellcheck", "install shellcheck"), "sudo apt-get install --yes shellcheck"),
+            (LINUX.replace("-RequiredVersion $env:PSSCRIPTANALYZER_VERSION ", ""), "Install-Module PSScriptAnalyzer"),
+            (LINUX.replace("      - run: python -m pip install -r requirements-dev.txt\n", ""), "requirements-dev"),
+            (
+                LINUX.replace("-k deployer\n", "-k deploy\n"),
+                "expected ['python -B tests/run_validation.py -k deployer']",
+            ),
+            (
+                LINUX.replace(
+                    "      - name: Run\n",
+                    "      - name: Run\n        run: python tests/run_validation.py\n      - name: Again\n",
+                ),
+                "the linux job runs",
+            ),
+        ):
+            with self.subTest(problem=problem):
+                problems = linux_job_problems(drifted, LINUX_COMMAND)
                 self.assertTrue(any(problem in found for found in problems), problems)
 
 
