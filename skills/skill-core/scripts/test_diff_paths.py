@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from diff_paths import DiffPathError, header_path, unquote
+from diff_paths import DiffPathError, header_path, snapshot_path, unquote
 from git_client import GitClient
 from git_test_base import GitTestCase
 
@@ -98,6 +98,66 @@ class DecoderTests(GitTestCase):
         for value in ('"b/a.py', '"', '"a"b"', '"a\\"', '"a\\q"', '"a\\12"', '"a\\400"', '"a\\08x"'):
             with self.subTest(value=value), self.assertRaisesRegex(DiffPathError, "^Malformed quoted diff path: "):
                 unquote(value)
+
+
+def link_folder(link: Path, target: Path) -> None:
+    """A link at `link` to the folder `target`: a junction on Windows, which needs no privilege, else a symlink."""
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+class SnapshotPathTests(GitTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.outer = Path(temporary.name) / "outer folder"
+        self.root = self.outer / "snapshot"
+        (self.root / "tools").mkdir(parents=True)
+        (self.root / "tools" / "inside.py").write_text("x = 1\n", encoding="utf-8")
+        (self.outer / "outside.py").write_text("def private_name():\n    pass\n", encoding="utf-8")
+
+    def test_a_path_inside_the_snapshot_is_where_it_lands(self) -> None:
+        for path in ("tools/inside.py", "tools/not yet here.py", "tools/ab:c.py", "tools/..x.py"):
+            with self.subTest(path=path):
+                self.assertEqual(self.root.resolve().joinpath(*path.split("/")), snapshot_path(self.root, path))
+
+    def test_a_path_that_could_land_outside_the_snapshot_is_refused_on_every_platform(self) -> None:
+        for path in (
+            "tools\\..\\..\\outside.py",
+            "tools\\inside.py",
+            "../outside.py",
+            "tools/../../outside.py",
+            "tools/./inside.py",
+            "tools//inside.py",
+            "tools/",
+            "",
+            "/etc/outside.py",
+            "//server/share/outside.py",
+            "C:/outside.py",
+            "C:outside.py",
+            "tools/D:outside.py",
+            "tools/in\nside.py",
+            "tools/in\x00side.py",
+        ):
+            with self.subTest(path=path):
+                self.assertIsNone(snapshot_path(self.root, path))
+
+    def test_this_platform_s_absolute_path_to_a_file_outside_is_refused(self) -> None:
+        outside = (self.outer / "outside.py").resolve()
+        self.assertTrue(outside.is_file())
+        for path in (str(outside), outside.as_posix()):
+            with self.subTest(path=path):
+                self.assertIsNone(snapshot_path(self.root, path))
+
+    def test_a_path_through_a_link_out_of_the_snapshot_is_refused(self) -> None:
+        link_folder(self.root / "linked", self.outer)
+        self.assertTrue((self.root / "linked" / "outside.py").is_file())
+        self.assertIsNone(snapshot_path(self.root, "linked/outside.py"))
 
 
 if __name__ == "__main__":

@@ -30,6 +30,9 @@ of its file <tests>`, the tests that import its module or name its file, where a
 it through a caller, followed by that hunk, cut at MAX_HUNK_CHARACTERS; at most MAX_ENTRIES of them, with an
 `OMITTED <n>` line for the rest; and `UNPARSED <file>: <reason>` for a changed Python file `ast` cannot read.
 
+It reads the diff through conditions.read_files, so a changed file whose path could name a file outside the snapshot
+is neither read nor listed, and gets a `REFUSED <path>: ...` line on stdout instead.
+
 Prints `UNTESTED <found> given=<n>`. Exit status 0 means it wrote entries, which opens the route; 1 that every
 changed definition is named by a test, or none changed, which closes it; 2 a usage error or a last line
 FAILED <reason>, which fails the review.
@@ -50,9 +53,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-core" / "scripts"))
 
-from conditions import DIFF_VARIABLE, OUTPUT_VARIABLE, SCRIPT_SUFFIXES, is_suite
+from conditions import DIFF_VARIABLE, OUTPUT_VARIABLE, SCRIPT_SUFFIXES, is_suite, read_files, refusal_line
 from console import failed_line, run_main
-from diff_paths import header_path
 
 EXIT_CONTRACT_EXEMPT = (
     "a code-review condition: exit 0 opens its route and 1 closes it, so a failure exits 2, which fails the review "
@@ -100,6 +102,7 @@ class Removal:
 @dataclass
 class FileChange:
     path: str
+    head: Path  # where the snapshot holds it
     added: dict[int, Hunk] = field(default_factory=dict)  # each non-blank added head line, and its hunk
     removals: list[Removal] = field(default_factory=list)
 
@@ -130,20 +133,19 @@ def _hunks(lines: list[str]) -> Iterator[tuple[int, list[str]]]:
         yield first, lines[start:]
 
 
-def read_diff(text: str) -> list[FileChange]:
-    """Each file the diff leaves at the head, in diff order, with the lines it adds and the lines it removes."""
+def read_diff(text: str, root: Path) -> tuple[list[FileChange], list[str]]:
+    """Each file the diff changes and leaves at the head, in diff order, with the lines it adds and the lines it
+    removes, read through conditions.read_files, and each path that refused."""
     changes: list[FileChange] = []
-    sections = re.split(r"^diff --git .*$", text.replace("\r\n", "\n"), flags=re.MULTILINE)
-    for section in sections:
-        lines = section.split("\n")
-        heads = [header_path(line[4:]) for line in lines if line.startswith("+++ ")][:1]
-        if not heads or heads[0] is None:
+    files, refused = read_files(text, root)
+    for file in files:
+        if file.new is None or file.head is None or not file.lines:
             continue
-        change = FileChange(heads[0])
-        for first, hunk_lines in _hunks(lines):
+        change = FileChange(file.new, file.head)
+        for first, hunk_lines in _hunks(list(file.lines)):
             _read_hunk(change, first, hunk_lines)
         changes.append(change)
-    return changes
+    return changes, refused
 
 
 def _read_hunk(change: FileChange, line_number: int, lines: list[str]) -> None:
@@ -466,22 +468,22 @@ def _excerpt(text: str) -> str:
     return text if len(text) <= MAX_HUNK_CHARACTERS else text[:MAX_HUNK_CHARACTERS] + "…"
 
 
-def entries(root: Path, diff: str) -> list[str]:
+def entries(root: Path, files: list[FileChange]) -> list[str]:
     """One block for each changed definition no test names, and for each changed Python file `ast` cannot read."""
     changes = [
         change
-        for change in read_diff(diff)
+        for change in files
         if change.path.endswith(SCRIPT_SUFFIXES)
         and not change.path.startswith(FIXTURES)
         and not is_suite(change.path)
-        and (root / change.path).is_file()
+        and change.head.is_file()
     ]
     if not changes:
         return []
     tests = Tests(suites(root))
     blocks: list[str] = []
     for change in changes:
-        text = (root / change.path).read_bytes().decode("utf-8", errors="replace").replace("\r\n", "\n")
+        text = change.head.read_bytes().decode("utf-8", errors="replace").replace("\r\n", "\n")
         try:
             definitions = _definitions(change.path, text)
         except (SyntaxError, ValueError) as error:
@@ -518,7 +520,10 @@ def _run() -> int:
         print(f"FAILED {' and '.join(missing)} not set; a review sets them for a condition")
         return 2
     diff = Path(os.environ[DIFF_VARIABLE]).read_bytes().decode("utf-8", errors="replace")
-    found = entries(arguments.source_root, diff)
+    changes, refused = read_diff(diff, arguments.source_root)
+    for path in refused:
+        print(refusal_line(path))
+    found = entries(arguments.source_root, changes)
     print(f"UNTESTED {len(found)} given={min(len(found), MAX_ENTRIES)}")
     if not found:
         return 1
