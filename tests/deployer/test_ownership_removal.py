@@ -457,6 +457,18 @@ class ManifestValidationTests(DeployerTestCase):
                 lambda data: data["sources"]["test/skills"].update(requested_skills=["alpha\n"]),
             ),
             (
+                "Manifest selection fields are malformed",
+                lambda data: data["sources"]["test/skills"].update(requested_bundle_members={"pack": ["../x"]}),
+            ),
+            (
+                "Manifest selection fields are malformed",
+                lambda data: data["sources"]["test/skills"].update(requested_bundle_members={"pack\n": ["alpha"]}),
+            ),
+            (
+                "Manifest selection fields are malformed",
+                lambda data: data["sources"]["test/skills"].update(requested_bundle_members=["pack"]),
+            ),
+            (
                 "Manifest entry is malformed: source 'test/skills' skills 'alpha'",
                 lambda data: data["sources"]["test/skills"]["skills"]["alpha"].update(shared_deps=["../escape"]),
             ),

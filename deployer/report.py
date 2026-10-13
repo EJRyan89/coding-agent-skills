@@ -148,15 +148,31 @@ def warn_ignored_home(home: Path) -> None:
     sys.stderr.flush()
 
 
+def requested_members(src: source.Source, owned: manifest.Ownership) -> set[str]:
+    """The skills the manifest's requested roots stand for: each skill requested on its own and each member of a
+    requested bundle.
+
+    A bundle request stands for the members the deployment that recorded it expanded it to, so it survives the source
+    renaming the bundle or moving a member out of it. A request recorded before its members were stands for the
+    members this source gives the bundle.
+    """
+    members = set(owned.requested_skills)
+    for bundle in owned.requested_bundles:
+        members |= owned.requested_bundle_members.get(bundle, set(src.bundles.get(bundle, ())))
+    return members
+
+
 def currently_chosen(src: source.Source, owned: manifest.Ownership, name: str, kind: str) -> bool:
     """Whether a menu item is currently chosen from this source, which `--all` keeps and the menu marks.
 
-    An item is chosen when the manifest records it among the requested roots, never because it, or a bundle's member,
-    is installed as another root's dependency: an opt-in item the user never chose stays out of `--all`. A bundle
-    also counts as chosen once any member was requested on its own: a bundle is atomic, so a skill that was deployed
-    on its own and then joined a bundle keeps being deployed by `--all`, which completes the bundle, instead of being
-    removed as no longer selected.
+    An item is chosen when the manifest's requested roots stand for it, never because it, or a bundle's member, is
+    installed as another root's dependency: an opt-in item the user never chose stays out of `--all`. A skill is chosen
+    when it was requested on its own or through a bundle that held it, whatever bundle, if any, holds it now. A bundle
+    is chosen when it was requested itself or any of its members was requested: a bundle is atomic, so a skill that was
+    deployed on its own, or through a bundle the source renamed, and then joined this bundle keeps being deployed by
+    `--all`, which completes the bundle, instead of being removed as no longer selected.
     """
+    requested = requested_members(src, owned)
     if kind == "bundle":
-        return name in owned.requested_bundles or any(member in owned.requested_skills for member in src.bundles[name])
-    return name in owned.requested_skills
+        return name in owned.requested_bundles or any(member in requested for member in src.bundles[name])
+    return name in requested
