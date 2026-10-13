@@ -19,7 +19,9 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("code-review-core")))
 
+import conditions
 import untested_functions
+from git_client import GitClient
 from git_test_base import GitTestCase
 from review_runtime import declared_reviewer_files, glob_matcher, validate_adapter_manifest
 from review_specialists import INPUTS, route, uncovered
@@ -368,11 +370,9 @@ class DocumentationDriftTests(GitTestCase):
         self.assertIn("documentation-drift", route(MANIFEST, ["tools/worktrees.py"], lambda name: True))
         self.assertEqual(["tools/worktrees.py"], uncovered(MANIFEST, ["tools/worktrees.py"]))
 
-    def test_each_condition_imports_only_the_standard_library_and_the_skill_core_modules_the_manifest_declares(
-        self,
-    ) -> None:
-        # A review materializes only the files a manifest declares, so every skill-core module a condition loads,
-        # through its imports and theirs, is a resource; anything else would be missing beside it.
+    def test_each_condition_imports_only_the_standard_library_and_the_modules_the_manifest_declares(self) -> None:
+        # A review materializes only the files a manifest declares, so every module of this skill or skill-core a
+        # condition loads, through its imports and theirs, is a resource; anything else would be missing beside it.
         pending, needed = [REPOSITORY / CONDITION, REPOSITORY / UNTESTED], set()
         while pending:
             tree = ast.parse(pending.pop().read_text(encoding="utf-8"))
@@ -385,14 +385,25 @@ class DocumentationDriftTests(GitTestCase):
                     else []
                 )
                 for name in names:
-                    module = REPOSITORY / SKILL_CORE / f"{name.split('.')[0]}.py"
-                    if module.is_file():
-                        if f"{SKILL_CORE}/{module.name}" not in needed:
-                            needed.add(f"{SKILL_CORE}/{module.name}")
-                            pending.append(module)
-                    else:
+                    found = [
+                        f"{folder}/{name.split('.')[0]}.py"
+                        for folder in (f"{SKILL}/scripts", SKILL_CORE)
+                        if (REPOSITORY / folder / f"{name.split('.')[0]}.py").is_file()
+                    ]
+                    if not found:
                         self.assertIn(name.split(".")[0], {*sys.stdlib_module_names, "__future__"}, name)
-        self.assertEqual({f"{SKILL_CORE}/console.py", f"{SKILL_CORE}/flat_text.py"}, needed)
+                    elif found[0] not in needed:
+                        needed.add(found[0])
+                        pending.append(REPOSITORY / found[0])
+        self.assertEqual(
+            {
+                f"{SKILL}/scripts/conditions.py",
+                f"{SKILL_CORE}/console.py",
+                f"{SKILL_CORE}/diff_paths.py",
+                f"{SKILL_CORE}/flat_text.py",
+            },
+            needed,
+        )
         self.assertLessEqual(needed, set(MANIFEST["resources"]))
 
     def test_the_condition_runs_from_a_reviewer_folder_holding_only_the_declared_files(self) -> None:
@@ -583,16 +594,16 @@ class UntestedChangesTests(GitTestCase):
             for target in node.targets
             if isinstance(target, ast.Name) and target.id in {"TEST_NAME_PATTERNS", "TEST_SCRIPT_EXTENSIONS"}
         }
-        self.assertEqual(("test_*", "test-*", "*_test", "*-test", "*.test.*"), untested_functions.SUITE_NAMES)
-        self.assertEqual(constants["TEST_NAME_PATTERNS"], untested_functions.SUITE_NAMES)
-        self.assertEqual((".py", ".ps1", ".sh"), untested_functions.SCRIPT_SUFFIXES)
-        self.assertEqual(constants["TEST_SCRIPT_EXTENSIONS"], set(untested_functions.SCRIPT_SUFFIXES))
+        self.assertEqual(("test_*", "test-*", "*_test", "*-test", "*.test.*"), conditions.SUITE_NAMES)
+        self.assertEqual(constants["TEST_NAME_PATTERNS"], conditions.SUITE_NAMES)
+        self.assertEqual((".py", ".ps1", ".sh"), conditions.SCRIPT_SUFFIXES)
+        self.assertEqual(constants["TEST_SCRIPT_EXTENSIONS"], set(conditions.SCRIPT_SUFFIXES))
         # Every suite this repository holds is a path the route reads, so a lazy snapshot gives the condition it.
         matchers = [glob_matcher(pattern) for pattern in MANIFEST["conditions"]["untested-functions"]["reads"]]
         suites = [
             path
             for path in tracked_files()
-            if untested_functions.is_suite(path) and not path.startswith(untested_functions.FIXTURES)
+            if conditions.is_suite(path) and not path.startswith(untested_functions.FIXTURES)
         ]
         self.assertIn(f"{SKILL}/scripts/test_untested_functions.py", suites)
         self.assertEqual([], [path for path in suites if not any(matches(path) for matches in matchers)])
@@ -624,6 +635,57 @@ class UntestedChangesTests(GitTestCase):
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, profile)
+
+
+class RealDiffTests(GitTestCase):
+    """Each condition reads a diff git wrote, whose headers end a path holding a space with a tab and quote a path
+    holding a byte outside printable ASCII, and runs from a reviewer folder holding only the declared files."""
+
+    SPACED = "tools/report age.py"
+    ACCENTED = "tools/résumé.py"
+
+    def setUp(self) -> None:
+        super().setUp()
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.scratch = Path(temporary.name)
+        self.reviewer, self.source = self.scratch / "reviewer", self.scratch / "source"
+        for path in declared_reviewer_files(MANIFEST):
+            (self.reviewer / path).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(REPOSITORY / path, self.reviewer / path)
+        self.source.mkdir()
+        self.git = GitClient()
+        self.git.output(["init", "--quiet"], directory=self.source)
+
+    def commit(self, files: dict[str, str]) -> None:
+        for path, text in files.items():
+            (self.source / path).parent.mkdir(parents=True, exist_ok=True)
+            (self.source / path).write_bytes(text.encode("utf-8"))
+        self.git.output(["add", "--all"], directory=self.source)
+        self.git.output(["commit", "--quiet", "--message", "change"], directory=self.source)
+
+    def diff(self) -> str:
+        diff = self.git.output(["diff", "HEAD~1", "HEAD"], directory=self.source)
+        self.assertIn("+++ b/tools/report age.py\t\n", diff)
+        self.assertIn('+++ "b/tools/r\\303\\251sum\\303\\251.py"\n', diff)
+        return diff
+
+    def test_the_untested_route_lists_each_changed_function_by_its_decoded_path(self) -> None:
+        self.commit({self.SPACED: "def days():\n    return 30\n", self.ACCENTED: "def weeks():\n    return 4\n"})
+        self.commit({self.SPACED: "def days():\n    return 7\n", self.ACCENTED: "def weeks():\n    return 2\n"})
+        code, out, written = run_condition(self.reviewer / UNTESTED, self.source, self.diff(), self.scratch)
+        self.assertEqual((0, "UNTESTED 2 given=2\n"), (code, out))
+        self.assertIn("UNTESTED tools/report age.py:1 function days, added lines 2, ", written)
+        self.assertIn("UNTESTED tools/résumé.py:1 function weeks, added lines 2, ", written)
+
+    def test_the_drift_route_gives_the_passages_that_name_each_changed_script(self) -> None:
+        guide = "# Guide\n\nRun `python -B 'tools/report age.py'` daily.\n\nThen run `tools/résumé.py`.\n"
+        self.commit({"docs/guide.md": guide, self.SPACED: "DAYS = 30\n", self.ACCENTED: "WEEKS = 4\n"})
+        self.commit({self.SPACED: "DAYS = 7\n", self.ACCENTED: "WEEKS = 2\n"})
+        code, out, written = run_condition(self.reviewer / CONDITION, self.source, self.diff(), self.scratch)
+        self.assertEqual((0, "PASSAGES 2 given=2\n"), (code, out))
+        self.assertIn("PASSAGE docs/guide.md:3 names report age.py (script in tools/report age.py)", written)
+        self.assertIn("PASSAGE docs/guide.md:5 names résumé.py (script in tools/résumé.py)", written)
 
 
 class RecommendedConfigurationTests(GitTestCase):

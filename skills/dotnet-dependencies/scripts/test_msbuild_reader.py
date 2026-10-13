@@ -15,6 +15,7 @@ import msbuild_reader
 from msbuild_reader import (
     PackageRef,
     Unreadable,
+    central_versions_file,
     package_assemblies,
     read_assets,
     read_central_versions,
@@ -52,7 +53,10 @@ SDK_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
     <PackageReference Include="Lantern.Core" />
     <PackageReference Include="Lantern.Text" VersionOverride="3.0.0" />
     <PackageReference Include="Beacon.Unknown" />
-    <PackageReference Update="Ignored.Update" />
+    <PackageReference Update="Ignored.Update" Version="9.9.9" />
+    <PackageReference Include="Beacon.Removed" Version="1.0.0" />
+    <PackageReference Update="quill.http" Version="1.3.0" />
+    <PackageReference Remove="Beacon.Removed" />
   </ItemGroup>
 </Project>
 """
@@ -155,8 +159,12 @@ class ReaderTests(unittest.TestCase):
         path.write_text(text, encoding="utf-8")
         return path
 
+    def central(self, directory: Path) -> dict[str, str]:
+        found = central_versions_file(directory, self.root)
+        return read_central_versions(found) if found else {}
+
     def test_legacy_project_gives_assembly_references_with_version_and_hint_path(self) -> None:
-        project = read_project(self.write("src/Harbor.Web/Harbor.Web.csproj", LEGACY_PROJECT), self.root)
+        project = read_project(self.write("src/Harbor.Web/Harbor.Web.csproj", LEGACY_PROJECT), self.central)
         self.assertEqual("legacy", project.style)
         self.assertEqual("Harbor.Web", project.assembly_name)
         self.assertEqual(["v4.7.2"], project.frameworks)
@@ -171,29 +179,31 @@ class ReaderTests(unittest.TestCase):
         )
 
     def test_sdk_project_takes_versions_from_attribute_child_override_or_central_file(self) -> None:
+        # An Update item sets the version of a reference included before it and never adds one; a Remove drops one.
         self.write("Directory.Packages.props", CENTRAL)
-        project = read_project(self.write("src/Harbor.Core/Harbor.Core.csproj", SDK_PROJECT), self.root)
+        project = read_project(self.write("src/Harbor.Core/Harbor.Core.csproj", SDK_PROJECT), self.central)
         self.assertEqual("sdk", project.style)
         self.assertEqual("Harbor.Core", project.assembly_name)
         self.assertEqual(["net8.0", "net472"], project.frameworks)
         self.assertEqual(
             [
-                PackageRef("Quill.Http", "1.2.0", "PackageReference"),
+                PackageRef("Quill.Http", "1.3.0", "PackageReference"),
                 PackageRef("Lantern.Json", "12.0.3", "PackageReference"),
                 PackageRef("Lantern.Core", "2.0.0", "central"),
                 PackageRef("Lantern.Text", "3.0.0", "PackageReference"),
                 PackageRef("Beacon.Unknown", None, "PackageReference"),
-                PackageRef("Ignored.Update", None, "PackageReference"),
             ],
             project.packages,
         )
 
     def test_central_versions_stop_at_the_solution_directory(self) -> None:
-        self.write("Directory.Packages.props", CENTRAL)
-        self.assertEqual({}, read_central_versions(self.root / "src", self.root / "src"))
-        self.assertEqual(
-            {"lantern.core": "2.0.0", "lantern.text": "2.5.0"}, read_central_versions(self.root / "src", self.root)
-        )
+        props = self.write("Directory.Packages.props", CENTRAL)
+        self.assertIsNone(central_versions_file(self.root / "src", self.root / "src"))
+        self.assertEqual(props, central_versions_file(self.root / "src", self.root))
+        self.assertEqual({"lantern.core": "2.0.0", "lantern.text": "2.5.0"}, read_central_versions(props))
+        with self.assertRaises(Unreadable) as refused:
+            read_central_versions(self.write("Directory.Packages.props", "<!DOCTYPE x><Project />"))
+        self.assertIn("DOCTYPE", refused.exception.reason)
 
     def test_sdk_element_and_sdk_import_count_as_sdk_style(self) -> None:
         for text in (
@@ -201,8 +211,8 @@ class ReaderTests(unittest.TestCase):
             "</PropertyGroup></Project>",
             '<Project><Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" /></Project>',
         ):
-            self.assertEqual("sdk", read_project(self.write("a/a.csproj", text), self.root).style)
-        self.assertEqual("legacy", read_project(self.write("b/b.csproj", "<Project></Project>"), self.root).style)
+            self.assertEqual("sdk", read_project(self.write("a/a.csproj", text), self.central).style)
+        self.assertEqual("legacy", read_project(self.write("b/b.csproj", "<Project></Project>"), self.central).style)
 
     def test_packages_config_lists_each_package_with_its_version_and_framework(self) -> None:
         self.assertEqual(
@@ -238,7 +248,7 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(("Lantern.Json", "Lantern.Json.Extras"), package_assemblies(self.root / "pkg"))
         self.assertEqual((), package_assemblies(self.root / "nowhere"))
 
-    def test_assets_give_each_targets_packages_direct_dependencies_and_package_folders(self) -> None:
+    def test_assets_give_each_frameworks_packages_and_direct_dependencies(self) -> None:
         assets = read_assets(self.write("obj/project.assets.json", json.dumps(ASSETS)))
         self.assertEqual(["net8.0"], list(assets.nodes))
         self.assertEqual(["Lantern.Json", "Quill.Http"], sorted(assets.nodes["net8.0"]))
@@ -248,7 +258,6 @@ class ReaderTests(unittest.TestCase):
         )
         self.assertEqual(("Quill.Http", "Quill.Http.Abstractions"), quill.assemblies)
         self.assertEqual({"net8.0": [PackageRef("Quill.Http", "[1.2.0, )", "PackageReference")]}, assets.direct)
-        self.assertEqual((Path("C:\\\\cache\\\\packages\\\\"),), assets.package_folders)
 
     def test_unreadable_files_name_the_file_and_the_reason(self) -> None:
         cases = {
@@ -258,11 +267,11 @@ class ReaderTests(unittest.TestCase):
         }
         for text, reason in cases.items():
             with self.subTest(reason=reason), self.assertRaises(Unreadable) as refused:
-                read_project(self.write("bad/bad.csproj", text), self.root)
+                read_project(self.write("bad/bad.csproj", text), self.central)
             self.assertEqual(self.root / "bad" / "bad.csproj", refused.exception.file)
             self.assertIn(reason, refused.exception.reason)
         with self.assertRaises(Unreadable) as refused:
-            read_project(self.root / "missing.csproj", self.root)
+            read_project(self.root / "missing.csproj", self.central)
         self.assertEqual(self.root / "missing.csproj", refused.exception.file)
         with self.assertRaises(Unreadable):
             read_assets(self.write("obj/project.assets.json", "{not json"))

@@ -12,7 +12,8 @@ CLAUDE.md, and every skill's SKILL.md, but no release's notes or evaluation resu
 a document writes code: inside a code span or a fenced block. A file name counts as a path's last segment there; a
 module, function, or class name counts as the whole span, a call (`name(`), or a dotted part (`module.name`). Prose
 never counts, nor `main`, which every entry point defines, nor a name shorter than MIN_NAME_LENGTH, so a name that is
-also a common word does not match every sentence that uses the word. A test file's names are left out.
+also a common word does not match every sentence that uses the word. A suite's names, by validation's rule, are
+left out.
 
 It writes each matching passage (a paragraph, a list item, a table row, a heading, or a fenced block) as
 `PASSAGE <document>:<line> names <name> (<kind> in <changed file>), hunk <header> at new lines <first>-<last>`, then
@@ -35,14 +36,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-core" / "scripts"))
 
+from conditions import DIFF_VARIABLE, OUTPUT_VARIABLE, SCRIPT_SUFFIXES, is_suite
 from console import failed_line, run_main
+from diff_paths import header_path
 
 EXIT_CONTRACT_EXEMPT = (
     "a code-review condition: exit 0 opens its route and 1 closes it, so a failure exits 2, which fails the review "
     "rather than silently closing the route"
 )
-DIFF_VARIABLE = "CODE_REVIEW_DIFF_FILE"
-OUTPUT_VARIABLE = "CODE_REVIEW_CONDITION_OUTPUT"
 # The documents searched, as globs under the snapshot; the route's `reads` in specialists.json declares the same.
 DOCUMENTS = (
     "docs/**/*.md",
@@ -55,7 +56,6 @@ DOCUMENTS = (
 # Records of the past or of results, not descriptions of the code: a release's notes describe what it shipped then,
 # and the evaluation results are written by a tool.
 RECORDS = frozenset({"docs/upgrade-notes.md", "docs/skill-evaluations.md"})
-SCRIPT_SUFFIXES = (".py", ".ps1", ".sh")
 # Names shorter than this are words a document uses in code for other things (`run`, `id`), so they never count.
 MIN_NAME_LENGTH = 4
 # Every entry point defines main, and documents write `main` for the branch.
@@ -120,16 +120,6 @@ class Passage:
     at: int  # where in the unit's text the name matched
 
 
-def _diff_path(line: str) -> str | None:
-    """The repository path a `+++ b/<path>` or `--- a/<path>` line names, or None for /dev/null."""
-    value = line[4:].rstrip("\n")
-    if value.startswith('"') and value.endswith('"'):
-        value = value[1:-1]
-    if value == "/dev/null":
-        return None
-    return value[2:] if value[:2] in {"a/", "b/"} else value
-
-
 def read_diff(text: str) -> tuple[list[str], list[Hunk], list[tuple[str, str, Hunk]]]:
     """The changed paths in diff order, their hunks, and each top-level definition a hunk adds, removes, or changes
     inside, as its keyword, its name, and that hunk."""
@@ -143,9 +133,9 @@ def read_diff(text: str) -> tuple[list[str], list[Hunk], list[tuple[str, str, Hu
         if line.startswith("diff --git "):
             old = path = current = None
         elif line.startswith("--- ") and current is None:
-            old = _diff_path(line)
+            old = header_path(line[4:])
         elif line.startswith("+++ ") and current is None:
-            path = _diff_path(line) or old
+            path = header_path(line[4:]) or old
             if path is not None and path not in paths:
                 paths.append(path)
         elif (match := HUNK.match(line)) and path is not None:
@@ -167,11 +157,6 @@ def _counts(text: str) -> bool:
     return len(text) >= MIN_NAME_LENGTH and text not in IGNORED_NAMES and not text.startswith("__")
 
 
-def _is_test(path: str) -> bool:
-    base = path.rsplit("/", 1)[-1]
-    return base.startswith("test_") or base.rsplit(".", 1)[0].endswith("_test")
-
-
 def names_to_find(diff: str) -> list[Name]:
     """Each name a document may use for what the diff changes, once, with the hunk it relates to, in the order a
     passage is matched: the functions and classes, then the script file names, so a path names its file, then the
@@ -183,9 +168,9 @@ def names_to_find(diff: str) -> list[Name]:
         first_hunk.setdefault(hunk.path, hunk)
     names: dict[str, Name] = {}
     for keyword, text, hunk in definitions:
-        if hunk.path.endswith(".py") and not _is_test(hunk.path) and _counts(text):
+        if hunk.path.endswith(".py") and not is_suite(hunk.path) and _counts(text):
             names.setdefault(text, Name(text, "class" if keyword == "class" else "function", hunk))
-    scripts = [path for path in paths if path.endswith(SCRIPT_SUFFIXES) and not _is_test(path)]
+    scripts = [path for path in paths if path.endswith(SCRIPT_SUFFIXES) and not is_suite(path)]
     for kind in ("script", "module"):
         for path in scripts:
             base = path.rsplit("/", 1)[-1]

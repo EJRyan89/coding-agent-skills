@@ -180,6 +180,32 @@ class ConditionTests(unittest.TestCase):
         diff = changed("tests/test_specialists.py", ("", ["+def test_route():", "+    pass"]))
         self.assertEqual((1, "PASSAGES 0 given=0\n", ""), self.run_condition(diff))
 
+    def test_every_suite_name_validation_runs_is_left_out_and_another_script_is_not(self) -> None:
+        for path in (
+            "tests/test_run.sh",
+            "tests/test-run.sh",
+            "skills/x/scripts/check_test.py",
+            "skills/x/scripts/check-test.ps1",
+            "skills/x/scripts/a.test.sh",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual([], doc_passages.names_to_find(changed(path, ("", ["+def sweep_all():"]))))
+        self.assertEqual(
+            ["contest.sh"], [name.text for name in doc_passages.names_to_find(changed("tools/contest.sh"))]
+        )
+
+    def test_a_header_s_tab_and_quoting_are_not_part_of_the_path(self) -> None:
+        diff = (
+            "diff --git a/tools/report age.py b/tools/report age.py\n--- a/tools/report age.py\t\n"
+            '+++ b/tools/report age.py\t\n@@ -1 +1 @@\n-DAYS = 30\n+DAYS = 7\ndiff --git "a/tools/r\\303\\251sum'
+            '\\303\\251.sh" "b/tools/r\\303\\251sum\\303\\251.sh"\n--- "a/tools/r\\303\\251sum\\303\\251.sh"\n'
+            '+++ "b/tools/r\\303\\251sum\\303\\251.sh"\n@@ -1 +1 @@\n-x=1\n+x=2\n'
+        )
+        self.assertEqual(
+            [("report age.py", "script"), ("résumé.sh", "script"), ("report age", "module")],
+            [(name.text, name.kind) for name in doc_passages.names_to_find(diff)],
+        )
+
     def test_a_condition_run_without_its_inputs_fails_the_review(self) -> None:
         code, out, written = self.run_condition("", environment={})
         self.assertEqual(

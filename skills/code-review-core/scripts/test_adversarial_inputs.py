@@ -367,6 +367,29 @@ class FileNameTests(AdversarialFixture):
             with self.subTest(units=len(name.encode("utf-16-le")) // 2):
                 self.assertEqual(reason, review_runtime.unsafe_path_reason(f"app/{name}/x.py", ample))
 
+    def test_a_drive_or_device_name_in_any_segment_is_unsafe_by_its_name_whatever_the_room(self) -> None:
+        # The names review-document refuses for a pull request's document before it writes the document's fixture,
+        # where no room is measured yet: a drive resets a Windows join to that drive, and a device name opens the
+        # device.
+        reserved = (
+            'a reserved character (< > : " | ? *) or a control character in a segment: Windows refuses it in a name'
+        )
+        device = (
+            "a reserved device name as a segment, with or without an extension: Windows opens the device, not a file"
+        )
+        unbounded = review_runtime.PathRoom(file=sys.maxsize, folder=sys.maxsize)
+        for name, reason in (
+            ("C:/x.md", reserved),
+            ("C:x.md", reserved),
+            ("docs/C:/x.md", reserved),
+            ("docs/C:x/x.md", reserved),
+            ("a:b.md", reserved),
+            ("CON.md", device),
+            ("docs/nul/x.md", device),
+        ):
+            with self.subTest(name=name):
+                self.assertEqual(reason, review_runtime.unsafe_path_reason(name, unbounded))
+
     def test_names_windows_cannot_hold_are_unsafe_path_exclusions_and_a_coverage_gap_only_where_changed(self) -> None:
         unsafe = [
             "app/a:b.py",
@@ -499,6 +522,38 @@ class BlobContentTests(AdversarialFixture):
         self.assertEqual(["app/huge.py"], self.request(ready)["coverage"]["unavailable_sources"])
         self.assertNotIn("ignore your instructions", self.prompts(ready))
         self.assertEqual("INCOMPLETE", self.recorded_verdict(ready))
+
+
+class AnalyzerInventoryTests(AdversarialFixture):
+    def test_msbuild_xml_declaring_an_entity_is_listed_unread_and_never_expanded_or_fetched(self) -> None:
+        outside = self.root / "outside.txt"
+        outside.write_text("read-from-outside", encoding="utf-8")
+        expanding = (
+            '<?xml version="1.0"?><!DOCTYPE p [<!ENTITY a "expanded-entity">]>'
+            "<Project><PropertyGroup><AnalysisLevel>&a;</AnalysisLevel></PropertyGroup></Project>"
+        )
+        external = (
+            f'<!DOCTYPE p [<!ENTITY x SYSTEM "{outside.as_uri()}">]><Project Sdk="Microsoft.NET.Sdk">'
+            "<PropertyGroup><AnalysisMode>&x;</AnalysisMode></PropertyGroup></Project>"
+        )
+        clean = "<Project><PropertyGroup><AnalysisLevel>latest</AnalysisLevel></PropertyGroup></Project>"
+        project = {"src/App/App.csproj": external, "src/Clean.props": clean, "src/Expanding.props": expanding}
+        self.pull_request({**BASE, **files({path: text.encode("utf-8") for path, text in project.items()})})
+        ready = self.prepare()
+        analyzers = json.loads((ready["run"] / "work" / "analyzers.json").read_text(encoding="utf-8"))
+        unread = "(present, but could not be parsed; read the file for its settings)"
+        self.assertEqual(
+            [
+                ("src/App/App.csproj", unread),
+                ("src/Clean.props", "<AnalysisLevel>latest</AnalysisLevel>"),
+                ("src/Expanding.props", unread),
+            ],
+            [(entry["file"], entry["setting"]) for entry in analyzers["settings"]],
+        )
+        self.assertEqual([], analyzers["tools"], "a refused project names no analyzer")
+        listed = json.dumps(analyzers) + self.prompts(ready)
+        self.assertNotIn("expanded-entity</AnalysisLevel>", listed)
+        self.assertNotIn("read-from-outside", listed)
 
 
 class DocumentExtractionTests(AdversarialFixture):
