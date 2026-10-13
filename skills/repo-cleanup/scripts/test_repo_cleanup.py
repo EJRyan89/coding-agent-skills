@@ -1744,6 +1744,32 @@ class RemoveWorktreeTests(CleanupTestCase):
         self.assertEqual(["PRESERVED", "untracked"], events[0][:2])
         self.assertTrue((path / "draft.txt").is_file())
 
+    def test_untracked_work_is_kept_when_the_user_hides_untracked_files(self) -> None:
+        # The setting hides untracked files from git status, and from the check git worktree remove makes itself.
+        git(self.repo, "config", "status.showUntrackedFiles", "no")
+        path = self.add("hidden")
+        (path / "draft.txt").write_text("draft\n", encoding="utf-8")
+        self.assertEqual("", git(path, "status", "--porcelain"), "the setting hides the draft")
+        self.assertEqual(1, rc.dirty_count(rc.Services(), path))
+        removed, events, _ = self.remove("hidden")
+        self.assertFalse(removed)
+        self.assertEqual(["PRESERVED", "hidden"], events[0][:2])
+        self.assertTrue(events[0][2].startswith(f"Git refused to remove worktree {path}: "), events)
+        self.assertTrue((path / "draft.txt").is_file())
+
+    def test_ignored_files_keep_a_worktree_when_the_user_hides_untracked_files(self) -> None:
+        self.ignore(".env")
+        git(self.repo, "config", "status.showUntrackedFiles", "no")
+        path = self.add("hidden")
+        self.fill(path, ".env")
+        removed, events, _ = self.remove("hidden")
+        self.assertFalse(removed)
+        self.assertEqual(
+            [["PRESERVED", "hidden", f"worktree {path} holds 1 ignored path git worktree remove would delete: .env"]],
+            events,
+        )
+        self.assertTrue((path / ".env").is_file())
+
     def ignore(self, *patterns: str) -> None:
         (self.repo / ".gitignore").write_text("".join(f"{pattern}\n" for pattern in patterns), encoding="utf-8")
         git(self.repo, "add", ".gitignore")

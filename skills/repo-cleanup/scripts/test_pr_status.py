@@ -25,6 +25,7 @@ from pr_status import (
     QueryError,
     base_contains,
     branch_tips,
+    change_identity,
     classify,
     fetched_bases,
     patch_match,
@@ -865,7 +866,7 @@ class PatchMatchTests(SquashFixture):
         commands: list[tuple[str, ...]] = []
 
         def runner(command: Sequence[str], timeout: float, *, input_bytes: bytes | None = None) -> GitResult:
-            for verb in ("merge-base", "diff"):
+            for verb in ("merge-base", "diff-tree"):
                 if verb in command:
                     commands.append(tuple(command[command.index(verb) :]))
             return subprocess_runner(command, timeout, input_bytes=input_bytes)
@@ -876,12 +877,132 @@ class PatchMatchTests(SquashFixture):
         self.assertEqual(
             [
                 ("merge-base", self.BASE_REF, self.tip),
-                ("diff", fork_point, self.tip),
-                ("diff", f"{squash}^", squash),
-                ("diff", f"{squash}^", squash),
+                ("diff-tree", fork_point, self.tip),
+                ("diff-tree", f"{squash}^", squash),
+                ("diff-tree", f"{squash}^", squash),
             ],
-            commands,
+            [(command[0], *command[-2:]) for command in commands],
         )
+
+    def test_the_proof_holds_whatever_diff_settings_the_user_has(self) -> None:
+        squash = self.squash_merge()
+        rewritten = self.reword_tip()
+        # Each setting with what it makes git diff print: escape codes, or the external program's output for a patch.
+        settings = (("color.diff", "always", "\x1b["), ("diff.external", "echo external", "external feature.txt"))
+        for key, value, printed in settings:
+            with self.subTest(setting=key):
+                self.git("-C", str(self.clone), "config", key, value)
+                try:
+                    self.assertIn(printed, self.git("-C", str(self.clone), "diff", f"{squash}^", squash))
+                    self.assertTrue(self.same_patch(rewritten, squash))
+                    self.assertTrue(self.same_patch(self.tip, squash))
+                finally:
+                    self.git("-C", str(self.clone), "config", "--unset", key)
+
+
+DEMO = b'def f(flag):\n    if flag:\n        return 1\n    return 2\n\n\nGREETING = "hello world"\n'
+# Later changes to the demo that are whitespace only and change what it holds; git patch-id ignores each.
+WHITESPACE_ONLY = {
+    "indentation that moves a statement under the if": DEMO.replace(b"\n    return 2\n", b"\n        return 2\n"),
+    "whitespace inside a string": DEMO.replace(b"hello world", b"hello  world"),
+    "a line ending": DEMO.replace(b"return 1\n", b"return 1\r\n"),
+}
+
+
+class WhitespaceFixture(SquashFixture):
+    """The topic also adds a Python file and is squash-merged; a test then amends the topic's tip, as a later commit
+    whose only change is whitespace leaves it."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.git("-C", str(self.clone), "switch", "topic")
+        self.tip = self.write_demo(DEMO)
+        self.git("-C", str(self.clone), "push", "origin", "topic")
+        self.git("-C", str(self.clone), "switch", "main")
+        self.squash = self.squash_merge()
+
+    def write_demo(self, content: bytes, *options: str) -> str:
+        """A commit on the checked-out branch that writes `content` to demo.py byte for byte."""
+        (self.clone / "demo.py").write_bytes(content)
+        self.git("-C", str(self.clone), "add", "demo.py")
+        self.git("-C", str(self.clone), "commit", *options, "-m", "add the demo")
+        return self.git("-C", str(self.clone), "rev-parse", "HEAD")
+
+    def amend(self, content: bytes) -> str:
+        """Reset the topic to the tip the pull request ended at and amend it so demo.py holds `content`."""
+        self.git("-C", str(self.clone), "switch", "-C", "topic", self.tip)
+        amended = self.write_demo(content, "--amend")
+        self.git("-C", str(self.clone), "switch", "main")
+        return amended
+
+    def stable_patch_id(self, start: str, end: str) -> str:
+        diff = subprocess.run(
+            ["git", "-C", str(self.clone), "diff", "--no-color", "--no-ext-diff", start, end],
+            capture_output=True,
+            check=True,
+        )
+        ids = subprocess.run(
+            ["git", "-C", str(self.clone), "patch-id", "--stable"], input=diff.stdout, capture_output=True, check=True
+        )
+        return ids.stdout.decode("ascii").split()[0]
+
+
+PATCH = (
+    b"diff --git a/demo.py b/demo.py\n"
+    b"index 1a2b3c4..5d6e7f8 100644\n"
+    b"--- a/demo.py\n"
+    b"+++ b/demo.py\n"
+    b"@@ -10,3 +10,4 @@ def f(flag):\n"
+    b"     if flag:\n"
+    b"         return 1\n"
+    b"+    return 3\n"
+    b"     return 2\n"
+)
+
+
+class ChangeIdentityTests(GitTestCase):
+    def test_where_a_change_sits_is_left_out_and_every_other_byte_counts(self) -> None:
+        moved = PATCH.replace(b"index 1a2b3c4..5d6e7f8", b"index 9a8b7c6..0d1e2f3").replace(
+            b"@@ -10,3 +10,4 @@ def f(flag):", b"@@ -40,3 +40,4 @@ class Demo:"
+        )
+        self.assertEqual(change_identity(PATCH), change_identity(moved), "object names and line numbers are left out")
+        for changed in (
+            PATCH.replace(b"+    return 3", b"+        return 3"),
+            PATCH.replace(b"+    return 3", b"+    return  3"),
+            PATCH.replace(b"+    return 3\n", b"+    return 3\r\n"),
+            PATCH.replace(b"+    return 3", b"+    return 4"),
+            PATCH.replace(b"         return 1", b"         return 5"),
+            PATCH.replace(b"100644", b"100755").replace(b"index", b"old mode 100644\nnew mode 100755\nindex"),
+        ):
+            with self.subTest(changed=changed):
+                self.assertNotEqual(change_identity(PATCH), change_identity(changed))
+        self.assertIsNone(change_identity(b""), "an empty patch is no change")
+
+
+class WhitespaceTests(WhitespaceFixture):
+    def test_a_tip_whose_only_later_change_is_whitespace_does_not_match(self) -> None:
+        self.assertTrue(self.same_patch(self.tip, self.squash), "the tip the pull request ended at matches")
+        landed = self.stable_patch_id(f"{self.squash}^", self.squash)
+        for variant, content in WHITESPACE_ONLY.items():
+            with self.subTest(variant=variant):
+                amended = self.amend(content)
+                fork_point = self.git("-C", str(self.clone), "merge-base", self.BASE_REF, amended)
+                self.assertEqual(landed, self.stable_patch_id(fork_point, amended), "patch-id cannot tell them apart")
+                self.assertFalse(self.same_patch(amended, self.squash))
+
+    def test_a_branch_whose_only_later_change_is_whitespace_stays_unmatched(self) -> None:
+        def state() -> str:
+            head, upstream = branch_tips(str(self.clone), "topic")
+            listed = listing(dict(pull("MERGED", self.tip), mergeCommit={"oid": self.squash}))
+            run = router(listed, history((self.tip, BASE)))
+            return classify("owner/repo", "topic", head, upstream, run, fetched_bases(str(self.clone)), "main")
+
+        self.reword_tip()
+        self.assertEqual("MERGED", state(), "a tip reworded without changing its content is merged")
+        for variant, content in WHITESPACE_ONLY.items():
+            with self.subTest(variant=variant):
+                self.amend(content)
+                self.assertEqual("UNMATCHED", state())
 
 
 class ReleaseBaseFixture(SquashFixture):
