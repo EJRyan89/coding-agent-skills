@@ -987,7 +987,7 @@ class ReleaseBaseTests(ReleaseBaseFixture):
 
 
 def main_only_fetched(clone: Path) -> Bases:
-    """The fetched main's tests and no other base's, as the classifier judged every pull request before #680."""
+    """The fetched main's tests and no other base's: how every pull request was judged before bases were per pull."""
     main = fetched_bases(str(clone))("main")
     return {"main": main}.get
 
