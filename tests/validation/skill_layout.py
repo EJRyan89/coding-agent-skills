@@ -256,7 +256,7 @@ AGENTS_DOC = '"Subagent definitions" in docs/adding-a-skill.md'
 
 def skill_path_problems(root: Path) -> list[str]:
     """Report skills and agents that reach a skill's files other than through ${CLAUDE_SKILL_DIR}."""
-    skills = {path.parent.name for path in (root / "skills").glob("**/SKILL.md")}
+    skills = {path.parent.name for path in (root / "skills").glob("*/SKILL.md")}
     problems: list[str] = []
     for path, dependencies, directory in _path_documents(root):
         name = path.relative_to(root).as_posix()
@@ -397,10 +397,10 @@ def _sibling_path_files(root: Path) -> list[Path]:
 def sibling_path_problems(root: Path) -> list[str]:
     """Report a sys.path entry that reaches a sibling skill's scripts other than through skill-core's lookup.
 
-    skill_roots.sibling_scripts knows where a sibling lives, in the checkout, a categorized checkout, and the deployed
-    home alike, so a hand-written path is a copy of that layout that breaks when it changes. The line that puts
-    skill-core on sys.path is the one hand-written entry, since it finds the lookup, and a lookup's name is a literal
-    so the skill_deps check can read it.
+    skill_roots.sibling_scripts knows where a sibling lives, in the checkout and the deployed home alike, so a
+    hand-written path is a copy of that layout that breaks when it changes. The line that puts skill-core on sys.path
+    is the one hand-written entry, since it finds the lookup, and a lookup's name is a literal so the skill_deps check
+    can read it.
     """
     problems: list[str] = []
     for path in _sibling_path_files(root):
@@ -514,33 +514,26 @@ def script_layout_problems(root: Path) -> list[str]:
 
 
 def skill_tree_problems(root: Path) -> list[str]:
-    """Report a directory under skills/ that deployer/source.py would not read as a skill or a category of skills.
+    """Report a directory under skills/ that deployer/source.py would not read as a skill or a shared asset.
 
-    A skill is skills/<name> or skills/<category>/<name> holding SKILL.md, so a directory that is neither, or a
-    SKILL.md deeper than that, is a folder whose files and suites nothing would find.
+    A skill is skills/<name> holding SKILL.md and source.json declares each shared asset, so any other directory, or a
+    SKILL.md deeper than skills/<name>, is a folder whose files and suites nothing would find.
     """
     skills = root / "skills"
-    problems: list[str] = []
-    for directory in sorted(path for path in skills.iterdir() if path.is_dir()) if skills.is_dir() else []:
-        name = directory.relative_to(root).as_posix()
-        members = sorted(path for path in directory.iterdir() if path.is_dir())
-        if (directory / "SKILL.md").is_file():
-            problems += [
-                f"{member.relative_to(root).as_posix()}/SKILL.md is a skill inside the skill {name}"
-                for member in members
-                if (member / "SKILL.md").is_file()
-            ]
-            continue
-        if not members:
-            problems.append(f"{name} holds no SKILL.md, so it is neither a skill nor a category of skills")
-        problems += [
-            f"{member.relative_to(root).as_posix()} holds no SKILL.md, but {name} is a category, so it must be a skill"
-            for member in members
-            if not (member / "SKILL.md").is_file()
-        ]
-    for skill_md in sorted(skills.rglob("SKILL.md")) if skills.is_dir() else []:
-        if len(skill_md.relative_to(skills).parts) > 3:
-            problems.append(f"{skill_md.relative_to(root).as_posix()} is deeper than skills/<category>/<name>")
+    if not skills.is_dir():
+        return []
+    source = root / "source.json"
+    shared = json.loads(source.read_text(encoding="utf-8")).get("shared_assets", {}) if source.is_file() else {}
+    problems = [
+        f"{directory.relative_to(root).as_posix()} holds no SKILL.md and source.json declares no such shared asset"
+        for directory in sorted(path for path in skills.iterdir() if path.is_dir())
+        if not (directory / "SKILL.md").is_file() and directory.name not in shared
+    ]
+    problems += [
+        f"{skill_md.relative_to(root).as_posix()} is deeper than skills/<name>"
+        for skill_md in sorted(skills.rglob("SKILL.md"))
+        if len(skill_md.relative_to(skills).parts) > 2
+    ]
     return problems
 
 
@@ -564,7 +557,7 @@ class SkillLayoutPolicies(unittest.TestCase):
     def test_skill_scripts_use_standard_layout(self) -> None:
         self.assertEqual([], script_layout_problems(REPOSITORY_ROOT))
 
-    def test_every_directory_under_skills_is_a_skill_or_a_category_of_skills(self) -> None:
+    def test_every_directory_under_skills_is_a_skill_or_a_shared_asset(self) -> None:
         self.assertEqual([], skill_tree_problems(REPOSITORY_ROOT))
 
     def test_skill_markdown_does_not_embed_programs(self) -> None:

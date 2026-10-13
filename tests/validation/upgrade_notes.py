@@ -156,7 +156,7 @@ def _format_tables(snapshot: Snapshot) -> dict[str, object]:
 
 
 def _skill_directories(snapshot: Snapshot) -> dict[str, object]:
-    """Each skill directory in the tree, skills/<name> or skills/<category>/<name>, so a category is not a skill."""
+    """Each skill directory in the tree, skills/<name> holding SKILL.md."""
     return {path.parent.as_posix(): True for path in map(PurePosixPath, snapshot.names) if is_skill_file(path)}
 
 
