@@ -534,7 +534,10 @@ class SyncTests(Fixture):
         self.assertEqual([["switched"]], facts(lines, "CHECKOUT"))
         forwarded = ["forwarded", git(self.other, "rev-parse", "HEAD")]
         self.assertEqual([forwarded], facts(lines, "FF_DEFAULT"))
-        self.assertEqual({"checkout": "switched", "fast_forward": forwarded, "behind": 1}, finished)
+        self.assertEqual(
+            {"default": {"name": "main", "note": ""}, "checkout": "switched", "fast_forward": forwarded, "behind": 1},
+            finished,
+        )
         self.assertEqual("refs/heads/main", git(self.clone, "symbolic-ref", "HEAD"))
         self.assertEqual(git(self.other, "rev-parse", "HEAD"), self.tip("main"))
         self.assertEqual("", git(self.clone, "for-each-ref", "refs/remotes/origin/pruned"))
@@ -586,13 +589,15 @@ class SyncTests(Fixture):
         self.assertEqual("refs/heads/topic", git(self.clone, "symbolic-ref", "HEAD"))
         self.assertEqual("failed", finished["checkout"] if finished else None)
 
-    def test_fetch_failure_stops_the_repository(self) -> None:
+    def test_fetch_failure_stops_the_repository_before_it_is_switched(self) -> None:
+        git(self.clone, "switch", "--quiet", "-c", "topic")
         git(self.clone, "config", f"url.{(self.root / 'missing remote').as_posix()}.insteadOf", REMOTE_URL)
         git(self.clone, "config", "--unset", f"url.{self.remote.as_posix()}.insteadOf")
         finished, lines = self.sync()
         self.assertFalse(finished, lines)
         self.assertEqual(1, len(facts(lines, "FETCH_FAILED")))
-        self.assertEqual([], facts(lines, "FF_DEFAULT"))
+        self.assertEqual([], facts(lines, "DEFAULT") + facts(lines, "CHECKOUT") + facts(lines, "FF_DEFAULT"))
+        self.assertEqual("refs/heads/topic", git(self.clone, "symbolic-ref", "HEAD"))
         summary = [fields[0] for fields in facts(lines, "SUMMARY")]
         self.assertTrue(summary[0].startswith("my repo skipped: fetch failed — "), summary)
         self.assertIn("nothing was fast-forwarded", summary[1])
@@ -1150,6 +1155,62 @@ class SweepTests(Fixture):
             )
         return code, output.getvalue().splitlines()
 
+    def test_a_clone_of_a_checkout_on_a_topic_branch_is_switched_to_origins_default_not_the_stale_branch(
+        self,
+    ) -> None:
+        git(self.other, "switch", "--quiet", "-c", "topic/old")
+        stale = self.commit(self.other, "work only the other checkout has")
+        copied = self.repos / "copied repo"
+        git(self.root, "clone", "--quiet", str(self.other), str(copied))
+        git(self.other, "switch", "--quiet", "main")
+        git(copied, "remote", "set-url", "origin", REMOTE_URL)
+        git(copied, "config", f"url.{self.remote.as_posix()}.insteadOf", REMOTE_URL)
+        git(copied, "fetch", "--quiet", "--prune", "origin")
+        self.assertEqual("refs/remotes/origin/topic/old", git(copied, "symbolic-ref", "refs/remotes/origin/HEAD"))
+
+        code, lines = self.sweep(None, "copied repo")
+        self.assertEqual(0, code, lines)
+        self.assertEqual([[copied.as_posix(), "cleaned"]], facts(lines, "REPO"))
+        self.assertEqual("refs/heads/main", git(copied, "symbolic-ref", "HEAD"))
+        self.assertEqual("refs/remotes/origin/main", git(copied, "symbolic-ref", "refs/remotes/origin/HEAD"))
+        self.assertIn(
+            "  Default branch:          main (up to date; switched to it; origin/HEAD named topic/old, which origin "
+            "lacks: refreshed it from origin)\n",
+            self.summary(lines) + "\n",
+        )
+        self.assertEqual(stale, git(copied, "rev-parse", "refs/heads/topic/old"), "its own work is kept")
+
+    def test_a_dangling_origin_head_origin_will_not_refresh_falls_back_to_main(self) -> None:
+        bare_git(self.remote, "symbolic-ref", "HEAD", "refs/heads/unborn")
+        git(self.clone, "switch", "--quiet", "-c", "topic")
+        git(self.clone, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/renamed")
+
+        code, lines = self.sweep(None, "my repo")
+        self.assertEqual(0, code, lines)
+        self.assertEqual([[self.clone.as_posix(), "cleaned"]], facts(lines, "REPO"), "a fallback is never quiet")
+        self.assertEqual("refs/heads/main", git(self.clone, "symbolic-ref", "HEAD"))
+        default = next(line for line in self.summary(lines).splitlines() if "Default branch:" in line)
+        prefix = (
+            "  Default branch:          main (up to date; switched to it; origin/HEAD names renamed, which origin "
+            "lacks: fell back to main — refreshing it failed: "
+        )
+        self.assertTrue(default.startswith(prefix), default)
+
+    def test_a_repository_whose_default_branch_cannot_be_found_is_left_on_its_branch(self) -> None:
+        bare_git(self.remote, "branch", "-m", "main", "trunk")
+        bare_git(self.remote, "symbolic-ref", "HEAD", "refs/heads/unborn")
+        git(self.clone, "switch", "--quiet", "-c", "topic")
+
+        code, lines = self.sweep(None, "my repo")
+        self.assertEqual(1, code, lines)
+        self.assertEqual([[self.clone.as_posix(), "error"]], facts(lines, "REPO"))
+        errors = facts(lines, "ERROR")
+        self.assertEqual(1, len(errors), lines)
+        self.assertTrue(errors[0][0].startswith("cannot determine default branch: origin/HEAD names main, which "))
+        self.assertTrue(errors[0][0].endswith("and origin has no main or master; left on topic"), errors)
+        self.assertEqual("refs/heads/topic", git(self.clone, "symbolic-ref", "HEAD"))
+        self.assertEqual([], facts(lines, "PLAN"))
+
     def test_a_dirty_repository_the_user_continues_is_cleaned_in_one_sweep_without_switching(self) -> None:
         # One command instead of sync, plan, and apply: three commands would cost the agent two more calls, and a
         # shell variable naming the script would make Claude Code ask before each.
@@ -1362,7 +1423,8 @@ class SweepTests(Fixture):
             facts(lines, "REPO"),
         )
         blocks = self.blocks(lines)
-        self.assertEqual([["switched"]], facts(blocks["broken repo"], "CHECKOUT"), "no plan summary carries it")
+        self.assertEqual([], facts(blocks["broken repo"], "CHECKOUT"), "a failed fetch stops before the switch")
+        self.assertEqual("refs/heads/topic", git(broken, "symbolic-ref", "HEAD"))
         default = "  Default branch:          main"
         self.assertIn(f"{default} (up to date; fast-forwarded)\n", self.summary(blocks["forwarded repo"]))
         self.assertIn(f"{default} (up to date; fast-forwarded; switched to it)\n", self.summary(blocks["my repo"]))
@@ -1483,10 +1545,12 @@ class SweepTests(Fixture):
         self.make_clone("other repo")
         build_plan = rc.build_plan
 
-        def failing(root: str, repos_root: str, services: rc.Services) -> dict[str, Any]:
+        def failing(
+            root: str, repos_root: str, services: rc.Services, chosen: rc.DefaultBranch | None = None
+        ) -> dict[str, Any]:
             if root.endswith("other repo"):
                 raise ValueError("not enough values to unpack (expected 4, got 1)")
-            return build_plan(root, repos_root, services)
+            return build_plan(root, repos_root, services, chosen)
 
         with mock.patch.object(rc, "build_plan", failing):
             code, lines = self.sweep()
@@ -1543,18 +1607,65 @@ class DefaultBranchTests(CleanupTestCase):
         git(root, "update-ref", "refs/remotes/origin/trunk", "HEAD")
         git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
         git(root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk")
-        self.assertEqual("trunk", rc.default_branch(rc.Services(), root))
+        self.assertEqual(rc.DefaultBranch("trunk"), rc.default_branch(rc.Services(), root))
 
     def test_without_origin_head_main_then_master(self) -> None:
         for branch in ("main", "master"):
             with self.subTest(branch=branch):
                 root = self.repository("topic")
                 git(root, "update-ref", f"refs/remotes/origin/{branch}", "HEAD")
-                self.assertEqual(branch, rc.default_branch(rc.Services(), root))
+                self.assertEqual(rc.DefaultBranch(branch), rc.default_branch(rc.Services(), root))
 
-    def test_no_default_branch_skips_the_repository(self) -> None:
-        with self.assertRaisesRegex(rc.CleanupError, "^cannot determine default branch$"):
+    def test_no_default_branch_skips_the_repository_on_its_branch(self) -> None:
+        pattern = (
+            "^cannot determine default branch: origin/HEAD is unset and origin has no main or master; left on topic$"
+        )
+        with self.assertRaisesRegex(rc.CleanupError, pattern):
             rc.default_branch(rc.Services(), self.repository("topic"))
+
+    def renamed(self) -> Path:
+        """A clone whose origin renamed its default branch from master to main after the clone, fetched and pruned,
+        so its origin/HEAD still names master, which origin no longer has."""
+        root = Path(tempfile.mkdtemp(prefix="repo cleanup renamed ")).resolve()
+        self.addCleanup(remove_tree, root)
+        upstream, remote, clone = root / "upstream work", root / "remote store.git", root / "renamed clone"
+        git(root, "init", "--quiet", "-b", "master", str(upstream))
+        git(upstream, "commit", "--quiet", "--allow-empty", "-m", "initial")
+        git(root, "clone", "--quiet", "--bare", str(upstream), str(remote))
+        git(root, "clone", "--quiet", str(remote), str(clone))
+        bare_git(remote, "branch", "-m", "master", "main")
+        git(clone, "fetch", "--quiet", "--prune", "origin")
+        self.assertEqual("refs/remotes/origin/master", git(clone, "symbolic-ref", "refs/remotes/origin/HEAD"))
+        self.assertEqual("", git(clone, "for-each-ref", "refs/remotes/origin/master"), "the fetch pruned it")
+        return clone
+
+    def test_a_dangling_origin_head_is_refreshed_from_a_reachable_origin(self) -> None:
+        clone = self.renamed()
+        note = "origin/HEAD named master, which origin lacks: refreshed it from origin"
+        self.assertEqual(rc.DefaultBranch("main", note), rc.default_branch(rc.Services(), clone))
+        self.assertEqual("refs/remotes/origin/main", git(clone, "symbolic-ref", "refs/remotes/origin/HEAD"))
+        self.assertEqual(rc.DefaultBranch("main"), rc.default_branch(rc.Services(), clone), "nothing left to refresh")
+
+    def test_a_dangling_origin_head_falls_back_to_main_when_origin_is_unreachable(self) -> None:
+        clone = self.renamed()
+        git(clone, "remote", "set-url", "origin", (clone.parent / "missing remote.git").as_posix())
+        found = rc.default_branch(rc.Services(), clone)
+        self.assertEqual("main", found.name)
+        prefix = "origin/HEAD names master, which origin lacks: fell back to main — refreshing it failed: "
+        self.assertTrue(found.note.startswith(prefix) and len(found.note) > len(prefix), found.note)
+        self.assertEqual("refs/remotes/origin/master", git(clone, "symbolic-ref", "refs/remotes/origin/HEAD"))
+
+    def test_a_dangling_origin_head_with_nothing_to_fall_back_on_leaves_the_repository_on_its_branch(self) -> None:
+        root = self.repository("topic")
+        git(root, "update-ref", "refs/remotes/origin/trunk", "HEAD")
+        git(root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/gone")
+        pattern = (
+            r"^cannot determine default branch: origin/HEAD names gone, which origin lacks, refreshing it failed "
+            r"\(.+\), and origin has no main or master; left on topic$"
+        )
+        with self.assertRaisesRegex(rc.CleanupError, pattern):
+            rc.default_branch(rc.Services(), root)
+        self.assertEqual("refs/heads/topic", git(root, "symbolic-ref", "HEAD"))
 
 
 class RemoveWorktreeTests(CleanupTestCase):

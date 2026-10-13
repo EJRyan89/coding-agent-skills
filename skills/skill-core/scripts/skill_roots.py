@@ -32,22 +32,12 @@ class MissingSibling(SystemExit):
 def sibling_scripts(name: str) -> Path:
     """The scripts directory of the sibling skill `name`, for a script to put on sys.path.
 
-    A deployed home and an uncategorized checkout hold the sibling at SKILLS_ROOT/<name>; a checkout may also hold
-    it in a category, at SKILLS_ROOT/<category>/<name>, which the deployer flattens on install.
+    The skills directory is flat in the checkout and the deployed home alike, so the sibling is SKILLS_ROOT/<name>,
+    beside skill-core.
     """
-    direct = SKILLS_ROOT / name / "scripts"
-    if direct.is_dir():
-        return direct
-    categorized = sorted(
-        skill / "scripts"
-        for skill in SKILLS_ROOT.glob(f"*/{name}")
-        if (skill / "SKILL.md").is_file() and (skill / "scripts").is_dir()
-    )
-    if len(categorized) == 1:
-        return categorized[0]
-    if categorized:
-        found = ", ".join(str(path) for path in categorized)
-        raise MissingSibling(name, f"skill {name} is in more than one category under {SKILLS_ROOT}: {found}")
+    scripts = SKILLS_ROOT / name / "scripts"
+    if scripts.is_dir():
+        return scripts
     raise MissingSibling(
         name, f"skill {name} has no scripts under {SKILLS_ROOT}; deploy the skills that declare it in skill_deps again"
     )

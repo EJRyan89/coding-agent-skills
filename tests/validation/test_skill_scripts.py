@@ -983,9 +983,8 @@ class SkillScriptsFixtures(GitTestCase):
                 "deploy-meta/core.json": json.dumps({"tools": ["gh"], "selectable": False}),
                 "deploy-meta/aliased.json": json.dumps({"skill_deps": ["core"]}),
                 "deploy-meta/quoted.json": json.dumps({"skill_deps": ["core"]}),
-                # A dependency in a category is reached as well.
-                "skills/shared/core/SKILL.md": "# core\n",
-                "skills/shared/core/scripts/github.py": 'run(["gh", "api"])\n',
+                "skills/core/SKILL.md": "# core\n",
+                "skills/core/scripts/github.py": 'run(["gh", "api"])\n',
                 "skills/aliased/SKILL.md": "# aliased\n",
                 "skills/aliased/scripts/run.py": "import json, github as api\n",
                 # Text that reads like an import is not one.
@@ -993,15 +992,15 @@ class SkillScriptsFixtures(GitTestCase):
                 "skills/quoted/scripts/run.py": 'HELP = """\nimport github\nfrom github import Client\n"""\n',
                 # A sanction's reason names a file that holds a copy, which the module does not run.
                 "deploy-meta/sanctioned.json": json.dumps({"skill_deps": ["core"]}),
-                "skills/shared/core/scripts/store.py": (
-                    'DUPLICATION_ALLOWED = {\n    "LIMIT": "skills/shared/core/scripts/github.py holds a copy",\n}\n'
+                "skills/core/scripts/store.py": (
+                    'DUPLICATION_ALLOWED = {\n    "LIMIT": "skills/core/scripts/github.py holds a copy",\n}\n'
                 ),
                 "skills/sanctioned/SKILL.md": "# sanctioned\n",
                 "skills/sanctioned/scripts/run.py": "import store\n",
             }
             write_fixture_tree(root, files)
             self.assertEqual(
-                ["skill aliased runs gh through skills/shared/core/scripts/github.py without declaring it in tools"],
+                ["skill aliased runs gh through skills/core/scripts/github.py without declaring it in tools"],
                 skill_command_problems(root, {"gh"}, {"git", "python"}),
             )
 

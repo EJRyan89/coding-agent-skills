@@ -321,7 +321,6 @@ def problems(root: Path) -> list[str]:
     document = reference.read_text(encoding="utf-8")
     found: list[str] = []
     for entry in skills:
-        # The source's directory, so a skill under skills/<category>/<name> is read where it is.
         skill_md = source.skills[entry.name].directory / "SKILL.md"
         name = skill_md.relative_to(root).as_posix()
         if entry.argument_hint is None and "$ARGUMENTS" in skill_md.read_text(encoding="utf-8"):

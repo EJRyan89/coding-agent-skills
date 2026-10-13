@@ -275,13 +275,17 @@ class MetadataValidationTests(DeployerTestCase):
         self.make_config()
         self.deploy_fails("--all", pattern="has no matching deploy-meta/orphan.json")
 
-    def test_duplicate_flattened_skill_names_are_rejected(self) -> None:
+    def test_a_skill_under_a_directory_that_is_not_a_skill_is_refused(self) -> None:
+        # The skills directory is flat: a skill nested under a category folder is refused by its path, never skipped,
+        # though its metadata is in place.
         self.make_source_json()
-        directory = self.make_skill("alpha", "Alpha content")
-        (self.source / "skills" / "category" / "alpha").mkdir(parents=True)
-        shutil.copy(directory / "SKILL.md", self.source / "skills" / "category" / "alpha" / "SKILL.md")
+        self.make_skill("alpha", "Alpha content")
+        directory = self.make_skill("beta", "Beta content")
+        shutil.move(directory, self.source / "skills" / "a category" / "beta")
         self.make_config()
-        self.deploy_fails("--all", pattern="Duplicate skill directory name 'alpha'")
+        self.deploy_fails(
+            "--all", pattern=r"SKILL\.md must be directly under skills/<name>: .*/skills/a category/beta/SKILL\.md"
+        )
 
     def test_skill_directory_containing_nested_skill_md_is_rejected(self) -> None:
         self.make_source_json()
@@ -289,7 +293,17 @@ class MetadataValidationTests(DeployerTestCase):
         (directory / "nested").mkdir()
         self.write(directory / "nested" / "SKILL.md", "---\nname: nested\n---\n")
         self.make_config()
-        self.deploy_fails("--all", pattern="contains another SKILL.md")
+        self.deploy_fails("--all", pattern=r"SKILL\.md must be directly under skills/<name>: .*/alpha/nested/SKILL\.md")
+
+    def test_a_flat_skills_directory_deploys_each_skill_beside_a_shared_asset(self) -> None:
+        self.make_source_json(shared_assets={"guide.md": "owner"})
+        self.make_skill("alpha", "Alpha content")
+        self.make_skill("beta", "Beta content", shared_deps=["guide.md"])
+        self.make_shared_asset("guide.md", "Guide")
+        self.make_config()
+        self.deploy_ok("--all")
+        self.assertIn("Alpha content", self.skill_text("alpha"))
+        self.assertIn("Beta content", self.skill_text("beta"))
 
     def test_invalid_metadata_shape_is_rejected(self) -> None:
         self.make_source_json()
@@ -434,8 +448,8 @@ class SharedAssetValidationTests(DeployerTestCase):
 
     def test_skill_and_shared_asset_names_cannot_collide(self) -> None:
         self.make_source_json(shared_assets={"alpha": "owner"})
-        self.make_skill("alpha", "Skill alpha", category="category")
-        self.make_shared_asset("alpha", "Shared alpha")
+        # The asset's path is the skill's own directory, so declaring it is the collision.
+        self.make_skill("alpha", "Skill alpha")
         self.make_config()
         self.deploy_fails("--all", pattern="collides with a skill of the same name")
 
