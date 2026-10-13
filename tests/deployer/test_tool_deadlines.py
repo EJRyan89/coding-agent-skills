@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 
 import job_tree
 from harness import DeployerTestCase, Result, forward
-from test_job_tree import SignalledTree, ended
+from test_job_tree import QUICK_LAUNCHER, PausedTree, SignalledTree, ended
 
 from deployer import errors, plan, platform_support
 
@@ -119,6 +119,14 @@ class RunToolTests(DeadlineCase):
         program = "import os; print(os.environ['ADDED'], bool(os.environ.get('PATH')))"
         result = platform_support.run_tool([sys.executable, "-c", program], {"ADDED": "a value"})
         self.assertEqual((0, ["a value True"]), (result.returncode, result.output.splitlines()))
+
+    def test_a_program_a_tool_starts_and_leaves_before_it_is_held_is_ended_when_the_tool_returns(self) -> None:
+        started = self.root / "child.pid"
+        with mock.patch.object(platform_support, "process_tree", return_value=PausedTree(started)):
+            result = platform_support.run_tool([sys.executable, "-c", QUICK_LAUNCHER, str(started)])
+        self.assertEqual(0, result.returncode, result.output)
+        child = int(started.read_text(encoding="utf-8"))
+        self.assertTrue(ended(child, 0), f"process {child} the tool started still runs once run_tool has returned")
 
     def test_a_hung_tool_is_ended_with_what_it_started_and_named_with_its_deadline(self) -> None:
         stub = self.stubs.hanging("shellcheck")

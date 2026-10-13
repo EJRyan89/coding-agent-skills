@@ -3,11 +3,12 @@
 session of its own, `GroupTree`.
 
 Leaving `JobTree.hold` ends every process of the job still running, and the job ends them too if this process dies
-first, since it kills its processes when its last handle closes. A process joins the job right after it starts, before
-it has loaded enough to start a program of its own, and every process it then starts joins with it.
+first, since it kills its processes when its last handle closes. A command starts suspended, joins the job, and only
+then runs, so every process it starts joins with it from the first: none can start outside the job before it joins.
 
-A command still running that cannot join is killed and refused with `JobRefused`, never run without the job: its
-caller relies on ending everything it starts. One already gone when it would join has nothing left to hold.
+A command still running that cannot join, or that cannot be let run once it has, is killed and refused with
+`JobRefused`, never run without the job: its caller relies on ending everything it starts. One already gone when it
+would join has nothing left to hold.
 
 Leaving `hold` returns only once every process of the job has ended and Windows has let go of what it held, its
 working directory and open files among them, so a caller may remove the folder the command ran in at once. Ending a
@@ -15,10 +16,10 @@ job is asynchronous, so `hold` waits for each process, up to KILL_WAIT_SECONDS; 
 end, or see end in that time leaves `hold` with an OSError saying they may still run.
 
 A `GroupTree` starts the command as the leader of a new session, so the command and every process it starts that does
-not leave the group share one process group, which the command cannot fail to join. Leaving `hold` kills the group
-and returns once no process of it is running but the ones that have ended and wait only to be reaped, up to
-KILL_WAIT_SECONDS, or with an OSError saying they may still run. Unlike a job, the group does not outlive this process:
-a process killed outright leaves its group running.
+not leave the group share one process group, which the command cannot fail to join: it leads the group before it
+runs. Leaving `hold` kills the group and returns once no process of it is running but the ones that have ended and
+wait only to be reaped, up to KILL_WAIT_SECONDS, or with an OSError saying they may still run. Unlike a job, the group
+does not outlive this process: a process killed outright leaves its group running.
 """
 
 from __future__ import annotations
@@ -43,7 +44,15 @@ JOB_OBJECT_BASIC_PROCESS_ID_LIST = 3
 SYNCHRONIZE = 0x00100000
 WAIT_OBJECT_0 = 0
 ERROR_MORE_DATA = 234
+ERROR_NO_MORE_FILES = 18
 CREATE_NO_WINDOW = 0x08000000
+CREATE_SUSPENDED = 0x00000004
+THREAD_SUSPEND_RESUME = 0x0002
+TH32CS_SNAPTHREAD = 0x00000004
+# What ResumeThread returns when it fails, (DWORD)-1, in place of the thread's previous suspend count.
+RESUME_FAILED = 0xFFFFFFFF
+# What CreateToolhelp32Snapshot returns when it fails, as ctypes reads a handle.
+INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 # Seconds to wait for a refused command, once killed, to be reported gone, and for an ended job's processes to end.
 KILL_WAIT_SECONDS = 10.0
 # Processes a job's first listing has room for; a longer listing is asked for again with room for all.
@@ -88,6 +97,20 @@ class _ExtendedLimitInformation(ctypes.Structure):
     ]
 
 
+class _ThreadEntry(ctypes.Structure):
+    """THREADENTRY32."""
+
+    _fields_ = [
+        ("dwSize", ctypes.c_uint32),
+        ("cntUsage", ctypes.c_uint32),
+        ("th32ThreadID", ctypes.c_uint32),
+        ("th32OwnerProcessID", ctypes.c_uint32),
+        ("tpBasePri", ctypes.c_int32),
+        ("tpDeltaPri", ctypes.c_int32),
+        ("dwFlags", ctypes.c_uint32),
+    ]
+
+
 class JobTree:
     """The process tree of one command: see the module's description. With `hidden_window`, a console command starts
     without a window of its own."""
@@ -98,7 +121,7 @@ class JobTree:
         self.hidden_window = hidden_window
 
     def start_options(self) -> dict[str, Any]:
-        return {"creationflags": CREATE_NO_WINDOW} if self.hidden_window else {}
+        return {"creationflags": CREATE_SUSPENDED | (CREATE_NO_WINDOW if self.hidden_window else 0)}
 
     @contextmanager
     def hold(self, process: subprocess.Popen[Any]) -> Iterator[None]:
@@ -106,15 +129,28 @@ class JobTree:
             job: int | None = job_holding(process.pid)
         except OSError as exc:
             if process.poll() is None:
-                process.kill()
-                process.wait(timeout=KILL_WAIT_SECONDS)
+                _kill(process)
                 raise JobRefused(f"it could not join a Windows job object: {exc}") from exc
             job = None
+        if job is not None:
+            try:
+                resume(process.pid)
+            except OSError as exc:
+                if process.poll() is None:
+                    _kill(process)
+                    _end_job(job)
+                    raise JobRefused(f"it could not be resumed in its Windows job object: {exc}") from exc
         try:
             yield
         finally:
             if job is not None:
                 _end_job(job)
+
+
+def _kill(process: subprocess.Popen[Any]) -> None:
+    """Kill a command that may not run, and wait for it to be reported gone."""
+    process.kill()
+    process.wait(timeout=KILL_WAIT_SECONDS)
 
 
 @functools.cache
@@ -138,6 +174,14 @@ def _kernel32() -> Any:
     ]
     kernel32.WaitForSingleObject.restype = wintypes.DWORD
     kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel32.Thread32First.argtypes = [wintypes.HANDLE, wintypes.LPVOID]
+    kernel32.Thread32Next.argtypes = [wintypes.HANDLE, wintypes.LPVOID]
+    kernel32.OpenThread.restype = wintypes.HANDLE
+    kernel32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.ResumeThread.restype = wintypes.DWORD
+    kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     return kernel32
 
@@ -257,6 +301,45 @@ def job_holding(pid: int) -> int:
         if process:
             kernel32.CloseHandle(process)
     return int(job)
+
+
+def resume(pid: int) -> None:
+    """Let the process `pid`, started suspended, run: resume each of its threads, of which a process started suspended
+    has only its first. Raises OSError when a thread cannot be resumed or the process has none."""
+    kernel32 = _kernel32()
+    snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0)
+    if not snapshot or snapshot == INVALID_HANDLE_VALUE:
+        raise _failed("CreateToolhelp32Snapshot")
+    resumed = 0
+    try:
+        entry = _ThreadEntry()
+        entry.dwSize = ctypes.sizeof(entry)
+        call = "Thread32First"
+        listed = kernel32.Thread32First(snapshot, ctypes.byref(entry))
+        while listed:
+            if entry.th32OwnerProcessID == pid:
+                _resume_thread(entry.th32ThreadID)
+                resumed += 1
+            call = "Thread32Next"
+            listed = kernel32.Thread32Next(snapshot, ctypes.byref(entry))
+        if ctypes.get_last_error() != ERROR_NO_MORE_FILES:  # type: ignore[attr-defined]  # Windows only
+            raise _failed(call)
+    finally:
+        kernel32.CloseHandle(snapshot)
+    if not resumed:
+        raise OSError(f"no thread of process {pid} was listed to resume")
+
+
+def _resume_thread(thread_id: int) -> None:
+    kernel32 = _kernel32()
+    thread = kernel32.OpenThread(THREAD_SUSPEND_RESUME, False, thread_id)
+    if not thread:
+        raise _failed("OpenThread")
+    try:
+        if kernel32.ResumeThread(thread) == RESUME_FAILED:
+            raise _failed("ResumeThread")
+    finally:
+        kernel32.CloseHandle(thread)
 
 
 class GroupTree:
