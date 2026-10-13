@@ -50,6 +50,9 @@ KILL_WAIT_SECONDS = 10.0
 LISTED_PROCESSES = 64
 # Seconds between two looks at whether a killed process group still has a process running.
 GROUP_POLL_SECONDS = 0.05
+# The pause between those looks, bound when the module loads, so a test that replaces time.sleep to count another
+# caller's waits, such as a rate limit's backoff, never counts these.
+_pause = time.sleep
 # Where Linux reports each process, and the states, in its stat file, of one that has ended and waits to be reaped.
 PROC = "/proc"
 ENDED_STATES = frozenset({b"Z", b"X", b"x"})
@@ -305,7 +308,7 @@ def end_group(group: int) -> None:
                 f"The group's processes may still run: process {running[0]} had not ended {KILL_WAIT_SECONDS:g} "
                 "seconds on"
             )
-        time.sleep(GROUP_POLL_SECONDS)
+        _pause(GROUP_POLL_SECONDS)
 
 
 def group_members(group: int) -> list[int]:
