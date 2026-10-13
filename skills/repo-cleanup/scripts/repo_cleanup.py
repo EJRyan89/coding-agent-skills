@@ -52,6 +52,11 @@ STALE_STATES = ("MERGED", "CLOSED")
 DISPOSABLE_CACHES = frozenset({"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "node_modules/.cache"})
 # How many paths a report line names before it counts the rest, so a worktree full of them does not flood the line.
 NAMED_PATHS = 5
+# The status listing every check of a worktree reads. status.showUntrackedFiles=no would hide untracked files from it,
+# and fail it with --ignored, so the untracked-files mode is named rather than taken from the user's configuration.
+STATUS_ARGUMENTS = ("status", "--porcelain", "-z", "--untracked-files=normal")
+# git worktree remove checks for changes with a status of its own, which reads the same setting.
+SHOW_UNTRACKED = ("-c", "status.showUntrackedFiles=normal")
 KEPT_STATES = {"OPEN": "pr-open", "UNMATCHED": "pr-unmatched", "UNKNOWN": "pr-unknown"}
 WORKTREE_AREA = "Worktrees"
 GITHUB_REMOTE = re.compile(
@@ -180,7 +185,7 @@ def same_path(first: str, second: str) -> bool:
 def status_codes(services: Services, directory: str | Path, *options: str) -> list[str]:
     """The two-letter code of each path `git status --porcelain -z` lists, a rename or copy counted once."""
     codes: list[str] = []
-    fields = iter(git_output(services, directory, "status", "--porcelain", "-z", *options).split("\0"))
+    fields = iter(git_output(services, directory, *STATUS_ARGUMENTS, *options).split("\0"))
     for entry in fields:
         if not entry:
             continue
@@ -768,7 +773,7 @@ def ignored_entries(services: Services, directory: str | Path) -> list[str]:
     The matching mode lists each ignored path itself; the default mode folds a directory whose every file is ignored
     into one entry for the directory, which would hide a cache under an untracked package.
     """
-    listing = git_output(services, directory, "status", "--porcelain", "-z", "--ignored=matching")
+    listing = git_output(services, directory, *STATUS_ARGUMENTS, "--ignored=matching")
     return [entry[3:] for entry in listing.split("\0") if entry.startswith("!! ")]
 
 
@@ -825,7 +830,7 @@ def remove_worktree(
     if held:
         record(plan, "PRESERVED", entry["branch"], held)
         return False
-    removed = git(services, plan["repo_root"], "worktree", "remove", entry["path"])
+    removed = git(services, plan["repo_root"], *SHOW_UNTRACKED, "worktree", "remove", entry["path"])
     if removed.returncode != 0:
         record(plan, "PRESERVED", entry["branch"], f"Git refused to remove worktree {entry['path']}: {reason(removed)}")
         return False
