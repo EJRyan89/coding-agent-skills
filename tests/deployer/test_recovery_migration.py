@@ -1511,6 +1511,53 @@ class MigrationTests(DeployerTestCase):
             ["alpha", "b", "c", "reviewer.md (agent)"],
         )
 
+    def pack_from_a_version_7_entry(self, requested: list[str]) -> Path:
+        """Deploy opt-in bundle pack [alpha, beta] from test/old by request, and rewrite the manifest as the last
+        deployer to write version 7 left it, with these bundle requests. Return the old source.
+        """
+        self.make_source_json("test/old", bundles={"pack": {"members": ["alpha", "beta"], "opt_in": True}})
+        self.make_skill("alpha", "Alpha")
+        self.make_skill("beta", "Beta")
+        self.make_config("test/old")
+        old = self.snapshot_source("old")
+        self.deploy_from(old, "--all", "--include", "pack")
+        self.rewrite_as_version_7(requested, "test/old")
+        return old
+
+    def test_a_migration_from_a_version_7_entry_carries_its_bundle_request_into_a_renamed_bundle(self) -> None:
+        self.pack_from_a_version_7_entry(["pack"])
+        self.make_source_json(bundles={"kit": {"members": ["alpha", "beta"], "opt_in": True}})
+        self.make_config()
+        self.deploy_ok("--migrate-from", "test/old")
+        self.assertEqual(["test/skills"], list(self.manifest()["sources"]))
+        self.assertEqual((["kit"], {"kit": ["alpha", "beta"]}, []), self.requests())
+        self.kept_by_all("Selected 1 item (2 skills):\n  kit (bundle)\n    alpha\n    beta\n", ["alpha", "beta"])
+
+    def test_a_migration_from_a_version_7_entry_carries_a_request_an_earlier_migration_left_out(self) -> None:
+        self.pack_from_a_version_7_entry([])
+        self.make_source_json(bundles={"pack": {"members": ["alpha", "beta"], "opt_in": True}})
+        self.make_config()
+        self.deploy_ok("--migrate-from", "test/old")
+        self.assertEqual((["pack"], {"pack": ["alpha", "beta"]}, []), self.requests())
+        self.kept_by_all("Selected 1 item (2 skills):\n  pack (bundle)\n    alpha\n    beta\n", ["alpha", "beta"])
+
+    def test_a_version_7_entry_left_beside_a_migration_keeps_its_bundle_request(self) -> None:
+        self.make_skill("gamma", "Gamma")
+        old = self.pack_from_a_version_7_entry([])
+        self.remove_skill("alpha")
+        self.remove_skill("beta")
+        self.make_source_json()
+        self.make_config()
+        self.deploy_ok("--migrate-from", "test/old")
+        self.assertEqual(["alpha", "beta"], sorted(self.owned("skills", "test/old")))
+        # The migration saved the old entry as version 8 with the dependencies the upgrade filled in.
+        self.assertEqual(["beta", "gamma"], self.owned("skills", "test/old")["alpha"]["skill_deps"])
+        shutil.rmtree(old / "skills" / "gamma")
+        (old / "deploy-meta" / "gamma.json").unlink()
+        result = self.deploy_from(old, "--all", "--dry-run")
+        self.assertIn("Selected 1 item (2 skills):\n  pack (bundle)\n    alpha\n    beta\n", result.output)
+        self.assertEqual({"UNCHANGED": ["alpha", "beta"]}, self.report_groups(result.output, "DRY RUN"))
+
     def gamma_from_another_source_beside_pack(self) -> None:
         """Deploy gamma from test/old, then opt-in bundle pack [alpha, beta] from this source by request."""
         self.make_source_json("test/old")

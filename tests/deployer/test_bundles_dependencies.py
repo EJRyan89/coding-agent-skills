@@ -588,6 +588,25 @@ class OptInTests(DeployerTestCase):
         self.assertEqual(["pack2"], entry["requested_bundles"])
         self.assertEqual({"pack2": ["fmt", "x"]}, entry["requested_bundle_members"])
 
+    def test_a_bundle_request_in_a_version_7_manifest_stays_in_all(self) -> None:
+        self.make_source_json(bundles={"pack": {"members": ["fmt", "x"], "opt_in": True}})
+        self.make_skill("x", "X")
+        self.deploy_ok("--all", "--include", "pack")
+        # An earlier --migrate-from recorded no bundle request, the source renames the bundle, or neither happened.
+        for requested, bundle in (([], "pack"), (["pack"], "pack2"), (["pack"], "pack")):
+            with self.subTest(requested=requested, bundle=bundle):
+                self.make_source_json(bundles={bundle: {"members": ["fmt", "x"], "opt_in": True}})
+                self.rewrite_as_version_7(requested)
+                menu = self.deploy("--dry-run", stdin="\n").output
+                self.assertRegex(menu, rf"(?m)^  \[\*\] [0-9]+\. {bundle} \(bundle, opt-in\)$")
+                dry_run = self.report_groups(self.deploy_ok("--all", "--dry-run").output, "DRY RUN")
+                deployed = self.report_groups(self.deploy_ok("--all").output, "DEPLOYED")
+                self.assertEqual({"UNCHANGED": ["everyday", "fmt", "x"]}, dry_run)
+                self.assertEqual(dry_run, deployed)
+                entry = self.manifest()["sources"]["test/skills"]
+                self.assertEqual([bundle], entry["requested_bundles"])
+                self.assertEqual({bundle: ["fmt", "x"]}, entry["requested_bundle_members"])
+
     def test_an_entry_recorded_before_bundle_members_were_counts_no_dependency_as_chosen(self) -> None:
         self.dependency_member_fixture()
         self.deploy_ok("--all")
