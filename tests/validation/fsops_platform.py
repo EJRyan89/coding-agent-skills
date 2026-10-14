@@ -62,9 +62,23 @@ PLATFORM_TOKENS: dict[str, tuple[str, ...]] = {
         "platform.freedesktop_os_release",
         "platform.android_ver",
         "platform.ios_ver",
+        # The subprocess names only Windows defines, beside the families "qualified_prefix" holds.
+        "subprocess.STARTUPINFO",
+        "subprocess.DETACHED_PROCESS",
+        "subprocess.SW_HIDE",
+        "subprocess.ABOVE_NORMAL_PRIORITY_CLASS",
+        "subprocess.BELOW_NORMAL_PRIORITY_CLASS",
+        "subprocess.HIGH_PRIORITY_CLASS",
+        "subprocess.IDLE_PRIORITY_CLASS",
+        "subprocess.NORMAL_PRIORITY_CLASS",
+        "subprocess.REALTIME_PRIORITY_CLASS",
     ),
+    # Families of qualified names, each matched by its prefix: subprocess's Windows process creation flags, startup
+    # flags, and standard handles.
+    "qualified_prefix": ("subprocess.CREATE_", "subprocess.STARTF_", "subprocess.STD_"),
     "attribute": ("chmod", "fchmod", "lchmod", "st_file_attributes"),
-    # subprocess keywords that only one platform accepts.
+    # subprocess keywords that only one platform accepts, matched as a keyword at the call and as a string literal,
+    # which is how one is passed through a dict, as in subprocess.run(command, **{"creationflags": flags}).
     "keyword": ("creationflags", "startupinfo", "start_new_session", "process_group", "preexec_fn"),
     "module": (
         "ctypes",
@@ -80,10 +94,23 @@ PLATFORM_TOKENS: dict[str, tuple[str, ...]] = {
         "tty",
         "pty",
         "resource",
+        # Windows path rules on every platform; os.path is the portable module.
+        "ntpath",
     ),
     # Windows environment names, which Windows compares ignoring case, so each is matched in any case.
-    "variable": ("LOCALAPPDATA", "USERPROFILE", "ProgramFiles", "APPDATA", "GIT_BASH"),
-    "command": ("cygpath",),
+    "variable": (
+        "LOCALAPPDATA",
+        "USERPROFILE",
+        "ProgramFiles",
+        "APPDATA",
+        "GIT_BASH",
+        "PATHEXT",
+        "SystemRoot",
+        "ComSpec",
+    ),
+    "command": ("cygpath", "taskkill"),
+    # The filesystem paths only one platform has, matched where a path starts in a literal.
+    "path": ("/proc",),
     # The extensions Windows finds a program by, matched in any case. Code that strips, appends, or compares one on a
     # program name assumes Windows. .ps1 is not one of them: it names a PowerShell script on every platform pwsh runs
     # on, so comparing a file's suffix with it tells a script's type, not the platform.
@@ -95,6 +122,19 @@ EXTENSION_METHODS = frozenset({"endswith", "removesuffix", "rstrip", "replace", 
 APPENDED_EXTENSION = re.compile(
     r"(" + "|".join(map(re.escape, PLATFORM_TOKENS["extension"])) + r")(?![A-Za-z0-9_])", re.IGNORECASE
 )
+# A platform path where one starts in a literal: at its start, or after whitespace, a quote, an equals sign, an
+# opening parenthesis, a comma, or a shell separator, as in "/proc", f"/proc/{pid}/stat", or "cat /proc/1/stat".
+PLATFORM_PATH = re.compile(
+    r"(?:^|(?<=[\s\"'=(,;|&]))(" + "|".join(map(re.escape, PLATFORM_TOKENS["path"])) + r")(?![A-Za-z0-9_.-])"
+)
+# The calls that name an attribute or a module by a string literal: getattr(subprocess, "CREATE_NO_WINDOW", 0) and
+# hasattr(os, "fork") name the attribute's token, and importlib.import_module("ntpath") the module's.
+ATTRIBUTE_BY_NAME = frozenset({"getattr", "hasattr", "builtins.getattr", "builtins.hasattr"})
+MODULE_BY_NAME = frozenset({"importlib.import_module", "__import__", "builtins.__import__"})
+# What the platform policy cannot read: a token built at run time, such as an attribute, keyword, environment name,
+# module, or path joined from parts, as in Path("/") / "proc", or held in a variable; a keyword dict another module
+# builds, which is the intended route when that module is deployer/platform_support.py; and a module reached through a
+# name the module does not bind by import.
 # A module sanctions a use beside the code it excuses, as a module-level PLATFORM_ALLOWED = {token: reason}. An
 # allowance the module no longer needs is reported.
 PLATFORM_ALLOWANCE = "PLATFORM_ALLOWED"
@@ -166,8 +206,25 @@ def _platform_node_names(
         return [(node.lineno, node.arg)]
     if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings:
         return _platform_string_names(node.lineno, node.value, command)
-    if isinstance(node, (ast.Call, ast.Compare, ast.BinOp, ast.JoinedStr)):
+    if isinstance(node, ast.Call):
+        named = _platform_names_by_string(node, aliases)
+        return named + [(node.lineno, extension) for extension in _assumed_extensions(node)]
+    if isinstance(node, (ast.Compare, ast.BinOp, ast.JoinedStr)):
         return [(node.lineno, extension) for extension in _assumed_extensions(node)]
+    return []
+
+
+def _platform_names_by_string(node: ast.Call, aliases: dict[str, str]) -> list[tuple[int, str]]:
+    """The token a call of ATTRIBUTE_BY_NAME or MODULE_BY_NAME names by its literal argument."""
+    function = qualified_name(node.func, aliases)
+    if function in MODULE_BY_NAME and node.args:
+        module = node.args[0]
+        if isinstance(module, ast.Constant) and isinstance(module.value, str):
+            return _platform_module_name(node.lineno, module.value)
+    if function in ATTRIBUTE_BY_NAME and len(node.args) > 1:
+        owner, attribute = qualified_name(node.args[0], aliases), node.args[1]
+        if owner and isinstance(attribute, ast.Constant) and isinstance(attribute.value, str):
+            return _platform_qualified_names(node.lineno, f"{owner}.{attribute.value}", attribute.value)
     return []
 
 
@@ -219,11 +276,15 @@ def _platform_module_name(line: int, module: str) -> list[tuple[int, str]]:
 
 
 def _platform_attribute_names(node: ast.Attribute, aliases: dict[str, str]) -> list[tuple[int, str]]:
-    qualified = qualified_name(node, aliases)
-    if qualified in PLATFORM_TOKENS["qualified"]:
-        return [(node.lineno, qualified)]
-    if node.attr in PLATFORM_TOKENS["attribute"]:
-        return [(node.lineno, node.attr)]
+    return _platform_qualified_names(node.lineno, qualified_name(node, aliases), node.attr)
+
+
+def _platform_qualified_names(line: int, qualified: str, attribute: str) -> list[tuple[int, str]]:
+    """The token an attribute names: its qualified name, one of a qualified family, or a platform attribute."""
+    if qualified in PLATFORM_TOKENS["qualified"] or qualified.startswith(PLATFORM_TOKENS["qualified_prefix"]):
+        return [(line, qualified)]
+    if attribute in PLATFORM_TOKENS["attribute"]:
+        return [(line, attribute)]
     return []
 
 
@@ -237,11 +298,7 @@ def _platform_import_from_names(node: ast.ImportFrom) -> list[tuple[int, str]]:
     if found:
         return found
     for alias in node.names:
-        qualified = f"{module}.{alias.name}"
-        if qualified in PLATFORM_TOKENS["qualified"]:
-            found.append((node.lineno, qualified))
-        elif alias.name in PLATFORM_TOKENS["attribute"]:
-            found.append((node.lineno, alias.name))
+        found.extend(_platform_qualified_names(node.lineno, f"{module}.{alias.name}", alias.name))
     return found
 
 
@@ -250,7 +307,9 @@ def _platform_string_names(line: int, value: str, command: re.Pattern[str]) -> l
     # because Windows does: os.environ.get("PROGRAMFILES") reads ProgramFiles.
     variables = {variable.casefold() for variable in PLATFORM_TOKENS["variable"]}
     found = [(line, value)] if value.casefold() in variables else []
+    found.extend((line, value) for keyword in PLATFORM_TOKENS["keyword"] if value == keyword)
     found.extend((line, name) for name in sorted(set(command.findall(value))))
+    found.extend((line, path) for path in sorted(set(PLATFORM_PATH.findall(value))))
     return found
 
 
