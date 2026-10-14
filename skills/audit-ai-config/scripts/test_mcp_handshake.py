@@ -202,6 +202,22 @@ class HandshakeTests(unittest.TestCase):
             code, lines = self._run()
         self.assertEqual((0, ["HANDSHAKE_OK docs source=.mcp.json protocol=2025-06-18 tools=2"]), (code, lines))
 
+    def test_a_server_sees_no_repository_selecting_variable_its_configured_environment_names(self) -> None:
+        server = {"command": sys.executable, "args": [str(self.server), "norepository", "GIT_DIR,GIT_WORK_TREE"]}
+        configured = {
+            "FIXTURE_TOKEN": "a b",
+            "GIT_CONFIG_COUNT": "0",
+            "GIT_DIR": str(self.root / ".git"),
+            "GIT_WORK_TREE": str(self.root),
+        }
+        self._write(".mcp.json", "mcpServers", {"docs": {**server, "env": configured}})
+        # Only the configured environment names the variables, so the server's never seeing them is the strip.
+        with mock.patch.dict(os.environ):
+            os.environ.pop("GIT_DIR", None)
+            os.environ.pop("GIT_WORK_TREE", None)
+            code, lines = self._run()
+        self.assertEqual((0, ["HANDSHAKE_OK docs source=.mcp.json protocol=2025-06-18 tools=2"]), (code, lines))
+
     def test_identical_definitions_are_started_once(self) -> None:
         self._write(".mcp.json", "mcpServers", {"docs": self._stdio("ok")})
         self._write(".vscode/mcp.json", "servers", {"docs": self._stdio("ok")})
