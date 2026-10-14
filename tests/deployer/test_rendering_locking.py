@@ -11,6 +11,9 @@ from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+
+import process_identity
 from harness import REPOSITORY_ROOT, TAKES_THE_LOCK, DeployerTestCase, forward
 
 from deployer import fsops, lock, platform_support
@@ -484,6 +487,20 @@ class LockTests(DeployerTestCase):
         info = self.home / ".claude" / "deployer" / ".deploy.lock.d" / "info.json"
         self.write(info, json.dumps({"pid": 4242, "token": "x", "start_time": 7}))
         self.deploy_fails("--all", pattern="start time cannot be read", probe=probe_returning(True, None))
+
+    def test_a_holder_windows_will_not_open_keeps_the_lock_unless_its_pid_names_no_process(self) -> None:
+        self.fixture()
+        self.write_lock({"pid": 4242, "token": "x", "start_time": 7})
+        not_enough_quota, invalid_parameter = 1816, 87
+        self.deploy_fails(
+            "--all",
+            pattern="start time cannot be read",
+            probe=lambda pid: process_identity.open_failure_status(not_enough_quota),
+        )
+        self.assertFalse((self.skills_dir / "alpha").exists())
+        self.assertTrue((self.home / ".claude" / "deployer" / ".deploy.lock.d" / "info.json").is_file())
+        result = self.deploy_ok("--all", probe=lambda pid: process_identity.open_failure_status(invalid_parameter))
+        self.assertIn("Stale lock detected (PID 4242 not running)", result.output)
 
     def test_lock_without_metadata_or_pid_fails_closed(self) -> None:
         self.fixture()
