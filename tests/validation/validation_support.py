@@ -13,7 +13,7 @@ import fnmatch
 import re
 import subprocess
 import sys
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 
@@ -83,6 +83,33 @@ def qualified_name(node: ast.AST, aliases: dict[str, str]) -> str:
         base = qualified_name(node.value, aliases)
         return f"{base}.{node.attr}" if base else ""
     return ""
+
+
+def call_argument(call: ast.Call, position: int, keyword: str) -> ast.expr | None:
+    """A call's argument at a position, or the one passed by keyword when fewer are passed by position."""
+    if len(call.args) > position:
+        return call.args[position]
+    return next((found.value for found in call.keywords if found.arg == keyword), None)
+
+
+def _blocks(node: ast.stmt) -> list[list[ast.stmt]]:
+    """The blocks of a module-level statement that also run at module level: an if's, a try's, and a with's."""
+    if isinstance(node, ast.If):
+        return [node.body, node.orelse]
+    if isinstance(node, ast.With):
+        return [node.body]
+    if isinstance(node, (ast.Try, ast.TryStar)):
+        return [node.body, *(handler.body for handler in node.handlers), node.orelse, node.finalbody]
+    return []
+
+
+def module_statements(body: list[ast.stmt]) -> Iterator[ast.stmt]:
+    """Each statement that runs at module level, including one in a module-level if, try, or with block, which binds
+    its names in the module as a top-level statement does."""
+    for node in body:
+        yield node
+        for block in _blocks(node):
+            yield from module_statements(block)
 
 
 @dataclass
