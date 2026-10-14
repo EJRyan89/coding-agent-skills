@@ -76,7 +76,6 @@ class ManifestTests(GitTestCase):
             "deployer/manifest.py": {"deployer", "upgrade-notes", "documentation-drift", "untested-changes"},
             "deployer/arguments.py": {"deployer", "upgrade-notes", "documentation-drift", "untested-changes"},
             "skills/repo-cleanup/SKILL.md": {"skill-contract", "upgrade-notes"},
-            "skills/category/example/SKILL.md": {"skill-contract", "upgrade-notes"},
             "deploy-meta/review-prs.json": {"skill-contract", "upgrade-notes"},
             "agents/code-review-reviewer.md": {"skill-contract"},
             "source.json": {"skill-contract"},
@@ -221,6 +220,13 @@ class ManifestTests(GitTestCase):
         ]
         self.assertEqual(others, uncovered(MANIFEST, others))
 
+    def test_a_skill_md_below_a_skill_folder_reaches_only_the_generic_reviewer(self) -> None:
+        # The deployer refuses a SKILL.md that is not directly under skills/<name>, and validation fails on it, so no
+        # specialist reviews one as a skill.
+        nested = ["skills/repo-cleanup/references/SKILL.md", "skills/group/example/SKILL.md"]
+        self.assertEqual({}, route(MANIFEST, nested, lambda name: True))
+        self.assertEqual(nested, uncovered(MANIFEST, nested))
+
     def test_every_trust_boundary_script_the_route_names_is_in_the_repository(self) -> None:
         # A rename would leave the route matching nothing, and the specialist would stop seeing the file.
         files = set(tracked_files())
@@ -353,7 +359,7 @@ class DocumentationDriftTests(GitTestCase):
             "README.md",
             "CONTRIBUTING.md",
             "CLAUDE.md",
-            "skills/**/SKILL.md",
+            "skills/*/SKILL.md",
             ".claude/skills/*/SKILL.md",
         ]
         self.assertEqual({"script": CONDITION, "reads": documents}, MANIFEST["conditions"]["doc-passages"])

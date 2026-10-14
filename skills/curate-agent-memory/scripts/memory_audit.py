@@ -7,8 +7,9 @@ resolve and audit are read-only. They never decide what to keep or delete; the c
 every candidate. resolve locates the memory directory for --repo, else for the Git repository holding
 the current directory, and prints `REPO <root>`; then `MEMORY_DIR <path>`, `SOURCE <where it came
 from>`, and `EXISTS yes|no`, or `NO_MEMORY_DIR` when settings name no usable directory; one
-`CANDIDATE <dir>` per memory directory found when the resolved one does not exist; and one
-`NOTE <text>` per caveat. No directory is a result, not a failure.
+`CANDIDATE <dir>` per memory directory under the configuration directory's projects folder when no
+existing directory resolved, whether settings named a missing one, the default one is missing, or
+none is usable; and one `NOTE <text>` per caveat. No directory is a result, not a failure.
 
 audit writes its JSON report of mechanical problems and candidate overlaps to --output, else to a new
 temporary file, and prints `REPORT <path>`. It refuses an --output inside the skills directory it runs
@@ -618,8 +619,17 @@ def config_directory(home: Path, environment: dict[str, str]) -> Path:
 
 
 def resolve(repo: Path, home: Path, environment: dict[str, str], managed: Path) -> dict:
-    """Locate the auto-memory directory Claude Code uses for repo, following its documented order."""
+    """Locate the auto-memory directory for repo, with the memory directories found when none exists there."""
     config_dir = config_directory(home, environment)
+    result = locate(repo, home, environment, managed, config_dir)
+    if not result["exists"]:
+        projects = config_dir / "projects"
+        result["candidates"] = sorted(str(path) for path in projects.glob("*/memory") if path.is_dir())
+    return result
+
+
+def locate(repo: Path, home: Path, environment: dict[str, str], managed: Path, config_dir: Path) -> dict:
+    """The auto-memory directory Claude Code uses for repo, following its documented order."""
     notes = [
         "A --settings file passed when Claude Code starts can also set autoMemoryDirectory; this audit cannot see it."
     ]
@@ -673,10 +683,7 @@ def resolve(repo: Path, home: Path, environment: dict[str, str], managed: Path) 
         directory = projects / encode_project(str(root)) / "memory"
         source = f"derived from the repository's main worktree ({root})"
         notes.append("The directory name is derived by convention; confirm it before changing anything.")
-    result = {"memory_dir": str(directory), "source": source, "exists": directory.is_dir(), "notes": notes}
-    if not directory.is_dir():
-        result["candidates"] = sorted(str(path) for path in projects.glob("*/memory") if path.is_dir())
-    return result
+    return {"memory_dir": str(directory), "source": source, "exists": directory.is_dir(), "notes": notes}
 
 
 def reason(exc: OSError) -> str:

@@ -269,6 +269,46 @@ class SearchTests(unittest.TestCase):
                 client.search_all("search/issues", "q", KEY)
             self.assertEqual("malformed", context.exception.kind)
 
+    def test_a_search_count_must_be_a_non_negative_integer(self) -> None:
+        counts: tuple[object, ...] = (True, False, "1", 1.0, -1)
+        for count in counts:
+            client, _ = client_for(scripted(ok({"items": [], "total_count": count}))[0])
+            with self.subTest(count=count), self.assertRaises(GitHubError) as context:
+                client.search_all("search/issues", "q", KEY)
+            self.assertEqual("malformed", context.exception.kind)
+            self.assertIn("response.total_count must be an integer of at least 0", str(context.exception))
+        client, _ = client_for(scripted(ok({"items": rows(1), "total_count": 1}))[0])
+        self.assertEqual(1, fetch(client))
+
+    def test_a_graphql_search_count_must_be_a_non_negative_integer(self) -> None:
+        def page(count: object) -> CommandResult:
+            nodes = [{"id": "PR_1"}]
+            return ok({"data": {"search": {"issueCount": count, "pageInfo": {"hasNextPage": False}, "nodes": nodes}}})
+
+        for count in (True, False, "1", 1.0, -1):
+            client, _ = client_for(scripted(page(count))[0])
+            with self.subTest(count=count), self.assertRaises(GitHubError) as context:
+                client.graphql_search_range("q {span}", "octo", date(2026, 1, 1), date(2026, 1, 31))
+            self.assertEqual("malformed", context.exception.kind)
+            self.assertIn("data.search.issueCount must be an integer of at least 0", str(context.exception))
+        client, _ = client_for(scripted(page(1))[0])
+        nodes, capped = client.graphql_search_range("q {span}", "octo", date(2026, 1, 1), date(2026, 1, 31))
+        self.assertEqual((1, []), (len(nodes), capped))
+
+    def test_malformed_graphql_search_responses_fail_closed(self) -> None:
+        searches: tuple[object, ...] = (
+            None,
+            [],
+            {"issueCount": 0, "pageInfo": {"hasNextPage": False}},
+            {"issueCount": 0, "nodes": []},
+            {"issueCount": 0, "pageInfo": [], "nodes": []},
+        )
+        for search in searches:
+            client, _ = client_for(scripted(ok({"data": {"search": search}}))[0])
+            with self.subTest(search=search), self.assertRaises(GitHubError) as context:
+                client.graphql_search_range("q {span}", "octo", date(2026, 1, 1), date(2026, 1, 31))
+            self.assertEqual("malformed", context.exception.kind)
+
     def test_invalid_json_fails_closed(self) -> None:
         client, _ = client_for(scripted(CommandResult(0, "not json", ""))[0])
         with self.assertRaises(GitHubError) as context:
