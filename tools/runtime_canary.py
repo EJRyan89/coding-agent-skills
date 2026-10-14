@@ -13,8 +13,7 @@ runtime-canary-probe, then each SKILL given. It prints one fact per line:
 
   HOME "<dir>"                                  the throwaway home; delete it with --remove-home when done
   DEPLOYED <source id>                          or DEPLOY_FAILED <source id> "<log>", which stops the run
-  SKIPPED <runtime> "<reason>"                  the runtime is not installed where `deploy.py check` looks; when every
-                                                runtime is, the canary exits 1
+  SKIPPED <runtime> "<reason>"                  the runtime is not installed where `deploy.py check` looks
   DISCOVERED <runtime> <skill> ["<path>"]       the runtime lists the canary's copy, enabled
   SHADOWED <runtime> <skill> "<path>"           it also lists another enabled copy, such as an installed adapter
   PROJECT_COPY <runtime> <skill> "<path>"       it lists the canary home's own deployed skill as a project skill
@@ -31,6 +30,7 @@ runtime-canary-probe, then each SKILL given. It prints one fact per line:
   TRANSCRIPT <runtime> <skill> "<path>"         the runtime's output for that run
   MATRIX <runtime> <skill> AGREES <level>       what ran is what the skill's declared runtime support expects
   MATRIX <runtime> <skill> DISAGREES <level> "<what ran instead>"
+  NOTHING_CHECKED "<reason>"                    no runtime was listed or run, with why for each; the canary exits 1
 
 With --remove-home DIR it prints REMOVED "<dir>", or FAILED "<reason>" and exits 1.
 
@@ -58,7 +58,9 @@ capabilities lie past the first script the canary asks for, and `none` is NOT_AT
 line per RUNTIME line compares the two, and the canary exits 1 when any disagrees or a skill declares nothing, so the
 matrix cannot claim more than a run shows. It also exits 1 on any UNDISCOVERED or DISCOVERY_FAILED line,
 --discovery-only included, since a runtime whose skill list cannot be read is one whose discovery shows nothing, and
-when every runtime it was asked to check is SKIPPED, since then it checked nothing.
+on NOTHING_CHECKED, which it prints when no runtime it was asked to check printed a DISCOVERED or UNDISCOVERED line
+or a RUNTIME line for a run it started: each runtime was SKIPPED, could not be listed, was asked for no skill it
+could list or start, or, under --discovery-only, is Claude Code, whose discovery shows only in a model run.
 
 Discovery is held to what `deploy.py verify` holds: the adapters the canary home's manifest records. A skill deployed
 with none, as the deployer deploys a hidden dependency such as code-review-core, is DISCOVERY_NOT_ATTEMPTED, never
@@ -108,6 +110,8 @@ DECLARED_RUNTIME = {"claude": "claude-code", "codex": "codex", "copilot": "copil
 # script the canary asks for, so the skill still runs that far.
 PARTIAL_OUTCOME = {"user-only-start": "UNSUPPORTED"}
 OUTCOME_LINE = re.compile(r"^RUNTIME (\S+) (\S+) ([A-Z_]+)\b")
+# The RUNTIME outcomes the canary reaches without starting the runtime, which therefore check nothing.
+UNSTARTED = ("NOT_ATTEMPTED", "UNSUPPORTED")
 FIXTURE_SOURCE = REPOSITORY_ROOT / "tests" / "fixtures" / "runtime-canary"
 FIXTURE_SKILL = "runtime-canary-probe"
 STATE = ".runtime-canary"
@@ -379,6 +383,26 @@ def compare(lines: Sequence[str], declared: Declarations) -> list[str]:
             reason = f"{support.level} expects {want}, but the run was {outcome}"
             result.append(f"MATRIX {runtime} {skill} DISAGREES {support.level} {quote(reason)}")
     return result
+
+
+def checks(line: str) -> bool:
+    """Whether the line shows its runtime checked: a listing that found the canary's copy or missed it, or a run the
+    canary started. DISCOVERY_FAILED read nothing, and NOT_ATTEMPTED and UNSUPPORTED started nothing."""
+    match = OUTCOME_LINE.match(line)
+    if match is not None:
+        return match.group(3) not in UNSTARTED
+    return line.startswith(("DISCOVERED ", "UNDISCOVERED "))
+
+
+def unchecked(runtime: str, lines: Sequence[str], discovery_only: bool) -> str:
+    """Why a runtime whose lines include none that checks was not checked."""
+    if any(line.startswith(f"DISCOVERY_FAILED {runtime} ") for line in lines):
+        return f"{runtime}'s skill list could not be read"
+    if runtime not in discovery.RUNTIMES and discovery_only:
+        return (
+            f"{runtime} has no skill listing, so its discovery needs a model run, which --discovery-only does not start"
+        )
+    return f"{runtime} was asked for no skill it could list or start"
 
 
 def environment(base: Mapping[str, str], script_log: Path, home: Path) -> dict[str, str]:
@@ -766,14 +790,14 @@ def canary(
     declared = declarations(sources)
     unadapted = without_adapter(home)
     printed = []
-    checked = False
+    reasons = []
     for runtime in runtimes:
         executable = which(runtime)
         if executable is None:
             print(f"SKIPPED {runtime} {quote(f'{runtime} is not installed')}")
+            reasons.append(f"{runtime} is not installed")
             continue
-        checked = True
-        for line in check_runtime(
+        lines = check_runtime(
             runtime,
             executable,
             ordered,
@@ -787,15 +811,22 @@ def canary(
             talk,
             declared,
             unadapted,
-        ):
+        )
+        for line in lines:
             print(line, flush=True)
-            printed.append(line)
+        printed += lines
+        if not any(checks(line) for line in lines):
+            reasons.append(unchecked(runtime, lines, discovery_only))
     matrix = compare(printed, declared)
     for line in matrix:
         print(line, flush=True)
     # A runtime whose skill list could not be read proves nothing about it, so it fails the run as a miss does, and
-    # so does a run that skipped every runtime, as `deploy.py verify` fails when it finds none to verify.
-    unestablished = not checked or any(line.startswith(("UNDISCOVERED ", "DISCOVERY_FAILED ")) for line in printed)
+    # so does a run that checked no runtime, as `deploy.py verify` fails when it finds none to verify.
+    nothing = not any(checks(line) for line in printed)
+    if nothing:
+        what = "discovery" if discovery_only else "discovery or run"
+        print(f"NOTHING_CHECKED {quote(f'no runtime was checked for {what}: ' + '; '.join(reasons))}", flush=True)
+    unestablished = nothing or any(line.startswith(("UNDISCOVERED ", "DISCOVERY_FAILED ")) for line in printed)
     return 1 if unestablished or any(" DISAGREES " in line for line in matrix) else 0
 
 
