@@ -75,7 +75,8 @@ A release-note obligation that a pull request records belongs in its body's `## 
 
 1. Deploy from the hub on `main` and confirm `python deploy.py verify` finds every adapter.
 2. Start `update-coding-agent-skills` from a runtime and confirm it reports `UP_TO_DATE`, which exercises the rendered source path and the fetch together. A release that raised the breaking component makes the skill stop at `MAJOR_UPDATE` on every installation behind it until the user passes `--cross-major`, so its notes must say what the user has to do.
-3. **Rotation audit.** Run the `audit-repository` skill's `rotation` mode, which names the area its rotation record shows read whole least recently (the deployer, the code review skills, the other skills, or the repository's infrastructure and documents) and writes that area's whole-area brief, so no area goes unread for more than four releases. Its findings, with the issues the new milestone carries, feed the next milestone; it holds nothing. Record the area for the new tag with `rotation --record`, through a pull request, and note on the milestone which areas both audits read.
-4. Retire any worktree the release work used.
+3. **Security advisories.** Apply [Disclosure](../SECURITY.md#disclosure) to each draft advisory the release audit opened: publish each whose defect a tagged release carried, with the new tag as its patched version, and close the rest without publication.
+4. **Rotation audit.** Run the `audit-repository` skill's `rotation` mode, which names the area its rotation record shows read whole least recently (the deployer, the code review skills, the other skills, or the repository's infrastructure and documents) and writes that area's whole-area brief, so no area goes unread for more than four releases. Its findings, with the issues the new milestone carries, feed the next milestone; it holds nothing. Record the area for the new tag with `rotation --record`, through a pull request, and note on the milestone which areas both audits read.
+5. Retire any worktree the release work used.
 
 The history of how the repository was prepared for its first release is in the Git history before the first tag.
