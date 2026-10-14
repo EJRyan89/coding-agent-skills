@@ -45,7 +45,7 @@ Label these as your assessment, separate from the engine's findings, and do not 
 
 Only when the user explicitly authorizes it for a trusted repository, because both commands execute repository-controlled code:
 
-1. Run the repository's generator in read-only mode, never `--write`: `python -B .github/scripts/ai_config.py --check` from the repository root.
+1. Run the repository's generator in read-only mode, never `--write`: `{{PYTHON}} -B .github/scripts/ai_config.py --check` from the repository root.
 2. Handshake each stdio MCP server, which starts it, sends `initialize` and `tools/list`, and stops it without invoking a tool:
 
    ```bash

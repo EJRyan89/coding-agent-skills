@@ -10,6 +10,8 @@ import argparse
 import re
 import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -31,6 +33,7 @@ from github_client import (
     json_body,
     subprocess_runner,
 )
+from typed_fields import FieldError, FieldReader
 
 SEARCH_PAGE_SIZE = 100
 SEARCH_RESULT_CAP = 1000
@@ -41,6 +44,7 @@ RECOVERY_STREAK = 10
 PAGINATION_PASSES = 3
 MAX_MONTHS = 36
 LOGIN_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}")
+READ = FieldReader()
 
 REVIEW_SEARCH_QUERY = """
 query($q: String!, $user: String!, $after: String) {
@@ -108,6 +112,15 @@ class SearchPacer:
             self._clean_searches = 0
 
 
+@contextmanager
+def _shape_of(response: str) -> Iterator[None]:
+    """Fail a field read inside the block as a malformed response, naming the field and what it held."""
+    try:
+        yield
+    except FieldError as exc:
+        raise GitHubError(f"{response} has an unexpected shape: {exc}", kind="malformed") from exc
+
+
 def _payload(result: CommandResult) -> Any:
     """The JSON body, failing on GraphQL errors and retrying a search GitHub cut short."""
     payload = json_body(result)
@@ -141,13 +154,11 @@ class GitHubSearchClient:
 
     def _search_page(self, endpoint: str, query: str, page: int, per_page: int) -> dict[str, Any]:
         payload = self._request([f"{endpoint}?q={quote(query, safe='')}&per_page={per_page}&page={page}"], search=True)
-        if (
-            not isinstance(payload, dict)
-            or not isinstance(payload.get("items"), list)
-            or not isinstance(payload.get("total_count"), int)
-        ):
-            raise GitHubError(f"Search response for {query!r} has an unexpected shape", kind="malformed")
-        return payload
+        with _shape_of(f"Search response for {query!r}"):
+            response = READ.json_object(payload, "response")
+            READ.array(response.get("items"), "response.items")
+            READ.integer(response.get("total_count"), "response.total_count", minimum=0)
+        return response
 
     def search_all(
         self, endpoint: str, query: str, key: tuple[str, ...], first: dict[str, Any] | None = None
@@ -210,14 +221,12 @@ class GitHubSearchClient:
         variables = {"q": query, "user": user}
         if after is not None:
             variables["after"] = after
-        search = self.graphql(REVIEW_SEARCH_QUERY, variables, search=True).get("search")
-        if (
-            not isinstance(search, dict)
-            or not isinstance(search.get("issueCount"), int)
-            or not isinstance(search.get("nodes"), list)
-            or not isinstance(search.get("pageInfo"), dict)
-        ):
-            raise GitHubError(f"GraphQL search for {query!r} has an unexpected shape", kind="malformed")
+        data = self.graphql(REVIEW_SEARCH_QUERY, variables, search=True)
+        with _shape_of(f"GraphQL search for {query!r}"):
+            search = READ.json_object(data.get("search"), "data.search")
+            READ.integer(search.get("issueCount"), "data.search.issueCount", minimum=0)
+            READ.array(search.get("nodes"), "data.search.nodes")
+            READ.json_object(search.get("pageInfo"), "data.search.pageInfo")
         return search
 
     def graphql_search_range(self, template: str, user: str, start: date, end: date) -> tuple[list[Any], list[str]]:

@@ -196,6 +196,9 @@ SHELL_FILE_COMMAND = r"(?:cat|head|tail|find|grep|rg|sed|awk|wc|ls)"
 # Word edges that also treat hyphens as part of a word, so "rev-parse" is not "parse".
 WORD_START = r"(?<![\w-])"
 WORD_END = r"(?![\w-])"
+# Python told to run code given on its command line: a source tree writes the interpreter as the PYTHON template
+# token, which a deployment renders as python or python3, and short options such as -B or -I may come before -c.
+INLINE_PYTHON = rf"(?:\{{\{{PYTHON\}}\}}|{WORD_START}python3?)(?:\s+-[A-Za-z]+{WORD_END})*?\s+-c{WORD_END}"
 CUES = (
     ("wide-glob", re.compile(r"\*\*/\*|\*\*[\\/]")),
     (
@@ -212,7 +215,7 @@ CUES = (
     (
         "generated-code",
         re.compile(
-            rf"(?i)python3? -c{WORD_END}|<<-?\s*['\"]?[A-Z_]+['\"]?|"
+            rf"(?i){INLINE_PYTHON}|<<-?\s*['\"]?[A-Z_]+['\"]?|"
             rf"{WORD_START}(?:write|writes|generate|generates|compose)"
             rf"{WORD_END}.{{0,40}}{WORD_START}(?:script|code|glue|program|one-liner){WORD_END}"
         ),
