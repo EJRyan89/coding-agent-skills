@@ -42,7 +42,7 @@
       "category": "Skill contract",
       "profile": ".claude/skills/review-repository/references/skill-contract.md",
       "include": [
-        "^skills/(?:[^/]+/)?[^/]+/SKILL\\.md$",
+        "^skills/[^/]+/SKILL\\.md$",
         "^agents/",
         "^deploy-meta/",
         "^source\\.json$",
@@ -115,7 +115,7 @@
         "^deploy-meta/[^/]+\\.json$",
         "^skills/code-review-core/references/[^/]+\\.schema\\.json$",
         "^docs/code-review-operations-contract\\.md$",
-        "^skills/(?:[^/]+/)?[^/]+/SKILL\\.md$"
+        "^skills/[^/]+/SKILL\\.md$"
       ],
       "exclude": [],
       "resources": ["docs/releasing.md"],
@@ -130,7 +130,7 @@
         "README.md",
         "CONTRIBUTING.md",
         "CLAUDE.md",
-        "skills/**/SKILL.md",
+        "skills/*/SKILL.md",
         ".claude/skills/*/SKILL.md"
       ]
     },

@@ -1062,6 +1062,35 @@ class ResolveTests(GitTestCase):
                 self.assertEqual(str(self.home / f"memory-{scope}"), result["memory_dir"])
                 self.assertIn(f"{scope} settings", result["source"])
 
+    def test_a_missing_settings_named_directory_lists_candidates(self) -> None:
+        other = self.home / ".claude" / "projects" / "C--elsewhere" / "memory"
+        other.mkdir(parents=True)
+        write(self.home / ".claude" / "settings.json", json.dumps({"autoMemoryDirectory": "~/memory-user"}))
+        result = self.resolve()
+        self.assertEqual(str(self.home / "memory-user"), result["memory_dir"])
+        self.assertFalse(result["exists"])
+        self.assertEqual([str(other)], result["candidates"])
+
+    def test_an_existing_directory_lists_no_candidates(self) -> None:
+        (self.home / ".claude" / "projects" / "C--elsewhere" / "memory").mkdir(parents=True)
+        (self.home / "memory-user").mkdir(parents=True)
+        self.derived().mkdir(parents=True)
+        with self.subTest(source="derived"):
+            self.assertNotIn("candidates", self.resolve())
+        write(self.home / ".claude" / "settings.json", json.dumps({"autoMemoryDirectory": "~/memory-user"}))
+        with self.subTest(source="settings"):
+            result = self.resolve()
+            self.assertTrue(result["exists"])
+            self.assertNotIn("candidates", result)
+
+    def test_an_unusable_settings_value_lists_candidates(self) -> None:
+        other = self.home / ".claude" / "projects" / "C--elsewhere" / "memory"
+        other.mkdir(parents=True)
+        write(self.home / ".claude" / "settings.json", json.dumps({"autoMemoryDirectory": "relative/path"}))
+        result = self.resolve()
+        self.assertIsNone(result["memory_dir"])
+        self.assertEqual([str(other)], result["candidates"])
+
     def test_project_directory_name_and_config_dir_are_honored(self) -> None:
         config = self.root / "config"
         result = self.resolve({"CLAUDE_CONFIG_DIR": str(config), "CLAUDE_CODE_PROJECT_DIR_NAME": "shared"})
@@ -1108,6 +1137,23 @@ class ResolveTests(GitTestCase):
         lines = self.resolve_lines()
         self.assertEqual(
             ["EXISTS no", f"CANDIDATE {other}"], [line for line in lines if line.startswith(("EXISTS", "CANDIDATE"))]
+        )
+
+    def test_command_line_lists_candidates_when_the_settings_named_directory_is_missing(self) -> None:
+        other = self.home / ".claude" / "projects" / "C--elsewhere" / "memory"
+        other.mkdir(parents=True)
+        settings = self.home / ".claude" / "settings.json"
+        write(settings, json.dumps({"autoMemoryDirectory": "~/memory-user"}))
+        self.assertEqual(
+            [
+                f"REPO {self.repo.resolve()}",
+                f"MEMORY_DIR {self.home / 'memory-user'}",
+                f"SOURCE autoMemoryDirectory in user settings ({settings})",
+                "EXISTS no",
+                f"CANDIDATE {other}",
+                self.SETTINGS_NOTE,
+            ],
+            self.resolve_lines(),
         )
 
     def test_notes_use_shared_flattening_without_truncating_or_reordering_facts(self) -> None:

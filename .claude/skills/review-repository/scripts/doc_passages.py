@@ -61,7 +61,7 @@ DOCUMENTS = (
     "README.md",
     "CONTRIBUTING.md",
     "CLAUDE.md",
-    "skills/**/SKILL.md",
+    "skills/*/SKILL.md",
     ".claude/skills/*/SKILL.md",
 )
 # Records of the past or of results, not descriptions of the code: a release's notes describe what it shipped then,
