@@ -373,6 +373,19 @@ class CheckCommandTests(DeployerTestCase):
         groups = self.report_groups(self.check(machine).output, "CHECK")
         self.assertEqual(["dotnet-format (used by pack2)"], groups["MISSING"])
 
+    def test_a_member_requested_before_bundle_members_were_recorded_still_needs_its_tools(self) -> None:
+        self.make_source_json(bundles={"pack": {"members": ["reviewer", "formatter"], "opt_in": True}})
+        self.make_config()
+        machine = Machine(missing=("dotnet-format",))
+        with machine.patches():
+            self.deploy_ok("--all", "--include", "pack")
+        data = self.manifest()
+        del data["sources"]["test/skills"]["requested_bundle_members"]
+        self.write_manifest(data)
+        self.make_source_json(bundles={"pack2": {"members": ["reviewer", "formatter"], "opt_in": True}})
+        groups = self.report_groups(self.check(machine).output, "CHECK")
+        self.assertEqual(["dotnet-format (used by pack2)"], groups["MISSING"])
+
     def test_the_runtimes_verify_lists_are_reported_whether_or_not_a_skill_declares_them(self) -> None:
         # deploy.py verify runs Codex CLI and Copilot CLI, so check reports both even when no skill runs either.
         set_tools(self, "core", ["gh"])
