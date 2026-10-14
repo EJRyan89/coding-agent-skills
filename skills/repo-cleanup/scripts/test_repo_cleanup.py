@@ -135,6 +135,18 @@ def plan_lines(plan: dict, path: Path) -> list[str]:
     return ["\t".join(str(field) if str(field).strip() else "-" for field in line) for line in lines]
 
 
+def refusing_branch_deletion(*names: str) -> GitClient:
+    """Git that refuses every `git branch` command ending in one of these branches, as a locked ref makes it, and
+    runs every other command."""
+
+    def refusing(command: Sequence[str], timeout: float) -> GitResult:
+        if "branch" in command and command[-1] in names:
+            return GitResult(1, "", f"error: cannot lock ref 'refs/heads/{command[-1]}'")
+        return git_client.subprocess_runner(command, timeout)
+
+    return GitClient(refusing)
+
+
 class FakeGitHub:
     """Stands in for gh: answers the github.com access probe, `pr list` from a table of pull requests per branch, and
     the pull request commits query as `gh api --paginate --slurp` prints it, from `git rev-list --parents` lines."""
@@ -877,13 +889,7 @@ class PlanApplyTests(Fixture):
         second = self.commit(self.clone, "unpublished work")
         git(self.clone, "switch", "--quiet", "main")
         self.clean()
-
-        def refusing(command: Sequence[str], timeout: float) -> GitResult:
-            if "branch" in command and command[-1] in ("first", "second"):
-                return GitResult(1, "", f"error: cannot lock ref 'refs/heads/{command[-1]}'")
-            return git_client.subprocess_runner(command, timeout)
-
-        services = rc.Services(git=GitClient(refusing), gh=self.github)
+        services = rc.Services(git=refusing_branch_deletion("first", "second"), gh=self.github)
         for command, branch in (("delete-local", "first"), ("delete-local", "second"), ("force-delete", "second")):
             with self.subTest(command=command, branch=branch):
                 output = io.StringIO()
@@ -1343,6 +1349,22 @@ class SweepTests(Fixture):
     def summary(self, block: list[str]) -> str:
         return "\n".join(fields[0] for fields in facts(block, "SUMMARY"))
 
+    def test_a_branch_deletion_git_refuses_is_reported_and_the_sweep_exits_1(self) -> None:
+        self.finished_branch("done")
+        self.finished_branch("done-tree")
+        tree = self.area / "done-tree wt"
+        git(self.clone, "worktree", "add", "--quiet", str(tree), "done-tree")
+        services = rc.Services(git=refusing_branch_deletion("done", "done-tree"), gh=self.github)
+        code, lines = self.sweep(services)
+        self.assertEqual(1, code, lines)
+        self.assertEqual([[f"{self.repos.as_posix()}/my repo", "cleaned"]], facts(lines, "REPO"))
+        summary = self.summary(lines)
+        for name in ("done", "done-tree"):
+            self.assertIn(f"{name}: error: cannot lock ref 'refs/heads/{name}'", summary)
+            self.assertIsNotNone(self.tip(name), name)
+        self.assertIn("Worktrees removed:       1 — ", summary)
+        self.assertFalse(tree.exists(), "the worktree removal Git accepted still happens")
+
     def test_a_failure_partway_through_apply_reports_what_was_done_before_it(self) -> None:
         self.finished_branch("done")
         self.push_branch("behind")
@@ -1705,7 +1727,7 @@ class RemoveWorktreeTests(CleanupTestCase):
         git(self.repo, "worktree", "add", "--quiet", "-b", name, str(path))
         return path
 
-    def remove(self, name: str, pr: str = "CLOSED") -> tuple[bool, list[list[str]], Path]:
+    def remove(self, name: str, pr: str = "CLOSED") -> tuple[rc.Removal, list[list[str]], Path]:
         path = self.root / f"{name} wt"
         entry = {"path": str(path), "branch": name}
         tip = self.tip(name)
@@ -1718,7 +1740,7 @@ class RemoveWorktreeTests(CleanupTestCase):
     def test_a_merged_worktree_and_its_branch_are_removed(self) -> None:
         self.add("merged")
         removed, events, path = self.remove("merged")
-        self.assertTrue(removed)
+        self.assertEqual(rc.Removal(removed=True, refused=False), removed)
         self.assertEqual([["REMOVED", str(path), "merged"], ["DELETED", "merged"]], events)
         self.assertFalse(path.exists())
         self.assertIsNone(self.tip("merged"))
@@ -1730,7 +1752,7 @@ class RemoveWorktreeTests(CleanupTestCase):
             removed = rc.remove_worktree(
                 rc.Services(), self.plan, {"path": str(path), "branch": "closed"}, tip, "CLOSED", ask=True
             )
-        self.assertTrue(removed)
+        self.assertEqual(rc.Removal(removed=True, refused=False), removed)
         self.assertEqual([["REMOVED", str(path), "closed"], ["CONFIRM_LOCAL", "closed"]], self.plan["events"])
         self.assertFalse(path.exists())
         self.assertEqual(tip, self.tip("closed"))
@@ -1742,7 +1764,7 @@ class RemoveWorktreeTests(CleanupTestCase):
         git(path, "commit", "--quiet", "-m", "sentinel")
         git(self.repo, "worktree", "lock", str(path))
         removed, events, _ = self.remove("locked")
-        self.assertFalse(removed)
+        self.assertEqual(rc.Removal(removed=False, refused=True), removed)
         self.assertEqual(["PRESERVED", "locked"], events[0][:2])
         self.assertTrue(events[0][2].startswith(f"Git refused to remove worktree {path}: "), events)
         self.assertTrue((path / "sentinel.txt").is_file())
@@ -1752,7 +1774,7 @@ class RemoveWorktreeTests(CleanupTestCase):
         path = self.add("untracked")
         (path / "draft.txt").write_text("draft\n", encoding="utf-8")
         removed, events, _ = self.remove("untracked")
-        self.assertFalse(removed)
+        self.assertEqual(rc.Removal(removed=False, refused=True), removed)
         self.assertEqual(["PRESERVED", "untracked"], events[0][:2])
         self.assertTrue((path / "draft.txt").is_file())
 
@@ -1764,7 +1786,7 @@ class RemoveWorktreeTests(CleanupTestCase):
         self.assertEqual("", git(path, "status", "--porcelain"), "the setting hides the draft")
         self.assertEqual(1, rc.dirty_count(rc.Services(), path))
         removed, events, _ = self.remove("hidden")
-        self.assertFalse(removed)
+        self.assertEqual(rc.Removal(removed=False, refused=True), removed)
         self.assertEqual(["PRESERVED", "hidden"], events[0][:2])
         self.assertTrue(events[0][2].startswith(f"Git refused to remove worktree {path}: "), events)
         self.assertTrue((path / "draft.txt").is_file())
@@ -1775,7 +1797,7 @@ class RemoveWorktreeTests(CleanupTestCase):
         path = self.add("hidden")
         self.fill(path, ".env")
         removed, events, _ = self.remove("hidden")
-        self.assertFalse(removed)
+        self.assertEqual(rc.Removal(removed=False, refused=False), removed, "ignored files keep it")
         self.assertEqual(
             [["PRESERVED", "hidden", f"worktree {path} holds 1 ignored path git worktree remove would delete: .env"]],
             events,
@@ -1800,7 +1822,7 @@ class RemoveWorktreeTests(CleanupTestCase):
         path = self.add("ignored")
         self.fill(path, ".env", "bin/app.dll")
         removed, events, _ = self.remove("ignored")
-        self.assertFalse(removed)
+        self.assertEqual(rc.Removal(removed=False, refused=False), removed, "ignored files keep it")
         self.assertEqual(
             [
                 [
@@ -1827,7 +1849,7 @@ class RemoveWorktreeTests(CleanupTestCase):
             "node_modules/.cache/babel/y",
         )
         removed, events, _ = self.remove("cached")
-        self.assertTrue(removed)
+        self.assertEqual(rc.Removal(removed=True, refused=False), removed)
         self.assertEqual(
             [
                 [
@@ -1850,7 +1872,7 @@ class RemoveWorktreeTests(CleanupTestCase):
         # node_modules as a whole is not a cache: its .cache is hidden under it, and the packages are the user's.
         self.fill(path, "__pycache__/a.pyc", ".pytest_cache/v/n", "node_modules/.cache/y", "node_modules/left-pad/i.js")
         removed, events, _ = self.remove("mixed")
-        self.assertFalse(removed)
+        self.assertEqual(rc.Removal(removed=False, refused=False), removed)
         self.assertEqual(
             [
                 [
@@ -1868,7 +1890,7 @@ class RemoveWorktreeTests(CleanupTestCase):
         self.fill(path, ".env", "pkg/__pycache__/c.pyc", "pkg/stray.pyc")
         self.plan["events"].clear()
         removed, events, _ = self.remove("mixed")
-        self.assertFalse(removed)
+        self.assertEqual(rc.Removal(removed=False, refused=False), removed)
         self.assertEqual(
             f"worktree {path} holds 2 ignored paths git worktree remove would delete: .env, pkg/stray.pyc; "
             "also 3 regenerable caches: .pytest_cache/, __pycache__/, pkg/__pycache__/",
@@ -1881,7 +1903,7 @@ class RemoveWorktreeTests(CleanupTestCase):
         path = self.add("flooded")
         self.fill(path, *(f"out{index}/built" for index in range(6)), "a.log", "b.log")
         removed, events, _ = self.remove("flooded")
-        self.assertFalse(removed)
+        self.assertEqual(rc.Removal(removed=False, refused=False), removed)
         self.assertEqual(
             f"worktree {path} holds 8 ignored paths git worktree remove would delete: "
             "a.log, b.log, out0/, out1/, out2/, and 3 more",
@@ -1916,10 +1938,26 @@ class RemoveWorktreeTests(CleanupTestCase):
         git(path, "commit", "--quiet", "--allow-empty", "-m", "work")
         sha = self.tip("unmerged")
         removed, events, _ = self.remove("unmerged")
-        self.assertTrue(removed)
+        self.assertEqual(rc.Removal(removed=True, refused=False), removed)
         self.assertEqual([["REMOVED", str(path), "unmerged"], ["UNMERGED", "unmerged", sha]], events)
         self.assertFalse(path.exists())
         self.assertEqual(sha, self.tip("unmerged"))
+
+    def test_a_branch_deletion_git_refuses_after_the_worktree_is_removed_is_reported_as_refused(self) -> None:
+        path = self.add("held")
+        tip = self.tip("held") or ""
+        entry = {"path": str(path), "branch": "held"}
+        with contextlib.redirect_stdout(io.StringIO()):
+            outcome = rc.remove_worktree(
+                rc.Services(git=refusing_branch_deletion("held")), self.plan, entry, tip, "MERGED"
+            )
+        self.assertEqual(rc.Removal(removed=True, refused=True), outcome)
+        self.assertEqual(
+            [["REMOVED", str(path), "held"], ["PRESERVED", "held", "error: cannot lock ref 'refs/heads/held'"]],
+            self.plan["events"],
+        )
+        self.assertFalse(path.exists())
+        self.assertEqual(tip, self.tip("held"))
 
 
 def link_directory(target: Path, link: Path) -> None:
@@ -2064,6 +2102,62 @@ class LeftoverTests(Fixture):
         self.assertEqual([["work"]], facts(lines, "DELETED"))
         self.assertIsNone(self.tip("work"))
 
+    def test_a_branch_git_refuses_to_delete_after_its_worktree_is_removed_is_preserved_and_exits_1(self) -> None:
+        trees = {name: self.area / f"{name} wt" for name in ("fine", "held", "beside")}
+        for name, path in trees.items():
+            git(self.clone, "branch", name, "main")
+            git(self.clone, "worktree", "add", "--quiet", str(path), name)
+        _, applied = self.clean()
+        self.assertEqual({"fine", "held", "beside"}, set(self.offered(applied, "CONFIRM_LOCAL")))
+        code, lines = self.confirm("delete-local", "fine")
+        self.assertEqual(0, code, lines)
+        self.assertEqual(
+            ([["fine"]], ["fine"]), (facts(lines, "DELETED"), [fields[1] for fields in facts(lines, "REMOVED")])
+        )
+
+        output = io.StringIO()
+        services = rc.Services(git=refusing_branch_deletion("held"), gh=self.github)
+        with contextlib.redirect_stdout(output):
+            code = rc.main(
+                ["delete-local", "--plan", str(self.plan_file), "--branch", "held", "--branch", "beside"], services
+            )
+        lines = output.getvalue().splitlines()
+        self.assertEqual(1, code, lines)
+        self.assertEqual(["held", "beside"], [fields[1] for fields in facts(lines, "REMOVED")])
+        self.assertEqual([["held", "error: cannot lock ref 'refs/heads/held'"]], facts(lines, "PRESERVED"))
+        self.assertEqual([["beside"]], facts(lines, "DELETED"))
+        self.assertFalse(trees["held"].exists() or trees["beside"].exists())
+        self.assertIsNotNone(self.tip("held"))
+        self.assertIsNone(self.tip("beside"))
+        self.assertIn("held: error: cannot lock ref 'refs/heads/held'", self.summary(lines))
+
+    def test_a_branch_tracking_a_remote_branch_of_another_name_is_kept_though_main_holds_it(self) -> None:
+        for name in ("feature/nested", "feature/nested-tree", "exact"):
+            self.landed(name)
+        # A task started from origin/feature/<name> under the shorter name tracks the longer one.
+        for name in ("nested", "nested-tree"):
+            git(self.clone, "branch", "-m", f"feature/{name}", name)
+        self.assertEqual(
+            "refs/remotes/origin/feature/nested",
+            git(self.clone, "rev-parse", "--symbolic-full-name", "nested@{upstream}"),
+        )
+        tree = self.area / "nested-tree wt"
+        git(self.clone, "worktree", "add", "--quiet", str(tree), "nested-tree")
+        planned, applied = self.clean()
+        self.assertEqual(
+            {
+                "nested": ("-", "keep", "-"),
+                "nested-tree": ("NONE", "keep", "in-worktree"),
+                "exact": ("NONE", "delete", "-"),
+            },
+            {fields[0]: (fields[2], fields[4], fields[5]) for fields in facts(planned, "BRANCH")},
+        )
+        self.assertEqual([["exact"]], facts(applied, "DELETED"))
+        self.assertEqual([], facts(applied, "REMOVED"))
+        self.assertTrue(tree.is_dir())
+        self.assertIsNotNone(self.tip("nested"))
+        self.assertIsNotNone(self.tip("nested-tree"))
+
     def test_a_detached_worktree_is_offered_when_clean_and_on_a_remote_branch_else_kept_with_why(self) -> None:
         main = git(self.clone, "rev-parse", "main")
         pushed = self.push_branch("pushed")
@@ -2140,8 +2234,11 @@ class LeftoverTests(Fixture):
         outside = self.root / "outside target"
         outside.mkdir()
         (outside / "keep.txt").write_text("keep\n", encoding="utf-8")
+        (outside / "inner").mkdir()
         link_directory(outside, stale / "link")
         link_directory(outside, self.area / "linked")
+        # Inside a directory the search enters because it holds a worktree.
+        link_directory(outside, self.area / "group" / "linked")
         pruned = self.area / "pruned wt"
         pruned.mkdir()
         (pruned / ".git").write_text("gitdir: elsewhere\n", encoding="utf-8")
@@ -2165,6 +2262,7 @@ class LeftoverTests(Fixture):
         self.assertEqual(2, len(facts(lines, "DELETED_DIR")), lines)
         self.assertFalse(os.path.lexists(stale) or os.path.lexists(leftover))
         self.assertTrue((outside / "keep.txt").exists(), "a link inside an orphan is removed, never followed")
+        self.assertTrue((outside / "inner").is_dir())
         self.assertTrue(os.path.lexists(self.area / "linked") and (self.area / "group" / "grouped wt").is_dir())
         self.assertTrue(pruned.is_dir() and (self.area / "live wt").is_dir())
         self.assertEqual([], facts(lines, "PRUNED_DIR"), "the group still holds a worktree")
@@ -2187,6 +2285,64 @@ class LeftoverTests(Fixture):
             (self.area / "live wt", "not a detached worktree or orphan directory offered by this plan"),
         )
         self.assertTrue((task / "notes.md").exists())
+
+    def outside_area(self, name: str, *inner: str) -> Path:
+        """A directory outside the repository and the worktree area, holding `inner` and a victim directory in it."""
+        target = self.root / name
+        victim = target.joinpath(*inner, "victim")
+        victim.mkdir(parents=True)
+        (victim / "keep.txt").write_text("keep\n", encoding="utf-8")
+        return target
+
+    def test_a_link_on_the_way_to_a_worktree_area_is_never_followed_and_nothing_beyond_it_is_offered(self) -> None:
+        # A junction on Windows and a symbolic link elsewhere: the repository's .claude, and the shared area itself.
+        claude = self.outside_area("claude target", "worktrees")
+        link_directory(claude, self.clone / ".claude")
+        (self.clone / ".git" / "info").mkdir(exist_ok=True)
+        (self.clone / ".git" / "info" / "exclude").write_text(".claude/\n", encoding="utf-8")
+        shared = self.outside_area("shared target", "my repo")
+        link_directory(shared, self.repos / "Worktrees")
+        _, applied = self.clean()
+        self.assertEqual([], facts(applied, "ORPHAN"))
+        plan = rc.load_plan(self.plan_file)
+        self.assertEqual([], rc.orphan_directories([], plan["orphan_areas"], rc.area_anchors(plan)))
+
+        # Were a search to name a directory beyond the link, the confirmed deletion still refuses it.
+        victim = self.clone / ".claude" / "worktrees" / "victim"
+        output = io.StringIO()
+        with (
+            mock.patch.object(rc, "orphan_directories", return_value=[str(victim)]),
+            contextlib.redirect_stdout(output),
+        ):
+            self.assertFalse(rc.delete_orphan(rc.Services(gh=self.github), plan, str(victim)))
+        self.assertEqual(
+            [[str(victim), "it resolves outside the worktree areas"]],
+            facts(output.getvalue().splitlines(), "PRESERVED"),
+        )
+        self.assertTrue((claude / "worktrees" / "victim" / "keep.txt").exists())
+        self.assertTrue((shared / "my repo" / "victim" / "keep.txt").exists())
+
+    def test_the_confirmed_deletion_refuses_a_directory_that_resolves_outside_its_worktree_area(self) -> None:
+        stale = self.area / "stale wt"
+        stale.mkdir(parents=True)
+        _, applied = self.clean()
+        self.assertEqual(1, len(facts(applied, "ORPHAN")), applied)
+        target = self.outside_area("outside target")
+        link_directory(target, self.area / "linked")
+        # The area is searchable, but the directory named lies beyond a link inside it.
+        beyond = self.area / "linked" / "victim"
+        plan = rc.load_plan(self.plan_file)
+        output = io.StringIO()
+        with (
+            mock.patch.object(rc, "orphan_directories", return_value=[str(beyond)]),
+            contextlib.redirect_stdout(output),
+        ):
+            self.assertFalse(rc.delete_orphan(rc.Services(gh=self.github), plan, str(beyond)))
+        self.assertEqual(
+            [[str(beyond), "it resolves outside the worktree areas"]],
+            facts(output.getvalue().splitlines(), "PRESERVED"),
+        )
+        self.assertTrue((target / "victim" / "keep.txt").exists())
 
     def test_an_orphan_that_cannot_be_deleted_is_kept_with_the_reason_and_exits_1(self) -> None:
         stale = self.area / "stale wt"
