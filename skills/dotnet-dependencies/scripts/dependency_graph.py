@@ -84,6 +84,7 @@ from msbuild_reader import (
     ProjectFile,
     Unreadable,
     central_versions_file,
+    matching_framework,
     package_assemblies,
     packages_for,
     read_assets,
@@ -92,7 +93,6 @@ from msbuild_reader import (
     read_packages_config,
     read_project,
     read_redirects,
-    same_framework,
 )
 from sdk_why import DEFAULT_TIMEOUT_SECONDS, SdkPath, Services, run_why
 from skill_roots import skills_directory_holding
@@ -138,7 +138,8 @@ class Project:
 
     def targets_for(self, framework: str) -> list[Target]:
         """The targets a walk under `framework` enters: the target of that framework, else every one."""
-        return [target for target in self.targets if same_framework(target.framework, framework)] or self.targets
+        match = matching_framework(framework, (target.framework for target in self.targets))
+        return [target for target in self.targets if target.framework == match] or self.targets
 
 
 @dataclass
@@ -645,14 +646,15 @@ def project_paths(graph: Graph, project: Project, name: str, sdk: list[SdkPath] 
     rows: list[tuple[str, Row]] = []
     claimed: set[int] = set()
     for answer in sdk or []:
-        framework = next(
-            (target.framework for target in project.targets if same_framework(target.framework, answer.framework)),
-            answer.framework or NO_FRAMEWORK,
+        framework = (
+            matching_framework(answer.framework, (target.framework for target in project.targets))
+            or answer.framework
+            or NO_FRAMEWORK
         )
         matched = [
             index
             for index, (walked_framework, chain) in enumerate(walked)
-            if index not in claimed and same_framework(walked_framework, framework) and same_route(chain, answer)
+            if index not in claimed and walked_framework == framework and same_route(chain, answer)
         ]
         claimed.update(matched)
         rows.append((framework, ("sdk", merged_chain(answer, [walked[index][1] for index in matched]))))
@@ -781,10 +783,10 @@ def wants(graph: Graph, project: Project) -> list[Want]:
 
 def at_odds(items: list[Want]) -> bool:
     """Whether two wants of one name differ in version where one build may load both: in two projects, or in one
-    project under one framework. Two frameworks of one project are built apart."""
+    project under one framework, which its wants name by one target's name. Two frameworks of one project are built
+    apart."""
     return any(
-        first.version != second.version
-        and (first.project != second.project or same_framework(first.framework, second.framework))
+        first.version != second.version and (first.project != second.project or first.framework == second.framework)
         for first, second in combinations(items, 2)
     )
 
