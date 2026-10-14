@@ -44,6 +44,7 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("code-review-core")))
 sys.path.insert(0, str(sibling_scripts("review-insights")))
+sys.path.insert(0, str(sibling_scripts("update-pr-tracker")))
 
 import review_insights
 import review_runtime
@@ -58,6 +59,7 @@ from review_records import build_record, carried_findings, validate_adapter_resu
 from review_runtime import build_adapter_request, validate_adapter_manifest
 from review_specialists import load_role_result
 from review_state import validate_state
+from update_pr_tracker import validate_tracker_record
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 CONTRACT = REPOSITORY_ROOT / "docs" / "code-review-operations-contract.md"
@@ -879,6 +881,14 @@ def state_fixtures() -> list[dict[str, Any]]:
     ]
 
 
+def tracker_fixtures() -> list[dict[str, Any]]:
+    """A tracker record holding pull requests in two repositories, and one holding none."""
+    return [
+        {"schema_version": 1, "pulls": ["example/one#2", "Example/Two#5"]},
+        {"schema_version": 1, "pulls": []},
+    ]
+
+
 INSIGHTS_ADAPTER = {
     "name": "repository-reviewer",
     "scope": "repository",
@@ -1460,6 +1470,10 @@ class FormatContractTest(GitTestCase):
             "flag-store": [Fixture(f"flag store {index}", value, flags) for index, value in enumerate(flag_fixtures())],
             "state": [
                 Fixture(f"state {index}", value, _judge(validate_state)) for index, value in enumerate(state_fixtures())
+            ],
+            "tracker": [
+                Fixture(f"tracker {index}", value, _judge(validate_tracker_record))
+                for index, value in enumerate(tracker_fixtures())
             ],
             "specialist-result": specialist_fixtures(scratch),
             "legacy-index": [Fixture("legacy index", LEGACY_INDEX, legacy_accepts(scratch))],
