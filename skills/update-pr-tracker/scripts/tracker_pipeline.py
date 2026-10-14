@@ -2,10 +2,12 @@
 
     collect  read every open pull request and its reviewed head for the selected repositories into a tracker input file
              (by default in a new temporary directory)
-    update   render the owned dashboard section from that file, with every other argument taken from the configuration
+    update   render the owned dashboard section from that file, with every other argument taken from the configuration,
+             and record the pull requests the tracker holds in `tracker.json` beside the configuration
     override list, set, or clear the configuration's `dashboard.status_overrides`, validating the whole configuration
-             before it is written; it reads nothing from GitHub, so a closed pull request's override clears like any
-             other
+             before it is written; a set must name a pull request that record holds, and the listing marks each
+             override it does not, but it reads nothing from GitHub, so a closed pull request's override clears like
+             any other
 
 Every command prints machine-readable lines and exits 0 on success. Expected failures, including a collection in
 which any repository failed and an update in which any pull request's comparison failed, print `FAILED <reason>` as the
@@ -53,6 +55,7 @@ from update_pr_tracker import (
     review_candidates,
     update_dashboard_rows,
     validate_items,
+    validate_tracker_record,
 )
 
 # One query per page of 50 open pull requests. Nested connections are not paginated: a pull request with more
@@ -79,6 +82,7 @@ query($owner: String!, $name: String!, $login: String!, $after: String) {
 }
 """.strip()
 GHOST_LOGIN = "ghost"
+TRACKER_RECORD = "tracker.json"
 # Whether a repository's first commit is its second commit or an ancestor of it; None when that cannot be told.
 Ancestry = Callable[[str, str, str], "bool | None"]
 
@@ -312,13 +316,31 @@ def update(
         removals=removals or [],
         home_repositories=config["repository_sets"][config["default_repository_set"]],
         config_path=str(config_path),
+        record=tracker_record_path(config_path),
     )
     return dashboard, rows
 
 
-def list_overrides(config_path: Path | None = None) -> dict[str, str]:
-    """The configured status overrides, keyed and trimmed as the tracker matches them."""
-    return normalize_overrides(load_config(config_path)["dashboard"]["status_overrides"])
+def tracker_record_path(config_path: Path) -> Path:
+    """Where `update` records the pull requests the tracker holds: beside the configuration it read."""
+    return config_path.parent / TRACKER_RECORD
+
+
+def held_pulls(config_path: Path) -> set[str] | None:
+    """The pull requests the last `update` with this configuration held, or None before any has recorded them."""
+    record = tracker_record_path(config_path)
+    if not record.exists():
+        return None
+    return set(validate_tracker_record(read_json(record))["pulls"])
+
+
+def list_overrides(config_path: Path | None = None) -> list[tuple[str, str, bool]]:
+    """Each configured status override, keyed and trimmed as the tracker matches it, in key order, with whether the
+    tracker still holds its pull request."""
+    path = config_path or default_config_path()
+    overrides = normalize_overrides(load_config(path)["dashboard"]["status_overrides"])
+    held = held_pulls(path) or set()
+    return [(key, status, key in held) for key, status in sorted(overrides.items())]
 
 
 def _pull_key(value: str) -> str:
@@ -354,7 +376,8 @@ def change_overrides(
     serialized. The layout is normalized, keys sorted and indented two spaces as that command writes them, so a file it
     wrote changes only in its overrides; keeping an arbitrary hand layout would need an indentation guess in the
     shared writer, and JSON holds no comments to lose. A change that fails, such as a computed state, a malformed key,
-    or clearing an override that is not set, writes nothing."""
+    clearing an override that is not set, or setting one for a pull request the tracker does not hold, writes
+    nothing."""
     path = config_path or default_config_path()
     changes = override_changes(sets, clears)
     raw = read_json(path)
@@ -367,8 +390,23 @@ def change_overrides(
         raise TrackerError(f"No status override for {missing[0]}")
     kept = {key: status for key, status in current.items() if _pull_key(key) not in changes}
     dashboard["status_overrides"] = {**kept, **{key: status for key, status in changes.items() if status is not None}}
+    validate_config(raw)
+    _refuse_untracked([key for key, status in changes.items() if status is not None], path)
     atomic_write_json(path, raw, validator=validate_config)
     return path, changes
+
+
+def _refuse_untracked(keys: list[str], config_path: Path) -> None:
+    """Refuse the first key naming no pull request the tracker holds, so a mistyped one never sits unmatched."""
+    if not keys:
+        return
+    held = held_pulls(config_path)
+    record = tracker_record_path(config_path)
+    for key in keys:
+        if held is None:
+            raise TrackerError(f"Status override {key} names no tracked pull request: no update has written {record}")
+        if key not in held:
+            raise TrackerError(f"Status override {key} names no pull request the tracker holds in {record}")
 
 
 def main(arguments: list[str] | None = None, services: Services | None = None) -> int:
@@ -441,8 +479,8 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
 def _override(sets: list[str], clears: list[str], config_path: Path | None) -> int:
     if not sets and not clears:
         overrides = list_overrides(config_path)
-        for key, status in sorted(overrides.items()):
-            print(f"OVERRIDE {key} {status}")
+        for key, status, held in overrides:
+            print(f"{'OVERRIDE' if held else 'OVERRIDE_UNTRACKED'} {key} {status}")
         print(f"OVERRIDES {len(overrides)}")
         return 0
     path, changes = change_overrides(sets, clears, config_path=config_path)

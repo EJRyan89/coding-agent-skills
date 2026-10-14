@@ -946,7 +946,11 @@ class FrameworkAndAssemblyTests(Fixture):
         self.assertEqual(why, self.lines(rows, "PATH"))
         self.assertEqual(
             [
-                [label, f"the condition {debug} on PackageReference Beacon.Debug cannot be evaluated for {framework}"]
+                [
+                    label,
+                    f"the condition {debug} on PackageReference Beacon.Debug cannot be evaluated for {framework}, "
+                    "so it is left out",
+                ]
                 for framework in ("net8.0", "net472")
             ],
             self.lines(rows, "UNREADABLE"),
@@ -1399,6 +1403,259 @@ class UnreadableInputTests(Fixture):
         self.write("Harbor.slnx", "<Solution />")
         code, rows = self.run_main("conflicts", "--root", str(solution_file))
         self.assertEqual((0, []), (code, self.lines(rows, "UNREADABLE")))
+
+
+# A restored project of two frameworks whose assembly and project references hold for one; the referenced project
+# has no restore.
+FRAMEWORK_ITEMS_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFrameworks>net8.0;net472</TargetFrameworks></PropertyGroup>
+  <ItemGroup><PackageReference Include="Quill.Http" Version="1.2.0" /></ItemGroup>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net472'">
+    <Reference Include="System.Web" />
+    <ProjectReference Include="..\\Harbor.Legacy\\Harbor.Legacy.csproj" />
+  </ItemGroup>
+</Project>
+"""
+FRAMEWORK_ITEMS_ASSETS = {
+    "version": 3,
+    "targets": {framework: {"Quill.Http/1.2.0": {"type": "package"}} for framework in ("net8.0", "net472")},
+    "project": {
+        "frameworks": {
+            framework: {"dependencies": {"Quill.Http": {"target": "Package", "version": "[1.2.0, )"}}}
+            for framework in ("net8.0", "net472")
+        }
+    },
+}
+LEGACY_PACKAGE_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net472</TargetFramework></PropertyGroup>
+  <ItemGroup><PackageReference Include="Legacy.Pkg" Version="1.0.0" /></ItemGroup>
+</Project>
+"""
+FRAMEWORK_CENTRAL = """<Project>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net8.0'">
+    <PackageVersion Include="Lantern.Json" Version="13.0.1" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(TargetFramework)' != 'net8.0'">
+    <PackageVersion Include="Lantern.Json" Version="12.0.3" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(Configuration)'=='Debug'">
+    <PackageVersion Update="Lantern.Json" Version="14.0.0" />
+  </ItemGroup>
+</Project>
+"""
+# An Update and a Remove under a condition the reader cannot evaluate, and a package added inside a Target.
+UNEVALUATED_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Quill.Http" Version="1.2.0" />
+    <PackageReference Include="Lantern.Json" Version="12.0.3" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(Configuration)'=='Release'">
+    <PackageReference Update="Quill.Http" Version="2.0.0" />
+    <PackageReference Remove="Lantern.Json" />
+  </ItemGroup>
+  <Target Name="AddLate" BeforeTargets="CollectPackageReferences">
+    <ItemGroup><PackageReference Include="Beacon.Late" Version="1.0.0" /></ItemGroup>
+  </Target>
+</Project>
+"""
+OTHER_ROUTE_SDK_TEXT = (
+    "Project 'Harbor.Core' has the following dependency graph(s) for 'Lantern.Json':\r\n"
+    "\r\n"
+    "  [net8.0]\r\n"
+    "  \u2514\u2500\u2500 Other.Pkg (v1.0.0)\r\n"
+    "      \u2514\u2500\u2500 Lantern.Json (v12.0.3)\r\n"
+    "\r\n"
+)
+
+
+class ConditionalItemTests(Fixture):
+    def framework_items_solution(self, project: str = FRAMEWORK_ITEMS_PROJECT) -> None:
+        self.write("src/Harbor.Api/Harbor.Api.csproj", project)
+        self.write("src/Harbor.Legacy/Harbor.Legacy.csproj", LEGACY_PACKAGE_PROJECT)
+        self.write("Harbor.sln", solution("src\\Harbor.Api\\Harbor.Api.csproj"))
+
+    def test_a_conditional_reference_and_project_reference_hold_for_their_framework_only(self) -> None:
+        self.framework_items_solution()
+        self.write("src/Harbor.Api/obj/project.assets.json", json.dumps(FRAMEWORK_ITEMS_ASSETS))
+        api, legacy = "src/Harbor.Api/Harbor.Api.csproj", "src/Harbor.Legacy/Harbor.Legacy.csproj"
+        code, rows = self.run_main("where", "System.Web", "--root", str(self.root))
+        self.assertEqual([[api, "net472", "System.Web", "framework", "-", "-"]], self.lines(rows, "WHERE"))
+        self.assertEqual((0, []), (code, self.lines(rows, "UNREADABLE")))
+        _, rows = self.run_main("where", "Harbor.Legacy", "--root", str(self.root))
+        self.assertEqual([[api, "net472", "Harbor.Legacy", "project", "-", legacy]], self.lines(rows, "WHERE"))
+        _, rows = self.run_main("why", "Legacy.Pkg", "--root", str(self.root))
+        chain = "Harbor.Legacy (project) > Legacy.Pkg (v1.0.0)"
+        self.assertEqual(
+            [
+                [api, "net472", "Legacy.Pkg", "graph", chain],
+                [legacy, "-", "Legacy.Pkg", "graph", "Legacy.Pkg (v1.0.0)"],
+            ],
+            self.lines(rows, "PATH"),
+        )
+        # Kept as today: an unconditional reference holds for every framework.
+        _, rows = self.run_main("why", "Quill.Http", "--root", str(self.root))
+        self.assertEqual(
+            [[api, "net8.0;net472", "Quill.Http", "graph", "Quill.Http (v1.2.0)"]], self.lines(rows, "PATH")
+        )
+
+    def test_a_restores_recorded_project_references_decide_and_an_unevaluated_reference_is_reported(self) -> None:
+        # The restore ran at another path and recorded the project reference for net472 alone, so its condition,
+        # which the reader cannot evaluate, is not needed; the Reference's is reported for each framework.
+        debug = "'$(Configuration)'=='Debug'"
+        project = FRAMEWORK_ITEMS_PROJECT.replace(
+            "<ItemGroup Condition=\"'$(TargetFramework)' == 'net472'\">", f'<ItemGroup Condition="{debug}">'
+        ).replace('<Reference Include="System.Web" />', '<Reference Include="Beacon.Debug" />')
+        self.framework_items_solution(project)
+        restore = {
+            "projectPath": "D:\\old\\src\\Harbor.Api\\Harbor.Api.csproj",
+            "frameworks": {
+                "net8.0": {"projectReferences": {}},
+                "net472": {"projectReferences": {"D:\\old\\src\\Harbor.Legacy\\Harbor.Legacy.csproj": {}}},
+            },
+        }
+        assets = json.loads(json.dumps(FRAMEWORK_ITEMS_ASSETS))
+        assets["project"]["restore"] = restore
+        self.write("src/Harbor.Api/obj/project.assets.json", json.dumps(assets))
+        api = "src/Harbor.Api/Harbor.Api.csproj"
+        code, rows = self.run_main("why", "Legacy.Pkg", "--project", str(self.root / api), "--root", str(self.root))
+        chain = "Harbor.Legacy (project) > Legacy.Pkg (v1.0.0)"
+        self.assertEqual([[api, "net472", "Legacy.Pkg", "graph", chain]], self.lines(rows, "PATH"))
+        self.assertEqual(
+            [
+                [
+                    api,
+                    f"the condition {debug} on Reference Beacon.Debug cannot be evaluated for {framework}, so it is "
+                    "left out",
+                ]
+                for framework in ("net8.0", "net472")
+            ],
+            self.lines(rows, "UNREADABLE"),
+        )
+        self.assertEqual(1, code)
+        # With no restore, every item counts whatever its condition, as before.
+        (self.root / "src" / "Harbor.Api" / "obj" / "project.assets.json").unlink()
+        code, rows = self.run_main("where", "Beacon.Debug", "--root", str(self.root))
+        self.assertEqual([[api, "-", "Beacon.Debug", "framework", "-", "-"]], self.lines(rows, "WHERE"))
+        self.assertEqual((0, []), (code, self.lines(rows, "UNREADABLE")))
+
+    def test_a_central_version_holds_for_the_frameworks_its_condition_holds_for(self) -> None:
+        self.write("Directory.Packages.props", FRAMEWORK_CENTRAL)
+        self.write(
+            "src/Harbor.Json/Harbor.Json.csproj",
+            FRAMEWORK_ITEMS_PROJECT.replace('Include="Quill.Http" Version="1.2.0"', 'Include="Lantern.Json"'),
+        )
+        document = {"version": 3, "targets": {"net8.0": {}, "net472": {}}, "project": {}}
+        self.write("src/Harbor.Json/obj/project.assets.json", json.dumps(document))
+        self.write("src/Harbor.Legacy/Harbor.Legacy.csproj", LEGACY_PACKAGE_PROJECT)
+        self.write("Harbor.sln", solution("src\\Harbor.Json\\Harbor.Json.csproj"))
+        code, rows = self.run_main("why", "Lantern.Json", "--root", str(self.root))
+        label = "src/Harbor.Json/Harbor.Json.csproj"
+        self.assertEqual(
+            [
+                [label, "net8.0", "Lantern.Json", "graph", "Lantern.Json (v13.0.1)"],
+                [label, "net472", "Lantern.Json", "graph", "Lantern.Json (v12.0.3)"],
+            ],
+            self.lines(rows, "PATH"),
+        )
+        self.assertEqual(
+            [
+                [
+                    label,
+                    "the condition '$(Configuration)'=='Debug' on the Update of PackageVersion Lantern.Json cannot be "
+                    f"evaluated for {framework}, so the Update is not applied",
+                ]
+                for framework in ("net8.0", "net472")
+            ],
+            self.lines(rows, "UNREADABLE"),
+        )
+        self.assertEqual(1, code)
+
+    def test_an_unevaluated_update_or_remove_says_what_it_left_and_a_targets_item_is_left_out(self) -> None:
+        self.write("src/Harbor.Late/Harbor.Late.csproj", UNEVALUATED_PROJECT)
+        document = {"version": 3, "targets": {"net8.0": {}}, "project": {}}
+        self.write("src/Harbor.Late/obj/project.assets.json", json.dumps(document))
+        self.write("Harbor.sln", solution("src\\Harbor.Late\\Harbor.Late.csproj"))
+        label = "src/Harbor.Late/Harbor.Late.csproj"
+        release = "'$(Configuration)'=='Release'"
+        code, rows = self.run_main("why", "Quill.Http", "Lantern.Json", "Beacon.Late", "--root", str(self.root))
+        self.assertEqual(
+            [
+                [
+                    label,
+                    "the PackageReference Beacon.Late inside Target AddLate is left out: MSBuild defines it only when "
+                    "that target runs",
+                ],
+                [
+                    label,
+                    f"the condition {release} on the Update of PackageReference Quill.Http cannot be evaluated for "
+                    "net8.0, so the Update is not applied",
+                ],
+                [
+                    label,
+                    f"the condition {release} on the Remove of PackageReference Lantern.Json cannot be evaluated "
+                    "for net8.0, so it is not removed",
+                ],
+            ],
+            self.lines(rows, "UNREADABLE"),
+        )
+        self.assertEqual(
+            [
+                [label, "net8.0", "Quill.Http", "graph", "Quill.Http (v1.2.0)"],
+                [label, "net8.0", "Lantern.Json", "graph", "Lantern.Json (v12.0.3)"],
+            ],
+            self.lines(rows, "PATH"),
+        )
+        self.assertEqual(([["Beacon.Late"]], 1), (self.lines(rows, "MISSING"), code))
+
+    def test_the_chain_limit_counts_the_sdks_chains(self) -> None:
+        root = self.mixed_solution()
+        core = self.root / "src" / "Harbor.Core" / "Harbor.Core.csproj"
+        sdk = TableSdk({(same_path(core), "lantern.json"): OTHER_ROUTE_SDK_TEXT})
+        services = Services(run=sdk, which=self.with_dotnet.which)
+        original = dependency_graph.PATH_LIMIT
+        dependency_graph.PATH_LIMIT = 1
+        self.addCleanup(setattr, dependency_graph, "PATH_LIMIT", original)
+        _, rows = self.run_main("why", "Lantern.Json", "--project", str(core), "--root", str(root), services=services)
+        label = "src/Harbor.Core/Harbor.Core.csproj"
+        self.assertEqual(
+            [[label, "net8.0", "Lantern.Json", "sdk", "Other.Pkg (v1.0.0) > Lantern.Json (v12.0.3)"]],
+            self.lines(rows, "PATH"),
+        )
+        self.assertEqual([[label, "net8.0", "Lantern.Json", "1"]], self.lines(rows, "TRUNCATED"))
+        # Within the limit, the SDK's chain and the walk's are both printed and nothing is cut.
+        dependency_graph.PATH_LIMIT = 2
+        _, rows = self.run_main("why", "Lantern.Json", "--project", str(core), "--root", str(root), services=services)
+        self.assertEqual(2, len(self.lines(rows, "PATH")))
+        self.assertEqual([], self.lines(rows, "TRUNCATED"))
+
+    def test_a_when_without_a_condition_and_a_framework_of_thousands_of_digits_cost_only_their_own_facts(
+        self,
+    ) -> None:
+        root = self.mixed_solution()
+        self.write(
+            "src/Harbor.Tests/Harbor.Tests.csproj",
+            '<Project Sdk="Microsoft.NET.Sdk"><Choose><When><ItemGroup><PackageReference Include="Alpha.Pkg" '
+            'Version="1.0.0" /></ItemGroup></When></Choose></Project>',
+        )
+        long_name = ".NETCoreApp,Version=v" + "9" * 5000
+        assets = json.loads(json.dumps(CORE_ASSETS))
+        assets["targets"][long_name] = {}
+        self.write("src/Harbor.Core/obj/project.assets.json", json.dumps(assets))
+        code, rows = self.run_main("why", "Quill.Http", "--root", str(root))
+        self.assertEqual(
+            [
+                [
+                    "src/Harbor.Tests/Harbor.Tests.csproj",
+                    "a When has no Condition, which MSBuild refuses, so the file does not evaluate",
+                ]
+            ],
+            self.lines(rows, "UNREADABLE"),
+        )
+        # The restore's target of a name no project names keeps the name it was written with.
+        core = [row for row in self.lines(rows, "PATH") if row[0] == "src/Harbor.Core/Harbor.Core.csproj"]
+        self.assertEqual([["net8.0", long_name]], [row[1].split(";") for row in core])
+        self.assertEqual((1, "SUMMARY"), (code, rows[-1][0]))
 
 
 class GraphNarrowingTests(Fixture):

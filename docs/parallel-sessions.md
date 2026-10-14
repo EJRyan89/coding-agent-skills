@@ -165,8 +165,11 @@ With the guard enabled:
     rest of the command (`export`, `declare -x`, `typeset -x`, or an assignment while `set -a` or
     `set -o allexport` holds or to a variable already exported). An assignment that is not exported does not
     reach git and is ignored, and `unset`, `export -n`, `env -i`, and `env -u` remove one;
-  - in PowerShell, assigned through `$env:`, `Set-Item` or `New-Item` on the `env:` drive, or
-    `[Environment]::SetEnvironmentVariable`.
+  - in PowerShell, assigned through `$env:` or `[Environment]::SetEnvironmentVariable`, or set on the `env:`
+    drive: by `Set-Item`, `New-Item`, or `Set-Content` at its path, `Copy-Item` at its destination, `New-Item`
+    on the drive itself with `-Name`, or `Rename-Item` of a variable there with `-NewName`. PowerShell's own
+    binder places each argument, so a parameter abbreviated, aliased, or left positional, and each path of an
+    array, is read. `Add-Content` and `Move-Item` fail on the drive, so they set nothing.
 
   The guard's own git calls drop these variables, as does the hook's check of the opt-in setting, so an
   inherited one cannot hide the hub from the guard.
@@ -190,7 +193,8 @@ With the guard enabled:
 - **How PowerShell is read.** A PowerShell command is read by PowerShell's own parser, not by a second
   hand-written grammar. Here-strings, backtick escapes, and comments are where a tokenizer would misread a
   quote and miss the command beside it. `tools/worktrees-powershell.ps1` only reports what the parser found,
-  in the order PowerShell would run it, and `tools/worktrees.py` makes every decision.
+  and the parameters PowerShell's binder gives each command's arguments, in the order PowerShell would run it,
+  and `tools/worktrees.py` makes every decision.
   - **When pwsh starts.** Starting `pwsh` costs far more than the guard's git calls, so the guard starts it
     only when the text names `git` and, as a word, one of the refused subcommands or one of the aliases git
     lists where the command starts. `git status`, `git log`, and every non-git command never wait for it.
@@ -202,6 +206,8 @@ The guard catches mistakes, not determined effort. It does not see:
 - shell redirection or other programs writing files;
 - git run indirectly from inside a script, or through `Start-Process`, `cmd /c`, or `pwsh -EncodedCommand`;
 - a git subcommand spelled with escapes or computed at run time, or a directory the text does not settle;
+- a location variable set on PowerShell's `env:` drive through a path the text does not settle, piped in, or
+  named relative to a location on that drive;
 - a location variable set by the shell's own startup files, a sourced script, or `eval`, or configuration given
   through git's `GIT_CONFIG_*` variables;
 - `GIT_INDEX_FILE`, which moves only the index: the guard still judges the call by the checkout whose `HEAD` and

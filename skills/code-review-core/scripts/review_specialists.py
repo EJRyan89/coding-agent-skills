@@ -9,6 +9,7 @@ The orchestrating skill only dispatches the prompts; findings are never synthesi
 
 from __future__ import annotations
 
+import codecs
 import hashlib
 import json
 import re
@@ -29,7 +30,7 @@ from job_tree import process_tree
 from review_analyzers import inventory, tool_names
 from review_config import safe_repository_path
 from review_documents import LINE_UNSAFE
-from review_io import PersistenceError, atomic_write_json, atomic_write_text, read_diff, read_json
+from review_io import PersistenceError, atomic_write_bytes, atomic_write_json, atomic_write_text, read_diff, read_json
 from review_records import (
     SEVERITY_RANK,
     TITLE_MAXIMUM_LENGTH,
@@ -377,9 +378,10 @@ def evaluate_condition(
 
 
 def condition_output(path: Path) -> tuple[bytes, int] | None:
-    """What a condition wrote at `path` for the specialists it opens: its first CONDITION_FILE_BYTES and its whole
-    length, or None when it wrote nothing or an empty file. Anything there but a regular file fails the review, since
-    a link would hand a reviewer a file the condition never wrote."""
+    """What a condition wrote at `path` for the specialists it opens: its first CONDITION_FILE_BYTES, as it wrote
+    them, less a UTF-8 character that bound splits, and its whole length, or None when it wrote nothing or an empty
+    file. Anything there but a regular file fails the review, since a link would hand a reviewer a file the condition
+    never wrote."""
     try:
         status = path.lstat()
     except FileNotFoundError:
@@ -389,7 +391,15 @@ def condition_output(path: Path) -> tuple[bytes, int] | None:
     if status.st_size == 0:
         return None
     with path.open("rb") as stream:
-        return stream.read(CONDITION_FILE_BYTES), status.st_size
+        kept = stream.read(CONDITION_FILE_BYTES)
+    if len(kept) < status.st_size:
+        # The bound cut the file: what an incremental decoder still holds at the end is a character it split, which
+        # would reach the reviewer as a broken character. Bytes that are not UTF-8 are no character and stay.
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        decoder.decode(kept)
+        split, _ = decoder.getstate()
+        kept = kept[: len(kept) - len(split)]
+    return kept, status.st_size
 
 
 def _matched(specialist: dict[str, Any], changed: list[str]) -> list[str]:
@@ -1172,7 +1182,8 @@ def _give_condition_files(
     manifest: dict[str, Any], roles: list[dict[str, Any]], work: Path, outputs: dict[str, tuple[bytes, int]]
 ) -> None:
     """Give each role whose specialist an open condition routed what that condition wrote, cut to
-    CONDITION_FILE_BYTES, as its own file, recording the condition, the file, and how much of it the file holds."""
+    CONDITION_FILE_BYTES, as its own file holding those bytes unchanged, recording the condition, the file, and how
+    much of it the file holds."""
     conditions = {specialist["id"]: specialist["when"] for specialist in manifest["specialists"]}
     for role in roles:
         name = conditions.get(role["id"])
@@ -1180,7 +1191,7 @@ def _give_condition_files(
             continue
         kept, size = outputs[name]
         given = work / f"{role['id']}.condition.txt"
-        atomic_write_text(given, kept.decode("utf-8", errors="replace"))
+        atomic_write_bytes(given, kept)
         role["condition"] = {"name": name, "file": str(given), "bytes": size, "given": len(kept)}
 
 

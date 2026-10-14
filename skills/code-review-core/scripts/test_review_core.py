@@ -1035,6 +1035,16 @@ class AtomicWriteTests(GitTestCase):
             self.assertEqual("café\nnext\n".encode(), path.read_bytes())
             self.assertEqual(["state.json"], sorted(item.name for item in Path(temporary).iterdir()))
 
+    def test_bytes_that_are_not_utf8_replace_the_file_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "condition.txt"
+            path.write_bytes(b"previous\n")
+            with self.watched_descriptors() as (opened, closes, _reused):
+                review_io.atomic_write_bytes(path, b"caf\xc3\xa9 \xff\xc3")
+            self.assertEqual(opened, closes)
+            self.assertEqual(b"caf\xc3\xa9 \xff\xc3", path.read_bytes())
+            self.assertEqual(["condition.txt"], sorted(item.name for item in Path(temporary).iterdir()))
+
     def test_a_folder_that_cannot_be_made_or_text_utf8_cannot_encode_fails_before_a_copy_exists(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             blocker = Path(temporary) / "blocker"
