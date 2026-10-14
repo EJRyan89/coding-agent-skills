@@ -11,13 +11,16 @@ under, its own and those of the ItemGroup, When, or Otherwise holding it, and th
 must fail, so a framework's references can be evaluated for that framework: an item's own conditions with the value the
 build of that framework gives `$(TargetFramework)` in the end, and a When's with the value it held when MSBuild entered
 the Choose, which chooses its branch then, once (`ChooseEntry`). The target framework properties are read as the file
-sets them, each condition evaluated once, when it is reached (`FrameworkProperties`). An item inside a Target is defined
-only when that target runs, so evaluation leaves it out and the reader names it instead. Only comparisons of
-`$(TargetFramework)` and literals, and its StartsWith call, are evaluated; any other condition is left unevaluated and
-named, never guessed, and a project whose When has no Condition, which MSBuild refuses, is unreadable. Every comparison
-of two framework names goes through `same_framework`, so a restore's long name, such as `.NETCoreApp,Version=v8.0`,
-matches the project's `net8.0`, and every search for a name among a project's names through `matching_framework`, which
-prefers the name spelled alike.
+sets them, each condition evaluated once, when it is reached (`FrameworkProperties`). The reader does not read the files
+a project imports, so under a Directory.Build.props, which MSBuild imports before the project's body, the file's own
+unset `$(TargetFramework)` is not a settled value: a condition reading it before the file sets it cannot be evaluated,
+so a Choose it decides is never chosen as if the property were unset. An item inside a Target is defined only when that
+target runs, so evaluation leaves it out and the reader names it instead. Only comparisons of `$(TargetFramework)` and
+literals, and its StartsWith call, are evaluated; any other condition is left unevaluated and named, never guessed, and
+a project whose When has no Condition, which MSBuild refuses, is unreadable. Every comparison of two framework names
+goes through `same_framework`, so a restore's long name, such as `.NETCoreApp,Version=v8.0`, matches the project's
+`net8.0`, and every search for a name among a project's names through `matching_framework`, which prefers the name
+spelled alike.
 """
 
 from __future__ import annotations
@@ -63,6 +66,11 @@ PLATFORM_DEFAULT_VERSIONS = {"windows": "7.0"}
 NUSPEC_DEPENDENCY_ID = "id"
 PACKAGES_CONFIG = "packages.config"
 CENTRAL_VERSIONS = "Directory.Packages.props"
+# The file MSBuild imports before a project's body from the nearest directory at or above it that holds one.
+BUILD_PROPS = "Directory.Build.props"
+# The value `$(TargetFramework)` may hold as a project's body starts, beside unset, when an import the reader does not
+# read may set it: a value no condition can be evaluated against, and never a framework the project names.
+IMPORTED_FRAMEWORK = "<set by an import>"
 ASSETS_FILE = "project.assets.json"
 CONFIG_FILES = ("web.config", "app.config")
 OPERATIONS = ("Include", "Update", "Remove")
@@ -252,10 +260,10 @@ def is_sdk_style(root: Element) -> bool:
     return any(local_name(child) == "Sdk" or child.get("Sdk") for child in root)
 
 
-def frameworks_of(root: Element) -> list[str]:
+def frameworks_of(root: Element, imported: bool = False) -> list[str]:
     """The target frameworks a project names in its TargetFrameworks, TargetFramework, and TargetFrameworkVersion
     properties outside a target, read in document order as MSBuild evaluates them (`FrameworkProperties`)."""
-    return FrameworkProperties(root).frameworks()
+    return FrameworkProperties(root, imported).frameworks()
 
 
 # The values of a project's framework properties at one point of its evaluation, each a list of the names it may hold:
@@ -277,7 +285,7 @@ class ChooseEntry:
     whatever the file sets after, in the build of each framework: the framework itself where the file sets nothing to
     the property from the Choose on, or where TargetFrameworks names it, whose build fixes the property from the
     start; else the value the file has given it so far, `""` while unset, which the reader cannot evaluate a condition
-    against while it is one of several."""
+    against while it is one of several, as it is while unset under an import that may set it."""
 
     values: tuple[str, ...]
     reassigned: bool
@@ -297,17 +305,20 @@ class FrameworkProperties:
     condition cannot be evaluated adds its names to those it may replace, never choosing between them; a Choose whose
     branch cannot be chosen reads each branch that may apply from the state it was entered with, and the next element
     sees any value one of them, or none where no branch may apply, leaves. A condition reads `$(TargetFramework)` as
-    the value the file has given it so far, empty at first; while that value is one of several, a condition reading it
-    cannot be evaluated. The value each Choose is entered with is kept for its items (`choose_entries`)."""
+    the value the file has given it so far, empty at first, or, when `imported` because an import the reader does not
+    read may set it before the file's body, either empty or that import's value (`IMPORTED_FRAMEWORK`) until the file
+    sets it; while that value is one of several, a condition reading it cannot be evaluated. The value each Choose is
+    entered with is kept for its items (`choose_entries`)."""
 
-    def __init__(self, root: Element) -> None:
-        self.values: PropertyState = {}
+    def __init__(self, root: Element, imported: bool = False) -> None:
+        self.values: PropertyState = {"TargetFramework": ["", IMPORTED_FRAMEWORK]} if imported else {}
         self.assignments = 0
         self.entered: dict[Element, tuple[tuple[str, ...], int]] = {}
         self.read(root)
 
     def frameworks(self) -> list[str]:
-        return list(dict.fromkeys(framework for names in self.values.values() for framework in names if framework))
+        names = (name for values in self.values.values() for name in values)
+        return list(dict.fromkeys(name for name in names if name and name != IMPORTED_FRAMEWORK))
 
     def choose_entries(self) -> dict[Element, ChooseEntry]:
         """Each Choose the file enters, with the value `$(TargetFramework)` holds there for each framework's build."""
@@ -591,10 +602,11 @@ def conditioned(
         yield from conditioned(child, entries, inner)
 
 
-def written_items(root: Element, kind: str) -> Iterator[tuple[str, str, Element, Conditions]]:
+def written_items(root: Element, kind: str, imported: bool = False) -> Iterator[tuple[str, str, Element, Conditions]]:
     """Each item named `kind` outside a Target, one per name its Include, Update, or Remove lists, in document order,
-    with its operation, its element, and the conditions it sits under."""
-    for element, conditions in conditioned(root, FrameworkProperties(root).choose_entries()):
+    with its operation, its element, and the conditions it sits under, its Chooses entered as `FrameworkProperties`
+    reads them, `imported` when an import may set `$(TargetFramework)` before the file's body."""
+    for element, conditions in conditioned(root, FrameworkProperties(root, imported).choose_entries()):
         if local_name(element) != kind:
             continue
         operation = next((name for name in OPERATIONS if element.get(name)), None)
@@ -626,12 +638,14 @@ def evaluation_root(path: Path) -> Element:
     return root
 
 
-def package_items(root: Element, kind: str = "PackageReference", origin: str = "PackageReference") -> list[PackageItem]:
+def package_items(
+    root: Element, kind: str = "PackageReference", origin: str = "PackageReference", imported: bool = False
+) -> list[PackageItem]:
     """Each PackageReference item, or of another `kind` such as PackageVersion with its `origin`, in document order,
     one per package its Include, Update, or Remove lists, with its Version attribute or child, or a PackageReference's
     VersionOverride, and the conditions it sits under."""
     found: list[PackageItem] = []
-    for operation, package, element, conditions in written_items(root, kind):
+    for operation, package, element, conditions in written_items(root, kind, imported):
         version = element.get("Version") or child_text(element, "Version") or element.get("VersionOverride")
         found.append(PackageItem(operation, package, None if operation == "Remove" else version, origin, conditions))
     return found
@@ -751,12 +765,12 @@ def packages_for(
     return references, [*unevaluated, *(entry for entry in central_unevaluated if package_key(entry[0]) in unversioned)]
 
 
-def reference_items(root: Element) -> list[ReferenceItem]:
+def reference_items(root: Element, imported: bool = False) -> list[ReferenceItem]:
     """Each old-style Reference item, one per assembly its Include, Update, or Remove lists, with its HintPath and
     the conditions it sits under."""
     return [
         ReferenceItem(operation, spec, child_text(element, "HintPath"), conditions)
-        for operation, spec, element, conditions in written_items(root, "Reference")
+        for operation, spec, element, conditions in written_items(root, "Reference", imported)
     ]
 
 
@@ -781,12 +795,12 @@ def assemblies_for(
     return references, unevaluated
 
 
-def project_items(root: Element, project_dir: Path) -> list[ProjectItem]:
+def project_items(root: Element, project_dir: Path, imported: bool = False) -> list[ProjectItem]:
     """Each ProjectReference item, one per project its Include, Update, or Remove lists, resolved against the
     project's directory, with the conditions it sits under."""
     return [
         ProjectItem(operation, project_path(project_dir, name), conditions)
-        for operation, name, _, conditions in written_items(root, "ProjectReference")
+        for operation, name, _, conditions in written_items(root, "ProjectReference", imported)
     ]
 
 
@@ -803,9 +817,15 @@ def project_refs_for(
 
 def central_versions_file(project_dir: Path, stop: Path) -> Path | None:
     """The nearest Directory.Packages.props from the project's directory up to `stop`, or None."""
+    return nearest_file(project_dir, CENTRAL_VERSIONS, stop)
+
+
+def nearest_file(project_dir: Path, name: str, stop: Path | None = None) -> Path | None:
+    """The nearest file named `name` from the project's directory up to `stop`, or to the filesystem's root without
+    one, as MSBuild searches for Directory.Build.props; None when there is none."""
     directory = project_dir
     while True:
-        candidate = directory / CENTRAL_VERSIONS
+        candidate = directory / name
         if candidate.is_file():
             return candidate
         if directory == stop or directory.parent == directory:
@@ -823,14 +843,17 @@ def read_central_versions(path: Path) -> CentralVersions:
 def read_project(path: Path, central: Callable[[Path], Sequence[PackageItem]]) -> ProjectFile:
     """What the .csproj at `path` says about its dependencies. `central` gives an SDK-style project's central
     PackageVersion items from the project's directory, so the caller reads each Directory.Packages.props once and
-    reports an unreadable one once, without costing the project its own facts."""
+    reports an unreadable one once, without costing the project its own facts. A Directory.Build.props at or above
+    the project's directory, which the reader does not read, may set `$(TargetFramework)` before the project's body,
+    so the file's own unset value is then one of the values it may hold, not a settled one (`FrameworkProperties`)."""
     root = evaluation_root(path)
     style = "sdk" if is_sdk_style(root) else "legacy"
     versions = list(central(path.parent)) if style == "sdk" else []
-    items = package_items(root)
-    references = reference_items(root)
-    projects = project_items(root, path.parent)
-    frameworks = frameworks_of(root)
+    imported = nearest_file(path.parent, BUILD_PROPS) is not None
+    items = package_items(root, imported=imported)
+    references = reference_items(root, imported)
+    projects = project_items(root, path.parent, imported)
+    frameworks = frameworks_of(root, imported)
     return ProjectFile(
         path=path,
         style=style,
