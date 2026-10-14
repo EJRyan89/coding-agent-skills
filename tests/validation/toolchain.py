@@ -111,9 +111,11 @@ def missing_prerequisites(
     return missing
 
 
-# The oldest release of each validation tool the suite is known to work with. docs/dependency-updates.md owns these,
-# and CI installs Python, ShellCheck, PSScriptAnalyzer, ruff, and mypy at their floors. Git Bash has no floor: the
-# shell scripts need no Bash 4. ruff's and mypy's floors are their pins in requirements-dev.txt, because a newer
+# The oldest release of each validation tool the suite is known to work with. docs/dependency-updates.md owns these.
+# CI installs PSScriptAnalyzer, ruff, and mypy at their floors on every leg, Python at the newest release of its floor's
+# minor version, and ShellCheck at its floor on the Windows legs; the Linux job takes Ubuntu's archive ShellCheck
+# unpinned, which this floor must not pass. PowerShell 7 arrives unpinned with each runner image. Git Bash has no floor:
+# the shell scripts need no Bash 4. ruff's and mypy's floors are their pins in requirements-dev.txt, because a newer
 # release can change the formatting style or report new errors in an unchanged tree.
 DEPENDENCY_DOC = "docs/dependency-updates.md"
 VALIDATION_FLOORS: dict[str, tuple[int, ...]] = {

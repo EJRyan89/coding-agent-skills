@@ -23,8 +23,8 @@ PYTHON = "python" if sys.platform == "win32" else "python3"
 
 def link_folders() -> list[Path]:
     """The folders a package manager links the commands it installs into: WinGet's Links folder on Windows, and none
-    elsewhere yet. A local application data folder that is unset or relative gives none, so nothing is looked up
-    relative to the working directory."""
+    elsewhere, where a distribution's package manager installs into a folder PATH already names. A local application
+    data folder that is unset or relative gives none, so nothing is looked up relative to the working directory."""
     if sys.platform != "win32":
         return []
     local = Path(os.environ.get("LOCALAPPDATA", ""))

@@ -348,6 +348,7 @@ ACCEPTED: list[tuple[str, Callable[[], dict[str, Any]], Mutation]] = [
     ),
     ("artifacts null", _record, _set(("artifacts",), None)),
     ("comments without artifacts", _full_record, _delete(("artifacts",))),
+    *((f"comment body {value!r}", _full_record, _set(("github_comments", 0, "body"), value)) for value in ("", " ")),
     (
         "ledger without comments",
         _full_record,
@@ -1419,6 +1420,15 @@ class RecordValidationTests(unittest.TestCase):
                 continue
             with self.subTest(name):
                 self.assert_refused(mutation(_full_record()), error, message)
+
+    def test_a_review_comment_names_its_author_path_and_url(self) -> None:
+        # GitHub may leave a comment's body empty, which the body cases above accept; the rest it always names.
+        for field in ("author", "path", "url"):
+            for value in ("", " "):
+                with self.subTest(field=field, value=value):
+                    record = _set(("github_comments", 0, field), value)(_full_record())
+                    message = _wrong(f"record.github_comments[0].{field}", TEXT, value)
+                    self.assert_refused(record, RecordFieldError, message)
 
     def test_each_stage_is_refused_alone(self) -> None:
         for name, mutation, error, message in STAGES:

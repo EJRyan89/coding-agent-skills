@@ -119,7 +119,7 @@ How to read a table:
 - **One of** in a field's meaning lists every value it may have, besides `null` when its type allows null.
 - A validated object rejects any field its table does not list. A field whose meaning says what it is keyed by is an object of named entries rather than of fixed fields.
 - Paths are repository-relative POSIX paths: no leading `/`, no `\`, and no `..` part. Absolute paths take the platform's form: drive-letter paths on Windows, and elsewhere POSIX paths from one leading `/`, neither a filesystem root. Hashes are lowercase hexadecimal, 40 or 64 characters for a commit, 64 for SHA-256.
-- Every validator reads a field's type through the one typed-field reader, `typed_fields.py` in skill-core, by these kinds: `string` (not blank, unless its meaning allows an empty one), `integer` (never `true` or a float such as `1.0`), `number` (finite), `boolean`, `hex_digest` (the hashes above), `one_of` (the values **One of** lists), `array`, `json_object` (with the fields its table lists), `optional` (a type that allows `null`), and `either` (several types joined by `or`). A value of another kind is refused as `<path> must be <expected>, found <what it is>`, the path starting with the format's name from its table's heading, as in `config.repositories.owner/repo.reviewer.id`.
+- The validators in `code-review-core`, which hold every format before the [Insights report](#insights-report), read a field's type through the one typed-field reader, `typed_fields.py` in skill-core, by these kinds: `string` (not blank, unless its meaning allows an empty one), `integer` (never `true` or a float such as `1.0`), `number` (finite), `boolean`, `hex_digest` (the hashes above), `one_of` (the values **One of** lists), `array`, `json_object` (with the fields its table lists), `optional` (a type that allows `null`), and `either` (several types joined by `or`). A value of another kind is refused as `<path> must be <expected>, found <what it is>`, the path starting with the format's name from its table's heading, as in `config.repositories.owner/repo.reviewer.id`. `review-insights` checks the types in the insights report, the synthesis result, and the synthesis input itself, with messages of its own.
 
 ### Configuration
 
@@ -553,7 +553,7 @@ A review version's JSON record, the archive's source of truth, validated by `val
 | `path` | string | yes | The file it is on. |
 | `line` | integer or null | yes | Its line, or null when it has none. |
 | `outdated` | boolean | yes | Whether the code it was on has changed since. |
-| `body` | string | yes | The thread's first comment. |
+| `body` | string | yes | The thread's first comment, which may be empty. |
 | `url` | string | yes | Its web address. |
 
 #### Comment disposition (`record.comment_dispositions[]`, `specialist-result.comment_dispositions[]`)

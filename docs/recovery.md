@@ -114,13 +114,18 @@ To move back to `main`, run `python deploy.py --all --unpin` from the clone, or,
 
 ## A tool that does not finish
 
-Every tool the deployer runs, such as Git Bash, ShellCheck, and PowerShell checking the rendered skills, git reading the checkout, and the version probes of `check` and `verify`, runs under one deadline, `TOOL_DEADLINE_SECONDS` in `deployer/platform_support.py`. It is minutes long, so a slow but working tool on a busy machine still finishes; a tool that reaches it is almost always stuck. The deployer then ends the tool and every process it started (on Linux, every one that has not left the tool's process group), and stops with `ERROR: <tool> did not finish within <seconds> seconds`, followed by the tool's path.
+Every tool the deployer runs, such as Git Bash, ShellCheck, and PowerShell checking the rendered skills, git reading the checkout, and the version probes of `check` and `verify` but `pdftotext`'s, runs under one deadline, `TOOL_DEADLINE_SECONDS` in `deployer/platform_support.py`. It is minutes long, so a slow but working tool on a busy machine still finishes; a tool that reaches it is almost always stuck. The deployer then ends the tool and every process it started (on Linux, every one that has not left the tool's process group), and stops with `ERROR: <tool> did not finish within <seconds> seconds`, followed by the tool's path.
 
 What that leaves depends on when it happened:
 
 - While the deployment was checking the rendered skills, or reading the checkout, it had changed nothing yet. It refuses as a failed validation does, releases the lock, and leaves no journal, so you can retry at once.
 - A tool that times out after the deployment began changing items fails it like any other error: the run reconciles its own journal before it exits, as [Interrupted deployments](#interrupted-deployments) describes, and releases the lock.
 - `check` and `verify` change nothing, and stop with the same message.
+
+Two waits have limits of their own, and neither stops the command:
+
+- `check`'s version probe of each `pdftotext` it finds, the same probe every PDF extraction runs, has a few seconds, `PROBE_SECONDS` in `skills/skill-core/scripts/pdf_tool.py`. A probe that reaches it ends the `pdftotext` it started, but not a process that program started, because the probe runs outside a process tree. `check` passes that copy over as `version probe did not finish within <seconds> seconds`, reports the parser `UNUSABLE` when no copy passes, and carries on, since PDF review is optional.
+- `verify`'s listing of each runtime's skills has its own answer limit, `DEFAULT_TIMEOUT` in `deployer/discovery.py`, and is held in a process tree like the tools above, so a listing that reaches it ends every process the runtime started. `verify` reports that runtime as `Cannot list its skills: no answer within <seconds> seconds`, goes on to the next runtime, and fails at the end, naming it.
 
 Run the tool named in the message by itself, such as `shellcheck --version`, to see whether it hangs there too. An antivirus scan of a freshly installed tool, a prompt the tool shows only in a window of its own, or a broken install are the usual causes; repair or reinstall it as [Installing the tools](installation.md#installing-the-tools) says, then retry.
 

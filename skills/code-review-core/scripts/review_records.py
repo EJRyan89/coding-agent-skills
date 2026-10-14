@@ -885,8 +885,10 @@ def _validate_comments(record: dict[str, Any]) -> None:
         if not re.fullmatch(r"C[1-9][0-9]*", identifier) or identifier in ids:
             raise RecordError("Review comment IDs must be unique C<n> values")
         ids.add(identifier)
-        for field in ("author", "path", "body", "url"):
-            READ.string(comment[field], f"{path}.{field}", empty=True)
+        for field in ("author", "path", "url"):
+            READ.string(comment[field], f"{path}.{field}")
+        # GitHub may leave a comment's body empty, as its reader keeps it.
+        READ.string(comment["body"], f"{path}.body", empty=True)
         READ.optional(READ.integer, comment["line"], f"{path}.line", minimum=1)
         READ.boolean(comment["outdated"], f"{path}.outdated")
     validate_dispositions(dispositions, "comment_id", ids, "Comment", path="record.comment_dispositions")
