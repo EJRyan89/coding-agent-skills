@@ -73,15 +73,17 @@ unset UPDATE_SKILLS_COPY
 # `git -C "$CLONE"` below at another repository, index, or object store: those git clears itself before it works in
 # another repository, but for the command-scope settings in its list, and GIT_NAMESPACE. Each is unset in any case, as
 # Windows reads a name, so git there takes git_dir as GIT_DIR. skill-core's bounded_process.py leaves the same out of
-# every command a skill's Python starts.
-REPOSITORY_VARIABLES=" $(git rev-parse --local-env-vars 2>/dev/null | tr '\r\n' '  ') GIT_NAMESPACE "
-for NAME in $(compgen -e); do
-  case "${NAME^^}" in
-    GIT_CONFIG_PARAMETERS | GIT_CONFIG_COUNT) ;;
-    *) case "$REPOSITORY_VARIABLES" in *" ${NAME^^} "*) unset "$NAME" ;; esac ;;
-  esac
+# every command a skill's Python starts. awk's ENVIRON names each exported variable in the case it was given.
+for NAME in $(git rev-parse --local-env-vars 2>/dev/null | awk '
+  { sub(/\r$/, ""); wanted[$0] = 1 }
+  END {
+    wanted["GIT_NAMESPACE"] = 1
+    delete wanted["GIT_CONFIG_PARAMETERS"]
+    delete wanted["GIT_CONFIG_COUNT"]
+    for (NAME in ENVIRON) if (toupper(NAME) in wanted) print NAME
+  }'); do
+  unset "$NAME"
 done
-unset REPOSITORY_VARIABLES
 
 CLONE=$1
 if [ ! -f "$CLONE/deploy.py" ]; then
