@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import job_tree
 from bounded_process import run_bounded
-from job_tree import GroupTree, JobRefused, JobTree
+from job_tree import GroupTree, JobRefused, JobTree, TreeNotEnded
 from process_identity import process_status
 
 # Seconds a started program gets to come up on a loaded machine, and a held file to be let go once its holder ends.
@@ -332,7 +332,7 @@ if sys.platform == "win32":
             with (
                 mock.patch.object(job_tree, "_kernel32", return_value=kernel),
                 self.assertRaisesRegex(
-                    OSError,
+                    TreeNotEnded,
                     r"^The job's processes may still run: TerminateJobObject failed: .+; CloseHandle failed: ",
                 ),
             ):
@@ -362,7 +362,7 @@ if sys.platform == "win32":
             with (
                 mock.patch.object(job_tree, "_kernel32", return_value=FailingKernel("QueryInformationJobObject")),
                 self.assertRaisesRegex(
-                    OSError,
+                    TreeNotEnded,
                     r"^The job's processes may still run: QueryInformationJobObject failed: .+ \(Windows error 5\)$",
                 ),
             ):
@@ -377,7 +377,7 @@ if sys.platform == "win32":
                 mock.patch.object(job_tree, "_kernel32", return_value=kernel),
                 mock.patch.object(kernel, "WaitForSingleObject", return_value=timeout, create=True),
                 self.assertRaisesRegex(
-                    OSError, r"^The job's processes may still run: process \d+ had not ended 10 seconds on$"
+                    TreeNotEnded, r"^The job's processes may still run: process \d+ had not ended 10 seconds on$"
                 ),
             ):
                 run_bounded(command, STARTUP_SECONDS, tree=SignalledTree(self.ready))
@@ -561,7 +561,7 @@ if sys.platform != "win32":
         def test_a_group_it_cannot_signal_says_its_processes_may_still_run(self) -> None:
             with (
                 mock.patch.object(job_tree.os, "killpg", side_effect=PermissionError(1, "Operation not permitted")),
-                self.assertRaisesRegex(OSError, r"^The group's processes may still run: killpg failed: "),
+                self.assertRaisesRegex(TreeNotEnded, r"^The group's processes may still run: killpg failed: "),
             ):
                 job_tree.end_group(4242)
 
@@ -579,7 +579,7 @@ if sys.platform != "win32":
                 mock.patch.object(job_tree, "group_members", return_value=[4243]),
                 mock.patch.object(job_tree, "KILL_WAIT_SECONDS", 0.2),
                 self.assertRaisesRegex(
-                    OSError, r"^The group's processes may still run: process 4243 had not ended 0.2 seconds on$"
+                    TreeNotEnded, r"^The group's processes may still run: process 4243 had not ended 0.2 seconds on$"
                 ),
             ):
                 job_tree.end_group(4242)

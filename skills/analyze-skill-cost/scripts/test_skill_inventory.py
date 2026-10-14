@@ -849,6 +849,41 @@ class ScanTests(TemporaryTestCase):
         )
         self.assertEqual(f"CUE {skill.as_posix()} 5 shell-file-command Use `find . -name x` or `cat`.", lines[0])
 
+    def test_inline_python_is_generated_code_in_every_interpreter_spelling(self) -> None:
+        # The token is split so that a deployment, which renders this file, leaves it for the scan to read.
+        token = "{{" + "PYTHON}}"
+        for interpreter in (token, "python", "python3", "Python3"):
+            for command in (f"{interpreter} -c 'print(1)'", f'{interpreter} -B -I -c "import sys"'):
+                for place, content in (
+                    ("fence", f"```bash\n{command}\n```\n"),
+                    ("inline code", f"Run `{command}` to count them.\n"),
+                ):
+                    with self.subTest(command=command, place=place):
+                        skill = write(self.root / "SKILL.md", content)
+                        code, lines, error = run("scan", str(skill))
+                        self.assertEqual(0, code, error)
+                        self.assertEqual(["generated-code"], [line.split()[3] for line in lines])
+
+    def test_a_plain_python_command_is_not_generated_code(self) -> None:
+        token = "{{" + "PYTHON}}"
+        for command in (
+            token + ' -B "${CLAUDE_SKILL_DIR}/scripts/count.py" -c 3',
+            f"{token} -m json.tool -c",
+            "python3 scripts/count.py --config -c",
+            f"{token} -config",
+            f"{token}-c",
+            "cpython -c 'print(1)'",
+        ):
+            for place, content in (
+                ("fence", f"```bash\n{command}\n```\n"),
+                ("inline code", f"Run `{command}` to count them.\n"),
+            ):
+                with self.subTest(command=command, place=place):
+                    skill = write(self.root / "SKILL.md", content)
+                    code, lines, error = run("scan", str(skill))
+                    self.assertEqual(0, code, error)
+                    self.assertEqual([], [line for line in lines if line])
+
     def test_per_item_commands_relayed_output_replies_and_runtime_prompts(self) -> None:
         delegation = "Start one subagent per role with this prompt: `Read <prompt file> and follow it.`\n"
         skill = write(
