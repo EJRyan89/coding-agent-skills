@@ -16,6 +16,7 @@ import frontmatter
 from job_pool import refuse_termination, run_process
 from toolchain import VALIDATION_FLOORS, find_git_bash, find_powershell, find_psscriptanalyzer, find_shellcheck
 from validation_support import (
+    CODE_SPAN,
     REPOSITORY_ROOT,
     TEMPLATE_TOKEN,
     is_shell_script,
@@ -34,6 +35,9 @@ SHELL_WORD_BREAKS = " \t\n;|&()"
 # Python named by hand, as a word of its own, where a shipped skill writes {{PYTHON}} so that the command renders as the
 # platform names it: python on Windows and python3 elsewhere.
 HAND_WRITTEN_INTERPRETER = re.compile(r"(?<![\w./{}-])python3?(?![\w./}-])")
+# An inline code span in a shipped skill's Markdown prose that runs Python named by hand: the interpreter, its options,
+# then what it runs. A span naming the interpreter or an option alone, such as `python -c`, names no command.
+HAND_WRITTEN_SPAN_COMMAND = re.compile(r"\s*python3?(?:\s+-\S*)*\s+[^-\s]")
 INTERPRETER_DOC = '"Template values" in docs/adding-a-skill.md'
 
 
@@ -212,9 +216,21 @@ def shell_token_problems(root: Path) -> list[str]:
     ]
 
 
+def _prose_code_spans(path: Path) -> list[tuple[int, str]]:
+    """Each inline code span outside a Markdown file's fences, as (line number, text)."""
+    lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
+    fenced: set[int] = set()
+    for fence in render.find_fences(lines):
+        fenced.update(range(fence.opener, len(lines) if fence.closer is None else fence.closer + 1))
+    return [
+        (index + 1, span) for index, line in enumerate(lines) if index not in fenced for span in CODE_SPAN.findall(line)
+    ]
+
+
 def interpreter_problems(root: Path) -> list[str]:
-    """Report Python named by hand in a shipped skill's Markdown Bash or PowerShell, or in a shell grant of its
-    allowed-tools, where {{PYTHON}} belongs so that the command and the grant render as the platform names Python.
+    """Report Python named by hand in a shipped skill's Markdown Bash or PowerShell, in a code span of its prose that
+    runs it, or in a shell grant of its allowed-tools, where {{PYTHON}} belongs so that the command and the grant render
+    as the platform names Python.
 
     A script under scripts/ runs from the checkout in its suite, unrendered, so it names the interpreter itself.
     """
@@ -228,6 +244,12 @@ def interpreter_problems(root: Path) -> list[str]:
                         f"{name}:{start + offset} names Python by hand in {SHELL_LABELS[context]}; write "
                         f"{{{{PYTHON}}}}; see {INTERPRETER_DOC}"
                     )
+        problems += [
+            f"{name}:{number} names Python by hand in the code span `{span}`; write {{{{PYTHON}}}}; "
+            f"see {INTERPRETER_DOC}"
+            for number, span in _prose_code_spans(path)
+            if HAND_WRITTEN_SPAN_COMMAND.match(span)
+        ]
         if path.name != "SKILL.md":
             continue
         try:
