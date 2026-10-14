@@ -106,6 +106,8 @@ GIT_OPTIONS_WITH_VALUE = {"-C", "-c", "--config-env", "--git-dir", "--namespace"
 # is not one: it moves only the index, never HEAD or the tree, so the directory still names the checkout written.
 LOCATION_VARIABLES = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR")
 ENVIRONMENT_DRIVE_VARIABLE = re.compile(r"^env:[\\/]?(" + "|".join(LOCATION_VARIABLES) + r")$", re.IGNORECASE)
+ENVIRONMENT_DRIVE_ROOT = re.compile(r"^env:[\\/]?$", re.IGNORECASE)
+ENVIRONMENT_DRIVE_PATH = re.compile(r"^env:", re.IGNORECASE)
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 GIT_NAMES = {"git"}
 BASH_NAMES = {"bash", "sh"}
@@ -116,8 +118,16 @@ PUSH_LOCATION_NAMES = {"pushd", "push-location"}
 POP_LOCATION_NAMES = {"popd", "pop-location"}
 # Bash builtins that declare variables; export, and the others with -x, export them, and +x or export -n stops that.
 DECLARE_NAMES = {"export", "declare", "typeset", "local", "readonly"}
-# PowerShell commands that set an item, an environment variable among them when the path is on the env: drive.
-SET_ITEM_NAMES = {"set-item", "si", "new-item", "ni"}
+# PowerShell commands that set an environment variable when a path they write is on the env: drive, and the
+# parameters, as the command declares them, that name that path. Add-Content and Move-Item fail there: the drive
+# can neither seek within a variable nor move one.
+ENVIRONMENT_WRITERS = {
+    **dict.fromkeys(["set-item", "si", "new-item", "ni", "set-content"], ("path", "literalpath")),
+    **dict.fromkeys(["copy-item", "copy", "cp", "cpi"], ("destination",)),
+}
+# New-Item names the variable with -Name when its path is the drive itself; Rename-Item names it with -NewName.
+NEW_ITEM_NAMES = {"new-item", "ni"}
+RENAME_ITEM_NAMES = {"rename-item", "ren", "rni"}
 # Options of env that take no value, and those that take the next word as one.
 ENV_FLAGS = {"-0", "--null", "-v", "--debug"}
 ENV_UNSET = {"-u", "--unset"}
@@ -717,10 +727,41 @@ def read_powershell(command: str, cwd: Path | None, reading: Reading, depth: int
             reading.notes.append(str(event.get("text")))
         elif kind == "command":
             words: list[Word] = [None if word["dynamic"] else word["text"] for word in event["words"]]
-            read_powershell_command(words, session, reading, depth)
+            parameters = {
+                name.lower(): [None if word["dynamic"] else word["text"] for word in values]
+                for name, values in (event.get("parameters") or {}).items()
+            }
+            read_powershell_command(words, parameters, session, reading, depth)
 
 
-def read_powershell_command(words: list[Word], session: Session, reading: Reading, depth: int) -> None:
+def environment_drive_variables(name: str | None, parameters: Mapping[str, list[Word]]) -> set[str]:
+    """The location variables a PowerShell command sets on the env: drive, read from the parameters PowerShell binds.
+
+    Set-Item, New-Item, and Set-Content set the variable their path names, and Copy-Item the one its destination
+    names. New-Item on the drive itself sets the one its -Name names, and Rename-Item of a variable on the drive the
+    one its -NewName names. A path the text does not settle is passed over, as a directory it does not settle is.
+    """
+    found = {
+        match.group(1).upper()
+        for parameter in ENVIRONMENT_WRITERS.get(name or "", ())
+        for word in parameters.get(parameter, [])
+        if (match := ENVIRONMENT_DRIVE_VARIABLE.match(word or ""))
+    }
+    paths = parameters.get("path", []) + parameters.get("literalpath", [])
+    if name in NEW_ITEM_NAMES:
+        named, drive = parameters.get("name", []), ENVIRONMENT_DRIVE_ROOT
+    elif name in RENAME_ITEM_NAMES:
+        named, drive = parameters.get("newname", []), ENVIRONMENT_DRIVE_PATH
+    else:
+        return found
+    if paths and all(drive.match(path or "") for path in paths):
+        found.update(word.upper() for word in named if word is not None and word.upper() in LOCATION_VARIABLES)
+    return found
+
+
+def read_powershell_command(
+    words: list[Word], parameters: Mapping[str, list[Word]], session: Session, reading: Reading, depth: int
+) -> None:
     """One PowerShell command: a location change, a location variable set on the env: drive, or a program."""
     name, arguments = command_name(words[0]), words[1:]
     if name in LOCATION_NAMES:
@@ -737,11 +778,9 @@ def read_powershell_command(words: list[Word], session: Session, reading: Readin
         record_git_call(arguments, directory, reading, work_tree_named)
     elif name in BASH_NAMES:
         follow(name, bash_script(arguments), session.cwd, session.variables, reading, depth, read_bash)
-    elif name in SET_ITEM_NAMES:
-        for word in arguments:
-            found = ENVIRONMENT_DRIVE_VARIABLE.match(word or "")
-            if found:
-                session.variables[found.group(1).upper()] = None
+    else:
+        for variable in environment_drive_variables(name, parameters):
+            session.variables[variable] = None
 
 
 ShellReader = Callable[[str, "Path | None", Reading, int, Variables], None]

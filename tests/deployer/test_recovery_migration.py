@@ -1511,16 +1511,21 @@ class MigrationTests(DeployerTestCase):
             ["alpha", "b", "c", "reviewer.md (agent)"],
         )
 
-    def pack_from_a_version_7_entry(self, requested: list[str]) -> Path:
-        """Deploy opt-in bundle pack [alpha, beta] from test/old by request, and rewrite the manifest as the last
-        deployer to write version 7 left it, with these bundle requests. Return the old source.
-        """
+    def pack_from_the_old_source(self) -> Path:
+        """Deploy opt-in bundle pack [alpha, beta] from test/old by request. Return the old source."""
         self.make_source_json("test/old", bundles={"pack": {"members": ["alpha", "beta"], "opt_in": True}})
         self.make_skill("alpha", "Alpha")
         self.make_skill("beta", "Beta")
         self.make_config("test/old")
         old = self.snapshot_source("old")
         self.deploy_from(old, "--all", "--include", "pack")
+        return old
+
+    def pack_from_a_version_7_entry(self, requested: list[str]) -> Path:
+        """Deploy opt-in bundle pack [alpha, beta] from test/old by request, and rewrite the manifest as the last
+        deployer to write version 7 left it, with these bundle requests. Return the old source.
+        """
+        old = self.pack_from_the_old_source()
         self.rewrite_as_version_7(requested, "test/old")
         return old
 
@@ -1540,6 +1545,21 @@ class MigrationTests(DeployerTestCase):
         self.deploy_ok("--migrate-from", "test/old")
         self.assertEqual((["pack"], {"pack": ["alpha", "beta"]}, []), self.requests())
         self.kept_by_all("Selected 1 item (2 skills):\n  pack (bundle)\n    alpha\n    beta\n", ["alpha", "beta"])
+
+    def test_a_migration_carries_a_bundle_request_beside_a_skill_preserved_through_the_version_8_upgrade(self) -> None:
+        self.make_skill("everyday", "Everyday")
+        self.pack_from_the_old_source()
+        self.rewrite_as_preserved_through_the_upgrade("everyday", "test/old")
+        self.assertEqual(["alpha", "beta"], self.owned("skills", "test/old")["everyday"]["skill_deps"])
+        self.make_source_json(bundles={"kit": {"members": ["alpha", "beta"], "opt_in": True}})
+        self.make_config()
+        self.deploy_ok("--migrate-from", "test/old")
+        self.assertEqual(["test/skills"], list(self.manifest()["sources"]))
+        self.assertEqual((["kit"], {"kit": ["alpha", "beta"]}, ["everyday"]), self.requests())
+        self.kept_by_all(
+            "Selected 2 items (3 skills):\n  kit (bundle)\n    alpha\n    beta\n  everyday\n",
+            ["alpha", "beta", "everyday"],
+        )
 
     def test_a_version_7_entry_left_beside_a_migration_keeps_its_bundle_request(self) -> None:
         self.make_skill("gamma", "Gamma")
