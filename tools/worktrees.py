@@ -105,11 +105,13 @@ GIT_OPTIONS_WITH_VALUE = {"-C", "-c", "--config-env", "--git-dir", "--namespace"
 # The variables that choose the repository or work tree a git command writes, wherever the command runs. GIT_INDEX_FILE
 # is not one: it moves only the index, never HEAD or the tree, so the directory still names the checkout written.
 LOCATION_VARIABLES = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR")
-# A path on the environment provider: on the env: drive, or provider-qualified as Environment::, which may carry the
-# provider's module.
-ENVIRONMENT_PROVIDER = r"^(?:env:|(?:Microsoft\.PowerShell\.Core\\)?Environment::)"
+# A path on the environment provider: on the env: drive, or provider-qualified as Environment::, which may carry a
+# leading backslash or, without one, the provider's module. A variable may follow a separator on the drive only: after
+# Environment:: PowerShell keeps the separator as part of the variable's name, which git never reads.
+ENVIRONMENT_QUALIFIED = r"(?:\\|Microsoft\.PowerShell\.Core\\)?Environment::"
+ENVIRONMENT_PROVIDER = r"^(?:env:|" + ENVIRONMENT_QUALIFIED + r")"
 ENVIRONMENT_DRIVE_VARIABLE = re.compile(
-    ENVIRONMENT_PROVIDER + r"[\\/]?(" + "|".join(LOCATION_VARIABLES) + r")$", re.IGNORECASE
+    r"^(?:env:[\\/]?|" + ENVIRONMENT_QUALIFIED + r")(" + "|".join(LOCATION_VARIABLES) + r")$", re.IGNORECASE
 )
 ENVIRONMENT_DRIVE_ROOT = re.compile(ENVIRONMENT_PROVIDER + r"[\\/]?$", re.IGNORECASE)
 ENVIRONMENT_DRIVE_PATH = re.compile(ENVIRONMENT_PROVIDER, re.IGNORECASE)
@@ -750,6 +752,9 @@ def read_powershell(command: str, cwd: Path | None, reading: Reading, depth: int
             session = parents.pop() if parents else session
         elif kind == "gitEnv":
             session.variables[str(event.get("name", "GIT_DIR")).upper()] = None
+        elif kind == "assigned":
+            if match := ENVIRONMENT_DRIVE_VARIABLE.match(str(event.get("path", ""))):
+                session.variables[match.group(1).upper()] = None
         elif kind == "note":
             reading.notes.append(str(event.get("text")))
         elif kind == "command":

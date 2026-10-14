@@ -923,6 +923,71 @@ class CommandReadingTests(WorktreesTestCase):
             with self.subTest(command=command):
                 self.assertEqual(self.at(self.hub, "commit"), self.read(f"{command}; git commit"))
 
+    def test_powershell_reads_a_location_variable_set_through_the_leading_backslash_provider_path(self) -> None:
+        # PowerShell takes \Environment:: as Environment::, though not \Microsoft.PowerShell.Core\Environment::.
+        for command in (
+            "Set-Item \\Environment::GIT_DIR x",
+            "Set-Content -Path \\ENVIRONMENT::git_dir -Value x",
+            "New-Item -Path \\Environment::GIT_DIR -Value x",
+            "New-Item -Path \\Environment:: -Name GIT_DIR -Value x",
+            "ni \\Environment::\\ -Name git_dir -Value x",
+            "Copy-Item env:FOO \\Environment::GIT_DIR",
+            "Rename-Item \\Environment::FOO GIT_DIR",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self.at(None, "commit"), self.read(f"{command}; git commit"))
+                self.assertEqual([], self.notes)
+        aimed = {**self.environment, "GIT_WORK_TREE": str(self.hub)}
+        self.assertEqual(
+            self.at(None, "commit"),
+            self.read(f"Set-Item \\Environment::GIT_WORK_TREE '{self.tree}'; git commit", environment=aimed),
+        )
+        for command in (
+            "Set-Item \\Microsoft.PowerShell.Core\\Environment::GIT_DIR x",
+            "Set-Item /Environment::GIT_DIR x",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self.at(self.hub, "commit"), self.read(f"{command}; git commit"))
+
+    def test_powershell_reads_a_location_variable_assigned_through_variable_notation_on_the_provider(self) -> None:
+        # Variable notation takes the paths a cmdlet does: ${env:\NAME} sets NAME, as Set-Item env:\NAME does.
+        for command in (
+            "${Environment::GIT_WORK_TREE} = 'x'",
+            "${environment::git_dir} = 'x'",
+            "${Microsoft.PowerShell.Core\\Environment::GIT_DIR} = 'x'",
+            "${\\Environment::GIT_COMMON_DIR} = 'x'",
+            "${env:GIT_DIR} = 'x'",
+            "${env:\\GIT_DIR} = 'x'",
+            "${ENV:/git_dir} += 'x'",
+            # A cast or attribute still assigns the variable it wraps.
+            "[string]$env:GIT_DIR = 'x'",
+            "[ValidateNotNull()][string]${Environment::GIT_DIR} = 'x'",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self.at(None, "commit"), self.read(f"{command}; git commit"))
+                self.assertEqual([], self.notes)
+        for command in ("${variable:GIT_DIR} = 'x'", "${GIT_DIR} = 'x'", "${Env::GIT_DIR} = 'x'"):
+            with self.subTest(command=command):
+                self.assertEqual(self.at(self.hub, "commit"), self.read(f"{command}; git commit"))
+
+    def test_powershell_does_not_read_a_separator_after_the_provider_qualified_path_as_setting_a_variable(self) -> None:
+        # After Environment:: PowerShell keeps a separator in the variable's name, so \GIT_DIR is set, which git never
+        # reads. On the provider's root, New-Item's -Name and Rename-Item's -NewName still name the variable set.
+        for command in (
+            "Set-Item Environment::\\GIT_DIR x",
+            "Set-Item Environment::/GIT_DIR x",
+            "Set-Content -Path Microsoft.PowerShell.Core\\Environment::\\GIT_DIR -Value x",
+            "New-Item -Path \\Environment::/GIT_DIR -Value x",
+            "Copy-Item env:FOO Environment::\\GIT_DIR",
+            "${Environment::\\GIT_DIR} = 'x'",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self.at(self.hub, "commit"), self.read(f"{command}; git commit"))
+                self.assertEqual([], self.notes)
+        for command in ("New-Item -Path Environment::\\ -Name GIT_DIR", "Rename-Item Environment::\\FOO GIT_DIR"):
+            with self.subTest(command=command):
+                self.assertEqual(self.at(None, "commit"), self.read(f"{command}; git commit"))
+
     def test_powershell_passes_over_cmdlets_that_set_no_location_variable(self) -> None:
         inherited = {**self.environment, "GIT_WORK_TREE": str(self.tree)}
         for command in (
@@ -990,6 +1055,15 @@ class PowerShellGuardTests(WorktreesTestCase):
 
     def test_a_location_variable_set_through_the_provider_qualified_path_reaches_the_judgment(self) -> None:
         command = f"Set-Item Environment::GIT_WORK_TREE '{self.hub}'; git reset --hard"
+        self.assertIsNone(self.powershell(command, self.tree))
+        self.assertIn("could not tell where `git reset` runs", self.stderr)
+        command = f"Set-Item \\Environment::GIT_WORK_TREE '{self.hub}'; git reset --hard"
+        self.assertIsNone(self.powershell(command, self.tree))
+        self.assertIn("could not tell where `git reset` runs", self.stderr)
+        self.assertEqual("deny", self.powershell("Set-Item Environment::\\GIT_DIR x; git commit -m x", self.hub))
+
+    def test_a_location_variable_assigned_through_variable_notation_on_the_provider_reaches_the_judgment(self) -> None:
+        command = f"${{Environment::GIT_WORK_TREE}} = '{self.hub}'; git reset --hard"
         self.assertIsNone(self.powershell(command, self.tree))
         self.assertIn("could not tell where `git reset` runs", self.stderr)
 

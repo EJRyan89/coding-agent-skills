@@ -12,8 +12,10 @@ using namespace System.Management.Automation.Language
 #                                                        PowerShell's own binder gives each parameter, by the
 #                                                        name the command declares, an array's elements apart
 #   {"kind": "gitEnv", "name": name}                     a location variable (GIT_DIR, GIT_WORK_TREE, or
-#                                                        GIT_COMMON_DIR) was assigned through $env: or
+#                                                        GIT_COMMON_DIR) was set through
 #                                                        [Environment]::SetEnvironmentVariable
+#   {"kind": "assigned", "path": path}                   a variable on a drive or provider, as in $env:NAME or
+#                                                        ${Environment::NAME}, was assigned; path is as written
 #   {"kind": "push"} ... {"kind": "pop"}                 around a child pwsh's commands, whose location dies with it
 #   {"kind": "note", "text": text}                       a nested command that could not be read
 #
@@ -151,12 +153,14 @@ function Read-CommandEvent([string] $Text, [int] $Depth, [Collections.Generic.Li
 
     foreach ($node in $nodes) {
         if ($node -is [AssignmentStatementAst]) {
-            if ($node.Left -is [VariableExpressionAst] -and $node.Left.VariablePath.IsDriveQualified -and
-                $node.Left.VariablePath.DriveName -eq 'env') {
-                $name = $node.Left.VariablePath.UserPath.Substring(4)
-                if ($name -match $LocationVariable) {
-                    $Events.Add([ordered]@{ kind = 'gitEnv'; name = $name.ToUpperInvariant() })
-                }
+            # A cast or attribute, as in [string]$env:NAME = ..., still assigns the variable it wraps.
+            $left = $node.Left
+            while ($left -is [AttributedExpressionAst]) {
+                $left = $left.Child
+            }
+            # worktrees.py judges whether the path names a location variable on the environment provider.
+            if ($left -is [VariableExpressionAst] -and $left.VariablePath.IsDriveQualified) {
+                $Events.Add([ordered]@{ kind = 'assigned'; path = $left.VariablePath.UserPath })
             }
             continue
         }
