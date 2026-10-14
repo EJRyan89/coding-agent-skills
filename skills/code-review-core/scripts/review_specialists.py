@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 from bounded_process import non_interactive_environment, run_bounded
 from diff_paths import DiffPathError, header_path, unquote
-from job_tree import process_tree
+from job_tree import TreeNotEnded, process_tree
 from review_analyzers import inventory, tool_names
 from review_config import safe_repository_path
 from review_documents import LINE_UNSAFE
@@ -346,7 +346,8 @@ def evaluate_condition(
     in CONDITION_OUTPUT_VARIABLE; `output`'s folder is made for it. It reads no stdin, at most CONDITION_OUTPUT_BYTES of
     each output stream is kept, for the failure's detail, and it is killed at CONDITION_TIMEOUT_SECONDS; every process
     it started that stays in its process tree is ended with it either way. One that cannot start, or that no job object
-    can hold to end what it starts, is ended and fails the review.
+    can hold to end what it starts, is ended and fails the review. One whose processes could not be ended fails it
+    too, saying that it started and they may still run, never that it could not run.
     """
     path = reviewer_root.joinpath(*PurePosixPath(script).parts)
     environment = {
@@ -366,6 +367,10 @@ def evaluate_condition(
         )
     except subprocess.TimeoutExpired as exc:
         raise SpecialistError(f"Condition script timed out: {script}") from exc
+    except TreeNotEnded as exc:
+        raise SpecialistError(
+            f"Condition script started, but its processes could not be ended: {script}: {exc}"
+        ) from exc
     except OSError as exc:
         raise SpecialistError(f"Condition script could not run: {script}: {exc}") from exc
     if process.returncode == 0:
