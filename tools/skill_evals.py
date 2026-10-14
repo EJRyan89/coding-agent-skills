@@ -150,6 +150,7 @@ from skill_roots import sibling_scripts
 sys.path.insert(0, str(sibling_scripts("code-review-core")))
 
 import frontmatter
+from bounded_process import without_repository_variables
 from console import run_main
 from git_client import GitClient, GitError
 from review_records import DISPOSITIONS as RECORD_DISPOSITIONS
@@ -1063,8 +1064,8 @@ def unguarded(record: Record) -> str | None:
 
 @dataclass(frozen=True)
 class Session:
-    """What every run starts its session with: Claude Code, the user's environment, the runner, its time limit, and
-    the git client a document scenario's checkout is made with."""
+    """What every run starts its session with: Claude Code, the user's environment without git's repository-selecting
+    variables, the runner, its time limit, and the git client a document scenario's checkout is made with."""
 
     executable: str
     base: Mapping[str, str]
@@ -1351,7 +1352,9 @@ def preflight(write: bool, seams: Seams) -> tuple[str, str | None]:
 def evaluate(skill: str, scenarios: Sequence[Scenario], options: argparse.Namespace, seams: Seams) -> int:
     """Run every scenario on every model from throwaway homes, judge the records, and print the result."""
     models = list(dict.fromkeys(options.model or MODELS))
-    base = dict(os.environ if seams.environment is None else seams.environment)
+    # Without git's repository-selecting variables, so neither the version probe nor a session, nor anything the
+    # session starts, reads the repository a shell's `GIT_DIR` names rather than the throwaway home.
+    base = without_repository_variables(os.environ if seams.environment is None else seams.environment)
     try:
         executable, results_text = preflight(options.write, seams)
     except ScenarioError as exc:
