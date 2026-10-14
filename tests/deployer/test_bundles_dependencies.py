@@ -514,17 +514,23 @@ class OptInTests(DeployerTestCase):
         self.deploy_ok("--all")
         self.assertEqual(["everyday"], self.installed())
 
-    def regrouped(self, bundles: dict[str, Any], opt_in_skills: dict[str, str] | None = None) -> dict[str, list[str]]:
+    def regrouped(
+        self, bundles: dict[str, Any], opt_in_skills: dict[str, str] | None = None, preserved: str | None = None
+    ) -> dict[str, list[str]]:
         """Deploy opt-in bundle pack [fmt, x] by request, regroup the source, making each skill opt_in_skills names an
         opt-in root with the content it gives, and return the next --all's report.
 
-        The dry run and the deployment must select and report the same items.
+        With `preserved`, the manifest is first rewritten as the first deployer to write version 8 left it after
+        preserving that skill through its upgrade of a version 7 manifest. The dry run and the deployment must select
+        and report the same items.
         """
         self.make_source_json(bundles={"pack": {"members": ["fmt", "x"], "opt_in": True}})
         self.make_skill("x", "X")
         self.deploy_ok("--all", "--include", "pack")
         self.assertEqual(["everyday", "fmt", "x"], self.installed())
         self.assertEqual({"pack": ["fmt", "x"]}, self.manifest()["sources"]["test/skills"]["requested_bundle_members"])
+        if preserved is not None:
+            self.rewrite_as_preserved_through_the_upgrade(preserved)
         self.make_source_json(bundles=bundles)
         for name, content in (opt_in_skills or {}).items():
             self.make_skill(name, content, opt_in=True)
@@ -606,6 +612,38 @@ class OptInTests(DeployerTestCase):
                 entry = self.manifest()["sources"]["test/skills"]
                 self.assertEqual([bundle], entry["requested_bundles"])
                 self.assertEqual({bundle: ["fmt", "x"]}, entry["requested_bundle_members"])
+
+    def test_a_renamed_bundle_beside_a_skill_preserved_through_the_version_8_upgrade_stays_in_all(self) -> None:
+        # everyday's filled-in dependencies name both members and lie on no cycle, since fmt and x record exact ones.
+        report = self.regrouped({"kit": {"members": ["fmt", "x"], "opt_in": True}}, preserved="everyday")
+        self.assertEqual({"UNCHANGED": ["everyday", "fmt", "x"]}, report)
+        self.assertEqual(["everyday", "fmt", "x"], self.installed())
+        self.assertRegex(self.deploy("--dry-run", stdin="\n").output, r"(?m)^  \[\*\] [0-9]+\. kit \(bundle, opt-in\)$")
+        entry = self.manifest()["sources"]["test/skills"]
+        self.assertEqual(["kit"], entry["requested_bundles"])
+        self.assertEqual({"kit": ["fmt", "x"]}, entry["requested_bundle_members"])
+
+    def test_a_member_moved_out_beside_a_skill_preserved_through_the_version_8_upgrade_stays_in_all(self) -> None:
+        report = self.regrouped({"pack": {"members": ["x"], "opt_in": True}}, {"fmt": "Format"}, preserved="everyday")
+        self.assertEqual({"UNCHANGED": ["everyday", "fmt", "x"]}, report)
+        self.assertEqual(["everyday", "fmt", "x"], self.installed())
+        menu = self.deploy("--dry-run", stdin="\n").output
+        self.assertRegex(menu, r"(?m)^  \[\*\] [0-9]+\. pack \(bundle, opt-in\)$")
+        self.assertRegex(menu, r"(?m)^  \[\*\] [0-9]+\. fmt \(opt-in\)$")
+        entry = self.manifest()["sources"]["test/skills"]
+        self.assertEqual(["pack"], entry["requested_bundles"])
+        self.assertEqual({"pack": ["x"]}, entry["requested_bundle_members"])
+        self.assertEqual(["everyday", "fmt"], entry["requested_skills"])
+
+    def test_a_member_moved_out_beside_a_member_preserved_through_the_version_8_upgrade_stays_in_all(self) -> None:
+        # fmt's filled-in dependencies name everyday, which is requested on its own, and the member x.
+        report = self.regrouped({"pack": {"members": ["fmt"], "opt_in": True}}, {"x": "X"}, preserved="fmt")
+        self.assertEqual({"UNCHANGED": ["everyday", "fmt", "x"]}, report)
+        self.assertEqual(["everyday", "fmt", "x"], self.installed())
+        entry = self.manifest()["sources"]["test/skills"]
+        self.assertEqual(["pack"], entry["requested_bundles"])
+        self.assertEqual({"pack": ["fmt"]}, entry["requested_bundle_members"])
+        self.assertEqual(["everyday", "x"], entry["requested_skills"])
 
     def test_an_entry_recorded_before_bundle_members_were_counts_no_dependency_as_chosen(self) -> None:
         self.dependency_member_fixture()

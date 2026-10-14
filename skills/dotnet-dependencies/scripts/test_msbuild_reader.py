@@ -7,20 +7,25 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import msbuild_reader
 from msbuild_reader import (
+    PackageItem,
     PackageRef,
+    TargetItem,
     Unreadable,
+    assemblies_for,
     central_versions_file,
     condition_holds,
     framework_key,
     matching_framework,
     package_assemblies,
     packages_for,
+    project_refs_for,
     read_assets,
     read_central_versions,
     read_nuspec,
@@ -29,6 +34,7 @@ from msbuild_reader import (
     read_redirects,
     same_framework,
 )
+from xml_reader import read_xml
 
 LEGACY_PROJECT = """<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
@@ -137,6 +143,62 @@ CENTRAL = """<Project>
   </ItemGroup>
 </Project>
 """
+# Reference, ProjectReference, and central PackageVersion items under conditions on the framework and on another
+# property, with an Update and a Remove.
+CONDITIONAL_ITEMS_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFrameworks>net8.0;net472</TargetFrameworks></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\\Harbor.Shared\\Harbor.Shared.csproj" />
+    <PackageReference Include="Lantern.Json" />
+    <Reference Include="Beacon.Modern" Condition="'$(TargetFramework)' == 'net8.0'" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net472'">
+    <Reference Include="System.Web" />
+    <Reference Include="Beacon.Hinted" />
+    <Reference Update="Beacon.Hinted"><HintPath>lib\\Beacon.Hinted.dll</HintPath></Reference>
+    <ProjectReference Include="..\\Harbor.Legacy\\Harbor.Legacy.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(Configuration)' == 'Debug'">
+    <Reference Include="Beacon.Debug" />
+    <ProjectReference Remove="..\\Harbor.Shared\\Harbor.Shared.csproj" />
+  </ItemGroup>
+</Project>
+"""
+CONDITIONAL_CENTRAL = """<Project>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net8.0'">
+    <PackageVersion Include="Lantern.Json" Version="13.0.1" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(TargetFramework)' != 'net8.0'">
+    <PackageVersion Include="Lantern.Json" Version="12.0.3" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(Configuration)' == 'Debug'">
+    <PackageVersion Update="Lantern.Json" Version="14.0.0" />
+    <PackageVersion Include="Beacon.Unused" Version="1.0.0" />
+  </ItemGroup>
+</Project>
+"""
+# Items and a property inside Targets, which MSBuild defines only when the target runs.
+TARGET_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+  <ItemGroup><PackageReference Include="Quill.Http" Version="1.2.0" /></ItemGroup>
+  <Target Name="AddLate" BeforeTargets="CollectPackageReferences">
+    <PropertyGroup><TargetFramework>net472</TargetFramework></PropertyGroup>
+    <ItemGroup>
+      <PackageReference Include="Beacon.Late" Version="1.0.0" />
+      <ProjectReference Include="..\\Harbor.Late.Core\\Harbor.Late.Core.csproj" />
+      <Reference Include="System.Late" />
+    </ItemGroup>
+  </Target>
+  <Target Name="DropQuill">
+    <ItemGroup><PackageReference Remove="Quill.Http" /></ItemGroup>
+  </Target>
+</Project>
+"""
+TARGET_CENTRAL = """<Project>
+  <ItemGroup><PackageVersion Include="Lantern.Json" Version="13.0.1" /></ItemGroup>
+  <Target Name="Pin"><ItemGroup><PackageVersion Include="Beacon.Late" Version="1.0.0" /></ItemGroup></Target>
+</Project>
+"""
 PACKAGES_CONFIG = """<?xml version="1.0" encoding="utf-8"?>
 <packages>
   <package id="Lantern.Core" version="2.0.0" targetFramework="net472" />
@@ -228,9 +290,9 @@ class ReaderTests(unittest.TestCase):
         path.write_text(text, encoding="utf-8")
         return path
 
-    def central(self, directory: Path) -> dict[str, str]:
+    def central(self, directory: Path) -> list[PackageItem]:
         found = central_versions_file(directory, self.root)
-        return read_central_versions(found) if found else {}
+        return read_central_versions(found).items if found else []
 
     def test_legacy_project_gives_assembly_references_with_version_and_hint_path(self) -> None:
         project = read_project(self.write("src/Harbor.Web/Harbor.Web.csproj", LEGACY_PROJECT), self.central)
@@ -503,7 +565,10 @@ class ReaderTests(unittest.TestCase):
         props = self.write("Directory.Packages.props", CENTRAL)
         self.assertIsNone(central_versions_file(self.root / "src", self.root / "src"))
         self.assertEqual(props, central_versions_file(self.root / "src", self.root))
-        self.assertEqual({"lantern.core": "2.0.0", "lantern.text": "2.5.0"}, read_central_versions(props))
+        self.assertEqual(
+            [("Lantern.Core", "2.0.0", "central"), ("Lantern.Text", "2.5.0", "central")],
+            [(item.id, item.version, item.origin) for item in read_central_versions(props).items],
+        )
         with self.assertRaises(Unreadable) as refused:
             read_central_versions(self.write("Directory.Packages.props", "<!DOCTYPE x><Project />"))
         self.assertIn("DOCTYPE", refused.exception.reason)
@@ -581,6 +646,229 @@ class ReaderTests(unittest.TestCase):
         with self.assertRaises(Unreadable) as refused:
             read_assets(self.write("obj/project.assets.json", "{}"))
         self.assertIn("no targets", refused.exception.reason)
+
+    def test_one_operand_decides_whatever_its_place_and_a_malformed_condition_is_never_evaluated(self) -> None:
+        debug = "'$(Configuration)'=='Debug'"
+        mirrored = "'Debug'=='$(Configuration)'"
+        framework = "'$(TargetFramework)'=='net472'"
+        holds = [
+            (f"{framework} or {debug}", "net472"),
+            (f"{framework} or {mirrored}", "net472"),
+            (f"{debug} or {framework}", "net472"),
+            (f"({debug}) or ({framework})", "net472"),
+            ("$(TargetFramework.StartsWith('net'))", "net8.0"),
+        ]
+        fails = [
+            (f"{framework} and {debug}", "net8.0"),
+            (f"{framework} and {mirrored}", "net8.0"),
+            (f"{debug} and {framework}", "net8.0"),
+            # MSBuild's StartsWith compares with regard to case.
+            ("$(TargetFramework.StartsWith('NET'))", "net8.0"),
+        ]
+        unknown = [
+            # Kept as today: an operand the reader cannot evaluate leaves undecided what no other operand decides.
+            (f"{framework} or {debug}", "net8.0"),
+            (f"{framework} and {debug}", "net472"),
+            # A dangling, leading, or doubled keyword, an unclosed or unopened parenthesis, a lone operand, and a
+            # missing operand make a condition MSBuild refuses, whatever its other operands.
+            (f"{framework} or or", "net472"),
+            (f"or {framework}", "net472"),
+            (f"{framework} or", "net472"),
+            (f"{framework} and", "net472"),
+            (f"{framework} or and {framework}", "net472"),
+            (f"{framework})", "net472"),
+            ("'net472'", "net472"),
+            ("== 'net472'", "net472"),
+        ]
+        for expected, cases in ((True, holds), (False, fails), (None, unknown)):
+            for text, name in cases:
+                with self.subTest(text=text, framework=name):
+                    self.assertIs(expected, condition_holds(text, name))
+
+    def test_each_item_kind_holds_for_the_frameworks_its_conditions_hold_for(self) -> None:
+        self.write("Directory.Packages.props", CONDITIONAL_CENTRAL)
+        path = self.write("src/Harbor.Api/Harbor.Api.csproj", CONDITIONAL_ITEMS_PROJECT)
+        project = read_project(path, self.central)
+        legacy = (self.root / "src" / "Harbor.Legacy" / "Harbor.Legacy.csproj").resolve()
+        shared = (self.root / "src" / "Harbor.Shared" / "Harbor.Shared.csproj").resolve()
+        debug = "'$(Configuration)' == 'Debug'"
+        cases = {
+            "net8.0": (
+                [shared],
+                [("Beacon.Modern", None)],
+                [("Lantern.Json", "13.0.1", "central")],
+            ),
+            "net472": (
+                [shared, legacy],
+                [("System.Web", None), ("Beacon.Hinted", "lib\\Beacon.Hinted.dll")],
+                [("Lantern.Json", "12.0.3", "central")],
+            ),
+        }
+        for framework, (projects, assemblies, packages) in cases.items():
+            with self.subTest(framework=framework):
+                found, skipped = project_refs_for(project.project_items, framework)
+                self.assertEqual(projects, found)
+                self.assertEqual([("Remove", debug)], [(item.operation, text) for item, text in skipped])
+                references, unevaluated = assemblies_for(project.reference_items, framework)
+                self.assertEqual(assemblies, [(item.name, item.hint_path) for item in references])
+                self.assertEqual(
+                    [("Include", "Beacon.Debug", debug)], [(i.operation, i.spec, t) for i, t in unevaluated]
+                )
+                refs, left = packages_for(project.package_items, framework, project.central_items)
+                self.assertEqual(packages, [(ref.id, ref.version, ref.origin) for ref in refs])
+                # A central item whose condition cannot be evaluated is named for a package that takes its version.
+                self.assertEqual(
+                    [("Update", "Lantern.Json", "central")], [(i.operation, i.id, i.origin) for i, _ in left]
+                )
+        # With no framework, as for a project with no restore, every item applies whatever its condition, as before,
+        # an Update and a Remove included.
+        self.assertEqual([legacy], project.project_refs)
+        self.assertEqual(
+            ["Beacon.Modern", "System.Web", "Beacon.Hinted", "Beacon.Debug"], [item.name for item in project.assemblies]
+        )
+        self.assertEqual([PackageRef("Lantern.Json", "14.0.0", "central")], project.packages)
+
+    def test_items_inside_a_target_are_left_out_and_named(self) -> None:
+        path = self.write("src/Harbor.Late/Harbor.Late.csproj", TARGET_PROJECT)
+        project = read_project(path, self.central)
+        self.assertEqual([PackageRef("Quill.Http", "1.2.0", "PackageReference")], project.packages)
+        self.assertEqual([], project.project_refs)
+        self.assertEqual([], project.assemblies)
+        self.assertEqual(["net8.0"], project.frameworks)
+        self.assertEqual(
+            [
+                TargetItem("PackageReference", "Beacon.Late", "AddLate"),
+                TargetItem("ProjectReference", "..\\Harbor.Late.Core\\Harbor.Late.Core.csproj", "AddLate"),
+                TargetItem("Reference", "System.Late", "AddLate"),
+                TargetItem("PackageReference", "Quill.Http", "DropQuill"),
+            ],
+            project.in_targets,
+        )
+        props = self.write("Directory.Packages.props", TARGET_CENTRAL)
+        central = read_central_versions(props)
+        self.assertEqual(["Lantern.Json"], [item.id for item in central.items])
+        self.assertEqual([TargetItem("PackageVersion", "Beacon.Late", "Pin")], central.in_targets)
+
+    def test_a_framework_property_counts_where_its_conditions_hold(self) -> None:
+        cases = [
+            # A property under a condition that fails names nothing, and one that holds replaces the value before it.
+            (
+                "<PropertyGroup><TargetFrameworks>net8.0;net472</TargetFrameworks></PropertyGroup>"
+                "<PropertyGroup Condition=\"'$(TargetFramework)' == 'net8.0'\">"
+                "<TargetFrameworks>net6.0</TargetFrameworks></PropertyGroup>",
+                ["net8.0", "net472"],
+            ),
+            (
+                "<PropertyGroup><TargetFrameworks>net8.0;net472</TargetFrameworks></PropertyGroup>"
+                "<PropertyGroup><TargetFrameworks>net9.0</TargetFrameworks></PropertyGroup>",
+                ["net9.0"],
+            ),
+            # `$(TargetFramework)` is empty until the file sets it.
+            (
+                "<PropertyGroup Condition=\"'$(TargetFramework)' == ''\"><TargetFramework>net8.0</TargetFramework>"
+                "</PropertyGroup><PropertyGroup Condition=\"'$(TargetFramework)' == 'net8.0'\">"
+                "<TargetFrameworkVersion>v4.8</TargetFrameworkVersion></PropertyGroup>",
+                ["net8.0", "v4.8"],
+            ),
+            # A condition the reader cannot evaluate adds its names to those it may replace, never choosing.
+            (
+                "<PropertyGroup><TargetFrameworks>net8.0</TargetFrameworks></PropertyGroup>"
+                "<PropertyGroup Condition=\"'$(OS)' == 'Windows_NT'\">"
+                "<TargetFrameworks>net8.0;net472</TargetFrameworks></PropertyGroup>",
+                ["net8.0", "net472"],
+            ),
+            (
+                "<Choose><When Condition=\"'$(Configuration)' == 'Debug'\"><PropertyGroup>"
+                "<TargetFramework>net8.0</TargetFramework></PropertyGroup></When><Otherwise><PropertyGroup>"
+                "<TargetFramework>net472</TargetFramework></PropertyGroup></Otherwise></Choose>"
+                "<PropertyGroup Condition=\"'$(TargetFramework)' == 'net8.0'\"><TargetFrameworkVersion>v4.8"
+                "</TargetFrameworkVersion></PropertyGroup>",
+                ["net8.0", "net472", "v4.8"],
+            ),
+        ]
+        for body, expected in cases:
+            with self.subTest(body=body):
+                path = self.write("src/a/a.csproj", f'<Project Sdk="Microsoft.NET.Sdk">{body}</Project>')
+                self.assertEqual(expected, read_project(path, self.central).frameworks)
+
+    def test_a_when_without_a_condition_makes_the_file_unreadable(self) -> None:
+        choose = (
+            '<Choose><When><ItemGroup><PackageReference Include="Alpha.Pkg" Version="1.0.0" /></ItemGroup></When>'
+            "<When Condition=\"'$(TargetFramework)'=='net8.0'\"><ItemGroup>"
+            '<PackageReference Include="Beta.Pkg" Version="1.0.0" /></ItemGroup></When>'
+            '<Otherwise><ItemGroup><PackageReference Include="Gamma.Pkg" Version="1.0.0" /></ItemGroup></Otherwise>'
+            "</Choose>"
+        )
+        for relative in ("src/a/a.csproj", "Directory.Packages.props"):
+            path = self.write(relative, f"<Project>{choose.replace('PackageReference', 'PackageVersion')}</Project>")
+            reader = read_central_versions if relative.endswith(".props") else lambda p: read_project(p, self.central)
+            with self.subTest(file=relative), self.assertRaises(Unreadable) as refused:
+                reader(path)
+            self.assertEqual(path, refused.exception.file)
+            self.assertIn("a When has no Condition", refused.exception.reason)
+        # Read directly, such a When cannot be evaluated, and neither can a When after it; the Otherwise is ruled out
+        # by a later When that holds, and not evaluated when none does.
+        root = read_xml(f'<Project Sdk="Microsoft.NET.Sdk">{choose}</Project>')
+        for framework, unevaluated_ids in (
+            ("net8.0", ["Alpha.Pkg", "Beta.Pkg"]),
+            ("net472", ["Alpha.Pkg", "Gamma.Pkg"]),
+        ):
+            found, unevaluated = packages_for(msbuild_reader.package_items(root), framework)
+            self.assertEqual([], found)
+            self.assertEqual(unevaluated_ids, [item.id for item, _ in unevaluated])
+        self.assertEqual(3, len(packages_for(msbuild_reader.package_items(root), None)[0]))
+
+    def test_a_framework_version_of_any_length_is_read(self) -> None:
+        digits = "9" * 5000
+        self.assertEqual(f"net{digits}.0", framework_key(f".NETCoreApp,Version=v{digits}"))
+        self.assertEqual("net10.0", framework_key(".NETCoreApp,Version=v10.0"))
+        self.assertEqual("net5.0", framework_key(".NETCoreApp,Version=v5.0"))
+        self.assertEqual(f"net8.0-windows1{digits}.0", framework_key(f"net8.0-windows1{digits}.0.0"))
+        self.assertEqual("net8.0-windows10.0", framework_key(f"net8.0-windows10.0.{'0' * 5000}"))
+        document = {"version": 3, "targets": {f".NETCoreApp,Version=v{digits}": {}}, "project": {}}
+        assets = read_assets(self.write("obj/project.assets.json", json.dumps(document)))
+        self.assertEqual([f".NETCoreApp,Version=v{digits}"], list(assets.nodes))
+
+    def test_a_restore_records_each_frameworks_project_references_where_the_project_now_is(self) -> None:
+        # Restored at another path, as in a checkout moved since; a path sharing no root is taken as written.
+        restored = "D:\\old\\src\\Harbor.Api\\Harbor.Api.csproj"
+        elsewhere = (self.root / "Elsewhere" / "Other.csproj").resolve()
+        recorded: dict[str, dict[str, str]] = {
+            "D:\\old\\src\\Harbor.Legacy\\Harbor.Legacy.csproj": {},
+            "D:\\old\\src\\Harbor.Api\\Inner\\Inner.csproj": {},
+            str(elsewhere): {},
+        }
+        restore: dict[str, Any] = {
+            "projectPath": restored,
+            "frameworks": {
+                "net8.0": {"projectReferences": {}},
+                "net472": {"projectReferences": recorded},
+                "net9.0": {},
+            },
+        }
+        document = {
+            "version": 3,
+            "targets": {".NETCoreApp,Version=v8.0": {}, ".NETFramework,Version=v4.7.2": {}},
+            "project": {"restore": restore, "frameworks": {"net8.0": {}, "net472": {}}},
+        }
+        path = self.write("src/Harbor.Api/obj/project.assets.json", json.dumps(document))
+        assets = read_assets(path)
+        api = self.root / "src" / "Harbor.Api"
+        self.assertEqual(
+            {
+                "net8.0": [],
+                "net472": [
+                    (api.parent / "Harbor.Legacy" / "Harbor.Legacy.csproj").resolve(),
+                    (api / "Inner" / "Inner.csproj").resolve(),
+                    elsewhere,
+                ],
+            },
+            assets.project_refs,
+        )
+        # A restore that does not name the project it ran for records none.
+        del restore["projectPath"]
+        path = self.write("src/Harbor.Api/obj/project.assets.json", json.dumps(document))
+        self.assertEqual({}, read_assets(path).project_refs)
 
     def test_module_names_the_files_it_reads(self) -> None:
         self.assertEqual(("web.config", "app.config"), msbuild_reader.CONFIG_FILES)
