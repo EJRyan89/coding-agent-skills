@@ -23,7 +23,7 @@ The maintainer will assess the report, coordinate any fix, and disclose it as [D
 
 ## Disclosure
 
-When a tagged release carried the defect, its advisory is published once the fix is on `main` and the next tag carries it, and names that tag as the first fixed release. A defect that entered and left `main` between two tags is fixed on `main` and its draft advisory is closed without publication: no release carried it, so an advisory would name nothing a user can act on, and the fix's commit on `main` is the public record. Reporters who want attribution are credited in either case, in the published advisory or in the fix's commit and pull request.
+When a tagged release carried the defect, its advisory is published once the fix is on `main` and the next tag carries it, and names that tag as the first fixed release. A defect that entered and left `main` between two tags is fixed on `main`, and its draft advisory is closed without publication at the release whose tag carries the fix: no release carried it, so an advisory would name nothing a user can act on, and the fix's commit on `main` is the public record. Reporters who want attribution are credited in either case, in the published advisory or in the fix's commit and pull request.
 
 ## Security-sensitive areas
 

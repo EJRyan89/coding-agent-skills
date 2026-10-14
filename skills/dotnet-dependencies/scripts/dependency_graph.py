@@ -22,7 +22,8 @@ forward slashes:
     PATH          <project> <frameworks> <name> <sdk|graph> <hop> > <hop> ...    one chain, each hop
                   `name (vversion)`, `name (project)`, `name (vversion, assembly)`, `name (assembly)` for an
                   assembly a package ships, or `name (vversion, graph vother)` for a package the SDK resolves at one
-                  version and the walk at another; the source says whether `dotnet nuget why` answered or the walk did
+                  version and the walk at another, every other version the walk took joined by `;` as in
+                  `graph v12.0.3;v11.0.0`; the source says whether `dotnet nuget why` answered or the walk did
     TRUNCATED     <project> <frameworks> <name> <limit>      more chains than the limit; the first ones printed
     MISSING       <name>                                     no project reaches the name
     REACHES       <project> <frameworks> <name> <version> <package|project|assembly|framework> <first hop>
@@ -612,8 +613,8 @@ def same_route(walked: tuple[Hop, ...], printed: SdkPath) -> bool:
 
 def merged_chain(printed: SdkPath, walked: list[tuple[Hop, ...]]) -> str:
     """The SDK's chain, with the hops of the walk's chains along the same route when there are any, so a project hop
-    reads alike from both: each package at the SDK's version, and the walk's own versions of it named after `graph`
-    where they differ."""
+    reads alike from both: each package at the SDK's version, and the walk's own versions of it that differ named after
+    `graph`, joined by `;` in the order the walk found them."""
     if not walked:
         return " > ".join(hop_text(("package", *hop)) for hop in printed.hops)
     hops: list[str] = []
@@ -633,7 +634,8 @@ def project_paths(graph: Graph, project: Project, name: str, sdk: list[SdkPath] 
     """Print the chains from the project to the name, labelled with their frameworks; return how many lines. Each
     chain the SDK printed is named `sdk`, and holds every chain the walk found along the same route, so a route is
     printed once whichever found it (`merged_chain`); every chain only the walk found, such as one ending in an
-    assembly or one through a packages.config project, which the SDK cannot see, is named `graph`. Without the SDK's
+    assembly or a referenced project, or one through a packages.config project, which the SDK cannot see, is named
+    `graph`. Without the SDK's
     chains, the walk answers alone."""
     walked: list[tuple[str, tuple[Hop, ...]]] = []
     truncated: list[str] = []

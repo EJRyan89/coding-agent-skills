@@ -62,8 +62,9 @@ def _skill_lines(src: source.Source, owned: manifest.Ownership) -> list[ReportLi
     lines: list[ReportLine] = []
     for name, roots in users.items():
         tool = catalogue[name]
-        # An opt-in item that is not installed makes its tools optional, like a tool marked optional or one that
-        # every skill using it declares optional.
+        # A tool every root using it is an unchosen opt-in item for is optional, like a tool marked optional or one
+        # that every skill using it declares optional. An opt-in item is chosen when the requested roots stand for it,
+        # not when it is installed, so a tool another root also uses stays needed.
         dormant = {
             root
             for root in roots

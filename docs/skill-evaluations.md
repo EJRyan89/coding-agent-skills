@@ -68,10 +68,6 @@ changes a skill's prompt, model guidance, or reviewer instructions cites this ru
 
 ### Notes
 
-- **`review-repository`, `tested-change`:** Sonnet's should-fix finding, raised again on a rerun, is correct: the
-  fixture's `main` prints `days_old`'s output through `echo "$(...)"`, which drops the refusal's exit status, so the
-  change the scenario calls clean holds a defect the other models did not report. The fixture needs the fix, not the
-  reviewer.
 - **`review-document`, `pdf-gaps`:** not run on any model, because no `pdftotext` the session found met the
   extraction floor: the one Git for Windows bundles and the Poppler installed beside it were both older, so `build`
   refused the PDF's text before a reviewer started. Installing a supported Xpdf or Poppler lets it run.

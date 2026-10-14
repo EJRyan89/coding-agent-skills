@@ -93,7 +93,7 @@ STANDARD_COMMANDS = frozenset({"python", "powershell", "cygpath"}) if WINDOWS el
 def ensure_supported() -> None:
     if sys.platform not in SUPPORTED_PLATFORMS:
         raise DeployError(
-            f"ERROR: The deployer currently supports {' and '.join(SUPPORTED_PLATFORMS.values())} only "
+            f"ERROR: The deployer runs on {' and '.join(SUPPORTED_PLATFORMS.values())} only "
             f"(detected platform: {sys.platform})."
         )
 
@@ -417,9 +417,10 @@ def run_tool(
 ) -> ToolResult:
     """Run a tool with stdout and stderr captured through a file, never inherited pipes, within a deadline.
 
-    The tool and every process it starts are held in one process tree, which ends them all once it has finished. Its
-    environment is this process's without git's repository-selecting variables, so a git it runs, such as the source
-    commit's, reads the checkout it names, with `environment` added.
+    The tool and every process it starts are held in one process tree, which ends them all once it has finished: a
+    Windows job object allows no breakaway, and a process group holds every process that does not start a session or
+    group of its own. Its environment is this process's without git's repository-selecting variables, so a git it runs,
+    such as the source commit's, reads the checkout it names, with `environment` added.
     Raises ToolTimedOut when it has not finished within `timeout` seconds, TOOL_DEADLINE_SECONDS unless given, and
     DeployError when it cannot be held with the processes it starts.
     """

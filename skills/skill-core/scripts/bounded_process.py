@@ -126,7 +126,7 @@ def run_bounded(
     `env`, that is the command's whole environment but git's repository-selecting variables, and no prompt is turned
     off for it; otherwise it is `non_interactive_environment()`. With `output_limit`, at most that many bytes of each
     stream are read back, and a stream that held more ends with CUT_NOTE. With `tree`, the command starts as the tree
-    says, and every process it started is ended once it has finished or been killed.
+    says, and every process it started that stays in the tree is ended once it has finished or been killed.
     Raises OSError when the command cannot start (FileNotFoundError when it does not exist), and
     subprocess.TimeoutExpired, after killing it, when it does not finish within `timeout` seconds; the exception
     carries the output written by then, read back as a result's would be.

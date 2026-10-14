@@ -1274,6 +1274,18 @@ class FrameworkAndAssemblyTests(Fixture):
         )
         self.assertEqual(1, code)
 
+    def test_a_route_the_walk_finds_at_two_other_versions_names_both_after_graph(self) -> None:
+        # Two walked chains along the SDK's route reach the package at versions apart from the SDK's and each other.
+        printed = dependency_graph.SdkPath("Harbor.Host", "net8.0", (("Harbor.Data", ""), ("Lantern.Json", "13.0.1")))
+        walked: list[tuple[dependency_graph.Hop, ...]] = [
+            (("project", "Harbor.Data", ""), ("package", "Lantern.Json", version))
+            for version in ("12.0.3", "13.0.1", "11.0.0", "12.0.3")
+        ]
+        self.assertEqual(
+            "Harbor.Data (project) > Lantern.Json (v13.0.1, graph v12.0.3;v11.0.0)",
+            dependency_graph.merged_chain(printed, walked),
+        )
+
     def test_a_restore_keyed_by_long_framework_names_keeps_its_recorded_direct_packages(self) -> None:
         # Older SDKs key a restore's targets by long names beside the project section's short ones.
         project = self.write("src/Harbor.Tuple/Harbor.Tuple.csproj", TUPLE_PROJECT)
