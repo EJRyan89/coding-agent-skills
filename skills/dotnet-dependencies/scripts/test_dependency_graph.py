@@ -1112,6 +1112,57 @@ class FrameworkAndAssemblyTests(Fixture):
         )
         self.assertEqual(1, code)
 
+    def test_a_project_naming_one_platform_with_and_without_a_version_answers_each_framework_apart(self) -> None:
+        # What the project declares, and what its restore and the SDK write for each, in order.
+        cases = [
+            (("net8.0-windows", "net8.0-windows10.0.19041.0"), ("net8.0-windows7.0", "net8.0-windows10.0.19041")),
+            (("net8.0-android", "net8.0-android34.0"), ("net8.0-android35.0", "net8.0-android34.0")),
+        ]
+        label = "src/Harbor.Desk/Harbor.Desk.csproj"
+        for declared, written in cases:
+            with self.subTest(declared=declared):
+                project = self.write(
+                    "src/Harbor.Desk/Harbor.Desk.csproj",
+                    f'<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFrameworks>{";".join(declared)}'
+                    "</TargetFrameworks></PropertyGroup></Project>",
+                )
+                packages = (("Lantern.Wpf", "12.0.3"), ("Lantern.WinRT", "13.0.1"))
+                targets = {
+                    name: {
+                        f"{package}/1.0.0": {"type": "package", "dependencies": {"Lantern.Json": json_version}},
+                        f"Lantern.Json/{json_version}": {"type": "package"},
+                    }
+                    for name, (package, json_version) in zip(written, packages, strict=True)
+                }
+                sections = {
+                    name: {"dependencies": {package: {"target": "Package", "version": "[1.0.0, )"}}}
+                    for name, (package, _) in zip(declared, packages, strict=True)
+                }
+                assets = {"version": 3, "targets": targets, "project": {"frameworks": sections}}
+                self.write("src/Harbor.Desk/obj/project.assets.json", json.dumps(assets))
+                self.write("Harbor.sln", solution("src\\Harbor.Desk\\Harbor.Desk.csproj"))
+                why = [
+                    [label, declared[0], "Lantern.Wpf", "graph", "Lantern.Wpf (v1.0.0)"],
+                    [label, declared[1], "Lantern.WinRT", "graph", "Lantern.WinRT (v1.0.0)"],
+                ]
+                code, rows = self.run_main("why", "Lantern.Wpf", "Lantern.WinRT", "--root", str(self.root))
+                self.assertEqual((0, why), (code, self.lines(rows, "PATH")))
+                # Each framework resolves the shared package at its own version, which is no conflict.
+                code, rows = self.run_main("conflicts", "--root", str(self.root))
+                self.assertEqual(
+                    (0, [], [["0", "0"]]), (code, self.lines(rows, "CONFLICT"), self.lines(rows, "SUMMARY"))
+                )
+                # The SDK names the second framework as the restore writes it, and answers the project's name for it.
+                sdk_text = (
+                    "Project 'Harbor.Desk' has the following dependency graph(s) for 'Lantern.WinRT':\r\n\r\n"
+                    f"  [{written[1]}]\r\n  └── Lantern.WinRT (v1.0.0)\r\n\r\n"
+                )
+                _, with_sdk = self.sdk_services({(same_path(project), "lantern.winrt"): sdk_text})
+                _, rows = self.run_main("why", "Lantern.WinRT", "--root", str(self.root), services=with_sdk)
+                self.assertEqual(
+                    [[label, declared[1], "Lantern.WinRT", "sdk", "Lantern.WinRT (v1.0.0)"]], self.lines(rows, "PATH")
+                )
+
     def test_two_restored_projects_with_one_file_name_keep_their_own_sdk_answers(self) -> None:
         shop = """<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
