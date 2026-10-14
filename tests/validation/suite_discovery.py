@@ -24,11 +24,14 @@ from validation_support import (
     SKILL_GUIDE,
     TEST_NAME_PATTERNS,
     TEST_SCRIPT_EXTENSIONS,
+    CallableResolver,
+    call_argument,
     import_aliases,
     is_executable_script,
     is_test_script,
     markdown_section,
     module_imports,
+    module_statements,
     qualified_name,
     relative,
     repository_files,
@@ -450,9 +453,13 @@ class RepositoryModules:
 
     def class_bases(self, path: Path, name: str, seen: frozenset[tuple[Path, str]] = frozenset()) -> set[str]:
         """The test bases a class of path's derives from, through its own classes and the repository's: each of
-        TEST_CASE_BASES and GIT_TEST_BASE it reaches."""
+        TEST_CASE_BASES and GIT_TEST_BASE it reaches. A class defined in a module-level if, try, or with block is a
+        module's class as a top-level one is."""
         tree = self.tree(path)
-        definition = next((node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == name), None)
+        definition = next(
+            (node for node in module_statements(tree.body) if isinstance(node, ast.ClassDef) and node.name == name),
+            None,
+        )
         if definition is None or (path, name) in seen:
             return set()
         aliases = self.aliases(path)
@@ -491,7 +498,7 @@ def _suite_git_problems(modules: RepositoryModules, path: Path, name: str, runne
     aliases = modules.aliases(path)
     reason = f"runs git ({'itself' if runner == name else f'through {runner}'})"
     problems: list[str] = []
-    for node in tree.body:
+    for node in module_statements(tree.body):
         if (
             isinstance(node, ast.FunctionDef)
             and node.name == "setUpModule"
@@ -523,7 +530,8 @@ def _suite_git_problems(modules: RepositoryModules, path: Path, name: str, runne
 def git_isolation_problems(root: Path) -> list[str]:
     """Report a Python regression suite that runs git, itself or through a repository module it imports, with a test
     class that does not inherit git_test_base.GitTestCase, a setUpClass that does not start by calling its parent's,
-    or a setUpModule that does not start with git_test_base.isolate_module().
+    or a setUpModule that does not start with git_test_base.isolate_module(). A class or setUpModule defined in a
+    module-level if, try, or with block is read as a top-level one is, since unittest finds it the same way.
 
     The shell that starts a suite reaches its git otherwise: a command-scope setting outranks every file, a global
     hook runs on a fixture's commit, and a hook's GIT_DIR points every command at another repository.
@@ -545,63 +553,127 @@ def git_isolation_problems(root: Path) -> list[str]:
 # copy of os.environ and prints each result to sys.stdout, so a policy check that changes either reaches the pool.
 RUNNER = "tests/run_validation.py"
 SHARED_STATE_CALLS = frozenset(
-    {"contextlib.redirect_stdout", "contextlib.redirect_stderr", "os.putenv", "os.unsetenv", "os.chdir"}
+    {
+        "contextlib.redirect_stdout",
+        "contextlib.redirect_stderr",
+        "contextlib.chdir",
+        "os.putenv",
+        "os.unsetenv",
+        "os.chdir",
+        "os.fchdir",
+    }
 )
-ENVIRONMENT_CHANGES = frozenset({"update", "pop", "popitem", "clear", "setdefault", "__setitem__", "__delitem__"})
+ENVIRONMENT_CHANGES = frozenset(
+    {"update", "pop", "popitem", "clear", "setdefault", "__setitem__", "__delitem__", "__ior__"}
+)
 PATCHED_TARGETS = frozenset({*STANDARD_STREAMS, "os.environ"})
+MOCK_PATCHES = ("unittest.mock.patch", "mock.patch")
+PATCH_CALLS = frozenset(MOCK_PATCHES)
+PATCH_DICT_CALLS = frozenset(f"{patch}.dict" for patch in MOCK_PATCHES)
+PATCH_OBJECT_CALLS = frozenset({*(f"{patch}.object" for patch in MOCK_PATCHES), "setattr", "builtins.setattr"})
+PATCH_MULTIPLE_CALLS = frozenset(f"{patch}.multiple" for patch in MOCK_PATCHES)
+# The keyword arguments patch.multiple takes for itself; any other keyword names an attribute it replaces.
+PATCH_MULTIPLE_OPTIONS = frozenset({"target", "spec", "create", "spec_set", "autospec", "new_callable"})
 
 
 def _constant(node: ast.expr | None) -> str | None:
     return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
 
 
-def _changed_target(node: ast.AST, aliases: dict[str, str]) -> bool:
-    """Whether an assignment or deletion target is a standard stream, os.environ, or an entry of os.environ."""
+def _name(node: ast.expr | None, resolver: CallableResolver) -> str:
+    """The dotted name an expression stands for through the module's imports and the names it binds to one by a simple
+    assignment, such as os.environ for `environment` after `environment = os.environ`, or for an assignment
+    expression `(environment := os.environ)`; "" when it stands for none."""
+    if isinstance(node, ast.NamedExpr):
+        return _name(node.value, resolver)
+    if isinstance(node, ast.Attribute):
+        base = _name(node.value, resolver)
+        return f"{base}.{node.attr}" if base else ""
+    return resolver.name(node) if isinstance(node, ast.Name) else ""
+
+
+def _stored(node: ast.expr) -> list[ast.expr]:
+    """Each name, attribute, or subscript an assignment or deletion target stores to, through any unpacking."""
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return [part for item in node.elts for part in _stored(item)]
+    return _stored(node.value) if isinstance(node, ast.Starred) else [node]
+
+
+def _changed_target(node: ast.expr, resolver: CallableResolver, imports: dict[str, str] | None) -> bool:
+    """Whether an assignment or deletion target is a standard stream, os.environ, or an entry of os.environ.
+
+    A name an assignment or deletion binds changes only the name, never what it stood for, so a bare name counts only
+    for an augmented assignment, given its imports, which changes os.environ in place through `environ |= ...`.
+    """
     if isinstance(node, ast.Subscript):
-        return qualified_name(node.value, aliases) == "os.environ"
-    return qualified_name(node, aliases) in PATCHED_TARGETS
+        return _name(node.value, resolver) == "os.environ"
+    if isinstance(node, ast.Name):
+        return imports is not None and qualified_name(node, imports) in PATCHED_TARGETS
+    return _name(node, resolver) in PATCHED_TARGETS
 
 
-def _shares_state(node: ast.AST, aliases: dict[str, str]) -> str:
+def _replaced_attributes(call: ast.Call) -> list[str]:
+    """The attributes a patch.multiple call replaces: its keywords, and the string keys of a `**` dictionary."""
+    names = [found.arg for found in call.keywords if found.arg is not None]
+    for found in call.keywords:
+        if found.arg is None and isinstance(found.value, ast.Dict):
+            names += [key for key in map(_constant, found.value.keys) if key]
+    return [name for name in names if name not in PATCH_MULTIPLE_OPTIONS]
+
+
+def _patched(call: ast.Call, called: str, resolver: CallableResolver) -> list[str]:
+    """The dotted names a patch, patch.dict, patch.object, patch.multiple, or setattr call replaces, each target and
+    attribute read by position or by keyword. A patch target is a string import path; a patch.dict or patch.multiple
+    target is a string or an object; a patch.object or setattr target is an object."""
+    if called in PATCH_CALLS:
+        return [_constant(call_argument(call, 0, "target")) or ""]
+    if called in PATCH_DICT_CALLS:
+        dictionary = call_argument(call, 0, "in_dict")
+        return [_constant(dictionary) or _name(dictionary, resolver)]
+    if called in PATCH_OBJECT_CALLS:
+        owner = _name(call_argument(call, 0, "target"), resolver)
+        attribute = _constant(call_argument(call, 1, "attribute"))
+        return [f"{owner}.{attribute}"] if owner and attribute else []
+    if called in PATCH_MULTIPLE_CALLS:
+        target = call_argument(call, 0, "target")
+        base = _constant(target) or _name(target, resolver)
+        return [f"{base}.{attribute}" for attribute in _replaced_attributes(call)] if base else []
+    return []
+
+
+def _shares_state(node: ast.AST, resolver: CallableResolver, imports: dict[str, str]) -> str:
     """What a node changes of the state the pool reads, or an empty string."""
     if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Delete)):
         targets = node.targets if isinstance(node, (ast.Assign, ast.Delete)) else [node.target]
-        changed = [ast.unparse(target) for target in targets if _changed_target(target, aliases)]
+        augmented = imports if isinstance(node, ast.AugAssign) else None
+        changed = [
+            ast.unparse(stored)
+            for target in targets
+            for stored in _stored(target)
+            if _changed_target(stored, resolver, augmented)
+        ]
         return f"changes {changed[0]}" if changed else ""
     if not isinstance(node, ast.Call):
         return ""
-    called = qualified_name(node.func, aliases)
-    first = node.args[0] if node.args else None
-    second = node.args[1] if len(node.args) > 1 else None
-    if called in SHARED_STATE_CALLS:
+    called = _name(node.func, resolver)
+    owner, _, method = called.rpartition(".")
+    if called in SHARED_STATE_CALLS or (owner == "os.environ" and method in ENVIRONMENT_CHANGES):
         return f"calls {called}"
-    function = node.func
-    if (
-        isinstance(function, ast.Attribute)
-        and function.attr in ENVIRONMENT_CHANGES
-        and qualified_name(function.value, aliases) == "os.environ"
-    ):
-        return f"calls os.environ.{function.attr}"
-    patched = ""
-    if called in {"unittest.mock.patch.dict", "mock.patch.dict"} and first is not None:
-        patched = qualified_name(first, aliases)
-    elif called in {"unittest.mock.patch.object", "mock.patch.object", "setattr", "builtins.setattr"}:
-        attribute = _constant(second)
-        patched = f"{qualified_name(first, aliases)}.{attribute}" if first is not None and attribute else ""
-    elif called in {"unittest.mock.patch", "mock.patch"}:
-        patched = _constant(first) or ""
-    return f"patches {patched}" if patched in PATCHED_TARGETS else ""
+    patched = [name for name in _patched(node, called, resolver) if name in PATCHED_TARGETS]
+    return f"patches {patched[0]}" if patched else ""
 
 
 def shared_state_lines(source: str) -> list[tuple[int, str]]:
     """Each line on which a module swaps a standard stream or changes os.environ or the working directory, and how,
-    resolved through its imports."""
+    resolved through its imports and the names it binds to one by a simple assignment, as CallableResolver reads
+    them."""
     tree = ast.parse(source)
-    aliases = import_aliases(tree)
+    resolver = CallableResolver(tree)
+    imports = import_aliases(tree)
     found = {
         (node.lineno, change)
         for node in ast.walk(tree)
-        if isinstance(node, (ast.stmt, ast.expr)) and (change := _shares_state(node, aliases))
+        if isinstance(node, (ast.stmt, ast.expr)) and (change := _shares_state(node, resolver, imports))
     }
     return sorted(found)
 

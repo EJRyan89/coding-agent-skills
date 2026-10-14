@@ -451,6 +451,9 @@ GIT_SUITE_FILES = {
     ),
 }
 
+# The files a fixture of a suite that runs git through lib/runner.py needs.
+GIT_RUNNER_FILES = ("pyproject.toml", "lib/runner.py")
+
 
 class GitIsolationPolicy(GitTestCase):
     def test_a_suite_that_runs_git_must_isolate_every_test_class_class_fixture_and_module_fixture(self) -> None:
@@ -471,6 +474,46 @@ class GitIsolationPolicy(GitTestCase):
                     f"tests/test_through_lookup.py:6 Case {plain} (through lib/finder.py)",
                     f"tests/test_through_package.py:6 Case {plain} (through pkg/located.py)",
                     f"tests/test_through_runner.py:6 Case {plain} (through lib/runner.py)",
+                ],
+                git_isolation_problems(root),
+            )
+
+    def test_a_class_or_module_fixture_in_a_module_level_if_try_or_with_block_is_read_as_a_top_level_one(
+        self,
+    ) -> None:
+        nested = {
+            "tests/test_nested_if.py": (
+                "import sys\nimport unittest\n\nimport runner\n\nif sys.platform == 'win32':\n\n"
+                "    class Base(unittest.TestCase):\n        pass\n\n\nclass Case(Base):\n    pass\n"
+            ),
+            "tests/test_nested_try.py": (
+                "import runner\n\ntry:\n    import git_test_base\nexcept ImportError:\n    raise\nelse:\n\n"
+                "    def setUpModule():\n        pass\n\n    class Case(git_test_base.GitTestCase):\n        pass\n"
+            ),
+            "tests/test_nested_with.py": (
+                "import contextlib\n\nimport runner\nfrom git_test_base import GitTestCase\n\n"
+                "with contextlib.suppress(ImportError):\n\n    class Case(GitTestCase):\n        @classmethod\n"
+                "        def setUpClass(cls):\n            cls.value = 1\n"
+            ),
+            "tests/test_nested_isolated.py": (
+                "import sys\n\nimport git_test_base\nimport runner\n\nif sys.platform == 'win32':\n\n"
+                "    def setUpModule():\n        git_test_base.isolate_module()\n\nelse:\n\n"
+                "    class Base(git_test_base.GitTestCase):\n        @classmethod\n        def setUpClass(cls):\n"
+                "            super().setUpClass()\n\n\nclass Case(Base):\n    pass\n"
+            ),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(root, {**{name: GIT_SUITE_FILES[name] for name in GIT_RUNNER_FILES}, **nested})
+            plain = "does not inherit git_test_base.GitTestCase, and the suite runs git (through lib/runner.py)"
+            self.assertEqual(
+                [
+                    f"tests/test_nested_if.py:8 Base {plain}",
+                    f"tests/test_nested_if.py:12 Case {plain}",
+                    "tests/test_nested_try.py:9 runs git (through lib/runner.py), so its setUpModule starts with "
+                    "git_test_base.isolate_module()",
+                    "tests/test_nested_with.py:10 Case.setUpClass does not start with super().setUpClass(), which "
+                    "isolates its git, and the suite runs git (through lib/runner.py)",
                 ],
                 git_isolation_problems(root),
             )
@@ -531,6 +574,71 @@ class PoolSharedStatePolicy(GitTestCase):
         )
         self.assertIn("which the validation pool reads while the policy checks run", problems[0])
 
+    def test_a_string_patch_target_a_keyword_target_patch_multiple_contextlib_chdir_and_an_alias_are_reported(
+        self,
+    ) -> None:
+        alpha = (
+            "import contextlib\n"
+            "import io\n"
+            "import os\n"
+            "import sys\n"
+            "from unittest import mock\n"
+            "\n"
+            "def check():\n"
+            "    mock.patch.dict('os.environ', {'A': 'b'})\n"
+            "    mock.patch.dict(in_dict=os.environ, values={'A': 'b'})\n"
+            "    with contextlib.chdir('..'):\n"
+            "        pass\n"
+            "    mock.patch.multiple(sys, stdout=io.StringIO())\n"
+            "    mock.patch.multiple('os', **{'environ': {}})\n"
+            "    mock.patch.multiple(target=sys, stderr=None)\n"
+            "    mock.patch(target='os.environ', new={})\n"
+            "    mock.patch(target='sys.stdout')\n"
+            "    mock.patch.object(sys, attribute='stdout')\n"
+            "    mock.patch.object(target=sys, attribute='stdin')\n"
+            "    env = os.environ; env['A'] = 'b'\n"
+            "    environment = os.environ; environment.clear()\n"
+            "    (other := os.environ)['A'] = 'b'\n"
+            "    os.fchdir(0)\n"
+            "    streams = sys; streams.stdout, value = io.StringIO(), 1\n"
+            "    update = os.environ.update; update(A='b')\n"
+            "\n"
+            "SAVED = os.environ\n"
+            "\n"
+            "def later():\n"
+            "    del SAVED['A']\n"
+            "    SAVED.pop('A')\n"
+            "    from os import environ\n"
+            "    environ |= {'A': 'b'}\n"
+            "    os.environ |= {'A': 'b'}\n"
+        )
+        problems = self.problems({"tests/validation/alpha.py": alpha})
+        self.assertEqual(
+            [
+                "tests/validation/alpha.py:8 patches os.environ",
+                "tests/validation/alpha.py:9 patches os.environ",
+                "tests/validation/alpha.py:10 calls contextlib.chdir",
+                "tests/validation/alpha.py:12 patches sys.stdout",
+                "tests/validation/alpha.py:13 patches os.environ",
+                "tests/validation/alpha.py:14 patches sys.stderr",
+                "tests/validation/alpha.py:15 patches os.environ",
+                "tests/validation/alpha.py:16 patches sys.stdout",
+                "tests/validation/alpha.py:17 patches sys.stdout",
+                "tests/validation/alpha.py:18 patches sys.stdin",
+                "tests/validation/alpha.py:19 changes env['A']",
+                "tests/validation/alpha.py:20 calls os.environ.clear",
+                "tests/validation/alpha.py:21 changes (other := os.environ)['A']",
+                "tests/validation/alpha.py:22 calls os.fchdir",
+                "tests/validation/alpha.py:23 changes streams.stdout",
+                "tests/validation/alpha.py:24 calls os.environ.update",
+                "tests/validation/alpha.py:29 changes SAVED['A']",
+                "tests/validation/alpha.py:30 calls os.environ.pop",
+                "tests/validation/alpha.py:32 changes environ",
+                "tests/validation/alpha.py:33 changes os.environ",
+            ],
+            [problem.split(",", 1)[0] for problem in problems],
+        )
+
     def test_the_runner_itself_is_read_and_a_missing_policy_module_is_reported(self) -> None:
         runner = self.RUNNER + "import contextlib, io\n\ndef f():\n    contextlib.redirect_stderr(io.StringIO())\n"
         with tempfile.TemporaryDirectory() as temporary:
@@ -560,6 +668,32 @@ class PoolSharedStatePolicy(GitTestCase):
             "        pass\n"
             "    with mock.patch('module.attribute'):\n"
             "        pass\n"
+        )
+        self.assertEqual([], self.problems({"tests/validation/alpha.py": alpha}))
+
+    def test_the_conforming_twin_of_each_newly_read_form_passes(self) -> None:
+        alpha = (
+            "import contextlib\n"
+            "import io\n"
+            "import os\n"
+            "import sys\n"
+            "from os import environ\n"
+            "from unittest import mock\n"
+            "\n"
+            "def check(directory, merged):\n"
+            "    mock.patch.dict('module.SETTINGS', {'A': 'b'})\n"
+            "    mock.patch.dict(in_dict=merged, values={'A': 'b'})\n"
+            "    with contextlib.suppress(OSError):\n"
+            "        pass\n"
+            "    mock.patch.multiple(io, StringIO=None, create=True)\n"
+            "    mock.patch.multiple('sys', **{'argv': []})\n"
+            "    mock.patch(target='module.environ', new={})\n"
+            "    mock.patch.object(sys, attribute='argv')\n"
+            "    env = dict(os.environ); env['A'] = 'b'\n"
+            "    environment = os.environ; environment = {}; environment.clear()\n"
+            "    (other := {})['A'] = 'b'\n"
+            "    stream = sys.stdout; stream = io.StringIO()\n"
+            "    print(environ.get('A'), os.environ.get('A'), directory)\n"
         )
         self.assertEqual([], self.problems({"tests/validation/alpha.py": alpha}))
 

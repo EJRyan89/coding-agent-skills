@@ -24,7 +24,8 @@ A suite whose code writes under the profile folder gives that code a temporary h
 
 `GitTestCase` runs each test, its setUp, tearDown, and cleanups included, in a home of its own, whether or not a
 subclass's setUp calls its parent, and its class fixture in another; a subclass that defines setUpClass starts it
-with `super().setUpClass()`. A suite whose setUpModule builds fixtures with git starts it with `isolate_module()`.
+with `super().setUpClass()`. A setUpModule starts with `isolate_module()`, whatever it builds, since it runs before
+any test class isolates git.
 `git_config` adds settings to the global file, such as a default branch a suite's fixtures name.
 """
 
