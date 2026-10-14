@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -158,6 +159,26 @@ class SnapshotPathTests(GitTestCase):
         link_folder(self.root / "linked", self.outer)
         self.assertTrue((self.root / "linked" / "outside.py").is_file())
         self.assertIsNone(snapshot_path(self.root, "linked/outside.py"))
+
+
+class UnresolvableSnapshotPathTests(GitTestCase):
+    def test_a_path_whose_resolution_raises_is_refused(self) -> None:
+        # Windows' non-strict realpath re-raises some errors, such as a name too long, so the error is raised here
+        # for the one path, leaving the root to resolve.
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name) / "snapshot"
+        root.mkdir()
+        real_resolve = Path.resolve
+
+        def resolve(path: Path, strict: bool = False) -> Path:
+            if path.name == "unresolvable.py":
+                raise OSError(206, "The filename or extension is too long")
+            return real_resolve(path, strict)
+
+        with mock.patch.object(Path, "resolve", resolve):
+            self.assertIsNone(snapshot_path(root, "tools/unresolvable.py"))
+            self.assertEqual(root.resolve() / "tools" / "inside.py", snapshot_path(root, "tools/inside.py"))
 
 
 if __name__ == "__main__":

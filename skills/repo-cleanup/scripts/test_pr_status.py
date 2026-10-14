@@ -827,6 +827,23 @@ class PatchMatchTests(SquashFixture):
         self.assertNotEqual(self.tip, rebased)
         self.assertTrue(self.same_change(rebased, squash))
 
+    def test_a_rewritten_tip_that_was_never_rebased_matches_a_squash_onto_a_main_that_moved_in_other_files(
+        self,
+    ) -> None:
+        # The most common squash: main moved in another file while the pull request was open, and the branch was
+        # neither rebased nor merged with it. The tip lacks main's later file, so a test that compared the tip with
+        # the squash commit's parent, rather than with the point the tip left main, would see that file removed.
+        self.change(self.other, "elsewhere.txt", "unrelated\n", "main moves on")
+        self.git("-C", str(self.other), "push", "origin", "main")
+        squash = self.squash_merge()
+        rewritten = self.reword_tip()
+        self.assertEqual(
+            self.git("-C", str(self.clone), "rev-parse", "main"),
+            self.git("-C", str(self.clone), "merge-base", self.BASE_REF, rewritten),
+            "the tip still leaves main where it did before main moved",
+        )
+        self.assertTrue(self.same_change(rewritten, squash))
+
     def test_a_later_commit_with_real_changes_does_not_match(self) -> None:
         squash = self.squash_merge()
         self.assertFalse(self.same_change(self.extend_topic(), squash))
