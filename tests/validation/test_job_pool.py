@@ -7,21 +7,26 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import sys
 import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 import job_pool
+import pull_request_title
+import upgrade_notes
 from git_test_base import GitTestCase
 from job_pool import (
     OUTPUT_LOCK,
     Job,
+    PoolResult,
     Retry,
     Terminated,
     append_step_summary,
@@ -33,6 +38,7 @@ from job_pool import (
 )
 
 from deployer import platform_support
+from tests import run_validation
 
 # Stand-ins for the program a job starts, Bash among them. Windows reports a process that exits with -2147483644 as
 # 0x80000004, the status Git Bash was ended with on the hosted runners before it printed anything; elsewhere a process
@@ -309,6 +315,40 @@ class TerminationFixtures(GitTestCase):
             f"  {ended}\n  It passed.\n  ```\n\n",
             text,
         )
+
+
+class RunnerDefaultEnvironment(GitTestCase):
+    """The runner's main as CI starts it, with no environment argument: it reads the step summary's path, the base
+    branch, and the worker count from os.environ. Its own policy checks pass an environment, and a policy check may not
+    change os.environ beside the pool, so this suite, which runs in its own process, holds the default."""
+
+    def test_main_reads_the_step_summary_the_base_branch_and_the_workers_from_os_environ(self) -> None:
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as temporary:
+            summary = Path(temporary) / "step summary.md"
+            variables = {"GITHUB_STEP_SUMMARY": str(summary), "GITHUB_BASE_REF": "release line", "VALIDATION_JOBS": "3"}
+            with (
+                mock.patch.dict(os.environ, variables),
+                mock.patch.object(upgrade_notes, "pull_request_body", None),
+                mock.patch.object(pull_request_title, "pull_request_title", None),
+                mock.patch.object(run_validation, "tool_versions", return_value={}),
+                mock.patch.object(run_validation, "report_prerequisite_problems", return_value=False),
+                mock.patch.object(run_validation, "changed_paths", return_value=None) as changed,
+                mock.patch.object(run_validation, "all_jobs", return_value=[]),
+                mock.patch.object(
+                    run_validation, "run_beside", return_value=(unittest.TestResult(), PoolResult([], []))
+                ) as beside,
+                contextlib.redirect_stdout(output),
+            ):
+                code = run_validation.main([])
+            self.assertTrue(summary.is_file(), "the step summary is written to the file os.environ names")
+            text = summary.read_text(encoding="utf-8")
+        self.assertEqual(0, code, output.getvalue())
+        changed.assert_called_once_with(run_validation.REPOSITORY_ROOT, "origin/release line")
+        self.assertEqual(3, beside.call_args.args[3])
+        self.assertIn("suite jobs on 3 workers.", output.getvalue())
+        self.assertIn("## Repository validation\n", text)
+        self.assertIn("**validation passed**", text)
 
 
 if __name__ == "__main__":

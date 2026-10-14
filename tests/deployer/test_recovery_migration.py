@@ -1394,12 +1394,20 @@ class MigrationTests(DeployerTestCase):
         )
 
     def test_a_bundle_request_stays_with_the_old_source_when_none_of_its_members_moves(self) -> None:
-        self.old_source_with_agent({"pack": {"members": ["alpha"], "opt_in": True}}, "--include", "pack")
+        # The old source's pack holds gamma alone, which this source does not define, so gamma stays and keeps the old
+        # entry; alpha, deployed on its own, moves. This source names a different pack, which the request must not join.
+        self.make_skill("gamma", "Gamma")
+        self.old_source_with_agent({"pack": {"members": ["gamma"], "opt_in": True}}, "--include", "pack")
+        self.remove_skill("gamma")
         self.make_source_json(bundles={"pack": {"members": ["beta"], "opt_in": True}})
         self.make_skill("beta", "Beta")
-        self.make_skill("alpha", "Alpha", agent_deps=["reviewer"])
         self.deploy_ok("--migrate-from", "test/old")
-        self.assertEqual([], self.manifest()["sources"]["test/skills"]["requested_bundles"])
+        sources = self.manifest()["sources"]
+        self.assertEqual(["alpha"], sorted(sources["test/skills"]["skills"]))
+        self.assertEqual([], sources["test/skills"]["requested_bundles"])
+        self.assertEqual(["gamma"], sorted(sources["test/old"]["skills"]))
+        self.assertEqual(["pack"], sources["test/old"]["requested_bundles"])
+        self.assertEqual({"pack": ["gamma"]}, sources["test/old"]["requested_bundle_members"])
         self.assertNotIn("pack (bundle)", self.deploy_ok("--all", "--dry-run").output)
 
     def drop_bundle_members(self) -> None:

@@ -3868,6 +3868,31 @@ class ReviewerSourceTests(PipelineFixture):
         )
         self.assertEqual([], ready["uncovered_files"])
 
+    def test_validate_reviewer_counts_only_the_ignored_files_no_open_sharing_specialist_reviews(self) -> None:
+        # README.md joins the change uncovered beside CLAUDE.md, and the sharing specialist matches only CLAUDE.md:
+        # while its condition is open it reviews one of the two, and while it is closed neither.
+        cases = (
+            (None, "def total(items):\n    if not items:\n        return 0\n    return sum(items)\n", 1, ["README.md"]),
+            ("window", "def total(items):\n    return sum(items) or 0\n", 2, ["CLAUDE.md", "README.md"]),
+        )
+        for sharer_when, service, count, unreviewed in cases:
+            with self.subTest(sharer_when=sharer_when):
+                self.sharing_manifest(sharer_when=sharer_when, uncovered="ignore")
+                self.push({"README.md": "# Fixture\n", "app/service.py": service})
+                code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
+                self.assertEqual(0, code, err)
+                lines = out.splitlines()
+                self.assertEqual(
+                    [
+                        "UNCOVERED CLAUDE.md",
+                        "UNCOVERED README.md",
+                        f"UNREVIEWED files={count} (the manifest sets uncovered to ignore; the record lists them)",
+                        "VALID",
+                    ],
+                    lines[lines.index("UNCOVERED CLAUDE.md") :],
+                )
+                self.assertEqual(unreviewed, self.prepare()["uncovered_files"])
+
     def test_local_manifest_problems_fail_closed(self) -> None:
         manifest = self.local_manifest()
         (manifest.parent / "window.py").unlink()

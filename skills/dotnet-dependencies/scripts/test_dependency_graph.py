@@ -13,6 +13,7 @@ import time
 import unittest
 from collections.abc import Sequence
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
@@ -1702,6 +1703,19 @@ class EntryPointTests(Fixture):
         result = self.run_script("why", "Lantern.Json", "--root", str(self.root / "missing"))
         self.assertEqual(1, result.returncode)
         self.assertTrue(result.stdout.rstrip().endswith(b"is neither a solution file nor a directory"), result.stdout)
+
+
+class UnreadableSolutionTests(Fixture):
+    def test_a_solution_the_system_refuses_to_read_is_reported_unreadable_and_the_run_goes_on(self) -> None:
+        root = self.mixed_solution()
+        refused = PermissionError(13, "Permission denied", str(root))
+        with mock.patch.object(dependency_graph, "read_listed_projects", side_effect=refused):
+            code, rows = self.run_main("why", "Lantern.Json", "--root", str(root))
+        self.assertEqual(1, code)
+        self.assertEqual([["Harbor.sln", "Permission denied"]], self.lines(rows, "UNREADABLE"))
+        self.assertEqual([], self.lines(rows, "PROJECT"))
+        self.assertFalse(any(row[0].startswith("FAILED") for row in rows), rows)
+        self.assertEqual("SUMMARY", rows[-1][0])
 
 
 if __name__ == "__main__":

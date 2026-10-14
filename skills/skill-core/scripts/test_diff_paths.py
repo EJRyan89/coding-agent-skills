@@ -56,6 +56,18 @@ class RealDiffTests(GitTestCase):
         )
         self.assertEqual([ACCENTED, ACCENTED], [header_path(line[4:]) for line in headers])
 
+    def test_a_quoted_path_with_a_space_keeps_git_s_tab_off_before_it_is_decoded(self) -> None:
+        quoted_spaced = "tools/résumé age.py"
+        self.commit({quoted_spaced: "DAYS = 30\n"})
+        self.commit({quoted_spaced: "DAYS = 7\n"})
+        headers = self.headers(("--- ", "+++ "))
+        # The fixture is what git writes: the quoted name, then the tab it ends a name holding a space with.
+        self.assertEqual(
+            ['--- "a/tools/r\\303\\251sum\\303\\251 age.py"\t', '+++ "b/tools/r\\303\\251sum\\303\\251 age.py"\t'],
+            headers,
+        )
+        self.assertEqual([quoted_spaced, quoted_spaced], [header_path(line[4:]) for line in headers])
+
     def test_an_added_and_a_deleted_file_have_no_path_on_their_empty_side(self) -> None:
         self.commit({SPACED: "DAYS = 30\n"})
         (self.checkout / SPACED).unlink()
