@@ -1486,6 +1486,43 @@ CHOOSING_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup><Reference Include="Beacon.Modern" Condition="'$(TargetFramework)'=='net8.0'" /></ItemGroup>
 </Project>
 """
+# A project that includes Lib and then holds a Choose whose When sets the framework it tests, and whose Otherwise,
+# which MSBuild never enters, removes Lib.
+CHOSEN_REMOVE_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup><ProjectReference Include="..\\Lib\\Lib.csproj" /></ItemGroup>
+  <Choose>
+    <When Condition="'$(TargetFramework)'==''">
+      <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+    </When>
+    <Otherwise>
+      <PropertyGroup><TargetFramework>net472</TargetFramework></PropertyGroup>
+      <ItemGroup><ProjectReference Remove="..\\Lib\\Lib.csproj" /></ItemGroup>
+    </Otherwise>
+  </Choose>
+</Project>
+"""
+# The same Otherwise after a Choose entered with net8.0, before a group that sets net472.
+RESET_REMOVE_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+  <ItemGroup><ProjectReference Include="..\\Lib\\Lib.csproj" /></ItemGroup>
+  <Choose>
+    <When Condition="'$(TargetFramework)'=='net8.0'"><PropertyGroup><Chosen>true</Chosen></PropertyGroup></When>
+    <Otherwise><ItemGroup><ProjectReference Remove="..\\Lib\\Lib.csproj" /></ItemGroup></Otherwise>
+  </Choose>
+  <PropertyGroup><TargetFramework>net472</TargetFramework></PropertyGroup>
+</Project>
+"""
+# A legacy project with a packages.config whose Removes the reader cannot evaluate: its Reference's is reported, and
+# its PackageReference's is not, since the packages.config gives its packages.
+CONFIG_REMOVE_PROJECT = """<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup><TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion></PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Beacon.Classic" />
+    <Reference Remove="Beacon.Classic" Condition="'$(Configuration)'=='Debug'" />
+    <PackageReference Remove="Lantern.Json" Condition="'$(Configuration)'=='Debug'" />
+  </ItemGroup>
+</Project>
+"""
 OTHER_ROUTE_SDK_TEXT = (
     "Project 'Harbor.Core' has the following dependency graph(s) for 'Lantern.Json':\r\n"
     "\r\n"
@@ -1700,6 +1737,88 @@ class ConditionalItemTests(Fixture):
         code, rows = self.run_main("where", "Beacon.Modern", "--root", str(self.root))
         self.assertEqual([[label, "net8.0", "Beacon.Modern", "framework", "-", "-"]], self.lines(rows, "WHERE"))
         self.assertEqual((0, []), (code, self.lines(rows, "UNREADABLE")))
+
+    def test_a_remove_in_a_branch_the_choose_did_not_choose_is_never_applied(self) -> None:
+        # The issue's two projects: MSBuild enters App's Choose with the framework unset, so the When applies and the
+        # Otherwise's Remove never does, with no restore and with one; nor when a later group sets the framework the
+        # Choose's When did not test.
+        app, lib = "App/App.csproj", "Lib/Lib.csproj"
+        self.write(lib, LIB_PROJECT)
+        own = [lib, "-", "Lib.Pkg", "graph", "Lib.Pkg (v1.0.0)"]
+        for project, framework in ((CHOSEN_REMOVE_PROJECT, "net8.0"), (RESET_REMOVE_PROJECT, "net472")):
+            with self.subTest(framework=framework):
+                assets = self.root / "App" / "obj" / "project.assets.json"
+                assets.unlink(missing_ok=True)
+                self.write(app, project)
+                chain = [app, "-", "Lib.Pkg", "graph", "Lib (project) > Lib.Pkg (v1.0.0)"]
+                code, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root))
+                self.assertEqual(
+                    (0, [chain, own], []), (code, self.lines(rows, "PATH"), self.lines(rows, "UNREADABLE"))
+                )
+                document = {"version": 3, "targets": {framework: {}}, "project": {}}
+                self.write("App/obj/project.assets.json", json.dumps(document))
+                code, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root))
+                self.assertEqual(
+                    (0, [[app, framework, *chain[2:]], own], []),
+                    (code, self.lines(rows, "PATH"), self.lines(rows, "UNREADABLE")),
+                )
+
+    def test_with_no_restore_a_remove_it_cannot_evaluate_is_reported_and_not_applied(self) -> None:
+        # The issue's projects: App removes Lib under a condition the reader cannot evaluate, and a central
+        # PackageVersion's Remove under one gives Lib.Pkg's version. With no restore, both are kept and reported for
+        # the first framework each cannot be evaluated for, as with a restore.
+        app, lib = "App/App.csproj", "Lib/Lib.csproj"
+        debug = "'$(Configuration)'=='Debug'"
+        self.write(app, REMOVING_PROJECT.format(debug))
+        self.write(lib, LIB_PROJECT.replace(' Version="1.0.0"', ""))
+        self.write(
+            "Directory.Packages.props",
+            '<Project><ItemGroup><PackageVersion Include="Lib.Pkg" Version="1.0.0" />'
+            f'<PackageVersion Remove="Lib.Pkg" Condition="{debug}" /></ItemGroup></Project>',
+        )
+        code, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root))
+        self.assertEqual(
+            [
+                [app, "-", "Lib.Pkg", "graph", "Lib (project) > Lib.Pkg (v1.0.0)"],
+                [lib, "-", "Lib.Pkg", "graph", "Lib.Pkg (v1.0.0)"],
+            ],
+            self.lines(rows, "PATH"),
+        )
+        self.assertEqual(
+            [
+                [
+                    app,
+                    f"the condition {debug} on the Remove of ProjectReference Lib/Lib.csproj cannot be evaluated for "
+                    "net8.0, so it is not removed",
+                ],
+                [
+                    lib,
+                    f"the condition {debug} on the Remove of PackageVersion Lib.Pkg cannot be evaluated for net8.0, "
+                    "so it is not removed",
+                ],
+            ],
+            sorted(self.lines(rows, "UNREADABLE")),
+        )
+        self.assertEqual(1, code)
+        # A project whose packages.config gives its packages reports its Reference's Remove and not its
+        # PackageReference's, which it does not read.
+        label = "Classic/Classic.csproj"
+        self.write(label, CONFIG_REMOVE_PROJECT)
+        self.write("Classic/packages.config", '<?xml version="1.0"?><packages />')
+        self.write("Harbor.sln", solution("Classic\\Classic.csproj"))
+        code, rows = self.run_main("where", "Beacon.Classic", "--root", str(self.root))
+        self.assertEqual([[label, "-", "Beacon.Classic", "framework", "-", "-"]], self.lines(rows, "WHERE"))
+        self.assertEqual(
+            [
+                [
+                    label,
+                    f"the condition {debug} on the Remove of Reference Beacon.Classic cannot be evaluated for v4.7.2, "
+                    "so it is not removed",
+                ]
+            ],
+            self.lines(rows, "UNREADABLE"),
+        )
+        self.assertEqual(1, code)
 
     def test_the_chain_limit_counts_the_sdks_chains(self) -> None:
         root = self.mixed_solution()

@@ -8,14 +8,16 @@ MSBuild 2003 namespace, a nuspec one of several, and a binding redirect the asse
 
 Each PackageReference, Reference, ProjectReference, and central PackageVersion item is kept with the conditions it sits
 under, its own and those of the ItemGroup, When, or Otherwise holding it, and the Whens before it in its Choose, which
-must fail, so a framework's references can be evaluated for that framework, whose build fixes `$(TargetFramework)`. The
-target framework properties are read as the file sets them, each condition evaluated once, when it is reached
-(`FrameworkProperties`). An item inside a Target is defined only when that target runs, so evaluation leaves it out and
-the reader names it instead. Only comparisons of `$(TargetFramework)` and literals, and its StartsWith call, are
-evaluated; any other condition is left unevaluated and named, never guessed, and a project whose When has no Condition,
-which MSBuild refuses, is unreadable. Every comparison of two framework names goes through `same_framework`, so a
-restore's long name, such as `.NETCoreApp,Version=v8.0`, matches the project's `net8.0`, and every search for a name
-among a project's names through `matching_framework`, which prefers the name spelled alike.
+must fail, so a framework's references can be evaluated for that framework: an item's own conditions with the value the
+build of that framework gives `$(TargetFramework)` in the end, and a When's with the value it held when MSBuild entered
+the Choose, which chooses its branch then, once (`ChooseEntry`). The target framework properties are read as the file
+sets them, each condition evaluated once, when it is reached (`FrameworkProperties`). An item inside a Target is defined
+only when that target runs, so evaluation leaves it out and the reader names it instead. Only comparisons of
+`$(TargetFramework)` and literals, and its StartsWith call, are evaluated; any other condition is left unevaluated and
+named, never guessed, and a project whose When has no Condition, which MSBuild refuses, is unreadable. Every comparison
+of two framework names goes through `same_framework`, so a restore's long name, such as `.NETCoreApp,Version=v8.0`,
+matches the project's `net8.0`, and every search for a name among a project's names through `matching_framework`, which
+prefers the name spelled alike.
 """
 
 from __future__ import annotations
@@ -71,7 +73,8 @@ PROJECT_ITEMS = ("PackageReference", "ProjectReference", "Reference")
 CENTRAL_ITEM = "PackageVersion"
 
 
-Conditions = tuple[tuple[str, bool], ...]
+# A condition an item sits under, with whether it must hold and, for a When's, its Choose's `ChooseEntry`.
+Conditions = tuple[tuple[str, bool, "ChooseEntry | None"], ...]
 ConditionedElement = tuple[Element, Conditions]
 
 
@@ -255,22 +258,64 @@ def frameworks_of(root: Element) -> list[str]:
     return FrameworkProperties(root).frameworks()
 
 
+# The values of a project's framework properties at one point of its evaluation, each a list of the names it may hold:
+# a TargetFrameworks value its names, and a TargetFramework value one name, or several when the file may set any of
+# them there, `""` among them where it may still be unset.
+PropertyState = dict[str, list[str]]
+
+
+def joined(states: Sequence[PropertyState]) -> PropertyState:
+    """The state after one of several alternatives, not knowing which: each property may hold any value one of them
+    leaves it, `""` where one leaves it unset."""
+    names = dict.fromkeys(name for state in states for name in state)
+    return {name: list(dict.fromkeys(value for state in states for value in state.get(name) or [""])) for name in names}
+
+
+@dataclass(frozen=True)
+class ChooseEntry:
+    """The value `$(TargetFramework)` holds when MSBuild enters a Choose, which tests its Whens then and only then,
+    whatever the file sets after, in the build of each framework: the framework itself where the file sets nothing to
+    the property from the Choose on, or where TargetFrameworks names it, whose build fixes the property from the
+    start; else the value the file has given it so far, `""` while unset, which the reader cannot evaluate a condition
+    against while it is one of several."""
+
+    values: tuple[str, ...]
+    reassigned: bool
+    built_apart: tuple[str, ...]
+
+    def framework_at(self, framework: str) -> str | None:
+        if not self.reassigned or matching_framework(framework, self.built_apart) is not None:
+            return framework
+        return self.values[0] if len(self.values) == 1 else None
+
+
 class FrameworkProperties:
     """A project's target framework properties, read in document order as MSBuild evaluates them: each condition is
     evaluated once, when it is reached, a PropertyGroup's before its properties and a Choose's Whens before any branch
     applies, the first that holds, else the Otherwise, so a property a group or a branch sets never changes whether it
     applies. A property whose conditions hold sets its value, one whose conditions fail is passed over, and one whose
-    condition cannot be evaluated adds its names to those it may replace, never choosing between them. A condition
-    reads `$(TargetFramework)` as the value the file has given it so far, empty at first; while that value is one of
-    several, a condition reading it cannot be evaluated."""
+    condition cannot be evaluated adds its names to those it may replace, never choosing between them; a Choose whose
+    branch cannot be chosen reads each branch that may apply from the state it was entered with, and the next element
+    sees any value one of them, or none where no branch may apply, leaves. A condition reads `$(TargetFramework)` as
+    the value the file has given it so far, empty at first; while that value is one of several, a condition reading it
+    cannot be evaluated. The value each Choose is entered with is kept for its items (`choose_entries`)."""
 
     def __init__(self, root: Element) -> None:
-        self.root = root
-        self.values: dict[str, list[str]] = {}
+        self.values: PropertyState = {}
+        self.assignments = 0
+        self.entered: dict[Element, tuple[tuple[str, ...], int]] = {}
+        self.read(root)
 
     def frameworks(self) -> list[str]:
-        self.read(self.root, True)
-        return list(dict.fromkeys(framework for names in self.values.values() for framework in names))
+        return list(dict.fromkeys(framework for names in self.values.values() for framework in names if framework))
+
+    def choose_entries(self) -> dict[Element, ChooseEntry]:
+        """Each Choose the file enters, with the value `$(TargetFramework)` holds there for each framework's build."""
+        built_apart = tuple(name for name in self.values.get("TargetFrameworks", []) if name)
+        return {
+            choose: ChooseEntry(values, self.assignments > assignments, built_apart)
+            for choose, (values, assignments) in self.entered.items()
+        }
 
     def holds(self, text: str) -> bool | None:
         """Whether a condition holds now, None when it cannot be evaluated."""
@@ -284,48 +329,64 @@ class FrameworkProperties:
         text = (element.get("Condition") or "").strip()
         return self.holds(text) if text else True
 
-    def read(self, container: Element, certain: bool) -> None:
-        """Read the PropertyGroups and Chooses of a project, When, or Otherwise; `certain` is whether every condition
-        around them holds."""
+    def read(self, container: Element) -> None:
+        """Read the PropertyGroups and Chooses of a project, When, or Otherwise."""
         for child in container:
             name = local_name(child)
             if name == "PropertyGroup" and (applies := self.condition(child)) is not False:
                 for element in child:
-                    self.set_property(element, certain and applies is True)
+                    self.set_property(element, applies is True)
             elif name == "Choose":
-                for branch, sure in self.branches(child, certain):
-                    self.read(branch, sure)
+                self.read_choose(child)
 
-    def branches(self, choose: Element, certain: bool) -> list[tuple[Element, bool]]:
-        """The branches of a Choose that may apply, each with whether it surely does, every When tested before any
-        branch is read: up to the first When that holds, else the Otherwise. A When with no Condition, which MSBuild
-        refuses, cannot be evaluated, and after a When that cannot be, no branch surely applies."""
-        chosen: list[tuple[Element, bool]] = []
+    def read_choose(self, choose: Element) -> None:
+        """Read the branch of a Choose that applies, or, when the reader cannot choose it, each branch that may, from
+        the state the Choose was entered with, and join the states they leave with the one it was entered with when no
+        branch may apply."""
+        self.entered[choose] = (tuple(self.values.get("TargetFramework") or [""]), self.assignments)
+        branches, chosen = self.branches(choose)
+        if chosen and len(branches) == 1:
+            self.read(branches[0])
+            return
+        incoming = self.values
+        states = [] if chosen else [incoming]
+        for branch in branches:
+            self.values = {name: list(names) for name, names in incoming.items()}
+            self.read(branch)
+            states.append(self.values)
+        self.values = joined(states)
+
+    def branches(self, choose: Element) -> tuple[list[Element], bool]:
+        """The branches of a Choose that may apply, every When tested before any branch is read: up to the first When
+        that holds, else the Otherwise; and whether one of them surely applies, as one does once a When holds or the
+        Otherwise is reached. A When with no Condition, which MSBuild refuses, cannot be evaluated."""
+        found: list[Element] = []
         for branch in choose:
             name = local_name(branch)
             text = (branch.get("Condition") or "").strip()
             value = (self.holds(text) if text else None) if name == "When" else True
             if name not in ("When", "Otherwise") or value is False:
                 continue
-            chosen.append((branch, certain and value is True))
+            found.append(branch)
             if value is True:
-                break
-            certain = False
-        return chosen
+                return found, True
+        return found, False
 
     def set_property(self, element: Element, certain: bool) -> None:
-        """Apply a framework property whose condition does not fail: its value replaces the one before it when every
-        condition around it surely holds, and joins it otherwise."""
+        """Apply a framework property whose condition does not fail: its value replaces the one before it when its
+        group's condition and its own surely hold, and joins it otherwise."""
         name = local_name(element)
         applies = self.condition(element)
         if name not in FRAMEWORK_PROPERTIES or applies is False:
             return
+        if name == "TargetFramework":
+            self.assignments += 1
         text = (element.text or "").strip()
         if name == "TargetFrameworks":
             names = [part.strip() for part in text.split(";") if part.strip()]
         else:
             names = [text] if text else []
-        self.values[name] = names if certain and applies is True else [*self.values.get(name, []), *names]
+        self.values[name] = names if certain and applies is True else joined([self.values, {name: names}])[name]
 
 
 def platform_version(version: str) -> str:
@@ -502,34 +563,38 @@ def condition_holds(text: str, framework: str) -> bool | None:
     return value if parser.position == len(tokens) else None
 
 
-def conditioned(element: Element, conditions: Conditions = ()) -> Iterator[ConditionedElement]:
+def conditioned(
+    element: Element, entries: dict[Element, ChooseEntry], conditions: Conditions = ()
+) -> Iterator[ConditionedElement]:
     """Every descendant outside a Target in document order with the conditions it sits under, its own included. A Choose
     applies its first When whose condition holds, as MSBuild evaluates it, so a When also needs every When before it in
     its Choose to fail, and an Otherwise needs them all to; a When after one that cannot be evaluated is not evaluated
     either, and a When with no Condition, which MSBuild refuses, cannot be evaluated. A Target's contents are defined
-    only when it runs, so they are left out (`target_items`). The conditions are evaluated later, for one framework, as
-    an item's are in the build of that framework, where `$(TargetFramework)` never changes; the properties that set the
-    framework are read by `FrameworkProperties`, which evaluates each condition when it is reached."""
+    only when it runs, so they are left out (`target_items`). The conditions are evaluated later, for one framework: an
+    item's and its ItemGroup's as in the build of that framework, which reads the property's final value, and a When's
+    with the value `$(TargetFramework)` held when MSBuild entered its Choose (`entries`, from `FrameworkProperties`),
+    so a Choose chooses its branch once, for its items as for its properties."""
     whens: list[str] = []
+    entry = entries.get(element)
     for child in element:
         name = local_name(child)
         if name == "Target":
             continue
         own = (child.get("Condition") or "").strip()
-        inner = (*conditions, (own, True)) if own else conditions
+        inner: Conditions = (*conditions, (own, True, None)) if own else conditions
         if name in ("When", "Otherwise"):
-            inner = (*conditions, *((when, False) for when in whens))
+            inner = (*conditions, *((when, False, entry) for when in whens))
             if name == "When":
-                inner = (*inner, (own, True))
+                inner = (*inner, (own, True, entry))
                 whens.append(own)
         yield child, inner
-        yield from conditioned(child, inner)
+        yield from conditioned(child, entries, inner)
 
 
 def written_items(root: Element, kind: str) -> Iterator[tuple[str, str, Element, Conditions]]:
     """Each item named `kind` outside a Target, one per name its Include, Update, or Remove lists, in document order,
     with its operation, its element, and the conditions it sits under."""
-    for element, conditions in conditioned(root):
+    for element, conditions in conditioned(root, FrameworkProperties(root).choose_entries()):
         if local_name(element) != kind:
             continue
         operation = next((name for name in OPERATIONS if element.get(name)), None)
@@ -573,11 +638,12 @@ def package_items(root: Element, kind: str = "PackageReference", origin: str = "
 
 
 def conditions_apply(conditions: Conditions, framework: str) -> bool | str:
-    """Whether every condition is as it must be when `$(TargetFramework)` is `framework`: False when one is not,
-    else the text of the first that cannot be evaluated, else True."""
+    """Whether every condition is as it must be in the build of `framework`, where `$(TargetFramework)` is `framework`
+    but at a Choose, whose Whens read the value it held when MSBuild entered the Choose (`ChooseEntry`): False when one
+    is not, else the text of the first that cannot be evaluated, else True."""
     unevaluated: str | None = None
-    for text, wanted in conditions:
-        value = condition_holds(text, framework)
+    for text, wanted, entry in conditions:
+        value = condition_at(text, framework if entry is None else entry.framework_at(framework))
         if value is None:
             unevaluated = text if unevaluated is None else unevaluated
         elif value != wanted:
@@ -585,13 +651,36 @@ def conditions_apply(conditions: Conditions, framework: str) -> bool | str:
     return True if unevaluated is None else unevaluated
 
 
+def condition_at(text: str, framework: str | None) -> bool | None:
+    """Whether a condition holds when `$(TargetFramework)` is `framework` (`condition_holds`); one that reads the
+    property cannot be evaluated when `framework` is None, as when the property may hold one of several values."""
+    if framework is None:
+        return None if FRAMEWORK_REFERENCE.search(text) else condition_holds(text, "")
+    return condition_holds(text, framework)
+
+
 Item = TypeVar("Item", PackageItem, ReferenceItem, ProjectItem)
+# An item not applied because a condition cannot be evaluated: the item, the condition, and the framework.
+Unevaluated = tuple[Item, str, str]
 
 
-def removed_everywhere(conditions: Conditions, named: Sequence[str]) -> bool:
-    """Whether a Remove under `conditions` holds for every framework a project names: one with no condition does,
-    and one with a condition only when the project names a framework and the condition holds for each."""
-    return not conditions or (bool(named) and all(conditions_apply(conditions, name) is True for name in named))
+def removed_everywhere(conditions: Conditions, named: Sequence[str]) -> tuple[bool | str, str]:
+    """Whether a Remove under `conditions` holds for every framework a project names, as `conditions_apply` says for
+    each, with the framework that decides it: one with no condition holds; one with a condition fails when the
+    project names no framework or the condition fails for one, else is the condition that cannot be evaluated for
+    the first framework it cannot be, else holds."""
+    if not conditions:
+        return True, ""
+    if not named:
+        return False, ""
+    unevaluated: tuple[str, str] | None = None
+    for name in named:
+        value = conditions_apply(conditions, name)
+        if value is False:
+            return False, name
+        if isinstance(value, str) and unevaluated is None:
+            unevaluated = (value, name)
+    return unevaluated or (True, "")
 
 
 def evaluated(
@@ -600,24 +689,28 @@ def evaluated(
     key: Callable[[Item], str],
     update: Callable[[Item, Item], Item],
     named: Sequence[str] = (),
-) -> tuple[list[Item], list[tuple[Item, str]]]:
+) -> tuple[list[Item], list[Unevaluated[Item]]]:
     """The items left under a framework, read in document order as MSBuild evaluates them: an Include adds one, an
     Update changes each included before it under the same key as `update` says, and a Remove drops them; an Update
     or a Remove never adds one. An item whose conditions hold is applied, one whose conditions fail is not, and one
-    whose condition cannot be evaluated is not applied and is returned with that condition. With no framework, as
-    for a project with no restore, whose one set of references stands for every framework it builds, every Include
-    and Update is applied whatever its condition, and a Remove only where it holds for every framework the project
-    names (`removed_everywhere`), so what one framework removes is kept for the others."""
+    whose condition cannot be evaluated is not applied and is returned with that condition and the framework. With no
+    framework, as for a project with no restore, whose one set of references stands for every framework it builds,
+    every Include and Update is applied whatever its condition, and a Remove only where it holds for every framework
+    the project names (`removed_everywhere`), so what one framework removes is kept for the others; a Remove that
+    fails for none of them but cannot be evaluated for one is not applied and is returned with that framework."""
     found: list[Item] = []
-    unevaluated: list[tuple[Item, str]] = []
+    unevaluated: list[Unevaluated[Item]] = []
     for item in items:
         applies: bool | str
+        deciding = framework or ""
         if framework is not None:
             applies = conditions_apply(item.conditions, framework)
+        elif item.operation == "Remove":
+            applies, deciding = removed_everywhere(item.conditions, named)
         else:
-            applies = item.operation != "Remove" or removed_everywhere(item.conditions, named)
+            applies = True
         if isinstance(applies, str):
-            unevaluated.append((item, applies))
+            unevaluated.append((item, applies, deciding))
             continue
         if not applies:
             continue
@@ -642,7 +735,7 @@ def with_version(earlier: PackageItem, update: PackageItem) -> PackageItem:
 
 def packages_for(
     items: list[PackageItem], framework: str | None, central: Sequence[PackageItem] = (), named: Sequence[str] = ()
-) -> tuple[list[PackageRef], list[tuple[PackageItem, str]]]:
+) -> tuple[list[PackageRef], list[Unevaluated[PackageItem]]]:
     """The package references the items leave under a framework (`evaluated`, with the frameworks the project
     `named` when there is none), an Include that states no version taking the version the central PackageVersion
     items give it under that framework, with the items whose condition cannot be evaluated: the package items, and
@@ -674,7 +767,7 @@ def with_hint_path(earlier: ReferenceItem, update: ReferenceItem) -> ReferenceIt
 
 def assemblies_for(
     items: list[ReferenceItem], framework: str | None, named: Sequence[str] = ()
-) -> tuple[list[AssemblyRef], list[tuple[ReferenceItem, str]]]:
+) -> tuple[list[AssemblyRef], list[Unevaluated[ReferenceItem]]]:
     """The assembly references the Reference items leave under a framework (`evaluated`, with the frameworks the
     project `named` when there is none): the name before the first comma, the Version= in the Include, and the
     HintPath; with the items whose condition cannot be evaluated."""
@@ -699,7 +792,7 @@ def project_items(root: Element, project_dir: Path) -> list[ProjectItem]:
 
 def project_refs_for(
     items: list[ProjectItem], framework: str | None, named: Sequence[str] = ()
-) -> tuple[list[Path], list[tuple[ProjectItem, str]]]:
+) -> tuple[list[Path], list[Unevaluated[ProjectItem]]]:
     """The projects the ProjectReference items leave under a framework (`evaluated`, with the frameworks the project
     `named` when there is none), with the items whose condition cannot be evaluated."""
     found, unevaluated = evaluated(

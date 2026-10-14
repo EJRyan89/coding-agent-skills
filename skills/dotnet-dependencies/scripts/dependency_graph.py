@@ -38,16 +38,16 @@ forward slashes:
 
 <frameworks> names the target frameworks of the project's restore that hold the line, joined by `;`, or `-` for a
 project with no restore, whose facts are not kept per framework: every item counts whatever its condition, but a
-Remove counts only where it holds for every framework the project names. A line that holds for several frameworks is
-printed once. Two frameworks of one project resolving different versions build apart and are not a conflict. A
-framework is named as the project names it, whichever form its restore writes (`net8.0` or
-`.NETCoreApp,Version=v8.0`). A framework's direct packages and project references are those its restore recorded; for
-a framework the restore did not record them for, and for its assembly references, which a restore never records, they
-are the project file's PackageReference, ProjectReference, and Reference items whose conditions hold for it, a package
-without a version of its own taking the central PackageVersion whose conditions do, and a Choose applying its first
-When that holds. An item whose condition the reader cannot evaluate is not applied and is reported as an UNREADABLE
-line naming the condition and what was done instead, and an item inside a Target, which MSBuild defines only when the
-target runs, is left out and reported so.
+Remove counts only where it holds for every framework the project names, and one whose condition cannot be evaluated
+for one of them is reported. A line that holds for several frameworks is printed once. Two frameworks of one project
+resolving different versions build apart and are not a conflict. A framework is named as the project names it,
+whichever form its restore writes (`net8.0` or `.NETCoreApp,Version=v8.0`). A framework's direct packages and project
+references are those its restore recorded; for a framework the restore did not record them for, and for its assembly
+references, which a restore never records, they are the project file's PackageReference, ProjectReference, and
+Reference items whose conditions hold for it, a package without a version of its own taking the central PackageVersion
+whose conditions do, and a Choose applying its first When that holds when MSBuild enters it. An item whose condition
+the reader cannot evaluate is not applied and is reported as an UNREADABLE line naming the condition and what was done
+instead, and an item inside a Target, which MSBuild defines only when the target runs, is left out and reported so.
 
 `why` asks `dotnet nuget why` for a project that is SDK-style, uses PackageReference, has an obj/project.assets.json
 no older than the project file, and only when dotnet is installed. A run that fails, even after printing part of an
@@ -69,7 +69,7 @@ import os
 import sys
 import tempfile
 from collections import deque
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from itertools import combinations
 from pathlib import Path
@@ -90,7 +90,10 @@ from msbuild_reader import (
     PackageNode,
     PackageRef,
     ProjectFile,
+    ProjectItem,
+    ReferenceItem,
     TargetItem,
+    Unevaluated,
     Unreadable,
     assemblies_for,
     central_versions_file,
@@ -370,7 +373,8 @@ def nuspec_node(graph: Graph, folders: Sequence[Path], reference: PackageRef) ->
 
 def file_target(project: Project, direct: list[PackageRef]) -> Target:
     """The one target of a project with no restore: the direct packages, and every project and assembly reference
-    its file states, whatever its condition, but those a Remove takes out for every framework the file names."""
+    its file states, whatever its condition, but those a Remove takes out for every framework the file names; a Remove
+    whose condition cannot be evaluated for one of them is reported (`refuse_file_unevaluated`)."""
     file = project.file
     return Target(NO_FRAMEWORK, direct=direct, project_refs=list(file.project_refs), assemblies=list(file.assemblies))
 
@@ -391,15 +395,45 @@ def closure_from_nuspecs(graph: Graph, project: Project, direct: list[PackageRef
 NOT_APPLIED = {"Include": "it is left out", "Update": "the Update is not applied", "Remove": "it is not removed"}
 
 
-def refuse_unevaluated(
-    graph: Graph, project: Project, framework: str, unevaluated: Iterable[tuple[str, str, str, str]]
-) -> None:
-    """Report each item, given as its kind, operation, name, and condition, whose condition cannot be evaluated for
-    the framework, saying what the reader did instead."""
-    for kind, operation, name, condition in unevaluated:
+def refuse_unevaluated(graph: Graph, project: Project, unevaluated: Iterable[tuple[str, str, str, str, str]]) -> None:
+    """Report each item, given as its kind, operation, name, condition, and the framework that condition cannot be
+    evaluated for, saying what the reader did instead."""
+    for kind, operation, name, condition, framework in unevaluated:
         item = f"{kind} {name}" if operation == "Include" else f"the {operation} of {kind} {name}"
         reason = f"the condition {condition} on {item} cannot be evaluated for {framework}, so {NOT_APPLIED[operation]}"
         graph.refuse(Unreadable(project.file.path, reason))
+
+
+def package_rows(unevaluated: Iterable[Unevaluated[PackageItem]]) -> Iterator[tuple[str, str, str, str, str]]:
+    for item, condition, framework in unevaluated:
+        kind = "PackageVersion" if item.origin == "central" else "PackageReference"
+        yield kind, item.operation, item.id, condition, framework
+
+
+def project_rows(
+    graph: Graph, unevaluated: Iterable[Unevaluated[ProjectItem]]
+) -> Iterator[tuple[str, str, str, str, str]]:
+    for item, condition, framework in unevaluated:
+        yield "ProjectReference", item.operation, graph.relative(item.path), condition, framework
+
+
+def reference_rows(unevaluated: Iterable[Unevaluated[ReferenceItem]]) -> Iterator[tuple[str, str, str, str, str]]:
+    for item, condition, framework in unevaluated:
+        yield "Reference", item.operation, item.spec, condition, framework
+
+
+def refuse_file_unevaluated(graph: Graph, project: Project, packages: bool) -> None:
+    """Report each Remove that the one target of a project with no restore keeps because its condition cannot be
+    evaluated for a framework the project names (`file_target`): of its project and assembly references, and of its
+    packages unless a packages.config gives them."""
+    file = project.file
+    rows = [
+        *project_rows(graph, project_refs_for(file.project_items, None, file.frameworks)[1]),
+        *reference_rows(assemblies_for(file.reference_items, None, file.frameworks)[1]),
+    ]
+    if packages:
+        rows += package_rows(packages_for(file.package_items, None, file.central_items, file.frameworks)[1])
+    refuse_unevaluated(graph, project, rows)
 
 
 def direct_references(graph: Graph, project: Project, assets: Assets, framework: str) -> list[PackageRef]:
@@ -409,15 +443,7 @@ def direct_references(graph: Graph, project: Project, assets: Assets, framework:
     if framework in assets.direct:
         return assets.direct[framework]
     references, unevaluated = packages_for(project.file.package_items, framework, project.file.central_items)
-    refuse_unevaluated(
-        graph,
-        project,
-        framework,
-        (
-            ("PackageVersion" if item.origin == "central" else "PackageReference", item.operation, item.id, condition)
-            for item, condition in unevaluated
-        ),
-    )
+    refuse_unevaluated(graph, project, package_rows(unevaluated))
     return references
 
 
@@ -429,12 +455,7 @@ def project_references(graph: Graph, project: Project, assets: Assets, framework
         keys = {same_path(path) for path in recorded}
         return [path for path in project.file.project_refs if same_path(path) in keys]
     references, unevaluated = project_refs_for(project.file.project_items, framework)
-    refuse_unevaluated(
-        graph,
-        project,
-        framework,
-        (("ProjectReference", item.operation, graph.relative(item.path), text) for item, text in unevaluated),
-    )
+    refuse_unevaluated(graph, project, project_rows(graph, unevaluated))
     return references
 
 
@@ -442,9 +463,7 @@ def assembly_references(graph: Graph, project: Project, framework: str) -> list[
     """A framework's assembly references, which a restore does not record: the project file's whose conditions hold
     for it, each item whose condition cannot be evaluated reported and not applied."""
     references, unevaluated = assemblies_for(project.file.reference_items, framework)
-    refuse_unevaluated(
-        graph, project, framework, (("Reference", item.operation, item.spec, text) for item, text in unevaluated)
-    )
+    refuse_unevaluated(graph, project, reference_rows(unevaluated))
     return references
 
 
@@ -484,11 +503,14 @@ def build_closure(graph: Graph, project: Project, services: Services) -> None:
             graph.refuse(error)
         folder = packages_folder(project.file.path.parent, graph.base)
         closure_from_nuspecs(graph, project, direct, [folder] if folder else nuget_cache())
+        refuse_file_unevaluated(graph, project, packages=False)
         return
     project.targets = [file_target(project, list(project.file.packages))]
     assets_path = project.file.path.parent / "obj" / ASSETS_FILE
     if project.file.style == "sdk" and assets_path.is_file():
         closure_from_assets(graph, project, assets_path, services)
+    if project.targets[0].framework == NO_FRAMEWORK:
+        refuse_file_unevaluated(graph, project, packages=True)
 
 
 def build_graph(root: Path, services: Services) -> Graph:

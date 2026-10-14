@@ -124,6 +124,37 @@ CHOOSE_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
   </Choose>
 </Project>
 """
+# A Choose entered with net8.0, whose When holds then, before a group that sets net472.
+ENTERED_CHOOSE_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+  <Choose>
+    <When Condition="'$(TargetFramework)'=='net8.0'">
+      <ItemGroup><PackageReference Include="Lantern.Entered" Version="1.0.0" /></ItemGroup>
+    </When>
+    <Otherwise>
+      <ItemGroup><PackageReference Include="Lantern.Other" Version="1.0.0" /></ItemGroup>
+    </Otherwise>
+  </Choose>
+  <PropertyGroup><TargetFramework>net472</TargetFramework></PropertyGroup>
+  <ItemGroup Condition="'$(TargetFramework)'=='net472'">
+    <PackageReference Include="Lantern.Final" Version="1.0.0" />
+  </ItemGroup>
+</Project>
+"""
+# A Choose in a project whose frameworks TargetFrameworks names, though the file sets TargetFramework after it.
+APART_CHOOSE_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFrameworks>net8.0;net472</TargetFrameworks></PropertyGroup>
+  <Choose>
+    <When Condition="'$(TargetFramework)'=='net472'">
+      <ItemGroup><PackageReference Include="Lantern.Apart" Version="1.0.0" /></ItemGroup>
+    </When>
+    <Otherwise>
+      <ItemGroup><PackageReference Include="Lantern.Other" Version="1.0.0" /></ItemGroup>
+    </Otherwise>
+  </Choose>
+  <PropertyGroup Condition="'$(TargetFramework)'==''"><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+</Project>
+"""
 LIST_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <PackageReference Include="Lantern.Json; Quill.Http;Beacon.Gone;Beacon.Spent" Version="1.0.0" />
@@ -345,7 +376,7 @@ class ReaderTests(unittest.TestCase):
                 found, unevaluated = packages_for(project.package_items, framework)
                 self.assertEqual(references, [(item.id, item.version) for item in found])
                 # A condition on another property is not guessed: the item is left out and named.
-                self.assertEqual([("Beacon.Debug", debug)], [(item.id, text) for item, text in unevaluated])
+                self.assertEqual([("Beacon.Debug", debug)], [(item.id, text) for item, text, _ in unevaluated])
         # With no framework, as for a project with no restore, every item counts whatever its condition.
         self.assertEqual(
             [
@@ -413,7 +444,7 @@ class ReaderTests(unittest.TestCase):
             with self.subTest(framework=framework):
                 found, skipped = packages_for(project.package_items, framework)
                 self.assertEqual(references, [item.id for item in found])
-                self.assertEqual(unevaluated, [(item.id, text) for item, text in skipped])
+                self.assertEqual(unevaluated, [(item.id, text) for item, text, _ in skipped])
 
     def test_an_include_update_or_remove_lists_each_item_it_names(self) -> None:
         project = read_project(self.write("src/Harbor.List/Harbor.List.csproj", LIST_PROJECT), self.central)
@@ -708,17 +739,17 @@ class ReaderTests(unittest.TestCase):
             with self.subTest(framework=framework):
                 found, skipped = project_refs_for(project.project_items, framework)
                 self.assertEqual(projects, found)
-                self.assertEqual([("Remove", debug)], [(item.operation, text) for item, text in skipped])
+                self.assertEqual([("Remove", debug)], [(item.operation, text) for item, text, _ in skipped])
                 references, unevaluated = assemblies_for(project.reference_items, framework)
                 self.assertEqual(assemblies, [(item.name, item.hint_path) for item in references])
                 self.assertEqual(
-                    [("Include", "Beacon.Debug", debug)], [(i.operation, i.spec, t) for i, t in unevaluated]
+                    [("Include", "Beacon.Debug", debug)], [(i.operation, i.spec, t) for i, t, _ in unevaluated]
                 )
                 refs, left = packages_for(project.package_items, framework, project.central_items)
                 self.assertEqual(packages, [(ref.id, ref.version, ref.origin) for ref in refs])
                 # A central item whose condition cannot be evaluated is named for a package that takes its version.
                 self.assertEqual(
-                    [("Update", "Lantern.Json", "central")], [(i.operation, i.id, i.origin) for i, _ in left]
+                    [("Update", "Lantern.Json", "central")], [(i.operation, i.id, i.origin) for i, _, _ in left]
                 )
         # With no framework, as for a project with no restore, every Include and Update applies whatever its
         # condition, as before; a Remove whose condition cannot be shown to hold for every framework is not made.
@@ -769,7 +800,7 @@ class ReaderTests(unittest.TestCase):
                     self.assertEqual([lib] if held else [], found)
                     self.assertEqual(
                         ["'$(Configuration)'=='Debug'"] if "Configuration" in condition else [],
-                        [text for _, text in unevaluated],
+                        [text for _, text, _ in unevaluated],
                     )
                     self.assertEqual(
                         ["System.Web"] if held else [],
@@ -779,6 +810,87 @@ class ReaderTests(unittest.TestCase):
                         ["Lib.Pkg"] if held else [],
                         [item.id for item in packages_for(project.package_items, framework)[0]],
                     )
+
+    def test_with_no_framework_a_remove_it_cannot_evaluate_for_a_framework_is_named_with_it(self) -> None:
+        # With no restore, a Remove applies only where it holds for every framework the project names, so one that
+        # holds for one framework alone, the first or the second, or fails for one, is kept with nothing to name; one
+        # that fails for none but cannot be evaluated for one is kept and named with the first such framework.
+        lib = (self.root / "src" / "Lib" / "Lib.csproj").resolve()
+        debug = "'$(Configuration)'=='Debug'"
+        items = (
+            '<ItemGroup><ProjectReference Include="..\\Lib\\Lib.csproj" /><Reference Include="System.Web" />'
+            '<PackageReference Include="Lib.Pkg" Version="1.0.0" /></ItemGroup>'
+            '<ItemGroup Condition="{0}">'
+            '<ProjectReference Remove="..\\Lib\\Lib.csproj" /><Reference Remove="System.Web" />'
+            '<PackageReference Remove="Lib.Pkg" /></ItemGroup>'
+        )
+        cases = [
+            ("'$(TargetFramework)'=='net8.0'", []),
+            ("'$(TargetFramework)'=='net472'", []),
+            (f"'$(TargetFramework)'=='net472' and {debug}", []),
+            (f"'$(TargetFramework)'=='net472' or {debug}", ["net8.0"]),
+            (f"'$(TargetFramework)'=='net8.0' or {debug}", ["net472"]),
+        ]
+        body = "<PropertyGroup><TargetFrameworks>net8.0;net472</TargetFrameworks></PropertyGroup>"
+        for condition, named in cases:
+            with self.subTest(condition=condition):
+                text = f'<Project Sdk="Microsoft.NET.Sdk">{body}{items.format(condition)}</Project>'
+                project = read_project(self.write("src/App/App.csproj", text), self.central)
+                self.assertEqual(
+                    ([lib], ["System.Web"], ["Lib.Pkg"]),
+                    (
+                        project.project_refs,
+                        [item.name for item in project.assemblies],
+                        [i.id for i in project.packages],
+                    ),
+                )
+                frameworks = project.frameworks
+                expected = [("Remove", condition, framework) for framework in named]
+                for unevaluated in (
+                    project_refs_for(project.project_items, None, frameworks)[1],
+                    assemblies_for(project.reference_items, None, frameworks)[1],
+                    packages_for(project.package_items, None, (), frameworks)[1],
+                ):
+                    self.assertEqual(expected, [(item.operation, text, name) for item, text, name in unevaluated])
+        # A central PackageVersion's Remove is decided the same way, for the frameworks the project names.
+        props = self.write(
+            "Directory.Packages.props",
+            '<Project><ItemGroup><PackageVersion Include="Lib.Pkg" Version="1.0.0" />'
+            f'<PackageVersion Remove="Lib.Pkg" Condition="{debug}" /></ItemGroup></Project>',
+        )
+        central = read_central_versions(props).items
+        text = f'<Project Sdk="Microsoft.NET.Sdk">{body}<ItemGroup><PackageReference Include="Lib.Pkg" /></ItemGroup>'
+        project = read_project(self.write("src/App/App.csproj", f"{text}</Project>"), self.central)
+        references, unevaluated = packages_for(project.package_items, None, central, project.frameworks)
+        self.assertEqual([PackageRef("Lib.Pkg", "1.0.0", "central")], references)
+        self.assertEqual(
+            [("central", "Remove", debug, "net8.0")], [(i.origin, i.operation, t, f) for i, t, f in unevaluated]
+        )
+
+    def test_a_choose_chooses_its_branch_for_its_items_with_the_framework_it_was_entered_with(self) -> None:
+        # MSBuild tests a Choose's Whens once, when it enters the Choose, so a When's items hold for the framework a
+        # later group sets when the When held for the one before it; an item's own condition reads the final value.
+        project = read_project(self.write("src/App/App.csproj", ENTERED_CHOOSE_PROJECT), self.central)
+        self.assertEqual(["net472"], project.frameworks)
+        found, unevaluated = packages_for(project.package_items, "net472")
+        self.assertEqual(["Lantern.Entered", "Lantern.Final"], [item.id for item in found])
+        self.assertEqual([], unevaluated)
+        # A framework TargetFrameworks names is fixed for its build from the start, whatever the file sets after.
+        project = read_project(self.write("src/App/App.csproj", APART_CHOOSE_PROJECT), self.central)
+        self.assertEqual(["net8.0", "net472"], project.frameworks)
+        for framework, expected in (("net8.0", ["Lantern.Other"]), ("net472", ["Lantern.Apart"])):
+            with self.subTest(framework=framework):
+                self.assertEqual(expected, [item.id for item in packages_for(project.package_items, framework)[0]])
+        # A Choose entered while the framework may hold one of several values cannot be chosen for a framework the
+        # file sets after it, and its items are named, not applied.
+        text = ENTERED_CHOOSE_PROJECT.replace("<PropertyGroup>", "<PropertyGroup Condition=\"'$(OS)'=='Unix'\">", 1)
+        project = read_project(self.write("src/App/App.csproj", text), self.central)
+        found, unevaluated = packages_for(project.package_items, "net472")
+        self.assertEqual(["Lantern.Final"], [item.id for item in found])
+        entered = "'$(TargetFramework)'=='net8.0'"
+        self.assertEqual(
+            [("Lantern.Entered", entered), ("Lantern.Other", entered)], [(i.id, t) for i, t, _ in unevaluated]
+        )
 
     def test_items_inside_a_target_are_left_out_and_named(self) -> None:
         path = self.write("src/Harbor.Late/Harbor.Late.csproj", TARGET_PROJECT)
@@ -854,6 +966,43 @@ class ReaderTests(unittest.TestCase):
                 "</TargetFramework></PropertyGroup></When></Choose>",
                 ["net8.0", "net472"],
             ),
+            # Each branch that may apply is read from the state the Choose was entered with: the Otherwise sees the
+            # framework still unset, whatever the When it may follow sets, and both names join.
+            (
+                "<Choose><When Condition=\"'$(Configuration)'=='Debug'\"><PropertyGroup>"
+                "<TargetFramework>net8.0</TargetFramework></PropertyGroup></When><Otherwise>"
+                "<PropertyGroup Condition=\"'$(TargetFramework)'==''\"><TargetFramework>net472</TargetFramework>"
+                "</PropertyGroup></Otherwise></Choose>",
+                ["net8.0", "net472"],
+            ),
+            # After a property the reader cannot tell is set, or a Choose none of whose branches may apply, the
+            # framework may still be unset, so a later condition on it cannot be evaluated and its names join.
+            (
+                "<PropertyGroup Condition=\"'$(Configuration)'=='Debug'\"><TargetFramework>net8.0</TargetFramework>"
+                "</PropertyGroup><PropertyGroup Condition=\"'$(TargetFramework)'==''\">"
+                "<TargetFramework>net472</TargetFramework></PropertyGroup>",
+                ["net8.0", "net472"],
+            ),
+            (
+                "<Choose><When Condition=\"'$(Configuration)'=='Debug'\"><PropertyGroup>"
+                "<TargetFramework>net8.0</TargetFramework></PropertyGroup></When></Choose>"
+                "<PropertyGroup Condition=\"'$(TargetFramework)'==''\"><TargetFramework>net472</TargetFramework>"
+                "</PropertyGroup>",
+                ["net8.0", "net472"],
+            ),
+            # A Choose inside a When chooses its own branch when it is reached, and a PropertyGroup inside a When
+            # applies only where its own condition holds.
+            (
+                "<Choose><When Condition=\"'$(TargetFramework)'==''\"><Choose>"
+                "<When Condition=\"'$(TargetFramework)'==''\"><PropertyGroup><TargetFramework>net8.0"
+                "</TargetFramework></PropertyGroup></When><Otherwise><PropertyGroup><TargetFramework>net472"
+                "</TargetFramework></PropertyGroup></Otherwise></Choose>"
+                "<PropertyGroup Condition=\"'$(TargetFramework)'=='net472'\"><TargetFrameworkVersion>v4.7.2"
+                "</TargetFrameworkVersion></PropertyGroup>"
+                "<PropertyGroup Condition=\"'$(TargetFramework)'=='net8.0'\"><TargetFrameworkVersion>v4.8"
+                "</TargetFrameworkVersion></PropertyGroup></When></Choose>",
+                ["net8.0", "v4.8"],
+            ),
             # A PropertyGroup's condition is evaluated once, when it is reached, not again for each property in it.
             (
                 "<PropertyGroup Condition=\"'$(TargetFramework)'==''\"><TargetFramework>net8.0</TargetFramework>"
@@ -898,7 +1047,7 @@ class ReaderTests(unittest.TestCase):
         ):
             found, unevaluated = packages_for(msbuild_reader.package_items(root), framework)
             self.assertEqual([], found)
-            self.assertEqual(unevaluated_ids, [item.id for item, _ in unevaluated])
+            self.assertEqual(unevaluated_ids, [item.id for item, _, _ in unevaluated])
         self.assertEqual(3, len(packages_for(msbuild_reader.package_items(root), None)[0]))
 
     def test_a_framework_version_of_any_length_is_read(self) -> None:
