@@ -23,6 +23,8 @@ PROC = Path("/proc")
 STAT_START_TIME = 19
 # The states of a process that has ended: a zombie waits only to be reaped by its parent, and a dead one is going.
 ENDED_STATES = frozenset({b"Z", b"X", b"x"})
+# The error OpenProcess sets for a PID that names no process.
+ERROR_INVALID_PARAMETER = 87
 
 
 @dataclass(frozen=True)
@@ -80,6 +82,13 @@ def _signalled_status(pid: int) -> ProcessStatus:
     return ProcessStatus(True, None)
 
 
+def open_failure_status(error: int) -> ProcessStatus:
+    """The state of a process Windows would not open a handle to, from the error OpenProcess set. Only an invalid
+    parameter says no process has the PID; access denied names one this user may not query, and any other error, such
+    as a quota or resource failure, leaves the process unread, so both report it alive with no start time."""
+    return ProcessStatus(error != ERROR_INVALID_PARAMETER, None)
+
+
 def _windows_status(pid: int) -> ProcessStatus:
     """The process's state as Windows reports it, by a handle that may only query it."""
     import ctypes
@@ -89,11 +98,10 @@ def _windows_status(pid: int) -> ProcessStatus:
     kernel32.OpenProcess.restype = wintypes.HANDLE
     kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     query_limited_information = 0x1000
-    access_denied = 5
     still_active = 259
     handle = kernel32.OpenProcess(query_limited_information, False, pid)
     if not handle:
-        return ProcessStatus(ctypes.get_last_error() == access_denied, None)  # type: ignore[attr-defined]  # Windows only
+        return open_failure_status(ctypes.get_last_error())  # type: ignore[attr-defined]  # Windows only
     try:
         exit_code = wintypes.DWORD()
         if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
