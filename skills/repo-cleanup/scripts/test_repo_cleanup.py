@@ -2299,7 +2299,8 @@ class LeftoverTests(Fixture):
         claude = self.outside_area("claude target", "worktrees")
         link_directory(claude, self.clone / ".claude")
         (self.clone / ".git" / "info").mkdir(exist_ok=True)
-        (self.clone / ".git" / "info" / "exclude").write_text(".claude/\n", encoding="utf-8")
+        # No trailing slash: Git lists a symbolic link as a file, which a directory-only pattern does not exclude.
+        (self.clone / ".git" / "info" / "exclude").write_text(".claude\n", encoding="utf-8")
         shared = self.outside_area("shared target", "my repo")
         link_directory(shared, self.repos / "Worktrees")
         _, applied = self.clean()
