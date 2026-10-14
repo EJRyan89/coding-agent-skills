@@ -286,6 +286,13 @@ def platform_code_problems(root: Path) -> list[str]:
 # tell a Path from another receiver; the names are chosen so that none is a common method of anything else. Path.replace
 # shares its name with str.replace, so _filesystem_writes tells them apart by their arguments instead. A qualified name
 # is matched through the module's imports, so `import shutil as sh` and `from os import replace` hide no write.
+# The logging handlers that create or append to the file they are given.
+LOGGING_FILE_HANDLERS = (
+    "logging.FileHandler",
+    "logging.handlers.RotatingFileHandler",
+    "logging.handlers.TimedRotatingFileHandler",
+    "logging.handlers.WatchedFileHandler",
+)
 FILESYSTEM_WRITES: dict[str, frozenset[str]] = {
     "method": frozenset(
         {
@@ -351,6 +358,13 @@ FILESYSTEM_WRITES: dict[str, frozenset[str]] = {
             "tempfile.NamedTemporaryFile",
             "tempfile.TemporaryFile",
             "tempfile.SpooledTemporaryFile",
+            *LOGGING_FILE_HANDLERS,
+            "urllib.request.urlretrieve",
+            # A compiler writes the bytecode beside its source or where it is told.
+            "py_compile.compile",
+            "compileall.compile_dir",
+            "compileall.compile_file",
+            "compileall.compile_path",
         }
     ),
 }
@@ -405,7 +419,12 @@ MODE_OPENERS: dict[str, ModeOpener] = {
     "lzma.LZMAFile": _COMPRESSED,
     "shelve.open": ModeOpener(1, "flag", frozenset({"filename"}), True, _flag_writes),
     "dbm.open": ModeOpener(1, "flag", frozenset({"file"}), False, _flag_writes),
+    "io.FileIO": ModeOpener(1, "mode", frozenset({"file"}), False, _mode_writes),
 }
+# logging.basicConfig writes only when given a file, which it takes by keyword alone.
+BASIC_CONFIG = "logging.basicConfig"
+# The fileinput readers write only in place, which their second argument or inplace keyword asks for.
+IN_PLACE_READERS = frozenset({"fileinput.input", "fileinput.FileInput"})
 # The os.open flags that only read. Any other flag, a nonzero number, or flags the policy cannot read count as a write.
 READ_FLAGS = frozenset({"os.O_RDONLY", "os.O_BINARY", "os.O_TEXT", "os.O_NOINHERIT", "os.O_CLOEXEC", "os.O_NOFOLLOW"})
 
@@ -497,11 +516,21 @@ def _replaces_a_path(call: ast.Call) -> bool:
     return len(call.args) == 1 and len(positional) == 1 and not call.keywords
 
 
+def _rewrites_in_place(call: ast.Call) -> bool:
+    """Whether a fileinput reader is given an inplace argument that is not a false constant."""
+    inplace = _mode_argument(call, 1, "inplace")
+    return inplace is not None and not (isinstance(inplace, ast.Constant) and not inplace.value)
+
+
 def _call_writes(call: ast.Call, resolver: CallableResolver, bindings: dict[str, set[str] | None]) -> str | None:
     """The token naming the write a call makes, or None when it makes none."""
     target = resolver.name(call.func)
     if target in FILESYSTEM_WRITES["qualified"]:
         return target
+    if target == BASIC_CONFIG:
+        return target if any(keyword.arg in {"filename", None} for keyword in call.keywords) else None
+    if target in IN_PLACE_READERS:
+        return target if _rewrites_in_place(call) else None
     if target == "os.open":
         return target if _os_open_writes(call, resolver) else None
     if target in OPEN_FUNCTIONS:
@@ -518,12 +547,54 @@ def _call_writes(call: ast.Call, resolver: CallableResolver, bindings: dict[str,
     return None
 
 
-def _write_nodes(tree: ast.Module) -> list[tuple[ast.ImportFrom | ast.Call, str]]:
-    """The imports and calls through which a module's code writes to the filesystem, with each one's token, ignoring
-    test cases."""
+# The method names a write callable passed as a value may have besides the write methods: a Path's open() and
+# replace(), which a call tells from a read or a str.replace by its arguments, and a value reference has none.
+REFERENCED_METHODS = FILESYSTEM_WRITES["method"] | {"open", "replace"}
+
+
+def _reference_writes(node: ast.Name | ast.Attribute, resolver: CallableResolver) -> str | None:
+    """The token naming the write a callable may make when it is passed as a value rather than called, such as
+    map(Path.write_text, ...) or a callback=shutil.rmtree, or None when it names no write. Whoever calls it chooses
+    its arguments, so a callable that writes with some mode or flag counts."""
+    target = resolver.name(node)
+    if target in OPEN_FUNCTIONS:
+        return "open"
+    if target in FILESYSTEM_WRITES["qualified"] | MODE_OPENERS.keys() | IN_PLACE_READERS | {"os.open", BASIC_CONFIG}:
+        return target
+    if isinstance(node, ast.Attribute) and node.attr in REFERENCED_METHODS:
+        return node.attr
+    return None
+
+
+def _callable_references(tree: ast.Module, resolver: CallableResolver) -> set[int]:
+    """The ids of the names and attributes a module reads as values: neither a call's callable, which _call_writes
+    reads, nor an attribute's receiver, nor the value of an alias the resolver follows to the calls it makes."""
+    excluded = {
+        id(value)
+        for scope in resolver.scopes.values()
+        for values in scope.bindings.values()
+        for value in values
+        if isinstance(value, ast.AST)
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            excluded.add(id(node.func))
+        elif isinstance(node, ast.Attribute):
+            excluded.add(id(node.value))
+    return {
+        id(node)
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Name, ast.Attribute)) and isinstance(node.ctx, ast.Load) and id(node) not in excluded
+    }
+
+
+def _write_nodes(tree: ast.Module) -> list[tuple[ast.stmt | ast.expr, str]]:
+    """The imports, calls, and callables passed as values through which a module's code writes to the filesystem,
+    with each one's token, ignoring test cases."""
     resolver = CallableResolver(tree)
     bindings = _string_bindings(tree)
-    found: list[tuple[ast.ImportFrom | ast.Call, str]] = []
+    references = _callable_references(tree, resolver)
+    found: list[tuple[ast.stmt | ast.expr, str]] = []
 
     def visit(node: ast.AST) -> None:
         if _is_test_case(node):
@@ -540,6 +611,12 @@ def _write_nodes(tree: ast.Module) -> list[tuple[ast.ImportFrom | ast.Call, str]
             )
             if token := _call_writes(call, resolver, bindings):
                 found.append((call, token))
+        elif (
+            isinstance(node, (ast.Name, ast.Attribute))
+            and id(node) in references
+            and (token := _reference_writes(node, resolver))
+        ):
+            found.append((node, token))
         for child in ast.iter_child_nodes(node):
             visit(child)
 
@@ -553,6 +630,8 @@ def _filesystem_writes(tree: ast.Module) -> list[tuple[int, str]]:
 
 
 TEMPORARY_DIRECTORY_CALL = "tempfile.mkdtemp"
+# The calls whose one argument and result name the same path, resolved through the module's imports.
+PATH_KEEPING_CALLS = frozenset({"pathlib.Path", "os.fspath", "str"})
 
 
 def _in_the_temporary_directory(call: ast.Call, aliases: dict[str, str]) -> bool:
@@ -565,7 +644,8 @@ def _in_the_temporary_directory(call: ast.Call, aliases: dict[str, str]) -> bool
 
 def _temporary_directory_names(tree: ast.Module, resolver: CallableResolver) -> set[str]:
     """The names a module binds only to a directory tempfile.mkdtemp created under the system temporary directory,
-    directly or through one wrapping call such as Path(...), and never as a parameter or a loop or with target."""
+    directly or through calls that keep the path, such as Path(...), and never as a parameter or a loop or with
+    target. Any other call around it, such as a function of the module's own, may return another path."""
     values: dict[str, list[ast.expr | None]] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
@@ -586,7 +666,12 @@ def _temporary_directory_names(tree: ast.Module, resolver: CallableResolver) -> 
             return False
         if resolver.name(value.func) == TEMPORARY_DIRECTORY_CALL:
             return _in_the_temporary_directory(value, resolver.aliases(value.func))
-        return len(value.args) == 1 and not value.keywords and created(value.args[0])
+        return (
+            resolver.name(value.func) in PATH_KEEPING_CALLS
+            and len(value.args) == 1
+            and not value.keywords
+            and created(value.args[0])
+        )
 
     return {name for name, bound in values.items() if all(created(value) for value in bound)}
 
@@ -600,15 +685,21 @@ def _keyword_arguments(call: ast.Call, names: set[str]) -> list[ast.expr]:
     return [keyword.value for keyword in call.keywords if keyword.arg is None or keyword.arg in names]
 
 
-# The writes that name where they land in one argument, by its position and the keywords that may give it: open()
-# and os.open() write to their file, and os.open() also relative to its dir_fd; an archive, compressed file, or
-# database opener to its file; unpack_archive to its extract_dir; and make_archive to its base_name.
-NAMED_DESTINATIONS: dict[str, tuple[int, frozenset[str]]] = {
+# The writes that name where they land in one argument, by its position, or None when only a keyword gives it, and
+# the keywords that may give it: open() and os.open() write to their file, and os.open() also relative to its dir_fd;
+# an archive, compressed file, or database opener to its file; unpack_archive to its extract_dir; make_archive to its
+# base_name; a logging handler and basicConfig to their filename; fileinput to its files; and urlretrieve to its
+# filename.
+NAMED_DESTINATIONS: dict[str, tuple[int | None, frozenset[str]]] = {
     "os.open": (0, frozenset({"path", "dir_fd"})),
     **{name: (0, frozenset({"file"})) for name in OPEN_FUNCTIONS},
     **{name: (0, opener.files) for name, opener in MODE_OPENERS.items()},
     "shutil.unpack_archive": (1, frozenset({"extract_dir"})),
     "shutil.make_archive": (0, frozenset({"base_name"})),
+    **dict.fromkeys(LOGGING_FILE_HANDLERS, (0, frozenset({"filename"}))),
+    BASIC_CONFIG: (None, frozenset({"filename"})),
+    **dict.fromkeys(IN_PLACE_READERS, (0, frozenset({"files"}))),
+    "urllib.request.urlretrieve": (1, frozenset({"filename"})),
 }
 # The archive methods that write to their path argument, never to their receiver, which is the archive they read.
 METHOD_DESTINATIONS: dict[str, tuple[int, frozenset[str]]] = {
@@ -617,12 +708,12 @@ METHOD_DESTINATIONS: dict[str, tuple[int, frozenset[str]]] = {
 }
 
 
-def _named_destination(call: ast.Call, position: int, names: frozenset[str]) -> list[ast.expr]:
+def _named_destination(call: ast.Call, position: int | None, names: frozenset[str]) -> list[ast.expr]:
     """The argument at position or a `*` unpacking at or before it, and each keyword in names or `**` unpacking. A
     call that gives none, such as an extraction into the working directory, names no destination."""
     positional = [
         argument
-        for index, argument in enumerate(call.args[: position + 1])
+        for index, argument in enumerate(call.args[: position + 1] if position is not None else [])
         if index == position or isinstance(argument, ast.Starred)
     ]
     return positional + _keyword_arguments(call, set(names))
@@ -652,12 +743,18 @@ def _temporary_write_problems(name: str, tree: ast.Module, allowed: dict[str, st
     """Report each call an allowance sanctions that may write outside the system temporary directory: a tempfile call
     that is not keyword-only without dir, or any other write with a destination argument that is not a name bound only
     to a directory tempfile.mkdtemp created there. A destination built from such a name, unpacked, or held in anything
-    else may be anywhere."""
+    else may be anywhere, and so may a sanctioned callable passed as a value, whose caller chooses its arguments."""
     resolver = CallableResolver(tree)
     directories = _temporary_directory_names(tree, resolver)
     problems: list[str] = []
     for node, token in _write_nodes(tree):
-        if not isinstance(node, ast.Call) or token not in allowed:
+        if isinstance(node, ast.ImportFrom) or token not in allowed:
+            continue
+        if not isinstance(node, ast.Call):
+            problems.append(
+                f"{name}:{node.lineno} {FSOPS_ALLOWANCE} allows {token} only under the system temporary directory, "
+                "and a callable passed as a value may write anywhere"
+            )
             continue
         aliases = resolver.aliases(node.func)
         if token.startswith("tempfile."):
