@@ -1569,6 +1569,24 @@ class MigrationTests(DeployerTestCase):
             ["alpha", "beta", "everyday"],
         )
 
+    def test_a_migration_carries_a_bundle_request_beside_a_skill_preserved_by_a_deployment_that_installed_a_new_one(
+        self,
+    ) -> None:
+        self.make_skill("everyday", "Everyday")
+        self.make_skill("newer", "Newer")
+        self.pack_from_the_old_source()
+        self.rewrite_as_preserved_through_the_upgrade("everyday", "test/old", installed_since=("newer",))
+        self.assertEqual(["alpha", "beta"], self.owned("skills", "test/old")["everyday"]["skill_deps"])
+        self.make_source_json(bundles={"kit": {"members": ["alpha", "beta"], "opt_in": True}})
+        self.make_config()
+        self.deploy_ok("--migrate-from", "test/old")
+        self.assertEqual(["test/skills"], list(self.manifest()["sources"]))
+        self.assertEqual((["kit"], {"kit": ["alpha", "beta"]}, ["everyday", "newer"]), self.requests())
+        self.kept_by_all(
+            "Selected 3 items (4 skills):\n  kit (bundle)\n    alpha\n    beta\n  everyday\n  newer\n",
+            ["alpha", "beta", "everyday", "newer"],
+        )
+
     def test_a_version_7_entry_left_beside_a_migration_keeps_its_bundle_request(self) -> None:
         self.make_skill("gamma", "Gamma")
         old = self.pack_from_a_version_7_entry([])

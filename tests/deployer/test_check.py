@@ -410,10 +410,13 @@ class CheckCommandTests(DeployerTestCase):
         machine = Machine(missing=("dotnet-format",))
         with machine.patches():
             self.deploy_ok("--all", "--include", "pack")
-        self.rewrite_as_preserved_through_the_upgrade("plain")
         self.make_source_json(bundles={"pack2": {"members": ["reviewer", "formatter"], "opt_in": True}})
-        groups = self.report_groups(self.check(machine).output, "CHECK")
-        self.assertEqual(["dotnet-format (used by pack2)"], groups["MISSING"])
+        # With reporter, the deployment that preserved plain also installed a skill the version 7 manifest did not own.
+        for installed_since in ((), ("reporter",)):
+            with self.subTest(installed_since=installed_since):
+                self.rewrite_as_preserved_through_the_upgrade("plain", installed_since=installed_since)
+                groups = self.report_groups(self.check(machine).output, "CHECK")
+                self.assertEqual(["dotnet-format (used by pack2)"], groups["MISSING"])
 
     def test_the_runtimes_verify_lists_are_reported_whether_or_not_a_skill_declares_them(self) -> None:
         # deploy.py verify runs Codex CLI and Copilot CLI, so check reports both even when no skill runs either.
