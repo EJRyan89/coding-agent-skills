@@ -19,6 +19,7 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("code-review-core")))
 
+import review_guidance
 import review_insights as ri
 import review_synthesis as rs
 from git_test_base import GitTestCase
@@ -759,7 +760,7 @@ class StageTests(GitTestCase):
         }
         self.assertEqual(
             {"owner/repo": ["new.md", "other.md"], "owner/empty": []},
-            rs.guidance_files(["owner/repo", "Owner/Empty"], records),
+            review_guidance.guidance_files(["owner/repo", "Owner/Empty"], records),
         )
 
     def test_a_suite_profile_a_reviewer_was_built_from_is_no_guidance_file(self) -> None:
@@ -767,7 +768,7 @@ class StageTests(GitTestCase):
         records = {
             Path("a.json"): {"repository": "owner/repo", "review": {"reviewed_at": "2026-01-01", "adapter": adapter}}
         }
-        self.assertEqual({"owner/repo": ["docs/design.md"]}, rs.guidance_files(["owner/repo"], records))
+        self.assertEqual({"owner/repo": ["docs/design.md"]}, review_guidance.guidance_files(["owner/repo"], records))
 
     def test_the_previous_period_ends_at_most_seven_days_before_this_one_starts(self) -> None:
         temporary = tempfile.TemporaryDirectory()
@@ -948,6 +949,173 @@ class ClaimTests(SynthesisFixture):
             "into at most 15 patterns",
             "At most 10 themes",
             "and 12 recommendations",
+        ):
+            self.assertIn(phrase, prompt)
+
+
+class ChangeTypeTests(SynthesisFixture):
+    """The recommendation types that act on more than one guidance file, or move a rule out of guidance."""
+
+    def recommendation(self, json_path: Path, kind: str, title: str, target: Any, **extra: Any) -> dict[str, Any]:
+        return {
+            **self.valid_result(json_path)["recommendations"][0],
+            "type": kind,
+            "title": title,
+            "target": target,
+            **extra,
+        }
+
+    def result(self, json_path: Path, recommendations: list[dict[str, Any]]) -> dict[str, Any]:
+        """A valid result holding these recommendations, whose category commentary names none of them."""
+        categories = [{**item, "addressed_by": []} for item in self.categories(json_path)]
+        return self.valid_result(json_path, recommendations=recommendations, categories=categories)
+
+    def record(self, json_path: Path, *recommendations: dict[str, Any]) -> list[str]:
+        result = self.result(json_path, list(recommendations))
+        code, out, err = self.synthesize(json_path, self.write_result(json_path, result))
+        self.assertEqual(0, code, out + err)
+        return out.splitlines()
+
+    def refused(self, json_path: Path, recommendation: dict[str, Any], message: str) -> None:
+        result = self.result(json_path, [recommendation])
+        code, out, _ = self.synthesize(json_path, self.write_result(json_path, result), "--check")
+        self.assertEqual(1, code)
+        self.assertTrue(any(line.startswith("PROBLEM ") and message in line for line in out.splitlines()), out)
+
+    def decide(self, json_path: Path, identifier: str, title: str) -> tuple[int, str, str]:
+        return self.run_main(
+            "decide",
+            "--report",
+            str(json_path),
+            identifier,
+            "--synthesized",
+            title,
+            "--flags",
+            self.unlinked,
+            "accepted",
+        )
+
+    def test_a_consolidation_targets_several_guidance_files_renders_and_is_decided(self) -> None:
+        json_path, _ = self.run_report()
+        target = {"repository": "owner/repo", "path": GUIDE, "merge": [".agents/review.md"]}
+        lines = self.record(
+            json_path, self.recommendation(json_path, "consolidate", "Merge the timezone rules", target)
+        )
+        self.assertIn(
+            f"SYNTHESIZED REC-003 type=consolidate priority=high decision=deferred flags={self.unlinked}", lines
+        )
+        self.assertIn(f"TARGET REC-003 owner/repo:{GUIDE}+.agents/review.md", lines)
+        markdown = json_path.with_suffix(".md").read_text(encoding="utf-8")
+        self.assertIn(f"Type: consolidate\nTarget: owner/repo:{GUIDE}+.agents/review.md\n", markdown)
+        code, out, err = self.decide(json_path, "REC-003", "Merge the timezone rules")
+        self.assertEqual(
+            (0, [f"FLAG_RESOLVED {self.unlinked}", "DECIDED REC-003 accepted"]), (code, out.splitlines()), err
+        )
+
+    def test_a_consolidation_must_name_the_surviving_file_and_at_least_one_other_guidance_file(self) -> None:
+        json_path, _ = self.run_report()
+        survives = "must name the guidance file whose wording survives"
+        cases = {
+            "no merge": ({"repository": "owner/repo", "path": GUIDE}, "must be {repository, path, merge}"),
+            "an empty merge": ({"repository": "owner/repo", "path": GUIDE, "merge": []}, survives),
+            "no surviving file": ({"repository": "owner/repo", "path": None, "merge": [GUIDE]}, survives),
+            "the surviving file merged into itself": (
+                {"repository": "owner/repo", "path": GUIDE, "merge": [GUIDE]},
+                survives,
+            ),
+            "a file outside the guidance set": (
+                {"repository": "owner/repo", "path": GUIDE, "merge": ["README.md"]},
+                "path 'README.md' is not a guidance file of owner/repo",
+            ),
+        }
+        for name, (target, message) in cases.items():
+            with self.subTest(name):
+                self.refused(json_path, self.recommendation(json_path, "consolidate", "Merge", target), message)
+        with self.subTest("a merge on another type"):
+            target = {"repository": "owner/repo", "path": GUIDE, "merge": [".agents/review.md"]}
+            recommendation = self.recommendation(json_path, "strengthen-rule", "Strengthen", target)
+            self.refused(json_path, recommendation, "must be {repository, path} naming one of")
+
+    def test_a_move_to_script_targets_a_file_that_is_no_guidance_and_is_decided(self) -> None:
+        json_path, _ = self.run_report()
+        target = {"repository": "owner/repo", "path": "tools/check_timezones.py"}
+        recommendation = self.recommendation(json_path, "move-to-script", "Scan added lines for local time", target)
+        lines = self.record(json_path, recommendation)
+        self.assertIn(
+            f"SYNTHESIZED REC-003 type=move-to-script priority=high decision=deferred flags={self.unlinked}", lines
+        )
+        self.assertIn("TARGET REC-003 owner/repo:tools/check_timezones.py", lines)
+        markdown = json_path.with_suffix(".md").read_text(encoding="utf-8")
+        self.assertIn("Type: move-to-script\nTarget: owner/repo:tools/check_timezones.py\n", markdown)
+        code, out, err = self.decide(json_path, "REC-003", "Scan added lines for local time")
+        self.assertEqual(
+            (0, [f"FLAG_RESOLVED {self.unlinked}", "DECIDED REC-003 accepted"]), (code, out.splitlines()), err
+        )
+
+    def test_a_move_to_script_without_a_script_target_is_refused(self) -> None:
+        json_path, _ = self.run_report()
+        script = "path must name the script, validator, or test that takes over the rule"
+        cases = {
+            "no target": (None, "must be {repository, path} naming one of"),
+            "no repository": ({"path": "tools/check.py"}, "must be {repository, path} naming one of"),
+            "no file": ({"repository": "owner/repo", "path": None}, script),
+            "a prose file": ({"repository": "owner/repo", "path": GUIDE}, script),
+            "a path that leaves the repository": ({"repository": "owner/repo", "path": "../check.py"}, script),
+        }
+        for name, (target, message) in cases.items():
+            with self.subTest(name):
+                self.refused(json_path, self.recommendation(json_path, "move-to-script", "Move", target), message)
+
+    def test_recommendations_are_shown_by_priority_then_cheapest_fix_first(self) -> None:
+        json_path, _ = self.run_report()
+        guide = {"repository": "owner/repo", "path": GUIDE}
+
+        def analyzer(coverage: str) -> dict[str, Any]:
+            return {"analyzer": {"coverage": coverage, "tool": "Roslynator.Analyzers", "rule": "RCS1001"}}
+
+        def made(kind: str, title: str, target: Any, priority: str = "high") -> dict[str, Any]:
+            return self.recommendation(json_path, kind, title, target, priority=priority)
+
+        lines = self.record(
+            json_path,
+            made("new-rule", "Add a rule", guide),
+            made("strengthen-rule", "Strengthen a rule", guide),
+            made("new-analyzer", "Adopt an analyzer", analyzer("known")),
+            made("consolidate", "Merge two rules", {**guide, "merge": [".agents/review.md"]}),
+            made("move-to-script", "Scan in the pipeline", {**guide, "path": "tools/a.py"}),
+            made("new-analyzer", "Enforce the rule", analyzer("available")),
+            made("remove-rule", "Remove a rule", guide, "medium"),
+            made("move-to-script", "Test the policy", {**guide, "path": "tests/a.py"}, "low"),
+        )
+        expected = [
+            "Enforce the rule",
+            "Scan in the pipeline",
+            "Adopt an analyzer",
+            "Merge two rules",
+            "Strengthen a rule",
+            "Add a rule",
+            "Remove a rule",
+            "Test the policy",
+        ]
+        self.assertEqual(expected, [line.split(" ", 2)[2] for line in lines if line.startswith("TITLE ")])
+        markdown = json_path.with_suffix(".md").read_text(encoding="utf-8")
+        positions = [markdown.index(f"— {title}\n") for title in expected]
+        self.assertEqual(sorted(positions), positions)
+
+    def test_the_prompt_states_the_fix_order_the_new_types_and_how_to_weigh_the_signals(self) -> None:
+        json_path, _ = self.run_report()
+        prompt = " ".join((json_path.parent / rs.PROMPT_NAME).read_text(encoding="utf-8").split())
+        for phrase in (
+            "`remove-rule`, `consolidate`, `stop-flagging`, `start-flagging`, `new-analyzer`, `move-to-script`, "
+            "`flagged`",
+            "Prefer the cheapest fix: enforcing a rule a repository's analyzer already has, then a deterministic check "
+            "in the review pipeline or a consistency test (`move-to-script`), then adopting an analyzer, then a custom "
+            "rule, then guidance; in guidance, remove or merge a rule before adding one.",
+            "Recommend `move-to-script` when a rule is mechanical",
+            "or when findings show models applying it inconsistently.",
+            "Recommend `consolidate` for a contradiction or a duplicate.",
+            "prefer clarifying its severity or applicability over adding a rule.",
+            "`guidance-overlap`: two rules from two guidance files",
         ):
             self.assertIn(phrase, prompt)
 

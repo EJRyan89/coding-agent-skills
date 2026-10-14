@@ -679,13 +679,13 @@ A fixture canary, `prepare --canary --fixture <directory>`, reviews a fixture di
 
 ### Insights report
 
-The report `review-insights report` writes to `<summary_root>/<set>/<start>--<end>/insights.json`, with a Markdown projection beside it, and that `synthesize`, `decide`, and `decide-custom` record into. `load_report` in `review_insights.py` reads it back. It upgrades a report of any earlier version, 1 to 7, to the current one, 8, and refuses any other version, but it checks only the fields it uses and rejects no unlisted field. So these tables are checked against the reports `create_report`, `synthesize`, `decide`, and `decide-custom` write, as the adapter request's are against what its writer writes, and not against a validator. A change to the report's shape raises `SCHEMA_VERSION`, adds the step that upgrades the version before it, and records the new shape in `tests/code-review/test_format_contract.py`, which fails while the report's tables differ from the shape recorded for the current version. "Review insights" and "Synthesis" in [Code-review operations](code-review-operations.md#review-insights) describe how the report is built.
+The report `review-insights report` writes to `<summary_root>/<set>/<start>--<end>/insights.json`, with a Markdown projection beside it, and that `synthesize`, `decide`, and `decide-custom` record into. `load_report` in `review_insights.py` reads it back. It upgrades a report of any earlier version, 1 to 8, to the current one, 9, and refuses any other version, but it checks only the fields it uses and rejects no unlisted field. So these tables are checked against the reports `create_report`, `synthesize`, `decide`, and `decide-custom` write, as the adapter request's are against what its writer writes, and not against a validator. A change to the report's shape raises `SCHEMA_VERSION`, adds the step that upgrades the version before it, and records the new shape in `tests/code-review/test_format_contract.py`, which fails while the report's tables differ from the shape recorded for the current version. "Review insights" and "Synthesis" in [Code-review operations](code-review-operations.md#review-insights) describe how the report is built.
 
 #### Report (`insights`)
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `schema_version` | integer | yes | One of `8`. |
+| `schema_version` | integer | yes | One of `9`. |
 | `repository_set` | string | yes | The set the report summarizes, or `repositories-<digest>` for an explicit repository list. |
 | `repositories` | array | yes | The `owner/repo` identities analyzed, sorted. |
 | `start_date` | string | yes | The first day of the range, as `YYYY-MM-DD`. |
@@ -698,6 +698,7 @@ The report `review-insights report` writes to `<summary_root>/<set>/<start>--<en
 | `next_recommendation_number` | integer | yes | The first `REC-` number the report has never given, so a subject a regeneration drops never has its ID given again. |
 | `records` | array | yes | Every review record the report analyzed. |
 | `synthesis` | object or null | yes | The synthesis of this range; null in a report upgraded from before version 7 until it is regenerated. |
+| `signals` | object | yes | The consistency signals of this range and the candidates found in its guidance, computed before the synthesis and never decided; empty in a report upgraded from before version 9 until it is regenerated. |
 
 #### Analyzed record (`insights.records[]`)
 
@@ -727,7 +728,7 @@ The report `review-insights report` writes to `<summary_root>/<set>/<start>--<en
 | `rule` | string | no | An analyzer recommendation's rule, spelled as `tool` is. |
 | `repositories` | array | no | The repositories an analyzer recommendation's findings came from. |
 | `evidence` | array | no | An analyzer recommendation's findings, each an object, or a synthesized one's finding references, each a string. |
-| `type` | string | no | A synthesized recommendation's kind of change. One of `new-rule`, `strengthen-rule`, `remove-rule`, `stop-flagging`, `start-flagging`, `new-analyzer`, or `flagged`. |
+| `type` | string | no | A synthesized recommendation's kind of change. One of `new-rule`, `strengthen-rule`, `remove-rule`, `consolidate`, `stop-flagging`, `start-flagging`, `new-analyzer`, `move-to-script`, or `flagged`. |
 | `priority` | string | no | A synthesized recommendation's priority. One of `high`, `medium`, or `low`. |
 | `target` | object | no | What a synthesized recommendation changes. |
 | `title` | string | no | A synthesized recommendation's title, one line of at most 120 characters without quotes, backticks, `$`, backslashes, or control characters. |
@@ -771,7 +772,8 @@ The report `review-insights report` writes to `<summary_root>/<set>/<start>--<en
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
 | `repository` | string | with `path` | The repository whose guidance changes, one of the scope's; absent for a `new-analyzer` recommendation. |
-| `path` | string or null | with `repository` | The guidance file to change, one of the repository's guidance files, or null when none fits and the change says where the guidance belongs. |
+| `path` | string or null | with `repository` | The guidance file to change, one of the repository's guidance files, or null when none fits and the change says where the guidance belongs. For a `consolidate` recommendation, the guidance file whose wording survives; for a `move-to-script` one, the script, validator, or test that takes the rule over, a repository-relative file that is no prose guidance and need not exist yet. |
+| `merge` | array | when the recommendation is a `consolidate` one | The other guidance files of the repository a `consolidate` recommendation merges into `path`, at least one, each once; absent for every other type. |
 | `analyzer` | object | no | A `new-analyzer` recommendation's rule, with no other field. |
 
 #### Synthesis (`insights.synthesis`)
@@ -802,6 +804,83 @@ The report `review-insights report` writes to `<summary_root>/<set>/<start>--<en
 | `input_sha256` | string | yes | The input it was recorded against. |
 | `recommendations` | array | yes | Its synthesized recommendations, with their decisions; their IDs are never given again. |
 
+#### Signals (`insights.signals`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `severity_drift` | array | yes | The strongest groups and ledger entries whose findings carry more than one severity. |
+| `verdict_flips` | array | yes | The strongest pairs of consecutive reviews of one head commit whose verdicts differ. |
+| `reviewer_disagreements` | array | yes | The strongest places where reviewers that share no source gave one head commit's findings different severities. |
+| `guidance_overlaps` | array | yes | The strongest candidate pairs of rules from two guidance files that conflict or repeat each other. |
+| `unsupplied_references` | array | yes | The first Markdown files a reviewer's guidance names that the reviewer is not given. |
+| `counts` | object | yes | Keyed by each of the fields above, how many it found before it kept the strongest. |
+
+#### Severity drift (`insights.signals.severity_drift[]`, `synthesis-input:severity-drift`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `kind` | string | no | On an input line only. One of `severity-drift`. |
+| `id` | string | yes | `D` and its rank, from 1. |
+| `basis` | string | yes | One of `group` or `ledger`: findings with the same repository, category, and headline, or a finding and its repeats. |
+| `repository` | string | yes | The repository, lowercase. |
+| `category` | string | yes | Its first finding's category. |
+| `headline` | string | yes | Its first finding's headline. |
+| `severity` | object | yes | Its findings keyed by severity, each a count; more than one severity. |
+| `examples` | array | yes | Up to three findings, each `<severity> <reference>`, one of each severity first. |
+
+#### Verdict flip (`insights.signals.verdict_flips[]`, `synthesis-input:verdict-flip`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `kind` | string | no | On an input line only. One of `verdict-flip`. |
+| `id` | string | yes | `V` and its rank, from 1. |
+| `repository` | string | yes | The pull request's repository, lowercase. |
+| `pull_number` | integer | yes | The pull request. |
+| `head_sha` | string | yes | The head commit both reviews reviewed. |
+| `versions` | array | yes | The two review versions, earlier first. |
+| `verdicts` | array | yes | Their verdicts, in the same order. |
+| `differences` | array | yes | Up to ten findings the reviews held open whose severity or presence differs, each `<path>:<line> <before> -> <after> <references>`, `absent` for a review that did not hold it. |
+
+#### Reviewer disagreement (`insights.signals.reviewer_disagreements[]`, `synthesis-input:reviewer-disagreement`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `kind` | string | no | On an input line only. One of `reviewer-disagreement`. |
+| `id` | string | yes | `R` and its rank, from 1. |
+| `repository` | string | yes | The pull request's repository, lowercase. |
+| `pull_number` | integer | yes | The pull request. |
+| `head_sha` | string | yes | The head commit the findings were raised on. |
+| `path` | string | yes | The file. |
+| `line` | integer | yes | The first finding's line; the others are within three lines after it. |
+| `reports` | array | yes | Up to five findings there, each `<severity> <reference> <source>`. |
+
+#### Guidance overlap (`insights.signals.guidance_overlaps[]`, `synthesis-input:guidance-overlap`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `kind` | string | no | On an input line only. One of `guidance-overlap`. |
+| `id` | string | yes | `O` and its rank, from 1: conflicts first, then by similarity. |
+| `repository` | string | yes | The repository both files belong to. |
+| `relation` | string | yes | One of `conflict` or `duplicate`: the rules differ in a force word, a severity, or a number, or they agree. |
+| `similarity` | number | yes | The share of their words the rules have in common, from 0 to 1, leaving out force words and numbers. |
+| `differs` | array | yes | The force words, severities, and numbers only one of the rules has; empty for a duplicate. |
+| `paths` | array | yes | The two files, in path order. |
+| `lines` | array | yes | The line each rule starts on, in the same order. |
+| `texts` | array | yes | Each rule's sentence on one line of at most 300 characters. |
+| `reviewers` | array | yes | The reviewers given both files. May be empty. |
+
+#### Unsupplied reference (`insights.signals.unsupplied_references[]`, `synthesis-input:guidance-unsupplied`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `kind` | string | no | On an input line only. One of `guidance-unsupplied`. |
+| `id` | string | yes | `U` and its number, from 1. |
+| `repository` | string | yes | The repository. |
+| `reviewer` | string | yes | The reviewer whose guidance names the file. |
+| `path` | string | yes | The guidance file that names it. |
+| `line` | integer | yes | The line that names it. |
+| `reference` | string | yes | The Markdown file named, from the repository root. |
+
 ### Synthesis result
 
 The result the analyst agent writes to the file the report's `synthesis.result` names, validated by `check_result` in `review_synthesis.py` against the context the report sealed, both by `synthesize --check` and when it is recorded. Its analysis is recorded in the report's `synthesis`, so the tables of its parts below state the report's too.
@@ -825,9 +904,9 @@ The result the analyst agent writes to the file the report's `synthesis.result` 
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `type` | string | yes | One of `new-rule`, `strengthen-rule`, `remove-rule`, `stop-flagging`, `start-flagging`, `new-analyzer`, or `flagged`. |
+| `type` | string | yes | One of `new-rule`, `strengthen-rule`, `remove-rule`, `consolidate`, `stop-flagging`, `start-flagging`, `new-analyzer`, `move-to-script`, or `flagged`. |
 | `priority` | string | yes | One of `high`, `medium`, or `low`. |
-| `target` | object | yes | An analyzer rule for `new-analyzer`, a repository and guidance file for every other type. |
+| `target` | object | yes | An analyzer rule for `new-analyzer`; a repository, the surviving guidance file, and the files it merges for `consolidate`; a repository and the script that takes the rule over for `move-to-script`; a repository and guidance file for every other type. |
 | `title` | string | yes | One line of at most 120 characters without quotes, backticks, `$`, backslashes, or control characters. |
 | `change` | string | yes | Exactly what to add, change, or remove, at most 2000 characters. |
 | `rationale` | string | yes | Why, at most 1500 characters. |
@@ -951,6 +1030,18 @@ The analyst agent's input, `synthesis-input.jsonl` beside the report: JSON Lines
 | `kind` | string | yes | One of `guidance`. |
 | `repositories` | object | yes | Keyed by repository, each the sorted guidance files its repository-scoped reviewers were built from, empty for one only a generic reviewer reviews. |
 
+#### Guidance file line (`synthesis-input:guidance-file`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `kind` | string | yes | One of `guidance-file`. |
+| `repository` | string | yes | The repository. |
+| `path` | string | yes | One of its guidance files. |
+| `role` | string | yes | One of `prose` or `code`: a guidance document, or a script, manifest, or test, listed by path only. |
+| `reviewers` | array | yes | The reviewers whose latest record was built from it. |
+| `status` | string | yes | One of `included`, `listed`, `too-large`, `over-budget`, or `unavailable`: its text is given, it is a `code` file, its text is past the file limit, past what the input has left, or no checkout copy matches the hash the reviewer's record pinned. |
+| `content` | string or null | yes | Its text as the reviewers were given it when `status` is `included`, otherwise null. |
+
 #### Previous period line (`synthesis-input:previous`)
 
 | Field | Type | Required | Meaning |
@@ -968,7 +1059,7 @@ The analyst agent's input, `synthesis-input.jsonl` beside the report: JSON Lines
 | --- | --- | --- | --- |
 | `id` | string | yes | Its ID. |
 | `type` | string | yes | Its type. |
-| `target` | string | yes | Its target, as `owner/repo:<file>` or `analyzer <coverage> <tool> <rule>`. |
+| `target` | string | yes | Its target, as `owner/repo:<file>`, a consolidation's files joined by `+` with the surviving one first, or `analyzer <coverage> <tool> <rule>`. |
 | `title` | string | yes | Its title. |
 | `decision` | string | yes | Its latest decision. |
 

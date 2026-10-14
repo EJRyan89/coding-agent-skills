@@ -261,7 +261,7 @@ class ReportTests(InsightFixture):
             lines,
         )
         report = json.loads(json_path.read_text(encoding="utf-8"))
-        self.assertEqual(8, report["schema_version"])
+        self.assertEqual(9, report["schema_version"])
         self.assertEqual(3, report["record_count"], "the out-of-range review is excluded")
         self.assertEqual([], report["recommendations"][0]["decision_history"])
         markdown = json_path.with_suffix(".md").read_text(encoding="utf-8")
@@ -828,7 +828,7 @@ class DecideTests(InsightFixture):
         code, out, err = self.decide(json_path, "REC-001", "Style", "none", "accepted")
         self.assertEqual((0, "DECIDED REC-001 accepted\n"), (code, out), err)
         report = json.loads(json_path.read_text(encoding="utf-8"))
-        self.assertEqual(8, report["schema_version"])
+        self.assertEqual(9, report["schema_version"])
         self.assertEqual([], report["recommendations"][0]["linked_flags"])
         self.assertEqual([], report["recommendations"][0]["reviewers"])
         self.assertEqual(1, len(report["recommendations"][0]["decision_history"]))
@@ -846,7 +846,7 @@ class DecideTests(InsightFixture):
         self.assertEqual([f"FLAG_RESOLVED {flag}", "DECIDED REC-001 accepted"], out.splitlines())
         upgraded = json.loads(json_path.read_text(encoding="utf-8"))
         self.assertEqual(
-            (8, [], "category"),
+            (9, [], "category"),
             (
                 upgraded["schema_version"],
                 upgraded["recommendations"][0]["reviewers"],
@@ -875,7 +875,7 @@ class DecideTests(InsightFixture):
         self.assertEqual(0, code, err)
         upgraded = json.loads(json_path.read_text(encoding="utf-8"))
         self.assertEqual(
-            (8, None, None),
+            (9, None, None),
             (
                 upgraded["schema_version"],
                 upgraded["recommendations"][0]["reviewers"][0]["addressed"],
@@ -930,7 +930,7 @@ class DecideTests(InsightFixture):
         self.assertEqual((0, f"DECIDED {recommendation} accepted\n"), (code, out), err)
         self.assertEqual({"open"}, {flag["status"] for flag in load_store(self.flags)["flags"]})
         upgraded = json.loads(json_path.read_text(encoding="utf-8"))
-        self.assertEqual(8, upgraded["schema_version"])
+        self.assertEqual(9, upgraded["schema_version"])
         self.assertEqual([[], []], [item["linked_flags"] for item in upgraded["recommendations"]])
 
     def test_failures_leave_report_and_flags_unchanged(self) -> None:
@@ -1427,7 +1427,7 @@ class RecordingTests(InsightFixture):
         json_path.write_text(json.dumps(report), encoding="utf-8")
         self.assertEqual(0, self.decide(json_path, "REC-001", "Correctness", "none")[0])
         upgraded = json.loads(json_path.read_text(encoding="utf-8"))
-        self.assertEqual((8, 3), (upgraded["schema_version"], upgraded["next_recommendation_number"]))
+        self.assertEqual((9, 3), (upgraded["schema_version"], upgraded["next_recommendation_number"]))
         for broken in (2, "3", None):
             with self.subTest(number=broken):
                 json_path.write_text(json.dumps({**upgraded, "next_recommendation_number": broken}), encoding="utf-8")
@@ -1441,7 +1441,7 @@ class RecordingTests(InsightFixture):
         self.commit("owner/repo", 7, ["Correctness"])
         json_path, _ = self.report()
         report = json.loads(json_path.read_text(encoding="utf-8"))
-        for version in (True, False, 8.0, 7.0, 1.0, "8", [8], {"version": 8}, None, 0, 9):
+        for version in (True, False, 9.0, 8.0, 1.0, "9", [9], {"version": 9}, None, 0, 10):
             with self.subTest(version=version):
                 json_path.write_text(json.dumps({**report, "schema_version": version}), encoding="utf-8")
                 before = json_path.read_text(encoding="utf-8")
