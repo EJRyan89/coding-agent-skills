@@ -564,6 +564,16 @@ class CommandGuardTests(WorktreesTestCase):
         self.assertEqual("deny", self.bash(f'GIT_WORK_TREE="{self.hub}" git checkout -- .', self.tree))
         self.assertIsNone(self.bash(f'git -C "{self.hub}" --work-tree="{self.tree}" add .', self.tree))
 
+    def test_a_location_variable_named_in_any_case_cannot_reach_into_the_hub(self) -> None:
+        # Git on Windows reads an environment name in any case, so git_work_tree is GIT_WORK_TREE to it.
+        for command in (
+            f'git_work_tree="{self.hub}" git reset --hard',
+            f'env git_work_tree="{self.hub}" git reset --hard',
+            f'Git_Work_Tree="{self.hub}" git reset --hard',
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+
     def test_guard_fails_open_on_input_it_cannot_judge(self) -> None:
         outside = self.root / "not-a-repository"
         outside.mkdir()
@@ -789,6 +799,28 @@ class CommandReadingTests(WorktreesTestCase):
                 self.assertEqual(expected, self.read(command, tool="Bash"))
                 self.assertEqual([], self.notes)
 
+    def test_bash_reads_a_location_variable_named_in_any_case(self) -> None:
+        tree = f'"{self.tree}"'
+        for command, expected in (
+            (f"git_work_tree={tree} git reset --hard", self.at(self.tree, "reset")),
+            (f"env git_work_tree={tree} git reset --hard", self.at(self.tree, "reset")),
+            (f"Git_Work_Tree={tree} git reset --hard", self.at(self.tree, "reset")),
+            ("export git_dir=.git; git commit -m x", self.at(None, "commit")),
+            ("declare -x Git_Common_Dir=x; git commit", self.at(None, "commit")),
+            ("git_dir=.git; export git_dir; git commit", self.at(None, "commit")),
+            # Bash keeps each spelling a variable of its own, so removing one leaves the other in force.
+            ("export git_dir=.git; unset GIT_DIR; git commit", self.at(None, "commit")),
+            ("export git_dir=.git; unset git_dir; git commit", self.at(self.hub, "commit")),
+            ("export git_dir=.git; export -n git_dir; git commit", self.at(self.hub, "commit")),
+            ("export git_dir=.git; env -u GIT_DIR git commit", self.at(None, "commit")),
+            (f"export GIT_WORK_TREE={tree}; git_work_tree={tree} git commit", self.at(self.tree, "commit")),
+            # Which of two spellings git takes is not the text's to say.
+            (f"export GIT_WORK_TREE={tree}; git_work_tree=elsewhere git commit", self.at(None, "commit")),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(expected, self.read(command, tool="Bash"))
+                self.assertEqual([], self.notes)
+
     def test_inherited_location_variables_apply_until_a_command_removes_them(self) -> None:
         inherited = {**self.environment, "GIT_DIR": str(self.hub / ".git")}
         for command, expected in (
@@ -865,6 +897,32 @@ class CommandReadingTests(WorktreesTestCase):
             self.read(f"Set-Content env:GIT_WORK_TREE '{self.tree}'; git commit", environment=aimed),
         )
 
+    def test_powershell_reads_a_location_variable_set_through_the_provider_qualified_path(self) -> None:
+        # Environment:: names the environment provider as the env: drive does, with or without its module.
+        for command in (
+            "Set-Item Environment::GIT_DIR x",
+            "Set-Item -Path Microsoft.PowerShell.Core\\Environment::GIT_DIR -Value x",
+            "Set-Content environment::git_dir x",
+            "New-Item -Path Environment::GIT_DIR -Value x",
+            "New-Item -Path Environment:: -Name GIT_DIR -Value x",
+            "ni Microsoft.PowerShell.Core\\Environment::\\ -Name git_dir -Value x",
+            "Copy-Item Environment::FOO Environment::GIT_DIR",
+            "Copy-Item -Path env:FOO -Destination Microsoft.PowerShell.Core\\Environment::GIT_DIR",
+            "Rename-Item Environment::FOO GIT_DIR",
+            "Rename-Item -LiteralPath Microsoft.PowerShell.Core\\Environment::FOO -NewName git_dir",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self.at(None, "commit"), self.read(f"{command}; git commit"))
+                self.assertEqual([], self.notes)
+        aimed = {**self.environment, "GIT_WORK_TREE": str(self.hub)}
+        self.assertEqual(
+            self.at(None, "commit"),
+            self.read(f"Set-Item Environment::GIT_WORK_TREE '{self.tree}'; git commit", environment=aimed),
+        )
+        for command in ("Copy-Item Environment::GIT_DIR env:SAVED", "New-Item -Path Environment::FOO -Name GIT_DIR"):
+            with self.subTest(command=command):
+                self.assertEqual(self.at(self.hub, "commit"), self.read(f"{command}; git commit"))
+
     def test_powershell_passes_over_cmdlets_that_set_no_location_variable(self) -> None:
         inherited = {**self.environment, "GIT_WORK_TREE": str(self.tree)}
         for command in (
@@ -929,6 +987,11 @@ class PowerShellGuardTests(WorktreesTestCase):
         self.assertIsNone(self.powershell("Rename-Item env:FOO GIT_WORK_TREE; git commit -m x", self.hub))
         self.assertIn("could not tell where `git commit` runs", self.stderr)
         self.assertEqual("deny", self.powershell("Set-Content notes.txt GIT_WORK_TREE; git commit -m x", self.hub))
+
+    def test_a_location_variable_set_through_the_provider_qualified_path_reaches_the_judgment(self) -> None:
+        command = f"Set-Item Environment::GIT_WORK_TREE '{self.hub}'; git reset --hard"
+        self.assertIsNone(self.powershell(command, self.tree))
+        self.assertIn("could not tell where `git reset` runs", self.stderr)
 
     def test_a_powershell_command_is_allowed_with_a_note_when_pwsh_cannot_be_started(self) -> None:
         git = shutil.which("git")

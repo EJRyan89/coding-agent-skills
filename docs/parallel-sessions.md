@@ -165,12 +165,17 @@ With the guard enabled:
   - in Bash, set for one command (`GIT_DIR=<dir> git ...`, or `env GIT_DIR=<dir> git ...`), or exported for the
     rest of the command (`export`, `declare -x`, `typeset -x`, or an assignment while `set -a` or
     `set -o allexport` holds or to a variable already exported). An assignment that is not exported does not
-    reach git and is ignored, and `unset`, `export -n`, `env -i`, and `env -u` remove one;
-  - in PowerShell, assigned through `$env:` or `[Environment]::SetEnvironmentVariable`, or set on the `env:`
-    drive: by `Set-Item`, `New-Item`, or `Set-Content` at its path, `Copy-Item` at its destination, `New-Item`
-    on the drive itself with `-Name`, or `Rename-Item` of a variable there with `-NewName`. PowerShell's own
-    binder places each argument, so a parameter abbreviated, aliased, or left positional, and each path of an
-    array, is read. `Add-Content` and `Move-Item` fail on the drive, so they set nothing.
+    reach git and is ignored, and `unset`, `export -n`, `env -i`, and `env -u` remove one. A name is read in
+    any case, as `git_dir` or `Git_Dir`, since Windows reads an environment name in any case and git there takes
+    `git_dir` as `GIT_DIR`. Bash keeps each spelling a variable of its own, so `unset GIT_DIR` leaves a `git_dir`
+    in force, and two spellings with different values leave the directory unknown;
+  - in PowerShell, assigned through `$env:` or `[Environment]::SetEnvironmentVariable`, or set on the
+    environment provider, through the `env:` drive or the provider-qualified path `Environment::<name>` (with
+    or without `Microsoft.PowerShell.Core\`): by `Set-Item`, `New-Item`, or `Set-Content` at its path,
+    `Copy-Item` at its destination, `New-Item` on the provider's root with `-Name`, or `Rename-Item` of a
+    variable there with `-NewName`. PowerShell's own binder places each argument, so a parameter abbreviated,
+    aliased, or left positional, and each path of an array, is read. `Add-Content` and `Move-Item` fail on the
+    provider, so they set nothing.
 
   The guard's own git calls drop these variables, as does the hook's check of the opt-in setting, so an
   inherited one cannot hide the hub from the guard.
@@ -207,8 +212,8 @@ The guard catches mistakes, not determined effort. It does not see:
 - shell redirection or other programs writing files;
 - git run indirectly from inside a script, or through `Start-Process`, `cmd /c`, or `pwsh -EncodedCommand`;
 - a git subcommand spelled with escapes or computed at run time, or a directory the text does not settle;
-- a location variable set on PowerShell's `env:` drive through a path the text does not settle, piped in, or
-  named relative to a location on that drive;
+- a location variable set on PowerShell's environment provider through a path the text does not settle, piped
+  in, or named relative to a location on that provider;
 - a location variable set by the shell's own startup files, a sourced script, or `eval`, or configuration given
   through git's `GIT_CONFIG_*` variables;
 - `GIT_INDEX_FILE`, which moves only the index: the guard still judges the call by the checkout whose `HEAD` and
