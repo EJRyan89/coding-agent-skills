@@ -3,11 +3,14 @@ from, the text of its prose files as that reviewer was given it, and the candida
 text before any model reads it.
 
 A reviewer's files are the repository-relative paths in `review.adapter.source_hashes` of the latest record it wrote,
-anywhere in the archive; a profile the suite ships is no file of the repository and is left out. A prose file's text
-is read from the repository's configured checkout only when its SHA-256 matches the hash that record pinned: the file
-in the working tree, or else the file at the record's `source_commit`. A file whose text does not match, or that is
-too large or past the input's total budget, is listed by path alone with the reason. A script, manifest, or other code
-file is listed by path, so a recommendation can name it, and its text is never read.
+anywhere in the archive; a profile the suite ships is no file of the repository and is left out. Reviewers whose
+records pinned different hashes of one file were given different versions of it, so each version is its own line with
+its own reviewers, and its text is checked against the rules of the files those reviewers were given. A prose file's
+text is read from the repository's configured checkout only when its SHA-256 matches the hash the records pinned: the
+file in the working tree, or else the file at a pinning record's `source_commit`; a working-tree copy that cannot be
+read is passed over for the commit's, and the report says so. A file whose text does not match, or that is too large
+or past the input's total budget, is listed by path alone with the reason. A script, manifest, or other code file is
+listed by path, so a recommendation can name it, and its text is never read.
 
 The overlap candidates come from the text read, every verified file, including one listed without its text for the
 budget: each rule (a list item's or paragraph's sentence) is compared with the rules of the repository's other files
@@ -79,7 +82,18 @@ WORD = re.compile(r"[a-z0-9_]+")
 LINK = re.compile(r"\]\(\s*<?([^)\s>#]+\.md)(?:#[^)\s]*)?>?\s*\)")
 CODE_REFERENCE = re.compile(r"`([A-Za-z0-9_./-]+\.md)`")
 
-PinnedReader = Callable[[Path, str | None, str, str], bytes | None]
+
+@dataclass(frozen=True)
+class Pinned:
+    """A file's bytes as a reviewer was given them, or None, and why the working tree's copy could not be read when
+    it could not."""
+
+    content: bytes | None
+    unreadable: str | None = None
+
+
+PinnedReader = Callable[[Path, str | None, str, str], Pinned]
+VersionKey = tuple[str, str]
 
 
 @dataclass
@@ -109,6 +123,8 @@ class Guidance:
     lines: list[dict[str, Any]] = field(default_factory=list)
     overlaps: list[dict[str, Any]] = field(default_factory=list)
     unsupplied: list[dict[str, Any]] = field(default_factory=list)
+    # A fact line for each prose file whose working-tree copy could not be read.
+    unreadable: list[str] = field(default_factory=list)
 
 
 def reviewer_sources(repositories: list[str], records: dict[Path, dict[str, Any]]) -> dict[str, dict[str, Source]]:
@@ -142,17 +158,31 @@ def is_prose(path: str) -> bool:
     return PurePosixPath(path).suffix.lower() in PROSE_SUFFIXES
 
 
-def read_pinned(checkout: Path, commit: str | None, path: str, digest: str) -> bytes | None:
-    """The file's bytes as the reviewer was given them: the working tree's copy, or else the copy at `commit`, the
-    first whose SHA-256 is `digest`; None when neither is, or the path leaves the checkout."""
-    if not safe_repository_path(path):
-        return None
-    root = checkout.resolve()
+def _working_copy(root: Path, path: str) -> bytes | None:
+    """The working tree's copy of `path`, or None when it is no file inside the checkout or is too large to read."""
     target = root.joinpath(*PurePosixPath(path).parts).resolve()
     if target.is_relative_to(root) and target.is_file() and target.stat().st_size <= READ_BYTES:
-        content = target.read_bytes()
-        if hashlib.sha256(content).hexdigest() == digest:
-            return content
+        return target.read_bytes()
+    return None
+
+
+def read_pinned(checkout: Path, commit: str | None, path: str, digest: str) -> Pinned:
+    """The file's bytes as the reviewer was given them: the working tree's copy, or else the copy at `commit`, the
+    first whose SHA-256 is `digest`; None when neither is, or the path leaves the checkout. A working-tree copy that
+    cannot be read is passed over for the commit's, and the result says why."""
+    if not safe_repository_path(path):
+        return Pinned(None)
+    unreadable = None
+    try:
+        content = _working_copy(checkout.resolve(), path)
+    except OSError as exc:
+        content, unreadable = None, flat_text(f"{type(exc).__name__}: {exc.strerror or exc}")
+    if content is not None and hashlib.sha256(content).hexdigest() == digest:
+        return Pinned(content)
+    return Pinned(_committed(checkout, commit, path, digest), unreadable)
+
+
+def _committed(checkout: Path, commit: str | None, path: str, digest: str) -> bytes | None:
     if commit is None:
         return None
     try:
@@ -165,16 +195,17 @@ def read_pinned(checkout: Path, commit: str | None, path: str, digest: str) -> b
     return content
 
 
-def _file_sources(by_name: dict[str, Source]) -> dict[str, tuple[Source, list[str]]]:
-    """Each file of a repository with the latest reviewer record that names it, and every reviewer that names it."""
-    files: dict[str, tuple[Source, list[str]]] = {}
+def _file_versions(by_name: dict[str, Source]) -> dict[VersionKey, list[tuple[str, Source]]]:
+    """Each version of a repository's files, by path and the hash a reviewer's record pinned, with every reviewer
+    given that version, the latest record first."""
+    versions: dict[VersionKey, list[tuple[str, Source]]] = {}
     for name in sorted(by_name):
         source = by_name[name]
-        for path in source.hashes:
-            known = files.get(path)
-            newest = source if known is None or known[0].stamp < source.stamp else known[0]
-            files[path] = (newest, [*(known[1] if known else []), name])
-    return files
+        for path, digest in source.hashes.items():
+            versions.setdefault((path, digest), []).append((name, source))
+    for given in versions.values():
+        given.sort(key=lambda item: item[1].stamp, reverse=True)
+    return versions
 
 
 def read_guidance(
@@ -183,28 +214,36 @@ def read_guidance(
     checkouts: Mapping[str, Path | None],
     reader: PinnedReader = read_pinned,
 ) -> Guidance:
-    """The guidance the synthesis reads: each repository's files, a line for each with its text when it is prose,
-    verified, and within the budget, and the overlap and unsupplied-reference candidates in the text read."""
+    """The guidance the synthesis reads: each repository's files, a line for each version of each with the reviewers
+    given it and its text when it is prose, verified, and within the budget, and the overlap and unsupplied-reference
+    candidates in the text read."""
     sources = reviewer_sources(repositories, records)
     guidance = Guidance(guidance_files(repositories, records))
     budget = TOTAL_CHARS
     for repository in sorted(sources):
         checkout = checkouts.get(repository)
-        texts: dict[str, str] = {}
-        for path, (source, reviewers) in sorted(_file_sources(sources[repository]).items()):
+        texts: dict[VersionKey, str] = {}
+        for (path, digest), given in sorted(_file_versions(sources[repository]).items()):
             line: dict[str, Any] = {
                 "kind": "guidance-file",
                 "repository": repository,
                 "path": path,
                 "role": "prose" if is_prose(path) else "code",
-                "reviewers": reviewers,
+                "reviewers": sorted(name for name, _ in given),
                 "status": "listed",
                 "content": None,
             }
             if is_prose(path):
-                text = _verified_text(checkout, source, path, reader)
+                text, unreadable = _verified_text(
+                    checkout, [source.commit for _, source in given], path, digest, reader
+                )
+                if unreadable is not None:
+                    fallback = "commit" if text is not None else "none"
+                    guidance.unreadable.append(
+                        f"GUIDANCE_UNREADABLE {repository} {flat_text(path)} fallback={fallback} {unreadable}"
+                    )
                 if text is not None:
-                    texts[path] = text
+                    texts[path, digest] = text
                 line["status"] = _status(text, budget)
                 if line["status"] == "included" and text is not None:
                     line["content"] = text
@@ -216,16 +255,23 @@ def read_guidance(
     return guidance
 
 
-def _verified_text(checkout: Path | None, source: Source, path: str, reader: PinnedReader) -> str | None:
+def _verified_text(
+    checkout: Path | None, commits: list[str | None], path: str, digest: str, reader: PinnedReader
+) -> tuple[str | None, str | None]:
+    """The version's text, read at the working tree or at each commit a record that pinned it was built at, and why
+    the working tree's copy could not be read when it could not."""
     if checkout is None:
-        return None
-    content = reader(checkout, source.commit, path, source.hashes[path])
-    if content is None:
-        return None
-    try:
-        return content.decode("utf-8")
-    except UnicodeDecodeError:
-        return None
+        return None, None
+    unreadable = None
+    for commit in dict.fromkeys(commits):
+        pinned = reader(checkout, commit, path, digest)
+        unreadable = unreadable or pinned.unreadable
+        if pinned.content is not None:
+            try:
+                return pinned.content.decode("utf-8"), unreadable
+            except UnicodeDecodeError:
+                return None, unreadable
+    return None, unreadable
 
 
 def _status(text: str | None, budget: int) -> str:
@@ -301,24 +347,29 @@ def _cut(text: str) -> str:
     return text if len(text) <= RULE_TEXT else text[: RULE_TEXT - 3].rstrip() + "..."
 
 
-def overlaps(repository: str, texts: dict[str, str], sources: dict[str, Source]) -> list[dict[str, Any]]:
-    """Every candidate pair of rules from two of a repository's files, with the reviewers given both files."""
-    by_file = [rules(path, texts[path]) for path in sorted(texts)]
-    found = []
-    for index, first_rules in enumerate(by_file):
-        for second_rules in by_file[index + 1 :]:
+def overlaps(repository: str, texts: dict[VersionKey, str], sources: dict[str, Source]) -> list[dict[str, Any]]:
+    """Every candidate pair of rules from two of a repository's files, each file at every version read, with the
+    reviewers given both versions; a candidate two versions share is one, naming every reviewer given it."""
+    by_version = [(key, rules(key[0], texts[key])) for key in sorted(texts)]
+    found: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for index, (first_key, first_rules) in enumerate(by_version):
+        for second_key, second_rules in by_version[index + 1 :]:
+            if first_key[0] == second_key[0]:
+                continue
+            shared = {name for name, source in sources.items() if _given(source, first_key, second_key)}
             for first in first_rules:
                 for second in second_rules:
                     candidate = compare(first, second)
                     if candidate is None:
                         continue
-                    shared = sorted(
-                        name
-                        for name, source in sources.items()
-                        if first.path in source.hashes and second.path in source.hashes
-                    )
-                    found.append({"repository": repository, **candidate, "reviewers": shared})
-    return found
+                    key = (candidate["relation"], *candidate["paths"], *candidate["lines"], *candidate["texts"])
+                    known = found.setdefault(key, {"repository": repository, **candidate, "reviewers": []})
+                    known["reviewers"] = sorted({*known["reviewers"], *shared})
+    return list(found.values())
+
+
+def _given(source: Source, *versions: VersionKey) -> bool:
+    return all(source.hashes.get(path) == digest for path, digest in versions)
 
 
 def _overlap_rank(item: dict[str, Any]) -> tuple[Any, ...]:
@@ -339,13 +390,17 @@ def _resolved(base: str, reference: str) -> str | None:
     return "/".join(parts) or None
 
 
-def unsupplied(repository: str, texts: dict[str, str], sources: dict[str, Source]) -> list[dict[str, Any]]:
-    """Each Markdown file a reviewer's prose links to or names in code that the reviewer was not given."""
+def unsupplied(repository: str, texts: dict[VersionKey, str], sources: dict[str, Source]) -> list[dict[str, Any]]:
+    """Each Markdown file a reviewer's prose, at the version it was given, links to or names in code that the reviewer
+    was not given."""
     found: list[dict[str, Any]] = []
     for reviewer in sorted(sources):
         given = sources[reviewer].hashes
-        for path in sorted(set(given) & set(texts)):
-            for number, line in enumerate(texts[path].splitlines(), start=1):
+        for path in sorted(given):
+            text = texts.get((path, given[path]))
+            if text is None:
+                continue
+            for number, line in enumerate(text.splitlines(), start=1):
                 links = [_resolved(path, target) for target in LINK.findall(line) if "://" not in target]
                 named = [(target, _resolved(path, target)) for target in CODE_REFERENCE.findall(line)]
                 candidates = [link for link in links if link is not None and link not in given]
