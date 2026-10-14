@@ -1519,14 +1519,17 @@ class MigrationTests(DeployerTestCase):
             ["alpha", "b", "c", "reviewer.md (agent)"],
         )
 
-    def pack_from_the_old_source(self) -> Path:
-        """Deploy opt-in bundle pack [alpha, beta] from test/old by request. Return the old source."""
-        self.make_source_json("test/old", bundles={"pack": {"members": ["alpha", "beta"], "opt_in": True}})
+    def pack_from_the_old_source(self, bundles: dict | None = None, include: tuple[str, ...] = ()) -> Path:
+        """Deploy opt-in bundle pack [alpha, beta] from test/old by request, beside the other bundles given, of which
+        those include names are requested too. Return the old source."""
+        self.make_source_json(
+            "test/old", bundles={"pack": {"members": ["alpha", "beta"], "opt_in": True}, **(bundles or {})}
+        )
         self.make_skill("alpha", "Alpha")
         self.make_skill("beta", "Beta")
         self.make_config("test/old")
         old = self.snapshot_source("old")
-        self.deploy_from(old, "--all", "--include", "pack")
+        self.deploy_from(old, "--all", *(argument for name in ("pack", *include) for argument in ("--include", name)))
         return old
 
     def pack_from_a_version_7_entry(self, requested: list[str]) -> Path:
@@ -1585,6 +1588,74 @@ class MigrationTests(DeployerTestCase):
         self.kept_by_all(
             "Selected 3 items (4 skills):\n  kit (bundle)\n    alpha\n    beta\n  everyday\n  newer\n",
             ["alpha", "beta", "everyday", "newer"],
+        )
+
+    def test_a_migration_beside_a_skill_preserved_by_a_deployment_that_included_a_new_bundle_needs_include(
+        self,
+    ) -> None:
+        # As for --all, the old entry reads everyday's filled-in dependencies as exact, since no request on its own
+        # reaches np, so the migration carries no request for alpha and beta; --include keeps the renamed bundle.
+        self.make_skill("everyday", "Everyday")
+        self.make_skill("np", "Np")
+        pack2 = {"pack2": {"members": ["np"], "opt_in": True}}
+        self.pack_from_the_old_source(pack2, include=("pack2",))
+        self.rewrite_as_preserved_through_the_upgrade("everyday", "test/old", installed_since=("np",))
+        self.assertEqual(["alpha", "beta"], self.owned("skills", "test/old")["everyday"]["skill_deps"])
+        self.make_source_json(bundles={"kit": {"members": ["alpha", "beta"], "opt_in": True}, **pack2})
+        self.make_config()
+        self.deploy_ok("--migrate-from", "test/old")
+        self.assertEqual(["test/skills"], list(self.manifest()["sources"]))
+        self.assertEqual((["pack2"], {"pack2": ["np"]}, ["everyday"]), self.requests())
+        groups = self.report_groups(self.deploy_ok("--all", "--dry-run").output, "DRY RUN")
+        self.assertEqual(["alpha", "beta"], [line.split()[0] for line in groups["REMOVE"]])
+        self.deploy_ok("--all", "--include", "kit")
+        self.assertEqual((["kit", "pack2"], {"kit": ["alpha", "beta"], "pack2": ["np"]}, ["everyday"]), self.requests())
+        self.kept_by_all(
+            "Selected 3 items (4 skills):\n  kit (bundle)\n    alpha\n    beta\n  pack2 (bundle)\n    np\n  everyday\n",
+            ["alpha", "beta", "everyday", "np"],
+        )
+
+    def test_a_migration_carries_a_bundle_request_beside_a_preserved_skill_the_deployment_did_not_select(self) -> None:
+        self.make_skill("everyday", "Everyday")
+        self.make_skill("newer", "Newer")
+        self.pack_from_the_old_source()
+        self.rewrite_as_preserved_through_the_upgrade(
+            "everyday", "test/old", installed_since=("newer",), deselected=True
+        )
+        self.assertEqual(["newer"], self.manifest()["sources"]["test/old"]["requested_skills"])
+        self.make_source_json(bundles={"kit": {"members": ["alpha", "beta"], "opt_in": True}})
+        self.make_config()
+        self.deploy_ok("--migrate-from", "test/old")
+        self.assertEqual((["kit"], {"kit": ["alpha", "beta"]}, ["everyday", "newer"]), self.requests())
+        self.kept_by_all(
+            "Selected 3 items (4 skills):\n  kit (bundle)\n    alpha\n    beta\n  everyday\n  newer\n",
+            ["alpha", "beta", "everyday", "newer"],
+        )
+
+    def test_a_migration_carries_no_request_for_a_member_installed_only_as_a_dependency_beside_a_preserved_skill(
+        self,
+    ) -> None:
+        # everyday's filled-in dependencies name tool, its dependency helper, and more, so tool's list is read as
+        # recorded: helper stays a dependency, and the opt-in bundle hb that holds it stays unrequested.
+        self.make_skill("everyday", "Everyday")
+        self.make_skill("tool", "Tool", skill_deps=["helper"])
+        self.make_skill("helper", "Helper")
+        self.make_skill("mate", "Mate")
+        hb = {"hb": {"members": ["helper", "mate"], "opt_in": True}}
+        self.pack_from_the_old_source(hb)
+        self.rewrite_as_preserved_through_the_upgrade("everyday", "test/old")
+        self.assertEqual(
+            ["alpha", "beta", "helper", "tool"], self.owned("skills", "test/old")["everyday"]["skill_deps"]
+        )
+        self.make_source_json(bundles={"pack": {"members": ["alpha", "beta"], "opt_in": True}, **hb})
+        self.make_config()
+        self.deploy_ok("--migrate-from", "test/old")
+        self.assertEqual((["pack"], {"pack": ["alpha", "beta"]}, ["everyday", "tool"]), self.requests())
+        self.assertRegex(self.deploy("--dry-run", stdin="\n").output, r"(?m)^  \[ \] [0-9]+\. hb \(bundle, opt-in\)$")
+        self.kept_by_all(
+            "Selected 3 items (5 skills):\n  pack (bundle)\n    alpha\n    beta\n  everyday\n  tool\n"
+            "    helper (dependency)\n",
+            ["alpha", "beta", "everyday", "helper", "tool"],
         )
 
     def test_a_version_7_entry_left_beside_a_migration_keeps_its_bundle_request(self) -> None:

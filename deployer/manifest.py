@@ -78,25 +78,33 @@ class Ownership:
         The first deployer to write version 8 recorded no bundle members, and a skill it left in place, preserved or
         skipped, kept the edges the upgrade filled in beside the exact ones it recorded for the skills it installed, so
         they need not form a cycle. That deployment may also have installed a skill the upgraded manifest did not own,
-        which a filled-in list therefore does not name; it installed such a skill for a request on its own, or as a
-        dependency of one. An entry that requests a bundle whose members it does not record is one an earlier release
-        wrote, and in it a skill's recorded dependencies may be those filled-in edges when they name every other skill
+        which a filled-in list therefore does not name, and it may have preserved a skill the user deselected. An entry
+        that requests a bundle whose members it does not record is one an earlier release wrote, and when it requests a
+        skill on its own, a skill's recorded dependencies may be those filled-in edges when they name every other skill
         the entry owns except ones requested on their own or depended on, by another skill's recorded edges, by one
-        that is, and that skill or one they name is requested on its own, as every filled-in list is in an entry that
-        requests any skill on its own: they exclude no skill either. Such an entry may count as chosen a skill a
-        deployment recorded only as a dependency of a skill that depends on every other skill no such request reaches,
-        which keeps more, never less, until its next deployment records what its requests stand for. An entry that
-        requests no skill on its own cannot tell a filled-in list from an exact one, and its edges are read as recorded.
+        that is: they exclude no skill either, and are set aside. The upgrade filled in every list from the same skills
+        and a deployment only added skills beside them, so a skill's list is exact, and read as recorded, when another
+        skill's list, with that skill, names the first skill, every skill its list names, and more. Such an entry may
+        count as chosen a skill a deployment recorded only as a dependency of a skill that depends on every other skill
+        no such request reaches and that no other list names more than, which keeps more until its next deployment
+        records what its requests stand for.
+
+        A skill that deployment installed only through a bundle request, whose members it did not record, is one no
+        request on its own reaches, so beside it a filled-in list reads as exact and the entry keeps less: the skills
+        that list names count as dependencies, and a bundle the source has since renamed stays chosen only when named
+        with --include. The entry cannot tell that history from one whose deployment preserved nothing and installed a
+        requested bundle's members that nothing depends on, where setting the list aside would count an opt-in
+        dependency as chosen and install the rest of its bundle. An entry that requests no skill on its own cannot tell
+        a filled-in list from an exact one either, and its edges are read as recorded.
         """
         edges = self.deps_of(SKILL)
-        if self.requested_bundles - self.requested_bundle_members.keys():
+        if self.requested_bundles - self.requested_bundle_members.keys() and self.requested_skills:
+            named = [{name, *dependencies} for name, dependencies in edges.items()]
             edges = {
                 name: dependencies
                 for name, dependencies in edges.items()
-                if not (
-                    set(self.skills) - {name, *dependencies} <= self._requested_reach(without=name)
-                    and self.requested_skills & {name, *dependencies}
-                )
+                if any({name, *dependencies} < other for other in named)
+                or not set(self.skills) - {name, *dependencies} <= self._requested_reach(without=name)
             }
 
         def reaches(start: str, goal: str) -> bool:
