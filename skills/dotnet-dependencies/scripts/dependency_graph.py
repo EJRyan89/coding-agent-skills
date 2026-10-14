@@ -37,16 +37,17 @@ forward slashes:
                   where <projects>; conflicts <names in conflict> <stale redirects>; graph <nodes> <edges>
 
 <frameworks> names the target frameworks of the project's restore that hold the line, joined by `;`, or `-` for a
-project with no restore, whose facts are not kept per framework. A line that holds for several frameworks is printed
-once. Two frameworks of one project resolving different versions build apart and are not a conflict. A framework is
-named as the project names it, whichever form its restore writes (`net8.0` or `.NETCoreApp,Version=v8.0`). A
-framework's direct packages and project references are those its restore recorded; for a framework the restore did
-not record them for, and for its assembly references, which a restore never records, they are the project file's
-PackageReference, ProjectReference, and Reference items whose conditions hold for it, a package without a version of
-its own taking the central PackageVersion whose conditions do, and a Choose applying its first When that holds. An
-item whose condition the reader cannot evaluate is not applied and is reported as an UNREADABLE line naming the
-condition and what was done instead, and an item inside a Target, which MSBuild defines only when the target runs,
-is left out and reported so.
+project with no restore, whose facts are not kept per framework: every item counts whatever its condition, but a
+Remove counts only where it holds for every framework the project names. A line that holds for several frameworks is
+printed once. Two frameworks of one project resolving different versions build apart and are not a conflict. A
+framework is named as the project names it, whichever form its restore writes (`net8.0` or
+`.NETCoreApp,Version=v8.0`). A framework's direct packages and project references are those its restore recorded; for
+a framework the restore did not record them for, and for its assembly references, which a restore never records, they
+are the project file's PackageReference, ProjectReference, and Reference items whose conditions hold for it, a package
+without a version of its own taking the central PackageVersion whose conditions do, and a Choose applying its first
+When that holds. An item whose condition the reader cannot evaluate is not applied and is reported as an UNREADABLE
+line naming the condition and what was done instead, and an item inside a Target, which MSBuild defines only when the
+target runs, is left out and reported so.
 
 `why` asks `dotnet nuget why` for a project that is SDK-style, uses PackageReference, has an obj/project.assets.json
 no older than the project file, and only when dotnet is installed. A run that fails, even after printing part of an
@@ -281,7 +282,8 @@ def resolve_root(path: Path, graph_unreadable: list[tuple[Path, str]]) -> tuple[
 
 
 def load_projects(graph: Graph, listed: Iterable[Path]) -> None:
-    """Read each listed project and, through ProjectReference, every project they reach."""
+    """Read each listed project and, through ProjectReference, every project they reach under any framework, so a
+    project one framework removes is still read for the others."""
     queue = deque((path, True) for path in listed)
     while queue:
         path, is_listed = queue.popleft()
@@ -368,7 +370,7 @@ def nuspec_node(graph: Graph, folders: Sequence[Path], reference: PackageRef) ->
 
 def file_target(project: Project, direct: list[PackageRef]) -> Target:
     """The one target of a project with no restore: the direct packages, and every project and assembly reference
-    its file states, whatever its condition."""
+    its file states, whatever its condition, but those a Remove takes out for every framework the file names."""
     file = project.file
     return Target(NO_FRAMEWORK, direct=direct, project_refs=list(file.project_refs), assemblies=list(file.assemblies))
 
