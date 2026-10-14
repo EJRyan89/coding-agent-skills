@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from validation_support import (
+    CODE_SPAN,
     EXECUTABLE_SCRIPT_EXTENSIONS,
     REPOSITORY_ROOT,
     REPOSITORY_SKILLS,
@@ -244,7 +245,7 @@ SKILL_DIR_FILE = re.compile(r"\$\{CLAUDE_SKILL_DIR\}/([A-Za-z0-9._/-]+)(?![A-Za-
 BARE_SCRIPT_PATH = re.compile(r"""(?:^|[\s"'=])(?:\./|\.\./[A-Za-z0-9._-]+/)?scripts/""")
 # In SKILL.md prose, a code span that names the skill's own scripts/ or references/ by a relative path. Claude Code
 # resolves it against the working directory, and Codex and Copilot against the adapter, which has neither folder.
-PROSE_CODE_SPAN = re.compile(r"`([^`\n]+)`")
+# A code span is read with skill-core's CODE_SPAN, which validation_support re-exports.
 BARE_OWN_PATH = re.compile(r"""(?:^|[\s"'=(])(?:\./|\.\./[A-Za-z0-9._-]+/)?(?:scripts|references)/""")
 # analyze-skill-cost recommends a command under `scripts/` in the skill it audits, which is not a path of its own.
 BARE_OWN_PATH_EXEMPT = frozenset({("skills/analyze-skill-cost/SKILL.md", "scripts/")})
@@ -293,7 +294,7 @@ def _prose_path_problems(name: str, number: int, line: str) -> list[str]:
     """Code spans in SKILL.md prose that name the skill's own scripts/ or references/ by a relative path."""
     return [
         f"{name}:{number} names `{span}` by a bare relative path; see {SKILL_PATHS_DOC}"
-        for span in PROSE_CODE_SPAN.findall(line)
+        for span in CODE_SPAN.findall(line)
         if BARE_OWN_PATH.search(span) and (name, span) not in BARE_OWN_PATH_EXEMPT
     ]
 

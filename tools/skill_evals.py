@@ -610,8 +610,8 @@ def load_scenario(skill: str, directory: Path, checkout: Path = REPOSITORY_ROOT)
             document = _document(directory, spec["document"], "document")
             base = _document(directory, spec["base"], "base") if "base" in spec else None
             stage = _choice(spec["stage"], tuple(DOCUMENT_STAGES), "stage") if "stage" in spec else None
-        else:
-            _fixture(directory)
+        elif reviewer is None:
+            _fixture(directory)  # a reviewer's scenario had its fixture checked in _reviewer
         prior = None
         if mode == "re-review":
             prior = directory / _path(spec["prior"])
