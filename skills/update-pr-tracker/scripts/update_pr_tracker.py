@@ -35,7 +35,7 @@ from review_config import (
     validate_repository_identity,
 )
 from review_github import GitHubClient
-from review_io import atomic_write_text
+from review_io import atomic_write_json, atomic_write_text
 from review_records import SEVERITIES as SEVERITY_KEYS
 from typed_fields import FieldError, FieldReader
 
@@ -79,6 +79,7 @@ OPEN_SECTIONS = {SECTION_TO_REVIEW, SECTION_AWAITING, SECTION_MINE}
 FINDINGS_LEGEND = (
     "Findings: M must fix, H should fix, S suggestion; flagged means you flagged it with flag-review-finding."
 )
+TRACKER_SCHEMA_VERSION = 1
 PULL_KEY_PATTERN = re.compile(r"([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*)#([1-9][0-9]*)")
 
 
@@ -283,6 +284,22 @@ def normalize_overrides(value: dict[str, str] | None) -> dict[str, str]:
             raise TrackerError(f"Duplicate status override after normalization: {key}")
         normalized[key] = status
     return normalized
+
+
+def tracked_pulls(items: list[dict[str, Any]], login: str) -> list[str]:
+    """The pull requests the tracker holds, sorted: every collected item the user authored, is asked to review, or
+    takes part in, whether or not this run shows its row, so a removed or approved one can still be pinned."""
+    login_key = login.casefold()
+    return sorted(f"{item['repository']}#{item['number']}" for item in items if _relationship(item, login_key))
+
+
+def validate_tracker_record(value: Any) -> dict[str, Any]:
+    """The tracker record `update` keeps beside the configuration: the pull requests its last run held, keyed as a
+    status override is, so `override` can refuse one naming none of them."""
+    record = READ.json_object(value, "tracker", required={"schema_version", "pulls"})
+    READ.one_of(record["schema_version"], "tracker.schema_version", (TRACKER_SCHEMA_VERSION,))
+    pulls = normalize_pull_keys(READ.array(record["pulls"], "tracker.pulls", READ.string), "tracker")
+    return {"schema_version": TRACKER_SCHEMA_VERSION, "pulls": sorted(pulls)}
 
 
 def apply_author_names(items: list[dict[str, Any]], author_names: dict[str, str] | None) -> list[dict[str, Any]]:
@@ -591,8 +608,10 @@ def update_dashboard_rows(
     removals: set[str] | list[str] | None = None,
     home_repositories: set[str] | list[str] | None = None,
     config_path: str | None = None,
+    record: Path | None = None,
 ) -> list[Row]:
-    """Update the owned section and return the rendered rows."""
+    """Update the owned section and return the rendered rows, then, given a `record` path, write there the pull
+    requests the tracker holds."""
     try:
         items = validate_items(json.loads(input_path.read_text(encoding="utf-8-sig")))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -619,4 +638,7 @@ def update_dashboard_rows(
     # section are kept, since the owned section is rendered from the input alone.
     current = _read_dashboard(dashboard)
     atomic_write_text(dashboard, splice(current, owned, start_marker=start_marker, end_marker=end_marker))
+    if record is not None:
+        tracked = {"schema_version": TRACKER_SCHEMA_VERSION, "pulls": tracked_pulls(items, login)}
+        atomic_write_json(record, tracked, validator=validate_tracker_record)
     return rows
