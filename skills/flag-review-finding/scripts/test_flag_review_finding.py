@@ -217,6 +217,47 @@ class FlagCliTests(unittest.TestCase):
         self.assert_result(self.store_cli("resolve", "RF-000001", "Accepted"), 0, "RESOLVED RF-000001\n")
         self.assert_result(self.store_cli("list"), 0, "COUNT 0\n")
 
+    def test_edit_changes_the_category_and_body_of_an_open_flag(self) -> None:
+        review_fixture.commit_fixture(self.archive)
+        self.assert_result(self.flag_finding("3", "F002"), 0, "ADDED RF-000001\n")
+        before = json.loads(Path(self.store).read_text(encoding="utf-8"))["flags"][0]
+        self.assert_result(
+            self.store_cli("edit", "RF-000001", "--category", "noise", "--body", "Caller already guarantees it"),
+            0,
+            "EDITED RF-000001\n",
+        )
+        self.assert_result(
+            self.store_cli("edit", "RF-000001", "--body", "Rationale with spaces"), 0, "EDITED RF-000001\n"
+        )
+        stored = json.loads(Path(self.store).read_text(encoding="utf-8"))["flags"][0]
+        self.assertEqual({**before, "category": "noise", "body": "Rationale with spaces"}, stored)
+        self.assert_result(
+            self.store_cli("list"), 0, "FLAG RF-000001 noise example/one#12 v3 F002 Rationale with spaces\nCOUNT 1\n"
+        )
+
+    def test_edit_refusals_print_their_reason_and_leave_the_store_and_locks_unchanged(self) -> None:
+        self.assert_result(self.store_cli("add", "guideline", "Open"), 0, "ADDED RF-000001\n")
+        self.assert_result(self.store_cli("add", "guideline", "Resolved"), 0, "ADDED RF-000002\n")
+        self.assert_result(self.store_cli("resolve", "RF-000002", "Done"), 0, "RESOLVED RF-000002\n")
+        # Refused under the store lock, which leaves the store as it was.
+        for reason, arguments in (
+            ("Flag RF-000002 is resolved; only an open flag is edited", ("RF-000002", "--body", "New")),
+            ("Unknown flag ID: RF-000009", ("RF-000009", "--category", "noise")),
+        ):
+            with self.subTest(arguments=arguments):
+                before = Path(self.store).read_bytes()
+                self.assert_result(self.store_cli("edit", *arguments), 1, f"FAILED {reason}\n")
+                self.assertEqual(before, Path(self.store).read_bytes())
+        # Refused before the lock is taken, which leaves the lock folder as it was too.
+        unlocked: tuple[tuple[str, tuple[str, ...]], ...] = (
+            ("Flag category must not be blank", ("RF-000001", "--category", " \t")),
+            ("Flag body must not be blank", ("RF-000001", "--body", "")),
+            ("Name a new category, a new body, or both", ("RF-000001",)),
+        )
+        for reason, unlocked_arguments in unlocked:
+            with self.subTest(arguments=unlocked_arguments):
+                self.assert_refusal_preserves_store_and_locks(reason, "edit", *unlocked_arguments)
+
     def test_resolving_a_resolved_flag_keeps_its_resolution(self) -> None:
         self.store_cli("add", "guideline", "Body")
         self.store_cli("resolve", "RF-000001", "First")

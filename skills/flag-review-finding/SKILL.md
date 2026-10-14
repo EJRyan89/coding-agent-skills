@@ -1,7 +1,7 @@
 ---
 name: flag-review-finding
-description: "Add, list, or resolve a structured code-review improvement flag. Use it when the user says a review finding was wrong, noisy, or missed something and wants that recorded."
-argument-hint: "add CATEGORY BODY [--repository owner/repo --pull N [--review-version V --finding ID]] | list | findings --repository owner/repo --pull N | resolve ID RESOLUTION"
+description: "Add, list, edit, or resolve a structured code-review improvement flag. Use it when the user says a review finding was wrong, noisy, or missed something and wants that recorded."
+argument-hint: "add CATEGORY BODY [--repository owner/repo --pull N [--review-version V --finding ID]] | list | findings --repository owner/repo --pull N | edit ID [--category CATEGORY] [--body BODY] | resolve ID RESOLUTION"
 allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/*)"]
 ---
 
@@ -30,6 +30,14 @@ List the open flags:
 ```
 
 It prints `FLAG <flag id> <category> <target> <body>` per open flag, with the body cut to 160 characters and `-` as the target of a flag that names neither a repository nor a pull request, then `COUNT <n>`.
+
+Correct an open flag's category, rationale, or both by its ID; what it names and its status stay as they are:
+
+```bash
+{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/flag_review_finding.py" edit "<flag id>" --category "<category>" --body "<rationale>"
+```
+
+Leave out the option for a value that stays. It prints `EDITED <flag id>`, and refuses a resolved or unknown flag.
 
 Resolve an open flag by its ID (such as `RF-000004`) with a non-empty resolution:
 

@@ -3,6 +3,7 @@
 Every command prints one fact per line:
   add       ADDED <id>. A flag that names a finding is refused unless that review of the pull request is archived
             and has that finding.
+  edit      EDITED <id>. Only an open flag is edited, and only its category and body change.
   resolve   RESOLVED <id>, or ALREADY_RESOLVED <id> when the flag was resolved earlier; it keeps that resolution
   list      FLAG <id> <category> <target> <body> per open flag, then COUNT <n>. The target is
             <owner/repo>#<pull>, followed by v<version> and the finding when the flag names them, or - when it
@@ -35,6 +36,7 @@ from review_flags import (
     FlagError,
     add_flag,
     default_flags_path,
+    edit_flag,
     load_store,
     resolve_flag,
     validate_target,
@@ -72,6 +74,10 @@ def build_parser() -> argparse.ArgumentParser:
     findings = commands.add_parser("findings")
     findings.add_argument("--repository", required=True)
     findings.add_argument("--pull", type=int, required=True)
+    edit = commands.add_parser("edit")
+    edit.add_argument("flag_id")
+    edit.add_argument("--category")
+    edit.add_argument("--body")
     resolve = commands.add_parser("resolve")
     resolve.add_argument("flag_id")
     resolve.add_argument("resolution")
@@ -139,6 +145,9 @@ def run(args: argparse.Namespace) -> list[str]:
             finding_id=args.finding,
         )
         return [f"ADDED {flag['id']}"]
+    if args.command == "edit":
+        flag = edit_flag(args.store, args.flag_id, category=args.category, body=args.body)
+        return [f"EDITED {flag['id']}"]
     if args.command == "resolve":
         try:
             flag = resolve_flag(args.store, args.flag_id, args.resolution)

@@ -144,7 +144,7 @@ class ShellTargetsFixtures(GitTestCase):
                     '"PowerShell({{PYTHON}} -B \\"${CLAUDE_SKILL_DIR}/scripts/*)", "Read"]\n'
                     "---\n"
                     "\n"
-                    "Prose may say `python -B x.py`.\n"
+                    "Prose may name `python`, `python3`, or `python -c` in a span.\n"
                     "\n"
                     "```bash\n"
                     "python -B x.py\n"
@@ -174,6 +174,37 @@ class ShellTargetsFixtures(GitTestCase):
                     'skills/alpha/SKILL.md grants Bash(python -B "${CLAUDE_SKILL_DIR}/scripts/*), which names Python '
                     f"by hand; write {{{{PYTHON}}}}; see {doc}",
                     f"skills/alpha/references/guide.md:2 names Python by hand in Bash; write {{{{PYTHON}}}}; see {doc}",
+                ],
+                interpreter_problems(root),
+            )
+
+    def test_a_prose_code_span_that_runs_python_named_by_hand_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "skills/alpha/SKILL.md": "---\nname: alpha\n---\n"
+                    "\n"
+                    "1. Run `python -B .github/scripts/gen.py --check` from the root, then `python3 -m pip list`.\n"
+                    '2. Run `{{PYTHON}} -B "x.py"`, which renders per platform.\n'
+                    "3. Recommend no `python -c`, `python`, `pythonic x`, or `python.exe x.py`.\n"
+                    "\n"
+                    "```text\n"
+                    "`python x.py` in a fence is no code span\n"
+                    "```\n",
+                    "skills/alpha/references/guide.md": "Then run ` python x.py `.\n",
+                },
+            )
+            doc = '"Template values" in docs/adding-a-skill.md'
+            self.assertEqual(
+                [
+                    "skills/alpha/SKILL.md:5 names Python by hand in the code span "
+                    f"`python -B .github/scripts/gen.py --check`; write {{{{PYTHON}}}}; see {doc}",
+                    "skills/alpha/SKILL.md:5 names Python by hand in the code span "
+                    f"`python3 -m pip list`; write {{{{PYTHON}}}}; see {doc}",
+                    "skills/alpha/references/guide.md:1 names Python by hand in the code span "
+                    f"` python x.py `; write {{{{PYTHON}}}}; see {doc}",
                 ],
                 interpreter_problems(root),
             )

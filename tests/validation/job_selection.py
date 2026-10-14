@@ -117,8 +117,9 @@ def job_seconds(path: Path = JOB_SECONDS) -> dict[str, float]:
     if not (
         isinstance(runs, list)
         and runs
-        and len(set(runs)) == len(runs)
         and all(isinstance(run, int) and not isinstance(run, bool) and run > 0 for run in runs)
+        # Distinct only once each is an integer: a list or an object among them cannot be put in a set.
+        and len(set(runs)) == len(runs)
     ):
         raise ValueError(f'{path.name} records "runs" as {runs!r}; they are a list of distinct run IDs, at least one')
     seconds = table["seconds"]

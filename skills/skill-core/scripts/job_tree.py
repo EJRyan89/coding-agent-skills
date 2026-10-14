@@ -13,13 +13,13 @@ would join has nothing left to hold.
 Leaving `hold` returns only once every process of the job has ended and Windows has let go of what it held, its
 working directory and open files among them, so a caller may remove the folder the command ran in at once. Ending a
 job is asynchronous, so `hold` waits for each process, up to KILL_WAIT_SECONDS; a job whose processes it cannot list,
-end, or see end in that time leaves `hold` with an OSError saying they may still run.
+end, or see end in that time leaves `hold` with `TreeNotEnded`, an OSError saying they may still run.
 
 A `GroupTree` starts the command as the leader of a new session, so the command and every process it starts that does
 not leave the group share one process group, which the command cannot fail to join: it leads the group before it
 runs. Leaving `hold` kills the group and returns once no process of it is running but the ones that have ended and
-wait only to be reaped, up to KILL_WAIT_SECONDS, or with an OSError saying they may still run. Unlike a job, the group
-does not outlive this process: a process killed outright leaves its group running.
+wait only to be reaped, up to KILL_WAIT_SECONDS, or with `TreeNotEnded` saying they may still run. Unlike a job, the
+group does not outlive this process: a process killed outright leaves its group running.
 """
 
 from __future__ import annotations
@@ -65,6 +65,11 @@ GROUP_POLL_SECONDS = 0.05
 class JobRefused(OSError):
     """A command could not be held in its job: it could not join it, or, on Windows, it joined and could not be
     resumed in it, so it was killed; the message says which."""
+
+
+class TreeNotEnded(OSError):
+    """A tree's processes could not be ended, or had not ended within KILL_WAIT_SECONDS, so they may still run: the
+    command was started, unlike one refused with `JobRefused`, and the message says what failed."""
 
 
 class _BasicLimitInformation(ctypes.Structure):
@@ -239,7 +244,7 @@ def _until_ended(watched: dict[int, int]) -> None:
     for pid, handle in watched.items():
         remaining = max(0, int((deadline - time.monotonic()) * 1000))
         if kernel32.WaitForSingleObject(handle, remaining) != WAIT_OBJECT_0:
-            raise OSError(
+            raise TreeNotEnded(
                 f"The job's processes may still run: process {pid} had not ended {KILL_WAIT_SECONDS:g} seconds on"
             )
 
@@ -262,9 +267,9 @@ def _end_job(job: int) -> None:
         else:
             error = _failed("TerminateJobObject")
             if not kernel32.CloseHandle(job):
-                raise OSError(f"The job's processes may still run: {error}; {_failed('CloseHandle')}") from error
+                raise TreeNotEnded(f"The job's processes may still run: {error}; {_failed('CloseHandle')}") from error
         if problem is not None:
-            raise OSError(f"The job's processes may still run: {problem}") from problem
+            raise TreeNotEnded(f"The job's processes may still run: {problem}") from problem
         _until_ended(watched)
     finally:
         for handle in watched.values():
@@ -372,18 +377,18 @@ class GroupTree:
 
 
 def end_group(group: int) -> None:
-    """Kill every process of the process group `group`, and return once none is running; raises OSError when they
+    """Kill every process of the process group `group`, and return once none is running; raises TreeNotEnded when they
     cannot be killed or have not ended within KILL_WAIT_SECONDS."""
     try:
         os.killpg(group, signal.SIGKILL)  # type: ignore[attr-defined]  # Unix only
     except ProcessLookupError:
         return  # no process of the group is left
     except OSError as error:
-        raise OSError(f"The group's processes may still run: killpg failed: {error}") from error
+        raise TreeNotEnded(f"The group's processes may still run: killpg failed: {error}") from error
     deadline = time.monotonic() + KILL_WAIT_SECONDS
     while running := group_members(group):
         if time.monotonic() >= deadline:
-            raise OSError(
+            raise TreeNotEnded(
                 f"The group's processes may still run: process {running[0]} had not ended {KILL_WAIT_SECONDS:g} "
                 "seconds on"
             )

@@ -2170,6 +2170,10 @@ LAYERING_SCENARIOS: dict[str, tuple[dict[str, str], dict]] = {
         {"AGENTS.md": PLAIN_AGENTS, ".github/instructions/api.instructions.md": "Prefer async.\n"},
         {"runtimes": ["codex"], "surfaces": EVERY_SURFACE},
     ),
+    "path_instructions_only": (
+        {".github/instructions/api.instructions.md": "Prefer async.\n"},
+        {"runtimes": [], "surfaces": ["copilot_cli", "copilot_app"]},
+    ),
     "claude_only": (
         {"CLAUDE.md": "# CLAUDE.md\n"},
         {"runtimes": ["codex"], "surfaces": EVERY_SURFACE},
@@ -2380,7 +2384,7 @@ LAYERING_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
     ],
     "plain_agents_and_path_instructions": [
         ("WARNING", "layering", None, "Codex: non-redirecting AGENTS.md — CLAUDE.md not loaded through adapter"),
-        ("INFO", "layering", None, "Copilot CLI/app: effective sources: AGENTS.md"),
+        ("INFO", "layering", None, "Copilot CLI/app: effective sources: AGENTS.md, .github/instructions"),
         (
             "WARNING",
             "layering",
@@ -2412,6 +2416,23 @@ LAYERING_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
             None,
             "VS Code instruction settings (chat.useClaudeMdFile, chat.useAgentsMdFile, "
             "useInstructionFiles, includeApplyingInstructions) cannot be verified statically",
+        ),
+    ],
+    "path_instructions_only": [
+        ("INFO", "layering", None, "Copilot CLI/app: effective sources: .github/instructions"),
+        (
+            "WARNING",
+            "layering",
+            None,
+            "Copilot CLI/app folder trust status cannot be determined "
+            "statically — .mcp.json silently skipped in untrusted directories",
+        ),
+        (
+            "WARNING",
+            "runtime",
+            None,
+            "Copilot repository settings, organization policy, authentication, model availability, "
+            "runtime enablement, and actual operational use cannot be verified statically",
         ),
     ],
     "claude_only": [
