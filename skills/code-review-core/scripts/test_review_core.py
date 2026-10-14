@@ -50,7 +50,7 @@ from review_config import (
     validate_config,
     write_config,
 )
-from review_flags import FlagAlreadyResolved, FlagError, add_flag, load_store, resolve_flag
+from review_flags import FlagAlreadyResolved, FlagError, add_flag, edit_flag, load_store, resolve_flag
 from review_github import GitHubClient, GitHubError, GitHubFieldError, GitHubInputError
 from review_hosts import (
     HostSuperseded,
@@ -1926,6 +1926,57 @@ class FlagTests(GitTestCase):
                 self.assertIs(FlagError, type(caught.exception))
                 self.assertEqual(message, str(caught.exception))
                 self.assertEqual(before, path.read_bytes())
+
+    def test_edit_changes_only_the_category_and_body_of_an_open_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "flags.json"
+            created = add_flag(
+                path,
+                category="Guideline",
+                body="First rationale.",
+                repository="example/one",
+                pull_number=12,
+                review_version=2,
+                finding_id="F001",
+            )
+            edited = edit_flag(path, created["id"], category="noise", body="Corrected rationale.")
+            expected = {**created, "category": "noise", "body": "Corrected rationale."}
+            self.assertEqual(expected, edited)
+            self.assertEqual([expected], load_store(path)["flags"])
+            self.assertEqual(2, load_store(path)["next_id"])
+            body_only = edit_flag(path, created["id"], body="Body alone.")
+            self.assertEqual({**expected, "body": "Body alone."}, body_only)
+            category_only = edit_flag(path, created["id"], category="missed")
+            self.assertEqual({**expected, "body": "Body alone.", "category": "missed"}, category_only)
+
+    def test_edit_refusals_name_their_reason_and_leave_the_store_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "flags.json"
+            open_flag = add_flag(path, category="guideline", body="Open.")
+            resolved = add_flag(path, category="guideline", body="Resolved.")
+            resolve_flag(path, resolved["id"], "Done")
+            before = path.read_bytes()
+            refusals: tuple[tuple[str, dict[str, str], str], ...] = (
+                (resolved["id"], {"body": "New."}, f"Flag {resolved['id']} is resolved; only an open flag is edited"),
+                ("RF-000009", {"body": "New."}, "Unknown flag ID: RF-000009"),
+                (open_flag["id"], {"category": " \t"}, "Flag category must not be blank"),
+                (open_flag["id"], {"category": ""}, "Flag category must not be blank"),
+                (open_flag["id"], {"body": "\n"}, "Flag body must not be blank"),
+                (open_flag["id"], {}, "Name a new category, a new body, or both"),
+            )
+            for flag_id, changes, message in refusals:
+                with self.subTest(flag_id=flag_id, changes=changes), self.assertRaises(FlagError) as caught:
+                    edit_flag(path, flag_id, **changes)
+                self.assertIs(FlagError, type(caught.exception))
+                self.assertEqual(message, str(caught.exception))
+                self.assertEqual(before, path.read_bytes())
+
+    def test_edit_of_a_value_of_the_wrong_kind_fails_before_the_store_is_read(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "flags.json"
+            with self.assertRaises(FlagError):
+                edit_flag(path, "RF-000001", category=7)  # type: ignore[arg-type]  # a caller outside the CLI
+            self.assertFalse(path.exists())
 
     def test_a_finding_is_named_with_its_review_version(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

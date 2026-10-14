@@ -1,4 +1,4 @@
-"""Structured flag creation, listing, and resolution."""
+"""Structured flag creation, listing, editing, and resolution."""
 
 from __future__ import annotations
 
@@ -229,6 +229,41 @@ def add_flag(
         return flag
 
 
+def _stored_flag(store: dict[str, Any], flag_id: str) -> dict[str, Any]:
+    matching = [item for item in store["flags"] if item["id"] == flag_id]
+    if len(matching) != 1:
+        raise FlagError(f"Unknown flag ID: {flag_id}")
+    return matching[0]
+
+
+def _new_text(value: Any, field: str) -> str | None:
+    """A replacement for a flag's category or body: a string that is not blank, or None to keep the old one."""
+    if value is None:
+        return None
+    text = READ.string(value, f"flag.{field}", empty=True)
+    if not text.strip():
+        raise FlagError(f"Flag {field} must not be blank")
+    return text
+
+
+def edit_flag(path: Path, flag_id: str, *, category: str | None = None, body: str | None = None) -> dict[str, Any]:
+    """Replace an open flag's category, body, or both under the store lock. What the flag is about, its status, and
+    its times stay as they are; a resolved or unknown flag is refused without a write."""
+    replacements = {"category": _new_text(category, "category"), "body": _new_text(body, "body")}
+    changes = {field: text for field, text in replacements.items() if text is not None}
+    if not changes:
+        raise FlagError("Name a new category, a new body, or both")
+    lock = path.parent / ".locks" / "flags.lock"
+    with ResourceLock(lock):
+        store = load_store(path)
+        flag = _stored_flag(store, flag_id)
+        if flag["status"] != "open":
+            raise FlagError(f"Flag {flag_id} is resolved; only an open flag is edited")
+        flag.update(changes)
+        atomic_write_json(path, store, validator=validate_store)
+        return flag
+
+
 def resolve_flag(path: Path, flag_id: str, resolution: str) -> dict[str, Any]:
     """Resolve under the store lock, or raise FlagAlreadyResolved without changing the earlier resolution."""
     if not resolution.strip():
@@ -236,10 +271,7 @@ def resolve_flag(path: Path, flag_id: str, resolution: str) -> dict[str, Any]:
     lock = path.parent / ".locks" / "flags.lock"
     with ResourceLock(lock):
         store = load_store(path)
-        matching = [item for item in store["flags"] if item["id"] == flag_id]
-        if len(matching) != 1:
-            raise FlagError(f"Unknown flag ID: {flag_id}")
-        flag = matching[0]
+        flag = _stored_flag(store, flag_id)
         if flag["status"] != "open":
             raise FlagAlreadyResolved(flag_id)
         flag["status"] = "resolved"
