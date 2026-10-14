@@ -46,6 +46,7 @@ sys.path.insert(0, str(sibling_scripts("code-review-core")))
 sys.path.insert(0, str(sibling_scripts("review-insights")))
 sys.path.insert(0, str(sibling_scripts("update-pr-tracker")))
 
+import review_guidance
 import review_insights
 import review_runtime
 import review_synthesis
@@ -889,11 +890,27 @@ def tracker_fixtures() -> list[dict[str, Any]]:
     ]
 
 
+# The guidance the insights fixtures' reviewer was built from, written to a checkout so each file's line takes each
+# status: the checklist fits the input, the guide is past its budget, the long file past the file limit, the missing
+# file has no copy, and the script is listed by path. The checklist and guide plant a conflict, a duplicate, and a
+# reference to a file the reviewer is not given.
+INSIGHTS_GUIDANCE = {
+    "docs/checklist.md": "- Flag a blocking call inside an async method as MUST_FIX.\n"
+    "- Each public API change needs a changelog entry under the Unreleased heading.\n",
+    "docs/guide.md": "Flag a blocking call inside an async method as a SUGGESTION.\n\n"
+    "Each public API change needs a changelog entry under the Unreleased heading.\n\n"
+    "The severity model is in [the severity guide](severity.md).\n",
+    "docs/long.md": "Long guidance. " * 80,
+    "docs/missing.md": "Never written to the checkout.\n",
+    "tools/check.py": "print('check')\n",
+}
 INSIGHTS_ADAPTER = {
     "name": "repository-reviewer",
     "scope": "repository",
     "source_commit": None,
-    "source_hashes": {"docs/guide.md": "c" * 64},
+    "source_hashes": {
+        path: hashlib.sha256(text.encode("utf-8")).hexdigest() for path, text in INSIGHTS_GUIDANCE.items()
+    },
 }
 INSIGHTS_REPOSITORY = "example/one"
 POLICY = {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3}
@@ -903,8 +920,9 @@ def _insights_record(
     number: int, version: int, reviewed_at: str, findings: list[dict[str, Any]], archive: Path, **request: Any
 ) -> None:
     """Commit one review of example/one to `archive`; a re-review carries its prior ledger and dispositions, as
-    `finalize` assembles it, so only an initial review's result is validated as an adapter's."""
-    head = f"{version:x}" * 40
+    `finalize` assembles it, so only an initial review's result is validated as an adapter's. The head commit is the
+    version's digit unless `head` names one."""
+    head = request.pop("head", f"{version:x}" * 40)
     mode = request.pop("mode", "initial")
     result = {**_result(findings, request.pop("dispositions", [])), "pull_number": number, "head_sha": head}
     if mode == "initial":
@@ -1012,6 +1030,11 @@ class InsightsRun:
 
     def report(self, start: str, end: str, *, repositories: tuple[str, ...] = (INSIGHTS_REPOSITORY,), **extra: Any):
         flags = extra.pop("flags", load_store(self.flags_path)["flags"])
+        checkout = self.root / "checkout"
+        for path, text in INSIGHTS_GUIDANCE.items():
+            if path != "docs/missing.md":
+                (checkout / path).parent.mkdir(parents=True, exist_ok=True)
+                (checkout / path).write_text(text, encoding="utf-8", newline="\n")
         json_path, _, _ = review_insights.create_report(
             archive_root=self.archive,
             summary_root=self.summary,
@@ -1020,6 +1043,7 @@ class InsightsRun:
             start=date.fromisoformat(start),
             end=date.fromisoformat(end),
             flags=flags,
+            checkouts={INSIGHTS_REPOSITORY: checkout},
             services=self.services,
         )
         return json_path
@@ -1094,6 +1118,30 @@ def insights_fixtures(scratch: Path) -> dict[str, list[Fixture]]:
         mode="re-review",
         dispositions=[_disposition("v1:F001", "addressed"), _disposition("v1:F002", "still_present")],
     )
+    # A pull request whose two reviews of one head disagree: a headline at two severities from two reviewers at
+    # nearly one line, a finding repeated at a lower severity, and a verdict the re-review changes.
+    _insights_record(
+        8,
+        1,
+        "2026-01-21T12:00:00+00:00",
+        [
+            _finding("s1", "MUST_FIX", 20, category="Concurrency", title="Unguarded state", source="security"),
+            _finding("s2", "SUGGESTION", 21, category="Concurrency", title="Unguarded state", source="style"),
+            _finding("s3", "SHOULD_FIX", 40, category="Concurrency", title="Retry without backoff", source="security"),
+        ],
+        run.archive,
+        head="8" * 40,
+    )
+    _insights_record(
+        8,
+        2,
+        "2026-01-22T12:00:00+00:00",
+        [_finding("s4", "SUGGESTION", 40, category="Concurrency", title="Retry", source="security", repeats="v1:F003")],
+        run.archive,
+        mode="re-review",
+        head="8" * 40,
+        dispositions=[_disposition("v1:F001", "addressed"), _disposition("v1:F003", "still_present")],
+    )
     linked = add_flag(
         run.flags_path,
         category="noise",
@@ -1107,7 +1155,11 @@ def insights_fixtures(scratch: Path) -> dict[str, list[Fixture]]:
         run.flags_path, category="missed", body="Missed a retry.", repository=INSIGHTS_REPOSITORY, pull_number=7
     )["id"]
     add_flag(run.flags_path, category="heuristic", body="Prefer analyzers.")
-    with mock.patch.object(review_synthesis, "GROUPS_IN_FULL", 3):
+    with (
+        mock.patch.object(review_synthesis, "GROUPS_IN_FULL", 3),
+        mock.patch.object(review_guidance, "FILE_CHARS", 1000),
+        mock.patch.object(review_guidance, "TOTAL_CHARS", len(INSIGHTS_GUIDANCE["docs/checklist.md"]) + 1),
+    ):
         december = run.report("2025-12-01", "2025-12-31")
         december_result = run.synthesize(
             december,
@@ -1136,6 +1188,20 @@ def insights_fixtures(scratch: Path) -> dict[str, list[Fixture]]:
                 ),
                 _synthesized("new-analyzer", "high", "Adopt a rule", refs[:1], target=analyzer_target),
                 _synthesized("flagged", "low", "Answer the flag", [], flags=[linked]),
+                _synthesized(
+                    "consolidate",
+                    "high",
+                    "Merge the blocking-call rules",
+                    refs[:1],
+                    target={"repository": INSIGHTS_REPOSITORY, "path": "docs/guide.md", "merge": ["docs/checklist.md"]},
+                ),
+                _synthesized(
+                    "move-to-script",
+                    "medium",
+                    "Scan for blocking calls",
+                    refs[:1],
+                    target={"repository": INSIGHTS_REPOSITORY, "path": "tools/check.py"},
+                ),
             ]
             comparison = {
                 "persistent": ["Time handling"],
@@ -1401,7 +1467,10 @@ def report_shape(tables: list[Table]) -> str:
 # The report's shape at each schema version since its tables were written. A change to the tables' fields changes the
 # digest: raise review_insights.SCHEMA_VERSION, add the upgrade step from the version before, and add the new
 # version's digest here, keeping the earlier ones.
-REPORT_SHAPES = {8: "3a9bce3e9fde46c775a13037c77f33d0c52f9c244dfd33fc9b5cdba9496a9458"}
+REPORT_SHAPES = {
+    8: "3a9bce3e9fde46c775a13037c77f33d0c52f9c244dfd33fc9b5cdba9496a9458",
+    9: "bc23f98e2fa475533c57e0293cd126bbd8c14f9e0999936e95b01cbd2f0156d7",
+}
 
 
 def schema_tables(schema: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
@@ -1569,7 +1638,7 @@ class FormatContractTest(GitTestCase):
         )
 
     def test_the_report_shape_is_the_one_recorded_for_its_schema_version(self) -> None:
-        self.assertEqual(8, max(REPORT_SHAPES), "a new report version records its shape here")
+        self.assertEqual(9, max(REPORT_SHAPES), "a new report version records its shape here")
         self.assertEqual(max(REPORT_SHAPES), review_insights.SCHEMA_VERSION)
         self.assertEqual(set(range(1, review_insights.SCHEMA_VERSION + 1)), review_insights.READABLE_SCHEMA_VERSIONS)
         self.assertEqual(
@@ -1600,8 +1669,8 @@ class FormatContractTest(GitTestCase):
             ),
             (
                 "unlisted value",
-                text.replace("| One of `8`. |", "| One of `7`. |"),
-                "schema_version has the unlisted value 8",
+                text.replace("| One of `9`. |", "| One of `8`. |"),
+                "schema_version has the unlisted value 9",
             ),
             ("unwritten row", text.replace(row.group(0), unwritten), "retired occurs in no fixture"),
         ):

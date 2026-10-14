@@ -32,6 +32,11 @@ it did resolve, and deciding again resolves the rest.
 Every command that writes a report holds its directory's lock from reading it to writing it, so two runs at once never
 lose each other's decisions.
 
+A report also carries consistency signals computed from the archive alone (`review_signals.py`): severity drift,
+verdicts that changed without a code change, and reviewer disagreement, with the guidance overlap and
+unsupplied-reference candidates `review_guidance.py` finds in the guidance text read from each repository's configured
+checkout. They are evidence for the synthesis and the user, never decided.
+
 Each recommendation also counts its findings by the reviewer that raised them and the model that reviewer ran on,
 read from the review record: a finding raised by several reviewers counts for each, and a reviewer whose record
 names no model counts under `unknown`. Beside the flags, each count says how many of those findings a later review
@@ -60,6 +65,8 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("code-review-core")))
 
+import review_guidance
+import review_signals
 import review_synthesis as synthesis_stage
 from console import run_main
 from flat_text import flat_text
@@ -88,8 +95,9 @@ from skill_roots import skills_directory_holding
 # it is regenerated.
 # Version 8 adds next_recommendation_number, the first REC- number the report has never given, so a subject a
 # regeneration drops never has its ID given to another; an earlier report gains the number after every ID it holds.
-SCHEMA_VERSION = 8
-READABLE_SCHEMA_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8}
+# Version 9 adds the report's signals; an earlier report has none until it is regenerated.
+SCHEMA_VERSION = 9
+READABLE_SCHEMA_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8, 9}
 UNKNOWN_MODEL = "unknown"
 REVIEWER_FIELDS = {"reviewer", "model", "findings", "flagged_findings", "addressed", "still_present"}
 OUTCOMES = ("addressed", "still_present")
@@ -136,6 +144,7 @@ class Services:
     git_common_dir: Callable[[Path], Path | None] = lambda directory: GitClient().rev_parse_path(
         "--git-common-dir", directory=directory
     )
+    read_pinned: review_guidance.PinnedReader = review_guidance.read_pinned
     report_lock: Callable[[Path], AbstractContextManager[Any]] = lambda json_path: ResourceLock(
         json_path.parent / ".locks" / "insights.lock"
     )
@@ -548,6 +557,7 @@ def render(report: dict[str, Any]) -> str:
         f"Records analyzed: {report['record_count']}",
         f"Findings analyzed: {report['finding_count']}",
         "",
+        *review_signals.render(report["signals"]),
         *synthesis_stage.render(report, _decision_history),
         "## Recommendations",
         "",
@@ -675,7 +685,8 @@ def load_report(path: Path) -> dict[str, Any]:
     """A report in the current schema; a version 1 report gains an empty history, a version 1 or 2 report's links
     are dropped because they may name a finding from another review, a report before version 4 gains an empty
     reviewers breakdown, every recommendation in a report before version 5 is a category one, a report before
-    version 7 has no synthesis, and a report before version 8 gains the next number after every ID it holds."""
+    version 7 has no synthesis, a report before version 8 gains the next number after every ID it holds, and a report
+    before version 9 has no signals."""
     try:
         report = read_json(path, maximum_bytes=synthesis_stage.MAXIMUM_BYTES)
     except PersistenceError as exc:
@@ -693,6 +704,10 @@ def load_report(path: Path) -> dict[str, Any]:
         _upgrade_recommendation(item, report["schema_version"], path)
     if report["schema_version"] < 7:
         report["synthesis"] = None
+    if report["schema_version"] < 9:
+        report["signals"] = review_signals.empty()
+    if not isinstance(report.get("signals"), dict) or set(report["signals"]) != {*review_signals.SIGNALS, "counts"}:
+        raise InsightError(f"{path} has invalid signals")
     # A synthesis recorded before category commentary was required has none.
     if isinstance(report.get("synthesis"), dict):
         report["synthesis"].setdefault("categories", [])
@@ -751,17 +766,20 @@ def create_report(
     start: date,
     end: date,
     flags: list[dict[str, Any]] | None = None,
+    checkouts: dict[str, Path] | None = None,
     services: Services | None = None,
 ) -> tuple[Path, Path, dict[str, Any]]:
     """Write insights for the range and the input of its synthesis. Regenerating keeps each subject's decision and
-    decision history, and a recorded synthesis while its input is unchanged; a changed input supersedes it."""
+    decision history, and a recorded synthesis while its input is unchanged; a changed input supersedes it.
+    `checkouts` gives each repository's checkout, lowercase, from which its guidance text is read."""
+    services = services or Services()
     if not SET_NAME.fullmatch(repository_set):
         raise InsightError("Repository-set name is invalid")
     set_root = outside_skill_directories(summary_root) / repository_set
     json_path = set_root / f"{start.isoformat()}--{end.isoformat()}" / "insights.json"
     pairs = RecordPairs()
     records = collect_records(archive_root, repositories, start, end, pairs)
-    with (services or Services()).report_lock(json_path):
+    with services.report_lock(json_path):
         earlier = load_report(json_path) if json_path.exists() else None
         previous = {subject_key(item): item for item in earlier["recommendations"]} if earlier else {}
         # A superseded recommendation keeps its ID, so no later subject is given it.
@@ -789,6 +807,9 @@ def create_report(
             ],
         }
         json_path.parent.mkdir(parents=True, exist_ok=True)
+        guidance = review_guidance.read_guidance(
+            report["repositories"], pairs.validated, checkouts or {}, services.read_pinned
+        )
         analyzed = synthesis_stage.Analyzed(
             report=report,
             records=[record for _, record in records],
@@ -796,11 +817,21 @@ def create_report(
             outcomes=ledgers.outcomes,
             flagged=set(flags_by_entry(flags or [], ledgers)),
         )
+        report["signals"] = review_signals.kept(
+            {
+                "severity_drift": review_signals.severity_drift(analyzed.pairs, analyzed.records, ledgers.entries),
+                "verdict_flips": review_signals.verdict_flips(analyzed.records),
+                "reviewer_disagreements": review_signals.reviewer_disagreements(analyzed.records),
+                "guidance_overlaps": guidance.overlaps,
+                "unsupplied_references": guidance.unsupplied,
+            }
+        )
+        analyzed.signal_lines = review_signals.input_lines(report["signals"])
         fresh = synthesis_stage.prepare(
             json_path.parent,
             analyzed,
             flags=flags or [],
-            guidance=synthesis_stage.guidance_files(report["repositories"], pairs.validated),
+            guidance=guidance,
             previous=synthesis_stage.previous_period(set_root, start, load_report),
             script=SCRIPT,
         )
@@ -856,6 +887,11 @@ def report_from_config(
         start=start,
         end=end,
         flags=load_store(services.flags_path())["flags"],
+        checkouts={
+            identity.lower(): Path(entry["checkout_path"])
+            for identity, entry in config["repositories"].items()
+            if entry.get("checkout_path")
+        },
         services=services,
     )
 
@@ -1096,7 +1132,7 @@ def _print_synthesis(report: dict[str, Any]) -> None:
         return
     print(f"SYNTHESIS recorded {synthesis['recorded_at']}")
     items = [item for item in report["recommendations"] if item["kind"] == "synthesized"]
-    for item in sorted(items, key=lambda entry: synthesis_stage.PRIORITIES.index(entry["priority"])):
+    for item in synthesis_stage.presented(items):
         _print_synthesized(item)
 
 
@@ -1247,6 +1283,8 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
             )
             print(f"REPORT {json_path}")
             print(f"MARKDOWN {markdown_path}")
+            for fact in review_signals.facts(report["signals"]):
+                print(fact)
             _print_report(report)
             return 0
         if args.command == "synthesize":
