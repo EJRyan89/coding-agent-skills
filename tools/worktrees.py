@@ -105,9 +105,14 @@ GIT_OPTIONS_WITH_VALUE = {"-C", "-c", "--config-env", "--git-dir", "--namespace"
 # The variables that choose the repository or work tree a git command writes, wherever the command runs. GIT_INDEX_FILE
 # is not one: it moves only the index, never HEAD or the tree, so the directory still names the checkout written.
 LOCATION_VARIABLES = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR")
-ENVIRONMENT_DRIVE_VARIABLE = re.compile(r"^env:[\\/]?(" + "|".join(LOCATION_VARIABLES) + r")$", re.IGNORECASE)
-ENVIRONMENT_DRIVE_ROOT = re.compile(r"^env:[\\/]?$", re.IGNORECASE)
-ENVIRONMENT_DRIVE_PATH = re.compile(r"^env:", re.IGNORECASE)
+# A path on the environment provider: on the env: drive, or provider-qualified as Environment::, which may carry the
+# provider's module.
+ENVIRONMENT_PROVIDER = r"^(?:env:|(?:Microsoft\.PowerShell\.Core\\)?Environment::)"
+ENVIRONMENT_DRIVE_VARIABLE = re.compile(
+    ENVIRONMENT_PROVIDER + r"[\\/]?(" + "|".join(LOCATION_VARIABLES) + r")$", re.IGNORECASE
+)
+ENVIRONMENT_DRIVE_ROOT = re.compile(ENVIRONMENT_PROVIDER + r"[\\/]?$", re.IGNORECASE)
+ENVIRONMENT_DRIVE_PATH = re.compile(ENVIRONMENT_PROVIDER, re.IGNORECASE)
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 GIT_NAMES = {"git"}
 BASH_NAMES = {"bash", "sh"}
@@ -118,14 +123,14 @@ PUSH_LOCATION_NAMES = {"pushd", "push-location"}
 POP_LOCATION_NAMES = {"popd", "pop-location"}
 # Bash builtins that declare variables; export, and the others with -x, export them, and +x or export -n stops that.
 DECLARE_NAMES = {"export", "declare", "typeset", "local", "readonly"}
-# PowerShell commands that set an environment variable when a path they write is on the env: drive, and the
-# parameters, as the command declares them, that name that path. Add-Content and Move-Item fail there: the drive
-# can neither seek within a variable nor move one.
+# PowerShell commands that set an environment variable when a path they write is on the environment provider, and
+# the parameters, as the command declares them, that name that path. Add-Content and Move-Item fail there: the
+# provider can neither seek within a variable nor move one.
 ENVIRONMENT_WRITERS = {
     **dict.fromkeys(["set-item", "si", "new-item", "ni", "set-content"], ("path", "literalpath")),
     **dict.fromkeys(["copy-item", "copy", "cp", "cpi"], ("destination",)),
 }
-# New-Item names the variable with -Name when its path is the drive itself; Rename-Item names it with -NewName.
+# New-Item names the variable with -Name when its path is the provider's root; Rename-Item names it with -NewName.
 NEW_ITEM_NAMES = {"new-item", "ni"}
 RENAME_ITEM_NAMES = {"rename-item", "ren", "rni"}
 # Options of env that take no value, and those that take the next word as one.
@@ -309,6 +314,27 @@ def command_name(word: Word) -> str | None:
 Variables = Mapping[str, Word]
 
 
+def is_location_variable(name: str) -> bool:
+    """Whether a name sets a location variable in any case: Windows reads an environment name in any case, and git
+    there takes git_dir as GIT_DIR.
+
+    Bash keeps the name as written, since there git_dir and GIT_DIR are two variables that unset and export treat
+    apart; git_target folds them where git reads them.
+    """
+    return name.upper() in LOCATION_VARIABLES
+
+
+def location_values(variables: Variables) -> dict[str, Word]:
+    """The location variables git reads, by upper-cased name. Two spellings of one name with different values leave
+    it unsettled, since which of them git takes is not the text's to say."""
+    values: dict[str, Word] = {}
+    for name, value in variables.items():
+        variable = name.upper()
+        if variable in LOCATION_VARIABLES:
+            values[variable] = value if values.get(variable, value) == value else None
+    return values
+
+
 def inherited_variables(environment: Mapping[str, str]) -> dict[str, Word]:
     """The location variables a shell starts with: those the guard's own process was given."""
     return {name: environment[name] for name in LOCATION_VARIABLES if name in environment}
@@ -319,6 +345,7 @@ def git_target(cwd: Path | None, variables: Variables) -> tuple[Path | None, boo
 
     A work tree named settles it; a repository named elsewhere without one leaves it unknown.
     """
+    variables = location_values(variables)
     if "GIT_WORK_TREE" in variables:
         return moved(cwd, variables["GIT_WORK_TREE"]), True
     if "GIT_DIR" in variables or "GIT_COMMON_DIR" in variables:
@@ -426,7 +453,7 @@ class Shell:
 
     def assign(self, name: str, value: Word, export: bool) -> None:
         """NAME=value: a variable already exported stays so, as every variable does under allexport."""
-        if name not in LOCATION_VARIABLES:
+        if not is_location_variable(name):
             return
         if export or self.allexport or name in self.exported:
             self.exported[name] = value
@@ -468,7 +495,7 @@ def read_bash_command(segment: list[str], shell: Shell, reading: Reading, depth:
     local: dict[str, Word] = {}
     while index < len(segment) and ASSIGNMENT.match(segment[index]):
         name, _, value = segment[index].partition("=")
-        if name in LOCATION_VARIABLES:
+        if is_location_variable(name):
             local[name] = value
         index += 1
     if index >= len(segment):
@@ -583,7 +610,7 @@ def read_env(arguments: list[Word], cwd: Path | None, variables: Variables, read
         index += 2 if word in ENV_UNSET | ENV_CHDIR else 1
     while index < len(arguments) and ASSIGNMENT.match(arguments[index] or ""):
         name, _, assigned = (arguments[index] or "").partition("=")
-        if name in LOCATION_VARIABLES:
+        if is_location_variable(name):
             given[name] = assigned
         index += 1
     if index < len(arguments):
@@ -735,11 +762,12 @@ def read_powershell(command: str, cwd: Path | None, reading: Reading, depth: int
 
 
 def environment_drive_variables(name: str | None, parameters: Mapping[str, list[Word]]) -> set[str]:
-    """The location variables a PowerShell command sets on the env: drive, read from the parameters PowerShell binds.
+    """The location variables a PowerShell command sets on the environment provider, through the env: drive or the
+    provider-qualified Environment:: path, read from the parameters PowerShell binds.
 
     Set-Item, New-Item, and Set-Content set the variable their path names, and Copy-Item the one its destination
-    names. New-Item on the drive itself sets the one its -Name names, and Rename-Item of a variable on the drive the
-    one its -NewName names. A path the text does not settle is passed over, as a directory it does not settle is.
+    names. New-Item on the provider's root sets the one its -Name names, and Rename-Item of a variable there the one
+    its -NewName names. A path the text does not settle is passed over, as a directory it does not settle is.
     """
     found = {
         match.group(1).upper()
@@ -762,7 +790,7 @@ def environment_drive_variables(name: str | None, parameters: Mapping[str, list[
 def read_powershell_command(
     words: list[Word], parameters: Mapping[str, list[Word]], session: Session, reading: Reading, depth: int
 ) -> None:
-    """One PowerShell command: a location change, a location variable set on the env: drive, or a program."""
+    """One PowerShell command: a location change, a location variable set on the environment provider, or a program."""
     name, arguments = command_name(words[0]), words[1:]
     if name in LOCATION_NAMES:
         session.cwd = location_after(session.cwd, *location_target(arguments))
