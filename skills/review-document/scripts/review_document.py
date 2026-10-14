@@ -37,11 +37,13 @@ must name a new or empty directory, so nothing already there is mixed with the r
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import re
 import shutil
 import sys
 import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -368,8 +370,18 @@ def write_fixture(fixture: Path, document: Document, pull: dict[str, Any], stage
     ]
 
 
-def output_root(directory: Path | None) -> Path:
-    return directory or Path(tempfile.mkdtemp(prefix="review-document-")).resolve()
+@contextlib.contextmanager
+def output_root(directory: Path | None) -> Iterator[Path]:
+    """The output directory, or a new temporary one that is removed again when the build fails inside it."""
+    if directory is not None:
+        yield directory
+        return
+    root = Path(tempfile.mkdtemp(prefix="review-document-")).resolve()
+    try:
+        yield root
+    except BaseException:
+        shutil.rmtree(root, ignore_errors=True)
+        raise
 
 
 def refuse_stage(relative: str, stage: str | None) -> None:
@@ -405,7 +417,8 @@ def build(
         "base_ref": f"committed {base.commit}" if base.commit else "none",
         "head_ref": "working tree",
     }
-    return write_fixture(output_root(directory) / "fixture", document, pull, stage)
+    with output_root(directory) as root:
+        return write_fixture(root / "fixture", document, pull, stage)
 
 
 def pull_reference(argument: str) -> tuple[str, int] | None:
@@ -557,29 +570,24 @@ def build_pull(
         if added is not None:
             raise DocumentError(f"--base committed has nothing to compare with: {added} is added in the pull request")
     lines = [f"PULL {selector} base {pull.base} head {pull.head}"]
-    root = output_root(directory)
-    try:
+    with output_root(directory) as root:
         refuse_crowded(root, len(routed))
         documents, skipped = pull_documents(github, pull, routed, requested, wanted, root)
-    except BaseException:
-        if directory is None:
-            shutil.rmtree(root, ignore_errors=True)
-        raise
-    for index, document in enumerate(documents, start=1):
-        whole = document.base.commit is None
-        lines += write_fixture(
-            fixture_folder(root, index),
-            document,
-            {
-                "repository": repository,
-                "number": number,
-                "title": f"Review of {document.relative} in {selector}: "
-                + ("the whole document" if whole else "its change"),
-                "base_ref": "none" if whole else f"committed {pull.base}",
-                "head_ref": f"head {pull.head}",
-            },
-            stage,
-        )
+        for index, document in enumerate(documents, start=1):
+            whole = document.base.commit is None
+            lines += write_fixture(
+                fixture_folder(root, index),
+                document,
+                {
+                    "repository": repository,
+                    "number": number,
+                    "title": f"Review of {document.relative} in {selector}: "
+                    + ("the whole document" if whole else "its change"),
+                    "base_ref": "none" if whole else f"committed {pull.base}",
+                    "head_ref": f"head {pull.head}",
+                },
+                stage,
+            )
     return lines + [f"SKIPPED {reason}" for reason in skipped]
 
 

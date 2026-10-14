@@ -166,7 +166,7 @@ class Manifest:
         entry = self.source(source_id) or {}
         owned = Ownership()
         for kind in KINDS:
-            for name, value in (entry.get(kind.key) or {}).items():
+            for name, value in entry.get(kind.key, {}).items():
                 owned.of(kind)[name] = _hash_of(value)
                 details = value if isinstance(value, dict) else {}
                 if kind is SKILL:
@@ -177,13 +177,13 @@ class Manifest:
         owned.requested_skills = set(entry.get("requested_skills", []))
         owned.requested_bundles = set(entry.get("requested_bundles", []))
         owned.requested_bundle_members = {
-            name: set(members) for name, members in (entry.get("requested_bundle_members") or {}).items()
+            name: set(members) for name, members in entry.get("requested_bundle_members", {}).items()
         }
         owned.bundle_members_recorded = "requested_bundle_members" in entry
         return owned
 
     def entry(self, source_id: str, kind: str, name: str) -> dict[str, Any] | None:
-        value = ((self.source(source_id) or {}).get(kind) or {}).get(name)
+        value = (self.source(source_id) or {}).get(kind, {}).get(name)
         return value if isinstance(value, dict) else None
 
     def last_run_id(self) -> str:
@@ -299,7 +299,7 @@ def _validate(data: dict[str, Any], path: Path) -> None:
 
 def _record_owners(data: dict[str, Any], kind: str, label: str, owners: dict[str, str]) -> None:
     for source_id, entry in data["sources"].items():
-        for name in entry.get(kind) or {}:
+        for name in entry.get(kind, {}):
             if name in owners and owners[name] != source_id:
                 raise DeployError(
                     f"ERROR: {label} '{name}' is owned by both '{owners[name]}' and '{source_id}' in manifest"

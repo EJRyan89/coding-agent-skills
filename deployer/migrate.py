@@ -24,21 +24,21 @@ def _migration_candidates(context: Context, old_entry: dict, kind: ItemKind) -> 
         see_recovery("Ownership held by another source"),
     )
     candidates: list[str] = []
-    for name in sorted(old_entry.get(kind.key) or {}):
+    for name in sorted(old_entry.get(kind.key, {})):
         if kind is SHARED:
             require_safe_name(name, "migration shared asset")
             if context.source.shared_assets.get(name) != "owner":
                 continue
             if not (context.paths.skills_src / name).is_file():
                 raise DeployError(f"ERROR: Cannot migrate shared asset '{name}': source owner file is missing.")
-            if (old_entry[kind.key][name] or {}).get("role") != "owner":
+            if old_entry[kind.key][name].get("role") != "owner":
                 continue
         elif kind is AGENT_KIND:
             if not name.endswith(kind.suffix) or kind.item_name(name) not in context.source.agents:
                 continue
         elif name not in context.source.skills:
             continue
-        expected = (old_entry[kind.key][name] or {}).get("hash", "")
+        expected = old_entry[kind.key][name].get("hash", "")
         subject = f"{kind.label} '{name}'" if kind.label else f"'{name}'"
         if not isinstance(expected, str) or not hashing.HASH_PATTERN.fullmatch(expected):
             raise DeployError(f"ERROR: Old manifest has no valid hash for {kind.noun} '{name}'.")

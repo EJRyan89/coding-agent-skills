@@ -111,12 +111,13 @@ The setting lives in the shared `.git/config`, so one command covers the hub and
 the setting is not tracked, someone who clones the repository and works in a single checkout is never blocked.
 
 The hook command reads the setting itself, in Bash, and exits before starting Python when the clone has not opted
-in. Elsewhere the hook is inert and costs one `git config` call per tool call: `python` never runs, so a `python`
-that still resolves to the Microsoft Store alias cannot fail the hook. In an opted-in clone it runs
+in. Elsewhere the hook is inert and costs one `awk` and one `git config` call per tool call: `python` never runs, so
+a `python` that still resolves to the Microsoft Store alias cannot fail the hook. In an opted-in clone it runs
 `tools/worktrees.py guard` under `$CLAUDE_PROJECT_DIR`, which checks the same setting again. Neither read can be
 pointed at another repository's setting: the hook command unsets `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, and
-`GIT_CONFIG` for its `git config` call, and `tools/worktrees.py` runs its own git calls without any of git's
-repository-selecting variables, the set skill-core's `bounded_process.py` names.
+`GIT_CONFIG` for its `git config` call, each in any case, since Windows reads an environment name in any case, and
+`tools/worktrees.py` runs its own git calls without any of git's repository-selecting variables, the set skill-core's
+`bounded_process.py` names.
 `tests/tools/test_worktrees.py` runs the tracked command both ways.
 
 With the guard enabled:

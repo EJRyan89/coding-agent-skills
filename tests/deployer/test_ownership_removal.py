@@ -6,7 +6,9 @@ import shutil
 import subprocess
 import sys
 import unittest
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 from harness import FAILS_PARTWAY, SOURCE_ID, DeployerTestCase, forward, make_directory_link, remove_directory_link
@@ -484,6 +486,30 @@ class ManifestValidationTests(DeployerTestCase):
                 mutate(data)
                 self.write_manifest(data)
                 self.deploy_fails("--all", pattern=re.escape(message))
+        self.write_manifest(original)
+        self.deploy_ok("--all")
+
+    def test_a_null_selection_or_item_field_is_refused_on_read_before_ownership_or_migration_reads_it(self) -> None:
+        # Ownership and migration read these fields without a fallback for null, since reading refuses it first.
+        self.deployed()
+        original = self.manifest()
+        cases: list[tuple[str, Callable[[dict[str, Any]], object]]] = [
+            ("Manifest selection fields are malformed", lambda entry: entry.update(requested_bundle_members=None)),
+            ("Manifest selection fields are malformed", lambda entry: entry.update(skills=None)),
+            ("Manifest selection fields are malformed", lambda entry: entry.update(shared=None)),
+            (
+                "Manifest entry is malformed: source 'old/skills' skills 'alpha'",
+                lambda entry: entry["skills"].update(alpha=None),
+            ),
+        ]
+        for message, mutate in cases:
+            for arguments in (("--all",), ("--migrate-from", "old/skills")):
+                with self.subTest(message=message, arguments=arguments):
+                    data = json.loads(json.dumps(original))
+                    old = data["sources"]["old/skills"] = data["sources"].pop(SOURCE_ID)
+                    mutate(old)
+                    self.write_manifest(data)
+                    self.deploy_fails(*arguments, pattern=re.escape(message))
         self.write_manifest(original)
         self.deploy_ok("--all")
 

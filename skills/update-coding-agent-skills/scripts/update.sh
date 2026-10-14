@@ -71,14 +71,17 @@ unset UPDATE_SKILLS_COPY
 
 # git's repository-selecting variables, which a git hook exports and a shell may pass on, would point every
 # `git -C "$CLONE"` below at another repository, index, or object store: those git clears itself before it works in
-# another repository, but for the command-scope settings in its list, and GIT_NAMESPACE. skill-core's bounded_process.py
-# leaves the same out of every command a skill's Python starts.
-for NAME in $(git rev-parse --local-env-vars 2>/dev/null) GIT_NAMESPACE; do
-  case "$NAME" in
+# another repository, but for the command-scope settings in its list, and GIT_NAMESPACE. Each is unset in any case, as
+# Windows reads a name, so git there takes git_dir as GIT_DIR. skill-core's bounded_process.py leaves the same out of
+# every command a skill's Python starts.
+REPOSITORY_VARIABLES=" $(git rev-parse --local-env-vars 2>/dev/null | tr '\r\n' '  ') GIT_NAMESPACE "
+for NAME in $(compgen -e); do
+  case "${NAME^^}" in
     GIT_CONFIG_PARAMETERS | GIT_CONFIG_COUNT) ;;
-    *) unset "$NAME" ;;
+    *) case "$REPOSITORY_VARIABLES" in *" ${NAME^^} "*) unset "$NAME" ;; esac ;;
   esac
 done
+unset REPOSITORY_VARIABLES
 
 CLONE=$1
 if [ ! -f "$CLONE/deploy.py" ]; then

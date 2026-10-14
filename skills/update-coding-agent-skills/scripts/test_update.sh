@@ -501,6 +501,20 @@ expect_status 0 "repository variables"
 [ "$(head_of "$OTHER" HEAD)" = "$OTHER_HEAD" ] || fail "repository variables: the other clone moved"
 expect_deployed "repository variables"
 
+# Windows reads an environment name in any case, so git there takes git_dir as GIT_DIR; the update unsets each spelling.
+new_clone
+OTHER=$CLONE
+OTHER_HEAD=$(head_of "$OTHER" HEAD)
+new_clone
+publish "change while git_dir names another clone"
+export git_dir="$OTHER/.git" Git_Index_File="$OTHER/.git/index" Git_Namespace="elsewhere"
+run_subject "$CLONE"
+unset git_dir Git_Index_File Git_Namespace
+expect_status 0 "repository variables in any case"
+[ "$(head_of "$CLONE" HEAD)" = "$(head_of "$SEED" HEAD)" ] || fail "repository variables in any case: the named clone did not move"
+[ "$(head_of "$OTHER" HEAD)" = "$OTHER_HEAD" ] || fail "repository variables in any case: the other clone moved"
+expect_deployed "repository variables in any case"
+
 INSTALLED="$FIXTURE/installed skill (copy)"
 mkdir -p "$INSTALLED/scripts" "$FIXTURE/tmp"
 cp "$SUBJECT" "$INSTALLED/scripts/update.sh"
