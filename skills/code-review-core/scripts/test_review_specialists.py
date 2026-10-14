@@ -2239,6 +2239,37 @@ class EndToEndTests(SpecialistFixture, GitTestCase):
             self.prompt(plan, "compat-review"),
         )
 
+    def test_a_condition_file_holds_the_bytes_the_script_wrote_within_its_bound_and_states_their_length(self) -> None:
+        # The bound is 32 KiB of the bytes the file holds, never of text re-encoded after the cut, so a character the
+        # cut splits is left out rather than written as U+FFFD past the bound, and bytes that are not UTF-8 stay.
+        bound = 32768
+        for name, written, expected in (
+            ("ascii", b"x" * 40000, b"x" * bound),
+            ("two-byte", b"a" * 32767 + "é".encode() + b" after", b"a" * 32767),
+            ("four-byte", b"a" * 32766 + "\U0001f600".encode() + b"z", b"a" * 32766),
+            ("ending at the bound", b"a" * 32766 + "é".encode() + b"z", b"a" * 32766 + "é".encode()),
+            ("not utf-8", b"\xff" * 40000, b"\xff" * bound),
+            ("whole", b"a" * 10 + b"\xc3", b"a" * 10 + b"\xc3"),
+        ):
+            with self.subTest(name=name):
+                self.use_condition(
+                    "import os\nfrom pathlib import Path\n"
+                    f"Path(os.environ['CODE_REVIEW_CONDITION_OUTPUT']).write_bytes(bytes.fromhex('{written.hex()}'))\n",
+                    name.replace(" ", "-"),
+                )
+                shutil.rmtree(self.root / "work-initial", ignore_errors=True)
+                plan = self.plan()
+                condition = next(r for r in plan["roles"] if r["id"] == "compat-review")["condition"]
+                given = Path(condition["file"]).read_bytes()
+                self.assertEqual(expected, given)
+                self.assertLessEqual(len(given), bound)
+                self.assertEqual((len(written), len(given)), (condition["bytes"], condition["given"]))
+                if given == written:
+                    state = f"The file holds all {len(given):,} bytes the script wrote."
+                else:
+                    state = f"The file holds the first {len(given):,} of {len(written):,} bytes the script wrote;"
+                self.assertIn(state, self.prompt(plan, "compat-review"))
+
     def test_a_condition_that_writes_nothing_or_closes_gives_no_file(self) -> None:
         touch = "import os\nfrom pathlib import Path\nPath(os.environ['CODE_REVIEW_CONDITION_OUTPUT']).touch()\n"
         for program, name, opened in (
