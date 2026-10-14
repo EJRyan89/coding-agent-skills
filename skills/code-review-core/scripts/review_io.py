@@ -157,16 +157,25 @@ def read_diff(path: Path) -> str:
 
 
 def atomic_write_text(path: Path, content: str, *, mode: int = 0o600) -> None:
-    """Replace `path` with `content` through a synced copy beside it; on any failure, including content that is not
-    text UTF-8 can encode and a folder that cannot be made, `path` is untouched, the copy is removed, and the error is
-    a PersistenceError, which names the copy when it cannot be removed.
+    """Replace `path` with `content` encoded as UTF-8, as atomic_write_bytes does; content that is not text UTF-8 can
+    encode leaves `path` untouched and is a PersistenceError."""
+    try:
+        data = content.encode("utf-8")
+    except UnicodeError as exc:
+        raise PersistenceError(f"Cannot atomically replace {path}: {exc}") from exc
+    atomic_write_bytes(path, data, mode=mode)
+
+
+def atomic_write_bytes(path: Path, data: bytes, *, mode: int = 0o600) -> None:
+    """Replace `path` with `data` through a synced copy beside it; on any failure, including a folder that cannot be
+    made, `path` is untouched, the copy is removed, and the error is a PersistenceError, which names the copy when it
+    cannot be removed.
 
     The copy's descriptor is never handed to a stream: this function alone closes it, once, whatever fails. A stream
     that closed it first would free its number for another thread's open, and a second close would close that file.
     """
     temporary: Path | None = None
     try:
-        data = content.encode("utf-8")
         path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
         temporary = Path(temporary_name)
@@ -180,7 +189,7 @@ def atomic_write_text(path: Path, content: str, *, mode: int = 0o600) -> None:
             os.close(descriptor)
         temporary.replace(path)
         temporary = None
-    except (OSError, UnicodeError) as exc:
+    except OSError as exc:
         raise PersistenceError(f"Cannot atomically replace {path}: {exc}") from exc
     finally:
         if temporary is not None:
