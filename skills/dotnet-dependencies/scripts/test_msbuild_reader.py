@@ -720,13 +720,65 @@ class ReaderTests(unittest.TestCase):
                 self.assertEqual(
                     [("Update", "Lantern.Json", "central")], [(i.operation, i.id, i.origin) for i, _ in left]
                 )
-        # With no framework, as for a project with no restore, every item applies whatever its condition, as before,
-        # an Update and a Remove included.
-        self.assertEqual([legacy], project.project_refs)
+        # With no framework, as for a project with no restore, every Include and Update applies whatever its
+        # condition, as before; a Remove whose condition cannot be shown to hold for every framework is not made.
+        self.assertEqual([shared, legacy], project.project_refs)
         self.assertEqual(
             ["Beacon.Modern", "System.Web", "Beacon.Hinted", "Beacon.Debug"], [item.name for item in project.assemblies]
         )
         self.assertEqual([PackageRef("Lantern.Json", "14.0.0", "central")], project.packages)
+
+    def test_a_conditional_remove_removes_only_for_the_frameworks_its_conditions_hold_for(self) -> None:
+        # One Remove of each kind under a condition, and with no framework, as for a project with no restore, whose
+        # one target stands for every framework it builds.
+        lib = (self.root / "src" / "Lib" / "Lib.csproj").resolve()
+        items = (
+            '<ItemGroup><ProjectReference Include="..\\Lib\\Lib.csproj" /><Reference Include="System.Web" />'
+            '<PackageReference Include="Lib.Pkg" Version="1.0.0" /></ItemGroup>'
+            "<ItemGroup{0}>"
+            '<ProjectReference Remove="..\\Lib\\Lib.csproj" /><Reference Remove="System.Web" />'
+            '<PackageReference Remove="Lib.Pkg" /></ItemGroup>'
+        )
+        net472 = " Condition=\"'$(TargetFramework)'=='net472'\""
+        cases = [
+            # Removed for net472 alone: net8.0 keeps each item, and so does the project's one target.
+            ("net8.0;net472", net472, {"net8.0": True, "net472": False}, True),
+            # A condition that holds for every framework the project names removes everywhere.
+            ("net8.0;net472", " Condition=\"$(TargetFramework.StartsWith('net'))\"", {"net8.0": False}, False),
+            ("net472", net472, {"net472": False}, False),
+            # An unconditional Remove removes everywhere, as before.
+            ("net8.0;net472", "", {"net8.0": False, "net472": False}, False),
+            # A condition the reader cannot evaluate removes nowhere, and per framework it is named.
+            ("net8.0;net472", " Condition=\"'$(Configuration)'=='Debug'\"", {"net8.0": True}, True),
+        ]
+        for frameworks, condition, per_framework, kept in cases:
+            with self.subTest(frameworks=frameworks, condition=condition):
+                body = f"<PropertyGroup><TargetFrameworks>{frameworks}</TargetFrameworks></PropertyGroup>"
+                text = f'<Project Sdk="Microsoft.NET.Sdk">{body}{items.format(condition)}</Project>'
+                project = read_project(self.write("src/App/App.csproj", text), self.central)
+                self.assertEqual(
+                    ([lib], ["System.Web"], ["Lib.Pkg"]) if kept else ([], [], []),
+                    (
+                        project.project_refs,
+                        [item.name for item in project.assemblies],
+                        [item.id for item in project.packages],
+                    ),
+                )
+                for framework, held in per_framework.items():
+                    found, unevaluated = project_refs_for(project.project_items, framework)
+                    self.assertEqual([lib] if held else [], found)
+                    self.assertEqual(
+                        ["'$(Configuration)'=='Debug'"] if "Configuration" in condition else [],
+                        [text for _, text in unevaluated],
+                    )
+                    self.assertEqual(
+                        ["System.Web"] if held else [],
+                        [item.name for item in assemblies_for(project.reference_items, framework)[0]],
+                    )
+                    self.assertEqual(
+                        ["Lib.Pkg"] if held else [],
+                        [item.id for item in packages_for(project.package_items, framework)[0]],
+                    )
 
     def test_items_inside_a_target_are_left_out_and_named(self) -> None:
         path = self.write("src/Harbor.Late/Harbor.Late.csproj", TARGET_PROJECT)
@@ -785,11 +837,42 @@ class ReaderTests(unittest.TestCase):
                 "</TargetFrameworkVersion></PropertyGroup>",
                 ["net8.0", "net472", "v4.8"],
             ),
+            # A Choose selects its branch once, when it is reached, so a When that sets the property it tests never
+            # hands over to the Otherwise.
+            (
+                "<Choose><When Condition=\"'$(TargetFramework)'==''\"><PropertyGroup><TargetFramework>net8.0"
+                "</TargetFramework></PropertyGroup></When><Otherwise><PropertyGroup><TargetFramework>net472"
+                "</TargetFramework></PropertyGroup></Otherwise></Choose>",
+                ["net8.0"],
+            ),
+            # Every When of a Choose is tested before any branch applies: a later When is not tested against what an
+            # earlier one the reader cannot evaluate may set.
+            (
+                "<Choose><When Condition=\"'$(Configuration)' == 'Debug'\"><PropertyGroup>"
+                "<TargetFramework>net8.0</TargetFramework></PropertyGroup></When>"
+                "<When Condition=\"'$(TargetFramework)'==''\"><PropertyGroup><TargetFramework>net472"
+                "</TargetFramework></PropertyGroup></When></Choose>",
+                ["net8.0", "net472"],
+            ),
+            # A PropertyGroup's condition is evaluated once, when it is reached, not again for each property in it.
+            (
+                "<PropertyGroup Condition=\"'$(TargetFramework)'==''\"><TargetFramework>net8.0</TargetFramework>"
+                "<TargetFrameworkVersion>v4.8</TargetFrameworkVersion></PropertyGroup>",
+                ["net8.0", "v4.8"],
+            ),
+            # A property's own condition is evaluated when the property is reached.
+            (
+                "<PropertyGroup><TargetFramework>net8.0</TargetFramework>"
+                "<TargetFrameworkVersion Condition=\"'$(TargetFramework)'=='net8.0'\">v4.8</TargetFrameworkVersion>"
+                "</PropertyGroup>",
+                ["net8.0", "v4.8"],
+            ),
         ]
         for body, expected in cases:
             with self.subTest(body=body):
                 path = self.write("src/a/a.csproj", f'<Project Sdk="Microsoft.NET.Sdk">{body}</Project>')
                 self.assertEqual(expected, read_project(path, self.central).frameworks)
+                self.assertEqual(expected, msbuild_reader.frameworks_of(msbuild_reader.evaluation_root(path)))
 
     def test_a_when_without_a_condition_makes_the_file_unreadable(self) -> None:
         choose = (
