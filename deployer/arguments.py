@@ -200,6 +200,17 @@ def _check_deploy_options(top: _Parser, namespace: argparse.Namespace) -> None:
                     top.error(f"{option} cannot be combined with {other}")
 
 
+def debug_given(arguments: list[str]) -> bool:
+    """Whether this command line gives --debug, read again, printing nothing, for a failure no command handled.
+
+    A command line the parser refuses gives none: deploy.py ran no command for it.
+    """
+    try:
+        return bool(_parse(arguments).debug)
+    except (ParserExit, DeployError):
+        return False
+
+
 def parse_command(arguments: list[str]) -> argparse.Namespace | int:
     """deploy.py's parsed command line, or its exit code once help or a usage error has been printed."""
     try:

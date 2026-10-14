@@ -32,5 +32,20 @@ def main():
     return cli.main(sys.argv[1:], Paths(Path(__file__).resolve().parent, home))
 
 
+def traceback_requested():
+    """Whether a failure no command handled shows its traceback after the FAILED line: --debug, or DEPLOYER_DEBUG.
+
+    Asked only once main has failed past the version check. The variable is read first, so it still shows the traceback
+    of a deployer module that fails to import; the command line is read with the parser main used.
+    """
+    from deployer.errors import debug_requested
+
+    if debug_requested():
+        return True
+    from deployer.arguments import debug_given
+
+    return debug_given(sys.argv[1:])
+
+
 if __name__ == "__main__":
-    run_main(main, errors="backslashreplace")
+    run_main(main, errors="backslashreplace", traceback_requested=traceback_requested)

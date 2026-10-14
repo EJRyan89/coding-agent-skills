@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import sys
 import unittest
 from functools import partial
@@ -14,7 +15,7 @@ from unittest import mock
 from harness import DEPLOY_COMMAND, REPOSITORY_ROOT, DeployerTestCase, Result, forward
 
 from deployer import check, configure, platform_support, verify
-from deployer.arguments import USAGE_ERROR, parse_command
+from deployer.arguments import USAGE_ERROR, debug_given, parse_command
 
 
 def interrupting() -> io.StringIO:
@@ -324,6 +325,88 @@ class HomeTests(DeployerTestCase):
             self.assertIn(f"\nHome: {forward(self.home)}\n", result.output)
             self.assertNotIn("WARNING", result.output)
             self.assertFalse(self.other.exists())
+
+
+# Run deploy.py as written in a child Python whose deploy and check commands raise past everything they handle, so the
+# failure reaches the entry point's runner: argv[1] is the repository, argv[2] the failure, and the rest deploy.py's.
+ESCAPING_FAILURE = r"""
+import runpy, sys
+root = sys.argv.pop(1)
+sys.path.insert(0, root)
+from deployer import check, pipeline
+failure = KeyboardInterrupt() if sys.argv.pop(1) == "interrupt" else ValueError("injected failure")
+def failing(*arguments, **keywords):
+    raise failure
+pipeline.execute = check.execute = failing
+sys.argv[0] = root + "/deploy.py"
+runpy.run_path(sys.argv[0], run_name="__main__")
+"""
+TRACEBACK_HEADER = "Traceback (most recent call last):\n"
+
+
+class EscapingFailureTests(DeployerTestCase):
+    """--debug and DEPLOYER_DEBUG show the traceback of a failure no command handled, after its FAILED line."""
+
+    def run_failing(self, failure: str, *arguments: str, debug_variable: str | None = None) -> tuple[int, str, str]:
+        environment = {key: value for key, value in os.environ.items() if key != "DEPLOYER_DEBUG"}
+        environment.update({"HOME": str(self.home), "USERPROFILE": str(self.home)})
+        if debug_variable is not None:
+            environment["DEPLOYER_DEBUG"] = debug_variable
+        result = subprocess.run(
+            [sys.executable, "-B", "-c", ESCAPING_FAILURE, str(REPOSITORY_ROOT), failure, *arguments],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            stdin=subprocess.DEVNULL,
+            env=environment,
+            timeout=120,
+            check=False,
+        )
+        return result.returncode, result.stdout, result.stderr
+
+    def test_debug_shows_the_traceback_after_the_failed_line_and_keeps_the_exit_code(self) -> None:
+        for arguments, variable in (
+            (("--debug",), None),
+            (("--dry-run", "--debug"), None),
+            (("check", "--debug"), None),
+            (("--debug", "check"), None),
+            (("--dry-run",), "1"),
+            (("check",), "yes"),
+        ):
+            with self.subTest(arguments=arguments, variable=variable):
+                code, output, errors = self.run_failing("error", *arguments, debug_variable=variable)
+                self.assertEqual((1, "FAILED ValueError: injected failure\n"), (code, output), errors)
+                self.assertTrue(errors.startswith(TRACEBACK_HEADER), errors)
+                self.assertIn("in failing", errors)
+                self.assertTrue(errors.endswith("ValueError: injected failure\n"), errors)
+
+    def test_ctrl_c_shows_its_traceback_under_debug_and_keeps_exit_130(self) -> None:
+        code, output, errors = self.run_failing("interrupt", "--debug")
+        self.assertEqual((130, "FAILED interrupted\n"), (code, output), errors)
+        self.assertTrue(errors.startswith(TRACEBACK_HEADER), errors)
+        self.assertTrue(errors.endswith("KeyboardInterrupt\n"), errors)
+
+    def test_without_debug_the_failed_line_is_the_whole_report(self) -> None:
+        for failure, arguments, variable, ending in (
+            ("error", (), None, (1, "FAILED ValueError: injected failure\n")),
+            ("error", ("check",), None, (1, "FAILED ValueError: injected failure\n")),
+            ("error", ("--dry-run",), "0", (1, "FAILED ValueError: injected failure\n")),
+            ("error", ("--dry-run",), "", (1, "FAILED ValueError: injected failure\n")),
+            ("interrupt", (), None, (130, "FAILED interrupted\n")),
+        ):
+            with self.subTest(failure=failure, arguments=arguments, variable=variable):
+                code, output, errors = self.run_failing(failure, *arguments, debug_variable=variable)
+                self.assertEqual((ending, ""), ((code, output), errors))
+
+    def test_reading_debug_again_prints_nothing_and_a_refused_command_line_gives_none(self) -> None:
+        output, errors = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            self.assertTrue(debug_given(["--debug", "--dry-run"]))
+            self.assertTrue(debug_given(["verify", "--debug"]))
+            self.assertFalse(debug_given(["--dry-run"]))
+            self.assertFalse(debug_given(["--debug", "--bogus"]))
+            self.assertFalse(debug_given(["--debug", "--at"]))
+        self.assertEqual(("", ""), (output.getvalue(), errors.getvalue()))
 
 
 if __name__ == "__main__":

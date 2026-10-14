@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import sys
+import traceback
 from collections.abc import Callable
 from typing import NoReturn
 
@@ -54,20 +55,46 @@ def failed_line(error: BaseException) -> str:
     return f"FAILED {type(error).__name__}: {message}" if message else f"FAILED {type(error).__name__}"
 
 
-def run_main(main: Callable[[], int | None], *, errors: str = "strict", newline: str | None = None) -> NoReturn:
+def run_main(
+    main: Callable[[], int | None],
+    *,
+    errors: str = "strict",
+    newline: str | None = None,
+    traceback_requested: Callable[[], bool] | None = None,
+) -> NoReturn:
     """Set up the console as `use_utf8_output` does, run `main`, and exit with what it returns.
 
     A `SystemExit`, argparse's usage error included, passes through. Any other exception prints `failed_line` on
-    stdout and exits 1, and Ctrl+C prints `FAILED interrupted` and exits 130; neither prints a traceback. A failure
-    the script expects stays its own to report, with its own line, before it reaches here.
+    stdout and exits 1, and Ctrl+C prints `FAILED interrupted` and exits 130; neither prints a traceback unless
+    `traceback_requested`, asked only then, says to, as deploy.py's --debug does. A failure the script expects stays
+    its own to report, with its own line, before it reaches here.
     """
     use_utf8_output(errors=errors, newline=newline)
     try:
         code = main()
-    except KeyboardInterrupt:
+    except KeyboardInterrupt as error:
         print(INTERRUPTED_LINE, flush=True)
+        _print_requested_traceback(error, traceback_requested)
         raise SystemExit(INTERRUPTED_EXIT) from None
     except Exception as error:
         print(failed_line(error), flush=True)
+        _print_requested_traceback(error, traceback_requested)
         raise SystemExit(1) from None
     raise SystemExit(code)
+
+
+def _print_requested_traceback(error: BaseException, requested: Callable[[], bool] | None) -> None:
+    """Write `error`'s traceback, its causes included, to stderr after its line when `requested` says to.
+
+    A request that fails to answer shows none, so the line stays the whole report, as it is without one.
+    """
+    if requested is None:
+        return
+    try:
+        wanted = requested()
+    except Exception:
+        return
+    if wanted:
+        # The three-argument form, which Python 3.7 reads; see the module docstring.
+        sys.stderr.write("".join(traceback.format_exception(type(error), error, error.__traceback__)))
+        sys.stderr.flush()
