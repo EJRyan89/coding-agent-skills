@@ -1,4 +1,5 @@
-"""Typed fields: the reader of a JSON field's kind for the code-review pipeline's and the pull request tracker's files.
+"""Typed fields: the reader of a JSON field's kind for the code-review pipeline's and the pull request tracker's files,
+and for the GitHub search responses the activity report reads.
 
 A validator built on it reads each field through a `FieldReader`, which checks the field's kind and returns its value,
 or raises `FieldError`, naming the field's path, the kind expected, and what was found, in one shape:
