@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import signal
 import subprocess
@@ -9,6 +10,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
@@ -21,6 +23,29 @@ from review_process import same_process, start_detached
 SLEEPER = (
     "import sys, time; print('host started', flush=True); "
     "print('to stderr', file=sys.stderr, flush=True); time.sleep(120)"
+)
+
+# git's repository-selecting variables, written out here rather than read from skill-core.
+REPOSITORY_SELECTING = (
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_CONFIG",
+    "GIT_DIR",
+    "GIT_GRAFT_FILE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_NAMESPACE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_PREFIX",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_SHALLOW_FILE",
+    "GIT_WORK_TREE",
+)
+# Prints, as one JSON line, the names of the GIT_ variables it sees in upper case, and exits.
+GIT_VARIABLES_PROGRAM = (
+    "import json, os; "
+    "print(json.dumps(sorted(name.upper() for name in os.environ if name.upper().startswith('GIT_'))), flush=True)"
 )
 
 
@@ -156,6 +181,24 @@ class StartDetachedTests(unittest.TestCase):
             if sys.platform == "win32":
                 # process_status reads the exit code, which Windows sets moments before it closes the host's
                 # handles, so the log is released shortly after, not at once; the directory's removal needs it.
+                self.assertTrue(wait_until(lambda: opens_exclusively(log)), "the log is released within 20 seconds")
+
+    def test_a_detached_host_sees_no_repository_selecting_variable_the_shell_exported(self) -> None:
+        exported = {name: "C:/elsewhere/.git" for name in REPOSITORY_SELECTING}
+        exported.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "fixture.scope", "GIT_CONFIG_VALUE_0": "on"})
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "run with spaces"
+            root.mkdir()
+            log = root / "host.log"
+            with mock.patch.dict(os.environ, exported):
+                pid = start_detached([sys.executable, "-c", GIT_VARIABLES_PROGRAM], root, log)
+            self.addCleanup(terminate, pid)
+            self.assertTrue(wait_until(lambda: log.read_text(encoding="utf-8", errors="replace").endswith("\n")))
+            seen = set(json.loads(log.read_text(encoding="utf-8")))
+            self.assertEqual(set(), set(REPOSITORY_SELECTING) & seen)
+            self.assertLessEqual({"GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"}, seen)
+            self.assertTrue(wait_until(lambda: not process_status(pid).alive))
+            if sys.platform == "win32":
                 self.assertTrue(wait_until(lambda: opens_exclusively(log)), "the log is released within 20 seconds")
 
     if sys.platform == "win32":

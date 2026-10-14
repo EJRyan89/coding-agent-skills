@@ -2,10 +2,12 @@
 
 The command reads no stdin, or only the input its caller gives in full up front, and its environment turns off every
 prompt git, Git Credential Manager, and gh would otherwise show, so an expired credential fails at once instead of
-waiting for an answer nobody gives. Its environment also leaves out git's repository-selecting variables, such as
-`GIT_DIR` and `GIT_INDEX_FILE`, which a git hook exports and a shell may pass on: a command names its repository by the
-directory it runs in or names, as `git -C` and gh in its working directory do, and reads that repository, its index,
-and its objects, never one a variable points at.
+waiting for an answer nobody gives. Its environment, that default or one its caller gives, also leaves out git's
+repository-selecting variables, such as `GIT_DIR` and `GIT_INDEX_FILE`, which a git hook exports and a shell may pass
+on: a command names its repository by the directory it runs in or names, as `git -C` and gh in its working directory
+do, and reads that repository, its index, and its objects, never one a variable points at. A program that is not git,
+such as Copilot CLI or an MCP server, may run git or read a repository's files itself, so no command keeps them.
+`without_repository_variables` is the one builder of such an environment, which a start outside this module uses too.
 
 Output goes to temporary files, not pipes. A command that times out is killed, but a process it started, such as
 `git-remote-https` or a credential helper, can outlive it and hold a pipe open, and reading a pipe to its end would
@@ -16,7 +18,8 @@ own gives a `ProcessTree`, which ends every one of them still running once the c
 is operating-system-specific, so this module only calls it.
 
 `Streaming` runs a command that answers requests while it runs, such as `git cat-file --batch`, with the same
-environment unless its caller gives another; its stdin is the caller's pipe of requests, never the terminal.
+environment unless its caller gives another, which loses the same variables; its stdin is the caller's pipe of
+requests, never the terminal.
 """
 
 from __future__ import annotations
@@ -90,7 +93,11 @@ class ProcessTree(Protocol):
 
 
 def without_repository_variables(environment: Mapping[str, str]) -> dict[str, str]:
-    """`environment` without git's repository-selecting variables, each matched in any case, as Windows reads a name."""
+    """`environment` without git's repository-selecting variables, each matched in any case, as Windows reads a name.
+
+    Every command this module starts gets its environment through it, and so does every process a skill's Python, the
+    deployer, or a repository tool starts some other way, so none reads a repository a variable points at.
+    """
     return {name: value for name, value in environment.items() if name.upper() not in REPOSITORY_VARIABLES}
 
 
@@ -116,10 +123,10 @@ def run_bounded(
     With `stdout`, the command writes there and the result's stdout is empty, and `stderr` likewise; given the same
     file, the two streams arrive in it in the order the command wrote them. With `cwd`, it runs in that directory.
     With `input_bytes`, its stdin is exactly those bytes and then closed; the time limit covers reading them. With
-    `env`, that is the command's whole environment and no prompt is turned off for it; otherwise it is
-    `non_interactive_environment()`. With `output_limit`, at most that many bytes of each stream are read
-    back, and a stream that held more ends with CUT_NOTE. With `tree`, the command starts as the tree says, and every
-    process it started is ended once it has finished or been killed.
+    `env`, that is the command's whole environment but git's repository-selecting variables, and no prompt is turned
+    off for it; otherwise it is `non_interactive_environment()`. With `output_limit`, at most that many bytes of each
+    stream are read back, and a stream that held more ends with CUT_NOTE. With `tree`, the command starts as the tree
+    says, and every process it started is ended once it has finished or been killed.
     Raises OSError when the command cannot start (FileNotFoundError when it does not exist), and
     subprocess.TimeoutExpired, after killing it, when it does not finish within `timeout` seconds; the exception
     carries the output written by then, read back as a result's would be.
@@ -130,7 +137,7 @@ def run_bounded(
             stdin=stdin,
             stdout=output if stdout is None else stdout,
             stderr=errors if stderr is None else stderr,
-            env=non_interactive_environment() if env is None else dict(env),
+            env=non_interactive_environment() if env is None else without_repository_variables(env),
             cwd=cwd,
             **({} if tree is None else tree.start_options()),
         )
@@ -184,10 +191,10 @@ def streaming(
     """Start a command that takes requests on stdin and answers on stdout while it runs, and close it on leaving.
 
     With `timeout`, the whole session, from starting the command to closing it, lasts at most that many seconds, as
-    `Streaming` describes. With `env`, that is the command's whole environment and no prompt is turned off for it;
-    otherwise it is `non_interactive_environment()`. Raises OSError when the command cannot
-    start (FileNotFoundError when it does not exist). With `merge_stderr`, both output streams go through the bounded
-    stdout reader, rather than keeping diagnostics in a file.
+    `Streaming` describes. With `env`, that is the command's whole environment but git's repository-selecting
+    variables, and no prompt is turned off for it; otherwise it is `non_interactive_environment()`. Raises OSError
+    when the command cannot start (FileNotFoundError when it does not exist). With `merge_stderr`, both output
+    streams go through the bounded stdout reader, rather than keeping diagnostics in a file.
     """
     with tempfile.TemporaryFile() as errors:
         process = subprocess.Popen(
@@ -195,7 +202,7 @@ def streaming(
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT if merge_stderr else errors,
-            env=non_interactive_environment() if env is None else dict(env),
+            env=non_interactive_environment() if env is None else without_repository_variables(env),
             cwd=cwd,
         )
         running = Streaming(process, errors, idle_timeout=idle_timeout, exit_wait=exit_wait, timeout=timeout)

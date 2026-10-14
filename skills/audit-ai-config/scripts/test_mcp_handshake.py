@@ -84,6 +84,11 @@ for line in sys.stdin.buffer:
     elif message.get("method") == "tools/list":
         if mode == "env" and __import__("os").environ.get("FIXTURE_TOKEN") != "a b":
             sys.exit(4)
+        if mode == "norepository":
+            # The configured value and a variable that configures git arrive; no repository-selecting one does.
+            seen = {name.upper() for name in __import__("os").environ}
+            if not {"FIXTURE_TOKEN", "GIT_CONFIG_COUNT"} <= seen or seen & set(sys.argv[2].split(",")):
+                sys.exit(4)
         cursor = message.get("params", {}).get("cursor")
         if mode == "paged" and cursor is None:
             result = {"tools": [{"name": "search", "inputSchema": SCHEMA}], "nextCursor": "page 2"}
@@ -183,6 +188,19 @@ class HandshakeTests(unittest.TestCase):
         self._write(".mcp.json", "mcpServers", {"docs": self._stdio("env", env={"FIXTURE_TOKEN": "a b"})})
         code, lines = self._run()
         self.assertEqual(0, code, lines)
+
+    def test_a_server_sees_no_repository_selecting_variable_the_shell_exported(self) -> None:
+        selecting = (
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES,GIT_COMMON_DIR,GIT_CONFIG,GIT_DIR,GIT_GRAFT_FILE,GIT_IMPLICIT_WORK_TREE,"
+            "GIT_INDEX_FILE,GIT_NAMESPACE,GIT_NO_REPLACE_OBJECTS,GIT_OBJECT_DIRECTORY,GIT_PREFIX,GIT_REPLACE_REF_BASE,"
+            "GIT_SHALLOW_FILE,GIT_WORK_TREE"
+        )
+        server = {"command": sys.executable, "args": [str(self.server), "norepository", selecting]}
+        self._write(".mcp.json", "mcpServers", {"docs": {**server, "env": {"FIXTURE_TOKEN": "a b"}}})
+        exported = {name: str(self.root / ".git") for name in selecting.split(",")}
+        with mock.patch.dict(os.environ, {**exported, "GIT_CONFIG_COUNT": "0"}):
+            code, lines = self._run()
+        self.assertEqual((0, ["HANDSHAKE_OK docs source=.mcp.json protocol=2025-06-18 tools=2"]), (code, lines))
 
     def test_identical_definitions_are_started_once(self) -> None:
         self._write(".mcp.json", "mcpServers", {"docs": self._stdio("ok")})

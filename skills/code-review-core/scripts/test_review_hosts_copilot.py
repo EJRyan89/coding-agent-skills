@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 import job_tree
 import review_hosts
+from git_client import GitClient
 from git_test_base import GitTestCase
 from review_hosts import HostSuperseded, ProcessResult, run_copilot
 from review_runtime import RuntimeContractError, RuntimeContractFieldError, stamp_source_snapshot
@@ -38,6 +39,31 @@ VERSION = ProcessResult(0, "GitHub Copilot CLI 1.0.88\n", "")
 REVIEWED = ProcessResult(0, '{"type":"assistant.message","text":"done"}\n', "")
 RESULT = b'{"status": "complete"}'
 BASE_ENVIRONMENT = {"GH_TOKEN": "test-token", "PATH": "C:/tools"}
+# git's repository-selecting variables, written out here rather than read from skill-core, each pointing elsewhere.
+REPOSITORY_SELECTING = (
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_CONFIG",
+    "GIT_DIR",
+    "GIT_GRAFT_FILE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_NAMESPACE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_PREFIX",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_SHALLOW_FILE",
+    "GIT_WORK_TREE",
+)
+# Stands in for Copilot CLI: prints the GIT_ variables it sees, by name in upper case, and the git directory a git it
+# runs in its workspace finds, or null when it finds none.
+GIT_CONTEXT_PROGRAM = (
+    "import json, os, subprocess; "
+    "found = subprocess.run(['git', 'rev-parse', '--absolute-git-dir'], capture_output=True, text=True); "
+    "print(json.dumps({'variables': sorted(name.upper() for name in os.environ if name.upper().startswith('GIT_')), "
+    "'git_dir': found.stdout.strip() if found.returncode == 0 else None}))"
+)
 Response = ProcessResult | subprocess.TimeoutExpired
 
 
@@ -982,6 +1008,74 @@ class CopilotProcessTests(GitTestCase):
             ProcessResult(0, f"review this — «prompt»\n|0|isolated value|{self.folder}", ""),
             result,
             "the prompt arrives byte for byte and then stdin ends, in the given environment and folder",
+        )
+
+    def other_repository(self) -> Path:
+        """A repository outside the isolation root, whose git directory a shell's GIT_DIR names."""
+        other = self.folder / "another repository"
+        GitClient(timeout=60).output(["init", "--quiet", str(other)])
+        return other / ".git"
+
+    def git_dir_forms(self, git_dir: Path) -> list[str]:
+        """The git directory as each platform's shells export it: Git Bash on Windows also writes C:/ forms."""
+        return [str(git_dir), git_dir.as_posix()] if os.name == "nt" else [str(git_dir)]
+
+    def test_copilot_sees_no_repository_selecting_variable_the_shell_exported(self) -> None:
+        git_dir = self.other_repository()
+        forms = self.git_dir_forms(git_dir)
+        self.assertTrue(forms)
+        for index, value in enumerate(forms):
+            exported = {name: str(self.folder / "elsewhere") for name in REPOSITORY_SELECTING}
+            # The workspace's parents hold no repository, so a git there finds one only through a variable.
+            exported.update({"GIT_DIR": value, "GIT_CEILING_DIRECTORIES": str(self.folder)})
+            exported.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "fixture.scope", "GIT_CONFIG_VALUE_0": "on"})
+            with self.subTest(value=value), mock.patch.dict(os.environ, exported):
+                isolation = self.folder / f"isolation-{index}"
+                workspace, environment = review_hosts.isolated_copilot_environment(isolation)
+                # GIT_DIR alone, as before the fix, finds the other repository from the workspace.
+                git_dir_alone = {
+                    name: setting
+                    for name, setting in os.environ.items()
+                    if name.upper() == "GIT_DIR" or name.upper() not in REPOSITORY_SELECTING
+                }
+                unfiltered = subprocess.run(
+                    [sys.executable, "-c", GIT_CONTEXT_PROGRAM],
+                    cwd=workspace,
+                    env=git_dir_alone,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertEqual(
+                    git_dir.resolve(), Path(json.loads(unfiltered.stdout)["git_dir"]).resolve(), "the variable works"
+                )
+                result = review_hosts.subprocess_runner(
+                    [sys.executable, "-c", GIT_CONTEXT_PROGRAM], workspace, environment, ""
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                seen = json.loads(result.stdout)
+                self.assertEqual(set(), set(REPOSITORY_SELECTING) & set(seen["variables"]))
+                self.assertLessEqual({"GIT_CEILING_DIRECTORIES", "GIT_CONFIG_COUNT"}, set(seen["variables"]))
+                self.assertIsNone(seen["git_dir"])
+
+    def test_a_given_base_environment_loses_its_repository_selecting_variables_in_any_case(self) -> None:
+        base = {
+            **BASE_ENVIRONMENT,
+            **{name: "elsewhere" for name in REPOSITORY_SELECTING},
+            **{name.lower(): "elsewhere" for name in REPOSITORY_SELECTING},
+            "GIT_SSH_COMMAND": "ssh -o BatchMode=yes",
+        }
+        isolation = self.folder / "isolation"
+        workspace, environment = review_hosts.isolated_copilot_environment(isolation, base)
+        self.assertEqual(isolation / "workspace", workspace)
+        self.assertEqual(
+            {
+                **BASE_ENVIRONMENT,
+                "GIT_SSH_COMMAND": "ssh -o BatchMode=yes",
+                "HOME": str(isolation / "home"),
+                "USERPROFILE": str(isolation / "home"),
+                "COPILOT_HOME": str(isolation / "copilot-home"),
+            },
+            environment,
         )
 
     def test_output_past_the_limit_is_cut_and_the_cut_named_in_the_diagnostic(self) -> None:

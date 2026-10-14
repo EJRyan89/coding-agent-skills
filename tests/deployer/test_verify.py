@@ -239,6 +239,25 @@ class ParsingTests(GitTestCase):
         )
 
 
+# git's repository-selecting variables, written out here rather than read from skill-core.
+REPOSITORY_SELECTING = (
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_CONFIG",
+    "GIT_DIR",
+    "GIT_GRAFT_FILE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_NAMESPACE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_PREFIX",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_SHALLOW_FILE",
+    "GIT_WORK_TREE",
+)
+
+
 class ConverseTests(DeployerTestCase):
     """discovery.converse against real child processes."""
 
@@ -272,6 +291,18 @@ class ConverseTests(DeployerTestCase):
             arguments, ['{"id": 0}', '{"method": "initialized"}', '{"id": 1}'], answered=discovery.codex_answered
         )
         self.assertEqual([{"id": 1, "cwd": str(self.root), "probe": "a b"}], [json.loads(line) for line in lines])
+
+    def test_a_runtime_sees_no_repository_selecting_variable_the_shell_exported(self) -> None:
+        arguments = self.program("""
+            import json, os
+            print(json.dumps(sorted(name.upper() for name in os.environ)))
+        """)
+        exported = {name: str(self.root / ".git") for name in REPOSITORY_SELECTING}
+        with mock.patch.dict(os.environ, {**exported, "GIT_CONFIG_COUNT": "0"}):
+            [line] = self.talk(arguments)
+        seen = set(json.loads(line))
+        self.assertEqual(set(), set(REPOSITORY_SELECTING) & seen)
+        self.assertLessEqual({"GIT_CONFIG_COUNT", "PROBE"}, seen)
 
     def test_a_program_that_ends_before_answering_names_its_exit_code_and_last_error_line(self) -> None:
         arguments = self.program("""

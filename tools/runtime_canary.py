@@ -91,6 +91,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
 
 import frontmatter
+from bounded_process import without_repository_variables
 from console import run_main
 
 from deployer import discovery, manifest, pipeline, platform_support, runtime_support, verify
@@ -381,11 +382,13 @@ def compare(lines: Sequence[str], declared: Declarations) -> list[str]:
 
 
 def environment(base: Mapping[str, str], script_log: Path, home: Path) -> dict[str, str]:
-    """The runtime's own environment, sign-in included, plus the Python and Bash recorders."""
+    """The runtime's own environment, sign-in included, plus the Python and Bash recorders, without git's
+    repository-selecting variables, so the runtime and the skill it runs read the canary home, not the repository a
+    shell's `GIT_DIR` names."""
     recorder = home / STATE / "recorder"
     existing = base.get("PYTHONPATH")
     return {
-        **base,
+        **without_repository_variables(base),
         "PYTHONPATH": f"{recorder}{os.pathsep}{existing}" if existing else str(recorder),
         "BASH_ENV": forward(recorder / "bash_env.sh"),
         SCRIPT_LOG: str(script_log),

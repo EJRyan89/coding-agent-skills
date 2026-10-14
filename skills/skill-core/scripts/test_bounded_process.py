@@ -28,6 +28,49 @@ ENVIRONMENT_PROGRAM = (
     "'GH_PROMPT_DISABLED', 'KEPT')}}))"
 )
 
+# git's repository-selecting variables, written out here rather than read from bounded_process, so the pin below fails
+# when the module's set changes; each is set in the case a shell exports it and in lower case, as Windows matches it.
+REPOSITORY_SELECTING = (
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_CONFIG",
+    "GIT_DIR",
+    "GIT_GRAFT_FILE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_NAMESPACE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_PREFIX",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_SHALLOW_FILE",
+    "GIT_WORK_TREE",
+)
+# Variables that configure git rather than choose a repository, which every command still sees.
+CONFIGURING = {
+    "GIT_CONFIG_COUNT": "1",
+    "GIT_CONFIG_KEY_0": "fixture.scope",
+    "GIT_CONFIG_VALUE_0": "a value with spaces",
+    "GIT_CONFIG_PARAMETERS": "'fixture.parameter=on'",
+    "GIT_CONFIG_GLOBAL": "a global file",
+    "GIT_SSH_COMMAND": "ssh -o BatchMode=yes",
+    "GIT_AUTHOR_NAME": "A Fixture Author",
+}
+# Prints, as JSON, every variable of the command's environment whose name starts with GIT_, by its name in upper case.
+GIT_VARIABLES_PROGRAM = (
+    "import json, os; "
+    "print(json.dumps({name.upper(): value for name, value in os.environ.items() if name.upper().startswith('GIT_')}))"
+)
+
+
+def selecting_environment() -> dict[str, str]:
+    """This process's environment with every repository-selecting variable set, in two cases, and CONFIGURING."""
+    selecting = {name: "C:/elsewhere/.git" for name in REPOSITORY_SELECTING}
+    if sys.platform != "win32":  # Windows holds one variable per name whatever its case
+        selecting.update({name.lower(): "another repository" for name in REPOSITORY_SELECTING})
+    return {**os.environ, **selecting, **CONFIGURING}
+
+
 # The streaming tests read a command's first output under STARTUP_SECONDS, which covers starting interpreters on a
 # loaded machine, and only then lower the idle limit to IDLE_SECONDS, the short limit under test, so how long start-up
 # takes never decides whether the limit holds. A read that must raise may do so up to IDLE_MARGIN_SECONDS past it,
@@ -283,6 +326,23 @@ class BoundedProcessTests(unittest.TestCase):
             {"PATH": "a path"}, bounded_process.without_repository_variables({"git_dir": "x", "PATH": "a path"})
         )
 
+    def test_the_one_builder_leaves_out_exactly_the_repository_selecting_variables_in_any_case(self) -> None:
+        given = {
+            **{name: "elsewhere" for name in REPOSITORY_SELECTING},
+            **{name.lower(): "elsewhere" for name in REPOSITORY_SELECTING},
+            **{name.title(): "elsewhere" for name in REPOSITORY_SELECTING},
+            **CONFIGURING,
+            "PATH": "a path",
+        }
+        self.assertEqual({**CONFIGURING, "PATH": "a path"}, bounded_process.without_repository_variables(given))
+
+    def test_a_command_given_an_environment_sees_no_repository_selecting_variable(self) -> None:
+        finished = run_bounded([sys.executable, "-c", GIT_VARIABLES_PROGRAM], 60, env=selecting_environment())
+        self.assertEqual(0, finished.returncode, finished.stderr)
+        seen = json.loads(finished.stdout)
+        self.assertEqual(set(), set(REPOSITORY_SELECTING) & set(seen))
+        self.assertEqual(CONFIGURING, {name: seen.get(name) for name in CONFIGURING})
+
     def test_a_command_started_with_the_default_environment_sees_no_repository_selecting_variable(self) -> None:
         program = "import os; print(sorted(name for name in os.environ if name.upper().startswith('GIT_')))"
         with mock.patch.dict(os.environ, {"GIT_DIR": "elsewhere", "GIT_INDEX_FILE": "another index"}):
@@ -431,6 +491,15 @@ class StreamingTests(unittest.TestCase):
             running.stdin.close()
             self.assertEqual(b"first answered a value with spaces None\n", running.readline())
             self.assertEqual(3, running.wait())
+
+    def test_a_command_given_an_environment_sees_no_repository_selecting_variable(self) -> None:
+        command = [sys.executable, "-c", GIT_VARIABLES_PROGRAM]
+        with bounded_process.streaming(command, idle_timeout=STARTUP_SECONDS, env=selecting_environment()) as running:
+            running.stdin.close()
+            seen = json.loads(running.readline())
+            self.assertEqual(0, running.wait())
+        self.assertEqual(set(), set(REPOSITORY_SELECTING) & set(seen))
+        self.assertEqual(CONFIGURING, {name: seen.get(name) for name in CONFIGURING})
 
     def test_the_session_timeout_ends_reads_while_output_keeps_arriving(self) -> None:
         # A byte every twentieth of a second for two minutes: the idle limit never fires, the session limit must.

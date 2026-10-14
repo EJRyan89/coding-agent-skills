@@ -312,6 +312,40 @@ class LookupTests(GitTestCase):
         )
 
 
+# git's repository-selecting variables, written out here rather than read from skill-core.
+REPOSITORY_SELECTING = (
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_CONFIG",
+    "GIT_DIR",
+    "GIT_GRAFT_FILE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_NAMESPACE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_PREFIX",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_SHALLOW_FILE",
+    "GIT_WORK_TREE",
+)
+
+
+class EnvironmentTests(GitTestCase):
+    def test_a_runtime_sees_no_repository_selecting_variable_the_shell_exported(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            base = {**os.environ, **{name: "C:/elsewhere/.git" for name in REPOSITORY_SELECTING}}
+            base.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "fixture.scope", "GIT_CONFIG_VALUE_0": "on"})
+            environment = runtime_canary.environment(base, home / "scripts.jsonl", home)
+            program = "import json, os; print(json.dumps(sorted(name.upper() for name in os.environ)))"
+            completed = runtime_canary.run_process([sys.executable, "-c", program], home, environment, 60)
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        seen = set(json.loads(completed.stdout))
+        self.assertEqual(set(), set(REPOSITORY_SELECTING) & seen)
+        self.assertLessEqual({"GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "PYTHONPATH"}, seen)
+
+
 class RemoveHomeTests(GitTestCase):
     # The skill deletes the home through the script, which its allowed-tools already grant, rather than through a
     # prefix grant on rm that would approve deleting any directory.
