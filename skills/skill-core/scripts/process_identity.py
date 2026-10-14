@@ -17,7 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # Where Linux reports each process: /proc/<pid>/stat, whose fields after the command name, in parentheses, start with
-# the state and hold the start time, in clock ticks since boot, as the twentieth (field 22 of the whole line).
+# the state and hold the start time, in clock ticks since boot, as the twentieth (field 22 of the whole line). It is
+# skill-core's one reader of /proc: job_tree imports PROC, ENDED_STATES, and stat_fields from here.
 PROC = Path("/proc")
 STAT_START_TIME = 19
 # The states of a process that has ended: a zombie waits only to be reaped by its parent, and a dead one is going.
@@ -49,8 +50,7 @@ def proc_status(pid: int) -> ProcessStatus:
         return _signalled_status(pid)
     except OSError:
         return ProcessStatus(True, None)
-    close = text.rfind(b")")
-    fields = text[close + 1 :].split() if close >= 0 else []
+    fields = stat_fields(text)
     if len(fields) <= STAT_START_TIME:
         return ProcessStatus(True, None)
     if fields[0] in ENDED_STATES:
@@ -59,6 +59,14 @@ def proc_status(pid: int) -> ProcessStatus:
         return ProcessStatus(True, int(fields[STAT_START_TIME]))
     except ValueError:
         return ProcessStatus(True, None)
+
+
+def stat_fields(text: bytes) -> list[bytes]:
+    """The fields of a /proc/<pid>/stat line after the command name, which sits in parentheses and may itself hold
+    spaces and parentheses: the state, the parent's ID, the process group's ID, and on. A line with no closing
+    parenthesis has none."""
+    close = text.rfind(b")")
+    return text[close + 1 :].split() if close >= 0 else []
 
 
 def _signalled_status(pid: int) -> ProcessStatus:

@@ -3,7 +3,9 @@ stops as any failure does, with the lock released and the journal as recovery ex
 
 from __future__ import annotations
 
+import contextlib
 import sys
+import tempfile
 import textwrap
 import unittest
 from pathlib import Path
@@ -16,7 +18,7 @@ import job_tree
 from harness import DeployerTestCase, Result, forward
 from test_job_tree import QUICK_LAUNCHER, PausedTree, SignalledTree, ended
 
-from deployer import errors, plan, platform_support
+from deployer import errors, plan, platform_support, source_ref
 
 # Seconds a stub tool's processes get to be reported gone once ended; SignalledTree bounds its start-up.
 GONE_SECONDS = 10.0
@@ -91,6 +93,18 @@ def found(name: str, path: str) -> Any:
     return mock.patch.object(
         platform_support, "find_executable", side_effect=lambda wanted: path if wanted == name else real(wanted)
     )
+
+
+def recorded_temporary_directories() -> tuple[Any, list[Path]]:
+    """A patch of --at's mkdtemp that records each directory the export makes, and the list it records them in."""
+    made: list[Path] = []
+    real = tempfile.mkdtemp
+
+    def mkdtemp(*positional: Any, **keywords: Any) -> str:
+        made.append(Path(real(*positional, **keywords)))
+        return str(made[-1])
+
+    return mock.patch.object(source_ref.tempfile, "mkdtemp", mkdtemp), made
 
 
 class DeadlineCase(DeployerTestCase):
@@ -249,6 +263,56 @@ class DeploymentDeadlineTests(DeadlineCase):
         self.assertFalse(self.lock.exists())
         self.assertEqual([], sorted(path.name for path in self.staging.iterdir()))
         self.assert_ended(self.stubs.started())
+
+    def test_git_that_hangs_reading_the_checkout_s_commit_refuses_before_any_change(self) -> None:
+        self.make_skill("alpha", "Alpha")
+        self.make_config()
+        (self.source / ".git").mkdir()
+        stub = self.stubs.hanging("git")
+        with self.held_until_started(), found("git", stub), run_with_deadline(stub, SHORT_DEADLINE):
+            result = self.deploy_fails("--all", pattern="did not finish within")
+        self.assertEqual(1, result.code)
+        self.assert_lines_in_order([*timed_out_lines(stub, SHORT_DEADLINE), "", RECONCILING], result)
+        self.assertIn("Rendered and validated.", result.output, "git reads the commit once the checks have passed")
+        self.assertNotIn("Traceback", result.output)
+        self.assertFalse(self.lock.exists())
+        self.assertEqual([], sorted(path.name for path in self.staging.iterdir()))
+        self.assertFalse(self.manifest_file.exists())
+        self.assertFalse((self.skills_dir / "alpha").exists())
+        self.assert_ended(self.stubs.started())
+
+    def test_git_that_hangs_resolving_or_exporting_at_s_commit_refuses_before_the_lock(self) -> None:
+        self.make_skill("alpha", "Alpha")
+        self.make_config()
+        (self.source / ".git").mkdir()
+        commit = "0123456789abcdef0123456789abcdef01234567"
+        for step, resolved in (("resolve", None), ("export", source_ref.Pin("main", commit))):
+            with self.subTest(step=step):
+                stub = self.stubs.hanging("git")
+                self.stubs.pids.unlink(missing_ok=True)
+                recording, made = recorded_temporary_directories()
+                resolving = (
+                    mock.patch.object(source_ref, "resolve", return_value=resolved)
+                    if resolved is not None
+                    else contextlib.nullcontext()
+                )
+                with (
+                    self.held_until_started(),
+                    found("git", stub),
+                    run_with_deadline(stub, SHORT_DEADLINE),
+                    resolving,
+                    recording,
+                ):
+                    result = self.deploy_fails("--all", "--at", "main", pattern="did not finish within")
+                self.assertEqual(1, result.code)
+                self.assert_lines_in_order(timed_out_lines(stub, SHORT_DEADLINE), result)
+                self.assertNotIn("Rendered and validated.", result.output)
+                self.assertNotIn("Traceback", result.output)
+                self.assertEqual(1 if resolved else 0, len(made), "only the export makes a directory")
+                self.assertEqual([], [directory for directory in made if directory.exists()], "the export is removed")
+                self.assertFalse(self.lock.exists())
+                self.assertFalse((self.skills_dir / "alpha").exists())
+                self.assert_ended(self.stubs.started())
 
     def test_a_slow_validator_within_the_deadline_lets_the_deployment_finish(self) -> None:
         self.make_script_skill("Alpha")

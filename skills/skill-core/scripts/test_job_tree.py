@@ -439,6 +439,23 @@ class ProcessTreeTests(unittest.TestCase):
             with self.subTest(hidden_window=hidden):
                 self.assertEqual({"start_new_session": True}, GroupTree(hidden_window=hidden).start_options())
 
+    def test_a_group_tree_holds_a_command_already_reaped_and_ends_its_group(self) -> None:
+        # Once its caller has reaped it, the command's PID names no process for getpgid; what it started and left
+        # running is still in the group its PID names, so the tree holds it and ends that group, as for a leader.
+        process = mock.Mock(pid=4242)
+        process.poll.return_value = 0
+        with (
+            mock.patch.object(
+                job_tree.os, "getpgid", create=True, side_effect=ProcessLookupError(3, "No such process")
+            ),
+            mock.patch.object(job_tree, "end_group") as end_group,
+        ):
+            with GroupTree().hold(process):
+                end_group.assert_not_called()
+            end_group.assert_called_once_with(4242)
+        process.poll.assert_not_called()  # a leader is never checked for having exited, nor killed
+        process.kill.assert_not_called()
+
     def test_windows_holds_a_command_in_a_job_and_every_other_platform_in_a_process_group(self) -> None:
         for platform, kind in (("win32", JobTree), ("linux", GroupTree), ("darwin", GroupTree)):
             with self.subTest(platform=platform), mock.patch.object(job_tree.sys, "platform", platform):
