@@ -20,7 +20,7 @@ Everything later deletes or rewrites files, so the target must be the store Clau
   {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" resolve
   ```
 
-  It prints `REPO <root>`, the repository to use from here on; then `MEMORY_DIR <path>`, `SOURCE <where it came from>`, and `EXISTS yes` or `EXISTS no`, or `NO_MEMORY_DIR` when the settings name no usable directory; a `CANDIDATE <dir>` line for each memory directory it found when the resolved one does not exist; and a `NOTE` line for each caveat, such as the `--settings` launch flag it cannot see. `FAILED not inside a Git repository` means you must pass `--repo`.
+  It prints `REPO <root>`, the repository to use from here on; then `MEMORY_DIR <path>`, `SOURCE <where it came from>`, and `EXISTS yes` or `EXISTS no`, or `NO_MEMORY_DIR` when the settings name no usable directory; a `CANDIDATE <dir>` line for each memory directory it found when no existing directory resolved, whatever named it; and a `NOTE` line for each caveat, such as the `--settings` launch flag it cannot see. `FAILED not inside a Git repository` means you must pass `--repo`.
 - On `NO_MEMORY_DIR` or `EXISTS no`, show the notes, list the `CANDIDATE` lines, and ask the user to choose or supply `--memory-dir`. Never guess.
 - Show the user the resolved directory and its source, and get explicit confirmation before continuing.
 
