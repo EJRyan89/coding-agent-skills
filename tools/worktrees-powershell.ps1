@@ -7,8 +7,10 @@ using namespace System.Management.Automation.Language
 # Input: the command as base64-encoded UTF-8 on stdin, so no console code page can alter it.
 # Output: one JSON object. {"error": message} when PowerShell would refuse to parse the command, and so would run
 # none of it; otherwise {"events": [...]}, each one of:
-#   {"kind": "command", "words": [{"text", "dynamic"}]}  a command, its name first; dynamic means the text does
-#                                                        not settle the word's value
+#   {"kind": "command", "words": [{"text", "dynamic"}],  a command, its name first; dynamic means the text does
+#    "parameters": {name: [{"text", "dynamic"}]}}        not settle the word's value. parameters are the words
+#                                                        PowerShell's own binder gives each parameter, by the
+#                                                        name the command declares, an array's elements apart
 #   {"kind": "gitEnv", "name": name}                     a location variable (GIT_DIR, GIT_WORK_TREE, or
 #                                                        GIT_COMMON_DIR) was assigned through $env: or
 #                                                        [Environment]::SetEnvironmentVariable
@@ -68,6 +70,33 @@ function Get-ElementWord([CommandElementAst] $Element) {
         $words.Add((ConvertTo-Word '' $true))
     }
     , $words.ToArray()
+}
+
+# The words PowerShell's own binder gives each of a command's parameters, keyed by the name the command declares,
+# with abbreviations, aliases, and positions resolved, and an array's elements as separate words. Empty when the
+# command's name is computed or the binder fails.
+function Get-BoundParameter([CommandAst] $Command) {
+    $parameters = [ordered]@{}
+    if ($null -eq $Command.GetCommandName()) {
+        return $parameters
+    }
+    try {
+        $bound = [StaticParameterBinder]::BindCommand($Command, $true).BoundParameters
+    } catch {
+        return $parameters
+    }
+    foreach ($name in $bound.Keys) {
+        $value = $bound[$name].Value
+        $elements = if ($value -is [ArrayLiteralAst]) { $value.Elements } else { @($value) }
+        $words = [Collections.Generic.List[object]]::new()
+        foreach ($element in $elements) {
+            if ($element -is [CommandElementAst]) {
+                $words.AddRange([object[]] (Get-ElementWord $element))
+            }
+        }
+        $parameters[$name] = $words.ToArray()
+    }
+    $parameters
 }
 
 # The lower-cased name a command is called by, without its directory or extension; $null when it is computed.
@@ -153,7 +182,7 @@ function Read-CommandEvent([string] $Text, [int] $Depth, [Collections.Generic.Li
         for ($index = 1; $index -lt $elements.Count; $index++) {
             $words.AddRange([object[]] (Get-ElementWord $elements[$index]))
         }
-        $Events.Add([ordered]@{ kind = 'command'; words = $words.ToArray() })
+        $Events.Add([ordered]@{ kind = 'command'; words = $words.ToArray(); parameters = Get-BoundParameter $node })
 
         if ($leaf -eq 'iex' -or $leaf -eq 'invoke-expression') {
             # Invoke-Expression runs its string in this session, so its location changes outlive it.
