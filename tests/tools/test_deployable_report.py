@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import shutil
 import sys
 import tempfile
 import unittest
@@ -29,6 +30,8 @@ SOURCE_ID = "test/source"
 HASH = "sha256:" + "0" * 64
 ADAPTERS = ("alpha", "beta")
 AGENT = "reviewer.md"
+# A shared asset is a file beside the skill directories, as source.json's runtime-compatibility.md is.
+SHARED_FILE = "shared-notes.md"
 SIGN_IN = "it exited before answering with exit code 1: You are not logged in. Run `copilot login` to sign in."
 # What `deploy.py verify` prints when it fails, pinned here as literals.
 CODEX_FAILED = "Verification failed for Codex CLI.\nSee docs/codex-support.md.\n"
@@ -380,6 +383,176 @@ class DeployableReportTests(GitTestCase):
             ("after reinstall", "claude", "FAILED"),
             (recorded[0]["label"], recorded[0]["results"][0]["runtime"], recorded[0]["results"][0]["status"]),
         )
+
+    # -- uninstall ------------------------------------------------------------------------------------------
+
+    def deploy_everything(self) -> None:
+        """Add what setUp leaves out: the runtime adapters' directories and a shared asset file the manifest owns."""
+        for name in ADAPTERS:
+            (self.paths.adapter_dest_dir / name).mkdir(parents=True)
+            (self.paths.adapter_dest_dir / name / "SKILL.md").write_text(f"# {name}\n", encoding="utf-8")
+        (self.paths.dest_dir / SHARED_FILE).write_text("notes\n", encoding="utf-8")
+        data = json.loads(self.paths.manifest_file.read_text(encoding="utf-8"))
+        data["sources"][SOURCE_ID]["shared"] = {SHARED_FILE: {"hash": HASH, "role": "owner"}}
+        self.paths.manifest_file.write_text(json.dumps(data), encoding="utf-8")
+
+    def uninstall(self, *, keep: tuple[Path, ...] = ()) -> None:
+        """Do what the uninstall does, leaving the paths in keep: remove every item, empty the source's manifest
+        entry, which the uninstall keeps, and retain a backup, which it may."""
+        for root in (self.paths.dest_dir, self.paths.adapter_dest_dir, self.paths.agent_dest_dir):
+            for entry in root.iterdir():
+                if entry == self.paths.manifest_file or entry in keep:
+                    continue
+                if entry.is_dir():
+                    shutil.rmtree(entry)
+                else:
+                    entry.unlink()
+        backup = self.paths.dest_dir / ".backups" / "run-1" / "alpha"
+        backup.mkdir(parents=True)
+        (backup / "SKILL.md").write_text("# kept\n", encoding="utf-8")
+        emptied: dict[str, dict[str, object]] = {"skills": {}, "shared": {}, "wrappers": {}, "agents": {}}
+        self.paths.manifest_file.write_text(
+            json.dumps({"manifest_version": manifest.MANIFEST_VERSION, "sources": {SOURCE_ID: emptied}}),
+            encoding="utf-8",
+        )
+
+    def record_owned(self) -> Path:
+        owned = self.results_file.parent / "owned.json"
+        code, output = self.run_main(
+            "owned", "--owned", str(owned), "--home", str(self.home), "--source", str(self.paths.source_dir)
+        )
+        self.assertEqual(0, code, output)
+        return owned
+
+    def check_leftovers(self, owned: Path) -> tuple[int, str, list[str]]:
+        code, output = self.run_main(
+            "leftovers",
+            "--owned",
+            str(owned),
+            "--results",
+            str(self.results_file),
+            "--home",
+            str(self.home),
+            "--source",
+            str(self.paths.source_dir),
+        )
+        recorded = json.loads(self.results_file.read_text(encoding="utf-8"))
+        return code, output, next(item["left"] for item in recorded if item["label"] == "uninstall")
+
+    def summary_of_record(self) -> str:
+        return report.render_summary(json.loads(self.results_file.read_text(encoding="utf-8")), [], [])
+
+    def test_owned_saves_every_owned_path_and_every_entry_where_items_deploy(self) -> None:
+        self.deploy_everything()
+        (self.paths.dest_dir / "unowned.txt").write_text("made by the run\n", encoding="utf-8")
+        saved = json.loads(self.record_owned().read_text(encoding="utf-8"))
+        expected = {
+            self.paths.dest_dir / "alpha",
+            self.paths.dest_dir / "beta",
+            self.paths.dest_dir / SHARED_FILE,
+            self.paths.dest_dir / "unowned.txt",
+            self.paths.adapter_dest_dir / "alpha",
+            self.paths.adapter_dest_dir / "beta",
+            self.paths.agent_dest_dir / AGENT,
+        }
+        self.assertEqual(sorted(str(path) for path in expected), saved)
+
+    def test_owned_with_nothing_deployed_is_an_error(self) -> None:
+        self.deploy_everything()
+        self.uninstall()
+        owned = self.results_file.parent / "owned.json"
+        code, output = self.run_main(
+            "owned", "--owned", str(owned), "--home", str(self.home), "--source", str(self.paths.source_dir)
+        )
+        self.assertEqual(1, code)
+        self.assertIn("Nothing is deployed in", output)
+        self.assertIn(DEPLOY_FIRST, output)
+        self.assertFalse(owned.exists())
+
+    def test_a_clean_uninstall_leaves_nothing_but_the_manifest_and_retained_backups(self) -> None:
+        self.deploy_everything()
+        owned = self.record_owned()
+        self.uninstall()
+        code, output, left = self.check_leftovers(owned)
+        self.assertEqual((0, []), (code, left), output)
+        self.assertIn("Nothing deployed is left", output)
+        self.assertIn("### After the uninstall\n\nNothing deployed is left.", self.summary_of_record())
+
+    def test_a_shared_file_left_after_the_uninstall_fails_and_is_named(self) -> None:
+        self.deploy_everything()
+        owned = self.record_owned()
+        shared = self.paths.dest_dir / SHARED_FILE
+        self.uninstall(keep=(shared,))
+        code, output, left = self.check_leftovers(owned)
+        self.assertEqual(1, code)
+        self.assertEqual([platform_support.normalize(shared)], left)
+        self.assertIn(f"::error::left after uninstall: {platform_support.normalize(shared)}", output)
+        self.assertIn(f"- Left: `{platform_support.normalize(shared)}`", self.summary_of_record())
+
+    def test_a_directory_left_after_the_uninstall_fails_and_is_named(self) -> None:
+        self.deploy_everything()
+        owned = self.record_owned()
+        adapter = self.paths.adapter_dest_dir / "beta"
+        self.uninstall(keep=(adapter,))
+        code, output, left = self.check_leftovers(owned)
+        self.assertEqual((1, [platform_support.normalize(adapter)]), (code, left), output)
+        self.assertIn(f"- Left: `{platform_support.normalize(adapter)}`", self.summary_of_record())
+
+    def test_an_entry_the_uninstall_added_where_items_deploy_fails(self) -> None:
+        self.deploy_everything()
+        owned = self.record_owned()
+        self.uninstall()
+        stray = self.paths.dest_dir / "alpha.deploying-bak"
+        stray.write_text("stale\n", encoding="utf-8")
+        hidden = self.paths.agent_dest_dir / ".stray.md"
+        hidden.write_text("stale\n", encoding="utf-8")
+        code, output, left = self.check_leftovers(owned)
+        self.assertEqual(1, code, output)
+        self.assertEqual(sorted(platform_support.normalize(path) for path in (stray, hidden)), left)
+
+    def test_an_item_the_manifest_still_owns_fails_even_when_its_file_is_gone(self) -> None:
+        self.deploy_everything()
+        owned = self.record_owned()
+        self.uninstall()
+        data = json.loads(self.paths.manifest_file.read_text(encoding="utf-8"))
+        data["sources"][SOURCE_ID]["shared"] = {SHARED_FILE: {"hash": HASH, "role": "owner"}}
+        self.paths.manifest_file.write_text(json.dumps(data), encoding="utf-8")
+        code, output, left = self.check_leftovers(owned)
+        self.assertEqual(1, code, output)
+        shared = platform_support.normalize(self.paths.dest_dir / SHARED_FILE)
+        self.assertEqual([f"manifest source '{SOURCE_ID}' still owns shared asset {shared}"], left)
+
+    def test_a_second_leftovers_check_replaces_the_first_record(self) -> None:
+        self.deploy_everything()
+        owned = self.record_owned()
+        shared = self.paths.dest_dir / SHARED_FILE
+        self.uninstall(keep=(shared,))
+        self.check_leftovers(owned)
+        shared.unlink()
+        code, _, left = self.check_leftovers(owned)
+        self.assertEqual((0, []), (code, left))
+        recorded = json.loads(self.results_file.read_text(encoding="utf-8"))
+        self.assertEqual(1, sum(item["label"] == "uninstall" for item in recorded))
+
+    def test_leftovers_without_the_saved_paths_is_an_error(self) -> None:
+        missing = self.results_file.parent / "missing.json"
+        empty = self.results_file.parent / "empty.json"
+        empty.write_text("[]", encoding="utf-8")
+        for saved in (missing, empty):
+            with self.subTest(saved=saved.name):
+                code, output = self.run_main(
+                    "leftovers",
+                    "--owned",
+                    str(saved),
+                    "--results",
+                    str(self.results_file),
+                    "--home",
+                    str(self.home),
+                    "--source",
+                    str(self.paths.source_dir),
+                )
+                self.assertEqual(1, code)
+                self.assertIn("saved before the uninstall", output)
 
     # -- summary --------------------------------------------------------------------------------------------
 

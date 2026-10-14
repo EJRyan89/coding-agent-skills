@@ -198,6 +198,13 @@ jobs:
           python tools/deployable_report.py layout --label 'first deploy' --results $env:RESULTS
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      # Every path the manifest owns and every entry the deployment made where items deploy, files included, for the
+      # check after the uninstall.
+      - name: Record what the deployment owns
+        run: |
+          python tools/deployable_report.py owned --owned (Join-Path $env:LOGS 'owned.json')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       # The README's `none` selection, answered on stdin.
       - name: Uninstall
         run: |
@@ -206,22 +213,12 @@ jobs:
           'none' | python deploy.py 2>&1 | Tee-Object -FilePath (Join-Path $env:LOGS 'uninstall.log')
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      # Names each recorded path still there, each entry added where items deploy, and each item the manifest still
+      # records, beside the manifest and retained backups the uninstall keeps; the step summary lists them.
       - name: Confirm the profile holds nothing from the suite
         run: |
-          $left = @()
-          $skills = Join-Path $env:USERPROFILE '.claude\skills'
-          if (Test-Path -LiteralPath $skills) {
-            $left += Get-ChildItem -LiteralPath $skills -Directory | Where-Object { $_.Name -notlike '.*' }
-          }
-          foreach ($pattern in @(@('.agents\skills', '*'), @('.claude\agents', '*.md'))) {
-            $directory = Join-Path $env:USERPROFILE $pattern[0]
-            if (Test-Path -LiteralPath $directory) { $left += Get-ChildItem -LiteralPath $directory -Filter $pattern[1] }
-          }
-          if ($left.Count -gt 0) {
-            $left | ForEach-Object { Write-Host "::error::left after uninstall: $($_.FullName)" }
-            exit 1
-          }
-          Write-Host 'Nothing from the suite is left under ~/.claude/skills, ~/.agents/skills, or ~/.claude/agents.'
+          python tools/deployable_report.py leftovers --owned (Join-Path $env:LOGS 'owned.json') --results $env:RESULTS
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Deploy again
         run: |
@@ -383,24 +380,23 @@ jobs:
         run: |
           python3 tools/deployable_report.py layout --label 'first deploy' --results "$RESULTS"
 
+      # Every path the manifest owns and every entry the deployment made where items deploy, files included, for the
+      # check after the uninstall.
+      - name: Record what the deployment owns
+        run: |
+          python3 tools/deployable_report.py owned --owned "$LOGS/owned.json"
+
       # The README's `none` selection, answered on stdin.
       - name: Uninstall
         run: |
           printf 'none\n' | python3 deploy.py --dry-run 2>&1 | tee "$LOGS/uninstall-dry-run.log"
           printf 'none\n' | python3 deploy.py 2>&1 | tee "$LOGS/uninstall.log"
 
+      # Names each recorded path still there, each entry added where items deploy, and each item the manifest still
+      # records, beside the manifest and retained backups the uninstall keeps; the step summary lists them.
       - name: Confirm the profile holds nothing from the suite
         run: |
-          left="$({
-            find "$HOME/.claude/skills" -mindepth 1 -maxdepth 1 -type d ! -name '.*'
-            find "$HOME/.agents/skills" -mindepth 1 -maxdepth 1
-            find "$HOME/.claude/agents" -mindepth 1 -maxdepth 1 -name '*.md'
-          } 2> /dev/null || true)"
-          if [ -n "$left" ]; then
-            while IFS= read -r path; do echo "::error::left after uninstall: $path"; done <<< "$left"
-            exit 1
-          fi
-          echo 'Nothing from the suite is left under ~/.claude/skills, ~/.agents/skills, or ~/.claude/agents.'
+          python3 tools/deployable_report.py leftovers --owned "$LOGS/owned.json" --results "$RESULTS"
 
       - name: Deploy again
         run: |

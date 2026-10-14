@@ -4,6 +4,8 @@ Usage:
   python tools/deployable_report.py verify --label NAME --deploy-verify-exit CODE --deploy-verify-log FILE
                                             --results FILE
   python tools/deployable_report.py layout --label NAME --results FILE
+  python tools/deployable_report.py owned --owned FILE
+  python tools/deployable_report.py leftovers --owned FILE --results FILE
   python tools/deployable_report.py summary --results FILE [--note TEXT ...] [--summary FILE]
 
 `verify` asks Codex CLI and Copilot CLI which skills they find, the way `python deploy.py verify` does, and judges
@@ -18,6 +20,12 @@ step summary file (GITHUB_STEP_SUMMARY by default) and printed.
 that lists skills without a session, so this checks the files instead: Claude Code is installed, every skill the
 manifest owns has a non-empty SKILL.md, and every agent it owns is in place. That is a file-layout check, not a
 discovery check, and the result says so. It joins the pass with the same label in the results file.
+
+`owned` and `leftovers` are the uninstall check. Before the uninstall, `owned` saves every path the manifest owns and
+every entry in the directories items deploy to, files and directories alike. After it, `leftovers` names each saved
+path that is still there, each entry those directories gained, and each item the manifest still records, and records
+them for the summary; it exits 1 when it names any. It allows what the uninstall leaves by design: the manifest, which
+keeps the source's entry with no items, and each directory's retained backups.
 
 Nothing here starts a model.
 """
@@ -40,9 +48,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-c
 
 from console import run_main
 
-from deployer import discovery, manifest, platform_support, tools, verify
+from deployer import discovery, journal, manifest, platform_support, tools, verify
 from deployer.arguments import PROG, VERIFY_COMMAND_LINE
 from deployer.errors import DeployError, print_error
+from deployer.kinds import KINDS
 from deployer.paths import Paths
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -65,6 +74,10 @@ VERSIONED = (
     ("Codex CLI", "codex"),
     ("Copilot CLI", "copilot"),
 )
+# What a directory items deploy to holds after the uninstall by design, beside nothing else: the manifest, which keeps
+# the source's entry with no items, and the backups a run retained (docs/installation.md, "Uninstalling").
+BACKUPS = ".backups"
+UNINSTALL = "uninstall"
 Find = Callable[[str], "str | None"]
 RunVersion = Callable[[list[str]], "tuple[int, str]"]
 
@@ -145,6 +158,56 @@ def check_layout(paths: Paths, find: Find | None = None) -> RuntimeResult:
     )
 
 
+def _item_roots(paths: Paths) -> list[Path]:
+    """The directories items deploy to, once each, in the kinds' order."""
+    return list(dict.fromkeys(journal.root_directory(paths, kind.root) for kind in KINDS))
+
+
+def _present(path: Path) -> bool:
+    return path.exists() or path.is_symlink()
+
+
+def _root_entries(paths: Paths) -> set[Path]:
+    """Every entry in the directories items deploy to, files included, but the manifest and the retained backups."""
+    found: set[Path] = set()
+    for root in _item_roots(paths):
+        if root.is_dir():
+            found.update(entry for entry in root.iterdir() if entry != paths.manifest_file and entry.name != BACKUPS)
+    return found
+
+
+def _manifest_items(paths: Paths) -> list[tuple[str, str, Path]]:
+    """Each item the manifest records, as its source, its kind's noun, and its deployed path."""
+    owned = manifest.load(paths.manifest_file)
+    return [
+        (source_id, kind.noun, journal.root_directory(paths, kind.root) / name)
+        for source_id in sorted(owned.sources)
+        for kind in KINDS
+        for name in sorted(owned.ownership(source_id).of(kind))
+    ]
+
+
+def owned_paths(paths: Paths) -> list[str]:
+    """Before the uninstall: every path the manifest owns and every entry the deployment left where items deploy."""
+    items = _manifest_items(paths)
+    if not items:
+        where = platform_support.normalize(paths.dest_dir)
+        raise DeployError(f"ERROR: Nothing is deployed in {where}.", f"Deploy first with '{PROG}'.")
+    return sorted({str(path) for _, _, path in items} | {str(path) for path in _root_entries(paths)})
+
+
+def leftovers(paths: Paths, recorded: list[str]) -> list[str]:
+    """After the uninstall: each recorded path still there, each entry added where items deploy, and each item the
+    manifest still records, named by its path or by the source that still owns it."""
+    surviving = {Path(path) for path in recorded if _present(Path(path))} | _root_entries(paths)
+    left = sorted(platform_support.normalize(path) for path in surviving)
+    left += [
+        f"manifest source '{source_id}' still owns {noun} {platform_support.normalize(path)}"
+        for source_id, noun, path in _manifest_items(paths)
+    ]
+    return left
+
+
 def verify_failures(output: str) -> set[str]:
     """The runtimes `deploy.py verify` names on its line saying which it failed for, by the names discovery uses; a
     name it does not know stays as printed."""
@@ -210,6 +273,10 @@ def render_summary(passes: list[dict], versions: list[tuple[str, str]], notes: l
         for result in item.get("results", []):
             detail = str(result.get("detail", "")).replace("|", "\\|").replace("\n", " ")
             lines.append(f"| {item.get('label', '')} | {result['runtime']} | {result['status']} | {detail} |")
+    for item in passes:
+        if "left" in item:
+            lines += ["", "### After the uninstall", ""]
+            lines += [f"- Left: `{path}`" for path in item["left"]] or ["Nothing deployed is left."]
     if notes:
         lines += ["", "### Notes", "", *(f"- {note}" for note in notes)]
     return "\n".join(lines) + "\n"
@@ -238,6 +305,23 @@ def _record(results_file: Path, label: str, results: list[RuntimeResult]) -> Non
     results_file.write_text(json.dumps(passes, indent=2) + "\n", encoding="utf-8")
 
 
+def _record_leftovers(results_file: Path, left: list[str]) -> None:
+    """Replace the uninstall's record of what was left, or start it."""
+    passes = [item for item in _read_results(results_file) if item.get("label") != UNINSTALL]
+    passes.append({"label": UNINSTALL, "left": left})
+    results_file.write_text(json.dumps(passes, indent=2) + "\n", encoding="utf-8")
+
+
+def _read_owned(path: Path) -> list[str]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise DeployError(f"ERROR: Cannot read the paths saved before the uninstall: {path}: {exc}") from exc
+    if not isinstance(data, list) or not data or not all(isinstance(item, str) for item in data):
+        raise DeployError(f"ERROR: The paths saved before the uninstall are not a non-empty JSON array: {path}")
+    return data
+
+
 def _verify(arguments: argparse.Namespace) -> int:
     paths = Paths(Path(arguments.source), Path(arguments.home))
     try:
@@ -263,6 +347,34 @@ def _layout(arguments: argparse.Namespace) -> int:
     return 0 if result.status == PASSED else 1
 
 
+def _owned(arguments: argparse.Namespace) -> int:
+    paths = Paths(Path(arguments.source), Path(arguments.home))
+    try:
+        found = owned_paths(paths)
+    except DeployError as exc:
+        print_error(exc)
+        return exc.exit_code
+    Path(arguments.owned).write_text(json.dumps(found, indent=2) + "\n", encoding="utf-8")
+    print(f"Saved {len(found)} paths the deployment owns or created.")
+    return 0
+
+
+def _leftovers(arguments: argparse.Namespace) -> int:
+    paths = Paths(Path(arguments.source), Path(arguments.home))
+    try:
+        left = leftovers(paths, _read_owned(Path(arguments.owned)))
+    except DeployError as exc:
+        print_error(exc)
+        return exc.exit_code
+    _record_leftovers(Path(arguments.results), left)
+    for item in left:
+        print(f"::error::left after uninstall: {item}")
+    if left:
+        return 1
+    print("Nothing deployed is left where skills, runtime adapters, and agents deploy.")
+    return 0
+
+
 def _summary(arguments: argparse.Namespace) -> int:
     try:
         passes = _read_results(Path(arguments.results))
@@ -282,13 +394,16 @@ def _summary(arguments: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("verify", "layout", "summary"):
+    for name in ("verify", "layout", "owned", "leftovers", "summary"):
         command = commands.add_parser(name)
-        command.add_argument("--results", required=True, help="the JSON file that collects each pass")
+        if name != "owned":
+            command.add_argument("--results", required=True, help="the JSON file that collects each pass")
         command.add_argument("--home", default=str(platform_support.home_directory()), help=argparse.SUPPRESS)
         command.add_argument("--source", default=str(REPOSITORY_ROOT), help=argparse.SUPPRESS)
     for name in ("verify", "layout"):
         commands.choices[name].add_argument("--label", required=True)
+    for name in ("owned", "leftovers"):
+        commands.choices[name].add_argument("--owned", required=True, help="the paths saved before the uninstall")
     commands.choices["verify"].add_argument("--deploy-verify-exit", type=int, required=True)
     commands.choices["verify"].add_argument(
         "--deploy-verify-log", required=True, help=f"the saved output of {VERIFY_COMMAND_LINE}"
@@ -297,7 +412,8 @@ def main(argv: list[str] | None = None) -> int:
     commands.choices["summary"].add_argument("--summary", default="")
     commands.choices["summary"].add_argument("--no-probe", action="store_true", help=argparse.SUPPRESS)
     arguments = parser.parse_args(argv)
-    return {"verify": _verify, "layout": _layout, "summary": _summary}[arguments.command](arguments)
+    handlers = {"verify": _verify, "layout": _layout, "owned": _owned, "leftovers": _leftovers, "summary": _summary}
+    return handlers[arguments.command](arguments)
 
 
 if __name__ == "__main__":
