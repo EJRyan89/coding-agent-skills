@@ -82,7 +82,7 @@ class SingleEntryPointTests(DeployerTestCase):
             "\n"
             "options:\n"
             "  -h, --help          show this help message and exit\n"
-            "  --all               deploy everything except uninstalled opt-in items\n"
+            "  --all               deploy everything except opt-in items not already chosen\n"
             "  --include NAME      with --all, also deploy this opt-in item; repeatable\n"
             "  --dry-run           show what would change; change nothing\n"
             "  --force             replace modified or unmanaged items (backed up)\n"

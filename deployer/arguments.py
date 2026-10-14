@@ -83,7 +83,10 @@ def parser() -> _Parser:
     top = _Parser(prog=PROG, description="Render, validate, and deploy this repository's skills.")
     top.deploy_options = [
         top.add_argument(
-            "--all", dest="select_all", action="store_true", help="deploy everything except uninstalled opt-in items"
+            "--all",
+            dest="select_all",
+            action="store_true",
+            help="deploy everything except opt-in items not already chosen",
         ),
         top.add_argument(
             "--include",

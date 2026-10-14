@@ -12,7 +12,8 @@ from .report import currently_chosen, plural, wrap
 
 
 def select_all(context: Context, include: list[str]) -> Selection:
-    """Every menu item except opt-in ones, which stay only when already installed or named with --include."""
+    """Every menu item except opt-in ones, which stay only when the manifest's requested roots already choose them or
+    they are named with --include; an opt-in item installed only as another root's dependency is not chosen."""
     src = context.source
     selection = Selection()
     for names, kind, chosen in (

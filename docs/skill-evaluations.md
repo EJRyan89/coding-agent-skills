@@ -58,9 +58,9 @@ changes a skill's prompt, model guidance, or reviewer instructions cites this ru
 | review-document | haiku | claude-haiku-5-5 | 19/20 | committed-edit 3/3, design-clean 1/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps not run, word-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
 | review-document | sonnet | claude-sonnet-5-5 | 20/20 | committed-edit 3/3, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps not run, word-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
 | review-document | opus | claude-opus-5-5 | 20/20 | committed-edit 3/3, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps not run, word-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
-| review-prs | haiku | claude-haiku-5-5 | 19/21 | clean-change 2/2, design-clean 1/2, design-gaps 5/5, planted-defects 4/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-12 |
-| review-prs | sonnet | claude-sonnet-5-5 | 21/21 | clean-change 2/2, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-12 |
-| review-prs | opus | claude-opus-5-5 | 21/21 | clean-change 2/2, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-12 |
+| review-prs | haiku | claude-haiku-5-5 | 19/21 | clean-change 2/2, design-clean 1/2, design-gaps 5/5, planted-defects 4/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
+| review-prs | sonnet | claude-sonnet-5-5 | 21/21 | clean-change 2/2, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
+| review-prs | opus | claude-opus-5-5 | 21/21 | clean-change 2/2, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
 | review-repository | haiku | claude-haiku-5-5 | 5/5 | drifted-guide 2/2, tested-change 1/1, undocumented-change 1/1, untested-change 1/1 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
 | review-repository | sonnet | claude-sonnet-5-5 | 5/5 | drifted-guide 2/2, tested-change 1/1, undocumented-change 1/1, untested-change 1/1 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
 | review-repository | opus | claude-opus-5-5 | 5/5 | drifted-guide 2/2, tested-change 1/1, undocumented-change 1/1, untested-change 1/1 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
@@ -68,10 +68,6 @@ changes a skill's prompt, model guidance, or reviewer instructions cites this ru
 
 ### Notes
 
-- **`review-repository`, `tested-change`:** Sonnet's should-fix finding, raised again on a rerun, is correct: the
-  fixture's `main` prints `days_old`'s output through `echo "$(...)"`, which drops the refusal's exit status, so the
-  change the scenario calls clean holds a defect the other models did not report. The fixture needs the fix, not the
-  reviewer.
 - **`review-document`, `pdf-gaps`:** not run on any model, because no `pdftotext` the session found met the
   extraction floor: the one Git for Windows bundles and the Poppler installed beside it were both older, so `build`
   refused the PDF's text before a reviewer started. Installing a supported Xpdf or Poppler lets it run.

@@ -114,7 +114,7 @@ To move back to `main`, run `python deploy.py --all --unpin` from the clone, or,
 
 ## A tool that does not finish
 
-Every tool the deployer runs, such as Git Bash, ShellCheck, and PowerShell checking the rendered skills, git reading the checkout, and the version probes of `check` and `verify`, runs under one deadline, `TOOL_DEADLINE_SECONDS` in `deployer/platform_support.py`. It is minutes long, so a slow but working tool on a busy machine still finishes; a tool that reaches it is almost always stuck. The deployer then ends the tool and every process it started, and stops with `ERROR: <tool> did not finish within <seconds> seconds`, followed by the tool's path.
+Every tool the deployer runs, such as Git Bash, ShellCheck, and PowerShell checking the rendered skills, git reading the checkout, and the version probes of `check` and `verify`, runs under one deadline, `TOOL_DEADLINE_SECONDS` in `deployer/platform_support.py`. It is minutes long, so a slow but working tool on a busy machine still finishes; a tool that reaches it is almost always stuck. The deployer then ends the tool and every process it started (on Linux, every one that has not left the tool's process group), and stops with `ERROR: <tool> did not finish within <seconds> seconds`, followed by the tool's path.
 
 What that leaves depends on when it happened:
 
