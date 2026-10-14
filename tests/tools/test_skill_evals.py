@@ -1258,6 +1258,18 @@ class ReviewerScenarioTests(GitTestCase):
                         [], [path for path in scenario.placed if (scenario.directory / tree / path).exists()]
                     )
 
+    def test_each_scenario_s_fixture_is_checked_once(self) -> None:
+        for skill in ("review-repository", "review-prs"):
+            with (
+                self.subTest(skill=skill),
+                mock.patch.object(skill_evals, "_fixture", wraps=skill_evals._fixture) as checked,
+            ):
+                scenarios = skill_evals.load_scenarios(skill)
+            self.assertEqual(
+                sorted(scenario.directory for scenario in scenarios),
+                sorted(call.args[0] for call in checked.call_args_list),
+            )
+
     def test_the_copy_holds_the_checkout_s_files_in_both_trees_and_is_removed_after_the_run(self) -> None:
         (scenario,) = skill_evals.load_scenarios("review-repository", ["untested-change"])
         before = tree_bytes(scenario.directory)
