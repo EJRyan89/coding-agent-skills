@@ -197,8 +197,13 @@ class RuntimeCanaryTestCase(GitTestCase):
     ) -> list[str]:
         code, lines = self.outcome(runner, skills, runtimes, sources, environment, installed, discovery_only, **options)
         # A deployment that stops exits 1 too, but it prints none of these lines, so it fails here.
-        skipped = {line.split()[1] for line in lines if line.startswith("SKIPPED ")}
-        failed = set(runtimes) <= skipped or any(
+        # A runtime is checked by a listing that found or missed the canary's copy, or by a run the canary started.
+        checked = any(
+            line.startswith(("DISCOVERED ", "UNDISCOVERED "))
+            or (line.startswith("RUNTIME ") and line.split()[3] not in ("NOT_ATTEMPTED", "UNSUPPORTED"))
+            for line in lines
+        )
+        failed = not checked or any(
             line.startswith(("UNDISCOVERED ", "DISCOVERY_FAILED "))
             or (line.startswith("MATRIX ") and " DISAGREES " in line)
             for line in lines
@@ -1335,6 +1340,67 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
                 )
                 self.assertEqual(code, result, lines)
                 self.assertIn('SKIPPED copilot "copilot is not installed"', lines)
+                nothing = (
+                    'NOTHING_CHECKED "no runtime was checked for discovery: '
+                    'codex is not installed; copilot is not installed"'
+                )
+                self.assertEqual(code == 1, nothing in lines, lines)
+
+    def test_a_discovery_only_run_whose_only_runtime_is_claude_code_checked_nothing_and_fails(self) -> None:
+        claude = (
+            "claude has no skill listing, so its discovery needs a model run, which --discovery-only does not start"
+        )
+        for runtimes, installed, reasons in (
+            (("claude",), runtime_canary.RUNTIMES, claude),
+            (runtime_canary.RUNTIMES, ("claude",), f"{claude}; codex is not installed; copilot is not installed"),
+        ):
+            with self.subTest(runtimes=runtimes, installed=installed):
+                runner = FakeRuntimes()
+                code, lines = self.outcome(runner, runtimes=runtimes, installed=installed, discovery_only=True)
+                self.assertEqual(1, code, lines)
+                self.assertIn(f'NOTHING_CHECKED "no runtime was checked for discovery: {reasons}"', lines)
+                self.assertEqual([], runner.calls)
+
+    def test_a_discovery_only_run_that_lists_one_runtime_exits_0_beside_claude_code(self) -> None:
+        adapters = forward(self.home / ".agents" / "skills")
+        for runtimes in (("codex",), ("claude", "codex")):
+            with self.subTest(runtimes=runtimes):
+                runner = FakeRuntimes()
+                runner.listings["codex"] = [(FIXTURE, f"{adapters}/{FIXTURE}", True)]
+                code, lines = self.outcome(runner, runtimes=runtimes, discovery_only=True)
+                self.assertEqual(0, code, lines)
+                self.assertIn(f'DISCOVERED codex {FIXTURE} "{adapters}/{FIXTURE}"', lines)
+                self.assertFalse([line for line in lines if line.startswith(("NOTHING_CHECKED ", "RUNTIME "))], lines)
+                self.assertFalse([line for line in lines if " claude " in line], lines)
+
+    def test_a_discovery_only_run_whose_every_listing_failed_checked_nothing(self) -> None:
+        runner = FakeRuntimes()
+
+        def fail(*_: object) -> list[str]:
+            raise discovery.ListingError("stub listing unavailable")
+
+        with mock.patch.object(runner, "talk", fail):
+            code, lines = self.outcome(runner, runtimes=("codex", "copilot"), discovery_only=True)
+        self.assertEqual(1, code, lines)
+        self.assertIn(
+            "NOTHING_CHECKED \"no runtime was checked for discovery: codex's skill list could not be read; "
+            "copilot's skill list could not be read\"",
+            lines,
+        )
+
+    def test_a_run_whose_every_skill_was_never_started_checked_nothing(self) -> None:
+        # The fixture declares full for every runtime and always runs first, so this takes a fixture that declares
+        # none, as the hidden dependency does: its runs and its listing are both NOT_ATTEMPTED, and both agree.
+        with mock.patch.object(runtime_canary, "FIXTURE_SKILL", "core"):
+            code, lines = self.outcome(FakeRuntimes(), ["core"], ("codex",), sources=[self.make_source(hidden=True)])
+        self.assertEqual(1, code, lines)
+        self.assertIn(f'RUNTIME codex core NOT_ATTEMPTED "{HIDDEN_REASON}"', lines)
+        self.assertIn("MATRIX codex core AGREES none", lines)
+        self.assertIn(
+            'NOTHING_CHECKED "no runtime was checked for discovery or run: '
+            'codex was asked for no skill it could list or start"',
+            lines,
+        )
 
     def test_output_starts_with_the_home_and_each_deployment(self) -> None:
         lines = self.canary(FakeRuntimes(), discovery_only=True)
