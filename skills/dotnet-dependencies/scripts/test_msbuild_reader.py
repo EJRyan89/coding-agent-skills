@@ -126,10 +126,10 @@ CHOOSE_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
 """
 LIST_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
-    <PackageReference Include="Lantern.Json; Quill.Http;Beacon.Gone" Version="1.0.0" />
+    <PackageReference Include="Lantern.Json; Quill.Http;Beacon.Gone;Beacon.Spent" Version="1.0.0" />
     <PackageReference Update="Lantern.Json;Lantern.Absent" Version="13.0.1" />
     <PackageReference Update="Quill.Http" Version="2.0.0" />
-    <PackageReference Remove=";Beacon.Gone;" />
+    <PackageReference Remove=";Beacon.Gone; Beacon.Spent;" />
     <ProjectReference Include="..\\Harbor.Core\\Harbor.Core.csproj;..\\Harbor.Data\\Harbor.Data.csproj" />
     <Reference Include="Beacon.One, Version=1.0.0.0;Beacon.Two" />
   </ItemGroup>
