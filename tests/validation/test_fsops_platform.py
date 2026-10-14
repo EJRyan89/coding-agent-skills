@@ -1120,6 +1120,246 @@ class FsopsPlatformFixtures(GitTestCase):
                 filesystem_write_problems(root),
             )
 
+    def test_a_temporary_directory_is_kept_only_through_calls_that_keep_its_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            allowance = (
+                "FSOPS_ALLOWED = {\n"
+                '    "tempfile.mkdtemp": "a working directory under the system temporary directory",\n'
+                '    "shutil.rmtree": "removes only the directory mkdtemp made",\n'
+                "}\n"
+                "import os\n"
+                "import shutil\n"
+                "import tempfile\n"
+                "from pathlib import Path as P\n"
+                "\n"
+                "\n"
+            )
+            files = {
+                "deployer/kept.py": allowance + "def run():\n"
+                "    work = P(tempfile.mkdtemp())\n"
+                "    named = os.fspath(P(tempfile.mkdtemp()))\n"
+                "    text = str(tempfile.mkdtemp())\n"
+                "    shutil.rmtree(work)\n"
+                "    shutil.rmtree(named)\n"
+                "    shutil.rmtree(text)\n",
+                "deployer/strayed.py": allowance + "def unrelated_path(_):\n"
+                '    return "/some/non-temporary/directory"\n'
+                "def run():\n"
+                "    path = unrelated_path(tempfile.mkdtemp())\n"
+                "    shutil.rmtree(path)\n"  # 15: a function of the module's own may return any path
+                "    joined = os.path.join(tempfile.mkdtemp())\n"
+                "    shutil.rmtree(joined)\n"  # 17: a call that is not one that keeps the path
+                "    wrapped = P(tempfile.mkdtemp(), 'x')\n"
+                "    shutil.rmtree(wrapped)\n",  # 19: a second argument changes the path
+                # A local function named Path is not pathlib's.
+                "deployer/shadowed.py": allowance.replace("from pathlib import Path as P\n", "") + "def P(_):\n"
+                '    return "/some/non-temporary/directory"\n'
+                "def run():\n"
+                "    work = P(tempfile.mkdtemp())\n"
+                "    shutil.rmtree(work)\n",  # 14
+            }
+            write_fixture_tree(root, files)
+            message = (
+                "FSOPS_ALLOWED allows {} only under the system temporary directory, and this call may write elsewhere"
+            )
+            self.assertEqual(
+                [
+                    "deployer/shadowed.py:14 " + message.format("shutil.rmtree"),
+                    "deployer/strayed.py:15 " + message.format("shutil.rmtree"),
+                    "deployer/strayed.py:17 " + message.format("shutil.rmtree"),
+                    "deployer/strayed.py:19 " + message.format("shutil.rmtree"),
+                ],
+                filesystem_write_problems(root),
+            )
+
+    def test_filesystem_write_policy_counts_file_io_logging_files_downloads_in_place_input_and_bytecode(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deployer/writes.py": "import compileall\n"
+                    "import fileinput\n"
+                    "import io\n"
+                    "import logging\n"
+                    "import py_compile\n"
+                    "import urllib.request\n"
+                    "from io import FileIO\n"
+                    "from logging import handlers\n"
+                    "\n"
+                    "\n"
+                    "def write(path, url, level, mode):\n"
+                    '    io.FileIO(path, "w")\n'  # 12
+                    '    FileIO(path, mode="ab")\n'  # 13
+                    "    io.FileIO(path, mode)\n"  # 14: a mode the policy cannot read
+                    "    logging.FileHandler(path)\n"  # 15
+                    "    handlers.RotatingFileHandler(path)\n"  # 16
+                    "    handlers.TimedRotatingFileHandler(path)\n"  # 17
+                    "    handlers.WatchedFileHandler(path)\n"  # 18
+                    "    logging.basicConfig(filename=path)\n"  # 19
+                    "    urllib.request.urlretrieve(url, path)\n"  # 20
+                    "    fileinput.input(path, True)\n"  # 21
+                    "    fileinput.FileInput(path, inplace=level)\n"  # 22
+                    "    py_compile.compile(path)\n"  # 23
+                    "    compileall.compile_dir(path)\n"  # 24
+                    "\n"
+                    "\n"
+                    "def read(path, level):\n"
+                    "    io.FileIO(path)\n"
+                    '    FileIO(path, "rb")\n'
+                    "    logging.basicConfig(level=level)\n"
+                    "    logging.getLogger(path)\n"
+                    "    fileinput.input(path)\n"
+                    "    fileinput.input(path, inplace=False)\n"
+                    "    urllib.request.urlopen(path)\n",
+                },
+            )
+            route = "; route it through deployer/fsops.py"
+            self.assertEqual(
+                [
+                    f"deployer/writes.py:12 writes with io.FileIO{route}",
+                    f"deployer/writes.py:13 writes with io.FileIO{route}",
+                    f"deployer/writes.py:14 writes with io.FileIO{route}",
+                    f"deployer/writes.py:15 writes with logging.FileHandler{route}",
+                    f"deployer/writes.py:16 writes with logging.handlers.RotatingFileHandler{route}",
+                    f"deployer/writes.py:17 writes with logging.handlers.TimedRotatingFileHandler{route}",
+                    f"deployer/writes.py:18 writes with logging.handlers.WatchedFileHandler{route}",
+                    f"deployer/writes.py:19 writes with logging.basicConfig{route}",
+                    f"deployer/writes.py:20 writes with urllib.request.urlretrieve{route}",
+                    f"deployer/writes.py:21 writes with fileinput.input{route}",
+                    f"deployer/writes.py:22 writes with fileinput.FileInput{route}",
+                    f"deployer/writes.py:23 writes with py_compile.compile{route}",
+                    f"deployer/writes.py:24 writes with compileall.compile_dir{route}",
+                ],
+                filesystem_write_problems(root),
+            )
+
+    def test_an_allowed_logging_file_download_or_in_place_input_must_land_in_the_temporary_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            allowance = (
+                "FSOPS_ALLOWED = {\n"
+                '    "tempfile.mkdtemp": "a working directory under the system temporary directory",\n'
+                '    "logging.FileHandler": "logs only inside the directory mkdtemp made",\n'
+                '    "logging.basicConfig": "logs only inside the directory mkdtemp made",\n'
+                '    "urllib.request.urlretrieve": "downloads only into the directory mkdtemp made",\n'
+                '    "fileinput.input": "rewrites only inside the directory mkdtemp made",\n'
+                "}\n"
+                "import fileinput\n"
+                "import logging\n"
+                "import tempfile\n"
+                "import urllib.request\n"
+                "\n"
+                "\n"
+            )
+            files = {
+                # The mode, the level, and the address name no destination.
+                "deployer/kept.py": allowance + "def run(url):\n"
+                "    work = tempfile.mkdtemp()\n"
+                '    logging.FileHandler(work, "w")\n'
+                "    logging.basicConfig(filename=work, level=logging.INFO)\n"
+                "    urllib.request.urlretrieve(url, work)\n"
+                "    fileinput.input(work, inplace=True)\n",
+                "deployer/strayed.py": allowance + "def run(url, elsewhere):\n"
+                "    work = tempfile.mkdtemp()\n"
+                "    logging.FileHandler(elsewhere)\n"  # 16
+                "    logging.basicConfig(filename=elsewhere)\n"  # 17
+                "    urllib.request.urlretrieve(url, filename=elsewhere)\n"  # 18
+                "    urllib.request.urlretrieve(work)\n"  # 19: with no file it picks one itself
+                "    fileinput.input(elsewhere, inplace=True)\n",  # 20
+            }
+            write_fixture_tree(root, files)
+            message = (
+                "FSOPS_ALLOWED allows {} only under the system temporary directory, and this call may write elsewhere"
+            )
+            self.assertEqual(
+                [
+                    "deployer/strayed.py:16 " + message.format("logging.FileHandler"),
+                    "deployer/strayed.py:17 " + message.format("logging.basicConfig"),
+                    "deployer/strayed.py:18 " + message.format("urllib.request.urlretrieve"),
+                    "deployer/strayed.py:19 " + message.format("urllib.request.urlretrieve"),
+                    "deployer/strayed.py:20 " + message.format("fileinput.input"),
+                ],
+                filesystem_write_problems(root),
+            )
+
+    def test_filesystem_write_policy_counts_a_write_callable_passed_as_a_value(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deployer/passed.py": "import functools\n"
+                    "import os\n"
+                    "import shutil\n"
+                    "from pathlib import Path\n"
+                    "\n"
+                    "\n"
+                    "def run(paths, texts, path, work):\n"
+                    "    list(map(Path.write_text, paths, texts))\n"  # 8
+                    "    sorted(paths, key=os.remove)\n"  # 9
+                    "    work(callback=shutil.rmtree)\n"  # 10
+                    '    handlers = {"remove": os.remove}\n'  # 11
+                    "    remove = os.unlink\n"
+                    "    list(map(remove, paths))\n"  # 13: an alias passed on
+                    "    functools.partial(path.mkdir, parents=True)\n"  # 14
+                    "    list(map(open, paths))\n"  # 15: the caller may pass a writing mode
+                    "    work(opener=path.open)\n"  # 16
+                    "    return handlers\n"
+                    "\n"
+                    "\n"
+                    "def read(paths, path, work):\n"
+                    "    list(map(Path.read_text, paths))\n"
+                    "    sorted(paths, key=os.path.getsize)\n"
+                    "    work(callback=shutil.which)\n"
+                    '    readers = {"read": path.read_bytes}\n'
+                    "    writer = open\n"
+                    '    writer(path, "rb")\n'
+                    "    return readers, path.name, os.sep\n",
+                },
+            )
+            route = "; route it through deployer/fsops.py"
+            self.assertEqual(
+                [
+                    f"deployer/passed.py:8 writes with write_text{route}",
+                    f"deployer/passed.py:9 writes with os.remove{route}",
+                    f"deployer/passed.py:10 writes with shutil.rmtree{route}",
+                    f"deployer/passed.py:11 writes with os.remove{route}",
+                    f"deployer/passed.py:13 writes with os.unlink{route}",
+                    f"deployer/passed.py:14 writes with mkdir{route}",
+                    f"deployer/passed.py:15 writes with open{route}",
+                    f"deployer/passed.py:16 writes with open{route}",
+                ],
+                filesystem_write_problems(root),
+            )
+
+    def test_an_allowed_write_callable_passed_as_a_value_may_write_anywhere(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deployer/kept.py": 'FSOPS_ALLOWED = {"shutil.rmtree": "removes only the directory mkdtemp made",'
+                    ' "tempfile.mkdtemp": "a working directory under the system temporary directory"}\n'
+                    "import shutil\n"
+                    "import tempfile\n"
+                    "work = tempfile.mkdtemp()\n"
+                    "shutil.rmtree(work)\n",
+                    "deployer/passed.py": 'FSOPS_ALLOWED = {"shutil.rmtree": "removes only a temporary directory"}\n'
+                    "import shutil\n"
+                    "def run(paths):\n"
+                    "    list(map(shutil.rmtree, paths))\n",
+                },
+            )
+            self.assertEqual(
+                [
+                    "deployer/passed.py:4 FSOPS_ALLOWED allows shutil.rmtree only under the system temporary "
+                    "directory, and a callable passed as a value may write anywhere"
+                ],
+                filesystem_write_problems(root),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
