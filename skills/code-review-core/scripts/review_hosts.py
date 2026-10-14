@@ -24,7 +24,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
-from bounded_process import run_bounded
+from bounded_process import run_bounded, without_repository_variables
 from executable_locator import find_executables
 from job_tree import JobRefused, process_tree
 from review_io import ResourceLock, atomic_write_json, atomic_write_text, read_diff, read_json
@@ -268,6 +268,9 @@ def isolated_copilot_environment(
     isolation_root: Path,
     base_environment: Mapping[str, str] | None = None,
 ) -> tuple[Path, dict[str, str]]:
+    """Make the isolation root's home, Copilot home, and workspace, and return the workspace and Copilot CLI's
+    environment: `base_environment`, or this process's, without git's repository-selecting variables, so neither
+    Copilot nor a git it runs reads the repository a shell's `GIT_DIR` names, with both homes in the isolation root."""
     if not isolation_root.is_absolute():
         raise RuntimeContractError("Copilot isolation root must be absolute")
     if isolation_root.exists() and not isolation_root.is_dir():
@@ -279,7 +282,7 @@ def isolated_copilot_environment(
     workspace = isolation_root / "workspace"
     for directory in (home, copilot_home, workspace):
         directory.mkdir(parents=True, exist_ok=True)
-    environment = dict(os.environ if base_environment is None else base_environment)
+    environment = without_repository_variables(os.environ if base_environment is None else base_environment)
     environment["HOME"] = str(home)
     environment["USERPROFILE"] = str(home)
     environment["COPILOT_HOME"] = str(copilot_home)

@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
-from bounded_process import ProcessTree
+from bounded_process import ProcessTree, without_repository_variables
 
 from . import platform_support
 
@@ -99,12 +99,16 @@ def converse(
 def _start(
     arguments: list[str], cwd: Path, environment: Mapping[str, str], errors: IO[bytes], tree: ProcessTree
 ) -> tuple[subprocess.Popen[str], IO[str], IO[str]]:
-    """The started program and its stdin and stdout pipes, its stderr going to errors, started as `tree` holds it."""
+    """The started program and its stdin and stdout pipes, its stderr going to errors, started as `tree` holds it.
+
+    Its environment is `environment` without git's repository-selecting variables, so a runtime lists the skills of
+    `cwd` and the home, never those of a repository a shell's `GIT_DIR` names.
+    """
     try:
         process = subprocess.Popen(
             arguments,
             cwd=cwd,
-            env=dict(environment),
+            env=without_repository_variables(environment),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=errors,

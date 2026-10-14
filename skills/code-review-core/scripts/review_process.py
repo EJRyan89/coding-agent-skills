@@ -9,6 +9,7 @@ job object, or elsewhere a process group.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import warnings
@@ -17,6 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+from bounded_process import without_repository_variables
 from process_identity import ProcessStatus
 
 CREATE_NEW_PROCESS_GROUP = 0x00000200
@@ -47,7 +49,8 @@ def start_detached(arguments: Sequence[str], cwd: Path, log_path: Path) -> int:
     ran dispatch reaches it, and the console programs it starts inherit that console instead of opening a window. It
     leaves the caller's job object when the job allows that, since a runtime may end a command's whole job. Elsewhere
     it leads a session of its own, so neither the terminal's signals nor the end of the caller's process group reach
-    it.
+    it. Either way its environment is this process's without git's repository-selecting variables, so neither it nor
+    a program it starts reads the repository a shell's `GIT_DIR` names.
     """
     if sys.platform != "win32":
         return _start_session(arguments, cwd, log_path)
@@ -57,6 +60,7 @@ def start_detached(arguments: Sequence[str], cwd: Path, log_path: Path) -> int:
             return subprocess.Popen(
                 list(arguments),
                 cwd=cwd,
+                env=without_repository_variables(os.environ),
                 stdin=subprocess.DEVNULL,
                 stdout=log,
                 stderr=subprocess.STDOUT,
@@ -83,6 +87,7 @@ def _start_session(arguments: Sequence[str], cwd: Path, log_path: Path) -> int:
         process = subprocess.Popen(
             list(arguments),
             cwd=cwd,
+            env=without_repository_variables(os.environ),
             stdin=subprocess.DEVNULL,
             stdout=log,
             stderr=subprocess.STDOUT,
