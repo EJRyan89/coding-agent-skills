@@ -172,7 +172,9 @@ With the guard enabled:
   - in PowerShell, set through `[Environment]::SetEnvironmentVariable`, or on the environment provider, through
     the `env:` drive (`env:<name>`, `env:\<name>`, or `env:/<name>`) or the provider-qualified path
     `Environment::<name>` (also as `\Environment::<name>` or `Microsoft.PowerShell.Core\Environment::<name>`):
-    assigned in variable notation (`$env:<name>`, or `${<path>}` with any of those paths, cast or not), by
+    assigned in variable notation (`$env:<name>`, or `${<path>}` with any of those paths, cast or not, in
+    parentheses or not, and alone or as any target of a multiple assignment such as `$env:<name>, $other = ...`,
+    whose values the guard does not follow), by
     `Set-Item`, `New-Item`, or `Set-Content` at its path, `Copy-Item` at its destination, `New-Item` on the
     provider's root with `-Name`, or `Rename-Item` of a variable there with `-NewName`. PowerShell's own binder
     places each argument, so a parameter abbreviated, aliased, or left positional, and each path of an array, is
