@@ -230,17 +230,37 @@ def _reviewers(finding: dict[str, Any]) -> frozenset[str]:
     return frozenset(part.strip() for part in finding["source"].split(" + ") if part.strip())
 
 
-def _disagree(cluster: list[tuple[dict[str, Any], dict[str, Any]]]) -> bool:
-    return any(
-        first["severity"] != second["severity"] and not _reviewers(first) & _reviewers(second)
-        for index, (_, first) in enumerate(cluster)
-        for _, second in cluster[index + 1 :]
-    )
+def _disagree(first: dict[str, Any], second: dict[str, Any]) -> bool:
+    return first["severity"] != second["severity"] and not _reviewers(first) & _reviewers(second)
+
+
+def _clusters(members: list[tuple[dict[str, Any], dict[str, Any]]]) -> list[list[int]]:
+    """The indexes of `members`, sorted by place, joined wherever two findings disagree: every pair is compared, so a
+    finding near one end of a disagreement never hides it, and each cluster is reported once."""
+    root = list(range(len(members)))
+
+    def find(index: int) -> int:
+        while root[index] != index:
+            root[index] = root[root[index]]
+            index = root[index]
+        return index
+
+    for index, (_, first) in enumerate(members):
+        for later in range(index + 1, len(members)):
+            second = members[later][1]
+            if second["path"] != first["path"] or second["line"] - first["line"] > ANCHOR_WINDOW:
+                break
+            if _disagree(first, second):
+                root[find(later)] = find(index)
+    clusters: dict[int, list[int]] = {}
+    for index in range(len(members)):
+        clusters.setdefault(find(index), []).append(index)
+    return [cluster for cluster in clusters.values() if len(cluster) > 1]
 
 
 def reviewer_disagreements(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     """Each place at one head commit of a pull request where reviewers that share no source gave findings within
-    ANCHOR_WINDOW lines of each other different severities."""
+    ANCHOR_WINDOW lines of each other different severities: the findings joined by such pairs, from the first."""
     heads: dict[tuple[str, int, str], list[tuple[dict[str, Any], dict[str, Any]]]] = {}
     for record in records:
         key = (*_review_key(record)[:2], record["pull_request"]["head_sha"])
@@ -248,31 +268,21 @@ def reviewer_disagreements(records: Iterable[dict[str, Any]]) -> list[dict[str, 
     found = []
     for (repository, number, head), members in sorted(heads.items()):
         members.sort(key=lambda member: (member[1]["path"], member[1]["line"], *_order(member)))
-        start = 0
-        while start < len(members):
-            anchor = members[start][1]
-            end = start + 1
-            while (
-                end < len(members)
-                and members[end][1]["path"] == anchor["path"]
-                and members[end][1]["line"] - anchor["line"] <= ANCHOR_WINDOW
-            ):
-                end += 1
-            cluster, start = members[start:end], end
-            if _disagree(cluster):
-                found.append(
-                    {
-                        "repository": repository,
-                        "pull_number": number,
-                        "head_sha": head,
-                        "path": anchor["path"],
-                        "line": anchor["line"],
-                        "reports": [
-                            flat_text(f"{finding['severity']} {finding_ref(record, finding)} {finding['source']}")
-                            for record, finding in cluster[:REPORTS_KEPT]
-                        ],
-                    }
-                )
+        for cluster in _clusters(members):
+            anchor = members[cluster[0]][1]
+            found.append(
+                {
+                    "repository": repository,
+                    "pull_number": number,
+                    "head_sha": head,
+                    "path": anchor["path"],
+                    "line": anchor["line"],
+                    "reports": [
+                        flat_text(f"{finding['severity']} {finding_ref(record, finding)} {finding['source']}")
+                        for record, finding in (members[index] for index in cluster[:REPORTS_KEPT])
+                    ],
+                }
+            )
     return found
 
 

@@ -768,10 +768,12 @@ def create_report(
     flags: list[dict[str, Any]] | None = None,
     checkouts: dict[str, Path] | None = None,
     services: Services | None = None,
+    notices: list[str] | None = None,
 ) -> tuple[Path, Path, dict[str, Any]]:
     """Write insights for the range and the input of its synthesis. Regenerating keeps each subject's decision and
     decision history, and a recorded synthesis while its input is unchanged; a changed input supersedes it.
-    `checkouts` gives each repository's checkout, lowercase, from which its guidance text is read."""
+    `checkouts` gives each repository's checkout, lowercase, from which its guidance text is read; `notices` gains a
+    fact line for each guidance file whose working-tree copy could not be read."""
     services = services or Services()
     if not SET_NAME.fullmatch(repository_set):
         raise InsightError("Repository-set name is invalid")
@@ -810,6 +812,8 @@ def create_report(
         guidance = review_guidance.read_guidance(
             report["repositories"], pairs.validated, checkouts or {}, services.read_pinned
         )
+        if notices is not None:
+            notices += guidance.unreadable
         analyzed = synthesis_stage.Analyzed(
             report=report,
             records=[record for _, record in records],
@@ -866,6 +870,7 @@ def report_from_config(
     repository_set: str | None = None,
     config_path: Path | None = None,
     services: Services | None = None,
+    notices: list[str] | None = None,
 ) -> tuple[Path, Path, dict[str, Any]]:
     services = services or Services()
     config = load_config(config_path)
@@ -893,6 +898,7 @@ def report_from_config(
             if entry.get("checkout_path")
         },
         services=services,
+        notices=notices,
     )
 
 
@@ -1273,6 +1279,7 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
     args = parser.parse_args(arguments)
     try:
         if args.command == "report":
+            notices: list[str] = []
             json_path, markdown_path, report = report_from_config(
                 start=args.start,
                 end=args.end,
@@ -1280,10 +1287,11 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
                 repository_set=args.repository_set,
                 config_path=args.config,
                 services=services,
+                notices=notices,
             )
             print(f"REPORT {json_path}")
             print(f"MARKDOWN {markdown_path}")
-            for fact in review_signals.facts(report["signals"]):
+            for fact in [*notices, *review_signals.facts(report["signals"])]:
                 print(fact)
             _print_report(report)
             return 0

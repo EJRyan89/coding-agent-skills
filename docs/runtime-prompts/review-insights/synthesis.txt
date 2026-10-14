@@ -34,8 +34,9 @@ guidance and to the repositories' tooling. This file is your complete task.
 - `guidance`: per repository, the files its reviewers are built from. A recommendation that changes guidance names one
   of these files, or null when none fits, and then says in its change where the guidance belongs.
 - `guidance-file`: one of those files, its `role` (`prose`, or `code` for a script, manifest, or test, listed by path
-  only) and the `reviewers` given it. A prose file's `content` is its text as those reviewers were given it when
-  `status` is `included`; otherwise `status` says why not: `unavailable`, `too-large`, or `over-budget`.
+  only) and the `reviewers` given it. Reviewers given different versions of one file have a line per version. A prose
+  file's `content` is its text as those reviewers were given it when `status` is `included`; otherwise `status` says
+  why not: `unavailable`, `too-large`, or `over-budget`.
 - `severity-drift`, `verdict-flip`, `reviewer-disagreement`: consistency signals computed from the reviews alone. The
   same finding at more than one severity, across a group or across a finding's re-reviews; a verdict that changed
   between two reviews of the same commit, with the findings whose severity or presence differs; and reviewers that

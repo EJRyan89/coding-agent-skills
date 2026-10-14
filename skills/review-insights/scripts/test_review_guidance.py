@@ -5,6 +5,8 @@ import json
 import sys
 import tempfile
 import unittest
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -48,6 +50,8 @@ CHECKLIST = """# Checklist
 4. Prefer `docs/severity.md` for the severity model.
 """
 CODE = "print('check')\n"
+# The conventions as a later reviewer was given them: the async rule lowered to SUGGESTION.
+CONVENTIONS_LOWERED = CONVENTIONS.replace("CancellationToken as MUST_FIX", "CancellationToken as SUGGESTION", 1)
 
 
 def digest(text: str) -> str:
@@ -187,16 +191,129 @@ class ReadTests(GitTestCase):
         path = self.checkout / "docs" / "checklist.md"
         path.write_text("Rewritten since.\n", encoding="utf-8")
         content = rg.read_pinned(self.checkout, commit, "docs/checklist.md", digest(CHECKLIST))
-        self.assertEqual(CHECKLIST.encode("utf-8"), content)
-        self.assertIsNone(rg.read_pinned(self.checkout, None, "docs/checklist.md", digest(CHECKLIST)))
-        self.assertIsNone(rg.read_pinned(self.checkout, commit, "docs/checklist.md", "0" * 64))
+        self.assertEqual(rg.Pinned(CHECKLIST.encode("utf-8")), content)
+        self.assertEqual(rg.Pinned(None), rg.read_pinned(self.checkout, None, "docs/checklist.md", digest(CHECKLIST)))
+        self.assertEqual(rg.Pinned(None), rg.read_pinned(self.checkout, commit, "docs/checklist.md", "0" * 64))
 
     def test_a_path_that_leaves_the_checkout_is_never_read(self) -> None:
         outside = self.checkout.parent / "outside.md"
         outside.write_text(CHECKLIST, encoding="utf-8", newline="\n")
         for path in ("../outside.md", str(outside).replace("\\", "/")):
             with self.subTest(path):
-                self.assertIsNone(rg.read_pinned(self.checkout, None, path, digest(CHECKLIST)))
+                self.assertEqual(rg.Pinned(None), rg.read_pinned(self.checkout, None, path, digest(CHECKLIST)))
+
+    def test_an_unreadable_working_copy_falls_back_to_the_commit_and_says_why(self) -> None:
+        git = GitClient()
+        git.output(["init", "--quiet"], directory=self.checkout)
+        git.output(["add", "."], directory=self.checkout)
+        git.output(["commit", "--quiet", "-m", "Guidance"], directory=self.checkout)
+        commit = git.output(["rev-parse", "HEAD"], directory=self.checkout).strip()
+        with unreadable("checklist.md"):
+            pinned = rg.read_pinned(self.checkout, commit, "docs/checklist.md", digest(CHECKLIST))
+            missing = rg.read_pinned(self.checkout, None, "docs/checklist.md", digest(CHECKLIST))
+        self.assertEqual(
+            [
+                rg.Pinned(CHECKLIST.encode("utf-8"), "PermissionError: Permission denied"),
+                rg.Pinned(None, "PermissionError: Permission denied"),
+            ],
+            [pinned, missing],
+        )
+
+    def test_a_report_names_an_unreadable_file_and_reads_the_rest(self) -> None:
+        with unreadable("checklist.md"):
+            guidance = self.read()
+        self.assertEqual(
+            {
+                "docs/checklist.md": ("prose", "unavailable", False),
+                "docs/conventions.md": ("prose", "included", True),
+                "scripts/check.py": ("code", "listed", False),
+            },
+            self.statuses(guidance),
+        )
+        self.assertEqual(
+            ["GUIDANCE_UNREADABLE owner/repo docs/checklist.md fallback=none PermissionError: Permission denied"],
+            guidance.unreadable,
+        )
+        self.assertEqual([], self.read().unreadable)
+
+    def two_versions(self) -> None:
+        """Two reviewers given the same checklist and different versions of the conventions."""
+        self.records = {
+            Path("a.json"): reviewed(
+                "security",
+                "2026-01-02T00:00:00+00:00",
+                {"docs/conventions.md": CONVENTIONS, "docs/checklist.md": CHECKLIST},
+            ),
+            Path("b.json"): reviewed(
+                "style",
+                "2026-01-03T00:00:00+00:00",
+                {"docs/conventions.md": CONVENTIONS_LOWERED, "docs/checklist.md": CHECKLIST},
+            ),
+        }
+
+    def test_reviewers_given_different_versions_of_a_file_each_get_their_own(self) -> None:
+        self.two_versions()
+        texts = {digest(text): text.encode("utf-8") for text in (CONVENTIONS, CONVENTIONS_LOWERED, CHECKLIST)}
+        guidance = rg.read_guidance(
+            ["owner/repo"],
+            self.records,
+            {"owner/repo": self.checkout},
+            lambda _checkout, _commit, _path, pinned: rg.Pinned(texts.get(pinned)),
+        )
+        conventions = sorted(
+            [
+                ("docs/conventions.md", ["security"], CONVENTIONS),
+                ("docs/conventions.md", ["style"], CONVENTIONS_LOWERED),
+            ],
+            key=lambda item: digest(item[2]),
+        )
+        self.assertEqual(
+            [("docs/checklist.md", ["security", "style"], CHECKLIST), *conventions],
+            [(line["path"], line["reviewers"], line["content"]) for line in guidance.lines],
+        )
+        self.assertEqual(
+            [
+                ("conflict", [7, 3], ["security"]),
+                ("conflict", [10, 6], ["security", "style"]),
+                ("duplicate", [7, 3], ["style"]),
+                ("duplicate", [9, 5], ["security", "style"]),
+            ],
+            [(item["relation"], item["lines"], item["reviewers"]) for item in guidance.overlaps],
+        )
+
+    def test_a_version_whose_bytes_are_gone_is_unavailable_and_lends_no_reviewer_the_other(self) -> None:
+        self.two_versions()
+        (self.checkout / "docs" / "conventions.md").write_text(CONVENTIONS_LOWERED, encoding="utf-8", newline="\n")
+        guidance = self.read()
+        conventions = sorted(
+            [(["security"], "unavailable", None, CONVENTIONS), (["style"], "included", CONVENTIONS_LOWERED, None)],
+            key=lambda item: digest(item[3] or CONVENTIONS_LOWERED),
+        )
+        self.assertEqual(
+            [item[:3] for item in conventions],
+            [
+                (line["reviewers"], line["status"], line["content"])
+                for line in guidance.lines
+                if line["path"] == "docs/conventions.md"
+            ],
+        )
+        self.assertEqual(
+            {("style",)}, {tuple(item["reviewers"]) for item in guidance.overlaps}, "security never read this text"
+        )
+
+
+@contextmanager
+def unreadable(name: str) -> Iterator[None]:
+    """Reading any file named `name` fails as a file locked against reading does."""
+    real = Path.read_bytes
+
+    def read_bytes(path: Path) -> bytes:
+        if path.name == name:
+            raise PermissionError(13, "Permission denied", str(path))
+        return real(path)
+
+    with mock.patch.object(Path, "read_bytes", read_bytes):
+        yield
 
 
 class ReportTests(InsightFixture):
@@ -245,6 +362,22 @@ class ReportTests(InsightFixture):
         markdown = (directory / "insights.md").read_text(encoding="utf-8")
         self.assertIn(
             "### Guidance overlap candidates\n\n- O1 conflict (1.0) owner/repo: docs/checklist.md:7", markdown
+        )
+
+    def test_an_unreadable_guidance_file_is_named_and_the_report_still_written(self) -> None:
+        with unreadable("checklist.md"):
+            code, out, err = self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31")
+        self.assertEqual(0, code, err)
+        lines = out.splitlines()
+        self.assertIn(
+            "GUIDANCE_UNREADABLE owner/repo docs/checklist.md fallback=none PermissionError: Permission denied", lines
+        )
+        directory = Path(lines[0].removeprefix("REPORT ")).parent
+        items = [json.loads(line) for line in (directory / rs.INPUT_NAME).read_text(encoding="utf-8").splitlines()]
+        files = {item["path"]: item for item in items if item["kind"] == "guidance-file"}
+        self.assertEqual(
+            [("unavailable", None), ("included", CONVENTIONS)],
+            [(files[path]["status"], files[path]["content"]) for path in ("docs/checklist.md", "docs/conventions.md")],
         )
 
 

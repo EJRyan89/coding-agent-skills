@@ -772,7 +772,7 @@ The report `review-insights report` writes to `<summary_root>/<set>/<start>--<en
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
 | `repository` | string | with `path` | The repository whose guidance changes, one of the scope's; absent for a `new-analyzer` recommendation. |
-| `path` | string or null | with `repository` | The guidance file to change, one of the repository's guidance files, or null when none fits and the change says where the guidance belongs. For a `consolidate` recommendation, the guidance file whose wording survives; for a `move-to-script` one, the script, validator, or test that takes the rule over, a repository-relative file that is no prose guidance and need not exist yet. |
+| `path` | string or null | with `repository` | The guidance file to change, one of the repository's guidance files, or null when none fits and the change says where the guidance belongs. For a `consolidate` recommendation, the guidance file whose wording survives; for a `move-to-script` one, the script, validator, or test that takes the rule over, a repository-relative file that is no prose guidance and need not exist yet, in at most 260 characters free of quotes, backticks, `$`, backslashes, and control characters. |
 | `merge` | array | when the recommendation is a `consolidate` one | The other guidance files of the repository a `consolidate` recommendation merges into `path`, at least one, each once; absent for every other type. |
 | `analyzer` | object | no | A `new-analyzer` recommendation's rule, with no other field. |
 
@@ -1036,9 +1036,9 @@ The analyst agent's input, `synthesis-input.jsonl` beside the report: JSON Lines
 | --- | --- | --- | --- |
 | `kind` | string | yes | One of `guidance-file`. |
 | `repository` | string | yes | The repository. |
-| `path` | string | yes | One of its guidance files. |
+| `path` | string | yes | One of its guidance files, at one version: a file the reviewers' records pinned at different hashes has a line for each. |
 | `role` | string | yes | One of `prose` or `code`: a guidance document, or a script, manifest, or test, listed by path only. |
-| `reviewers` | array | yes | The reviewers whose latest record was built from it. |
+| `reviewers` | array | yes | The reviewers whose latest record was built from this version of it. |
 | `status` | string | yes | One of `included`, `listed`, `too-large`, `over-budget`, or `unavailable`: its text is given, it is a `code` file, its text is past the file limit, past what the input has left, or no checkout copy matches the hash the reviewer's record pinned. |
 | `content` | string or null | yes | Its text as the reviewers were given it when `status` is `included`, otherwise null. |
 
