@@ -393,20 +393,27 @@ class DeployerTestCase(GitTestCase):
         self.write_manifest(data)
 
     def rewrite_as_preserved_through_the_upgrade(
-        self, preserved: str, source_id: str = SOURCE_ID, installed_since: tuple[str, ...] = ()
+        self,
+        preserved: str,
+        source_id: str = SOURCE_ID,
+        installed_since: tuple[str, ...] = (),
+        deselected: bool = False,
     ) -> None:
         """Rewrite the manifest as the first deployer to write version 8, which recorded no bundle members, left a
         version 7 manifest when it deployed the source and preserved its locally modified skill `preserved`: that skill
         keeps the skill dependencies the upgrade filled in, every other skill its source owned then, beside the exact
         ones the deployment recorded for the skills it installed, and no entry records the members of its bundle
         requests. The skills `installed_since` names are ones that deployment installed and the version 7 manifest did
-        not own, so the filled-in list does not name them.
+        not own, so the filled-in list does not name them. With `deselected`, that deployment preserved the skill
+        although the user did not select it, so the entry does not request it on its own.
         """
         data = self.manifest()
         for entry in data["sources"].values():
             entry.pop("requested_bundle_members", None)
-        skills = data["sources"][source_id]["skills"]
-        skills[preserved]["skill_deps"] = sorted(set(skills) - {preserved, *installed_since})
+        entry = data["sources"][source_id]
+        entry["skills"][preserved]["skill_deps"] = sorted(set(entry["skills"]) - {preserved, *installed_since})
+        if deselected:
+            entry["requested_skills"] = [name for name in entry["requested_skills"] if name != preserved]
         self.write_manifest(data)
 
     def owned(self, kind: str, source_id: str = SOURCE_ID) -> dict[str, Any]:
