@@ -20,8 +20,9 @@ forward slashes:
                   cannot evaluate; its facts are missing
     SDK_FAILED    <project> <name> <reason>                  `dotnet nuget why` failed; the graph walk answered
     PATH          <project> <frameworks> <name> <sdk|graph> <hop> > <hop> ...    one chain, each hop
-                  `name (vversion)`, `name (project)`, `name (vversion, assembly)`, or `name (assembly)` for an
-                  assembly a package ships; the source says whether `dotnet nuget why` answered or the graph walk did
+                  `name (vversion)`, `name (project)`, `name (vversion, assembly)`, `name (assembly)` for an
+                  assembly a package ships, or `name (vversion, graph vother)` for a package the SDK resolves at one
+                  version and the walk at another; the source says whether `dotnet nuget why` answered or the walk did
     TRUNCATED     <project> <frameworks> <name> <limit>      more chains than the limit; the first ones printed
     MISSING       <name>                                     no project reaches the name
     REACHES       <project> <frameworks> <name> <version> <package|project|assembly|framework> <first hop>
@@ -35,17 +36,22 @@ forward slashes:
 
 <frameworks> names the target frameworks of the project's restore that hold the line, joined by `;`, or `-` for a
 project with no restore, whose facts are not kept per framework. A line that holds for several frameworks is printed
-once. Two frameworks of one project resolving different versions build apart and are not a conflict. A framework's
-direct packages are those its restore recorded; for a framework the restore's project section does not name, they
-are the project file's PackageReference items whose conditions hold for it, and an item whose condition the reader
-cannot evaluate is left out and reported as an UNREADABLE line naming the condition.
+once. Two frameworks of one project resolving different versions build apart and are not a conflict. A framework is
+named as the project names it, whichever form its restore writes (`net8.0` or `.NETCoreApp,Version=v8.0`). A
+framework's direct packages are those its restore recorded; for a framework the restore's project section does not
+name, they are the project file's PackageReference items whose conditions hold for it, a Choose applying its first
+When that holds, and an item whose condition the reader cannot evaluate is left out and reported as an UNREADABLE
+line naming the condition.
 
 `why` asks `dotnet nuget why` for a project that is SDK-style, uses PackageReference, has an obj/project.assets.json
 no older than the project file, and only when dotnet is installed. A run that fails, even after printing part of an
-answer, is an SDK_FAILED line. The graph walk runs for every project too: for a project the SDK answered, a chain
-the SDK printed too is named `sdk` and keeps the walk's hops, and the walk adds every chain the SDK cannot see, such
-as one ending in an assembly or one through a packages.config project; for every other project it answers alone. So
-whether dotnet is installed changes only which source a chain the SDK sees names. The script changes nothing on disk
+answer, is an SDK_FAILED line. The graph walk runs for every project too: for a project the SDK answered, the walk's
+chains along a route the SDK printed are printed once with it, named `sdk`, with the walk's hops at the SDK's
+versions, and the walk's version of a package after `graph` where a referenced project's own restore resolves it
+apart, a split `conflicts` reports; the walk adds every chain the SDK cannot see, such as one ending in an assembly
+or one through a packages.config project; for every other project it answers alone. So whether dotnet is installed
+changes which source a route names and which version leads where the two differ, never which routes are printed.
+The script changes nothing on disk
 but the graph file, runs no restore or build, and exits 1 when it printed a CONFLICT, REDIRECT_STALE, or UNREADABLE
 line, else 0; a FAILED <reason> line and exit 1 when the root cannot be resolved, and a usage error exits 2.
 """
@@ -86,6 +92,7 @@ from msbuild_reader import (
     read_packages_config,
     read_project,
     read_redirects,
+    same_framework,
 )
 from sdk_why import DEFAULT_TIMEOUT_SECONDS, SdkPath, Services, run_why
 from skill_roots import skills_directory_holding
@@ -131,7 +138,7 @@ class Project:
 
     def targets_for(self, framework: str) -> list[Target]:
         """The targets a walk under `framework` enters: the target of that framework, else every one."""
-        return [target for target in self.targets if target.framework == framework] or self.targets
+        return [target for target in self.targets if same_framework(target.framework, framework)] or self.targets
 
 
 @dataclass
@@ -353,7 +360,7 @@ def closure_from_assets(graph: Graph, project: Project, assets_path: Path, servi
     """One target per framework the assets file restored, each with its own packages and direct references; the
     project keeps its direct target when the file cannot be read or restored no framework."""
     try:
-        assets = read_assets(assets_path)
+        assets = read_assets(assets_path, project.file.frameworks)
     except Unreadable as error:
         graph.refuse(error)
         return
@@ -592,23 +599,41 @@ def sdk_answers(
     }
 
 
-def same_chain(walked: tuple[Hop, ...], printed: SdkPath) -> bool:
-    """Whether a chain of the graph walk is one the SDK printed: the same names in order, at the same versions, but
-    for a project, which the SDK prints at the project's own version."""
+def same_route(walked: tuple[Hop, ...], printed: SdkPath) -> bool:
+    """Whether a chain of the graph walk takes the route the SDK printed: the same packages and projects in order,
+    whatever their versions. The SDK prints each package at the version the answering project resolves, and the
+    walk takes a referenced project's packages from that project's own restore, which may resolve another."""
     return len(walked) == len(printed.hops) and all(
-        kind in ("package", "project")
-        and name.casefold() == sdk_name.casefold()
-        and (kind == "project" or version == sdk_version)
-        for (kind, name, version), (sdk_name, sdk_version) in zip(walked, printed.hops, strict=True)
+        kind in ("package", "project") and name.casefold() == sdk_name.casefold()
+        for (kind, name, _), (sdk_name, _) in zip(walked, printed.hops, strict=True)
     )
+
+
+def merged_chain(printed: SdkPath, walked: list[tuple[Hop, ...]]) -> str:
+    """The SDK's chain, with the hops of the walk's chains along the same route when there are any, so a project hop
+    reads alike from both: each package at the SDK's version, and the walk's own versions of it named after `graph`
+    where they differ."""
+    if not walked:
+        return " > ".join(hop_text(("package", *hop)) for hop in printed.hops)
+    hops: list[str] = []
+    for position, (_, sdk_version) in enumerate(printed.hops):
+        kind, hop_name, _ = walked[0][position]
+        if kind == "project":
+            hops.append(hop_text(walked[0][position]))
+            continue
+        versions = dict.fromkeys(chain[position][2] for chain in walked)
+        apart = [version for version in versions if version not in ("", sdk_version)]
+        graph_versions = f", graph {';'.join(f'v{version}' for version in apart)}" if apart else ""
+        hops.append(f"{hop_name} (v{sdk_version}{graph_versions})")
+    return " > ".join(hops)
 
 
 def project_paths(graph: Graph, project: Project, name: str, sdk: list[SdkPath] | None, out: Emitter) -> int:
     """Print the chains from the project to the name, labelled with their frameworks; return how many lines. Each
-    chain the SDK printed is named `sdk`, with the walk's hops when the walk found it too, so a project hop reads
-    alike from both; every chain only the walk found, such as one ending in an assembly or one through a
-    packages.config project, which the SDK cannot see, is named `graph`. Without the SDK's chains, the walk answers
-    alone."""
+    chain the SDK printed is named `sdk`, and holds every chain the walk found along the same route, so a route is
+    printed once whichever found it (`merged_chain`); every chain only the walk found, such as one ending in an
+    assembly or one through a packages.config project, which the SDK cannot see, is named `graph`. Without the SDK's
+    chains, the walk answers alone."""
     walked: list[tuple[str, tuple[Hop, ...]]] = []
     truncated: list[str] = []
     for target in project.targets:
@@ -620,19 +645,17 @@ def project_paths(graph: Graph, project: Project, name: str, sdk: list[SdkPath] 
     rows: list[tuple[str, Row]] = []
     claimed: set[int] = set()
     for answer in sdk or []:
-        framework = answer.framework or NO_FRAMEWORK
-        match = next(
-            (
-                index
-                for index, (walked_framework, chain) in enumerate(walked)
-                if index not in claimed and walked_framework == framework and same_chain(chain, answer)
-            ),
-            None,
+        framework = next(
+            (target.framework for target in project.targets if same_framework(target.framework, answer.framework)),
+            answer.framework or NO_FRAMEWORK,
         )
-        hops = tuple(("package", *hop) for hop in answer.hops) if match is None else walked[match][1]
-        if match is not None:
-            claimed.add(match)
-        rows.append((framework, ("sdk", " > ".join(hop_text(hop) for hop in hops))))
+        matched = [
+            index
+            for index, (walked_framework, chain) in enumerate(walked)
+            if index not in claimed and same_framework(walked_framework, framework) and same_route(chain, answer)
+        ]
+        claimed.update(matched)
+        rows.append((framework, ("sdk", merged_chain(answer, [walked[index][1] for index in matched]))))
     rows += [
         (framework, ("graph", " > ".join(hop_text(hop) for hop in chain)))
         for index, (framework, chain) in enumerate(walked)
@@ -760,7 +783,8 @@ def at_odds(items: list[Want]) -> bool:
     """Whether two wants of one name differ in version where one build may load both: in two projects, or in one
     project under one framework. Two frameworks of one project are built apart."""
     return any(
-        first.version != second.version and (first.project != second.project or first.framework == second.framework)
+        first.version != second.version
+        and (first.project != second.project or same_framework(first.framework, second.framework))
         for first, second in combinations(items, 2)
     )
 

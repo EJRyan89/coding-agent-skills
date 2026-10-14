@@ -796,6 +796,47 @@ APP_SDK_TEXT = (
     "Project 'Harbor.App' has the following dependency graph(s) for 'Lantern.Json':\r\n\r\n  [net472]\r\n"
     "  └── Harbor.Shared (v1.0.0)\r\n      └── Lantern.Json (v12.0.3)\r\n\r\n"
 )
+# A host that pins a package above the version the project it references asks for, each restored on its own.
+HOST_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\\Harbor.Data\\Harbor.Data.csproj" />
+    <PackageReference Include="Lantern.Json" Version="13.0.1" />
+  </ItemGroup>
+</Project>
+"""
+HOST_ASSETS = {
+    "version": 3,
+    "targets": {
+        "net8.0": {
+            "Lantern.Json/13.0.1": {"type": "package"},
+            "Harbor.Data/1.0.0": {"type": "project", "dependencies": {"Lantern.Json": "12.0.3"}},
+        }
+    },
+    "project": {
+        "frameworks": {"net8.0": {"dependencies": {"Lantern.Json": {"target": "Package", "version": "[13.0.1, )"}}}}
+    },
+}
+DATA_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+  <ItemGroup><PackageReference Include="Lantern.Json" Version="12.0.3" /></ItemGroup>
+</Project>
+"""
+DATA_ASSETS = {
+    "version": 3,
+    "targets": {"net8.0": {"Lantern.Json/12.0.3": {"type": "package"}}},
+    "project": {
+        "frameworks": {"net8.0": {"dependencies": {"Lantern.Json": {"target": "Package", "version": "[12.0.3, )"}}}}
+    },
+}
+HOST_SDK_TEXT = (
+    "Project 'Harbor.Host' has the following dependency graph(s) for 'Lantern.Json':\r\n\r\n  [net8.0]\r\n"
+    "  ├── Harbor.Data (v1.0.0)\r\n  │   └── Lantern.Json (v13.0.1)\r\n  └── Lantern.Json (v13.0.1)\r\n\r\n"
+)
+DATA_SDK_TEXT = (
+    "Project 'Harbor.Data' has the following dependency graph(s) for 'Lantern.Json':\r\n\r\n  [net8.0]\r\n"
+    "  └── Lantern.Json (v12.0.3)\r\n\r\n"
+)
 
 
 class TableSdk:
@@ -1125,6 +1166,94 @@ class FrameworkAndAssemblyTests(Fixture):
             ],
             self.lines(rows, "PATH"),
         )
+
+    def host_and_data_solution(self) -> tuple[Path, Path]:
+        host = self.write("src/Harbor.Host/Harbor.Host.csproj", HOST_PROJECT)
+        self.write("src/Harbor.Host/obj/project.assets.json", json.dumps(HOST_ASSETS))
+        data = self.write("src/Harbor.Data/Harbor.Data.csproj", DATA_PROJECT)
+        self.write("src/Harbor.Data/obj/project.assets.json", json.dumps(DATA_ASSETS))
+        self.write(
+            "Harbor.sln", solution("src\\Harbor.Host\\Harbor.Host.csproj", "src\\Harbor.Data\\Harbor.Data.csproj")
+        )
+        return host, data
+
+    def test_a_route_the_sdk_and_the_walk_both_find_is_printed_once_at_the_sdks_version(self) -> None:
+        # The host pins Lantern.Json above the version its referenced project asks for. The SDK prints the route
+        # through the project at the version the host resolves; the walk takes it from the project's own restore.
+        host, data = self.host_and_data_solution()
+        _, with_sdk = self.sdk_services(
+            {
+                (same_path(host), "lantern.json"): HOST_SDK_TEXT,
+                (same_path(data), "lantern.json"): DATA_SDK_TEXT,
+            }
+        )
+        host_label, data_label = "src/Harbor.Host/Harbor.Host.csproj", "src/Harbor.Data/Harbor.Data.csproj"
+        expected = {
+            "sdk": [
+                [data_label, "net8.0", "Lantern.Json", "sdk", "Lantern.Json (v12.0.3)"],
+                [
+                    host_label,
+                    "net8.0",
+                    "Lantern.Json",
+                    "sdk",
+                    "Harbor.Data (project) > Lantern.Json (v13.0.1, graph v12.0.3)",
+                ],
+                [host_label, "net8.0", "Lantern.Json", "sdk", "Lantern.Json (v13.0.1)"],
+            ],
+            "graph": [
+                [data_label, "net8.0", "Lantern.Json", "graph", "Lantern.Json (v12.0.3)"],
+                [host_label, "net8.0", "Lantern.Json", "graph", "Harbor.Data (project) > Lantern.Json (v12.0.3)"],
+                [host_label, "net8.0", "Lantern.Json", "graph", "Lantern.Json (v13.0.1)"],
+            ],
+        }
+        for source, services in (("sdk", with_sdk), ("graph", self.without_dotnet)):
+            with self.subTest(source=source):
+                _, rows = self.run_main("why", "Lantern.Json", "--root", str(self.root), services=services)
+                self.assertEqual(expected[source], self.lines(rows, "PATH"))
+                self.assertEqual([["3", "1", "0"]], self.lines(rows, "SUMMARY"))
+        # The versions the two restores resolve apart are a conflict, which `conflicts` reports.
+        code, rows = self.run_main("conflicts", "--root", str(self.root))
+        self.assertEqual(
+            [
+                ["Lantern.Json", "package", "12.0.3", data_label, "net8.0", "Lantern.Json (v12.0.3)"],
+                ["Lantern.Json", "package", "12.0.3", host_label, "net8.0", "Harbor.Data (project)"],
+                ["Lantern.Json", "package", "13.0.1", host_label, "net8.0", "Lantern.Json (v13.0.1)"],
+            ],
+            self.lines(rows, "CONFLICT"),
+        )
+        self.assertEqual(1, code)
+
+    def test_a_restore_keyed_by_long_framework_names_keeps_its_recorded_direct_packages(self) -> None:
+        # Older SDKs key a restore's targets by long names beside the project section's short ones.
+        project = self.write("src/Harbor.Tuple/Harbor.Tuple.csproj", TUPLE_PROJECT)
+        targets = {
+            ".NETCoreApp,Version=v8.0": {},
+            ".NETFramework,Version=v4.7.2": {"Lantern.Tuple/4.5.0": {"type": "package"}},
+        }
+        assets = {**TUPLE_ASSETS, "targets": targets}
+        self.write("src/Harbor.Tuple/obj/project.assets.json", json.dumps(assets))
+        self.write("Harbor.sln", solution("src\\Harbor.Tuple\\Harbor.Tuple.csproj"))
+        label = "src/Harbor.Tuple/Harbor.Tuple.csproj"
+        why = [[label, "net472", "Lantern.Tuple", "graph", "Lantern.Tuple (v4.5.0)"]]
+        code, rows = self.run_main("why", "Lantern.Tuple", "--root", str(self.root))
+        self.assertEqual((0, why, []), (code, self.lines(rows, "PATH"), self.lines(rows, "UNREADABLE")))
+        # Without a project section, the project file's own names key the restore, so its conditions are evaluated,
+        # in either form they read the property.
+        starts = TUPLE_PROJECT.replace("'$(TargetFramework)'=='net472'", "$(TargetFramework.StartsWith('net4'))")
+        for text in (TUPLE_PROJECT, starts):
+            with self.subTest(condition=text):
+                self.write("src/Harbor.Tuple/Harbor.Tuple.csproj", text)
+                self.write("src/Harbor.Tuple/obj/project.assets.json", json.dumps({**assets, "project": {}}))
+                code, rows = self.run_main("why", "Lantern.Tuple", "--root", str(self.root))
+                self.assertEqual((0, why, []), (code, self.lines(rows, "PATH"), self.lines(rows, "UNREADABLE")))
+        # An SDK that prints the long name answers the framework the project names.
+        sdk_text = (
+            "Project 'Harbor.Tuple' has the following dependency graph(s) for 'Lantern.Tuple':\r\n\r\n"
+            "  [.NETFramework,Version=v4.7.2]\r\n  └── Lantern.Tuple (v4.5.0)\r\n\r\n"
+        )
+        _, with_sdk = self.sdk_services({(same_path(project), "lantern.tuple"): sdk_text})
+        _, rows = self.run_main("why", "Lantern.Tuple", "--root", str(self.root), services=with_sdk)
+        self.assertEqual([[*why[0][:3], "sdk", why[0][4]]], self.lines(rows, "PATH"))
 
     def test_two_referenced_projects_with_one_assembly_name_are_each_walked(self) -> None:
         shop = '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="{0}" Version="1.0.0" />' + (
