@@ -572,17 +572,30 @@ class OptInTests(DeployerTestCase):
         self.assertEqual({"UNCHANGED": ["everyday", "fmt"]}, report)
         self.assertEqual({"pack": ["fmt"]}, self.manifest()["sources"]["test/skills"]["requested_bundle_members"])
 
-    def drop_bundle_members(self) -> None:
-        """Rewrite the entry as a deployer that recorded no bundle members wrote it."""
+    def drop_bundle_members(self, keep_key: bool = False) -> None:
+        """Rewrite the entry as a deployer that recorded no bundle members wrote it, or, with keep_key, as a hand edit
+        that keeps requested_bundle_members but records no members for the bundle requested."""
         data = self.manifest()
-        del data["sources"]["test/skills"]["requested_bundle_members"]
+        if keep_key:
+            data["sources"]["test/skills"]["requested_bundle_members"] = {}
+        else:
+            del data["sources"]["test/skills"]["requested_bundle_members"]
         self.write_manifest(data)
 
     def test_a_bundle_request_recorded_before_its_members_were_stays_in_all_when_the_source_renames_it(self) -> None:
+        self.assert_renamed_bundle_stays_without_its_members(keep_key=False)
+
+    def test_a_bundle_request_whose_members_the_entry_lacks_stays_in_all_when_the_source_renames_it(self) -> None:
+        # Every deployment records the members of each bundle it requests, so only a hand edit leaves the key without
+        # them; an entry that records the key but not a requested bundle's members records that request's no better
+        # than an entry without the key, so its installed roots stand for it too.
+        self.assert_renamed_bundle_stays_without_its_members(keep_key=True)
+
+    def assert_renamed_bundle_stays_without_its_members(self, keep_key: bool) -> None:
         self.make_source_json(bundles={"pack": {"members": ["fmt", "x"], "opt_in": True}})
         self.make_skill("x", "X")
         self.deploy_ok("--all", "--include", "pack")
-        self.drop_bundle_members()
+        self.drop_bundle_members(keep_key)
         self.make_source_json(bundles={"pack2": {"members": ["fmt", "x"], "opt_in": True}})
         menu = self.deploy("--dry-run", stdin="\n").output
         self.assertRegex(menu, r"(?m)^  \[\*\] [0-9]+\. pack2 \(bundle, opt-in\)$")

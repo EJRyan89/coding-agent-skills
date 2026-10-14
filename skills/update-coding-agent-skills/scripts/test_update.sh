@@ -27,7 +27,16 @@ git config --file "$GIT_CONFIG_GLOBAL" maintenance.autoDetach false
 git config --file "$GIT_CONFIG_GLOBAL" gc.auto 0
 git config --file "$GIT_CONFIG_GLOBAL" gc.autoDetach false
 
-git_quiet() { git -c user.name=Test -c user.email=test@example.invalid "$@" >/dev/null 2>&1; }
+# A setup command runs through git_quiet, which keeps its output off the suite's streams while it succeeds. One that fails
+# prints the command and the stderr it saved, as fail does for an expectation, and the suite exits with its status.
+git_quiet() {
+  local status=0
+  git -c user.name=Test -c user.email=test@example.invalid "$@" >/dev/null 2>"$FIXTURE/git-quiet.stderr" || status=$?
+  if [ "$status" -ne 0 ]; then
+    printf 'FAIL: setup command exited %s: git %s\n%s\n' "$status" "$*" "$(<"$FIXTURE/git-quiet.stderr")" >&2
+    exit "$status"
+  fi
+}
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 # The upstream carries a stand-in deploy.py that records its arguments and exits with $FAKE_DEPLOY_EXIT. Its check
@@ -54,6 +63,21 @@ git_quiet -C "$SEED" add deploy.py .gitignore
 git_quiet -C "$SEED" commit -m initial
 git_quiet -C "$SEED" remote add origin "$UPSTREAM"
 git_quiet -C "$SEED" push origin main
+
+# A setup command that fails names itself and what git printed, and ends the suite with its exit status; one that
+# succeeds prints nothing.
+MISSING="$FIXTURE/missing repository"
+set +e
+(git_quiet -C "$MISSING" status) 2>"$FIXTURE/stderr"
+status=$?
+set -e
+[ "$status" -eq 128 ] || fail "failed setup command: expected exit 128, got $status: $(<"$FIXTURE/stderr")"
+[ "$(head -n 1 "$FIXTURE/stderr")" = "FAIL: setup command exited 128: git -C $MISSING status" ] ||
+  fail "failed setup command: command not named: $(<"$FIXTURE/stderr")"
+# Git names the folder in its own form of the path, a drive-letter one on Windows, so only the folder's name is matched.
+grep -q "missing repository" <(tail -n +2 "$FIXTURE/stderr") || fail "failed setup command: git's stderr not shown: $(<"$FIXTURE/stderr")"
+(git_quiet -C "$SEED" status) 2>"$FIXTURE/stderr"
+[ ! -s "$FIXTURE/stderr" ] || fail "succeeding setup command: wrote to stderr: $(<"$FIXTURE/stderr")"
 
 publish() {
   printf '%s\n' "$1" >>"$SEED/notes.txt"
@@ -485,8 +509,6 @@ run_subject "$CLONE" --force
 expect_status 2 "unknown option"
 expect_not_deployed "unknown option"
 
-# The deploy can back up the installed skill directory the script runs from, and the temporary copy is removed.
-new_clone
 # A repository-selecting variable a shell or a git hook exported does not point the update at another clone.
 new_clone
 OTHER=$CLONE
@@ -515,6 +537,8 @@ expect_status 0 "repository variables in any case"
 [ "$(head_of "$OTHER" HEAD)" = "$OTHER_HEAD" ] || fail "repository variables in any case: the other clone moved"
 expect_deployed "repository variables in any case"
 
+# The deploy can back up the installed skill directory the script runs from, and the temporary copy is removed.
+new_clone
 INSTALLED="$FIXTURE/installed skill (copy)"
 mkdir -p "$INSTALLED/scripts" "$FIXTURE/tmp"
 cp "$SUBJECT" "$INSTALLED/scripts/update.sh"

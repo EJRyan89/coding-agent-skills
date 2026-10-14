@@ -1006,6 +1006,34 @@ class PullRequestTests(PipelineTestCase):
             {path.relative_to(self.output).as_posix() for path in self.output.rglob("*") if path.is_file()},
         )
 
+    def test_a_listed_path_with_a_backslash_or_an_empty_dot_or_dot_dot_segment_is_skipped_before_it_is_read(
+        self,
+    ) -> None:
+        # Each is served at the head, so a check that let one through would read it and review it. `docs/../x.md`
+        # resolves inside the fixture, to `head/x.md`, so only the segment check keeps it from being written at another
+        # path than the one the pull request lists.
+        refused = [
+            "docs\\x.md",
+            "docs//x.md",
+            "/docs/x.md",
+            "docs/x.md/",
+            "docs/./x.md",
+            "./x.md",
+            "docs/../x.md",
+            "../x.md",
+        ]
+        stub = self.pull_with(*refused)
+        self.assertEqual(
+            [
+                f"PULL octo-org/widgets#7 base {MERGE_BASE} head {HEAD}",
+                *self.block(1, "docs/design/retention.md", f"committed {MERGE_BASE}"),
+                *(f"SKIPPED {path} is not a path a fixture can hold" for path in refused),
+            ],
+            self.build_pull(stub),
+        )
+        self.assertEqual([f"docs/design/retention.md@{HEAD}", f"docs/design/retention.md@{MERGE_BASE}"], stub.reads())
+        self.assertEqual(self.fixture_files(1, "docs/design/retention.md", committed=True), self.written())
+
     def written(self) -> set[str]:
         """Every file under the output directory, by its path there."""
         return {path.relative_to(self.output).as_posix() for path in self.output.rglob("*") if path.is_file()}

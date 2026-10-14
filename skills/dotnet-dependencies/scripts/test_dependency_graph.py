@@ -1718,5 +1718,38 @@ class UnreadableSolutionTests(Fixture):
         self.assertEqual("SUMMARY", rows[-1][0])
 
 
+class FailedSdkHeadingTests(Fixture):
+    def test_a_no_dependency_heading_then_a_nonzero_exit_is_a_failed_run_through_why(self) -> None:
+        # The heading parses as a whole answer, that the project does not depend on the package, so a reader that
+        # failed only a partial tree would take it and print no SDK_FAILED line.
+        root = self.mixed_solution()
+        services = Services(
+            run=lambda arguments, timeout: Completed(1, SDK_ABSENT_TEXT.format(name="Lantern.Json")),
+            which=self.with_dotnet.which,
+        )
+        code, rows = self.run_main("why", "Lantern.Json", "--root", str(root), services=services)
+        self.assertEqual(0, code)
+        self.assertEqual(
+            [
+                [
+                    "src/Harbor.Core/Harbor.Core.csproj",
+                    "Lantern.Json",
+                    "dotnet nuget why exited with code 1 after printing part of an answer",
+                ]
+            ],
+            self.lines(rows, "SDK_FAILED"),
+        )
+        self.assertIn(
+            [
+                "src/Harbor.Core/Harbor.Core.csproj",
+                "net8.0",
+                "Lantern.Json",
+                "graph",
+                "Quill.Http (v1.2.0) > Lantern.Json (v12.0.3)",
+            ],
+            self.lines(rows, "PATH"),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1402,6 +1402,41 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
             lines,
         )
 
+    def test_a_run_whose_only_outcome_is_unsupported_checked_nothing(self) -> None:
+        # The fixture always runs first, and a listing that reads checks, so this takes a user-only fixture on Copilot
+        # whose listing could not be read: its run is UNSUPPORTED, which started nothing.
+        runner = FakeRuntimes()
+
+        def fail(*_: object) -> list[str]:
+            raise discovery.ListingError("stub listing unavailable")
+
+        with mock.patch.object(runtime_canary, "FIXTURE_SKILL", "alpha"), mock.patch.object(runner, "talk", fail):
+            code, lines = self.outcome(runner, ["alpha"], ("copilot",), sources=[self.make_source(user_only=True)])
+        self.assertEqual(1, code, lines)
+        self.assertIn(
+            'RUNTIME copilot alpha UNSUPPORTED "copilot -p cannot start a user-only skill; '
+            'see docs/copilot-support.md#headless-sessions"',
+            lines,
+        )
+        self.assertIn(
+            'NOTHING_CHECKED "no runtime was checked for discovery or run: copilot\'s skill list could not be read"',
+            lines,
+        )
+        self.assertFalse([call for call in runner.calls if call[0] == "run"])
+
+    def test_a_full_run_of_claude_code_alone_is_checked_by_its_run(self) -> None:
+        # Claude Code has no listing, and a stream without its init event names no skill, so the RUNTIME line is the
+        # only one that shows the run checked it.
+        runner = FakeRuntimes()
+        runner.actions["claude"] = run_python(f"{self.skill_dir()}/scripts/canary_probe.py", "--help")
+        code, lines = self.outcome(runner, runtimes=("claude",))
+        self.assertEqual(0, code, lines)
+        self.assertTrue([line for line in lines if line.startswith(f"RUNTIME claude {FIXTURE} RAN ")], lines)
+        self.assertIn(f"MATRIX claude {FIXTURE} AGREES full", lines)
+        self.assertFalse(
+            [line for line in lines if line.startswith(("NOTHING_CHECKED ", "DISCOVERED ", "UNDISCOVERED "))], lines
+        )
+
     def test_output_starts_with_the_home_and_each_deployment(self) -> None:
         lines = self.canary(FakeRuntimes(), discovery_only=True)
         self.assertEqual([f'HOME "{forward(self.home)}"', "DEPLOYED test/runtime-canary"], lines[:2])
