@@ -294,7 +294,16 @@ class HookCommandTests(WorktreesTestCase):
     def test_an_inherited_git_dir_or_git_config_cannot_switch_the_opt_in_off(self) -> None:
         other = self.other_repository()
         self.git(other, "config", "coding-agent-skills.hubGuard", "false")
-        for name, value in (("GIT_DIR", ".git"), ("GIT_COMMON_DIR", ".git"), ("GIT_CONFIG", ".git/config")):
+        # Windows reads an environment name in any case, so git there takes git_dir as GIT_DIR.
+        for name, value in (
+            ("GIT_DIR", ".git"),
+            ("GIT_COMMON_DIR", ".git"),
+            ("GIT_CONFIG", ".git/config"),
+            ("git_dir", ".git"),
+            ("Git_Common_Dir", ".git"),
+            ("git_config", ".git/config"),
+            ("Git_Config", ".git/config"),
+        ):
             with self.subTest(name=name):
                 code, arguments = self.run_hook({name: str(other / value)})
                 self.assertEqual((0, ["-B", f"{self.hub}/tools/worktrees.py", "guard"]), (code, arguments))

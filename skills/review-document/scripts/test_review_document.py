@@ -347,6 +347,28 @@ class LooseFileTests(DocumentTestCase):
         self.assertEqual(self.root, output.parent)
         self.assertEqual(output / "fixture", Path(facts(lines)["FIXTURE"]))
 
+    def test_a_document_the_temporary_fixture_has_no_room_for_leaves_no_temporary_output_behind(self) -> None:
+        # The fixture refuses the document's path only once the temporary directory is made, so the refusal removes it.
+        name = "p" * 150 + ".md"
+        document = self.root / "loose" / name
+        document.parent.mkdir()
+        document.write_bytes(b"# Plan\n")
+        temporary = self.root / ("t" * 100)
+
+        def mkdtemp(prefix: str) -> str:
+            temporary.mkdir()
+            return str(temporary)
+
+        with (
+            mock.patch.object(review_document.tempfile, "mkdtemp", side_effect=mkdtemp),
+            mock.patch.object(review_runtime, "_long_paths_enabled", return_value=False),
+        ):
+            code, lines = run_main("build", str(document))
+        self.assertEqual((1, 1), (code, len(lines)), lines)
+        self.assertTrue(lines[0].startswith(f"FAILED {name} "), lines)
+        self.assertIn(PATH_TOO_LONG, lines[0])
+        self.assertFalse(temporary.exists())
+
 
 class PipelineTestCase(DocumentTestCase):
     """Runs the review pipeline on a fixture `build` wrote, as the skill does, with a configuration of its own."""
