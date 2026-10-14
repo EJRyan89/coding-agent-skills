@@ -3,8 +3,12 @@
     sweep         find the repositories to clean, then sync, plan, and apply every one at once, printing only what
                   needs the agent: decisions, failures, and summaries; plans go to a new temporary directory by
                   default
-    delete-local  delete local-only branches the user chose to delete (git branch -d)
+    delete-local  delete local-only branches the user chose to delete (git branch -d), with the clean worktree a
+                  branch offered with its path is checked out in
     force-delete  force-delete branches reported UNMERGED, after the user confirmed
+    remove-directory
+                  remove detached worktrees reported CONFIRM_DETACHED and delete directories reported ORPHAN, after
+                  the user confirmed
     summary       print the repository's summary from the plan file
 
 Every command prints one tab-separated fact per line. Exit status 0 means every repository was cleaned, or every
@@ -20,6 +24,7 @@ import dataclasses
 import json
 import os
 import re
+import shutil
 import stat
 import sys
 import tempfile
@@ -59,6 +64,11 @@ STATUS_ARGUMENTS = ("status", "--porcelain", "-z", "--untracked-files=normal")
 SHOW_UNTRACKED = ("-c", "status.showUntrackedFiles=normal")
 KEPT_STATES = {"OPEN": "pr-open", "UNMATCHED": "pr-unmatched", "UNKNOWN": "pr-unknown"}
 WORKTREE_AREA = "Worktrees"
+# Where Claude Code, and many repositories' own worktree tools, put a repository's worktrees. With
+# WORKTREE_AREA/<repository name>, the folders a sweep searches for directories a worktree removal left behind.
+REPOSITORY_AREA = (".claude", "worktrees")
+# What a clean linked worktree becomes, by its branch's planned action: removed, offered, or else kept.
+WORKTREE_ACTIONS = {"remove-worktree": "remove", "remove-worktree-ask": "remove", "ask-remove-worktree": "ask"}
 GITHUB_REMOTE = re.compile(
     r"(?:https?://(?:[^@/]+@)?github\.com/|ssh://git@github\.com(?::\d+)?/|git@github\.com:)"
     r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?",
@@ -71,7 +81,16 @@ SUMMARY_WIDTH = 25
 # secondary rate limits.
 SWEEP_WORKERS = 4
 # The lines a sweep passes on: what the agent must act on or report. Everything else is in the summary.
-SWEEP_KINDS = {"DIRTY_MAIN", "FETCH_FAILED", "ERROR", "CONFIRM_LOCAL", "UNMERGED", "SUMMARY"}
+SWEEP_KINDS = {
+    "DIRTY_MAIN",
+    "FETCH_FAILED",
+    "ERROR",
+    "CONFIRM_LOCAL",
+    "UNMERGED",
+    "CONFIRM_DETACHED",
+    "ORPHAN",
+    "SUMMARY",
+}
 # What sync did to the default branch, passed on only for a repository with no plan summary to carry it.
 SYNC_KINDS = {"CHECKOUT": {"switched"}, "FF_DEFAULT": {"forwarded", "skipped", "diverged", "failed"}}
 # Why the GitHub CLI cannot reach github.com, by GitHubError.kind; other kinds are named as they are.
@@ -150,6 +169,17 @@ def branch_tip(services: Services, root: str | Path, branch: str) -> str | None:
     return resolve(services, root, f"refs/heads/{branch}")
 
 
+def default_refs(default: str) -> tuple[str, str]:
+    """The local and the fetched default branch, either of which proves a commit landed."""
+    return f"refs/heads/{default}", f"refs/remotes/origin/{default}"
+
+
+def reachable(services: Services, root: str | Path, sha: str, *refs: str) -> bool:
+    """Whether one of `refs` contains `sha`; a ref names itself or, as `refs/remotes` does, every ref below it."""
+    result = git(services, root, "for-each-ref", "--count=1", f"--contains={sha}", "--format=%(refname)", *refs)
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
 def ahead_behind(services: Services, root: str | Path, local: str, upstream: str) -> tuple[int, int]:
     ahead, behind = git_output(services, root, "rev-list", "--left-right", "--count", f"{local}...{upstream}").split()
     return int(ahead), int(behind)
@@ -160,6 +190,7 @@ class Worktree:
     path: str
     branch: str | None
     main: bool
+    head: str = ""
 
 
 def list_worktrees(services: Services, root: str | Path) -> list[Worktree]:
@@ -167,10 +198,14 @@ def list_worktrees(services: Services, root: str | Path) -> list[Worktree]:
     records: list[dict[str, Any]] = []
     for field in git_output(services, root, "worktree", "list", "--porcelain", "-z").split("\0"):
         if field.startswith("worktree "):
-            records.append({"path": field[len("worktree ") :], "branch": None})
+            records.append({"path": field[len("worktree ") :], "branch": None, "head": ""})
         elif records and field.startswith("branch refs/heads/"):
             records[-1]["branch"] = field[len("branch refs/heads/") :]
-    return [Worktree(record["path"], record["branch"], index == 0) for index, record in enumerate(records)]
+        elif records and field.startswith("HEAD "):
+            records[-1]["head"] = field[len("HEAD ") :]
+    return [
+        Worktree(record["path"], record["branch"], index == 0, record["head"]) for index, record in enumerate(records)
+    ]
 
 
 def checkouts(services: Services, root: str | Path) -> dict[str, Worktree]:
@@ -458,45 +493,80 @@ def fetch_failed_summary(name: str, error: str) -> list[str]:
 
 
 def decide(
-    category: str, state: str, error: str, tree: Worktree | None, linked: dict[str, Any] | None
+    category: str,
+    state: str,
+    error: str,
+    tree: Worktree | None,
+    linked: dict[str, Any] | None,
+    landed: bool = False,
 ) -> tuple[str, str]:
     """The planned action for one non-release branch, mirroring the cleanup rules.
 
     A clean linked worktree of a stale branch is removed. Its branch is deleted with it unless its pull request closed
-    without merging: that work was set aside rather than landed, so the branch is kept and the user is asked.
+    without merging: that work was set aside rather than landed, so the branch is kept and the user is asked. A branch
+    with a remote and no pull request is stale when `landed`, the default branch holding its tip and its upstream's,
+    since nothing on it is its own. A clean linked worktree of a local-only branch with no pull request is offered:
+    the user is asked before it and its branch go, since it may hold a task just started.
     """
     if state in KEPT_STATES:
         return "keep", f"{KEPT_STATES[state]}: {error}" if error else KEPT_STATES[state]
-    stale = state in STALE_STATES or (category == "gone" and state == "NONE")
+    merged = landed and category == "tracking" and state == "NONE"
+    stale = state in STALE_STATES or (category == "gone" and state == "NONE") or merged
     if tree is not None and tree.main:
         return "keep", "checked-out-main" if stale or category == "local" else ""
     if linked is not None:
         if linked["action"] == "candidate":
-            if not stale:
-                return "keep", "in-worktree"
-            return ("remove-worktree-ask", "") if state == "CLOSED" else ("remove-worktree", "")
+            if stale:
+                return ("remove-worktree-ask", "") if state == "CLOSED" else ("remove-worktree", "")
+            if category == "local" and state == "NONE":
+                return "ask-remove-worktree", ""
+            return "keep", "in-worktree"
         return "keep", f"worktree-{linked['action'].split(':')[0]}"
-    if category == "gone" and stale:
+    if (category == "gone" and stale) or merged:
         return "delete", ""
     if category == "local" and state in (*STALE_STATES, "NONE"):
         return "ask-delete", ""
     return "keep", ""
 
 
-def evaluate_worktree(services: Services, tree: Worktree) -> dict[str, Any]:
-    entry = {"path": tree.path, "branch": tree.branch, "action": "keep", "detail": ""}
-    if tree.branch is None:
-        entry["detail"] = "detached"
-        return entry
-    if is_protected(tree.branch, tree.path):
+def evaluate_worktree(services: Services, root: str, default: str, tree: Worktree) -> dict[str, Any]:
+    entry: dict[str, Any] = {"path": tree.path, "branch": tree.branch, "action": "keep", "detail": ""}
+    if is_protected(tree.branch or "", tree.path):
         entry["action"] = "protected"
         return entry
     try:
         changed = dirty_count(services, tree.path)
-        entry["action"] = f"dirty:{changed}" if changed else "candidate"
     except CleanupError as exc:
         entry["detail"] = str(exc)
+        return entry
+    if tree.branch is not None:
+        entry["action"] = f"dirty:{changed}" if changed else "candidate"
+    else:
+        entry.update(judge_detached(services, root, default, tree.head, changed))
     return entry
+
+
+def judge_detached(services: Services, root: str, default: str, head: str, changed: int) -> dict[str, Any]:
+    """A worktree with no branch is offered for removal only when it is clean and the default branch or a remote
+    branch holds its commit, so removing it loses nothing; otherwise it is kept, and the detail says why."""
+    if changed:
+        return {"sha": head, "detail": counted(changed, "uncommitted change")}
+    if not head or not reachable(services, root, head, default_refs(default)[0], "refs/remotes"):
+        return {"sha": head, "detail": f"its commit {head[:12] or '-'} is on neither {default} nor a remote branch"}
+    return {"sha": head, "action": "ask", "detail": f"clean, its commit is on {default} or a remote branch"}
+
+
+def landed_in_default(services: Services, root: str, default: str, name: str, sha: str, upstream: str) -> bool:
+    """Whether the branch was pushed under its own name and the default branch holds its tip and its upstream's:
+    nothing on it is its own.
+
+    A branch whose upstream is another branch, as one started from origin/main tracks origin/main, never counts: it
+    is a task just started, not one finished.
+    """
+    if not (upstream.startswith("refs/remotes/") and upstream.endswith(f"/{name}")):
+        return False
+    tips = [sha, resolve(services, root, upstream) or sha]
+    return all(reachable(services, root, tip, *default_refs(default)) for tip in dict.fromkeys(tips))
 
 
 def build_plan(root: str, repos_root: str, services: Services, chosen: DefaultBranch | None = None) -> dict[str, Any]:
@@ -506,7 +576,7 @@ def build_plan(root: str, repos_root: str, services: Services, chosen: DefaultBr
     nwo = name_with_owner(services, root)
     trees = list_worktrees(services, root)
     located = {tree.branch: tree for tree in trees if tree.branch}
-    worktrees = [evaluate_worktree(services, tree) for tree in trees if not tree.main]
+    worktrees = [evaluate_worktree(services, root, default, tree) for tree in trees if not tree.main]
     linked = {entry["branch"]: entry for entry in worktrees if entry["branch"]}
     branches: list[dict[str, Any]] = []
     moves: dict[str, list[dict[str, Any]]] = {"fastforward": [], "fastforward_skipped": [], "diverged": []}
@@ -525,17 +595,19 @@ def build_plan(root: str, repos_root: str, services: Services, chosen: DefaultBr
             continue
         category = "local" if not upstream else "gone" if track == "[gone]" else "tracking"
         tree, entry = located.get(name), linked.get(name)
-        state, error = "-", ""
+        candidate = entry is not None and entry["action"] == "candidate"
+        state, error, landed = "-", "", False
         if is_release(name):
             action, detail = "keep", "release"
         else:
-            if category != "tracking" or (entry is not None and entry["action"] == "candidate"):
+            if category == "tracking" and (candidate or tree is None):
+                landed = landed_in_default(services, root, default, name, sha, upstream)
+            if category != "tracking" or candidate or landed:
                 state, error = pull_state(services, root, nwo, default, name, sha)
-            action, detail = decide(category, state, error, tree, entry)
-        if entry is not None and entry["action"] == "candidate":
-            removing = action in ("remove-worktree", "remove-worktree-ask")
-            entry["action"] = "remove" if removing else "keep"
-            entry["detail"] = "" if removing else detail
+            action, detail = decide(category, state, error, tree, entry, landed)
+        if entry is not None and candidate:
+            entry["action"] = WORKTREE_ACTIONS.get(action, "keep")
+            entry["detail"] = "" if entry["action"] != "keep" else detail
         branches.append(
             {
                 "name": name,
@@ -557,6 +629,7 @@ def build_plan(root: str, repos_root: str, services: Services, chosen: DefaultBr
         "repo_root": str(root),
         "repo_name": Path(root).name,
         "worktree_area": str(Path(repos_root) / WORKTREE_AREA),
+        "orphan_areas": [str(Path(repos_root) / WORKTREE_AREA / Path(root).name), str(Path(root, *REPOSITORY_AREA))],
         "default": {"name": default, "status": default_status(services, root, default)},
         "branches": branches,
         "worktrees": worktrees,
@@ -662,11 +735,7 @@ def closed_branches(plan: dict[str, Any]) -> set[str]:
 
 def in_default(services: Services, plan: dict[str, Any], sha: str) -> bool:
     """Whether the local or the fetched default branch contains `sha`."""
-    default = plan["default"]["name"]
-    return any(
-        git(services, plan["repo_root"], "merge-base", "--is-ancestor", sha, ref).returncode == 0
-        for ref in (f"refs/heads/{default}", f"refs/remotes/origin/{default}")
-    )
+    return reachable(services, plan["repo_root"], sha, *default_refs(plan["default"]["name"]))
 
 
 def delete_merged(services: Services, plan: dict[str, Any], name: str, sha: str, pr: str) -> bool:
@@ -818,23 +887,33 @@ def ignored_paths(services: Services, path: str) -> tuple[str, str]:
     return reason, disposed
 
 
+def remove_checkout(services: Services, plan: dict[str, Any], path: str, name: str, label: str) -> bool:
+    """git worktree remove, which refuses a locked worktree or one with changes; False when the worktree stays.
+
+    A worktree with ignored files is kept, since Git would delete them with it, unless every one is a regenerable
+    cache, which the REMOVED fact names after `label`. A PRESERVED fact names `name` with the reason it stayed.
+    """
+    held, disposed = ignored_paths(services, path)
+    if held:
+        record(plan, "PRESERVED", name, held)
+        return False
+    removed = git(services, plan["repo_root"], *SHOW_UNTRACKED, "worktree", "remove", path)
+    if removed.returncode != 0:
+        record(plan, "PRESERVED", name, f"Git refused to remove worktree {path}: {reason(removed)}")
+        return False
+    record(plan, "REMOVED", path, label, *([disposed] if disposed else []))
+    return True
+
+
 def remove_worktree(
     services: Services, plan: dict[str, Any], entry: dict[str, Any], sha: str, pr: str, ask: bool = False
 ) -> bool:
-    """git worktree remove, which refuses a locked worktree or one with changes, then delete_merged on its branch.
+    """remove_checkout on the branch's worktree, then delete_merged on its branch.
 
-    With `ask`, the branch is kept and offered for the user's confirmation instead. A worktree with ignored files is
-    kept, since Git would delete them with it, unless every one is a regenerable cache, which the REMOVED fact names.
+    With `ask`, the branch is kept and offered for the user's confirmation instead.
     """
-    held, disposed = ignored_paths(services, entry["path"])
-    if held:
-        record(plan, "PRESERVED", entry["branch"], held)
+    if not remove_checkout(services, plan, entry["path"], entry["branch"], entry["branch"]):
         return False
-    removed = git(services, plan["repo_root"], *SHOW_UNTRACKED, "worktree", "remove", entry["path"])
-    if removed.returncode != 0:
-        record(plan, "PRESERVED", entry["branch"], f"Git refused to remove worktree {entry['path']}: {reason(removed)}")
-        return False
-    record(plan, "REMOVED", entry["path"], entry["branch"], *([disposed] if disposed else []))
     if ask:
         record(plan, "CONFIRM_LOCAL", entry["branch"])
     else:
@@ -886,10 +965,8 @@ def apply_plan(plan: dict[str, Any], services: Services) -> None:
             services, plan, entry, sha, branch["pr"], ask
         ):
             removed.append(entry["path"])
-    boundaries = [plan["worktree_area"], root]
     for path in removed:
-        for directory in prune_empty_parents(path, boundaries):
-            record(plan, "PRUNED_DIR", directory)
+        prune_parents(plan, path)
     located = checkouts(services, root)
     for entry in plan["fastforward"]:
         if not unchanged(services, plan, entry["branch"], entry["sha"], located, entry["worktree"]):
@@ -901,12 +978,173 @@ def apply_plan(plan: dict[str, Any], services: Services) -> None:
             record(plan, "FF", entry["branch"], entry["target"])
     for entry in plan["diverged"]:
         record(plan, "DIVERGED", entry["branch"], entry["ahead"], entry["behind"])
+    offer(services, plan, located)
+
+
+def offer(services: Services, plan: dict[str, Any], located: dict[str, Worktree]) -> None:
+    """Offer what only the user may delete: local-only branches, with the clean worktree one is checked out in,
+    detached worktrees, then the directories Git no longer tracks that are left once every removal ran."""
+    root = plan["repo_root"]
     for branch in plan["branches"]:
         if branch["action"] == "ask-delete":
             if branch_tip(services, root, branch["name"]) == branch["sha"]:
                 record(plan, "CONFIRM_LOCAL", branch["name"])
             else:
                 record(plan, "PRESERVED", branch["name"], "moved")
+        elif branch["action"] == "ask-remove-worktree" and unchanged(
+            services, plan, branch["name"], branch["sha"], located, branch["worktree"]
+        ):
+            record(plan, "CONFIRM_LOCAL", branch["name"], branch["worktree"])
+    offer_detached(services, plan)
+    registered = [tree.path for tree in list_worktrees(services, root)]
+    for path in orphan_directories(registered, plan.get("orphan_areas", [])):  # absent from an earlier version's plan
+        record(plan, "ORPHAN", path)
+
+
+def prune_parents(plan: dict[str, Any], removed: str) -> None:
+    """Remove the empty directories a removal left, never at or above the worktree areas or the repository root."""
+    boundaries = [plan["worktree_area"], *plan.get("orphan_areas", []), plan["repo_root"]]
+    for directory in prune_empty_parents(removed, boundaries):
+        record(plan, "PRUNED_DIR", directory)
+
+
+def detached_at(services: Services, plan: dict[str, Any], path: str, sha: str) -> Worktree | None:
+    """The linked worktree at `path` when it is still detached at `sha`, else None."""
+    for tree in list_worktrees(services, plan["repo_root"]):
+        if not tree.main and same_path(tree.path, path):
+            return tree if tree.branch is None and tree.head == sha else None
+    return None
+
+
+def offer_detached(services: Services, plan: dict[str, Any]) -> None:
+    """Offer each detached worktree the plan found clean and reachable, when it has not moved since."""
+    for entry in plan["worktrees"]:
+        if entry["branch"] is None and entry["action"] == "ask":
+            if detached_at(services, plan, entry["path"], entry["sha"]):
+                record(plan, "CONFIRM_DETACHED", entry["path"], entry["sha"])
+            else:
+                record(plan, "PRESERVED", entry["path"], "moved")
+
+
+def holds_checkout(directory: Path, registered: list[str]) -> bool:
+    """Whether a registered worktree, or a `.git` entry of any repository or worktree, is inside `directory`.
+
+    Links are never followed. A directory that cannot be read counts as holding one, so it is never reported.
+    """
+    if any(strictly_inside(path, str(directory)) for path in registered):
+        return True
+    pending = [directory]
+    while pending:
+        try:
+            children = list(pending.pop().iterdir())
+        except OSError:
+            return True
+        for child in children:
+            if child.name == ".git":
+                return True
+            if is_plain_directory(child):
+                pending.append(child)
+    return False
+
+
+def orphan_directories(registered: list[str], areas: list[str]) -> list[str]:
+    """The directories under the worktree areas that Git no longer tracks, the outermost of each.
+
+    Such a directory is no registered worktree, has no `.git` entry, and holds no worktree or repository, as a
+    worktree whose removal Git finished but Windows could not complete leaves behind. A directory that holds a
+    worktree is searched instead, and a link is neither followed nor reported.
+    """
+    found: list[str] = []
+
+    def search(directory: Path) -> None:
+        try:
+            children = sorted(directory.iterdir(), key=lambda path: path.name.casefold())
+        except OSError:
+            return
+        for child in children:
+            if not is_plain_directory(child) or os.path.lexists(child / ".git"):
+                continue
+            if any(same_path(str(child), path) for path in registered):
+                continue
+            if holds_checkout(child, registered):
+                search(child)
+            else:
+                found.append(child.as_posix())
+
+    for area in areas:
+        if is_plain_directory(Path(area)):
+            search(Path(area))
+    return found
+
+
+def delete_tree(path: Path) -> None:
+    """shutil.rmtree, which removes a link inside the tree without following it, clearing the read-only attribute
+    Windows refuses to delete a file with."""
+
+    def writable(function: Callable[..., Any], target: str, *_: Any) -> None:
+        Path(target).chmod(stat.S_IWRITE)
+        function(target)
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=writable)
+    else:
+        shutil.rmtree(path, onerror=writable)
+
+
+def remove_detached(services: Services, plan: dict[str, Any], path: str, sha: str) -> bool:
+    """Remove an offered detached worktree that has not moved and whose commit is still on the default branch or a
+    remote branch; False when it stays for a reason other than having moved."""
+    if detached_at(services, plan, path, sha) is None:
+        record(plan, "PRESERVED", path, "moved")
+        return True
+    default = plan["default"]["name"]
+    if not reachable(services, plan["repo_root"], sha, default_refs(default)[0], "refs/remotes"):
+        record(plan, "PRESERVED", path, f"its commit {sha[:12]} is no longer on {default} or a remote branch")
+        return True
+    if not remove_checkout(services, plan, path, path, "detached"):
+        return False
+    prune_parents(plan, path)
+    return True
+
+
+def delete_orphan(services: Services, plan: dict[str, Any], path: str) -> bool:
+    """Delete an offered orphan directory that is still one; False when deleting it failed."""
+    registered = [tree.path for tree in list_worktrees(services, plan["repo_root"])]
+    if not any(same_path(path, found) for found in orphan_directories(registered, plan.get("orphan_areas", []))):
+        record(plan, "PRESERVED", path, "no longer a directory Git does not track")
+        return True
+    try:
+        delete_tree(Path(path))
+    except OSError as exc:
+        record(plan, "PRESERVED", path, f"could not delete it: {one_line(exc)}")
+        return False
+    record(plan, "DELETED_DIR", path)
+    prune_parents(plan, path)
+    return True
+
+
+def remove_directories(plan_path: str, paths: list[str], services: Services) -> bool:
+    """Remove the confirmed detached worktrees and orphan directories the plan offered; False when any stayed."""
+    plan = load_plan(plan_path)
+    if not plan["applied"]:
+        raise CleanupError("run apply with this plan first")
+
+    def remove() -> bool:
+        done = [fields[0] for kind in ("REMOVED", "DELETED_DIR") for fields in events(plan, kind)]
+        detached = {fields[0]: fields[1] for fields in events(plan, "CONFIRM_DETACHED")}
+        orphans = [fields[0] for fields in events(plan, "ORPHAN")]
+        succeeded = True
+        for path in dict.fromkeys(paths):
+            offered = next((known for known in [*detached, *orphans] if same_path(known, path)), None)
+            if offered is None or any(same_path(offered, gone) for gone in done):
+                record(plan, "PRESERVED", path, "not a detached worktree or orphan directory offered by this plan")
+            elif offered in detached:
+                succeeded = remove_detached(services, plan, offered, detached[offered]) and succeeded
+            else:
+                succeeded = delete_orphan(services, plan, offered) and succeeded
+        return succeeded
+
+    return run_and_report(plan_path, plan, remove)
 
 
 def confirm(plan_path: str, names: list[str], services: Services, force: bool) -> bool:
@@ -915,16 +1153,22 @@ def confirm(plan_path: str, names: list[str], services: Services, force: bool) -
     if not plan["applied"]:
         raise CleanupError("run apply with this plan first")
     states = {branch["name"]: branch["pr"] for branch in plan["branches"]}
+    worktrees: dict[str, str] = {}
     if force:
         eligible = {fields[0]: fields[1] for fields in events(plan, "UNMERGED")}
         refusal = "not reported UNMERGED by this plan"
     else:
-        # A closed pull request's branch is offered only once its worktree is gone.
-        closed = {fields[0] for fields in events(plan, "CONFIRM_LOCAL")} & closed_branches(plan)
+        # A closed pull request's branch is offered only once its worktree is gone, and a local-only branch in a
+        # clean worktree with the worktree's path, to be removed with it.
+        offered = events(plan, "CONFIRM_LOCAL")
+        closed = {fields[0] for fields in offered} & closed_branches(plan)
+        worktrees = {fields[0]: fields[1] for fields in offered if len(fields) > 1}
         eligible = {
             branch["name"]: branch["sha"]
             for branch in plan["branches"]
-            if branch["action"] == "ask-delete" or branch["name"] in closed
+            if branch["action"] == "ask-delete"
+            or branch["name"] in closed
+            or (branch["action"] == "ask-remove-worktree" and branch["name"] in worktrees)
         }
         refusal = "not a local-only or closed branch offered by this plan"
 
@@ -934,9 +1178,15 @@ def confirm(plan_path: str, names: list[str], services: Services, force: bool) -
         for name in dict.fromkeys(names):
             if name not in eligible or name in deleted(plan):
                 record(plan, "PRESERVED", name, refusal)
-            elif unchanged(services, plan, name, eligible[name], located, None):
+            elif unchanged(services, plan, name, eligible[name], located, worktrees.get(name)):
                 if force:
                     succeeded = force_delete(services, plan, name) and succeeded
+                elif name in worktrees:
+                    entry = {"path": worktrees[name], "branch": name}
+                    removed = remove_worktree(services, plan, entry, eligible[name], states[name])
+                    if removed:
+                        prune_parents(plan, worktrees[name])
+                    succeeded = removed and succeeded
                 else:
                     succeeded = delete_merged(services, plan, name, eligible[name], states[name]) and succeeded
         return succeeded
@@ -958,9 +1208,20 @@ def summary_items(plan: dict[str, Any]) -> dict[str, list[str]]:
     unmerged = [fields[0] for fields in events(plan, "UNMERGED") if fields[0] not in removed_branches]
     closed = closed_branches(plan)
     offered = [
-        fields[0]
+        fields
         for fields in events(plan, "CONFIRM_LOCAL")
         if fields[0] not in removed_branches and fields[0] not in unmerged
+    ]
+    removed_paths = [fields[0] for kind in ("REMOVED", "DELETED_DIR") for fields in events(plan, kind)]
+    detached = [
+        f"{entry['path']} ({entry['detail']})"
+        for entry in plan["worktrees"]
+        if entry["branch"] is None
+        and entry["action"] in ("keep", "ask")
+        and not any(same_path(entry["path"], path) for path in removed_paths)
+    ]
+    orphans = [
+        fields[0] for fields in events(plan, "ORPHAN") if not any(same_path(fields[0], path) for path in removed_paths)
     ]
     dirty = [
         f"{entry['path']} ({entry['branch']}, {entry['action'].split(':')[1]} changed)"
@@ -992,8 +1253,13 @@ def summary_items(plan: dict[str, Any]) -> dict[str, list[str]]:
         "PR status unverified": unknown,
         "PR history unmatched": unmatched,
         "Unmerged (kept)": unmerged,
-        "Local-only (kept)": [name for name in offered if name not in closed],
-        "Closed PR (kept)": [name for name in offered if name in closed],
+        "Local-only (kept)": [
+            f"{name} (in worktree {where[0]})" if where else name for name, *where in offered if name not in closed
+        ],
+        "Closed PR (kept)": [fields[0] for fields in offered if fields[0] in closed],
+        "Detached (kept)": detached,
+        "Orphans (kept)": orphans,
+        "Orphans deleted": [fields[0] for fields in events(plan, "DELETED_DIR")],
         "Preserved": [f"{name}: {why}" for name, why in events(plan, "PRESERVED")],
         "Open PR (kept)": [branch["name"] for branch in plan["branches"] if branch["pr"] == "OPEN"],
         "Empty directories removed": [fields[0] for fields in events(plan, "PRUNED_DIR")],
@@ -1022,6 +1288,9 @@ def summary_lines(plan: dict[str, Any]) -> list[str]:
         "Unmerged (kept)",
         "Local-only (kept)",
         "Closed PR (kept)",
+        "Detached (kept)",
+        "Orphans (kept)",
+        "Orphans deleted",
         "Preserved",
         "Open PR (kept)",
         "Empty directories removed",
@@ -1196,6 +1465,9 @@ def build_parser() -> argparse.ArgumentParser:
         confirm_parser = commands.add_parser(name)
         confirm_parser.add_argument("--plan", required=True)
         confirm_parser.add_argument("--branch", required=True, action="append", dest="branches")
+    remove_parser = commands.add_parser("remove-directory")
+    remove_parser.add_argument("--plan", required=True)
+    remove_parser.add_argument("--path", required=True, action="append", dest="paths")
     return parser
 
 
@@ -1208,6 +1480,9 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
             return sweep(options.target, options.repos_root, plans, services, options.skip_checkout)
         if options.command == "summary":
             print_summary(load_plan(options.plan))
+        elif options.command == "remove-directory":
+            if not remove_directories(options.plan, options.paths, services):
+                return 1
         elif not confirm(options.plan, options.branches, services, force=options.command == "force-delete"):
             return 1
     except (CleanupError, GitUnavailable, OSError, ValueError) as exc:
