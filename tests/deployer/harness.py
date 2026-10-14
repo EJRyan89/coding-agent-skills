@@ -392,6 +392,19 @@ class DeployerTestCase(GitTestCase):
         data["sources"][source_id]["requested_bundles"] = requested_bundles
         self.write_manifest(data)
 
+    def rewrite_as_preserved_through_the_upgrade(self, preserved: str, source_id: str = SOURCE_ID) -> None:
+        """Rewrite the manifest as the first deployer to write version 8, which recorded no bundle members, left a
+        version 7 manifest when it deployed the source and preserved its locally modified skill `preserved`: that skill
+        keeps the skill dependencies the upgrade filled in, every other skill its source owns, beside the exact ones the
+        deployment recorded for the skills it installed, and no entry records the members of its bundle requests.
+        """
+        data = self.manifest()
+        for entry in data["sources"].values():
+            entry.pop("requested_bundle_members", None)
+        skills = data["sources"][source_id]["skills"]
+        skills[preserved]["skill_deps"] = sorted(set(skills) - {preserved})
+        self.write_manifest(data)
+
     def owned(self, kind: str, source_id: str = SOURCE_ID) -> dict[str, Any]:
         return self.manifest()["sources"].get(source_id, {}).get(kind, {})
 
