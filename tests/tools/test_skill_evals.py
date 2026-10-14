@@ -2074,6 +2074,23 @@ class EvaluateTests(GitTestCase):
                 agents = arguments[arguments.index("--agents") + 1]
                 self.assertEqual(str(cwd / skill_evals.STATE / "agents.json"), agents)
 
+    def test_claude_code_sees_no_repository_selecting_variable_the_shell_exported(self) -> None:
+        # Written out here rather than read from skill-core; a lower-case name is the same variable on Windows.
+        selecting = {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY"}
+        exported = {name: "C:/elsewhere/.git" for name in selecting} | {"git_namespace": "elsewhere"}
+        configuring = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "fixture.scope", "GIT_CONFIG_VALUE_0": "on"}
+        claude = StubClaude(self)
+        seams = self.seams(claude, environment={"PATH": "kept", **exported, **configuring})
+        status, lines = self.evaluate(["--scenario", "clean-change", "--model", "haiku", "--jobs", "1"], seams)
+        self.assertEqual(0, status, lines)
+        started = [" ".join(arguments[1:2]) for arguments, _, _ in claude.calls]
+        self.assertEqual(["--version", "-p"], started)
+        for arguments, _, environment in claude.calls:
+            with self.subTest(start=arguments[1]):
+                names = {name.upper() for name in environment}
+                self.assertEqual(set(), names & (selecting | {"GIT_NAMESPACE"}))
+                self.assertLessEqual(set(configuring) | {"PATH"}, names)
+
     def test_a_document_scenario_runs_the_skill_on_its_staged_document(self) -> None:
         pdftotext_reads_pdf_gaps(self)
         claude = StubClaude(self)

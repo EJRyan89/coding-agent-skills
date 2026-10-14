@@ -18,6 +18,7 @@ from msbuild_reader import (
     central_versions_file,
     condition_holds,
     framework_key,
+    matching_framework,
     package_assemblies,
     packages_for,
     read_assets,
@@ -381,6 +382,12 @@ class ReaderTests(unittest.TestCase):
             # A restore writes out the platform version a project leaves to the default.
             ("net8.0-windows", "net8.0-windows7.0"),
             ("net8.0-windows7.0", "NET8.0-Windows7.0"),
+            # A restore drops a platform version's trailing zero parts down to two parts.
+            ("net8.0-windows10.0.19041.0", "net8.0-windows10.0.19041"),
+            ("net8.0-windows10", "net8.0-windows10.0"),
+            ("net8.0-windows7.0.0", "net8.0-windows"),
+            # A workload sets the default of a platform other than Windows, so any version may be it.
+            ("net8.0-android", "net8.0-android34.0"),
         ]
         different = [
             ("net8.0", "netcoreapp8.0-x"),
@@ -388,6 +395,11 @@ class ReaderTests(unittest.TestCase):
             ("netcoreapp3.1", ".NETStandard,Version=v3.1"),
             ("net8.0", "net8.0-windows"),
             ("net8.0-windows10.0", "net8.0-windows7.0"),
+            # A name that leaves the version to the default is never one with another version.
+            ("net8.0-windows", "net8.0-windows10.0.19041"),
+            ("net8.0-windows", "net8.0-windows10.0.19041.0"),
+            ("net8.0-windows10.0.19041", "net8.0-windows10.0.22621.0"),
+            ("net8.0-android34.0", "net8.0-android35.0"),
             ("net8.0-android", "net8.0-ios"),
             ("net9.0-windows", "net8.0-windows7.0"),
             (".NETFoo,Version=v1.0", "foo1.0"),
@@ -442,6 +454,50 @@ class ReaderTests(unittest.TestCase):
             [".NETCoreApp,Version=v8.0", ".NETFramework,Version=v4.7.2", "net8.0-windows7.0"],
             list(read_assets(path).nodes),
         )
+
+    def test_a_project_naming_one_platform_with_and_without_a_version_keeps_both_targets(self) -> None:
+        # Each pair is what the project declares and what its restore writes for each, in order.
+        cases = [
+            (["net8.0-windows", "net8.0-windows10.0.19041.0"], ["net8.0-windows7.0", "net8.0-windows10.0.19041"]),
+            (["net8.0-windows", "net8.0-windows10.0.19041.0"], ["net8.0-windows7.0", "net8.0-windows10.0.19041.0"]),
+            (["net8.0-windows10.0.19041.0", "net8.0-windows"], ["net8.0-windows10.0.19041", "net8.0-windows7.0"]),
+            # A workload's default is unknown, so only the name spelled alike tells the two apart.
+            (["net8.0-android", "net8.0-android34.0"], ["net8.0-android35.0", "net8.0-android34.0"]),
+            (["net8.0-android34.0", "net8.0-android"], ["net8.0-android34.0", "net8.0-android35.0"]),
+        ]
+        packages = ["Lantern.Wpf", "Lantern.WinRT"]
+        for declared, written in cases:
+            with self.subTest(declared=declared, written=written):
+                targets = {
+                    name: {f"{package}/1.0.0": {"type": "package"}}
+                    for name, package in zip(written, packages, strict=True)
+                }
+                sections = {
+                    name: {"dependencies": {package: {"target": "Package", "version": "[1.0.0, )"}}}
+                    for name, package in zip(declared, packages, strict=True)
+                }
+                for project in ({"frameworks": sections}, {}):
+                    document = {"version": 3, "targets": targets, "project": project}
+                    path = self.write("obj/project.assets.json", json.dumps(document))
+                    assets = read_assets(path, declared)
+                    self.assertEqual(
+                        {name: [package] for name, package in zip(declared, packages, strict=True)},
+                        {name: list(nodes) for name, nodes in assets.nodes.items()},
+                    )
+                    direct = {
+                        name: [PackageRef(package, "[1.0.0, )", "PackageReference")]
+                        for name, package in zip(declared, packages, strict=True)
+                    }
+                    self.assertEqual(direct if project else {}, assets.direct)
+
+    def test_a_name_is_found_among_names_spelled_alike_first(self) -> None:
+        names = ["net8.0-android", "net8.0-android34.0", "net8.0-windows", "NET8.0-Windows10.0.19041.0"]
+        self.assertEqual("net8.0-android34.0", matching_framework("net8.0-android34.0", names))
+        self.assertEqual("net8.0-android", matching_framework("net8.0-android35.0", names))
+        self.assertEqual("net8.0-windows", matching_framework("net8.0-windows7.0", names))
+        self.assertEqual("NET8.0-Windows10.0.19041.0", matching_framework("net8.0-windows10.0.19041", names))
+        self.assertIsNone(matching_framework("net8.0-windows10.0.22621.0", names))
+        self.assertIsNone(matching_framework("net8.0", names))
 
     def test_central_versions_stop_at_the_solution_directory(self) -> None:
         props = self.write("Directory.Packages.props", CENTRAL)
