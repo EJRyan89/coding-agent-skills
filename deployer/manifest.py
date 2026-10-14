@@ -52,6 +52,9 @@ class Ownership:
     # requested bundle -> the members the deployment that recorded the request expanded it to; an entry written
     # before members were recorded has none
     requested_bundle_members: dict[str, set[str]] = field(default_factory=dict)
+    # whether the entry records the members of its bundle requests: an entry an earlier release wrote, by deploying or
+    # by migrating, does not
+    bundle_members_recorded: bool = False
 
     def of(self, kind: ItemKind) -> dict[str, str]:
         return self.hashes[kind.key]
@@ -62,6 +65,16 @@ class Ownership:
     @property
     def skills(self) -> dict[str, str]:
         return self.of(SKILL)
+
+    def installed_roots(self) -> set[str]:
+        """The installed skills that no other installed skill was deployed depending on."""
+        depended = {
+            dependency
+            for name, dependencies in self.deps_of(SKILL).items()
+            for dependency in dependencies
+            if dependency != name
+        }
+        return set(self.skills) - depended
 
     @property
     def shared(self) -> dict[str, str]:
@@ -128,6 +141,7 @@ class Manifest:
         owned.requested_bundle_members = {
             name: set(members) for name, members in (entry.get("requested_bundle_members") or {}).items()
         }
+        owned.bundle_members_recorded = "requested_bundle_members" in entry
         return owned
 
     def entry(self, source_id: str, kind: str, name: str) -> dict[str, Any] | None:

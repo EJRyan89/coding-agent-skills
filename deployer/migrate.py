@@ -9,7 +9,7 @@ from .context import Context
 from .errors import DeployError, see_recovery
 from .kinds import AGENT_KIND, KINDS, SHARED, SKILL, ItemKind
 from .names import require_safe_name
-from .report import ReportLine, print_report, requested_members
+from .report import ReportLine, members_recorded, print_report, requested_members
 
 KINDS_ALLOWED = {
     "_migration_candidates": "this source takes over a shared asset only if it owns one, an agent only from its "
@@ -76,21 +76,31 @@ def _carry_requests(context: Context, old: str, old_entry: dict, new_entry: dict
     terms: a moved skill the old source's requests stood for is requested here through the bundle this source puts it
     in, or on its own when this source offers it on its own. The old entry keeps its bundle requests: a bundle may hold
     members that stay with the old source, and its next deployment refuses the moved ones as another source's rather
-    than removing the rest as no longer selected. A request recorded before its members were stands for the members
-    this source gives the bundle, which is all a migration can tell of it.
+    than removing the rest as no longer selected. An old entry that records no bundle members stands for what
+    `requested_members` reads from its installed skills.
+
+    This entry's own requests keep what they stood for. A bundle the migration carries a request into keeps the members
+    its request already recorded beside the ones it gains, and every other bundle's record is left as it is. An entry
+    an earlier release wrote, which records no members, is first recorded as standing for what it stood for: the skills
+    its requests stand for become requested on their own, and each bundle request records the members this source
+    gives it.
     """
     src = context.source
-    requested = requested_members(src, context.manifest.ownership(old)) & moved
+    requested = requested_members(context.manifest.ownership(old)) & moved
+    current = context.manifest.ownership(context.source_id)
     roots = set(source.root_names(src))
     skills = set(new_entry.get("requested_skills", [])) | (requested & roots)
-    bundles = set(new_entry.get("requested_bundles", [])) | {
-        src.skill_bundle[name] for name in requested if name in src.skill_bundle
-    }
-    members = dict(new_entry.get("requested_bundle_members") or {})
-    members.update({bundle: sorted(src.bundles[bundle]) for bundle in bundles if bundle in src.bundles})
+    bundles = set(new_entry.get("requested_bundles", []))
+    members = {name: set(values) for name, values in current.requested_bundle_members.items()}
+    if not members_recorded(current):
+        skills |= requested_members(current)
+        members |= {bundle: set(src.bundles.get(bundle, ())) for bundle in bundles if bundle not in members}
+    for bundle in {src.skill_bundle[name] for name in requested if name in src.skill_bundle}:
+        bundles.add(bundle)
+        members[bundle] = members.get(bundle, set()) | set(src.bundles[bundle])
     new_entry["requested_skills"] = sorted(skills)
     new_entry["requested_bundles"] = sorted(bundles)
-    new_entry["requested_bundle_members"] = dict(sorted(members.items()))
+    new_entry["requested_bundle_members"] = {name: sorted(members[name]) for name in sorted(members)}
     old_entry["requested_skills"] = [name for name in old_entry.get("requested_skills", []) if name not in moved]
 
 

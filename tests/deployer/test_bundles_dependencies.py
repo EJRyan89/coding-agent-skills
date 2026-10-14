@@ -566,6 +566,39 @@ class OptInTests(DeployerTestCase):
         self.assertEqual({"UNCHANGED": ["everyday", "fmt"]}, report)
         self.assertEqual({"pack": ["fmt"]}, self.manifest()["sources"]["test/skills"]["requested_bundle_members"])
 
+    def drop_bundle_members(self) -> None:
+        """Rewrite the entry as a deployer that recorded no bundle members wrote it."""
+        data = self.manifest()
+        del data["sources"]["test/skills"]["requested_bundle_members"]
+        self.write_manifest(data)
+
+    def test_a_bundle_request_recorded_before_its_members_were_stays_in_all_when_the_source_renames_it(self) -> None:
+        self.make_source_json(bundles={"pack": {"members": ["fmt", "x"], "opt_in": True}})
+        self.make_skill("x", "X")
+        self.deploy_ok("--all", "--include", "pack")
+        self.drop_bundle_members()
+        self.make_source_json(bundles={"pack2": {"members": ["fmt", "x"], "opt_in": True}})
+        menu = self.deploy("--dry-run", stdin="\n").output
+        self.assertRegex(menu, r"(?m)^  \[\*\] [0-9]+\. pack2 \(bundle, opt-in\)$")
+        dry_run = self.report_groups(self.deploy_ok("--all", "--dry-run").output, "DRY RUN")
+        deployed = self.report_groups(self.deploy_ok("--all").output, "DEPLOYED")
+        self.assertEqual({"UNCHANGED": ["everyday", "fmt", "x"]}, dry_run)
+        self.assertEqual(dry_run, deployed)
+        entry = self.manifest()["sources"]["test/skills"]
+        self.assertEqual(["pack2"], entry["requested_bundles"])
+        self.assertEqual({"pack2": ["fmt", "x"]}, entry["requested_bundle_members"])
+
+    def test_an_entry_recorded_before_bundle_members_were_counts_no_dependency_as_chosen(self) -> None:
+        self.dependency_member_fixture()
+        self.deploy_ok("--all")
+        self.drop_bundle_members()
+        menu = self.deploy("--dry-run", stdin="\n").output
+        self.assertRegex(menu, r"(?m)^  \[ \] [0-9]+\. pack \(bundle, opt-in\)$")
+        result = self.deploy_ok("--all").output
+        self.assertIn("Selected 1 item (2 skills):\n  everyday\n    fmt (dependency)\n", result)
+        self.assertEqual({"UNCHANGED": ["everyday", "fmt"]}, self.report_groups(result, "DEPLOYED"))
+        self.assertEqual([], self.manifest()["sources"]["test/skills"]["requested_bundles"])
+
     def test_a_bundle_member_installed_only_as_a_dependency_stays_unchosen_when_the_source_regroups_it(self) -> None:
         self.dependency_member_fixture()
         self.deploy_ok("--all")

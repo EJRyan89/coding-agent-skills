@@ -25,6 +25,7 @@ from harness import (
 )
 
 from deployer import fsops, hashing, journal, platform_support, render
+from deployer.kinds import KINDS
 from deployer.paths import CANARY_MARKER, CANARY_MARKER_TEXT
 
 ZERO_HASH = "sha256:" + "0" * 64
@@ -1400,6 +1401,151 @@ class MigrationTests(DeployerTestCase):
         self.deploy_ok("--migrate-from", "test/old")
         self.assertEqual([], self.manifest()["sources"]["test/skills"]["requested_bundles"])
         self.assertNotIn("pack (bundle)", self.deploy_ok("--all", "--dry-run").output)
+
+    def drop_bundle_members(self) -> None:
+        """Rewrite every manifest entry as a deployer that recorded no bundle members wrote it.
+
+        The deployment that records members writes the same entry with requested_bundle_members beside the requests,
+        so an entry without it is one a release before that deployment wrote.
+        """
+        data = self.manifest()
+        for entry in data["sources"].values():
+            del entry["requested_bundle_members"]
+        self.write_manifest(data)
+
+    def migrate_as_before_members_were_recorded(self, old: str) -> None:
+        """Move everything the old source owns into this source's entry as --migrate-from did before bundle members
+        were recorded: the new entry carried each skill the old one requested on its own, and no bundle request, since
+        a bundle whose members were installed counted as chosen then. That migration deployed nothing, so the entry
+        stays as it wrote it until the next deployment.
+        """
+        data = self.manifest()
+        old_entry = data["sources"].pop(old)
+        data["sources"]["test/skills"] = {
+            "source_dir": platform_support.normalize(self.source),
+            "deployed_at": None,
+            "requested_bundles": [],
+            "requested_skills": [name for name in old_entry["requested_skills"] if name in old_entry["skills"]],
+            **{kind.key: old_entry[kind.key] for kind in KINDS},
+        }
+        self.write_manifest(data)
+
+    def kept_by_all(self, selected: str, kept: list[str]) -> None:
+        """A plain --all, dry run and deployment alike, selects what is given and reports every kept item UNCHANGED."""
+        for arguments, title in ((("--all", "--dry-run"), "DRY RUN"), (("--all",), "DEPLOYED")):
+            with self.subTest(title=title):
+                output = self.deploy_ok(*arguments).output
+                self.assertIn(selected, output)
+                self.assertEqual({"UNCHANGED": kept}, self.report_groups(output, title))
+
+    def requests(self) -> tuple[list[str], dict[str, list[str]], list[str]]:
+        entry = self.manifest()["sources"]["test/skills"]
+        return entry["requested_bundles"], entry["requested_bundle_members"], entry["requested_skills"]
+
+    def test_a_bundle_an_earlier_migration_recorded_no_request_for_stays_in_all(self) -> None:
+        self.old_source_with_agent({"pack": {"members": ["alpha"], "opt_in": True}}, "--include", "pack")
+        self.migrate_as_before_members_were_recorded("test/old")
+        menu = self.deploy("--dry-run", stdin="\n").output
+        self.assertRegex(menu, r"(?m)^  \[\*\] [0-9]+\. pack \(bundle, opt-in\)$")
+        self.kept_by_all("Selected 1 item (1 skill):\n  pack (bundle)\n    alpha\n", ["alpha", "reviewer.md (agent)"])
+        self.assertEqual((["pack"], {"pack": ["alpha"]}, []), self.requests())
+
+    def test_a_skill_an_earlier_migration_recorded_no_request_for_stays_in_all_as_an_opt_in_root(self) -> None:
+        self.old_source_with_agent({"pack": {"members": ["alpha"], "opt_in": True}}, "--include", "pack")
+        self.make_source_json()
+        self.make_skill("alpha", "Alpha", agent_deps=["reviewer"], opt_in=True)
+        self.migrate_as_before_members_were_recorded("test/old")
+        self.kept_by_all("Selected 1 item (1 skill):\n  alpha\n", ["alpha", "reviewer.md (agent)"])
+        self.assertEqual(([], {}, ["alpha"]), self.requests())
+
+    def test_a_request_recorded_without_members_follows_a_moved_member_into_a_renamed_bundle(self) -> None:
+        self.old_source_with_agent({"pack": {"members": ["alpha"], "opt_in": True}}, "--include", "pack")
+        self.drop_bundle_members()
+        self.make_source_json(bundles={"kit": {"members": ["alpha"], "opt_in": True}})
+        self.deploy_ok("--migrate-from", "test/old")
+        self.assertEqual((["kit"], {"kit": ["alpha"]}, []), self.requests())
+        self.kept_by_all("Selected 1 item (1 skill):\n  kit (bundle)\n    alpha\n", ["alpha", "reviewer.md (agent)"])
+
+    def test_a_request_recorded_without_members_follows_a_moved_member_this_source_offers_on_its_own(self) -> None:
+        self.old_source_with_agent({"pack": {"members": ["alpha"], "opt_in": True}}, "--include", "pack")
+        self.drop_bundle_members()
+        self.make_source_json()
+        self.make_skill("alpha", "Alpha", agent_deps=["reviewer"], opt_in=True)
+        self.deploy_ok("--migrate-from", "test/old")
+        self.assertEqual(([], {}, ["alpha"]), self.requests())
+        self.kept_by_all("Selected 1 item (1 skill):\n  alpha\n", ["alpha", "reviewer.md (agent)"])
+
+    def test_a_migration_counts_no_skill_installed_only_as_a_dependency_as_chosen(self) -> None:
+        self.make_source_json("test/old", bundles={"pack": {"members": ["alpha"], "opt_in": True}})
+        self.make_skill("alpha", "Alpha", skill_deps=["beta"])
+        self.make_skill("beta", "Beta", opt_in=True)
+        self.make_config("test/old")
+        self.deploy_from(self.snapshot_source("old"), "--all", "--include", "pack")
+        self.drop_bundle_members()
+        # This source puts the old dependency in a bundle of the old name and offers alpha on its own.
+        self.make_source_json(bundles={"pack": {"members": ["beta"], "opt_in": True}})
+        self.make_skill("alpha", "Alpha", skill_deps=["beta"], opt_in=True)
+        self.make_skill("beta", "Beta")
+        self.make_config()
+        self.deploy_ok("--migrate-from", "test/old")
+        self.assertEqual(([], {}, ["alpha"]), self.requests())
+        menu = self.deploy("--dry-run", stdin="\n").output
+        self.assertRegex(menu, r"(?m)^  \[ \] [0-9]+\. pack \(bundle, opt-in\)$")
+        self.kept_by_all("Selected 1 item (2 skills):\n  alpha\n    beta (dependency)\n", ["alpha", "beta"])
+
+    def test_a_migration_into_a_requested_bundle_keeps_the_members_its_request_recorded(self) -> None:
+        self.old_source_with_agent({"pack": {"members": ["alpha"], "opt_in": True}}, "--include", "pack")
+        self.remove_skill("alpha")
+        self.make_source_json(bundles={"kit": {"members": ["b", "c"], "opt_in": True}})
+        self.make_skill("b", "B")
+        self.make_skill("c", "C")
+        self.deploy_ok("--all", "--include", "kit")
+        # The source moves c out of the bundle and alpha into it, so --all refuses alpha until it is migrated.
+        self.make_source_json(bundles={"kit": {"members": ["alpha", "b"], "opt_in": True}})
+        self.make_skill("alpha", "Alpha", agent_deps=["reviewer"])
+        self.make_skill("c", "C", opt_in=True)
+        self.deploy_ok("--migrate-from", "test/old")
+        self.assertEqual((["kit"], {"kit": ["alpha", "b", "c"]}, []), self.requests())
+        self.kept_by_all(
+            "Selected 2 items (3 skills):\n  kit (bundle)\n    alpha\n    b\n  c\n",
+            ["alpha", "b", "c", "reviewer.md (agent)"],
+        )
+
+    def gamma_from_another_source_beside_pack(self) -> None:
+        """Deploy gamma from test/old, then opt-in bundle pack [alpha, beta] from this source by request."""
+        self.make_source_json("test/old")
+        self.make_skill("gamma", "Gamma")
+        self.make_config("test/old")
+        self.deploy_from(self.snapshot_source("old"), "--all")
+        self.remove_skill("gamma")
+        self.make_source_json(bundles={"pack": {"members": ["alpha", "beta"], "opt_in": True}})
+        self.make_skill("alpha", "Alpha")
+        self.make_skill("beta", "Beta")
+        self.make_config()
+        self.deploy_ok("--all", "--include", "pack")
+
+    def test_a_migration_leaves_the_record_of_a_bundle_it_carries_nothing_into(self) -> None:
+        self.gamma_from_another_source_beside_pack()
+        self.make_source_json(bundles={"pack": {"members": ["beta"], "opt_in": True}})
+        self.make_skill("alpha", "Alpha", opt_in=True)
+        self.make_skill("gamma", "Gamma")
+        self.deploy_ok("--migrate-from", "test/old")
+        self.assertEqual((["pack"], {"pack": ["alpha", "beta"]}, ["gamma"]), self.requests())
+        self.kept_by_all(
+            "Selected 3 items (3 skills):\n  pack (bundle)\n    beta\n  alpha\n  gamma\n", ["alpha", "beta", "gamma"]
+        )
+
+    def test_a_migration_into_an_entry_recorded_without_members_keeps_what_its_requests_stood_for(self) -> None:
+        self.gamma_from_another_source_beside_pack()
+        self.drop_bundle_members()
+        self.make_source_json(bundles={"kit": {"members": ["beta"], "opt_in": True}})
+        self.make_skill("alpha", "Alpha", opt_in=True)
+        self.make_skill("gamma", "Gamma")
+        self.deploy_ok("--migrate-from", "test/old")
+        self.assertEqual((["pack"], {"pack": []}, ["alpha", "beta", "gamma"]), self.requests())
+        self.kept_by_all(
+            "Selected 3 items (3 skills):\n  kit (bundle)\n    beta\n  alpha\n  gamma\n", ["alpha", "beta", "gamma"]
+        )
 
     def test_migration_transfers_the_skill_and_shared_intersection(self) -> None:
         self.make_source_json("new/source", shared_assets={"shared-doc.md": "owner"})
