@@ -276,7 +276,7 @@ def skill_path_problems(root: Path) -> list[str]:
 
 
 def _path_documents(root: Path) -> list[tuple[Path, set[str] | None, Path | None]]:
-    """Each agent, then each skill's Markdown with the skills it declares and its directory, a grouped one included."""
+    """Each agent, then each skill's Markdown with the skills it declares and its directory."""
     documents: list[tuple[Path, set[str] | None, Path | None]] = [
         (path, None, None) for path in sorted((root / "agents").glob("*.md"), key=path_order)
     ]

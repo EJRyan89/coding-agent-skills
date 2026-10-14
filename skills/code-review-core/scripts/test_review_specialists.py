@@ -2110,6 +2110,23 @@ class EndToEndTests(SpecialistFixture, GitTestCase):
                 [], list((self.root / "work-initial").iterdir()), "no plan, prompt, or result is published"
             )
 
+        def test_a_condition_script_whose_processes_cannot_be_ended_fails_as_started_not_as_unrun(self) -> None:
+            child = self.use_lingering_condition()
+            kernel = FailingKernel()
+            wait_timeout = 258  # WAIT_TIMEOUT: the job's processes are ended, but are not seen to end in time
+            with (
+                mock.patch("job_tree._kernel32", return_value=kernel),
+                mock.patch.object(kernel, "WaitForSingleObject", return_value=wait_timeout, create=True),
+                self.assertRaises(rs.SpecialistError) as raised,
+            ):
+                self.plan()
+            self.assertRegex(
+                str(raised.exception),
+                r"^Condition script started, but its processes could not be ended: tools/window\.py: "
+                r"The job's processes may still run: process \d+ had not ended 10 seconds on$",
+            )
+            self.assert_lingering_condition_failed(child)
+
     else:
 
         def test_a_condition_script_leading_no_process_group_of_its_own_is_ended_and_fails_the_review(self) -> None:
@@ -2138,6 +2155,38 @@ class EndToEndTests(SpecialistFixture, GitTestCase):
             self.assertEqual(
                 [], list((self.root / "work-initial").iterdir()), "no plan, prompt, or result is published"
             )
+
+        def test_a_condition_script_whose_processes_cannot_be_ended_fails_as_started_not_as_unrun(self) -> None:
+            child = self.use_lingering_condition()
+            with (
+                mock.patch.object(job_tree, "group_members", return_value=[4243]),
+                mock.patch.object(job_tree, "KILL_WAIT_SECONDS", 0.2),
+                self.assertRaises(rs.SpecialistError) as raised,
+            ):
+                self.plan()
+            self.assertEqual(
+                "Condition script started, but its processes could not be ended: tools/window.py: "
+                "The group's processes may still run: process 4243 had not ended 0.2 seconds on",
+                str(raised.exception),
+            )
+            self.assert_lingering_condition_failed(child)
+
+    def use_lingering_condition(self) -> Path:
+        """Make the window condition one that holds, exiting 0 once it has started a program that outlives it, and
+        return the file it writes the program's ID to."""
+        child = self.root / "condition-child"
+        self.use_condition(
+            "import subprocess, sys\n"
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+            f"open({str(child)!r}, 'w').write(str(child.pid))\n",
+            "lingering",
+        )
+        return child
+
+    def assert_lingering_condition_failed(self, child: Path) -> None:
+        self.assertTrue(child.is_file(), "the condition ran: it started its program")
+        self.assertTrue(ended(int(child.read_text(encoding="utf-8"))), "the program it started was ended all the same")
+        self.assertEqual([], list((self.root / "work-initial").iterdir()), "no plan, prompt, or result is published")
 
     def test_a_condition_scripts_output_past_its_limit_is_cut_and_the_cut_named(self) -> None:
         self.use_condition("import sys\nsys.stderr.write('e' * 100000)\nsys.exit(2)\n", "talkative")

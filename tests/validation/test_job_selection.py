@@ -169,6 +169,8 @@ class JobSecondsFixtures(GitTestCase):
             '{"runs": ["7"], "seconds": {"tests/test_a.py": 1}}',
             '{"runs": [true], "seconds": {"tests/test_a.py": 1}}',
             '{"runs": [0], "seconds": {"tests/test_a.py": 1}}',
+            '{"runs": [[7]], "seconds": {"tests/test_a.py": 1}}',
+            '{"runs": [7, {"id": 9}], "seconds": {"tests/test_a.py": 1}}',
         ):
             with self.subTest(text=text), self.assertRaisesRegex(ValueError, "job_seconds.json"):
                 job_seconds(self.write_table(text))
