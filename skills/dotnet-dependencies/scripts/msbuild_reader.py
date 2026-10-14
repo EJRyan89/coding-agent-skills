@@ -10,7 +10,8 @@ A PackageReference is kept with the conditions it sits under, its own and those 
 holding it, and the Whens before it in its Choose, which must fail, so a framework's references can be evaluated for
 that framework. Only comparisons of `$(TargetFramework)` and literals, and its StartsWith call, are evaluated; any
 other condition is left unevaluated and named, never guessed. Every comparison of two framework names goes through
-`same_framework`, so a restore's long name, such as `.NETCoreApp,Version=v8.0`, matches the project's `net8.0`.
+`same_framework`, so a restore's long name, such as `.NETCoreApp,Version=v8.0`, matches the project's `net8.0`, and
+every search for a name among a project's names through `matching_framework`, which prefers the name spelled alike.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from __future__ import annotations
 import json
 import re
 import sys
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -50,6 +51,9 @@ LONG_FRAMEWORK = re.compile(
 )
 # A short moniker with a platform, whose version a restore writes out where the project may leave it to the default.
 PLATFORM_FRAMEWORK = re.compile(r"^(?P<base>net\d+\.\d+)-(?P<platform>[a-z]+)(?P<version>\d+(?:\.\d+)*)?$")
+# The platform version the .NET SDK gives a platform a project names without one. A workload sets every other
+# platform's, which varies with the workload, so a name without a version matches any version of such a platform.
+PLATFORM_DEFAULT_VERSIONS = {"windows": "7.0"}
 NUSPEC_DEPENDENCY_ID = "id"
 PACKAGES_CONFIG = "packages.config"
 CENTRAL_VERSIONS = "Directory.Packages.props"
@@ -200,14 +204,28 @@ def frameworks_of(root: Element) -> list[str]:
     return list(dict.fromkeys(found))
 
 
+def platform_version(version: str) -> str:
+    """A platform version as a restore writes it, its trailing zero parts dropped down to two parts: `10.0.19041.0`
+    is `10.0.19041`, and `10` is `10.0`."""
+    parts = version.split(".")
+    while len(parts) > 2 and int(parts[-1]) == 0:
+        parts.pop()
+    return ".".join(parts if len(parts) > 1 else [*parts, "0"])
+
+
 def framework_key(name: str) -> str:
     """A target framework's canonical name, its short moniker case-folded, whether it is written short, as `net8.0`
     or `net472`, or long, as `.NETCoreApp,Version=v8.0` or `.NETFramework,Version=v4.7.2`, the form older restores
-    key their targets by. A name in neither form is its own key."""
+    key their targets by, with a platform version as a restore writes it (`platform_version`). A name in neither
+    form is its own key."""
     text = name.strip()
     long = LONG_FRAMEWORK.match(text)
     if long is None:
-        return text.casefold()
+        key = text.casefold()
+        platform = PLATFORM_FRAMEWORK.match(key)
+        if platform is None or not platform.group("version"):
+            return key
+        return f"{platform.group('base')}-{platform.group('platform')}{platform_version(platform.group('version'))}"
     identifier = long.group("identifier").casefold()
     parts = long.group("version").split(".")
     if identifier == ".netframework":
@@ -225,18 +243,33 @@ def framework_key(name: str) -> str:
 
 def same_framework(first: str, second: str) -> bool:
     """Whether two names are one target framework, the one comparison every framework match goes through: their
-    canonical names agree, or both name one platform of one framework and one leaves its version to the default,
-    as a restore keys `net8.0-windows7.0` for a project's `net8.0-windows`."""
+    canonical names agree, or both name one platform of one framework and one leaves its version to the default
+    while the other names that default, as a restore keys `net8.0-windows7.0` for a project's `net8.0-windows` and
+    never `net8.0-windows10.0.19041`. A platform whose default a workload sets (`PLATFORM_DEFAULT_VERSIONS`) takes
+    any version as the default."""
     keys = (framework_key(first), framework_key(second))
     if keys[0] == keys[1]:
         return True
     left, right = (PLATFORM_FRAMEWORK.match(key) for key in keys)
-    return bool(
+    if not (
         left
         and right
         and (left.group("base"), left.group("platform")) == (right.group("base"), right.group("platform"))
-        and not (left.group("version") and right.group("version"))
-    )
+    ):
+        return False
+    versions = [match.group("version") for match in (left, right) if match.group("version")]
+    default = PLATFORM_DEFAULT_VERSIONS.get(left.group("platform"))
+    return len(versions) == 1 and default in (None, versions[0])
+
+
+def matching_framework(name: str, names: Iterable[str]) -> str | None:
+    """The first of `names` that is the same framework as `name`, a name whose canonical name is `name`'s before one
+    that is the same only by leaving its platform version to the default, so a project naming both `net8.0-android`
+    and `net8.0-android34.0` keeps each of its restore's targets apart; None when none is."""
+    candidates = list(names)
+    key = framework_key(name)
+    exact = next((candidate for candidate in candidates if framework_key(candidate) == key), None)
+    return exact or next((candidate for candidate in candidates if same_framework(candidate, name)), None)
 
 
 def item_specs(text: str) -> list[str]:
@@ -572,7 +605,8 @@ def read_assets(path: Path, declared: Sequence[str] = ()) -> Assets:
 
     Both are keyed by the name `$(TargetFramework)` holds for the framework, so its conditions read as written: the
     first of the project file's `declared` frameworks, then of the project section's, that is the same framework as
-    the target, whichever form the restore wrote it in (`same_framework`), else the target's name as written."""
+    the target, whichever form the restore wrote it in, a name spelled alike before one that leaves its platform
+    version to the default (`matching_framework`), else the target's name as written."""
     try:
         document = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as error:
@@ -584,7 +618,7 @@ def read_assets(path: Path, declared: Sequence[str] = ()) -> Assets:
     aliases = [*declared, *frameworks]
 
     def named(written: str) -> str:
-        return next((alias for alias in aliases if same_framework(alias, written)), written)
+        return matching_framework(written, aliases) or written
 
     nodes: dict[str, dict[str, PackageNode]] = {}
     for target, entries in targets.items():
