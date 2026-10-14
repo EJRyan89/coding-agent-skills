@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import unittest
 from pathlib import Path
@@ -11,7 +12,7 @@ from unittest import mock
 
 from harness import DeployerTestCase
 
-from deployer import fsops
+from deployer import fsops, platform_support
 
 
 def sha256(content: bytes) -> str:
@@ -229,6 +230,24 @@ class AgentDeploymentTests(DeployerTestCase):
                     extra.unlink()
                 self.make_agent("reviewer")
                 self.make_skill("alpha", "Alpha", agent_deps=["reviewer"])
+
+    def test_an_agent_naming_a_path_or_configured_variable_is_refused_with_its_token_left_unexpanded(self) -> None:
+        # The skill renders each variable, so a value is there to substitute; the agent takes the interpreter alone.
+        python = "python" if platform_support.WINDOWS else "python3"
+        for token in ("HOME", "SOURCE_ROOT", "REPOS_ROOT"):
+            with self.subTest(token=token):
+                self.make_skill("alpha", f'Alpha in "{{{{{token}}}}}"', [token], agent_deps=["reviewer"])
+                self.make_agent("reviewer", f'Run {{{{PYTHON}}}} "{{{{{token}}}}}/guard.py" first.')
+                self.deploy_fails(
+                    "--all",
+                    pattern=re.escape(
+                        "ERROR: Unexpanded tokens found in staged output:\n"
+                        f'.claude-agents/reviewer.md:8:Run {python} "{{{{{token}}}}}/guard.py" first.\n'
+                    ),
+                )
+                self.assertFalse(self.agent.exists())
+                self.assertFalse((self.skills_dir / "alpha").exists())
+                self.assertFalse(self.manifest_file.exists())
 
     def test_a_failed_agent_install_rolls_back_the_whole_run(self) -> None:
         self.deploy_ok("--all")
