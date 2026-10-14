@@ -7,8 +7,10 @@ never the whole answer. Element names are matched without their namespace, becau
 MSBuild 2003 namespace, a nuspec one of several, and a binding redirect the assembly-binding one.
 
 A PackageReference is kept with the conditions it sits under, its own and those of the ItemGroup, When, or Otherwise
-holding it, so a framework's references can be evaluated for that framework. Only comparisons of `$(TargetFramework)`
-and literals are evaluated; any other condition is left unevaluated and named, never guessed.
+holding it, and the Whens before it in its Choose, which must fail, so a framework's references can be evaluated for
+that framework. Only comparisons of `$(TargetFramework)` and literals, and its StartsWith call, are evaluated; any
+other condition is left unevaluated and named, never guessed. Every comparison of two framework names goes through
+`same_framework`, so a restore's long name, such as `.NETCoreApp,Version=v8.0`, matches the project's `net8.0`.
 """
 
 from __future__ import annotations
@@ -16,7 +18,7 @@ from __future__ import annotations
 import json
 import re
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -40,6 +42,14 @@ CONDITION_TOKEN = re.compile(
     re.IGNORECASE,
 )
 FRAMEWORK_PROPERTY = re.compile(re.escape("$(TargetFramework)"), re.IGNORECASE)
+# The property in either form a condition reads it: bare, or as the object of a StartsWith call.
+FRAMEWORK_REFERENCE = re.compile(r"\$\(TargetFramework\b", re.IGNORECASE)
+# A target framework's long name, as older restores key their targets: `.NETCoreApp,Version=v8.0`.
+LONG_FRAMEWORK = re.compile(
+    r"^(?P<identifier>\.[a-z]+),Version=v(?P<version>\d+(?:\.\d+)*)(?:,Profile=(?P<profile>\w+))?$", re.IGNORECASE
+)
+# A short moniker with a platform, whose version a restore writes out where the project may leave it to the default.
+PLATFORM_FRAMEWORK = re.compile(r"^(?P<base>net\d+\.\d+)-(?P<platform>[a-z]+)(?P<version>\d+(?:\.\d+)*)?$")
 NUSPEC_DEPENDENCY_ID = "id"
 PACKAGES_CONFIG = "packages.config"
 CENTRAL_VERSIONS = "Directory.Packages.props"
@@ -73,7 +83,7 @@ class PackageRef:
 class PackageItem:
     """A PackageReference as written: its operation (Include, Update, or Remove), the package, the version it states
     or the central version an Include takes, and the conditions it sits under, outermost first, each with whether it
-    must hold (an Otherwise needs every When before it to fail)."""
+    must hold (a When or an Otherwise in a Choose needs every When before it to fail)."""
 
     operation: str
     id: str
@@ -190,6 +200,50 @@ def frameworks_of(root: Element) -> list[str]:
     return list(dict.fromkeys(found))
 
 
+def framework_key(name: str) -> str:
+    """A target framework's canonical name, its short moniker case-folded, whether it is written short, as `net8.0`
+    or `net472`, or long, as `.NETCoreApp,Version=v8.0` or `.NETFramework,Version=v4.7.2`, the form older restores
+    key their targets by. A name in neither form is its own key."""
+    text = name.strip()
+    long = LONG_FRAMEWORK.match(text)
+    if long is None:
+        return text.casefold()
+    identifier = long.group("identifier").casefold()
+    parts = long.group("version").split(".")
+    if identifier == ".netframework":
+        while len(parts) > 2 and parts[-1] == "0":
+            parts.pop()
+        short = "net" + "".join(parts)
+    elif identifier in (".netcoreapp", ".netstandard"):
+        modern = identifier == ".netcoreapp" and int(parts[0]) >= 5
+        short = ("net" if modern else identifier[1:]) + f"{parts[0]}.{parts[1] if len(parts) > 1 else '0'}"
+    else:
+        return text.casefold()
+    profile = long.group("profile")
+    return f"{short}-{profile.casefold()}" if profile else short
+
+
+def same_framework(first: str, second: str) -> bool:
+    """Whether two names are one target framework, the one comparison every framework match goes through: their
+    canonical names agree, or both name one platform of one framework and one leaves its version to the default,
+    as a restore keys `net8.0-windows7.0` for a project's `net8.0-windows`."""
+    keys = (framework_key(first), framework_key(second))
+    if keys[0] == keys[1]:
+        return True
+    left, right = (PLATFORM_FRAMEWORK.match(key) for key in keys)
+    return bool(
+        left
+        and right
+        and (left.group("base"), left.group("platform")) == (right.group("base"), right.group("platform"))
+        and not (left.group("version") and right.group("version"))
+    )
+
+
+def item_specs(text: str) -> list[str]:
+    """The item names an Include, Update, or Remove lists, separated by `;` as MSBuild splits them."""
+    return [part.strip() for part in text.split(";") if part.strip()]
+
+
 class ConditionParser:
     """A recursive-descent reader of one MSBuild condition for one framework: `or` over `and` over comparisons, a
     StartsWith call on the property, and parentheses. Each method returns the value, or None when the condition is
@@ -273,7 +327,7 @@ def condition_holds(text: str, framework: str) -> bool | None:
             return None
         tokens.append(token)
         position = token.end()
-    if not tokens or ("," in framework and FRAMEWORK_PROPERTY.search(text)):
+    if not tokens or ("," in framework and FRAMEWORK_REFERENCE.search(text)):
         return None
     parser = ConditionParser(tokens, framework)
     value = parser.disjunction()
@@ -281,38 +335,44 @@ def condition_holds(text: str, framework: str) -> bool | None:
 
 
 def conditioned(element: Element, conditions: tuple[tuple[str, bool], ...] = ()) -> Iterator[ConditionedElement]:
-    """Every descendant in document order with the conditions it sits under, its own included: an Otherwise holds
-    when every When before it in its Choose fails."""
+    """Every descendant in document order with the conditions it sits under, its own included. A Choose applies its
+    first When whose condition holds, as MSBuild evaluates it, so a When also needs every When before it in its
+    Choose to fail, and an Otherwise needs them all to; a When after one that cannot be evaluated is not evaluated
+    either."""
     whens: list[str] = []
     for child in element:
         name = local_name(child)
         own = (child.get("Condition") or "").strip()
         inner = (*conditions, (own, True)) if own else conditions
-        if name == "When" and own:
-            whens.append(own)
-        elif name == "Otherwise":
+        if name in ("When", "Otherwise"):
             inner = (*conditions, *((when, False) for when in whens))
+            if name == "When" and own:
+                inner = (*inner, (own, True))
+                whens.append(own)
         yield child, inner
         yield from conditioned(child, inner)
 
 
 def package_items(root: Element, central: dict[str, str]) -> list[PackageItem]:
-    """Each PackageReference item in document order, with its Version attribute or child, else for an Include the
-    central version, and the conditions it sits under."""
+    """Each PackageReference item in document order, one per package its Include, Update, or Remove lists, with its
+    Version attribute or child, else for an Include the central version, and the conditions it sits under."""
     found: list[PackageItem] = []
     for element, conditions in conditioned(root):
         if local_name(element) != "PackageReference":
             continue
         version = element.get("Version") or child_text(element, "Version") or element.get("VersionOverride")
-        if package := element.get("Include"):
-            origin = "PackageReference"
-            if not version and package.casefold() in central:
-                version, origin = central[package.casefold()], "central"
-            found.append(PackageItem("Include", package, version, origin, conditions))
-        elif package := element.get("Update"):
-            found.append(PackageItem("Update", package, version, "PackageReference", conditions))
-        elif package := element.get("Remove"):
-            found.append(PackageItem("Remove", package, None, "PackageReference", conditions))
+        operation = next((name for name in ("Include", "Update", "Remove") if element.get(name)), None)
+        if operation is None:
+            continue
+        for package in item_specs(element.get(operation) or ""):
+            if operation == "Include":
+                origin, wanted = "PackageReference", version
+                if not wanted and package.casefold() in central:
+                    wanted, origin = central[package.casefold()], "central"
+                found.append(PackageItem(operation, package, wanted, origin, conditions))
+            else:
+                wanted = version if operation == "Update" else None
+                found.append(PackageItem(operation, package, wanted, "PackageReference", conditions))
     return found
 
 
@@ -362,15 +422,14 @@ def packages_for(
 
 
 def assembly_references(root: Element) -> list[AssemblyRef]:
-    """Each old-style Reference: the name before the first comma, the Version= in the Include, and the HintPath."""
+    """Each old-style Reference, one per assembly its Include lists: the name before the first comma, the Version=
+    in the Include, and the HintPath."""
     found: list[AssemblyRef] = []
     for element in children(root, "Reference"):
-        include = (element.get("Include") or "").strip()
-        if not include:
-            continue
-        name = include.split(",", 1)[0].strip()
-        match = ASSEMBLY_VERSION.search(include)
-        found.append(AssemblyRef(name, match.group(1) if match else None, child_text(element, "HintPath")))
+        for include in item_specs(element.get("Include") or ""):
+            name = include.split(",", 1)[0].strip()
+            match = ASSEMBLY_VERSION.search(include)
+            found.append(AssemblyRef(name, match.group(1) if match else None, child_text(element, "HintPath")))
     return found
 
 
@@ -413,7 +472,7 @@ def read_project(path: Path, central: Callable[[Path], dict[str, str]]) -> Proje
         project_refs=[
             project_path(path.parent, include)
             for element in children(root, "ProjectReference")
-            if (include := element.get("Include"))
+            for include in item_specs(element.get("Include") or "")
         ],
         packages=packages_for(items, None)[0],
         assemblies=assembly_references(root),
@@ -506,10 +565,14 @@ def assets_direct(frameworks: dict[str, Any]) -> dict[str, list[PackageRef]]:
     return direct
 
 
-def read_assets(path: Path) -> Assets:
+def read_assets(path: Path, declared: Sequence[str] = ()) -> Assets:
     """What a project.assets.json recorded: each framework's packages with their dependencies and assemblies, and
     the direct dependencies per framework. A runtime-specific target, such as `net8.0/win-x64`, repeats its
-    framework's packages and is passed over."""
+    framework's packages and is passed over.
+
+    Both are keyed by the name `$(TargetFramework)` holds for the framework, so its conditions read as written: the
+    first of the project file's `declared` frameworks, then of the project section's, that is the same framework as
+    the target, whichever form the restore wrote it in (`same_framework`), else the target's name as written."""
     try:
         document = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as error:
@@ -517,9 +580,15 @@ def read_assets(path: Path) -> Assets:
     targets = document.get("targets") if isinstance(document, dict) else None
     if not isinstance(targets, dict):
         raise Unreadable(path, "the assets file has no targets")
+    frameworks = mapping(mapping(document, "project"), "frameworks")
+    aliases = [*declared, *frameworks]
+
+    def named(written: str) -> str:
+        return next((alias for alias in aliases if same_framework(alias, written)), written)
+
     nodes: dict[str, dict[str, PackageNode]] = {}
     for target, entries in targets.items():
-        framework = target.split("/", 1)[0]
+        framework = named(target.split("/", 1)[0])
         if not isinstance(entries, dict) or framework in nodes:
             continue
         nodes[framework] = {}
@@ -534,5 +603,4 @@ def read_assets(path: Path) -> Assets:
                 {k: str(v) for k, v in dependencies.items()} if isinstance(dependencies, dict) else {},
                 assets_assemblies(entry),
             )
-    frameworks = mapping(mapping(document, "project"), "frameworks")
-    return Assets(nodes, assets_direct(frameworks))
+    return Assets(nodes, {named(framework): refs for framework, refs in assets_direct(frameworks).items()})
