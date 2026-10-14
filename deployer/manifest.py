@@ -74,8 +74,26 @@ class Ownership:
         skill its source owned, and says nothing about what was chosen: it excludes no skill, so such an entry keeps
         more, not less, as it does whether it is read in memory before its next deployment or after a deployment of
         another source, or a migration, saved it as filled in.
+
+        The first deployer to write version 8 recorded no bundle members, and a skill it left in place, preserved or
+        skipped, kept the edges the upgrade filled in beside the exact ones it recorded for the skills it installed, so
+        they need not form a cycle. An entry that requests a bundle whose members it does not record is one an earlier
+        release wrote, and in it a skill's recorded dependencies may be those filled-in edges when they name every
+        other skill the entry owns and that skill or one they name is requested on its own, as every filled-in list is
+        in an entry that requests any skill on its own: they exclude no skill either. Such an entry may count as chosen
+        a skill a deployment recorded only as a dependency of a skill that depends on every other, which keeps more,
+        never less, until its next deployment records what its requests stand for. An entry that requests no skill on
+        its own cannot tell a filled-in list from an exact one, and its edges are read as recorded.
         """
         edges = self.deps_of(SKILL)
+        if self.requested_bundles - self.requested_bundle_members.keys():
+            edges = {
+                name: dependencies
+                for name, dependencies in edges.items()
+                if not (
+                    set(dependencies) >= set(self.skills) - {name} and self.requested_skills & {name, *dependencies}
+                )
+            }
 
         def reaches(start: str, goal: str) -> bool:
             seen, pending = {start}, [start]

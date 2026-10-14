@@ -826,6 +826,60 @@ class CommandReadingTests(WorktreesTestCase):
         )
         self.assertEqual([], self.notes)
 
+    def test_powershell_reads_a_location_variable_each_env_drive_cmdlet_sets(self) -> None:
+        # PowerShell's own binder places each argument, so a parameter abbreviated, aliased, given with a colon, or
+        # left positional names the same path, and every element of an array of paths is read.
+        for command in (
+            "Set-Content env:GIT_DIR x",
+            "Set-Content -Path Env:\\GIT_DIR -Value x",
+            "Set-Content -LiteralPath ENV:/git_dir x",
+            "Set-Content -Pat:env:GIT_DIR -Encoding utf8 x",
+            "Set-Content -LP env:GIT_DIR x",
+            "Set-Content env:NOTES, env:GIT_DIR x",
+            "Set-Item -Value x -LiteralPath env:GIT_DIR",
+            "si env:FOO, env:GIT_DIR x",
+            "Rename-Item env:FOO GIT_DIR",
+            "Rename-Item -NewName git_dir -LiteralPath Env:\\FOO",
+            "rni -Path env:FOO -NewName GIT_DIR",
+            "Copy-Item env:FOO env:GIT_DIR",
+            "Copy-Item -Path env:FOO -Destination ENV:\\GIT_DIR",
+            "cpi env:FOO, env:BAR -Dest env:/GIT_DIR",
+            "New-Item -Path env: -Name GIT_DIR -Value x",
+            "ni Env:\\ -Name git_dir -Value x",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self.at(None, "commit"), self.read(f"{command}; git commit"))
+                self.assertEqual([], self.notes)
+        aimed = {**self.environment, "GIT_WORK_TREE": str(self.hub)}
+        self.assertEqual(
+            self.at(None, "commit"),
+            self.read(f"Set-Content env:GIT_WORK_TREE '{self.tree}'; git commit", environment=aimed),
+        )
+
+    def test_powershell_passes_over_cmdlets_that_set_no_location_variable(self) -> None:
+        inherited = {**self.environment, "GIT_WORK_TREE": str(self.tree)}
+        for command in (
+            "Set-Content notes.txt GIT_DIR",
+            "Set-Content -Path notes.txt -Value env:GIT_DIR",
+            "Set-Content env:NOTES GIT_DIR",
+            "Set-Content $target x",
+            "Rename-Item notes.txt GIT_DIR",
+            # The provider takes -NewName as a bare name, so this sets a variable named env:GIT_DIR.
+            "Rename-Item env:FOO env:GIT_DIR",
+            "Copy-Item env:GIT_DIR env:SAVED",
+            "Copy-Item notes.txt GIT_DIR",
+            "New-Item -Path . -Name GIT_DIR",
+            # The env: drive cannot seek within a variable, so Add-Content fails there.
+            "Add-Content env:GIT_DIR x",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self.at(self.hub, "commit"), self.read(f"{command}; git commit"))
+                self.assertEqual([], self.notes)
+        self.assertEqual(
+            self.at(self.tree, "commit"),
+            self.read("Copy-Item env:GIT_WORK_TREE env:SAVED; git commit", environment=inherited),
+        )
+
     def test_what_cannot_be_read_is_left_unjudged_with_a_note(self) -> None:
         self.assertEqual([], self.read("& $git commit; git $verb x; pwsh -c $script; iex $text; pwsh -c"))
         self.assertIn("a git subcommand is computed at run time", self.notes)
@@ -861,6 +915,11 @@ class PowerShellGuardTests(WorktreesTestCase):
         self.assertIsNone(self.powershell("git commit -m x", self.tree))
         self.assertEqual("deny", self.powershell(f"Set-Location '{self.hub}'; git commit -m x", self.tree))
         self.assertEqual("deny", self.bash(f"pwsh -c 'git -C \"{self.hub}\" switch feat/demo'", self.tree))
+
+    def test_a_location_variable_set_through_an_env_drive_cmdlet_reaches_the_judgment(self) -> None:
+        self.assertIsNone(self.powershell("Rename-Item env:FOO GIT_WORK_TREE; git commit -m x", self.hub))
+        self.assertIn("could not tell where `git commit` runs", self.stderr)
+        self.assertEqual("deny", self.powershell("Set-Content notes.txt GIT_WORK_TREE; git commit -m x", self.hub))
 
     def test_a_powershell_command_is_allowed_with_a_note_when_pwsh_cannot_be_started(self) -> None:
         git = shutil.which("git")
