@@ -144,6 +144,45 @@ class ProcStatusTests(unittest.TestCase):
         kill.assert_not_called()
 
 
+class OpenFailureTests(unittest.TestCase):
+    """A process Windows will not open a handle to is reported gone only when its PID names no process."""
+
+    # Windows' error codes, from winerror.h.
+    NAMES_NO_PROCESS = 87  # ERROR_INVALID_PARAMETER
+    UNREADABLE = (
+        5,  # ERROR_ACCESS_DENIED
+        8,  # ERROR_NOT_ENOUGH_MEMORY
+        1450,  # ERROR_NO_SYSTEM_RESOURCES
+        1816,  # ERROR_NOT_ENOUGH_QUOTA
+        0,  # no error set
+    )
+
+    def test_only_an_invalid_parameter_reports_the_process_gone(self) -> None:
+        self.assertEqual(ProcessStatus(False, None), process_identity.open_failure_status(self.NAMES_NO_PROCESS))
+        for error in self.UNREADABLE:
+            with self.subTest(error=error):
+                self.assertEqual(ProcessStatus(True, None), process_identity.open_failure_status(error))
+
+    if sys.platform == "win32":
+
+        def test_a_failed_open_process_is_judged_by_its_error(self) -> None:
+            for error, expected in (
+                (self.NAMES_NO_PROCESS, ProcessStatus(False, None)),
+                *((error, ProcessStatus(True, None)) for error in self.UNREADABLE),
+            ):
+                kernel32 = mock.MagicMock()
+                kernel32.OpenProcess.return_value = None
+                with (
+                    self.subTest(error=error),
+                    mock.patch("ctypes.WinDLL", return_value=kernel32),
+                    mock.patch("ctypes.get_last_error", return_value=error),
+                ):
+                    self.assertEqual(expected, process_status(4252))
+                kernel32.OpenProcess.assert_called_once_with(0x1000, False, 4252)
+                kernel32.GetExitCodeProcess.assert_not_called()
+                kernel32.CloseHandle.assert_not_called()
+
+
 class StatFieldsTests(unittest.TestCase):
     """The one parse of a stat line, which job_tree reads a process group's members with too."""
 
