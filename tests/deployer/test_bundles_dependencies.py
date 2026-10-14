@@ -515,22 +515,27 @@ class OptInTests(DeployerTestCase):
         self.assertEqual(["everyday"], self.installed())
 
     def regrouped(
-        self, bundles: dict[str, Any], opt_in_skills: dict[str, str] | None = None, preserved: str | None = None
+        self,
+        bundles: dict[str, Any],
+        opt_in_skills: dict[str, str] | None = None,
+        preserved: str | None = None,
+        installed_since: tuple[str, ...] = (),
     ) -> dict[str, list[str]]:
         """Deploy opt-in bundle pack [fmt, x] by request, regroup the source, making each skill opt_in_skills names an
         opt-in root with the content it gives, and return the next --all's report.
 
         With `preserved`, the manifest is first rewritten as the first deployer to write version 8 left it after
-        preserving that skill through its upgrade of a version 7 manifest. The dry run and the deployment must select
+        preserving that skill through its upgrade of a version 7 manifest, in a deployment that also installed the
+        skills `installed_since` names, which the caller made in the source. The dry run and the deployment must select
         and report the same items.
         """
         self.make_source_json(bundles={"pack": {"members": ["fmt", "x"], "opt_in": True}})
         self.make_skill("x", "X")
         self.deploy_ok("--all", "--include", "pack")
-        self.assertEqual(["everyday", "fmt", "x"], self.installed())
+        self.assertEqual(sorted(["everyday", "fmt", "x", *installed_since]), self.installed())
         self.assertEqual({"pack": ["fmt", "x"]}, self.manifest()["sources"]["test/skills"]["requested_bundle_members"])
         if preserved is not None:
-            self.rewrite_as_preserved_through_the_upgrade(preserved)
+            self.rewrite_as_preserved_through_the_upgrade(preserved, installed_since=installed_since)
         self.make_source_json(bundles=bundles)
         for name, content in (opt_in_skills or {}).items():
             self.make_skill(name, content, opt_in=True)
@@ -657,6 +662,53 @@ class OptInTests(DeployerTestCase):
         self.assertEqual(["pack"], entry["requested_bundles"])
         self.assertEqual({"pack": ["fmt"]}, entry["requested_bundle_members"])
         self.assertEqual(["everyday", "x"], entry["requested_skills"])
+
+    def test_a_renamed_bundle_beside_a_skill_preserved_by_a_deployment_that_installed_a_new_one_stays_in_all(
+        self,
+    ) -> None:
+        # everyday's filled-in dependencies name fmt and x but not newer, which the version 7 manifest did not own.
+        self.make_skill("newer", "Newer")
+        report = self.regrouped(
+            {"kit": {"members": ["fmt", "x"], "opt_in": True}}, preserved="everyday", installed_since=("newer",)
+        )
+        self.assertEqual({"UNCHANGED": ["everyday", "fmt", "newer", "x"]}, report)
+        self.assertEqual(["everyday", "fmt", "newer", "x"], self.installed())
+        self.assertRegex(self.deploy("--dry-run", stdin="\n").output, r"(?m)^  \[\*\] [0-9]+\. kit \(bundle, opt-in\)$")
+        entry = self.manifest()["sources"]["test/skills"]
+        self.assertEqual(["kit"], entry["requested_bundles"])
+        self.assertEqual({"kit": ["fmt", "x"]}, entry["requested_bundle_members"])
+        self.assertEqual(["everyday", "newer"], entry["requested_skills"])
+
+    def test_a_renamed_bundle_beside_a_skill_preserved_by_a_deployment_that_installed_a_new_dependency_stays_in_all(
+        self,
+    ) -> None:
+        # The new skill brought a new opt-in dependency, which is not requested on its own but reached from one that is.
+        # newer's exact list then reads as a filled-in one would, naming every skill but a request and what it reaches,
+        # so the entry keeps more: helper counts as chosen and is requested from then on.
+        self.make_skill("newer", "Newer", skill_deps=["helper"])
+        self.make_skill("helper", "Helper", opt_in=True)
+        report = self.regrouped(
+            {"kit": {"members": ["fmt", "x"], "opt_in": True}},
+            preserved="everyday",
+            installed_since=("helper", "newer"),
+        )
+        self.assertEqual({"UNCHANGED": ["everyday", "fmt", "helper", "newer", "x"]}, report)
+        entry = self.manifest()["sources"]["test/skills"]
+        self.assertEqual(["kit"], entry["requested_bundles"])
+        self.assertEqual(["everyday", "helper", "newer"], entry["requested_skills"])
+
+    def test_a_member_moved_out_beside_a_member_preserved_by_a_deployment_that_installed_a_new_one_stays_in_all(
+        self,
+    ) -> None:
+        self.make_skill("newer", "Newer")
+        report = self.regrouped(
+            {"pack": {"members": ["fmt"], "opt_in": True}}, {"x": "X"}, preserved="fmt", installed_since=("newer",)
+        )
+        self.assertEqual({"UNCHANGED": ["everyday", "fmt", "newer", "x"]}, report)
+        entry = self.manifest()["sources"]["test/skills"]
+        self.assertEqual(["pack"], entry["requested_bundles"])
+        self.assertEqual({"pack": ["fmt"]}, entry["requested_bundle_members"])
+        self.assertEqual(["everyday", "newer", "x"], entry["requested_skills"])
 
     def test_an_entry_recorded_before_bundle_members_were_counts_no_dependency_as_chosen(self) -> None:
         self.dependency_member_fixture()

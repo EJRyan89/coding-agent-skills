@@ -392,17 +392,21 @@ class DeployerTestCase(GitTestCase):
         data["sources"][source_id]["requested_bundles"] = requested_bundles
         self.write_manifest(data)
 
-    def rewrite_as_preserved_through_the_upgrade(self, preserved: str, source_id: str = SOURCE_ID) -> None:
+    def rewrite_as_preserved_through_the_upgrade(
+        self, preserved: str, source_id: str = SOURCE_ID, installed_since: tuple[str, ...] = ()
+    ) -> None:
         """Rewrite the manifest as the first deployer to write version 8, which recorded no bundle members, left a
         version 7 manifest when it deployed the source and preserved its locally modified skill `preserved`: that skill
-        keeps the skill dependencies the upgrade filled in, every other skill its source owns, beside the exact ones the
-        deployment recorded for the skills it installed, and no entry records the members of its bundle requests.
+        keeps the skill dependencies the upgrade filled in, every other skill its source owned then, beside the exact
+        ones the deployment recorded for the skills it installed, and no entry records the members of its bundle
+        requests. The skills `installed_since` names are ones that deployment installed and the version 7 manifest did
+        not own, so the filled-in list does not name them.
         """
         data = self.manifest()
         for entry in data["sources"].values():
             entry.pop("requested_bundle_members", None)
         skills = data["sources"][source_id]["skills"]
-        skills[preserved]["skill_deps"] = sorted(set(skills) - {preserved})
+        skills[preserved]["skill_deps"] = sorted(set(skills) - {preserved, *installed_since})
         self.write_manifest(data)
 
     def owned(self, kind: str, source_id: str = SOURCE_ID) -> dict[str, Any]:
