@@ -17,6 +17,7 @@ from msbuild_reader import (
     Unreadable,
     central_versions_file,
     condition_holds,
+    framework_key,
     package_assemblies,
     packages_for,
     read_assets,
@@ -25,6 +26,7 @@ from msbuild_reader import (
     read_packages_config,
     read_project,
     read_redirects,
+    same_framework,
 )
 
 LEGACY_PROJECT = """<?xml version="1.0" encoding="utf-8"?>
@@ -87,6 +89,43 @@ CONDITIONAL_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
       <ItemGroup><PackageReference Include="Lantern.Other" Version="1.0.0" /></ItemGroup>
     </Otherwise>
   </Choose>
+</Project>
+"""
+# Two Choose elements: the first's Whens overlap and end in an Otherwise; the second's first When cannot be evaluated.
+CHOOSE_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
+  <Choose>
+    <When Condition="$(TargetFramework.StartsWith('net4'))">
+      <ItemGroup><PackageReference Include="Lantern.First" Version="1.0.0" /></ItemGroup>
+    </When>
+    <When Condition="$(TargetFramework.StartsWith('net'))">
+      <ItemGroup><PackageReference Include="Lantern.Second" Version="1.0.0" /></ItemGroup>
+    </When>
+    <Otherwise>
+      <ItemGroup><PackageReference Include="Lantern.Rest" Version="1.0.0" /></ItemGroup>
+    </Otherwise>
+  </Choose>
+  <Choose>
+    <When Condition="'$(Configuration)' == 'Debug'">
+      <ItemGroup><PackageReference Include="Beacon.Unsure" Version="1.0.0" /></ItemGroup>
+    </When>
+    <When Condition="'$(TargetFramework)' == 'net472'">
+      <ItemGroup><PackageReference Include="Beacon.Later" Version="1.0.0" /></ItemGroup>
+    </When>
+    <Otherwise>
+      <ItemGroup><PackageReference Include="Beacon.Rest" Version="1.0.0" /></ItemGroup>
+    </Otherwise>
+  </Choose>
+</Project>
+"""
+LIST_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Lantern.Json; Quill.Http;Beacon.Gone" Version="1.0.0" />
+    <PackageReference Update="Lantern.Json;Lantern.Absent" Version="13.0.1" />
+    <PackageReference Update="Quill.Http" Version="2.0.0" />
+    <PackageReference Remove=";Beacon.Gone;" />
+    <ProjectReference Include="..\\Harbor.Core\\Harbor.Core.csproj;..\\Harbor.Data\\Harbor.Data.csproj" />
+    <Reference Include="Beacon.One, Version=1.0.0.0;Beacon.Two" />
+  </ItemGroup>
 </Project>
 """
 CENTRAL = """<Project>
@@ -284,13 +323,125 @@ class ReaderTests(unittest.TestCase):
             ("'$(TargetFramework)' ==", "net8.0"),
             ("('$(TargetFramework)' == 'net8.0'", "net8.0"),
             ("", "net8.0"),
-            # A restore that names the framework by its long name cannot be compared with a short one.
+            # A restore that names the framework by its long name cannot be compared with a short one, in either form
+            # a condition reads the property.
             ("'$(TargetFramework)' == 'net472'", ".NETFramework,Version=v4.7.2"),
+            ("$(TargetFramework.StartsWith('net4'))", ".NETFramework,Version=v4.7.2"),
         ]
         for expected, cases in ((True, holds), (False, fails), (None, unknown)):
             for text, framework in cases:
                 with self.subTest(text=text, framework=framework):
                     self.assertIs(expected, condition_holds(text, framework))
+
+    def test_a_choose_applies_its_first_when_that_holds_else_its_otherwise(self) -> None:
+        project = read_project(self.write("src/Harbor.Choice/Harbor.Choice.csproj", CHOOSE_PROJECT), self.central)
+        debug = "'$(Configuration)' == 'Debug'"
+        cases = {
+            # Both Whens of the first Choose hold for net472, and only the first applies. In the second, a When after
+            # one that cannot be evaluated is not evaluated either, and the Otherwise is ruled out because a When
+            # holds, whatever the first one is.
+            "net472": (["Lantern.First"], [("Beacon.Unsure", debug), ("Beacon.Later", debug)]),
+            # The first When fails and the second holds; in the second Choose the Otherwise is not evaluated.
+            "netstandard2.0": (["Lantern.Second"], [("Beacon.Unsure", debug), ("Beacon.Rest", debug)]),
+            # No When of the first Choose holds, so its Otherwise applies.
+            "uap10.0": (["Lantern.Rest"], [("Beacon.Unsure", debug), ("Beacon.Rest", debug)]),
+        }
+        for framework, (references, unevaluated) in cases.items():
+            with self.subTest(framework=framework):
+                found, skipped = packages_for(project.package_items, framework)
+                self.assertEqual(references, [item.id for item in found])
+                self.assertEqual(unevaluated, [(item.id, text) for item, text in skipped])
+
+    def test_an_include_update_or_remove_lists_each_item_it_names(self) -> None:
+        project = read_project(self.write("src/Harbor.List/Harbor.List.csproj", LIST_PROJECT), self.central)
+        self.assertEqual(
+            [
+                PackageRef("Lantern.Json", "13.0.1", "PackageReference"),
+                PackageRef("Quill.Http", "2.0.0", "PackageReference"),
+            ],
+            project.packages,
+        )
+        self.assertEqual(
+            [(self.root / "src" / name / f"{name}.csproj").resolve() for name in ("Harbor.Core", "Harbor.Data")],
+            project.project_refs,
+        )
+        self.assertEqual(
+            [("Beacon.One", "1.0.0.0"), ("Beacon.Two", None)], [(a.name, a.version) for a in project.assemblies]
+        )
+
+    def test_a_framework_is_one_framework_whichever_form_names_it(self) -> None:
+        same = [
+            ("net8.0", ".NETCoreApp,Version=v8.0"),
+            ("netcoreapp3.1", ".NETCoreApp,Version=v3.1"),
+            ("net472", ".NETFramework,Version=v4.7.2"),
+            ("NET48", ".netframework,version=v4.8"),
+            ("net40", ".NETFramework,Version=v4.0"),
+            ("net40-client", ".NETFramework,Version=v4.0,Profile=Client"),
+            ("netstandard2.0", ".NETStandard,Version=v2.0"),
+            # A restore writes out the platform version a project leaves to the default.
+            ("net8.0-windows", "net8.0-windows7.0"),
+            ("net8.0-windows7.0", "NET8.0-Windows7.0"),
+        ]
+        different = [
+            ("net8.0", "netcoreapp8.0-x"),
+            ("net472", ".NETFramework,Version=v4.7.1"),
+            ("netcoreapp3.1", ".NETStandard,Version=v3.1"),
+            ("net8.0", "net8.0-windows"),
+            ("net8.0-windows10.0", "net8.0-windows7.0"),
+            ("net8.0-android", "net8.0-ios"),
+            ("net9.0-windows", "net8.0-windows7.0"),
+            (".NETFoo,Version=v1.0", "foo1.0"),
+        ]
+        for expected, cases in ((True, same), (False, different)):
+            for first, second in cases:
+                with self.subTest(first=first, second=second):
+                    self.assertIs(expected, same_framework(first, second))
+                    self.assertIs(expected, same_framework(second, first))
+        self.assertEqual(".netfoo,version=v1.0", framework_key(".NETFoo,Version=v1.0"))
+
+    def test_a_restore_keyed_by_long_names_is_keyed_by_the_projects_own_names(self) -> None:
+        tuple_reference = {"Lantern.Tuple": {"target": "Package", "version": "[4.5.0, )"}}
+        targets = {
+            ".NETCoreApp,Version=v8.0": {},
+            ".NETFramework,Version=v4.7.2": {"Lantern.Tuple/4.5.0": {"type": "package"}},
+            ".NETFramework,Version=v4.7.2/win-x86": {"Lantern.Tuple/4.5.0": {"type": "package"}},
+            "net8.0-windows7.0": {},
+        }
+        document = {
+            "version": 3,
+            "targets": targets,
+            "project": {
+                "frameworks": {
+                    "net8.0": {},
+                    "net472": {"dependencies": tuple_reference},
+                    "net8.0-windows": {"targetAlias": "net8.0-windows"},
+                }
+            },
+        }
+        path = self.write("obj/project.assets.json", json.dumps(document))
+        names = ["net8.0", "net472", "net8.0-windows"]
+        assets = read_assets(path)
+        self.assertEqual(names, list(assets.nodes))
+        self.assertEqual(["Lantern.Tuple"], list(assets.nodes["net472"]))
+        self.assertEqual(
+            {
+                "net8.0": [],
+                "net472": [PackageRef("Lantern.Tuple", "[4.5.0, )", "PackageReference")],
+                "net8.0-windows": [],
+            },
+            assets.direct,
+        )
+        # Without a project section the project file's own names key the restore, so its conditions read as written.
+        path = self.write("obj/project.assets.json", json.dumps({**document, "project": {}}))
+        self.assertEqual(
+            ["NET8.0", "net472", "net8.0-windows"],
+            list(read_assets(path, ["NET8.0", "net472", "net8.0-windows"]).nodes),
+        )
+        # A target no name matches keeps the name the restore wrote.
+        self.assertEqual(
+            [".NETCoreApp,Version=v8.0", ".NETFramework,Version=v4.7.2", "net8.0-windows7.0"],
+            list(read_assets(path).nodes),
+        )
 
     def test_central_versions_stop_at_the_solution_directory(self) -> None:
         props = self.write("Directory.Packages.props", CENTRAL)
