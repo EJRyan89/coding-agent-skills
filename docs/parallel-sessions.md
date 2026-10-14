@@ -169,13 +169,16 @@ With the guard enabled:
     any case, as `git_dir` or `Git_Dir`, since Windows reads an environment name in any case and git there takes
     `git_dir` as `GIT_DIR`. Bash keeps each spelling a variable of its own, so `unset GIT_DIR` leaves a `git_dir`
     in force, and two spellings with different values leave the directory unknown;
-  - in PowerShell, assigned through `$env:` or `[Environment]::SetEnvironmentVariable`, or set on the
-    environment provider, through the `env:` drive or the provider-qualified path `Environment::<name>` (with
-    or without `Microsoft.PowerShell.Core\`): by `Set-Item`, `New-Item`, or `Set-Content` at its path,
-    `Copy-Item` at its destination, `New-Item` on the provider's root with `-Name`, or `Rename-Item` of a
-    variable there with `-NewName`. PowerShell's own binder places each argument, so a parameter abbreviated,
-    aliased, or left positional, and each path of an array, is read. `Add-Content` and `Move-Item` fail on the
-    provider, so they set nothing.
+  - in PowerShell, set through `[Environment]::SetEnvironmentVariable`, or on the environment provider, through
+    the `env:` drive (`env:<name>`, `env:\<name>`, or `env:/<name>`) or the provider-qualified path
+    `Environment::<name>` (also as `\Environment::<name>` or `Microsoft.PowerShell.Core\Environment::<name>`):
+    assigned in variable notation (`$env:<name>`, or `${<path>}` with any of those paths, cast or not), by
+    `Set-Item`, `New-Item`, or `Set-Content` at its path, `Copy-Item` at its destination, `New-Item` on the
+    provider's root with `-Name`, or `Rename-Item` of a variable there with `-NewName`. PowerShell's own binder
+    places each argument, so a parameter abbreviated, aliased, or left positional, and each path of an array, is
+    read. `Add-Content` and `Move-Item` fail on the provider, so they set nothing. A separator after
+    `Environment::`, as in `Environment::\GIT_DIR`, becomes part of the variable's name, so the variable set is
+    not the one git reads, and the guard judges the command as setting none.
 
   The guard's own git calls drop these variables, as does the hook's check of the opt-in setting, so an
   inherited one cannot hide the hub from the guard.
