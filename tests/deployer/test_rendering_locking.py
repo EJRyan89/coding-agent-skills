@@ -67,7 +67,7 @@ class RenderedExecutableTests(DeployerTestCase):
         self.assertEqual(forward(repos), from_bash.output.strip())
         self.assertEqual(forward(repos), from_pwsh.output.strip())
 
-    def test_an_interpreter_outside_its_fixed_set_is_refused_wherever_it_would_render(self) -> None:
+    def test_a_platform_python_outside_its_fixed_set_is_refused_before_rendering(self) -> None:
         self.make_source_json()
         self.make_skill("alpha", "```bash\n{{PYTHON}} -V\n```", ["PYTHON"])
         self.make_config()

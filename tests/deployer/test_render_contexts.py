@@ -62,6 +62,35 @@ class SubstitutionContextTests(GitTestCase):
             "an opening rule that is never closed is not frontmatter",
         )
 
+    def test_an_interpreter_outside_its_fixed_set_is_refused_wherever_it_would_render(self) -> None:
+        # The configuration refuses such a value first; this holds render's own refusal, in contexts that would
+        # otherwise escape it, accept it, or leave it raw.
+        cases = {
+            "s/SKILL.md": b"Run {{PYTHON}} -V\n",
+            "s/run.sh": b"{{PYTHON}} -V\n",
+            "s/run.ps1": b"{{PYTHON}} -V\n",
+            "s/tool.py": b'PYTHON = "{{PYTHON}}"\n',
+            "s/config.json": b'{"python": "{{PYTHON}}"}',
+            "s/config.toml": b'python = "{{PYTHON}}"\n',
+            "s/notes.txt": b"{{PYTHON}}\n",
+        }
+        for logical, content in cases.items():
+            for value in ("pythonw", "py", ""):
+                with self.subTest(logical=logical, value=value), self.assertRaises(DeployError) as raised:
+                    render.render_file(logical, content, {"PYTHON": value})
+                self.assertEqual(
+                    (
+                        f"ERROR: Variable PYTHON cannot be substituted into {logical}: {value!r} is not one of "
+                        "python, python3",
+                    ),
+                    raised.exception.lines,
+                )
+        for value in ("python", "python3"):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    f"{value} -V\n".encode(), render.render_file("s/run.sh", b"{{PYTHON}} -V\n", {"PYTHON": value})
+                )
+
     def test_undeclared_tokens_and_unknown_suffixes_are_left_untouched(self) -> None:
         self.assertEqual(b"{{Y}}", render.render_file("s/a.md", b"{{Y}}", {"X": "v"}))
         self.assertEqual(b"{{X}}", render.render_file("s/image.bin", b"{{X}}", {"X": "v"}))

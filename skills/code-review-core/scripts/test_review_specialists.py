@@ -2263,6 +2263,27 @@ class EndToEndTests(SpecialistFixture, GitTestCase):
         self.assertEqual("Condition output is not a regular file: window-open.txt", str(raised.exception))
         self.assertEqual([], list((self.root / "work-initial").iterdir()), "no plan, prompt, or result is published")
 
+    def test_a_condition_output_that_is_a_link_fails_the_review(self) -> None:
+        # Elsewhere a symbolic link to a regular file the condition never wrote, which only lstat tells apart; on
+        # Windows, where such a link needs a privilege, a directory junction, the link any user can make there.
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "notes.txt").write_text("Not the condition's.\n", encoding="utf-8")
+        self.use_condition(
+            "import os, subprocess, sys\n"
+            "output = os.environ['CODE_REVIEW_CONDITION_OUTPUT']\n"
+            "if sys.platform == 'win32':\n"
+            f"    subprocess.run(['cmd', '/c', 'mklink', '/J', output, {str(elsewhere)!r}], check=True)\n"
+            "else:\n"
+            f"    os.symlink({str(elsewhere / 'notes.txt')!r}, output)\n",
+            "link",
+        )
+        with self.assertRaises(rs.SpecialistError) as raised:
+            self.plan()
+        self.assertEqual("Condition output is not a regular file: window-open.txt", str(raised.exception))
+        self.assertEqual([], list((self.root / "work-initial").iterdir()), "no plan, prompt, or result is published")
+        self.assertEqual("Not the condition's.\n", (elsewhere / "notes.txt").read_text(encoding="utf-8"))
+
     def test_missing_result_and_tampered_reviewer_fail(self) -> None:
         plan = self.plan()
         self.write(plan, "db-review", [])
