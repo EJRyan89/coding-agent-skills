@@ -16,15 +16,16 @@ forward slashes:
     PROJECT       <project> <sdk|legacy> <assets|nuspec|direct> <listed|referenced>
                   where package-to-package edges came from: obj/project.assets.json, the packages' nuspecs in the
                   packages folder or the NuGet cache, or neither, leaving the direct references alone
-    UNREADABLE    <file> <reason>                            a file the readers refused, or a condition they
-                  cannot evaluate; its facts are missing
+    UNREADABLE    <file> <reason>                            a file the readers refused, a condition they
+                  cannot evaluate, or an item inside a Target; its facts are missing
     SDK_FAILED    <project> <name> <reason>                  `dotnet nuget why` failed; the graph walk answered
     PATH          <project> <frameworks> <name> <sdk|graph> <hop> > <hop> ...    one chain, each hop
                   `name (vversion)`, `name (project)`, `name (vversion, assembly)`, `name (assembly)` for an
                   assembly a package ships, or `name (vversion, graph vother)` for a package the SDK resolves at one
                   version and the walk at another, every other version the walk took joined by `;` as in
                   `graph v12.0.3;v11.0.0`; the source says whether `dotnet nuget why` answered or the walk did
-    TRUNCATED     <project> <frameworks> <name> <limit>      more chains than the limit; the first ones printed
+    TRUNCATED     <project> <frameworks> <name> <limit>      more chains than the limit, the SDK's counted; the
+                  first ones printed
     MISSING       <name>                                     no project reaches the name
     REACHES       <project> <frameworks> <name> <version> <package|project|assembly|framework> <first hop>
     WHERE         <project> <frameworks> <assembly> <reference|framework|package|project> <version> <via>
@@ -39,10 +40,13 @@ forward slashes:
 project with no restore, whose facts are not kept per framework. A line that holds for several frameworks is printed
 once. Two frameworks of one project resolving different versions build apart and are not a conflict. A framework is
 named as the project names it, whichever form its restore writes (`net8.0` or `.NETCoreApp,Version=v8.0`). A
-framework's direct packages are those its restore recorded; for a framework the restore's project section does not
-name, they are the project file's PackageReference items whose conditions hold for it, a Choose applying its first
-When that holds, and an item whose condition the reader cannot evaluate is left out and reported as an UNREADABLE
-line naming the condition.
+framework's direct packages and project references are those its restore recorded; for a framework the restore did
+not record them for, and for its assembly references, which a restore never records, they are the project file's
+PackageReference, ProjectReference, and Reference items whose conditions hold for it, a package without a version of
+its own taking the central PackageVersion whose conditions do, and a Choose applying its first When that holds. An
+item whose condition the reader cannot evaluate is not applied and is reported as an UNREADABLE line naming the
+condition and what was done instead, and an item inside a Target, which MSBuild defines only when the target runs,
+is left out and reported so.
 
 `why` asks `dotnet nuget why` for a project that is SDK-style, uses PackageReference, has an obj/project.assets.json
 no older than the project file, and only when dotnet is installed. A run that fails, even after printing part of an
@@ -52,9 +56,9 @@ versions, and the walk's version of a package after `graph` where a referenced p
 apart, a split `conflicts` reports; the walk adds every chain the SDK cannot see, such as one ending in an assembly
 or one through a packages.config project; for every other project it answers alone. So whether dotnet is installed
 changes which source a route names and which version leads where the two differ, never which routes are printed.
-The script changes nothing on disk
-but the graph file, runs no restore or build, and exits 1 when it printed a CONFLICT, REDIRECT_STALE, or UNREADABLE
-line, else 0; a FAILED <reason> line and exit 1 when the root cannot be resolved, and a usage error exits 2.
+The script changes nothing on disk but the graph file, runs no restore or build, and exits 1 when it printed a
+CONFLICT, REDIRECT_STALE, or UNREADABLE line, else 0; a FAILED <reason> line and exit 1 when the root cannot be
+resolved, and a usage error exits 2.
 """
 
 from __future__ import annotations
@@ -79,15 +83,20 @@ from msbuild_reader import (
     ASSETS_FILE,
     CONFIG_FILES,
     PACKAGES_CONFIG,
+    AssemblyRef,
     Assets,
+    PackageItem,
     PackageNode,
     PackageRef,
     ProjectFile,
+    TargetItem,
     Unreadable,
+    assemblies_for,
     central_versions_file,
     matching_framework,
     package_assemblies,
     packages_for,
+    project_refs_for,
     read_assets,
     read_central_versions,
     read_nuspec,
@@ -114,12 +123,14 @@ class Failed(Exception):
 
 @dataclass
 class Target:
-    """One framework's package closure of a project: the restore's target framework, or `-` for a project with no
-    restore, whose direct references and nuspec edges hold for every framework it builds."""
+    """One framework's references and package closure of a project: the restore's target framework, or `-` for a
+    project with no restore, whose references and nuspec edges hold for every framework it builds."""
 
     framework: str
     nodes: dict[str, PackageNode] = field(default_factory=dict)  # case-folded id -> node
     direct: list[PackageRef] = field(default_factory=list)
+    project_refs: list[Path] = field(default_factory=list)
+    assemblies: list[AssemblyRef] = field(default_factory=list)
 
     def node(self, package: str) -> PackageNode | None:
         return self.nodes.get(package.casefold())
@@ -142,6 +153,10 @@ class Project:
         match = matching_framework(framework, (target.framework for target in self.targets))
         return [target for target in self.targets if target.framework == match] or self.targets
 
+    def references_for(self, framework: str) -> tuple[list[Path], list[AssemblyRef]]:
+        """The projects and assemblies the targets a walk under `framework` enters reference, each once."""
+        return references_of(self.targets_for(framework))
+
 
 @dataclass
 class Graph:
@@ -149,7 +164,7 @@ class Graph:
     base: Path
     projects: dict[str, Project] = field(default_factory=dict)  # same_path -> project
     unreadable: list[tuple[Path, str]] = field(default_factory=list)
-    central: dict[str, dict[str, str]] = field(default_factory=dict)  # same_path of a props file -> its versions
+    central: dict[str, list[PackageItem]] = field(default_factory=dict)  # same_path of a props file -> its items
 
     def relative(self, path: Path) -> str:
         try:
@@ -166,20 +181,36 @@ class Graph:
     def refuse(self, error: Unreadable) -> None:
         self.unreadable.append((error.file, error.reason))
 
-    def central_versions(self, project_dir: Path) -> dict[str, str]:
-        """The central versions that apply in a project's directory, each props file read once; an unreadable one
-        is reported once and gives none, so each project it covers keeps its own facts."""
+    def refuse_in_targets(self, file: Path, items: Iterable[TargetItem]) -> None:
+        """Report each item inside a Target, which the reader leaves out."""
+        for item in items:
+            reason = f"the {item.kind} {item.name} inside Target {item.target} is left out: MSBuild defines it only "
+            self.refuse(Unreadable(file, reason + "when that target runs"))
+
+    def central_versions(self, project_dir: Path) -> list[PackageItem]:
+        """The central PackageVersion items that apply in a project's directory, each props file read once; an
+        unreadable one is reported once and gives none, so each project it covers keeps its own facts."""
         found = central_versions_file(project_dir, self.base)
         if found is None:
-            return {}
+            return []
         key = same_path(found)
         if key not in self.central:
             try:
-                self.central[key] = read_central_versions(found)
+                central = read_central_versions(found)
             except Unreadable as error:
                 self.refuse(error)
-                self.central[key] = {}
+                self.central[key] = []
+            else:
+                self.central[key] = central.items
+                self.refuse_in_targets(found, central.in_targets)
         return self.central[key]
+
+
+def references_of(targets: Iterable[Target]) -> tuple[list[Path], list[AssemblyRef]]:
+    """The projects and assemblies the targets reference, each once, in the order first met."""
+    chosen = list(targets)
+    projects = {same_path(path): path for target in chosen for path in target.project_refs}
+    return list(projects.values()), list(dict.fromkeys(item for target in chosen for item in target.assemblies))
 
 
 class Emitter:
@@ -264,6 +295,7 @@ def load_projects(graph: Graph, listed: Iterable[Path]) -> None:
             graph.projects[same_path(path)] = Project(placeholder, is_listed, readable=False)
             continue
         graph.projects[same_path(path)] = Project(file, is_listed)
+        graph.refuse_in_targets(path, file.in_targets)
         queue.extend((reference, False) for reference in file.project_refs)
 
 
@@ -334,10 +366,17 @@ def nuspec_node(graph: Graph, folders: Sequence[Path], reference: PackageRef) ->
         return None
 
 
+def file_target(project: Project, direct: list[PackageRef]) -> Target:
+    """The one target of a project with no restore: the direct packages, and every project and assembly reference
+    its file states, whatever its condition."""
+    file = project.file
+    return Target(NO_FRAMEWORK, direct=direct, project_refs=list(file.project_refs), assemblies=list(file.assemblies))
+
+
 def closure_from_nuspecs(graph: Graph, project: Project, direct: list[PackageRef], folders: Sequence[Path]) -> None:
     """One target of the direct packages with their nodes from their nuspecs; edges are `nuspec` when any was
     found."""
-    target = Target(NO_FRAMEWORK, direct=direct)
+    target = file_target(project, direct)
     for reference in direct:
         node = nuspec_node(graph, folders, reference)
         if node is not None:
@@ -346,15 +385,64 @@ def closure_from_nuspecs(graph: Graph, project: Project, direct: list[PackageRef
     project.edges = "nuspec" if target.nodes else "direct"
 
 
+# What the reader does instead of applying an item whose condition it cannot evaluate, by the item's operation.
+NOT_APPLIED = {"Include": "it is left out", "Update": "the Update is not applied", "Remove": "it is not removed"}
+
+
+def refuse_unevaluated(
+    graph: Graph, project: Project, framework: str, unevaluated: Iterable[tuple[str, str, str, str]]
+) -> None:
+    """Report each item, given as its kind, operation, name, and condition, whose condition cannot be evaluated for
+    the framework, saying what the reader did instead."""
+    for kind, operation, name, condition in unevaluated:
+        item = f"{kind} {name}" if operation == "Include" else f"the {operation} of {kind} {name}"
+        reason = f"the condition {condition} on {item} cannot be evaluated for {framework}, so {NOT_APPLIED[operation]}"
+        graph.refuse(Unreadable(project.file.path, reason))
+
+
 def direct_references(graph: Graph, project: Project, assets: Assets, framework: str) -> list[PackageRef]:
     """A framework's direct packages: those its restore recorded, an empty list included, else the project file's
-    references whose conditions hold for it, each item whose condition cannot be evaluated reported and left out."""
+    references whose conditions hold for it, at the central versions whose conditions do, each item whose condition
+    cannot be evaluated reported and not applied."""
     if framework in assets.direct:
         return assets.direct[framework]
-    references, unevaluated = packages_for(project.file.package_items, framework)
-    for item, condition in unevaluated:
-        reason = f"the condition {condition} on PackageReference {item.id} cannot be evaluated for {framework}"
-        graph.refuse(Unreadable(project.file.path, reason))
+    references, unevaluated = packages_for(project.file.package_items, framework, project.file.central_items)
+    refuse_unevaluated(
+        graph,
+        project,
+        framework,
+        (
+            ("PackageVersion" if item.origin == "central" else "PackageReference", item.operation, item.id, condition)
+            for item, condition in unevaluated
+        ),
+    )
+    return references
+
+
+def project_references(graph: Graph, project: Project, assets: Assets, framework: str) -> list[Path]:
+    """A framework's project references: the project file's that its restore recorded for it, else those whose
+    conditions hold for it, each item whose condition cannot be evaluated reported and not applied."""
+    recorded = assets.project_refs.get(framework)
+    if recorded is not None:
+        keys = {same_path(path) for path in recorded}
+        return [path for path in project.file.project_refs if same_path(path) in keys]
+    references, unevaluated = project_refs_for(project.file.project_items, framework)
+    refuse_unevaluated(
+        graph,
+        project,
+        framework,
+        (("ProjectReference", item.operation, graph.relative(item.path), text) for item, text in unevaluated),
+    )
+    return references
+
+
+def assembly_references(graph: Graph, project: Project, framework: str) -> list[AssemblyRef]:
+    """A framework's assembly references, which a restore does not record: the project file's whose conditions hold
+    for it, each item whose condition cannot be evaluated reported and not applied."""
+    references, unevaluated = assemblies_for(project.file.reference_items, framework)
+    refuse_unevaluated(
+        graph, project, framework, (("Reference", item.operation, item.spec, text) for item, text in unevaluated)
+    )
     return references
 
 
@@ -373,6 +461,8 @@ def closure_from_assets(graph: Graph, project: Project, assets_path: Path, servi
             framework,
             {package.casefold(): node for package, node in nodes.items()},
             direct_references(graph, project, assets, framework),
+            project_references(graph, project, assets, framework),
+            assembly_references(graph, project, framework),
         )
         for framework, nodes in assets.nodes.items()
     ]
@@ -393,7 +483,7 @@ def build_closure(graph: Graph, project: Project, services: Services) -> None:
         folder = packages_folder(project.file.path.parent, graph.base)
         closure_from_nuspecs(graph, project, direct, [folder] if folder else nuget_cache())
         return
-    project.targets = [Target(NO_FRAMEWORK, direct=list(project.file.packages))]
+    project.targets = [file_target(project, list(project.file.packages))]
     assets_path = project.file.path.parent / "obj" / ASSETS_FILE
     if project.file.style == "sdk" and assets_path.is_file():
         closure_from_assets(graph, project, assets_path, services)
@@ -456,9 +546,9 @@ def labelled(rows: Iterable[tuple[str, Row]]) -> list[tuple[str, Row]]:
 
 
 class PathFinder:
-    """Every chain from a project to a name under one framework, through project references, direct packages,
-    package edges, and the assemblies a package ships. A referenced project is walked under the same framework when
-    it has it, else under each of its own."""
+    """Every chain from a project to a name under one framework, through the framework's project references, direct
+    packages, and assembly references, package edges, and the assemblies a package ships. A referenced project is
+    walked under the same framework when it has it, else under each of its own."""
 
     def __init__(self, graph: Graph, target: str, framework: str, limit: int | None = None) -> None:
         self.graph = graph
@@ -481,7 +571,8 @@ class PathFinder:
         if key in seen:
             return
         seen = seen | {key}
-        for reference in project.file.project_refs:
+        projects, assemblies = project.references_for(self.framework)
+        for reference in projects:
             child = self.graph.project_at(reference)
             if child is not None:
                 hop: Hop = ("project", child.file.assembly_name, "")
@@ -491,7 +582,7 @@ class PathFinder:
         for target in project.targets_for(self.framework):
             for direct in target.direct:
                 self.from_package(target, direct.id, direct.version, path, frozenset())
-        for assembly in project.file.assemblies:
+        for assembly in assemblies:
             if assembly.name.casefold() == self.target:
                 self.record((*path, assembly_hop(assembly.name, assembly.version, assembly.hint_path)))
 
@@ -539,13 +630,14 @@ def reaches(graph: Graph, project: Project, framework: str) -> list[Reached]:
 
     def own_steps(owner: Project) -> list[Step]:
         steps: list[Step] = []
-        for reference in owner.file.project_refs:
+        projects, assemblies = owner.references_for(framework)
+        for reference in projects:
             child = graph.project_at(reference)
             if child is not None:
                 steps.append((("project", child.file.assembly_name, ""), None, child))
         for target in owner.targets_for(framework):
             steps += [(package_hop(target, direct.id, direct.version), target, None) for direct in target.direct]
-        steps += [(assembly_hop(item.name, item.version, item.hint_path), None, None) for item in owner.file.assemblies]
+        steps += [(assembly_hop(item.name, item.version, item.hint_path), None, None) for item in assemblies]
         return steps
 
     def enqueue(steps: Iterable[Step], first: str | None) -> None:
@@ -635,8 +727,8 @@ def project_paths(graph: Graph, project: Project, name: str, sdk: list[SdkPath] 
     chain the SDK printed is named `sdk`, and holds every chain the walk found along the same route, so a route is
     printed once whichever found it (`merged_chain`); every chain only the walk found, such as one ending in an
     assembly or a referenced project, or one through a packages.config project, which the SDK cannot see, is named
-    `graph`. Without the SDK's
-    chains, the walk answers alone."""
+    `graph`. Without the SDK's chains, the walk answers alone. At most `PATH_LIMIT` lines are printed, the SDK's
+    first, and TRUNCATED names every framework a chain past the limit holds for, whichever found it."""
     walked: list[tuple[str, tuple[Hop, ...]]] = []
     truncated: list[str] = []
     for target in project.targets:
@@ -666,6 +758,9 @@ def project_paths(graph: Graph, project: Project, name: str, sdk: list[SdkPath] 
         if index not in claimed
     ]
     printed = labelled(rows)
+    for frameworks, _ in printed[PATH_LIMIT:]:
+        truncated += [framework for framework in frameworks.split(";") if framework not in truncated]
+    printed = printed[:PATH_LIMIT]
     for frameworks, (source, chain) in printed:
         out.line("PATH", graph.label(project), frameworks, name, source, chain)
     if truncated:
@@ -710,7 +805,7 @@ def resolved_assemblies(graph: Graph, project: Project, target: Target) -> list[
     closure is the target's own (a restore records what flows in through project references too), with the first
     hop that brings each package in where the graph walk finds one."""
     found: list[tuple[str, str, str, str]] = []
-    for assembly in project.file.assemblies:
+    for assembly in target.assemblies:
         kind = "reference" if assembly.hint_path else "framework"
         found.append((assembly.name, kind, assembly.version or "-", assembly.hint_path or "-"))
     first_hops = {
@@ -742,7 +837,7 @@ def where_query(graph: Graph, assembly: str, narrowed: Path | None, out: Emitter
                 for name, kind, version, via in resolved_assemblies(graph, project, target)
                 if name.casefold() == target_name
             ]
-            for reference in project.file.project_refs:
+            for reference in target.project_refs:
                 child = graph.project_at(reference)
                 if child is not None and child.file.assembly_name.casefold() == target_name:
                     rows.append((target.framework, (child.file.assembly_name, "project", "-", graph.label(child))))
@@ -777,7 +872,7 @@ def wants(graph: Graph, project: Project) -> list[Want]:
             Want(
                 assembly.name, "assembly", assembly.version, label, target.framework, assembly.hint_path or "reference"
             )
-            for assembly in project.file.assemblies
+            for assembly in target.assemblies
             if assembly.version
         ]
     return found
@@ -799,11 +894,10 @@ def redirect_lines(graph: Graph, project: Project, out: Emitter) -> int:
     referenced = {
         name.casefold() for target in project.targets for name, _, _, _ in resolved_assemblies(graph, project, target)
     }
+    _, assemblies = references_of(project.targets)
     for redirect in project.file.redirects:
         fold = redirect.name.casefold()
-        versions = sorted(
-            {item.version for item in project.file.assemblies if item.name.casefold() == fold and item.version}
-        )
+        versions = sorted({item.version for item in assemblies if item.name.casefold() == fold and item.version})
         config = graph.relative(redirect.config)
         if versions and redirect.new_version not in versions:
             out.line(
@@ -847,7 +941,7 @@ def with_references(graph: Graph, projects: list[Project]) -> list[Project]:
     found = {same_path(project.file.path): project for project in projects}
     queue = deque(projects)
     while queue:
-        for reference in queue.popleft().file.project_refs:
+        for reference in references_of(queue.popleft().targets)[0]:
             child = graph.project_at(reference)
             if child is not None and same_path(child.file.path) not in found:
                 found[same_path(child.file.path)] = child
@@ -867,7 +961,8 @@ def graph_edges(graph: Graph, projects: list[Project]) -> tuple[Nodes, list[tupl
 
     for project in projects:
         source = add(f"project:{same_path(project.file.path)}", graph.label(project), "project")
-        for reference in project.file.project_refs:
+        references, assemblies = references_of(project.targets)
+        for reference in references:
             child = graph.project_at(reference)
             if child is not None:
                 edges.append((source, add(f"project:{same_path(child.file.path)}", graph.label(child), "project")))
@@ -878,7 +973,7 @@ def graph_edges(graph: Graph, projects: list[Project]) -> tuple[Nodes, list[tupl
                 owner = add(*package_key(target, node.id, node.version), "package")
                 for dependency, wanted in node.dependencies.items():
                     edges.append((owner, add(*package_key(target, dependency, wanted), "package")))
-        for assembly in project.file.assemblies:
+        for assembly in assemblies:
             kind = "assembly" if assembly.hint_path else "framework"
             edges.append((source, add(f"{kind}:{assembly.name.casefold()}", assembly.name, kind)))
     return nodes, list(dict.fromkeys(edges))
