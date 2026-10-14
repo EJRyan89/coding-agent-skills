@@ -1,7 +1,7 @@
-"""Typed fields: the one reader of a JSON field's kind for every record, configuration, manifest, and fixture.
+"""Typed fields: the reader of a JSON field's kind for the code-review pipeline's and the pull request tracker's files.
 
-A validator reads each field through a `FieldReader`, which checks the field's kind and returns its value, or raises
-`FieldError`, naming the field's path, the kind expected, and what was found, in one shape:
+A validator built on it reads each field through a `FieldReader`, which checks the field's kind and returns its value,
+or raises `FieldError`, naming the field's path, the kind expected, and what was found, in one shape:
 `<path> must be <expected>, found <found>`. The validator then checks only the value, such as a pattern, a range, or
 a reference to another field; it never checks a field's type itself.
 

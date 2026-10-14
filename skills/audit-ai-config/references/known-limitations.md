@@ -1,6 +1,7 @@
 # Known Limitations — audit-ai-config
 
-Reviewed 2026-09-11 by Claude Code, GitHub Copilot, and Codex; updated 2026-10-10.
+Claude Code, GitHub Copilot, and Codex each reviewed these limitations against the audit engine,
+`scripts/audit_ai_config.py`.
 
 The engine reports each limitation below that applies to the audited repository as an
 `INFO` finding with check `limitation`, when it can detect that it applies.
@@ -88,7 +89,7 @@ The CLI checks `args.root / ".git"` exists (not equivalent to `git rev-parse --s
 
 ## Read-only contract
 
-The audit engine is verified read-only: no writes, no execution, no modifications, no subprocess, no tempfile, no network access. All file access uses `read_text()`, `is_file()`, `is_dir()`, `glob()`, `rglob()`, `os.walk()`, `json.loads()`, and `tomllib.load()` in read-binary mode.
+The audit engine is verified read-only: no writes, no execution, no modifications, no subprocess, no tempfile, no network access. All file access uses `read_text()`, `exists()`, `is_file()`, `is_dir()`, `resolve()`, `iterdir()`, `glob()`, `rglob()`, `os.walk()`, `json.loads()`, and `tomllib.load()` on a file opened in read-binary mode.
 
 ## Behavioral checks are heuristics
 
