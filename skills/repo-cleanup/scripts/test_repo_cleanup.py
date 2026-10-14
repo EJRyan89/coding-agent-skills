@@ -1434,6 +1434,18 @@ class SweepTests(Fixture):
         for name in ("forwarded repo", "my repo", "quiet repo", "switched repo"):
             self.assertEqual([], facts(blocks[name], "CHECKOUT") + facts(blocks[name], "FF_DEFAULT"), name)
 
+    def test_a_sweep_passes_on_detached_worktrees_and_orphan_directories_and_is_not_quiet(self) -> None:
+        detached = self.area / "detached wt"
+        git(self.clone, "worktree", "add", "--quiet", "--detach", str(detached), "main")
+        (self.area / "leftover").mkdir()
+        code, lines = self.sweep(None, str(self.clone))
+        self.assertEqual(0, code, lines)
+        self.assertEqual([[self.clone.as_posix(), "cleaned"]], facts(lines, "REPO"))
+        self.assertEqual(
+            [git(self.clone, "rev-parse", "main")], [fields[1] for fields in facts(lines, "CONFIRM_DETACHED")]
+        )
+        self.assertTrue(rc.same_path(facts(lines, "ORPHAN")[0][0], str(self.area / "leftover")), lines)
+
     def test_a_default_branch_not_fast_forwarded_for_changes_is_listed_as_skipped(self) -> None:
         self.commit(self.other, "upstream work")
         git(self.other, "push", "--quiet", "origin", "main")
@@ -1908,6 +1920,286 @@ class RemoveWorktreeTests(CleanupTestCase):
         self.assertEqual([["REMOVED", str(path), "unmerged"], ["UNMERGED", "unmerged", sha]], events)
         self.assertFalse(path.exists())
         self.assertEqual(sha, self.tip("unmerged"))
+
+
+def link_directory(target: Path, link: Path) -> None:
+    """A link to a directory: a junction on Windows, which needs no privilege, else a symbolic link."""
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+class LeftoverTests(Fixture):
+    """Branches the default branch already holds, local-only and detached worktrees, and directories Git no longer
+    tracks: each is cleaned when nothing is lost, offered when only the user may decide, or kept with the reason."""
+
+    def landed(self, name: str) -> str:
+        """A pushed branch that main holds through a merge, whose remote branch stays and that had no pull request."""
+        tip = self.push_branch(name)
+        self.merge_remotely(name)
+        return tip
+
+    def queried(self) -> set[str]:
+        return {call[call.index("--head") + 1] for call in self.github.calls if call[:2] == ["pr", "list"]}
+
+    def summary(self, lines: list[str]) -> str:
+        return "\n".join(fields[0] for fields in facts(lines, "SUMMARY"))
+
+    def offered(self, lines: list[str], kind: str) -> dict[str, str]:
+        return {fields[0]: fields[1] for fields in facts(lines, kind)}
+
+    def same(self, expected: Path, actual: str) -> None:
+        self.assertTrue(rc.same_path(str(expected), actual), (expected, actual))
+
+    def preserved(self, lines: list[str], *expected: tuple[Path, str]) -> None:
+        """The PRESERVED lines name these paths, in Git's spelling or the one given, with these reasons."""
+        actual = facts(lines, "PRESERVED")
+        self.assertEqual([why for _, why in expected], [fields[1] for fields in actual], lines)
+        for (path, _), fields in zip(expected, actual, strict=True):
+            self.same(path, fields[0])
+
+    def test_a_branch_main_holds_with_a_remote_and_no_pull_request_is_cleaned_as_merged(self) -> None:
+        for name in ("landed", "landed-tree", "landed-dirty", "landed-locked", "landed-open"):
+            self.landed(name)
+        self.github.pull("landed-open", "OPEN", self.tip("landed-open") or "")
+        self.landed("upstream-ahead")
+        newer = self.advance_remotely("upstream-ahead")
+        own = self.push_branch("own-work")
+        git(self.clone, "fetch", "--quiet", "origin")
+        git(self.clone, "branch", "--quiet", "--track", "started", "origin/main")
+        trees = {name: self.area / f"{name} wt" for name in ("landed-tree", "landed-dirty", "landed-locked", "started")}
+        for name, path in trees.items():
+            git(self.clone, "worktree", "add", "--quiet", str(path), name)
+        (trees["landed-dirty"] / "notes.txt").write_text("unsaved\n", encoding="utf-8")
+        git(self.clone, "worktree", "lock", str(trees["landed-locked"]))
+        planned, applied = self.clean()
+        actions = {fields[0]: (fields[1], fields[2], fields[4], fields[5]) for fields in facts(planned, "BRANCH")}
+        self.assertEqual(
+            {
+                "landed": ("tracking", "NONE", "delete", "-"),
+                "landed-tree": ("tracking", "NONE", "remove-worktree", "-"),
+                "landed-dirty": ("tracking", "-", "keep", "worktree-dirty"),
+                "landed-locked": ("tracking", "NONE", "remove-worktree", "-"),
+                "landed-open": ("tracking", "OPEN", "keep", "pr-open"),
+                "upstream-ahead": ("tracking", "-", "keep", "-"),
+                "own-work": ("tracking", "-", "keep", "-"),
+                "started": ("tracking", "NONE", "keep", "in-worktree"),
+            },
+            actions,
+        )
+        self.assertTrue(trees["started"].is_dir(), "a branch started from origin/main is not one main holds")
+        self.assertEqual(
+            {"landed", "landed-tree", "landed-locked", "landed-open", "started"},
+            self.queried(),
+            "a branch without a clean worktree is looked up only when the default branch holds it",
+        )
+        self.assertEqual([["upstream-ahead", newer]], facts(planned, "FASTFORWARD"))
+        self.assertEqual({"landed", "landed-tree"}, {fields[0] for fields in facts(applied, "DELETED")})
+        self.assertEqual(["landed-tree"], [fields[1] for fields in facts(applied, "REMOVED")])
+        self.assertFalse(trees["landed-tree"].exists())
+        locked = [why for name, why in facts(applied, "PRESERVED") if name == "landed-locked"]
+        self.assertEqual(1, len(locked), applied)
+        self.assertTrue(locked[0].startswith("Git refused to remove worktree "), locked)
+        for name in ("landed-dirty", "landed-locked", "landed-open"):
+            self.assertIsNotNone(self.tip(name), name)
+        self.assertEqual((newer, own), (self.tip("upstream-ahead"), self.tip("own-work")))
+        summary = self.summary(applied)
+        self.assertIn("  Dirty worktrees skipped: 1 — ", summary)
+        self.assertIn("  Open PR (kept):          1 — landed-open", summary)
+        git(self.clone, "worktree", "unlock", str(trees["landed-locked"]))
+
+    def test_a_local_only_branch_in_a_clean_worktree_is_offered_and_deleted_with_it_on_confirmation(self) -> None:
+        git(self.clone, "switch", "--quiet", "-c", "work", "main")
+        work = self.commit(self.clone, "unpublished work")
+        git(self.clone, "switch", "--quiet", "main")
+        for name in ("fresh", "drafted", "reviewing", "later"):
+            git(self.clone, "branch", name, "main")
+        self.github.pull("reviewing", "OPEN", self.tip("reviewing") or "")
+        trees = {name: self.area / f"{name} wt" for name in ("fresh", "work", "drafted", "reviewing", "later")}
+        for name, path in trees.items():
+            git(self.clone, "worktree", "add", "--quiet", str(path), name)
+        (trees["drafted"] / "notes.txt").write_text("unsaved\n", encoding="utf-8")
+        planned, applied = self.clean()
+        self.assertEqual(
+            {
+                "fresh": ("NONE", "ask-remove-worktree"),
+                "work": ("NONE", "ask-remove-worktree"),
+                "later": ("NONE", "ask-remove-worktree"),
+                "drafted": ("NONE", "keep"),
+                "reviewing": ("OPEN", "keep"),
+            },
+            {fields[0]: (fields[2], fields[4]) for fields in facts(planned, "BRANCH")},
+        )
+        self.assertEqual(
+            {"fresh wt": "ask", "work wt": "ask", "later wt": "ask", "drafted wt": "dirty:1", "reviewing wt": "keep"},
+            {Path(fields[0]).name: fields[2] for fields in facts(planned, "WORKTREE")},
+        )
+        offered = self.offered(applied, "CONFIRM_LOCAL")
+        self.assertEqual({"fresh", "work", "later"}, set(offered))
+        for name, where in offered.items():
+            self.same(trees[name], where)
+        self.assertEqual([], facts(applied, "REMOVED"), "nothing is removed before the user answers")
+        self.assertTrue(all(path.exists() for path in trees.values()))
+        summary = self.summary(applied)
+        self.assertIn("  Local-only (kept):       3 — ", summary)
+        self.assertIn(f"work (in worktree {offered['work']})", summary)
+
+        (trees["later"] / "notes.txt").write_text("started after the sweep\n", encoding="utf-8")
+        code, lines = self.confirm("delete-local", "fresh", "work", "later", "reviewing")
+        self.assertEqual(1, code, lines)
+        self.assertEqual({"fresh", "work"}, {fields[1] for fields in facts(lines, "REMOVED")})
+        self.assertEqual([["fresh"]], facts(lines, "DELETED"))
+        self.assertEqual([["work", work]], facts(lines, "UNMERGED"))
+        preserved = dict(facts(lines, "PRESERVED"))
+        self.assertTrue(preserved["later"].startswith("Git refused to remove worktree "), preserved)
+        self.assertEqual("not a local-only or closed branch offered by this plan", preserved["reviewing"])
+        self.assertFalse(trees["fresh"].exists() or trees["work"].exists())
+        self.assertTrue((trees["later"] / "notes.txt").exists())
+        self.assertIsNone(self.tip("fresh"))
+        self.assertIsNotNone(self.tip("later"))
+        code, lines = self.confirm("force-delete", "work")
+        self.assertEqual([["work"]], facts(lines, "DELETED"))
+        self.assertIsNone(self.tip("work"))
+
+    def test_a_detached_worktree_is_offered_when_clean_and_on_a_remote_branch_else_kept_with_why(self) -> None:
+        main = git(self.clone, "rev-parse", "main")
+        pushed = self.push_branch("pushed")
+        trees = {name: self.area / f"{name} wt" for name in ("on-main", "on-remote", "own-commit", "dirty")}
+        for name, path in trees.items():
+            git(
+                self.clone, "worktree", "add", "--quiet", "--detach", str(path), pushed if name == "on-remote" else main
+            )
+        own = self.commit(trees["own-commit"], "detached work")
+        (trees["dirty"] / "notes.txt").write_text("unsaved\n", encoding="utf-8")
+        protected = self.area / "release" / "detached wt"
+        git(self.clone, "worktree", "add", "--quiet", "--detach", str(protected), main)
+        planned, applied = self.clean()
+        self.assertEqual(
+            {
+                "on-main wt": "ask",
+                "on-remote wt": "ask",
+                "own-commit wt": "keep",
+                "dirty wt": "keep",
+                "detached wt": "protected",
+            },
+            {Path(fields[0]).name: fields[2] for fields in facts(planned, "WORKTREE")},
+        )
+        offered = {Path(path).name: sha for path, sha in facts(applied, "CONFIRM_DETACHED")}
+        self.assertEqual({"on-main wt": main, "on-remote wt": pushed}, offered)
+        summary = self.summary(applied)
+        self.assertIn("  Detached (kept):         4 — ", summary)
+        self.assertIn(f"own-commit wt (its commit {own[:12]} is on neither main nor a remote branch)", summary)
+        self.assertIn("dirty wt (1 uncommitted change)", summary)
+        self.assertIn("on-main wt (clean, its commit is on main or a remote branch)", summary)
+        self.assertIn("  Protected release worktrees: 1 (preserved)", summary)
+        self.assertTrue(all(path.exists() for path in trees.values()), "nothing is removed before the user answers")
+
+        git(self.clone, "update-ref", "-d", "refs/remotes/origin/pushed")
+        code, lines = self.invoke(
+            "remove-directory",
+            "--plan",
+            str(self.plan_file),
+            *("--path", str(trees["on-main"])),
+            *("--path", str(trees["on-remote"])),
+            *("--path", str(trees["own-commit"])),
+        )
+        self.assertEqual(0, code, lines)
+        self.assertEqual(["detached"], [fields[1] for fields in facts(lines, "REMOVED")])
+        self.same(trees["on-main"], facts(lines, "REMOVED")[0][0])
+        self.assertEqual(
+            [
+                f"its commit {pushed[:12]} is no longer on main or a remote branch",
+                "not a detached worktree or orphan directory offered by this plan",
+            ],
+            [why for _, why in facts(lines, "PRESERVED")],
+        )
+        self.assertFalse(trees["on-main"].exists())
+        self.assertTrue(trees["on-remote"].exists() and trees["own-commit"].exists())
+        self.assertIn(" (detached)", self.summary(lines))
+        code, lines = self.invoke("remove-directory", "--plan", str(self.plan_file), "--path", str(trees["on-main"]))
+        self.preserved(lines, (trees["on-main"], "not a detached worktree or orphan directory offered by this plan"))
+
+    def test_directories_git_no_longer_tracks_are_reported_and_deleted_only_on_confirmation(self) -> None:
+        self.push_branch("live")
+        self.push_branch("grouped")
+        git(self.clone, "worktree", "add", "--quiet", str(self.area / "live wt"), "live")
+        git(self.clone, "worktree", "add", "--quiet", str(self.area / "group" / "grouped wt"), "grouped")
+        leftover = self.area / "group" / "leftover"
+        leftover.mkdir()
+        (leftover / "file.txt").write_text("left\n", encoding="utf-8")
+        # As a removal on Windows leaves it: Git deregistered the worktree and deleted its .git file, but a locked
+        # file kept the directory, and the tool that removed it left a marker to finish the cleanup later.
+        stale = self.area / "stale wt"
+        (stale / "src").mkdir(parents=True)
+        (stale / "src" / "locked.txt").write_text("in use\n", encoding="utf-8")
+        (stale / "src" / "locked.txt").chmod(stat.S_IREAD)
+        (stale / ".pending-removal").write_text("", encoding="utf-8")
+        outside = self.root / "outside target"
+        outside.mkdir()
+        (outside / "keep.txt").write_text("keep\n", encoding="utf-8")
+        link_directory(outside, stale / "link")
+        link_directory(outside, self.area / "linked")
+        pruned = self.area / "pruned wt"
+        pruned.mkdir()
+        (pruned / ".git").write_text("gitdir: elsewhere\n", encoding="utf-8")
+        task = self.clone / ".claude" / "worktrees" / "old task"
+        task.mkdir(parents=True)
+        (task / "notes.md").write_text("notes\n", encoding="utf-8")
+        (self.clone / ".git" / "info").mkdir(exist_ok=True)
+        (self.clone / ".git" / "info" / "exclude").write_text(".claude/\n", encoding="utf-8")
+        _, applied = self.clean()
+        orphans = [fields[0] for fields in facts(applied, "ORPHAN")]
+        self.assertEqual(3, len(orphans), applied)
+        for expected, actual in zip((leftover, stale, task), orphans, strict=True):
+            self.same(expected, actual)
+        self.assertIn("  Orphans (kept):          3 — ", self.summary(applied))
+        self.assertTrue(leftover.exists() and stale.exists() and task.exists(), "nothing is deleted unasked")
+
+        code, lines = self.invoke(
+            "remove-directory", "--plan", str(self.plan_file), "--path", str(stale), "--path", str(leftover)
+        )
+        self.assertEqual(0, code, lines)
+        self.assertEqual(2, len(facts(lines, "DELETED_DIR")), lines)
+        self.assertFalse(os.path.lexists(stale) or os.path.lexists(leftover))
+        self.assertTrue((outside / "keep.txt").exists(), "a link inside an orphan is removed, never followed")
+        self.assertTrue(os.path.lexists(self.area / "linked") and (self.area / "group" / "grouped wt").is_dir())
+        self.assertTrue(pruned.is_dir() and (self.area / "live wt").is_dir())
+        self.assertEqual([], facts(lines, "PRUNED_DIR"), "the group still holds a worktree")
+        summary = self.summary(lines)
+        self.assertIn("  Orphans deleted:         2 — ", summary)
+        self.assertIn("  Orphans (kept):          1 — ", summary)
+
+        (task / ".git").write_text("gitdir: elsewhere\n", encoding="utf-8")
+        code, lines = self.invoke(
+            "remove-directory",
+            "--plan",
+            str(self.plan_file),
+            *("--path", str(task)),
+            *("--path", str(self.area / "live wt")),
+        )
+        self.assertEqual(0, code, lines)
+        self.preserved(
+            lines,
+            (task, "no longer a directory Git does not track"),
+            (self.area / "live wt", "not a detached worktree or orphan directory offered by this plan"),
+        )
+        self.assertTrue((task / "notes.md").exists())
+
+    def test_an_orphan_that_cannot_be_deleted_is_kept_with_the_reason_and_exits_1(self) -> None:
+        stale = self.area / "stale wt"
+        stale.mkdir(parents=True)
+        (stale / "locked.txt").write_text("in use\n", encoding="utf-8")
+        _, applied = self.clean()
+        self.assertEqual(1, len(facts(applied, "ORPHAN")), applied)
+        with mock.patch.object(rc.shutil, "rmtree", side_effect=PermissionError(13, "Permission denied")):
+            code, lines = self.invoke("remove-directory", "--plan", str(self.plan_file), "--path", str(stale))
+        self.assertEqual(1, code, lines)
+        self.preserved(lines, (stale, "could not delete it: [Errno 13] Permission denied"))
+        self.assertTrue((stale / "locked.txt").exists())
+        self.assertIn("  Orphans (kept):          1 — ", self.summary(lines))
 
 
 class UnitTests(CleanupTestCase):
