@@ -12,9 +12,11 @@ from pathlib import Path
 from validation_support import (
     REPOSITORY_ROOT,
     CallableResolver,
+    call_argument,
     is_test_script,
     module_allowance,
     module_imports,
+    module_statements,
     scripts_put_on_path,
 )
 
@@ -55,32 +57,6 @@ def _definition_key(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
     return ast.dump(node)
 
 
-def _blocks(node: ast.stmt) -> list[list[ast.stmt]]:
-    """The blocks of a module-level statement that also run at module level: an if's, a try's, and a with's."""
-    if isinstance(node, ast.If):
-        return [node.body, node.orelse]
-    if isinstance(node, ast.With):
-        return [node.body]
-    if isinstance(node, (ast.Try, ast.TryStar)):
-        return [node.body, *(handler.body for handler in node.handlers), node.orelse, node.finalbody]
-    return []
-
-
-def _module_statements(body: list[ast.stmt]) -> Iterator[ast.stmt]:
-    """Each statement that runs at module level, including one in a module-level if, try, or with block, which binds
-    its names in the module as a top-level statement does."""
-    for node in body:
-        yield node
-        for block in _blocks(node):
-            yield from _module_statements(block)
-
-
-def _argument(call: ast.Call, position: int, keyword: str) -> ast.expr | None:
-    if len(call.args) > position:
-        return call.args[position]
-    return next((found.value for found in call.keywords if found.arg == keyword), None)
-
-
 def _flags(node: ast.expr | None, resolver: CallableResolver) -> int | str:
     """A pattern's flags by value, so re.I and re.IGNORECASE, in either order, compare equal; a flag the policy
     cannot read compares by its syntax."""
@@ -112,10 +88,10 @@ def _constant_key(value: ast.expr, resolver: CallableResolver) -> str | None:
         return f"{CONSTANT_KEY}{value.value!r}" if len(value.value) >= MINIMUM_CONSTANT_LENGTH else None
     called = resolver.name(value.func) if isinstance(value, ast.Call) else ""
     if isinstance(value, ast.Call) and called == "re.compile":
-        pattern = _argument(value, 0, "pattern")
+        pattern = call_argument(value, 0, "pattern")
         if not isinstance(pattern, ast.Constant) or not isinstance(pattern.value, (str, bytes)):
             return None
-        return f"{CONSTANT_KEY}re.compile{(pattern.value, _flags(_argument(value, 1, 'flags'), resolver))!r}"
+        return f"{CONSTANT_KEY}re.compile{(pattern.value, _flags(call_argument(value, 1, 'flags'), resolver))!r}"
     if isinstance(value, ast.Call) and called in COLLECTION_CALLS and len(value.args) == 1 and not value.keywords:
         value = value.args[0]
     items = _literals(value)
@@ -127,7 +103,7 @@ def _constant_key(value: ast.expr, resolver: CallableResolver) -> str | None:
 def _module_copies(name: str, tree: ast.Module) -> Iterator[tuple[str, Copy]]:
     """Each definition and constant the module may share with another, as its group key and where it is."""
     resolver = CallableResolver(tree)
-    for node in _module_statements(tree.body):
+    for node in module_statements(tree.body):
         if (
             isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
             and (node.end_lineno or node.lineno) - node.lineno + 1 >= MINIMUM_DUPLICATED_LINES
