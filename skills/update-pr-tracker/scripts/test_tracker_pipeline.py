@@ -218,6 +218,14 @@ class TrackerPipelineFixture(unittest.TestCase):
             self.config_path,
         )
 
+    def track(self, *keys: str) -> None:
+        """Record `keys` as the pull requests the tracker holds, as the last update would have."""
+        self.record.write_text(json.dumps({"schema_version": 1, "pulls": list(keys)}), encoding="utf-8")
+
+    @property
+    def record(self) -> Path:
+        return self.config_path.parent / "tracker.json"
+
     def run_main(self, *arguments: str) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -480,6 +488,35 @@ class UpdateTests(TrackerPipelineFixture):
         self.assertIn("[two#5 Change 5]", content)
         self.assertIn(f"vscode://file/{self.config_path.as_posix().replace(' ', '%20')}", content)
         self.assertIn("### My PRs (1)", content)
+        self.assertEqual(
+            {"schema_version": 1, "pulls": ["example/one#1", "example/one#2", "example/one#3", "example/two#5"]},
+            json.loads(self.record.read_text(encoding="utf-8")),
+        )
+
+    def test_update_records_every_pull_request_the_user_relates_to_whether_or_not_its_row_shows(self) -> None:
+        unrelated = pull_node(7, reviewRequests={"pageInfo": {"hasNextPage": False}, "nodes": []})
+        approved = pull_node(8, reviews={"nodes": [{"state": "APPROVED", "commit": {"oid": HEAD}}]})
+        self.github.pages["example/one"] = [page([pull_node(1), unrelated, approved])]
+        self.github.pages["example/two"] = [page([])]
+        self.track("example/one#99")
+        code, _, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual(0, code, err)
+        code, out, err = self.run_main("update", "--input", str(self.input), "--remove", "example/one#1")
+        self.assertEqual(0, code, err)
+        self.assertEqual(f"UPDATED {self.dashboard} rows=0", out.splitlines()[0], "removed and approved rows hide")
+        # The record replaces the last one: a removed or approved pull request is still held, an unrelated one never.
+        self.assertEqual(
+            {"schema_version": 1, "pulls": ["example/one#1", "example/one#8"]},
+            json.loads(self.record.read_text(encoding="utf-8")),
+        )
+
+    def test_an_update_that_writes_no_dashboard_records_nothing(self) -> None:
+        self.collect()
+        self.dashboard.write_text("no markers\n", encoding="utf-8")
+        code, out, _ = self.run_main("update", "--input", str(self.input))
+        self.assertEqual(1, code)
+        self.assertIn("marker", out)
+        self.assertFalse(self.record.exists())
 
     def collect_fixture(self, reviews: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:
         """Collect and render example/one#12 of the three-version fixture with the configured user's reviews."""
@@ -882,12 +919,31 @@ class OverrideTests(TrackerPipelineFixture):
 
     def test_override_alone_lists_each_override_as_the_tracker_matches_it(self) -> None:
         self.configure(overrides={"example/two#5": "on hold", "Example/One#2": " delegated "})
+        self.track("example/one#2", "example/two#5")
         code, out, err = self.run_main("override")
         self.assertEqual((0, ""), (code, err))
         self.assertEqual(
             ["OVERRIDE example/one#2 delegated", "OVERRIDE example/two#5 on hold", "OVERRIDES 2"], out.splitlines()
         )
         self.assertEqual([], self.github.calls)
+
+    def test_the_listing_marks_each_override_the_tracker_no_longer_holds(self) -> None:
+        self.configure(overrides={"example/two#5": "on hold", "example/one#2": "delegated"})
+        self.track("Example/Two#5")
+        code, out, err = self.run_main("override")
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual(
+            ["OVERRIDE_UNTRACKED example/one#2 delegated", "OVERRIDE example/two#5 on hold", "OVERRIDES 2"],
+            out.splitlines(),
+        )
+        # Before any update has recorded what the tracker holds, it holds none of them.
+        self.record.unlink()
+        code, out, err = self.run_main("override")
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual(
+            ["OVERRIDE_UNTRACKED example/one#2 delegated", "OVERRIDE_UNTRACKED example/two#5 on hold", "OVERRIDES 2"],
+            out.splitlines(),
+        )
 
     def test_set_and_clear_change_only_the_overrides_and_rewrite_the_file_in_normalized_layout(self) -> None:
         raw = {
@@ -901,6 +957,7 @@ class OverrideTests(TrackerPipelineFixture):
             "dashboard": {"status_overrides": {"example/one#1": "waiting"}, "author_names": {"bob": "Robert"}},
         }
         self.config_path.write_text(json.dumps(raw, indent=4), encoding="utf-8")
+        self.track("example/one#2")
         code, out, err = self.run_main("override", "--set", "Example/One#2= on hold ", "--clear", "example/one#1")
         self.assertEqual((0, ""), (code, err))
         self.assertEqual(
@@ -924,13 +981,14 @@ class OverrideTests(TrackerPipelineFixture):
 
     def test_the_skill_names_every_line_the_command_prints(self) -> None:
         # The agent reads only SKILL.md, so a line it does not name is output the agent has to guess at.
-        self.configure(overrides={"example/one#2": "waiting"})
+        self.configure(overrides={"example/one#2": "waiting", "example/one#4": "on hold"})
+        self.track("example/one#3", "example/one#4")
         printed: set[str] = set()
         for arguments in ([], ["--set", "example/one#3=on hold"], ["--clear", "example/one#2"]):
             code, out, err = self.run_main("override", *arguments)
             self.assertEqual((0, ""), (code, err))
             printed |= {line.split()[0] for line in out.splitlines()}
-        self.assertEqual({"OVERRIDE", "OVERRIDES", "SET", "CLEARED", "WROTE"}, printed)
+        self.assertEqual({"OVERRIDE", "OVERRIDE_UNTRACKED", "OVERRIDES", "SET", "CLEARED", "WROTE"}, printed)
         skill = (SCRIPT_DIRECTORY.parent / "SKILL.md").read_text(encoding="utf-8")
         for word in sorted(printed):
             with self.subTest(line=word):
@@ -938,6 +996,7 @@ class OverrideTests(TrackerPipelineFixture):
 
     def test_set_replaces_the_override_of_the_same_pull_request_whatever_its_case(self) -> None:
         self.configure(overrides={"Example/One#2": "waiting", "example/two#5": "on hold"})
+        self.track("example/one#2")
         code, out, err = self.run_main("override", "--set", "example/one#2=delegated")
         self.assertEqual((0, ""), (code, err))
         self.assertEqual(["SET example/one#2 delegated", f"WROTE {self.config_path}"], out.splitlines())
@@ -958,8 +1017,63 @@ class OverrideTests(TrackerPipelineFixture):
         self.assertEqual(calls, len(self.github.calls), "clearing reads nothing from GitHub")
         self.assertEqual({}, self.written()["dashboard"]["status_overrides"])
 
+    def test_a_set_naming_a_pull_request_the_tracker_does_not_hold_is_refused_and_writes_nothing(self) -> None:
+        self.configure(overrides={"example/one#2": "waiting"})
+        original = self.config_path.read_bytes()
+        held = f"Status override example/one#3 names no pull request the tracker holds in {self.record}"
+        unwritten = f"Status override example/one#3 names no tracked pull request: no update has written {self.record}"
+        for recorded, key, reason in ((True, "example/one#3", held), (False, "Example/One#3", unwritten)):
+            with self.subTest(recorded=recorded):
+                if recorded:
+                    self.track("example/one#2", "example/two#3", "other/one#3")
+                else:
+                    self.record.unlink()
+                # A mistyped key is refused even beside a valid change, which is not written either.
+                code, out, err = self.run_main("override", "--set", f"{key}=on hold", "--clear", "example/one#2")
+                self.assertEqual((1, "", [f"FAILED {reason}"]), (code, err, out.splitlines()))
+                self.assertEqual(original, self.config_path.read_bytes())
+        # Clearing needs no record, and a pull request the record holds is written.
+        self.track("example/one#3")
+        code, out, err = self.run_main("override", "--set", "example/one#3=on hold", "--clear", "example/one#2")
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual({"example/one#3": "on hold"}, self.written()["dashboard"]["status_overrides"])
+
+    def test_a_set_checks_the_record_the_last_update_wrote(self) -> None:
+        self.serve_default_pages()
+        code, _, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual(0, code, err)
+        code, _, err = self.run_main("update", "--input", str(self.input))
+        self.assertEqual(0, code, err)
+        calls = len(self.github.calls)
+        code, out, _ = self.run_main("override", "--set", "example/two#6=on hold")
+        reason = f"Status override example/two#6 names no pull request the tracker holds in {self.record}"
+        self.assertEqual((1, [f"FAILED {reason}"]), (code, out.splitlines()))
+        code, out, err = self.run_main("override", "--set", "example/two#5=on hold")
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual({"example/two#5": "on hold"}, self.written()["dashboard"]["status_overrides"])
+        self.assertEqual(calls, len(self.github.calls), "override reads nothing from GitHub")
+
+    def test_an_unreadable_record_fails_the_listing_and_a_set(self) -> None:
+        self.configure(overrides={"example/one#2": "waiting"})
+        original = self.config_path.read_bytes()
+        for record, reason in (
+            ({"schema_version": 2, "pulls": []}, "tracker.schema_version must be one of 1, found integer 2"),
+            ({"schema_version": 1, "pulls": ["example/one"]}, "Invalid tracker pull-request identity"),
+            ({"schema_version": 1, "pulls": ["example/one#2", "Example/One#2"]}, "Duplicate tracker pull-request"),
+        ):
+            self.record.write_text(json.dumps(record), encoding="utf-8")
+            for arguments in ([], ["--set", "example/one#2=on hold"]):
+                with self.subTest(record=record, arguments=arguments):
+                    code, out, err = self.run_main("override", *arguments)
+                    self.assertEqual((1, ""), (code, err))
+                    self.assertEqual(1, len(out.splitlines()), out)
+                    self.assertTrue(out.startswith("FAILED "), out)
+                    self.assertIn(reason, out)
+                    self.assertEqual(original, self.config_path.read_bytes())
+
     def test_a_refused_change_writes_nothing(self) -> None:
         self.configure(overrides={"example/one#2": "waiting"})
+        self.track("example/one#3")
         original = self.config_path.read_bytes()
         # Every computed tracker state, in another case, as the configuration's validator refuses it.
         computed = [
