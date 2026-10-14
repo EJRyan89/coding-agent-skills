@@ -341,11 +341,11 @@ def evaluate_condition(
 ) -> bool:
     """Run a condition script: exit 0 holds, 1 does not, and anything else fails the review.
 
-    Its environment names the run's diff, `diff_file`, in CONDITION_DIFF_VARIABLE, and the file it may write,
-    `output`, in CONDITION_OUTPUT_VARIABLE; `output`'s folder is made for it. It reads no stdin, at most
-    CONDITION_OUTPUT_BYTES of each output stream is kept, for the failure's detail, and it is killed at
-    CONDITION_TIMEOUT_SECONDS; every process it started is ended with it either way. One that cannot start, or that
-    no job object can hold to end what it starts, is ended and fails the review.
+    Its environment names the run's diff, `diff_file`, in CONDITION_DIFF_VARIABLE, and the file it may write, `output`,
+    in CONDITION_OUTPUT_VARIABLE; `output`'s folder is made for it. It reads no stdin, at most CONDITION_OUTPUT_BYTES of
+    each output stream is kept, for the failure's detail, and it is killed at CONDITION_TIMEOUT_SECONDS; every process
+    it started that stays in its process tree is ended with it either way. One that cannot start, or that no job object
+    can hold to end what it starts, is ended and fails the review.
     """
     path = reviewer_root.joinpath(*PurePosixPath(script).parts)
     environment = {
@@ -1233,7 +1233,7 @@ def _specialist_roles(
     for identity, files in routes.items():
         reviewed = _to_review(files, review_files)
         if not reviewed and not assigned[identity] and not assigned_comments[identity]:
-            continue  # incremental, and none of its files changed nor awaits a disposition
+            continue  # incremental: none of its files changed or was left unreviewed, and none awaits a disposition
         specialist = by_id[identity]
         # Only a materialized manifest declares specialists, and it has a reviewer root.
         if reviewer_root is None:

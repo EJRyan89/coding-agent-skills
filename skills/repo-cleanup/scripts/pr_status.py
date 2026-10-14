@@ -143,8 +143,9 @@ def change_match(repository_root: str, base_ref: str, git: GitClient | None = No
     matches the squash commit. Each change is every file it touches with that file's whole content before and after,
     so a base that moved in other files before the merge still matches, while every byte of a touched file counts:
     whitespace, line endings, and where in the file a change sits. The same edit made at another place, however
-    alike the lines around it, is another change, and so is a touched file the base changed elsewhere before the
-    merge, which keeps the branch rather than guess. A tip sharing no history with base_ref, a merge commit missing
+    alike the lines around it, is another change, and so is a touched file the base changed elsewhere after the tip
+    left it and before the merge, which keeps the branch rather than guess; a tip rebased onto that change left the
+    base after it, so it matches. A tip sharing no history with base_ref, a merge commit missing
     locally, or an empty change on either side is no match; a merge base or diff that fails for any other reason,
     such as a base_ref that does not resolve, is a QueryError. The tip's change is read once, however many merge
     commits it is compared with.

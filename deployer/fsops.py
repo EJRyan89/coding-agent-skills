@@ -115,9 +115,11 @@ def append_line(path: Path, line: str) -> None:
 def extract_archive(archive: Path, destination: Path) -> None:
     """Extract a tar archive into destination through tarfile's data filter.
 
-    The filter strips every leading slash or backslash from a member's name, so `/etc/passwd` lands at
-    `destination/etc/passwd` and a UNC name such as `//server/share/x` at `destination/server/share/x`. It refuses a
-    name still absolute after that, one with a drive such as `C:/Windows/x`, a device, and any member or link that
-    resolves outside destination."""
+    The filter strips every leading slash from a member's name, and on Windows every leading backslash too, so
+    `/etc/passwd` lands at `destination/etc/passwd` and a UNC name such as `//server/share/x` at
+    `destination/server/share/x`. It refuses a name the platform still reads as absolute after that, a device, and any
+    member or link that resolves outside destination. On Windows a name with a drive such as `C:/Windows/x` is
+    absolute and refused; elsewhere `C:` is a directory name like any other, so it lands at
+    `destination/C:/Windows/x`, and a backslash is a character of the name."""
     with tarfile.open(archive) as handle:
         handle.extractall(destination, filter="data")

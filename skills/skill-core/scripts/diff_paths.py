@@ -1,11 +1,11 @@
 """The repository paths a git diff's file headers name.
 
-Git writes a path in a `--- a/<path>` or `+++ b/<path>` line, and in a `rename from` or `rename to` line, as is,
-unless it holds a byte outside printable ASCII, a double quote, or a backslash: then it writes the whole name, its
-prefix included, between double quotes, each such byte escaped as `\\a`, `\\b`, `\\t`, `\\n`, `\\v`, `\\f`, `\\r`,
-`\\"`, `\\\\`, or three octal digits. An unquoted `---` or `+++` path that holds a space ends with a tab, so the
-name's end is plain however it ends. A script that reads those lines decodes the path here, so every reader drops the
-same tab and undoes the same quoting.
+Git writes a path in a `--- a/<path>` or `+++ b/<path>` line, and in a `rename from` or `rename to` line, as is, unless
+it holds a byte outside printable ASCII, a double quote, or a backslash: then it writes the whole name, its prefix
+included, between double quotes, each such byte escaped as `\\a`, `\\b`, `\\t`, `\\n`, `\\v`, `\\f`, `\\r`, `\\"`,
+`\\\\`, or three octal digits. A `---` or `+++` path that holds a space ends with a tab, quoted or not, so the name's
+end is plain however it ends. A script that reads those lines decodes the path here, so every reader drops the same tab
+and undoes the same quoting.
 
 A decoded path is the pull request author's to choose, and pathlib on Windows reads a backslash in it as a separator,
 so a script that reads the file a diff names finds it through `snapshot_path`, which holds it inside the snapshot.
@@ -60,10 +60,10 @@ def unquote(value: str) -> str:
 
 
 def header_path(value: str) -> str | None:
-    """The repository path a `--- ` or `+++ ` line names, given the line after those four characters: its line end
-    and the tab git ends an unquoted name holding a space with left off, git's quoting undone, and its `a/` or `b/`
-    prefix removed; None for `/dev/null`, the side an added or a deleted file has no file on. A name that ends in a
-    space keeps it."""
+    """The repository path a `--- ` or `+++ ` line names, given the line after those four characters: its line end and
+    the tab git ends a name holding a space with, quoted or not, left off before git's quoting is undone, and its `a/`
+    or `b/` prefix removed; None for `/dev/null`, the side an added or a deleted file has no file on. A name that ends
+    in a space keeps it."""
     path = unquote(value.removesuffix("\n").removesuffix("\r").removesuffix("\t"))
     if path == "/dev/null":
         return None

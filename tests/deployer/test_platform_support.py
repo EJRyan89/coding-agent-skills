@@ -186,7 +186,7 @@ class SupportedPlatformTests(GitTestCase):
         ):
             platform_support.ensure_supported()
         self.assertEqual(
-            ("ERROR: The deployer currently supports Windows and Linux only (detected platform: darwin).",),
+            ("ERROR: The deployer runs on Windows and Linux only (detected platform: darwin).",),
             raised.exception.lines,
         )
 

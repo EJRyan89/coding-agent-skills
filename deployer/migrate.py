@@ -74,10 +74,11 @@ def _carry_requests(context: Context, old: str, old_entry: dict, new_entry: dict
 
     --all keeps an opt-in item only when it is requested, so a request has to move with its skills, in this source's
     terms: a moved skill the old source's requests stood for is requested here through the bundle this source puts it
-    in, or on its own when this source offers it on its own. The old entry keeps its bundle requests: a bundle may hold
-    members that stay with the old source, and its next deployment refuses the moved ones as another source's rather
-    than removing the rest as no longer selected. An old entry that records no bundle members stands for what
-    `requested_members` reads from its installed skills.
+    in, or on its own when this source offers it on its own. The old entry keeps its bundle requests while it keeps
+    anything else: a bundle may hold members that stay with the old source, and its next deployment refuses the moved
+    ones as another source's rather than removing the rest as no longer selected. `migrate` removes an old entry left
+    with no item and no skill request, since its bundle requests then stand for nothing it still holds. An old entry
+    that records no bundle members stands for what `requested_members` reads from its installed skills.
 
     This entry's own requests keep what they stood for. A bundle the migration carries a request into keeps the members
     its request already recorded beside the ones it gains, and every other bundle's record is left as it is. An entry

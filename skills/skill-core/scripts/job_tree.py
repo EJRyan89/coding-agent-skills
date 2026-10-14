@@ -65,7 +65,8 @@ ENDED_STATES = frozenset({b"Z", b"X", b"x"})
 
 
 class JobRefused(OSError):
-    """A running command could not join its job, so it was killed; the message says why it could not."""
+    """A command could not be held in its job: it could not join it, or, on Windows, it joined and could not be
+    resumed in it, so it was killed; the message says which."""
 
 
 class _BasicLimitInformation(ctypes.Structure):
