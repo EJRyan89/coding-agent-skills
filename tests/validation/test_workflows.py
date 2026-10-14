@@ -22,6 +22,7 @@ from workflows import (
     read_workflow,
     required_check_problems,
     tool_cache_problems,
+    uninstall_check_problems,
     verify_log_problems,
     workflow_guard_problems,
 )
@@ -418,6 +419,86 @@ class LinuxVerifyLogFixtures(GitTestCase):
         report = next(index for index, line in enumerate(lines) if "python3 tools/deployable_report.py" in line)
         lines[producer], lines[report] = lines[report], lines[producer]
         self.assertTrue(linux_verify_log_problems("\n".join(lines)))
+
+
+UNINSTALL_CHECK = (
+    "jobs:\n  deployable:\n    steps:\n"
+    "      - name: Record what the deployment owns\n        run: |\n"
+    "          python tools/deployable_report.py owned --owned (Join-Path $env:LOGS 'owned.json')\n"
+    "          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n"
+    "      # The README's selection.\n"
+    "      - name: Uninstall\n        run: |\n"
+    "          'none' | python deploy.py\n"
+    "      - name: Confirm the profile holds nothing from the suite\n        run: |\n"
+    "          # Names what is left.\n"
+    "          python tools/deployable_report.py leftovers --owned (Join-Path $env:LOGS 'owned.json') "
+    "--results $env:RESULTS\n"
+    "          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n"
+    "  deployable-linux:\n    steps:\n"
+    "      - name: Record what the deployment owns\n        run: |\n"
+    '          python3 tools/deployable_report.py owned --owned "$LOGS/owned.json"\n'
+    "      - name: Uninstall\n        run: |\n"
+    "          printf 'none\\n' | python3 deploy.py\n"
+    "      - name: Confirm the profile holds nothing from the suite\n        run: |\n"
+    '          python3 tools/deployable_report.py leftovers --owned "$LOGS/owned.json" --results "$RESULTS"\n'
+)
+
+
+class UninstallCheckFixtures(GitTestCase):
+    def test_both_jobs_save_what_is_owned_before_the_uninstall_and_report_what_is_left_after(self) -> None:
+        self.assertEqual([], uninstall_check_problems(UNINSTALL_CHECK))
+
+    def test_a_check_in_the_steps_own_shell_or_out_of_place_fails(self) -> None:
+        linux = UNINSTALL_CHECK.index("  deployable-linux:")
+        windows_part, linux_part = UNINSTALL_CHECK[:linux], UNINSTALL_CHECK[linux:]
+        directories_only = "          find \"$HOME/.claude/skills\" -mindepth 1 -maxdepth 1 -type d ! -name '.*'\n"
+        for name, drifted, problem in (
+            (
+                "a shell listing of directories",
+                windows_part
+                + linux_part.replace(
+                    '          python3 tools/deployable_report.py leftovers --owned "$LOGS/owned.json" '
+                    '--results "$RESULTS"\n',
+                    directories_only,
+                ),
+                "deployable-linux: 'Confirm the profile holds nothing from the suite' must run exactly",
+            ),
+            (
+                "no exit status check",
+                UNINSTALL_CHECK.replace("          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n", "", 1),
+                "deployable: 'Record what the deployment owns' must run exactly",
+            ),
+            (
+                "another saved file",
+                windows_part
+                + linux_part.replace('--owned "$LOGS/owned.json" --results', '--owned "$LOGS/x.json" --results'),
+                "deployable-linux: 'Confirm the profile holds nothing from the suite' must run exactly",
+            ),
+            (
+                "the record after the uninstall",
+                UNINSTALL_CHECK.replace("Record what the deployment owns", "Record", 1),
+                "deployable: the step before 'Uninstall' is not 'Record what the deployment owns'",
+            ),
+            (
+                "the check missing",
+                windows_part.split("      - name: Confirm")[0] + linux_part,
+                "deployable: the step after 'Uninstall' is not 'Confirm the profile holds nothing from the suite'",
+            ),
+            (
+                "a failure let through",
+                UNINSTALL_CHECK.replace(
+                    "      - name: Confirm the profile holds nothing from the suite\n",
+                    "      - name: Confirm the profile holds nothing from the suite\n        continue-on-error: true\n",
+                    1,
+                ),
+                "must set only its name and run",
+            ),
+            ("no uninstall", windows_part.replace("name: Uninstall", "name: Remove") + linux_part, "expected one"),
+            ("no linux job", windows_part, "deployable-linux: expected one 'Uninstall' step, found 0"),
+        ):
+            with self.subTest(drift=name):
+                problems = uninstall_check_problems(drifted)
+                self.assertTrue(any(problem in found for found in problems), problems)
 
 
 class WorkflowReaderFixtures(GitTestCase):

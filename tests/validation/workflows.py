@@ -572,11 +572,75 @@ def linux_verify_log_problems(workflow: str) -> list[str]:
     return problems
 
 
+# The uninstall check in each deployable job, in its own shell: the step before the uninstall saves what the
+# deployment owns, and the step after it names what is left, files included, through tools/deployable_report.py, which
+# tests/tools/test_deployable_report.py covers. A listing the step wrote for itself looked only at directories, so a
+# shared file left behind passed.
+RECORD_OWNED_STEP = "Record what the deployment owns"
+UNINSTALL_STEP = "Uninstall"
+CONFIRM_UNINSTALL_STEP = "Confirm the profile holds nothing from the suite"
+UNINSTALL_CHECKS = {
+    "deployable": (
+        [
+            "python tools/deployable_report.py owned --owned (Join-Path $env:LOGS 'owned.json')",
+            "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }",
+        ],
+        [
+            "python tools/deployable_report.py leftovers --owned (Join-Path $env:LOGS 'owned.json') "
+            "--results $env:RESULTS",
+            "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }",
+        ],
+    ),
+    "deployable-linux": (
+        ['python3 tools/deployable_report.py owned --owned "$LOGS/owned.json"'],
+        ['python3 tools/deployable_report.py leftovers --owned "$LOGS/owned.json" --results "$RESULTS"'],
+    ),
+}
+
+
+def _script_lines(step: dict[str, Node]) -> list[str]:
+    """A step's run script as its lines, stripped, without blank lines and comments."""
+    lines = [line.strip() for line in str(step.get("run", "")).splitlines()]
+    return [line for line in lines if line and not line.startswith("#")]
+
+
+def uninstall_check_problems(workflow: str) -> list[str]:
+    """Hold each deployable job's uninstall between the step that saves what the deployment owns and the step that
+    names what the uninstall left, each running exactly its deployable_report.py command and nothing else."""
+    tree = read_workflow(workflow)
+    problems: list[str] = []
+    for job, (record, confirm) in UNINSTALL_CHECKS.items():
+        steps = _steps(_mapping(tree, "jobs", job))
+        names = [step.get("name") for step in steps]
+        if names.count(UNINSTALL_STEP) != 1:
+            problems.append(f"{job}: expected one {UNINSTALL_STEP!r} step, found {names.count(UNINSTALL_STEP)}")
+            continue
+        index = names.index(UNINSTALL_STEP)
+        for position, where, name, lines in (
+            (index - 1, "before", RECORD_OWNED_STEP, record),
+            (index + 1, "after", CONFIRM_UNINSTALL_STEP, confirm),
+        ):
+            step = steps[position] if 0 <= position < len(steps) else {}
+            if step.get("name") != name:
+                problems.append(f"{job}: the step {where} {UNINSTALL_STEP!r} is not {name!r}")
+            elif set(step) != {"name", "run"}:
+                problems.append(
+                    f"{job}: {name!r} must set only its name and run, not {sorted(set(step) - {'name', 'run'})}"
+                )
+            elif _script_lines(step) != lines:
+                problems.append(f"{job}: {name!r} must run exactly {lines}")
+    return problems
+
+
 class WorkflowsPolicies(unittest.TestCase):
     def test_deployable_verify_reports_read_the_logs_saved_by_their_own_steps(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
         self.assertEqual([], verify_log_problems(workflow))
         self.assertEqual([], linux_verify_log_problems(workflow))
+
+    def test_deployable_workflow_checks_what_the_uninstall_left_through_the_report_in_both_jobs(self) -> None:
+        workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
+        self.assertEqual([], uninstall_check_problems(workflow))
 
     def test_deployable_workflow_runs_the_windows_job_again_on_a_fresh_linux_runner(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
