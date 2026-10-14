@@ -19,6 +19,7 @@ from pathlib import Path, PurePath
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
+from markdown_sections import CODE_SPAN as CODE_SPAN
 from markdown_sections import markdown_section as markdown_section
 
 from deployer import platform_support, render

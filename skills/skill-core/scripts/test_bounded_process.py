@@ -19,6 +19,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import bounded_process
+import job_tree
 from bounded_process import Finished, run_bounded
 
 ENVIRONMENT_PROGRAM = (
@@ -573,6 +574,9 @@ class StreamingTests(unittest.TestCase):
             (60.0, 10.0, 1.0),
             (bounded_process.EXIT_WAIT_SECONDS, bounded_process.KILL_WAIT_SECONDS, bounded_process.READER_WAIT_SECONDS),
         )
+
+    def test_job_tree_waits_for_a_killed_process_as_long_as_this_module(self) -> None:
+        self.assertIs(bounded_process.KILL_WAIT_SECONDS, job_tree.KILL_WAIT_SECONDS)
 
     def assert_nothing_left_behind(self, running: bounded_process.Streaming) -> None:
         """Once the released program exits, the reader sees stdout end, closes it, and ends."""

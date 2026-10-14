@@ -36,6 +36,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from bounded_process import KILL_WAIT_SECONDS
+from process_identity import ENDED_STATES, PROC, stat_fields
+
 PROCESS_TERMINATE = 0x0001
 PROCESS_SET_QUOTA = 0x0100
 JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
@@ -53,15 +56,10 @@ TH32CS_SNAPTHREAD = 0x00000004
 RESUME_FAILED = 0xFFFFFFFF
 # What CreateToolhelp32Snapshot returns when it fails, as ctypes reads a handle.
 INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
-# Seconds to wait for a refused command, once killed, to be reported gone, and for an ended job's processes to end.
-KILL_WAIT_SECONDS = 10.0
 # Processes a job's first listing has room for; a longer listing is asked for again with room for all.
 LISTED_PROCESSES = 64
 # Seconds between two looks at whether a killed process group still has a process running.
 GROUP_POLL_SECONDS = 0.05
-# Where Linux reports each process, and the states, in its stat file, of one that has ended and waits to be reaped.
-PROC = "/proc"
-ENDED_STATES = frozenset({b"Z", b"X", b"x"})
 
 
 class JobRefused(OSError):
@@ -412,8 +410,7 @@ def group_members(group: int) -> list[int]:
             text = (Path(PROC) / entry / "stat").read_bytes()
         except OSError:
             continue  # it ended meanwhile
-        # After the command name, in parentheses, come the state, the parent's ID, and the process group's ID.
-        fields = text[text.rfind(b")") + 1 :].split()
+        fields = stat_fields(text)  # the state, the parent's ID, and the process group's ID
         if len(fields) > 2 and fields[0] not in ENDED_STATES and fields[2] == str(group).encode():
             running.append(int(entry))
     return running

@@ -13,8 +13,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import job_tree
 import process_identity
-from process_identity import ProcessStatus, proc_status, process_status
+from process_identity import ProcessStatus, proc_status, process_status, stat_fields
 
 # Seconds a started child gets to come up, and an ended one to be reported as ended, on a loaded machine.
 SETTLE_SECONDS = 20.0
@@ -141,6 +142,25 @@ class ProcStatusTests(unittest.TestCase):
         with mock.patch.object(process_identity.os, "kill") as kill:
             self.assertEqual(ProcessStatus(False, None), proc_status(0))
         kill.assert_not_called()
+
+
+class StatFieldsTests(unittest.TestCase):
+    """The one parse of a stat line, which job_tree reads a process group's members with too."""
+
+    def test_the_fields_start_after_the_last_closing_parenthesis(self) -> None:
+        self.assertEqual([b"R", b"1", b"7"], stat_fields(b"4242 (deploy (x) S 1 2) R 1 7\n"))
+
+    def test_a_line_with_no_closing_parenthesis_has_no_fields(self) -> None:
+        for text in (b"", b"4242 no parentheses S 0 0\n"):
+            with self.subTest(text=text):
+                self.assertEqual([], stat_fields(text))
+
+    def test_job_tree_reads_proc_with_this_module_s_definitions(self) -> None:
+        self.assertIs(process_identity.PROC, job_tree.PROC)
+        self.assertIs(process_identity.ENDED_STATES, job_tree.ENDED_STATES)
+        self.assertIs(stat_fields, job_tree.stat_fields)
+        self.assertEqual(Path("/proc"), process_identity.PROC)
+        self.assertEqual(frozenset({b"Z", b"X", b"x"}), process_identity.ENDED_STATES)
 
 
 if __name__ == "__main__":
