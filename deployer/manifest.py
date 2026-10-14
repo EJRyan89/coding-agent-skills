@@ -67,12 +67,32 @@ class Ownership:
         return self.of(SKILL)
 
     def installed_roots(self) -> set[str]:
-        """The installed skills that no other installed skill was deployed depending on."""
+        """The installed skills that no other installed skill was deployed depending on.
+
+        A deployment refuses a dependency cycle, so the skill dependencies it records never form one. An edge on a
+        cycle is one `_upgrade_dependencies` filled in for an entry that recorded none, giving each skill every other
+        skill its source owned, and says nothing about what was chosen: it excludes no skill, so such an entry keeps
+        more, not less, as it does whether it is read in memory before its next deployment or after a deployment of
+        another source, or a migration, saved it as filled in.
+        """
+        edges = self.deps_of(SKILL)
+
+        def reaches(start: str, goal: str) -> bool:
+            seen, pending = {start}, [start]
+            while pending:
+                for dependency in edges.get(pending.pop(), []):
+                    if dependency == goal:
+                        return True
+                    if dependency not in seen:
+                        seen.add(dependency)
+                        pending.append(dependency)
+            return False
+
         depended = {
             dependency
-            for name, dependencies in self.deps_of(SKILL).items()
+            for name, dependencies in edges.items()
             for dependency in dependencies
-            if dependency != name
+            if dependency != name and not reaches(dependency, name)
         }
         return set(self.skills) - depended
 

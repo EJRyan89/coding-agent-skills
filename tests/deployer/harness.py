@@ -379,6 +379,19 @@ class DeployerTestCase(GitTestCase):
     def write_manifest(self, data: dict[str, Any]) -> None:
         self.manifest_file.write_text(json.dumps(data), encoding="utf-8")
 
+    def rewrite_as_version_7(self, requested_bundles: list[str], source_id: str = SOURCE_ID) -> None:
+        """Rewrite the manifest as the last deployer to write version 7 left it, with these bundle requests recorded
+        for the source: no skill records its skill dependencies and no entry the members of its bundle requests.
+        """
+        data = self.manifest()
+        data["manifest_version"] = 7
+        for entry in data["sources"].values():
+            entry.pop("requested_bundle_members", None)
+            for details in entry.get("skills", {}).values():
+                details.pop("skill_deps", None)
+        data["sources"][source_id]["requested_bundles"] = requested_bundles
+        self.write_manifest(data)
+
     def owned(self, kind: str, source_id: str = SOURCE_ID) -> dict[str, Any]:
         return self.manifest()["sources"].get(source_id, {}).get(kind, {})
 

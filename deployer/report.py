@@ -164,7 +164,9 @@ def requested_members(owned: manifest.Ownership) -> set[str]:
     renaming the bundle or moving a member out of it. An entry that records no members cannot say what its bundle
     requests stood for, and an earlier release's --migrate-from recorded no bundle request at all, relying on the
     installed members, so such an entry's requests also stand for each installed skill no other installed skill
-    depends on. That is what the user chose, never a skill installed only as another's dependency, and it is read
+    depends on, by an edge a deployment recorded rather than one the upgrade of a manifest that recorded none filled in
+    (`Ownership.installed_roots`). That is what the user chose, never a skill installed only as another's dependency
+    a deployment recorded, and it is read
     from the installed skills rather than from the bundle this source gives the request's name, which may hold other
     skills since the source regrouped them.
     """
