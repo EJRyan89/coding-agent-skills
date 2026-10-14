@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 
 from git_test_base import GitTestCase
 from validation_support import (
+    CODE_SPAN,
     CallableResolver,
     ModuleImport,
     docstring_ids,
@@ -305,6 +306,13 @@ class SharedReaderFixtures(GitTestCase):
         self.assertEqual("first  \n### Inner\nkept\t", markdown_section(text, "## One"))
         self.assertEqual("second", markdown_section(text, "## Two"))
         self.assertIsNone(markdown_section(text, "## On"))
+
+    def test_the_code_span_reader_is_skill_core_s(self) -> None:
+        import markdown_sections
+        import skill_layout
+
+        self.assertIs(markdown_sections.CODE_SPAN, CODE_SPAN)
+        self.assertIs(CODE_SPAN, skill_layout.CODE_SPAN)
 
     def test_a_fence_body_line_excludes_the_opener_and_the_closer(self) -> None:
         lines = ["text", "```bash", "echo hi", "```", "after"]
