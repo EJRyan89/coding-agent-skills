@@ -8,7 +8,8 @@ authorizes operational validation of a trusted repository. Each stdio server dec
 .mcp.json, .github/mcp.json, .vscode/mcp.json, or .codex/config.toml is started with its
 configured command, arguments, working directory, and environment (a command with a directory part is
 relative to that working directory under the root, as a client starts it), the environment added to this
-process's but never carrying git's repository-selecting variables, such as a shell's GIT_DIR; it receives initialize,
+process's but never carrying git's repository-selecting variables, such as a shell's or its configuration's
+GIT_DIR, which skill-core's bounded_process.streaming removes; it receives initialize,
 notifications/initialized, and tools/list, each one line of JSON ended by a line feed and never a carriage
 return, and is then stopped. --timeout bounds each server from its start to its stop, so neither the server nor a
 program its launcher started and left holding its output keeps the run waiting past it; a server still running
@@ -50,7 +51,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from audit_ai_config import _parse_mcp_json, _read_codex_mcp
-from bounded_process import Streaming, streaming, without_repository_variables
+from bounded_process import Streaming, streaming
 from console import run_main
 
 # Every server this starts is a command the target repository configures, so the skill leaves this script ungranted
@@ -258,7 +259,7 @@ def handshake(root: Path, entry: dict[str, Any], timeout: float) -> str:
             [command, *args],
             idle_timeout=timeout,
             timeout=timeout,
-            env={**without_repository_variables(os.environ), **env_values},
+            env={**os.environ, **env_values},  # streaming drops git's repository-selecting variables from both
             cwd=cwd,
             exit_wait=EXIT_WAIT_SECONDS,
         ) as running:

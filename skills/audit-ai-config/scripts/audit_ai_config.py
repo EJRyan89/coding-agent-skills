@@ -1791,6 +1791,7 @@ def _layering_copilot_cli(sources: InstructionSources) -> list[Finding]:
             ("AGENTS.md", sources.agents_md),
             (".github/copilot-instructions.md", sources.copilot_instructions),
             ("GEMINI.md", sources.gemini_md),
+            (".github/instructions", sources.path_instructions),
         )
         if present
     ]
