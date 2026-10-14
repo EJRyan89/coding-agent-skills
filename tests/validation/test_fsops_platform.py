@@ -877,6 +877,104 @@ class FsopsPlatformFixtures(GitTestCase):
                 platform_code_problems(root),
             )
 
+    def test_platform_policy_finds_windows_process_names_variables_ntpath_taskkill_proc_and_dict_keywords(
+        self,
+    ) -> None:
+        strayed = (
+            "import importlib\n"  # 1
+            "import ntpath\n"  # 2
+            "import os\n"  # 3
+            "import subprocess as sp\n"  # 4
+            "from ntpath import join\n"  # 5
+            "from subprocess import CREATE_NO_WINDOW, STARTUPINFO, run\n"  # 6
+            "\n"  # 7
+            "\n"  # 8
+            "def start(command, pid):\n"  # 9
+            "    sp.CREATE_NEW_PROCESS_GROUP | sp.DETACHED_PROCESS | sp.HIGH_PRIORITY_CLASS\n"  # 10
+            "    sp.STARTF_USESHOWWINDOW, sp.SW_HIDE, sp.STD_OUTPUT_HANDLE\n"  # 11
+            '    os.environ["PATHEXT"], os.environ.get("SystemRoot"), os.getenv("COMSPEC")\n'  # 12
+            '    run(["taskkill", "/F", "/T", "/PID", str(pid)], check=False)\n'  # 13
+            '    open("/proc/self/stat"), f"/proc/{pid}/stat", "cat /proc/1/cmdline", "/proc"\n'  # 14
+            '    sp.run(command, **{"creationflags": 0, "start_new_session": True})\n'  # 15
+            "    options = {}\n"  # 16
+            '    options["startupinfo"] = None\n'  # 17
+            '    options.setdefault("preexec_fn", None)\n'  # 18
+            '    getattr(sp, "CREATE_NO_WINDOW", 0), hasattr(os, "fork"), getattr(os, "getuid")()\n'  # 19
+            '    importlib.import_module("ntpath"), __import__("winreg")\n'  # 20
+        )
+        # Portable subprocess names, other strings, and a keyword dict platform_support builds assume no platform.
+        innocent = (
+            "import importlib\n"
+            "import os\n"
+            "import subprocess\n"
+            "\n"
+            "from deployer import platform_support\n"
+            "\n"
+            "\n"
+            "def start(command, holder):\n"
+            "    subprocess.run(command, stdout=subprocess.STDOUT, stderr=subprocess.DEVNULL, check=False)\n"
+            "    subprocess.run(command, **platform_support.process_options())\n"
+            '    subprocess.run(command, **{"check": False, "text": True})\n'
+            '    os.environ["PATH"], os.environ.get("SYSTEMROOTS"), "PATHEXT is a Windows variable"\n'
+            '    "taskkills", "ntpath", "/process", "lib/proc/x", "~proc", "/procfs"\n'
+            '    "creationflag", "the creationflags keyword"\n'
+            '    getattr(holder, "CREATE_NO_WINDOW"), getattr(subprocess, "run"), hasattr(os, "sep")\n'
+            '    importlib.import_module("json"), getattr(subprocess, command)\n'
+        )
+        sanctioned = (
+            "PLATFORM_ALLOWED = {\n"
+            '    "/proc": "reads the Linux process table the canary checks",\n'
+            '    "subprocess.CREATE_NO_WINDOW": "starts the Windows runner without a console",\n'
+            '    "COMSPEC": "names the shell the runner reports",\n'
+            "}\n"
+            "import subprocess\n"
+            'STAT = "/proc/self/stat"\n'
+            "FLAGS = subprocess.CREATE_NO_WINDOW\n"
+            'SHELL = "COMSPEC"\n'
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "tools/strayed.py": strayed,
+                    "deployer/platform_support.py": strayed,
+                    "tools/innocent.py": innocent,
+                    "tools/sanctioned.py": sanctioned,
+                },
+            )
+            move = "; move it behind deployer/platform_support.py"
+            expected = [
+                (2, "ntpath"),
+                (5, "ntpath"),
+                (6, "subprocess.CREATE_NO_WINDOW"),
+                (6, "subprocess.STARTUPINFO"),
+                (10, "subprocess.CREATE_NEW_PROCESS_GROUP"),
+                (10, "subprocess.DETACHED_PROCESS"),
+                (10, "subprocess.HIGH_PRIORITY_CLASS"),
+                (11, "subprocess.STARTF_USESHOWWINDOW"),
+                (11, "subprocess.STD_OUTPUT_HANDLE"),
+                (11, "subprocess.SW_HIDE"),
+                (12, "COMSPEC"),
+                (12, "PATHEXT"),
+                (12, "SystemRoot"),
+                (13, "taskkill"),
+                (14, "/proc"),
+                (15, "creationflags"),
+                (15, "start_new_session"),
+                (17, "startupinfo"),
+                (18, "preexec_fn"),
+                (19, "os.fork"),
+                (19, "os.getuid"),
+                (19, "subprocess.CREATE_NO_WINDOW"),
+                (20, "ntpath"),
+                (20, "winreg"),
+            ]
+            self.assertEqual(
+                [f"tools/strayed.py:{line} names {token}{move}" for line, token in expected],
+                platform_code_problems(root),
+            )
+
     def test_filesystem_write_policy_counts_archive_extraction_creation_and_writable_archives(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
