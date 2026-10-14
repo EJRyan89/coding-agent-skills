@@ -239,6 +239,50 @@ class DisagreementTests(SignalFixture):
             lines,
         )
 
+    def test_a_finding_a_few_lines_earlier_never_hides_a_disagreement_one_line_away(self) -> None:
+        self.review(
+            7,
+            1,
+            [
+                finding("SHOULD_FIX", "src/a.cs", 10, "Earlier", source="style"),
+                finding("SHOULD_FIX", "src/a.cs", 13, "Nearby", source="style"),
+                finding("MUST_FIX", "src/a.cs", 14, "Unvalidated path", source="security"),
+            ],
+            reviewers=self.REVIEWERS,
+        )
+        _, lines = self.signal_lines()
+        self.assertEqual(
+            [
+                f"REVIEWER_DISAGREEMENT R1 owner/repo#7 head={HEAD[:12]} src/a.cs:13",
+                "DISAGREEING R1 SHOULD_FIX owner/repo#7 v1 F002 style",
+                "DISAGREEING R1 MUST_FIX owner/repo#7 v1 F003 security",
+            ],
+            lines,
+        )
+
+    def test_findings_joined_by_disagreeing_pairs_are_one_place_and_distant_ones_are_another(self) -> None:
+        self.review(
+            7,
+            1,
+            [
+                finding("SUGGESTION", "src/a.cs", 10, "First", source="style"),
+                finding("MUST_FIX", "src/a.cs", 13, "Second", source="security"),
+                finding("SUGGESTION", "src/a.cs", 16, "Third", source="style"),
+                finding("SHOULD_FIX", "src/a.cs", 30, "Fourth", source="style"),
+                finding("MUST_FIX", "src/a.cs", 33, "Fifth", source="security"),
+            ],
+            reviewers=self.REVIEWERS,
+        )
+        _, lines = self.signal_lines()
+        self.assertEqual(
+            [line for line in lines if line.startswith("REVIEWER_DISAGREEMENT")],
+            [
+                f"REVIEWER_DISAGREEMENT R1 owner/repo#7 head={HEAD[:12]} src/a.cs:10",
+                f"REVIEWER_DISAGREEMENT R2 owner/repo#7 head={HEAD[:12]} src/a.cs:30",
+            ],
+        )
+        self.assertEqual(3, sum(line.startswith("DISAGREEING R1 ") for line in lines))
+
     def test_reviewers_that_share_a_source_or_agree_are_no_disagreement(self) -> None:
         self.review(
             7,

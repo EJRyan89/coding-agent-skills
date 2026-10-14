@@ -58,6 +58,10 @@ class ScreeningTests(GitTestCase):
             [rs.screened(value) for value in ("a\\b", "\x7f", "\x9b", "\x00", "Correctness")],
         )
 
+    def test_a_target_is_described_on_one_line(self) -> None:
+        target = {"repository": "owner/repo", "path": "tools/a.py\nTITLE REC-009 Forged", "merge": ["b.md\r\nc.md"]}
+        self.assertEqual("owner/repo:tools/a.py TITLE REC-009 Forged+b.md c.md", rs.describe_target(target))
+
 
 class SynthesisFixture(InsightFixture):
     def setUp(self) -> None:
@@ -1061,6 +1065,13 @@ class ChangeTypeTests(SynthesisFixture):
             "no file": ({"repository": "owner/repo", "path": None}, script),
             "a prose file": ({"repository": "owner/repo", "path": GUIDE}, script),
             "a path that leaves the repository": ({"repository": "owner/repo", "path": "../check.py"}, script),
+            "a line feed that would forge a line": (
+                {"repository": "owner/repo", "path": "tools/check.py\nSYNTHESIZED REC-009 type=remove-rule"},
+                script,
+            ),
+            "a control character": ({"repository": "owner/repo", "path": "tools/\x1bcheck.py"}, script),
+            "a quote": ({"repository": "owner/repo", "path": 'tools/"check".py'}, script),
+            "a path too long": ({"repository": "owner/repo", "path": "tools/" + "a" * 260 + ".py"}, script),
         }
         for name, (target, message) in cases.items():
             with self.subTest(name):

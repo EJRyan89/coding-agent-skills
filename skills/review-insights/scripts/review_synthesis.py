@@ -120,6 +120,9 @@ TEXT_LIMITS = {"short": 300, "rationale": 1500, "change": 2000}
 # A title, category, or analyzer name is passed back on the command line inside double quotes as the subject of a
 # decision, and printed on a fact line, so it holds no character a shell expands there and no control character.
 UNSAFE_ARGUMENT = re.compile(r'["`$\\\x00-\x1f\x7f-\x9f\u2028\u2029]')
+# A `move-to-script` target names a file no record lists, chosen by the synthesis, and is printed on a fact line, so
+# it holds no character UNSAFE_ARGUMENT matches and is at most this long.
+TARGET_PATH = 260
 ADJACENT_DAYS = 7
 PERIOD = re.compile(r"(\d{4}-\d{2}-\d{2})--(\d{4}-\d{2}-\d{2})")
 PROBLEMS_SHOWN = 20
@@ -325,7 +328,8 @@ def describe_target(target: dict[str, Any]) -> str:
     if "analyzer" in target:
         analyzer = target["analyzer"]
         return f"analyzer {analyzer['coverage']} {analyzer['tool']} {analyzer['rule']}"
-    return f"{target['repository']}:{'+'.join([target['path'] or '(no listed file)', *target.get('merge', [])])}"
+    files = [target["path"] or "(no listed file)", *target.get("merge", [])]
+    return f"{target['repository']}:{'+'.join(flat_text(path) for path in files)}"
 
 
 def fix_rank(item: dict[str, Any]) -> int:
@@ -574,8 +578,9 @@ guidance and to the repositories' tooling. This file is your complete task.
 - `guidance`: per repository, the files its reviewers are built from. A recommendation that changes guidance names one
   of these files, or null when none fits, and then says in its change where the guidance belongs.
 - `guidance-file`: one of those files, its `role` (`prose`, or `code` for a script, manifest, or test, listed by path
-  only) and the `reviewers` given it. A prose file's `content` is its text as those reviewers were given it when
-  `status` is `included`; otherwise `status` says why not: `unavailable`, `too-large`, or `over-budget`.
+  only) and the `reviewers` given it. Reviewers given different versions of one file have a line per version. A prose
+  file's `content` is its text as those reviewers were given it when `status` is `included`; otherwise `status` says
+  why not: `unavailable`, `too-large`, or `over-budget`.
 - `severity-drift`, `verdict-flip`, `reviewer-disagreement`: consistency signals computed from the reviews alone. The
   same finding at more than one severity, across a group or across a finding's re-reviews; a verdict that changed
   between two reviews of the same commit, with the findings whose severity or presence differs; and reviewers that
@@ -807,11 +812,18 @@ class _Checker:
             return
         files, path = guidance[value["repository"]], value["path"]
         if kind == "move-to-script":
-            if not isinstance(path, str) or not safe_repository_path(path) or is_prose(path):
+            if (
+                not isinstance(path, str)
+                or len(path) > TARGET_PATH
+                or UNSAFE_ARGUMENT.search(path)
+                or not safe_repository_path(path)
+                or is_prose(path)
+            ):
                 self.problem(
                     where,
                     "path must name the script, validator, or test that takes over the rule: a repository-relative "
-                    "file that is not prose guidance",
+                    f"file that is not prose guidance, of at most {TARGET_PATH} characters without quotes, "
+                    "backticks, $, \\, or control characters",
                 )
             return
         named = [path, *value["merge"]] if kind == "consolidate" and isinstance(value["merge"], list) else [path]
