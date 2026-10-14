@@ -892,6 +892,43 @@ class ReaderTests(unittest.TestCase):
             [("Lantern.Entered", entered), ("Lantern.Other", entered)], [(i.id, t) for i, t, _ in unevaluated]
         )
 
+    def test_a_directory_build_props_makes_the_files_unset_framework_one_of_the_values_it_may_hold(self) -> None:
+        when = "'$(TargetFramework)'==''"
+        text = (
+            '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><ProjectReference Include="..\\Lib\\Lib.csproj" /></ItemGroup>'
+            f'<Choose><When Condition="{when}"><PropertyGroup><TargetFramework>net472</TargetFramework>'
+            '</PropertyGroup><ItemGroup><ProjectReference Remove="..\\Lib\\Lib.csproj" /></ItemGroup></When>'
+            "<Otherwise><PropertyGroup><Keep>1</Keep></PropertyGroup></Otherwise></Choose></Project>"
+        )
+        lib = (self.root / "src" / "Lib" / "Lib.csproj").resolve()
+        # With no import, the file's unset value is the one MSBuild enters the Choose with, so the When applies.
+        project = read_project(self.write("src/App/App.csproj", text), self.central)
+        self.assertEqual((["net472"], []), (project.frameworks, project.project_refs))
+        self.assertEqual([], project_refs_for(project.project_items, None, project.frameworks)[1])
+        # Under a Directory.Build.props, at any depth above the project, the When cannot be chosen: its Remove is kept
+        # and named, and the import's value never stands as a framework the project names.
+        for relative in ("src/App/Directory.Build.props", "Directory.Build.props"):
+            with self.subTest(props=relative):
+                props = self.write(relative, "<Project />")
+                project = read_project(self.root / "src" / "App" / "App.csproj", self.central)
+                self.assertEqual((["net472"], [lib]), (project.frameworks, project.project_refs))
+                unevaluated = project_refs_for(project.project_items, None, project.frameworks)[1]
+                self.assertEqual([("Remove", when, "net472")], [(i.operation, t, f) for i, t, f in unevaluated])
+                self.assertEqual(
+                    [("Remove", when, "net8.0")],
+                    [(i.operation, t, f) for i, t, f in project_refs_for(project.project_items, "net8.0")[1]],
+                )
+                props.unlink()
+        # A framework the file sets before the Choose replaces whatever the import set, so the Choose is chosen with
+        # it as before.
+        self.write("Directory.Build.props", "<Project />")
+        settled = text.replace(
+            "<ItemGroup>", "<PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup><ItemGroup>", 1
+        )
+        project = read_project(self.write("src/App/App.csproj", settled), self.central)
+        self.assertEqual((["net8.0"], [lib]), (project.frameworks, project.project_refs))
+        self.assertEqual([], project_refs_for(project.project_items, "net8.0")[1])
+
     def test_items_inside_a_target_are_left_out_and_named(self) -> None:
         path = self.write("src/Harbor.Late/Harbor.Late.csproj", TARGET_PROJECT)
         project = read_project(path, self.central)
