@@ -13,7 +13,7 @@ import tempfile
 import unittest
 from collections import defaultdict
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from duplication import SKILL_CORE, SKILL_CORE_SCRIPTS
 from toolchain import find_powershell
@@ -261,6 +261,48 @@ def _program_name(command: str) -> str | None:
     return name if COMMAND_NAME.fullmatch(name) else None
 
 
+# A word that names a program by a path: one holding a separator, or a Windows drive.
+PATH_WORD = re.compile(r"[^/\\]*[/\\].*|[A-Za-z]:.*")
+
+
+def _read_literal(source: ast.Constant) -> Source:
+    """What a string literal a command starts names: the literal itself when its first word names a program, the
+    executable's base name, without a .exe suffix, when the whole literal is one path to it, and Unreadable for a path
+    spaces or arguments follow, which could be part of the path or not, or for a literal that names no program."""
+    value = str(source.value)
+    if _program_name(value):
+        return source
+    words = value.split()
+    if not words or not PATH_WORD.fullmatch(words[0]):
+        return Unreadable(source, f"the program in `{ast.unparse(source)}`, which names none")
+    if len(words) > 1:
+        return Unreadable(source, f"the program in `{ast.unparse(source)}`, a path that a space may be part of")
+    name = "" if words[0][-1] in "/\\" else platform_support.program_name(PureWindowsPath(words[0]).name)
+    if not COMMAND_NAME.fullmatch(name):
+        return Unreadable(source, f"the program in `{ast.unparse(source)}`, a path that names none")
+    return ast.copy_location(ast.Constant(name), source)
+
+
+def _read_literals(sources: list[Source]) -> list[Source]:
+    return [_read_literal(source) if isinstance(source, ast.Constant) else source for source in sources]
+
+
+def _type_uses(tree: ast.Module, resolver: CallableResolver) -> set[int]:
+    """The nodes that use a class as a type, which starts nothing: an annotation, a subscripted generic such as
+    subprocess.Popen[bytes], and the class isinstance or issubclass checks against."""
+    roots: list[ast.expr] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.arg | ast.AnnAssign) and node.annotation is not None:
+            roots.append(node.annotation)
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.returns is not None:
+            roots.append(node.returns)
+        elif isinstance(node, ast.Subscript):
+            roots.append(node.value)
+        elif isinstance(node, ast.Call) and resolver.name(node.func) in {"isinstance", "issubclass"}:
+            roots += node.args[1:2]
+    return {id(found) for root in roots for found in ast.walk(root)}
+
+
 class _NameBindings:
     """Every value the module binds each name to, in the lexical scope that owns the name: an assigned value, each
     element of what a loop or a comprehension walks, or None for a store whose value the reader cannot read, such as
@@ -400,8 +442,9 @@ def _prefixes(sources: list[Source], placeholder: str, kind: str) -> list[Source
 class CommandReader:
     """The programs a Python module runs, each call resolved through the module's imports and each command it passes
     followed to what names its program: a literal the module binds the name to, a lookup, or, for a parameter, what
-    each call of its function in the module passes. Where none can be read, the reader says so, so a command whose
-    program it cannot read never passes unseen.
+    each call of its function in the module passes. A literal path names its program by its base name. Where none can
+    be read, the reader says so, as it does for a runner the module hands on as a value or takes by getattr, so a
+    command whose program it cannot read never passes unseen.
     """
 
     def __init__(self, tree: ast.Module) -> None:
@@ -411,6 +454,14 @@ class CommandReader:
         self.scope_names = _scope_names(tree)
         self.calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
         self.called = {id(call.func) for call in self.calls}
+        # The values the module binds a name to, which a call through that name is resolved by.
+        self.alias_values = {
+            id(value)
+            for scope in {id(scope): scope for scope in self.resolver.scopes.values()}.values()
+            for values in scope.bindings.values()
+            for value in values
+            if isinstance(value, ast.expr)
+        }
         # The names the module uses other than by calling them, such as a function it hands on as a value.
         self.handed_on = {
             node.id if isinstance(node, ast.Name) else node.attr
@@ -620,11 +671,60 @@ class CommandReader:
         return []
 
     def _sources(self, call: ast.Call) -> list[Source]:
-        return [
-            found
-            for argument in self._command_arguments(call)
-            for found in ([argument] if isinstance(argument, Unreadable) else self.program_literals(argument))
-        ]
+        return _read_literals(
+            [
+                found
+                for argument in self._command_arguments(call)
+                for found in ([argument] if isinstance(argument, Unreadable) else self.program_literals(argument))
+            ]
+        )
+
+    def _names_a_runner(self, node: ast.expr, seen: frozenset[int] = frozenset()) -> bool:
+        """Whether an expression names a COMMAND_RUNNERS call, through the module's imports or any value the module
+        binds the name to, even where a name bound more than once does not resolve."""
+        if self.resolver.name(node) in COMMAND_RUNNERS:
+            return True
+        scope = self.resolver.scopes.get(id(node))
+        if not isinstance(node, ast.Name) or scope is None or id(node) in seen:
+            return False
+        owner = scope.owner(node.id)
+        values = owner.bindings.get(node.id, []) if owner is not None else []
+        return any(
+            isinstance(value, (ast.Name, ast.Attribute)) and self._names_a_runner(value, seen | {id(node)})
+            for value in values
+        )
+
+    def _runners_handed_on(self) -> list[Unreadable]:
+        """Each runner the module uses other than by calling it or binding a name to it, whose commands the reader
+        cannot follow: one handed to functools.partial, map, a Thread's target, or a collection, or taken by getattr."""
+        found: list[Unreadable] = []
+        types = _type_uses(self.tree, self.resolver)
+        for node in ast.walk(self.tree):
+            if isinstance(node, ast.Call) and self.resolver.name(node.func) == "getattr" and len(node.args) > 1:
+                module = self.resolver.name(node.args[0])
+                attribute = node.args[1]
+                named = (
+                    isinstance(attribute, ast.Constant)
+                    and isinstance(attribute.value, str)
+                    and f"{module}.{attribute.value}" in COMMAND_RUNNERS
+                )
+                dynamic = not isinstance(attribute, ast.Constant) and any(
+                    runner.startswith(f"{module}.") for runner in COMMAND_RUNNERS
+                )
+                if module and (named or dynamic):
+                    found.append(Unreadable(node, f"the program `{ast.unparse(node)}` runs, which getattr takes"))
+            elif (
+                isinstance(node, (ast.Name, ast.Attribute))
+                and isinstance(node.ctx, ast.Load)
+                and id(node) not in self.called
+                and id(node) not in self.alias_values
+                and id(node) not in types
+                and self._names_a_runner(node)
+            ):
+                found.append(
+                    Unreadable(node, f"the program `{ast.unparse(node)}` runs, which the module hands on as a value")
+                )
+        return found
 
     @staticmethod
     def _named(sources: list[Source]) -> list[tuple[int, str]]:
@@ -646,7 +746,7 @@ class CommandReader:
         An import, command lookup, or command list alone starts nothing. This does not say whether the process
         runs code from the target repository; that is the script's RUNS_REPOSITORY_CODE declaration.
         """
-        return any(
+        return bool(self._runners_handed_on()) or any(
             self.resolver.name(node.func) in COMMAND_RUNNERS or self.resolver.name(node.func) in CLIENT_CLASSES
             for node in self.calls
         )
@@ -658,10 +758,10 @@ class CommandReader:
     def unreadable(self) -> list[Unreadable]:
         """Each place a command the module starts names a program the reader cannot read, once, in line order."""
         if self._unreadable is None:
+            started = [source for call in self.calls for source in self._sources(call)]
             found = {
                 (source.line, source.description, self.scope(source)): source
-                for call in self.calls
-                for source in self._sources(call)
+                for source in [*started, *self._runners_handed_on()]
                 if isinstance(source, Unreadable)
             }
             self._unreadable = [found[key] for key in sorted(found)]
@@ -719,7 +819,8 @@ class CommandReader:
                     client = CLIENT_CLASSES.get(self.resolver.name(node.func))
                     found |= {client} if client else set()
                     if _is_lookup(node, self.resolver.aliases(node.func)):
-                        found |= {name for _, name in self._named(self.program_literals(_lookup_argument(node)))}
+                        looked_up = _read_literals(self.program_literals(_lookup_argument(node)))
+                        found |= {name for _, name in self._named(looked_up)}
                     found |= {name for _, name in self.started(node)}
             self._commands[key] = found
         return self._commands[key]

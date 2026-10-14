@@ -510,6 +510,120 @@ class SkillScriptsFixtures(GitTestCase):
                 skill_command_problems(root, {"gh"}, {"git"}),
             )
 
+    def test_command_policies_read_a_literal_path_by_its_base_name_or_report_one_they_cannot(self) -> None:
+        windows = "C:\\Tools\\yq.exe"
+        spaced = "C:\\Program Files\\Tool\\tool.exe"
+        argued = "/usr/bin/perl -e 1"
+        script = (
+            "import subprocess\n"
+            'subprocess.run(["/usr/bin/ruby", "-e", "1"])\n'  # absolute
+            'subprocess.run(["./custom-tool"])\n'  # relative
+            f"subprocess.run({windows!r})\n"  # Windows-style, with its .exe suffix
+            'subprocess.run(["../bin/jq.EXE", "."])\n'
+            "def spaced():\n"
+            f"    subprocess.run([{spaced!r}])\n"  # 7: a space may be part of the path or start its arguments
+            "def argued():\n"
+            f"    subprocess.run({argued!r}, shell=True)\n"  # 9
+            "def directory():\n"
+            '    subprocess.run(["/usr/local/bin/"])\n'  # 11
+            "def empty():\n"
+            '    subprocess.run([""])\n'  # 13
+        )
+        path = "skills/alpha/scripts/tool.py"
+        unread = [
+            unreadable(path, 7, f"the program in `{spaced!r}`, a path that a space may be part of"),
+            unreadable(path, 9, f"the program in `{argued!r}`, a path that a space may be part of"),
+            unreadable(path, 11, "the program in `'/usr/local/bin/'`, a path that names none"),
+            unreadable(path, 13, "the program in `''`, which names none"),
+        ]
+        reasons = {
+            "spaced": "runs the tool its installer placed",
+            "argued": "runs perl by its path",
+            "directory": "runs what the folder holds",
+            "empty": "runs what its caller fills in",
+        }
+        sanction = f"COMMANDS_ALLOWED = {reasons!r}\n"
+        tools = ["custom-tool", "jq", "ruby", "yq"]
+        for allowance, declared, expected in (
+            # Unsanctioned, each unread path is reported and each path read by its base name is an undeclared tool.
+            (
+                "",
+                [],
+                [
+                    *unread,
+                    *(f"skill alpha runs {name} without declaring it in tools" for name in tools),
+                ],
+            ),
+            # Declared tools and a stated reason for each unread path pass.
+            (sanction, tools, []),
+        ):
+            with self.subTest(allowance=allowance), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                write_fixture_tree(
+                    root,
+                    {
+                        "deploy-meta/alpha.json": json.dumps({"tools": declared}),
+                        "skills/alpha/SKILL.md": "# alpha\n",
+                        "skills/alpha/scripts/tool.py": script + allowance,
+                    },
+                )
+                self.assertEqual(expected, skill_command_problems(root, {"gh", *tools}, {"git", "python"}))
+                self.assertEqual(expected[: len(unread)] if not allowance else [], client_command_problems(root))
+
+    def test_command_policies_report_a_runner_handed_on_as_a_value_or_taken_by_getattr(self) -> None:
+        script = (
+            "import functools\n"
+            "import os\n"
+            "import subprocess\n"
+            "import threading\n"
+            "from subprocess import run\n"
+            "def partial():\n"
+            '    return functools.partial(subprocess.run, ["git"])\n'  # 7
+            "def named():\n"
+            '    return getattr(subprocess, "run")(["git"])\n'  # 9
+            "def dynamic(name):\n"
+            "    return getattr(os, name)\n"  # 11
+            'RUNNERS = {"run": subprocess.run}\n'  # 12
+            "def mapped(commands):\n"
+            "    return list(map(run, commands))\n"  # 14
+            "def threaded():\n"
+            '    return threading.Thread(target=subprocess.Popen, args=(["git"],))\n'  # 16
+            "def rebound(flag):\n"
+            "    start = subprocess.call\n"
+            "    if flag:\n"
+            "        start = subprocess.check_call\n"
+            "    return threading.Thread(target=start)\n"  # 21: a name bound twice still names a runner
+            # A class used as a type, a getattr of what starts nothing, and a call through an alias start nothing
+            # unread.
+            "def typed(process: subprocess.Popen[bytes]) -> subprocess.Popen[bytes]:\n"
+            '    return process if isinstance(process, subprocess.Popen) else getattr(subprocess, "DEVNULL")\n'
+            "def called():\n"
+            "    start = subprocess.run\n"
+            '    return start(["git", "status"])\n'
+        )
+        path = "skills/alpha/scripts/tool.py"
+        handed = "which the module hands on as a value"
+        expected = [
+            unreadable(path, 7, f"the program `subprocess.run` runs, {handed}"),
+            unreadable(path, 9, "the program `getattr(subprocess, 'run')` runs, which getattr takes"),
+            unreadable(path, 11, "the program `getattr(os, name)` runs, which getattr takes"),
+            unreadable(path, 12, f"the program `subprocess.run` runs, {handed}"),
+            unreadable(path, 14, f"the program `run` runs, {handed}"),
+            unreadable(path, 16, f"the program `subprocess.Popen` runs, {handed}"),
+            unreadable(path, 21, f"the program `start` runs, {handed}"),
+        ]
+        reader = CommandReader(ast.parse(script))
+        self.assertEqual(expected, reader.problems(path))
+        self.assertEqual({"git"}, reader.commands(set()))
+        scopes = ("partial", "named", "dynamic", "RUNNERS", "mapped", "threaded", "rebound")
+        sanctioned = f"{script}COMMANDS_ALLOWED = {dict.fromkeys(scopes, 'starts what its caller gives it')!r}\n"
+        self.assertEqual([], CommandReader(ast.parse(sanctioned)).problems(path))
+        # A module that only hands a runner on starts a process all the same.
+        self.assertTrue(CommandReader(ast.parse("import subprocess\nRUNNERS = [subprocess.run]\n")).starts_process())
+        self.assertFalse(
+            CommandReader(ast.parse("import subprocess\ndef f(p: subprocess.Popen[str]): ...\n")).starts_process()
+        )
+
     def test_command_reader_is_built_once_per_content_and_again_when_a_file_changes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
