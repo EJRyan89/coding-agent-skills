@@ -1460,6 +1460,32 @@ UNEVALUATED_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
   </Target>
 </Project>
 """
+# A project of two frameworks that references Lib and removes it under a condition, and Lib, which asks for a package.
+REMOVE_CONDITION = "'$(TargetFramework)'=='net472'"
+REMOVING_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFrameworks>net8.0;net472</TargetFrameworks></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\\Lib\\Lib.csproj" />
+    <ProjectReference Remove="..\\Lib\\Lib.csproj" Condition="{0}" />
+  </ItemGroup>
+</Project>
+"""
+LIB_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+  <ItemGroup><PackageReference Include="Lib.Pkg" Version="1.0.0" /></ItemGroup>
+</Project>
+"""
+# A framework a Choose's first When sets while testing it, and a reference that holds for that framework.
+CHOOSING_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
+  <Choose>
+    <When Condition="'$(TargetFramework)'==''">
+      <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+    </When>
+    <Otherwise><PropertyGroup><TargetFramework>net472</TargetFramework></PropertyGroup></Otherwise>
+  </Choose>
+  <ItemGroup><Reference Include="Beacon.Modern" Condition="'$(TargetFramework)'=='net8.0'" /></ItemGroup>
+</Project>
+"""
 OTHER_ROUTE_SDK_TEXT = (
     "Project 'Harbor.Core' has the following dependency graph(s) for 'Lantern.Json':\r\n"
     "\r\n"
@@ -1608,6 +1634,72 @@ class ConditionalItemTests(Fixture):
             self.lines(rows, "PATH"),
         )
         self.assertEqual(([["Beacon.Late"]], 1), (self.lines(rows, "MISSING"), code))
+
+    def test_a_conditional_project_reference_remove_keeps_the_project_for_the_other_frameworks(self) -> None:
+        # The issue's two projects, App removing Lib for net472 alone, read from the directory holding both.
+        app, lib = "App/App.csproj", "Lib/Lib.csproj"
+        self.write(app, REMOVING_PROJECT.format(REMOVE_CONDITION))
+        self.write(lib, LIB_PROJECT)
+        chain = [app, "-", "Lib.Pkg", "graph", "Lib (project) > Lib.Pkg (v1.0.0)"]
+        own = [lib, "-", "Lib.Pkg", "graph", "Lib.Pkg (v1.0.0)"]
+        code, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root))
+        self.assertEqual((0, [chain, own], []), (code, self.lines(rows, "PATH"), self.lines(rows, "UNREADABLE")))
+        # Listed alone, App still loads Lib as its reference, with no restore and with one: recorded for net8.0, or
+        # not recorded, so each framework's conditions decide.
+        self.write("Harbor.sln", solution("App\\App.csproj"))
+        _, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root))
+        self.assertEqual([chain, own], self.lines(rows, "PATH"))
+        restore = {
+            "projectPath": "D:\\old\\App\\App.csproj",
+            "frameworks": {
+                "net8.0": {"projectReferences": {"D:\\old\\Lib\\Lib.csproj": {}}},
+                "net472": {"projectReferences": {}},
+            },
+        }
+        for project in ({"restore": restore}, {}):
+            with self.subTest(recorded=bool(project)):
+                document = {"version": 3, "targets": {"net8.0": {}, "net472": {}}, "project": project}
+                self.write("App/obj/project.assets.json", json.dumps(document))
+                code, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root))
+                self.assertEqual(
+                    (0, [[app, "net8.0", *chain[2:]], own], []),
+                    (code, self.lines(rows, "PATH"), self.lines(rows, "UNREADABLE")),
+                )
+        # A Remove whose condition the reader cannot evaluate is reported as not removed, and is not: the walk keeps
+        # Lib for each framework.
+        debug = "'$(Configuration)'=='Debug'"
+        self.write(app, REMOVING_PROJECT.format(debug))
+        code, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root))
+        self.assertEqual([[app, "net8.0;net472", *chain[2:]], own], self.lines(rows, "PATH"))
+        self.assertEqual(
+            [
+                [
+                    app,
+                    f"the condition {debug} on the Remove of ProjectReference Lib/Lib.csproj cannot be evaluated for "
+                    f"{framework}, so it is not removed",
+                ]
+                for framework in ("net8.0", "net472")
+            ],
+            self.lines(rows, "UNREADABLE"),
+        )
+        self.assertEqual(1, code)
+        # An unconditional Remove still removes the project everywhere, so App reaches nothing and Lib is not read.
+        (self.root / "App" / "obj" / "project.assets.json").unlink()
+        self.write(app, REMOVING_PROJECT.replace(' Condition="{0}"', ""))
+        code, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root))
+        self.assertEqual((0, [["Lib.Pkg"]]), (code, self.lines(rows, "MISSING")))
+        self.assertEqual([[app, "sdk", "direct", "listed"]], self.lines(rows, "PROJECT"))
+
+    def test_a_choose_that_sets_the_framework_it_tests_keeps_the_framework_its_when_chose(self) -> None:
+        # The restore keys its target by the long name, which reads the project's conditions only through the short
+        # name the project's Choose gives it.
+        label = "App/App.csproj"
+        self.write(label, CHOOSING_PROJECT)
+        document = {"version": 3, "targets": {".NETCoreApp,Version=v8.0": {}}, "project": {}}
+        self.write("App/obj/project.assets.json", json.dumps(document))
+        code, rows = self.run_main("where", "Beacon.Modern", "--root", str(self.root))
+        self.assertEqual([[label, "net8.0", "Beacon.Modern", "framework", "-", "-"]], self.lines(rows, "WHERE"))
+        self.assertEqual((0, []), (code, self.lines(rows, "UNREADABLE")))
 
     def test_the_chain_limit_counts_the_sdks_chains(self) -> None:
         root = self.mixed_solution()
