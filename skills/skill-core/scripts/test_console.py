@@ -148,6 +148,49 @@ class RunMainTests(unittest.TestCase):
                 self.assertEqual(line.encode(), result.stdout.replace(b"\r\n", b"\n"))
                 self.assertEqual(b"", result.stderr)
 
+    def test_a_requested_traceback_follows_the_line_on_stderr_with_the_same_exit_code(self) -> None:
+        for body, code, line, last in (
+            ("raise LookupError('gone')", 1, "FAILED LookupError: gone\n", "LookupError: gone"),
+            ("raise KeyboardInterrupt", 130, "FAILED interrupted\n", "KeyboardInterrupt"),
+        ):
+            with self.subTest(body=body):
+                result = child(f"def main():\n    {body}\nconsole.run_main(main, traceback_requested=lambda: True)")
+                self.assertEqual(code, result.returncode, result.stderr)
+                self.assertEqual(line.encode(), result.stdout.replace(b"\r\n", b"\n"))
+                errors = result.stderr.replace(b"\r\n", b"\n").decode()
+                self.assertTrue(errors.startswith("Traceback (most recent call last):\n"), errors)
+                self.assertIn("in main", errors)
+                self.assertTrue(errors.endswith(f"{last}\n"), errors)
+
+    def test_a_traceback_is_shown_only_when_asked_and_its_question_answers(self) -> None:
+        def unanswerable() -> bool:
+            raise ImportError("no deployer")
+
+        for requested in (None, lambda: False, unanswerable):
+            with self.subTest(requested=requested):
+                output, errors = io.StringIO(), io.StringIO()
+                with (
+                    contextlib.redirect_stdout(output),
+                    contextlib.redirect_stderr(errors),
+                    self.assertRaises(SystemExit) as exited,
+                ):
+                    console.run_main(raises(ValueError("boom")), traceback_requested=requested)
+                self.assertEqual(
+                    (1, "FAILED ValueError: boom\n", ""), (exited.exception.code, output.getvalue(), errors.getvalue())
+                )
+
+    def test_success_and_a_system_exit_never_ask_for_a_traceback(self) -> None:
+        asked: list[bool] = []
+
+        def requested() -> bool:
+            asked.append(True)
+            return True
+
+        for main in (lambda: 0, raises(SystemExit(2))):
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                console.run_main(main, traceback_requested=requested)
+        self.assertEqual([], asked)
+
     def test_the_runner_sets_up_utf8_output_first_with_its_options(self) -> None:
         result = child(
             "def main():\n    print('→ ✓')\n    sys.stdout.write('\\udcff')\n"
