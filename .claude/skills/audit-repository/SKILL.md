@@ -43,14 +43,14 @@ A reader's finding is a lead, not a verdict. Open both sides it quotes and keep 
 
 ## 5. File
 
-- File each confirmed finding as one issue written from the template its `template` field names in `.github/ISSUE_TEMPLATE/`, keeping the template's headings and quoting both sides, with `gh issue create --body-file`, into the milestone the rule below gives.
+- File each confirmed finding as one issue written from the template its `template` field names in `.github/ISSUE_TEMPLATE/`, keeping the template's headings, quoting both sides, and naming the audit, its scope (the base tag, or the area read whole), and the date in its body, with `gh issue create --body-file`, into the milestone the rule below gives.
 - A `trust-boundary` finding, or any finding that shows a way past a trust boundary, is a vulnerability. Report it privately as `SECURITY.md` says, through a private security advisory, and never in a public issue, commit message, or pull request.
 - **Release audit:** a confirmed defect is fixed before the tag. It goes into the release's own milestone, and the tag waits for its pull request. Drift and polish go into the next milestone, and the release notes' scope section names each as deferred.
 - **Rotation audit:** every finding goes into the next milestone, and nothing waits.
 
 ## 6. Record
 
-Add a line to each milestone that received findings, naming the audit, its scope (the base tag, or the area read whole), the date, and the issues filed. After a rotation audit, record its area from a worktree, never the hub, with the tag just released, and merge the change through a pull request:
+The filed issues are the audit's record, so no milestone gets a line. After a rotation audit, record its area from a worktree, never the hub, with the tag just released, and merge the change through a pull request:
 
 ```bash
 python -B .claude/skills/audit-repository/scripts/audit_repository.py rotation --record '<tag>'
