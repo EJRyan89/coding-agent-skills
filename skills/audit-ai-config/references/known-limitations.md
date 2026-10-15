@@ -37,7 +37,7 @@ Deterministic reconstruction covers AGENTS.md, skill shims, and copilot-instruct
 
 ## Instruction-layering analysis is incomplete
 
-Surface resolvers exist for Codex, Copilot CLI/app, JetBrains, cloud agent, code review, and VS Code. Codex nested files use correct additive-chain semantics. The engine does not judge whether effective sources contradict or overlap, including path-specific instructions; the skill asks the agent to review that content as a separate, labelled assessment.
+Surface resolvers exist for Codex, Copilot CLI/app, JetBrains, cloud agent, code review, and VS Code. Codex nested files use correct additive-chain semantics for `AGENTS.override.md` and `AGENTS.md`; the fallback names a repository's `.codex/config.toml` gives Codex are read for the root only, and the fallback names a user's own Codex configuration gives cannot be read. The engine does not judge whether effective sources contradict or overlap, including path-specific instructions; the skill asks the agent to review that content as a separate, labelled assessment.
 
 ## Copilot configuration is static, not operational
 
@@ -76,8 +76,9 @@ artifacts rather than authority sources.
 
 ## MCP validation gaps
 
-- Missing `mcpServers` wrapper and non-object server entries, and non-table `.codex/config.toml` server entries,
-  produce warnings, not errors; the audit and the handshake read each file the same way.
+- A missing `mcpServers` wrapper in `.mcp.json` or `.github/mcp.json`, non-object server entries, and non-table
+  `.codex/config.toml` server entries produce warnings, not errors; a missing `servers` wrapper in `.vscode/mcp.json`
+  is an error. The audit and the handshake read each file through one reader, so they report the same problems.
 - VS Code and Codex server definitions receive minimal structural validation beyond container type checks.
 - Ancestor-chain `.mcp.json` discovery is not implemented; nested `.mcp.json` files are reported as a limitation but not validated.
 - Cross-runtime parity does not cover `env_vars`, HTTP headers, or authentication fields.
