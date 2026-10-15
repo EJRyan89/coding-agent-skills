@@ -2087,7 +2087,7 @@ class RunPieceTests(GitTestCase):
 
     def test_the_reason_the_results_file_records_names_no_path(self) -> None:
         completed = skill_evals.Completed
-        home = "C:/Users/someone/AppData/Local/Temp/skill-evals-x1/haiku"
+        home = "D:/scratch/skill-evals-x1/haiku"
         command = f'python -B "{home}/.claude/skills/code-review-core/scripts/review_pipeline.py" prepare'
         denials = [{"tool_name": "Bash", "tool_input": {"command": command}}] * 2
         denied = json.dumps({"type": "result", "permission_denials": denials})
@@ -2140,7 +2140,7 @@ class ResultsTests(GitTestCase):
         run = skill_evals.Run
         session = frozenset({"claude-opus-5-5"})
         # The reason a run failed may name the machine's paths; the row takes the phrase recorded for it.
-        failed = "the run recorded no review; denied: Bash: C:/Users/someone/home/script.py | here"
+        failed = "the run recorded no review; denied: Bash: D:/scratch/home/script.py | here"
         runs = {
             ("a", "haiku"): run({}, None, frozenset({"claude-haiku-4"}), session),
             ("b", "haiku"): run(None, "x", frozenset({"claude-haiku-4"}), session, "x"),
