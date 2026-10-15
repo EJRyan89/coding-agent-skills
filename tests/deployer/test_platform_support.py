@@ -181,7 +181,9 @@ class WorkingDirectoryTests(DeployerTestCase):
         # Without the variable that stops it, Windows' own search would find the planted programs on any Python.
         stop = "NoDefaultCurrentDirectoryInExePath".casefold()
         environment = {key: value for key, value in os.environ.items() if key.casefold() != stop}
-        environment.update(PATH=str(self.empty), PATHEXT=".EXE", LOCALAPPDATA=str(self.root / "local app data"))
+        environment.update(PATH=str(self.empty), LOCALAPPDATA=str(self.root / "local app data"))
+        if platform_support.WINDOWS:
+            environment["PATHEXT"] = ".EXE"
         patcher = mock.patch.dict(os.environ, environment, clear=True)
         patcher.start()
         self.addCleanup(patcher.stop)
