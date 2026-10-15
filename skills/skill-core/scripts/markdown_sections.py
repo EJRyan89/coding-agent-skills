@@ -9,9 +9,10 @@ from dataclasses import dataclass
 # An inline code span on one line, with its text as the first group, as a skill reads commands or cited paths from it.
 CODE_SPAN = re.compile(r"`([^`\n]+)`")
 # A fence's opening line: the blockquote and list item markers that hold it, any indentation, a run of three or more
-# backticks or tildes, and its info string.
+# backticks or tildes, and its info string. Whitespace is read once, after each marker, so no run of it can be split
+# between two markers and the match stays linear.
 FENCE_OPENER = re.compile(
-    r"(?P<container>(?:[ \t]*>[ \t]?|[ \t]*(?:[-+*]|\d{1,9}[.)])[ \t]+)*)[ \t]*(?P<marker>`{3,}|~{3,})(?P<info>.*)"
+    r"(?P<container>[ \t]*(?:(?:>|(?:[-+*]|\d{1,9}[.)])[ \t])[ \t]*)*)(?P<marker>`{3,}|~{3,})(?P<info>.*)"
 )
 QUOTE_MARKER = re.compile(r"[ \t]*>[ \t]?")
 

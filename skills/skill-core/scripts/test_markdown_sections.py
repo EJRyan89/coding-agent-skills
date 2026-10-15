@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -62,6 +63,14 @@ class FenceReaderTests(unittest.TestCase):
         for name, (text, expected) in cases.items():
             with self.subTest(case=name):
                 self.assertEqual(expected, self.fences(text))
+
+    def test_a_long_run_of_container_markers_is_read_in_linear_time(self) -> None:
+        # A run of whitespace could once be split between two markers in exponentially many ways before a mismatch.
+        for marker in (">", "*"):
+            with self.subTest(marker=marker):
+                started = time.perf_counter()
+                self.assertEqual([], find_fences([marker + f"\t\t{marker}" * 5000 + "x"]))
+                self.assertLess(time.perf_counter() - started, 1.0)
 
     def test_a_fence_closes_only_on_its_own_run_inside_what_holds_it(self) -> None:
         cases = {
