@@ -9,7 +9,7 @@ import re
 import unittest
 from pathlib import Path
 
-from validation_support import REPOSITORY_ROOT, fence_holders, markdown_section, repository_files
+from validation_support import REPOSITORY_ROOT, fence_holders, markdown_section, python_trees, repository_files
 
 MARKDOWN_HEADING = re.compile(r"^ {0,3}#{1,6}[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$")
 MARKDOWN_CODE_SPAN = re.compile(r"(`+).+?\1")
@@ -102,7 +102,8 @@ def threat_model_test_problems(root: Path) -> list[str]:
                 defined[suite] = (
                     {
                         node.name
-                        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+                        for _, _, tree in python_trees([path], root, problems)
+                        for node in ast.walk(tree)
                         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                     }
                     if path.is_file()

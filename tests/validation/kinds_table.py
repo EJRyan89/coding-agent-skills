@@ -6,9 +6,18 @@ from __future__ import annotations
 
 import ast
 import unittest
+from collections.abc import Iterable
 from pathlib import Path
+from typing import Protocol
 
-from validation_support import REPOSITORY_ROOT, docstring_ids, import_aliases, module_allowance, qualified_name
+from validation_support import (
+    REPOSITORY_ROOT,
+    docstring_ids,
+    import_aliases,
+    module_allowance,
+    python_trees,
+    qualified_name,
+)
 
 # Each kind's manifest key, report label, and journal root, written out here rather than read from deployer/kinds.py,
 # so that a change to the table cannot also change what this policy looks for.
@@ -99,11 +108,14 @@ def _path_components(tree: ast.Module) -> set[int]:
 
 def _lookups(tree: ast.Module) -> set[int]:
     """The id of each expression a value is looked up or compared by: a subscript's index, a dict display's key, a
-    comparison's operand or an element of a display there, and each argument of a get, setdefault, or pop call."""
+    comparison's operand or an element of a display there, a match case's value, and each argument of a get,
+    setdefault, or pop call."""
     found: list[ast.AST] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Subscript):
             found.append(node.slice)
+        elif isinstance(node, ast.MatchValue):
+            found.append(node.value)
         elif isinstance(node, ast.Dict):
             found += [key for key in node.keys if key is not None]
         elif isinstance(node, ast.Compare):
@@ -125,8 +137,15 @@ def _node_findings(
         _compares_a_kind(operand, aliases) for operand in (node.left, *node.comparators)
     ):
         return [(node.lineno, "branches on a kind")]
-    if isinstance(node, ast.expr) and sum(1 for entry in _table_entries(node) if _names_a_kind(entry, aliases)) >= 2:
+    # A case that matches a kind treats it apart, as a comparison does.
+    if isinstance(node, ast.MatchValue) and _names_a_kind(node.value, aliases):
+        return [(node.value.lineno, "branches on a kind")]
+    kinds = sum(1 for entry in _table_entries(node) if _names_a_kind(entry, aliases))
+    if isinstance(node, ast.expr) and kinds >= 2:
         return [(node.lineno, "lists kinds by hand")]
+    # A table keyed by one kind is a dispatch that treats that kind apart from the ones a lookup falls through.
+    if isinstance(node, ast.Dict) and kinds == 1:
+        return [(node.lineno, "branches on a kind")]
     return []
 
 
@@ -176,9 +195,8 @@ def kinds_table_problems(root: Path) -> list[str]:
     """
     problems: list[str] = []
     found: list[str] = []
-    for path in sorted(_scanned_files(root), key=lambda path: path.relative_to(root).as_posix()):
-        name = path.relative_to(root).as_posix()
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+    ordered = sorted(_scanned_files(root), key=lambda path: path.relative_to(root).as_posix())
+    for _, name, tree in python_trees(ordered, root, problems):
         allowed = module_allowance(tree, KINDS_ALLOWANCE)
         if allowed is None:
             problems.append(f"{name}: {KINDS_ALLOWANCE} must map each pass to the reason it treats a kind apart")
@@ -198,7 +216,39 @@ def kinds_table_problems(root: Path) -> list[str]:
     return found + problems
 
 
+class Kind(Protocol):
+    @property
+    def key(self) -> str: ...
+
+    @property
+    def label(self) -> str: ...
+
+    @property
+    def root(self) -> str: ...
+
+
+def kind_vocabulary_problems(kinds: Iterable[Kind]) -> list[str]:
+    """Report each manifest key, report label, or journal root the kinds table gives a kind that KIND_STRINGS does not
+    pin, which every deployer pass could then name by literal unreported.
+
+    KIND_STRINGS stays written out, so a change to the table cannot also change what the policy looks for; this holds
+    the table to it one way instead, so a kind added to the table without its strings fails.
+    """
+    return [
+        f"{KINDS_MODULE} gives a kind the {field} {value!r}, which KIND_STRINGS in tests/validation/kinds_table.py "
+        "does not pin; add it there"
+        for kind in kinds
+        for field, value in (("manifest key", kind.key), ("report label", kind.label), ("journal root", kind.root))
+        if value and value not in KIND_STRINGS
+    ]
+
+
 class KindsTablePolicies(unittest.TestCase):
     def test_deployer_passes_iterate_the_kinds_table(self) -> None:
         # A kind added to or changed in deployer/kinds.py then reaches every pass, or the pass says why not.
         self.assertEqual([], kinds_table_problems(REPOSITORY_ROOT))
+
+    def test_the_policy_pins_every_string_the_kinds_table_gives_a_kind(self) -> None:
+        from deployer import kinds
+
+        self.assertEqual([], kind_vocabulary_problems(kinds.KINDS))

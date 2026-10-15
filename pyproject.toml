@@ -2,6 +2,9 @@
 # requirements-dev.txt pins the tools and docs/dependency-updates.md owns the decision.
 
 [tool.ruff]
+# Empty, so ruff's default exclusions, such as dist/, venv/, site-packages/, node_modules/, and _build/, skip no file
+# under the roots validation names; a gitignored file is still skipped, since nothing can commit one.
+exclude = []
 line-length = 120
 target-version = "py311"
 

@@ -1,16 +1,19 @@
 """Command-line interface for the structured code-review flag store.
 
 Every command prints one fact per line:
-  add       ADDED <id>. A flag that names a finding is refused unless that review of the pull request is archived
-            and has that finding.
+  add       ADDED <id>. A pull request is named with its repository, and a review version with its finding; a flag
+            that names a finding is refused unless that review of the pull request is archived and has that finding.
+            A category or body past its length limit is refused, naming the limit, and so is a write that would take
+            the store past the size it is read at.
   edit      EDITED <id>. Only an open flag is edited, and only its category and body change.
   resolve   RESOLVED <id>, or ALREADY_RESOLVED <id> when the flag was resolved earlier; it keeps that resolution
-  list      FLAG <id> <category> <target> <body> per open flag, then COUNT <n>. The target is
-            <owner/repo>#<pull>, followed by v<version> and the finding when the flag names them, or - when it
-            names no repository or pull request. The body is collapsed to one line and cut to 160 characters.
+  list      FLAG <id> <category> <target> <body> per open flag, then COUNT <n>. The target is <owner/repo>,
+            followed by #<pull>, v<version>, and the finding as far as the flag names them, or - when it names no
+            repository or pull request. The body is collapsed to one line and cut to 160 characters.
   findings  FINDING v<version> <finding> <severity> <path>:<line> <headline> per open or unverified finding of a
             pull request, labelled as its review report labels it, then COUNT <n>. The headline is the finding's
-            title, or its body cut like a flag's.
+            title, or its body cut like a flag's; the path is collapsed to one line.
+A value that begins with - follows -- after the options, or is joined to its option, as in --body=-x.
 A failure prints `FAILED <reason>` and exits 1; a usage error exits 2.
 """
 
@@ -121,7 +124,7 @@ def finding_lines(config: Path | None, repository: str, pull: int) -> list[str]:
     if not records:
         raise FlagError(f"{repository}#{pull} has no review in the archive")
     lines = [
-        f"FINDING {item['id'].replace(':', ' ')} {item['severity']} {item['path']}:{item['line']} "
+        f"FINDING {item['id'].replace(':', ' ')} {item['severity']} {flat_text(item['path'])}:{item['line']} "
         f"{cut(item.get('title') or item['body'])}"
         for item in carried_findings(records)
     ]

@@ -17,7 +17,11 @@ from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
 from toolchain import find_mypy, find_ruff
 from validation_support import (
     REPOSITORY_ROOT,
+    UnreadablePython,
     module_imports,
+    parse_source,
+    python_source,
+    python_trees,
     relative,
     repository_files,
     scripts_put_on_path,
@@ -26,7 +30,8 @@ from validation_support import (
 
 from deployer import platform_support
 
-# Every Python file under these is checked with `ruff format --check` and `ruff check`; none is excluded.
+# Every Python file under these is checked with `ruff format --check` and `ruff check`; none is excluded, since
+# pyproject.toml empties ruff's default exclusions.
 FORMAT_ROOTS = ("deployer", "tools", "tests", "skills", ".claude/skills", "deploy.py")
 # A noqa comment names the codes it suppresses and says why after a dash, as in `noqa: F401 - <reason>`.
 NOQA = re.compile(r"#\s*noqa\b", re.IGNORECASE)
@@ -38,6 +43,9 @@ CEILING_CODES = frozenset({"C901", "PLR0915"})
 # mypy checks these as one root from the repository root, and each skill's scripts/ directory from inside it, where
 # the deployed skill's own imports resolve. pyproject.toml's [tool.mypy] holds the configuration; it excludes nothing.
 TYPE_CHECK_ROOTS = ("deployer", "tools", "deploy.py", "tests")
+# The folders mypy passes over when it collects the files under a root it is given, by their names, which no setting
+# changes: a file in one is type-checked by nothing.
+MYPY_SKIPPED_FOLDERS = frozenset({"__pycache__", "site-packages", "node_modules"})
 # A type: ignore names its error codes and states its reason in a comment after it: `# type: ignore[code]  # <why>`.
 TYPE_IGNORE = re.compile(r"#\s*type:\s*ignore\b")
 TYPE_IGNORE_WITH_REASON = re.compile(r"#\s*type:\s*ignore\[[a-z-]+(?:\s*,\s*[a-z-]+)*\]\s*#\s*\S")
@@ -54,13 +62,24 @@ def comments(source: str) -> list[tokenize.TokenInfo]:
     return [token for token in tokenize.generate_tokens(io.StringIO(source).readline) if token.type == tokenize.COMMENT]
 
 
+def file_comments(root: Path, path: Path, found: list[str]) -> list[tokenize.TokenInfo]:
+    """Each comment in a Python file, or none when no policy can read it, which found then names."""
+    try:
+        return comments(python_source(path))
+    except UnreadablePython as error:
+        found.append(f"{path.relative_to(root).as_posix()} {error}")
+    except (SyntaxError, tokenize.TokenError) as error:
+        found.append(f"{path.relative_to(root).as_posix()} does not tokenize: {error}")
+    return []
+
+
 def noqa_without_reason(root: Path, files: list[Path]) -> list[str]:
     """Each `# noqa` comment that does not name its codes and state its reason after ` - `, as path:line."""
     found: list[str] = []
     for path in sorted(files):
         if path.suffix != ".py":
             continue
-        for token in comments(path.read_text(encoding="utf-8")):
+        for token in file_comments(root, path, found):
             if NOQA.search(token.string) and not NOQA_WITH_REASON.search(token.string):
                 found.append(f"{path.relative_to(root).as_posix()}:{token.start[0]}")
     return found
@@ -72,7 +91,7 @@ def ceiling_noqa(root: Path, files: list[Path]) -> list[str]:
     for path in sorted(files):
         if path.suffix != ".py":
             continue
-        for token in comments(path.read_text(encoding="utf-8")):
+        for token in file_comments(root, path, found):
             for match in NOQA_CODES.finditer(token.string):
                 named = sorted({code.upper() for code in re.split(r"[\s,]+", match.group(1)) if code} & CEILING_CODES)
                 if named:
@@ -84,11 +103,12 @@ def ceiling_noqa(root: Path, files: list[Path]) -> list[str]:
 
 
 # A comment that turns a check off for a file or a region instead of one finding on its line: mypy's inline
-# configuration, such as ignore-errors; ruff's file-level noqa, which it also reads in flake8's spelling; an isort
-# skip, which ruff's import rules honor; and the formatter's off and skip markers.
+# configuration, such as ignore-errors; ruff's file-level noqa, which it also reads in flake8's spelling; ruff's range
+# suppression, which turns the codes it names off until the comment that turns them on again, the complexity and
+# length ceilings included; an isort skip, which ruff's import rules honor; and the formatter's off and skip markers.
 PYTHON_SUPPRESSION = re.compile(
-    r"#\s*(?:mypy:|(?:ruff|flake8):\s*noqa\b|(?:ruff:\s*)?isort:\s*(?:skip_file|off)\b|fmt:\s*(?:off|skip)\b"
-    r"|yapf:\s*disable\b)",
+    r"#\s*(?:mypy:|(?:ruff|flake8):\s*noqa\b|ruff:\s*disable\b|(?:ruff:\s*)?isort:\s*(?:skip_file|off)\b"
+    r"|fmt:\s*(?:off|skip)\b|yapf:\s*disable\b)",
     re.IGNORECASE,
 )
 # ruff reads its configuration from the nearest of these to each file, so one anywhere but the root's pyproject.toml
@@ -108,7 +128,7 @@ def python_suppression_problems(root: Path, files: list[Path]) -> list[str]:
             continue
         found += [
             f"{name}:{token.start[0]} turns a check off with {match.group(0)!r}; fix each finding at its cause"
-            for token in comments(path.read_text(encoding="utf-8"))
+            for token in file_comments(root, path, found)
             if (match := PYTHON_SUPPRESSION.search(token.string))
         ]
     return found
@@ -120,7 +140,7 @@ def type_ignore_without_reason(root: Path, files: list[Path]) -> list[str]:
     for path in sorted(files):
         if path.suffix != ".py":
             continue
-        for token in comments(path.read_text(encoding="utf-8")):
+        for token in file_comments(root, path, found):
             if TYPE_IGNORE.search(token.string) and not TYPE_IGNORE_WITH_REASON.search(token.string):
                 found.append(f"{path.relative_to(root).as_posix()}:{token.start[0]}")
     return found
@@ -129,7 +149,7 @@ def type_ignore_without_reason(root: Path, files: list[Path]) -> list[str]:
 def docstring_lines(source: str) -> list[tuple[int, str]]:
     """Each line of the module's, every class's, and every function's docstring, with its line number in the source."""
     lines: list[tuple[int, str]] = []
-    for node in ast.walk(ast.parse(source)):
+    for node in ast.walk(parse_source(source, "<docstrings>")):
         if not isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef) or not node.body:
             continue
         first = node.body[0]
@@ -150,23 +170,58 @@ def issue_numbers_in_comments(root: Path, files: list[Path]) -> list[str]:
             or any(name.startswith(f"{prefix}/") for prefix in ISSUE_REFERENCE_EXCLUDED)
         ):
             continue
-        source = path.read_text(encoding="utf-8")
-        lines = {
+        try:
+            source = python_source(path)
+            lines = {number for number, line in docstring_lines(source) if ISSUE_REFERENCE.search(line)}
+        except UnreadablePython as error:
+            found.append(f"{name} {error}")
+            continue
+        lines |= {
             token.start[0]
             for token in comments(source)
             # The comment's own leading hash sign is not a citation, so the search starts after it.
             if ISSUE_REFERENCE.search(token.string[1:])
         }
-        lines |= {number for number, line in docstring_lines(source) if ISSUE_REFERENCE.search(line)}
         found += [f"{name}:{number}" for number in sorted(lines)]
     return found
 
 
-def imports_a_sibling(path: Path, source: str) -> bool:
+def _type_check_root(root: Path, path: Path, skill_scripts: list[Path]) -> Path | None:
+    """The folder mypy collects a file from: its skill's scripts/, or the root of TYPE_CHECK_ROOTS holding it."""
+    for scripts in skill_scripts:
+        if path.is_relative_to(scripts):
+            return scripts
+    for top in TYPE_CHECK_ROOTS:
+        if path == root / top or path.is_relative_to(root / top):
+            return root / top
+    return None
+
+
+def type_check_skipped_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each Python file under a root mypy checks that it would pass over: one in a folder named like a cache, an
+    installed package, or a Node module, or in a folder whose name starts with a dot, which mypy never reads."""
+    skill_scripts = skill_script_directories(root)
+    problems: list[str] = []
+    for path in sorted(files, key=lambda path: path.relative_to(root).as_posix()):
+        checked_from = _type_check_root(root, path, skill_scripts) if path.suffix == ".py" else None
+        if checked_from is None or path == checked_from:
+            continue
+        skipped = [
+            part
+            for part in path.parent.relative_to(checked_from).parts
+            if part in MYPY_SKIPPED_FOLDERS or part.startswith(".")
+        ]
+        if skipped:
+            problems.append(
+                f"{path.relative_to(root).as_posix()} is in a folder named {skipped[0]}, which mypy passes over, so "
+                "no type check reads it; move it"
+            )
+    return problems
+
+
+def imports_a_sibling(path: Path, tree: ast.Module) -> bool:
     """Whether the module imports, by its bare name, another module in its own directory."""
-    return any(
-        (path.parent / f"{found.module.split('.')[0]}.py").is_file() for found in module_imports(ast.parse(source))
-    )
+    return any((path.parent / f"{found.module.split('.')[0]}.py").is_file() for found in module_imports(tree))
 
 
 def mypy_path_problems(root: Path, files: list[Path]) -> list[str]:
@@ -182,22 +237,20 @@ def mypy_path_problems(root: Path, files: list[Path]) -> list[str]:
     if not isinstance(configured, list):
         return ["pyproject.toml: [tool.mypy] mypy_path must be a list"]
     expected: dict[str, str] = {}
+    unreadable: list[str] = []
     skill_scripts = set(skill_script_directories(root))
-    for path in sorted(files):
-        if path.suffix != ".py":
-            continue
+    for path, _, tree in python_trees(sorted(path for path in files if path.suffix == ".py"), root, unreadable):
         relative_path = path.relative_to(root)
-        source = path.read_text(encoding="utf-8")
-        for name in scripts_put_on_path(source):
+        for name in scripts_put_on_path(tree):
             expected.setdefault(
                 f"$MYPY_CONFIG_FILE_DIR/skills/{name}/scripts", f"{relative_path.as_posix()} puts on sys.path"
             )
-        if len(relative_path.parts) > 1 and path.parent not in skill_scripts and imports_a_sibling(path, source):
+        if len(relative_path.parts) > 1 and path.parent not in skill_scripts and imports_a_sibling(path, tree):
             expected.setdefault(
                 f"$MYPY_CONFIG_FILE_DIR/{relative_path.parent.as_posix()}",
                 f"{relative_path.as_posix()} imports a module from by its bare name",
             )
-    problems = [
+    problems = unreadable + [
         f"pyproject.toml: [tool.mypy] mypy_path lacks {entry}, which {expected[entry]}"
         for entry in sorted(set(expected) - set(configured))
     ]
@@ -301,7 +354,9 @@ class PythonChecksPolicies(unittest.TestCase):
         self.assertEqual(["mccabe", "pylint", "select"], sorted(lint))
         self.assertEqual(["max-complexity"], sorted(lint["mccabe"]))
         self.assertEqual(["max-statements"], sorted(lint["pylint"]))
-        self.assertEqual(["format", "line-length", "lint", "target-version"], sorted(configuration))
+        self.assertEqual(["exclude", "format", "line-length", "lint", "target-version"], sorted(configuration))
+        # ruff's default exclusions are emptied, so every Python file under the roots is formatted and linted.
+        self.assertEqual([], configuration["exclude"])
 
     def test_type_check_configuration_is_pinned(self) -> None:
         configuration = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["mypy"]
@@ -310,6 +365,9 @@ class PythonChecksPolicies(unittest.TestCase):
         # Default strictness, and no module, suite, or import is exempt. No platform: each host checks the code as it
         # runs there, so every platform's branches are checked on the platform that runs them.
         self.assertEqual(["explicit_package_bases", "mypy_path", "python_version"], sorted(configuration))
+
+    def test_mypy_reads_every_python_file_under_its_roots(self) -> None:
+        self.assertEqual([], type_check_skipped_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
 
     def test_mypy_path_names_each_scripts_directory_put_on_sys_path(self) -> None:
         self.assertEqual([], mypy_path_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))

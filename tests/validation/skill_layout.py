@@ -6,10 +6,12 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
+from skill_roots import sibling_scripts
 from validation_support import (
     CODE_SPAN,
     EXECUTABLE_SCRIPT_EXTENSIONS,
@@ -28,6 +30,7 @@ from validation_support import (
     is_executable_script,
     is_test_script,
     path_order,
+    python_trees,
     scripts_entries,
     scripts_put_on_path,
     skill_directories,
@@ -36,22 +39,26 @@ from validation_support import (
 
 from deployer import platform_support
 
+# The analyze-skill-cost inventory owns the labels it reads as command shells, the grant checks among its readers, so
+# a fence the grant checks read as commands is one the five-line and output-placeholder rules read too. The path is set
+# once here, at import, as skill_grants sets it.
+sys.path.insert(0, str(sibling_scripts("analyze-skill-cost")))
+import skill_inventory
+
 MAXIMUM_INLINE_EXECUTABLE_LINES = 5
 
 
-EXECUTABLE_FENCE_LANGUAGES = {
-    "bash",
-    "javascript",
-    "js",
-    "powershell",
-    "ps1",
-    "pwsh",
-    "python",
-    "sh",
-    "shell",
-    "ts",
-    "typescript",
-}
+# Every label a fence of commands or a program may carry: the command shells and PowerShell the inventory reads, and
+# Python, JavaScript, and TypeScript under each name Markdown gives them.
+EXECUTABLE_FENCE_LANGUAGES = frozenset(
+    {
+        *skill_inventory.SHELL_FENCES,
+        *skill_inventory.POWERSHELL_FENCES,
+        *("python", "python3", "py"),
+        *("javascript", "js", "node", "mjs", "cjs"),
+        *("typescript", "ts"),
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -62,14 +69,13 @@ class ExecutableFence:
 
 
 def find_executable_fences(lines: list[str]) -> list[ExecutableFence]:
-    fences: list[ExecutableFence] = []
-    for fence in find_fences(lines):
-        if fence.language.casefold() not in EXECUTABLE_FENCE_LANGUAGES:
-            continue
-        if fence.closer is None:
-            raise AssertionError(f"Unclosed executable {fence.language} fence at line {fence.opener + 1}.")
-        fences.append(ExecutableFence(fence.opener + 1, fence.language, fence.closer - fence.opener - 1))
-    return fences
+    """Each fence in an executable language, with its body's length: up to its closer, or, for one left open, to the
+    end of what holds it, as the renderer reads it; unclosed_fence_problems reports one left open."""
+    return [
+        ExecutableFence(fence.opener + 1, fence.language, len(fence.body()))
+        for fence in find_fences(lines)
+        if fence.language.casefold() in EXECUTABLE_FENCE_LANGUAGES
+    ]
 
 
 def embedded_program_problems(root: Path, tree: str = "skills") -> list[str]:
@@ -371,10 +377,8 @@ def script_dependency_problems(root: Path) -> list[str]:
         skill = metadata.stem
         declared = set(json.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", []))
         scripts = sorted((skills[skill] / "scripts").glob("*.py")) if skill in skills else []
-        for path in scripts:
-            if is_test_script(path):
-                continue
-            for name in sorted(set(scripts_put_on_path(path.read_text(encoding="utf-8"))) - declared - {skill}):
+        for path, _, tree in python_trees([path for path in scripts if not is_test_script(path)], root, problems):
+            for name in sorted(set(scripts_put_on_path(tree)) - declared - {skill}):
                 problems.append(
                     f"{path.relative_to(root).as_posix()} puts {name}'s scripts on sys.path without declaring "
                     f"{name} in skill_deps; see {SKILL_PATHS_DOC}"
@@ -405,10 +409,9 @@ def sibling_path_problems(root: Path) -> list[str]:
     can read it.
     """
     problems: list[str] = []
-    for path in _sibling_path_files(root):
-        name = path.relative_to(root).as_posix()
+    for path, name, tree in python_trees(_sibling_path_files(root), root, problems):
         own = path.parent.parent.name if path.parent.name == "scripts" else None
-        for entry in scripts_entries(path.read_text(encoding="utf-8")):
+        for entry in scripts_entries(tree):
             where = f"{name}:{entry.line}"
             if entry.name is None:
                 problems.append(
@@ -461,13 +464,27 @@ def fixture_source_problems(root: Path) -> list[str]:
     return found
 
 
+def _starts_with_a_shebang(path: Path) -> bool:
+    with path.open("rb") as handle:
+        return handle.read(2) == b"#!"
+
+
 def unsupported_script_problems(root: Path) -> list[str]:
-    """Report each JavaScript or TypeScript file anywhere in a skill, scripts/ included."""
-    return [
-        f"{path.relative_to(root).as_posix()}: a skill's executable files are Bash, Python, and PowerShell"
-        for path in sorted((root / "skills").rglob("*"), key=lambda p: p.as_posix())
-        if path.is_file() and path.suffix.casefold() in UNSUPPORTED_SCRIPT_EXTENSIONS
-    ]
+    """Report each JavaScript, TypeScript, PowerShell module, or Windows batch file anywhere in a shipped or repository
+    skill, scripts/ included, and each file that starts with #! without an executable extension, which runs as a
+    program no analyzer or command policy reads."""
+    problems: list[str] = []
+    files = [path for skill in all_skill_directories(root) for path in skill.rglob("*") if path.is_file()]
+    for path in sorted(files, key=lambda p: p.as_posix()):
+        name = path.relative_to(root).as_posix()
+        if path.suffix.casefold() in UNSUPPORTED_SCRIPT_EXTENSIONS:
+            problems.append(f"{name}: a skill's executable files are Bash, Python, and PowerShell")
+        elif not is_executable_script(path) and _starts_with_a_shebang(path):
+            problems.append(
+                f"{name} starts with #!, so it runs as a program; a skill's executable files are Bash, Python, and "
+                "PowerShell, named by their extension"
+            )
+    return problems
 
 
 def script_language_problems(root: Path, standard_commands: set[str]) -> list[str]:
@@ -501,16 +518,29 @@ def script_language_problems(root: Path, standard_commands: set[str]) -> list[st
     return found
 
 
+# The folder Python writes its compiled modules to beside a script, which no commit holds.
+BYTECODE_FOLDER = "__pycache__"
+
+
 def script_layout_problems(root: Path) -> list[str]:
-    """Report each executable file of a shipped or repository skill outside the skill's scripts/ directory."""
+    """Report each executable file of a shipped or repository skill outside the skill's scripts/ directory, and each
+    file in a folder below scripts/, which the script policies, the suites' discovery, and the type check read only
+    one level deep."""
     problems: list[str] = []
     for skill in all_skill_directories(root):
         for path in sorted(skill.rglob("*")):
-            inside = path.relative_to(skill).as_posix()
-            if path.is_file() and is_executable_script(path) and not inside.startswith("scripts/"):
+            inside = path.relative_to(skill)
+            if not path.is_file() or BYTECODE_FOLDER in inside.parts:
+                continue
+            if is_executable_script(path) and inside.parts[0] != "scripts":
                 problems.append(
                     f"{path.relative_to(root).as_posix()} is an executable file outside its skill's scripts/; move it "
                     f"to {skill.relative_to(root).as_posix()}/scripts/"
+                )
+            elif inside.parts[0] == "scripts" and len(inside.parts) > 2:
+                problems.append(
+                    f"{path.relative_to(root).as_posix()} is in a folder below its skill's scripts/, which the script "
+                    f"policies do not read; move it to {skill.relative_to(root).as_posix()}/scripts/"
                 )
     return problems
 
@@ -591,7 +621,7 @@ class SkillLayoutPolicies(unittest.TestCase):
         # Pinned here, not read back from the constants: a new script language is a decision for the skill contract,
         # the deployment prerequisites, and the renderer, never a one-line change to the runner.
         self.assertEqual({".bash", ".ps1", ".py", ".sh"}, EXECUTABLE_SCRIPT_EXTENSIONS)
-        self.assertEqual({".cjs", ".js", ".mjs", ".ts"}, UNSUPPORTED_SCRIPT_EXTENSIONS)
+        self.assertEqual({".bat", ".cjs", ".cmd", ".js", ".mjs", ".psm1", ".ts"}, UNSUPPORTED_SCRIPT_EXTENSIONS)
         python = "python" if platform_support.WINDOWS else "python3"
         self.assertEqual({".bash": "bash", ".sh": "bash", ".py": python, ".ps1": "pwsh"}, dict(SCRIPT_INTERPRETERS))
         self.assertEqual([], unsupported_script_problems(REPOSITORY_ROOT))
