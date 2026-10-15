@@ -21,6 +21,16 @@ import run_dotnet_format as formatter
 from git_test_base import GitTestCase
 
 INSTALL_HINT = "dotnet-format is not installed; install it with: dotnet tool install -g dotnet-format"
+SDK_INSTALL_HINT = (
+    "dotnet is not installed; the solution is a .slnx solution, or a .sln of SDK-style projects, which the .NET SDK's"
+    " dotnet format formats; install the .NET SDK 9.0.200 or newer"
+)
+TOOL = "dotnet-format"
+SDK = "dotnet format"
+SDK_PROJECT = '<Project Sdk="Microsoft.NET.Sdk"></Project>\n'
+LEGACY_PROJECT = '<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003"></Project>\n'
+WEB_PROJECT = '<Project Sdk="Microsoft.NET.Sdk.Web"></Project>\n'
+CSHARP_PROJECT_TYPE = "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}"
 # A file outside the repository as dotnet-format names it on this platform, and as the formatter reports it.
 OUTSIDE_FILE, OUTSIDE_REPORTED = (
     ("C:\\elsewhere\\Generated.cs", "C:/elsewhere/Generated.cs")
@@ -112,7 +122,7 @@ class CommandTests(GitTestCase):
                 "src/A.cs",
                 "src/My Folder/B.cs",
             ],
-            formatter.command("check", "My App.sln", ["src/A.cs", "src/My Folder/B.cs"], "warn"),
+            formatter.command(TOOL, "check", "My App.sln", ["src/A.cs", "src/My Folder/B.cs"], "warn"),
         )
 
     def test_fix_saves_and_passes_the_severity_to_style_and_analyzers(self) -> None:
@@ -131,7 +141,7 @@ class CommandTests(GitTestCase):
                 "--include",
                 "A.cs",
             ],
-            formatter.command("fix", "App.sln", ["A.cs"], "info"),
+            formatter.command(TOOL, "fix", "App.sln", ["A.cs"], "info"),
         )
 
     def test_a_name_starting_with_at_or_dash_is_passed_as_a_path_to_either_formatter(self) -> None:
@@ -139,13 +149,14 @@ class CommandTests(GitTestCase):
         # option, anywhere on the command line; `./` makes each a path both match as the same file.
         names = ["@Program.cs", "-Option.cs", "src/@Kept.cs", "src/-Kept.cs", "A@B.cs", "Plain.cs"]
         included = ["./@Program.cs", "./-Option.cs", "src/@Kept.cs", "src/-Kept.cs", "A@B.cs", "Plain.cs"]
-        for solution in ("App.sln", "App.slnx"):
+        for tool, solution in ((TOOL, "App.sln"), (SDK, "App.slnx"), (SDK, "App.sln")):
             for mode in ("check", "fix"):
-                with self.subTest(solution=solution, mode=mode):
-                    arguments = formatter.command(mode, solution, names, "warn")
+                with self.subTest(tool=tool, solution=solution, mode=mode):
+                    arguments = formatter.command(tool, mode, solution, names, "warn")
                     self.assertEqual(included, arguments[arguments.index("--include") + 1 :])
                     self.assertEqual(
-                        formatter.command(mode, solution, [], "warn"), arguments[: arguments.index("--include") + 1]
+                        formatter.command(tool, mode, solution, [], "warn"),
+                        arguments[: arguments.index("--include") + 1],
                     )
                     self.assertFalse(
                         [argument for argument in arguments[1:] if argument.startswith("@")],
@@ -315,8 +326,8 @@ class LocatedFormatterTests(GitTestCase):
     def test_each_formatter_only_in_wingets_links_folder_is_found_and_run_from_there(self) -> None:
         services = formatter.Services()
         for name, arguments in (
-            ("dotnet-format", formatter.command("check", "App.sln", ["a b.cs"], "warn")),
-            ("dotnet", formatter.command("check", "App.slnx", ["a b.cs"], "warn")),
+            ("dotnet-format", formatter.command(TOOL, "check", "App.sln", ["a b.cs"], "warn")),
+            ("dotnet", formatter.command(SDK, "check", "App.slnx", ["a b.cs"], "warn")),
         ):
             with self.subTest(name=name):
                 self.assertIsNone(services.which(name))
@@ -544,7 +555,7 @@ class MainTests(GitTestCase):
         services = formatter.Services(run=runner, which=lambda name: name if name == "dotnet-format" else None)
         lines = self.assert_failed(
             self.run_formatter("check", services, True, "--solution", "App.slnx"),
-            "dotnet is not installed; a .slnx solution needs the .NET SDK 9.0.200 or newer",
+            SDK_INSTALL_HINT,
         )
         self.assertEqual(1, len(lines))
         self.assertEqual([], runner.calls)
@@ -576,7 +587,7 @@ class MainTests(GitTestCase):
             self.assertEqual(self.root, cwd)
             self.assertLessEqual(len(subprocess.list2cmdline(arguments)), formatter.COMMAND_LINE_LIMIT)
             self.assertEqual(
-                formatter.command("check", "App.sln", [], "warn"), arguments[: arguments.index("--include") + 1]
+                formatter.command(TOOL, "check", "App.sln", [], "warn"), arguments[: arguments.index("--include") + 1]
             )
             included += arguments[arguments.index("--include") + 1 :]
         self.assertEqual(files, included)
@@ -615,6 +626,169 @@ class MainTests(GitTestCase):
                 lines = self.assert_failed(self.run_formatter("check", runner), reason)
                 self.assertEqual(2, len(runner.calls))
                 self.assertEqual(b"first\ncrash\n", Path(lines[-2][1]).read_bytes())
+                self.assertEqual([], [fields for fields in lines if fields[0] in ("SAVED", "UNFINISHED")])
+
+    def test_a_fix_that_fails_in_a_later_run_names_the_files_it_saved_and_those_it_did_not_finish(self) -> None:
+        # Each run saves its fixes as it finishes, so the first run's are in the working tree and the second's and
+        # third's are not; the report has to say which files are which.
+        files = self.many_files()
+        runs = formatter.batches(formatter.command(TOOL, "fix", "App.sln", [], "warn"), files)
+        self.assertEqual(3, len(runs))
+        first_run, later = runs[0], runs[1] + runs[2]
+        found = (
+            f"{self.root / first_run[0]}(1,1): warning IDE0055: Fix formatting\n"
+            f"{self.root / first_run[5]}(2,1): warning IDE0055: Fix formatting\n"
+            f"{self.root / first_run[0]}(3,1): error WHITESPACE: Fix whitespace formatting.\n"
+        )
+        crashed = f"{self.root / later[0]}(1,1): warning IDE0055: Fix formatting\nUnhandled exception\n"
+        for timed_out in (False, True):
+            with self.subTest(timed_out=timed_out):
+                runner = ScriptedRunner(
+                    formatter.Completed(0, found.encode()), formatter.Completed(1, crashed.encode(), timed_out)
+                )
+                reason = (
+                    "dotnet-format did not finish within 570 seconds; see the log"
+                    if timed_out
+                    else "dotnet-format exited with code 1; see the log"
+                )
+                lines = self.assert_failed(self.run_formatter("fix", runner), reason)
+                self.assertEqual(2, len(runner.calls))
+                self.assertEqual(
+                    [["SAVED", first_run[0]], ["SAVED", first_run[5]], *(["UNFINISHED", name] for name in later)],
+                    [fields for fields in lines if fields[0] in ("SAVED", "UNFINISHED")],
+                )
+                kinds = [fields[0] for fields in lines]
+                self.assertLess(kinds.index("SUMMARY"), kinds.index("SAVED"))
+                self.assertEqual(["UNFINISHED", "LOG"], kinds[-3:-1])
+
+    def test_a_fix_that_fails_in_its_only_run_saved_nothing(self) -> None:
+        lines = self.assert_failed(
+            self.run_formatter("fix", FakeRunner(1, sample_log(self.root))),
+            "dotnet-format exited with code 1; see the log",
+        )
+        self.assertEqual(
+            [["UNFINISHED", name] for name in self.files],
+            [fields for fields in lines if fields[0] in ("SAVED", "UNFINISHED")],
+        )
+        status, lines, _ = self.run_formatter("fix", FakeRunner(0, sample_log(self.root)))
+        self.assertEqual(0, status)
+        self.assertEqual([], [fields for fields in lines if fields[0] in ("SAVED", "UNFINISHED")])
+
+    def write_solution(self, *projects: tuple[str, str]) -> None:
+        """App.sln at the repository root listing each project, written with the given text."""
+        lines = ["Microsoft Visual Studio Solution File, Format Version 12.00"]
+        for number, (project, text) in enumerate(projects):
+            path = self.root / project.replace("\\", "/")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+            lines += [f'Project("{CSHARP_PROJECT_TYPE}") = "P{number}", "{project}", "{{{number}}}"', "EndProject"]
+        (self.root / "App.sln").write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
+
+    def test_a_sln_of_sdk_style_projects_runs_the_sdks_dotnet_format_and_any_other_the_global_tool(self) -> None:
+        # The global tool cannot load the analyzers current SDKs give an SDK-style project, so only a solution with a
+        # project in the older format, which the SDK's command can fail on, keeps it.
+        both = formatter.Services(run=FakeRunner(0, ""), which=lambda name: name)
+        cases = (
+            ("dotnet", [("src\\App\\App.csproj", SDK_PROJECT)]),
+            ("dotnet", [("src\\App\\App.csproj", SDK_PROJECT), ("native\\Native.vcxproj", LEGACY_PROJECT)]),
+            ("dotnet", [("src\\App\\App.csproj", '<Project><Sdk Name="Microsoft.NET.Sdk" /></Project>\n')]),
+            (
+                "dotnet",
+                [("src\\App\\App.csproj", '<Project><Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" /></Project>')],
+            ),
+            ("dotnet-format", [("src\\App\\App.csproj", SDK_PROJECT), ("old\\Old.csproj", LEGACY_PROJECT)]),
+            ("dotnet-format", [("src\\App\\App.csproj", SDK_PROJECT), ("old\\Old.vbproj", LEGACY_PROJECT)]),
+            ("dotnet-format", [("src\\App\\App.csproj", SDK_PROJECT), ("old\\Broken.csproj", "<Project>")]),
+            ("dotnet-format", [("native\\Native.vcxproj", SDK_PROJECT)]),
+        )
+        for program, projects in cases:
+            with self.subTest(projects=projects):
+                self.write_solution(*projects)
+                runner = FakeRunner(2, sample_log(self.root))
+                both.run = runner
+                status, lines, _ = self.run_formatter("check", both)
+                self.assertEqual(1, status)
+                self.assertEqual(SAMPLE_DIAGNOSTICS, lines[:-1])
+                ((arguments, _, _),) = runner.calls
+                self.assertEqual(program, arguments[0])
+                if program == "dotnet":
+                    self.assertEqual(["dotnet", "format", "App.sln", "--no-restore", "--severity"], arguments[:5])
+                    self.assertEqual("--verify-no-changes", arguments[arguments.index("--include") - 1])
+        self.write_solution(("src\\App\\App.csproj", SDK_PROJECT))
+        runner = FakeRunner(0, "")
+        services = formatter.Services(run=runner, which=lambda name: name if name == "dotnet-format" else None)
+        self.assert_failed(self.run_formatter("check", services), SDK_INSTALL_HINT)
+        self.assertEqual([], runner.calls)
+
+    def test_a_relative_repository_root_chooses_as_an_absolute_one_does(self) -> None:
+        self.write_solution(("src\\App\\App.csproj", SDK_PROJECT))
+        runner = FakeRunner(0, "")
+        services = formatter.Services(run=runner, which=lambda name: name)
+        arguments = ["check", "--repo-root", ".", "--solution", "App.sln", "--include-file", str(self.file_list)]
+        with contextlib.chdir(self.root), contextlib.redirect_stdout(io.StringIO()) as output:
+            status = formatter.main(arguments, services)
+        for line in output.getvalue().splitlines():
+            if line.startswith("LOG\t"):
+                self.addCleanup(os.remove, line.split("\t")[1])
+        self.assertEqual(0, status)
+        self.assertEqual("dotnet", runner.calls[0][0][0])
+
+    def test_a_solution_project_outside_the_repository_is_never_read_and_keeps_the_global_tool(self) -> None:
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        (Path(outside.name) / "Out.csproj").write_text(SDK_PROJECT, encoding="utf-8")
+        self.write_solution(("src\\App\\App.csproj", SDK_PROJECT))
+        listed = f'Project("{CSHARP_PROJECT_TYPE}") = "Out", "{Path(outside.name) / "Out.csproj"}", "{{9}}"\r\n'
+        with (self.root / "App.sln").open("a", encoding="utf-8") as handle:
+            handle.write(listed)
+        runner = FakeRunner(0, "")
+        status, _, _ = self.run_formatter("check", runner)
+        self.assertEqual(0, status)
+        self.assertEqual("dotnet-format", runner.calls[0][0][0])
+
+    def test_the_global_tools_analyzer_load_failure_is_named_with_its_remedy(self) -> None:
+        crash = (
+            "Unhandled exception: System.Reflection.ReflectionTypeLoadException: Unable to load one or more of the "
+            "requested types.\nCould not load file or assembly 'Microsoft.CodeAnalysis, Version=4.14.0.0'\n"
+        )
+        lines = self.assert_failed(
+            self.run_formatter("check", FakeRunner(1, crash)),
+            "dotnet-format exited with code 1: the global tool could not load the analyzers the installed .NET SDK "
+            "gives an SDK-style project (ReflectionTypeLoadException); it runs because the solution holds a project "
+            "that is not SDK-style, so convert that project to SDK-style, and the SDK's dotnet format formats the "
+            "solution; see the log",
+        )
+        self.assertEqual(crash.encode(), Path(lines[-2][1]).read_bytes())
+        self.assert_failed(
+            self.run_formatter("check", self.sdk_services(FakeRunner(1, crash)), True, "--solution", "App.slnx"),
+            "dotnet format exited with code 1; see the log",
+        )
+
+    def test_the_global_tool_skips_an_aspnet_projects_files_and_the_sdks_command_formats_them(self) -> None:
+        self.files = ["src/App/Program.cs", "src/Web/Startup.cs", "src/Web/Pages/Index.cs"]
+        self.file_list.write_text("".join(f"{name}\n" for name in self.files), encoding="utf-8")
+        self.write_solution(("src\\App\\App.csproj", LEGACY_PROJECT), ("src\\Web\\Web.csproj", WEB_PROJECT))
+        runner = FakeRunner(0, "")
+        self.assertEqual(0, self.run_formatter("check", runner)[0])
+        ((arguments, _, _),) = runner.calls
+        self.assertEqual(("dotnet-format", ["src/App/Program.cs"]), (arguments[0], arguments[-1:]))
+
+        self.write_solution(("src\\App\\App.csproj", SDK_PROJECT), ("src\\Web\\Web.csproj", WEB_PROJECT))
+        runner = FakeRunner(0, "")
+        self.assertEqual(0, self.run_formatter("check", formatter.Services(run=runner, which=lambda name: name))[0])
+        ((arguments, _, _),) = runner.calls
+        self.assertEqual("dotnet", arguments[0])
+        self.assertEqual(self.files, arguments[arguments.index("--include") + 1 :])
+
+    def test_nothing_runs_when_the_global_tool_skips_every_file(self) -> None:
+        self.files = ["src/Web/Startup.cs"]
+        self.file_list.write_text("src/Web/Startup.cs\n", encoding="utf-8")
+        self.write_solution(("src\\Web\\Web.csproj", WEB_PROJECT), ("old\\Old.csproj", LEGACY_PROJECT))
+        runner = FakeRunner(1, "")
+        for mode in ("check", "fix"):
+            with self.subTest(mode=mode):
+                self.assertEqual((0, [["SUMMARY", "0", "0", "-"]], ""), self.run_formatter(mode, runner))
+        self.assertEqual([], runner.calls)
 
     def test_no_batch_starts_once_the_time_limit_is_spent(self) -> None:
         self.many_files()

@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from collections.abc import Sequence
 from pathlib import Path
+from typing import IO, Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -28,6 +29,13 @@ from github_client import Runner as GhRunner
 
 SDK_PROJECT = '<Project Sdk="Microsoft.NET.Sdk"></Project>\n'
 WEB_PROJECT = '<Project Sdk="Microsoft.NET.Sdk.Web"></Project>\n'
+# A project in the format before SDK-style ones, as Visual Studio wrote it for .NET Framework.
+LEGACY_PROJECT = (
+    '<?xml version="1.0" encoding="utf-8"?>\n<Project ToolsVersion="15.0" '
+    'xmlns="http://schemas.microsoft.com/developer/msbuild/2003">\n'
+    '  <Import Project="$(MSBuildExtensionsPath)\\$(MSBuildToolsVersion)\\Microsoft.Common.props" />\n'
+    "</Project>\n"
+)
 LEGACY_WEB_PROJECT = (
     "<Project><PropertyGroup><ProjectTypeGuids>{349C5851-65DF-11DA-9384-00065B846F21};"
     "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}</ProjectTypeGuids></PropertyGroup></Project>\n"
@@ -198,12 +206,22 @@ class ResolveTests(GitTestCase):
         repo.git("mv", "App/Renamed.cs", "App/RenamedAgain.cs")
         repo.write("App/Modified.cs", "class Modified { }\n")
         repo.write("Loose/Untracked.cs")
-        repo.write("App.sln", solution("App\\App.csproj", "Forms\\Forms.csproj"))
+        repo.write(
+            "App.sln",
+            solution(
+                "App\\App.csproj",
+                "Forms\\Forms.csproj",
+                "Web\\Web.csproj",
+                "Legacy\\Legacy.csproj",
+                "Site\\Site.csproj",
+            ),
+        )
 
         lines = self.resolve()
 
         self.assertEqual(["REPO_ROOT", str(repo.root)], lines[0])
         self.assertEqual([["origin/main"]], self.values(lines, "BASE"))
+        # The solution holds projects in the older format, so the global tool formats it and skips the ASP.NET ones.
         self.assertEqual(
             [
                 ["Legacy/Page.cs", "Legacy/Legacy.csproj"],
@@ -217,25 +235,65 @@ class ResolveTests(GitTestCase):
             "App/Modified.cs",
             "App/RenamedAgain.cs",
             "Forms/My Form.cs",
+            "Legacy/Page.cs",
             "Loose/Untracked.cs",
+            "Site/Global.cs",
+            "Web/Controllers/HomeController.cs",
         ]
         self.assertEqual([[name] for name in expected], self.values(lines, "FILE"))
         (file_list,) = self.values(lines, "FILE_LIST")
         self.assertEqual("".join(f"{name}\n" for name in expected), Path(file_list[0]).read_text(encoding="utf-8"))
         self.assertEqual(expected, targets.read_file_list(Path(file_list[0])))
-        self.assertEqual([["App.sln", "4"]], self.values(lines, "SOLUTION"))
+        self.assertEqual([["App.sln", "7"]], self.values(lines, "SOLUTION"))
         self.assertEqual([["Loose/Untracked.cs"]], self.values(lines, "OUTSIDE_SOLUTION"))
         self.assertEqual("SOLUTION", lines[-1][0])
 
     def test_web_project_at_repository_root_owns_files_without_a_nearer_project(self) -> None:
         self.repository.write("Root.csproj", WEB_PROJECT)
+        self.repository.write("Old/Old.csproj", LEGACY_PROJECT)
         self.repository.write("Pages/Index.cs")
+        self.repository.write("Root.sln", solution("Root.csproj", "Old\\Old.csproj"))
         self.repository.commit("web")
         lines = self.resolve()
         self.assertEqual([["Pages/Index.cs", "Root.csproj"]], self.values(lines, "SKIPPED_ASPNET"))
+        self.assertEqual([["Pages/Index.cs"]], self.values(lines, "FILE"))
+        self.assertEqual([["Root.sln", "1"]], self.values(lines, "SOLUTION"))
+
+    def test_the_sdks_dotnet_format_is_given_an_aspnet_projects_files_and_only_the_global_tool_skips_them(self) -> None:
+        # The SDK's dotnet format formats an ASP.NET project, so its files are skipped only when the solution has the
+        # global tool run, and the layout checker sees them either way.
+        repo = self.repository
+        repo.write("Web/Web.csproj", WEB_PROJECT)
+        repo.write("Web/Program.cs")
+        repo.write("Site/Site.csproj", WEB_APPLICATION_PROJECT)
+        repo.write("Site/Global.cs")
+        repo.write("App/App.csproj", SDK_PROJECT)
+        repo.write("App/Code.cs")
+        repo.write("App.sln", solution("App\\App.csproj", "Web\\Web.csproj"))
+        repo.commit("web")
+        everything = ["App/Code.cs", "Site/Global.cs", "Web/Program.cs"]
+        lines = self.resolve()
+        self.assertEqual([], self.values(lines, "SKIPPED_ASPNET"))
+        self.assertEqual([["Site/Global.cs"]], self.values(lines, "OUTSIDE_SOLUTION"))
+        (file_list,) = self.values(lines, "FILE_LIST")
+        self.assertEqual(everything, targets.read_file_list(Path(file_list[0])))
+        self.assertEqual([["App.sln", "2"]], self.values(lines, "SOLUTION"))
+
+        repo.write("App.sln", solution("App\\App.csproj", "Web\\Web.csproj", "Site\\Site.csproj"))
+        repo.commit("a web application project, in the older format")
+        lines = self.resolve()
         self.assertEqual(
-            [["no C# files changed vs origin/main (excluding ASP.NET projects)"]], self.values(lines, "STOP")
+            [["Site/Global.cs", "Site/Site.csproj"], ["Web/Program.cs", "Web/Web.csproj"]],
+            self.values(lines, "SKIPPED_ASPNET"),
         )
+        (file_list,) = self.values(lines, "FILE_LIST")
+        self.assertEqual(everything, targets.read_file_list(Path(file_list[0])))
+        self.assertEqual([["App.sln", "3"]], self.values(lines, "SOLUTION"))
+
+        (repo.root / "App.sln").unlink()
+        repo.write("App.slnx", slnx("App/App.csproj", "Web/Web.csproj", "Site/Site.csproj"))
+        repo.commit("slnx")
+        self.assertEqual([], self.values(self.resolve(), "SKIPPED_ASPNET"))
 
     def test_nearest_owning_solution_from_cwd_wins_over_better_scoring_solutions_elsewhere(self) -> None:
         repo = self.repository
@@ -344,9 +402,7 @@ class ResolveTests(GitTestCase):
         self.assertEqual([], self.values(lines, "FILE_LIST"))
 
     def test_stops_when_nothing_changed(self) -> None:
-        self.assertEqual(
-            [["no C# files changed vs origin/main (excluding ASP.NET projects)"]], self.values(self.resolve(), "STOP")
-        )
+        self.assertEqual([["no C# files changed vs origin/main"]], self.values(self.resolve(), "STOP"))
 
     def test_base_is_the_pull_request_base_then_origin_head_then_main_then_master(self) -> None:
         repo = self.repository
@@ -580,9 +636,17 @@ class ResolveTests(GitTestCase):
     def test_an_unreadable_project_fails(self) -> None:
         self.repository.write("Lib/Lib.csproj", SDK_PROJECT)
         self.repository.write("Lib/Code.cs")
+        self.repository.write("App.sln", solution("Lib\\Lib.csproj"))
         self.repository.commit("code")
         denied = PermissionError(13, "Permission denied", "Lib/Lib.csproj")
-        with mock.patch.object(Path, "open", side_effect=denied):
+        opened = Path.open
+
+        def open_project(path: Path, *arguments: Any, **options: Any) -> IO[Any]:
+            if path.name == "Lib.csproj":
+                raise denied
+            return opened(path, *arguments, **options)
+
+        with mock.patch.object(Path, "open", open_project):
             failure = self.failed()
         self.assertEqual(f"{self.repository.root / 'Lib' / 'Lib.csproj'} cannot be read: Permission denied", failure)
 
@@ -648,21 +712,24 @@ class ResolveTests(GitTestCase):
         repo.write("Lib/Code.cs")
         repo.write("App.slnx", slnx("Lib/Lib.csproj"))
         repo.commit("solutions")
+        needs_sdk = (
+            "is a .slnx solution, or a .sln of SDK-style projects, which the .NET SDK's dotnet format formats; "
+            "install the .NET SDK 9.0.200 or newer"
+        )
         status, lines, errors = self.run_resolve(services=Services(dotnet=False))
         self.assertEqual((0, ""), (status, errors))
-        self.assertEqual(
-            [
-                "STOP",
-                "App.slnx is a .slnx solution, which only the .NET SDK's dotnet format opens; "
-                "install the .NET SDK 9.0.200 or newer",
-            ],
-            lines[-1],
-        )
+        self.assertEqual(["STOP", f"App.slnx {needs_sdk}"], lines[-1])
         self.assertEqual([], self.values(lines, "FILE_LIST"))
         self.assertEqual([], self.values(lines, "SOLUTION"))
 
         repo.write("App.sln", solution("Lib\\Lib.csproj"))
         repo.commit("sln")
+        lines = self.resolve(services=Services(dotnet=False))
+        self.assertEqual(["STOP", f"App.sln {needs_sdk}"], lines[-1])
+
+        repo.write("Old/Old.csproj", LEGACY_PROJECT)
+        repo.write("App.sln", solution("Lib\\Lib.csproj", "Old\\Old.csproj"))
+        repo.commit("a project in the older format")
         self.assertEqual([["App.sln", "1"]], self.values(self.resolve(services=Services(dotnet=False)), "SOLUTION"))
 
     def test_an_sln_beside_an_slnx_listing_the_same_projects_wins_the_tie(self) -> None:
@@ -740,11 +807,18 @@ class ResolveTests(GitTestCase):
         (repo.root / "Lib/Lib.csproj").write_bytes(b"\xef\xbb\xbf" + SDK_PROJECT.encode("utf-8"))
         repo.write("Web/Page.cs")
         repo.write("Lib/Code.cs")
-        (repo.root / "Lib.sln").write_bytes(b"\xef\xbb\xbf" + solution("Lib\\Lib.csproj").encode("utf-8"))
+        (repo.root / "Old").mkdir()
+        (repo.root / "Old/Old.csproj").write_bytes(LEGACY_PROJECT.replace("utf-8", "utf-16").encode("utf-16"))
+        listed = solution("Lib\\Lib.csproj", "Web\\Web.csproj", "Old\\Old.csproj")
+        (repo.root / "Lib.sln").write_bytes(b"\xef\xbb\xbf" + listed.encode("utf-8"))
         repo.commit("encodings")
         lines = self.resolve()
         self.assertEqual([["Web/Page.cs", "Web/Web.csproj"]], self.values(lines, "SKIPPED_ASPNET"))
-        self.assertEqual([["Lib.sln", "1"]], self.values(lines, "SOLUTION"))
+        self.assertEqual([["Lib.sln", "2"]], self.values(lines, "SOLUTION"))
+        self.assertEqual(targets.TOOL_FORMATTER, targets.formatter_for(repo.root, repo.root / "Lib.sln"))
+        listed = solution("Lib\\Lib.csproj", "Web\\Web.csproj")
+        (repo.root / "Lib.sln").write_bytes(b"\xef\xbb\xbf" + listed.encode("utf-8"))
+        self.assertEqual(targets.SDK_FORMATTER, targets.formatter_for(repo.root, repo.root / "Lib.sln"))
 
 
 class ConsoleTests(GitTestCase):

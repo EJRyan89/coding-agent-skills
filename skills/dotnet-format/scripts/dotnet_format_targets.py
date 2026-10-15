@@ -8,9 +8,9 @@ Output, one fact per line, tab separated:
     REPO_ROOT       <absolute repository root>
     FETCH_FAILED    <reason>                      `git fetch origin` failed; BASE is origin as last fetched
     BASE            <base ref the branch is compared with>
-    SKIPPED_ASPNET  <file> <owning .csproj>       file belongs to an ASP.NET project, which crashes the formatter
     FILE            <file>                        a changed C# file to format
     OUTSIDE_SOLUTION <file>                       a FILE no project of SOLUTION owns; the formatter skips it
+    SKIPPED_ASPNET  <file> <owning .csproj>       a FILE of an ASP.NET project, which the global tool is not run on
     FILE_LIST       <temporary file>              the FILE paths, one per line, for --include-file / --file-list
     SOLUTION        <solution> <score>            the solution to format and how many FILEs its projects own
     STOP            <reason>                      nothing to format; report the reason and stop
@@ -19,8 +19,15 @@ BASE is the pull request's base branch when gh reports one, else the remote's de
 origin/main, else origin/master, after `git fetch origin` brings them up to date. SOLUTION is the nearest solution
 (.sln or .slnx) from the invocation directory that owns a FILE, else the repository solution owning the most. A
 solution owning none of them is never chosen, because the formatter would skip every file and report a clean result;
-that ends in STOP, as does finding no changed C# file or no solution, or choosing a .slnx solution when the .NET
-SDK's dotnet, which alone formats one, is not installed.
+that ends in STOP, as does finding no changed C# file or no solution, or choosing a solution the .NET SDK's
+`dotnet format` formats when dotnet is not installed.
+
+The formatter is the .NET SDK's `dotnet format` for a .slnx solution, which the dotnet-format global tool cannot open,
+and for a .sln whose C# and Visual Basic projects are all SDK-style, since the global tool cannot load the analyzers
+current SDKs give such projects; it is the global tool for any other .sln, such as one holding a .NET Framework project
+in the older format, on which the SDK's command can fail. The global tool is not run on an ASP.NET project's files,
+which SKIPPED_ASPNET names: the SDK's command formats them, so the skip holds only for the global tool. A FILE that
+SKIPPED_ASPNET or OUTSIDE_SOLUTION names still goes into FILE_LIST, for the layout checker.
 
 FILE, SKIPPED_ASPNET, and SOLUTION paths are relative to REPO_ROOT with forward slashes, because dotnet-format
 runs from REPO_ROOT and matches --include paths against that directory.
@@ -42,24 +49,44 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
+from xml.etree import ElementTree
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from console import run_main
-from dotnet_solution import is_solution, read_text, same_path, solution_projects
+from dotnet_solution import (
+    is_solution,
+    lexical_absolute,
+    project_path,
+    read_listed_projects,
+    read_text,
+    refusal,
+    same_path,
+    solution_projects,
+)
 from executable_locator import find_executable
 from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult, classify_failure
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_client import Runner as GhRunner
-from xml_reader import XmlRefused
+from xml_reader import XmlRefused, read_xml
 
+# An ASP.NET project, whose files the dotnet-format global tool is not run on. The skill has skipped them since its
+# first version as crashing the formatter, with no record of which project kind did; the SDK's dotnet format formats
+# them, so `formatter_skips` holds the skip to the global tool alone.
 WEB_PROJECT = re.compile(
     r"Microsoft\.NET\.Sdk\.Web|<WebApplication>|<WebSiteType>|349c5851-65df-11da-9384-00065b846f21",
     re.IGNORECASE,
 )
+# The project files the formatters format, whose style chooses between them; any other, such as a C++ project, is left
+# out of the choice.
+FORMATTED_PROJECT_SUFFIXES = (".csproj", ".vbproj")
+SDK_FORMATTER = "dotnet format"
+TOOL_FORMATTER = "dotnet-format"
 IGNORED_DIRECTORIES = frozenset({".git", "bin", "obj", "node_modules"})
 REMOTE_REFS = "refs/remotes/origin/"
+# Why a solution needs the .NET SDK's dotnet, after its name.
+SDK_SOLUTION = "is a .slnx solution, or a .sln of SDK-style projects, which the .NET SDK's dotnet format formats"
 
 
 def gh_runner_in(directory: Path) -> GhRunner:
@@ -218,6 +245,60 @@ def is_web_project(project: Path) -> bool:
     return bool(WEB_PROJECT.search(read_text(project)))
 
 
+def local_name(element: ElementTree.Element) -> str:
+    """An element's tag without the MSBuild namespace an older project file declares."""
+    return element.tag.rpartition("}")[2]
+
+
+def is_sdk_style(project: Path) -> bool:
+    """Whether a project file is SDK-style, as MSBuild reads one: its Project element names an Sdk, or it holds an
+    Sdk element or an Import of an Sdk. A file that cannot be read is not shown to be one."""
+    try:
+        document = read_xml(read_text(project))
+    except (OSError, XmlRefused):
+        return False
+    if local_name(document) != "Project":
+        return False
+    if document.get("Sdk"):
+        return True
+    return any(local_name(child) == "Sdk" or (local_name(child) == "Import" and child.get("Sdk")) for child in document)
+
+
+def formatter_for(root: Path, solution: Path) -> str:
+    """The formatter for a solution: the SDK's `dotnet format` for a .slnx, and for a .sln listing C# or Visual Basic
+    projects that are all SDK-style files inside `root`; the dotnet-format global tool for any other .sln, one it
+    cannot read included, so that only a solution shown to suit the SDK's command gets it. A relative root or
+    solution is taken from the working directory, as the formatter takes them."""
+    if solution.name.casefold().endswith(".slnx"):
+        return SDK_FORMATTER
+    root, solution = lexical_absolute(root), lexical_absolute(solution)
+    try:
+        listed = read_listed_projects(solution)
+    except (OSError, XmlRefused):
+        return TOOL_FORMATTER
+    projects = [
+        project
+        for entry in listed
+        if (project := project_path(solution.parent, entry)).suffix.casefold() in FORMATTED_PROJECT_SUFFIXES
+    ]
+    if projects and all(refusal(project, root) is None and is_sdk_style(project) for project in projects):
+        return SDK_FORMATTER
+    return TOOL_FORMATTER
+
+
+def web_project(root: Path, name: str) -> Path | None:
+    """The ASP.NET project owning a file, of those `owning_projects` gives, or None."""
+    return next((project for project in owning_projects(root, root / name) if is_web_project(project)), None)
+
+
+def formatter_skips(root: Path, formatter: str, names: list[str]) -> dict[str, Path]:
+    """The files `formatter` is not run on, each with the ASP.NET project owning it: none for the SDK's command,
+    which formats them, and every ASP.NET project's file for the global tool."""
+    if formatter != TOOL_FORMATTER:
+        return {}
+    return {name: project for name in names if (project := web_project(root, name)) is not None}
+
+
 def nearest_solutions(root: Path, cwd: Path) -> list[Path]:
     """Solutions in the nearest directory from cwd up to the root, or none."""
     inside = same_path(cwd) == same_path(root) or any(same_path(parent) == same_path(root) for parent in cwd.parents)
@@ -299,29 +380,22 @@ def resolve(cwd: Path, services: Services, emit: Callable[[str], None]) -> None:
     emit(f"REPO_ROOT\t{root}")
     base = base_ref(services, root, emit)
     emit(f"BASE\t{base}")
-    kept: list[str] = []
-    owners: list[list[Path]] = []
-    for name in changed_files(services, root, base):
-        projects = owning_projects(root, root / name)
-        web = next((project for project in projects if is_web_project(project)), None)
-        if web is not None:
-            emit(f"SKIPPED_ASPNET\t{name}\t{relative(web, root)}")
-            continue
-        kept.append(name)
-        owners.append(projects)
+    kept = changed_files(services, root, base)
     if not kept:
-        raise Stop(f"no C# files changed vs {base} (excluding ASP.NET projects)")
+        raise Stop(f"no C# files changed vs {base}")
+    owners = [owning_projects(root, root / name) for name in kept]
     for name in kept:
         emit(f"FILE\t{name}")
     solution, score = choose_solution(root, cwd.resolve(), owners)
+    formatter = formatter_for(root, solution)
+    skipped = formatter_skips(root, formatter, kept)
     for name, owned in zip(kept, owners, strict=True):
         if not owns(solution, owned):
             emit(f"OUTSIDE_SOLUTION\t{name}")
-    if solution.name.casefold().endswith(".slnx") and not services.which("dotnet"):
-        raise Stop(
-            f"{relative(solution, root)} is a .slnx solution, which only the .NET SDK's dotnet format opens; "
-            "install the .NET SDK 9.0.200 or newer"
-        )
+        elif name in skipped:
+            emit(f"SKIPPED_ASPNET\t{name}\t{relative(skipped[name], root)}")
+    if formatter == SDK_FORMATTER and not services.which("dotnet"):
+        raise Stop(f"{relative(solution, root)} {SDK_SOLUTION}; install the .NET SDK 9.0.200 or newer")
     descriptor, list_path = tempfile.mkstemp(prefix="dotnet-format-files-", suffix=".txt")
     with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
         handle.write("".join(f"{name}\n" for name in kept))
