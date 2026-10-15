@@ -240,7 +240,8 @@ class EvaluationTests(unittest.TestCase):
         project = self.read("src/Harbor.Web/Harbor.Web.csproj", LEGACY_PROJECT)
         self.assertEqual("legacy", project.style)
         self.assertEqual("Harbor.Web", project.assembly_name)
-        self.assertEqual(["v4.7.2"], project.frameworks)
+        # A project that is not SDK-style builds the .NET Framework its TargetFrameworkVersion names.
+        self.assertEqual(["net472"], project.frameworks)
         self.assertEqual([(self.root / "src" / "Harbor.Core" / "Harbor.Core.csproj").resolve()], project.project_refs)
         self.assertEqual([], project.packages)
         self.assertEqual(
@@ -478,6 +479,7 @@ class EvaluationTests(unittest.TestCase):
             ("'$(TargetFramework)'=='net8.0'", []),
             ("'$(TargetFramework)'=='net472'", []),
             (f"'$(TargetFramework)'=='net472' and {debug}", []),
+            (f"'$(TargetFramework)'=='net8.0' and {debug}", []),
             (f"'$(TargetFramework)'=='net472' or {debug}", ["net8.0"]),
             (f"'$(TargetFramework)'=='net8.0' or {debug}", ["net472"]),
         ]
@@ -675,6 +677,13 @@ class EvaluationTests(unittest.TestCase):
                 "<AssemblyName>Once</AssemblyName></PropertyGroup>",
                 ["net8.0"],
                 "Once",
+            ),
+            # An SDK-style project names its framework by TargetFramework, whatever TargetFrameworkVersion says.
+            (
+                "<PropertyGroup><TargetFramework>net8.0</TargetFramework>"
+                "<TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion></PropertyGroup>",
+                ["net8.0"],
+                "a",
             ),
             # A property's own condition is evaluated when the property is reached.
             (

@@ -65,6 +65,7 @@ from msbuild_reader import (
     Redirect,
     Unreadable,
     central_versions_file,
+    framework_key,
     is_sdk_style,
     item_specs,
     local_name,
@@ -115,6 +116,8 @@ PROPS_FILES = frozenset(("microsoft.common.props", "sdk.props"))
 TARGETS_FILES = frozenset(
     ("microsoft.common.targets", "microsoft.csharp.targets", "microsoft.visualbasic.targets", "sdk.targets")
 )
+# A TargetFrameworkVersion, such as `v4.7.2`.
+VERSION_NAME = re.compile(r"v\d+(?:\.\d+)*", re.IGNORECASE)
 # What the reader does instead of applying an item it cannot settle, by the item's operation.
 NOT_APPLIED = {"Include": "it is left out", "Update": "the Update is not applied", "Remove": "it is not removed"}
 
@@ -746,8 +749,19 @@ def framework_names(state: State, style: str) -> tuple[list[str], list[str], boo
         single = state.get("TargetFramework")
         once += [value.strip() for value in single if value and value.strip()]
         if style == "legacy" and any(not value for value in single):
-            once += [value.strip() for value in state.get("TargetFrameworkVersion") if value and value.strip()]
-    return list(dict.fromkeys(apart)), list(dict.fromkeys(once)), None in several
+            once += [framework_version_name(state, value) for value in state.get("TargetFrameworkVersion") if value]
+    return list(dict.fromkeys(apart)), list(dict.fromkeys(name for name in once if name)), None in several
+
+
+def framework_version_name(state: State, version: str) -> str:
+    """The framework a project that is not SDK-style builds, named as a project names it, such as `net472` for a
+    `TargetFrameworkVersion` of `v4.7.2` under the default `.NETFramework` identifier; the version as written when
+    the project sets another identifier, or one the reader cannot settle."""
+    identifier = state.values.get("targetframeworkidentifier")
+    default = identifier is None or [value and value.casefold() for value in identifier] == [".netframework"]
+    if default and VERSION_NAME.fullmatch(version.strip()):
+        return framework_key(f".NETFramework,Version={version.strip()}")
+    return version.strip()
 
 
 class ProjectEvaluation:
