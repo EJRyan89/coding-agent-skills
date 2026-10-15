@@ -17,8 +17,8 @@ forward slashes:
                   where package-to-package edges came from: obj/project.assets.json, the packages' nuspecs in the
                   packages folder or the NuGet cache, or neither, leaving the direct references alone
     UNREADABLE    <file> <reason>                            a file the readers refused, a path a file names
-                  outside the examined tree, a condition they cannot evaluate, or an item inside a Target; its
-                  facts are missing
+                  outside the examined tree, a condition, name, or AssemblyName they cannot settle, an Import
+                  not read, or an item inside a Target; its facts are missing
     SDK_FAILED    <project> <name> <reason>                  `dotnet nuget why` failed; the graph walk answered
     PATH          <project> <frameworks> <name> <sdk|graph> <hop> > <hop> ...    one chain, each hop
                   `name (vversion)`, `name (project)`, `name (vversion, assembly)`, `name (assembly)` for an
@@ -38,18 +38,19 @@ forward slashes:
                   where <projects>; conflicts <names in conflict> <stale redirects>; graph <nodes> <edges>
 
 <frameworks> names the target frameworks of the project's restore that hold the line, joined by `;`, or `-` for a
-project with no restore, whose facts are not kept per framework: every item counts whatever its condition, but a
-Remove counts only where it holds for every framework the project names, and one whose condition cannot be evaluated
-for one of them is reported. A line that holds for several frameworks is printed once. Two frameworks of one project
-resolving different versions build apart and are not a conflict. A framework is named as the project names it,
-whichever form its restore writes (`net8.0` or `.NETCoreApp,Version=v8.0`). A framework's direct packages are those its
-restore recorded, and its project references are the project file's ProjectReference items its restore also
+project with no restore, whose facts are not kept per framework. Each project is evaluated as MSBuild evaluates it,
+once per build (msbuild_evaluation's docstring): its files and the files it imports in import order for the
+properties, then its items with the final properties. A project with no restore counts every Include and Update that
+may apply in one of its builds, and a Remove only where it applies in every build, and one that cannot be settled in
+a build and fails in none is reported. A line that holds for several frameworks is printed once. Two frameworks of one
+project resolving different versions build apart and are not a conflict. A framework is named as the project names
+it, whichever form its restore writes (`net8.0` or `.NETCoreApp,Version=v8.0`). A framework's direct packages are those
+its restore recorded, and its project references are the project file's ProjectReference items its restore also
 recorded; for a framework the restore did not record them for, and for its assembly references, which a restore never
-records, they are the project file's PackageReference, ProjectReference, and Reference items whose conditions hold for
-it, a package without a version of its own taking the central PackageVersion whose conditions do, and a Choose
-applying its first When that holds when MSBuild enters it. An item whose condition
-the reader cannot evaluate is not applied and is reported as an UNREADABLE line naming the condition and what was done
-instead, and an item inside a Target, which MSBuild defines only when the target runs, is left out and reported so.
+records, they are the items that framework's build leaves, a package without a version of its own taking the central
+PackageVersion that build leaves. An item, or a metadata value, whose condition or name the reader cannot settle is
+not applied and is reported as an UNREADABLE line naming it and what was done instead; an item inside a Target, which
+MSBuild defines only when the target runs, is left out and reported so, and so is an Import the reader does not read.
 
 `why` asks `dotnet nuget why` for a project that is SDK-style, uses PackageReference, has an obj/project.assets.json
 no older than the project file, and only when dotnet is installed. A run that fails, even after printing part of an
