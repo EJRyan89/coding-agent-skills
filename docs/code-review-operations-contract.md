@@ -732,7 +732,7 @@ The report `review-insights report` writes to `<summary_root>/<set>/<start>--<en
 | `type` | string | no | A synthesized recommendation's kind of change. One of `new-rule`, `strengthen-rule`, `remove-rule`, `consolidate`, `stop-flagging`, `start-flagging`, `new-analyzer`, `move-to-script`, or `flagged`. |
 | `priority` | string | no | A synthesized recommendation's priority. One of `high`, `medium`, or `low`. |
 | `target` | object | no | What a synthesized recommendation changes. |
-| `title` | string | no | A synthesized recommendation's title, one line of at most 120 characters without quotes, backticks, `$`, backslashes, or control characters. |
+| `title` | string | no | A synthesized recommendation's title, one line of at most 120 characters without quotes, backticks, `$`, backslashes, control characters, or the line separators U+0085, U+2028, and U+2029. |
 | `change` | string | no | A synthesized recommendation's change, exactly what to add, change, or remove. |
 | `rationale` | string | no | Why a synthesized recommendation is made. |
 
@@ -773,7 +773,7 @@ The report `review-insights report` writes to `<summary_root>/<set>/<start>--<en
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
 | `repository` | string | with `path` | The repository whose guidance changes, one of the scope's; absent for a `new-analyzer` recommendation. |
-| `path` | string or null | with `repository` | The guidance file to change, one of the repository's guidance files, or null when none fits and the change says where the guidance belongs. For a `consolidate` recommendation, the guidance file whose wording survives; for a `move-to-script` one, the script, validator, or test that takes the rule over, a repository-relative file that is no prose guidance and need not exist yet, in at most 260 characters free of quotes, backticks, `$`, backslashes, and control characters. |
+| `path` | string or null | with `repository` | The guidance file to change, one of the repository's guidance files, or null when none fits and the change says where the guidance belongs. For a `consolidate` recommendation, the guidance file whose wording survives; for a `move-to-script` one, the script, validator, or test that takes the rule over, a repository-relative file that is no prose guidance and need not exist yet, in at most 260 characters free of quotes, backticks, `$`, backslashes, control characters, and the line separators U+0085, U+2028, and U+2029. |
 | `merge` | array | when the recommendation is a `consolidate` one | The other guidance files of the repository a `consolidate` recommendation merges into `path`, at least one, each once; absent for every other type. |
 | `analyzer` | object | no | A `new-analyzer` recommendation's rule, with no other field. |
 
@@ -852,7 +852,7 @@ The report `review-insights report` writes to `<summary_root>/<set>/<start>--<en
 | `pull_number` | integer | yes | The pull request. |
 | `head_sha` | string | yes | The head commit the findings were raised on. |
 | `path` | string | yes | The file. |
-| `line` | integer | yes | The first finding's line; the others are within three lines after it. |
+| `line` | integer | yes | The first finding's line; the others are joined to it through disagreeing pairs, each pair within three lines of one another, so a cluster may span more than three lines. |
 | `reports` | array | yes | Up to five findings there, each `<severity> <reference> <source>`. |
 
 #### Guidance overlap (`insights.signals.guidance_overlaps[]`, `synthesis-input:guidance-overlap`)
@@ -868,7 +868,7 @@ The report `review-insights report` writes to `<summary_root>/<set>/<start>--<en
 | `paths` | array | yes | The two files, in path order. |
 | `lines` | array | yes | The line each rule starts on, in the same order. |
 | `texts` | array | yes | Each rule's sentence on one line of at most 300 characters. |
-| `reviewers` | array | yes | The reviewers given both files. May be empty. |
+| `reviewers` | array | yes | The reviewers given both files at the versions the rules' texts came from; a reviewer given another version of either file is not named. May be empty. |
 
 #### Unsupplied reference (`insights.signals.unsupplied_references[]`, `synthesis-input:guidance-unsupplied`)
 
@@ -908,7 +908,7 @@ The result the analyst agent writes to the file the report's `synthesis.result` 
 | `type` | string | yes | One of `new-rule`, `strengthen-rule`, `remove-rule`, `consolidate`, `stop-flagging`, `start-flagging`, `new-analyzer`, `move-to-script`, or `flagged`. |
 | `priority` | string | yes | One of `high`, `medium`, or `low`. |
 | `target` | object | yes | An analyzer rule for `new-analyzer`; a repository, the surviving guidance file, and the files it merges for `consolidate`; a repository and the script that takes the rule over for `move-to-script`; a repository and guidance file for every other type. |
-| `title` | string | yes | One line of at most 120 characters without quotes, backticks, `$`, backslashes, or control characters. |
+| `title` | string | yes | One line of at most 120 characters without quotes, backticks, `$`, backslashes, control characters, or the line separators U+0085, U+2028, and U+2029. |
 | `change` | string | yes | Exactly what to add, change, or remove, at most 2000 characters. |
 | `rationale` | string | yes | Why, at most 1500 characters. |
 | `evidence` | array | yes | At most 10 finding references from the input. |
