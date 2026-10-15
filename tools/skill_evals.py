@@ -4,13 +4,16 @@ Usage:
   python -B tools/skill_evals.py SKILL [--write] [--timeout SECONDS] [--jobs N]
   python -B tools/skill_evals.py SKILL [--scenario NAME ...] [--model NAME ...] [--records DIR]
 
-Repeated --scenario and --model names count once, in first-occurrence order. Without --scenario, every scenario
-is selected in name order.
+SKILL is one skill's name, a folder of scenarios under tests/fixtures/skill-evals/; a name that is not a skill's is a
+usage error, and a skill with no scenario there fails the run. Repeated --scenario and --model names count once, in
+first-occurrence order. Without --scenario, every scenario is selected in name order. --timeout is a positive number
+of seconds.
 
 A scenario is a directory tests/fixtures/skill-evals/<skill>/<scenario>/, which never ships, holding a scenario.json.
 A fixture scenario is a code-review fixture, which `review_pipeline.py prepare --canary --fixture <scenario>` reviews
 in place of a pull request: the change as two trees, base/ and head/, and the pull request in pull.json (see
-review_canary.py in code-review-core). A re-review scenario's run adds `--re-review --prior <scenario>/<prior>`. A
+review_canary.py in code-review-core). A re-review scenario's run adds `--re-review --prior <scenario>/<prior>`, its
+prior a plain relative path inside the scenario's folder. A
 document scenario names a document instead, for a skill started on one file's path, as review-document is: the run
 writes it under its own file name into a new folder in the run's folder and starts the skill with that path alone.
 With a base, that folder is a new git checkout whose one commit holds the base under the same name, and the document
@@ -47,7 +50,8 @@ rank SUGGESTION < SHOULD_FIX < MUST_FIX; `lines` lists the head lines a finding 
       `category` is given; a scenario whose manifest declares finding_categories names one of them
   {"kind": "no_finding_above", "severity": S, "paths": [P, ...], "lines": [N, ...]}
       no finding more severe than S on the paths, or on any path when `paths` is left out; with `lines`, which takes
-      exactly one path, only on those lines of it, so a document may hold a more severe finding elsewhere
+      exactly one path, only on those lines of it, so a document may hold a more severe finding elsewhere; S is
+      below the highest severity, above which nothing ranks
   {"kind": "only_at", "path": P, "lines": [N, ...]}
       every finding, whatever its severity, is at P on one of the lines, as a review of one edited line should be
   {"kind": "verdict", "verdict": "APPROVED" | "CHANGES_REQUESTED" | "INCOMPLETE"}
@@ -61,11 +65,16 @@ rank SUGGESTION < SHOULD_FIX < MUST_FIX; `lines` lists the head lines a finding 
       a finding there of another severity: a less severe one is about another defect, and a more severe one is a new
       finding, since a repeat may not be more severe than what it repeats
 
-An unknown kind, or a field a kind does not take, fails the whole run before anything is judged.
+An unknown kind, a field a kind does not take, or a `category` the scenario's manifest does not list, ignoring case,
+fails the whole run before anything is judged. The manifest is the one the fixture's pull.json names in its base tree,
+the checkout's for a repository reviewer's scenario, or review-document's design manifest for a document scenario.
 
 Records come from a record source, a function of a scenario and a model that returns the record that run wrote.
---records DIR reads DIR/<scenario>/<model>.json, the record JSON a run finalized. A missing or unreadable record fails
-every expectation of its scenario and model.
+--records DIR reads DIR/<scenario>/<model>.json, the record JSON a run finalized, and holds it to what a run's record
+is held to: code-review-core's record contract (validate_record), the review version of the scenario's mode, a guard
+that held every reviewer, and every reviewer's `model` naming that model's ID. The model is the one each reviewer's
+result reports, which is weaker than a run's check of the transcript. A missing or unreadable record, or one any of
+those refuses, fails every expectation of its scenario and model.
 
 Without --records, it runs the scenarios. For each model it makes a fresh home under one throwaway directory,
 deploys this checkout into it with `deploy.py --canary-home`, as tools/runtime_canary.py does, and sets the model's
@@ -119,11 +128,15 @@ Output, one fact per line:
   FAIL <skill> <scenario> <model> <expectation> "<reason>"
   FAILED "<reason>"                               nothing was run or judged: the scenarios could not be loaded,
                                                   Claude Code is missing, or --write's existing results file
-                                                  cannot be read or lacks its table
+                                                  cannot be read or its table cannot be read
 then a Markdown table, one row per scenario and one column per model, each cell the expectations passed of those
 checked, then `WROTE <file>` when --write replaced the skill's rows in docs/skill-evaluations.md, and `REMOVED
-"<dir>"` when nothing failed and the home is gone; otherwise the home stays for its transcripts. It exits 1 on any
-FAIL or FAILED line, 0 otherwise, and 2 on a usage error.
+"<dir>"` when nothing failed and the home is gone; otherwise the home stays for its transcripts. A model none of whose
+reviewers ran is written there as not run with a fixed phrase for its first reason, such as `timed out after 1800
+seconds` or `denied 2 commands`, which names no path of the machine; the FAIL lines and the transcript keep the whole
+reason. --write reads the results table strictly before any run: the header, its separator, then rows of the header's
+columns, each naming a skill, and nothing else between the markers. Every other skill's row is written back as it was.
+It exits 1 on any FAIL, FAILED, or DEPLOY_FAILED line, 0 otherwise, and 2 on a usage error.
 
 It records pass or fail, the model identifiers, the runtime version, and the date, and nothing else: no tokens,
 cost, or timings. It calls models, so it is never part of validation; see .claude/skills/evaluate-skill/SKILL.md.
@@ -137,6 +150,7 @@ import contextlib
 import datetime
 import itertools
 import json
+import math
 import os
 import re
 import shutil
@@ -153,19 +167,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-c
 from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("code-review-core")))
+sys.path.insert(0, str(sibling_scripts("review-document")))
 
 import frontmatter
 from bounded_process import without_repository_variables
 from console import run_main
 from git_client import GitClient, GitError
 from review_archive import ArchiveError, latest_record, list_versions
+from review_document import specialists_manifest
 from review_io import PersistenceError
 from review_records import DISPOSITIONS as RECORD_DISPOSITIONS
-from review_records import LEDGER_ID, SEVERITY_RANK
+from review_records import LEDGER_ID, SEVERITY_RANK, validate_record
 from review_runtime import DOCUMENT_STAGES, RuntimeContractError, declared_reviewer_files, validate_adapter_manifest
 
 from deployer import fsops, platform_support, tools
 from deployer.platform_support import PYTHON
+from deployer.source import SKILL_NAME_PATTERN
 from tools import runtime_canary
 from tools.runtime_canary import Completed, Runner
 
@@ -206,6 +223,12 @@ RESULTS_HEADER = (
     "| Skill | Model | Model ID | Passed | By scenario | Session model | Claude Code | Date |",
     "| --- | --- | --- | --- | --- | --- | --- | --- |",
 )
+# A results table's cell border, a pipe its cell does not escape, and a separator cell, aligned or not.
+CELL_BORDER = re.compile(r"(?<!\\)\|")
+SEPARATOR_CELL = re.compile(r":?-{3,}:?")
+# A run that recorded no review, as the results file records it: why the record is missing may name the machine's
+# paths, which the FAIL lines keep.
+NO_REVIEW = "the run recorded no review"
 # The record's own vocabulary, from code-review-core's record module, in a stable order for messages: severities from
 # the lowest rank, dispositions alphabetically.
 SEVERITIES = tuple(sorted(SEVERITY_RANK, key=SEVERITY_RANK.__getitem__))
@@ -232,7 +255,7 @@ class ScenarioError(Exception):
 
 
 class RecordError(Exception):
-    """A record that is missing, unreadable, or lacks what an expectation reads."""
+    """A record that is missing, unreadable, refused, or lacks what an expectation reads."""
 
 
 @dataclass(frozen=True)
@@ -296,8 +319,18 @@ def _choice(value: Any, choices: Sequence[str], what: str) -> str:
 
 
 def _path(value: Any) -> str:
+    """A plain relative path. One either platform reads as absolute, a drive's included, is refused on both, since a
+    scenario runs on each: on Windows, a path joined to a drive leaves the scenario's folder."""
     path = PurePosixPath(value) if isinstance(value, str) else None
-    if path is None or not value or "\\" in value or path.is_absolute() or ".." in path.parts or str(path) != value:
+    if (
+        path is None
+        or not value
+        or "\\" in value
+        or path.is_absolute()
+        or PureWindowsPath(value).anchor
+        or ".." in path.parts
+        or str(path) != value
+    ):
         raise ScenarioError(f"path must be a plain relative path, not {quote(str(value))}")
     return value
 
@@ -368,6 +401,8 @@ def finding_expectation(spec: Mapping[str, Any]) -> Expectation:
 def no_finding_above_expectation(spec: Mapping[str, Any]) -> Expectation:
     _fields(spec, {"kind", "severity"}, frozenset({"paths", "lines"}))
     severity = _choice(spec["severity"], SEVERITIES, "severity")
+    if severity == SEVERITIES[-1]:
+        raise ScenarioError(f"no_finding_above {severity} holds for every record: no severity ranks above it")
     paths: tuple[str, ...] | None = None
     if "paths" in spec:
         if not isinstance(spec["paths"], list) or not spec["paths"]:
@@ -539,6 +574,49 @@ def _reviewer_folder(checkout: Path, folder: PurePosixPath) -> list[str]:
     return files
 
 
+def _manifest_path(directory: Path) -> str | None:
+    """The reviewer manifest a fixture's pull.json names, or None for the generic reviewer."""
+    try:
+        manifest_path = json.loads((directory / "pull.json").read_text(encoding="utf-8")).get("manifest_path")
+    except (OSError, ValueError, AttributeError) as exc:
+        raise ScenarioError(f"cannot read pull.json's manifest_path: {exc}") from exc
+    return None if manifest_path is None else _path(manifest_path)
+
+
+def _manifest(tree: Path, manifest_path: str, what: str) -> dict[str, Any]:
+    try:
+        return validate_adapter_manifest(json.loads((tree / manifest_path).read_text(encoding="utf-8")))
+    except (OSError, ValueError, RuntimeContractError) as exc:
+        raise ScenarioError(f"{what} {manifest_path} cannot be read: {exc}") from exc
+
+
+def finding_categories(spec: Mapping[str, Any], directory: Path, checkout: Path) -> list[str] | None:
+    """The finding categories of the manifest the scenario's reviewers follow, or None when it lists none: a document
+    scenario's is review-document's design manifest, a repository reviewer's the checkout's manifest, and any other
+    fixture's the one its pull.json names, which prepare reads from the base tree."""
+    if "document" in spec:
+        return list(specialists_manifest(PurePosixPath(str(spec["document"])).name)["finding_categories"])
+    manifest_path = _manifest_path(directory)
+    if manifest_path is None:
+        return None
+    tree = checkout if "reviewer" in spec else directory / "base"
+    categories = _manifest(tree, manifest_path, "the manifest").get("finding_categories")
+    return None if categories is None else list(categories)
+
+
+def _listed_categories(expectations: Sequence[Mapping[str, Any]], categories: Sequence[str] | None) -> None:
+    """Refuse a finding expectation's category its manifest does not list, ignoring case, as the judge matches it."""
+    if categories is None:
+        return
+    listed = {category.casefold() for category in categories}
+    for item in expectations:
+        if item["kind"] == "finding" and "category" in item and item["category"].strip().casefold() not in listed:
+            raise ScenarioError(
+                f"category {quote(item['category'])} is not one of the manifest's finding_categories: "
+                f"{', '.join(categories)}"
+            )
+
+
 def reviewer_files(reviewer: str, directory: Path, checkout: Path) -> tuple[str, ...]:
     """The files a run of a repository reviewer's scenario places from the checkout: the reviewer's SKILL.md, its
     folders, its manifest, at the fixture's pull.json manifest_path, and every file that manifest declares (its
@@ -548,16 +626,10 @@ def reviewer_files(reviewer: str, directory: Path, checkout: Path) -> tuple[str,
     folder = REPOSITORY_SKILLS / reviewer
     if not (checkout / folder / "SKILL.md").is_file():
         raise ScenarioError(f"no repository skill {reviewer}: the checkout has no {folder}/SKILL.md")
-    try:
-        manifest_path = json.loads((directory / "pull.json").read_text(encoding="utf-8")).get("manifest_path")
-    except (OSError, ValueError, AttributeError) as exc:
-        raise ScenarioError(f"cannot read pull.json's manifest_path: {exc}") from exc
-    if not isinstance(manifest_path, str) or not PurePosixPath(_path(manifest_path)).is_relative_to(folder):
+    manifest_path = _manifest_path(directory)
+    if manifest_path is None or not PurePosixPath(manifest_path).is_relative_to(folder):
         raise ScenarioError(f"pull.json's manifest_path must name {reviewer}'s manifest under {folder}/")
-    try:
-        manifest = validate_adapter_manifest(json.loads((checkout / manifest_path).read_text(encoding="utf-8")))
-    except (OSError, ValueError, RuntimeContractError) as exc:
-        raise ScenarioError(f"{reviewer}'s manifest {manifest_path} cannot be read: {exc}") from exc
+    manifest = _manifest(checkout, manifest_path, f"{reviewer}'s manifest")
     own = [str(folder / "SKILL.md"), *_reviewer_folder(checkout, folder), manifest_path]
     files = tuple(dict.fromkeys([*own, *declared_reviewer_files(manifest)]))
     for relative in files:
@@ -625,6 +697,7 @@ def load_scenario(skill: str, directory: Path, checkout: Path = REPOSITORY_ROOT)
         if not isinstance(spec["expectations"], list) or not spec["expectations"]:
             raise ScenarioError("expectations must be a non-empty list")
         expectations = tuple(expectation(item, mode) for item in spec["expectations"])
+        _listed_categories(spec["expectations"], finding_categories(spec, directory, checkout))
     except ScenarioError as exc:
         raise ScenarioError(f"{directory.name}: {exc}") from exc
     return Scenario(
@@ -713,9 +786,9 @@ def load_scenarios(
     """Each named scenario once in first-occurrence order, or every scenario in name order; a repository reviewer's
     files come from the checkout."""
     folder = root / skill
-    if not folder.is_dir():
-        raise ScenarioError(f"no scenarios for {skill} under {folder}")
-    found = sorted(path.parent.name for path in folder.glob("*/scenario.json"))
+    found = sorted(path.parent.name for path in folder.glob("*/scenario.json")) if folder.is_dir() else []
+    if not found:
+        raise ScenarioError(f"no scenarios for {skill}: each is a <scenario>/scenario.json under {folder}")
     unknown = [name for name in names if name not in found]
     if unknown:
         raise ScenarioError(f"no scenario {', '.join(unknown)} for {skill}")
@@ -725,43 +798,21 @@ def load_scenarios(
 # Reading a record
 
 
+# A record source gives only a record code-review-core's record contract accepts, so these read its parts unchecked.
+
+
 def review(record: Record) -> Mapping[str, Any]:
-    value = record.get("review")
-    if (
-        not isinstance(value, dict)
-        or not isinstance(value.get("version"), int)
-        or not isinstance(value.get("verdict"), str)
-    ):
-        raise RecordError("the record has no review version and verdict")
-    return value
+    return record["review"]
 
 
 def findings(record: Record) -> list[Mapping[str, Any]]:
-    value = record.get("findings")
-    if not isinstance(value, list) or any(
-        not isinstance(item, dict)
-        or not isinstance(item.get("path"), str)
-        or not isinstance(item.get("line"), int)
-        or item.get("severity") not in SEVERITIES
-        for item in value
-    ):
-        raise RecordError("the record's findings are malformed")
-    return value
+    return record["findings"]
 
 
 def ledger_entries(record: Record) -> list[Mapping[str, Any]]:
     ledger = record.get("ledger")
-    if not isinstance(ledger, list):
+    if ledger is None:
         raise RecordError("the record has no ledger")
-    for entry in ledger:
-        if (
-            not isinstance(entry, dict)
-            or not isinstance(entry.get("version"), int)
-            or not isinstance(entry.get("id"), str)
-            or not isinstance(entry.get("dispositions"), list)
-            or any(not isinstance(item, dict) for item in entry["dispositions"])
-        ):
-            raise RecordError("the record's ledger is malformed")
     return ledger
 
 
@@ -770,8 +821,6 @@ def entry_severity(record: Record, key: tuple[int, str]) -> str:
     entry = next((item for item in ledger_entries(record) if (item["version"], item["id"]) == key), None)
     if entry is None:
         raise RecordError(f"the record's ledger has no v{key[0]}:{key[1]}")
-    if entry.get("severity") not in SEVERITIES:
-        raise RecordError(f"the record's ledger gives v{key[0]}:{key[1]} no severity")
     return str(entry["severity"])
 
 
@@ -787,7 +836,9 @@ def judgments(record: Record) -> dict[tuple[int, str], str]:
 
 
 def records_in(directory: Path) -> RecordSource:
-    """A record source reading DIR/<scenario>/<model>.json."""
+    """A record source reading DIR/<scenario>/<model>.json, holding each record to what a run's is held to: the
+    record contract, the scenario's review version, a guard that held every reviewer, and each reviewer's reported
+    model."""
 
     def source(scenario: Scenario, model: str) -> Record:
         path = directory / scenario.name / f"{model}.json"
@@ -797,8 +848,18 @@ def records_in(directory: Path) -> RecordSource:
             raise RecordError(f"no record at {path}") from exc
         except (OSError, ValueError) as exc:
             raise RecordError(f"cannot read {path}: {exc}") from exc
-        if not isinstance(record, dict):
-            raise RecordError(f"{path} does not hold a record")
+        try:
+            validate_record(record)
+        except ValueError as exc:
+            raise RecordError(f"{path} is not a review record: {exc}") from exc
+        version, wanted = record["review"]["version"], RECORD_VERSION[scenario.mode]
+        reason = (
+            f"it is review version {version}, not the {wanted} a {scenario.mode} run records"
+            if version != wanted
+            else unguarded(record) or unreported_model(record, model)
+        )
+        if reason:
+            raise RecordError(f"{path} counts for nothing: {reason}")
         return record
 
     return source
@@ -809,12 +870,14 @@ def records_in(directory: Path) -> RecordSource:
 
 @dataclass(frozen=True)
 class Run:
-    """One scenario run on one model: the record it wrote, or why it counts for nothing, and the models it used."""
+    """One scenario run on one model: the record it wrote, or why it counts for nothing, and the models it used.
+    `recorded` is that reason as the results file records it, in fixed phrases that name no path of the machine."""
 
     record: Record | None
     failure: str | None
     reviewers: frozenset[str]
     session: frozenset[str]
+    recorded: str | None = None
 
 
 def review_config(directory: Path) -> dict[str, Any]:
@@ -1067,21 +1130,27 @@ def find_record(directory: Path, version: int) -> Record:
     return found[0]
 
 
-def run_failure(model: str, completed: Completed, timeout: float, skill: str, missing: str | None) -> str | None:
-    """Why a run counts for nothing, or None when it recorded a review on the model it was given."""
+def run_failure(
+    model: str, completed: Completed, timeout: float, skill: str, missing: str | None, recorded: bool = False
+) -> str | None:
+    """Why a run counts for nothing, or None when it recorded a review on the model it was given. With `recorded`, the
+    reason as the results file records it: why the record is missing, why Claude Code could not start, and each
+    denied command, which may name the machine's paths, are each a fixed phrase."""
     listed, denials = runtime_canary.claude_stream(completed.stdout)
     session, reviewers = stream_models(completed.stdout)
     if missing is not None:
-        reasons = [missing]
+        reasons = [NO_REVIEW if recorded else missing]
         if completed.error:
-            reasons.append(completed.error)
+            reasons.append("Claude Code could not start" if recorded else completed.error)
         elif completed.timed_out:
             reasons.append(f"timed out after {timeout:g} seconds")
         elif completed.returncode != 0:
             reasons.append(f"Claude Code exited with code {completed.returncode}")
         if listed is not None and skill not in listed:
             reasons.append(f"Claude Code did not list {skill}")
-        if denials:
+        if denials and recorded:
+            reasons.append(f"denied {len(denials)} command{'' if len(denials) == 1 else 's'}")
+        elif denials:
             reasons.append(f"denied: {'; '.join(denials)}")
         return "; ".join(reasons)
     if not reviewers:
@@ -1098,18 +1167,22 @@ def run_failure(model: str, completed: Completed, timeout: float, skill: str, mi
 def unguarded(record: Record) -> str | None:
     """Why the record shows a reviewer the reviewer guard did not hold, or None. The guard's claim starts the role's
     read log, so a held reviewer's files_read is a count, if only 0; null means no guard ran."""
-    try:
-        reviewers = review(record).get("reviewers")
-    except RecordError as exc:
-        return str(exc)
-    if not isinstance(reviewers, list) or not reviewers:
+    reviewers = review(record).get("reviewers")
+    if not reviewers:
         return "the record names no reviewer"
-    loose = [
-        str(reviewer.get("id")) if isinstance(reviewer, dict) else "a reviewer"
-        for reviewer in reviewers
-        if not isinstance(reviewer, dict) or reviewer.get("files_read") is None
-    ]
+    loose = [str(reviewer["id"]) for reviewer in reviewers if reviewer.get("files_read") is None]
     return f"no reviewer guard held {', '.join(loose)}: its files_read is null" if loose else None
+
+
+def unreported_model(record: Record, model: str) -> str | None:
+    """Why the record does not show every reviewer on the model's ID, by the model each reviewer's result reports, or
+    None. A reviewer reports its own model, so this is weaker than a run's check of the transcript."""
+    others = [
+        f"{reviewer['id']} on {reviewer.get('model', 'no model it reports')}"
+        for reviewer in review(record).get("reviewers", [])
+        if not names_model(str(reviewer.get("model", "")), MODELS[model])
+    ]
+    return f"its reviewers did not all run on {MODELS[model]}: {', '.join(others)}" if others else None
 
 
 @dataclass(frozen=True)
@@ -1136,7 +1209,8 @@ def run_scenario(scenario: Scenario, model: str, home: Path, session: Session) -
         except (GitError, OSError) as exc:
             transcript.write_text("", encoding="utf-8")
             staged = "fixture" if scenario.document is None else "document"
-            return Run(None, f"the {staged} could not be staged: {exc}", frozenset(), frozenset()), transcript
+            failure = f"the {staged} could not be staged"
+            return Run(None, f"{failure}: {exc}", frozenset(), frozenset(), failure), transcript
         return _session_run(scenario, model, home, session, arguments, transcript)
 
 
@@ -1159,10 +1233,11 @@ def _session_run(
     except RecordError as exc:
         missing = str(exc)
     failure = run_failure(model, completed, session.timeout, scenario.skill, missing)
+    recorded = run_failure(model, completed, session.timeout, scenario.skill, missing, recorded=True)
     if failure is None and record is not None:
-        failure = unguarded(record)
+        failure = recorded = unguarded(record)
     orchestrators, reviewers = stream_models(completed.stdout)
-    return Run(None if failure else record, failure, reviewers, orchestrators), transcript
+    return Run(None if failure else record, failure, reviewers, orchestrators, recorded), transcript
 
 
 def guarded_lines(scenario: str, model: str, run: Run) -> list[str]:
@@ -1263,7 +1338,8 @@ def result_rows(
     today: datetime.date,
 ) -> list[str]:
     """One row per model: the model IDs its reviewers ran on, its expectations passed, and the run's versions; a
-    model none of whose reviewers ran is recorded as not run, with the first reason. A scenario none of whose
+    model none of whose reviewers ran is recorded as not run, with its first run's reason as the results file records
+    it, which names no path of the machine. A scenario none of whose
     reviewers ran on a model, such as one the session refused before starting any, holds no judgment of that model,
     so its cell says `not run` and its expectations are left out of the model's count."""
     rows = []
@@ -1289,34 +1365,61 @@ def result_rows(
             )
         else:
             identifier = "not run"
-            detail = next((outcome.failure for outcome in theirs if outcome.failure), "no run")
+            detail = next((run.recorded for run in mine if run.recorded), "no run")
         passed = f"{sum(1 for outcome in theirs if outcome.failure is None)}/{len(theirs)}"
         cells = [skill, model, identifier, passed, detail, session, version, today.isoformat()]
         rows.append(f"| {' | '.join(_cell(cell) for cell in cells)} |")
     return rows
 
 
-def results_table(text: str) -> tuple[int, int]:
-    """The line indexes of the results markers in docs/skill-evaluations.md, or a ScenarioError."""
+def _cells(line: str) -> list[str] | None:
+    """A table line's cells, stripped, or None when the line is not one: it starts and ends with a cell border."""
+    stripped = line.strip()
+    borders = [match.start() for match in CELL_BORDER.finditer(stripped)]
+    if len(borders) < 2 or borders[0] != 0 or borders[-1] != len(stripped) - 1:
+        return None
+    return [cell.strip() for cell in CELL_BORDER.split(stripped[1:-1])]
+
+
+def _row_skill(row: str) -> str:
+    """The skill a row of a table results_table read names."""
+    return (_cells(row) or [""])[0]
+
+
+def results_table(text: str) -> tuple[int, int, list[str]]:
+    """The line indexes of the results markers in docs/skill-evaluations.md and the table's rows between them, each
+    as written. Raise ScenarioError when the markers are not there once each and in order, or when anything between
+    them is not the header, its separator, and then rows of the header's columns, each naming a skill."""
     lines = text.split("\n")
     if lines.count(RESULTS_BEGIN) != 1 or lines.count(RESULTS_END) != 1:
         raise ScenarioError(f"the results file needs one {RESULTS_BEGIN} line and one {RESULTS_END} line")
     begin, end = lines.index(RESULTS_BEGIN), lines.index(RESULTS_END)
     if end < begin:
         raise ScenarioError(f"{RESULTS_END} comes before {RESULTS_BEGIN} in the results file")
-    return begin, end
+    header = _cells(RESULTS_HEADER[0]) or []
+    table = lines[begin + 1 : end]
+    if not table or _cells(table[0]) != header:
+        raise ScenarioError(f"the results table must start with the header {RESULTS_HEADER[0]}")
+    separator = _cells(table[1]) if len(table) > 1 else None
+    if separator is None or len(separator) != len(header) or not all(map(SEPARATOR_CELL.fullmatch, separator)):
+        raise ScenarioError(f"the results table's header must be followed by its separator {RESULTS_HEADER[1]}")
+    for number, row in enumerate(table[2:], begin + 4):
+        cells = _cells(row)
+        if cells is None or len(cells) != len(header) or not cells[0]:
+            raise ScenarioError(
+                f"line {number} of the results file is not a row of the table's {len(header)} columns naming a "
+                f"skill: {quote(row)}"
+            )
+    return begin, end, table[2:]
 
 
 def replace_results(text: str, skill: str, rows: Sequence[str]) -> str:
-    """The results file with the skill's rows replaced by these, every other skill's rows kept, sorted by skill."""
+    """The results file with the skill's rows replaced by these and every other skill's rows kept as written, sorted
+    by skill; raise ScenarioError when results_table cannot read its table."""
     lines = text.split("\n")
-    begin, end = results_table(text)
-    kept = [
-        line
-        for line in lines[begin + 1 : end]
-        if line.startswith("| ") and line not in RESULTS_HEADER and line.split("|")[1].strip() != skill
-    ]
-    table = sorted([*kept, *rows], key=lambda line: line.split("|")[1].strip())
+    begin, end, existing = results_table(text)
+    kept = [row for row in existing if _row_skill(row) != skill]
+    table = sorted([*kept, *rows], key=_row_skill)
     return "\n".join([*lines[: begin + 1], *RESULTS_HEADER, *table, *lines[end:]])
 
 
@@ -1453,15 +1556,30 @@ def positive(value: str) -> int:
     return number
 
 
+def seconds(value: str) -> float:
+    number = float(value)
+    if not math.isfinite(number) or number <= 0:
+        raise argparse.ArgumentTypeError(f"must be a positive number of seconds, not {value}")
+    return number
+
+
+def skill_name(value: str) -> str:
+    if not SKILL_NAME_PATTERN.fullmatch(value):
+        raise argparse.ArgumentTypeError(f"must be a skill's name, a folder under {SCENARIO_ROOT}, not {value}")
+    return value
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description="Run a skill's scenarios on each model and judge their records.")
-    result.add_argument("skill", help="the skill whose scenarios to judge, a folder under tests/fixtures/skill-evals")
+    result.add_argument(
+        "skill", type=skill_name, help="the skill whose scenarios to judge, a folder under tests/fixtures/skill-evals"
+    )
     result.add_argument("--records", type=Path, help="judge a folder of <scenario>/<model>.json records; run nothing")
     result.add_argument("--scenario", action="append", default=[], help="judge only this scenario (repeatable)")
     result.add_argument("--model", action="append", choices=list(MODELS), help="judge only this model (repeatable)")
     result.add_argument("--write", action="store_true", help="replace the skill's rows in docs/skill-evaluations.md")
     result.add_argument(
-        "--timeout", type=float, default=DEFAULT_TIMEOUT, help=f"seconds for each run (default {DEFAULT_TIMEOUT})"
+        "--timeout", type=seconds, default=DEFAULT_TIMEOUT, help=f"seconds for each run (default {DEFAULT_TIMEOUT})"
     )
     result.add_argument("--jobs", type=positive, default=DEFAULT_JOBS, help=f"runs at once (default {DEFAULT_JOBS})")
     return result
