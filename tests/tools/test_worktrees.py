@@ -136,9 +136,16 @@ class WorktreesTestCase(GitTestCase):
         self.assertIn("tools/worktrees.py new", self.reason)
         return output["permissionDecision"]
 
-    def edit(self, path: Path | str, cwd: Path | None = None, tool: str = "Edit") -> str | None:
+    def edit(
+        self,
+        path: Path | str,
+        cwd: Path | None = None,
+        tool: str = "Edit",
+        environment: dict[str, str] | None = None,
+    ) -> str | None:
         key = "notebook_path" if tool == "NotebookEdit" else "file_path"
-        return self.decision({"tool_name": tool, "tool_input": {key: str(path)}, "cwd": str(cwd or self.root)})
+        event = {"tool_name": tool, "tool_input": {key: str(path)}, "cwd": str(cwd or self.root)}
+        return self.decision(event, environment)
 
     def bash(self, command: str, cwd: Path, environment: dict[str, str] | None = None) -> str | None:
         return self.decision({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(cwd)}, environment)
@@ -309,6 +316,20 @@ class HookCommandTests(WorktreesTestCase):
                 code, arguments = self.run_hook({name: str(other / value)})
                 self.assertEqual((0, ["-B", f"{self.hub}/tools/worktrees.py", "guard"]), (code, arguments))
 
+    def test_inherited_command_line_configuration_cannot_switch_the_opt_in_off(self) -> None:
+        # git config --get reads command-line configuration, which outranks the repository's own file.
+        for variables in (
+            {"GIT_CONFIG_PARAMETERS": "'coding-agent-skills.hubGuard=false'"},
+            {
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "coding-agent-skills.hubGuard",
+                "GIT_CONFIG_VALUE_0": "false",
+            },
+        ):
+            with self.subTest(variables=variables):
+                code, arguments = self.run_hook(variables)
+                self.assertEqual((0, ["-B", f"{self.hub}/tools/worktrees.py", "guard"]), (code, arguments))
+
 
 class BranchOptionTests(GitTestCase):
     def test_upstream_and_tracking_values_are_not_rename_options(self) -> None:
@@ -374,6 +395,10 @@ class CommandNameTests(GitTestCase):
             with self.subTest(word=word):
                 self.assertEqual(expected, worktrees.command_name(word))
         self.assertIsNone(worktrees.command_name(None))
+
+
+UNPLACED = "could not tell where `git {}` runs"
+WRITES = "`git {}` would move the hub's HEAD or write its index or tree."
 
 
 class CommandGuardTests(WorktreesTestCase):
@@ -460,6 +485,7 @@ class CommandGuardTests(WorktreesTestCase):
             "git log --oneline -5",
             "git diff",
             "git fetch origin",
+            "git fetch --prune origin",
             "git pull --ff-only",
             "git pull --ff-only origin main",
             "git pull -q --ff-only --no-rebase origin main",
@@ -476,6 +502,7 @@ class CommandGuardTests(WorktreesTestCase):
             "git branch -u origin/main",
             "git switch main",
             "git checkout -q main",
+            "git switch main 2>&1",
             "git stash list",
             "git apply --check change.patch",
             "git worktree add ../x -b y main",
@@ -489,6 +516,7 @@ class CommandGuardTests(WorktreesTestCase):
         ):
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command, self.hub))
+                self.assertEqual("", self.stderr)
 
     def test_the_hub_fast_forwards_only_to_origin_main(self) -> None:
         for command, target in (
@@ -526,6 +554,7 @@ class CommandGuardTests(WorktreesTestCase):
             "git sw feat/demo",
             "git chain feat/demo",
             f'cd "{self.tree}" && git -C "{self.hub}" co feat/demo',
+            "git -c alias.go=checkout go feat/demo",
         ):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, self.hub))
@@ -539,6 +568,7 @@ class CommandGuardTests(WorktreesTestCase):
             "git st",
             "git hop",
             "git co feat/demo && git status",
+            "git -c alias.go=status go",
         ):
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command, self.tree if "&&" in command else self.hub))
@@ -547,38 +577,59 @@ class CommandGuardTests(WorktreesTestCase):
     def test_an_alias_that_cannot_be_read_is_refused(self) -> None:
         for name, expansion in (
             ("unbalanced", "checkout 'feat/demo"),
-            ("unsettled", "!GIT_DIR=.git git commit -m x"),
             ("loop", "loop"),
+            ("unsettled", '!git -C "$TARGET_UNSET_HERE" commit -m x'),
         ):
             self.git(self.hub, "config", f"alias.{name}", expansion)
-        for command in ("git unbalanced", "git unsettled", "git loop"):
+        for command, reason in (
+            ("git unbalanced", "could not be read"),
+            ("git loop", "could not be read"),
+            ("git unsettled", UNPLACED.format("commit")),
+        ):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, self.hub))
-                self.assertIn("could not be read", self.reason)
+                self.assertIn(reason, self.reason)
         self.assertIsNone(self.bash("git unbalanced", self.tree))
 
     def test_worktree_sessions_may_commit_but_not_reach_into_the_hub(self) -> None:
         self.assertIsNone(self.bash("git commit -m x && git rebase main", self.tree))
+        self.assertIsNone(self.bash(f'git --work-tree="{self.tree}" add .', self.tree))
         self.assertEqual("deny", self.bash(f'git -C "{self.hub}" switch feat/demo', self.tree))
         self.assertEqual("deny", self.bash(f'cd "{self.hub}" && git commit -m x', self.tree))
         self.assertEqual("deny", self.bash(f'git --work-tree="{self.hub}" add .', self.tree))
         self.assertEqual("deny", self.bash(f'GIT_WORK_TREE="{self.hub}" git checkout -- .', self.tree))
-        self.assertIsNone(self.bash(f'git -C "{self.hub}" --work-tree="{self.tree}" add .', self.tree))
+        # Started in the hub, git writes the hub's own index whichever work tree it is given.
+        self.assertEqual("deny", self.bash(f'git -C "{self.hub}" --work-tree="{self.tree}" add .', self.tree))
+        self.assertIn(WRITES.format("add"), self.reason)
 
-    def test_a_location_variable_named_in_any_case_cannot_reach_into_the_hub(self) -> None:
-        # Git on Windows reads an environment name in any case, so git_work_tree is GIT_WORK_TREE to it.
-        for command in (
-            f'git_work_tree="{self.hub}" git reset --hard',
-            f'env git_work_tree="{self.hub}" git reset --hard',
-            f'Git_Work_Tree="{self.hub}" git reset --hard',
-        ):
-            with self.subTest(command=command):
-                self.assertEqual("deny", self.bash(command, self.tree))
+    if platform_support.WINDOWS:
 
-    def test_guard_fails_open_on_input_it_cannot_judge(self) -> None:
+        def test_a_location_variable_named_in_any_case_cannot_reach_into_the_hub(self) -> None:
+            # Git on Windows reads an environment name in any case, so git_work_tree is GIT_WORK_TREE to it.
+            for command in (
+                f'git_work_tree="{self.hub}" git reset --hard',
+                f'env git_work_tree="{self.hub}" git reset --hard',
+                f'Git_Work_Tree="{self.hub}" git reset --hard',
+            ):
+                with self.subTest(command=command):
+                    self.assertEqual("deny", self.bash(command, self.tree))
+
+    else:
+
+        def test_a_location_variable_not_in_upper_case_is_not_one_git_reads(self) -> None:
+            for command in (
+                f'git_work_tree="{self.hub}" git reset --hard',
+                f'env Git_Work_Tree="{self.hub}" git reset --hard',
+            ):
+                with self.subTest(command=command):
+                    self.assertIsNone(self.bash(command, self.tree))
+
+    def test_a_guard_defect_or_a_command_outside_every_guarded_hub_is_allowed(self) -> None:
         outside = self.root / "not-a-repository"
         outside.mkdir()
         self.assertIsNone(self.bash("git commit -m x", outside))
+        self.assertIsNone(self.bash('cd "$SOMEWHERE_UNSET" && git commit -m x', outside))
+        self.assertIn(UNPLACED.format("commit"), self.stderr)
         self.assertIsNone(
             self.decision({"tool_name": "Read", "tool_input": {"file_path": str(self.hub / "README.md")}})
         )
@@ -587,36 +638,27 @@ class CommandGuardTests(WorktreesTestCase):
         self.assertEqual("", result.stdout)
         self.assertIn("worktrees guard skipped", result.stderr)
 
-    def test_a_location_variable_in_force_leaves_the_target_unknown_and_allowed_with_a_note(self) -> None:
+    def test_a_location_variable_is_judged_by_the_checkout_it_names(self) -> None:
         other = self.other_repository() / ".git"
-        unknown = "could not tell where `git reset` runs"
-        for command, expected in (
-            (f'GIT_DIR="{other}" git reset --hard', None),
-            (f'export GIT_DIR="{other}"; git reset --hard', None),
-            (f'export GIT_DIR="{other}" && git reset --hard', None),
-            (f'env GIT_DIR="{other}" git reset --hard', None),
-            (f'GIT_DIR="{other}"; export GIT_DIR; git reset --hard', None),
-            (f'set -a; GIT_DIR="{other}"; git reset --hard', None),
-            (f'export GIT_COMMON_DIR="{other}"; git reset --hard', None),
-            # Not exported, so git never sees it, and the hub is what it writes.
-            (f'GIT_DIR="{other}"; git reset --hard', "deny"),
-            (f'export GIT_DIR="{other}"; unset GIT_DIR; git reset --hard', "deny"),
-            (f'(export GIT_DIR="{other}"; git status); git reset --hard', "deny"),
-            (f"bash -c 'export GIT_DIR=\"{other}\"'; git reset --hard", "deny"),
-            (f'export GIT_WORK_TREE="{self.hub}"; cd "{self.tree}" && git reset --hard', "deny"),
+        for command, cwd, expected in (
+            # git uses the other repository's HEAD and index and writes the directory it starts in.
+            (f'GIT_DIR="{other}" git reset --hard', self.hub, "deny"),
+            (f'export GIT_DIR="{other}"; git reset --hard', self.hub, "deny"),
+            (f'env GIT_DIR="{other}" git reset --hard', self.hub, "deny"),
+            (f'GIT_DIR="{other}" git reset --hard', self.tree, None),
+            (f'set -a; GIT_DIR="{other}"; cd "{self.tree}"; git reset --hard', self.hub, None),
+            # GIT_COMMON_DIR moves only the refs and objects every worktree shares.
+            (f'export GIT_COMMON_DIR="{other}"; git reset --hard', self.hub, "deny"),
+            (f'export GIT_COMMON_DIR="{other}"; git reset --hard', self.tree, None),
+            (f'export GIT_WORK_TREE="{self.hub}"; cd "{self.tree}" && git reset --hard', self.hub, "deny"),
+            (f"bash -c 'export GIT_WORK_TREE=\"{self.tree}\"'; git reset --hard", self.hub, "deny"),
         ):
-            with self.subTest(command=command):
-                self.assertEqual(expected, self.bash(command, self.hub))
-                if expected is None:
-                    self.assertIn(unknown, self.stderr)
+            with self.subTest(command=command, cwd=cwd):
+                self.assertEqual(expected, self.bash(command, cwd))
         inherited = {**self.environment, "GIT_DIR": str(other)}
-        self.assertIsNone(self.bash("git reset --hard", self.hub, inherited))
-        self.assertIn(unknown, self.stderr)
-        self.assertIsNone(self.powershell("git reset --hard", self.hub, inherited))
-        self.assertIn(unknown, self.stderr)
-        self.assertEqual("deny", self.bash("env -u GIT_DIR git reset --hard", self.hub, inherited))
-        self.assertEqual("deny", self.bash("unset GIT_DIR; git reset --hard", self.hub, inherited))
-        self.assertEqual("deny", self.bash(f'git -C "{self.hub}" reset --hard', self.tree, inherited))
+        self.assertEqual("deny", self.bash("git reset --hard", self.hub, inherited))
+        self.assertEqual("deny", self.powershell("git reset --hard", self.hub, inherited))
+        self.assertIsNone(self.bash("git reset --hard", self.tree, inherited))
         self.assertEqual("main\n", self.git(self.hub, "branch", "--show-current"))
         self.assertEqual("", self.git(self.hub, "status", "--porcelain"))
 
@@ -633,16 +675,34 @@ def shown(directory: Path | None) -> str | None:
 
 
 class CommandReadingTests(WorktreesTestCase):
-    """Each case starts a real pwsh, as the hook does, and packs several forms into one command to keep that cheap."""
+    """Each PowerShell case starts a real pwsh, as the hook does, and packs several forms into one command to keep that
+    cheap. read gives each call's work tree, None when the text does not settle it; reach gives what each call
+    reaches from the worktree unless told otherwise: the guarded hub, a place the text does not settle, or elsewhere.
+    From the hub every call reaches the hub through its work tree whatever repository it names."""
+
+    def reading(
+        self, command: str, cwd: Path | None = None, tool: str = "PowerShell", environment: dict[str, str] | None = None
+    ) -> worktrees.Reading:
+        reading = worktrees.read_command(tool, command, cwd or self.hub, environment or self.environment)
+        self.notes, self.unread = reading.notes, reading.unread
+        return reading
 
     def read(
         self, command: str, cwd: Path | None = None, tool: str = "PowerShell", environment: dict[str, str] | None = None
-    ) -> list[tuple[str | None, str]]:
-        reading = worktrees.read_command(tool, command, cwd or self.hub, environment or self.environment)
-        self.notes = reading.notes
+    ) -> list[tuple[str | None, str | None]]:
+        reading = self.reading(command, cwd, tool, environment)
         return [(shown(call.directory), call.subcommand) for call in reading.calls]
 
-    def at(self, directory: Path | None, *subcommands: str) -> list[tuple[str | None, str]]:
+    def reach(
+        self, command: str, cwd: Path | None = None, tool: str = "PowerShell", environment: dict[str, str] | None = None
+    ) -> list[tuple[str, str | None]]:
+        reached = []
+        for call in self.reading(command, cwd or self.tree, tool, environment).calls:
+            hub, unknown = worktrees.reached_hub(call.place)
+            reached.append(("hub" if hub is not None else "unknown" if unknown else "elsewhere", call.subcommand))
+        return reached
+
+    def at(self, directory: Path | None, *subcommands: str) -> list[tuple[str | None, str | None]]:
         return [(shown(directory), subcommand) for subcommand in subcommands]
 
     def test_set_location_and_its_aliases_are_followed(self) -> None:
@@ -654,7 +714,8 @@ class CommandReadingTests(WorktreesTestCase):
             f"chdir -Pat '{forward}' -PassThru; git mv a b\n"
             f"Set-Location -Path:'{self.tree}'; cd ..; git restore x\n"
             "cd; git reset\n"
-            "cd ~/sub; git revert x\n"
+            # A location that is not a directory fails and leaves the session where it was, or where it moved.
+            f"cd '{self.root / 'no such folder'}'; git revert x\n"
             "cd -; git clean -fd"
         )
         self.assertEqual(
@@ -665,8 +726,7 @@ class CommandReadingTests(WorktreesTestCase):
                 *self.at(self.hub, "mv"),
                 *self.at(self.worktrees, "restore"),
                 *self.at(Path.home(), "reset"),
-                *self.at(Path.home() / "sub", "revert"),
-                *self.at(None, "clean"),
+                *self.at(None, "revert", "clean"),
             ],
             self.read(command),
         )
@@ -700,7 +760,7 @@ class CommandReadingTests(WorktreesTestCase):
         self.assertEqual(
             [
                 *self.at(self.tree, "commit", "add", "rm"),
-                *self.at(None, "mv"),
+                *self.at(self.hub, "mv"),
                 *self.at(self.tree, "reset"),
                 *self.at(self.worktrees, "restore"),
                 *self.at(None, "revert", "clean"),
@@ -740,7 +800,27 @@ class CommandReadingTests(WorktreesTestCase):
             ],
             self.read(command),
         )
-        self.assertEqual([], self.notes)
+        self.assertEqual(([], []), (self.notes, self.unread))
+
+    def test_a_powershell_branch_loop_or_function_leaves_only_what_every_path_agrees_on(self) -> None:
+        command = (
+            f"if ($x) {{ Set-Location '{self.tree}' }}; git commit\n"
+            f"Set-Location '{self.tree}'; foreach ($i in 1, 2) {{ git add .; Set-Location '{self.hub}' }}; git rm x\n"
+            f"Set-Location '{self.tree}'; function Hop {{ Set-Location '{self.hub}' }}; git mv a b; Hop; git am\n"
+            f"Set-Location '{self.tree}'; $block = {{ Set-Location '{self.hub}' }}; git reset\n"
+            f"Set-Location '{self.tree}'; Test-Path x && Set-Location '{self.hub}'; git clean -fd"
+        )
+        self.assertEqual(
+            [
+                *self.at(None, "commit"),
+                *self.at(self.tree, "add"),
+                *self.at(None, "add", "rm"),
+                *self.at(self.tree, "mv"),
+                *self.at(self.hub, "am"),
+                *self.at(None, "reset", "clean"),
+            ],
+            self.read(command),
+        )
 
     def test_bash_follows_pwsh_and_git_work_tree_settings(self) -> None:
         command = (
@@ -751,7 +831,7 @@ class CommandReadingTests(WorktreesTestCase):
         self.assertEqual(
             [
                 *self.at(self.tree, "switch", "add", "rm"),
-                *self.at(None, "commit"),
+                *self.at(self.hub, "commit"),
                 *self.at(self.tree, "mv"),
                 *self.at(self.hub, "reset"),
             ],
@@ -761,25 +841,27 @@ class CommandReadingTests(WorktreesTestCase):
     def test_bash_applies_location_variables_from_every_source_like_a_command_local_one(self) -> None:
         tree = f'"{self.tree}"'
         for command, expected in (
-            ("GIT_DIR=.git git commit", self.at(None, "commit")),
-            ("export GIT_DIR=.git; git commit; git add .", self.at(None, "commit", "add")),
-            ("env GIT_DIR=.git git commit", self.at(None, "commit")),
-            ("env -i GIT_DIR=.git PATH=x git commit", self.at(None, "commit")),
-            ("GIT_DIR=.git; git commit", self.at(self.hub, "commit")),
-            ("GIT_DIR=.git; export GIT_DIR; git commit", self.at(None, "commit")),
-            ("declare -x GIT_COMMON_DIR=x; git commit", self.at(None, "commit")),
-            ("typeset -rx GIT_DIR=x; git commit", self.at(None, "commit")),
-            ("set -a; GIT_DIR=.git; set +a; git commit", self.at(None, "commit")),
-            ("set -o allexport; GIT_DIR=.git; git commit", self.at(None, "commit")),
-            ("set -eu; GIT_DIR=.git; git commit", self.at(self.hub, "commit")),
-            ("export GIT_DIR=.git; unset GIT_DIR; git commit", self.at(self.hub, "commit")),
-            ("export GIT_DIR=.git; export -n GIT_DIR; git commit", self.at(self.hub, "commit")),
-            ("export GIT_DIR=.git; declare +x GIT_DIR; git commit", self.at(self.hub, "commit")),
-            (f"export GIT_WORK_TREE={tree}; git commit", self.at(self.tree, "commit")),
+            (f"GIT_WORK_TREE={tree} git commit", self.at(self.tree, "commit")),
+            (f"export GIT_WORK_TREE={tree}; git commit; git add .", self.at(self.tree, "commit", "add")),
+            (f"env GIT_WORK_TREE={tree} git commit", self.at(self.tree, "commit")),
+            (f"env -i GIT_WORK_TREE={tree} PATH=x git commit", self.at(self.tree, "commit")),
+            (f"GIT_WORK_TREE={tree}; git commit", self.at(self.hub, "commit")),
+            (f"GIT_WORK_TREE={tree}; export GIT_WORK_TREE; git commit", self.at(self.tree, "commit")),
+            (f"declare -x GIT_WORK_TREE={tree}; git commit", self.at(self.tree, "commit")),
+            (f"typeset -rx GIT_WORK_TREE={tree}; git commit", self.at(self.tree, "commit")),
+            (f"set -a; GIT_WORK_TREE={tree}; set +a; git commit", self.at(self.tree, "commit")),
+            (f"set -o allexport; GIT_WORK_TREE={tree}; git commit", self.at(self.tree, "commit")),
+            (f"set -eu; GIT_WORK_TREE={tree}; git commit", self.at(self.hub, "commit")),
+            (f"export GIT_WORK_TREE={tree}; unset GIT_WORK_TREE; git commit", self.at(self.hub, "commit")),
+            (f"export GIT_WORK_TREE={tree}; export -n GIT_WORK_TREE; git commit", self.at(self.hub, "commit")),
+            (f"export GIT_WORK_TREE={tree}; declare +x GIT_WORK_TREE; git commit", self.at(self.hub, "commit")),
             (f"GIT_WORK_TREE={tree} git --git-dir=.git commit", self.at(self.tree, "commit")),
-            ("(export GIT_DIR=.git; git commit); git add .", [*self.at(None, "commit"), *self.at(self.hub, "add")]),
-            ("export GIT_DIR=.git; bash -c 'git commit'", self.at(None, "commit")),
-            ("bash -c 'export GIT_DIR=.git'; git commit", self.at(self.hub, "commit")),
+            (
+                f"(export GIT_WORK_TREE={tree}; git commit); git add .",
+                [*self.at(self.tree, "commit"), *self.at(self.hub, "add")],
+            ),
+            (f"export GIT_WORK_TREE={tree}; bash -c 'git commit'", self.at(self.tree, "commit")),
+            (f"bash -c 'export GIT_WORK_TREE={tree}'; git commit", self.at(self.hub, "commit")),
             (f"(cd {tree}); git commit", self.at(self.hub, "commit")),
             (
                 f"echo $(cd {tree} && git commit) && git add .",
@@ -790,57 +872,42 @@ class CommandReadingTests(WorktreesTestCase):
             (f"env -C {tree} git commit", self.at(self.tree, "commit")),
             (f"bash -lc 'cd {tree} && git commit'", self.at(self.tree, "commit")),
             (f"bash <<< 'cd {tree} && git commit'", self.at(self.tree, "commit")),
+            (f"bash <<'EOF'\ncd {tree} && git commit\nEOF", self.at(self.tree, "commit")),
             (f"git -c core.worktree={tree} commit", self.at(self.tree, "commit")),
             (f"git -c core.worktree={tree} --git-dir=.git commit", self.at(self.tree, "commit")),
             (f'git --work-tree="{self.hub}" -c core.worktree={tree} commit', self.at(self.hub, "commit")),
             ("git -c core.worktree=relative commit", self.at(None, "commit")),
             ("git --config-env=core.worktree=TREE commit", self.at(None, "commit")),
+            (f"GIT_CONFIG_PARAMETERS=\"'core.worktree={self.tree}'\" git commit", self.at(self.tree, "commit")),
+            (
+                f"GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.worktree GIT_CONFIG_VALUE_0={tree} git commit",
+                self.at(self.tree, "commit"),
+            ),
         ):
             with self.subTest(command=command):
                 self.assertEqual(expected, self.read(command, tool="Bash"))
-                self.assertEqual([], self.notes)
-
-    def test_bash_reads_a_location_variable_named_in_any_case(self) -> None:
-        tree = f'"{self.tree}"'
-        for command, expected in (
-            (f"git_work_tree={tree} git reset --hard", self.at(self.tree, "reset")),
-            (f"env git_work_tree={tree} git reset --hard", self.at(self.tree, "reset")),
-            (f"Git_Work_Tree={tree} git reset --hard", self.at(self.tree, "reset")),
-            ("export git_dir=.git; git commit -m x", self.at(None, "commit")),
-            ("declare -x Git_Common_Dir=x; git commit", self.at(None, "commit")),
-            ("git_dir=.git; export git_dir; git commit", self.at(None, "commit")),
-            # Bash keeps each spelling a variable of its own, so removing one leaves the other in force.
-            ("export git_dir=.git; unset GIT_DIR; git commit", self.at(None, "commit")),
-            ("export git_dir=.git; unset git_dir; git commit", self.at(self.hub, "commit")),
-            ("export git_dir=.git; export -n git_dir; git commit", self.at(self.hub, "commit")),
-            ("export git_dir=.git; env -u GIT_DIR git commit", self.at(None, "commit")),
-            (f"export GIT_WORK_TREE={tree}; git_work_tree={tree} git commit", self.at(self.tree, "commit")),
-            # Which of two spellings git takes is not the text's to say.
-            (f"export GIT_WORK_TREE={tree}; git_work_tree=elsewhere git commit", self.at(None, "commit")),
-        ):
-            with self.subTest(command=command):
-                self.assertEqual(expected, self.read(command, tool="Bash"))
-                self.assertEqual([], self.notes)
+                self.assertEqual(([], []), (self.notes, self.unread))
 
     def test_inherited_location_variables_apply_until_a_command_removes_them(self) -> None:
-        inherited = {**self.environment, "GIT_DIR": str(self.hub / ".git")}
+        inherited = {**self.environment, "GIT_WORK_TREE": str(self.tree)}
         for command, expected in (
-            ("git commit", self.at(None, "commit")),
-            (f'git -C "{self.tree}" commit', self.at(self.tree, "commit")),
+            ("git commit", self.at(self.tree, "commit")),
+            (f'git -C "{self.hub}" commit', self.at(self.tree, "commit")),
             ("env -i git commit", self.at(self.hub, "commit")),
-            ("env -u GIT_DIR git commit", self.at(self.hub, "commit")),
-            ("env --unset=GIT_DIR git commit", self.at(self.hub, "commit")),
-            ("unset GIT_DIR; git commit", self.at(self.hub, "commit")),
-            ("GIT_DIR=x; git commit", self.at(None, "commit")),
+            ("env -u GIT_WORK_TREE git commit", self.at(self.hub, "commit")),
+            ("env --unset=GIT_WORK_TREE git commit", self.at(self.hub, "commit")),
+            ("unset GIT_WORK_TREE; git commit", self.at(self.hub, "commit")),
+            ('GIT_WORK_TREE="$ELSEWHERE_UNSET"; git commit', self.at(None, "commit")),
         ):
             with self.subTest(command=command):
                 self.assertEqual(expected, self.read(command, tool="Bash", environment=inherited))
         allexport = {**self.environment, "SHELLOPTS": "braceexpand:allexport:hashall"}
         self.assertEqual(
-            self.at(None, "commit"), self.read("GIT_DIR=x; git commit", tool="Bash", environment=allexport)
+            self.at(self.tree, "commit"),
+            self.read(f'GIT_WORK_TREE="{self.tree}"; git commit', tool="Bash", environment=allexport),
         )
         self.assertEqual([], self.read("env -S 'git commit'", tool="Bash"))
-        self.assertEqual(["could not read the option -S passed to env"], self.notes)
+        self.assertEqual(["could not read the option -S passed to env"], self.unread)
 
     def test_powershell_applies_inherited_and_assigned_location_variables(self) -> None:
         inherited = {**self.environment, "GIT_WORK_TREE": str(self.tree)}
@@ -852,21 +919,22 @@ class CommandReadingTests(WorktreesTestCase):
             'pwsh -c "Set-Item env:GIT_DIR x; git rm x"; git restore x\n'
             "pwsh -c \"[Environment]::SetEnvironmentVariable('GIT_DIR', 'x'); git mv a b\"; git am\n"
             "pwsh -c \"New-Item -Path Env:\\GIT_DIR -Value x; bash -c 'git revert x'\"; git clean -fd\n"
-            f"$env:GIT_COMMON_DIR = 'x'; git commit; Set-Location '{self.tree}'; pwsh -c 'git add .'"
+            f"$env:GIT_WORK_TREE = 'x'; git commit; Set-Location '{self.tree}'; pwsh -c 'git add .'"
         )
         self.assertEqual(
             [
-                *self.at(None, "rm"),
-                *self.at(self.hub, "restore"),
-                *self.at(None, "mv"),
-                *self.at(self.hub, "am"),
-                *self.at(None, "revert"),
-                *self.at(self.hub, "clean"),
-                *self.at(None, "commit", "add"),
+                ("unknown", "rm"),
+                ("elsewhere", "restore"),
+                ("unknown", "mv"),
+                ("elsewhere", "am"),
+                ("unknown", "revert"),
+                ("elsewhere", "clean"),
+                ("unknown", "commit"),
+                ("unknown", "add"),
             ],
-            self.read(command),
+            self.reach(command),
         )
-        self.assertEqual([], self.notes)
+        self.assertEqual(([], []), (self.notes, self.unread))
 
     def test_powershell_reads_a_location_variable_each_env_drive_cmdlet_sets(self) -> None:
         # PowerShell's own binder places each argument, so a parameter abbreviated, aliased, given with a colon, or
@@ -874,28 +942,28 @@ class CommandReadingTests(WorktreesTestCase):
         for command in (
             "Set-Content env:GIT_DIR x",
             "Set-Content -Path Env:\\GIT_DIR -Value x",
-            "Set-Content -LiteralPath ENV:/git_dir x",
-            "Set-Content -Pat:env:GIT_DIR -Encoding utf8 x",
+            "Set-Content -LiteralPath ENV:/GIT_DIR x",
             "Set-Content -LP env:GIT_DIR x",
             "Set-Content env:NOTES, env:GIT_DIR x",
             "Set-Item -Value x -LiteralPath env:GIT_DIR",
             "si env:FOO, env:GIT_DIR x",
             "Rename-Item env:FOO GIT_DIR",
-            "Rename-Item -NewName git_dir -LiteralPath Env:\\FOO",
+            "Rename-Item -NewName GIT_DIR -LiteralPath Env:\\FOO",
             "rni -Path env:FOO -NewName GIT_DIR",
             "Copy-Item env:FOO env:GIT_DIR",
             "Copy-Item -Path env:FOO -Destination ENV:\\GIT_DIR",
             "cpi env:FOO, env:BAR -Dest env:/GIT_DIR",
             "New-Item -Path env: -Name GIT_DIR -Value x",
-            "ni Env:\\ -Name git_dir -Value x",
+            "ni Env:\\ -Name GIT_DIR -Value x",
+            "Set-Item env:GIT_D* x",
         ):
             with self.subTest(command=command):
-                self.assertEqual(self.at(None, "commit"), self.read(f"{command}; git commit"))
-                self.assertEqual([], self.notes)
+                self.assertEqual([("unknown", "commit")], self.reach(f"{command}; git commit"))
+                self.assertEqual(([], []), (self.notes, self.unread))
         aimed = {**self.environment, "GIT_WORK_TREE": str(self.hub)}
         self.assertEqual(
-            self.at(None, "commit"),
-            self.read(f"Set-Content env:GIT_WORK_TREE '{self.tree}'; git commit", environment=aimed),
+            [("unknown", "commit")],
+            self.reach(f"Set-Content env:GIT_WORK_TREE '{self.tree}'; git commit", self.tree, environment=aimed),
         )
 
     def test_powershell_reads_a_location_variable_set_through_the_provider_qualified_path(self) -> None:
@@ -903,98 +971,30 @@ class CommandReadingTests(WorktreesTestCase):
         for command in (
             "Set-Item Environment::GIT_DIR x",
             "Set-Item -Path Microsoft.PowerShell.Core\\Environment::GIT_DIR -Value x",
-            "Set-Content environment::git_dir x",
+            "Set-Content environment::GIT_DIR x",
             "New-Item -Path Environment::GIT_DIR -Value x",
             "New-Item -Path Environment:: -Name GIT_DIR -Value x",
-            "ni Microsoft.PowerShell.Core\\Environment::\\ -Name git_dir -Value x",
+            "ni Microsoft.PowerShell.Core\\Environment::\\ -Name GIT_DIR -Value x",
             "Copy-Item Environment::FOO Environment::GIT_DIR",
             "Copy-Item -Path env:FOO -Destination Microsoft.PowerShell.Core\\Environment::GIT_DIR",
             "Rename-Item Environment::FOO GIT_DIR",
-            "Rename-Item -LiteralPath Microsoft.PowerShell.Core\\Environment::FOO -NewName git_dir",
-        ):
-            with self.subTest(command=command):
-                self.assertEqual(self.at(None, "commit"), self.read(f"{command}; git commit"))
-                self.assertEqual([], self.notes)
-        aimed = {**self.environment, "GIT_WORK_TREE": str(self.hub)}
-        self.assertEqual(
-            self.at(None, "commit"),
-            self.read(f"Set-Item Environment::GIT_WORK_TREE '{self.tree}'; git commit", environment=aimed),
-        )
-        for command in ("Copy-Item Environment::GIT_DIR env:SAVED", "New-Item -Path Environment::FOO -Name GIT_DIR"):
-            with self.subTest(command=command):
-                self.assertEqual(self.at(self.hub, "commit"), self.read(f"{command}; git commit"))
-
-    def test_powershell_reads_a_location_variable_set_through_the_leading_backslash_provider_path(self) -> None:
-        # PowerShell takes \Environment:: as Environment::, though not \Microsoft.PowerShell.Core\Environment::.
-        for command in (
+            "Rename-Item -LiteralPath Microsoft.PowerShell.Core\\Environment::FOO -NewName GIT_DIR",
             "Set-Item \\Environment::GIT_DIR x",
-            "Set-Content -Path \\ENVIRONMENT::git_dir -Value x",
-            "New-Item -Path \\Environment::GIT_DIR -Value x",
-            "New-Item -Path \\Environment:: -Name GIT_DIR -Value x",
-            "ni \\Environment::\\ -Name git_dir -Value x",
+            "Set-Content -Path \\ENVIRONMENT::GIT_DIR -Value x",
             "Copy-Item env:FOO \\Environment::GIT_DIR",
-            "Rename-Item \\Environment::FOO GIT_DIR",
+            "New-Item -Path Environment::\\ -Name GIT_DIR",
+            "Rename-Item Environment::\\FOO GIT_DIR",
         ):
             with self.subTest(command=command):
-                self.assertEqual(self.at(None, "commit"), self.read(f"{command}; git commit"))
-                self.assertEqual([], self.notes)
-        aimed = {**self.environment, "GIT_WORK_TREE": str(self.hub)}
-        self.assertEqual(
-            self.at(None, "commit"),
-            self.read(f"Set-Item \\Environment::GIT_WORK_TREE '{self.tree}'; git commit", environment=aimed),
-        )
+                self.assertEqual([("unknown", "commit")], self.reach(f"{command}; git commit"))
+                self.assertEqual(([], []), (self.notes, self.unread))
         for command in (
+            "Copy-Item Environment::GIT_DIR env:SAVED",
+            "New-Item -Path Environment::FOO -Name GIT_DIR",
+            # PowerShell takes \Environment:: as Environment::, though not \Microsoft.PowerShell.Core\Environment::.
             "Set-Item \\Microsoft.PowerShell.Core\\Environment::GIT_DIR x",
             "Set-Item /Environment::GIT_DIR x",
-        ):
-            with self.subTest(command=command):
-                self.assertEqual(self.at(self.hub, "commit"), self.read(f"{command}; git commit"))
-
-    def test_powershell_reads_a_location_variable_assigned_through_variable_notation_on_the_provider(self) -> None:
-        # Variable notation takes the paths a cmdlet does: ${env:\NAME} sets NAME, as Set-Item env:\NAME does.
-        for command in (
-            "${Environment::GIT_WORK_TREE} = 'x'",
-            "${environment::git_dir} = 'x'",
-            "${Microsoft.PowerShell.Core\\Environment::GIT_DIR} = 'x'",
-            "${\\Environment::GIT_COMMON_DIR} = 'x'",
-            "${env:GIT_DIR} = 'x'",
-            "${env:\\GIT_DIR} = 'x'",
-            "${ENV:/git_dir} += 'x'",
-            # A cast or attribute still assigns the variable it wraps.
-            "[string]$env:GIT_DIR = 'x'",
-            "[ValidateNotNull()][string]${Environment::GIT_DIR} = 'x'",
-        ):
-            with self.subTest(command=command):
-                self.assertEqual(self.at(None, "commit"), self.read(f"{command}; git commit"))
-                self.assertEqual([], self.notes)
-        for command in ("${variable:GIT_DIR} = 'x'", "${GIT_DIR} = 'x'", "${Env::GIT_DIR} = 'x'"):
-            with self.subTest(command=command):
-                self.assertEqual(self.at(self.hub, "commit"), self.read(f"{command}; git commit"))
-
-    def test_powershell_reads_a_location_variable_assigned_in_parentheses_or_a_multiple_assignment(self) -> None:
-        # PowerShell sets the variable in each shape, so git started after it reads it.
-        for command in (
-            f"($env:GIT_WORK_TREE) = '{self.hub}'",
-            f"(([string]${{Environment::GIT_DIR}})) = '{self.hub}'",
-            f"$env:GIT_WORK_TREE, $other = '{self.hub}', 2",
-            f"$other, $env:GIT_WORK_TREE = 2, '{self.hub}'",
-            "($env:GIT_DIR, $other) = 'x', 2",
-            "([string]$env:GIT_DIR), $other = 'x', 2",
-            # A single value on the right is spread over the targets, so the text does not settle what each gets.
-            "$other, $env:GIT_COMMON_DIR = $values",
-            "$env:GIT_DIR, $other = @(Get-Content values.txt)",
-        ):
-            with self.subTest(command=command):
-                self.assertEqual(self.at(None, "reset"), self.read(f"{command}; git reset --hard"))
-                self.assertEqual([], self.notes)
-        for command in ("($env:NOTES) = 'x'", "$env:NOTES, $other = 'x', 2", "($GIT_DIR, $other) = 'x', 2"):
-            with self.subTest(command=command):
-                self.assertEqual(self.at(self.hub, "reset"), self.read(f"{command}; git reset --hard"))
-
-    def test_powershell_does_not_read_a_separator_after_the_provider_qualified_path_as_setting_a_variable(self) -> None:
-        # After Environment:: PowerShell keeps a separator in the variable's name, so \GIT_DIR is set, which git never
-        # reads. On the provider's root, New-Item's -Name and Rename-Item's -NewName still name the variable set.
-        for command in (
+            # After Environment:: PowerShell keeps a separator in the variable's name, which git never reads.
             "Set-Item Environment::\\GIT_DIR x",
             "Set-Item Environment::/GIT_DIR x",
             "Set-Content -Path Microsoft.PowerShell.Core\\Environment::\\GIT_DIR -Value x",
@@ -1003,11 +1003,39 @@ class CommandReadingTests(WorktreesTestCase):
             "${Environment::\\GIT_DIR} = 'x'",
         ):
             with self.subTest(command=command):
-                self.assertEqual(self.at(self.hub, "commit"), self.read(f"{command}; git commit"))
-                self.assertEqual([], self.notes)
-        for command in ("New-Item -Path Environment::\\ -Name GIT_DIR", "Rename-Item Environment::\\FOO GIT_DIR"):
+                self.assertEqual([("elsewhere", "commit")], self.reach(f"{command}; git commit"))
+
+    def test_powershell_reads_a_location_variable_assigned_through_variable_notation(self) -> None:
+        # Variable notation takes the paths a cmdlet does: ${env:\NAME} sets NAME, as Set-Item env:\NAME does.
+        for command in (
+            "${Environment::GIT_WORK_TREE} = 'x'",
+            "${Microsoft.PowerShell.Core\\Environment::GIT_DIR} = 'x'",
+            "${\\Environment::GIT_DIR} = 'x'",
+            "${env:GIT_DIR} = 'x'",
+            "${env:\\GIT_DIR} = 'x'",
+            "${ENV:/GIT_DIR} += 'x'",
+            # A cast or attribute still assigns the variable it wraps, as do parentheses and a multiple assignment.
+            "[string]$env:GIT_DIR = 'x'",
+            "[ValidateNotNull()][string]${Environment::GIT_DIR} = 'x'",
+            f"(([string]${{Environment::GIT_DIR}})) = '{self.hub}'",
+            "($env:GIT_DIR, $other) = 'x', 2",
+            "([string]$env:GIT_DIR), $other = 'x', 2",
+            "$other, $env:GIT_WORK_TREE = $values",
+            "$env:GIT_DIR, $other = @(Get-Content values.txt)",
+        ):
             with self.subTest(command=command):
-                self.assertEqual(self.at(None, "commit"), self.read(f"{command}; git commit"))
+                self.assertEqual([("unknown", "reset")], self.reach(f"{command}; git reset --hard"))
+                self.assertEqual(([], []), (self.notes, self.unread))
+        for command in (
+            "${variable:GIT_DIR} = 'x'",
+            "${GIT_DIR} = 'x'",
+            "${Env::GIT_DIR} = 'x'",
+            "($env:NOTES) = 'x'",
+            "($GIT_DIR, $other) = 'x', 2",
+            "$env:GIT_COMMON_DIR = 'x'",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual([("elsewhere", "reset")], self.reach(f"{command}; git reset --hard"))
 
     def test_powershell_passes_over_cmdlets_that_set_no_location_variable(self) -> None:
         inherited = {**self.environment, "GIT_WORK_TREE": str(self.tree)}
@@ -1026,34 +1054,45 @@ class CommandReadingTests(WorktreesTestCase):
             "Add-Content env:GIT_DIR x",
         ):
             with self.subTest(command=command):
-                self.assertEqual(self.at(self.hub, "commit"), self.read(f"{command}; git commit"))
-                self.assertEqual([], self.notes)
+                self.assertEqual([("elsewhere", "commit")], self.reach(f"{command}; git commit"))
+                self.assertEqual(([], []), (self.notes, self.unread))
         self.assertEqual(
             self.at(self.tree, "commit"),
             self.read("Copy-Item env:GIT_WORK_TREE env:SAVED; git commit", environment=inherited),
         )
 
-    def test_what_cannot_be_read_is_left_unjudged_with_a_note(self) -> None:
-        self.assertEqual([], self.read("& $git commit; git $verb x; pwsh -c $script; iex $text; pwsh -c"))
+    def test_what_cannot_be_read_is_recorded_as_unread(self) -> None:
+        self.assertEqual(
+            [("elsewhere", None)], self.reach("& $git commit; git $verb x; pwsh -c $script; iex $text; pwsh -c")
+        )
         self.assertIn("a git subcommand is computed at run time", self.notes)
-        self.assertIn("could not read the command passed to pwsh", self.notes)
-        self.assertIn("could not read the command passed to iex", self.notes)
+        self.assertIn("could not read the command passed to pwsh", self.unread)
+        self.assertIn("could not read the command passed to iex", self.unread)
         self.assertEqual([], self.read("git commit -m 'unterminated"))
         self.assertEqual(1, len(self.notes))
         self.assertIn("PowerShell would not parse the command, so none of it runs", self.notes[0])
+        self.assertEqual([], self.read("git commit -m 'unterminated", tool="Bash"))
+        self.assertIn("a single quote is not closed", self.unread[0])
 
-    def test_pwsh_starts_only_for_text_naming_git_and_a_refused_subcommand_or_an_alias(self) -> None:
+    def test_pwsh_starts_only_for_text_that_could_hold_a_refused_git_call(self) -> None:
         # A PATH that names no existing directory: an empty or missing one would let Windows find pwsh anyway.
         unavailable = {**self.environment, "PATH": str(self.root / "no-such-directory")}
+        missing = ["could not find pwsh to read a PowerShell command"]
         self.assertEqual([], self.read("git status; git log --oneline; Get-ChildItem", environment=unavailable))
-        self.assertEqual([], self.notes)
-        self.assertEqual([], self.read("git commit -m x", environment=unavailable))
-        self.assertEqual(["could not find pwsh to read a PowerShell command"], self.notes)
+        self.assertEqual(([], []), (self.notes, self.unread))
+        for command in ("git commit -m x", "git fetch -u origin main:main", "git log $range", "git -c alias.x=y x"):
+            with self.subTest(command=command):
+                self.assertEqual([], self.read(command, environment=unavailable))
+                self.assertEqual(missing, self.unread)
         self.git(self.hub, "config", "alias.co", "checkout")
         self.assertEqual([], self.read("git co feat/demo", environment=unavailable))
-        self.assertEqual(["could not find pwsh to read a PowerShell command"], self.notes)
+        self.assertEqual(missing, self.unread)
         self.assertEqual([], self.read("git cooperate; git log", environment=unavailable))
-        self.assertEqual([], self.notes)
+        self.assertEqual(([], []), (self.notes, self.unread))
+        outside = self.root / "outside"
+        outside.mkdir()
+        self.assertEqual([], self.read("git cooperate", outside, environment=unavailable))
+        self.assertEqual(missing, self.unread)
 
 
 class PowerShellGuardTests(WorktreesTestCase):
@@ -1069,31 +1108,20 @@ class PowerShellGuardTests(WorktreesTestCase):
         self.assertEqual("deny", self.powershell(f"Set-Location '{self.hub}'; git commit -m x", self.tree))
         self.assertEqual("deny", self.bash(f"pwsh -c 'git -C \"{self.hub}\" switch feat/demo'", self.tree))
 
-    def test_a_location_variable_set_through_an_env_drive_cmdlet_reaches_the_judgment(self) -> None:
-        self.assertIsNone(self.powershell("Rename-Item env:FOO GIT_WORK_TREE; git commit -m x", self.hub))
-        self.assertIn("could not tell where `git commit` runs", self.stderr)
+    def test_a_location_variable_set_where_the_text_does_not_settle_its_value_is_refused(self) -> None:
+        for command in (
+            "Rename-Item env:FOO GIT_WORK_TREE; git commit -m x",
+            f"Set-Item Environment::GIT_WORK_TREE '{self.hub}'; git reset --hard",
+            f"${{Environment::GIT_WORK_TREE}} = '{self.hub}'; git reset --hard",
+            f"($env:GIT_WORK_TREE) = '{self.hub}'; $other, $env:GIT_DIR = 2, 'x'; git reset --hard",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.tree))
+                self.assertIn("The guard could not tell where", self.reason)
         self.assertEqual("deny", self.powershell("Set-Content notes.txt GIT_WORK_TREE; git commit -m x", self.hub))
+        self.assertIn(WRITES.format("commit"), self.reason)
 
-    def test_a_location_variable_set_through_the_provider_qualified_path_reaches_the_judgment(self) -> None:
-        command = f"Set-Item Environment::GIT_WORK_TREE '{self.hub}'; git reset --hard"
-        self.assertIsNone(self.powershell(command, self.tree))
-        self.assertIn("could not tell where `git reset` runs", self.stderr)
-        command = f"Set-Item \\Environment::GIT_WORK_TREE '{self.hub}'; git reset --hard"
-        self.assertIsNone(self.powershell(command, self.tree))
-        self.assertIn("could not tell where `git reset` runs", self.stderr)
-        self.assertEqual("deny", self.powershell("Set-Item Environment::\\GIT_DIR x; git commit -m x", self.hub))
-
-    def test_a_location_variable_assigned_through_variable_notation_on_the_provider_reaches_the_judgment(self) -> None:
-        command = f"${{Environment::GIT_WORK_TREE}} = '{self.hub}'; git reset --hard"
-        self.assertIsNone(self.powershell(command, self.tree))
-        self.assertIn("could not tell where `git reset` runs", self.stderr)
-
-    def test_a_location_variable_assigned_in_parentheses_or_a_multiple_assignment_reaches_the_judgment(self) -> None:
-        command = f"($env:GIT_WORK_TREE) = '{self.hub}'; $other, $env:GIT_DIR = 2, 'x'; git reset --hard"
-        self.assertIsNone(self.powershell(command, self.tree))
-        self.assertIn("could not tell where `git reset` runs", self.stderr)
-
-    def test_a_powershell_command_is_allowed_with_a_note_when_pwsh_cannot_be_started(self) -> None:
+    def test_a_powershell_command_pwsh_cannot_read_is_refused_while_a_hub_is_guarded(self) -> None:
         git = shutil.which("git")
         if git is None:
             self.fail("git is not on PATH")
@@ -1104,8 +1132,336 @@ class PowerShellGuardTests(WorktreesTestCase):
             folder.mkdir()
             (folder / "git").symlink_to(git)
         path = os.pathsep.join([str(folder), str(self.root / "no-such-directory")])
-        self.assertIsNone(self.powershell("git switch feat/demo", self.hub, {**self.environment, "PATH": path}))
-        self.assertIn("could not find pwsh", self.stderr)
+        environment = {**self.environment, "PATH": path}
+        for cwd in (self.hub, self.tree):
+            with self.subTest(cwd=str(cwd)):
+                self.assertEqual("deny", self.powershell("git switch feat/demo", cwd, environment))
+                self.assertIn("could not find pwsh", self.reason)
+        self.assertIsNone(self.powershell("git status", self.tree, environment))
+
+
+class ContractTests(WorktreesTestCase):
+    """One case for each construct the guard's contract in docs/parallel-sessions.md names, through the hook."""
+
+    def nested(self, command: str, depth: int) -> str:
+        for _ in range(depth):
+            command = "iex '" + command.replace("'", "''") + "'"
+        return command
+
+    def test_remove_item_and_clear_item_of_an_inherited_location_variable_remove_it(self) -> None:
+        # A git hook's environment names the worktree's own repository and work tree, wherever its command runs.
+        repository = self.hub / ".git" / "worktrees" / "feat-demo"
+        inherited = {**self.environment, "GIT_DIR": str(repository), "GIT_WORK_TREE": str(self.tree)}
+        self.assertIsNone(self.powershell("git reset --hard", self.hub, inherited))
+        for removal in (
+            "Remove-Item env:GIT_WORK_TREE",
+            "Remove-Item Environment::GIT_WORK_TREE",
+            "Clear-Item env:GIT_WORK_TREE",
+            "Clear-Item Environment::GIT_WORK_TREE",
+            "ri env:GIT_*",
+            "$env:GIT_WORK_TREE = $null",
+            "[Environment]::SetEnvironmentVariable('GIT_WORK_TREE', $null)",
+        ):
+            with self.subTest(removal=removal):
+                self.assertEqual("deny", self.powershell(f"{removal}; git reset --hard", self.hub, inherited))
+                self.assertIn(WRITES.format("reset"), self.reason)
+
+    def test_a_cmdlet_whose_binding_fails_or_that_runs_with_whatif_sets_nothing(self) -> None:
+        for command in (
+            "Set-Item -Path Environment::GIT_DIR -Name X -Value x; git commit -m x",
+            "Set-Item env:GIT_DIR -Bogus x; git commit -m x",
+            "Set-Item Environment::GIT_DIR x -WhatIf; git commit -m x",
+            "Set-Content -Path env:GIT_DIR -Encoding utf8 x; git commit -m x",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.hub))
+                self.assertIn(WRITES.format("commit"), self.reason)
+                # Set, GIT_DIR would leave the call unplaced; PowerShell sets nothing, so it is the worktree's.
+                self.assertIsNone(self.powershell(command, self.tree))
+
+    def test_a_foreach_variable_psvariable_set_or_a_new_environment_drive_reaches_the_judgment(self) -> None:
+        for command in (
+            f"foreach ($env:GIT_WORK_TREE in '{self.hub}') {{ }}; git reset --hard",
+            f"$ExecutionContext.SessionState.PSVariable.Set('env:GIT_WORK_TREE', '{self.hub}'); git reset --hard",
+            "$ExecutionContext.SessionState.PSVariable.Set($name, 'x'); git reset --hard",
+            "New-PSDrive -Name e -PSProvider Environment -Root '' | Out-Null; Set-Item e:GIT_WORK_TREE x;"
+            " git reset --hard",
+            "[Environment]::SetEnvironmentVariable($name, 'x'); git reset --hard",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.tree))
+                self.assertIn("The guard could not tell where `git reset` runs", self.reason)
+
+    def test_a_location_variable_counts_only_in_the_case_git_reads_it(self) -> None:
+        reading = worktrees.read_command("PowerShell", "$env:git_dir = 'x'; git commit", self.tree, self.environment)
+        # Windows reads an environment name in any case; elsewhere git_dir is a variable git never reads.
+        self.assertEqual((None, platform_support.WINDOWS), worktrees.reached_hub(reading.calls[0].place))
+        for command, expected in (
+            # With no path, New-Item writes where the session is, on the file system.
+            ("New-Item -Name GIT_DIR -Value x; git commit", (None, False)),
+            # Every path of an array is written, so one on the environment provider sets the variable.
+            ("New-Item -Path ., env: -Name GIT_DIR -Value x; git commit", (None, True)),
+        ):
+            with self.subTest(command=command):
+                reading = worktrees.read_command("PowerShell", command, self.tree, self.environment)
+                self.assertEqual(expected, worktrees.reached_hub(reading.calls[0].place))
+
+    def test_bash_keywords_prefixes_and_backquotes_before_git_are_read(self) -> None:
+        for command, subcommand in (
+            ("if git diff --quiet; then echo clean; else git stash; fi", "stash"),
+            ("{ git switch feat/demo; }", "switch"),
+            ("for f in a b; do git add $f; done", "add"),
+            ("! git commit -m x", "commit"),
+            ("exec git switch feat/demo", "switch"),
+            ("command git switch feat/demo", "switch"),
+            ("time git commit -m x", "commit"),
+            ("nohup git commit -m x", "commit"),
+            ("timeout 5 git commit -m x", "commit"),
+            ("echo `git switch feat/demo`", "switch"),
+            ("while true; do git reset --hard; done", "reset"),
+            ("case x in x) git clean -fd;; esac", "clean"),
+            ("f() { git commit -m x; }; f", "commit"),
+            ("eval 'git commit -m x'", "commit"),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn(WRITES.format(subcommand), self.reason)
+        self.assertIsNone(self.bash("command -v git", self.hub))
+
+    def test_a_directory_change_that_runs_only_on_some_paths_leaves_the_directory_unknown(self) -> None:
+        for command in (
+            f'if [ -d x ]; then cd "{self.tree}"; fi; git commit -m x',
+            f'test -d x && cd "{self.tree}"; git commit -m x',
+            f'cd "{self.root / "no such folder"}"; git commit -m x',
+            f'f() {{ cd "{self.tree}"; }}; git commit -m x',
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+        self.assertIsNone(self.bash(f'cd "{self.tree}" || exit 1; git commit -m x', self.hub))
+        self.assertIsNone(self.bash(f'f() {{ cd "{self.tree}"; }}; f; git commit -m x', self.hub))
+
+    def test_a_set_location_powershell_cannot_bind_moves_nothing(self) -> None:
+        for command in (
+            f"cd -p '{self.tree}'; git commit -m x",
+            f"Set-Location '{self.tree}' '{self.root}'; git commit -m x",
+            f"cd -Path '{self.tree}' -LiteralPath '{self.tree}'; git commit -m x",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.hub))
+                self.assertIn(WRITES.format("commit"), self.reason)
+
+    def test_a_bash_word_holding_a_variable_the_text_does_not_set_is_not_settled(self) -> None:
+        for command, subcommand in (
+            ('cd "$HUB_NOT_SET_HERE" && git commit -m x', "commit"),
+            ('git -C "$HUB_NOT_SET_HERE" switch feat/demo', "switch"),
+            ('GIT_WORK_TREE="$HUB_NOT_SET_HERE" git reset --hard', "reset"),
+            ('cd "$(git rev-parse --show-toplevel)/.." && git commit -m x', "commit"),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn(f"The guard could not tell where `git {subcommand}` runs", self.reason)
+        self.assertEqual("deny", self.bash(f'HUB="{self.hub}"; cd "$HUB" && git commit -m x', self.tree))
+        self.assertIn(WRITES.format("commit"), self.reason)
+        self.assertIsNone(self.bash(f'TREE="{self.tree}"; cd "$TREE" && git commit -m x', self.hub))
+        self.assertIsNone(self.bash('cd "$PWD" && git commit -m x', self.tree))
+
+    def test_pwsh_command_with_args_is_read_as_its_script(self) -> None:
+        script = f'git -C "{self.hub}" switch feat/demo'
+        self.assertEqual("deny", self.bash(f"pwsh -cwa '{script}'", self.tree))
+        self.assertEqual("deny", self.bash(f"pwsh -CommandWithArgs '{script}' one two", self.tree))
+        self.assertEqual("deny", self.powershell(f"pwsh -cwa '{script}'", self.tree))
+        self.assertIsNone(self.bash("pwsh -CommandWithArgs 'git status $args' one", self.hub))
+
+    def test_the_nesting_limit_and_the_powershell_timeout_are_pinned(self) -> None:
+        settings = json.loads((REPOSITORY_ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        [hook] = settings["hooks"]["PreToolUse"][0]["hooks"]
+        self.assertEqual((4, 20, 30), (worktrees.NESTING_LIMIT, worktrees.POWERSHELL_TIMEOUT_SECONDS, hook["timeout"]))
+        document = (REPOSITORY_ROOT / "docs" / "parallel-sessions.md").read_text(encoding="utf-8")
+        self.assertIn("more than four deep", document)
+        self.assertIn("within 20 seconds", document)
+        # The PowerShell reader follows Invoke-Expression to the limit worktrees.py hands it.
+        self.assertEqual("deny", self.powershell(self.nested("git commit -m x", 3), self.hub))
+        self.assertIn(WRITES.format("commit"), self.reason)
+        self.assertEqual("deny", self.powershell(self.nested("git commit -m x", 4), self.hub))
+        self.assertIn("could not read the command passed to iex", self.reason)
+
+    def test_inherited_command_line_configuration_cannot_switch_the_opt_in_off(self) -> None:
+        for variables in (
+            {"GIT_CONFIG_PARAMETERS": "'coding-agent-skills.hubGuard=false'"},
+            {
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "coding-agent-skills.hubGuard",
+                "GIT_CONFIG_VALUE_0": "false",
+            },
+        ):
+            with self.subTest(variables=variables):
+                environment = {**self.environment, **variables}
+                self.assertEqual("deny", self.edit(self.hub / "README.md", environment=environment))
+                self.assertEqual("deny", self.bash("git switch feat/demo", self.hub, environment))
+
+    def test_fetch_with_update_head_ok_is_refused_in_the_hub(self) -> None:
+        for command in (
+            "git fetch --update-head-ok . feat/demo:main",
+            "git fetch -u origin main:main",
+            "git fetch -qu origin main:main",
+            "git fetch --update-h origin main:main",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn("`git fetch --update-head-ok` would move the branch the hub's HEAD names.", self.reason)
+                self.assertIsNone(self.bash(command, self.tree))
+        for command in ("git fetch origin", "git fetch -j 2 origin", "git fetch -o u origin", "git fetch -- -u"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.hub))
+
+    def test_attr_source_takes_the_next_word_as_its_value(self) -> None:
+        for shell in (self.bash, self.powershell):
+            with self.subTest(shell=shell.__name__):
+                self.assertEqual("deny", shell("git --attr-source HEAD commit -m x", self.hub))
+                self.assertIn(WRITES.format("commit"), self.reason)
+        self.assertEqual("deny", self.bash("git --frobnicate commit -m x", self.hub))
+        self.assertIn("could not tell which git subcommand runs", self.reason)
+
+    def test_a_git_dir_naming_the_hubs_git_directory_writes_the_hub(self) -> None:
+        outside = self.root / "outside"
+        outside.mkdir()
+        git_dir = self.hub / ".git"
+        for command, cwd in (
+            (f'git --git-dir="{git_dir}" commit -m x', self.tree),
+            (f'GIT_DIR="{git_dir}" git switch other', self.tree),
+            (f'git --git-dir="{git_dir}" commit -m x', outside),
+            (f'git --git-dir "{git_dir}" --work-tree "{self.tree}" reset --hard', self.tree),
+        ):
+            with self.subTest(command=command, cwd=str(cwd)):
+                self.assertEqual("deny", self.bash(command, cwd))
+                self.assertIn("would move the hub's HEAD", self.reason)
+        self.assertEqual("deny", self.powershell(f"git --git-dir='{git_dir}' commit -m x", self.tree))
+        other = self.other_repository() / ".git"
+        self.assertIsNone(self.bash(f'git --git-dir="{other}" commit -m x', self.tree))
+        self.assertIsNone(self.bash(f'GIT_DIR="{self.root / "no repository"}" git commit -m x', self.tree))
+
+    def test_a_here_document_body_is_data_not_commands(self) -> None:
+        command = f"cat > run.sh <<EOF\ncd '{self.tree}'\ngit status\nEOF\ngit add run.sh"
+        self.assertEqual("deny", self.bash(command, self.hub))
+        self.assertIn(WRITES.format("add"), self.reason)
+        self.assertIsNone(self.bash(f"cat <<'EOF'\ngit -C '{self.hub}' switch feat/demo\nEOF", self.tree))
+        # An unquoted body expands, so a command substitution in it runs.
+        self.assertEqual("deny", self.bash(f"cat <<EOF\n$(git -C '{self.hub}' switch feat/demo)\nEOF", self.tree))
+
+    def test_cd_double_dash_changes_to_the_directory_after_it(self) -> None:
+        for command in (
+            f'cd -- "{self.hub}" && git commit -m x',
+            f'cd -P -- "{self.hub}" && git commit -m x',
+            f'pushd -- "{self.hub}" && git commit -m x',
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn(WRITES.format("commit"), self.reason)
+
+    def test_a_file_tool_writing_under_the_hubs_git_directory_is_refused(self) -> None:
+        for path in ("HEAD", "config", "hooks/pre-commit", "info/exclude", "worktrees/feat-demo/HEAD"):
+            with self.subTest(path=path):
+                self.assertEqual("deny", self.edit(self.hub / ".git" / path, tool="Write"))
+        self.assertEqual("deny", self.edit(self.tree / ".." / ".." / ".." / ".git" / "HEAD", tool="Write"))
+        self.assertIsNone(self.edit(self.tree / ".git", tool="Write"))
+        other = self.other_repository()
+        self.assertIsNone(self.edit(other / ".git" / "config", tool="Write"))
+
+    def test_a_hub_alias_is_read_when_powershell_starts_outside_the_repository(self) -> None:
+        self.git(self.hub, "config", "alias.co", "checkout")
+        outside = self.root / "outside"
+        outside.mkdir()
+        self.assertEqual("deny", self.powershell(f"Set-Location '{self.hub}'; git co feat/demo", outside))
+        self.assertIn("is an alias", self.reason)
+        self.assertEqual("deny", self.bash(f"cd '{self.hub}' && git co feat/demo", outside))
+
+    def test_apply_check_after_a_double_dash_is_a_patch_name(self) -> None:
+        for command, expected in (
+            ("git apply change.patch -- --check", "deny"),
+            ("git apply --check --apply change.patch", "deny"),
+            ("git apply --check -- change.patch", None),
+            ("git apply --check change.patch", None),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(expected, self.bash(command, self.hub))
+
+    def test_two_spellings_of_a_location_variable_are_judged_by_the_upper_case_one(self) -> None:
+        conflict = "GIT_WORK_TREE and git_work_tree name different values; git reads GIT_WORK_TREE"
+        self.assertEqual("deny", self.bash(f'export GIT_WORK_TREE="{self.hub}"; git_work_tree=x git reset', self.tree))
+        self.assertIn(WRITES.format("reset"), self.reason)
+        command = f'export git_work_tree="{self.hub}"; GIT_WORK_TREE="{self.tree}" git reset --hard'
+        self.assertIsNone(self.bash(command, self.tree))
+        if platform_support.WINDOWS:
+            self.assertIn(conflict, self.stderr)
+        self.assertEqual("deny", self.bash('GIT_WORK_TREE="$UNSET_HERE" git_work_tree=x git reset', self.tree))
+
+    def test_a_writing_call_the_guard_cannot_place_is_refused_while_a_hub_is_guarded(self) -> None:
+        for shell in (self.bash, self.powershell):
+            with self.subTest(shell=shell.__name__):
+                command = 'git -C "$env:UNSET_HERE" commit -m x' if shell == self.powershell else 'cd "$UNSET_HERE"'
+                if shell == self.bash:
+                    command += " && git commit -m x"
+                self.assertEqual("deny", shell(command, self.tree))
+                self.assertIn("The guard could not tell where `git commit` runs", self.reason)
+                self.assertIn("Write the directory into the command itself", self.reason)
+        self.assertIsNone(self.bash('cd "$UNSET_HERE" && git status', self.tree))
+        self.assertEqual("deny", self.bash("source .venv/bin/activate && git commit -m x", self.tree))
+        # No alias can stand for a builtin, so a reading one is allowed wherever it runs.
+        self.assertIsNone(self.bash("source .venv/bin/activate && git status", self.tree))
+        self.assertEqual("deny", self.bash("git $VERB_UNSET_HERE x", self.hub))
+        self.assertIn("could not tell which git subcommand runs", self.reason)
+        # Whatever it is, a subcommand run in the worktree writes only the worktree.
+        self.assertIsNone(self.bash("git $VERB_UNSET_HERE x", self.tree))
+        self.assertEqual("deny", self.bash("git commit -m 'unterminated", self.tree))
+        self.assertIn("a single quote is not closed", self.reason)
+        self.assertIsNone(self.bash("echo 'unterminated", self.tree))
+
+
+class WorkflowTests(WorktreesTestCase):
+    """The commands docs/parallel-sessions.md and docs/implementing-changes.md tell a session to run stay allowed."""
+
+    def test_the_documented_commands_are_allowed_from_a_worktree_in_both_shells(self) -> None:
+        for command in (
+            "python tools/worktrees.py new fix thing",
+            "python tools/worktrees.py list",
+            "git fetch origin main",
+            "git rebase origin/main",
+            "git merge origin/main",
+            "git add -A",
+            'git commit -m "fix(tools): a message"',
+            "git commit -F - <<'EOF'\nfix(tools): a message\n\nWith a body.\nEOF",
+            "git push -u origin HEAD",
+            "git push",
+            "git pull",
+            "gh pr create --title 'refactor(tools): x' --body-file body.md",
+            "gh pr update-branch",
+            "gh pr merge --auto --squash",
+            "python -m ruff format --check tools/worktrees.py",
+            "python -m ruff check tools/worktrees.py",
+            "python -B tests/run_validation.py -k worktrees",
+            "python -B tests/run_validation.py --shard 1/4 --full",
+            "git stash push -u -m my-tag",
+            "git status --short && git diff --stat",
+        ):
+            for shell in (self.bash, self.powershell):
+                with self.subTest(command=command, shell=shell.__name__):
+                    if shell == self.powershell and "<<" in command:
+                        continue
+                    self.assertIsNone(shell(command, self.tree))
+                    self.assertNotIn("could not", self.stderr)
+
+    def test_the_documented_hub_commands_are_allowed_in_the_hub(self) -> None:
+        for command in (
+            "git pull --ff-only",
+            "git fetch --prune origin",
+            "python tools/worktrees.py list",
+            "git worktree remove '.claude/worktrees/feat-demo'",
+            "git branch -D 'feat/demo'",
+            "git switch main",
+        ):
+            for shell in (self.bash, self.powershell):
+                with self.subTest(command=command, shell=shell.__name__):
+                    self.assertIsNone(shell(command, self.hub))
 
 
 class NewWorktreeTests(WorktreesTestCase):
