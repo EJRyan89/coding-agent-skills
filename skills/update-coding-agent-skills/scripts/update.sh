@@ -9,10 +9,12 @@
 #   FETCH_FAILED     followed by Git's error
 #   TAG_SHADOWS_BRANCH followed by each tag named main or origin/main, as "<tag> on origin" or "<tag> in the clone";
 #                    nothing was fetched
-#   MAJOR_UPDATE <current>..<target> followed by the commits it would pull; origin/main's highest
+#   MAJOR_UPDATE <current>..<target> followed by the commits it would deploy; origin/main's highest
 #                    release tag raises the breaking component (the major, or the minor while the
-#                    major is 0) above local main's, and --cross-major was not given; <current> is
-#                    untagged, counted as 0.0.0, when no release tag reaches local main
+#                    major is 0) above the release of the commit `deploy.py check` names as deployed,
+#                    and --cross-major was not given; <current> is untagged, counted as 0.0.0, when no
+#                    release tag reaches that commit, and unknown, which any release raises, when check
+#                    names no deployed commit
 #   CHECKOUT_FAILED  followed by Git's error from switching to main
 #   NOT_FAST_FORWARD followed by the commits main has that origin/main lacks, found before switching branches;
 #                    or by Git's error when Git refuses the fast-forward itself, after which the clone is
@@ -20,7 +22,8 @@
 #   UP_TO_DATE <sha> or UPDATED <old>..<new> followed by the pulled commits, and by
 #                    CROSSED <current>..<target> when --cross-major accepted a release boundary,
 #                    then the deploy output and DEPLOYED or DEPLOY_FAILED <code>
-#   FAILED <reason>  alone: the clone is not a repository with deploy.py, or a step failed outright
+#   FAILED <reason>  alone: the clone is not a repository with deploy.py, a step failed outright, or a release tag
+#                    the stop compares has a version component too long to compare
 # A stop leaves the clone on the branch it was found on unless a "still on main:" line says otherwise; an update
 # switches it to main and leaves it there.
 # Exit: 0 deployed; 1 any other status line, or FAILED; 2 usage (the wrong arguments, on stderr).
@@ -108,22 +111,30 @@ if [ -n "$DIRTY" ]; then
   exit 1
 fi
 
-# A deployment made with `deploy.py --at` is pinned to that commit, and deploying main would replace it, so the update
-# stops until --unpin. check names the pin after the deployed commit, which it describes as "<name> (<commit>)" or
-# the commit alone. A check that fails or names no pin does not stop the update here; the deployer itself refuses to
-# replace a pin without --unpin.
-if [ -z "$UNPIN" ]; then
-  PIN_MARK=", pinned with --at "
-  PINNED=$("$PYTHON" "$CLONE/deploy.py" check </dev/null 2>/dev/null | tr -d '\r' | grep -m 1 -e "^Deployed commit: .*$PIN_MARK")
-  if [ -n "$PINNED" ]; then
-    DEPLOYED=${PINNED#Deployed commit: }
-    DEPLOYED=${DEPLOYED%"$PIN_MARK"*}
-    case "$DEPLOYED" in
-      *")") DEPLOYED=${DEPLOYED##*"("} && DEPLOYED=${DEPLOYED%")"} ;;
-    esac
-    echo "PINNED ${PINNED##*"$PIN_MARK"} $DEPLOYED"
-    exit 1
-  fi
+# check names the deployed commit as "<name> (<commit>)", the commit alone, or unknown, followed by the pin when the
+# deployment was made with `deploy.py --at <ref>`. Its exit status is not read: a check that reports a missing tool
+# still names the commit. DEPLOYED_COMMIT is the commit's full name, or empty when check names none, so it is never
+# taken for an option.
+PIN_MARK=", pinned with --at "
+DEPLOYED_LINE=$("$PYTHON" "$CLONE/deploy.py" check </dev/null 2>/dev/null | tr -d '\r' | grep -m 1 -e "^Deployed commit: ")
+DEPLOYED=${DEPLOYED_LINE#Deployed commit: }
+PIN_REF=
+case "$DEPLOYED" in
+  *"$PIN_MARK"*) PIN_REF=${DEPLOYED##*"$PIN_MARK"} && DEPLOYED=${DEPLOYED%"$PIN_MARK"*} ;;
+esac
+case "$DEPLOYED" in
+  *")") DEPLOYED=${DEPLOYED##*"("} && DEPLOYED=${DEPLOYED%")"} ;;
+esac
+DEPLOYED_COMMIT=
+if [[ "$DEPLOYED" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+  DEPLOYED_COMMIT=$DEPLOYED
+fi
+
+# A pinned deployment would be replaced by main, so the update stops until --unpin. A check that fails or names no
+# pin does not stop the update here; the deployer itself refuses to replace a pin without --unpin.
+if [ -n "$PIN_REF" ] && [ -z "$UNPIN" ]; then
+  echo "PINNED $PIN_REF $DEPLOYED"
+  exit 1
 fi
 
 # Every ref below is named in full: Git resolves a short name as refs/tags/<name> before refs/heads/<name> or
@@ -161,39 +172,71 @@ if ! OUTPUT=$(git -C "$CLONE" fetch --quiet --tags origin "+$MAIN:$ORIGIN_MAIN" 
   exit 1
 fi
 
-# The highest release tag reachable from a commit, or nothing when there is none. A release tag is
-# vMAJOR.MINOR.PATCH with an optional pre-release suffix, which sorts before its release; any other tag is ignored.
-# Only refs/tags/ is read.
+# The highest release tag reachable from a commit, or nothing when there is none; when Git refuses the lookup, a FAILED
+# line naming the second argument, and status 1. A release tag is vMAJOR.MINOR.PATCH with an optional pre-release
+# suffix, which sorts before its release; any other tag is ignored. Only refs/tags/ is read.
 release_of() {
-  git -C "$CLONE" -c versionsort.suffix=- for-each-ref --merged "$1" --sort=-version:refname \
-    --format='%(refname:strip=2)' 'refs/tags/v*' 2>/dev/null |
-    tr -d '\r' | grep -E -m 1 '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+  local tags
+  if ! tags=$(git -C "$CLONE" -c versionsort.suffix=- for-each-ref --merged "$1" --sort=-version:refname \
+    --format='%(refname:strip=2)' 'refs/tags/v*' 2>&1); then
+    echo "FAILED cannot read the release tags reaching $2: $(one_line "$tags")"
+    return 1
+  fi
+  printf '%s\n' "$tags" | tr -d '\r' | grep -E -m 1 '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' || true
 }
-# The component a release may not raise without acceptance: the major, or the minor while the major is 0.
+# A version component is compared as a number without its leading zeros, of at most MAX_DIGITS digits, so Bash's
+# 64-bit integers hold it exactly.
+MAX_DIGITS=18
+# The component a release may not raise without acceptance, as "<major> <minor>": the major and 0, or 0 and the minor
+# while the major is 0. A component longer than MAX_DIGITS is a FAILED line naming the tag, and status 1.
 breaking_component() {
-  local version=${1#v} major minor
-  major=${version%%.*}
-  minor=${version#*.}
-  minor=${minor%%.*}
+  local version=${1#v} part major minor
+  for part in major minor; do
+    local digits=${version%%.*}
+    version=${version#*.}
+    digits=${digits#"${digits%%[!0]*}"}
+    if [ "${#digits}" -gt "$MAX_DIGITS" ]; then
+      echo "FAILED cannot compare release tag $1: its $part version has more than $MAX_DIGITS digits"
+      return 1
+    fi
+    printf -v "$part" '%s' "${digits:-0}"
+  done
   if [ "$major" -gt 0 ]; then
-    echo "$major.0"
+    echo "$major 0"
   else
-    echo "0.$minor"
+    echo "0 $minor"
   fi
 }
-# Without a release on origin/main there is nothing to cross. A local main without one counts as version zero.
-CURRENT=$(release_of "$MAIN")
-TARGET=$(release_of "$ORIGIN_MAIN")
+# The installed version is the release of the deployed commit, not of local main, which a pull by hand may have moved
+# past it. Without a release on origin/main there is nothing to cross. A deployed commit no release tag reaches counts
+# as version zero, and one check does not name stops at any release.
 CROSSED=
+TARGET=$(release_of "$ORIGIN_MAIN" origin/main) || { echo "$TARGET"; exit 1; }
+if [ -n "$TARGET" ]; then
+  CURRENT=unknown
+  if [ -n "$DEPLOYED_COMMIT" ]; then
+    CURRENT=$(release_of "$DEPLOYED_COMMIT" "the deployed commit $DEPLOYED_COMMIT") || { echo "$CURRENT"; exit 1; }
+  fi
+fi
 if [ -n "$TARGET" ] && [ "$CURRENT" != "$TARGET" ]; then
-  CURRENT_BREAKING=$(breaking_component "${CURRENT:-v0.0.0}")
-  CURRENT=${CURRENT:-untagged}
-  TARGET_BREAKING=$(breaking_component "$TARGET")
-  if [ "${CURRENT_BREAKING%%.*}" -lt "${TARGET_BREAKING%%.*}" ] ||
-    { [ "${CURRENT_BREAKING%%.*}" -eq "${TARGET_BREAKING%%.*}" ] && [ "${CURRENT_BREAKING#*.}" -lt "${TARGET_BREAKING#*.}" ]; }; then
+  TARGET_BREAKING=$(breaking_component "$TARGET") || { echo "$TARGET_BREAKING"; exit 1; }
+  RAISED=1
+  if [ "$CURRENT" != unknown ]; then
+    CURRENT_BREAKING=$(breaking_component "${CURRENT:-v0.0.0}") || { echo "$CURRENT_BREAKING"; exit 1; }
+    CURRENT=${CURRENT:-untagged}
+    if [ "${CURRENT_BREAKING% *}" -gt "${TARGET_BREAKING% *}" ] ||
+      { [ "${CURRENT_BREAKING% *}" -eq "${TARGET_BREAKING% *}" ] && [ "${CURRENT_BREAKING#* }" -ge "${TARGET_BREAKING#* }" ]; }; then
+      RAISED=
+    fi
+  fi
+  if [ -n "$RAISED" ]; then
     if [ -z "$CROSS_MAJOR" ]; then
       echo "MAJOR_UPDATE $CURRENT..$TARGET"
-      git -C "$CLONE" log --oneline --no-decorate "$MAIN..$ORIGIN_MAIN" | tr -d '\r'
+      # The commits the update would deploy: from the deployed commit, or from local main when check names none.
+      LISTED_FROM=${DEPLOYED_COMMIT:-$MAIN}
+      if git -C "$CLONE" rev-parse --verify --quiet "$LISTED_FROM^{commit}" >/dev/null; then
+        git -C "$CLONE" log --oneline --no-decorate "$LISTED_FROM..$ORIGIN_MAIN" | tr -d '\r'
+      fi
       exit 1
     fi
     CROSSED="$CURRENT..$TARGET"
