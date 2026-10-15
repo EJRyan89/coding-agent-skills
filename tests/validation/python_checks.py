@@ -30,7 +30,8 @@ from validation_support import (
 
 from deployer import platform_support
 
-# Every Python file under these is checked with `ruff format --check` and `ruff check`; none is excluded.
+# Every Python file under these is checked with `ruff format --check` and `ruff check`; none is excluded, since
+# pyproject.toml empties ruff's default exclusions.
 FORMAT_ROOTS = ("deployer", "tools", "tests", "skills", ".claude/skills", "deploy.py")
 # A noqa comment names the codes it suppresses and says why after a dash, as in `noqa: F401 - <reason>`.
 NOQA = re.compile(r"#\s*noqa\b", re.IGNORECASE)
@@ -42,6 +43,9 @@ CEILING_CODES = frozenset({"C901", "PLR0915"})
 # mypy checks these as one root from the repository root, and each skill's scripts/ directory from inside it, where
 # the deployed skill's own imports resolve. pyproject.toml's [tool.mypy] holds the configuration; it excludes nothing.
 TYPE_CHECK_ROOTS = ("deployer", "tools", "deploy.py", "tests")
+# The folders mypy passes over when it collects the files under a root it is given, by their names, which no setting
+# changes: a file in one is type-checked by nothing.
+MYPY_SKIPPED_FOLDERS = frozenset({"__pycache__", "site-packages", "node_modules"})
 # A type: ignore names its error codes and states its reason in a comment after it: `# type: ignore[code]  # <why>`.
 TYPE_IGNORE = re.compile(r"#\s*type:\s*ignore\b")
 TYPE_IGNORE_WITH_REASON = re.compile(r"#\s*type:\s*ignore\[[a-z-]+(?:\s*,\s*[a-z-]+)*\]\s*#\s*\S")
@@ -182,6 +186,39 @@ def issue_numbers_in_comments(root: Path, files: list[Path]) -> list[str]:
     return found
 
 
+def _type_check_root(root: Path, path: Path, skill_scripts: list[Path]) -> Path | None:
+    """The folder mypy collects a file from: its skill's scripts/, or the root of TYPE_CHECK_ROOTS holding it."""
+    for scripts in skill_scripts:
+        if path.is_relative_to(scripts):
+            return scripts
+    for top in TYPE_CHECK_ROOTS:
+        if path == root / top or path.is_relative_to(root / top):
+            return root / top
+    return None
+
+
+def type_check_skipped_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each Python file under a root mypy checks that it would pass over: one in a folder named like a cache, an
+    installed package, or a Node module, or in a folder whose name starts with a dot, which mypy never reads."""
+    skill_scripts = skill_script_directories(root)
+    problems: list[str] = []
+    for path in sorted(files, key=lambda path: path.relative_to(root).as_posix()):
+        checked_from = _type_check_root(root, path, skill_scripts) if path.suffix == ".py" else None
+        if checked_from is None or path == checked_from:
+            continue
+        skipped = [
+            part
+            for part in path.parent.relative_to(checked_from).parts
+            if part in MYPY_SKIPPED_FOLDERS or part.startswith(".")
+        ]
+        if skipped:
+            problems.append(
+                f"{path.relative_to(root).as_posix()} is in a folder named {skipped[0]}, which mypy passes over, so "
+                "no type check reads it; move it"
+            )
+    return problems
+
+
 def imports_a_sibling(path: Path, tree: ast.Module) -> bool:
     """Whether the module imports, by its bare name, another module in its own directory."""
     return any((path.parent / f"{found.module.split('.')[0]}.py").is_file() for found in module_imports(tree))
@@ -317,7 +354,9 @@ class PythonChecksPolicies(unittest.TestCase):
         self.assertEqual(["mccabe", "pylint", "select"], sorted(lint))
         self.assertEqual(["max-complexity"], sorted(lint["mccabe"]))
         self.assertEqual(["max-statements"], sorted(lint["pylint"]))
-        self.assertEqual(["format", "line-length", "lint", "target-version"], sorted(configuration))
+        self.assertEqual(["exclude", "format", "line-length", "lint", "target-version"], sorted(configuration))
+        # ruff's default exclusions are emptied, so every Python file under the roots is formatted and linted.
+        self.assertEqual([], configuration["exclude"])
 
     def test_type_check_configuration_is_pinned(self) -> None:
         configuration = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["mypy"]
@@ -326,6 +365,9 @@ class PythonChecksPolicies(unittest.TestCase):
         # Default strictness, and no module, suite, or import is exempt. No platform: each host checks the code as it
         # runs there, so every platform's branches are checked on the platform that runs them.
         self.assertEqual(["explicit_package_bases", "mypy_path", "python_version"], sorted(configuration))
+
+    def test_mypy_reads_every_python_file_under_its_roots(self) -> None:
+        self.assertEqual([], type_check_skipped_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
 
     def test_mypy_path_names_each_scripts_directory_put_on_sys_path(self) -> None:
         self.assertEqual([], mypy_path_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))

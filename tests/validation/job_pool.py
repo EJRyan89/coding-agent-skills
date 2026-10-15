@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -13,6 +14,10 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple, TypeVar
+
+# skill-core's bounded runner is imported before validation_support, which puts skill-core on sys.path too, so this
+# module states the path itself.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 from bounded_process import run_bounded
 from validation_support import REPOSITORY_ROOT

@@ -29,6 +29,7 @@ from python_checks import (
     ruff_format_check,
     ruff_lint_check,
     type_check_skill_roots,
+    type_check_skipped_problems,
     type_ignore_without_reason,
 )
 from toolchain import PREREQUISITES, find_mypy, missing_prerequisites
@@ -251,6 +252,33 @@ class PythonChecksFixtures(GitTestCase):
                     "module.py:3 suppresses C901 and PLR0915; split the function instead",
                 ],
                 ceiling_noqa(root, [root / "module.py"]),
+            )
+
+    def test_a_python_file_in_a_folder_mypy_passes_over_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            names = [
+                "tests/site-packages/a.py",
+                "tests/ok/node_modules/b.py",
+                "tools/.hidden/c.py",
+                "skills/alpha/scripts/__pycache__/d.py",
+                # Read by mypy: an ordinary folder, a root's own name, a file named with a dot, and a folder outside
+                # every root it checks.
+                "tests/ok/e.py",
+                "deployer/f.py",
+                "skills/alpha/scripts/.g.py",
+                "docs/.examples/h.py",
+            ]
+            write_fixture_tree(root, {"skills/alpha/SKILL.md": "", **dict.fromkeys(names, "")})
+            moved = "which mypy passes over, so no type check reads it; move it"
+            self.assertEqual(
+                [
+                    f"skills/alpha/scripts/__pycache__/d.py is in a folder named __pycache__, {moved}",
+                    f"tests/ok/node_modules/b.py is in a folder named node_modules, {moved}",
+                    f"tests/site-packages/a.py is in a folder named site-packages, {moved}",
+                    f"tools/.hidden/c.py is in a folder named .hidden, {moved}",
+                ],
+                type_check_skipped_problems(root, [root / name for name in names]),
             )
 
     def test_suppression_scan_refuses_file_and_region_exemptions_and_extra_ruff_configuration(self) -> None:
