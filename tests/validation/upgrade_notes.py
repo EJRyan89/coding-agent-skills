@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import functools
 import json
 import re
 import subprocess
@@ -15,7 +16,14 @@ from pathlib import Path, PurePosixPath
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 from release_levels import RELEASING_DOC, VERSION, VERSIONING_HEADING, level_word, versioning_levels
-from validation_support import REPOSITORY_ROOT, is_skill_file, markdown_section, repository_files
+from validation_support import (
+    REPOSITORY_ROOT,
+    is_skill_file,
+    markdown_section,
+    module_statements,
+    parse_python,
+    repository_files,
+)
 
 from tools.release_notes import BODY_HEADING, UPGRADE_NOTES, SourcedEntry, body_entries, range_entries
 
@@ -29,6 +37,9 @@ RELEASE_BRANCH = "origin/main"
 MANIFEST_MODULE = "deployer/manifest.py"
 MANIFEST_CONTRACT_NAMES = ("MANIFEST_VERSION", "OLDEST_READABLE_VERSION")
 TOOLS_MODULE = "deployer/tools.py"
+# The class deployer/tools.py declares each tool with, and its fields that hold a version floor.
+TOOL_CLASS = "Tool"
+TOOL_FLOOR_FIELDS = frozenset({"minimum", "provider_minimum"})
 PDF_POLICY_MODULE = "skills/skill-core/scripts/pdf_tool.py"
 DEPLOY_META = re.compile(r"deploy-meta/[^/]+\.json")
 REVIEW_SCHEMA = re.compile(r"skills/code-review-core/references/.+\.schema\.json")
@@ -87,14 +98,29 @@ def tag_snapshot(root: Path, tag: str) -> Snapshot:
     )
 
 
-def _assigned_sources(tree: ast.Module, names: tuple[str, ...]) -> dict[str, str]:
-    values: dict[str, str] = {}
-    for node in tree.body:
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name) and target.id in names:
-                    values[target.id] = ast.unparse(node.value)
+def _module_values(tree: ast.Module) -> dict[str, ast.expr]:
+    """The value each name a module-level statement assigns, with or without an annotation, one in a module-level if,
+    try, or with block included; the last such assignment of a name holds."""
+    values: dict[str, ast.expr] = {}
+    for node in module_statements(tree.body):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+            for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
+                if isinstance(target, ast.Name):
+                    values[target.id] = node.value
     return values
+
+
+def _value_source(node: ast.expr, values: dict[str, ast.expr], seen: frozenset[str] = frozenset()) -> str:
+    """An expression's text, a module-level name followed to the value it is assigned, so a floor held in a constant
+    compares by the constant's value."""
+    if isinstance(node, ast.Name) and node.id in values and node.id not in seen:
+        return _value_source(values[node.id], values, seen | {node.id})
+    return ast.unparse(node)
+
+
+def _assigned_sources(tree: ast.Module, names: tuple[str, ...]) -> dict[str, str]:
+    values = _module_values(tree)
+    return {name: _value_source(values[name], values) for name in names if name in values}
 
 
 def _manifest_versions(snapshot: Snapshot) -> dict[str, object]:
@@ -107,15 +133,37 @@ def _tool_floors(snapshot: Snapshot) -> dict[str, object]:
     if source is None:
         return {}
     tree = ast.parse(source)
+    values = _module_values(tree)
     floors: dict[str, object] = dict(_assigned_sources(tree, ("MINIMUM_PYTHON",)))
+    fields = _tool_fields(tree)
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "Tool" and node.args:
-            floors[ast.unparse(node.args[0])] = {
-                keyword.arg: ast.unparse(keyword.value)
-                for keyword in node.keywords
-                if keyword.arg in {"minimum", "provider_minimum"}
-            }
+        if not (isinstance(node, ast.Call) and ast.unparse(node.func).rsplit(".", 1)[-1] == TOOL_CLASS):
+            continue
+        given = {**dict(zip(fields, node.args, strict=False)), **{item.arg: item.value for item in node.keywords}}
+        name = given.get("name")
+        floors[_value_source(name, values) if name is not None else f"{TOOL_CLASS} at line {node.lineno}"] = {
+            field: _value_source(value, values) for field, value in given.items() if field in TOOL_FLOOR_FIELDS
+        }
     return {TOOLS_MODULE: floors}
+
+
+def _tool_fields(tree: ast.Module) -> list[str]:
+    """The fields of deployer/tools.py's Tool in their order, which a Tool(...) call's positional arguments fill: the
+    snapshot's own class, or this checkout's when the snapshot declares none."""
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == TOOL_CLASS:
+            return [
+                item.target.id
+                for item in node.body
+                if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name)
+            ]
+    checkout = _checkout_tools()
+    return [] if tree is checkout else _tool_fields(checkout)
+
+
+@functools.cache
+def _checkout_tools() -> ast.Module:
+    return parse_python(REPOSITORY_ROOT / TOOLS_MODULE)
 
 
 def _pdf_provider_floors(snapshot: Snapshot) -> dict[str, object]:

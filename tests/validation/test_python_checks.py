@@ -272,6 +272,8 @@ class PythonChecksFixtures(GitTestCase):
                         "# f" + "mt: off",
                         "# ya" + "pf: disable",
                         "import sys  # no" + "qa: F401 - imported for its effect",
+                        "# ru" + "ff: disable[C901, PLR0915]",
+                        "# ru" + "ff: enable[C901, PLR0915]",
                         "# the mypy run and a fmt call are described here, not configured",
                         'TEXT = "# my' + 'py: ignore-errors"',
                         "",
@@ -290,6 +292,7 @@ class PythonChecksFixtures(GitTestCase):
                     f"{module}:5 turns a check off with '# f" + f"mt: skip'{fix}",
                     f"{module}:6 turns a check off with '# f" + f"mt: off'{fix}",
                     f"{module}:7 turns a check off with '# ya" + f"pf: disable'{fix}",
+                    f"{module}:9 turns a check off with '# ru" + f"ff: disable'{fix}",
                     "skills/alpha/scripts/pyproject.toml configures ruff; pyproject.toml at the repository root is its "
                     "one configuration",
                     "tests/.ruff.toml configures ruff; pyproject.toml at the repository root is its one configuration",

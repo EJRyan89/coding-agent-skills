@@ -99,11 +99,12 @@ def ceiling_noqa(root: Path, files: list[Path]) -> list[str]:
 
 
 # A comment that turns a check off for a file or a region instead of one finding on its line: mypy's inline
-# configuration, such as ignore-errors; ruff's file-level noqa, which it also reads in flake8's spelling; an isort
-# skip, which ruff's import rules honor; and the formatter's off and skip markers.
+# configuration, such as ignore-errors; ruff's file-level noqa, which it also reads in flake8's spelling; ruff's range
+# suppression, which turns the codes it names off until the comment that turns them on again, the complexity and
+# length ceilings included; an isort skip, which ruff's import rules honor; and the formatter's off and skip markers.
 PYTHON_SUPPRESSION = re.compile(
-    r"#\s*(?:mypy:|(?:ruff|flake8):\s*noqa\b|(?:ruff:\s*)?isort:\s*(?:skip_file|off)\b|fmt:\s*(?:off|skip)\b"
-    r"|yapf:\s*disable\b)",
+    r"#\s*(?:mypy:|(?:ruff|flake8):\s*noqa\b|ruff:\s*disable\b|(?:ruff:\s*)?isort:\s*(?:skip_file|off)\b"
+    r"|fmt:\s*(?:off|skip)\b|yapf:\s*disable\b)",
     re.IGNORECASE,
 )
 # ruff reads its configuration from the nearest of these to each file, so one anywhere but the root's pyproject.toml
