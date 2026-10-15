@@ -17,6 +17,199 @@ An entry is a `###` heading saying what changed, followed by these fields:
 
 A pull request whose change no user meets writes `None` under its `## Upgrade note`.
 
+## v0.8.0
+
+Level: minor.
+
+### A plain `--all` installs no unchosen opt-in bundle from a home v0.6.0 last deployed into, and keeps a renamed one only while it holds no new skill
+
+- Level: patch, defect fixes with no contract change.
+- Contract: none
+- User action: none, unless your last deployment was v0.6.0 from a source with an opt-in bundle and it preserved or skipped a locally modified skill. In that case, preview the next `--all` with `python deploy.py --all --dry-run`. It may report `REMOVE` for the skills of an opt-in bundle you chose that the source has since renamed, moved a skill out of, or given a new skill, or of one that deployment installed a skill through only by a bundle request it recorded: one typed as `--include <bundle>`, chosen from the menu, or a bundle a plain `--all` installed. If it does, run `python deploy.py --all --include <bundle>`, naming that bundle by its current name, and name each skill the source moved out of it by its new selection item, its new bundle or its own name, with another `--include`. Otherwise the next `--all` in such a home installs nothing from an opt-in bundle you never chose: it reports `UNCHANGED` where it used to report `FRESH INSTALL` for the rest of a bundle whose member another skill only depends on. It also keeps a renamed opt-in bundle's skills `UNCHANGED` beside a preserved skill that a newly installed skill depends on, and beside a skill v0.6.0 preserved after you deselected it.
+- Pull request: #930 and #914
+
+### The hub guard reads a location variable assigned in parentheses or in a multiple assignment
+
+- Level: patch, a defect fix in the repository's hub guard.
+- Contract: none
+- User action: none. From a worktree, a PowerShell command that assigns `GIT_DIR`, `GIT_WORK_TREE`, or `GIT_COMMON_DIR` in parentheses or as a target of a multiple assignment and then runs a refused git subcommand is now judged as running in an unknown place, as the plain `$env:` assignment is, instead of being allowed as acting on the worktree.
+- Pull request: #928
+
+### dotnet-dependencies reports a Choose on an unset framework under a Directory.Build.props instead of choosing it
+
+- Level: patch, a defect fix in the condition reader with no contract change. Under a `Directory.Build.props`, a `Choose` whose `When` tests `$(TargetFramework)` before the project file sets it is no longer chosen as if the framework were unset. Its items are reported as `UNREADABLE` lines, and the run exits 1, so a project its `When` removes is no longer silently `MISSING`.
+- Contract: none
+- User action: none
+- Pull request: #927
+
+### dotnet-dependencies chooses a Choose branch once for its items, and reports an unevaluable Remove without a restore
+
+- Level: patch, defect fixes in the condition reader with no contract change: a `Remove` in a `Choose` branch MSBuild never enters is no longer applied, nor in a project with a restore any other item there (no silent `MISSING` for a project a never-entered `Otherwise` removes), while a project with no restore still counts every `Include` and `Update` whatever its condition, and under a `Directory.Build.props` a `Choose` on a framework the project has not set yet is reported rather than chosen, as #927's entry says; a project with no restore whose conditional `Remove` cannot be evaluated keeps the item and now prints an `UNREADABLE` line naming the `Remove`, exiting 1; and a project whose framework a `Choose` with an unevaluable `When` sets now names every framework its branches may give it.
+- Contract: none
+- User action: none
+- Pull request: #912
+
+### The hub guard reads a git location variable through \Environment::, variable notation on the provider, and a cast, and no longer through Environment::\name
+
+- Level: patch, a defect fix in a contributor-facing tool with no contract change.
+- Contract: none
+- User action: none. From a worktree, `Set-Item \Environment::GIT_WORK_TREE <hub>; git reset --hard` and `${Environment::GIT_WORK_TREE} = '<hub>'; git reset --hard` are now allowed only with the note that the guard could not tell where git runs, and in the hub `Set-Item Environment::\GIT_DIR x; git commit` is refused, as it was before v0.8.0's audit fixes: the guard refuses more.
+- Pull request: #913
+
+### The hub guard reads a git location variable named in any case in Bash and set through PowerShell's Environment:: path
+
+- Level: patch, a defect fix in a contributor-facing tool with no contract change.
+- Contract: none
+- User action: none. In a clone that opts into the hub guard, a Bash command such as `git_work_tree=<hub> git reset --hard` from a worktree is now refused, and `Set-Item Environment::GIT_WORK_TREE <hub>; git reset --hard` in PowerShell is allowed only with the note that the guard could not tell where git runs.
+- Pull request: #884
+
+### A plain `--all` keeps a chosen opt-in bundle's skills when v0.6.0 also installed a new skill while preserving one
+
+- Level: patch. It fixes a defect in this release's handling of a manifest v0.6.0 wrote.
+- Contract: none
+- User action: none. The affected home was deployed by v0.5.0 or earlier with an opt-in bundle. It was then deployed by v0.6.0 while a skill was locally modified (preserved) or skipped, and that deployment also installed a skill the earlier installation didn't have. On such a home, the first `--all` after the source renamed the bundle or moved a member out of it reported `REMOVE` for the bundle's skills. It now reports them `UNCHANGED`, except where the entry for #930 and #914 above still asks you to name the bundle with `--include`. `--migrate-from` away from such an entry carries the request, and `deploy.py check` counts those skills' tools as required. If the new skill brought a dependency of its own, that dependency counts as chosen only when no bundle of the source holds it or the home holds every member of its bundle, so a later `--all` never installs the rest of an opt-in bundle you never chose for it. If the installation requested no skill on its own (only bundles), the entry reads as before.
+- Pull request: #882
+
+### repo-cleanup reports a refused branch deletion, never searches through a link, and matches a branch's upstream by its exact name
+
+- Level: patch, defect fixes bringing the commands in line with their documented rules.
+- Contract: none
+- User action: none. `delete-local`, and the sweep, now exit 1 when Git refuses to delete a branch, including one whose worktree was just removed with it, where before they exited 0 after printing `PRESERVED`. A worktree area reached through a link or junction, such as a `.claude` that is one, is no longer searched for leftover directories, and `remove-directory` refuses, with exit 1, a directory that resolves outside its area. A branch counts as pushed under its own name, and so as finished once the default branch holds it, only when its upstream is exactly `origin/<its name>`: a branch tracking `origin/feature/<its name>` or another remote is now kept.
+- Pull request: #881
+
+### review-insights finds every nearby reviewer disagreement and credits each guidance version only to its own reviewers
+
+- Level: patch. These are defect fixes in a skill this release added. The report schema is unchanged.
+- Contract: `docs/code-review-operations-contract.md` (the `synthesis-input:guidance-file` `path` and `reviewers` rows, now one line per pinned version, and the recommendation target's `path` row, which bounds a `move-to-script` path)
+- User action: none. A report can show disagreements a nearby same-severity finding used to hide. A guidance file that reviewers were given at different versions now has one line per version, each naming only its own reviewers. A guidance file the checkout cannot read prints a `GUIDANCE_UNREADABLE` line, and the report falls back to the reviewer's commit instead of failing. A synthesis whose `move-to-script` path holds a control character, a quote, a backtick, `$`, or a backslash, or is longer than 260 characters, is refused, and every printed `TARGET` line stays on one line.
+- Pull request: #880
+
+### dotnet-dependencies applies a conditional Remove only to its frameworks
+
+- Level: patch, a defect fix in this release's condition reader with no contract change: a `ProjectReference`, `Reference`, or `PackageReference` `Remove` under a condition no longer removes the item for every framework, so a project removed for one framework is read and walked for the others (no silent `MISSING`), and a project with no restore removes an item only where the condition holds for every framework it names.
+- Contract: none
+- User action: none
+- Pull request: #879
+
+### dotnet-dependencies evaluates a Choose once, when it is reached
+
+- Level: patch, a defect fix with no contract change: a project whose target framework comes from a `Choose`, or from a `PropertyGroup` whose condition reads the framework it sets, now names the framework MSBuild picks, where before a `When` that set the framework it tested handed over to the `Otherwise`.
+- Contract: none
+- User action: none
+- Pull request: #879
+
+### The update script ignores git's repository variables in any case on Windows
+
+- Level: patch, a defect fix with no contract change: `update.sh` now unsets git's repository-selecting variables whatever their case, so a lower-case `git_dir` in the shell no longer points the update at another clone.
+- Contract: none
+- User action: none
+- Pull request: #844
+
+### flag-review-finding corrects an open flag's category and rationale
+
+- Level: minor. A new `edit` command; the flag store's schema and every existing command are unchanged.
+- Contract: `docs/code-review-operations-contract.md` (the `flag-review-finding` row under Skill behavior)
+- User action: none
+- Pull request: #842
+
+### audit-ai-config counts path-specific instructions as a Copilot CLI/app source
+
+- Level: patch. A repository with only `.github/instructions/**/*.instructions.md` and a Copilot CLI or Copilot app target now reports `Copilot CLI/app: effective sources: .github/instructions` instead of the `ERROR` "no instruction sources available", and a repository that has them beside other sources lists them too.
+- Contract: none
+- User action: none
+- Pull request: #841
+
+### A condition whose processes could not be ended is no longer reported as one that could not run
+
+- Level: patch, since a failure that already failed the review now says what happened.
+- Contract: none.
+- User action: none; a review whose condition script started but whose processes could not be ended now ends with `FAILED` and `Condition script started, but its processes could not be ended: <script>: The job's processes may still run: ...` (or `The group's processes may still run: ...` on Linux) in place of `Condition script could not run: ...`. Those processes may still be running, so check for them before rerunning the review.
+- Pull request: #840
+
+### analyze-skill-cost reports inline Python written with the interpreter token
+
+- Level: patch. A bug fix: the `generated-code` cue now finds `{{PYTHON}} -c`, and `python -c` or `python3 -c` with interpreter options before `-c`, so a source-tree audit raises the MUST FIX the skill already described.
+- Contract: none
+- User action: none. An audit of a skill that runs inline Python may now report a MUST FIX it did not before.
+- Pull request: #839
+
+### github-activity-report refuses a search response whose count is not a non-negative integer
+
+- Level: patch, a defect fix: a malformed response is refused rather than used.
+- Contract: none
+- User action: none
+- Pull request: #838
+
+### `curate-agent-memory` lists candidate directories when the configured one is missing
+
+- Level: patch, a defect fix: `memory_audit.py resolve` now prints the `CANDIDATE <dir>` lines its documentation promised when a settings-named `autoMemoryDirectory` does not exist or settings name no usable directory, so the skill offers the memory directories it found instead of an empty list.
+- Contract: none.
+- User action: none.
+- Pull request: #837
+
+### review-insights reports consistency signals and reads guidance text
+
+- Level: minor. The insights report (schema 9) gains `signals` and a "Consistency signals" Markdown section, the synthesis input gains `guidance-file`, `severity-drift`, `verdict-flip`, `reviewer-disagreement`, `guidance-overlap`, and `guidance-unsupplied` lines, and synthesized recommendations gain the `consolidate` and `move-to-script` types and a cheapest-fix order within each priority.
+- Contract: `docs/code-review-operations-contract.md` (the insights report's `schema_version`, now `9`, and its new `signals` field; the signal tables: `insights.signals` and its `severity_drift`, `verdict_flips`, `reviewer_disagreements`, `guidance_overlaps`, and `unsupplied_references` rows; the recommendation `type` rows, which gain `consolidate` and `move-to-script`, with the new `merge` field and the `target` rows those types change; and the synthesis-input `guidance-file`, `severity-drift`, `verdict-flip`, `reviewer-disagreement`, `guidance-overlap`, and `guidance-unsupplied` lines)
+- User action: none. An existing report reads as before and gains its signals when it is regenerated. To give the synthesis your guidance text, set the repository's `checkout_path` in the code-review configuration.
+- Pull request: #835
+
+### `deploy.py --debug` shows the traceback of a failure no command handled
+
+- Level: patch, a defect fix with no contract change: the documented `--debug` and `DEPLOYER_DEBUG` behavior now holds for every failure.
+- Contract: none.
+- User action: none. A run with `--debug` or `DEPLOYER_DEBUG=1` that ends with a `FAILED` line now prints its traceback on stderr after it.
+- Pull request: #830
+
+### The deployment lock no longer treats a Windows process it cannot open as gone
+
+- Level: patch, a defect fix: on Windows, a lock holder whose process `OpenProcess` refuses with an error other than an invalid parameter is now reported running with an unreadable start time instead of gone.
+- Contract: none
+- User action: none. A deployment that meets such a lock now stops with "Lock PID <pid> is alive but its start time cannot be read" instead of reclaiming it; if no deployment is running, remove the lock as the message says.
+- Pull request: #828
+
+### dotnet-dependencies labels a conditional assembly, project, or central-version reference with the frameworks that hold it, and leaves a Target's items out
+
+- Level: patch. It is a defect fix with no contract change. A `Reference`, `ProjectReference`, or central `PackageVersion` under a framework condition, and the chains through it, are now labelled only with the frameworks it holds for, where before they carried every framework. An item inside a `Target` is no longer read as a reference; an `UNREADABLE` line names it. An `UNREADABLE` reason for a condition the script cannot evaluate now says what it did instead: an item left out, an `Update` not applied, or a `Remove` not made. A project with a `When` that has no `Condition` is reported unreadable.
+- Contract: none
+- User action: none
+- Pull request: #834
+
+### A plain `--all` keeps a chosen opt-in bundle's skills after v0.6.0 preserved a skill through its manifest upgrade
+
+- Level: patch. It fixes a defect in this release's handling of a manifest v0.6.0 wrote.
+- Contract: none
+- User action: none. The affected home was deployed by v0.5.0 or earlier with an opt-in bundle, then by v0.6.0 while a skill was locally modified (preserved) or skipped. On such a home, the first `--all` after the source renamed the bundle, or moved a member out of it, used to report `REMOVE` for the bundle's skills. It now reports them `UNCHANGED`, except where the entry for #930 and #914 above still asks you to name the bundle with `--include`. `--migrate-from` away from such an entry carries the request, and `deploy.py check` counts those skills' tools as required. One exception: if that installation requested no skill on its own (only bundles), the entry reads as before.
+- Pull request: #832
+
+### update-pr-tracker refuses an override for a pull request it does not track, and marks overrides it no longer tracks
+
+- Level: minor. A command that accepted any well-formed key now refuses one the tracker does not hold, the listing has a new line, and the tracker keeps a new file.
+- Contract: `docs/code-review-operations-contract.md`, its new tracker record format (`tracker`)
+- User action: run `update-pr-tracker` once after updating, before setting a status override. `override --set` reads the `tracker.json` record that each update now writes beside the code-review configuration, and refuses every key until an update has written it. After that, it refuses a key for a pull request the last update did not track. Existing overrides are kept, and the listing now marks each one whose pull request the tracker no longer holds as `OVERRIDE_UNTRACKED`, so you can clear the ones you no longer need.
+- Pull request: #833
+
+### A condition's file stays within its 32 KiB cap and holds the count the prompt states
+
+- Level: patch, a defect fix with no contract change: the file a condition gives its specialists is the script's own bytes, cut before a character the cap splits, and its length is the count the prompt and the plan state, where before a split character or bytes that are not UTF-8 made it larger than both.
+- Contract: none
+- User action: none
+- Pull request: #829
+
+### A review comment's author, path, and url are never blank
+
+- Level: patch, a fix that holds records to what GitHub's reader already writes.
+- Contract: `docs/code-review-operations-contract.md`
+- User action: none.
+- Pull request: #827
+
+### repo-cleanup cleans branches main already holds and asks about local-only worktrees, detached worktrees, and leftover directories
+
+- Level: minor, new behavior, new questions, and a new command.
+- Contract: `skills/repo-cleanup/SKILL.md` (the new `remove-directory` command, its `--plan` and `--path` arguments, and its `REMOVED`, `DELETED_DIR`, and `PRESERVED <path> <reason>` status lines; the sweep's new `CONFIRM_DETACHED <path> <sha>` and `ORPHAN <path>` lines and the worktree `CONFIRM_LOCAL` now carries; and the `REMOVED` line `delete-local` prints for a worktree it removes with its branch)
+- User action: none. A sweep now deletes a branch pushed under its own name with no pull request when the default branch holds it and its remote branch, removing its clean worktree. It asks before removing a clean worktree whose local-only branch you delete (`CONFIRM_LOCAL` now carries the worktree's path), a clean detached worktree whose commit is on the default branch or a remote branch (`CONFIRM_DETACHED`), and a directory in the worktree area that Git no longer tracks (`ORPHAN`), all through the new `remove-directory` command. The summary gains "Detached (kept)", "Orphans (kept)", and "Orphans deleted".
+- Pull request: #822
+
 ## v0.7.0
 
 Level: minor.
