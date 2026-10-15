@@ -18,9 +18,16 @@ a VIOLATION remains (findings), 0 when none does.
 per .editorconfig setting (state: present, missing, or other:<value>), judged as the listed files see it. With
 --apply it adds only the missing settings, as a `[*.cs]` section placed first in the outermost .editorconfig that
 applies, so every existing section still overrides them, and prints `ADDED <.editorconfig> <key> <value>`; it never
-changes a value the repository already sets and never adds a package reference. It exits 1 when a setting is
-missing and --apply was not given (findings), 0 otherwise: another value is the repository's choice, and the
-package is advice the skill cannot act on.
+changes a value the repository already sets and never adds a package reference. It exits 1 when a setting is still
+missing, because --apply was not given or could not write it (findings), 0 otherwise: another value is the
+repository's choice, and the package is advice the skill cannot act on.
+
+Both act only inside the repository. `config` reads a project the solution lists, and the package files above it, only
+when the entry lies inside the repository root, judged from its text before anything touches it; an entry outside the
+root, or written as a network share or a device, prints `REFUSED <entry> <reason>` and is left unread. Neither writes
+a file that is a symbolic link or a Windows junction, or that lies below one inside the repository, since the write
+would land wherever the link points: `check --fix` prints `REFUSED <file> <reason>` and leaves the file unfixed, and
+`config --apply` prints `REFUSED <.editorconfig> <reason>`, adds nothing there, and exits 1, a setting still missing.
 
 A failure, such as a listed file that does not exist or a file it cannot read or write, prints `FAILED <reason>`
 as the last line and exits 1. A usage error exits 2.
@@ -32,6 +39,7 @@ import argparse
 import functools
 import os
 import re
+import stat
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -42,7 +50,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from console import run_main
 from dotnet_format_targets import read_file_list
-from dotnet_solution import read_text, same_path, solution_projects
+from dotnet_solution import project_path, read_listed_projects, read_text, refusal, same_path
 from xml_reader import XmlRefused
 
 LINE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+\Z")
@@ -464,12 +472,40 @@ def write_source(path: Path, source: Source, text: str) -> None:
     path.write_bytes(source.bom + text.encode(source.encoding, errors="surrogatepass"))
 
 
+def is_link(path: Path) -> bool:
+    """Whether `path` is a symbolic link or, on Windows, a junction or any other reparse point; raises `OSError`,
+    `FileNotFoundError` for a path that does not exist. The skill's own test until skill-core holds one link test
+    (#1084)."""
+    status = os.lstat(path)
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return stat.S_ISLNK(status.st_mode) or bool(getattr(status, "st_file_attributes", 0) & reparse)
+
+
+def link_refusal(root: Path, path: Path) -> str | None:
+    """Why `path`, a file under `root` the script would write, is not written, or None: it, or a folder between it
+    and `root`, is a link, so the write would land wherever the link points. A path that does not exist yet, such
+    as an .editorconfig the script adds, is judged by the folders that do."""
+    current = root
+    for part in path.relative_to(root).parts:
+        current = current / part
+        try:
+            if is_link(current):
+                where = "the file" if current == path else f"its folder {current.relative_to(root).as_posix()}"
+                return f"{where} is a symbolic link or junction, which the script does not write through"
+        except FileNotFoundError:
+            return None
+        except OSError as error:
+            return f"{current.relative_to(root).as_posix()} cannot be examined: {error.strerror or error}"
+    return None
+
+
 class Failed(Exception):
     pass
 
 
 def check_files(root: Path, names: list[str], fix: bool, emit: Callable[[str], None]) -> bool:
-    """Check (and fix) each file; return whether a violation remains."""
+    """Check (and fix) each file; return whether a violation remains. A file `link_refusal` refuses is checked and
+    left unfixed."""
     missing = next((root / name for name in names if not (root / name).is_file()), None)
     if missing is not None:
         raise Failed(f"{missing} does not exist")
@@ -478,7 +514,10 @@ def check_files(root: Path, names: list[str], fix: bool, emit: Callable[[str], N
         path = root / name
         source = read_source(path)
         text = source.text
-        if fix:
+        refused = link_refusal(root, path) if fix else None
+        if refused:
+            emit(f"REFUSED\t{name}\t{refused}")
+        elif fix:
             text, fixed = fix_text(text)
             if fixed:
                 write_source(path, source, text)
@@ -676,17 +715,26 @@ def effective_settings(chain: list[Path], probe: Path) -> dict[str, str]:
     return settings
 
 
-def package_referenced(root: Path, solution: Path) -> bool:
-    """Whether a project of the solution, or a package file in a folder above one, names the package; a solution
-    that cannot be read fails rather than leaving only its own folder to search."""
+def package_referenced(root: Path, solution: Path, emit: Callable[[str], None]) -> bool:
+    """Whether a project of the solution, or a package file in a folder above one up to `root`, names the package; a
+    solution that cannot be read fails rather than leaving only its own folder to search. An entry skill-core's
+    `refusal` refuses, outside `root` or a network-share or device form, is reported and never touched, so no search
+    starts outside the repository."""
     try:
-        projects = solution_projects(solution)
+        listed = read_listed_projects(solution)
     except XmlRefused as error:
         raise Failed(f"{solution} cannot be read: {error}") from None
+    projects: dict[str, Path] = {}
+    for entry in listed:
+        project = project_path(solution.parent, entry)
+        refused = refusal(project, root)
+        if refused:
+            emit(f"REFUSED\t{entry}\t{refused}")
+        else:
+            projects.setdefault(same_path(project), project)
     directories: set[Path] = set()
     candidates: list[Path] = []
-    for project in sorted(projects):
-        path = Path(project)
+    for _, path in sorted(projects.items()):
         if path.is_file():
             candidates.append(path)
         directory = path.parent
@@ -722,8 +770,8 @@ def insert_settings(path: Path, settings: list[tuple[str, str]]) -> None:
 
 def configure(root: Path, solution: Path, files: list[str], apply: bool, emit: Callable[[str], None]) -> bool:
     """Report each setting as the changed files see it; with apply, fill only the gaps. Return whether a setting
-    is still missing."""
-    emit(f"PACKAGE\t{PACKAGE}\t{'present' if package_referenced(root, solution) else 'missing'}")
+    is still missing, which an .editorconfig `link_refusal` refuses to write leaves so."""
+    emit(f"PACKAGE\t{PACKAGE}\t{'present' if package_referenced(root, solution, emit) else 'missing'}")
     effective: list[tuple[Path, dict[str, str]]] = []
     for name in files:
         path = root / name
@@ -747,11 +795,17 @@ def configure(root: Path, solution: Path, files: list[str], apply: bool, emit: C
         emit(f"SETTING\t{key}\t{wanted}\t{state}")
     if not apply:
         return bool(gaps)
+    still_missing = False
     for target, missing in gaps.items():
+        refused = link_refusal(root, target)
+        if refused:
+            emit(f"REFUSED\t{target.relative_to(root).as_posix()}\t{refused}")
+            still_missing = True
+            continue
         insert_settings(target, missing)
         for key, value in missing:
             emit(f"ADDED\t{target.relative_to(root).as_posix()}\t{key}\t{value}")
-    return False
+    return still_missing
 
 
 # -------------------------------------------------------------------------------------------------- main

@@ -8,7 +8,9 @@ way. A `.slnx` goes through skill-core's `xml_reader`, which refuses a DOCTYPE o
 
 The files are a repository's the user did not write, so every read here, and each skill's own read of such a file,
 opens only a regular file and refuses one holding more than `READ_LIMIT_BYTES` (`read_bounded`), raising `FileRefused`,
-an `OSError` naming the file and the reason.
+an `OSError` naming the file and the reason. A path such a file names, a solution's entry or a project's reference, is
+made absolute without reaching the file system (`project_path`), and a skill asks `refusal` before anything opens or
+looks it up: one outside the tree the skill examines, or in a network-share or device form, is never touched.
 """
 
 from __future__ import annotations
@@ -22,6 +24,8 @@ from xml_reader import read_xml
 
 SOLUTION_PROJECT = re.compile(r'^\s*Project\("[^"]*"\)\s*=\s*"[^"]*"\s*,\s*"([^"]+)"')
 SOLUTION_SUFFIXES = (".sln", ".slnx")
+# The forms of a path that name a device rather than a file, as a path written with `/` for `\` starts.
+DEVICE_PREFIXES = ("//?/", "//./")
 # The most bytes a reader reads of one file; a larger file is refused unread, so no file can exhaust the memory a run
 # has. A large solution's restore writes the largest file the readers take, its project.assets.json, which stays well
 # below it.
@@ -76,6 +80,32 @@ def decode_text(data: bytes) -> str:
 def same_path(path: Path) -> str:
     """`path` as the file system compares it: normalized, and case-folded where the platform ignores case."""
     return os.path.normcase(os.path.normpath(str(path)))
+
+
+def lexical_absolute(path: str | Path) -> Path:
+    """`path` made absolute against the working directory and normalized without reaching the file system."""
+    return Path(os.path.abspath(path))  # noqa: PTH100 - Path.resolve reaches the file system, which this must not
+
+
+def project_path(project_dir: Path, include: str) -> Path:
+    """A path a file names, with Windows separators, joined to its directory and made absolute without reaching the
+    file system: nothing is opened, followed, or looked up to resolve it, so a path that names another host contacts
+    none before `refusal` judges it."""
+    return lexical_absolute(project_dir / include.replace("\\", "/"))
+
+
+def refusal(path: Path, tree: Path) -> str | None:
+    """Why a skill does not read `path`, a path a file names, made absolute by `project_path`, or None when it lies
+    inside `tree`, the tree the skill examines. The test is lexical, so it decides before anything touches the path:
+    a device or network form, or any other path outside the tree, is refused unopened."""
+    if Path(same_path(path)).is_relative_to(same_path(tree)):
+        return None
+    written = str(path).replace("\\", "/")
+    if written.startswith(DEVICE_PREFIXES):
+        return "the path names a device, which the reader does not open"
+    if written.startswith("//"):
+        return "the path names a network share, which the reader does not open, so no host is contacted"
+    return f"the path is outside the examined tree {tree.as_posix()}, which the reader does not leave"
 
 
 def is_solution(path: Path) -> bool:
