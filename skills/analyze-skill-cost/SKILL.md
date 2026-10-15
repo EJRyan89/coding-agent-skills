@@ -2,7 +2,7 @@
 name: analyze-skill-cost
 description: "Audit an agent skill for cost and efficiency: token footprint, tool calls, deterministic work left to prose, subagent overhead, runtime adapters, model, and allowed-tools. Read-only findings report. Use it when asked what a skill costs, why it is slow or expensive, or to check one before shipping it."
 argument-hint: "<SkillName>"
-allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "Read", "Grep"]
+allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py\" *)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py\" *)", "Read", "Grep"]
 ---
 
 Audit a named agent skill for cost and efficiency regressions and render a bucketed findings report. Read-only — no edits, no prompts.
@@ -103,8 +103,11 @@ Allowed-tools grants. `ALLOWED` lines fill the Scope. `NO_ALLOWED_TOOLS` renders
 
 - `UNUSED_ALLOWED <tool>` → SUGGESTION "remove from `allowed-tools`", after confirming the body does not need it in words the heuristic misses (invoking another skill by name needs skill invocation).
 - `MISSING_ALLOWED <tool> <line>` → for Claude, **MUST FIX** when that line tells the agent to use the tool, since the skill then prompts mid-run; ignore a line that only mentions it, such as a rubric or a counter-example. For another runtime, check that the compatibility contract provides a usable first-class mapping instead of requiring Claude tool names in native metadata.
-- `UNSCOPED_ALLOWED <entry>` → **MUST FIX**: it pre-approves every shell command. Recommend patterns for the commands the fences run, written as they are, such as `Bash({{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/*)` with the same `PowerShell(...)` pattern.
+- `UNSCOPED_ALLOWED <entry>` → **MUST FIX**: it pre-approves every shell command. Recommend patterns for the commands the fences run, written as they are, each script by name, the pattern ending at the script's closing quote, a space, and `*`, with the same `PowerShell(...)` pattern.
 - `UNPAIRED_ALLOWED <entry>` → **MUST FIX** for a skill that runs on Windows, SUGGESTION otherwise: add the other shell's identical pattern, or the user is prompted, or denied in a non-interactive run, whenever the model picks that shell.
+- `SIBLING_FOLDER_ALLOWED <entry>` → **MUST FIX**: the pattern reaches a sibling skill's folder rather than one script, so it matches every script there and every `..` path out of it. Grant each sibling script the body runs by name, the pattern ending at the script's closing quote, a space, and `*`.
+- `OPEN_PATH_ALLOWED <entry>` → **MUST FIX**: the pattern's `*` continues a path, as a folder's `/*` or `tool.py*` does, so it matches every file that path starts and every `..` path out of it, which reaches every installed skill's scripts. Grant each script the body runs by name, the pattern ending at the script's closing quote, or at a space when the path is unquoted, then `*`.
+- `NO_SCRIPT_ALLOWED <entry>` → **MUST FIX**: the pattern's text before its `*` names a program but no script, such as `{{PYTHON}} *` or `bash -c *`, or `git` or `gh` with no subcommand, so it pre-approves any code or subcommand the `*` supplies. Grant each script the body runs by name, or the `git` or `gh` subcommand it runs.
 - `UNGRANTED <tool> <line> <command>` → **MUST FIX** when the command runs the skill's own or a sibling's scripts; correct the pattern rather than widen it. For any other command, SUGGESTION to grant it exactly as written, unless it runs code from the target repository or acts outside the conversation, which should keep prompting.
 - `IDLE_ALLOWED <entry>` → **MUST FIX**: the pattern matches no command in a shell fence or code span, so it pre-approves a command the skill never asks for, such as one a repository leaves to prompt. Remove it, or show the command it is for.
 - `HIDDEN_ALLOWED` → **MUST FIX**: no turn starts a hidden skill, so its grants approve nothing. Remove `allowed-tools`; the skills that run its scripts grant them.

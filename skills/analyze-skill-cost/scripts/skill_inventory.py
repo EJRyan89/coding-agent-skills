@@ -34,8 +34,10 @@ Tool references: a tool counts as used on a line when its exact, case-sensitive 
   - the start of an inline code span (`Read`, `Grep -l`, `Glob("*")`), outside fenced blocks;
   - followed by "(" (call syntax) or by the word tool(s), call(s), or invocation(s); or
   - a multi-word tool name that is not an English word (AskUserQuestion, WebFetch, mcp__*), anywhere.
-A bash, sh, shell, console, or PowerShell fence uses each of Bash and PowerShell that is allowed, else Bash: on
-Windows, Claude Code may run a fence's command through either tool.
+A fence labelled for a command shell (bash, sh, shell, console, zsh, ksh, dash, fish, cmd, bat, or batch) or for
+PowerShell (powershell, pwsh, or ps1) uses each of Bash and PowerShell that is allowed, else Bash: on Windows, Claude
+Code may run a fence's command through either tool. Fences are read as skill-core's find_fences reads them, so a
+fence counts wherever Markdown allows one: indented, in a list item, or in a blockquote, with backticks or tildes.
 Sentence-initial verbs such as "Read the file" or lowercase "read and apply" never count as USED,
 so they never produce MISSING_ALLOWED. They do produce IMPLIED for an allowed tool whose action the
 prose names ("read", "search", "ask", "subagent", ...), which keeps it out of UNUSED_ALLOWED. A prohibition
@@ -44,17 +46,27 @@ names no use: an action a negation governs in its clause ("do not read", "never 
 names one: its verbs are the subagent's, so they neither use nor imply a tool.
 
 Shell grants: in Claude Code, allowed-tools pre-approves its entries for the turn that starts the skill; it
-restricts nothing. UNSCOPED_ALLOWED <entry> is a Bash or PowerShell entry that matches every command (bare,
-(*), or (:*)). UNPAIRED_ALLOWED <entry> is a Bash pattern without the same PowerShell pattern, or the
-reverse. UNGRANTED <tool> <line> <command> is a fence command that no pattern of a shell with patterns
-matches, so running it through that tool prompts. A pattern matches the command's text, quotes included,
-with * for any text. EXPANDS <line> <command> is a fence command that expands a shell variable or command
-substitution other than ${CLAUDE_SKILL_DIR} or $ARGUMENTS, which prompts in both shells whatever is granted.
-IDLE_ALLOWED <entry> is a scoped Bash or PowerShell pattern that matches no fence command and no code span outside
-a fence, so it pre-approves a command the skill never asks for. HIDDEN_ALLOWED is a hidden skill with any grant:
-no turn starts it, so its grants approve nothing, and it takes the place of its IDLE_ALLOWED lines.
+restricts nothing. UNSCOPED_ALLOWED <entry> is a Bash or PowerShell entry that matches every command (bare, (*), or
+(:*)). UNPAIRED_ALLOWED <entry> is a Bash pattern without the same PowerShell pattern, or the reverse.
+SIBLING_FOLDER_ALLOWED <entry> is a pattern that reaches a sibling skill through ${CLAUDE_SKILL_DIR}/../ without
+naming one of its files, quoted, before any *: no path is normalized, so it matches every script of that skill and
+every .. path out of it. OPEN_PATH_ALLOWED <entry> is any other pattern whose first * does not follow a space
+outside quotes, such as scripts/* or tool.py*: the * continues the path before it, so the pattern matches every file
+that path starts and every .. path out of it; a pattern ends a script's path at its closing quote, or at a space
+when unquoted, before any *. NO_SCRIPT_ALLOWED <entry> is any other pattern with a * whose text before it names no
+script: after the program, and capital-letter switches that take no value such as -B, no path ending in a script's
+suffix, nor, for git or gh, a subcommand right after the program; so python *, bash -c *, or git * pre-approves any
+code or subcommand the * supplies. A command is a fence command, or a code span outside a fence that runs a script:
+a program and a script's path as that rule reads them. UNGRANTED <tool> <line> <command> is a command that no
+pattern of a shell with patterns matches, so running it through that tool prompts. A pattern matches the command's
+text, quotes included, with * for any text, and one whose only * ends it after a space also matches the bare command
+before it. EXPANDS <line> <command> is a command that expands a shell variable or command substitution other than
+${CLAUDE_SKILL_DIR} or $ARGUMENTS, which prompts in both shells whatever is granted. IDLE_ALLOWED <entry> is a
+scoped Bash or PowerShell pattern that matches no fence command and no code span outside a fence, so it pre-approves
+a command the skill never asks for. HIDDEN_ALLOWED is a hidden skill with any grant: no turn starts it, so its
+grants approve nothing, and it takes the place of its IDLE_ALLOWED lines.
 A script that starts code the target repository configures declares a module-level RUNS_REPOSITORY_CODE string
-saying so, and its command must keep prompting. A fence command that runs one, through ${CLAUDE_SKILL_DIR}, is
+saying so, and its command must keep prompting. A command that runs one, through ${CLAUDE_SKILL_DIR}, is
 REPOSITORY_CODE <tool> <line> <command> when no grant of that tool covers it, as intended, and
 GRANTED_REPOSITORY_CODE <tool> <line> <command> when one does; it is never UNGRANTED.
 
@@ -76,7 +88,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass, field
-from itertools import pairwise
+from itertools import dropwhile, pairwise
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
@@ -84,7 +96,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 import frontmatter
 from console import run_main
 from git_client import GitClient
-from markdown_sections import CODE_SPAN
+from markdown_sections import CODE_SPAN, find_fences, prose_code_spans
 
 MAIN_NAME = "skill.md"
 HELPER_SUFFIXES = frozenset({".sh", ".bash", ".ps1", ".py", ".js", ".mjs", ".cjs", ".ts"})
@@ -97,8 +109,9 @@ BODY_LINE_LIMIT = 500
 DOC_TOC_LINE_LIMIT = 100
 SKIPPED_DIRECTORIES = frozenset({".git", "__pycache__", "node_modules"})
 SKILL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
-SHELL_FENCES = frozenset({"bash", "sh", "shell", "console"})
+# The labels of a fence whose lines are commands the model may run through its Bash or PowerShell tool: a command
+# shell's, and PowerShell's.
+SHELL_FENCES = frozenset({"bash", "sh", "shell", "console", "zsh", "ksh", "dash", "fish", "cmd", "bat", "batch"})
 POWERSHELL_FENCES = frozenset({"powershell", "pwsh", "ps1"})
 KNOWN_TOOLS = (
     "Agent",
@@ -183,6 +196,9 @@ ALLOWED_NAME = re.compile(r"[A-Za-z_][\w-]*")
 SHELL_TOOLS = ("Bash", "PowerShell")
 # Grant patterns that match every command, so they scope nothing.
 UNSCOPED_PATTERNS = frozenset({"", "*", ":*"})
+# How a command names a sibling skill's file. Claude Code normalizes no path in a shell grant, so a pattern that
+# leaves the sibling's file open matches every script of that skill and every `..` path out of it.
+SIBLING_PATH = "${CLAUDE_SKILL_DIR}/../"
 # A trailing && or | joins a fence's command to the next line, which Claude Code checks as its own command.
 COMMAND_JOIN = re.compile(r"\s*(?:&&|\|\||\||\\)\s*$")
 # Shell expansion other than the values Claude Code fills in before the command runs. A command holding one is
@@ -192,6 +208,19 @@ SHELL_EXPANSION = re.compile(r"(?<!\\)\$(?!\{CLAUDE_SKILL_DIR\}|ARGUMENTS\b)(?:[
 # fence command runs through the skill's directory.
 REPOSITORY_CODE_DECLARATION = "RUNS_REPOSITORY_CODE"
 SKILL_DIR_SCRIPT = re.compile(r"\$\{CLAUDE_SKILL_DIR\}/([^\"'\s]+\.py)")
+# A command's words: a quoted string, or a run of other text up to a space or a quote.
+COMMAND_WORD = re.compile(r"\"[^\"]*\"?|'[^']*'?|[^\s\"']+")
+# A script's path, as a command or a grant names the file it runs.
+SCRIPT_FILE = re.compile(
+    rf"[^\s;&|<>()*`]+\.(?:{'|'.join(sorted(suffix[1:] for suffix in HELPER_SUFFIXES))})", re.IGNORECASE
+)
+# The switches an interpreter may take before the script it runs: capital-letter flags that take no value, such as
+# Python's -B and -I. A lowercase switch such as -c, -e, or -m, a word such as -Command, or one that takes a value,
+# such as -X, runs code, a module, or an option's value rather than the script.
+SCRIPT_SWITCH = re.compile(r"-[BEIOPRS]+")
+# The programs a grant may name by a subcommand, which must follow the program directly.
+SUBCOMMAND_PROGRAMS = frozenset({"git", "gh"})
+SUBCOMMAND = re.compile(r"[a-z][a-z0-9-]*")
 SHELL_FILE_COMMAND = r"(?:cat|head|tail|find|grep|rg|sed|awk|wc|ls)"
 # Word edges that also treat hyphens as part of a word, so "rev-parse" is not "parse".
 WORD_START = r"(?<![\w-])"
@@ -301,29 +330,15 @@ class Block:
 
 
 def parse_fences(lines: list[str]) -> tuple[list[str | None], list[Block]]:
-    """Return each line's fence language (None outside fences) and every fenced block."""
+    """Return each line's fence language (None outside fences) and every fenced block, as skill-core's fence reader
+    finds them, each body line without the blockquote markers that hold it."""
     languages: list[str | None] = [None] * len(lines)
     blocks: list[Block] = []
-    opener = ""
-    current: Block | None = None
-    for index, line in enumerate(lines):
-        if current is None:
-            match = FENCE.match(line)
-            if match and not (match.group(1)[0] == "`" and "`" in match.group(2)):
-                opener = match.group(1)
-                info = match.group(2).split()
-                current = Block(index + 1, info[0].casefold() if info else "")
-                languages[index] = current.language
-            continue
-        languages[index] = current.language
-        stripped = line.strip()
-        if stripped and set(stripped) == {opener[0]} and len(stripped) >= len(opener):
-            blocks.append(current)
-            current = None
-        else:
-            current.body.append(line)
-    if current is not None:
-        blocks.append(current)
+    for fence in find_fences(lines):
+        language = fence.language.casefold()
+        for index in fence.lines():
+            languages[index] = language
+        blocks.append(Block(fence.opener + 1, language, [fence.text(lines[index]) for index in fence.body()]))
     return languages, blocks
 
 
@@ -388,12 +403,19 @@ def grants(pattern: str, command: str) -> bool:
     """Whether a Bash or PowerShell permission pattern matches a command, by Claude Code's rules.
 
     The comparison is on the command's text, quotes included, and `*` matches any text. The legacy `prefix:*` is
-    read as `prefix *`. Where the rules are unclear this errs toward no match, so a grant is never overstated.
+    read as `prefix *`, and a pattern whose only `*` ends it after a space also matches the bare command before it.
+    Where the rules are unclear this errs toward no match, so a grant is never overstated.
     """
-    if pattern.endswith(":*"):
-        pattern = pattern[:-2] + " *"
+    pattern = trailing_wildcard(pattern)
+    if pattern.endswith(" *") and pattern.count("*") == 1 and command == pattern[:-2]:
+        return True
     expression = ".*".join(re.escape(part) for part in pattern.split("*"))
     return re.fullmatch(expression, command, re.DOTALL) is not None
+
+
+def trailing_wildcard(pattern: str) -> str:
+    """The pattern with the legacy `prefix:*` read as `prefix *`, which Claude Code treats alike."""
+    return pattern[:-2] + " *" if pattern.endswith(":*") else pattern
 
 
 def runs_repository_code(script: Path) -> bool:
@@ -414,7 +436,7 @@ def runs_repository_code(script: Path) -> bool:
 
 
 def repository_code_commands(skill_dir: Path, commands: list[tuple[int, str]]) -> frozenset[str]:
-    """The fence commands that run a script, through the skill's directory, that declares it starts repository code."""
+    """The commands that run a script, through the skill's directory, that declares it starts repository code."""
     return frozenset(
         command
         for _, command in commands
@@ -422,16 +444,78 @@ def repository_code_commands(skill_dir: Path, commands: list[tuple[int, str]]) -
     )
 
 
-def fence_commands(body: list[str], languages: list[str | None], start: int) -> list[tuple[int, str]]:
-    """Each command line in a shell or PowerShell fence, with its file line number."""
+def fence_commands(body: list[str], start: int) -> list[tuple[int, str]]:
+    """Each command line in a shell or PowerShell fence, wherever it sits, with its file line number."""
     commands: list[tuple[int, str]] = []
-    for offset, (line, language) in enumerate(zip(body, languages, strict=True)):
-        if language not in SHELL_FENCES | POWERSHELL_FENCES or FENCE.match(line):
+    for fence in find_fences(body):
+        if fence.language.casefold() not in SHELL_FENCES | POWERSHELL_FENCES:
             continue
-        command = COMMAND_JOIN.sub("", line.strip())
-        if command and not command.startswith("#"):
-            commands.append((start + offset + 1, command))
+        for index in fence.body():
+            command = COMMAND_JOIN.sub("", fence.text(body[index]).strip())
+            if command and not command.startswith("#"):
+                commands.append((start + index + 1, command))
     return commands
+
+
+def runs_a_script(words: list[str]) -> bool:
+    """Whether a command's words run a script by its path: as the program, or after the program and the switches
+    SCRIPT_SWITCH allows."""
+    if not words:
+        return False
+    if SCRIPT_FILE.fullmatch(words[0]):
+        return True
+    rest = list(dropwhile(SCRIPT_SWITCH.fullmatch, words[1:]))
+    return bool(rest) and SCRIPT_FILE.fullmatch(rest[0]) is not None
+
+
+def command_words(text: str) -> list[str]:
+    return [word.strip("\"'") for word in COMMAND_WORD.findall(text)]
+
+
+def span_commands(body: list[str], start: int) -> list[tuple[int, str]]:
+    """Each code span outside a fence in which a program runs a script, as a fence command does, with its file line
+    number. A span that starts with the script's path, such as `deploy.py verify`, names the file or one of its
+    commands rather than running it."""
+    return [
+        (start + index + 1, span.strip())
+        for index, span in prose_code_spans(body)
+        if (words := command_words(span)) and not SCRIPT_FILE.fullmatch(words[0]) and runs_a_script(words)
+    ]
+
+
+def names_what_it_runs(pattern: str) -> bool:
+    """Whether a pattern's fixed part, the text before its first `*`, names what the command runs: a script by its
+    path, as runs_a_script reads it, or a git or gh subcommand right after the program. A pattern with no `*` matches
+    one command only, so it passes."""
+    pattern = trailing_wildcard(pattern)
+    if "*" not in pattern:
+        return True
+    words = command_words(pattern[: pattern.find("*")])
+    if words and words[0] in SUBCOMMAND_PROGRAMS:
+        return len(words) > 1 and SUBCOMMAND.fullmatch(words[1]) is not None
+    return runs_a_script(words)
+
+
+def names_one_sibling_script(pattern: str) -> bool:
+    """Whether a pattern that reaches a sibling skill names one of its files, quoted, with no `*` before the quote
+    closes, so no other script and no `..` path matches it. A pattern that reaches no sibling passes."""
+    start = pattern.find(SIBLING_PATH)
+    if start < 0:
+        return True
+    end = pattern.find('"', start)
+    path = pattern[start:end]
+    return pattern[start - 1 : start] == '"' and end >= 0 and "*" not in path and not path.endswith("/")
+
+
+def ends_its_path_before_the_wildcard(pattern: str) -> bool:
+    """Whether a pattern's first `*` follows a space outside quotes, so the path before it is closed and the `*`
+    stands only for what follows the command's script: a `*` that continues a path or a quoted string matches every
+    file that path starts and every `..` path out of it. A pattern with no `*` passes."""
+    pattern = trailing_wildcard(pattern)
+    star = pattern.find("*")
+    if star < 0:
+        return True
+    return star > 0 and pattern[star - 1] == " " and pattern[:star].count('"') % 2 == 0
 
 
 def grant_findings(
@@ -439,8 +523,9 @@ def grant_findings(
     commands: list[tuple[int, str]],
     repository_code: frozenset[str] = frozenset(),
 ) -> list[str]:
-    """Shell grants that scope nothing or lack their twin, fence commands no grant of a shell covers, and whether a
-    grant covers a command in repository_code, which runs code from the target repository and must keep prompting.
+    """Shell grants that scope nothing, lack their twin, leave a path open before a `*`, or name no script before it,
+    commands no grant of a shell covers, and whether a grant covers a command in repository_code, which runs code from
+    the target repository and must keep prompting.
     """
     shell = [(name, pattern) for name, pattern in entries if name in SHELL_TOOLS]
     output = [
@@ -456,6 +541,23 @@ def grant_findings(
         f"UNPAIRED_ALLOWED {entry_text(name, pattern)}"
         for name, pattern in scoped
         if (twin[name], pattern) not in shell
+    ]
+    output += [
+        f"SIBLING_FOLDER_ALLOWED {entry_text(name, pattern)}"
+        for name, pattern in scoped
+        if not names_one_sibling_script(pattern)
+    ]
+    output += [
+        f"OPEN_PATH_ALLOWED {entry_text(name, pattern)}"
+        for name, pattern in scoped
+        if names_one_sibling_script(pattern) and not ends_its_path_before_the_wildcard(pattern)
+    ]
+    output += [
+        f"NO_SCRIPT_ALLOWED {entry_text(name, pattern)}"
+        for name, pattern in scoped
+        if names_one_sibling_script(pattern)
+        and ends_its_path_before_the_wildcard(pattern)
+        and not names_what_it_runs(pattern)
     ]
     for number, command in commands:
         for tool in SHELL_TOOLS:
@@ -488,15 +590,10 @@ def idle_findings(entries: list[tuple[str, str | None]], commands: list[str]) ->
     ]
 
 
-def shown_commands(body: list[str], languages: list[str | None], start: int) -> list[str]:
+def shown_commands(body: list[str], start: int) -> list[str]:
     """Every command the body shows: each shell or PowerShell fence command, and each code span outside a fence."""
-    commands = [command for _, command in fence_commands(body, languages, start)]
-    return commands + [
-        span.strip()
-        for line, language in zip(body, languages, strict=True)
-        if language is None
-        for span in CODE_SPAN.findall(line)
-    ]
+    commands = [command for _, command in fence_commands(body, start)]
+    return commands + [span.strip() for _, span in prose_code_spans(body)]
 
 
 # --- locate ---------------------------------------------------------------------------------------
@@ -889,12 +986,12 @@ def tools(path: Path) -> list[str]:
         output += [f"IMPLIED {name} {first_implied[name]}" for name in implied]
         output += [f"UNUSED_ALLOWED {name}" for name in allowed if name not in first_use and name not in implied]
         output += [f"MISSING_ALLOWED {name} {line}" for name, line in used if name not in allowed]
-        commands = fence_commands(body, languages, start)
+        commands = sorted(fence_commands(body, start) + span_commands(body, start))
         output += grant_findings(entries, commands, repository_code_commands(path.parent, commands))
         if "INVOCATION hidden" in listed:
             output += ["HIDDEN_ALLOWED"] if allowed else []
         else:
-            output += idle_findings(entries, shown_commands(body, languages, start))
+            output += idle_findings(entries, shown_commands(body, start))
     return output
 
 

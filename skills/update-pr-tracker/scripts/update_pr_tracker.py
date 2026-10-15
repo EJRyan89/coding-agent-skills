@@ -14,6 +14,7 @@ from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+from markdown_literal import markdown_line, navigation_url
 from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("code-review-core")))
@@ -252,10 +253,6 @@ def _validate_review_state(item: dict[str, Any], key: str, path: str) -> None:
         raise TrackerError(f"Tracker item {key}.user_review_sha is required for {review_state}")
 
 
-def _escape(value: str) -> str:
-    return value.replace("|", "\\|").replace("\r", " ").replace("\n", " ")
-
-
 def normalize_pull_keys(values: set[str] | list[str], field: str) -> set[str]:
     normalized: set[str] = set()
     for value in values:
@@ -482,9 +479,13 @@ def _file_url(path: str) -> str:
 
 
 def _pull_link(row: Row, home_repositories: set[str]) -> str:
+    """The pull request's link, its title literal text whatever the author wrote, so it cannot add a marker, open a
+    comment, or add a cell; a URL that is not absolute HTTPS leaves the text unlinked."""
     repository = row.item["repository"]
     prefix = "" if repository in home_repositories else repository.split("/", 1)[1]
-    return f"[{prefix}#{row.item['number']} {_escape(row.item['title'])}]({row.item['url']})"
+    text = f"{prefix}#{row.item['number']} {markdown_line(row.item['title'])}"
+    url = navigation_url(row.item["url"])
+    return f"[{text}]({url})" if url else text
 
 
 def _my_status(item: dict[str, Any]) -> str:
@@ -495,7 +496,7 @@ def _my_status(item: dict[str, Any]) -> str:
 
 def _section_lines(section: str, members: list[Row], summary: str, home: set[str]) -> list[str]:
     lines = [
-        f"### {_escape(section)} ({len(members)})",
+        f"### {markdown_line(section)} ({len(members)})",
         "",
         "<details open>" if section in OPEN_SECTIONS else "<details>",
         f"<summary>{summary}</summary>",
@@ -513,7 +514,7 @@ def _section_lines(section: str, members: list[Row], summary: str, home: set[str
 
         previous = None
         for row in sorted(members, key=lambda r: (name(r).casefold(), r.item["repository"], r.item["number"])):
-            requestor = _escape(name(row)) if name(row).casefold() != previous else ""
+            requestor = markdown_line(name(row)) if name(row).casefold() != previous else ""
             previous = name(row).casefold()
             lines.append(f"| {requestor} | " + " | ".join([_pull_link(row, home), *_ai_cells(row)]) + " |")
     return [*lines, "", "</details>", ""]

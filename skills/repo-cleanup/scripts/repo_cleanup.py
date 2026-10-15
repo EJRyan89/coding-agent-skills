@@ -43,6 +43,7 @@ from console import run_main
 from git_client import GitClient, GitResult
 from github_client import GitHubClient, GitHubError, replace_undecodable, subprocess_runner
 from github_client import Runner as GhRunner
+from github_remote import github_repository
 from skill_roots import skills_directory_holding
 
 T = TypeVar("T")
@@ -69,11 +70,6 @@ WORKTREE_AREA = "Worktrees"
 REPOSITORY_AREA = (".claude", "worktrees")
 # What a clean linked worktree becomes, by its branch's planned action: removed, offered, or else kept.
 WORKTREE_ACTIONS = {"remove-worktree": "remove", "remove-worktree-ask": "remove", "ask-remove-worktree": "ask"}
-GITHUB_REMOTE = re.compile(
-    r"(?:https?://(?:[^@/]+@)?github\.com/|ssh://git@github\.com(?::\d+)?/|git@github\.com:)"
-    r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?",
-    re.IGNORECASE,
-)
 # Control characters and the line separators str.splitlines also breaks on, so every fact stays on one line.
 CONTROL = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]+")
 SUMMARY_WIDTH = 25
@@ -248,9 +244,9 @@ def name_with_owner(services: Services, root: str | Path) -> str | None:
     """owner/name of a github.com origin, from the configured URL or its insteadOf expansion."""
     for arguments in (("config", "--get", "remote.origin.url"), ("remote", "get-url", "origin")):
         result = git(services, root, *arguments)
-        match = GITHUB_REMOTE.fullmatch(result.stdout.strip()) if result.returncode == 0 else None
-        if match:
-            return match.group(1)
+        repository = github_repository(result.stdout) if result.returncode == 0 else None
+        if repository:
+            return repository
     return None
 
 
@@ -1002,7 +998,8 @@ def apply_plan(plan: dict[str, Any], services: Services) -> bool:
 
 def offer(services: Services, plan: dict[str, Any], located: dict[str, Worktree]) -> None:
     """Offer what only the user may delete: local-only branches, with the clean worktree one is checked out in,
-    detached worktrees, then the directories Git no longer tracks that are left once every removal ran."""
+    detached worktrees, then the directories Git no longer tracks that are left once every removal ran. A directory
+    a repository holding it tracks files in is kept instead, with the reason."""
     root = plan["repo_root"]
     for branch in plan["branches"]:
         if branch["action"] == "ask-delete":
@@ -1018,7 +1015,11 @@ def offer(services: Services, plan: dict[str, Any], located: dict[str, Worktree]
     registered = [tree.path for tree in list_worktrees(services, root)]
     # orphan_areas is absent from an earlier version's plan.
     for path in orphan_directories(registered, plan.get("orphan_areas", []), area_anchors(plan)):
-        record(plan, "ORPHAN", path)
+        tracked = tracked_reason(services, plan, path)
+        if tracked:
+            record(plan, "PRESERVED", path, tracked)
+        else:
+            record(plan, "ORPHAN", path)
 
 
 def prune_parents(plan: dict[str, Any], removed: str) -> None:
@@ -1130,6 +1131,41 @@ def orphan_directories(registered: list[str], areas: list[str], anchors: list[st
     return found
 
 
+def holding_repositories(path: str, anchors: list[str]) -> list[str]:
+    """Every directory holding `path` that has a `.git` entry, from the outermost anchor holding it, itself included,
+    down to its parent: the swept repository for its own area, and a repository such as one named like the shared
+    worktree area."""
+    # Lexical, like linkless_below, which the search already held for every component below the anchor.
+    path = os.path.abspath(path)  # noqa: PTH100 - lexical, as the comment says
+    holding = [anchor for anchor in anchors if strictly_inside(path, anchor, lexical=True)]
+    if not holding:
+        return []
+    current = Path(os.path.abspath(min(holding, key=len)))  # noqa: PTH100 - lexical, as the comment says
+    found = []
+    for part in Path(path).relative_to(current).parts:
+        if os.path.lexists(current / ".git"):
+            found.append(current.as_posix())
+        current /= part
+    return found
+
+
+def tracked_reason(services: Services, plan: dict[str, Any], path: str) -> str:
+    """Why an orphan candidate stays: a repository holding it tracks files in it, as `git ls-files` lists them, or
+    Git could not say; empty when no repository holding it tracks any file in it.
+
+    The pathspec is literal and matches in any letter case, so a folder Git tracks under another case is kept too.
+    """
+    for holder in holding_repositories(path, area_anchors(plan)):
+        relative = Path(os.path.relpath(path, holder)).as_posix()
+        listed = git(services, holder, "ls-files", "-z", "--", f":(literal,icase){relative}")
+        if listed.returncode != 0:
+            return f"could not ask Git whether {holder} tracks files in it: {reason(listed)}"
+        files = [entry for entry in listed.stdout.split("\0") if entry]
+        if files:
+            return f"Git tracks {counted(len(files), 'file')} in it, in {holder}: {named(files)}"
+    return ""
+
+
 def delete_tree(path: Path) -> None:
     """shutil.rmtree, which removes a link inside the tree without following it, clearing the read-only attribute
     Windows refuses to delete a file with."""
@@ -1161,11 +1197,12 @@ def remove_detached(services: Services, plan: dict[str, Any], path: str, sha: st
 
 
 def delete_orphan(services: Services, plan: dict[str, Any], path: str) -> bool:
-    """Delete an offered orphan directory that is still one; False when deleting it failed or it no longer resolves
-    inside a worktree area.
+    """Delete an offered orphan directory that is still one; False when deleting it failed, it no longer resolves
+    inside a worktree area, or a repository holding it tracks files in it.
 
     Just before the deletion, the directory must still be no link and, resolved through any link, lie inside an area
-    the search may enter, resolved the same way, so the deletion never reaches a directory the search did not.
+    the search may enter, resolved the same way, so the deletion never reaches a directory the search did not, and
+    no repository holding it may track a file in it, as tracked_reason asks again.
     """
     registered = [tree.path for tree in list_worktrees(services, plan["repo_root"])]
     areas = plan.get("orphan_areas", [])
@@ -1175,6 +1212,10 @@ def delete_orphan(services: Services, plan: dict[str, Any], path: str) -> bool:
     searchable = searchable_areas(areas, area_anchors(plan))
     if not is_plain_directory(Path(path)) or not any(strictly_inside(path, area) for area in searchable):
         record(plan, "PRESERVED", path, "it resolves outside the worktree areas")
+        return False
+    tracked = tracked_reason(services, plan, path)
+    if tracked:
+        record(plan, "PRESERVED", path, tracked)
         return False
     try:
         delete_tree(Path(path))

@@ -30,7 +30,7 @@ python -m pip install -r requirements-dev.txt
 
 `pyproject.toml` configures the tools and installs nothing, so it has no `[project]` table. [Python checks](../CONTRIBUTING.md#python-checks) in the contributing guide states what validation runs with them and how to fix what each check names.
 
-Dependabot (`.github/dependabot.yml`) checks `requirements-dev.txt` weekly, on the same cadence as the actions, and groups the bumps into one pull request, with security updates in their own group. A new development dependency is a decision recorded here first.
+Dependabot (`.github/dependabot.yml`) checks `requirements-dev.txt` weekly, on the same cadence as the actions, and groups the bumps into one pull request, with security updates in their own group. A new development dependency is a decision recorded here first, and then added to `DEVELOPMENT_PACKAGES` in `tests/validation/toolchain.py`: `test_ci_exercises_each_floor` fails on every line of `requirements-dev.txt` that is not a comment, a blank line, or `name==version` for a package that list names, so an unpinned package, another index, an included requirements file, or an install from a repository cannot enter it.
 
 ### After a Dependabot pull request for ruff
 

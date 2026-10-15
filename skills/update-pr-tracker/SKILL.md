@@ -2,7 +2,7 @@
 name: update-pr-tracker
 description: "Update the owned dashboard section for pull requests the configured user authors, reviews, or participates in. Use it when asked to refresh the pull request tracker or see which pull requests need attention."
 argument-hint: "[owner/repo ... | --repository-set NAME] [--no-review] [--remove owner/repo#number ...]"
-allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "AskUserQuestion", "Skill"]
+allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/tracker_pipeline.py\" *)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/tracker_pipeline.py\" *)", "AskUserQuestion", "Skill"]
 ---
 
 # Update PR tracker

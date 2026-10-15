@@ -7,6 +7,8 @@
 #   PINNED <ref> <commit> alone: `deploy.py check` names the deployment as made with `deploy.py --at <ref>`, which
 #                    deployed <commit>, and --unpin was not given
 #   FETCH_FAILED     followed by Git's error
+#   TAG_SHADOWS_BRANCH followed by each tag named main or origin/main, as "<tag> on origin" or "<tag> in the clone";
+#                    nothing was fetched
 #   MAJOR_UPDATE <current>..<target> followed by the commits it would pull; origin/main's highest
 #                    release tag raises the breaking component (the major, or the minor while the
 #                    major is 0) above local main's, and --cross-major was not given; <current> is
@@ -124,8 +126,36 @@ if [ -z "$UNPIN" ]; then
   fi
 fi
 
-# Release tags are fetched too, so both sides' versions can be compared below.
-if ! OUTPUT=$(git -C "$CLONE" fetch --quiet --tags origin main 2>&1); then
+# Every ref below is named in full: Git resolves a short name as refs/tags/<name> before refs/heads/<name> or
+# refs/remotes/<name>, so a tag named main or origin/main would stand in for the branch. The checkout and the switch
+# back name a branch by its short name, which checkout resolves as a branch first.
+MAIN=refs/heads/main
+ORIGIN_MAIN=refs/remotes/origin/main
+
+# A tag named like a branch the update reads, on origin or in the clone, stops it before anything is fetched: such a
+# tag still shadows the branch in the user's own Git commands.
+if ! OUTPUT=$(git -C "$CLONE" ls-remote --tags --refs origin "refs/tags/main" "refs/tags/origin/main" 2>&1); then
+  echo "FETCH_FAILED"
+  printf '%s\n' "$OUTPUT" | tr -d '\r'
+  exit 1
+fi
+SHADOWS=$(printf '%s\n' "$OUTPUT" | tr -d '\r' |
+  awk -F '\t' '$2 == "refs/tags/main" || $2 == "refs/tags/origin/main" { print $2 " on origin" }')
+for TAG in refs/tags/main refs/tags/origin/main; do
+  if git -C "$CLONE" show-ref --verify --quiet "$TAG"; then
+    SHADOWS+="${SHADOWS:+$'\n'}$TAG in the clone"
+  fi
+done
+if [ -n "$SHADOWS" ]; then
+  echo "TAG_SHADOWS_BRANCH"
+  printf '%s\n' "$SHADOWS"
+  exit 1
+fi
+
+# Release tags are fetched too, so both sides' versions can be compared below. The negative refspecs keep the tag
+# fetch from creating a shadowing tag that origin published after the check above.
+if ! OUTPUT=$(git -C "$CLONE" fetch --quiet --tags origin "+$MAIN:$ORIGIN_MAIN" \
+  "^refs/tags/main" "^refs/tags/origin/main" 2>&1); then
   echo "FETCH_FAILED"
   printf '%s\n' "$OUTPUT" | tr -d '\r'
   exit 1
@@ -133,8 +163,10 @@ fi
 
 # The highest release tag reachable from a commit, or nothing when there is none. A release tag is
 # vMAJOR.MINOR.PATCH with an optional pre-release suffix, which sorts before its release; any other tag is ignored.
+# Only refs/tags/ is read.
 release_of() {
-  git -C "$CLONE" -c versionsort.suffix=- tag --merged "$1" --list 'v*' --sort=-version:refname 2>/dev/null |
+  git -C "$CLONE" -c versionsort.suffix=- for-each-ref --merged "$1" --sort=-version:refname \
+    --format='%(refname:strip=2)' 'refs/tags/v*' 2>/dev/null |
     tr -d '\r' | grep -E -m 1 '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
 }
 # The component a release may not raise without acceptance: the major, or the minor while the major is 0.
@@ -150,8 +182,8 @@ breaking_component() {
   fi
 }
 # Without a release on origin/main there is nothing to cross. A local main without one counts as version zero.
-CURRENT=$(release_of main)
-TARGET=$(release_of origin/main)
+CURRENT=$(release_of "$MAIN")
+TARGET=$(release_of "$ORIGIN_MAIN")
 CROSSED=
 if [ -n "$TARGET" ] && [ "$CURRENT" != "$TARGET" ]; then
   CURRENT_BREAKING=$(breaking_component "${CURRENT:-v0.0.0}")
@@ -161,7 +193,7 @@ if [ -n "$TARGET" ] && [ "$CURRENT" != "$TARGET" ]; then
     { [ "${CURRENT_BREAKING%%.*}" -eq "${TARGET_BREAKING%%.*}" ] && [ "${CURRENT_BREAKING#*.}" -lt "${TARGET_BREAKING#*.}" ]; }; then
     if [ -z "$CROSS_MAJOR" ]; then
       echo "MAJOR_UPDATE $CURRENT..$TARGET"
-      git -C "$CLONE" log --oneline --no-decorate main..origin/main | tr -d '\r'
+      git -C "$CLONE" log --oneline --no-decorate "$MAIN..$ORIGIN_MAIN" | tr -d '\r'
       exit 1
     fi
     CROSSED="$CURRENT..$TARGET"
@@ -171,10 +203,10 @@ fi
 # A diverged main stops before the checkout, so the clone stays on the branch it was found on. Any other answer,
 # such as no local main yet, leaves the decision to the checkout and the fast-forward below.
 ANCESTOR=0
-git -C "$CLONE" merge-base --is-ancestor main origin/main >/dev/null 2>&1 || ANCESTOR=$?
+git -C "$CLONE" merge-base --is-ancestor "$MAIN" "$ORIGIN_MAIN" >/dev/null 2>&1 || ANCESTOR=$?
 if [ "$ANCESTOR" -eq 1 ]; then
   echo "NOT_FAST_FORWARD"
-  git -C "$CLONE" log --oneline --no-decorate origin/main..main | tr -d '\r'
+  git -C "$CLONE" log --oneline --no-decorate "$ORIGIN_MAIN..$MAIN" | tr -d '\r'
   exit 1
 fi
 
@@ -187,7 +219,7 @@ if ! OUTPUT=$(git -C "$CLONE" checkout --quiet main 2>&1); then
   exit 1
 fi
 BEFORE=$(git -C "$CLONE" rev-parse --short HEAD | tr -d '\r')
-if ! OUTPUT=$(git -C "$CLONE" merge --ff-only --quiet origin/main 2>&1); then
+if ! OUTPUT=$(git -C "$CLONE" merge --ff-only --quiet "$ORIGIN_MAIN" 2>&1); then
   echo "NOT_FAST_FORWARD"
   printf '%s\n' "$OUTPUT" | tr -d '\r'
   if [ -n "$FOUND_ON" ] && [ "$FOUND_ON" != "main" ] &&

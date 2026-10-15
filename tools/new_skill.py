@@ -7,8 +7,9 @@ Usage:
                                    [--allowed-tools ENTRY,ENTRY]
 
 A model-invocable skill's description must say when to use it, and allowed-tools may grant Bash and PowerShell
-only as twin patterns, by default the skill's own scripts: the rules validation applies, from skill_reference and
-the analyze-skill-cost inventory.
+only as twin patterns that end each path before any *, by default the skill's script named after it,
+scripts/<name with underscores>.py: the rules validation applies, from skill_reference and the analyze-skill-cost
+inventory.
 
 It writes skills/<name>/SKILL.md (frontmatter and a title only), deploy-meta/<name>.json, and the generated
 part of the skill's docs/skills.md section, then prints one REMAINING line for each thing validation still needs
@@ -26,6 +27,9 @@ It writes no scripts: validation requires a regression suite for any script unde
 a placeholder that lands untested. Given --skill-dep, it records the skill, with skill-core, in skill_deps and prints
 one SCRIPT_HEADER line for each line a script of the skill starts with: the line that puts skill-core on sys.path,
 then a sibling_scripts call for each other dependency.
+
+--root DIR scaffolds into another checkout of this repository, as the regression suite does. It refuses, as a usage
+error, a directory that does not hold source.json and .claude/skills, or that lies in a skills directory.
 """
 
 from __future__ import annotations
@@ -45,6 +49,7 @@ from deployer import runtime_support
 from deployer import source as deploy_source
 from deployer.tools import SKILL_TOOLS
 from tools import skill_reference, skill_shims
+from tools.checkout import ROOT_HELP, checkout_root
 
 # The analyze-skill-cost inventory owns the shell-grant rules. A deployed skill cannot import from this
 # repository, so this imports the skill's script rather than keeping a second copy here.
@@ -53,8 +58,16 @@ import skill_inventory
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 # A shipped skill runs Python as {{PYTHON}}, which the deployer renders as the platform names it.
-OWN_SCRIPTS = '{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/*'
-DEFAULT_ALLOWED_TOOLS = [f"Bash({OWN_SCRIPTS})", f"PowerShell({OWN_SCRIPTS})", "Read"]
+OWN_SCRIPTS = '{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/'
+
+
+def default_allowed_tools(name: str) -> list[str]:
+    """Both shells for the skill's script named after it, ending at the script's closing quote so no `..` path out
+    of scripts/ matches, and the file-reading tool."""
+    script = f'{OWN_SCRIPTS}{name.replace("-", "_")}.py" *'
+    return [f"Bash({script})", f"PowerShell({script})", "Read"]
+
+
 # A script finds skill-core by this one fixed line, and every other sibling through skill-core's lookup.
 SKILL_CORE = "skill-core"
 SKILL_CORE_LINE = f'sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "{SKILL_CORE}" / "scripts"))'
@@ -84,13 +97,24 @@ def skill_markdown(
 
 
 def shell_grant_problems(allowed_tools: list[str]) -> list[str]:
-    """Why each Bash or PowerShell entry grants every command or leaves one shell prompting; empty when none."""
+    """Why each Bash or PowerShell entry grants every command, leaves one shell prompting, leaves a path open before
+    its *, or names no script before it; empty when none."""
     found = []
     for line in skill_inventory.grant_findings(skill_inventory.allowed_entries(allowed_tools), []):
         kind, entry = line.split(" ", 1)
         if kind == "UNSCOPED_ALLOWED":
             found.append(
                 f"allowed-tools entry {entry} grants {entry} for every command; scope it to what the skill runs"
+            )
+        elif kind in {"OPEN_PATH_ALLOWED", "SIBLING_FOLDER_ALLOWED"}:
+            found.append(
+                f"allowed-tools entry {entry} leaves a path open before its *, so it matches every script through "
+                "..; grant each script by name, ending at its closing quote"
+            )
+        elif kind == "NO_SCRIPT_ALLOWED":
+            found.append(
+                f"allowed-tools entry {entry} names no script or git or gh subcommand before its *, so it pre-approves "
+                "any code the * supplies; grant each script by name"
             )
         else:
             twin = "PowerShell" if entry.startswith("Bash") else "Bash"
@@ -197,7 +221,11 @@ def scaffold(
     A skill given skill_deps also depends on skill-core, whose line finds every other sibling.
     """
     description, argument_hint, allowed = _frontmatter_values(
-        name, description, argument_hint, user_only, DEFAULT_ALLOWED_TOOLS if allowed_tools is None else allowed_tools
+        name,
+        description,
+        argument_hint,
+        user_only,
+        default_allowed_tools(name) if allowed_tools is None else allowed_tools,
     )
     tools = sorted(set(tools or []))
     unknown = [tool for tool in tools if tool not in SKILL_TOOLS]
@@ -270,10 +298,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--allowed-tools",
-        help="comma-separated allowed-tools entries (default: Bash and PowerShell for the skill's own scripts, and "
-        "Read; none for a repository skill)",
+        help="comma-separated allowed-tools entries (default: Bash and PowerShell for scripts/<name with "
+        "underscores>.py, and Read; none for a repository skill)",
     )
-    parser.add_argument("--root", type=Path, default=REPOSITORY_ROOT, help=argparse.SUPPRESS)
+    parser.add_argument("--root", type=checkout_root, default=REPOSITORY_ROOT, metavar="DIR", help=ROOT_HELP)
     arguments = parser.parse_args(argv)
     allowed = None if arguments.allowed_tools is None else arguments.allowed_tools.split(",")
     if arguments.repository:

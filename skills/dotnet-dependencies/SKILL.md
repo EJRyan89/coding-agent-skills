@@ -2,7 +2,7 @@
 name: dotnet-dependencies
 description: "Answer why a package or assembly is in a legacy or SDK-style C# solution, which projects reference an assembly, and where versions and binding redirects conflict, from a read-only dependency graph of the solution's project files. Use it when asked why a package is referenced, what pulls a dependency in, which projects use an assembly, or whether versions or binding redirects disagree, and not to restore, build, or change references."
 argument-hint: "<why <name>...|where <assembly>|conflicts|graph> [--project <path>]"
-allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/*)"]
+allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/dependency_graph.py\" *)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/dependency_graph.py\" *)"]
 ---
 
 Answer a dependency question about the .NET solution in the current directory from its project files alone. One script builds the graph and answers every query; it reads `.sln`, `.slnx`, `.csproj`, `packages.config`, `Directory.Packages.props`, each package's `.nuspec`, `obj/project.assets.json`, `web.config`, and `app.config`, runs no restore or build, and changes nothing but the file `graph` writes. Each line it prints is one tab-separated fact; its docstring names every line. Act on the printed lines, not the exit code: a query that reports a conflict or an unreadable file also exits 1. A last line `FAILED <reason>` means stop and report the reason.

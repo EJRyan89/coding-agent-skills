@@ -12,7 +12,31 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import csharp_layout as layout
+import dotnet_solution
 from git_test_base import GitTestCase
+
+LINKED_FILE = "the file is a symbolic link or junction, which the script does not write through"
+
+
+def linked_folder(name: str) -> str:
+    return f"its folder {name} is a symbolic link or junction, which the script does not write through"
+
+
+def link_directory(target: Path, link: Path) -> None:
+    """A real link to a directory: a junction on Windows, which needs no privilege, else a symbolic link."""
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+def outside_directory(test: unittest.TestCase) -> Path:
+    """A throwaway directory beside the test's repository root, outside it."""
+    directory = tempfile.TemporaryDirectory()
+    test.addCleanup(directory.cleanup)
+    return Path(directory.name).resolve()
 
 
 def source(*lines: str) -> str:
@@ -464,6 +488,69 @@ class FileTests(GitTestCase):
             status, lines = self.main("check", "--repo-root", str(self.root), "--file-list", str(file_list), "--fix")
         self.assertEqual((1, [["FAILED [Errno 13] Permission denied: 'Fixable.cs'"]]), (status, lines))
 
+    def test_fix_never_writes_a_file_that_is_or_lies_below_a_link(self) -> None:
+        original = b"#region A\n\n#endregion A\n"
+        for name in ("Linked.cs", "Linked/Inner.cs", "Fixable.cs"):
+            (self.root / name).parent.mkdir(exist_ok=True)
+            (self.root / name).write_bytes(original)
+        file_list = self.file_list("Linked.cs", "Linked/Inner.cs", "Fixable.cs")
+        # Links stand in through the stubbed test on every platform; the real-link test below makes one.
+        with mock.patch.object(layout, "is_link", side_effect=lambda path: path.name in {"Linked.cs", "Linked"}):
+            status, lines = self.main("check", "--repo-root", str(self.root), "--file-list", str(file_list), "--fix")
+        self.assertEqual(1, status, "the violations a refused file keeps remain")
+        self.assertEqual(
+            [
+                ["REFUSED", "Linked.cs", LINKED_FILE],
+                ["REFUSED", "Linked/Inner.cs", linked_folder("Linked")],
+                ["FIXED", "Fixable.cs", "3", "endregion-description"],
+                ["VIOLATION", "Linked.cs", "3", "warning", "endregion-description"],
+                ["VIOLATION", "Linked/Inner.cs", "3", "warning", "endregion-description"],
+                ["SUMMARY", "2", "2", "endregion-description"],
+            ],
+            [line[:5] if line[0] == "VIOLATION" else line for line in lines],
+        )
+        self.assertEqual(original, (self.root / "Linked.cs").read_bytes())
+        self.assertEqual(original, (self.root / "Linked" / "Inner.cs").read_bytes())
+        self.assertEqual(b"#region A\n\n#endregion\n", (self.root / "Fixable.cs").read_bytes())
+
+    def test_check_without_fix_reads_through_a_link_and_never_asks(self) -> None:
+        (self.root / "Linked.cs").write_bytes(b"#region A\n\n#endregion A\n")
+        with mock.patch.object(layout, "is_link", side_effect=AssertionError("asked without --fix")):
+            status, lines = self.main(
+                "check", "--repo-root", str(self.root), "--file-list", str(self.file_list("Linked.cs"))
+            )
+        self.assertEqual((1, ["VIOLATION", "SUMMARY"]), (status, [line[0] for line in lines]))
+
+    def test_fix_never_writes_through_a_real_link(self) -> None:
+        outside = outside_directory(self)
+        original = b"#region A\n\n#endregion A\n"
+        (outside / "Outside.cs").write_bytes(original)
+        link_directory(outside, self.root / "Linked")
+        names = ["Linked/Outside.cs"]
+        expected = [["REFUSED", "Linked/Outside.cs", linked_folder("Linked")]]
+        if sys.platform != "win32":  # a symbolic link to a file needs a privilege Windows rarely grants
+            (self.root / "File.cs").symlink_to(outside / "Outside.cs")
+            names.append("File.cs")
+            expected.append(["REFUSED", "File.cs", LINKED_FILE])
+        status, lines = self.main(
+            "check", "--repo-root", str(self.root), "--file-list", str(self.file_list(*names)), "--fix"
+        )
+        self.assertEqual(1, status)
+        self.assertEqual(expected, [line for line in lines if line[0] == "REFUSED"])
+        self.assertNotIn("FIXED", [line[0] for line in lines])
+        self.assertEqual(original, (outside / "Outside.cs").read_bytes())
+
+    def test_a_path_whose_link_state_cannot_be_read_is_not_written(self) -> None:
+        (self.root / "Fixable.cs").write_bytes(b"#region A\n\n#endregion A\n")
+        denied = PermissionError(13, "Permission denied")
+        with mock.patch.object(layout, "is_link", side_effect=denied):
+            status, lines = self.main(
+                "check", "--repo-root", str(self.root), "--file-list", str(self.file_list("Fixable.cs")), "--fix"
+            )
+        self.assertEqual(1, status)
+        self.assertEqual(["REFUSED", "Fixable.cs", "Fixable.cs cannot be examined: Permission denied"], lines[0])
+        self.assertEqual(b"#region A\n\n#endregion A\n", (self.root / "Fixable.cs").read_bytes())
+
     def test_usage_errors_exit_2_with_usage_on_stderr(self) -> None:
         cases: tuple[list[str], ...] = (
             [],
@@ -662,6 +749,78 @@ class ConfigTests(GitTestCase):
         self.assertTrue(failure.startswith(f"FAILED {self.root / 'App.slnx'} cannot be read: "), failure)
         self.assertIn("not well-formed", failure)
         self.assertNotIn("SETTING", grouped)
+
+    def test_a_solution_above_the_read_bound_fails_with_the_reason(self) -> None:
+        limit = 16
+        with mock.patch.object(dotnet_solution, "READ_LIMIT_BYTES", limit):
+            status, grouped = self.run_config()
+        self.assertEqual(1, status)
+        bound = f"the file is larger than the reader's bound of {limit} bytes, so it is not read"
+        (failure,) = [kind for kind in grouped if kind.startswith("FAILED ")]
+        self.assertEqual(f"FAILED {self.root / 'App.sln'} cannot be read: {bound}", failure)
+        self.assertNotIn("SETTING", grouped)
+
+    def test_a_solution_entry_outside_the_repository_is_refused_and_never_touched(self) -> None:
+        outside = outside_directory(self)
+        (outside / "Out").mkdir()
+        (outside / "Out" / "Out.csproj").write_text(SDK_PROJECT, encoding="utf-8")
+        (outside / "Directory.Build.props").write_text(
+            '<Project><ItemGroup><PackageReference Include="Roslynator.Formatting.Analyzers" /></ItemGroup>'
+            "</Project>\n",
+            encoding="utf-8",
+        )
+        entries = {
+            f"..\\{outside.name}\\Out\\Out.csproj": "the path is outside the examined tree",
+            "\\\\localhost\\nonexistent-share\\X\\X.csproj": "the path names a network share",
+            "//localhost/nonexistent-share/Y/Y.csproj": "the path names a network share",
+            "\\\\?\\C:\\Device\\Z.csproj": "the path names a device",
+        }
+        listed = "".join(f'<Project Path="{entry}" />' for entry in entries)
+        (self.root / "App.slnx").write_text(
+            f'<Solution><Project Path="src\\App\\App.csproj" />{listed}</Solution>', encoding="utf-8"
+        )
+        touched: list[str] = []
+        is_file = Path.is_file
+
+        def recording(path: Path) -> bool:
+            touched.append(str(path))
+            return is_file(path)
+
+        with mock.patch.object(Path, "is_file", recording):
+            grouped = self.config(solution="App.slnx")
+        self.assertEqual(list(entries), [entry for entry, _ in grouped["REFUSED"]])
+        for (entry, reason), expected in zip(grouped["REFUSED"], entries.values(), strict=True):
+            with self.subTest(entry=entry):
+                self.assertTrue(reason.startswith(expected), reason)
+        self.assertEqual([["Roslynator.Formatting.Analyzers", "missing"]], grouped["PACKAGE"])
+        root = dotnet_solution.same_path(self.root)
+        self.assertTrue(touched)
+        self.assertEqual(
+            [], [path for path in touched if not Path(dotnet_solution.same_path(Path(path))).is_relative_to(root)]
+        )
+
+    def test_apply_never_writes_an_editorconfig_that_is_or_lies_below_a_link(self) -> None:
+        editorconfig = self.root / ".editorconfig"
+        editorconfig.write_text("# shared\n", encoding="utf-8")
+        with mock.patch.object(layout, "is_link", side_effect=lambda path: path.name == ".editorconfig"):
+            status, grouped = self.run_config("--apply")
+        self.assertEqual(1, status, "the settings it did not add are still missing")
+        self.assertEqual([[".editorconfig", LINKED_FILE]], grouped["REFUSED"])
+        self.assertNotIn("ADDED", grouped)
+        self.assertEqual("# shared\n", editorconfig.read_text(encoding="utf-8"))
+
+    def test_apply_never_writes_through_a_real_link(self) -> None:
+        outside = outside_directory(self)
+        shared = outside / ".editorconfig"
+        shared.write_text("root = true\n", encoding="utf-8")
+        link_directory(outside, self.root / "linked")
+        self.changed("linked/Program.cs")
+        status, grouped = self.run_config("--apply")
+        self.assertEqual(1, status)
+        self.assertEqual([["linked/.editorconfig", linked_folder("linked")]], grouped["REFUSED"])
+        self.assertNotIn("ADDED", grouped)
+        self.assertEqual("root = true\n", shared.read_text(encoding="utf-8"))
+        self.assertFalse(list(self.root.glob(".editorconfig")))
 
     def test_a_single_star_section_does_not_configure_deeper_files(self) -> None:
         settings = "".join(f"{key} = {value}\n" for key, value in layout.SETTINGS)

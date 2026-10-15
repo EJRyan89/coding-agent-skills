@@ -12,6 +12,7 @@ import threading
 import unittest
 from collections.abc import Mapping
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
@@ -1176,6 +1177,29 @@ class ListTests(WorktreesTestCase):
         rows = self.rows({**self.environment, "GIT_INDEX_FILE": str(empty_index)})
         self.assertEqual(["main", "hub", "0", "0", "0"], rows["main"][:5])
         self.assertEqual(["feat/demo", "no commits", "0", "0", "0"], rows["feat/demo"][:5])
+
+
+class GitProgramTests(GitTestCase):
+    def test_git_is_started_at_the_path_the_locator_finds_never_by_name(self) -> None:
+        # Windows looks a bare name up in the working directory before PATH.
+        completed = subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(worktrees.subprocess, "run", return_value=completed) as run:
+            worktrees.git(Path("a checkout"), "status")
+        command = run.call_args.args[0]
+        self.assertEqual(
+            (platform_support.find_executable("git"), ["-C", "a checkout", "status"]), (command[0], command[1:])
+        )
+        self.assertTrue(Path(command[0]).is_absolute())
+
+    def test_a_git_the_locator_cannot_find_is_never_left_to_the_bare_name(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as empty,
+            mock.patch.dict(os.environ, {"PATH": empty}),
+            mock.patch.object(worktrees.subprocess, "run") as run,
+            self.assertRaises(FileNotFoundError),
+        ):
+            worktrees.git(Path(empty), "status")
+        run.assert_not_called()
 
 
 if __name__ == "__main__":

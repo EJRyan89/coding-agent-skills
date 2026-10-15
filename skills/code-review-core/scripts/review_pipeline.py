@@ -2547,12 +2547,14 @@ def enumerate_batch(
 
 
 def advance_watermarks(
-    batch_path: Path, *, config_path: Path | None = None
+    batch_path: Path, *, config_path: Path | None = None, services: Services | None = None
 ) -> dict[str, tuple[str | None, str | None]]:
     """Advance each fully enumerated repository past the merged pull requests whose heads are now reviewed.
 
     A repository whose enumeration failed keeps its watermark (None in the result), so no work is skipped; its
-    previous watermark is None when that watermark could not be read.
+    previous watermark is None when that watermark could not be read. The batch file is input, so a batch dated after
+    the pipeline's own today, or one that would move a watermark past it, is refused with the state unchanged: such a
+    watermark is one no merged pull request ever passes again.
     """
     batch = READ.json_object(read_json(batch_path), "batch")
     if READ.integer(batch.get("schema_version"), "batch.schema_version") != BATCH_SCHEMA_VERSION:
@@ -2560,6 +2562,9 @@ def advance_watermarks(
     config = load_config(config_path)
     archive_root = Path(config["archive_root"])
     today = date.fromisoformat(batch["today"])
+    now = (services or Services()).today()
+    if today > now:
+        raise PipelineError(f"{batch_path} is dated {today.isoformat()}, after today, {now.isoformat()}")
     changes: dict[str, tuple[str | None, str | None]] = {}
     for repository, entry in batch["repositories"].items():
         if not entry["complete"]:
@@ -2576,6 +2581,11 @@ def advance_watermarks(
             eligible_merged=merged,
             completed_numbers=completed,
         )
+        if candidate > now:
+            raise PipelineError(
+                f"{batch_path} would move the {repository} watermark to {candidate.isoformat()}, "
+                f"after today, {now.isoformat()}"
+            )
         changes[repository] = (previous.isoformat(), candidate.isoformat())
 
     def update(current: dict[str, Any]) -> dict[str, Any]:
@@ -2983,7 +2993,7 @@ def _run_finalize(args: argparse.Namespace, services: Services | None) -> int:
 
 
 def _run_advance(args: argparse.Namespace, services: Services | None) -> int:
-    for repository, (old, new) in advance_watermarks(args.batch, config_path=args.config).items():
+    for repository, (old, new) in advance_watermarks(args.batch, config_path=args.config, services=services).items():
         print(
             f"WATERMARK {repository} {old} -> {new}" if new else f"WATERMARK {repository} unchanged: enumeration failed"
         )

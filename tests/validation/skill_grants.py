@@ -10,10 +10,11 @@ import sys
 import unittest
 from pathlib import Path
 
+import frontmatter
 from skill_layout import embedded_program_problems, output_placeholder_problems
 from skill_roots import sibling_scripts
 from skill_scripts import command_reader
-from validation_support import REPOSITORY_ROOT, REPOSITORY_SKILLS, skills_by_name
+from validation_support import REPOSITORY_ROOT, REPOSITORY_SKILLS, import_aliases, qualified_name, skills_by_name
 
 from deployer import render
 
@@ -28,6 +29,11 @@ GRANTS_DOC = '"Granting tools" in docs/adding-a-skill.md'
 # its directory, and a repository skill runs the repository's tools and tests from the working tree.
 OWN_SCRIPT_COMMAND = re.compile(r"\$\{CLAUDE_SKILL_DIR\}")
 REPOSITORY_TOOL_COMMAND = re.compile(r"^python (?:-B )?(?:tools|tests)/")
+# A repository tool a grant runs, and the option that points the tool at another directory than the checkout it runs
+# from: a grant whose * covers it may only when the tool parses it with the check that refuses all but a checkout.
+GRANTED_TOOL = re.compile(r"^python (?:-B )?(tools/[\w-]+\.py)(?: |$)")
+ROOT_OPTION = "--root"
+CHECKOUT_PARSER = "tools.checkout.checkout_root"
 
 
 def shipped_skill_files(root: Path) -> list[Path]:
@@ -45,9 +51,12 @@ def repository_skill_files(root: Path) -> list[Path]:
 def skill_grant_problems(
     root: Path, skill_files: list[Path] | None = None, own: re.Pattern[str] = OWN_SCRIPT_COMMAND
 ) -> list[str]:
-    """Report shell grants that cover every command or one shell only, grants no step uses, own-script commands
-    left ungranted, grants that pre-approve a script that starts code from the target repository, shell patterns that
-    match no command the skill shows, and any grant in a hidden skill, which no turn starts.
+    """Report shell grants that cover every command or one shell only, a sibling's folder rather than its scripts,
+    a path a * continues, such as the skill's own scripts/*, rather than a script by name, or a program with no
+    script, such as python *, grants no step uses, own-script commands left ungranted, grants that pre-approve a
+    script that starts code from the target repository, shell patterns that match no command the skill shows, and any
+    grant in a hidden skill, which no turn starts. A command is read from every fence Markdown allows and from each
+    code span outside one that runs a script.
 
     The rules are the analyze-skill-cost inventory's, so the audit and this policy cannot disagree. A shipped skill's
     own scripts run through ${CLAUDE_SKILL_DIR}; a repository skill's are the repository's tools and tests.
@@ -70,6 +79,20 @@ def skill_grant_problems(
                 problems.append(f"{name} grants {detail} for every command; see {GRANTS_DOC}")
             elif kind == "UNPAIRED_ALLOWED":
                 problems.append(f"{name} grants {detail} in one shell only; see {GRANTS_DOC}")
+            elif kind == "SIBLING_FOLDER_ALLOWED":
+                problems.append(
+                    f"{name} grants {detail}, a sibling skill's folder rather than one script by name; see {GRANTS_DOC}"
+                )
+            elif kind == "OPEN_PATH_ALLOWED":
+                problems.append(
+                    f"{name} grants {detail}, whose * continues a path, so it reaches every skill's scripts through "
+                    f"..; grant each script by name; see {GRANTS_DOC}"
+                )
+            elif kind == "NO_SCRIPT_ALLOWED":
+                problems.append(
+                    f"{name} grants {detail}, whose text before its * names no script or git or gh subcommand, so it "
+                    f"pre-approves any code the * supplies; grant each script by name; see {GRANTS_DOC}"
+                )
             elif kind == "UNUSED_ALLOWED":
                 problems.append(f"{name} grants {detail}, which no step uses; see {GRANTS_DOC}")
             elif kind == "MISSING_ALLOWED" and detail.split(" ")[0] == "Bash":
@@ -89,6 +112,46 @@ def skill_grant_problems(
                     f"{name}:{number} expands a shell variable, so it always prompts: {command}; see {GRANTS_DOC}"
                 )
     return problems
+
+
+def root_option_problems(root: Path, skill_files: list[Path]) -> list[str]:
+    """Report each grant whose * covers a tools/ script's --root option that the script does not parse with
+    tools/checkout.py's checkout_root, so the grant would pre-approve the tool writing into any directory, the
+    deployer's skills directories included."""
+    problems: list[str] = []
+    for skill_md in skill_files:
+        name = skill_md.relative_to(root).as_posix()
+        found = frontmatter.split(skill_md.read_text(encoding="utf-8").splitlines())
+        document = frontmatter.Frontmatter(found[0] if found else [])
+        for tool, pattern in skill_inventory.allowed_entries(document.value("allowed-tools")):
+            match = GRANTED_TOOL.match(pattern or "")
+            if pattern is None or "*" not in pattern or match is None or not (root / match[1]).is_file():
+                continue
+            if unbounded_root_option(root / match[1]):
+                problems.append(
+                    f"{name} grants {tool}({pattern}), whose * covers {match[1]} {ROOT_OPTION}, which it does not "
+                    f"parse with {CHECKOUT_PARSER}; bound the option or grant the forms the skill runs; "
+                    f"see {GRANTS_DOC}"
+                )
+    return problems
+
+
+def unbounded_root_option(script: Path) -> bool:
+    """Whether a script declares the --root option with a type other than the checkout check, or with none."""
+    tree = ast.parse(script.read_text(encoding="utf-8"))
+    aliases = import_aliases(tree)
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument"
+            and any(isinstance(argument, ast.Constant) and argument.value == ROOT_OPTION for argument in node.args)
+        ):
+            continue
+        parser = next((keyword.value for keyword in node.keywords if keyword.arg == "type"), None)
+        if parser is None or qualified_name(parser, aliases) != CHECKOUT_PARSER:
+            return True
+    return False
 
 
 def repository_code_declaration_problems(root: Path) -> list[str]:
@@ -182,6 +245,11 @@ class SkillGrantsPolicies(unittest.TestCase):
         self.assertEqual([], output_placeholder_problems(REPOSITORY_ROOT, REPOSITORY_SKILLS))
         self.assertEqual([], skill_grant_problems(REPOSITORY_ROOT, skills, REPOSITORY_TOOL_COMMAND))
         self.assertEqual([], description_problems(REPOSITORY_ROOT, skills))
+
+    def test_repository_tool_grants_cover_no_root_option_outside_a_checkout(self) -> None:
+        # A tool's --root redirects every write it makes, so a grant whose * covers it must find the tool refusing a
+        # directory that is not a checkout of this repository, such as a home whose .agents/skills the deployer owns.
+        self.assertEqual([], root_option_problems(REPOSITORY_ROOT, repository_skill_files(REPOSITORY_ROOT)))
 
     def test_skills_grant_only_scoped_twin_shell_patterns_that_cover_their_own_scripts(self) -> None:
         # allowed-tools pre-approves; a bare Bash would pre-approve every command in the turn that starts the skill.

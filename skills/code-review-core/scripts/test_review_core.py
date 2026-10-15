@@ -31,6 +31,7 @@ import review_io
 import review_runtime
 import review_state
 import skill_roots
+from executable_locator import located_command
 from git_client import GitError, GitResult
 from git_test_base import GitTestCase
 from github_client import CommandResult
@@ -3033,7 +3034,8 @@ class RuntimeContractTests(GitTestCase):
         finished = bounded_process.Finished(0, b"caf\xe9\r\nok\r\n", b"fatal: caf\xe9\n")
         with mock.patch("git_client.run_bounded", return_value=finished) as run:
             result = review_runtime.subprocess_runner(["git", "show", "HEAD:latin1.md"], 60)
-        self.assertEqual(mock.call(["git", "show", "HEAD:latin1.md"], 60), run.call_args)
+        git = located_command(["git"])[0]
+        self.assertEqual(mock.call([git, "show", "HEAD:latin1.md"], 60), run.call_args)
         self.assertEqual(b"caf\xe9\r\nok\r\n", result.stdout.encode("utf-8", "surrogateescape"))
         self.assertEqual("fatal: caf�\n", result.stderr)
         self.assertEqual(0, result.returncode)
@@ -3478,6 +3480,38 @@ FULL_SHA256_COMMIT = "2" * 64
 
 def in_checkout(*arguments: str, checkout: str = "C:/checkout") -> tuple[str, ...]:
     return ("git", "-C", checkout, *arguments)
+
+
+class CheckoutRemoteTests(GitTestCase):
+    """The checkout's origin is the configured repository only when the whole URL is a github.com remote's."""
+
+    def verify(self, url: str, repository: str = "example/one") -> None:
+        git = AnsweringGit()
+        git.answers[("remote", "get-url", "origin")] = [GitResult(0, f"{url}\n", "")]
+        verify_checkout_remote(Path("C:/checkout"), repository, git)
+
+    def test_each_github_com_form_of_the_repository_is_accepted(self) -> None:
+        for url in (
+            "https://github.com/example/one.git",
+            "https://github.com/Example/One",
+            "git@github.com:example/one.git",
+            "git@github.com:example/one",
+            "ssh://git@github.com/example/one.git",
+        ):
+            with self.subTest(url=url):
+                self.verify(url)
+
+    def test_a_remote_on_another_host_is_refused_whatever_its_path_names(self) -> None:
+        for url in (
+            "https://example.invalid/github.com/example/one",
+            "https://example.invalid/mirror/github.com:example/one.git",
+            "git@example.invalid:github.com/example/one",
+            "https://github.com.example.invalid/example/one",
+        ):
+            with self.subTest(url=url), self.assertRaisesRegex(RuntimeContractError, "not a recognizable GitHub"):
+                self.verify(url)
+        with self.assertRaisesRegex(RuntimeContractError, "origin mismatch: expected example/two, found example/one"):
+            self.verify("https://github.com/example/one.git", "example/two")
 
 
 class PrepareGitRunnerTests(GitTestCase):

@@ -73,6 +73,7 @@ from review_runtime import (
     path_room,
     unsafe_path_reason,
 )
+from review_specialists import reviewable_path
 
 # The documents the design-review specialist reviews: Markdown and plain-text markup, matched by suffix, ignoring case.
 DESIGN_SUFFIXES = frozenset({".md", ".markdown", ".txt", ".rst", ".adoc"})
@@ -323,6 +324,14 @@ def reviewed_by_design(relative: str) -> bool:
     return document_format(relative) is not None or PurePosixPath(relative).suffix.lower() in DESIGN_SUFFIXES
 
 
+def refuse_unreviewable(relative: str) -> None:
+    """Refuse a path the pipeline gives no reviewer, by its own rule: one holding a control character or any line
+    break Python splits a line at, which would also break the printed DOCUMENT line, a backslash, or an absolute,
+    empty, `.`, or `..` segment."""
+    if reviewable_path(relative) is None:
+        raise DocumentError(f"{relative} is not a path a fixture can hold")
+
+
 def refuse_reserved(relative: str) -> None:
     """Refuse a path in a folder the review keeps for itself, in any case, since a case-insensitive file system
     merges the spellings: the fixture's manifest folder, and the folder where the snapshot holds a document's
@@ -401,6 +410,7 @@ def build(
     form = document_format(path.name)
     content = document_bytes(path, form)
     location = locate(path, git)
+    refuse_unreviewable(location.relative)
     refuse_reserved(location.relative)
     base = choose_base(requested, location, git, text=form is None)
     document = Document(location.relative, content, form, base)
@@ -471,11 +481,7 @@ def pull_document(github: GitHubClient, pull: Pull, change: Change, requested: s
     merge base. Refused, naming the document, when it cannot be reviewed, its path by every rule a fixture's path
     must meet, in the room the folder of its fixture, `fixture`, leaves it, before any of it is read."""
     relative = change.path
-    # A git path may hold a control character, such as a line break, which would break a printed line.
-    unprintable = any(ord(character) < 32 or character == "\x7f" for character in relative)
-    parts = relative.split("/")
-    if unprintable or "\\" in relative or any(part in ("", ".", "..") for part in parts):
-        raise DocumentError(f"{relative} is not a path a fixture can hold")
+    refuse_unreviewable(relative)
     fixture_target(fixture / "head", relative)
     refuse_reserved(relative)
     if change.status == "removed":

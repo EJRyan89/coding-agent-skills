@@ -9,6 +9,9 @@ skill, headed `` ## `<name>` ``.
 Each section starts with a generated block, built from the skill's SKILL.md frontmatter and deploy-meta, and
 continues with hand-written prose that explains its arguments. --write rewrites only the generated blocks and
 adds missing sections; it never changes the prose or removes a section. Skill sections end the file.
+
+--root DIR works on another checkout of this repository, as the regression suite does. It refuses, as a usage
+error, a directory that does not hold source.json and .claude/skills, or that lies in a skills directory.
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ from deployer.config import CONFIGURED_VARIABLES
 from deployer.errors import DeployError
 from deployer.paths import Paths
 from deployer.tools import SKILL_TOOLS
+from tools.checkout import ROOT_HELP, checkout_root
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
@@ -365,7 +369,7 @@ def write(root: Path) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("--write", action="store_true", help="regenerate the generated blocks and add missing sections")
-    parser.add_argument("--root", type=Path, default=REPOSITORY_ROOT, help=argparse.SUPPRESS)
+    parser.add_argument("--root", type=checkout_root, default=REPOSITORY_ROOT, metavar="DIR", help=ROOT_HELP)
     arguments = parser.parse_args(argv)
     try:
         if arguments.write:

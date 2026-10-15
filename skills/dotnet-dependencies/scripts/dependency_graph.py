@@ -60,7 +60,8 @@ apart, a split `conflicts` reports; the walk adds every chain the SDK cannot see
 or one through a packages.config project; for every other project it answers alone. So whether dotnet is installed
 changes which source a route names and which version leads where the two differ, never which routes are printed.
 A path a solution or project names is read only inside the examined tree, the checkout holding the solution or
-directory searched, and every read only of a regular file within READ_LIMIT_BYTES (msbuild_reader's docstring).
+directory searched, and every read only of a regular file within skill-core's READ_LIMIT_BYTES (msbuild_reader's
+docstring).
 The script changes nothing on disk but the graph file, runs no restore or build, and exits 1 when it printed a
 CONFLICT, REDIRECT_STALE, or UNREADABLE line, else 0; a FAILED <reason> line and exit 1 when the root cannot be
 resolved, and a usage error exits 2.
@@ -82,7 +83,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from console import run_main
-from dotnet_solution import is_solution, same_path
+from dotnet_solution import is_solution, lexical_absolute, project_path, refusal, same_path
 from flat_text import flat_text
 from msbuild_reader import (
     ASSETS_FILE,
@@ -102,11 +103,9 @@ from msbuild_reader import (
     assemblies_for,
     central_versions_file,
     examined_tree,
-    lexical_absolute,
     matching_framework,
     package_assemblies,
     packages_for,
-    project_path,
     project_refs_for,
     read_assets,
     read_central_versions,
@@ -115,7 +114,6 @@ from msbuild_reader import (
     read_project,
     read_redirects,
     read_solution,
-    refusal,
 )
 from sdk_why import DEFAULT_TIMEOUT_SECONDS, SdkPath, Services, run_why
 from skill_roots import skills_directory_holding

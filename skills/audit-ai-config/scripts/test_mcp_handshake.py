@@ -23,6 +23,19 @@ import mcp_handshake
 # The launcher test's --timeout, and how far past --timeout and the stop allowance a loaded machine may end the run.
 LAUNCHER_TIMEOUT_SECONDS = 2.0
 MARGIN_SECONDS = 10.0
+# Characters a line reader may take as the end of a line, each of which a configured value can hold.
+LINE_SEPARATORS = ("\n", "\r", "\u0085", "\u2028", "\u2029")
+
+
+def link_directory(target: Path, link: Path) -> None:
+    """A link to a directory: a junction on Windows, which needs no privilege, else a symbolic link."""
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
 
 FAKE_SERVER = """\
 import json, sys, time
@@ -387,19 +400,20 @@ class HandshakeTests(unittest.TestCase):
             self._run(),
         )
 
-    def test_a_relative_command_resolves_against_the_configured_directory_not_the_callers(self) -> None:
-        # A launcher as each platform runs one: a batch file on Windows, and an executable shell script elsewhere.
+    def _launcher(self, folder: Path, stem: str) -> str:
+        """A launcher of the fake server in `folder` as each platform runs one: a batch file on Windows, and an
+        executable shell script elsewhere. Returns its file name."""
         if sys.platform == "win32":
-            name = "fake server.cmd"
-            launcher = self.root / "tools" / name
-            launcher.write_text(f'@"{sys.executable}" "%~dp0fake server.py" %*\n', encoding="utf-8")
+            name = f"{stem}.cmd"
+            (folder / name).write_text(f'@"{sys.executable}" "{self.server}" %*\n', encoding="utf-8")
         else:
-            name = "fake server"
-            launcher = self.root / "tools" / name
-            launcher.write_text(
-                f'#!/bin/sh\nexec "{sys.executable}" "$(dirname "$0")/fake server.py" "$@"\n', encoding="utf-8"
-            )
-            launcher.chmod(0o755)
+            name = stem
+            (folder / name).write_text(f'#!/bin/sh\nexec "{sys.executable}" "{self.server}" "$@"\n', encoding="utf-8")
+            (folder / name).chmod(0o755)
+        return name
+
+    def test_a_relative_command_resolves_against_the_configured_directory_not_the_callers(self) -> None:
+        name = self._launcher(self.root / "tools", "fake server")
         self._write(
             ".mcp.json",
             "mcpServers",
@@ -423,6 +437,27 @@ class HandshakeTests(unittest.TestCase):
             (code, lines),
         )
 
+    def test_a_bare_command_is_found_on_path_and_never_in_the_folder_the_script_runs_from(self) -> None:
+        # shutil.which searches the working directory first on Windows.
+        elsewhere, on_path = Path(self.temp.name) / "elsewhere", Path(self.temp.name) / "on path"
+        for folder in (elsewhere, on_path):
+            folder.mkdir()
+            self._launcher(folder, "fake-mcp-server")
+        self._write(".mcp.json", "mcpServers", {"bare": {"command": "fake-mcp-server", "args": ["ok"]}})
+        missing = (1, ["HANDSHAKE_FAILED bare source=.mcp.json command not found: fake-mcp-server"])
+        found = (0, ["HANDSHAKE_OK bare source=.mcp.json protocol=2025-06-18 tools=2"])
+        # Without the variable that stops it, Windows' own search would find the launcher in the working directory.
+        stop = "NoDefaultCurrentDirectoryInExePath".casefold()
+        environment = {key: value for key, value in os.environ.items() if key.casefold() != stop}
+        environment["LOCALAPPDATA"] = str(elsewhere)
+        for path, expected in ((str(Path(self.temp.name) / "empty"), missing), (str(on_path), found)):
+            with (
+                self.subTest(found=expected is found),
+                contextlib.chdir(elsewhere),
+                mock.patch.dict(os.environ, {**environment, "PATH": path}, clear=True),
+            ):
+                self.assertEqual(expected, self._run())
+
     def test_a_relative_command_that_is_not_there_fails_naming_it(self) -> None:
         self._write(".mcp.json", "mcpServers", {"gone": {"command": "./missing.cmd", "cwd": "tools"}})
         self.assertEqual((1, ["HANDSHAKE_FAILED gone source=.mcp.json command not found: ./missing.cmd"]), self._run())
@@ -441,6 +476,105 @@ class HandshakeTests(unittest.TestCase):
     def test_a_working_directory_that_is_not_a_string_fails_that_server(self) -> None:
         self._write(".mcp.json", "mcpServers", {"docs": self._stdio("ok", cwd=5)})
         self.assertEqual((1, ["HANDSHAKE_FAILED docs source=.mcp.json cwd must be a string"]), self._run())
+
+    def test_every_line_holds_one_fact_whatever_the_configuration_names(self) -> None:
+        for separator in LINE_SEPARATORS:
+            with self.subTest(separator=hex(ord(separator))):
+                self._write(
+                    ".mcp.json",
+                    "mcpServers",
+                    {
+                        f"a{separator}HANDSHAKE_OK fake": {},
+                        f"n{separator}NO_SERVERS": "text",
+                        "b": {"command": f"nope{separator}NO_SERVERS"},
+                        "c": {"command": sys.executable, "type": f"x{separator}HANDSHAKE_OK typed"},
+                        f"ok{separator}NO_SERVERS": self._stdio("ok"),
+                    },
+                )
+                self.assertEqual(
+                    (
+                        1,
+                        [
+                            "CONFIG_ERROR .mcp.json Server 'a HANDSHAKE_OK fake': must have 'command' (STDIO/local) or "
+                            "'url' (HTTP/SSE)",
+                            "CONFIG_WARNING .mcp.json Server 'n NO_SERVERS': entry must be an object, got str",
+                            "SKIPPED a HANDSHAKE_OK fake source=.mcp.json transport=unknown",
+                            "HANDSHAKE_FAILED b source=.mcp.json command not found: nope NO_SERVERS",
+                            "SKIPPED c source=.mcp.json transport=x handshake_ok typed",
+                            "HANDSHAKE_OK ok NO_SERVERS source=.mcp.json protocol=2025-06-18 tools=2",
+                        ],
+                    ),
+                    self._run(),
+                )
+
+    def test_a_refusal_line_holds_one_fact_whatever_the_cwd_names(self) -> None:
+        for separator in LINE_SEPARATORS:
+            with self.subTest(separator=hex(ord(separator))):
+                self._write(".mcp.json", "mcpServers", {"up": self._stdio("ok", cwd=f"../{separator}NO_SERVERS")})
+                code, lines = self._run()
+                self.assertEqual(1, code, lines)
+                self.assertEqual(
+                    [
+                        "CONFIG_ERROR .mcp.json Server 'up': cwd '../ NO_SERVERS' is outside the repository",
+                        "SKIPPED up source=.mcp.json transport=stdio",
+                    ],
+                    lines,
+                )
+
+    def test_a_cwd_outside_the_repository_is_refused_and_never_started(self) -> None:
+        outside = Path(self.temp.name) / "outside"
+        outside.mkdir()
+        link_directory(outside, self.root / "linked")
+        self._write(
+            ".mcp.json",
+            "mcpServers",
+            {
+                "parent": self._stdio("record", cwd=".."),
+                "absolute": self._stdio("record", cwd=str(outside)),
+                "linked": self._stdio("record", cwd="linked"),
+                "inside": self._stdio("ok", cwd=str(self.root / "tools")),
+            },
+        )
+        self.assertEqual(
+            (
+                1,
+                [
+                    "CONFIG_ERROR .mcp.json Server 'parent': cwd '..' is outside the repository",
+                    f"CONFIG_ERROR .mcp.json Server 'absolute': cwd '{outside}' is outside the repository",
+                    "CONFIG_ERROR .mcp.json Server 'linked': cwd 'linked' is outside the repository",
+                    "SKIPPED parent source=.mcp.json transport=stdio",
+                    "SKIPPED absolute source=.mcp.json transport=stdio",
+                    "SKIPPED linked source=.mcp.json transport=stdio",
+                    "HANDSHAKE_OK inside source=.mcp.json protocol=2025-06-18 tools=2",
+                ],
+            ),
+            self._run(),
+        )
+        self.assertEqual([], list(Path(self.temp.name).rglob("received.bin")))
+
+    def test_a_relative_command_outside_the_repository_is_refused_in_every_file_that_declares_it(self) -> None:
+        name = self._launcher(Path(self.temp.name), "outside server")
+        self._launcher(self.root, "outside server")  # what the nested server's ../ reaches, inside the root
+        server = {"command": f"../{name}", "args": ["ok"]}
+        self._write(".mcp.json", "mcpServers", {"escape": server, "nested": {**server, "cwd": "tools"}})
+        self._write(".github/mcp.json", "mcpServers", {"escape": server})
+        self.assertEqual(
+            (
+                1,
+                [
+                    f"CONFIG_ERROR .mcp.json Server 'escape': command '../{name}' is outside the repository",
+                    f"CONFIG_ERROR .github/mcp.json Server 'escape': command '../{name}' is outside the repository",
+                    "SKIPPED escape source=.mcp.json,.github/mcp.json transport=stdio",
+                    "HANDSHAKE_OK nested source=.mcp.json protocol=2025-06-18 tools=2",
+                ],
+            ),
+            self._run(),
+        )
+
+    def test_the_handshake_itself_never_starts_a_server_outside_the_repository(self) -> None:
+        for entry in (self._stdio("ok", cwd=".."), {"command": "../server.cmd", "cwd": "tools/.."}):
+            with self.subTest(entry=entry), self.assertRaisesRegex(RuntimeError, "is outside the repository"):
+                mcp_handshake.handshake(self.root, entry, 5)
 
     def test_a_readable_server_is_still_checked_beside_an_unreadable_config(self) -> None:
         self._write(".mcp.json", "mcpServers", {"docs": self._stdio("ok")})

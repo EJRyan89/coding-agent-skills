@@ -382,9 +382,10 @@ def render(signals: dict[str, Any]) -> list[str]:
         ),
     ]
     lines: list[str] = []
+    # Each row is one bullet line, and a record's category, path, or reviewer ID may hold a line break.
     for title, rows in sections:
         if rows:
-            lines += [f"### {title}", "", *(f"- {row}" for row in rows), ""]
+            lines += [f"### {title}", "", *(f"- {flat_text(row)}" for row in rows), ""]
     omitted = [f"{name}: {count - SIGNALS_KEPT}" for name, count in signals["counts"].items() if count > SIGNALS_KEPT]
     if omitted:
         lines += [f"Omitted beyond the first {SIGNALS_KEPT} of each: {', '.join(omitted)}.", ""]

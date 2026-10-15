@@ -6,8 +6,10 @@
 This STARTS repository-configured commands, so run it only after the user explicitly
 authorizes operational validation of a trusted repository. Each stdio server declared in
 .mcp.json, .github/mcp.json, .vscode/mcp.json, or .codex/config.toml is started with its
-configured command, arguments, working directory, and environment (a command with a directory part is
-relative to that working directory under the root, as a client starts it), the environment added to this
+configured command, arguments, working directory, and environment (the working directory is under the root, and a
+command with a directory part that is not absolute is relative to it, as a client starts it; a server whose working
+directory or such a command leads out of the root, through `..`, an absolute path, or a link, is refused with a
+CONFIG_ERROR and never started), the environment added to this
 process's but never carrying git's repository-selecting variables, such as a shell's or its configuration's
 GIT_DIR, which skill-core's bounded_process.streaming removes; it receives initialize,
 notifications/initialized, and tools/list, each one line of JSON ended by a line feed and never a carriage
@@ -17,17 +19,22 @@ then is killed, and up to ten seconds more are allowed for it to be reported gon
 several files are started once. A handshake passes only when the initialize result has the fields
 the MCP schema requires and a protocol version this client supports, and every tools/list page, followed
 through nextCursor, is a valid list of tools. Each config is read as audit_ai_config.py reads it. One line per
-config problem, then one per server:
+config problem, then one per server, each on one line: a name, command, type, or reason the repository's
+configuration or a server supplies is flattened onto it with skill-core's flat_text.
 
     CONFIG_ERROR <file> <reason>        the file could not be read or parsed, so none of its servers was checked,
                                         or its servers are not an object (a table in TOML), or one server
-                                        names neither a command nor a url, which is then SKIPPED while the
-                                        others run
+                                        names neither a command nor a url, or its cwd or relative command is
+                                        outside the repository (Server '<name>': cwd '<cwd>' is outside the
+                                        repository, or command '<command>' is), which is then SKIPPED while
+                                        the others run
     CONFIG_WARNING <file> <reason>      the file lacks its servers key, or an entry is not an object (a
                                         table in TOML) and is not a server; the others run
     HANDSHAKE_OK <name> source=<files> protocol=<version> tools=<count|none>
     HANDSHAKE_FAILED <name> source=<files> <reason>
     SKIPPED <name> source=<files> transport=<transport>
+                                        a remote transport, a server without a command, or one a CONFIG_ERROR
+                                        refused
     NO_SERVERS                          no config had a CONFIG_ERROR and none declares a server
     FAILED <reason>                     last line: the root is not a Git repository, or no server has the
                                         name --server gives
@@ -50,9 +57,11 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
-from audit_ai_config import _parse_mcp_json, _read_codex_mcp
+from audit_ai_config import _parse_mcp_json, _read_codex_mcp, leaves_root
 from bounded_process import Streaming, streaming
 from console import run_main
+from executable_locator import find_executable
+from flat_text import flat_text
 
 # Every server this starts is a command the target repository configures, so the skill leaves this script ungranted
 # and the user approves each run.
@@ -231,12 +240,33 @@ COMMANDS_ALLOWED = {
 }
 
 
+def has_directory_part(command: str) -> bool:
+    return any(separator in command for separator in (os.sep, os.altsep) if separator)
+
+
 def resolve_command(command: str, cwd: Path) -> str | None:
     """The program a server's command names: a path is relative to the server's working directory, the directory a
-    client starts it in, and a bare name is looked up on PATH."""
-    if any(separator in command for separator in (os.sep, os.altsep) if separator):
+    client starts it in, and a bare name is the program skill-core's locator finds for it, so the folder this script
+    runs from, which `shutil.which` searches first on Windows, never decides it."""
+    if has_directory_part(command):
         return shutil.which(str(cwd / command))
-    return shutil.which(command)
+    return find_executable(command)
+
+
+def outside_problem(root: Path, entry: dict[str, Any]) -> str | None:
+    """Why a stdio server would start outside the repository, or None: its cwd, or a command with a directory part
+    that is not absolute, leads out of the root once `..` parts and links are resolved, or cannot be resolved. A cwd
+    that is not a string is the handshake's failure to report."""
+    configured_cwd = entry.get("cwd", ".")
+    if not isinstance(configured_cwd, str):
+        return None
+    cwd = root / configured_cwd
+    if leaves_root(root, cwd):
+        return f"cwd '{configured_cwd}' is outside the repository"
+    command = entry["command"]
+    if has_directory_part(command) and not Path(command).is_absolute() and leaves_root(root, cwd / command):
+        return f"command '{command}' is outside the repository"
+    return None
 
 
 def handshake(root: Path, entry: dict[str, Any], timeout: float) -> str:
@@ -244,6 +274,9 @@ def handshake(root: Path, entry: dict[str, Any], timeout: float) -> str:
     configured_cwd = entry.get("cwd", ".")
     if not isinstance(configured_cwd, str):
         raise RuntimeError("cwd must be a string")
+    problem = outside_problem(root, entry)
+    if problem is not None:  # main reports it as a CONFIG_ERROR and never gets here; another caller fails
+        raise RuntimeError(problem)
     cwd = root / configured_cwd
     command = resolve_command(entry["command"], cwd)
     if command is None:
@@ -305,9 +338,11 @@ def main(arguments: list[str] | None = None) -> int:
     if not (args.root / ".git").exists():
         print(f"FAILED {args.root} is not a Git repository")
         return 1
-    groups, problems = group_servers(args.root.resolve(), args.server)
+    root = args.root.resolve()
+    groups, problems = group_servers(root, args.server)
+    refused = refuse_outside(root, groups, problems)
     for severity, source, message in problems:
-        print(f"CONFIG_{severity} {source} {message}")
+        print(f"CONFIG_{severity} {source} {flat_text(message)}")
     failed = any(severity == "ERROR" for severity, _, _ in problems)
     if not groups:
         if args.server is not None:
@@ -316,18 +351,37 @@ def main(arguments: list[str] | None = None) -> int:
         if not failed:
             print("NO_SERVERS")
         return 1 if failed else 0
-    for name, sources, entry in groups:
-        label = f"{name} source={','.join(sources)}"
-        kind = transport(entry)
-        if kind not in {"stdio", "local"} or not isinstance(entry.get("command"), str):
-            print(f"SKIPPED {label} transport={kind}")
+    for index, (name, sources, entry) in enumerate(groups):
+        # The name, the type, and a failure's reason are the repository's text or carry it, so each is flattened.
+        label = f"{flat_text(name)} source={','.join(sources)}"
+        if index in refused or not starts(entry):
+            print(f"SKIPPED {label} transport={flat_text(transport(entry))}")
             continue
         try:
-            print(f"HANDSHAKE_OK {label} {handshake(args.root.resolve(), entry, args.timeout)}")
+            print(f"HANDSHAKE_OK {label} {handshake(root, entry, args.timeout)}")
         except RuntimeError as error:
             failed = True
-            print(f"HANDSHAKE_FAILED {label} {error}")
+            print(f"HANDSHAKE_FAILED {label} {flat_text(str(error))}")
     return 1 if failed else 0
+
+
+def starts(entry: dict[str, Any]) -> bool:
+    """Whether the handshake starts this server: a stdio or local one with a command."""
+    return transport(entry) in {"stdio", "local"} and isinstance(entry.get("command"), str)
+
+
+def refuse_outside(
+    root: Path, groups: list[tuple[str, list[str], dict[str, Any]]], problems: list[Problem]
+) -> set[int]:
+    """The indexes of the servers that would start outside the repository, each added to `problems` as an ERROR in
+    every file that declares it, so it is reported with the other config problems and never started."""
+    refused: set[int] = set()
+    for index, (name, sources, entry) in enumerate(groups):
+        problem = outside_problem(root, entry) if starts(entry) else None
+        if problem is not None:
+            refused.add(index)
+            problems.extend(("ERROR", source, f"Server '{name}': {problem}") for source in sources)
+    return refused
 
 
 if __name__ == "__main__":

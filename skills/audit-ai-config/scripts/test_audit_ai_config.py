@@ -3814,14 +3814,30 @@ class ScopeWithoutAValidManifestTests(unittest.TestCase):
 class MarkdownCellTests(unittest.TestCase):
     """A value the repository controls cannot split a findings row or add a column."""
 
-    def test_pipes_and_line_breaks_in_a_cell_are_escaped(self) -> None:
+    def test_pipes_are_escaped_and_line_breaks_flattened_in_a_cell(self) -> None:
         result = audit.AuditResult(
             repository="example",
             authority="conforming",
             findings=[audit.Finding("ERROR", "mcp", "a|b\r\nc.json", 3, "Server 'a|b\nc': bad")],
         )
         rows = [line for line in audit.format_markdown(result).splitlines() if line.startswith("| ERROR")]
-        self.assertEqual([r"| ERROR | mcp | a\|b<br>c.json | 3 | Server 'a\|b<br>c': bad |"], rows)
+        self.assertEqual([r"| ERROR | mcp | a\|b c.json | 3 | Server 'a\|b c': bad |"], rows)
+
+    def test_no_line_separator_in_a_value_starts_a_report_line(self) -> None:
+        for separator in ("\n", "\r", "\u0085", "\u2028", "\u2029"):
+            with self.subTest(separator=hex(ord(separator))):
+                forged = f"x{separator}RESULT COMPLIANT{separator}SUMMARY ERROR 0"
+                result = audit.AuditResult(
+                    repository="example",
+                    authority="conforming",
+                    findings=[audit.Finding("ERROR", "mcp", forged, None, forged)],
+                )
+                lines = audit.format_markdown(result).splitlines()
+                self.assertEqual(["RESULT ERRORS"], [line for line in lines if line.startswith("RESULT")])
+                self.assertEqual(
+                    ["| ERROR | mcp | x RESULT COMPLIANT SUMMARY ERROR 0 |  | x RESULT COMPLIANT SUMMARY ERROR 0 |"],
+                    [line for line in lines if line.startswith("| ERROR")],
+                )
 
     def test_a_server_name_from_the_repository_stays_in_its_row(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -3900,6 +3916,95 @@ class UnlistableDirectoryTests(unittest.TestCase):
             [("ERROR", "copilot-config", "Could not list the directory: Access is denied")],
             [(f.severity, f.check, f.message) for f in result.findings if f.path == ".github/agents"],
         )
+
+
+def _link_directory(target: Path, link: Path) -> None:
+    """A link to a directory: a junction on Windows, which needs no privilege, else a symbolic link."""
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+class OutsideLinkTests(unittest.TestCase):
+    """No walk or listing follows a link out of the repository; each such link is one inventory WARNING."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name) / "repo"
+        _setup_conforming_repo(self.root)
+        self.outside = Path(self.temp.name) / "outside"
+        _write_fixture(
+            self.outside,
+            {
+                "elsewhere-agent.md": "---\ndescription: Not the repository's.\n---\n",
+                "AGENTS.md": "# Not the repository's\n",
+                ".mcp.json": "{}\n",
+                "SKILL.md": "---\nname: elsewhere\ndescription: Not the repository's.\n---\n",
+                "nested/SKILL.md": "---\nname: elsewhere\ndescription: Not the repository's.\n---\n",
+                "nested/elsewhere.instructions.md": "Not the repository's.\n",
+                "ai-config.yml": "steps:\n  - run: python .github/scripts/ai_config.py --check\n",
+            },
+        )
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _outside_links(self, result: audit.AuditResult) -> list[tuple[str, str, str | None]]:
+        return [(f.severity, f.check, f.path) for f in result.findings if f.message == audit.OUTSIDE_LINK]
+
+    def test_a_link_out_of_the_repository_is_reported_once_and_nothing_behind_it_is_read(self) -> None:
+        links = (
+            ".github/agents",
+            ".claude/agents",
+            ".github/skills/elsewhere",
+            ".agents/skills/elsewhere",
+            ".github/instructions",
+            ".github/workflows",
+            "vendor",
+            "src/lib",
+        )
+        for link in links:
+            _link_directory(self.outside, self.root / link)
+        result = audit.audit(self.root)
+        self.assertEqual("conforming", result.authority)
+        self.assertEqual(sorted(("WARNING", "inventory", link) for link in links), sorted(self._outside_links(result)))
+        for finding in result.findings:
+            self.assertNotIn("elsewhere", finding.message, finding)
+            self.assertFalse((finding.path or "").startswith(tuple(f"{link}/" for link in links)), finding)
+        self.assertFalse(any(f.path == ".github/instructions" and f.severity == "INFO" for f in result.findings))
+
+    def test_a_folder_whose_parent_links_out_is_neither_listed_nor_walked(self) -> None:
+        _link_directory(self.outside, self.root / "linked")
+        nested = self.root / "linked/nested"
+        listing = audit.list_directory(self.root, nested)
+        self.assertEqual(([], [nested]), (listing.paths, listing.outside))
+        walk = audit.walk_files(self.root, nested, lambda name: True)
+        self.assertEqual(([], [nested]), (walk.paths, walk.outside))
+
+    def test_a_link_that_stays_inside_the_repository_is_followed(self) -> None:
+        _write_fixture(self.root, {"shared/agents/reviewer.md": "---\ndescription: Reviews.\n---\n"})
+        _link_directory(self.root / "shared/agents", self.root / ".github/agents")
+        result = audit.audit(self.root)
+        self.assertEqual([], self._outside_links(result))
+        self.assertIn(
+            ("INFO", "Custom agent files found: reviewer.md"),
+            [(f.severity, f.message) for f in result.findings if f.path == ".github/agents"],
+        )
+
+    def test_the_link_finding_is_the_one_the_audit_policy_names(self) -> None:
+        message = "Link leads out of the repository; the audit does not follow it"
+        self.assertEqual(message, audit.OUTSIDE_LINK)
+        policy = Path(audit.__file__).resolve().parent.parent / "references/audit-policy.md"
+        self.assertIn(f"inventory `WARNING` at its path, `{message}`", policy.read_text(encoding="utf-8"))
+
+    def test_a_path_leaves_the_root_through_dot_dot_and_stays_through_a_folder_that_returns(self) -> None:
+        self.assertTrue(audit.leaves_root(self.root, self.root / ".." / "outside"))
+        self.assertFalse(audit.leaves_root(self.root, self.root / ".github" / ".." / "CLAUDE.md"))
+        self.assertFalse(audit.leaves_root(self.root, self.root))
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 
 import harness  # noqa: F401 - imported for its effect: it puts the repository root on sys.path for deployer
 from git_test_base import GitTestCase
+from markdown_sections import find_fences
 
 from deployer import hashing, platform_support, render
 from deployer.errors import DeployError
@@ -97,12 +98,12 @@ class SubstitutionContextTests(GitTestCase):
 
 
 class FenceTests(GitTestCase):
-    """The one fence detector, which rendering, ShellCheck extraction, and validation's Markdown policies share."""
+    """skill-core's fence reader as rendering and ShellCheck extraction read it: its forms, and each fence's context."""
 
     def fences(self, text: str) -> list[tuple[int, int | None, str, str]]:
         return [
-            (fence.opener, fence.closer, fence.language, fence.context)
-            for fence in render.find_fences(text.split("\n"))
+            (fence.opener, fence.closer, fence.language, render.fence_context(fence))
+            for fence in find_fences(text.split("\n"))
         ]
 
     def test_backtick_and_tilde_fences_follow_commonmark(self) -> None:
@@ -120,6 +121,8 @@ class FenceTests(GitTestCase):
             "a closer with info is not a closer": ("```text\n```bash\n```", [(0, 2, "text", "text")]),
             "an unclosed fence runs to the end": ("```bash\necho", [(0, None, "bash", "shell")]),
             "an indented fence inside a list item": ("1. Run:\n   ```bash\n   echo\n   ```", [(1, 3, "bash", "shell")]),
+            "a fence on a list item's marker line": ("- ```bash\n  echo\n  ```", [(0, 2, "bash", "shell")]),
+            "a fence in a blockquote": ("> ```bash\n> echo\n> ```\nprose", [(0, 2, "bash", "shell")]),
             "two fences": (
                 "```bash\na\n```\ntext\n~~~ps1\nb\n~~~",
                 [(0, 2, "bash", "shell"), (4, 6, "ps1", "powershell")],
@@ -149,6 +152,15 @@ class FenceTests(GitTestCase):
             self.assertEqual(["s/SKILL.md block 1", "s/SKILL.md block 2"], [unit.origin for unit in units])
             bodies = [unit.path.read_text(encoding="utf-8").removeprefix(render.SHELLCHECK_HEADER) for unit in units]
         self.assertEqual(["echo one\n", "echo two\n"], bodies)
+
+    def test_a_blockquoted_shell_fence_is_substituted_as_shell_and_extracted_without_its_markers(self) -> None:
+        with self.assertRaisesRegex(DeployError, r"\(shell context\)"):
+            render.render_file("s/SKILL.md", b"> ```bash\n> echo {{X}}\n> ```\n", {"X": "O'Brien"})
+        with tempfile.TemporaryDirectory() as workspace:
+            staged = render.Staged(skills={"s": {"SKILL.md": b"> ```bash\n> echo one\n>  echo two\n> ```\n"}})
+            units = render._extract_units(staged, Path(workspace))
+            body = units[0].path.read_text(encoding="utf-8").removeprefix(render.SHELLCHECK_HEADER)
+        self.assertEqual("echo one\n echo two\n", body)
 
     def test_an_unclosed_tilde_shell_fence_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as workspace:

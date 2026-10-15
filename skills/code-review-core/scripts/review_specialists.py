@@ -133,7 +133,7 @@ def _header_path(rest: str) -> str | None:
     return None
 
 
-def _safe_path(value: str) -> str | None:
+def reviewable_path(value: str) -> str | None:
     """The path as reviewers see it, or None when no prompt, work file, or link may carry it: empty, absolute,
     with a backslash, an empty, `.`, or `..` segment, or a character `LINE_UNSAFE` matches."""
     if not safe_repository_path(value) or LINE_UNSAFE.search(value):
@@ -154,12 +154,12 @@ def _numbered(marker: str, number: int | None, text: str) -> str:
 
 def parse_unified_diff(text: str) -> dict[str, dict[str, Any]]:
     """Return {path: {"block": raw diff text, "numbered": block with new-file line numbers, "added": {new_line:
-    text}}} in diff order, for every path `_safe_path` accepts. `split_unified_diff` also names the others."""
+    text}}} in diff order, for every path `reviewable_path` accepts. `split_unified_diff` also names the others."""
     return split_unified_diff(text)[0]
 
 
 def split_unified_diff(text: str) -> tuple[dict[str, dict[str, Any]], list[str]]:
-    """The parsed diff of every safe path, as `parse_unified_diff` returns it, and each path `_safe_path` rejects,
+    """The parsed diff of every safe path, as `parse_unified_diff` returns it, and each path `reviewable_path` rejects,
     once, in diff order. A rejected path's block is left out whole: no reviewer prompt, work file, or link may
     carry its name, so no reviewer is given the file."""
     files: dict[str, dict[str, Any]] = {}
@@ -254,7 +254,7 @@ def _finish_diff_block(files: dict[str, dict[str, Any]], unsafe: list[str], curr
     path = current["new"] or current["old"] or current["header"]
     if path is None:
         raise SpecialistError("Diff block without a resolvable path")
-    safe = _safe_path(path)
+    safe = reviewable_path(path)
     if safe is None:
         if path not in unsafe:
             unsafe.append(path)

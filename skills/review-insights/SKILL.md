@@ -2,7 +2,7 @@
 name: review-insights
 description: "Analyze structured code-review findings and open flags for an explicit date range and repository set, and recommend guidance, reviewer, and analyzer changes. Use it when asked what reviews keep flagging, which findings were accepted or rejected, or what to change in review guidance."
 argument-hint: "START_DATE END_DATE [owner/repo ... | --repository-set NAME]"
-allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "Agent", "AskUserQuestion"]
+allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/review_insights.py\" *)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/review_insights.py\" *)", "Agent", "AskUserQuestion"]
 ---
 
 # Review insights

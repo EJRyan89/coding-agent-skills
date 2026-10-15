@@ -2,7 +2,7 @@
 name: repo-cleanup
 description: "Clean up GitHub repos: switch to default branch, prune gone branches, remove stale worktrees, and fast-forward remaining branches. Sweeps all repos under {{REPOS_ROOT}} or targets a single repo by name/path."
 argument-hint: "[<repo-name-or-path>]"
-allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "AskUserQuestion"]
+allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py\" *)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py\" *)", "AskUserQuestion"]
 disable-model-invocation: true
 ---
 
@@ -58,13 +58,13 @@ Ask only these questions, and only when the sweep or a later command printed the
 
 Both print `DELETED`, `UNMERGED`, or `PRESERVED <branch> <reason>` (for a deletion Git refused, or a worktree its ignored files kept, its reason, and the command exits 1), `REMOVED` for a worktree removed with its branch, and `PRUNED_DIR <dir>` for each empty parent directory its removal left and the command removed, or a last line `FAILED <reason>` when the plan cannot be used or Git could not run; `SUMMARY` lines before it say what was done.
 
-**Detached worktrees and leftover directories.** For `CONFIRM_DETACHED <path> <sha>` lines, call `AskUserQuestion` with question `"<REPO_NAME>: These worktrees have no branch checked out and no changes, and their commit is on <DEFAULT_BRANCH> or a remote branch. Remove or keep each?"` and header `"Detached"`. For `ORPHAN <path>` lines, call it with question `"<REPO_NAME>: These directories in the worktree area are no longer Git worktrees. Their contents are not in Git and cannot be recovered once deleted. Delete or keep each?"` and header `"Leftovers"`. Offer each list's options as for local branches. Then remove the chosen paths of both:
+**Detached worktrees and leftover directories.** For `CONFIRM_DETACHED <path> <sha>` lines, call `AskUserQuestion` with question `"<REPO_NAME>: These worktrees have no branch checked out and no changes, and their commit is on <DEFAULT_BRANCH> or a remote branch. Remove or keep each?"` and header `"Detached"`. For `ORPHAN <path>` lines, call it with question `"<REPO_NAME>: These directories in the worktree area are no longer Git worktrees, and Git tracks none of their files. They cannot be recovered once deleted. Delete or keep each?"` and header `"Leftovers"`. Offer each list's options as for local branches. Then remove the chosen paths of both:
 
 ```bash
 {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" remove-directory --plan "<plan file>" --path "<path>" --path "<path>"
 ```
 
-It prints `REMOVED` for a worktree, `DELETED_DIR` for a directory, `PRUNED_DIR <dir>` for each empty parent directory either left and the command removed, or `PRESERVED <path> <reason>` for one that stays (when Git refused, the worktree's ignored files kept it, deleting failed, or the directory resolves outside the worktree areas, the command exits 1), or a last line `FAILED <reason>`; `SUMMARY` lines before it say what was done.
+It prints `REMOVED` for a worktree, `DELETED_DIR` for a directory, `PRUNED_DIR <dir>` for each empty parent directory either left and the command removed, or `PRESERVED <path> <reason>` for one that stays (when Git refused, the worktree's ignored files kept it, deleting failed, the directory resolves outside the worktree areas, or Git tracks files in it, the command exits 1), or a last line `FAILED <reason>`; `SUMMARY` lines before it say what was done.
 
 ## 5. Summary
 

@@ -6,17 +6,18 @@ import copy
 import hashlib
 import json
 import re
-import string
 import sys
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
-from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from flat_text import flat_text
+from markdown_literal import markdown_line as _text
+from markdown_literal import markdown_literal as _literal
+from markdown_literal import navigation_url as _navigation_url
 from review_config import safe_repository_path, validate_repository_identity
 from review_io import atomic_write_json, atomic_write_text, read_json
 from typed_fields import FieldError, FieldReader, describe
@@ -1300,24 +1301,6 @@ def _cell(text: str) -> str:
     return flat_text(text).replace("|", "\\|")
 
 
-# Entities are text in both Markdown and HTML summaries. Encoding punctuation also prevents bare URL, email,
-# mention and math recognition, without depending on the parity of author-supplied backslashes.
-LITERAL_PUNCTUATION = str.maketrans(
-    {char: {"&": "&amp;", "<": "&lt;", ">": "&gt;"}.get(char, f"&#{ord(char)};") for char in string.punctuation}
-)
-
-
-def _literal(text: str) -> str:
-    text = text.translate(LITERAL_PUNCTUATION)
-    # Leading whitespace must not turn a prose line into an indented code block.
-    return re.sub(r"^[ \t]+", lambda match: "".join(f"&#{ord(char)};" for char in match[0]), text)
-
-
-def _text(text: str) -> str:
-    """Literal single-line metadata, for table cells and HTML summaries."""
-    return _literal(flat_text(text))
-
-
 def _code_cell(text: str) -> str:
     """HTML code avoids Markdown table escape parity when a label contains both backslashes and pipes."""
     if "\\" in text and "|" in text:
@@ -1338,13 +1321,6 @@ def _prose(text: str, *, table: bool = False) -> str:
 
 def _quote(text: str) -> list[str]:
     return [f"> {line}".rstrip() for line in _prose(text).splitlines()]
-
-
-def _navigation_url(url: str) -> str | None:
-    """Only absolute HTTPS navigation stays active; delimiters cannot escape its Markdown destination."""
-    if not re.fullmatch(r"https://[A-Za-z0-9.-]+(?::[0-9]+)?(?:/[^\x00-\x20]*)?", url):
-        return None
-    return quote(url, safe="/:?#@!$&+,;=%")
 
 
 def _comment_link(comment: dict[str, Any]) -> str:

@@ -2,7 +2,7 @@
 name: curate-agent-memory
 description: "Audit and clean up Claude Code auto-memory for a project: find stale, duplicated, or misplaced memories, move durable rules to their proper home, and apply only the changes the user approves. Use it when asked to review, tidy, or prune a project's memories."
 argument-hint: "[repository path] [--memory-dir DIR]"
-allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "Read", "Edit", "Grep", "AskUserQuestion", "Skill"]
+allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/memory_audit.py\" *)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/memory_audit.py\" *)", "Read", "Edit", "Grep", "AskUserQuestion", "Skill"]
 ---
 
 # Curate agent memory
@@ -20,7 +20,7 @@ Everything later deletes or rewrites files, so the target must be the store Clau
   {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" resolve
   ```
 
-  It prints `REPO <root>`, the repository to use from here on; then `MEMORY_DIR <path>`, `SOURCE <where it came from>`, and `EXISTS yes` or `EXISTS no`, or `NO_MEMORY_DIR` when the settings name no usable directory; a `CANDIDATE <dir>` line for each memory directory it found when no existing directory resolved, whatever named it; and a `NOTE` line for each caveat, such as the `--settings` launch flag it cannot see. `FAILED not inside a Git repository` means you must pass `--repo`.
+  It prints `REPO <root>`, the repository to use from here on; then `MEMORY_DIR <path>`, `SOURCE <where it came from>`, and `EXISTS yes` or `EXISTS no`, or `NO_MEMORY_DIR` when no usable directory resolves; a `CANDIDATE <dir>` line for each memory directory it found when no existing directory resolved, whatever named it; and a `NOTE` line for each caveat, such as the `--settings` launch flag it cannot see. `FAILED not inside a Git repository` means you must pass `--repo`.
 - On `NO_MEMORY_DIR` or `EXISTS no`, show the notes, list the `CANDIDATE` lines, and ask the user to choose or supply `--memory-dir`. Never guess.
 - Show the user the resolved directory and its source, and get explicit confirmation before continuing.
 
@@ -46,8 +46,16 @@ Assign each memory exactly one outcome, with a one-line reason and evidence (`fi
 | Merge | It overlaps other memories; name the survivor and show the merged text. |
 | Move to global instructions | A rule the user wants in every repository. |
 | Move to repository guidance | A convention for everyone working in this repository (`CLAUDE.md`, coding guidelines, contributor docs). |
-| Move to a skill | A rule about how a specific skill must behave; name the skill file. |
+| Move to a skill | A rule about how a specific skill must behave; the destination is a file `skill-source` prints (below). |
 | Record as a review finding | A correction to an automated reviewer's findings rather than a preference. Use `flag-review-finding` when it is available. |
+
+For a move to a skill, find the file to edit. Add `--repo "<repository>"` as in Step 1, or pass `--file "<path>"` in place of the name to check a source file the user names:
+
+```bash
+{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" skill-source "<skill>"
+```
+
+It prints `SKILL_FILE <path>` for each source of the skill: the checkout the deployer installed it from, and a project skill in the repository. Never edit a deployed copy under a skills directory: the deployer then stops updating that skill, and the next audit never sees the rule. A `NOTE` line names a file it passed over. When it ends with `FAILED <reason>`, show the reason; the outcome is Keep unless the user names a source file that `--file` accepts.
 
 A memory whose rule is not yet at its destination is never simply deleted. Its outcome is the move, and the memory is deleted only after the destination change is applied. If the user declines the move, keep the memory. Record nothing about deferrals; the next run checks again.
 
@@ -61,7 +69,7 @@ Ask which groups to apply with a multi-select question, one option per non-empty
 
 ## Step 5: Apply the approved changes
 
-- Edit destination files first, reading each before changing it and keeping its existing style and structure. Never replace a whole existing file.
+- Edit destination files first, reading each before changing it and keeping its existing style and structure. Never replace a whole existing file. A skill's destination is a `SKILL_FILE` from Step 3, never a file under a skills directory.
 - Only then delete or rewrite the memories those changes cover. When rewriting one, keep its frontmatter `name` and `description` accurate: the index is built from them. Delete approved memories by file name, never with another command:
 
   ```bash
@@ -77,7 +85,7 @@ Ask which groups to apply with a multi-select question, one option per non-empty
   ```
 
   It writes the index from the memory files and prints `WROTE <path>`, or `UNCHANGED`; report its `DROPPED` and `ADDED` lines. `OVER_LIMIT` (it still writes the index) or `NEAR_LIMIT` means the index still needs merging or moving entries. A last `FAILED <reason>` means it could not write the index; show the reason.
-- Do not commit, push, or open pull requests; report which repository files changed so the user can review them.
+- Do not commit, push, or open pull requests; report which repository files changed so the user can review them, and that a change to a skill's source reaches the deployed skill at its next deployment.
 
 ## Step 6: Re-audit and report
 

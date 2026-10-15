@@ -134,6 +134,33 @@ class CommandTests(GitTestCase):
             formatter.command("fix", "App.sln", ["A.cs"], "info"),
         )
 
+    def test_a_name_starting_with_at_or_dash_is_passed_as_a_path_to_either_formatter(self) -> None:
+        # Both formatters read an argument starting with `@` as a response file and one starting with `-` as an
+        # option, anywhere on the command line; `./` makes each a path both match as the same file.
+        names = ["@Program.cs", "-Option.cs", "src/@Kept.cs", "src/-Kept.cs", "A@B.cs", "Plain.cs"]
+        included = ["./@Program.cs", "./-Option.cs", "src/@Kept.cs", "src/-Kept.cs", "A@B.cs", "Plain.cs"]
+        for solution in ("App.sln", "App.slnx"):
+            for mode in ("check", "fix"):
+                with self.subTest(solution=solution, mode=mode):
+                    arguments = formatter.command(mode, solution, names, "warn")
+                    self.assertEqual(included, arguments[arguments.index("--include") + 1 :])
+                    self.assertEqual(
+                        formatter.command(mode, solution, [], "warn"), arguments[: arguments.index("--include") + 1]
+                    )
+                    self.assertFalse(
+                        [argument for argument in arguments[1:] if argument.startswith("@")],
+                        "no argument is read as a response file",
+                    )
+                    options = [argument for argument in arguments if argument.startswith("-")]
+                    self.assertEqual(options, [argument for argument in options if argument.startswith("--")])
+
+    def test_include_path_changes_only_a_name_the_formatter_would_not_read_as_a_path(self) -> None:
+        self.assertEqual("./@a.cs", formatter.include_path("@a.cs"))
+        self.assertEqual("./-a.cs", formatter.include_path("-a.cs"))
+        self.assertEqual("./--report.cs", formatter.include_path("--report.cs"))
+        self.assertEqual("a/@b.cs", formatter.include_path("a/@b.cs"))
+        self.assertEqual("a-b.cs", formatter.include_path("a-b.cs"))
+
 
 class BatchTests(GitTestCase):
     def test_a_list_that_fits_is_one_run(self) -> None:
@@ -147,6 +174,12 @@ class BatchTests(GitTestCase):
         for limit in (45, 50, 60):
             for run in formatter.batches(prefix, files, limit=limit):
                 self.assertLessEqual(len(subprocess.list2cmdline([*prefix, *run])), limit)
+
+    def test_a_run_fits_its_files_as_the_command_passes_them(self) -> None:
+        prefix = ["dotnet-format", "App.sln", "--include"]  # 31 characters
+        files = ["@A.cs", "B.cs"]  # 8 and 5 characters as `./@A.cs` and `B.cs` with the space before each
+        self.assertEqual([["@A.cs"], ["B.cs"]], formatter.batches(prefix, files, limit=42))
+        self.assertEqual([["@A.cs", "B.cs"]], formatter.batches(prefix, files, limit=44))
 
     def test_a_file_that_fits_no_command_line_fails(self) -> None:
         with self.assertRaisesRegex(formatter.Failed, "^Long Name.cs does not fit a command line of 40 characters$"):

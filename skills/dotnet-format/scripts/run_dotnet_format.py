@@ -13,9 +13,10 @@ temporary file; standard output gets one fact per line, tab separated:
 
 The formatter is the dotnet-format global tool for a .sln solution and the .NET SDK's `dotnet format` for a .slnx
 solution, which the global tool cannot open; both print diagnostics in one layout, and both exit 2 from a check that
-finds changes. FILE paths are relative to the repository root when they are inside it. Files too many for one
-command line, which Windows limits to 32,767 characters, are formatted in several runs within the one time limit,
-and the log holds every run's output in order.
+finds changes. FILE paths are relative to the repository root when they are inside it. A changed file whose name
+starts with `@` or `-` is passed to the formatter as `./<name>`, since either formatter would read the bare name as a
+response file or an option. Files too many for one command line, which Windows limits to 32,767 characters, are
+formatted in several runs within the one time limit, and the log holds every run's output in order.
 
 `check` exits 1 when it prints a DIAGNOSTIC (findings) and 0 when it prints none. `fix` exits 0 once the formatter
 succeeds: its DIAGNOSTIC lines are what it found to fix, because its log does not say which of them it could not
@@ -122,13 +123,22 @@ def formatter_name(solution: str) -> str:
     return "dotnet format" if is_slnx(solution) else "dotnet-format"
 
 
+def include_path(name: str) -> str:
+    """A changed file's name as the formatter's --include reads it as a path. Both formatters read an argument that
+    starts with `@` as a response file of further arguments and one that starts with `-` as an option, wherever it
+    stands, so such a name is passed as `./<name>`, which both match as the same file."""
+    return f"./{name}" if name.startswith(("@", "-")) else name
+
+
 def command(mode: str, solution: str, files: list[str], severity: str) -> list[str]:
+    """The formatter's command for the files, each passed through `include_path`."""
+    included = [include_path(name) for name in files]
     if is_slnx(solution):
         # The SDK command runs the whitespace, code-style, and analyzer passes together at one --severity.
         arguments = ["dotnet", "format", solution, "--no-restore", "--severity", severity, "--verbosity", "detailed"]
         if mode == "check":
             arguments.append("--verify-no-changes")
-        return [*arguments, "--include", *files]
+        return [*arguments, "--include", *included]
     arguments = [
         "dotnet-format",
         solution,
@@ -143,7 +153,7 @@ def command(mode: str, solution: str, files: list[str], severity: str) -> list[s
     ]
     if mode == "check":
         arguments.append("--check")
-    return [*arguments, "--include", *files]
+    return [*arguments, "--include", *included]
 
 
 def command_line_length(arguments: Sequence[str]) -> int:
@@ -156,7 +166,7 @@ def batches(prefix: Sequence[str], files: list[str], limit: int = COMMAND_LINE_L
     runs: list[list[str]] = [[]]
     length = command_line_length(prefix)
     for name in files:
-        size = 1 + command_line_length([name])
+        size = 1 + command_line_length([include_path(name)])
         if runs[-1] and length + size > limit:
             runs.append([])
             length = command_line_length(prefix)
