@@ -27,8 +27,8 @@ with `path:`). [Parallel sessions](parallel-sessions.md) explains why and how a 
 Validation is continuous integration's job: the `Validation` check runs `python -B tests/run_validation.py`, split
 across its Windows legs and whole on Linux, in full on every push and on every pull request that is not
 documentation-only. A documentation-only pull request runs the subset the runner selects (the policy checks, the suites
-that name a changed file, and the Markdown fence checks), and a pull request merges only when the check passes on both
-platforms. Locally, run what the change touches:
+that name a changed file, and, when a changed file is Markdown, the Markdown fence checks), and a pull request merges
+only when the check passes on both platforms. Locally, run what the change touches:
 
 - `python -m ruff format --check` and `python -m ruff check` on the changed Python paths;
 - `python -B tests/run_validation.py -k <pattern>` for the policies and suites that name the touched files, with
@@ -38,8 +38,10 @@ platforms. Locally, run what the change touches:
 
 Run the suite in full locally only when the change's reach warrants it, such as a validation policy, the runner, or a
 shared module whose callers `-k` does not capture. When a leg fails in continuous integration, reproduce that leg with
-`python -B tests/run_validation.py --shard <index>/<count>`. Bringing an open pull request current with its base needs no
-local rerun, since continuous integration runs on the result.
+`python -B tests/run_validation.py --shard <index>/<count>`, adding `--full` for a push, schedule, or dispatch leg,
+which the workflow runs with it: the runner deals the legs after it selects, so without `--full` a branch whose changes
+are all documentation deals a different leg. A pull-request leg needs no `--full`. Bringing an open pull request current
+with its base needs no local rerun, since continuous integration runs on the result.
 
 The gates that call a model never run in continuous integration, so they stay with the author: a change to skill
 paths, `allowed-tools`, runtime adapters, or agents runs the `runtime-canary` repository skill, a change to a skill's

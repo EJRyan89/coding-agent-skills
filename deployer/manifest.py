@@ -119,11 +119,13 @@ class Ownership:
         unchosen bundle one of whose members another skill depends on: it reads both as unchosen, and --all keeps the
         renamed one only when it is named with --include. Nor can it tell a renamed bundle from an unchosen one every
         member of which another skill depends on: it reads both as chosen, which installs nothing. A skill that
-        deployment installed only through a bundle request is one no request on its own reaches, so beside it a
-        filled-in list is read as recorded and a bundle the source has since renamed stays chosen only when named with
-        --include: the entry cannot tell that history from one whose deployment preserved nothing and installed a
-        requested bundle's members that nothing depends on. An entry that requests no skill on its own cannot tell a
-        filled-in list from an exact one either, and its edges are read as recorded.
+        deployment installed only through a bundle request (--include, the menu, or a bundle a plain --all installed) is
+        one no request on its own reaches, so beside it a filled-in list is read as recorded and a bundle the source has
+        since renamed stays chosen only when named with --include, and a member it has moved out only when its new
+        bundle, or the member itself when it now stands alone, is: the entry cannot tell that history from one whose
+        deployment preserved nothing and installed a requested bundle's members that nothing depends on. An entry that
+        requests no skill on its own cannot tell a filled-in list from an exact one either, and its edges are read as
+        recorded.
         """
         edges = self.deps_of(SKILL)
         roots = _independent(self.skills, edges)
