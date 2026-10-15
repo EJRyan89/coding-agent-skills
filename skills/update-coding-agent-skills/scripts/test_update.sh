@@ -23,15 +23,6 @@ unset_git_variables
 unset XDG_CONFIG_HOME
 export HOME="$FIXTURE/home"
 export GIT_CONFIG_GLOBAL="$HOME/.gitconfig" GIT_CONFIG_NOSYSTEM=1 GIT_ATTR_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 GIT_EDITOR=:
-mkdir -p "$HOME/no-hooks"
-git config --file "$GIT_CONFIG_GLOBAL" user.name Fixture
-git config --file "$GIT_CONFIG_GLOBAL" user.email fixture@example.invalid
-git config --file "$GIT_CONFIG_GLOBAL" core.hooksPath "$HOME/no-hooks"
-git config --file "$GIT_CONFIG_GLOBAL" maintenance.auto false
-git config --file "$GIT_CONFIG_GLOBAL" maintenance.autoDetach false
-git config --file "$GIT_CONFIG_GLOBAL" gc.auto 0
-git config --file "$GIT_CONFIG_GLOBAL" gc.autoDetach false
-
 # A setup command runs through git_quiet, which keeps its output off the suite's streams while it succeeds. One that fails
 # prints the command and the stderr it saved, as fail does for an expectation, and the suite exits with its status.
 git_quiet() {
@@ -44,26 +35,48 @@ git_quiet() {
 }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-# The upstream carries a stand-in deploy.py that records its arguments and exits with $FAKE_DEPLOY_EXIT. Its check
-# prints $FAKE_CHECK_OUTPUT, by default the line a deployment with no recorded commit gets, and exits with
-# $FAKE_CHECK_EXIT.
+mkdir -p "$HOME/no-hooks"
+git_quiet config --file "$GIT_CONFIG_GLOBAL" user.name Fixture
+git_quiet config --file "$GIT_CONFIG_GLOBAL" user.email fixture@example.invalid
+git_quiet config --file "$GIT_CONFIG_GLOBAL" core.hooksPath "$HOME/no-hooks"
+git_quiet config --file "$GIT_CONFIG_GLOBAL" maintenance.auto false
+git_quiet config --file "$GIT_CONFIG_GLOBAL" maintenance.autoDetach false
+git_quiet config --file "$GIT_CONFIG_GLOBAL" gc.auto 0
+git_quiet config --file "$GIT_CONFIG_GLOBAL" gc.autoDetach false
+
+# The upstream carries a stand-in deploy.py that records its arguments and exits with $FAKE_DEPLOY_EXIT. A deployment
+# that succeeds records the commit it ran from, as the real one does, and check names that commit, or prints
+# $FAKE_CHECK_OUTPUT when it is set, and exits with $FAKE_CHECK_EXIT.
 UPSTREAM="$FIXTURE/upstream.git"
 SEED="$FIXTURE/seed"
 git_quiet init --bare -b main "$UPSTREAM"
 git_quiet init -b main "$SEED"
 cat >"$SEED/deploy.py" <<'EOF'
-import os, sys
+import os, subprocess, sys
+here = os.path.dirname(os.path.abspath(__file__))
+record = os.path.join(here, ".fake-deployed")
 with open(os.environ["FAKE_DEPLOY_LOG"], "a", encoding="utf-8") as log:
     log.write(" ".join(sys.argv[1:]) + "\n")
 if sys.argv[1:] == ["check"]:
-    print(os.environ.get("FAKE_CHECK_OUTPUT", "Deployed commit: unknown"))
+    if "FAKE_CHECK_OUTPUT" in os.environ:
+        print(os.environ["FAKE_CHECK_OUTPUT"])
+    elif os.path.exists(record):
+        with open(record, encoding="utf-8") as recorded:
+            print("Deployed commit: " + recorded.read().strip())
+    else:
+        print("Deployed commit: unknown")
     raise SystemExit(int(os.environ.get("FAKE_CHECK_EXIT", "0")))
 if os.environ.get("FAKE_DEPLOY_MOVE"):
     os.rename(os.environ["FAKE_DEPLOY_MOVE"], os.environ["FAKE_DEPLOY_MOVE"] + ".bak")
 print("fake deploy ran")
-raise SystemExit(int(os.environ.get("FAKE_DEPLOY_EXIT", "0")))
+code = int(os.environ.get("FAKE_DEPLOY_EXIT", "0"))
+if code == 0:
+    head = subprocess.run(["git", "-C", here, "rev-parse", "HEAD"], capture_output=True, text=True, check=True)
+    with open(record, "w", encoding="utf-8") as recorded:
+        recorded.write(head.stdout.strip())
+raise SystemExit(code)
 EOF
-printf '__pycache__/\n' >"$SEED/.gitignore"
+printf '__pycache__/\n.fake-deployed\n' >"$SEED/.gitignore"
 git_quiet -C "$SEED" add deploy.py .gitignore
 git_quiet -C "$SEED" commit -m initial
 git_quiet -C "$SEED" remote add origin "$UPSTREAM"
@@ -81,8 +94,44 @@ set -e
   fail "failed setup command: command not named: $(<"$FIXTURE/stderr")"
 # Git names the folder in its own form of the path, a drive-letter one on Windows, so only the folder's name is matched.
 grep -q "missing repository" <(tail -n +2 "$FIXTURE/stderr") || fail "failed setup command: git's stderr not shown: $(<"$FIXTURE/stderr")"
+set +e
 (git_quiet -C "$SEED" status) 2>"$FIXTURE/stderr"
+status=$?
+set -e
+[ "$status" -eq 0 ] || fail "succeeding setup command: exited $status: $(<"$FIXTURE/stderr")"
 [ ! -s "$FIXTURE/stderr" ] || fail "succeeding setup command: wrote to stderr: $(<"$FIXTURE/stderr")"
+
+# A child run of this suite with UPDATE_TEST_SETUP_ONLY set stops here, after its setup and the self-tests above.
+if [ -n "${UPDATE_TEST_SETUP_ONLY:-}" ]; then
+  exit 0
+fi
+
+# A setup command that fails names itself and git's stderr on the suite's stderr, whether it is the self-test's
+# succeeding call or the global configuration, and the suite exits non-zero. A child run of the setup meets a Git
+# wrapper that fails the command whose arguments match the first argument with exit 4.
+SETUP_WRAPPER="$FIXTURE/setup git wrapper"
+mkdir -p "$SETUP_WRAPPER"
+expect_setup_failure() {
+  cat >"$SETUP_WRAPPER/git" <<EOF
+#!/usr/bin/env bash
+case " \$* " in
+  $1) echo "error: refused by the test" >&2; exit 4 ;;
+esac
+exec "$(command -v git)" "\$@"
+EOF
+  chmod +x "$SETUP_WRAPPER/git"
+  set +e
+  UPDATE_TEST_SETUP_ONLY=1 PATH="$SETUP_WRAPPER:$PATH" bash "$SCRIPT_DIR/${0##*/}" >"$FIXTURE/child.out" 2>"$FIXTURE/child.err"
+  status=$?
+  set -e
+  [ "$status" -ne 0 ] || fail "$3: the suite passed"
+  grep -q -E "$2" "$FIXTURE/child.err" || fail "$3: exit $status, the command not named: $(<"$FIXTURE/child.err")"
+  grep -q -x "error: refused by the test" "$FIXTURE/child.err" || fail "$3: git's stderr not shown: $(<"$FIXTURE/child.err")"
+}
+expect_setup_failure '*"/seed status "*' "^FAIL: succeeding setup command: exited 4: FAIL: setup command exited 4: git -C .*/seed status$" \
+  "failing self-test call"
+expect_setup_failure '*" config --file "*" user.name Fixture "*' \
+  "^FAIL: setup command exited 4: git config --file .* user\.name Fixture$" "failing global configuration"
 
 # The suite's isolation unsets a git variable named in any case, and keeps the two that locate git itself.
 LEFT=$(
@@ -101,13 +150,15 @@ publish() {
   git_quiet -C "$SEED" push origin main
 }
 
+# A new clone, made with any further clone arguments given, counts as deployed from the commit it checked out.
 case_number=0
 new_clone() {
   case_number=$((case_number + 1))
   CLONE="$FIXTURE/clone $case_number (dev)"
-  git_quiet clone "$UPSTREAM" "$CLONE"
-  git -C "$CLONE" config user.name Test
-  git -C "$CLONE" config user.email test@example.invalid
+  git_quiet clone "$@" "$UPSTREAM" "$CLONE"
+  git_quiet -C "$CLONE" config user.name Test
+  git_quiet -C "$CLONE" config user.email test@example.invalid
+  git -C "$CLONE" rev-parse HEAD >"$CLONE/.fake-deployed"
 }
 
 run_subject() {
@@ -306,7 +357,7 @@ expect_not_deployed "checkout failed"
 
 # An unreachable origin is reported without deploying.
 new_clone
-git -C "$CLONE" remote set-url origin "$FIXTURE/missing.git"
+git_quiet -C "$CLONE" remote set-url origin "$FIXTURE/missing.git"
 run_subject "$CLONE"
 expect_status 1 "fetch failed"
 expect_first_line "FETCH_FAILED" "fetch failed"
@@ -469,7 +520,7 @@ if printf '%s\n' "$OUTPUT" | grep -q "CROSSED"; then fail "pre-release to releas
 expect_deployed "pre-release to release"
 
 # A deployment made with deploy.py --at stops the update before the fetch, naming the ref and the commit check reports.
-PINNED_COMMIT=0123456789abcdef0123456789abcdef01234567
+PINNED_COMMIT=$(git -C "$SEED" rev-parse "v1.0.0^{commit}")
 PINNED_CHECK="
 Source: coding-agent-skills
 Deployed commit: v1.0.0 ($PINNED_COMMIT), pinned with --at v1.0.0
@@ -492,37 +543,120 @@ expect_status 1 "pinned untagged"
 [ "$OUTPUT" = "PINNED main~2 $PINNED_COMMIT" ] || fail "pinned untagged: got: $OUTPUT"
 expect_not_deployed "pinned untagged"
 
+# With --unpin the update moves past the pin, but the installed version is the pinned commit's, so a release that
+# raises its major stops it until --cross-major too.
+FAKE_CHECK_OUTPUT=$PINNED_CHECK run_subject "$CLONE" --unpin
+expect_status 1 "unpin across a major"
+expect_first_line "MAJOR_UPDATE v1.0.0..v3.0.0" "unpin across a major"
+printf '%s\n' "$OUTPUT" | grep -q "second major" || fail "unpin across a major: commit since the pin not listed: $OUTPUT"
+[ "$(git -C "$CLONE" rev-parse HEAD)" = "$BEFORE" ] || fail "unpin across a major: main moved"
+expect_not_deployed "unpin across a major"
+
 # With --unpin, before or after --cross-major, the update moves past the pin and deploys main, passing --unpin to the
 # deployer, which refuses to replace a pin without it.
-FAKE_CHECK_OUTPUT=$PINNED_CHECK run_subject "$CLONE" --unpin
-expect_status 0 "unpin"
-expect_first_line "UPDATED $(git -C "$CLONE" rev-parse --short "$BEFORE")..$(head_of "$CLONE" HEAD)" "unpin"
-expect_deployed "unpin" "--all --unpin"
-publish "after the unpin"
 FAKE_CHECK_OUTPUT=$PINNED_CHECK run_subject "$CLONE" --cross-major --unpin
 expect_status 0 "unpin after cross-major"
+expect_first_line "UPDATED $(git -C "$CLONE" rev-parse --short "$BEFORE")..$(head_of "$CLONE" HEAD)" "unpin after cross-major"
+printf '%s\n' "$OUTPUT" | grep -qx "CROSSED v1.0.0..v3.0.0" || fail "unpin after cross-major: crossing not named: $OUTPUT"
 expect_deployed "unpin after cross-major" "--all --unpin"
 publish "unpin first"
 FAKE_CHECK_OUTPUT=$PINNED_CHECK run_subject "$CLONE" --unpin --cross-major
 expect_status 0 "unpin before cross-major"
 expect_deployed "unpin before cross-major" "--all --unpin"
 
-# A deployment check names without a pin, or a check that fails, does not stop the update.
+# A deployment check names without a pin does not stop the update, and its commit is read from inside the parentheses.
 publish "unpinned change"
-FAKE_CHECK_OUTPUT="Deployed commit: v1.0.0 ($PINNED_COMMIT)" run_subject "$CLONE"
+FAKE_CHECK_OUTPUT="Deployed commit: v3.0.0-4-g0000000 ($(git -C "$CLONE" rev-parse HEAD))" run_subject "$CLONE"
 expect_status 0 "not pinned"
 printf '%s\n' "$OUTPUT" | grep -q "^UPDATED " || fail "not pinned: expected UPDATED: $OUTPUT"
 expect_deployed "not pinned"
-FAKE_CHECK_OUTPUT="" FAKE_CHECK_EXIT=1 run_subject "$CLONE"
+
+# A check that fails still names the deployed commit when it prints the line, and the update reads it.
+FAKE_CHECK_OUTPUT="Deployed commit: $(git -C "$CLONE" rev-parse HEAD)" FAKE_CHECK_EXIT=1 run_subject "$CLONE"
 expect_status 0 "check failed"
 expect_first_line "UP_TO_DATE $(head_of "$CLONE" HEAD)" "check failed"
 expect_no_stderr "check failed"
 expect_deployed "check failed"
 
+# With no deployed commit to read, from a check that names none or prints nothing, the installed version is unknown,
+# which any release on origin/main raises, until --cross-major accepts it.
+for CHECK_OUTPUT in "Deployed commit: unknown" ""; do
+  FAKE_CHECK_OUTPUT=$CHECK_OUTPUT FAKE_CHECK_EXIT=1 run_subject "$CLONE"
+  expect_status 1 "no deployed commit '$CHECK_OUTPUT'"
+  expect_first_line "MAJOR_UPDATE unknown..v3.0.0" "no deployed commit '$CHECK_OUTPUT'"
+  expect_no_stderr "no deployed commit '$CHECK_OUTPUT'"
+  expect_not_deployed "no deployed commit '$CHECK_OUTPUT'"
+done
+FAKE_CHECK_OUTPUT="Deployed commit: unknown" run_subject "$CLONE" --cross-major
+expect_status 0 "no deployed commit accepted"
+printf '%s\n' "$OUTPUT" | grep -qx "CROSSED unknown..v3.0.0" || fail "no deployed commit accepted: crossing not named: $OUTPUT"
+expect_deployed "no deployed commit accepted"
+
+# A deployed commit the clone does not hold is a named failure, not version zero.
+MISSING_COMMIT=0123456789abcdef0123456789abcdef01234567
+FAKE_CHECK_OUTPUT="Deployed commit: $MISSING_COMMIT" run_subject "$CLONE"
+expect_failed "FAILED cannot read the release tags reaching the deployed commit $MISSING_COMMIT: " "deployed commit missing"
+expect_not_deployed "deployed commit missing"
+
 # An unknown option is a usage error.
 run_subject "$CLONE" --force
 expect_status 2 "unknown option"
 expect_not_deployed "unknown option"
+
+# A clone pulled by hand past a release that raises the major, and not redeployed, stops at the deployed commit's
+# release, not at local main's, and lists the commits the update would deploy.
+new_clone
+publish "fourth major"
+tag_upstream v4.0.0
+git_quiet -C "$CLONE" pull --ff-only
+run_subject "$CLONE"
+expect_status 1 "pulled by hand"
+expect_first_line "MAJOR_UPDATE v3.0.0..v4.0.0" "pulled by hand"
+expect_no_stderr "pulled by hand"
+printf '%s\n' "$OUTPUT" | grep -q "fourth major" || fail "pulled by hand: pending commit not listed: $OUTPUT"
+expect_not_deployed "pulled by hand"
+run_subject "$CLONE" --cross-major
+expect_status 0 "pulled by hand accepted"
+expect_first_line "UP_TO_DATE $(head_of "$CLONE" HEAD)" "pulled by hand accepted"
+printf '%s\n' "$OUTPUT" | grep -qx "CROSSED v3.0.0..v4.0.0" || fail "pulled by hand accepted: crossing not named: $OUTPUT"
+expect_deployed "pulled by hand accepted"
+
+# A clone with no local main, detached at the release origin/main is on, is at that release and updates.
+new_clone --branch v4.0.0
+! git -C "$CLONE" show-ref --verify --quiet refs/heads/main || fail "no local main: the clone has a main"
+run_subject "$CLONE"
+expect_status 0 "no local main"
+expect_first_line "UP_TO_DATE $(head_of "$SEED" HEAD)" "no local main"
+expect_no_stderr "no local main"
+expect_deployed "no local main"
+
+# A release whose major or minor is longer than Bash's integers hold is refused, even with --cross-major, and the tag
+# is then removed so the cases below follow the releases above.
+new_clone
+publish "oversized release"
+for TAG in v99999999999999999999.0.0 v5.99999999999999999999.0; do
+  tag_upstream "$TAG"
+  for OPTION in "" --cross-major; do
+    run_subject "$CLONE" ${OPTION:+"$OPTION"}
+    expect_failed "FAILED cannot compare release tag $TAG: " "oversized tag $TAG $OPTION"
+    expect_not_deployed "oversized tag $TAG $OPTION"
+  done
+  git_quiet -C "$SEED" push origin ":refs/tags/$TAG"
+  git_quiet -C "$SEED" tag -d "$TAG"
+  git_quiet -C "$CLONE" tag -d "$TAG"
+done
+
+# A component's leading zeros do not count toward its length: a deployed commit whose only release is a zero-padded
+# 3.0.0 is compared as 3.0.0.
+PADDED=v00000000000000000000003.0.0
+PADDED_COMMIT=$(git -C "$CLONE" commit-tree -m "padded release" "HEAD^{tree}")
+git_quiet -C "$CLONE" tag "$PADDED" "$PADDED_COMMIT"
+FAKE_CHECK_OUTPUT="Deployed commit: $PADDED_COMMIT" run_subject "$CLONE"
+expect_status 1 "leading zeros"
+expect_first_line "MAJOR_UPDATE $PADDED..v4.0.0" "leading zeros"
+expect_no_stderr "leading zeros"
+expect_not_deployed "leading zeros"
+git_quiet -C "$CLONE" tag -d "$PADDED"
 
 # A repository-selecting variable a shell or a git hook exported does not point the update at another clone.
 new_clone
