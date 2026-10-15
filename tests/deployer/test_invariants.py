@@ -14,7 +14,7 @@ from unittest import mock
 
 from harness import FAILS_PARTWAY, DeployerTestCase, tree_state
 
-from deployer import pipeline, platform_support, render
+from deployer import cli, pipeline, platform_support, render
 from deployer.errors import DeployError
 from deployer.paths import Paths
 
@@ -176,7 +176,7 @@ class CLIImmutabilityGuardTests(DeployerTestCase):
                     return 2
 
                 with (
-                    mock.patch("deployer.cli.main", side_effect=refuse),
+                    mock.patch.object(cli, "main", side_effect=refuse),
                     self.assertRaisesRegex(AssertionError, message),
                 ):
                     self.run_cli("--bogus")
@@ -206,7 +206,7 @@ class CLIImmutabilityGuardTests(DeployerTestCase):
                     return 1
 
                 with (
-                    mock.patch("deployer.cli.main", side_effect=refuse),
+                    mock.patch.object(cli, "main", side_effect=refuse),
                     self.assertRaisesRegex(AssertionError, message),
                 ):
                     self.run_cli("--all", "--canary-home", str(canary), source=alternate, refusal_home=canary)
@@ -269,7 +269,7 @@ class RaisingRunGuardTests(DeployerTestCase):
             raise RuntimeError("synthetic escape")
 
         with (
-            mock.patch("deployer.cli.main", side_effect=refuse),
+            mock.patch.object(cli, "main", side_effect=refuse),
             self.assertRaisesRegex(AssertionError, "the refusal changed the home"),
         ):
             self.run_cli("--all")
@@ -292,7 +292,7 @@ class FreshHomeGuardTests(DeployerTestCase):
             return 1
 
         with (
-            mock.patch("deployer.cli.main", side_effect=refuse),
+            mock.patch.object(cli, "main", side_effect=refuse),
             self.assertRaisesRegex(AssertionError, "the refusal changed the home"),
         ):
             self.run_cli("--all")
