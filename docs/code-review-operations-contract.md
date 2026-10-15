@@ -575,7 +575,7 @@ A review version's JSON record, the archive's source of truth, validated by `val
 
 ### Flag store
 
-The flag store shared by `flag-review-finding` and `review-insights`, validated by `validate_store` in `review_flags.py` whenever it is read or written. A version 1 store is read as version 2 with no review versions.
+The flag store shared by `flag-review-finding` and `review-insights`, validated by `validate_store` in `review_flags.py` whenever it is read or written. A version 1 store is read as version 2 with no review versions. A store is read only up to 4194304 bytes (4 MiB), so a change that would write a larger one is refused and leaves the store as it was.
 
 #### Flag store (`flag-store`)
 
@@ -594,11 +594,11 @@ The flag store shared by `flag-review-finding` and `review-insights`, validated 
 | `created_at` | string | yes | When it was added, as an ISO 8601 time. |
 | `resolved_at` | string or null | yes | When it was resolved, as an ISO 8601 time; null while open. |
 | `repository` | string or null | yes | The `owner/repo` it is about, or null. |
-| `pull_number` | integer or null | yes | The pull request it is about, or null. |
-| `review_version` | integer or null | yes | The review version its finding is in, which needs `pull_number`; or null. |
+| `pull_number` | integer or null | yes | The pull request it is about, or null. `flag-review-finding add` writes one only with its `repository`; an older flag's pull request without one loads and links to nothing. |
+| `review_version` | integer or null | yes | The review version its finding is in, which needs `pull_number`; or null. `flag-review-finding add` writes one only with its `finding_id`; an older flag's review version without one loads and links to nothing. |
 | `finding_id` | string or null | yes | The finding it names in that review version, or null. `flag-review-finding add` writes only a finding ID that review has; its form is not checked when read, so an older flag's ID loads and links to nothing. |
-| `category` | string | yes | Its category. Not blank. |
-| `body` | string | yes | The observation. Not blank. |
+| `category` | string | yes | Its category. Not blank. `flag-review-finding` writes at most 120 characters; an older, longer one loads. |
+| `body` | string | yes | The observation. Not blank. `flag-review-finding` writes at most 4000 characters; an older, longer one loads. |
 | `resolution` | string or null | yes | How it was resolved; null while open. |
 
 ### Review state

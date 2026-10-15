@@ -50,6 +50,9 @@ class SkillTreeFixtures(GitTestCase):
                     "skills/alpha/SKILL.md": "",
                     "skills/alpha/scripts/run.py": "",
                     "skills/alpha/scripts/nested/run.sh": "",
+                    "skills/alpha/scripts/nested/data.json": "",
+                    # Python's compiled modules, which no commit holds.
+                    "skills/alpha/scripts/__pycache__/run.cpython-311.pyc": "",
                     "skills/alpha/tool.py": "",
                     "skills/alpha/references/notes.md": "",
                     "skills/beta/SKILL.md": "",
@@ -59,8 +62,11 @@ class SkillTreeFixtures(GitTestCase):
                     ".claude/skills/local/scripts/run.sh": "",
                 },
             )
+            below = "is in a folder below its skill's scripts/, which the script policies do not read; move it to"
             self.assertEqual(
                 [
+                    f"skills/alpha/scripts/nested/data.json {below} skills/alpha/scripts/",
+                    f"skills/alpha/scripts/nested/run.sh {below} skills/alpha/scripts/",
                     "skills/alpha/tool.py is an executable file outside its skill's scripts/; move it to "
                     "skills/alpha/scripts/",
                     "skills/beta/helper.ps1 is an executable file outside its skill's scripts/; move it to "
@@ -140,8 +146,8 @@ class SkillLayoutFixtures(GitTestCase):
             MAXIMUM_INLINE_EXECUTABLE_LINES,
         )
         self.assertEqual([], find_executable_fences(["```text", *["x"] * 9, "```"]))
-        with self.assertRaisesRegex(AssertionError, "Unclosed executable"):
-            find_executable_fences(["```sh", "echo open"])
+        # A fence left open runs to the end of the file, as the renderer reads it; unclosed_fence_problems reports it.
+        self.assertEqual([ExecutableFence(1, "sh", 2)], find_executable_fences(["```sh", "echo open", "echo more"]))
         # The detector the renderer uses: a tilde fence counts, and a longer opener holds a three-backtick line.
         tilde_program = ["~~~bash", *[f"echo {n}" for n in range(6)], "~~~"]
         self.assertEqual([ExecutableFence(1, "bash", 6)], find_executable_fences(tilde_program))
@@ -164,6 +170,31 @@ class SkillLayoutFixtures(GitTestCase):
                     "directory."
                 ],
                 embedded_program_problems(root, REPOSITORY_SKILLS),
+            )
+
+    def test_every_label_a_program_or_command_fence_may_carry_is_held_to_the_rules(self) -> None:
+        def fence(label: str, line: str, count: int = 12) -> str:
+            return f"```{label}\n" + "".join(f"{line} {n}\n" for n in range(count)) + "```\n\n"
+
+        labels = ("py", "python3", "zsh", "ksh", "cmd", "bat", "node", "mjs", "console", "python")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            text = "".join(fence(label, "run") for label in labels) + fence("text", "plain")
+            write_fixture_tree(root, {"skills/demo/SKILL.md": text})
+            reported = [
+                problem.split(" contains a ", 1)[1].split(" fence", 1)[0] for problem in embedded_program_problems(root)
+            ]
+            self.assertEqual(list(labels), reported)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(root, {"skills/demo/SKILL.md": "```py\nos.system('tool --output \"<file>\"')\n```\n"})
+            write_fixture_tree(root, {"skills/demo/notes.md": '```text\ntool --output "<file>"\n```\n'})
+            self.assertEqual(
+                [
+                    "skills/demo/SKILL.md:2 leaves --output to the agent; let the script choose and print the path; "
+                    f"see {WORKING_FILES_DOC}"
+                ],
+                output_placeholder_problems(root),
             )
 
     def test_output_placeholder_policy_holds_repository_skills(self) -> None:
@@ -212,13 +243,30 @@ class SkillLayoutFixtures(GitTestCase):
     def test_unsupported_script_policy_rejects_javascript_and_typescript_anywhere_in_a_skill(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            for name in ("scripts/run.js", "scripts/tool.MJS", "scripts/test_tool.cjs", "types.ts", "scripts/ok.py"):
-                path = root / "skills" / "demo" / name
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text("\n", encoding="utf-8")
+            files = {
+                **dict.fromkeys(
+                    ("scripts/run.js", "scripts/tool.MJS", "scripts/test_tool.cjs", "types.ts", "scripts/ok.py"), "\n"
+                ),
+                "SKILL.md": "# demo\n",
+                "scripts/helper.psm1": "Write-Host hi\n",
+                "references/run.cmd": "@echo off\ndel /q *\n",
+                "references/run.bat": "@echo off\n",
+                "references/run": '#!/usr/bin/env bash\nrm -rf "$1"\n',
+                # A script named by its extension may start with #!, and a file that does not is no program.
+                "scripts/tool.sh": "#!/usr/bin/env bash\necho hi\n",
+                "references/notes.txt": "a note\n",
+            }
+            write_fixture_tree(root, {f"skills/demo/{name}": text for name, text in files.items()})
+            write_fixture_tree(root, {".claude/skills/local/SKILL.md": "# local\n", ".claude/skills/local/x.cmd": ""})
             reason = "a skill's executable files are Bash, Python, and PowerShell"
             self.assertEqual(
                 [
+                    f".claude/skills/local/x.cmd: {reason}",
+                    f"skills/demo/references/run starts with #!, so it runs as a program; {reason}, named by their "
+                    "extension",
+                    f"skills/demo/references/run.bat: {reason}",
+                    f"skills/demo/references/run.cmd: {reason}",
+                    f"skills/demo/scripts/helper.psm1: {reason}",
                     f"skills/demo/scripts/run.js: {reason}",
                     f"skills/demo/scripts/test_tool.cjs: {reason}",
                     f"skills/demo/scripts/tool.MJS: {reason}",
@@ -236,7 +284,8 @@ class SkillLayoutFixtures(GitTestCase):
             guide = root / "docs" / "adding-a-skill.md"
             guide.write_text(
                 "# Adding a skill\n\nA skill's executable files are Bash, Python, and PowerShell: `.bash`, `.sh`, "
-                "`.py`, `.ps1`, and `.js` files. JavaScript and TypeScript (`.mjs`) are rejected.\n",
+                "`.py`, `.ps1`, and `.js` files. JavaScript and TypeScript (`.mjs`, `.bat`, `.cmd`, `.psm1`) are "
+                "rejected.\n",
                 encoding="utf-8",
             )
             self.assertEqual(

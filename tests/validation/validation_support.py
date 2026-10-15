@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import ast
 import builtins
+import codecs
 import fnmatch
 import re
 import subprocess
 import sys
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 
@@ -34,8 +35,9 @@ REPOSITORY_SKILLS = ".claude/skills"
 # A skill's executable files are Bash, Python, and PowerShell, each run by a standard command in deployer/tools.py.
 SCRIPT_INTERPRETERS = {".bash": "bash", ".sh": "bash", ".py": platform_support.PYTHON, ".ps1": "pwsh"}
 EXECUTABLE_SCRIPT_EXTENSIONS = set(SCRIPT_INTERPRETERS)
-# No runtime these need is a deployment prerequisite and the renderer cannot validate them, so a skill holds none.
-UNSUPPORTED_SCRIPT_EXTENSIONS = {".cjs", ".js", ".mjs", ".ts"}
+# No runtime JavaScript or TypeScript needs is a deployment prerequisite and the renderer cannot validate them, and no
+# analyzer or command policy here reads a PowerShell module or a Windows batch file, so a skill holds none of these.
+UNSUPPORTED_SCRIPT_EXTENSIONS = {".bat", ".cjs", ".cmd", ".js", ".mjs", ".psm1", ".ts"}
 TEST_SCRIPT_EXTENSIONS = {".py", ".sh", ".ps1"}
 # A regression suite is found by its name alone, matched against the file's stem or its whole name, ignoring case.
 TEST_NAME_PATTERNS = ("test_*", "test-*", "*_test", "*-test", "*.test.*")
@@ -44,6 +46,50 @@ PYTHON_ENTRY_POINT = 'if __name__ == "__main__":'
 SKILL_GUIDE = "docs/adding-a-skill.md"
 TEMPLATE_TOKEN = re.compile(r"\{\{([A-Z][A-Z0-9_]*)\}\}")
 SHELL_FENCES = {"bash", "sh", "shell"}
+
+
+class UnreadablePython(ValueError):
+    """A Python file no policy reads, with why, worded to follow the file's name in a problem."""
+
+
+def python_source(path: Path) -> str:
+    """A Python file's text, decoded the one way every policy decodes one: UTF-8 without a byte-order mark, its line
+    endings read as newlines. A file in any other encoding raises UnreadablePython, so every policy that reads it gives
+    the same answer instead of one crashing, one substituting, and one stripping a mark the others refuse."""
+    data = path.read_bytes()
+    if data.startswith(codecs.BOM_UTF8):
+        raise UnreadablePython("starts with a UTF-8 byte-order mark; save it as UTF-8 without one")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise UnreadablePython(f"holds a byte that is not UTF-8 at offset {error.start}; save it as UTF-8") from None
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def parse_source(source: str, name: str) -> ast.Module:
+    """The syntax tree of Python source, or UnreadablePython when it does not parse."""
+    try:
+        return ast.parse(source, filename=name)
+    except SyntaxError as error:
+        raise UnreadablePython(f"does not parse: {error.msg} at line {error.lineno}") from None
+
+
+def parse_python(path: Path) -> ast.Module:
+    """The syntax tree of a Python file as python_source decodes it, or UnreadablePython."""
+    return parse_source(python_source(path), path.name)
+
+
+def python_trees(paths: Iterable[Path], root: Path, problems: list[str]) -> Iterator[tuple[Path, str, ast.Module]]:
+    """Each Python file's path, its name relative to root, and its syntax tree; a file no policy can read is reported in
+    problems by its name, and the policy goes on to the next."""
+    for path in paths:
+        name = path.relative_to(root).as_posix()
+        try:
+            tree = parse_python(path)
+        except UnreadablePython as error:
+            problems.append(f"{name} {error}")
+            continue
+        yield path, name, tree
 
 
 @dataclass(frozen=True)
@@ -546,39 +592,102 @@ class ScriptsEntry:
     hand_written: bool
 
 
-def scripts_entries(source: str) -> list[ScriptsEntry]:
-    """Each skill scripts directory a `sys.path.insert` or `append` call in the source names: through a
-    `sibling_scripts("<skill>")` call, or by a hand-written `... / "<skill>" / "scripts"` path."""
-    entries: list[ScriptsEntry] = []
-    for node in ast.walk(ast.parse(source)):
-        if not (
+# The calls that build a path from parts, by their last name: os.path's join and pathlib's constructors, and a path's
+# joinpath, whose receiver is the first part; and the conversions whose one argument is the path they stand for.
+PATH_JOINS = frozenset({"join", "Path", "PurePath", "PurePosixPath", "PureWindowsPath"})
+PATH_CONVERSIONS = frozenset({"str", "fspath", "Path", "PurePath", "PurePosixPath", "PureWindowsPath"})
+
+
+def path_parts(
+    node: ast.AST | None, names: Mapping[str, list[ast.expr]] | None = None, seen: frozenset[str] = frozenset()
+) -> list[str | None]:
+    """The components a path expression is built from, in order, each literal one by its text and anything else as
+    None: a `/` chain, a join of parts, a conversion of one, or a string, split at each separator, so "x/scripts" is
+    two components. Given the values a module assigns each name, a name assigned once is followed to its value."""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        return path_parts(node.left, names, seen) + path_parts(node.right, names, seen)
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [part for part in re.split(r"[/\\]", node.value) if part] or [None]
+    if isinstance(node, ast.Name) and names is not None and node.id not in seen and len(names.get(node.id, [])) == 1:
+        return path_parts(names[node.id][0], names, seen | {node.id})
+    if isinstance(node, ast.Call) and not node.keywords:
+        function = ast.unparse(node.func).rsplit(".", 1)[-1]
+        arguments = [part for argument in node.args for part in path_parts(argument, names, seen)]
+        if function == "joinpath" and isinstance(node.func, ast.Attribute):
+            return path_parts(node.func.value, names, seen) + arguments
+        if (function in PATH_JOINS and len(node.args) > 1) or (function in PATH_CONVERSIONS and len(node.args) == 1):
+            return arguments
+    return [None]
+
+
+def _hand_written_skill(node: ast.AST) -> str | None:
+    """The skill whose scripts directory a path expression names by its last two components, "<skill>/scripts"."""
+    parts = path_parts(node)
+    if len(parts) > 1 and parts[-1] == "scripts" and parts[-2] not in {None, ".", ".."}:
+        return parts[-2]
+    return None
+
+
+def _path_values(tree: ast.AST, aliases: dict[str, str]) -> list[tuple[int, ast.expr]]:
+    """Each value a statement in the tree puts on sys.path, with the statement's line: what an insert, append, or
+    extend call passes, what a slice assignment assigns, and what an augmented assignment adds."""
+    values: list[tuple[int, ast.expr]] = []
+    for node in ast.walk(tree):
+        if (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
-            and node.func.attr in {"insert", "append"}
-            and ast.unparse(node.func.value) == "sys.path"
+            and node.func.attr in {"insert", "append", "extend"}
+            and qualified_name(node.func.value, aliases) == "sys.path"
         ):
-            continue
-        for part in ast.walk(node):
-            if isinstance(part, ast.Call) and ast.unparse(part.func).split(".")[-1] == SIBLING_LOOKUP:
-                argument = part.args[0] if len(part.args) == 1 and not part.keywords else None
-                name = argument.value if isinstance(argument, ast.Constant) else None
-                entries.append(ScriptsEntry(node.lineno, name if isinstance(name, str) else None, False))
-            elif (
-                isinstance(part, ast.BinOp)
-                and isinstance(part.op, ast.Div)
-                and isinstance(part.right, ast.Constant)
-                and part.right.value == "scripts"
-                and isinstance(part.left, ast.BinOp)
-                and isinstance(part.left.right, ast.Constant)
-                and isinstance(part.left.right.value, str)
-            ):
-                entries.append(ScriptsEntry(node.lineno, part.left.right.value, True))
-    return sorted(entries, key=lambda entry: entry.line)
+            values += [(node.lineno, argument) for argument in [*node.args, *(item.value for item in node.keywords)]]
+        elif isinstance(node, (ast.Assign, ast.AugAssign)) and any(
+            qualified_name(target.value if isinstance(target, ast.Subscript) else target, aliases) == "sys.path"
+            for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+        ):
+            values.append((node.lineno, node.value))
+    return values
 
 
-def scripts_put_on_path(source: str) -> list[str]:
-    """The skill names whose scripts directory the source reaches, as `scripts_entries` reads them."""
-    return [entry.name for entry in scripts_entries(source) if entry.name is not None]
+def name_values(tree: ast.AST) -> dict[str, list[ast.expr]]:
+    """Every value the tree assigns each name, in any scope, so a path held in a name first is followed to it."""
+    found: dict[str, list[ast.expr]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    found.setdefault(target.id, []).append(node.value)
+        elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and isinstance(node.target, ast.Name) and node.value:
+            found.setdefault(node.target.id, []).append(node.value)
+    return found
+
+
+def scripts_entries(tree: ast.AST) -> list[ScriptsEntry]:
+    """Each skill scripts directory a statement of the tree puts on sys.path, by an insert, append, or extend call, a
+    slice assignment, or an augmented assignment: through a `sibling_scripts("<skill>")` call, or by a hand-written
+    path whose last two components are "<skill>" and "scripts", built with `/`, a join, or one string. A value held in
+    a name is followed to every value the module assigns it."""
+    names = name_values(tree)
+    entries: set[ScriptsEntry] = set()
+    for line, value in _path_values(tree, import_aliases(tree)):
+        pending, seen = [value], set()
+        while pending:
+            expression = pending.pop()
+            for part in ast.walk(expression):
+                if isinstance(part, ast.Name) and isinstance(part.ctx, ast.Load) and part.id not in seen:
+                    seen.add(part.id)
+                    pending += names.get(part.id, [])
+                elif isinstance(part, ast.Call) and ast.unparse(part.func).split(".")[-1] == SIBLING_LOOKUP:
+                    argument = part.args[0] if len(part.args) == 1 and not part.keywords else None
+                    name = argument.value if isinstance(argument, ast.Constant) else None
+                    entries.add(ScriptsEntry(line, name if isinstance(name, str) else None, False))
+                elif skill := _hand_written_skill(part):
+                    entries.add(ScriptsEntry(line, skill, True))
+    return sorted(entries, key=lambda entry: (entry.line, entry.name or "", entry.hand_written))
+
+
+def scripts_put_on_path(tree: ast.AST) -> list[str]:
+    """The skill names whose scripts directory the tree reaches, as `scripts_entries` reads them."""
+    return [entry.name for entry in scripts_entries(tree) if entry.name is not None]
 
 
 def is_executable_script(path: Path) -> bool:
@@ -653,12 +762,14 @@ def module_allowance(tree: ast.Module, name: str) -> dict[str, str] | None:
     """A module's allowance, such as PLATFORM_ALLOWED, or None when it does not map each token to its reason.
 
     Every policy that lets a module sanction an exception beside the code it excuses reads the allowance here, so
-    they agree on its shape: a module-level literal dictionary of non-empty reasons, empty when the module has none.
+    they agree on its shape: a module-level literal dictionary of non-empty reasons, assigned with or without an
+    annotation, empty when the module has none.
     """
     for node in tree.body:
-        if isinstance(node, ast.Assign) and any(
-            isinstance(target, ast.Name) and target.id == name for target in node.targets
-        ):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if any(isinstance(target, ast.Name) and target.id == name for target in targets):
             try:
                 allowance = ast.literal_eval(node.value)
             except ValueError:
