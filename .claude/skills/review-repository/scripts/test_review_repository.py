@@ -153,6 +153,11 @@ class ManifestTests(GitTestCase):
             "skills/skill-core/scripts/git_client.py": {"trust-boundary", "documentation-drift", "untested-changes"},
             "skills/skill-core/scripts/github_client.py": {"trust-boundary", "documentation-drift", "untested-changes"},
             "skills/skill-core/scripts/job_tree.py": {"trust-boundary", "documentation-drift", "untested-changes"},
+            "skills/skill-core/scripts/markdown_literal.py": {
+                "trust-boundary",
+                "documentation-drift",
+                "untested-changes",
+            },
             "skills/skill-core/scripts/process_identity.py": {
                 "trust-boundary",
                 "documentation-drift",
@@ -253,6 +258,7 @@ class ManifestTests(GitTestCase):
                 "git_client",
                 "github_client",
                 "job_tree",
+                "markdown_literal",
                 "pdf_tool",
                 "process_identity",
                 "typed_fields",
