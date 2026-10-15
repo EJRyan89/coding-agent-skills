@@ -75,6 +75,39 @@ class ConfigureTests(DeployerTestCase):
         self.assertEqual(before, self.digest())
         self.assertEqual([self.config_file().name], [path.name for path in self.config_file().parent.iterdir()])
 
+    def test_an_unreadable_existing_config_is_reported_as_a_failed_read_with_its_remedy(self) -> None:
+        self.make_source_json()
+        self.make_config()
+        before = self.digest()
+        target = self.config_file()
+        # The read fails as a file an editor or a scanner holds does, while the harness still reads the home around it.
+        denied = PermissionError(13, "Permission denied", str(target))
+        with mock.patch("deployer.config.read", side_effect=denied):
+            result = self.configure(stdin=f"{forward(self.repos)}\n")
+        self.assertEqual(1, result.code, result.output)
+        self.assertIn(
+            f"\nERROR: Could not read the configuration: {forward(target)}: Permission denied\n"
+            "Check that the path exists and that you can read it, then retry.\n"
+            "Rerun with --debug to see the traceback.\n",
+            result.output,
+        )
+        self.assertNotIn("Could not write", result.output)
+        self.assertEqual(before, self.digest())
+
+    def test_a_failed_config_write_names_the_write_and_its_remedy(self) -> None:
+        self.make_source_json()
+        self.make_config()
+        failure = PermissionError(13, "Access is denied", str(self.config_file()))
+        with mock.patch("deployer.fsops.write_atomic", side_effect=failure):
+            result = self.configure(stdin=f"{forward(self.repos)}\n")
+        self.assertEqual(1, result.code, result.output)
+        self.assertIn(
+            f"\nERROR: Could not write the configuration: {forward(self.config_file())}: Access is denied\n"
+            "Check that the path exists and that you can read it, then retry.\n"
+            "Rerun with --debug to see the traceback.\n",
+            result.output,
+        )
+
     if platform_support.WINDOWS:
 
         def test_windows_style_path_input_is_normalized(self) -> None:

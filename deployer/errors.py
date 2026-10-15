@@ -66,8 +66,12 @@ def debug_requested(flag: bool = False) -> bool:
 
 def os_error(error: OSError, action: str, remedy: str = CHECK_THE_PATH) -> DeployError:
     """An OSError as the lines deploy.py ends with: what failed, on which path, why, and what to do."""
+    from .platform_support import normalize
+
     reason = error.strerror or str(error)
-    where = f"{error.filename}: " if error.filename else ""
+    # The path in the forward-slash form the deployer prints every other path in.
+    filename = normalize(error.filename) if isinstance(error.filename, str) else error.filename
+    where = f"{filename}: " if filename else ""
     converted = DeployError(f"ERROR: Could not {action}: {where}{reason}", remedy, DEBUG_HINT)
     converted.__cause__ = error
     return converted

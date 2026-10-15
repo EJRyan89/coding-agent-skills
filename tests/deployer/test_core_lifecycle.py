@@ -93,7 +93,7 @@ class CoreLifecycleTests(DeployerTestCase):
         self.make_source_json()
         self.make_skill("alpha", "No tokens here")
         self.make_config()
-        (self.skills_dir / "alpha").mkdir()
+        (self.skills_dir / "alpha").mkdir(parents=True)
         (self.skills_dir / "alpha" / "SKILL.md").write_bytes(
             (self.source / "skills" / "alpha" / "SKILL.md").read_bytes()
         )
@@ -105,7 +105,7 @@ class CoreLifecycleTests(DeployerTestCase):
         self.make_source_json()
         self.make_skill("alpha", "Template content")
         self.make_config()
-        (self.skills_dir / "alpha").mkdir()
+        (self.skills_dir / "alpha").mkdir(parents=True)
         self.write(self.skills_dir / "alpha" / "SKILL.md", "---\nname: alpha\n---\n\nDifferent content\n")
         result = self.deploy_ok("--all")
         self.assertRegex(
@@ -119,7 +119,7 @@ class CoreLifecycleTests(DeployerTestCase):
         self.make_source_json()
         self.make_skill("alpha", "Template content")
         self.make_config()
-        (self.skills_dir / "alpha").mkdir()
+        (self.skills_dir / "alpha").mkdir(parents=True)
         self.write(self.skills_dir / "alpha" / "SKILL.md", "Different content\n")
         result = self.deploy_ok("--all", "--force-item", "alpha")
         self.assertIn("Template content", self.skill_text("alpha"))
