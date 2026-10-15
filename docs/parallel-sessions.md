@@ -114,20 +114,23 @@ The hook command reads the setting itself, in Bash, and exits before starting Py
 in. Elsewhere the hook is inert and costs one `awk` and one `git config` call per tool call: `python` never runs, so
 a `python` that still resolves to the Microsoft Store alias cannot fail the hook. In an opted-in clone it runs
 `tools/worktrees.py guard` under `$CLAUDE_PROJECT_DIR`, which checks the same setting again. Neither read can be
-pointed at another repository's setting: the hook command unsets `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, and
-`GIT_CONFIG` for its `git config` call, each in any case, since Windows reads an environment name in any case, and
-`tools/worktrees.py` runs its own git calls without any of git's repository-selecting variables, the set skill-core's
-`bounded_process.py` names.
+pointed at another repository's setting or outranked: each reads only the repository's own file, with
+`git config --local`, which passes over the command-line configuration `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT`
+carry; the hook command unsets `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, and `GIT_CONFIG` for its call, each in
+any case, since Windows reads an environment name in any case; and `tools/worktrees.py` runs its own git calls
+without any of git's repository-selecting variables, the set skill-core's `bounded_process.py` names.
 `tests/tools/test_worktrees.py` runs the tracked command both ways.
 
 With the guard enabled:
 
-- **File tools.** `Edit`, `Write`, `MultiEdit`, or `NotebookEdit` is refused when its target lies in the hub.
-  This applies whichever session asks, so a worktree session that writes to a hub path by absolute path is also
-  stopped. Gitignored files, such as `.claude/settings.local.json`, are exempt.
-- **Refused git commands.** Any of the following that would run in the hub, because some subcommand or option of
+- **File tools.** `Edit`, `Write`, `MultiEdit`, or `NotebookEdit` is refused when its target lies in the hub's
+  tracked files or anywhere in its git directory, `.git`, which holds the hub's `HEAD`, index, and configuration
+  beside what every worktree shares. This applies whichever session asks, so a worktree session that writes to a hub
+  path by absolute path is also stopped. Gitignored files, such as `.claude/settings.local.json`, are exempt.
+- **Refused git commands.** Any of the following that would act on the hub, because some subcommand or option of
   each can move `HEAD` or the branch it names, or write the index or tracked files. A command that writes only
-  objects, other refs (`fetch`, `notes`, `replace`, `tag`), or other worktrees (`worktree`) is not refused.
+  objects, other refs (`notes`, `replace`, `tag`), or other worktrees (`worktree`) is not refused, and nor is
+  `fetch` unless it is given `--update-head-ok` (or `-u`), which lets it move the branch `HEAD` names.
   - `add`, `am`, `apply`, `bisect`, `branch`, `checkout`, `checkout-index`, `cherry-pick`, `clean`, `commit`
   - `fast-import`, `filter-branch`, `history`, `merge`, `merge-file`, `merge-index`, `merge-one-file`, `mv`
   - `pull`, `read-tree`, `rebase`, `replay`, `rerere`, `reset`, `restore`, `revert`, `rm`, `sparse-checkout`
@@ -140,95 +143,131 @@ With the guard enabled:
     `--ff-only`, each may take only `-q`, `--quiet`, `-v`, `--verbose`, or `--no-rebase`, and a fast-forward to
     any other target is refused with a reason that names it
   - `stash list` and `stash show`
-  - `apply --check`
+  - `apply --check`, with `--check` among the options before any `--` and no `--apply`, which applies the patch
+    all the same
   - `submodule` with no subcommand, `submodule status`, and `submodule summary`; every other subcommand, `foreach`
     included, is refused
   - `branch` without `-m`, `-M`, or `--move`, which rename a branch, `HEAD`'s own included; an abbreviated
     `--move` or a bundle such as `-fm` counts as one. Attached option values are not bundles: `-uorigin/main`
     is allowed like `-u origin/main` and `--set-upstream-to=origin/main`, while a separate rename option
     before or after the upstream value is still refused
-- **Aliases.** A subcommand that is not refused itself may be one of your git aliases, so the guard reads it
-  with `git config --get alias.<name>` in the hub and judges what it runs, through further aliases. A shell
-  alias (`!...`) is read as Bash from the top of the hub. An alias that cannot be read, nests more than four
-  deep, or runs something the guard cannot judge is refused.
+- **Aliases.** A subcommand that is neither refused itself nor one of git's builtins, which no alias can stand for,
+  may be an alias, so the guard reads it, first among the `alias.<name>` settings the command line gives (`-c`,
+  `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`), then with `git config --get alias.<name>` in the hub, and judges what
+  it runs, through further aliases. A shell alias (`!...`) is read as Bash from the top of the hub. An alias that
+  cannot be read, nests more than four deep, or runs something the guard cannot judge is refused.
 - **Both shell tools.** The same commands are refused, with the same allowances, whether they run through the
   `Bash` tool or the `PowerShell` tool.
-- **How the target is found.** The guard follows where each git call runs, so the hub can still act on a
-  worktree and a worktree session cannot reach into the hub. In both shells it follows `git -C <dir>`,
-  `--work-tree`, and an absolute `-c core.worktree=<dir>`. A `--git-dir`, or a `core.worktree` that is relative
-  or comes from `--config-env`, leaves the directory unknown unless a work tree is named.
-- **Location variables.** `GIT_DIR`, `GIT_WORK_TREE`, and `GIT_COMMON_DIR` point git at a repository or work
-  tree wherever the command runs. Whichever way one is set, the guard applies it to every git call that sees it:
-  a `GIT_WORK_TREE` settles the directory, and a `GIT_DIR` or `GIT_COMMON_DIR` without one leaves it unknown. It
-  finds them:
-  - inherited from the environment Claude Code gives the hook, in either shell;
-  - in Bash, set for one command (`GIT_DIR=<dir> git ...`, or `env GIT_DIR=<dir> git ...`), or exported for the
-    rest of the command (`export`, `declare -x`, `typeset -x`, or an assignment while `set -a` or
-    `set -o allexport` holds or to a variable already exported). An assignment that is not exported does not
-    reach git and is ignored, and `unset`, `export -n`, `env -i`, and `env -u` remove one. A name is read in
-    any case, as `git_dir` or `Git_Dir`, since Windows reads an environment name in any case and git there takes
-    `git_dir` as `GIT_DIR`. Bash keeps each spelling a variable of its own, so `unset GIT_DIR` leaves a `git_dir`
-    in force, and two spellings with different values leave the directory unknown;
-  - in PowerShell, set through `[Environment]::SetEnvironmentVariable`, or on the environment provider, through
-    the `env:` drive (`env:<name>`, `env:\<name>`, or `env:/<name>`) or the provider-qualified path
-    `Environment::<name>` (also as `\Environment::<name>` or `Microsoft.PowerShell.Core\Environment::<name>`):
-    assigned in variable notation (`$env:<name>`, or `${<path>}` with any of those paths, cast or not, in
-    parentheses or not, and alone or as any target of a multiple assignment such as `$env:<name>, $other = ...`,
-    whose values the guard does not follow), by
-    `Set-Item`, `New-Item`, or `Set-Content` at its path, `Copy-Item` at its destination, `New-Item` on the
-    provider's root with `-Name`, or `Rename-Item` of a variable there with `-NewName`. PowerShell's own binder
-    places each argument, so a parameter abbreviated, aliased, or left positional, and each path of an array, is
-    read. `Add-Content` and `Move-Item` fail on the provider, so they set nothing. A separator after
-    `Environment::`, as in `Environment::\GIT_DIR`, becomes part of the variable's name, so the variable set is
-    not the one git reads, and the guard judges the command as setting none.
 
-  The guard's own git calls drop these variables, as does the hook's check of the opt-in setting, so an
-  inherited one cannot hide the hub from the guard.
-- **Each shell's own rules.**
-  - **Bash.** The guard follows `cd <dir>` (a bare `cd` goes home, `cd -` leaves the directory unknown),
-    `pushd`, `popd`, and `env -C <dir>`. A directory or variable set inside `( )`, `$( )`, or `<( )` stays
-    there. Git Bash paths such as `/c/...` are understood.
-  - **PowerShell.** The guard follows `cd`, `chdir`, `sl`, and `Set-Location`, with `-Path` or `-LiteralPath`
-    written out, abbreviated, or omitted:
-    - a bare `cd` goes home, and a leading `~` means home;
-    - `cd -` and `cd +` leave the directory unknown;
-    - `Push-Location` and `Pop-Location` keep a stack, and a pop past its bottom leaves the directory unknown;
-    - a location set inside a script block outlives the block, as it does in PowerShell;
-    - `$env:NAME`, and strings whose only expansions are environment variables that are set, are expanded;
-    - a location variable the command assigns has no value the guard follows, so it leaves the directory
-      unknown, and removing it does not settle it again.
-  - **Nested shells.** `bash -c` (alone or in a bundle such as `-lc`), `bash <<< '<script>'`, and `pwsh -c` (or
-    `powershell -Command`) with a fixed script are read in either shell. The nested script runs as its own
-    process with the variables its parent exported, so its `cd` and what it exports do not outlive it.
-    PowerShell's `Invoke-Expression` (`iex`) with a fixed string is read as part of the same session.
-- **How PowerShell is read.** A PowerShell command is read by PowerShell's own parser, not by a second
-  hand-written grammar. Here-strings, backtick escapes, and comments are where a tokenizer would misread a
-  quote and miss the command beside it. `tools/worktrees-powershell.ps1` only reports what the parser found,
-  and the parameters PowerShell's binder gives each command's arguments, in the order PowerShell would run it,
-  and `tools/worktrees.py` makes every decision.
-  - **When pwsh starts.** Starting `pwsh` costs far more than the guard's git calls, so the guard starts it
-    only when the text names `git` and, as a word, one of the refused subcommands or one of the aliases git
-    lists where the command starts. `git status`, `git log`, and every non-git command never wait for it.
-  - **A command that doesn't parse is allowed.** PowerShell parses a whole script before it runs any of it, so
-    none of such a command runs. A Bash command is different: the lines before a syntax error do run.
+Runtimes other than Claude Code do not run the hook, so for them the `CLAUDE.md` rules are the guard.
 
-The guard catches mistakes, not determined effort. It does not see:
+### The guard's contract
 
+The hook is given the text of a command, not what runs under it. The guard reads that text with each shell's own
+rules, and every decision it makes is one of three: what its readers settle is judged, what they cannot settle is
+refused while a guarded hub is in view, and what they do not see at all is named below.
+
+#### What the readers settle
+
+- **Where a git call acts.** git writes the `HEAD` and index of its repository and the files of its work tree, so a
+  call acts on the hub when either one is the hub's. The repository is the one `--git-dir` or `GIT_DIR` names, or
+  else the one git finds from where it starts; the work tree is the one `--work-tree`, `GIT_WORK_TREE`, or a
+  `core.worktree` setting names, or else where git starts, after each `-C`. A relative path is read from where git
+  finally starts, and a relative `core.worktree` from the repository it is set for. `GIT_COMMON_DIR` names only the
+  store of refs and objects every worktree shares, so it does not change which checkout a call writes. The guard
+  reads git's own options as git does, with no abbreviation and with a value attached after `=` or as the next word
+  (`-C`, `-c`, `--attr-source`, `--config-env`, `--git-dir`, `--namespace`, `--super-prefix`, `--work-tree`), and
+  `core.worktree` and `alias.<name>` among the command-line configuration a call sees: `GIT_CONFIG_PARAMETERS`,
+  `GIT_CONFIG_COUNT` with its pairs, then each `-c` and `--config-env`.
+- **Location variables.** `GIT_DIR`, `GIT_WORK_TREE`, and the two configuration variables reach a git call from
+  the environment Claude Code gives the hook, and from whatever the command sets: in Bash, for one command
+  (`GIT_DIR=<dir> git ...`, `env GIT_DIR=<dir> git ...`) or exported for the rest (`export`, `declare -x`,
+  `typeset -x`, an assignment under `set -a` or to a variable already exported), and removed by `unset`,
+  `export -n`, `env -i`, and `env -u`; in PowerShell, through `$env:<name>` and `${<path>}` on the environment
+  provider (cast, in parentheses, or as any target of a multiple assignment), a `foreach` loop's variable,
+  `PSVariable.Set`, `[Environment]::SetEnvironmentVariable`, and the cmdlets that write the provider: `Set-Item`,
+  `New-Item`, and `Set-Content` at their path, `Copy-Item` at its destination, `New-Item` on the provider's root
+  with `-Name`, and `Rename-Item` with `-NewName`, while `Remove-Item` and `Clear-Item` remove one, and so does
+  assigning `$null`. The provider's paths are the `env:` drive (`env:<name>`, `env:\<name>`, `env:/<name>`) and
+  `Environment::<name>` (also `\Environment::<name>` and `Microsoft.PowerShell.Core\Environment::<name>`); after
+  `Environment::` a separator becomes part of the variable's name, which git never reads. On Windows git reads an
+  environment name in any case, so `git_dir` is `GIT_DIR` there; elsewhere only the upper-case name counts. Bash
+  keeps each spelling a variable of its own, and when two spellings reaching git disagree, the call is judged by
+  the upper-case one, the spelling git reads, with a note.
+- **Bash, by its grammar.** `tools/bash_syntax.py` reads Bash as Bash parses it: single and double quotes, `$'...'`,
+  escapes and line continuations, comments, and here-documents, whose bodies are data and never commands; and the
+  command tree of lists, `&&` and `||`, pipelines, `( )` subshells, `{ }` groups, `if`, `while`, `until`, `for`,
+  `select`, `case`, `[[ ]]`, `!`, `time`, and function definitions, with redirections. A word's value comes from its
+  literal text, `~`, and each `$NAME` the command sets or the environment holds, and `$PWD` is where the shell is; a
+  substitution, arithmetic, a special parameter, a glob, a brace expansion, or a value that would split leaves the
+  word unsettled. The guard follows `cd` (with `--`; bare goes home, `cd -` and a `CDPATH` search leave the
+  directory unknown), `pushd`, `popd`, and `env -C`, and runs a function's body where a command calls it.
+  Commands after `exec`, `command`, `builtin`, `nohup`, `nice`, `timeout`, `stdbuf`, and `env` are read as the
+  commands they start, and `eval` of fixed words is read as part of the shell. Every command or process
+  substitution runs, as Bash runs it, in a subshell before the command that holds it, and so does one in an
+  unquoted here-document's body.
+- **PowerShell, by its parser.** A PowerShell command is read by PowerShell's own parser, not by a second
+  hand-written grammar, and each command's arguments by the parameters PowerShell's binder gives them, so a
+  parameter abbreviated, aliased, or left positional, and each path of an array, is read; a command the binder
+  refuses, or one given `-WhatIf`, runs nothing. `tools/worktrees-powershell.ps1` only reports what the parser and
+  binder found, in the order PowerShell would run it, and `tools/worktrees.py` makes every decision. The guard
+  follows `cd`, `chdir`, `sl`, and `Set-Location` (bare goes home, a leading `~` means home, `cd -` and `cd +` leave
+  the location unknown, and one on a provider other than the file system leaves it unknown),
+  `Push-Location` and `Pop-Location` with their stack, `$env:NAME` and strings whose only expansions are
+  environment variables that are set, and a function's body where a command calls it. A location set inside a
+  script block outlives the block, as it does in PowerShell. `Invoke-Expression` (`iex`) with a fixed string is read
+  as part of the same session. A command that does not parse is allowed: PowerShell parses a whole script before it
+  runs any of it, so none of it runs.
+- **Paths that do not all run.** A command that runs only when another succeeds or fails, only in some branch, or
+  any number of times in a loop or script block, is read as running, and afterwards the guard keeps only what every
+  path agrees on: a directory or variable one path changes is unknown after it. A directory change whose target is
+  not a directory fails and leaves the shell where it was, so it is unknown after it too, except along `&&`, which
+  goes on only when it succeeded.
+- **Nested shells.** `bash -c` (alone or in a bundle such as `-lc`), `bash <<< '<script>'`, a here-document handed
+  to `bash`, and `pwsh -c` (or `powershell -Command`) or `pwsh -CommandWithArgs` (`-cwa`) with a fixed script are
+  read in either shell, as a process of its own that starts with the variables its parent exported; its directory
+  and what it exports do not outlive it. Nesting of shells, `eval`, function calls, and `Invoke-Expression` is
+  followed to four deep; deeper is a command the guard cannot read.
+- **When pwsh starts.** Starting `pwsh` costs far more than the guard's git calls, so the guard starts it only when
+  the text names `git` and either, as a word, a refused subcommand, `fetch`, or an alias git defines where the
+  command starts or in a hub in view, or command-line alias configuration; or something that computes a word
+  follows `git` in its statement; or the command starts outside every repository. `git status`, `git log`, and
+  every non-git command never wait for it.
+
+#### What it refuses because it cannot settle it
+
+A guarded hub is in view when it is the hub of the session's own directory, of its project, or of a place the
+command names. While one is, the guard refuses:
+
+- a git call that would write the checkout it runs in, where the text does not settle its repository or work tree:
+  a directory or location variable named by a value the command computes or does not set, a directory that only
+  some paths change, or a shell after a sourced file, which may change the directory and any variable;
+- a git call whose subcommand the text does not settle, or that comes after an option of git's own the guard does
+  not read;
+- a command with a part it cannot read that may start git, when the command names git: Bash its grammar cannot read
+  (the lines before a syntax error do run, unlike PowerShell's), a script handed to `bash`, `pwsh`, `eval`,
+  `Invoke-Expression`, or `env -S` that the text does not settle or that nests more than four deep, and a PowerShell
+  command when `pwsh` cannot be started or does not finish reading it within 20 seconds;
+- an alias that cannot be read, as above.
+
+The refusal names what it could not settle and asks for the directory to be written out, as `git -C <dir>` or
+`cd <dir> &&`. With no guarded hub in view, the same calls are allowed with a note on stderr. A defect in the guard
+itself is allowed with a note too, so that it cannot block every tool.
+
+#### What it does not see
+
+The hook sees the command text. It does not see:
+
+- git run indirectly: from a script or program (`bash script.sh`, `xargs`, `find -exec`, `make`, a Python script),
+  through `Start-Process`, `cmd /c`, `pwsh -File`, or `pwsh -EncodedCommand`, from a `trap`, or by a program whose
+  name is computed at run time;
 - shell redirection or other programs writing files;
-- git run indirectly from inside a script, or through `Start-Process`, `cmd /c`, or `pwsh -EncodedCommand`;
-- a git subcommand spelled with escapes or computed at run time, or a directory the text does not settle;
-- a location variable set on PowerShell's environment provider through a path the text does not settle, piped
-  in, or named relative to a location on that provider;
-- a location variable set by the shell's own startup files, a sourced script, or `eval`, or configuration given
-  through git's `GIT_CONFIG_*` variables;
-- `GIT_INDEX_FILE`, which moves only the index: the guard still judges the call by the checkout whose `HEAD` and
-  tree it writes, so it does not see an index file of the hub named from another checkout;
-- Bash commands whose quoting it cannot tokenize;
-- a PowerShell command when `pwsh` cannot be started, or does not finish reading it within 20 seconds.
-
-It also fails open: input it cannot judge is allowed, with a note on stderr, so that a guard defect cannot
-block every tool. The one exception is an alias that runs in the hub: one it cannot read is refused. Runtimes other than Claude Code do not run the hook, so for them the `CLAUDE.md` rules are
-the guard.
+- what the shell's own startup files set, or a variable the Bash tool's shell holds that the hook's environment does
+  not, or holds with another value;
+- a work tree set in a repository's own configuration, or `GIT_INDEX_FILE`, which moves only the index: the guard
+  judges such a call by the checkout whose `HEAD` and tree it writes;
+- a ref moved from another checkout, such as `git update-ref refs/heads/main` run in a worktree: refs live in the
+  store every worktree shares, and the guard judges a call by the checkout whose `HEAD`, index, and tree it writes.
 
 `.claude/settings.json` is tracked and reaches every developer's sessions. It may therefore name its `$schema`,
 declare hooks, and set `attribution`, which turns off Claude Code's commit trailers, pull request footer, and session
