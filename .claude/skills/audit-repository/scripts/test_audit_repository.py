@@ -196,7 +196,7 @@ def listed_paths(brief: str, heading: str) -> list[str]:
     return bullets
 
 
-class QuotingTests(unittest.TestCase):
+class QuotingTests(AuditTestCase):
     def assert_same_shape(self, hostile: str, plain: str) -> None:
         """The brief for hostile paths has the lines and headings of the brief for plain ones."""
         self.assertEqual(len(plain.splitlines()), len(hostile.splitlines()))
