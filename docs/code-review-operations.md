@@ -392,7 +392,7 @@ The manifest declares every trusted reviewer file. Directories are not recursive
 }
 ```
 
-The core verifies the checkout's GitHub origin, resolves the trusted ref to a commit, rejects symlink entries and unsafe paths, materializes only declared blobs, and records the source commit and SHA-256 hash of every loaded file.
+The core verifies the checkout's GitHub origin, accepting only an origin whose whole URL is one of the github.com forms skill-core's `github_remote.py` reads, such as `https://github.com/<owner>/<repo>`, `git@github.com:<owner>/<repo>`, or `ssh://git@github.com/<owner>/<repo>`, with or without `.git`, and names the configured repository, resolves the trusted ref to a commit, rejects symlink entries and unsafe paths, materializes only declared blobs, and records the source commit and SHA-256 hash of every loaded file.
 
 ### Specialist reviewers
 

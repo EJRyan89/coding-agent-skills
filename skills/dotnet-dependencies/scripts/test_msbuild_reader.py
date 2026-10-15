@@ -15,6 +15,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+import dotnet_solution
 import msbuild_reader
 from msbuild_reader import (
     PackageItem,
@@ -1169,8 +1170,7 @@ class PathBoundTests(unittest.TestCase):
             path.rmdir() if path.is_dir() else path.unlink()
         self.root.rmdir()
 
-    def test_the_bound_and_the_checkout_marker_are_the_documented_ones(self) -> None:
-        self.assertEqual(67108864, msbuild_reader.READ_LIMIT_BYTES)
+    def test_the_checkout_marker_is_the_documented_one(self) -> None:
         self.assertEqual(".git", msbuild_reader.CHECKOUT_MARKER)
 
     def test_a_named_path_is_made_absolute_and_judged_without_reaching_the_file_system(self) -> None:
@@ -1213,7 +1213,7 @@ class PathBoundTests(unittest.TestCase):
     def test_a_read_takes_a_regular_file_within_the_bound_and_refuses_any_other(self) -> None:
         path = self.root / "Lib.csproj"
         path.write_bytes(b"x" * 16)
-        with mock.patch.object(msbuild_reader, "READ_LIMIT_BYTES", 16):
+        with mock.patch.object(dotnet_solution, "READ_LIMIT_BYTES", 16):
             self.assertEqual(b"x" * 16, read_bounded(path))
             path.write_bytes(b"x" * 17)
             with self.assertRaises(Unreadable) as refused:
@@ -1239,7 +1239,7 @@ class PathBoundTests(unittest.TestCase):
         listed = self.root / "Harbor.slnx"
         listed.write_text('<Solution><Project Path="a.csproj" /></Solution>', encoding="utf-8")
         self.assertEqual(["a.csproj"], read_solution(listed))
-        with mock.patch.object(msbuild_reader, "READ_LIMIT_BYTES", 8):
+        with mock.patch.object(dotnet_solution, "READ_LIMIT_BYTES", 8):
             with self.assertRaises(Unreadable) as refused:
                 read_assets(assets)
             self.assertIn("larger than the reader's bound of 8 bytes", refused.exception.reason)

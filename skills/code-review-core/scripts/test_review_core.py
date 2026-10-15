@@ -3480,6 +3480,38 @@ def in_checkout(*arguments: str, checkout: str = "C:/checkout") -> tuple[str, ..
     return ("git", "-C", checkout, *arguments)
 
 
+class CheckoutRemoteTests(GitTestCase):
+    """The checkout's origin is the configured repository only when the whole URL is a github.com remote's."""
+
+    def verify(self, url: str, repository: str = "example/one") -> None:
+        git = AnsweringGit()
+        git.answers[("remote", "get-url", "origin")] = [GitResult(0, f"{url}\n", "")]
+        verify_checkout_remote(Path("C:/checkout"), repository, git)
+
+    def test_each_github_com_form_of_the_repository_is_accepted(self) -> None:
+        for url in (
+            "https://github.com/example/one.git",
+            "https://github.com/Example/One",
+            "git@github.com:example/one.git",
+            "git@github.com:example/one",
+            "ssh://git@github.com/example/one.git",
+        ):
+            with self.subTest(url=url):
+                self.verify(url)
+
+    def test_a_remote_on_another_host_is_refused_whatever_its_path_names(self) -> None:
+        for url in (
+            "https://example.invalid/github.com/example/one",
+            "https://example.invalid/mirror/github.com:example/one.git",
+            "git@example.invalid:github.com/example/one",
+            "https://github.com.example.invalid/example/one",
+        ):
+            with self.subTest(url=url), self.assertRaisesRegex(RuntimeContractError, "not a recognizable GitHub"):
+                self.verify(url)
+        with self.assertRaisesRegex(RuntimeContractError, "origin mismatch: expected example/two, found example/one"):
+            self.verify("https://github.com/example/one.git", "example/two")
+
+
 class PrepareGitRunnerTests(GitTestCase):
     """One prepare's git runner asks an identical query of origin or of a full object id once, until a command that
     is not a read; a ref, an abbreviation, a failed answer, and another prepare's runner are asked again."""
