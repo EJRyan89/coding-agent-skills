@@ -24,6 +24,7 @@ from toolchain import (
     missing_prerequisites,
     outdated_prerequisites,
     read_tool_version,
+    requirements_problems,
     tool_versions,
 )
 
@@ -56,6 +57,35 @@ class ToolchainFixtures(GitTestCase):
             ),
         )
         self.assertEqual([], missing_prerequisites((("ShellCheck", "ShellCheck", lambda: "shellcheck"),)))
+
+    def test_requirements_hold_only_comments_blank_lines_and_the_listed_pins(self) -> None:
+        packages = ("ruff", "mypy")
+        clean = "# Development dependencies.\n\nruff==0.16.10\n  # Indented comment.\nmypy==2.4.0\n"
+        self.assertEqual([], requirements_problems(clean, packages))
+        for added in (
+            "requests\n",
+            "requests==2.32.0\n",
+            "--extra-index-url https://example.invalid/simple\n",
+            "--index-url https://example.invalid/simple\n",
+            "-r other.txt\n",
+            "-c constraints.txt\n",
+            "-e git+https://example.invalid/pkg.git#egg=pkg\n",
+            "pkg @ https://example.invalid/pkg.whl\n",
+            "ruff>=0.16.10\n",
+            "mypy==2.4.0 --hash=sha256:00\n",
+            "mypy==2.4.0; python_version > '3.11'\n",
+            "mypy==2.4.0 # a trailing comment\n",
+            "Ruff==0.16.10\n",
+        ):
+            with self.subTest(added=added):
+                problems = requirements_problems(clean + added, packages)
+                self.assertTrue(any("line 6 is not name==version" in problem for problem in problems), problems)
+        self.assertEqual(
+            ["mypy is pinned 0 times, not once"], requirements_problems(clean.replace("mypy==2.4.0\n", ""), packages)
+        )
+        self.assertEqual(
+            ["ruff is pinned 2 times, not once"], requirements_problems(clean + "ruff==0.17.0\n", packages)
+        )
 
     def test_missing_ruff_is_reported_with_the_install_command(self) -> None:
         self.assertIn(("ruff", "ruff", find_ruff), PREREQUISITES)

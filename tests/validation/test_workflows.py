@@ -6,6 +6,7 @@ Each policy fails on a violating input and passes on a conforming one.
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from workflows import (
     required_check_problems,
     tool_cache_problems,
     uninstall_check_problems,
+    unknown_workflow_problems,
     verify_log_problems,
     workflow_guard_problems,
 )
@@ -73,6 +75,34 @@ class WorkflowsFixtures(GitTestCase):
             ),
             (clean + "      - uses: 'actions/checkout@v7'\n", "pin can be read"),
             (clean.replace("jobs:\n", "jobs: &shared\n"), "outside the YAML"),
+            (clean + "        env:\n          TOKEN: ${{ SECRETS.TOKEN }}\n", "secret"),
+            # The github context reached other than by a dotted read of an allowed field, in a run step or anywhere.
+            *(
+                (clean + f"      - run: echo '${{{{ {expression} }}}}'\n", "github context")
+                for expression in (
+                    "toJSON(github)",
+                    "github",
+                    "github[format('{0}','event')]",
+                    "github['event_name']",
+                    "fromJSON(toJSON(github)).event",
+                    "GITHUB.EVENT.PULL_REQUEST.TITLE",
+                    "github.event.pull_request.body",
+                    "github.event.pull_request.head.ref",
+                    "github.event.comment.body",
+                    "github.repository",
+                    "github.ref.foo",
+                    "github.ref['x']",
+                    "github . token",
+                    "format('{0}', github)",
+                    "github.*",
+                )
+            ),
+            (clean + "        with:\n          data: ${{ toJSON(github) }}\n", "github context"),
+            # An expression the policy cannot split into tokens fails rather than passes unread.
+            *(
+                (clean + f'      - run: echo "${{{{ {expression} }}}}"\n', "cannot read")
+                for expression in ("format('{0}", 'github["event"]', "github.ref - 1", "a ? b")
+            ),
         ):
             with self.subTest(problem=problem, drifted=drifted):
                 problems = workflow_guard_problems(drifted, expected, {"actions/checkout"})
@@ -110,6 +140,51 @@ class WorkflowsFixtures(GitTestCase):
             "  other:\n    permissions: read-all\n    steps:\n      - run: echo done\n"
         )
         self.assertEqual([], workflow_guard_problems(workflow, ["workflow_dispatch"], set()))
+
+    def test_the_allowed_github_fields_and_other_contexts_pass(self) -> None:
+        clean = "on:\n  push:\n\npermissions:\n  contents: read\n\njobs:\n  run:\n    steps:\n"
+        for expression in (
+            "github.event_name == 'schedule' && fromJSON('[\"3.11\", \"3.x\"]') || fromJSON('[\"3.11\"]')",
+            "github.ref != 'refs/heads/main'",
+            "GitHub.Workflow",
+            "github.workflow",
+            "!cancelled()",
+            "matrix.runtimes == 'latest' && 'latest' || inputs.claude-version || '2.1.289'",
+            "steps.shellcheck.outputs.cache-hit",
+            "needs.suite.result",
+            "format('{0} it''s github', matrix.shard)",
+            "inputs.github",
+        ):
+            with self.subTest(expression=expression):
+                workflow = clean + f"      - run: echo '${{{{ {expression} }}}}'\n"
+                self.assertEqual([], workflow_guard_problems(workflow, ["push"], set()))
+
+    def test_only_the_workflows_the_policy_knows_may_sit_in_the_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            known = ("deployable.yml", "validate.yml")
+            for name in known:
+                (directory / name).write_text("on: push\n", encoding="utf-8")
+            self.assertEqual([], unknown_workflow_problems(directory, known))
+            for extra in ("extra.yml", "other.yaml", "README.md", "nested"):
+                with self.subTest(extra=extra):
+                    path = directory / extra
+                    if extra == "nested":
+                        path.mkdir()
+                    else:
+                        path.write_text("on: [pull_request_target]\n", encoding="utf-8")
+                    problems = unknown_workflow_problems(directory, known)
+                    self.assertEqual(1, len(problems), problems)
+                    self.assertIn(f"{extra} is not a workflow the policy knows", problems[0])
+                    if path.is_dir():
+                        path.rmdir()
+                    else:
+                        path.unlink()
+            (directory / "validate.yml").unlink()
+            self.assertEqual([".github/workflows/validate.yml is missing"], unknown_workflow_problems(directory, known))
+        self.assertEqual(
+            [".github/workflows/validate.yml is missing"], unknown_workflow_problems(directory, ["validate.yml"])
+        )
 
 
 LEGS = (

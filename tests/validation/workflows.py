@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 import shlex
 import unittest
+from collections.abc import Collection
+from pathlib import Path
 
 from validation_support import REPOSITORY_ROOT
 
@@ -194,13 +196,59 @@ def action_pins(workflow: str) -> list[tuple[str, str, str]]:
 
 
 EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.DOTALL)
-SECRET_REFERENCE = re.compile(r"\bsecrets\b")
-TOKEN_REFERENCE = re.compile(r"\bgithub\s*(?:\.\s*token\b|\[\s*['\"]token['\"]\s*\])")
-# The event payload and the head branch's name, which a pull request's author writes: an expression pastes them into
-# the step's script, so a step reads the payload from the file GITHUB_EVENT_PATH names instead.
-EVENT_REFERENCE = re.compile(r"\bgithub\s*(?:\.\s*(?:event|head_ref)\b|\[\s*['\"](?:event|head_ref)['\"]\s*\])")
+# Context names are case-insensitive in an expression, so SECRETS.X reads a secret as secrets.x does.
+SECRET_REFERENCE = re.compile(r"\bsecrets\b", re.IGNORECASE)
+# The fields of the github context an expression may read, none of which holds text a pull request's author writes:
+# event_name and workflow are fixed by the event and the workflow file, and ref, for the triggers the workflows take,
+# is refs/heads/main, refs/pull/<number>/merge, or the branch a writer dispatched on. The rest of the context carries
+# the token and the event payload, which an expression would paste into the step, so a step reads the payload from the
+# file GITHUB_EVENT_PATH names instead.
+GITHUB_FIELDS = frozenset({"event_name", "ref", "workflow"})
+# One token of an expression: a string literal, a name, a number, or an operator. Anything else is unreadable.
+EXPRESSION_TOKEN = re.compile(
+    r"\s*(?:'(?:[^']|'')*'|(?P<name>[A-Za-z_][A-Za-z0-9_-]*)|\d+(?:\.\d+)?|==|!=|<=|>=|&&|\|\||[.()\[\],!<>*])\s*"
+)
 # What a job may grant its token: nothing beyond reading.
 READ_ONLY_SCOPES = frozenset({"read", "none"})
+
+
+def _expression_tokens(expression: str) -> list[tuple[str, bool]] | None:
+    """An expression's tokens, each with whether it is a name, or None when some of it reads as no token."""
+    tokens: list[tuple[str, bool]] = []
+    position = 0
+    while position < len(expression):
+        match = EXPRESSION_TOKEN.match(expression, position)
+        if match is None or match.end() == position:
+            return None
+        tokens.append((match.group().strip(), match.group("name") is not None))
+        position = match.end()
+    return tokens
+
+
+def github_context_problem(expression: str) -> str | None:
+    """Why an expression may reach the github context beyond GITHUB_FIELDS, or None when it cannot.
+
+    Each reference to the context must be a dotted read of one allowed field and nothing after it, so the whole
+    context, toJSON or fromJSON of it, a bracketed or computed field, and a field below an allowed one all fail, and so
+    does an expression this reader cannot split into tokens."""
+    tokens = _expression_tokens(expression)
+    if tokens is None:
+        return "the policy cannot read it, so it may reach the token or event data"
+    for index, (text, is_name) in enumerate(tokens):
+        if not is_name or text.casefold() != "github" or (index and tokens[index - 1][0] == "."):
+            continue
+        field = tokens[index + 1 : index + 3]
+        after = tokens[index + 3 : index + 4]
+        if (
+            len(field) != 2
+            or field[0][0] != "."
+            or not field[1][1]
+            or field[1][0].casefold() not in GITHUB_FIELDS
+            or after in ([(".", False)], [("[", False)])
+        ):
+            allowed = ", ".join(f"github.{name}" for name in sorted(GITHUB_FIELDS))
+            return f"it reads the github context, which carries the token and event data, beyond {allowed}"
+    return None
 
 
 def _triggers(on: Node) -> list[str]:
@@ -236,7 +284,7 @@ def _job_permission_problems(jobs: Node) -> list[str]:
 
 def _string_problems(tree: Node) -> list[str]:
     """Secrets, the token, and author-written event data, in any expression anywhere, any key, and any value, run
-    blocks included."""
+    blocks included, and any expression the policy cannot read."""
     problems: list[str] = []
     for path, text, is_key in _strings(tree):
         if is_key and text == "secrets":
@@ -244,10 +292,9 @@ def _string_problems(tree: Node) -> list[str]:
         for expression in EXPRESSION.findall(text):
             if SECRET_REFERENCE.search(expression):
                 problems.append(f"{path} reads a secret: ${{{{{expression}}}}}")
-            if TOKEN_REFERENCE.search(expression):
-                problems.append(f"{path} passes the token to a step: ${{{{{expression}}}}}")
-            if EVENT_REFERENCE.search(expression):
-                problems.append(f"{path} pastes event data an author writes into the workflow: ${{{{{expression}}}}}")
+            reason = github_context_problem(expression)
+            if reason:
+                problems.append(f"{path} has an expression the policy refuses, because {reason}: ${{{{{expression}}}}}")
         if "GITHUB_TOKEN" in text:
             problems.append(f"{path} names GITHUB_TOKEN, which passes the token to a step")
     return problems
@@ -289,6 +336,39 @@ def workflow_guard_problems(
     used = {text.split("@")[0] for text in parsed}
     if used != actions:
         problems.append(f"the actions used are {sorted(used)}, expected {sorted(actions)}")
+    return problems
+
+
+WORKFLOWS_DIRECTORY = ".github/workflows"
+# Every file under .github/workflows, by name, with the triggers, actions, and crons workflow_guard_problems holds it
+# to. A file not named here fails validation, so a new workflow is added here in the pull request that adds the file.
+# validate.yml takes no pull_request_target, so a pull request's code never runs with the base repository's token or
+# secrets. deployable.yml takes only dispatch and a weekly schedule, so it can never be a required status check or run
+# on a pull request, and its schedule is Tuesday's, the day after validate.yml's Monday run.
+WORKFLOW_GUARDS: dict[str, tuple[list[str], set[str], tuple[str, ...]]] = {
+    "deployable.yml": (
+        ["workflow_dispatch", "schedule"],
+        {"actions/checkout", "actions/setup-python", "actions/setup-node", "actions/upload-artifact"},
+        ("23 6 * * 2",),
+    ),
+    "validate.yml": (
+        ["pull_request", "push", "schedule", "workflow_dispatch"],
+        {"actions/checkout", "actions/setup-python", "actions/cache"},
+        ("23 6 * * 1",),
+    ),
+}
+
+
+def unknown_workflow_problems(directory: Path, known: Collection[str]) -> list[str]:
+    """Every entry of the workflows directory the policy does not know by name, which GitHub may run unguarded, and
+    every known workflow the directory lacks."""
+    entries = {entry.name for entry in directory.iterdir()} if directory.is_dir() else set()
+    problems = [
+        f"{WORKFLOWS_DIRECTORY}/{name} is not a workflow the policy knows; add it to WORKFLOW_GUARDS with its triggers,"
+        " actions, and crons"
+        for name in sorted(entries - set(known))
+    ]
+    problems += [f"{WORKFLOWS_DIRECTORY}/{name} is missing" for name in sorted(set(known) - entries)]
     return problems
 
 
@@ -646,21 +726,18 @@ class WorkflowsPolicies(unittest.TestCase):
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
         self.assertEqual([], deployable_linux_problems(workflow))
 
-    def test_deployable_workflow_is_a_dispatched_and_weekly_pinned_check_without_secrets(self) -> None:
-        workflows = REPOSITORY_ROOT / ".github/workflows"
+    def test_every_workflow_file_is_known_pinned_read_only_and_runs_on_its_own_events(self) -> None:
+        workflows = REPOSITORY_ROOT / WORKFLOWS_DIRECTORY
+        self.assertEqual([], unknown_workflow_problems(workflows, WORKFLOW_GUARDS))
+        for name, (triggers, actions, crons) in WORKFLOW_GUARDS.items():
+            with self.subTest(workflow=name):
+                workflow = (workflows / name).read_text(encoding="utf-8")
+                self.assertEqual([], workflow_guard_problems(workflow, triggers, actions, crons))
+
+    def test_deployable_workflow_shares_validates_action_pins(self) -> None:
+        workflows = REPOSITORY_ROOT / WORKFLOWS_DIRECTORY
         workflow = (workflows / "deployable.yml").read_text(encoding="utf-8")
         reviewed = (workflows / "validate.yml").read_text(encoding="utf-8")
-        # Dispatch and a weekly schedule are its only triggers, so it can never be a required status check or run on a
-        # pull request. The schedule is Tuesday's, the day after validate.yml's Monday run.
-        self.assertEqual(
-            [],
-            workflow_guard_problems(
-                workflow,
-                ["workflow_dispatch", "schedule"],
-                {"actions/checkout", "actions/setup-python", "actions/setup-node", "actions/upload-artifact"},
-                ("23 6 * * 2",),
-            ),
-        )
         # An action both workflows use is pinned to the commit Dependabot reviews in validate.yml.
         shared = {action for action, _, _ in action_pins(workflow)} & set(re.findall(r"uses:\s*(\S+)@", reviewed))
         self.assertTrue(shared)
@@ -671,18 +748,8 @@ class WorkflowsPolicies(unittest.TestCase):
                     required_match(rf"{re.escape(action)}@(\S+ +# v\S+)", workflow).group(1),
                 )
 
-    def test_validate_workflow_is_pinned_read_only_and_runs_on_its_own_events(self) -> None:
+    def test_validate_workflow_reads_the_pull_requests_body_and_title_from_the_event_payload(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
-        # No pull_request_target: a pull request's code never runs with the base repository's token or secrets.
-        self.assertEqual(
-            [],
-            workflow_guard_problems(
-                workflow,
-                ["pull_request", "push", "schedule", "workflow_dispatch"],
-                {"actions/checkout", "actions/setup-python", "actions/cache"},
-                ("23 6 * * 1",),
-            ),
-        )
         # The upgrade-notes check reads the pull request body and the title check its title, so an edit to either
         # reruns validation, and each reaches the runner as a file written from the event payload, which the guard
         # above keeps out of expressions.
