@@ -134,13 +134,14 @@ def shell_commands(script: str) -> set[str]:
 
 
 def _fences(markdown: str, context: str) -> list[str]:
-    """The body of each closed fence that deployer/render.py renders in a context: shell for a Bash, sh, or shell
-    fence, and powershell for a PowerShell, ps1, or pwsh fence."""
+    """The body of each fence that deployer/render.py renders in a context: shell for a Bash, sh, or shell fence, and
+    powershell for a PowerShell, ps1, or pwsh fence. A fence left open runs to the end of what holds it, as the
+    renderer reads it, so its commands are held like any other's; unclosed_fence_problems reports it."""
     lines = markdown.splitlines()
     return [
         "\n".join(fence.text(lines[index]) for index in fence.body())
         for fence in find_fences(lines)
-        if fence.closer is not None and render.fence_context(fence) == context
+        if render.fence_context(fence) == context
     ]
 
 

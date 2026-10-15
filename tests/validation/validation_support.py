@@ -35,8 +35,9 @@ REPOSITORY_SKILLS = ".claude/skills"
 # A skill's executable files are Bash, Python, and PowerShell, each run by a standard command in deployer/tools.py.
 SCRIPT_INTERPRETERS = {".bash": "bash", ".sh": "bash", ".py": platform_support.PYTHON, ".ps1": "pwsh"}
 EXECUTABLE_SCRIPT_EXTENSIONS = set(SCRIPT_INTERPRETERS)
-# No runtime these need is a deployment prerequisite and the renderer cannot validate them, so a skill holds none.
-UNSUPPORTED_SCRIPT_EXTENSIONS = {".cjs", ".js", ".mjs", ".ts"}
+# No runtime JavaScript or TypeScript needs is a deployment prerequisite and the renderer cannot validate them, and no
+# analyzer or command policy here reads a PowerShell module or a Windows batch file, so a skill holds none of these.
+UNSUPPORTED_SCRIPT_EXTENSIONS = {".bat", ".cjs", ".cmd", ".js", ".mjs", ".psm1", ".ts"}
 TEST_SCRIPT_EXTENSIONS = {".py", ".sh", ".ps1"}
 # A regression suite is found by its name alone, matched against the file's stem or its whole name, ignoring case.
 TEST_NAME_PATTERNS = ("test_*", "test-*", "*_test", "*-test", "*.test.*")

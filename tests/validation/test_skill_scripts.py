@@ -898,6 +898,21 @@ class SkillScriptsFixtures(GitTestCase):
             {"basename", "echo", "git", "grep", "jq", "printf", "read", "sed", "set", "tr"}, shell_commands(script)
         )
 
+    def test_skill_command_policy_reads_the_commands_of_an_unclosed_fence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deploy-meta/alpha.json": '{"tools": []}',
+                    "skills/alpha/SKILL.md": "# alpha\n\n```bash\nrg foo\n",
+                },
+            )
+            self.assertEqual(
+                [f"skill alpha runs rg, which a standard install lacks; see {COMMANDS_DOC}"],
+                skill_command_problems(root, set(), set()),
+            )
+
     def test_command_policies_read_a_bytes_command_and_a_subclass_of_a_client(self) -> None:
         reader = CommandReader(
             ast.parse('import subprocess\nsubprocess.run(b"git status", shell=True)\nsubprocess.run([b"gh", b"api"])\n')
