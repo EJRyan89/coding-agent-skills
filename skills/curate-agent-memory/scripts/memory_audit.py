@@ -738,15 +738,18 @@ def main_worktree(repo: Path) -> Path | None:
         return top
     if common.name == ".git":
         return common.parent
-    if GitClient().output(["rev-parse", "--is-inside-git-dir"], directory=common).strip() == "true":
+    # core.worktree, relative to the Git directory when relative, is git's own record of a submodule's working tree.
+    configured = GitClient().run(["config", "--file", str(common / "config"), "--get", "core.worktree"])
+    if configured.returncode == 1:
         raise UnknownMainWorktree(
             f"{top} is a linked worktree whose shared Git directory {common} names no main worktree; run resolve "
             "with --repo naming the main worktree, or pass --memory-dir."
         )
-    shared = rev_parse_paths(common, "--show-toplevel")
-    if shared is None:
-        raise GitError(f"git no longer reads {common} as a repository")
-    return shared[0]
+    value = configured.stdout.rstrip("\r\n")
+    if configured.returncode != 0 or not value:
+        message = configured.stderr.strip() or f"git config failed with exit code {configured.returncode}"
+        raise GitError(message, returncode=configured.returncode)
+    return (common / value).resolve()
 
 
 def repository_root(directory: Path) -> Path | None:
