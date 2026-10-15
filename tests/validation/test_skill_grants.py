@@ -177,6 +177,31 @@ class SkillGrantsFixtures(GitTestCase):
                 skill_grant_problems(root),
             )
 
+    def test_grant_policy_fails_a_sibling_grant_that_does_not_name_its_script(self) -> None:
+        sibling = 'python -B "${CLAUDE_SKILL_DIR}/../core/scripts/'
+        command = f'{sibling}y.py" run'
+        skills = {
+            "folder": json.dumps([f"Bash({sibling}*)", f"PowerShell({sibling}*)"]),
+            "named": json.dumps([f'Bash({sibling}y.py" *)', f'PowerShell({sibling}y.py" *)']),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            files: dict[str, str] = {}
+            for skill, allowed in skills.items():
+                files[f"deploy-meta/{skill}.json"] = "{}"
+                files[f"skills/{skill}/SKILL.md"] = (
+                    f"---\nname: {skill}\nallowed-tools: {allowed}\n---\n\n```bash\n{command}\n```\n"
+                )
+            write_fixture_tree(root, files)
+            self.assertEqual(
+                [
+                    f"skills/folder/SKILL.md grants {tool}({sibling}*), a sibling skill's folder rather than one "
+                    f"script by name; see {GRANTS_DOC}"
+                    for tool in ("Bash", "PowerShell")
+                ],
+                skill_grant_problems(root),
+            )
+
     def test_grant_policy_fails_grants_that_approve_nothing_the_skill_runs(self) -> None:
         own = 'python -B "${CLAUDE_SKILL_DIR}/scripts/'
         hidden = "disable-model-invocation: true\nuser-invocable: false\n"

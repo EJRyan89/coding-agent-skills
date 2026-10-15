@@ -46,8 +46,10 @@ names one: its verbs are the subagent's, so they neither use nor imply a tool.
 Shell grants: in Claude Code, allowed-tools pre-approves its entries for the turn that starts the skill; it
 restricts nothing. UNSCOPED_ALLOWED <entry> is a Bash or PowerShell entry that matches every command (bare,
 (*), or (:*)). UNPAIRED_ALLOWED <entry> is a Bash pattern without the same PowerShell pattern, or the
-reverse. UNGRANTED <tool> <line> <command> is a fence command that no pattern of a shell with patterns
-matches, so running it through that tool prompts. A pattern matches the command's text, quotes included,
+reverse. SIBLING_FOLDER_ALLOWED <entry> is a pattern that reaches a sibling skill through ${CLAUDE_SKILL_DIR}/../
+without naming one of its files, quoted, before any *: no path is normalized, so it matches every script of that
+skill and every .. path out of it. UNGRANTED <tool> <line> <command> is a fence command that no pattern of a shell
+with patterns matches, so running it through that tool prompts. A pattern matches the command's text, quotes included,
 with * for any text. EXPANDS <line> <command> is a fence command that expands a shell variable or command
 substitution other than ${CLAUDE_SKILL_DIR} or $ARGUMENTS, which prompts in both shells whatever is granted.
 IDLE_ALLOWED <entry> is a scoped Bash or PowerShell pattern that matches no fence command and no code span outside
@@ -183,6 +185,9 @@ ALLOWED_NAME = re.compile(r"[A-Za-z_][\w-]*")
 SHELL_TOOLS = ("Bash", "PowerShell")
 # Grant patterns that match every command, so they scope nothing.
 UNSCOPED_PATTERNS = frozenset({"", "*", ":*"})
+# How a command names a sibling skill's file. Claude Code normalizes no path in a shell grant, so a pattern that
+# leaves the sibling's file open matches every script of that skill and every `..` path out of it.
+SIBLING_PATH = "${CLAUDE_SKILL_DIR}/../"
 # A trailing && or | joins a fence's command to the next line, which Claude Code checks as its own command.
 COMMAND_JOIN = re.compile(r"\s*(?:&&|\|\||\||\\)\s*$")
 # Shell expansion other than the values Claude Code fills in before the command runs. A command holding one is
@@ -434,6 +439,17 @@ def fence_commands(body: list[str], languages: list[str | None], start: int) -> 
     return commands
 
 
+def names_one_sibling_script(pattern: str) -> bool:
+    """Whether a pattern that reaches a sibling skill names one of its files, quoted, with no `*` before the quote
+    closes, so no other script and no `..` path matches it. A pattern that reaches no sibling passes."""
+    start = pattern.find(SIBLING_PATH)
+    if start < 0:
+        return True
+    end = pattern.find('"', start)
+    path = pattern[start:end]
+    return pattern[start - 1 : start] == '"' and end >= 0 and "*" not in path and not path.endswith("/")
+
+
 def grant_findings(
     entries: list[tuple[str, str | None]],
     commands: list[tuple[int, str]],
@@ -456,6 +472,11 @@ def grant_findings(
         f"UNPAIRED_ALLOWED {entry_text(name, pattern)}"
         for name, pattern in scoped
         if (twin[name], pattern) not in shell
+    ]
+    output += [
+        f"SIBLING_FOLDER_ALLOWED {entry_text(name, pattern)}"
+        for name, pattern in scoped
+        if not names_one_sibling_script(pattern)
     ]
     for number, command in commands:
         for tool in SHELL_TOOLS:
