@@ -12,10 +12,12 @@ import inspect
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -31,6 +33,8 @@ from tools import runtime_canary
 from tools.runtime_canary import Completed
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+# The real runner, kept before setUp replaces it, for the cases that start a stub program through it.
+RUN_PROCESS = runtime_canary.run_process
 
 FIXTURE = "runtime-canary-probe"
 HIDDEN_REASON = "A hidden dependency no runtime starts."
@@ -118,6 +122,40 @@ def run_bash(*arguments: str) -> Callable[[list[str], Path, dict[str, str]], Com
     return action
 
 
+def stub_program(directory: Path, name: str) -> Path:
+    """A runtime program that exits 0 at once, started by its path as the canary starts a runtime: a .cmd file on
+    Windows, as npm installs Codex, and an executable shell script elsewhere."""
+    directory.mkdir(parents=True, exist_ok=True)
+    if sys.platform == "win32":
+        program = directory / f"{name}.cmd"
+        program.write_bytes(b"@exit /b 0\r\n")
+    else:
+        program = directory / name
+        program.write_bytes(b"#!/bin/sh\nexit 0\n")
+        program.chmod(0o755)
+    return program
+
+
+def launcher(directory: Path) -> tuple[list[str], Path]:
+    """A runtime that starts a child and waits for it, as a launcher script starts the runtime proper, and the file
+    the child writes its process ID to before it sleeps for a minute, outliving any limit a case sets."""
+    started = directory / "child.pid"
+    child = directory / "child.py"
+    child.write_text(
+        f"import os, pathlib, time\npathlib.Path({str(started)!r}).write_text(str(os.getpid()))\ntime.sleep(60)\n",
+        encoding="utf-8",
+    )
+    program = directory / "launcher.py"
+    program.write_text(
+        f"import subprocess, sys\nsubprocess.run([sys.executable, {str(child)!r}], check=False)\n", encoding="utf-8"
+    )
+    return [sys.executable, "-B", str(program)], started
+
+
+def running(pid_file: Path) -> bool:
+    return platform_support.process_status(int(pid_file.read_text(encoding="utf-8"))).alive
+
+
 class RuntimeCanaryTestCase(GitTestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="runtime-canary-test.")
@@ -196,9 +234,12 @@ class RuntimeCanaryTestCase(GitTestCase):
         environment: dict[str, str] | None = None,
         installed: tuple[str, ...] = runtime_canary.RUNTIMES,
         discovery_only: bool = False,
+        which: Callable[[str], str | None] | None = None,
         **options: str,
     ) -> list[str]:
-        code, lines = self.outcome(runner, skills, runtimes, sources, environment, installed, discovery_only, **options)
+        code, lines = self.outcome(
+            runner, skills, runtimes, sources, environment, installed, discovery_only, which, **options
+        )
         # A deployment that stops exits 1 too, but it prints none of these lines, so it fails here.
         # A runtime is checked by a listing that found or missed the canary's copy, or by a run the canary started.
         checked = any(
@@ -223,6 +264,7 @@ class RuntimeCanaryTestCase(GitTestCase):
         environment: dict[str, str] | None = None,
         installed: tuple[str, ...] = runtime_canary.RUNTIMES,
         discovery_only: bool = False,
+        which: Callable[[str], str | None] | None = None,
         **options: str,
     ) -> tuple[int, list[str]]:
         """The canary's exit code and printed lines, for a test that states the code it expects."""
@@ -235,7 +277,7 @@ class RuntimeCanaryTestCase(GitTestCase):
                 sources=sources if sources is not None else [runtime_canary.FIXTURE_SOURCE],
                 runner=runner,
                 talk=runner.talk,
-                which=lambda name: forward(self.root / "bin" / name) if name in installed else None,
+                which=which or (lambda name: forward(self.root / "bin" / name) if name in installed else None),
                 base_environment=dict(os.environ) if environment is None else environment,
                 discovery_only=discovery_only,
                 timeout=60,
@@ -371,6 +413,59 @@ class EnvironmentTests(GitTestCase):
         seen = set(json.loads(completed.stdout))
         self.assertEqual(set(), set(REPOSITORY_SELECTING) & seen)
         self.assertLessEqual({"GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "PYTHONPATH"}, seen)
+
+
+class RunProcessTests(GitTestCase):
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory(prefix="runtime-canary-test.")
+        self.addCleanup(self._temporary.cleanup)
+        self.root = Path(self._temporary.name).resolve()
+
+    def test_a_runtime_started_through_a_launcher_ends_at_the_limit_with_everything_it_started(self) -> None:
+        command, started = launcher(self.root)
+        began = time.monotonic()
+        completed = RUN_PROCESS(command, self.root, dict(os.environ), 5)
+        self.assertLess(time.monotonic() - began, 30, "the run waited for the child the launcher started")
+        self.assertTrue(completed.timed_out, completed)
+        self.assertTrue(started.is_file(), "the launcher's child never started within the limit")
+        self.assertFalse(running(started), "the child the launcher started outlived the run")
+
+    def test_an_interrupted_run_ends_everything_the_runtime_started(self) -> None:
+        command, started = launcher(self.root)
+        limit = 120.0
+        real_wait = subprocess.Popen.wait
+        interrupted_runs: list[subprocess.Popen[bytes]] = []
+
+        def interrupted(process: subprocess.Popen[bytes], timeout: float | None = None) -> int:
+            """Ctrl+C while the canary waits for the run, once the launcher's child is running."""
+            if timeout != limit:
+                return real_wait(process, timeout=timeout)
+            interrupted_runs.append(process)
+            deadline = time.monotonic() + 30
+            while not started.is_file() and time.monotonic() < deadline:
+                time.sleep(0.1)
+            raise KeyboardInterrupt
+
+        with mock.patch.object(subprocess.Popen, "wait", interrupted), self.assertRaises(KeyboardInterrupt):
+            RUN_PROCESS(command, self.root, dict(os.environ), limit)
+        self.assertTrue(started.is_file(), "the launcher's child never started")
+        self.assertFalse(running(started), "the child the launcher started outlived the interrupted run")
+        # The launcher went with it, so it is reported gone at once.
+        self.assertEqual(1, len(interrupted_runs))
+        real_wait(interrupted_runs[0], timeout=1)
+
+    def test_a_program_that_cannot_start_is_a_run_that_says_why(self) -> None:
+        missing = self.root / "bin" / "copilot.exe"
+        completed = RUN_PROCESS([str(missing), "-p", "x"], self.root, dict(os.environ), 60)
+        self.assertEqual(
+            (-1, "", "", False), (completed.returncode, completed.stdout, completed.stderr, completed.timed_out)
+        )
+        self.assertRegex(completed.error, f"^cannot run {re.escape(forward(missing))}: .+")
+
+    def test_output_reads_back_as_text_with_line_feeds(self) -> None:
+        program = "import sys; sys.stdout.buffer.write(b'one\\r\\ntwo\\n\\xff'); sys.stderr.write('warn')"
+        completed = RUN_PROCESS([sys.executable, "-c", program], self.root, dict(os.environ), 60)
+        self.assertEqual(Completed(0, "one\ntwo\n\ufffd", "warn"), completed)
 
 
 class RemoveHomeTests(GitTestCase):
@@ -795,6 +890,82 @@ class RunTests(RuntimeCanaryTestCase):
                         timeout=60,
                     ),
                 )
+
+    def test_a_runtime_whose_program_vanishes_fails_that_skill_and_every_other_line_stands(self) -> None:
+        adapters = forward(self.home / ".agents" / "skills")
+        program = stub_program(self.root / "bin", "copilot")
+        runner = FakeRuntimes()
+        runner.listings[program.name] = [(name, f"{adapters}/{name}", True) for name in (FIXTURE, "alpha")]
+
+        def update_moves_it_away(arguments: list[str], cwd: Path, environment: dict[str, str]) -> Completed:
+            # Copilot's update renames its program once a session has finished, so the next start finds none.
+            completed = RUN_PROCESS(arguments, cwd, environment, 60)
+            program.unlink(missing_ok=True)
+            return completed
+
+        runner.actions[program.name] = update_moves_it_away
+        lines = self.canary(
+            runner,
+            ["alpha"],
+            ("copilot",),
+            sources=[runtime_canary.FIXTURE_SOURCE, self.make_source()],
+            which=lambda name: forward(program) if name == "copilot" else None,
+        )
+        self.assertIn(f'DISCOVERED copilot alpha "{adapters}/alpha"', lines)
+        self.assertIn(
+            f'RUNTIME copilot {FIXTURE} FAILED "never ran a script from the skill" {self.kept("copilot")}', lines
+        )
+        failed = [line for line in lines if line.startswith("RUNTIME copilot alpha ")]
+        self.assertEqual(1, len(failed), lines)
+        self.assertRegex(failed[0], f'^RUNTIME copilot alpha FAILED "cannot run {re.escape(forward(program))}: .+"')
+        self.assertIn(
+            f'TRANSCRIPT copilot alpha "{forward(self.home)}/.runtime-canary/transcripts/copilot-alpha.jsonl"', lines
+        )
+        for skill in (FIXTURE, "alpha"):
+            self.assertTrue([line for line in lines if line.startswith(f"MATRIX copilot {skill} DISAGREES ")], lines)
+
+    def test_a_run_that_fails_unexpectedly_loses_no_line_already_made(self) -> None:
+        runner = FakeRuntimes()
+        script = f"{self.skill_dir()}/scripts/canary_probe.py"
+        ran = run_python(script, "--help")
+
+        def fails_on_the_second_skill(arguments: list[str], cwd: Path, environment: dict[str, str]) -> Completed:
+            if FIXTURE not in arguments[-1]:
+                raise RuntimeError("stub runtime broke")
+            return ran(arguments, cwd, environment)
+
+        runner.actions["codex"] = fails_on_the_second_skill
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), self.assertRaisesRegex(RuntimeError, "stub runtime broke"):
+            runtime_canary.canary(
+                [FIXTURE, "alpha"],
+                ["codex"],
+                self.home,
+                sources=[runtime_canary.FIXTURE_SOURCE, self.make_source()],
+                runner=runner,
+                talk=runner.talk,
+                which=lambda name: forward(self.root / "bin" / name),
+                base_environment=dict(os.environ),
+                timeout=60,
+            )
+        lines = output.getvalue().splitlines()
+        self.assertTrue([line for line in lines if line.startswith(f"RUNTIME codex {FIXTURE} RAN ")], lines)
+        self.assertTrue([line for line in lines if line.startswith(f"TRANSCRIPT codex {FIXTURE} ")], lines)
+
+    def test_a_permission_denial_of_any_shape_is_named_from_what_it_holds(self) -> None:
+        cases: tuple[tuple[object, list[str]], ...] = (
+            (["Bash"], ['?: "Bash"']),
+            ([{"tool_name": "Bash", "tool_input": "ls"}], ['Bash: "ls"']),
+            ([{"tool_name": "Bash", "tool_input": {"command": 3}}], ['Bash: {"command": 3}']),
+            ([{"tool_name": "Bash", "tool_input": {"command": "ls"}}], ["Bash: ls"]),
+            ({"tool_name": "Bash"}, []),
+        )
+        for listed, denials in cases:
+            with self.subTest(listed=listed):
+                stream = json.dumps({"type": "result", "permission_denials": listed})
+                self.assertEqual((None, denials), runtime_canary.claude_stream(stream))
+        init = json.dumps({"type": "system", "subtype": "init", "skills": 5})
+        self.assertEqual((set(), []), runtime_canary.claude_stream(init))
 
     def test_claude_discovery_and_permission_denials_come_from_its_stream(self) -> None:
         runner = FakeRuntimes()

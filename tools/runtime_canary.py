@@ -49,11 +49,13 @@ and `python -m` are no script. RAN means the script ran from the canary's copy o
 declares in skill_deps, whatever it exited with; a script from the installed copy is a failure, never RAN. RAN adds
 exit=<n> when a recorder saw the script end (Python 3.12 or later, where a script that does not compile exits 1; a
 Bash script that sets no EXIT trap of its own) and timed-out when the session ran out of time after the script
-started. The fixture must also exit 0, or it is FAILED with the status. Copilot's headless mode cannot start a skill
-only the user may start, so such a skill is UNSUPPORTED there and no model is called for it. --discovery-only lists
-skills without running any model. --remove-home deletes a home an earlier run printed and nothing else: a
-runtime-canary- directory directly under the temporary directory that holds the .runtime-canary/home.json marker
-each run writes, naming that home; it refuses any other with FAILED.
+started. The fixture must also exit 0, or it is FAILED with the status. A run ends at --timeout, or on Ctrl+C, with
+every process the runtime started, and a runtime the canary cannot start for a skill, as when its own update has moved
+its program away, is FAILED with why; each line prints as it is made, so none before it is lost. Copilot's headless
+mode cannot start a skill only the user may start, so such a skill is UNSUPPORTED there and no model is called for it.
+--discovery-only lists skills without running any model. --remove-home deletes a home an earlier run printed and
+nothing else: a runtime-canary- directory directly under the temporary directory that holds the
+.runtime-canary/home.json marker each run writes, naming that home; it refuses any other with FAILED.
 
 Each skill's runtime_support in deploy-meta, the matrix docs/skills.md prints, says what to expect: `full` must be
 RAN, `partial` must be RAN or, when the runtime lacks user-only-start, UNSUPPORTED, since the limits of the other
@@ -89,7 +91,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -97,7 +99,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
 
 import frontmatter
-from bounded_process import without_repository_variables
+from bounded_process import run_bounded, without_repository_variables
 from console import run_main
 
 from deployer import discovery, manifest, pipeline, platform_support, runtime_support, verify
@@ -281,33 +283,34 @@ class Completed:
     stdout: str
     stderr: str
     timed_out: bool = False
+    # Why the run has no exit status of its own: the program could not start, as when an update moved it away, or
+    # the processes it started could not be held or ended. Empty for a run that ended by itself or timed out.
+    error: str = ""
 
 
+# Runs a program and returns what it did, a failure to start it included, and never raises for the run itself.
 Runner = Callable[[list[str], Path, dict[str, str], float], Completed]
 
 
+def text(value: bytes | None) -> str:
+    """Output read back as text, with each line ending in a line feed, as a text-mode pipe would give it."""
+    return (value or b"").decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n")
+
+
 def run_process(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Completed:
+    """Run a runtime for at most `timeout` seconds with no stdin, which Codex exec would read a prompt addition from.
+
+    The run is skill-core's bounded one in a process tree, so its limit and an interrupt end every process it started,
+    such as the runtime a launcher script like npm's codex.cmd starts, which a kill of the launcher alone would leave
+    running with its model session, and its output goes to files, which nothing waits on such a process to close.
+    """
     try:
-        # Codex exec reads a prompt addition from stdin until it closes.
-        process = subprocess.run(
-            arguments,
-            cwd=cwd,
-            env=environment,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            check=False,
-        )
+        finished = run_bounded(arguments, timeout, cwd=cwd, env=environment, tree=platform_support.process_tree())
     except subprocess.TimeoutExpired as exc:
-
-        def text(value: str | bytes | None) -> str:
-            return value.decode("utf-8", "replace") if isinstance(value, bytes) else value or ""
-
         return Completed(-1, text(exc.stdout), text(exc.stderr), timed_out=True)
-    return Completed(process.returncode, process.stdout, process.stderr)
+    except OSError as exc:
+        return Completed(-1, "", "", error=f"cannot run {forward(arguments[0])}: {exc.strerror or exc}")
+    return Completed(finished.returncode, text(finished.stdout), text(finished.stderr))
 
 
 def forward(path: str | os.PathLike[str]) -> str:
@@ -553,13 +556,21 @@ def claude_stream(output: str) -> tuple[set[str] | None, list[str]]:
             if not isinstance(event, dict):
                 continue
             if event.get("type") == "system" and event.get("subtype") == "init":
-                skills = {str(name).lstrip("/") for name in event.get("skills") or []}
+                names = event.get("skills")
+                skills = {str(name).lstrip("/") for name in names} if isinstance(names, list) else set()
             if event.get("type") == "result":
-                for denial in event.get("permission_denials") or []:
-                    tool_input = denial.get("tool_input") or {}
-                    detail = tool_input.get("command") or json.dumps(tool_input, sort_keys=True)
-                    denials.append(f"{denial.get('tool_name', '?')}: {detail}")
+                listed = event.get("permission_denials")
+                denials += [denied(entry) for entry in listed] if isinstance(listed, list) else []
     return skills, denials
+
+
+def denied(entry: object) -> str:
+    """One permission denial, `<tool>: <command>`, named from whatever the entry holds, of any JSON type."""
+    denial = entry if isinstance(entry, dict) else {"tool_input": entry}
+    tool_input = denial.get("tool_input") or {}
+    command = tool_input.get("command") if isinstance(tool_input, dict) else None
+    detail = command if isinstance(command, str) and command else json.dumps(tool_input, sort_keys=True)
+    return f"{denial.get('tool_name', '?')}: {detail}"
 
 
 # Codex logs each command its execution policy refuses: "`<command>` rejected: blocked by policy".
@@ -686,7 +697,9 @@ def verdict(
         count = f"{len(rejected)} command{'' if len(rejected) == 1 else 's'}"
         reason = f"{rejected[0]}; the runtime refused {count} before any script ran"
         return f"BLOCKED {quote(f'{reason}; {cause}' if cause else reason)}"
-    if completed.timed_out:
+    if completed.error:
+        reason = completed.error
+    elif completed.timed_out:
         reason = f"timed out after {timeout:g} seconds before running a script from the skill"
     elif completed.returncode != 0:
         reason = f"exited with code {completed.returncode} before running a script from the skill"
@@ -775,32 +788,32 @@ def check_runtime(
     talk: discovery.Converse | None = None,
     declared: Declarations | None = None,
     unadapted: Mapping[str, str] | None = None,
-) -> list[str]:
-    lines = []
+) -> Iterator[str]:
+    """Each line of the runtime's checks, given as soon as it is known, so a run that fails later loses none."""
     # Claude Code has no listing; its run reports the skills it found.
     if runtime in discovery.RUNTIMES:
         listing_environment = environment(base, home / STATE / "scripts" / "listing.jsonl", home)
         try:
             found = discovery.list_skills(runtime, executable, home, listing_environment, timeout, talk)
-            lines += discovery_lines(runtime, skills, found, home, unadapted)
         except discovery.ListingError as exc:
-            lines.append(f"DISCOVERY_FAILED {runtime} {quote(f'cannot read its skill list: {exc}')}")
+            yield f"DISCOVERY_FAILED {runtime} {quote(f'cannot read its skill list: {exc}')}"
+        else:
+            yield from discovery_lines(runtime, skills, found, home, unadapted)
     if discovery_only:
-        return lines
-    lines += [f"SUPPLIED {runtime} {quote(setting)}" for setting in supplied(runtime, codex_sandbox)]
+        return
+    yield from (f"SUPPLIED {runtime} {quote(setting)}" for setting in supplied(runtime, codex_sandbox))
     for skill in skills:
         support = ((declared or {}).get(skill) or {}).get(DECLARED_RUNTIME[runtime])
         if support is not None and support.level == runtime_support.NONE:
-            lines.append(f"RUNTIME {runtime} {skill} NOT_ATTEMPTED {quote(support.reason)}")
+            yield f"RUNTIME {runtime} {skill} NOT_ATTEMPTED {quote(support.reason)}"
             continue
         reason = unsupported(runtime, skill, home)
         if reason:
-            lines.append(f"RUNTIME {runtime} {skill} UNSUPPORTED {quote(reason)}")
+            yield f"RUNTIME {runtime} {skill} UNSUPPORTED {quote(reason)}"
             continue
-        lines += run_skill(
+        yield from run_skill(
             runtime, executable, skill, home, base, runner, timeout, closure.get(skill, [skill]), codex_sandbox
         )
-    return lines
 
 
 def canary(
@@ -852,7 +865,8 @@ def canary(
             print(f"SKIPPED {runtime} {quote(f'{runtime} is not installed')}")
             reasons.append(f"{runtime} is not installed")
             continue
-        lines = check_runtime(
+        lines = []
+        for line in check_runtime(
             runtime,
             executable,
             ordered,
@@ -866,9 +880,9 @@ def canary(
             talk,
             declared,
             unadapted,
-        )
-        for line in lines:
+        ):
             print(line, flush=True)
+            lines.append(line)
         printed += lines
         if not any(checks(line) for line in lines):
             reasons.append(unchecked(runtime, lines, discovery_only))
