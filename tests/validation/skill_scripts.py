@@ -22,11 +22,13 @@ from validation_support import (
     REPOSITORY_ROOT,
     CallableResolver,
     UnreadablePython,
+    call_argument,
     find_fences,
     import_aliases,
     is_test_script,
     module_allowance,
     module_imports,
+    module_statements,
     parse_python,
     parse_source,
     python_source,
@@ -290,6 +292,12 @@ def _read_literal(source: ast.Constant) -> Source:
     return ast.copy_location(ast.Constant(name), source)
 
 
+def _text_constant(node: ast.Constant) -> ast.Constant:
+    """A string or bytes literal as the text it holds, so a bytes command names its program as a string one does."""
+    value = node.value.decode("utf-8", "replace") if isinstance(node.value, bytes) else node.value
+    return ast.copy_location(ast.Constant(value), node)
+
+
 def _read_literals(sources: list[Source]) -> list[Source]:
     return [_read_literal(source) if isinstance(source, ast.Constant) else source for source in sources]
 
@@ -494,9 +502,28 @@ class CommandReader:
                 for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
                     if isinstance(target, ast.Attribute):
                         self.attributes[target.attr].append(node.value)
+        self.clients = self._client_classes()
+        self._texts: dict[int, ast.Constant] = {}
         self._commands: dict[frozenset[str], set[str]] = {}
         self._problems: dict[str, list[str]] = {}
         self._unreadable: list[Unreadable] | None = None
+
+    def _client_classes(self) -> dict[str, str]:
+        """The command each skill-core client runs, by the client's qualified name, and the module's own classes that
+        derive from one, each by its local name, so a call through a subclass runs the client's command."""
+        clients = dict(CLIENT_CLASSES)
+        classes = [node for node in ast.walk(self.tree) if isinstance(node, ast.ClassDef)]
+        while True:
+            derived = {
+                f"<local>.{node.name}": command
+                for node in classes
+                if f"<local>.{node.name}" not in clients
+                for base in node.bases
+                if (command := clients.get(self.resolver.name(base)))
+            }
+            if not derived:
+                return clients
+            clients.update(derived)
 
     def _read_function(self, function: Function) -> None:
         if not isinstance(function, ast.Lambda):
@@ -516,7 +543,7 @@ class CommandReader:
         if node is None:
             return []
         if isinstance(node, ast.Constant):
-            return [node] if isinstance(node.value, str) else []
+            return [self._as_text(node)] if isinstance(node.value, (str, bytes)) else []
         if isinstance(node, ast.JoinedStr):
             first = node.values[0] if node.values else None
             if isinstance(first, ast.Constant) and isinstance(first.value, str) and _program_name(first.value):
@@ -544,6 +571,15 @@ class CommandReader:
         if isinstance(node, ast.Attribute):
             return self._attribute_sources(node, seen)
         return [Unreadable(node, f"the program in `{ast.unparse(node)}`")]
+
+    def _as_text(self, node: ast.Constant) -> ast.Constant:
+        """A string literal itself, or a bytes literal as the string it holds, placed in the literal's scope."""
+        if isinstance(node.value, str):
+            return node
+        if id(node) not in self._texts:
+            self._texts[id(node)] = _text_constant(node)
+            self.scope_names[id(self._texts[id(node)])] = self.scope_names.get(id(node), MODULE_SCOPE)
+        return self._texts[id(node)]
 
     def _call_sources(self, call: ast.Call, seen: frozenset[object]) -> list[Source]:
         function = call.func
@@ -754,7 +790,7 @@ class CommandReader:
         runs code from the target repository; that is the script's RUNS_REPOSITORY_CODE declaration.
         """
         return bool(self._runners_handed_on()) or any(
-            self.resolver.name(node.func) in COMMAND_RUNNERS or self.resolver.name(node.func) in CLIENT_CLASSES
+            self.resolver.name(node.func) in COMMAND_RUNNERS or self.resolver.name(node.func) in self.clients
             for node in self.calls
         )
 
@@ -820,10 +856,10 @@ class CommandReader:
             for node in ast.walk(self.tree):
                 if isinstance(node, (ast.List, ast.Tuple)) and node.elts:
                     first = node.elts[0]
-                    if isinstance(first, ast.Constant) and first.value in known:
-                        found.add(first.value)
+                    if isinstance(first, ast.Constant) and _text_constant(first).value in known:
+                        found.add(_text_constant(first).value)
                 elif isinstance(node, ast.Call):
-                    client = CLIENT_CLASSES.get(self.resolver.name(node.func))
+                    client = self.clients.get(self.resolver.name(node.func))
                     found |= {client} if client else set()
                     if _is_lookup(node, self.resolver.aliases(node.func)):
                         looked_up = _read_literals(self.program_literals(_lookup_argument(node)))
@@ -1203,6 +1239,49 @@ def _stream_change_lines(tree: ast.Module, aliases: dict[str, str]) -> list[int]
     )
 
 
+def is_main_guard(test: ast.expr) -> bool:
+    """Whether an if's test compares __name__ with "__main__", written either way round."""
+    if not (isinstance(test, ast.Compare) and len(test.ops) == 1 and isinstance(test.ops[0], ast.Eq)):
+        return False
+    sides = [test.left, test.comparators[0]]
+    return any(isinstance(side, ast.Name) and side.id == "__name__" for side in sides) and any(
+        isinstance(side, ast.Constant) and side.value == "__main__" for side in sides
+    )
+
+
+def main_blocks(tree: ast.Module) -> list[ast.If]:
+    """Each `if __name__ == "__main__":` block that runs at module level, one in a module-level if, try, or with block
+    included, and its test written either way round."""
+    return [node for node in module_statements(tree.body) if isinstance(node, ast.If) and is_main_guard(node.test)]
+
+
+# The functions an entry point runs as its program, by name.
+ENTRY_FUNCTIONS = frozenset({"main", "_main"})
+
+
+def _unguarded_main_lines(tree: ast.Module, aliases: dict[str, str]) -> list[int]:
+    """The lines of each module-level statement outside every __main__ block that runs main, or run_main, as the
+    program, itself or as what sys.exit or SystemExit is given, so it runs whenever the module is imported."""
+    guarded = {id(node) for block in main_blocks(tree) for node in ast.walk(block)}
+    lines: list[int] = []
+    for statement in module_statements(tree.body):
+        if id(statement) in guarded:
+            continue
+        call = statement.value if isinstance(statement, ast.Expr) else getattr(statement, "exc", None)
+        if (
+            isinstance(call, ast.Call)
+            and qualified_name(call.func, aliases) in {"sys.exit", "SystemExit"}
+            and call.args
+        ):
+            call = call.args[0]
+        if isinstance(call, ast.Call) and (
+            (isinstance(call.func, ast.Name) and call.func.id in ENTRY_FUNCTIONS)
+            or qualified_name(call.func, aliases) == CONSOLE_FUNCTION
+        ):
+            lines.append(statement.lineno)
+    return lines
+
+
 def _runs_through_the_runner(statement: ast.stmt, aliases: dict[str, str]) -> bool:
     """Whether a statement calls skill-core's run_main, resolved through the module's imports."""
     return (
@@ -1228,14 +1307,17 @@ def console_setup_problems(root: Path) -> list[str]:
             f"see {CONSOLE_DOC}"
             for line in _stream_change_lines(tree, aliases)
         ]
-        for node in tree.body:
-            if not (isinstance(node, ast.If) and ast.unparse(node.test) == "__name__ == '__main__'"):
-                continue
+        for node in main_blocks(tree):
             if not _runs_through_the_runner(node.body[0], aliases):
                 problems.append(
                     f"{name}:{node.lineno} does not call {CONSOLE_CORE}'s {CONSOLE_RUNNER}() first in its __main__ "
                     f"block; see {CONSOLE_DOC}"
                 )
+        problems += [
+            f'{name}:{line} runs main outside an `if __name__ == "__main__":` block, so importing it runs it; run '
+            f"{CONSOLE_CORE}'s {CONSOLE_RUNNER}(main) first in that block instead; see {CONSOLE_DOC}"
+            for line in _unguarded_main_lines(tree, aliases)
+        ]
     return problems
 
 
@@ -1259,15 +1341,83 @@ def _contract_exemption(tree: ast.Module) -> str | None:
 
 
 def _mentions_failed(node: ast.expr) -> bool:
-    parts = node.values if isinstance(node, ast.JoinedStr) else [node]
+    """Whether a message holds the word FAILED in any literal it is built from: a string, an f-string, a
+    concatenation, or a % or .format() template."""
     return any(
-        isinstance(part, ast.Constant) and isinstance(part.value, str) and "FAILED" in part.value for part in parts
+        isinstance(part, ast.Constant) and isinstance(part.value, str) and "FAILED" in part.value
+        for part in ast.walk(node)
     )
 
 
+# The standard streams, by every name sys gives them, and what ends the process with a code: sys.exit, the exit and
+# quit builtins, os._exit, and raising SystemExit.
+STANDARD_ERROR = frozenset({"sys.stderr", "sys.__stderr__"})
+STANDARD_OUTPUT = frozenset({"sys.stdout", "sys.__stdout__"})
+EXIT_CALLS = frozenset({"sys.exit", "exit", "quit", "builtins.exit", "builtins.quit", "os._exit", "SystemExit"})
+PARSER_CLASS = "argparse.ArgumentParser"
+
+
+def _parser_names(tree: ast.Module, resolver: CallableResolver) -> set[str]:
+    """The names the module binds to an argparse.ArgumentParser it builds, in any scope."""
+    return {
+        target.id
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Assign, ast.AnnAssign))
+        and isinstance(node.value, ast.Call)
+        and resolver.name(node.value.func) == PARSER_CLASS
+        for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+        if isinstance(target, ast.Name)
+    }
+
+
+def _is_parser(receiver: ast.expr, parsers: set[str]) -> bool:
+    """Whether a receiver is an argument parser: a name or attribute named for one, or a name bound to one."""
+    name = (
+        receiver.id if isinstance(receiver, ast.Name) else receiver.attr if isinstance(receiver, ast.Attribute) else ""
+    )
+    return "parser" in name.casefold() or name in parsers
+
+
+def _call_breaches(node: ast.Call, resolver: CallableResolver, parsers: set[str], in_handler: bool) -> list[str]:
+    """What one call does that "Script results" rules out."""
+    breaches: list[str] = []
+    function = resolver.name(node.func)
+    if (
+        isinstance(node.func, ast.Attribute)
+        and node.func.attr == "error"
+        and in_handler
+        and _is_parser(node.func.value, parsers)
+    ):
+        breaches.append("reports a failure through parser.error; print FAILED <reason> and exit 1")
+    code = call_argument(node, 0, "status" if function == "os._exit" else "code") if function in EXIT_CALLS else None
+    if isinstance(code, ast.Constant) and type(code.value) is int and code.value not in CONTRACT_EXIT_CODES:
+        breaches.append(f"exits {code.value}; scripts exit only 0, 1, or 2")
+    stream: ast.expr | None = None
+    message = node.args[0] if node.args else None
+    if function == "print":
+        stream = next((keyword.value for keyword in node.keywords if keyword.arg == "file"), None)
+    elif isinstance(node.func, ast.Attribute) and node.func.attr == "write":
+        stream = node.func.value
+    elif function == "json.dump":
+        stream, message = call_argument(node, 1, "fp"), node
+    target = resolver.name(stream) if stream is not None else "sys.stdout" if function == "print" else ""
+    if target in STANDARD_ERROR and message is not None and _mentions_failed(message):
+        breaches.append("prints FAILED on stderr; print it on stdout")
+    if (
+        target in STANDARD_OUTPUT
+        and isinstance(message, ast.Call)
+        and resolver.name(message.func) in {"json.dumps", "json.dump"}
+    ):
+        breaches.append("prints JSON; print one fact per line")
+    return breaches
+
+
 def _contract_breaches(tree: ast.Module) -> list[tuple[int, str]]:
-    """Where a script reports in a way "Script results" rules out, with what it does instead."""
+    """Where a script reports in a way "Script results" rules out, with what it does instead, each name read through
+    the module's imports and the names it binds to one."""
     breaches: list[tuple[int, str]] = []
+    resolver = CallableResolver(tree)
+    parsers = _parser_names(tree, resolver)
     handlers = [node for node in ast.walk(tree) if isinstance(node, ast.ExceptHandler)]
     in_handler = {id(inner) for handler in handlers for statement in handler.body for inner in ast.walk(statement)}
     entry_points = [
@@ -1283,42 +1433,10 @@ def _contract_breaches(tree: ast.Module) -> list[tuple[int, str]]:
             ):
                 breaches.append((node.lineno, f"exits {node.value.value}; scripts exit only 0, 1, or 2"))
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        function = node.func
-        if (
-            isinstance(function, ast.Attribute)
-            and function.attr == "error"
-            and id(node) in in_handler
-            and isinstance(function.value, ast.Name)
-            and "parser" in function.value.id
-        ):
-            breaches.append((node.lineno, "reports a failure through parser.error; print FAILED <reason> and exit 1"))
-        exits = (
-            isinstance(function, ast.Attribute)
-            and function.attr == "exit"
-            and isinstance(function.value, ast.Name)
-            and function.value.id == "sys"
-        )
-        if (exits or (isinstance(function, ast.Name) and function.id == "SystemExit")) and node.args:
-            code = node.args[0]
-            if isinstance(code, ast.Constant) and type(code.value) is int and code.value not in CONTRACT_EXIT_CODES:
-                breaches.append((node.lineno, f"exits {code.value}; scripts exit only 0, 1, or 2"))
-        if isinstance(function, ast.Name) and function.id == "print" and node.args:
-            stderr = any(
-                keyword.arg == "file" and ast.unparse(keyword.value) == "sys.stderr" for keyword in node.keywords
-            )
-            if stderr and _mentions_failed(node.args[0]):
-                breaches.append((node.lineno, "prints FAILED on stderr; print it on stdout"))
-            first = node.args[0]
-            if (
-                not stderr
-                and isinstance(first, ast.Call)
-                and isinstance(first.func, ast.Attribute)
-                and first.func.attr == "dumps"
-                and ast.unparse(first.func.value) == "json"
-            ):
-                breaches.append((node.lineno, "prints JSON; print one fact per line"))
+        if isinstance(node, ast.Call):
+            breaches += [
+                (node.lineno, breach) for breach in _call_breaches(node, resolver, parsers, id(node) in in_handler)
+            ]
     return sorted(breaches)
 
 
@@ -1388,8 +1506,8 @@ def _client_commands(node: ast.AST, reader: CommandReader) -> list[tuple[int, st
     found: list[tuple[int, str]] = []
     if isinstance(node, (ast.List, ast.Tuple)) and node.elts:
         first = node.elts[0]
-        if isinstance(first, ast.Constant) and isinstance(first.value, str):
-            found = [(first.lineno, first.value.split(" ", 1)[0])]
+        if isinstance(first, ast.Constant) and isinstance(first.value, (str, bytes)):
+            found = [(first.lineno, str(_text_constant(first).value).split(" ", 1)[0])]
     elif isinstance(node, ast.Call):
         found = reader.started(node)
     return [(line, command) for line, command in found if command in CLIENT_COMMANDS]

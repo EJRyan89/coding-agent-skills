@@ -28,6 +28,7 @@ from skill_scripts import (
     console_entry_points,
     console_setup_problems,
     gh_filter_problems,
+    main_blocks,
     script_contract_problems,
     secret_named_function_problems,
     shell_commands,
@@ -818,6 +819,45 @@ class SkillScriptsFixtures(GitTestCase):
                 script_contract_problems(mark_skills(root)),
             )
 
+    def test_script_contract_policy_reads_each_report_through_the_module_s_names(self) -> None:
+        doc = '"Script results" in docs/adding-a-skill.md'
+        stderr = f"prints FAILED on stderr; print it on stdout; see {doc}"
+        json_output = f"prints JSON; print one fact per line; see {doc}"
+        parser = f"reports a failure through parser.error; print FAILED <reason> and exit 1; see {doc}"
+        for source, breach in (
+            ("import sys\ndef main():\n    sys.stderr.write('FAILED x')\n", stderr),
+            ("from sys import stderr\ndef main():\n    print('FAILED x', file=stderr)\n", stderr),
+            ("import sys\ndef main(reason):\n    print('FAILED ' + reason, file=sys.stderr)\n", stderr),
+            ("import sys\ndef main(reason):\n    print('FAILED {}'.format(reason), file=sys.stderr)\n", stderr),
+            ("from sys import exit\ndef main():\n    exit(3)\n", f"exits 3; scripts exit only 0, 1, or 2; see {doc}"),
+            ("import os\ndef main():\n    os._exit(3)\n", f"exits 3; scripts exit only 0, 1, or 2; see {doc}"),
+            ("def main():\n    exit(4)\n", f"exits 4; scripts exit only 0, 1, or 2; see {doc}"),
+            ("from json import dumps\ndef main():\n    print(dumps({}))\n", json_output),
+            ("import json, sys\ndef main():\n    json.dump({}, sys.stdout)\n", json_output),
+            (
+                "import argparse\ndef main():\n    ap = argparse.ArgumentParser()\n    try:\n        pass\n"
+                "    except OSError as e:\n        ap.error(str(e))\n",
+                parser,
+            ),
+        ):
+            with self.subTest(source=source), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                write_fixture_tree(root, {"skills/alpha/scripts/run.py": source})
+                problems = script_contract_problems(mark_skills(root))
+                self.assertEqual([breach], [problem.split(" ", 1)[1] for problem in problems])
+        # Writing to a file, a FAILED line on stdout, and JSON written to a file are each allowed.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "skills/alpha/scripts/run.py": "import json, sys\ndef main(handle):\n"
+                    "    sys.stdout.write('FAILED x')\n    json.dump({}, handle)\n"
+                    "    print(json.dumps({}), file=handle)\n    exit(1)\n"
+                },
+            )
+            self.assertEqual([], script_contract_problems(mark_skills(root)))
+
     def test_secret_named_function_policy_flags_trusted_but_not_untrusted_or_tests(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -857,6 +897,35 @@ class SkillScriptsFixtures(GitTestCase):
         self.assertEqual(
             {"basename", "echo", "git", "grep", "jq", "printf", "read", "sed", "set", "tr"}, shell_commands(script)
         )
+
+    def test_command_policies_read_a_bytes_command_and_a_subclass_of_a_client(self) -> None:
+        reader = CommandReader(
+            ast.parse('import subprocess\nsubprocess.run(b"git status", shell=True)\nsubprocess.run([b"gh", b"api"])\n')
+        )
+        self.assertEqual({"git", "gh"}, reader.commands(set()))
+        subclass = CommandReader(
+            ast.parse(
+                "from github_client import GitHubClient\n\n\nclass Mine(GitHubClient):\n    pass\n\n\n"
+                "class Deeper(Mine):\n    pass\n\n\nDeeper().run(['api'])\n"
+            )
+        )
+        self.assertTrue(subclass.starts_process())
+        self.assertEqual({"gh"}, subclass.commands(set()))
+        # A class that derives from no client starts nothing.
+        self.assertFalse(CommandReader(ast.parse("class Mine(object):\n    pass\n\n\nMine()\n")).starts_process())
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {"skills/alpha/scripts/run.py": 'import subprocess\nsubprocess.run([b"git", b"status"])\n'},
+            )
+            self.assertEqual(
+                [
+                    "skills/alpha/scripts/run.py:2 runs git itself; run it through skill-core's git_client.py's "
+                    'GitClient, which bounds it and turns prompts off; see "Script results" in docs/adding-a-skill.md'
+                ],
+                client_command_problems(mark_skills(root)),
+            )
 
     def test_client_command_policy_detects_git_and_gh_a_script_runs_itself(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1238,6 +1307,37 @@ class SkillScriptsFixtures(GitTestCase):
                 console_setup_problems(root),
             )
 
+    def test_console_setup_policy_reads_every_main_guard_and_a_main_run_without_one(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            body = "def main():\n    return 0\n\n\n"
+            files = {
+                "skills/demo/scripts/reversed.py": f'{body}if "__main__" == __name__:\n    main()\n',
+                "skills/demo/scripts/in_try.py": f"{body}try:\n"
+                '    if __name__ == "__main__":\n        main()\nexcept ImportError:\n    pass\n',
+                "skills/demo/scripts/unguarded.py": f"import sys\n\n\n{body}sys.exit(main())\n",
+                "skills/demo/scripts/control.py": f'{body}if __name__ == "__main__":\n    main()\n',
+                "skills/demo/scripts/good.py": f"from console import run_main\n\n\n{body}"
+                'if "__main__" == __name__:\n    run_main(main)\n',
+            }
+            write_fixture_tree(root, files)
+            mark_skills(root)
+            doc = '"Script results" in docs/adding-a-skill.md'
+            late = f"does not call skill-core's run_main() first in its __main__ block; see {doc}"
+            self.assertEqual(
+                [
+                    f"skills/demo/scripts/control.py:5 {late}",
+                    f"skills/demo/scripts/in_try.py:6 {late}",
+                    f"skills/demo/scripts/reversed.py:5 {late}",
+                    'skills/demo/scripts/unguarded.py:8 runs main outside an `if __name__ == "__main__":` block, so '
+                    f"importing it runs it; run skill-core's run_main(main) first in that block instead; see {doc}",
+                ],
+                sorted(console_setup_problems(root)),
+            )
+            self.assertEqual(
+                [8], [block.lineno for block in main_blocks(ast.parse(files["skills/demo/scripts/good.py"]))]
+            )
+
     def test_console_setup_policy_detects_a_stream_replaced_wrapped_or_reconfigured_through_an_alias(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1290,8 +1390,8 @@ module = importlib.util.module_from_spec(specification)
 sys.modules[specification.name] = module
 specification.loader.exec_module(module)
 tree = ast.parse(path.read_text(encoding="utf-8"))
-main_test = "__name__ == '__main__'"
-block = next(node for node in tree.body if isinstance(node, ast.If) and ast.unparse(node.test) == main_test)
+line = int(sys.argv[2])
+block = next(node for node in ast.walk(tree) if isinstance(node, ast.If) and node.lineno == line)
 code = compile(ast.Module(body=block.body, type_ignores=[]), str(path), "exec")
 outcomes = []
 for failure in (LookupError("injected" + chr(10) + "failure"), KeyboardInterrupt()):
@@ -1312,12 +1412,13 @@ sys.__stdout__.write(json.dumps(outcomes))
 """
 
 
-def entry_points_with_a_main_block() -> list[Path]:
-    """The entry points the console policy covers that run as programs."""
+def entry_points_with_a_main_block() -> list[tuple[Path, int]]:
+    """The entry points the console policy covers that run as programs, each with the line of each __main__ block the
+    policy reads in it."""
     return [
-        path
+        (path, block.lineno)
         for path in console_entry_points(REPOSITORY_ROOT)
-        if 'if __name__ == "__main__":' in path.read_text(encoding="utf-8")
+        for block in main_blocks(ast.parse(path.read_text(encoding="utf-8")))
     ]
 
 
@@ -1325,12 +1426,12 @@ class EntryPointRunnerTests(GitTestCase):
     def test_every_entry_point_turns_a_failure_into_a_failed_line_and_ctrl_c_into_exit_130(self) -> None:
         # The policy proves each block starts with the runner; this runs each block as written with its main failing.
         entry_points = entry_points_with_a_main_block()
-        self.assertIn(REPOSITORY_ROOT / "deploy.py", entry_points)
-        for path in entry_points:
+        self.assertIn(REPOSITORY_ROOT / "deploy.py", [path for path, _ in entry_points])
+        for path, line in entry_points:
             name = path.relative_to(REPOSITORY_ROOT).as_posix()
             with self.subTest(entry_point=name):
                 result = subprocess.run(
-                    [sys.executable, "-B", "-c", ENTRY_POINT_PROBE, str(path)],
+                    [sys.executable, "-B", "-c", ENTRY_POINT_PROBE, str(path), str(line)],
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
