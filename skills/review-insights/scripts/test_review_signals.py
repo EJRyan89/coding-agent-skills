@@ -19,7 +19,7 @@ import review_signals
 import review_synthesis as rs
 from review_archive import commit_record, current_ledger
 from review_records import build_record, validate_adapter_result
-from test_review_insights import InsightFixture, reviewer
+from test_review_insights import LINE_BREAKS, InsightFixture, reviewer
 
 HEAD = "c" * 40
 OTHER_HEAD = "d" * 40
@@ -282,6 +282,29 @@ class DisagreementTests(SignalFixture):
             ],
         )
         self.assertEqual(3, sum(line.startswith("DISAGREEING R1 ") for line in lines))
+
+    def test_a_path_holding_a_line_break_prints_and_renders_on_one_line(self) -> None:
+        # A path is whatever the pull request named; the fact line and the Markdown bullet each stay one line.
+        for number, character in enumerate(LINE_BREAKS, start=1):
+            path = f"src/a{number}{character}FORGED.cs"
+            self.review(
+                number,
+                1,
+                [
+                    finding("MUST_FIX", path, 10, "Unvalidated path", source="security"),
+                    finding("SUGGESTION", path, 12, "Name the path variable", source="style"),
+                ],
+                reviewers=self.REVIEWERS,
+            )
+        json_path, lines = self.signal_lines()
+        markdown = json_path.with_suffix(".md").read_text(encoding="utf-8").splitlines()
+        self.assertEqual([], [line for line in markdown if line.startswith("FORGED")])
+        for number, character in enumerate(LINE_BREAKS, start=1):
+            with self.subTest(character=repr(character)):
+                shown = f"owner/repo#{number} head={HEAD[:12]} src/a{number} FORGED.cs:10"
+                self.assertEqual(1, sum(line.endswith(shown) for line in lines), lines)
+                bullet = f" owner/repo#{number} src/a{number} FORGED.cs:10 — MUST_FIX owner/repo#{number} v1 F001"
+                self.assertEqual(1, sum(line.startswith("- R") and bullet in line for line in markdown), markdown)
 
     def test_reviewers_that_share_a_source_or_agree_are_no_disagreement(self) -> None:
         self.review(

@@ -26,7 +26,7 @@ from git_test_base import GitTestCase
 from review_archive import commit_record, current_ledger
 from review_flags import add_flag, load_store, resolve_flag
 from review_records import build_record, write_record_pair
-from test_review_insights import DECIDED_AT, InsightFixture, covered, record
+from test_review_insights import DECIDED_AT, LINE_BREAKS, InsightFixture, covered, record
 
 # The command name the skills' scripts write for Python into the commands they hand an agent.
 PYTHON = "python" if sys.platform == "win32" else "python3"
@@ -922,6 +922,39 @@ class ClaimTests(SynthesisFixture):
             ],
             [" ".join(line.split()[1:4]) for line in out.splitlines() if line.startswith("SYNTHESIZED ")],
         )
+
+    def test_an_older_flags_finding_id_holding_a_line_break_prints_and_renders_on_one_line(self) -> None:
+        # A flag written before `add` checked finding IDs keeps whatever string it was given, and a synthesized
+        # recommendation may cite the finding such a flag names.
+        store = json.loads(self.flags.read_text(encoding="utf-8"))
+        linked = next(flag for flag in store["flags"] if flag["id"] == self.linked)
+        store["flags"] += [
+            {**linked, "id": f"RF-{90 + index:06d}", "finding_id": f"F00{index}{character}FORGED x"}
+            for index, character in enumerate(LINE_BREAKS)
+        ]
+        store["next_id"] = 100
+        self.flags.write_text(json.dumps(store), encoding="utf-8")
+        json_path, _ = self.run_report()
+        first = self.valid_result(json_path)["recommendations"][0]
+        recommendations = [
+            first,
+            *(
+                {**first, "title": f"Cite flag {index}", "evidence": [f"owner/repo#7 v1 F00{index}{character}FORGED x"]}
+                for index, character in enumerate(LINE_BREAKS)
+            ),
+        ]
+        result_path = self.write_result(json_path, self.valid_result(json_path, recommendations=recommendations))
+        code, out, err = self.synthesize(json_path, result_path)
+        self.assertEqual(0, code, out + err)
+        lines = out.splitlines()
+        markdown = json_path.with_suffix(".md").read_text(encoding="utf-8").splitlines()
+        for printed in (lines, markdown):
+            self.assertEqual([], [line for line in printed if line.startswith("FORGED")])
+        for index, character in enumerate(LINE_BREAKS):
+            with self.subTest(character=repr(character)):
+                shown = f"owner/repo#7 v1 F00{index} FORGED x"
+                self.assertEqual(1, sum(line.startswith("EXAMPLE REC-") and line.endswith(shown) for line in lines))
+                self.assertEqual(1, markdown.count(f"Evidence: {shown}"), markdown)
 
     def test_a_synthesis_after_a_dropped_subject_gives_its_id_to_nothing(self) -> None:
         json_path, lines = self.run_report()
