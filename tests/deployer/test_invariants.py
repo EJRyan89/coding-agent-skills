@@ -12,9 +12,9 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from harness import DeployerTestCase, tree_state
+from harness import FAILS_PARTWAY, DeployerTestCase, tree_state
 
-from deployer import pipeline, render
+from deployer import pipeline, platform_support, render
 from deployer.errors import DeployError
 from deployer.paths import Paths
 
@@ -227,6 +227,107 @@ class CLIImmutabilityGuardTests(DeployerTestCase):
             self.assertRaisesRegex(AssertionError, "the refusal changed the home"),
         ):
             self.configure()
+
+
+def killed_after_applying() -> mock._patch:
+    """Kill the deployment once it has applied its plan, as SystemExit raised past the pipeline ends it."""
+    return mock.patch("deployer.pipeline._finalize", side_effect=SystemExit(1))
+
+
+class RaisingRunGuardTests(DeployerTestCase):
+    """A run that raises, as a killed deployment does, is held to its source and home before the exception reaches the
+    test."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.make_source_json()
+        self.make_skill("alpha", "Alpha at {{HOME}}", ["HOME"])
+        self.make_config()
+
+    def test_a_killed_run_that_rewrites_its_source_fails_the_test(self) -> None:
+        with (
+            rendering_then(lambda: self.write(self.source / "unexpected.txt", "mutation\n")),
+            killed_after_applying(),
+            self.assertRaisesRegex(AssertionError, "the deployment changed its source") as caught,
+        ):
+            self.deploy("--all", changes_home=FAILS_PARTWAY)
+        self.assertIsInstance(caught.exception.__context__, SystemExit)
+
+    def test_a_killed_run_that_changes_the_home_without_saying_why_fails_the_test(self) -> None:
+        with killed_after_applying(), self.assertRaisesRegex(AssertionError, "the refusal changed the home"):
+            self.deploy("--all")
+        self.assertTrue((self.skills_dir / "alpha" / "SKILL.md").is_file())
+
+    def test_a_killed_run_that_says_why_it_changes_the_home_raises_its_own_exception(self) -> None:
+        with killed_after_applying(), self.assertRaises(SystemExit):
+            self.deploy("--all", changes_home=FAILS_PARTWAY)
+        self.assertTrue((self.skills_dir / "alpha" / "SKILL.md").is_file())
+
+    def test_a_raising_refusal_that_changes_the_home_fails_the_test(self) -> None:
+        def refuse(*_arguments: Any) -> int:
+            self.write(self.home / "unexpected.txt", "mutation\n")
+            raise RuntimeError("synthetic escape")
+
+        with (
+            mock.patch("deployer.cli.main", side_effect=refuse),
+            self.assertRaisesRegex(AssertionError, "the refusal changed the home"),
+        ):
+            self.run_cli("--all")
+
+
+class FreshHomeGuardTests(DeployerTestCase):
+    """The fixture home starts empty, as a fresh profile folder does, so a refusal that makes a root is seen."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.make_source_json()
+        self.make_skill("alpha", "Alpha")
+
+    def test_the_fixture_home_starts_empty(self) -> None:
+        self.assertEqual({}, tree_state(self.home))
+
+    def test_a_refusal_that_makes_a_managed_root_fails_the_test(self) -> None:
+        def refuse(*_arguments: Any) -> int:
+            (self.home / ".claude" / "skills").mkdir(parents=True)
+            return 1
+
+        with (
+            mock.patch("deployer.cli.main", side_effect=refuse),
+            self.assertRaisesRegex(AssertionError, "the refusal changed the home"),
+        ):
+            self.run_cli("--all")
+
+    def test_a_cancelled_configure_leaves_a_fresh_home_empty(self) -> None:
+        result = self.configure(stdin="")
+        self.assertEqual(130, result.code, result.output)
+        self.assertEqual({}, tree_state(self.home))
+
+
+class EntryPointGuardTests(DeployerTestCase):
+    """deploy.py run as a program runs from a copy of this checkout, which the harness compares around the run."""
+
+    def test_an_entry_point_run_that_changes_its_checkout_fails_the_test(self) -> None:
+        def write_beside(arguments: list[str], _environment: object = None) -> platform_support.ToolResult:
+            Path(arguments[2]).with_name("unexpected.txt").write_bytes(b"mutation\n")
+            return platform_support.ToolResult(0, "")
+
+        with (
+            mock.patch("deployer.platform_support.run_tool", side_effect=write_beside),
+            self.assertRaisesRegex(AssertionError, "the deployment changed its source"),
+        ):
+            self.run_entry_point("--help", environment={})
+
+    def test_an_entry_point_run_names_the_copy_and_not_the_checkout(self) -> None:
+        seen: list[str] = []
+
+        def record(arguments: list[str], _environment: object = None) -> platform_support.ToolResult:
+            seen.append(arguments[2])
+            return platform_support.ToolResult(0, "printed\n")
+
+        with mock.patch("deployer.platform_support.run_tool", side_effect=record):
+            result = self.run_entry_point("--help", environment={})
+        self.assertEqual((0, "printed\n"), (result.code, result.output))
+        self.assertEqual([str(self.root / "repository" / "deploy.py")], seen)
 
 
 class PermanentBackupTests(DeployerTestCase):

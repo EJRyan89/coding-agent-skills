@@ -106,7 +106,7 @@ class ConfigValidationTests(DeployerTestCase):
         self.make_source_json()
         self.make_skill("alpha", "Test")
         self.repos.mkdir()
-        self.config_file().write_bytes(f"_source_id=test/skills\r\nREPOS_ROOT={forward(self.repos)}\r\n".encode())
+        self.write(self.config_file(), f"_source_id=test/skills\r\nREPOS_ROOT={forward(self.repos)}\r\n")
         self.deploy_fails("--all", pattern="CRLF")
 
     def test_duplicate_config_key_is_rejected(self) -> None:

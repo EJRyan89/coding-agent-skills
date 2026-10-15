@@ -8,7 +8,7 @@ from typing import TextIO
 
 from . import config, fsops, platform_support, source
 from .arguments import CONFIGURE_COMMAND, PROG, parse_command
-from .errors import Cancelled, DeployError, debug_requested, print_error, print_traceback
+from .errors import Cancelled, DeployError, debug_requested, fail, os_error, print_error
 from .paths import Paths, validate_managed_roots
 
 # Ctrl+C or the end of input at a prompt. The configuration is written atomically, so it is unchanged.
@@ -48,11 +48,13 @@ def execute(namespace: argparse.Namespace, paths: Paths, stdin: TextIO | None = 
         validate_managed_roots(paths)
         source_id = source.load_source_id(paths)
         config_file = paths.config_file(source_id)
-        fsops.make_directories(config_file.parent)
         existing: dict[str, str] = {}
         dropped: list[str] = []
         if not reset and config_file.is_file():
-            existing = config.read(config_file, source_id, dropped)
+            try:
+                existing = config.read(config_file, source_id, dropped)
+            except OSError as exc:
+                raise os_error(exc, "read the configuration") from exc
         print("")
         print(f"Source: {source.label(source_id, source.load_source_name(paths))}")
         print(f"Config: {platform_support.normalize(config_file)}")
@@ -72,20 +74,14 @@ def execute(namespace: argparse.Namespace, paths: Paths, stdin: TextIO | None = 
         lines += [f"{key}={values[key]}" for key in config.CONFIGURED_VARIABLES if values.get(key)]
         content = "\n".join(lines) + "\n"
         config.validate_directories(config.parse(content, source_id))
+        # The directory is made only for the write, so a run that stops before it leaves a fresh home as it was.
+        fsops.make_directories(config_file.parent)
         fsops.write_atomic(config_file, content.encode("utf-8"))
     except KeyboardInterrupt:
         print_error(Cancelled(CANCELLED), debug)
         return 130
-    except DeployError as exc:
-        print_error(exc, debug)
-        return exc.exit_code
-    except OSError as exc:
-        print("", file=sys.stderr)
-        print(f"ERROR: Could not write configuration: {exc}", file=sys.stderr)
-        print("", file=sys.stderr)
-        if debug:
-            print_traceback(exc)
-        return 1
+    except (DeployError, OSError) as exc:
+        return fail(exc, debug, "write the configuration")
     print("")
     print("Saved.")
     print("")

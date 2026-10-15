@@ -401,6 +401,28 @@ class SelectionTests(DeployerTestCase):
         self.assertFalse((self.skills_dir / "alpha").exists())
         self.assertFalse((self.home / ".claude" / "deployer" / ".deploy.lock.d").exists())
 
+    def test_a_menu_answer_naming_an_item_twice_requests_it_once(self) -> None:
+        self.make_source_json(bundles={"b": {"members": ["alpha"]}})
+        self.make_skill("alpha", "Alpha")
+        self.make_skill("beta", "Beta")
+        self.make_config()
+        bundle, skill = self.selection_number("b", bundle=True), self.selection_number("beta")
+        result = self.deploy_ok(stdin=f"{bundle} {bundle} {skill} {skill}\n")
+        self.assertIn("Selected 2 items (2 skills):\n", result.output)
+        entry = self.manifest()["sources"]["test/skills"]
+        self.assertEqual(["b"], entry["requested_bundles"])
+        self.assertEqual({"b": ["alpha"]}, entry["requested_bundle_members"])
+        self.assertEqual(["beta"], entry["requested_skills"])
+
+    def test_an_unknown_include_named_twice_is_named_once(self) -> None:
+        self.make_source_json()
+        self.make_skill("alpha", "Alpha")
+        self.make_config()
+        result = self.deploy_fails(
+            "--all", "--include", "nothing", "--include", "nothing", pattern="no bundle or skill in this source"
+        )
+        self.assertIn("--include names no bundle or skill in this source: nothing\n", result.output)
+
     def test_unknown_arguments_are_rejected(self) -> None:
         self.make_source_json()
         self.make_skill("alpha", "Alpha")
