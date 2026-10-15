@@ -17,6 +17,7 @@ from validation_support import (
     module_allowance,
     module_imports,
     module_statements,
+    python_trees,
     scripts_put_on_path,
 )
 
@@ -146,9 +147,8 @@ def duplicated_definition_problems(root: Path) -> list[str]:
     allowances: dict[str, dict[str, str]] = {}
     problems: list[str] = []
     files = [path for top in DUPLICATION_ROOTS for path in (root / top).rglob("*.py") if not is_test_script(path)]
-    for path in sorted(files, key=lambda path: path.relative_to(root).as_posix()):
-        name = path.relative_to(root).as_posix()
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+    ordered = sorted(files, key=lambda path: path.relative_to(root).as_posix())
+    for _, name, tree in python_trees(ordered, root, problems):
         allowed = module_allowance(tree, DUPLICATION_ALLOWANCE)
         if allowed is None:
             problems.append(f"{name}: {DUPLICATION_ALLOWANCE} must map each name to the reason it is allowed")
@@ -233,7 +233,7 @@ def _skill_core_statement_lines(tree: ast.Module) -> list[int]:
             and isinstance(call.args[0], ast.Constant)
             and call.args[0].value == 0
             and "__file__" in ast.unparse(call.args[1])
-            and SKILL_CORE in scripts_put_on_path(ast.unparse(call))
+            and SKILL_CORE in scripts_put_on_path(node)
         ):
             lines.append(node.lineno)
     return lines
@@ -256,9 +256,11 @@ def skill_core_import_problems(root: Path) -> list[str]:
     shared = skill_core_modules(root)
     problems: list[str] = []
     package = root / DEPLOYER_PACKAGE
-    package_lines = (
-        _skill_core_statement_lines(ast.parse(package.read_text(encoding="utf-8"))) if package.is_file() else []
-    )
+    package_lines = [
+        line
+        for _, _, tree in python_trees([package] if package.is_file() else [], root, [])
+        for line in _skill_core_statement_lines(tree)
+    ]
     if not package_lines:
         problems.append(
             f"{DEPLOYER_PACKAGE} does not put {SKILL_CORE_SCRIPTS} first on sys.path, located from its own file; "
@@ -266,9 +268,7 @@ def skill_core_import_problems(root: Path) -> list[str]:
         )
     allowed = set(sys.stdlib_module_names) | shared | {"deployer"}
     for top in ("deployer", "tools", SKILL_CORE_SCRIPTS):
-        for path in sorted((root / top).rglob("*.py")):
-            name = path.relative_to(root).as_posix()
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+        for path, name, tree in python_trees(sorted((root / top).rglob("*.py")), root, problems):
             statements = _skill_core_statement_lines(tree)
             if top == "deployer" and name != DEPLOYER_PACKAGE:
                 problems += [

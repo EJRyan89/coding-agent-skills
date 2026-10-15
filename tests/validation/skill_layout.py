@@ -28,6 +28,7 @@ from validation_support import (
     is_executable_script,
     is_test_script,
     path_order,
+    python_trees,
     scripts_entries,
     scripts_put_on_path,
     skill_directories,
@@ -371,10 +372,8 @@ def script_dependency_problems(root: Path) -> list[str]:
         skill = metadata.stem
         declared = set(json.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", []))
         scripts = sorted((skills[skill] / "scripts").glob("*.py")) if skill in skills else []
-        for path in scripts:
-            if is_test_script(path):
-                continue
-            for name in sorted(set(scripts_put_on_path(path.read_text(encoding="utf-8"))) - declared - {skill}):
+        for path, _, tree in python_trees([path for path in scripts if not is_test_script(path)], root, problems):
+            for name in sorted(set(scripts_put_on_path(tree)) - declared - {skill}):
                 problems.append(
                     f"{path.relative_to(root).as_posix()} puts {name}'s scripts on sys.path without declaring "
                     f"{name} in skill_deps; see {SKILL_PATHS_DOC}"
@@ -405,10 +404,9 @@ def sibling_path_problems(root: Path) -> list[str]:
     can read it.
     """
     problems: list[str] = []
-    for path in _sibling_path_files(root):
-        name = path.relative_to(root).as_posix()
+    for path, name, tree in python_trees(_sibling_path_files(root), root, problems):
         own = path.parent.parent.name if path.parent.name == "scripts" else None
-        for entry in scripts_entries(path.read_text(encoding="utf-8")):
+        for entry in scripts_entries(tree):
             where = f"{name}:{entry.line}"
             if entry.name is None:
                 problems.append(

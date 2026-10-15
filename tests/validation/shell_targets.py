@@ -21,6 +21,7 @@ from validation_support import (
     find_fences,
     is_shell_script,
     prose_code_spans,
+    python_trees,
     relative,
     repository_files,
     repository_skill_directories,
@@ -166,15 +167,15 @@ def _literal_tokens(function: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str
     }
 
 
-def _executed_shell_tokens(root: Path) -> set[tuple[str, str]]:
+def _executed_shell_tokens(root: Path, unreadable: list[str]) -> set[tuple[str, str]]:
     """The (context, token) pairs a tests/deployer test named *with_spaces* renders and executes with a spaced value.
 
     The test function carries the token in a string literal, binds a value built from a literal with a space, runs
     the rendered result with that context's finder through run_tool, and asserts the run's output against that value.
     """
     executed: set[tuple[str, str]] = set()
-    for path in sorted((root / "tests" / "deployer").glob("test_*.py")):
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+    for _, _, tree in python_trees(sorted((root / "tests" / "deployer").glob("test_*.py")), root, unreadable):
+        for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             if not node.name.startswith("test_") or "with_spaces" not in node.name:
@@ -204,7 +205,7 @@ def shell_token_problems(root: Path) -> list[str]:
                 if not quoted and token not in config.INTERPRETER_VARIABLES:
                     unquoted.append(f"{name}:{line} has {{{{{token}}}}} outside quotes in {SHELL_LABELS[context]}")
                 first.setdefault((context, token), (name, line))
-    executed = _executed_shell_tokens(root)
+    executed = _executed_shell_tokens(root, unquoted)
     missing = sorted(
         (name, line, token, context)
         for (context, token), (name, line) in first.items()

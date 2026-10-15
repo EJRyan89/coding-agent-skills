@@ -17,7 +17,11 @@ from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
 from toolchain import find_mypy, find_ruff
 from validation_support import (
     REPOSITORY_ROOT,
+    UnreadablePython,
     module_imports,
+    parse_source,
+    python_source,
+    python_trees,
     relative,
     repository_files,
     scripts_put_on_path,
@@ -54,13 +58,24 @@ def comments(source: str) -> list[tokenize.TokenInfo]:
     return [token for token in tokenize.generate_tokens(io.StringIO(source).readline) if token.type == tokenize.COMMENT]
 
 
+def file_comments(root: Path, path: Path, found: list[str]) -> list[tokenize.TokenInfo]:
+    """Each comment in a Python file, or none when no policy can read it, which found then names."""
+    try:
+        return comments(python_source(path))
+    except UnreadablePython as error:
+        found.append(f"{path.relative_to(root).as_posix()} {error}")
+    except (SyntaxError, tokenize.TokenError) as error:
+        found.append(f"{path.relative_to(root).as_posix()} does not tokenize: {error}")
+    return []
+
+
 def noqa_without_reason(root: Path, files: list[Path]) -> list[str]:
     """Each `# noqa` comment that does not name its codes and state its reason after ` - `, as path:line."""
     found: list[str] = []
     for path in sorted(files):
         if path.suffix != ".py":
             continue
-        for token in comments(path.read_text(encoding="utf-8")):
+        for token in file_comments(root, path, found):
             if NOQA.search(token.string) and not NOQA_WITH_REASON.search(token.string):
                 found.append(f"{path.relative_to(root).as_posix()}:{token.start[0]}")
     return found
@@ -72,7 +87,7 @@ def ceiling_noqa(root: Path, files: list[Path]) -> list[str]:
     for path in sorted(files):
         if path.suffix != ".py":
             continue
-        for token in comments(path.read_text(encoding="utf-8")):
+        for token in file_comments(root, path, found):
             for match in NOQA_CODES.finditer(token.string):
                 named = sorted({code.upper() for code in re.split(r"[\s,]+", match.group(1)) if code} & CEILING_CODES)
                 if named:
@@ -108,7 +123,7 @@ def python_suppression_problems(root: Path, files: list[Path]) -> list[str]:
             continue
         found += [
             f"{name}:{token.start[0]} turns a check off with {match.group(0)!r}; fix each finding at its cause"
-            for token in comments(path.read_text(encoding="utf-8"))
+            for token in file_comments(root, path, found)
             if (match := PYTHON_SUPPRESSION.search(token.string))
         ]
     return found
@@ -120,7 +135,7 @@ def type_ignore_without_reason(root: Path, files: list[Path]) -> list[str]:
     for path in sorted(files):
         if path.suffix != ".py":
             continue
-        for token in comments(path.read_text(encoding="utf-8")):
+        for token in file_comments(root, path, found):
             if TYPE_IGNORE.search(token.string) and not TYPE_IGNORE_WITH_REASON.search(token.string):
                 found.append(f"{path.relative_to(root).as_posix()}:{token.start[0]}")
     return found
@@ -129,7 +144,7 @@ def type_ignore_without_reason(root: Path, files: list[Path]) -> list[str]:
 def docstring_lines(source: str) -> list[tuple[int, str]]:
     """Each line of the module's, every class's, and every function's docstring, with its line number in the source."""
     lines: list[tuple[int, str]] = []
-    for node in ast.walk(ast.parse(source)):
+    for node in ast.walk(parse_source(source, "<docstrings>")):
         if not isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef) or not node.body:
             continue
         first = node.body[0]
@@ -150,23 +165,25 @@ def issue_numbers_in_comments(root: Path, files: list[Path]) -> list[str]:
             or any(name.startswith(f"{prefix}/") for prefix in ISSUE_REFERENCE_EXCLUDED)
         ):
             continue
-        source = path.read_text(encoding="utf-8")
-        lines = {
+        try:
+            source = python_source(path)
+            lines = {number for number, line in docstring_lines(source) if ISSUE_REFERENCE.search(line)}
+        except UnreadablePython as error:
+            found.append(f"{name} {error}")
+            continue
+        lines |= {
             token.start[0]
             for token in comments(source)
             # The comment's own leading hash sign is not a citation, so the search starts after it.
             if ISSUE_REFERENCE.search(token.string[1:])
         }
-        lines |= {number for number, line in docstring_lines(source) if ISSUE_REFERENCE.search(line)}
         found += [f"{name}:{number}" for number in sorted(lines)]
     return found
 
 
-def imports_a_sibling(path: Path, source: str) -> bool:
+def imports_a_sibling(path: Path, tree: ast.Module) -> bool:
     """Whether the module imports, by its bare name, another module in its own directory."""
-    return any(
-        (path.parent / f"{found.module.split('.')[0]}.py").is_file() for found in module_imports(ast.parse(source))
-    )
+    return any((path.parent / f"{found.module.split('.')[0]}.py").is_file() for found in module_imports(tree))
 
 
 def mypy_path_problems(root: Path, files: list[Path]) -> list[str]:
@@ -182,22 +199,20 @@ def mypy_path_problems(root: Path, files: list[Path]) -> list[str]:
     if not isinstance(configured, list):
         return ["pyproject.toml: [tool.mypy] mypy_path must be a list"]
     expected: dict[str, str] = {}
+    unreadable: list[str] = []
     skill_scripts = set(skill_script_directories(root))
-    for path in sorted(files):
-        if path.suffix != ".py":
-            continue
+    for path, _, tree in python_trees(sorted(path for path in files if path.suffix == ".py"), root, unreadable):
         relative_path = path.relative_to(root)
-        source = path.read_text(encoding="utf-8")
-        for name in scripts_put_on_path(source):
+        for name in scripts_put_on_path(tree):
             expected.setdefault(
                 f"$MYPY_CONFIG_FILE_DIR/skills/{name}/scripts", f"{relative_path.as_posix()} puts on sys.path"
             )
-        if len(relative_path.parts) > 1 and path.parent not in skill_scripts and imports_a_sibling(path, source):
+        if len(relative_path.parts) > 1 and path.parent not in skill_scripts and imports_a_sibling(path, tree):
             expected.setdefault(
                 f"$MYPY_CONFIG_FILE_DIR/{relative_path.parent.as_posix()}",
                 f"{relative_path.as_posix()} imports a module from by its bare name",
             )
-    problems = [
+    problems = unreadable + [
         f"pyproject.toml: [tool.mypy] mypy_path lacks {entry}, which {expected[entry]}"
         for entry in sorted(set(expected) - set(configured))
     ]

@@ -8,7 +8,14 @@ import ast
 import unittest
 from pathlib import Path
 
-from validation_support import REPOSITORY_ROOT, docstring_ids, import_aliases, module_allowance, qualified_name
+from validation_support import (
+    REPOSITORY_ROOT,
+    docstring_ids,
+    import_aliases,
+    module_allowance,
+    python_trees,
+    qualified_name,
+)
 
 # Each kind's manifest key, report label, and journal root, written out here rather than read from deployer/kinds.py,
 # so that a change to the table cannot also change what this policy looks for.
@@ -176,9 +183,8 @@ def kinds_table_problems(root: Path) -> list[str]:
     """
     problems: list[str] = []
     found: list[str] = []
-    for path in sorted(_scanned_files(root), key=lambda path: path.relative_to(root).as_posix()):
-        name = path.relative_to(root).as_posix()
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+    ordered = sorted(_scanned_files(root), key=lambda path: path.relative_to(root).as_posix())
+    for _, name, tree in python_trees(ordered, root, problems):
         allowed = module_allowance(tree, KINDS_ALLOWANCE)
         if allowed is None:
             problems.append(f"{name}: {KINDS_ALLOWANCE} must map each pass to the reason it treats a kind apart")

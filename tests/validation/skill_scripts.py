@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import functools
 import json
 import re
@@ -20,11 +21,16 @@ from toolchain import find_powershell
 from validation_support import (
     REPOSITORY_ROOT,
     CallableResolver,
+    UnreadablePython,
     find_fences,
     import_aliases,
     is_test_script,
     module_allowance,
     module_imports,
+    parse_python,
+    parse_source,
+    python_source,
+    python_trees,
     qualified_name,
     skill_script_directories,
     skills_by_name,
@@ -829,13 +835,14 @@ class CommandReader:
 
 @functools.cache
 def _read_commands(source: str) -> CommandReader:
-    return CommandReader(ast.parse(source))
+    return CommandReader(parse_source(source, "<commands>"))
 
 
 def command_reader(path: Path) -> CommandReader:
     """The CommandReader of a Python file as it is now, built once for each content in a validation run, so every
-    policy that reads a file's commands shares one reading of it and a file that changes is read again."""
-    return _read_commands(path.read_text(encoding="utf-8", errors="replace"))
+    policy that reads a file's commands shares one reading of it and a file that changes is read again. A file no
+    policy can read raises UnreadablePython."""
+    return _read_commands(python_source(path))
 
 
 # Prints one JSON array of {source, name} for each external command run by the PowerShell sources in the JSON file
@@ -905,12 +912,14 @@ def _powershell_sources(path: Path) -> list[str]:
 
 
 def _file_commands(path: Path, known: set[str], powershell: dict[str, set[str]]) -> set[str]:
-    """The programs a file runs, where powershell holds what each PowerShell source read for the run runs."""
+    """The programs a file runs, where powershell holds what each PowerShell source read for the run runs. A Python
+    file no policy can read runs nothing here; skill_command_problems reports it."""
     text = path.read_text(encoding="utf-8", errors="replace")
     suffix = path.suffix.casefold()
     found = {command for source in _powershell_sources(path) for command in powershell[source]}
     if suffix == ".py":
-        found |= command_reader(path).commands(known)
+        with contextlib.suppress(UnreadablePython):
+            found |= command_reader(path).commands(known)
     elif suffix in {".sh", ".bash"}:
         found |= shell_commands(text)
     elif suffix == ".md":
@@ -927,8 +936,14 @@ NAMED_SCRIPT = re.compile(r"/([a-z0-9-]+)/scripts/([A-Za-z_]\w*)\.py\b")
 
 
 def _referenced_scripts(path: Path) -> frozenset[str]:
-    """Module names a file imports, and script names it gives by a path through another skill's scripts/."""
-    return _references(path.read_text(encoding="utf-8", errors="replace"), path.suffix.casefold() == ".py")
+    """Module names a file imports, and script names it gives by a path through another skill's scripts/; none for a
+    Python file no policy can read, which skill_command_problems reports."""
+    if path.suffix.casefold() != ".py":
+        return _references(path.read_text(encoding="utf-8", errors="replace"), False)
+    try:
+        return _references(python_source(path), True)
+    except UnreadablePython:
+        return frozenset()
 
 
 @functools.cache
@@ -936,7 +951,10 @@ def _references(text: str, python: bool) -> frozenset[str]:
     """What _referenced_scripts finds in a file's text, read once for each content in a validation run."""
     if not python:
         return frozenset(name for _, name in NAMED_SCRIPT.findall(text))
-    tree = ast.parse(text)
+    try:
+        tree = parse_source(text, "<references>")
+    except UnreadablePython:
+        return frozenset()
     # A module-level sanction such as DUPLICATION_ALLOWED names, in its reasons, the other files that hold a copy,
     # which the module does not run.
     sanctions = {
@@ -1013,7 +1031,11 @@ def skill_command_problems(root: Path, known: set[str], standard: set[str]) -> l
     for skill, declared, own, dependency_scripts in skills:
         for path in own + dependency_scripts:
             if path.suffix.casefold() == ".py":
-                problems += command_reader(path).problems(path.relative_to(root).as_posix())
+                name = path.relative_to(root).as_posix()
+                try:
+                    problems += command_reader(path).problems(name)
+                except UnreadablePython as error:
+                    problems.append(f"{name} {error}")
         used = {command for path in own for command in _file_commands(path, known, powershell)}
         reached: dict[str, Path] = {}
         for path in dependency_scripts:
@@ -1036,6 +1058,20 @@ GH_SHELL_CALL = re.compile(r"(?:^|[\s;|&(])gh\s")
 GH_SHELL_FILTER = re.compile(r"\s(--jq|--template|-q)(?=[\s=]|$)")
 
 
+def _gh_filter_flags(tree: ast.Module) -> list[tuple[int, str]]:
+    """The line and flag of each gh filter a Python module passes."""
+    found: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and node.value in GH_FILTERS:
+            found.append((node.lineno, node.value))
+        elif isinstance(node, (ast.List, ast.Tuple)):
+            values = {item.value for item in node.elts if isinstance(item, ast.Constant)}
+            # gh's -q applies a jq filter to --json output; git's -q never comes with --json.
+            if {"-q", "--json"} <= values:
+                found.append((node.lineno, "-q"))
+    return found
+
+
 def gh_filter_problems(root: Path) -> list[str]:
     """Report skill scripts that filter gh output with --jq, -q, or --template instead of parsing its JSON.
 
@@ -1050,14 +1086,8 @@ def gh_filter_problems(root: Path) -> list[str]:
         text = path.read_text(encoding="utf-8", errors="replace")
         found: list[tuple[int, str]] = []
         if path.suffix.casefold() == ".py":
-            for node in ast.walk(ast.parse(text)):
-                if isinstance(node, ast.Constant) and node.value in GH_FILTERS:
-                    found.append((node.lineno, node.value))
-                elif isinstance(node, (ast.List, ast.Tuple)):
-                    values = {item.value for item in node.elts if isinstance(item, ast.Constant)}
-                    # gh's -q applies a jq filter to --json output; git's -q never comes with --json.
-                    if {"-q", "--json"} <= values:
-                        found.append((node.lineno, "-q"))
+            for _, _, tree in python_trees([path], root, problems):
+                found += _gh_filter_flags(tree)
         elif path.suffix.casefold() in {".sh", ".bash", ".ps1"}:
             for number, line in enumerate(text.splitlines(), start=1):
                 match = GH_SHELL_FILTER.search(line) if GH_SHELL_CALL.search(line) else None
@@ -1191,9 +1221,7 @@ def console_setup_problems(root: Path) -> list[str]:
     the console and keeps that promise, so the copies cannot drift apart again.
     """
     problems: list[str] = []
-    for path in console_entry_points(root):
-        name = path.relative_to(root).as_posix()
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+    for _, name, tree in python_trees(console_entry_points(root), root, problems):
         aliases = import_aliases(tree)
         problems += [
             f"{name}:{line} reconfigures a stream itself; call {CONSOLE_RUNNER}() from {CONSOLE_CORE} instead; "
@@ -1305,11 +1333,11 @@ def secret_named_function_problems(root: Path) -> list[str]:
     files = [root / "deploy.py", *(root / "deployer").rglob("*.py"), *(root / "tools").rglob("*.py")]
     files += [path for scripts in skill_script_directories(root) for path in scripts.rglob("*.py")]
     problems: list[str] = []
-    for path in sorted(
+    ordered = sorted(
         (path for path in files if path.is_file() and not is_test_script(path)), key=lambda p: p.as_posix()
-    ):
-        name = path.relative_to(root).as_posix()
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"))):
+    )
+    for _, name, tree in python_trees(ordered, root, problems):
+        for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and CODEQL_SECRET_NAME.search(node.name):
                 problems.append(
                     f"{name}:{node.lineno}: function {node.name} is named so CodeQL treats its result as a secret "
@@ -1329,7 +1357,11 @@ def script_contract_problems(root: Path) -> list[str]:
         name = path.relative_to(root).as_posix()
         text = path.read_text(encoding="utf-8", errors="replace")
         if path.suffix == ".py":
-            tree = ast.parse(text)
+            try:
+                tree = parse_python(path)
+            except UnreadablePython as error:
+                problems.append(f"{name} {error}")
+                continue
             exemption = _contract_exemption(tree)
             if exemption is None:
                 problems.append(f"{name}: {CONTRACT_EXEMPTION} must be a non-empty string saying why")
@@ -1374,7 +1406,11 @@ def client_command_problems(root: Path) -> list[str]:
         name = path.relative_to(root).as_posix()
         if is_test_script(path) or name.startswith(f"{SKILL_CORE_SCRIPTS}/"):
             continue
-        reader = command_reader(path)
+        try:
+            reader = command_reader(path)
+        except UnreadablePython as error:
+            problems.append(f"{name} {error}")
+            continue
         problems += reader.problems(name)
         commands = {found for node in ast.walk(reader.tree) for found in _client_commands(node, reader)}
         for line, command in sorted(commands):
