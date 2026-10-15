@@ -1073,7 +1073,9 @@ def run_failure(model: str, completed: Completed, timeout: float, skill: str, mi
     session, reviewers = stream_models(completed.stdout)
     if missing is not None:
         reasons = [missing]
-        if completed.timed_out:
+        if completed.error:
+            reasons.append(completed.error)
+        elif completed.timed_out:
             reasons.append(f"timed out after {timeout:g} seconds")
         elif completed.returncode != 0:
             reasons.append(f"Claude Code exited with code {completed.returncode}")

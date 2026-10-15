@@ -1902,6 +1902,11 @@ class RunPieceTests(GitTestCase):
             f"{missing}; Claude Code exited with code 3",
             skill_evals.run_failure("haiku", completed(3, "", ""), 60, "review-prs", missing),
         )
+        unstarted = completed(-1, "", "", error="cannot run C:/bin/claude.exe: The system cannot find the file")
+        self.assertEqual(
+            f"{missing}; cannot run C:/bin/claude.exe: The system cannot find the file",
+            skill_evals.run_failure("haiku", unstarted, 60, "review-prs", missing),
+        )
 
 
 def outcome(scenario: str, model: str, failure: str | None = None) -> Outcome:
