@@ -552,6 +552,58 @@ expect_status 0 "repository variables in any case"
 [ "$(head_of "$OTHER" HEAD)" = "$OTHER_HEAD" ] || fail "repository variables in any case: the other clone moved"
 expect_deployed "repository variables in any case"
 
+# A tag named like a branch the update reads stops it before the fetch, whether origin publishes it or the clone holds
+# it, and never moves main. The tagged commit is not on origin's main, so a tag that stood in for the branch would
+# fast-forward main to it.
+SIDE=$(git -C "$SEED" commit-tree -p HEAD -m "not on main" "HEAD^{tree}")
+expect_shadowed() {
+  expect_status 1 "$2"
+  [ "$OUTPUT" = "TAG_SHADOWS_BRANCH"$'\n'"$1" ] || fail "$2: expected TAG_SHADOWS_BRANCH and '$1', got: $OUTPUT"
+  expect_no_stderr "$2"
+  [ "$(git -C "$CLONE" rev-parse refs/heads/main)" = "$BEFORE" ] || fail "$2: main moved"
+  [ "$(git -C "$CLONE" rev-parse refs/remotes/origin/main)" = "$FETCHED" ] || fail "$2: fetched anyway"
+  expect_not_deployed "$2"
+}
+for NAME in origin/main main; do
+  new_clone
+  BEFORE=$(git -C "$CLONE" rev-parse refs/heads/main)
+  FETCHED=$(git -C "$CLONE" rev-parse refs/remotes/origin/main)
+  publish "change while origin has a tag $NAME"
+  git_quiet -C "$SEED" push origin "$SIDE:refs/tags/$NAME"
+  run_subject "$CLONE"
+  expect_shadowed "refs/tags/$NAME on origin" "remote tag $NAME"
+  ! git -C "$CLONE" show-ref --verify --quiet "refs/tags/$NAME" || fail "remote tag $NAME: the tag was fetched"
+  git_quiet -C "$SEED" push origin ":refs/tags/$NAME"
+done
+new_clone
+BEFORE=$(git -C "$CLONE" rev-parse refs/heads/main)
+FETCHED=$(git -C "$CLONE" rev-parse refs/remotes/origin/main)
+git_quiet -C "$CLONE" tag main "$SIDE"
+publish "change while the clone has a tag main"
+run_subject "$CLONE"
+expect_shadowed "refs/tags/main in the clone" "local tag main"
+
+# A shadowing tag origin publishes after the check is not fetched, and the update follows origin's main. A Git wrapper
+# hides the tag from the check.
+new_clone
+publish "change while a tag appears after the check"
+git_quiet -C "$SEED" push origin "$SIDE:refs/tags/origin/main" "$SIDE:refs/tags/main"
+cat >"$WRAPPER/git" <<EOF
+#!/usr/bin/env bash
+case " \$* " in
+  *" ls-remote "*) exit 0 ;;
+esac
+exec "$(command -v git)" "\$@"
+EOF
+PATH="$WRAPPER:$PATH" run_subject "$CLONE"
+git_quiet -C "$SEED" push origin ":refs/tags/origin/main" ":refs/tags/main"
+expect_status 0 "tag after the check"
+[ "$(head_of "$CLONE" refs/heads/main)" = "$(head_of "$SEED" HEAD)" ] || fail "tag after the check: main is not origin's main"
+for TAG in refs/tags/main refs/tags/origin/main; do
+  ! git -C "$CLONE" show-ref --verify --quiet "$TAG" || fail "tag after the check: $TAG was fetched"
+done
+expect_deployed "tag after the check"
+
 # The deploy can back up the installed skill directory the script runs from, and the temporary copy is removed.
 new_clone
 INSTALLED="$FIXTURE/installed skill (copy)"
