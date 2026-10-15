@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 import memory_audit
 import skill_roots
 from flat_text import flat_text
-from git_client import GitError
+from git_client import MISSING_GIT, GitError, GitResult
 from git_test_base import GitTestCase
 
 
@@ -52,7 +52,17 @@ def file_name_breaks() -> tuple[str, ...]:
 
 
 NAME_BREAKS = file_name_breaks()
-RESOLVE_LABELS = ("REPO ", "MEMORY_DIR ", "SOURCE ", "EXISTS ", "NO_MEMORY_DIR", "CANDIDATE ", "NOTE ", "FAILED ")
+RESOLVE_LABELS = (
+    "REPO ",
+    "MEMORY_DIR ",
+    "SOURCE ",
+    "EXISTS ",
+    "REFUSED ",
+    "NO_MEMORY_DIR",
+    "CANDIDATE ",
+    "NOTE ",
+    "FAILED ",
+)
 
 
 def one_fact_per_line(test: unittest.TestCase, output: str, prefixes: tuple[str, ...]) -> list[str]:
@@ -69,6 +79,16 @@ def write(path: Path, text: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(text.encode("utf-8"))
     return path
+
+
+def directory_link(link: Path, target: Path) -> Path:
+    """A link at `link` to the directory `target`: a junction on Windows, which needs no privilege, else a symbolic
+    link. Removing `target` afterwards leaves it dangling."""
+    if sys.platform == "win32":
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], check=True, capture_output=True)
+    else:
+        link.symlink_to(target, target_is_directory=True)
+    return link
 
 
 def memory(name: str, body: str, kind: str = "feedback") -> str:
@@ -391,6 +411,7 @@ class MemoryAuditTests(GitTestCase):
             mock.patch.object(tempfile, "tempdir", str(self.root / "Temporary Files")),
         ):
             (self.root / "Temporary Files").mkdir(exist_ok=True)
+            (self.memory_dir / "MEMORY.md").touch()
             self.assertEqual(0, memory_audit.main(["audit", "--memory-dir", str(self.memory_dir), *arguments]))
         return captured.getvalue()
 
@@ -432,11 +453,90 @@ class MemoryAuditTests(GitTestCase):
                     self.assertFalse(target.exists())
 
     def test_an_unwritable_output_is_a_failed_line(self) -> None:
+        write(self.memory_dir / "MEMORY.md", "")
         write(self.memory_dir / "one.md", memory("one", "Body."))
         target = self.root / "no such folder" / "report.json"
         code, stdout, stderr = run_main("audit", "--memory-dir", str(self.memory_dir), "--output", str(target))
         self.assertEqual((1, ""), (code, stderr))
         self.assertRegex(stdout, rf"\AFAILED cannot write {re.escape(str(target))}: [^\n]+\n\Z")
+
+    def test_an_existing_output_is_refused_and_left_alone(self) -> None:
+        write(self.memory_dir / "MEMORY.md", "- [one](one.md) — one\n")
+        write(self.memory_dir / "one.md", memory("one", "Body."))
+        write(self.root / "CLAUDE.md", "- A rule.\n")
+        for target in (self.memory_dir / "one.md", self.memory_dir / "MEMORY.md", self.root / "CLAUDE.md"):
+            before = target.read_bytes()
+            with self.subTest(target=target.name):
+                self.assertEqual(
+                    (
+                        1,
+                        f"FAILED {target} already exists, and audit never replaces a file; omit --output to write a "
+                        "new temporary file\n",
+                        "",
+                    ),
+                    run_main("audit", "--memory-dir", str(self.memory_dir), "--output", str(target)),
+                )
+                self.assertEqual(before, target.read_bytes())
+
+    def test_an_output_inside_a_memory_store_is_refused_before_writing(self) -> None:
+        write(self.memory_dir / "MEMORY.md", "")
+        config = self.root / "config"
+        projects = config / "projects"
+        for target, inside in (
+            (self.memory_dir / "report.json", f"the memory directory {self.memory_dir}"),
+            (projects / "C--other" / "memory" / "report.json", f"Claude Code's projects folder {projects}"),
+        ):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with self.subTest(target=target), mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(config)}):
+                self.assertEqual(
+                    (1, f"FAILED {target} is inside {inside}; omit --output to write a new temporary file\n", ""),
+                    run_main("audit", "--memory-dir", str(self.memory_dir), "--output", str(target)),
+                )
+                self.assertFalse(target.exists())
+
+    def test_an_output_that_appears_after_the_check_is_never_replaced(self) -> None:
+        write(self.memory_dir / "MEMORY.md", "")
+        target = write(self.root / "late.json", "kept\n")
+        with mock.patch.object(memory_audit, "output_refusal", return_value=None):
+            self.assertEqual(
+                (1, f"FAILED {target} already exists, and audit never replaces a file\n", ""),
+                run_main("audit", "--memory-dir", str(self.memory_dir), "--output", str(target)),
+            )
+        self.assertEqual("kept\n", target.read_text(encoding="utf-8"))
+
+    def test_entries_that_are_no_regular_file_are_unreadable_and_the_rest_are_audited(self) -> None:
+        write(self.memory_dir / "MEMORY.md", "- [a](a.md) — a\n- [gone](dangling.md) — gone\n")
+        write(self.memory_dir / "a.md", memory("a", "Body of a."))
+        write(self.memory_dir / "locked.md", memory("locked", "Locked."))
+        (self.memory_dir / "sub.md").mkdir()
+        write(self.root / "target" / "inner.md", memory("inner", "Inner."))
+        directory_link(self.memory_dir / "linked.md", self.root / "target")
+        (self.root / "vanished").mkdir()
+        directory_link(self.memory_dir / "dangling.md", self.root / "vanished")
+        (self.root / "vanished").rmdir()
+        code, stdout, stderr = run_main("audit", "--memory-dir", str(self.memory_dir), "--output", str(self.root / "r"))
+        self.assertEqual((0, f"REPORT {self.root / 'r'}\n", ""), (code, stdout, stderr))
+        report = json.loads((self.root / "r").read_text(encoding="utf-8"))
+        self.assertEqual(["a.md", "locked.md"], [entry["file"] for entry in report["memories"]])
+        not_regular = [
+            {"file": name, "reason": "not a regular file"} for name in ("dangling.md", "linked.md", "sub.md")
+        ]
+        self.assertEqual(not_regular, report["unreadable"])
+        self.assertEqual([], report["index"]["missing_files"], "a dangling link is there, just not a memory")
+        original = Path.read_text
+
+        def read_text(path: Path, *arguments: object, **options: object) -> str:
+            if path.name == "locked.md":
+                raise PermissionError(13, "Access is denied", str(path))
+            return original(path, *arguments, **options)  # type: ignore[arg-type]  # forwards read_text's own options
+
+        with mock.patch.object(Path, "read_text", autospec=True, side_effect=read_text):
+            result = self.run_audit()
+        self.assertEqual(["a.md"], [entry["file"] for entry in result["memories"]])
+        self.assertEqual(
+            sorted([*not_regular, {"file": "locked.md", "reason": "Access is denied"}], key=lambda e: e["file"]),
+            result["unreadable"],
+        )
 
     def test_command_line_searches_the_claude_config_directory_by_default(self) -> None:
         rule = "Never name the object under test sut; derive the variable name from its class instead."
@@ -816,6 +916,33 @@ class ReindexTests(GitTestCase):
         with mock.patch.object(Path, "read_text", side_effect=PermissionError(13, "Access is denied", "one.md")):
             self.assertEqual(["FAILED Access is denied: one.md"], self.reindex(code=1))
 
+    def test_entries_that_are_no_regular_file_stay_as_written_and_are_never_added(self) -> None:
+        root = self.memory_dir.parent
+        self.index.write_text("- [Kept](dangling.md) — kept as written\n", encoding="utf-8")
+        write(self.memory_dir / "a.md", memory("a", "Body."))
+        (self.memory_dir / "sub.md").mkdir()
+        write(root / "target" / "inner.md", memory("inner", "Inner."))
+        directory_link(self.memory_dir / "linked.md", root / "target")
+        (root / "vanished").mkdir()
+        directory_link(self.memory_dir / "dangling.md", root / "vanished")
+        (root / "vanished").rmdir()
+        self.assertEqual(
+            [
+                "INDEX_LINE dangling.md",
+                "INDEX_LINE a.md",
+                "ADDED a.md",
+                "UNREADABLE dangling.md: not a regular file",
+                "UNREADABLE linked.md: not a regular file",
+                "UNREADABLE sub.md: not a regular file",
+                f"WROTE {self.index.as_posix()}",
+            ],
+            self.reindex("--write"),
+        )
+        self.assertEqual(
+            "- [Kept](dangling.md) — kept as written\n- [a](a.md) — a description\n",
+            self.index.read_text(encoding="utf-8"),
+        )
+
     def test_a_memory_named_with_a_line_break_is_refused_and_nothing_is_written(self) -> None:
         write(self.memory_dir / "one.md", memory("one", "Body."))
         for character in NAME_BREAKS:
@@ -937,11 +1064,7 @@ class DeleteTests(GitTestCase):
     def test_a_link_is_never_followed(self) -> None:
         target = self.root / "target"
         write(target / "precious.md", memory("precious", "Precious."))
-        link = self.memory_dir / "linked.md"
-        if sys.platform == "win32":
-            subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], check=True, capture_output=True)
-        else:
-            link.symlink_to(target, target_is_directory=True)
+        link = directory_link(self.memory_dir / "linked.md", target)
         self.assertEqual((1, ["FAILED linked.md: not a regular file"]), self.delete("linked.md", "gone.md"))
         self.assertTrue((target / "precious.md").is_file())
         self.assertTrue((self.memory_dir / "gone.md").is_file())
@@ -1005,7 +1128,7 @@ class DeleteTests(GitTestCase):
 
 
 class MemoryStoreGuardTests(GitTestCase):
-    """delete and reindex change only a directory that is a memory store, and never one inside a skills directory."""
+    """audit, reindex, and delete take only a directory that is a memory store, never one inside a skills directory."""
 
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory()
@@ -1028,12 +1151,15 @@ class MemoryStoreGuardTests(GitTestCase):
             path.relative_to(self.root).as_posix(): path.read_bytes() for path in self.root.rglob("*") if path.is_file()
         }
 
-    def run_both(self, directory: Path) -> list[tuple[int, str, str]]:
+    def run_all(self, directory: Path) -> list[tuple[int, str, str]]:
+        (self.root / "reports").mkdir(exist_ok=True)
         with (
             mock.patch.object(Path, "home", return_value=self.home),
             mock.patch.object(skill_roots, "SKILLS_ROOT", self.skills_root),
+            mock.patch.object(tempfile, "tempdir", str(self.root / "reports")),
         ):
             return [
+                run_main("audit", "--memory-dir", str(directory), "--user-dir", str(self.home)),
                 run_main("reindex", "--memory-dir", str(directory), "--write"),
                 run_main("delete", "--memory-dir", str(directory), "SKILL.md", "notes.md"),
             ]
@@ -1042,7 +1168,7 @@ class MemoryStoreGuardTests(GitTestCase):
         directory = self.root / "plain folder"
         before = self.populate(directory, index=False)
         failure = f"FAILED {directory} is not a memory directory: it holds no MEMORY.md\n"
-        self.assertEqual([(1, failure, "")] * 2, self.run_both(directory))
+        self.assertEqual([(1, failure, "")] * 3, self.run_all(directory))
         self.assertEqual(before, self.snapshot())
 
     def test_a_directory_inside_a_skills_directory_is_refused_and_left_alone(self) -> None:
@@ -1054,7 +1180,7 @@ class MemoryStoreGuardTests(GitTestCase):
                     f"FAILED {directory} is inside the skills directory {root}; "
                     "name the memory directory resolve printed\n"
                 )
-                self.assertEqual([(1, failure, "")] * 2, self.run_both(directory))
+                self.assertEqual([(1, failure, "")] * 3, self.run_all(directory))
                 self.assertEqual(before, self.snapshot())
 
     def test_a_memory_store_beside_a_skills_directory_is_changed(self) -> None:
@@ -1062,7 +1188,9 @@ class MemoryStoreGuardTests(GitTestCase):
         self.populate(directory)
         (directory / "SKILL.md").unlink()
         write(self.skills_root / "some-skill" / "SKILL.md", "---\nname: some-skill\n---\n")
-        reindexed, deleted = self.run_both(directory)
+        audited, reindexed, deleted = self.run_all(directory)
+        self.assertEqual((0, ""), (audited[0], audited[2]))
+        self.assertTrue(audited[1].startswith(f"REPORT {self.root / 'reports'}"), audited[1])
         self.assertEqual((0, f"INDEX_LINE notes.md\nWROTE {(directory / 'MEMORY.md').as_posix()}\n", ""), reindexed)
         self.assertEqual((1, "FAILED SKILL.md: no such file\n", ""), deleted)
         self.assertEqual(
@@ -1122,8 +1250,14 @@ class ResolveTests(GitTestCase):
     def resolve(self, environment: dict[str, str] | None = None, repo: Path | None = None) -> dict:
         return memory_audit.resolve(repo or self.repo, self.home, environment or {}, self.managed)
 
-    def derived(self) -> Path:
-        return self.home / ".claude" / "projects" / memory_audit.encode_project(str(self.repo.resolve())) / "memory"
+    def derived(self, root: Path | None = None) -> Path:
+        folder = memory_audit.encode_project(str((root or self.repo).resolve()))
+        return self.home / ".claude" / "projects" / folder / "memory"
+
+    def store(self, directory: Path) -> Path:
+        """Make directory a memory store, one holding MEMORY.md, as every later command requires."""
+        write(directory / "MEMORY.md", "")
+        return directory
 
     def test_default_is_derived_from_the_main_worktree_and_shared_by_worktrees(self) -> None:
         self.derived().mkdir(parents=True)
@@ -1168,8 +1302,8 @@ class ResolveTests(GitTestCase):
 
     def test_an_existing_directory_lists_no_candidates(self) -> None:
         (self.home / ".claude" / "projects" / "C--elsewhere" / "memory").mkdir(parents=True)
-        (self.home / "memory-user").mkdir(parents=True)
-        self.derived().mkdir(parents=True)
+        self.store(self.home / "memory-user")
+        self.store(self.derived())
         with self.subTest(source="derived"):
             self.assertNotIn("candidates", self.resolve())
         write(self.home / ".claude" / "settings.json", json.dumps({"autoMemoryDirectory": "~/memory-user"}))
@@ -1370,7 +1504,7 @@ class ResolveTests(GitTestCase):
                 self.assertEqual(self.blocked_note("user", "local", local), result["notes"][-1])
 
     def test_a_used_repository_choice_states_the_block_rule(self) -> None:
-        (self.home / "chosen").mkdir(parents=True)
+        self.store(self.home / "chosen")
         project = self.repo / ".claude" / "settings.json"
         write(project, json.dumps({"autoMemoryDirectory": "~/chosen"}))
         self.assertEqual(
@@ -1392,7 +1526,7 @@ class ResolveTests(GitTestCase):
         self.assertEqual(str(self.home / "chosen"), self.resolve()["memory_dir"], "a user's choice is not blocked")
 
     def test_command_line_defaults_to_the_current_repository(self) -> None:
-        self.derived().mkdir(parents=True)
+        self.store(self.derived())
         (self.repo / "src" / "deep").mkdir(parents=True)
         root = self.repo.resolve()
         expected = [
@@ -1488,6 +1622,125 @@ class ResolveTests(GitTestCase):
         outside = self.root / "plain folder"
         outside.mkdir()
         self.assertEqual(["FAILED not inside a Git repository; pass --repo"], self.resolve_lines(cwd=outside, code=1))
+
+    def new_repository(self, folder: Path, *options: str) -> Path:
+        """A repository at folder with one commit, made with git init's options."""
+        git("-C", str(folder.parent), "init", "-q", "-b", "main", *options, folder.name)
+        git("-C", str(folder), "commit", "-q", "--allow-empty", "-m", "init")
+        return folder
+
+    def test_a_submodule_and_a_separate_git_directory_derive_from_their_own_working_tree(self) -> None:
+        source = self.new_repository(self.root / "submodule source")
+        git("-C", str(self.repo), "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(source), "sub")
+        submodule = self.repo / "sub"
+        linked = self.root / "submodule worktree"
+        git("-C", str(submodule), "worktree", "add", "-q", "-b", "feature", str(linked))
+        separate = self.new_repository(self.root / "separate", f"--separate-git-dir={self.root / 'separate git'}")
+        for folder, main in ((submodule, submodule), (linked, submodule), (separate, separate)):
+            with self.subTest(folder=folder.name):
+                result = self.resolve(repo=folder)
+                self.assertEqual(str(self.derived(main)), result["memory_dir"])
+                self.assertEqual(f"derived from the repository's main worktree ({main.resolve()})", result["source"])
+
+    def test_a_linked_worktree_of_a_separate_git_directory_resolves_to_no_directory(self) -> None:
+        separate = self.new_repository(self.root / "separate", f"--separate-git-dir={self.root / 'separate git'}")
+        linked = self.root / "separate worktree"
+        git("-C", str(separate), "worktree", "add", "-q", "-b", "feature", str(linked))
+        other = self.store(self.home / ".claude" / "projects" / "C--elsewhere" / "memory")
+        result = self.resolve(repo=linked)
+        self.assertIsNone(result["memory_dir"])
+        self.assertEqual([str(other)], result["candidates"])
+        shared = (self.root / "separate git").resolve()
+        self.assertEqual(
+            f"{linked.resolve()} is a linked worktree whose shared Git directory {shared} "
+            "names no main worktree; run resolve with --repo naming the main worktree, or pass --memory-dir.",
+            result["notes"][-1],
+        )
+
+    def test_a_git_failure_is_reported_by_its_own_reason(self) -> None:
+        worktree = self.root / "wt"
+        git("-C", str(self.repo), "worktree", "add", "-q", "-b", "feature", str(worktree))
+        self.store(self.derived(worktree))  # where a silent fallback to the worktree's own folder would land
+        refused = (
+            f"fatal: detected dubious ownership in repository at '{worktree}'\nTo add an exception, run git config\n"
+        )
+        for failure, shown in (
+            (GitError("git rev-parse did not finish within 300 seconds", kind="timeout"), None),
+            (GitError(MISSING_GIT, kind="prerequisite"), None),
+            (GitResult(128, "", refused), flat_text(refused)),
+        ):
+            if isinstance(failure, GitError):
+                patch = mock.patch.object(memory_audit.GitClient, "run", side_effect=failure)
+                shown = str(failure)
+            else:
+                patch = mock.patch.object(memory_audit.GitClient, "run", return_value=failure)
+            for arguments, cwd in (((), worktree), (("--repo", str(worktree)), self.root)):
+                with self.subTest(failure=shown, arguments=arguments), patch:
+                    self.assertEqual(
+                        [f"FAILED git could not read the repository: {shown}"],
+                        self.resolve_lines(*arguments, cwd=cwd, code=1),
+                    )
+
+    def test_a_folder_in_no_repository_is_its_own_project(self) -> None:
+        folder = self.root / "plain folder"
+        folder.mkdir()
+        derived = self.store(self.derived(folder))
+        self.assertEqual(
+            [
+                f"REPO {folder.resolve()}",
+                f"MEMORY_DIR {derived}",
+                f"SOURCE derived from the folder ({folder.resolve()}), which is in no Git repository",
+                "EXISTS yes",
+                self.SETTINGS_NOTE,
+                self.DERIVED_NOTE,
+            ],
+            self.resolve_lines("--repo", str(folder), cwd=self.root),
+        )
+
+    def test_a_subdirectory_as_repo_resolves_like_the_working_directory(self) -> None:
+        chosen = self.store(self.home / "chosen")
+        write(self.repo / ".claude" / "settings.json", json.dumps({"autoMemoryDirectory": "~/chosen"}))
+        (self.repo / "src").mkdir()
+        settings = (self.repo / ".claude" / "settings.json").resolve()
+        from_inside = self.resolve_lines(cwd=self.repo / "src")
+        self.assertEqual(from_inside, self.resolve_lines("--repo", str(self.repo / "src"), cwd=self.root))
+        self.assertEqual(
+            [
+                f"REPO {self.repo.resolve()}",
+                f"MEMORY_DIR {chosen}",
+                f"SOURCE autoMemoryDirectory in project settings ({settings})",
+            ],
+            from_inside[:3],
+        )
+
+    def test_a_directory_the_later_commands_refuse_is_reported_with_the_candidates(self) -> None:
+        other = self.store(self.home / ".claude" / "projects" / "C--elsewhere" / "memory")
+        self.derived().mkdir(parents=True)
+        facts = ("EXISTS", "REFUSED", "CANDIDATE")
+        self.assertEqual(
+            [
+                "EXISTS yes",
+                f"REFUSED {self.derived()} is not a memory directory: it holds no MEMORY.md",
+                f"CANDIDATE {other}",
+            ],
+            [line for line in self.resolve_lines() if line.startswith(facts)],
+        )
+        self.derived().rmdir()
+        skill = self.store(self.home / ".claude" / "skills" / "some-skill")
+        write(
+            self.home / ".claude" / "settings.json", json.dumps({"autoMemoryDirectory": "~/.claude/skills/some-skill"})
+        )
+        with mock.patch.object(Path, "home", return_value=self.home):
+            lines = self.resolve_lines()
+        self.assertEqual(
+            [
+                "EXISTS yes",
+                f"REFUSED {skill} is inside the skills directory {self.home / '.claude' / 'skills'}; name the memory "
+                "directory resolve printed",
+                f"CANDIDATE {other}",
+            ],
+            [line for line in lines if line.startswith(facts)],
+        )
 
     def test_invalid_or_unreadable_settings_leave_the_directory_unresolved(self) -> None:
         settings = self.home / ".claude" / "settings.json"
@@ -1594,6 +1847,25 @@ class SkillSourceTests(GitTestCase):
         for name in ("../demo", "demo\nSKILL_FILE forged", "demo\u2028x"):
             with self.subTest(name=repr(name)):
                 self.assertEqual([f"FAILED {flat_text(repr(name))} is not a skill name"], self.source(name, code=1))
+
+    def test_a_git_failure_is_a_note_and_the_manifest_source_is_still_named(self) -> None:
+        self.manifest(main=str(self.checkout))
+        with (
+            mock.patch.object(Path, "home", return_value=self.home),
+            mock.patch.object(skill_roots, "SKILLS_ROOT", self.skills_root),
+            mock.patch.object(Path, "cwd", return_value=self.repo),
+            mock.patch.object(memory_audit.GitClient, "run", side_effect=GitError(MISSING_GIT, kind="prerequisite")),
+        ):
+            result = run_main("skill-source", "demo", "--home", str(self.home))
+        self.assertEqual(
+            (
+                0,
+                f"NOTE no project skill was looked for: git could not read the repository: {MISSING_GIT}\n"
+                f"SKILL_FILE {self.source_file}\n",
+                "",
+            ),
+            result,
+        )
 
     def test_a_name_and_a_file_together_are_a_usage_error(self) -> None:
         code, output, error = run_main("skill-source", "demo", "--file", str(self.source_file))
