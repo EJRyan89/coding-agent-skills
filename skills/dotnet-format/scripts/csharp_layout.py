@@ -474,8 +474,8 @@ def write_source(path: Path, source: Source, text: str) -> None:
 
 def is_link(path: Path) -> bool:
     """Whether `path` is a symbolic link or, on Windows, a junction or any other reparse point; raises `OSError`,
-    `FileNotFoundError` for a path that does not exist. The skill's own test until skill-core holds one link test
-    (#1084)."""
+    `FileNotFoundError` for a path that does not exist. The skill's own test, since skill-core holds no link test
+    the skills share yet; this one moves there when it does."""
     status = os.lstat(path)
     reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
     return stat.S_ISLNK(status.st_mode) or bool(getattr(status, "st_file_attributes", 0) & reparse)
