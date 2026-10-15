@@ -85,13 +85,15 @@ class NewSkillTestCase(FixtureRepositoryTestCase):
             "---\nname: widget-report\n"
             'description: "Report \\"widgets\\" in a repository with spaces — use it when asked about them."\n'
             'argument-hint: "ORG [--months N]"\n'
-            'allowed-tools: ["Bash({{PYTHON}} -B \\"${CLAUDE_SKILL_DIR}/scripts/*)", '
-            '"PowerShell({{PYTHON}} -B \\"${CLAUDE_SKILL_DIR}/scripts/*)", "Read"]\n---\n\n# Widget report\n',
+            'allowed-tools: ["Bash({{PYTHON}} -B \\"${CLAUDE_SKILL_DIR}/scripts/widget_report.py\\" *)", '
+            '"PowerShell({{PYTHON}} -B \\"${CLAUDE_SKILL_DIR}/scripts/widget_report.py\\" *)", "Read"]\n'
+            "---\n\n# Widget report\n",
             skill_md.read_text(encoding="utf-8"),
         )
         frontmatter = skill_reference.read_frontmatter(skill_md)
         self.assertEqual(DESCRIPTION, frontmatter["description"])
-        own_scripts = '{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/*'
+        # The default grant names the skill's script, ending at its closing quote, so no `..` path matches it.
+        own_scripts = '{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/widget_report.py" *'
         self.assertEqual(
             [f"Bash({own_scripts})", f"PowerShell({own_scripts})", "Read"],
             fm.read(skill_md).value("allowed-tools"),
@@ -202,6 +204,26 @@ class NewSkillTestCase(FixtureRepositoryTestCase):
             ("fresh", {"allowed_tools": ["Bash", "Read"]}, "grants Bash for every command"),
             ("fresh", {"allowed_tools": ["PowerShell(*)"]}, r"grants PowerShell\(\*\) for every command"),
             ("fresh", {"allowed_tools": ["Bash(git status)"]}, r"Bash\(git status\) has no PowerShell twin"),
+            (
+                "fresh",
+                {
+                    "allowed_tools": [
+                        'Bash(python -B "${CLAUDE_SKILL_DIR}/scripts/*)',
+                        'PowerShell(python -B "${CLAUDE_SKILL_DIR}/scripts/*)',
+                    ]
+                },
+                r"scripts/\*\) leaves a path open before its \*",
+            ),
+            (
+                "fresh",
+                {
+                    "allowed_tools": [
+                        'Bash(python -B "${CLAUDE_SKILL_DIR}/../core/scripts/*)',
+                        'PowerShell(python -B "${CLAUDE_SKILL_DIR}/../core/scripts/*)',
+                    ]
+                },
+                r"leaves a path open before its \*",
+            ),
         )
         for name, arguments, message in cases:
             with self.subTest(name=name, arguments=arguments):
@@ -350,11 +372,11 @@ class NewRepositorySkillTestCase(FixtureRepositoryTestCase):
         self.assertEqual(2, len(after) - len(before))
 
     def test_given_grants_and_user_only_reach_the_skill_and_its_shim(self) -> None:
-        grants = ["Bash(python -B tools/widgets.py*)", "PowerShell(python -B tools/widgets.py*)"]
+        grants = ["Bash(python -B tools/widgets.py *)", "PowerShell(python -B tools/widgets.py *)"]
         new_skill.scaffold_repository(self.root, "widget-check", "Check widgets.", user_only=True, allowed_tools=grants)
 
         expected = (
-            'allowed-tools: ["Bash(python -B tools/widgets.py*)", "PowerShell(python -B tools/widgets.py*)"]\n'
+            'allowed-tools: ["Bash(python -B tools/widgets.py *)", "PowerShell(python -B tools/widgets.py *)"]\n'
             "disable-model-invocation: true\n---\n"
         )
         for path in (".claude/skills/widget-check/SKILL.md", ".agents/skills/widget-check/SKILL.md"):
@@ -374,6 +396,11 @@ class NewRepositorySkillTestCase(FixtureRepositoryTestCase):
             ("fresh", {"description": "Fresh."}, "say what it does, then when to use it"),
             ("fresh", {"allowed_tools": ["Bash"]}, "grants Bash for every command"),
             ("fresh", {"allowed_tools": ["Bash(git status)"]}, r"Bash\(git status\) has no PowerShell twin"),
+            (
+                "fresh",
+                {"allowed_tools": ["Bash(python -B tools/widgets.py*)", "PowerShell(python -B tools/widgets.py*)"]},
+                r"leaves a path open before its \*",
+            ),
         )
         for name, arguments, message in cases:
             with self.subTest(name=name, arguments=arguments):

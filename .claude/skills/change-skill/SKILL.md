@@ -4,7 +4,7 @@ description: >-
   Procedure for adding or changing a skill in this repository, shipped under skills/ or repository-only under
   .claude/skills: its SKILL.md, scripts, metadata, or documentation. Use it when asked to add, create, change, fix,
   or extend a skill here. Not for deployer-only, repository-tool, or documentation-only changes.
-allowed-tools: ["Bash(python tools/new_skill.py *)", "PowerShell(python tools/new_skill.py *)", "Bash(python tools/skill_shims.py*)", "PowerShell(python tools/skill_shims.py*)", "Bash(python tools/skill_reference.py*)", "PowerShell(python tools/skill_reference.py*)", "Bash(python -B tests/run_validation.py*)", "PowerShell(python -B tests/run_validation.py*)"]
+allowed-tools: ["Bash(python tools/new_skill.py *)", "PowerShell(python tools/new_skill.py *)", "Bash(python tools/skill_shims.py *)", "PowerShell(python tools/skill_shims.py *)", "Bash(python tools/skill_reference.py *)", "PowerShell(python tools/skill_reference.py *)", "Bash(python -B tests/run_validation.py *)", "PowerShell(python -B tests/run_validation.py *)"]
 ---
 
 # Adding or changing a skill
@@ -34,7 +34,7 @@ For a new shipped skill, with the values the plan settled:
 python tools/new_skill.py "<name>" --description "<description>" --argument-hint "<hint>" --tool gh
 ```
 
-Add `--user-only` and `--opt-in` as planned, and `--skill-dep <dependency>` for each sibling whose scripts the skill's scripts import; omit `--argument-hint` or `--tool` when there is none. Pass the planned grants as `--allowed-tools`, comma-separated, unless they are its default: both shells for the skill's own scripts, and the file-reading tool. It writes the frontmatter, the metadata, and the generated part of the reference section, refuses without changing anything when the name is taken or a tool is unknown, prints the `SCRIPT_HEADER` lines a script with those dependencies starts with, and prints a `REMAINING` line for each thing validation still needs from you. A skill inside a bundle also needs its entry in `source.json`.
+Add `--user-only` and `--opt-in` as planned, and `--skill-dep <dependency>` for each sibling whose scripts the skill's scripts import; omit `--argument-hint` or `--tool` when there is none. Pass the planned grants as `--allowed-tools`, comma-separated, unless they are its default: both shells for its script named after it, `scripts/<name with underscores>.py`, and the file-reading tool; a skill with more scripts grants each by name. It writes the frontmatter, the metadata, and the generated part of the reference section, refuses without changing anything when the name is taken or a tool is unknown, prints the `SCRIPT_HEADER` lines a script with those dependencies starts with, and prints a `REMAINING` line for each thing validation still needs from you. A skill inside a bundle also needs its entry in `source.json`.
 
 For a new repository skill, add `--repository`, which writes `.claude/skills/<name>/SKILL.md` and its shim and takes no `--tool` or `--opt-in`; it grants nothing unless you pass `--allowed-tools`:
 

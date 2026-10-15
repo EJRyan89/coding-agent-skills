@@ -44,17 +44,21 @@ names no use: an action a negation governs in its clause ("do not read", "never 
 names one: its verbs are the subagent's, so they neither use nor imply a tool.
 
 Shell grants: in Claude Code, allowed-tools pre-approves its entries for the turn that starts the skill; it
-restricts nothing. UNSCOPED_ALLOWED <entry> is a Bash or PowerShell entry that matches every command (bare,
-(*), or (:*)). UNPAIRED_ALLOWED <entry> is a Bash pattern without the same PowerShell pattern, or the
-reverse. SIBLING_FOLDER_ALLOWED <entry> is a pattern that reaches a sibling skill through ${CLAUDE_SKILL_DIR}/../
-without naming one of its files, quoted, before any *: no path is normalized, so it matches every script of that
-skill and every .. path out of it. UNGRANTED <tool> <line> <command> is a fence command that no pattern of a shell
-with patterns matches, so running it through that tool prompts. A pattern matches the command's text, quotes included,
-with * for any text. EXPANDS <line> <command> is a fence command that expands a shell variable or command
-substitution other than ${CLAUDE_SKILL_DIR} or $ARGUMENTS, which prompts in both shells whatever is granted.
-IDLE_ALLOWED <entry> is a scoped Bash or PowerShell pattern that matches no fence command and no code span outside
-a fence, so it pre-approves a command the skill never asks for. HIDDEN_ALLOWED is a hidden skill with any grant:
-no turn starts it, so its grants approve nothing, and it takes the place of its IDLE_ALLOWED lines.
+restricts nothing. UNSCOPED_ALLOWED <entry> is a Bash or PowerShell entry that matches every command (bare, (*), or
+(:*)). UNPAIRED_ALLOWED <entry> is a Bash pattern without the same PowerShell pattern, or the reverse.
+SIBLING_FOLDER_ALLOWED <entry> is a pattern that reaches a sibling skill through ${CLAUDE_SKILL_DIR}/../ without
+naming one of its files, quoted, before any *: no path is normalized, so it matches every script of that skill and
+every .. path out of it. OPEN_PATH_ALLOWED <entry> is any other pattern whose first * does not follow a space
+outside quotes, such as scripts/* or tool.py*: the * continues the path before it, so the pattern matches every file
+that path starts and every .. path out of it; a pattern ends a script's path at its closing quote, or at a space
+when unquoted, before any *. UNGRANTED <tool> <line> <command> is a fence command that no pattern of a shell with
+patterns matches, so running it through that tool prompts. A pattern matches the command's text, quotes included,
+with * for any text, and one whose only * ends it after a space also matches the bare command before it. EXPANDS
+<line> <command> is a fence command that expands a shell variable or command substitution other than
+${CLAUDE_SKILL_DIR} or $ARGUMENTS, which prompts in both shells whatever is granted. IDLE_ALLOWED <entry> is a
+scoped Bash or PowerShell pattern that matches no fence command and no code span outside a fence, so it pre-approves
+a command the skill never asks for. HIDDEN_ALLOWED is a hidden skill with any grant: no turn starts it, so its
+grants approve nothing, and it takes the place of its IDLE_ALLOWED lines.
 A script that starts code the target repository configures declares a module-level RUNS_REPOSITORY_CODE string
 saying so, and its command must keep prompting. A fence command that runs one, through ${CLAUDE_SKILL_DIR}, is
 REPOSITORY_CODE <tool> <line> <command> when no grant of that tool covers it, as intended, and
@@ -393,12 +397,19 @@ def grants(pattern: str, command: str) -> bool:
     """Whether a Bash or PowerShell permission pattern matches a command, by Claude Code's rules.
 
     The comparison is on the command's text, quotes included, and `*` matches any text. The legacy `prefix:*` is
-    read as `prefix *`. Where the rules are unclear this errs toward no match, so a grant is never overstated.
+    read as `prefix *`, and a pattern whose only `*` ends it after a space also matches the bare command before it.
+    Where the rules are unclear this errs toward no match, so a grant is never overstated.
     """
-    if pattern.endswith(":*"):
-        pattern = pattern[:-2] + " *"
+    pattern = trailing_wildcard(pattern)
+    if pattern.endswith(" *") and pattern.count("*") == 1 and command == pattern[:-2]:
+        return True
     expression = ".*".join(re.escape(part) for part in pattern.split("*"))
     return re.fullmatch(expression, command, re.DOTALL) is not None
+
+
+def trailing_wildcard(pattern: str) -> str:
+    """The pattern with the legacy `prefix:*` read as `prefix *`, which Claude Code treats alike."""
+    return pattern[:-2] + " *" if pattern.endswith(":*") else pattern
 
 
 def runs_repository_code(script: Path) -> bool:
@@ -450,13 +461,25 @@ def names_one_sibling_script(pattern: str) -> bool:
     return pattern[start - 1 : start] == '"' and end >= 0 and "*" not in path and not path.endswith("/")
 
 
+def ends_its_path_before_the_wildcard(pattern: str) -> bool:
+    """Whether a pattern's first `*` follows a space outside quotes, so the path before it is closed and the `*`
+    stands only for what follows the command's script: a `*` that continues a path or a quoted string matches every
+    file that path starts and every `..` path out of it. A pattern with no `*` passes."""
+    pattern = trailing_wildcard(pattern)
+    star = pattern.find("*")
+    if star < 0:
+        return True
+    return star > 0 and pattern[star - 1] == " " and pattern[:star].count('"') % 2 == 0
+
+
 def grant_findings(
     entries: list[tuple[str, str | None]],
     commands: list[tuple[int, str]],
     repository_code: frozenset[str] = frozenset(),
 ) -> list[str]:
-    """Shell grants that scope nothing or lack their twin, fence commands no grant of a shell covers, and whether a
-    grant covers a command in repository_code, which runs code from the target repository and must keep prompting.
+    """Shell grants that scope nothing, lack their twin, or leave a path open before a `*`, fence commands no grant of
+    a shell covers, and whether a grant covers a command in repository_code, which runs code from the target repository
+    and must keep prompting.
     """
     shell = [(name, pattern) for name, pattern in entries if name in SHELL_TOOLS]
     output = [
@@ -477,6 +500,11 @@ def grant_findings(
         f"SIBLING_FOLDER_ALLOWED {entry_text(name, pattern)}"
         for name, pattern in scoped
         if not names_one_sibling_script(pattern)
+    ]
+    output += [
+        f"OPEN_PATH_ALLOWED {entry_text(name, pattern)}"
+        for name, pattern in scoped
+        if names_one_sibling_script(pattern) and not ends_its_path_before_the_wildcard(pattern)
     ]
     for number, command in commands:
         for tool in SHELL_TOOLS:

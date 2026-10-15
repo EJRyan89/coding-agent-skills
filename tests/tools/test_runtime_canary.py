@@ -261,8 +261,8 @@ class DeploymentTests(RuntimeCanaryTestCase):
         skill = (self.home / ".claude" / "skills" / FIXTURE / "SKILL.md").read_text(encoding="utf-8")
         self.assertNotIn("{{", skill)
         for line in (
-            f'allowed-tools: ["Bash({PYTHON} -B \\"${{CLAUDE_SKILL_DIR}}/scripts/*)", '
-            f'"PowerShell({PYTHON} -B \\"${{CLAUDE_SKILL_DIR}}/scripts/*)"]',
+            f'allowed-tools: ["Bash({PYTHON} -B \\"${{CLAUDE_SKILL_DIR}}/scripts/canary_probe.py\\" *)", '
+            f'"PowerShell({PYTHON} -B \\"${{CLAUDE_SKILL_DIR}}/scripts/canary_probe.py\\" *)"]',
             f'{PYTHON} -B "${{CLAUDE_SKILL_DIR}}/scripts/canary_probe.py"',
         ):
             self.assertIn(line, skill.splitlines())

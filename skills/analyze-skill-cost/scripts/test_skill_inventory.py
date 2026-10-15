@@ -584,6 +584,31 @@ class ToolsTests(TemporaryTestCase):
                 expected = [f"SIBLING_FOLDER_ALLOWED {tool}({pattern})" for tool in ("Bash", "PowerShell")]
                 self.assertEqual(expected if reported else [], [x for x in lines if x.startswith("SIBLING_")])
 
+    def test_a_pattern_whose_wildcard_continues_its_path_is_reported(self) -> None:
+        own = 'python -B "${CLAUDE_SKILL_DIR}/scripts/'
+        cases = {
+            f"{own}*": True,
+            f'{own}a*.py" *': True,
+            f"{own}a.py *": True,
+            "python tools/a.py*": True,
+            "python tools/*": True,
+            "python tools/a.py:*": False,
+            "* --version": True,
+            f'{own}a.py" *': False,
+            f'{own}a.py"': False,
+            "python tools/a.py *": False,
+            "gh pr create *": False,
+            "git rev-parse --show-toplevel": False,
+            # A sibling's folder is reported once, as SIBLING_FOLDER_ALLOWED.
+            'python -B "${CLAUDE_SKILL_DIR}/../core/scripts/*': False,
+        }
+        for pattern, reported in cases.items():
+            with self.subTest(pattern=pattern):
+                allowed = json.dumps([f"Bash({pattern})", f"PowerShell({pattern})"])
+                lines = self.tools(f"---\nallowed-tools: {allowed}\n---\n")
+                expected = [f"OPEN_PATH_ALLOWED {tool}({pattern})" for tool in ("Bash", "PowerShell")]
+                self.assertEqual(expected if reported else [], [x for x in lines if x.startswith("OPEN_PATH")])
+
     def test_each_parenthesized_entry_of_a_plain_scalar_is_its_own_grant(self) -> None:
         cases = {
             "Bash(ls *), PowerShell(ls *)": [],
@@ -698,6 +723,16 @@ class ToolsTests(TemporaryTestCase):
             ("git rev-parse:*", "git rev-parsed", False),
             ("ls *", "ls -la", True),
             ("ls *", "lsof", False),
+            # A `*` at the end after a space, as the only wildcard, also matches the bare command; without the space
+            # it continues the word.
+            ("ls *", "ls", True),
+            ("ls:*", "ls", True),
+            ("ls*", "lsof", True),
+            ("* --help *", "npm --help", False),
+            ('python -B "${CLAUDE_SKILL_DIR}/scripts/a.py" *', 'python -B "${CLAUDE_SKILL_DIR}/scripts/a.py"', True),
+            ("python tools/a.py *", "python tools/a.py --write", True),
+            ("python tools/a.py *", "python tools/a.py/../../b.py", False),
+            ("python tools/a.py*", "python tools/a.py/../../b.py", True),
             # No path is normalized, so a pattern ending in a folder also matches a `..` path out of it, and one
             # ending at a script's closing quote matches only that script.
             (
@@ -713,6 +748,11 @@ class ToolsTests(TemporaryTestCase):
             (
                 'python -B "${CLAUDE_SKILL_DIR}/../core/scripts/a.py" *',
                 'python -B "${CLAUDE_SKILL_DIR}/../core/scripts/a.py/../config.py" write x',
+                False,
+            ),
+            (
+                'python -B "${CLAUDE_SKILL_DIR}/scripts/a.py" *',
+                'python -B "${CLAUDE_SKILL_DIR}/scripts/a.py/../../../core/scripts/config.py" write x',
                 False,
             ),
         ]
