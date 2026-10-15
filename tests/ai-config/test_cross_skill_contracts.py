@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import ast
+import contextlib
+import io
 import json
 import os
 import re
@@ -706,10 +708,7 @@ class CrossSkillContractTests(GitTestCase):
         self.assertLessEqual(timeout, 100, "each wait fits well inside a 2-minute command limit")
         self.assertGreater(command_minutes * 60, timeout)
         self.assertLessEqual(timeout, literal_int(pipeline, "MAX_WAIT_SECONDS"))
-        self.assertIn(
-            "`OVERDUE <selector> <id> <seconds>s` means that role ran past the reviewer limit; step 4 retries it.",
-            workflow,
-        )
+        self.assertIn("Its `READY` and `OVERDUE` lines mean what they mean in step 3.", workflow)
         # Every mode ends by listing the runs that never reached finalize, and a denied command is a failure.
         self.assertIn(
             "run the pipeline's `unfinalized` command with one `--run` per `RUN` directory `prepare` printed. "
@@ -724,6 +723,64 @@ class CrossSkillContractTests(GitTestCase):
         source = pipeline.read_text(encoding="utf-8")
         self.assertIn('wait_reviewers_parser = commands.add_parser("wait-reviewers")', source)
         self.assertIn('for name in ("check", "finalize", "unfinalized"):', source)
+
+    def test_review_prs_waits_for_native_subagents_before_checking_them(self) -> None:
+        # The Agent tool returns before its subagent finishes, so a check straight after starting one found no
+        # result: it spent the role's one retry, and a second early check failed the pull request.
+        _, body = frontmatter_and_body((REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig"))
+        grouped = body.split("## With the Workflow tool", 1)[0]
+        review = grouped.split("3. **Review.**", 1)[1].split("4. **Check**", 1)[0]
+        check = grouped.split("4. **Check**", 1)[1].split("5. **Finalize**", 1)[0]
+        waits = re.findall(
+            r"Once the subagents are started, wait for them in this turn, never by ending it: run "
+            r"`wait-reviewers --run <run directory> --timeout (\d+)`, one `--run` per run that printed `ROLE` lines, "
+            r"with a command timeout of at least (\d+) minutes, again each time it prints a "
+            r"`RUNNING <selector> <id> <seconds>s` line\.",
+            review,
+        )
+        self.assertEqual(1, len(waits), "step 3 waits for the native subagents in repeated bounded calls")
+        timeout, command_minutes = (int(value) for value in waits[0])
+        self.assertLessEqual(timeout, 100, "each wait fits well inside a 2-minute command limit")
+        self.assertGreater(command_minutes * 60, timeout)
+        pipeline = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py"
+        self.assertLessEqual(timeout, literal_int(pipeline, "MAX_WAIT_SECONDS"))
+        self.assertIn("`READY <selector>` means every role of that run has a valid result.", review)
+        self.assertIn(
+            "`OVERDUE <selector> <id> <seconds>s` means that role ran past the reviewer limit; step 4 retries it.",
+            review,
+        )
+        self.assertIn("once those waits end", check)
+        self.assertIn(
+            "wait for the new subagents with `wait-reviewers` as in step 3, then check those runs again", check
+        )
+        # Only runs that printed ROLE lines go to wait-reviewers: it refuses a host run and an inline run.
+        source = pipeline.read_text(encoding="utf-8")
+        self.assertIn("runs on the Copilot CLI host; wait for it with wait", source)
+        self.assertIn("raise _inline_only(state)", source.split("def wait_for_reviewers(", 1)[1].split("\ndef ", 1)[0])
+        # review-document starts native subagents the same way, so it waits the same way.
+        _, document = frontmatter_and_body(
+            (REPOSITORY_ROOT / "skills/review-document/SKILL.md").read_text(encoding="utf-8-sig")
+        )
+        self.assertIn(
+            f'Then run `wait-reviewers --run "<run directory>" --timeout {timeout}` with a command timeout of at least '
+            f"{command_minutes} minutes, again while it prints `RUNNING`.",
+            document,
+        )
+
+    def test_review_prs_reports_a_run_that_prepared_nothing_without_unfinalized(self) -> None:
+        # unfinalized needs a --run, so with no RUN line step 7 named a usage error, which the next sentence then
+        # made a failure of an empty batch or an all-skipped run.
+        _, body = frontmatter_and_body((REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig"))
+        self.assertIn(
+            "If `prepare` printed no `RUN` line, as when `enumerate` printed no `PULL` line or every pull request "
+            "printed `SKIP` or `FAILED` at `prepare`, nothing was prepared: run no `unfinalized`, and report the "
+            "`LISTED`, `SKIP`, `FAILED`, and `WATERMARK` lines as they are.",
+            body,
+        )
+        with contextlib.redirect_stderr(io.StringIO()) as stderr, self.assertRaises(SystemExit) as caught:
+            review_pipeline.main(["unfinalized"])
+        self.assertEqual(2, caught.exception.code)
+        self.assertIn("the following arguments are required: --run", stderr.getvalue())
 
     def test_review_prs_works_an_inline_run_through_next_role_and_states_its_boundary(self) -> None:
         # Copilot CLI cannot start subagents, so the orchestrating session works each role itself.
