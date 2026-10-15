@@ -6,17 +6,27 @@ table or states its reason.
 
 from __future__ import annotations
 
+import ast
 import sys
 import tempfile
 import unittest
+from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 from git_test_base import GitTestCase
-from kinds_table import kinds_table_problems
+from kinds_table import kind_findings, kind_vocabulary_problems, kinds_table_problems
 from validation_support import write_fixture_tree
+
+
+@dataclass(frozen=True)
+class Kind:
+    key: str
+    label: str
+    root: str
+
 
 SUFFIX = "; iterate deployer/kinds.py's KINDS, or state why in KINDS_ALLOWED"
 
@@ -129,6 +139,46 @@ class KindsTableFixtures(GitTestCase):
                 "deployer/unexplained.py: KINDS_ALLOWED must map each pass to the reason it treats a kind apart",
             ],
             self.problems(files),
+        )
+
+    def test_a_case_that_matches_a_kind_and_a_table_keyed_by_one_kind_branch_on_it(self) -> None:
+        def findings(body: str) -> list[tuple[int, str, str]]:
+            return kind_findings(ast.parse(f"from deployer import kinds\n\n\ndef f(kind):\n{body}"), "deployer")
+
+        self.assertEqual(
+            [(6, "f", "branches on a kind")],
+            findings("    match kind:\n        case kinds.SKILL:\n            return 1\n    return 0\n"),
+        )
+        self.assertEqual(
+            [(6, "f", "names the kind literal 'claude'")],
+            findings('    match kind:\n        case "claude":\n            return 1\n    return 0\n'),
+        )
+        self.assertEqual([(5, "f", "branches on a kind")], findings("    return {kinds.SKILL: 1}.get(kind, 0)\n"))
+        self.assertEqual([(5, "f", "branches on a kind")], findings("    return 1 if kind == kinds.SKILL else 0\n"))
+        # Iterating the table, and a case on anything else, treat no kind apart.
+        self.assertEqual(
+            [],
+            findings(
+                "    for each in kinds.KINDS:\n        print({each.key: 1})\n    match kind:\n"
+                '        case "other":\n            return 1\n    return 0\n'
+            ),
+        )
+
+    def test_every_string_the_table_gives_a_kind_is_pinned(self) -> None:
+        pinned = Kind("skills", "", "claude")
+        self.assertEqual([], kind_vocabulary_problems([pinned]))
+        added = Kind("plugins", "plugin", "claude-plugins")
+        self.assertEqual(
+            [
+                f"deployer/kinds.py gives a kind the {field} {value!r}, which KIND_STRINGS in "
+                "tests/validation/kinds_table.py does not pin; add it there"
+                for field, value in (
+                    ("manifest key", "plugins"),
+                    ("report label", "plugin"),
+                    ("journal root", "claude-plugins"),
+                )
+            ],
+            kind_vocabulary_problems([pinned, added]),
         )
 
 

@@ -856,8 +856,9 @@ class CommandReader:
             for node in ast.walk(self.tree):
                 if isinstance(node, (ast.List, ast.Tuple)) and node.elts:
                     first = node.elts[0]
-                    if isinstance(first, ast.Constant) and _text_constant(first).value in known:
-                        found.add(_text_constant(first).value)
+                    text = _text_constant(first).value if isinstance(first, ast.Constant) else None
+                    if isinstance(text, str) and text in known:
+                        found.add(text)
                 elif isinstance(node, ast.Call):
                     client = self.clients.get(self.resolver.name(node.func))
                     found |= {client} if client else set()
