@@ -128,7 +128,9 @@ class UnreadableFileTests(RemedyTestCase):
         with self.unreadable(path):
             result = self.deploy("--all", "--dry-run")
         self.assertEqual(1, result.code, result.output)
-        self.assert_lines(result.output, f"ERROR: {message}: {path}: Permission denied", remedy, self.DEBUG_HINT)
+        self.assert_lines(
+            result.output, f"ERROR: {message}: {forward(path)}: Permission denied", remedy, self.DEBUG_HINT
+        )
         self.assertNotIn(malformed, result.output)
 
     def test_an_unreadable_manifest_is_not_reported_as_malformed(self) -> None:

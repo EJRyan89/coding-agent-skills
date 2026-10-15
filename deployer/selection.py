@@ -29,7 +29,7 @@ def select_all(context: Context, include: list[str]) -> Selection:
 def check_includes(src: source.Source, include: list[str]) -> None:
     """Refuse unknown --include roots before claiming the home or recovering an earlier deployment."""
     roots = set(src.bundles) | set(source.root_names(src))
-    unknown = [name for name in include if name not in roots]
+    unknown = [name for name in dict.fromkeys(include) if name not in roots]
     if unknown:
         raise usage_error(f"--include names no bundle or skill in this source: {', '.join(unknown)}")
 
@@ -82,7 +82,10 @@ def select(context: Context) -> Selection | None:
             if index < 0 or index >= len(choices):
                 raise DeployError(f"ERROR: Selection '{token}' is out of range")
             name, kind = choices[index]
-            (selection.bundles if kind == "bundle" else selection.skills).append(name)
+            chosen = selection.bundles if kind == "bundle" else selection.skills
+            # The manifest records each requested root once, however often the answer names it.
+            if name not in chosen:
+                chosen.append(name)
     if not selection.bundles and not selection.skills and not selection.deselect_all:
         print("", file=sys.stderr)
         print("No skills selected.", file=sys.stderr)

@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-import contextlib
-import io
 import unittest
 
 from harness import DeployerTestCase, forward
-
-from deployer import cli
 
 
 class PromptStreamTests(DeployerTestCase):
@@ -18,10 +14,8 @@ class PromptStreamTests(DeployerTestCase):
         self.make_skill("alpha", "Alpha")
 
     def run_split(self, *arguments: str, stdin: str) -> tuple[int, str, str]:
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = cli.main(list(arguments), self.paths, io.StringIO(stdin))
-        return code, out.getvalue(), err.getvalue()
+        result = self.run_cli(*arguments, stdin=stdin)
+        return result.code, result.stdout, result.stderr
 
     def test_configure_prompts_reach_stderr_and_not_stdout(self) -> None:
         self.repos.mkdir(parents=True, exist_ok=True)
