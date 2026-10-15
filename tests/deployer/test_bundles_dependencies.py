@@ -534,6 +534,23 @@ class OptInTests(DeployerTestCase):
         self.assertEqual(dry_run, deployed)
         return deployed
 
+    def assert_next_all(
+        self, unchanged: list[str], installed: tuple[str, ...] = (), removed: tuple[str, ...] = ()
+    ) -> None:
+        """Run --all as a dry run and then for real, and require each to report these skills unchanged, installed, and
+        removed, under its own labels."""
+        for arguments, title, labels in (
+            (("--all", "--dry-run"), "DRY RUN", ("FRESH INSTALL", "REMOVE")),
+            (("--all",), "DEPLOYED", ("INSTALLED", "REMOVED")),
+        ):
+            with self.subTest(title=title):
+                groups = self.report_groups(self.deploy_ok(*arguments).output, title)
+                expected = {"UNCHANGED": unchanged, labels[0]: list(installed), labels[1]: list(removed)}
+                self.assertEqual(
+                    {label: names for label, names in expected.items() if names},
+                    {label: [line.split()[0] for line in lines] for label, lines in groups.items()},
+                )
+
     def regroup(
         self,
         bundles: dict[str, Any],
@@ -656,7 +673,8 @@ class OptInTests(DeployerTestCase):
                 self.assertEqual({bundle: ["fmt", "x"]}, entry["requested_bundle_members"])
 
     def test_a_renamed_bundle_beside_a_skill_preserved_through_the_version_8_upgrade_stays_in_all(self) -> None:
-        # everyday's filled-in dependencies name both members and lie on no cycle, since fmt and x record exact ones.
+        # everyday's filled-in dependencies name both members and lie on no cycle, since fmt and x record exact ones,
+        # but the source declares no dependency of everyday's, so they explain neither.
         report = self.regrouped({"kit": {"members": ["fmt", "x"], "opt_in": True}}, preserved="everyday")
         self.assertEqual({"UNCHANGED": ["everyday", "fmt", "x"]}, report)
         self.assertEqual(["everyday", "fmt", "x"], self.installed())
@@ -706,9 +724,8 @@ class OptInTests(DeployerTestCase):
     def test_a_renamed_bundle_beside_a_skill_preserved_by_a_deployment_that_installed_a_new_dependency_stays_in_all(
         self,
     ) -> None:
-        # The new skill brought a new opt-in dependency, which is not requested on its own but reached from one that is.
-        # newer's exact list then reads as a filled-in one would, naming every skill but a request and what it reaches,
-        # so the entry keeps more: helper counts as chosen and is requested from then on.
+        # The new skill brought a new opt-in dependency, which newer's exact list records and the source still declares,
+        # so helper stays a dependency while everyday's filled-in list explains neither member.
         self.make_skill("newer", "Newer", skill_deps=["helper"])
         self.make_skill("helper", "Helper", opt_in=True)
         report = self.regrouped(
@@ -719,7 +736,7 @@ class OptInTests(DeployerTestCase):
         self.assertEqual({"UNCHANGED": ["everyday", "fmt", "helper", "newer", "x"]}, report)
         entry = self.manifest()["sources"]["test/skills"]
         self.assertEqual(["kit"], entry["requested_bundles"])
-        self.assertEqual(["everyday", "helper", "newer"], entry["requested_skills"])
+        self.assertEqual(["everyday", "newer"], entry["requested_skills"])
 
     def test_a_member_moved_out_beside_a_member_preserved_by_a_deployment_that_installed_a_new_one_stays_in_all(
         self,
@@ -734,13 +751,12 @@ class OptInTests(DeployerTestCase):
         self.assertEqual({"pack": ["fmt"]}, entry["requested_bundle_members"])
         self.assertEqual(["everyday", "newer", "x"], entry["requested_skills"])
 
-    def test_a_renamed_bundle_beside_a_skill_preserved_by_a_deployment_that_included_a_new_bundle_needs_include(
+    def test_a_renamed_bundle_beside_a_skill_preserved_by_a_deployment_that_included_a_new_bundle_stays_in_all(
         self,
     ) -> None:
         # That deployment installed np through a bundle request whose members it did not record, so no request on its
-        # own reaches np, which everyday's filled-in dependencies do not name: they read as exact, and fmt and x as
-        # everyday's dependencies. An ordinary entry that deployment wrote reads the same, so docs/installation.md
-        # names this history and the --include that keeps the renamed bundle; widening the read is a decision.
+        # own reaches np, which everyday's filled-in dependencies do not name; the source declares no dependency of
+        # everyday's, so that list explains neither fmt nor x.
         self.make_skill("np", "Np")
         pack2 = {"pack2": {"members": ["np"], "opt_in": True}}
         self.regroup(
@@ -749,18 +765,12 @@ class OptInTests(DeployerTestCase):
             installed_since=("np",),
             also_included=pack2,
         )
-        groups = self.report_groups(self.deploy_ok("--all", "--dry-run").output, "DRY RUN")
-        self.assertEqual(["everyday", "np"], groups["UNCHANGED"])
-        self.assertEqual(["fmt", "x"], [line.split()[0] for line in groups["REMOVE"]])
-        kept = self.report_groups(self.deploy_ok("--all", "--include", "kit").output, "DEPLOYED")
-        self.assertEqual({"UNCHANGED": ["everyday", "fmt", "np", "x"]}, kept)
-        self.assertEqual(
-            {"UNCHANGED": ["everyday", "fmt", "np", "x"]},
-            self.report_groups(self.deploy_ok("--all").output, "DEPLOYED"),
-        )
+        self.assertRegex(self.deploy("--dry-run", stdin="\n").output, r"(?m)^  \[\*\] [0-9]+\. kit \(bundle, opt-in\)$")
+        self.assertEqual({"UNCHANGED": ["everyday", "fmt", "np", "x"]}, self.next_all())
         entry = self.manifest()["sources"]["test/skills"]
         self.assertEqual(["kit", "pack2"], entry["requested_bundles"])
         self.assertEqual({"kit": ["fmt", "x"], "pack2": ["np"]}, entry["requested_bundle_members"])
+        self.assertEqual(["everyday"], entry["requested_skills"])
 
     def test_a_renamed_bundle_beside_a_skill_preserved_beside_a_new_dependency_chain_stays_in_all(self) -> None:
         # newer and the opt-in chain it depends on are new: helper2 is reached from the request only through helper.
@@ -819,9 +829,8 @@ class OptInTests(DeployerTestCase):
     def test_a_renamed_bundle_beside_a_preserved_skill_whose_list_a_new_skills_list_contains_stays_in_all(
         self,
     ) -> None:
-        # newer's exact list contains everyday's filled-in one, and newer no longer depends on fmt and x. Both lists
-        # are set aside, since each leaves out only skills requested on their own, and every member of kit is
-        # installed, so fmt and x stand for the request.
+        # newer's exact list contains everyday's filled-in one, and the source no longer has newer depend on fmt and
+        # x, so neither list explains them and they stand for the request.
         self.preserve_beside_a_skill_whose_list_contains_it()
         self.make_source_json(bundles={"kit": {"members": ["fmt", "x"], "opt_in": True}})
         self.make_skill("newer", "Newer", skill_deps=["helper"])
@@ -832,23 +841,17 @@ class OptInTests(DeployerTestCase):
         self.assertEqual({"kit": ["fmt", "x"]}, entry["requested_bundle_members"])
         self.assertEqual(["everyday", "helper", "newer"], entry["requested_skills"])
 
-    def test_a_renamed_bundle_that_gained_a_member_beside_a_preserved_skill_needs_include(self) -> None:
-        # Setting everyday's filled-in dependencies aside would choose kit through fmt and x, but kit holds y, which is
-        # not installed, and choosing it would add y. The entry cannot tell kit from an unchosen bundle one of whose
-        # members another skill depends on, so docs/installation.md names this history and the --include that keeps
-        # the renamed bundle.
+    def test_a_renamed_bundle_that_gained_a_member_beside_a_preserved_skill_stays_in_all_and_completes(self) -> None:
+        # No dependency the source declares explains fmt or x, so they stand for the request, and --all keeps kit and
+        # installs y, the member it gained, as it does for a bundle requested under its current name.
         self.regroup({"kit": {"members": ["fmt", "x", "y"], "opt_in": True}}, preserved="everyday")
         self.make_skill("y", "Y")
-        self.assertRegex(self.deploy("--dry-run", stdin="\n").output, r"(?m)^  \[ \] [0-9]+\. kit \(bundle, opt-in\)$")
-        groups = self.report_groups(self.deploy_ok("--all", "--dry-run").output, "DRY RUN")
-        self.assertEqual(["everyday"], groups["UNCHANGED"])
-        self.assertEqual(["fmt", "x"], [line.split()[0] for line in groups["REMOVE"]])
-        self.deploy_ok("--all", "--include", "kit")
+        self.assertRegex(self.deploy("--dry-run", stdin="\n").output, r"(?m)^  \[\*\] [0-9]+\. kit \(bundle, opt-in\)$")
+        self.assert_next_all(["everyday", "fmt", "x"], installed=("y",))
         self.assertEqual(["everyday", "fmt", "x", "y"], self.installed())
-        self.assertEqual({"UNCHANGED": ["everyday", "fmt", "x", "y"]}, self.next_all())
-        self.assertEqual(
-            {"kit": ["fmt", "x", "y"]}, self.manifest()["sources"]["test/skills"]["requested_bundle_members"]
-        )
+        entry = self.manifest()["sources"]["test/skills"]
+        self.assertEqual(["kit"], entry["requested_bundles"])
+        self.assertEqual({"kit": ["fmt", "x", "y"]}, entry["requested_bundle_members"])
 
     def assert_a_dependency_only_member_stays_unchosen(self, installed_since: tuple[str, ...] = ()) -> None:
         """Deploy everyday, tool, which depends on helper, a member of an opt-in bundle hb nobody requested, and opt-in
@@ -889,8 +892,8 @@ class OptInTests(DeployerTestCase):
     def test_a_dependency_only_member_beside_a_skill_preserved_through_the_version_8_upgrade_leaves_its_bundle_out(
         self,
     ) -> None:
-        # everyday's filled-in dependencies name every other skill, so they name tool, helper, and more: tool's exact
-        # list is read as recorded, and helper stays a dependency.
+        # everyday's filled-in dependencies name every other skill, tool and helper among them, and tool's exact list
+        # names helper, which the source still declares, so helper stays a dependency.
         self.assert_a_dependency_only_member_stays_unchosen()
 
     def test_a_dependency_only_member_beside_a_skill_preserved_beside_a_newly_installed_one_leaves_its_bundle_out(
@@ -904,9 +907,9 @@ class OptInTests(DeployerTestCase):
     def test_a_dependency_only_member_beside_a_skill_preserved_by_the_deployment_that_installed_its_dependent_stays_out(
         self,
     ) -> None:
-        # tool and helper are new, so everyday's filled-in dependencies name only fmt and x, and they reach every skill
-        # tool's exact list leaves out: that list reads as a filled-in one would. Setting it aside would choose hb
-        # through helper and install mate, which is adding, not keeping, so helper stays a dependency.
+        # tool and helper are new, so everyday's filled-in dependencies name only fmt and x; tool's exact list names
+        # helper, which the source still declares, so helper stays a dependency and hb, which would install mate,
+        # stays unchosen.
         self.assert_a_dependency_only_member_stays_unchosen(("helper", "tool"))
 
     def assert_an_entry_recorded_before_bundle_members_installs_nothing_unchosen(
@@ -933,15 +936,15 @@ class OptInTests(DeployerTestCase):
     def test_an_entry_recorded_before_bundle_members_does_not_choose_a_requested_skills_opt_in_dependency(
         self,
     ) -> None:
-        # r's exact dependencies leave out pack's members, which no request on its own reaches, so they are read.
+        # r's exact dependencies name helper, and the source still declares them.
         self.assert_an_entry_recorded_before_bundle_members_installs_nothing_unchosen(
             {"hb": ["helper", "mate"], "pack": {"members": ["p1", "p2"], "opt_in": True}},
             {"r": ["helper"], "helper": [], "mate": [], "p1": [], "p2": []},
         )
 
     def test_an_entry_recorded_before_bundle_members_reads_a_list_by_what_other_requests_reach(self) -> None:
-        # Through its own dependencies r reaches gamma, pack's only member, and every other skill is requested on its
-        # own; what r's own list reaches does not count, so r's list is read and beta stays a dependency.
+        # r depends on beta and beta on gamma, pack's only member, as the entry records and the source declares, so
+        # beta stays a dependency.
         self.assert_an_entry_recorded_before_bundle_members_installs_nothing_unchosen(
             {"hb": ["beta", "mate"], "pack": {"members": ["gamma"], "opt_in": True}},
             {"r": ["beta"], "beta": ["gamma"], "gamma": [], "mate": []},
@@ -950,8 +953,7 @@ class OptInTests(DeployerTestCase):
     def test_an_entry_recorded_before_bundle_members_keeps_out_a_bundle_another_requests_list_reaches_around(
         self,
     ) -> None:
-        # a reaches p1, the only skill r's exact list leaves out but requests on their own, so r's list reads as a
-        # filled-in one would; hb, which helper would choose, has a member not installed, so helper stays a dependency.
+        # a depends on p1 and r on helper, and the source declares both, however the lists compare with each other.
         self.assert_an_entry_recorded_before_bundle_members_installs_nothing_unchosen(
             {"hb": ["helper", "mate"], "pack": {"members": ["p1"], "opt_in": True}},
             {"a": ["p1"], "r": ["helper"], "helper": [], "mate": [], "p1": []},
@@ -960,8 +962,7 @@ class OptInTests(DeployerTestCase):
     def test_an_entry_recorded_before_bundle_members_keeps_out_a_bundle_when_two_requests_reach_around_each_other(
         self,
     ) -> None:
-        # r's and s's exact lists each leave out what the other reaches, and the entry cannot tell which, if either, is
-        # filled in.
+        # r's and s's exact lists each leave out what the other names, and the source declares both.
         self.assert_an_entry_recorded_before_bundle_members_installs_nothing_unchosen(
             {"hb": ["helper", "mate"], "pack": {"members": ["p1"], "opt_in": True}},
             {"r": ["helper"], "s": ["p1"], "helper": [], "mate": [], "p1": []},
@@ -977,6 +978,45 @@ class OptInTests(DeployerTestCase):
         self.assertIn("Selected 1 item (2 skills):\n  everyday\n    fmt (dependency)\n", result)
         self.assertEqual({"UNCHANGED": ["everyday", "fmt"]}, self.report_groups(result, "DEPLOYED"))
         self.assertEqual([], self.manifest()["sources"]["test/skills"]["requested_bundles"])
+
+    def test_a_bundle_member_installed_only_as_a_dependency_in_a_version_7_manifest_stays_unchosen(self) -> None:
+        # The upgrade fills in fmt's and everyday's lists with each other, a cycle; the source declares everyday's
+        # dependency on fmt and not fmt's on everyday, so fmt stays a dependency and pack, whose extra is not installed,
+        # stays unchosen.
+        self.dependency_member_fixture()
+        self.deploy_ok("--all")
+        self.rewrite_as_version_7([])
+        self.assertRegex(self.deploy("--dry-run", stdin="\n").output, r"(?m)^  \[ \] [0-9]+\. pack \(bundle, opt-in\)$")
+        result = self.deploy_ok("--all").output
+        self.assertIn("Selected 1 item (2 skills):\n  everyday\n    fmt (dependency)\n", result)
+        self.assertEqual({"UNCHANGED": ["everyday", "fmt"]}, self.report_groups(result, "DEPLOYED"))
+        entry = self.manifest()["sources"]["test/skills"]
+        self.assertEqual([], entry["requested_bundles"])
+        self.assertEqual(["everyday"], entry["requested_skills"])
+
+    def test_a_dependency_the_source_drops_keeps_its_skill_in_an_entry_recorded_before_bundle_members(self) -> None:
+        # The entry records everyday's dependency on fmt, but the source no longer declares it, so it explains nothing:
+        # an entry that recorded no bundle members cannot tell fmt from a member of a bundle request, and --all keeps
+        # it and completes its bundle rather than remove a skill the user may have chosen.
+        self.dependency_member_fixture()
+        self.deploy_ok("--all")
+        self.drop_bundle_members()
+        self.make_skill("everyday", "Everyday")
+        self.assertRegex(
+            self.deploy("--dry-run", stdin="\n").output, r"(?m)^  \[\*\] [0-9]+\. pack \(bundle, opt-in\)$"
+        )
+        self.assert_next_all(["everyday", "fmt"], installed=("extra",))
+        entry = self.manifest()["sources"]["test/skills"]
+        self.assertEqual(["pack"], entry["requested_bundles"])
+        self.assertEqual({"pack": ["extra", "fmt"]}, entry["requested_bundle_members"])
+
+    def test_a_dependency_the_source_drops_removes_its_skill_in_an_entry_that_records_bundle_members(self) -> None:
+        # The same history in an entry that records its bundle members is read as recorded: fmt was no request's.
+        self.dependency_member_fixture()
+        self.deploy_ok("--all")
+        self.make_skill("everyday", "Everyday")
+        self.assert_next_all(["everyday"], removed=("fmt",))
+        self.assertEqual(["everyday"], self.installed())
 
     def test_a_bundle_member_installed_only_as_a_dependency_stays_unchosen_when_the_source_regroups_it(self) -> None:
         self.dependency_member_fixture()

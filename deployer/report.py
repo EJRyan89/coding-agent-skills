@@ -161,19 +161,18 @@ def requested_members(owned: manifest.Ownership, src: source.Source) -> set[str]
     requested bundle.
 
     A bundle request stands for the members the deployment that recorded it expanded it to, so it survives the source
-    renaming the bundle or moving a member out of it. An entry that records no members cannot say what its bundle
-    requests stood for, and an earlier release's --migrate-from recorded no bundle request at all, relying on the
-    installed members, so such an entry's requests also stand for each installed skill no other installed skill
-    depends on, by an edge a deployment recorded rather than one the upgrade of a manifest that recorded none filled in
-    (`Ownership.installed_roots`, read against this source's bundles). That is what the user chose, never a skill
-    installed only as another's dependency a deployment recorded, and it is read from the installed skills rather than
-    from the bundle this source gives the request's name, which may hold other skills since the source regrouped them.
+    renaming the bundle or moving a member out of it. An entry that records the members of every bundle it requests is
+    read as recorded. One an earlier release wrote records none, and that release's --migrate-from recorded no bundle
+    request at all, relying on the installed members, so such an entry's requests also stand for each installed skill
+    that no other installed skill depends on by a dependency the entry records and this source still declares
+    (`Ownership.installed_roots`). It is read from the installed skills rather than from the bundle this source gives
+    the request's name, which may hold other skills since the source regrouped them.
     """
     members = set(owned.requested_skills)
     for bundle in owned.requested_bundles:
         members |= owned.requested_bundle_members.get(bundle, set())
     if not members_recorded(owned):
-        members |= owned.installed_roots(src.bundles)
+        members |= owned.installed_roots({name: skill.skill_deps for name, skill in src.skills.items()})
     return members
 
 

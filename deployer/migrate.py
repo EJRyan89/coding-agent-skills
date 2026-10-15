@@ -8,7 +8,6 @@ from . import hashing, journal, platform_support, source
 from .context import Context
 from .errors import DeployError, see_recovery
 from .kinds import AGENT_KIND, KINDS, SHARED, SKILL, ItemKind
-from .names import require_safe_name
 from .report import ReportLine, members_recorded, print_report, requested_members
 
 KINDS_ALLOWED = {
@@ -26,7 +25,6 @@ def _migration_candidates(context: Context, old_entry: dict, kind: ItemKind) -> 
     candidates: list[str] = []
     for name in sorted(old_entry.get(kind.key, {})):
         if kind is SHARED:
-            require_safe_name(name, "migration shared asset")
             if context.source.shared_assets.get(name) != "owner":
                 continue
             if not (context.paths.skills_src / name).is_file():
@@ -38,10 +36,8 @@ def _migration_candidates(context: Context, old_entry: dict, kind: ItemKind) -> 
                 continue
         elif name not in context.source.skills:
             continue
-        expected = old_entry[kind.key][name].get("hash", "")
+        expected = old_entry[kind.key][name]["hash"]
         subject = f"{kind.label} '{name}'" if kind.label else f"'{name}'"
-        if not isinstance(expected, str) or not hashing.HASH_PATTERN.fullmatch(expected):
-            raise DeployError(f"ERROR: Old manifest has no valid hash for {kind.noun} '{name}'.")
         destination = journal.root_directory(context.paths, kind.root) / name
         if not kind.has_expected_type(destination):
             raise DeployError(f"ERROR: Cannot migrate {subject}: destination is missing.", *restore)

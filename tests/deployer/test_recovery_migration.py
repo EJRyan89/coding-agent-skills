@@ -1343,6 +1343,36 @@ class MigrationTests(DeployerTestCase):
         deployed = self.report_groups(self.deploy_ok("--all").output, "DEPLOYED")
         self.assertEqual(["alpha", "reviewer.md (agent)"], deployed["UNCHANGED"])
 
+    def test_a_migration_from_an_entry_with_a_malformed_hash_or_an_unsafe_shared_name_is_refused_on_load(self) -> None:
+        self.old_source_with_agent()
+        original = self.manifest()
+        valid_hash = original["sources"]["test/old"]["skills"]["alpha"]["hash"]
+        cases = (
+            ("skills", "alpha", {**original["sources"]["test/old"]["skills"]["alpha"], "hash": "nothex"}),
+            (
+                "skills",
+                "alpha",
+                {
+                    key: value
+                    for key, value in original["sources"]["test/old"]["skills"]["alpha"].items()
+                    if key != "hash"
+                },
+            ),
+            ("shared", "../x", {"hash": valid_hash, "role": "owner"}),
+            ("shared", "a/b", {"hash": valid_hash, "role": "owner"}),
+        )
+        for kind, name, value in cases:
+            with self.subTest(kind=kind, name=name, value=value):
+                data = json.loads(json.dumps(original))
+                data["sources"]["test/old"].setdefault(kind, {})[name] = value
+                self.write_manifest(data)
+                self.deploy_fails(
+                    "--migrate-from",
+                    "test/old",
+                    pattern=re.escape(f"ERROR: Manifest entry is malformed: source 'test/old' {kind} '{name}'"),
+                )
+        self.write_manifest(original)
+
     def test_a_fully_migrated_source_that_requested_a_bundle_leaves_the_manifest(self) -> None:
         self.old_source_with_agent(bundles={"pack": {"members": ["alpha"]}})
         self.assertEqual(["pack"], self.manifest()["sources"]["test/old"]["requested_bundles"])
@@ -1590,11 +1620,11 @@ class MigrationTests(DeployerTestCase):
             ["alpha", "beta", "everyday", "newer"],
         )
 
-    def test_a_migration_beside_a_skill_preserved_by_a_deployment_that_included_a_new_bundle_needs_include(
+    def test_a_migration_carries_a_bundle_request_beside_a_skill_preserved_by_a_deployment_that_included_a_new_bundle(
         self,
     ) -> None:
-        # As for --all, the old entry reads everyday's filled-in dependencies as exact, since no request on its own
-        # reaches np, so the migration carries no request for alpha and beta; --include keeps the renamed bundle.
+        # The source declares no dependency of everyday's, so its filled-in list explains no skill, though no request
+        # on its own reaches np, which that deployment installed through a bundle request.
         self.make_skill("everyday", "Everyday")
         self.make_skill("np", "Np")
         pack2 = {"pack2": {"members": ["np"], "opt_in": True}}
@@ -1605,10 +1635,6 @@ class MigrationTests(DeployerTestCase):
         self.make_config()
         self.deploy_ok("--migrate-from", "test/old")
         self.assertEqual(["test/skills"], list(self.manifest()["sources"]))
-        self.assertEqual((["pack2"], {"pack2": ["np"]}, ["everyday"]), self.requests())
-        groups = self.report_groups(self.deploy_ok("--all", "--dry-run").output, "DRY RUN")
-        self.assertEqual(["alpha", "beta"], [line.split()[0] for line in groups["REMOVE"]])
-        self.deploy_ok("--all", "--include", "kit")
         self.assertEqual((["kit", "pack2"], {"kit": ["alpha", "beta"], "pack2": ["np"]}, ["everyday"]), self.requests())
         self.kept_by_all(
             "Selected 3 items (4 skills):\n  kit (bundle)\n    alpha\n    beta\n  pack2 (bundle)\n    np\n  everyday\n",
@@ -1635,15 +1661,16 @@ class MigrationTests(DeployerTestCase):
     def test_a_migration_carries_no_request_for_a_member_installed_only_as_a_dependency_beside_a_preserved_skill(
         self,
     ) -> None:
-        # everyday's filled-in dependencies name tool, its dependency helper, and more, and tool's list is read as
-        # recorded: helper stays a dependency, and the opt-in bundle hb that holds it stays unrequested.
+        # everyday's filled-in dependencies name tool, its dependency helper, and more, and tool's list names helper,
+        # which the source still declares: helper stays a dependency, and the opt-in bundle hb that holds it stays
+        # unrequested.
         self.assert_a_migration_carries_no_request_for_a_dependency_only_member(())
 
     def test_a_migration_carries_no_request_for_a_member_beside_a_skill_preserved_by_the_deployment_that_installed_it(
         self,
     ) -> None:
-        # tool and helper are new, so everyday's filled-in dependencies name only alpha and beta and reach every skill
-        # tool's list leaves out. Setting tool's list aside would request hb, which has a member not installed.
+        # tool and helper are new, so everyday's filled-in dependencies name only alpha and beta; tool's list names
+        # helper, which the source still declares, so hb, which has a member not installed, stays unrequested.
         self.assert_a_migration_carries_no_request_for_a_dependency_only_member(("helper", "tool"))
 
     def assert_a_migration_carries_no_request_for_a_dependency_only_member(
@@ -1678,7 +1705,7 @@ class MigrationTests(DeployerTestCase):
         self,
     ) -> None:
         # newer's exact list names everyday, alpha, beta, and more, and this source no longer has newer depend on
-        # alpha and beta: as for --all, both lists are set aside and kit is complete, so its request is carried.
+        # alpha and beta: as for --all, neither list explains them, so kit's request is carried.
         self.make_skill("everyday", "Everyday")
         self.make_skill("helper", "Helper")
         self.make_skill("newer", "Newer", skill_deps=["alpha", "beta", "everyday", "helper"])

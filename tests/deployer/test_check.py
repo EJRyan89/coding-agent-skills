@@ -421,8 +421,8 @@ class CheckCommandTests(DeployerTestCase):
     def test_a_member_requested_beside_a_preserved_skill_whose_list_a_new_skills_list_contains_still_needs_its_tools(
         self,
     ) -> None:
-        # newer's exact list names plain, every skill plain's filled-in list names, and more; as for --all, both are
-        # set aside and pack2 is complete, so its members stand for the renamed request.
+        # newer's exact list names plain, every skill plain's filled-in list names, and more, but the source no longer
+        # has newer depend on pack2's members; as for --all, they stand for the renamed request.
         self.make_source_json(bundles={"pack": {"members": ["formatter", "reporter"], "opt_in": True}})
         self.make_skill("helper", "Helper")
         self.make_skill("newer", "Newer", skill_deps=["core", "formatter", "helper", "plain", "reporter", "reviewer"])
@@ -439,8 +439,8 @@ class CheckCommandTests(DeployerTestCase):
     def test_a_member_installed_only_as_a_dependency_beside_requests_reaching_around_it_leaves_its_tools_optional(
         self,
     ) -> None:
-        # s reaches p1, the only skill r's exact list leaves out but requests on their own; as for --all, hb, which
-        # helper would choose, has a member not installed, so it stays unchosen and the formatter's tool optional.
+        # r depends on helper, as the entry records and the source declares; as for --all, helper stays a dependency,
+        # so hb stays unchosen and the formatter's tool optional.
         self.make_source_json(
             bundles={
                 "hb": {"members": ["helper", "formatter"], "opt_in": True},
