@@ -2286,6 +2286,89 @@ class LeftoverTests(Fixture):
         )
         self.assertTrue((task / "notes.md").exists())
 
+    def tracked_reason(self, why: str, holder: Path, *files: str) -> None:
+        """The PRESERVED reason says Git tracks `files` in the directory, in the repository at `holder`."""
+        prefix, listed = (
+            f"Git tracks {len(files)} file{'' if len(files) == 1 else 's'} in it, in ",
+            f": {', '.join(files)}",
+        )
+        self.assertTrue(why.startswith(prefix) and why.endswith(listed), why)
+        self.same(holder, why.removeprefix(prefix).removesuffix(listed))
+
+    def test_a_folder_git_tracks_in_the_worktree_area_is_kept_with_the_reason_and_never_deleted(self) -> None:
+        templates = self.clone / ".claude" / "worktrees" / "templates"
+        templates.mkdir(parents=True)
+        (templates / "base.md").write_text("tracked\n", encoding="utf-8")
+        git(self.clone, "add", ".claude/worktrees/templates/base.md")
+        self.commit(self.clone, "track a template")
+        git(self.clone, "push", "--quiet", "origin", "main")
+        (templates / "local.env").write_text("ignored\n", encoding="utf-8")
+        task = self.clone / ".claude" / "worktrees" / "old task"
+        task.mkdir()
+        (task / "notes.md").write_text("notes\n", encoding="utf-8")
+        (self.clone / ".git" / "info").mkdir(exist_ok=True)
+        (self.clone / ".git" / "info" / "exclude").write_text("*.env\n.claude/worktrees/old task/\n", encoding="utf-8")
+        _, applied = self.clean()
+        orphans = facts(applied, "ORPHAN")
+        self.assertEqual(1, len(orphans), applied)
+        self.same(task, orphans[0][0])
+        (kept, why), *rest = facts(applied, "PRESERVED")
+        self.assertEqual([], rest, applied)
+        self.same(templates, kept)
+        self.tracked_reason(why, self.clone, ".claude/worktrees/templates/base.md")
+        self.assertIn("  Preserved:               1 — ", self.summary(applied))
+
+        code, lines = self.invoke("remove-directory", "--plan", str(self.plan_file), "--path", str(templates))
+        self.assertEqual(0, code, lines)
+        self.preserved(lines, (templates, "not a detached worktree or orphan directory offered by this plan"))
+        self.assertTrue((templates / "base.md").exists() and (templates / "local.env").exists())
+        self.assertEqual("", git(self.clone, "status", "--porcelain"), "the main worktree lost no tracked file")
+
+        # Git starts tracking the offered directory after the sweep: the confirmed deletion asks again.
+        git(self.clone, "add", "--force", ".claude/worktrees/old task/notes.md")
+        code, lines = self.invoke("remove-directory", "--plan", str(self.plan_file), "--path", str(task))
+        self.assertEqual(1, code, lines)
+        (kept, why), *rest = facts(lines, "PRESERVED")
+        self.assertEqual([], rest, lines)
+        self.same(task, kept)
+        self.tracked_reason(why, self.clone, ".claude/worktrees/old task/notes.md")
+        self.assertEqual([], facts(lines, "DELETED_DIR"))
+        self.assertTrue((task / "notes.md").exists())
+
+    def test_a_repository_named_like_the_shared_worktree_area_keeps_its_tracked_folders(self) -> None:
+        holder = self.repos / "Worktrees"
+        notes = self.area / "notes"
+        notes.mkdir(parents=True)
+        (notes / "readme.md").write_text("tracked by the Worktrees repository\n", encoding="utf-8")
+        git(holder, "init", "--quiet")
+        git(holder, "add", "my repo/notes/readme.md")
+        self.commit(holder, "track notes")
+        leftover = self.area / "leftover"
+        leftover.mkdir()
+        (leftover / "file.txt").write_text("left\n", encoding="utf-8")
+        _, applied = self.clean()
+        orphans = facts(applied, "ORPHAN")
+        self.assertEqual(1, len(orphans), applied)
+        self.same(leftover, orphans[0][0])
+        (kept, why), *rest = facts(applied, "PRESERVED")
+        self.assertEqual([], rest, applied)
+        self.same(notes, kept)
+        self.tracked_reason(why, holder, "my repo/notes/readme.md")
+        self.assertTrue((notes / "readme.md").exists())
+
+    def test_a_directory_is_kept_when_git_cannot_say_whether_a_repository_holding_it_tracks_files_in_it(self) -> None:
+        holder = self.repos / "Worktrees"
+        stale = self.area / "stale wt"
+        stale.mkdir(parents=True)
+        (holder / ".git").write_text("gitdir: nowhere\n", encoding="utf-8")
+        _, applied = self.clean()
+        self.assertEqual([], facts(applied, "ORPHAN"), applied)
+        (kept, why), *rest = facts(applied, "PRESERVED")
+        self.assertEqual([], rest, applied)
+        self.same(stale, kept)
+        self.assertTrue(why.startswith(f"could not ask Git whether {holder.as_posix()} tracks files in it: "), why)
+        self.assertTrue(stale.is_dir())
+
     def outside_area(self, name: str, *inner: str) -> Path:
         """A directory outside the repository and the worktree area, holding `inner` and a victim directory in it."""
         target = self.root / name
@@ -2360,6 +2443,17 @@ class LeftoverTests(Fixture):
 
 
 class UnitTests(CleanupTestCase):
+    def test_the_orphan_confirmation_states_only_what_the_sweep_checked(self) -> None:
+        skill = (Path(__file__).resolve().parents[1] / "SKILL.md").read_text(encoding="utf-8")
+        question = re.search(r'For `ORPHAN <path>` lines, call it with question `"([^`]*)"`', skill)
+        if question is None:
+            self.fail("the ORPHAN confirmation is not where the skill asks it")
+        self.assertEqual(
+            "<REPO_NAME>: These directories in the worktree area are no longer Git worktrees, and Git tracks none of"
+            " their files. They cannot be recovered once deleted. Delete or keep each?",
+            question.group(1),
+        )
+
     def test_release_branches_and_worktrees_under_a_release_directory_are_protected(self) -> None:
         for branch, path, expected in (
             ("release/4.10", "C:/GitHub/Worktrees/example/topic", True),
