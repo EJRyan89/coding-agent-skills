@@ -1338,7 +1338,7 @@ class InstructionsTests(GitTestCase):
         )
 
 
-class TemplateValueTests(unittest.TestCase):
+class TemplateValueTests(GitTestCase):
     def test_every_template_value_the_skill_requires_is_one_a_command_or_grant_uses(self) -> None:
         # A value only a sentence names promises what no command reads, as a home folder the script never searches
         # would, and the deployment would require it for that sentence alone.
