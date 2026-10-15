@@ -20,9 +20,12 @@ from pathlib import Path, PurePath
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 from markdown_sections import CODE_SPAN as CODE_SPAN
+from markdown_sections import Fence as Fence
+from markdown_sections import find_fences as find_fences
 from markdown_sections import markdown_section as markdown_section
+from markdown_sections import prose_code_spans as prose_code_spans
 
-from deployer import platform_support, render
+from deployer import platform_support
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
@@ -500,19 +503,19 @@ class CallableResolver:
         ]
 
 
-def fence_holders(lines: list[str]) -> list[render.Fence | None]:
+def fence_holders(lines: list[str]) -> list[Fence | None]:
     """For each line, the fence holding it as its opener, body, or closer, or None outside every fence.
 
-    Every Markdown policy here reads fences through render.find_fences, the detector the deployer renders with.
+    Every Markdown policy here reads fences through skill-core's find_fences, the reader the deployer renders with.
     """
-    holders: list[render.Fence | None] = [None] * len(lines)
-    for fence in render.find_fences(lines):
-        for index in range(fence.opener, fence.closer + 1 if fence.closer is not None else len(lines)):
+    holders: list[Fence | None] = [None] * len(lines)
+    for fence in find_fences(lines):
+        for index in fence.lines():
             holders[index] = fence
     return holders
 
 
-def fence_body_line(holder: render.Fence | None, index: int) -> bool:
+def fence_body_line(holder: Fence | None, index: int) -> bool:
     """Whether the line at index is inside the fence that holds it, rather than its opener or closer."""
     return holder is not None and index not in (holder.opener, holder.closer)
 

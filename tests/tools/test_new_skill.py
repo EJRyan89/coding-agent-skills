@@ -224,6 +224,11 @@ class NewSkillTestCase(FixtureRepositoryTestCase):
                 },
                 r"leaves a path open before its \*",
             ),
+            (
+                "fresh",
+                {"allowed_tools": ["Bash(python -B *)", "PowerShell(python -B *)"]},
+                r"Bash\(python -B \*\) names no script or git or gh subcommand before its \*",
+            ),
         )
         for name, arguments, message in cases:
             with self.subTest(name=name, arguments=arguments):
