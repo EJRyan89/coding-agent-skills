@@ -9,6 +9,10 @@ skill's frontmatter unchanged, since that is all a runtime reads before choosing
 the skill as the authoritative workflow. This is the one writer of those shims: validation compares each shim with
 what it would write. --write never removes a stray shim, whose skill was renamed or removed; it reports it, and a
 person deletes it.
+
+--root DIR works on another checkout of this repository, as the regression suite does. It refuses, as a usage
+error, a directory that does not hold source.json and .claude/skills, or that lies in a skills directory, such as
+~/.agents/skills, whose adapters the deployer owns.
 """
 
 from __future__ import annotations
@@ -22,6 +26,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-c
 
 import frontmatter
 from console import run_main
+
+from tools.checkout import ROOT_HELP, checkout_root
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SKILLS = Path(".claude") / "skills"
@@ -101,7 +107,7 @@ def write(root: Path, names: list[str] | None = None) -> list[Path]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("--write", action="store_true", help="write each missing or stale shim")
-    parser.add_argument("--root", type=Path, default=REPOSITORY_ROOT, help=argparse.SUPPRESS)
+    parser.add_argument("--root", type=checkout_root, default=REPOSITORY_ROOT, metavar="DIR", help=ROOT_HELP)
     arguments = parser.parse_args(argv)
     try:
         written = write(arguments.root) if arguments.write else []
