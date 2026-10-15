@@ -139,7 +139,10 @@ def _tool_floors(snapshot: Snapshot) -> dict[str, object]:
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Call) and ast.unparse(node.func).rsplit(".", 1)[-1] == TOOL_CLASS):
             continue
-        given = {**dict(zip(fields, node.args, strict=False)), **{item.arg: item.value for item in node.keywords}}
+        given: dict[str | None, ast.expr] = {
+            **dict(zip(fields, node.args, strict=False)),
+            **{item.arg: item.value for item in node.keywords},
+        }
         name = given.get("name")
         floors[_value_source(name, values) if name is not None else f"{TOOL_CLASS} at line {node.lineno}"] = {
             field: _value_source(value, values) for field, value in given.items() if field in TOOL_FLOOR_FIELDS

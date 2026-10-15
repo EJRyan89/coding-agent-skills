@@ -29,6 +29,7 @@ from job_pool import (
     PoolResult,
     Retry,
     Terminated,
+    TimedOut,
     append_step_summary,
     run_beside,
     run_jobs,
@@ -36,6 +37,7 @@ from job_pool import (
     step_summary,
     worker_count,
 )
+from process_identity import process_status
 
 from deployer import platform_support
 from tests import run_validation
@@ -51,6 +53,15 @@ ENDED = [sys.executable, "-c", f"import os; {ENDING}"]
 ENDED_AFTER_OUTPUT = [sys.executable, "-c", f"import os; print('ran', flush=True); {ENDING}"]
 FAILS_AFTER_OUTPUT = [sys.executable, "-c", "import sys; print('1 test failed', flush=True); sys.exit(1)"]
 PASSES = [sys.executable, "-c", "pass"]
+# A suite that prints a line, starts a grandchild that outlives it, records the grandchild's process ID in the file its
+# first argument names, and hangs.
+HANGS = (
+    "import subprocess, sys, time\n"
+    "print('started its grandchild', flush=True)\n"
+    "grandchild = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+    "open(sys.argv[1], 'w').write(str(grandchild.pid))\n"
+    "time.sleep(60)\n"
+)
 
 
 def job_running(label: str, *commands: list[str]) -> tuple[Job, list[list[str]]]:
@@ -187,6 +198,31 @@ class JobPoolFixtures(GitTestCase):
         self.assertEqual(24, worker_count({}, cpus=64))
         self.assertEqual(32, worker_count({"VALIDATION_JOBS": "32"}, cpus=4))
         self.assertEqual(1, worker_count({"VALIDATION_JOBS": "0"}, cpus=24))
+        with self.assertRaisesRegex(ValueError, "VALIDATION_JOBS must be a whole number of workers, not 'four'"):
+            worker_count({"VALIDATION_JOBS": "four"}, cpus=4)
+
+    def test_a_program_past_its_time_limit_is_ended_with_every_process_it_started_and_reported_whole(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            recorded = Path(temporary) / "grandchild.txt"
+            command = [sys.executable, "-c", HANGS, str(recorded)]
+            with mock.patch.object(job_pool, "COMMAND_TIMEOUT_SECONDS", 4), self.assertRaises(TimedOut) as raised:
+                run_process(command)
+            # The report names the whole command, not the interpreter alone, and what it printed before it hung.
+            report = str(raised.exception)
+            self.assertIn(
+                f"Command timed out after 4s and was ended with every process it started: {command[0]} -c", report
+            )
+            self.assertIn(str(recorded), report)
+            self.assertIn("started its grandchild", report)
+            # Nothing the suite started is left running.
+            self.assertFalse(process_status(int(recorded.read_text(encoding="utf-8"))).alive)
+
+        # A timed-out job fails as a timeout, which the step summary details, rather than as a failed check.
+        def hangs() -> None:
+            raise TimedOut("Command timed out after 4s: x")
+
+        failures = run_jobs([Job("hangs", "hangs", 1, hangs)], verbose=False, workers=1).failures
+        self.assertEqual([(True, False, False)], [(f.timed_out, f.raised, f.terminated) for f in failures])
 
     def test_step_summary_carries_the_traceback_of_a_job_that_raised(self) -> None:
         traceback = 'Traceback (most recent call last):\n  File "x.py", line 1\nOSError: denied\n'

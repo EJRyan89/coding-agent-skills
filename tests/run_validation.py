@@ -66,6 +66,7 @@ import suite_discovery
 import toolchain
 import upgrade_notes
 import workflows
+from console import run_main
 from job_pool import (
     OUTPUT_LOCK,
     Failure,
@@ -310,6 +311,56 @@ class TerminationReport(unittest.TestCase):
         )
 
 
+class RunnerFailures(unittest.TestCase):
+    """What ends a run other than its checks: a report a console cannot encode, and a setting the runner cannot use.
+    Each reads through the stream and the environment main is given, so neither changes what the pool reads."""
+
+    def test_a_report_the_console_cannot_encode_still_ends_with_its_closing_line_and_step_summary(self) -> None:
+        job = Job("suite x.py", "suite x.py", 1, lambda: None)
+        report = "Command failed with exit code 1: python x.py\nAssertionError: '\ufffd' != 'e'\n"
+        pool = PoolResult([Failure(job, report)], [])
+        written = io.BytesIO()
+        console = io.TextIOWrapper(written, encoding="cp1252", errors="strict", newline="\n")
+        with tempfile.TemporaryDirectory() as temporary:
+            summary = Path(temporary) / "step summary.md"
+            with (
+                mock.patch.object(upgrade_notes, "pull_request_body", None),
+                mock.patch.object(pull_request_title, "pull_request_title", None),
+                mock.patch(f"{__name__}.tool_versions", return_value={}),
+                mock.patch(f"{__name__}.report_prerequisite_problems", return_value=False),
+                mock.patch(f"{__name__}.all_jobs", return_value=[job]),
+                mock.patch(f"{__name__}.run_beside", return_value=(unittest.TestResult(), pool)),
+            ):
+                code = main(["-k", "suite x.py"], out=console, environment={"GITHUB_STEP_SUMMARY": str(summary)})
+            console.flush()
+            self.assertEqual(1, code)
+            self.assertIn("- Failed: `suite x.py`", summary.read_text(encoding="utf-8"))
+        printed = written.getvalue().decode("cp1252")
+        self.assertIn("AssertionError: '\\ufffd' != 'e'", printed)
+        self.assertIn("validation FAILED (1 suite jobs failed).", printed)
+
+    def test_a_worker_count_that_is_not_a_whole_number_is_a_usage_error_before_any_check_runs(self) -> None:
+        error = io.StringIO()
+        with mock.patch(f"{__name__}.tool_versions") as versions:
+            self.assertEqual(2, main([], errors=error, environment={"VALIDATION_JOBS": "four"}))
+        self.assertIn("VALIDATION_JOBS must be a whole number of workers, not 'four'", error.getvalue())
+        versions.assert_not_called()
+
+    def test_a_table_the_legs_cannot_be_dealt_from_is_a_usage_error(self) -> None:
+        error = io.StringIO()
+        with (
+            mock.patch.object(upgrade_notes, "pull_request_body", upgrade_notes.pull_request_body),
+            mock.patch.object(pull_request_title, "pull_request_title", pull_request_title.pull_request_title),
+            mock.patch(f"{__name__}.tool_versions", return_value={}),
+            mock.patch(f"{__name__}.report_prerequisite_problems", return_value=False),
+            mock.patch(f"{__name__}.all_jobs", return_value=[]),
+            mock.patch(f"{__name__}.deal_to_leg", side_effect=ValueError("job_seconds.json cannot be read as JSON")),
+        ):
+            code = main(["-k", "ShardOption", "--shard", "1/2"], out=io.StringIO(), errors=error)
+        self.assertEqual(2, code)
+        self.assertIn("the legs cannot be dealt: job_seconds.json cannot be read as JSON", error.getvalue())
+
+
 def shard_option(text: str) -> tuple[int, int]:
     """--shard's `<index>/<count>`, the index counted from 1."""
     match = re.fullmatch(r"([1-9]\d*)/([1-9]\d*)", text)
@@ -331,13 +382,32 @@ def deal_to_leg(
     return leg_checks, leg_suites, line
 
 
-def run_policies(policies: unittest.TestSuite, verbose: bool, out: TextIO) -> unittest.TestResult:
+def run_policies(policies: unittest.TestSuite, verbose: bool, out: TextIO | io.TextIOBase) -> unittest.TestResult:
     """Run the policy checks into a buffer and print their report in one block once they finish."""
     report = io.StringIO()
     result = unittest.TextTestRunner(stream=report, verbosity=2 if verbose else 1).run(policies)
     with OUTPUT_LOCK:
         print(f"Policy checks:\n{report.getvalue()}", end="", file=out, flush=True)
     return result
+
+
+class Encodable(io.TextIOBase):
+    """A text stream that writes what the stream it wraps cannot encode as backslash escapes, so a report quoting what
+    a suite printed, a replacement character included, reaches its closing line on a legacy code page."""
+
+    def __init__(self, stream: TextIO | io.TextIOBase) -> None:
+        super().__init__()
+        self.stream = stream
+
+    def write(self, text: str) -> int:
+        encoding = getattr(self.stream, "encoding", None) or "utf-8"
+        self.stream.write(text.encode(encoding, "backslashreplace").decode(encoding))
+        return len(text)
+
+    def flush(self) -> None:
+        # A stream that is gone, as a test's is once the test ends, has nothing left to flush.
+        if not self.stream.closed:
+            self.stream.flush()
 
 
 class UsageParser(argparse.ArgumentParser):
@@ -407,7 +477,7 @@ def report_run(
     pool: PoolResult,
     jobs: int,
     run: Run,
-    out: TextIO,
+    out: TextIO | io.TextIOBase,
     environment: Mapping[str, str],
 ) -> bool:
     """Print each retried and failed job and the closing line to out, append the step summary to the file environment
@@ -427,7 +497,11 @@ def report_run(
     )
     failed = [f"policy {test.id().rsplit('.', 1)[-1]}" for test, _ in policy_result.failures + policy_result.errors]
     failed += [failure.job.label for failure in failures]
-    details = {failure.job.label: failure.report for failure in failures if failure.raised or failure.terminated}
+    details = {
+        failure.job.label: failure.report
+        for failure in failures
+        if failure.raised or failure.terminated or failure.timed_out
+    }
     summary = step_summary(
         tools.python_version(),
         run.versions,
@@ -447,17 +521,22 @@ def report_run(
 def main(
     argv: list[str] | None = None,
     *,
-    out: TextIO | None = None,
+    out: TextIO | io.TextIOBase | None = None,
     errors: TextIO | None = None,
     environment: Mapping[str, str] | None = None,
 ) -> int:
     """Run the validation. Its own output goes to out, a usage error or an empty selection to errors, and it reads the
     base branch, the worker count, and the step summary's path from environment: sys.stdout, sys.stderr, and
     os.environ unless given."""
-    out = sys.stdout if out is None else out
+    out = Encodable(sys.stdout if out is None else out)
     errors = sys.stderr if errors is None else errors
     environment = os.environ if environment is None else environment
     arguments = parse_arguments(argv, errors)
+    try:
+        workers = worker_count(environment)
+    except ValueError as error:
+        print(f"run_validation.py: error: {error}", file=errors)
+        return 2
     upgrade_notes.pull_request_body = arguments.pr_body
     pull_request_title.pull_request_title = arguments.pr_title
     versions = tool_versions()
@@ -496,11 +575,14 @@ def main(
         return 2
     leg = f"{arguments.shard[0]}/{arguments.shard[1]}" if arguments.shard else None
     if arguments.shard:
-        policies, jobs, share = deal_to_leg(policies, jobs, arguments.shard)
+        try:
+            policies, jobs, share = deal_to_leg(policies, jobs, arguments.shard)
+        except ValueError as error:
+            print(f"run_validation.py: error: the legs cannot be dealt: {error}", file=errors)
+            return 2
         mode = f"{mode} {share}"
         print(share, file=out, flush=True)
 
-    workers = worker_count(environment)
     print(
         f"Running {policies.countTestCases()} policy checks beside {len(jobs)} suite jobs on {workers} workers.",
         file=out,
@@ -521,4 +603,7 @@ def main(
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # skill-core's runner writes UTF-8, so a report quoting what a suite printed, its replacement characters included,
+    # ends with its closing line and its step summary on any console, and a crash of the runner itself ends in a FAILED
+    # line after its traceback.
+    run_main(main, errors="backslashreplace", traceback_requested=lambda: True)
