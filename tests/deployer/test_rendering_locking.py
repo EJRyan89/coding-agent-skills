@@ -827,7 +827,7 @@ class DryRunTests(DeployerTestCase):
         self.assertEqual({"FRESH INSTALL": ["alpha"]}, self.report_groups(result.output, "DRY RUN"))
         self.assertFalse((self.skills_dir / "alpha").exists())
         self.assertFalse(self.manifest_file.exists())
-        self.assertEqual([], list((self.home / ".claude" / "deployer" / "staging").iterdir()))
+        self.assertFalse((self.home / ".claude" / "deployer" / "staging").exists())
         self.assertFalse((self.home / ".claude" / "deployer" / ".deploy.lock.d").exists())
 
     def test_dry_run_reports_updates_conflicts_and_removals(self) -> None:
@@ -986,11 +986,12 @@ class DryRunTests(DeployerTestCase):
         source_id = json.loads((REPOSITORY_ROOT / "source.json").read_text(encoding="utf-8"))["id"]
         self.make_config(source_id)
         self.write(self.skills_dir / "repo-cleanup" / "SKILL.md", "Locally edited → copy\n")
-        result = platform_support.run_tool(
-            [sys.executable, "-B", str(REPOSITORY_ROOT / "deploy.py"), "--all", "--dry-run"],
-            {"HOME": str(self.home), "USERPROFILE": str(self.home), "PYTHONIOENCODING": "cp1252"},
+        result = self.run_entry_point(
+            "--all",
+            "--dry-run",
+            environment={"HOME": str(self.home), "USERPROFILE": str(self.home), "PYTHONIOENCODING": "cp1252"},
         )
-        self.assertEqual(0, result.returncode, result.output)
+        self.assertEqual(0, result.code, result.output)
         self.assertIn(
             "repo-cleanup (unmanaged and differs from the rendered skill)",
             self.report_groups(result.output, "DRY RUN")["CONFLICT"],

@@ -164,7 +164,7 @@ class SingleEntryPointTests(DeployerTestCase):
     def test_missing_required_variable_points_to_the_configure_command(self) -> None:
         self.make_source_json()
         self.make_skill("alpha", "Root {{REPOS_ROOT}}", ["REPOS_ROOT"])
-        self.config_file().write_bytes(b"_source_id=test/skills\n")
+        self.write(self.config_file(), "_source_id=test/skills\n")
         result = self.run_cli("--all", "--dry-run")
         self.assertEqual(1, result.code)
         self.assertIn(f"Run '{DEPLOY_COMMAND} configure' to set them.", result.output)
@@ -221,12 +221,10 @@ class SingleEntryPointTests(DeployerTestCase):
                 self.assertFalse(result.output.endswith("\n\n\n"), repr(result.output))
 
     def test_repository_entry_point_runs_the_configure_command(self) -> None:
-        self.make_source_json()
-        result = platform_support.run_tool(
-            [sys.executable, "-B", str(REPOSITORY_ROOT / "deploy.py"), "configure", "--help"],
-            {"HOME": str(self.home), "USERPROFILE": str(self.home)},
+        result = self.run_entry_point(
+            "configure", "--help", environment={"HOME": str(self.home), "USERPROFILE": str(self.home)}
         )
-        self.assertEqual(0, result.returncode, result.output)
+        self.assertEqual(0, result.code, result.output)
         self.assertIn("--reset     start from an empty configuration", result.output)
         self.assertFalse((REPOSITORY_ROOT / "configure.py").exists())
 
@@ -298,11 +296,10 @@ class HomeTests(DeployerTestCase):
         def test_the_entry_point_deploys_into_the_profile_folder_whatever_home_says(self) -> None:
             source_id = json.loads((REPOSITORY_ROOT / "source.json").read_text(encoding="utf-8"))["id"]
             self.make_config(source_id)
-            result = platform_support.run_tool(
-                [sys.executable, "-B", str(REPOSITORY_ROOT / "deploy.py"), "--all", "--dry-run"],
-                {"HOME": shell_path(self.other), "USERPROFILE": str(self.home)},
+            result = self.run_entry_point(
+                "--all", "--dry-run", environment={"HOME": shell_path(self.other), "USERPROFILE": str(self.home)}
             )
-            self.assertEqual(0, result.returncode, result.output)
+            self.assertEqual(0, result.code, result.output)
             self.assertIn(f"\nHome: {forward(self.home)}\n", result.output.replace("\r\n", "\n"))
             self.assertIn(self.warning, unwrapped(result.output))
             self.assertFalse(self.other.exists())
@@ -317,11 +314,10 @@ class HomeTests(DeployerTestCase):
         def test_the_entry_point_deploys_into_home_whatever_a_profile_variable_says(self) -> None:
             source_id = json.loads((REPOSITORY_ROOT / "source.json").read_text(encoding="utf-8"))["id"]
             self.make_config(source_id)
-            result = platform_support.run_tool(
-                [sys.executable, "-B", str(REPOSITORY_ROOT / "deploy.py"), "--all", "--dry-run"],
-                {"HOME": str(self.home), "USERPROFILE": str(self.other)},
+            result = self.run_entry_point(
+                "--all", "--dry-run", environment={"HOME": str(self.home), "USERPROFILE": str(self.other)}
             )
-            self.assertEqual(0, result.returncode, result.output)
+            self.assertEqual(0, result.code, result.output)
             self.assertIn(f"\nHome: {forward(self.home)}\n", result.output)
             self.assertNotIn("WARNING", result.output)
             self.assertFalse(self.other.exists())
