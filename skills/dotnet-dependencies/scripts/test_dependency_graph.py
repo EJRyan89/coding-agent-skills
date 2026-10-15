@@ -1780,7 +1780,7 @@ class ConditionalItemTests(Fixture):
                     (code, self.lines(rows, "PATH"), self.lines(rows, "UNREADABLE")),
                 )
 
-    def test_a_choose_on_an_unset_framework_is_not_chosen_when_a_directory_build_props_may_set_it(self) -> None:
+    def test_a_choose_reads_the_framework_a_directory_build_props_sets_before_the_project_body(self) -> None:
         # The issue's two projects: with no import, MSBuild enters App's Choose with the framework unset, so the When
         # applies and removes Lib, as before.
         app, lib = "App/App.csproj", "Lib/Lib.csproj"
@@ -1789,37 +1789,20 @@ class ConditionalItemTests(Fixture):
         own = [lib, "-", "Lib.Pkg", "graph", "Lib.Pkg (v1.0.0)"]
         code, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root))
         self.assertEqual((0, [own], []), (code, self.lines(rows, "PATH"), self.lines(rows, "UNREADABLE")))
-        # A Directory.Build.props above both may set the framework before the Choose, which the reader does not read,
-        # so the When is not chosen: its Remove is kept and reported, with no restore.
+        # MSBuild imports a Directory.Build.props above both before the project's body, so App's Choose is entered
+        # with the framework it sets: the When fails, Lib is kept, and the Otherwise's Reference is added.
         self.write("Directory.Build.props", FRAMEWORK_BUILD_PROPS)
-        when = "'$(TargetFramework)'==''"
         code, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root))
         chain = [app, "-", "Lib.Pkg", "graph", "Lib (project) > Lib.Pkg (v1.0.0)"]
-        self.assertEqual([chain, own], self.lines(rows, "PATH"))
-        self.assertEqual(
-            [
-                [
-                    app,
-                    f"the condition {when} on the Remove of ProjectReference Lib/Lib.csproj cannot be evaluated for "
-                    "net472, so it is not removed",
-                ]
-            ],
-            self.lines(rows, "UNREADABLE"),
-        )
-        self.assertEqual(1, code)
-        # With a restore keyed by the imported framework, the Otherwise's Reference is named, not guessed either way.
+        self.assertEqual((0, [chain, own], []), (code, self.lines(rows, "PATH"), self.lines(rows, "UNREADABLE")))
+        code, rows = self.run_main("where", "Beacon.Imported", "--root", str(self.root))
+        self.assertEqual([[app, "-", "Beacon.Imported", "framework", "-", "-"]], self.lines(rows, "WHERE"))
+        # With a restore of the framework the props file names, that framework's build holds the Reference too.
         document = {"version": 3, "targets": {"net8.0": {}}, "project": {}}
         self.write("App/obj/project.assets.json", json.dumps(document))
         code, rows = self.run_main("where", "Beacon.Imported", "--root", str(self.root))
-        self.assertEqual([], self.lines(rows, "WHERE"))
-        self.assertIn(
-            [
-                app,
-                f"the condition {when} on Reference Beacon.Imported cannot be evaluated for net8.0, so it is left out",
-            ],
-            self.lines(rows, "UNREADABLE"),
-        )
-        self.assertEqual(1, code)
+        self.assertEqual([[app, "net8.0", "Beacon.Imported", "framework", "-", "-"]], self.lines(rows, "WHERE"))
+        self.assertEqual((0, []), (code, self.lines(rows, "UNREADABLE")))
 
     def test_with_no_restore_a_remove_it_cannot_evaluate_is_reported_and_not_applied(self) -> None:
         # The issue's projects: App removes Lib under a condition the reader cannot evaluate, and a central
