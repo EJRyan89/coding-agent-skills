@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-c
 
 from bounded_process import without_repository_variables
 from console import run_main
+from executable_locator import located_command
 from markdown_sections import markdown_section
 from release_levels import RELEASING_DOC, VERSION, largest_level, versioning_levels
 
@@ -133,9 +134,11 @@ def unreleased_entries(notes: str | None) -> list[NotesEntry]:
 
 
 def _git(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
-    """git run on the checkout at root, without the repository-selecting variables that would read another one."""
+    """git run on the checkout at root, without the repository-selecting variables that would read another one, and
+    started at the path skill-core's locator finds rather than by name, which Windows looks up in the working directory
+    first."""
     return subprocess.run(
-        ["git", "-C", str(root), *arguments],
+        located_command(["git", "-C", str(root), *arguments]),
         capture_output=True,
         text=True,
         encoding="utf-8",
