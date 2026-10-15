@@ -37,7 +37,11 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   reviewer agent with `--agents`, its hook pointed at the home's reviewer guard, because Claude Code runs no hook of
   an agent loaded from a folder whose workspace trust was never accepted, which a headless session's never is. A run
   whose reviewers did not all run on that ID, a dated suffix allowed, or whose session ran on another, counts for
-  nothing, and so does one whose record shows a reviewer the guard did not hold (`files_read` null). A narrowed run
+  nothing, and so does one whose record shows a reviewer the guard did not hold (`files_read` null). The record is
+  the pull request's latest in the run's canary root, read and validated by code-review-core's archive, and must be
+  the version the run writes: 2 for a re-review, whose canary root first holds the prior record as version 1, and 1
+  otherwise, so a run whose own record is missing or unreadable fails rather than being judged by the prior. The
+  reviewers' self-check and source commands are granted at the exact quoted paths of the home's scripts. A narrowed run
   can repeat `--scenario` and `--model`; each distinct name counts once, in first-occurrence order, both when
   running scenarios and when judging existing records with `--records`. Without `--scenario`, scenarios are selected
   in name order.

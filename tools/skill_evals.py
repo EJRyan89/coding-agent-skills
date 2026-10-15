@@ -89,10 +89,14 @@ that model's ID, a dated suffix allowed, and every message of the session names 
 subagent, or one on another model or another generation of the same family, fails every expectation, since the model
 was not the one judged.
 Edits are accepted, standing in for the user who approves each reviewer's result file, which the reviewers write
-inside the home, and the reviewers' self-check and source commands are allowed; the skill's allowed-tools grant the
-rest. Each run's temporary directory is its own folder in the home, through TMPDIR, which Python reads first on every
-system, so the pipeline's run folders and the canary root that finalize writes land there, and the record judged is the
-highest review version in that canary root. The code-review configuration is written once per home at
+inside the home, and the reviewers' self-check and source commands are allowed, each by the quoted path of the home's
+deployed script as the pipeline's prompts give it, in both shells, with no wildcard in the path; the skill's
+allowed-tools grant the rest. Each run's temporary directory is its own folder in the home, through TMPDIR, which
+Python reads first on every system, so the pipeline's run folders and the canary root that finalize writes land there.
+The record judged is the latest record of the pull request recorded there, read and validated by code-review-core's
+archive, and it must be version 2 for a re-review, whose canary root first holds the prior record as version 1, and
+version 1 otherwise: a run whose latest record is another version, or cannot be read, recorded no review of its own,
+and fails with that reason. The code-review configuration is written once per home at
 `.skill-evals/config.json`, which all runs in that home read. A record any of whose reviewers has a null `files_read`
 counts for nothing either: the guard's claim starts a role's read log, so a reviewer the guard held has a count, if
 only 0, and null means the boundary was never exercised.
@@ -103,7 +107,8 @@ canary.
 Output, one fact per line:
   HOME "<dir>"                                    the throwaway directory, one home per model inside it
   DEPLOYED <model> <source id>                    or DEPLOY_FAILED <model> "<reason>", which stops the run, also
-                                                  when the home's reviewer agent cannot be passed with --agents
+                                                  when the home's reviewer agent cannot be passed with --agents, or
+                                                  the home's path holds a *, which a grant would read as any text
   RUNTIME claude <version>
   TRANSCRIPT <scenario> <model> "<path>"          a run finished; its stream-json output, in the order runs end
   REVIEWER <model> <model ID>[,<model ID>]        the models the reviewers ran on, or `none`
@@ -153,11 +158,14 @@ import frontmatter
 from bounded_process import without_repository_variables
 from console import run_main
 from git_client import GitClient, GitError
+from review_archive import ArchiveError, latest_record, list_versions
+from review_io import PersistenceError
 from review_records import DISPOSITIONS as RECORD_DISPOSITIONS
 from review_records import LEDGER_ID, SEVERITY_RANK
 from review_runtime import DOCUMENT_STAGES, RuntimeContractError, declared_reviewer_files, validate_adapter_manifest
 
 from deployer import fsops, platform_support, tools
+from deployer.platform_support import PYTHON
 from tools import runtime_canary
 from tools.runtime_canary import Completed, Runner
 
@@ -177,7 +185,10 @@ DEFAULT_JOBS = 3
 # The reviewer agent the runs set the model of, in each model's home, and the guard its hook runs: the hook names
 # the profile folder's copy, and the definition the session gets names the home's.
 REVIEWER_AGENT = Path(".claude") / "agents" / "code-review-reviewer.md"
-GUARD = Path(".claude") / "skills" / "code-review-core" / "scripts" / "review_guard.py"
+# A home's deployed skills folder, and the core whose scripts a reviewer runs, by its folder's name there.
+SKILLS = Path(".claude") / "skills"
+CORE = "code-review-core"
+GUARD = SKILLS / CORE / "scripts" / "review_guard.py"
 PROFILE_GUARD = f"~/{GUARD.as_posix()}"
 # The file in each home holding the reviewer definition the session gets with --agents, and the frontmatter keys
 # that definition carries over; an agent with any other key is refused, since its definition would drop it.
@@ -185,15 +196,9 @@ AGENTS = "agents.json"
 AGENT_KEYS = frozenset({"name", "description", "tools", "model", "omitClaudeMd", "hooks"})
 # What the home's path may not hold: the hook command quotes it for Python inside a Bash double quote.
 UNQUOTABLE = re.compile(r"[\\'\"`$!]")
-# The commands a reviewer runs besides its file tools: its self-check, which review_pipeline.py writes as
-# python -B "<script>" validate-result --run "<run>" --role "<role>", and a lazy snapshot's two source commands, which
-# review_source.py writes as python -B "<script>" source-file --run "<run>" --role "<role>" --path="<path>", and the
-# same with source-search and --pattern.
-REVIEWER_COMMANDS = (
-    'python -B "*review_pipeline.py" validate-result --run *',
-    'python -B "*review_source.py" source-file --run *',
-    'python -B "*review_source.py" source-search --run *',
-)
+# The review version a run's record must be, by the scenario's mode: a re-review's canary root first holds the prior
+# record as version 1.
+RECORD_VERSION = {"initial": 1, "re-review": 2}
 STATE = ".skill-evals"
 RESULTS_BEGIN = "<!-- skill-evals:begin -->"
 RESULTS_END = "<!-- skill-evals:end -->"
@@ -838,10 +843,38 @@ def prompt(skill: str, arguments: Sequence[str]) -> str:
     return " ".join([f"/{skill}", *(item if item.startswith("--") else f'"{item}"' for item in arguments)])
 
 
-def claude_command(executable: str, request: str, agents: Path) -> list[str]:
+def reviewer_script_folders(home: Path, skill: str) -> list[str]:
+    """Each spelling of the home's deployed core scripts folder a role's prompt may give, ending in its separator: the
+    started skill's ${CLAUDE_SKILL_DIR}/../code-review-core/scripts/ as Claude Code fills it in, which the pipeline
+    repeats from its start, and the folder's resolved path, which it gives when it cannot repeat the start."""
+    skills = home / SKILLS
+    started = f"{runtime_canary.forward(skills / skill)}/../{CORE}/scripts/"
+    return list(dict.fromkeys([started, f"{skills / CORE / 'scripts'}{os.sep}"]))
+
+
+def reviewer_grants(home: Path, skill: str) -> list[str]:
+    """The commands a reviewer runs besides its file tools, granted in both shells at each spelling of the home's
+    scripts: its self-check, which review_pipeline.py writes as python -B "<script>" validate-result --run "<run>"
+    --role "<role>", and a lazy snapshot's two source commands, which review_source.py writes as python -B "<script>"
+    source-file --run "<run>" --role "<role>" --path="<path>", and the same with source-search and --pattern. Each
+    names its script by its quoted path, so no other file matches; validation holds them to the skill grant rules."""
+    grants: list[str] = []
+    for folder in reviewer_script_folders(home, skill):
+        grants += [
+            f'Bash({PYTHON} -B "{folder}review_pipeline.py" validate-result --run *)',
+            f'PowerShell({PYTHON} -B "{folder}review_pipeline.py" validate-result --run *)',
+            f'Bash({PYTHON} -B "{folder}review_source.py" source-file --run *)',
+            f'PowerShell({PYTHON} -B "{folder}review_source.py" source-file --run *)',
+            f'Bash({PYTHON} -B "{folder}review_source.py" source-search --run *)',
+            f'PowerShell({PYTHON} -B "{folder}review_source.py" source-search --run *)',
+        ]
+    return grants
+
+
+def claude_command(executable: str, request: str, home: Path, skill: str) -> list[str]:
     # Project settings only, so the installed skills and agents do not load beside the home's; the reviewer agent from
-    # the file of --agents, so its guard hook runs; and no Workflow tool, so reviewers start as native subagents whose
-    # messages the transcript carries with their model.
+    # the home's file for --agents, so its guard hook runs; and no Workflow tool, so reviewers start as native
+    # subagents whose messages the transcript carries with their model.
     return [
         executable,
         "-p",
@@ -856,7 +889,7 @@ def claude_command(executable: str, request: str, agents: Path) -> list[str]:
         "--setting-sources",
         "project,local",
         "--agents",
-        str(agents),
+        str(home / STATE / AGENTS),
         "--strict-mcp-config",
         "--no-session-persistence",
         "--disallowedTools",
@@ -864,7 +897,7 @@ def claude_command(executable: str, request: str, agents: Path) -> list[str]:
         "--permission-mode",
         "acceptEdits",
         "--allowedTools",
-        *(f"{tool}({command})" for command in REVIEWER_COMMANDS for tool in ("Bash", "PowerShell")),
+        *reviewer_grants(home, skill),
     ]
 
 
@@ -1003,20 +1036,35 @@ def names_model(name: str, model_id: str) -> bool:
     return name == model_id or (name.startswith(model_id) and DATED.fullmatch(name[len(model_id) :]) is not None)
 
 
-def find_record(directory: Path) -> Record:
-    """The highest review version under the canary roots in a run's temporary directory."""
-    records = []
-    for path in sorted(directory.glob("code-review-canary-*/**/*.json")):
-        try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        review = value.get("review") if isinstance(value, dict) else None
-        if isinstance(review, dict) and isinstance(review.get("version"), int):
-            records.append(value)
-    if not records:
+def latest_review(pull: Path, version: int) -> Record | str:
+    """A pull request folder's latest record, read and validated by code-review-core's archive, when it is this
+    review version, or else what its latest record is. The folder is <canary root>/<owner>/<name>/pulls/<number>."""
+    latest = max(list_versions(pull), default=None)
+    try:
+        record = latest_record(pull.parents[3], f"{pull.parents[2].name}/{pull.parents[1].name}", int(pull.name))
+    except (ArchiveError, PersistenceError, OSError, ValueError) as exc:
+        return f"its latest record cannot be read: {exc}"
+    if record is None:
+        return "it holds no record"
+    found = record["review"]["version"] if latest == version else latest
+    return record if found == version else f"its latest record is version {found}"
+
+
+def find_record(directory: Path, version: int) -> Record:
+    """The record a run wrote: the latest record of the pull request under the canary roots in its temporary
+    directory, which must be this review version. Raise RecordError when none is, saying what each pull request's
+    latest record is instead, or when more than one is, since which is the run's own is then unknown."""
+    pulls = sorted(path for path in directory.glob("code-review-canary-*/*/*/pulls/*") if path.is_dir())
+    if not pulls:
         raise RecordError("the run recorded no review")
-    return max(records, key=lambda record: record["review"]["version"])
+    latest = [latest_review(pull, version) for pull in pulls]
+    found = [record for record in latest if not isinstance(record, str)]
+    if len(found) > 1:
+        raise RecordError(f"the run recorded {len(found)} reviews at version {version}, so which is its own is unknown")
+    if not found:
+        reasons = "; ".join(reason for reason in latest if isinstance(reason, str))
+        raise RecordError(f"the run recorded no review version {version}; {reasons}")
+    return found[0]
 
 
 def run_failure(model: str, completed: Completed, timeout: float, skill: str, missing: str | None) -> str | None:
@@ -1097,7 +1145,7 @@ def _session_run(
     record the run wrote."""
     run = transcript.parent
     environment = run_environment(session.base, run, home / STATE / "config.json")
-    command = claude_command(session.executable, prompt(scenario.skill, arguments), home / STATE / AGENTS)
+    command = claude_command(session.executable, prompt(scenario.skill, arguments), home, scenario.skill)
     completed = session.runner(command, home, environment, session.timeout)
     transcript.write_text(completed.stdout, encoding="utf-8")
     if completed.stderr:
@@ -1105,7 +1153,7 @@ def _session_run(
     record: Record | None = None
     missing = None
     try:
-        record = find_record(run / "tmp")
+        record = find_record(run / "tmp", RECORD_VERSION[scenario.mode])
     except RecordError as exc:
         missing = str(exc)
     failure = run_failure(model, completed, session.timeout, scenario.skill, missing)
@@ -1128,6 +1176,10 @@ def guarded_lines(scenario: str, model: str, run: Run) -> list[str]:
 def prepare_home(home: Path, model: str, deploy: Callable[[Path, Path], tuple[int, str]]) -> str | None:
     """Deploy the checkout into the model's home, set its reviewer model, and write the reviewer definition the
     session gets with --agents; return why that failed, or None."""
+    if "*" in str(home):
+        return (
+            f"the home's path {runtime_canary.forward(home)} holds a *, which a reviewer's grant would read as any text"
+        )
     home.mkdir(parents=True)
     code, log = deploy(home, REPOSITORY_ROOT)
     if code != 0:

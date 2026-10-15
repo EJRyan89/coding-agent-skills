@@ -34,6 +34,10 @@ REPOSITORY_TOOL_COMMAND = re.compile(r"^python (?:-B )?(?:tools|tests)/")
 GRANTED_TOOL = re.compile(r"^python (?:-B )?(tools/[\w-]+\.py)(?: |$)")
 ROOT_OPTION = "--root"
 CHECKOUT_PARSER = "tools.checkout.checkout_root"
+# The option a repository tool grants a Claude Code session tools with, and the text of one whole grant: a tool's
+# name, and the pattern its parentheses hold.
+ALLOWED_TOOLS_OPTION = "--allowedTools"
+GRANT_TEXT = re.compile(r"[A-Za-z_][\w-]*(?:\(.*\))?", re.DOTALL)
 
 
 def shipped_skill_files(root: Path) -> list[Path]:
@@ -75,24 +79,8 @@ def skill_grant_problems(
                 problems.append(
                     f"{name} grants {detail}, which matches no command in its fences or code spans; see {GRANTS_DOC}"
                 )
-            elif kind == "UNSCOPED_ALLOWED":
-                problems.append(f"{name} grants {detail} for every command; see {GRANTS_DOC}")
-            elif kind == "UNPAIRED_ALLOWED":
-                problems.append(f"{name} grants {detail} in one shell only; see {GRANTS_DOC}")
-            elif kind == "SIBLING_FOLDER_ALLOWED":
-                problems.append(
-                    f"{name} grants {detail}, a sibling skill's folder rather than one script by name; see {GRANTS_DOC}"
-                )
-            elif kind == "OPEN_PATH_ALLOWED":
-                problems.append(
-                    f"{name} grants {detail}, whose * continues a path, so it reaches every skill's scripts through "
-                    f"..; grant each script by name; see {GRANTS_DOC}"
-                )
-            elif kind == "NO_SCRIPT_ALLOWED":
-                problems.append(
-                    f"{name} grants {detail}, whose text before its * names no script or git or gh subcommand, so it "
-                    f"pre-approves any code the * supplies; grant each script by name; see {GRANTS_DOC}"
-                )
+            elif (problem := pattern_problem(name, kind, detail)) is not None:
+                problems.append(problem)
             elif kind == "UNUSED_ALLOWED":
                 problems.append(f"{name} grants {detail}, which no step uses; see {GRANTS_DOC}")
             elif kind == "MISSING_ALLOWED" and detail.split(" ")[0] == "Bash":
@@ -111,6 +99,119 @@ def skill_grant_problems(
                 problems.append(
                     f"{name}:{number} expands a shell variable, so it always prompts: {command}; see {GRANTS_DOC}"
                 )
+    return problems
+
+
+def pattern_problem(name: str, kind: str, detail: str) -> str | None:
+    """The problem an inventory line reports about one grant's own pattern, whoever grants it, or None for a line of
+    another kind."""
+    if kind == "UNSCOPED_ALLOWED":
+        return f"{name} grants {detail} for every command; see {GRANTS_DOC}"
+    if kind == "UNPAIRED_ALLOWED":
+        return f"{name} grants {detail} in one shell only; see {GRANTS_DOC}"
+    if kind == "SIBLING_FOLDER_ALLOWED":
+        return f"{name} grants {detail}, a sibling skill's folder rather than one script by name; see {GRANTS_DOC}"
+    if kind == "OPEN_PATH_ALLOWED":
+        return (
+            f"{name} grants {detail}, whose * continues a path, so it reaches every skill's scripts through "
+            f"..; grant each script by name; see {GRANTS_DOC}"
+        )
+    if kind == "NO_SCRIPT_ALLOWED":
+        return (
+            f"{name} grants {detail}, whose text before its * names no script or git or gh subcommand, so it "
+            f"pre-approves any code the * supplies; grant each script by name; see {GRANTS_DOC}"
+        )
+    return None
+
+
+def _strings(node: ast.AST) -> list[ast.Constant | ast.JoinedStr]:
+    """Each string a node holds, an f-string whole rather than its parts."""
+    if isinstance(node, ast.JoinedStr) or (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+        return [node]
+    return [string for child in ast.iter_child_nodes(node) for string in _strings(child)]
+
+
+def _text(node: ast.AST) -> str | None:
+    """A string's text, each value an f-string fills in read as its name in braces, or None for anything else."""
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, str) else None
+    if not isinstance(node, ast.JoinedStr):
+        return None
+    parts = []
+    for part in node.values:
+        if isinstance(part, ast.FormattedValue):
+            value = part.value
+            parts.append(f"{{{ast.unparse(value) if isinstance(value, ast.Name | ast.Attribute) else 'value'}}}")
+        else:
+            parts.append(str(part.value) if isinstance(part, ast.Constant) else "")
+    return "".join(parts)
+
+
+def _function_grants(function: ast.FunctionDef) -> list[str] | None:
+    """The grants a module function builds, each string in its body but its docstring, or None when one is not a
+    whole grant, so the policy cannot read what it returns."""
+    body = function.body[1:] if ast.get_docstring(function) is not None else function.body
+    texts = [_text(string) for statement in body for string in _strings(statement)]
+    grants = [text for text in texts if text is not None and GRANT_TEXT.fullmatch(text)]
+    return grants if grants and len(grants) == len(texts) else None
+
+
+def _passed_grants(values: list[ast.expr], functions: dict[str, ast.FunctionDef]) -> tuple[list[str], list[str]]:
+    """The grants the values after --allowedTools pass, up to the next option, and the source of each value this
+    policy cannot read as grants: a string or f-string that is one whole grant, or a starred call of a module function
+    each string of which is one."""
+    grants: list[str] = []
+    unreadable: list[str] = []
+    for value in values:
+        text = _text(value)
+        if text is not None and text.startswith("--"):
+            break
+        if text is not None and GRANT_TEXT.fullmatch(text):
+            grants.append(text)
+            continue
+        called = value.value if isinstance(value, ast.Starred) else None
+        if isinstance(called, ast.Call) and isinstance(called.func, ast.Name) and called.func.id in functions:
+            built = _function_grants(functions[called.func.id])
+            if built is not None:
+                grants += built
+                continue
+        unreadable.append(ast.unparse(value))
+    return grants, unreadable
+
+
+def tool_grant_problems(root: Path) -> list[str]:
+    """Report each grant a tools/ module passes to a Claude Code session with --allowedTools that the skill grant
+    rules refuse, and each value after the option this policy cannot read as grants.
+
+    A session started with these grants runs them without asking, as a skill's allowed-tools do, so they are held to
+    the same rules: each script by its path, never a * that continues one, in both shells. Each value is a string or
+    an f-string that is one whole grant, or a starred call of a function the module defines, each string of which,
+    but its docstring, is one; a value an f-string fills in is read as its name, so the module fills in no text that
+    holds a *.
+    """
+    problems: list[str] = []
+    for module in sorted((root / "tools").rglob("*.py")):
+        name = module.relative_to(root).as_posix()
+        tree = ast.parse(module.read_text(encoding="utf-8"))
+        functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+        for display in ast.walk(tree):
+            if not isinstance(display, ast.List | ast.Tuple):
+                continue
+            for index, item in enumerate(display.elts):
+                if _text(item) != ALLOWED_TOOLS_OPTION:
+                    continue
+                grants, unreadable = _passed_grants(display.elts[index + 1 :], functions)
+                problems += [
+                    f"{name}:{item.lineno} passes {source} to {ALLOWED_TOOLS_OPTION}, which this policy cannot read "
+                    f"as grants; write each grant as a string or an f-string, or return them from a function of the "
+                    f"module; see {GRANTS_DOC}"
+                    for source in unreadable
+                ]
+                for line in skill_inventory.grant_findings(skill_inventory.allowed_entries(grants), []):
+                    kind, _, detail = line.partition(" ")
+                    problem = pattern_problem(f"{name}:{item.lineno}", kind, detail)
+                    if problem is not None:
+                        problems.append(problem)
     return problems
 
 
@@ -250,6 +351,11 @@ class SkillGrantsPolicies(unittest.TestCase):
         # A tool's --root redirects every write it makes, so a grant whose * covers it must find the tool refusing a
         # directory that is not a checkout of this repository, such as a home whose .agents/skills the deployer owns.
         self.assertEqual([], root_option_problems(REPOSITORY_ROOT, repository_skill_files(REPOSITORY_ROOT)))
+
+    def test_repository_tools_grant_their_sessions_by_the_skill_grant_rules(self) -> None:
+        # A tool that starts Claude Code with --allowedTools pre-approves those commands for the whole session, so a
+        # * that continues a script's path there matches any file named like it, as it would in a skill's grants.
+        self.assertEqual([], tool_grant_problems(REPOSITORY_ROOT))
 
     def test_skills_grant_only_scoped_twin_shell_patterns_that_cover_their_own_scripts(self) -> None:
         # allowed-tools pre-approves; a bare Bash would pre-approve every command in the turn that starts the skill.
