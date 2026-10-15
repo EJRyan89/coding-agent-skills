@@ -248,6 +248,35 @@ class BackoffTests(unittest.TestCase):
             client.run(["api", "user"])
         self.assertEqual(4, context.exception.returncode)
 
+    def test_a_refused_api_request_carries_the_reasons_its_body_gives(self) -> None:
+        reason = "The listed users cannot be searched either because the users do not exist\nor you cannot view them."
+        body = json.dumps(
+            {"message": "Validation Failed", "errors": [{"message": reason, "code": "invalid"}, {"code": "missing"}]}
+        )
+        head = "HTTP/2.0 422 Unprocessable Entity\r\nContent-Type: application/json\r\n\r\n"
+        for stdout, headers in ((head + body, True), (body, False)):
+            client, sleeper = client_for(scripted(failed("gh: Validation Failed (HTTP 422)\n", stdout))[0])
+            with self.subTest(headers=headers), self.assertRaises(GitHubError) as context:
+                client.run(["api", "search/issues?q=author:nobody"], headers=headers)
+            self.assertEqual(
+                "gh: Validation Failed (HTTP 422): The listed users cannot be searched either because the users do "
+                "not exist or you cannot view them.",
+                str(context.exception),
+            )
+            self.assertEqual(("api", []), (context.exception.kind, sleeper.waits))
+
+    def test_a_reason_gh_already_printed_or_a_body_without_reasons_adds_nothing(self) -> None:
+        graphql = json.dumps({"errors": [{"type": "NOT_FOUND", "message": "Could not resolve to a User."}]})
+        for stdout in (graphql, "", "not json", "[]", '{"errors": "text"}', '{"errors": [{"message": 5}]}'):
+            client, _ = client_for(scripted(failed("gh: Could not resolve to a User.\n", stdout))[0])
+            with self.subTest(stdout=stdout), self.assertRaises(GitHubError) as context:
+                client.run(["api", "graphql"])
+            self.assertEqual("gh: Could not resolve to a User.", str(context.exception))
+        client, _ = client_for(scripted(failed("gh: pull request not found\n", graphql))[0])
+        with self.assertRaises(GitHubError) as context:
+            client.run(["pr", "view", "5"])
+        self.assertEqual("gh: pull request not found", str(context.exception), "only gh api prints a response body")
+
 
 BAD_GATEWAY = "gh: Bad Gateway (HTTP 502)"
 UNKNOWN_OUTCOME = "GitHub may have applied it, so check before repeating it"
