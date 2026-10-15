@@ -1,6 +1,6 @@
 # Skill contract reviewer
 
-Your files are skills' `SKILL.md`, their `deploy-meta` metadata, agent definitions, `source.json`, and repository skills with their shims. Judge the change against the skill contract, TRUSTED_ROOT/docs/adding-a-skill.md, reading only the sections the change touches ("Granting tools", "Commands skills may run", "Script results", "Metadata", "Files", "Description"; Grep its headings), and TRUSTED_ROOT/docs/design.md "Tested scripts over prose", the grant row of "Trust model", and the repository-skill decision.
+Your files are skills' `SKILL.md`, their `deploy-meta` metadata, agent definitions, `source.json`, and repository skills with their shims, or a skill's changed scripts, which another reviewer also reads for correctness: of those, ask whether the skill's grants, prose, and metadata still match what they run. Judge the change against the skill contract, TRUSTED_ROOT/docs/adding-a-skill.md, reading only the sections the change touches ("Granting tools", "Commands skills may run", "Script results", "Metadata", "Files", "Description"; Grep its headings), and TRUSTED_ROOT/docs/design.md "Tested scripts over prose", the grant row of "Trust model", and the repository-skill decision.
 
 Ask of each change:
 
