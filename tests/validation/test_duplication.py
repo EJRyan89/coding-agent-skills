@@ -15,7 +15,12 @@ from typing import ClassVar
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
-from duplication import duplicated_definition_problems, skill_core_copy_problems, skill_core_import_problems
+from duplication import (
+    duplicated_definition_problems,
+    skill_core_copy_problems,
+    skill_core_import_problems,
+    skill_script_import_problems,
+)
 from git_test_base import GitTestCase
 from validation_support import write_fixture_tree
 
@@ -205,6 +210,17 @@ class DuplicatedConstantPolicy(GitTestCase):
             ),
         )
 
+    def test_a_value_under_a_sanction_name_that_is_not_a_dictionary_is_compared(self) -> None:
+        self.assertEqual(
+            [f"KINDS_ALLOWED at deployer/one.py:1 and KINDS_ALLOWED at tools/two.py:1{self.FIX}"],
+            self.problems(
+                {
+                    "deployer/one.py": 'KINDS_ALLOWED = ("a sanction written as a tuple",)\n',
+                    "tools/two.py": 'KINDS_ALLOWED = ("a sanction written as a tuple",)\n',
+                }
+            ),
+        )
+
     def test_a_long_literal_or_a_collection_of_literals_copied_fails_wherever_it_is_assigned(self) -> None:
         self.assertEqual(
             [
@@ -273,7 +289,7 @@ class DuplicatedConstantPolicy(GitTestCase):
         common = (
             'UNKNOWN = "unknown"\nRUN_FILE = "run.json"\nSHELLS = ("bash", "sh", "shell")\nTIMEOUT = 120\n'
             '__all__ = ["first_exported_name", "second_exported_name"]\n'
-            'KINDS_ALLOWED = ("a sanction written as a tuple",)\n'
+            'KINDS_ALLOWED = {"a sanction": "written as a dictionary"}\n'
             'def outer():\n    INNER = "a long enough literal"\n    return INNER\n'
             'class Holder:\n    INNER = "a long enough literal"\n'
             'BUILT = "a long enough " + "literal"\n'
@@ -402,6 +418,65 @@ class SkillCoreHomePolicy(GitTestCase):
                     "skills/skill-core/scripts/test_shared.py": "import deployer.paths\nimport shared\n",
                     # A suite may import what it tests with; only the direction rule holds it.
                     "skills/skill-core/scripts/test_other.py": "import unittest\nimport shared\nimport harness\n",
+                },
+            ),
+        )
+
+    def test_a_module_imported_by_name_is_held_as_an_import_statement_is(self) -> None:
+        unread = (
+            "deployer/dynamic.py:5 imports a module by a name it cannot read; import it by a statement or one string "
+            f"literal; see {self.DOC}"
+        )
+        self.assertEqual(
+            [
+                f"deployer/dynamic.py:2 imports yaml, which is neither the standard library, the deployer, nor "
+                f"skill-core; see {self.DOC}",
+                f"deployer/dynamic.py:3 imports requests, which is neither the standard library, the deployer, nor "
+                f"skill-core; see {self.DOC}",
+                unread,
+            ],
+            self.run_policy(
+                skill_core_import_problems,
+                {
+                    "deployer/__init__.py": self.HEADER + self.STATEMENT,
+                    "deployer/dynamic.py": "import importlib\nyaml = importlib.import_module('yaml')\n"
+                    "requests = __import__('requests')\njson = importlib.import_module('json')\n"
+                    "chosen = importlib.import_module(NAME)\n",
+                },
+            ),
+        )
+
+    def test_a_shipped_skill_script_imports_only_what_a_deployment_holds(self) -> None:
+        def foreign(line: int, module: str) -> str:
+            return (
+                f"skills/demo/scripts/run.py:{line} imports {module}, which is neither the standard library, "
+                f"skill-core, the skill's own scripts, nor a skill its skill_deps reach; see {self.DOC}"
+            )
+
+        self.assertEqual(
+            [
+                foreign(1, "requests"),
+                foreign(6, "lonely"),
+                foreign(8, "yaml"),
+            ],
+            self.run_policy(
+                skill_script_import_problems,
+                {
+                    "deploy-meta/demo.json": '{"skill_deps": ["skill-core", "middle"]}',
+                    "deploy-meta/middle.json": '{"skill_deps": ["deep"]}',
+                    "skills/skill-core/SKILL.md": "",
+                    "skills/demo/SKILL.md": "",
+                    "skills/middle/SKILL.md": "",
+                    "skills/deep/SKILL.md": "",
+                    "skills/other/SKILL.md": "",
+                    "skills/middle/scripts/middling.py": "",
+                    "skills/deep/scripts/deepest.py": "",
+                    "skills/other/scripts/lonely.py": "",
+                    "skills/demo/scripts/helper.py": "",
+                    "skills/demo/scripts/run.py": "import requests\nimport json\nimport shared\nimport helper\n"
+                    "import middling, deepest\nimport lonely\nimport importlib\nimportlib.import_module('yaml')\n",
+                    # A suite may import what it tests with.
+                    "skills/demo/scripts/test_run.py": "import harness\n",
                 },
             ),
         )

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import os
 import subprocess
-import tempfile
+import sys
 import threading
 import time
 import traceback
@@ -15,6 +15,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple, TypeVar
 
+# skill-core's bounded runner is imported before validation_support, which puts skill-core on sys.path too, so this
+# module states the path itself.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+
+from bounded_process import run_bounded
 from validation_support import REPOSITORY_ROOT
 
 from deployer import platform_support, tools
@@ -98,38 +103,46 @@ def refuse_termination(arguments: Sequence[str], returncode: int, output: str | 
         raise Terminated(status, arguments)
 
 
+class TimedOut(Exception):
+    """A program a job started did not finish within COMMAND_TIMEOUT_SECONDS, so it was ended with every process it
+    started: no check failed, and its report names the whole command and what it wrote before it was ended."""
+
+
 def run_process(arguments: list[str], environment: dict[str, str] | None = None, cwd: Path = REPOSITORY_ROOT) -> None:
+    """Run a job's program and raise AssertionError, with its output, when it fails, Terminated when it was ended
+    before its first line of output, and TimedOut when it runs past COMMAND_TIMEOUT_SECONDS.
+
+    It runs through skill-core's bounded runner in this platform's process tree, so the time limit, and the end of a
+    run that passes or fails, ends every process the program started that stays in its tree, such as a git, PowerShell,
+    or Python a suite left holding its temporary home, and its output goes to real files, since MSYS tools can reject
+    inherited anonymous pipes with a spurious "failed to set file descriptor text/binary mode" error.
+    """
     merged = dict(os.environ)
     if environment:
         merged.update(environment)
-    # Redirect to real files: MSYS tools can reject inherited anonymous pipes with a
-    # spurious "failed to set file descriptor text/binary mode" error.
-    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
-        try:
-            completed = subprocess.run(
-                arguments,
-                cwd=cwd,
-                env=merged,
-                stdin=subprocess.DEVNULL,
-                stdout=stdout,
-                stderr=stderr,
-                timeout=COMMAND_TIMEOUT_SECONDS,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise AssertionError(f"Command timed out after {COMMAND_TIMEOUT_SECONDS}s: {arguments[0]}") from exc
-        if completed.returncode != 0:
-            stdout.seek(0)
-            stderr.seek(0)
-            written, written_error = stdout.read(), stderr.read()
-            refuse_termination(arguments, completed.returncode, written + written_error)
-            status = platform_support.termination_status(completed.returncode)
-            ended = f" (status {status}, ended after its output began)" if status else ""
-            output = written.decode("utf-8", "replace")
-            error = written_error.decode("utf-8", "replace")
-            raise AssertionError(
-                f"Command failed with exit code {completed.returncode}{ended}: {' '.join(arguments)}\n{output}\n{error}"
-            )
+    command = " ".join(arguments)
+    try:
+        finished = run_bounded(
+            arguments, COMMAND_TIMEOUT_SECONDS, cwd=cwd, env=merged, tree=platform_support.process_tree()
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise TimedOut(
+            f"Command timed out after {COMMAND_TIMEOUT_SECONDS}s and was ended with every process it started: "
+            f"{command}\n{_text(exc.stdout)}\n{_text(exc.stderr)}"
+        ) from None
+    if finished.returncode != 0:
+        refuse_termination(arguments, finished.returncode, finished.stdout + finished.stderr)
+        status = platform_support.termination_status(finished.returncode)
+        ended = f" (status {status}, ended after its output began)" if status else ""
+        raise AssertionError(
+            f"Command failed with exit code {finished.returncode}{ended}: {command}\n"
+            f"{_text(finished.stdout)}\n{_text(finished.stderr)}"
+        )
+
+
+def _text(written: bytes | str | None) -> str:
+    """What a program wrote, as text: UTF-8, with a byte it is not written as its replacement character."""
+    return written.decode("utf-8", "replace") if isinstance(written, bytes) else written or ""
 
 
 # The most workers a run starts unless VALIDATION_JOBS says otherwise. Most jobs wait on Git and other processes, so
@@ -138,9 +151,14 @@ MAXIMUM_WORKERS = 24
 
 
 def worker_count(environment: Mapping[str, str] = os.environ, cpus: int | None = None) -> int:
+    """The workers a run starts: VALIDATION_JOBS, at least one, or else one per CPU up to MAXIMUM_WORKERS. Raises
+    ValueError, naming the variable, when VALIDATION_JOBS is set to anything but a whole number."""
     configured = environment.get("VALIDATION_JOBS")
     if configured:
-        return max(1, int(configured))
+        try:
+            return max(1, int(configured))
+        except ValueError:
+            raise ValueError(f"VALIDATION_JOBS must be a whole number of workers, not {configured!r}") from None
     return max(1, min(MAXIMUM_WORKERS, cpus or os.cpu_count() or 1))
 
 
@@ -154,13 +172,15 @@ class Job:
 
 @dataclass(frozen=True)
 class Failure:
-    """A job that failed: a check's message, the traceback of anything else it raised, or, when every attempt's program
-    was ended before its first line of output, each of those endings."""
+    """A job that failed: a check's message, the traceback of anything else it raised, the command and output of a
+    program that ran past its time limit, or, when every attempt's program was ended before its first line of output,
+    each of those endings."""
 
     job: Job
     report: str
     raised: bool = False
     terminated: bool = False
+    timed_out: bool = False
 
 
 @dataclass(frozen=True)
@@ -192,6 +212,8 @@ def _attempt(job: Job) -> Failure | Terminated | None:
         job.run()
     except Terminated as exc:
         return exc
+    except TimedOut as exc:
+        return Failure(job, str(exc), timed_out=True)
     except AssertionError as exc:
         return Failure(job, str(exc))
     except (Exception, SystemExit) as exc:  # Any other exception, a job's sys.exit included, fails only the job.

@@ -18,6 +18,7 @@ from validation_support import (
     docstring_ids,
     import_aliases,
     module_allowance,
+    python_trees,
     qualified_name,
 )
 
@@ -320,9 +321,8 @@ def platform_code_problems(root: Path) -> list[str]:
     """
     found: set[tuple[str, int, str]] = set()
     problems: list[str] = []
-    for path in sorted(_platform_scanned_files(root), key=lambda path: path.relative_to(root).as_posix()):
-        name = path.relative_to(root).as_posix()
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+    ordered = sorted(_platform_scanned_files(root), key=lambda path: path.relative_to(root).as_posix())
+    for _, name, tree in python_trees(ordered, root, problems):
         allowed = module_allowance(tree, PLATFORM_ALLOWANCE)
         if allowed is None:
             problems.append(f"{name}: {PLATFORM_ALLOWANCE} must map each token to the reason it is allowed")
@@ -836,9 +836,8 @@ def filesystem_write_problems(root: Path) -> list[str]:
     writes that may land outside the system temporary directory."""
     found: set[tuple[str, int, str]] = set()
     problems: list[str] = []
-    for path in sorted(_writes_scanned_files(root), key=lambda path: path.relative_to(root).as_posix()):
-        name = path.relative_to(root).as_posix()
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+    ordered = sorted(_writes_scanned_files(root), key=lambda path: path.relative_to(root).as_posix())
+    for _, name, tree in python_trees(ordered, root, problems):
         allowed = module_allowance(tree, FSOPS_ALLOWANCE)
         if allowed is None:
             problems.append(f"{name}: {FSOPS_ALLOWANCE} must map each token to the reason it is allowed")

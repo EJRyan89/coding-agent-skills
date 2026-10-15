@@ -14,7 +14,16 @@ import frontmatter
 from skill_layout import embedded_program_problems, output_placeholder_problems
 from skill_roots import sibling_scripts
 from skill_scripts import command_reader
-from validation_support import REPOSITORY_ROOT, REPOSITORY_SKILLS, import_aliases, qualified_name, skills_by_name
+from validation_support import (
+    REPOSITORY_ROOT,
+    REPOSITORY_SKILLS,
+    UnreadablePython,
+    import_aliases,
+    parse_python,
+    python_trees,
+    qualified_name,
+    skills_by_name,
+)
 
 from deployer import render
 
@@ -190,9 +199,7 @@ def tool_grant_problems(root: Path) -> list[str]:
     holds a *.
     """
     problems: list[str] = []
-    for module in sorted((root / "tools").rglob("*.py")):
-        name = module.relative_to(root).as_posix()
-        tree = ast.parse(module.read_text(encoding="utf-8"))
+    for _, name, tree in python_trees(sorted((root / "tools").rglob("*.py")), root, problems):
         functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
         for display in ast.walk(tree):
             if not isinstance(display, ast.List | ast.Tuple):
@@ -238,8 +245,12 @@ def root_option_problems(root: Path, skill_files: list[Path]) -> list[str]:
 
 
 def unbounded_root_option(script: Path) -> bool:
-    """Whether a script declares the --root option with a type other than the checkout check, or with none."""
-    tree = ast.parse(script.read_text(encoding="utf-8"))
+    """Whether a script declares the --root option with a type other than the checkout check, or with none, or cannot
+    be read to tell."""
+    try:
+        tree = parse_python(script)
+    except UnreadablePython:
+        return True
     aliases = import_aliases(tree)
     for node in ast.walk(tree):
         if not (
@@ -264,8 +275,8 @@ def repository_code_declaration_problems(root: Path) -> list[str]:
     """
     declaration = skill_inventory.REPOSITORY_CODE_DECLARATION
     problems: list[str] = []
-    for script in sorted([*(root / "skills").rglob("*.py"), *(root / REPOSITORY_SKILLS).rglob("*.py")]):
-        tree = ast.parse(script.read_text(encoding="utf-8"))
+    scripts = sorted([*(root / "skills").rglob("*.py"), *(root / REPOSITORY_SKILLS).rglob("*.py")])
+    for script, name, tree in python_trees(scripts, root, problems):
         assigned = [
             node
             for node in ast.walk(tree)
@@ -277,7 +288,6 @@ def repository_code_declaration_problems(root: Path) -> list[str]:
         ]
         if not assigned:
             continue
-        name = script.relative_to(root).as_posix()
         if len(assigned) != 1 or assigned[0] not in tree.body or not skill_inventory.runs_repository_code(script):
             problems.append(f"{name}: {declaration} must be one module-level assignment of a non-empty reason")
         reader = command_reader(script)

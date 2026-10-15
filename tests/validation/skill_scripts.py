@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import functools
 import json
 import re
@@ -20,11 +21,18 @@ from toolchain import find_powershell
 from validation_support import (
     REPOSITORY_ROOT,
     CallableResolver,
+    UnreadablePython,
+    call_argument,
     find_fences,
     import_aliases,
     is_test_script,
     module_allowance,
     module_imports,
+    module_statements,
+    parse_python,
+    parse_source,
+    python_source,
+    python_trees,
     qualified_name,
     skill_script_directories,
     skills_by_name,
@@ -81,6 +89,29 @@ SHELL_BUILTINS = {
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=")
 COMMAND_NAME = re.compile(r"[A-Za-z][A-Za-z0-9._-]*")
 COMMANDS_DOC = '"Commands skills may run" in docs/adding-a-skill.md'
+# The commands that run the program a later word names, each with its options that take the next word as their value:
+# the program is the first word after the options, after the assignments env takes, and after the duration timeout
+# takes. command -v and -V only look a program up.
+COMMAND_WRAPPERS: dict[str, frozenset[str]] = {
+    "command": frozenset(),
+    "builtin": frozenset(),
+    "exec": frozenset({"-a"}),
+    "nohup": frozenset(),
+    "time": frozenset(),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "env": frozenset({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}),
+    "timeout": frozenset({"-s", "--signal", "-k", "--kill-after"}),
+    "stdbuf": frozenset({"-i", "-o", "-e"}),
+    "xargs": frozenset({"-I", "-n", "-L", "-d", "-P", "-s", "-E", "-a", "--arg-file", "--delimiter", "--max-args"}),
+}
+LOOKUP_ONLY_OPTIONS = frozenset({"-v", "-V"})
+# The commands that run a script a word holds: eval its arguments, and a shell the script after its -c.
+SCRIPT_SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
+# find's actions that run the program the next word names.
+FIND_ACTIONS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+# What a reader records for a program a wrapper runs but that no literal names, such as `xargs "$tool"`, so the command
+# policy refuses it rather than passing it unseen; it never names a program.
+UNREAD_PROGRAM = "<unread> "
 
 
 def _split_operators(token: str) -> list[str]:
@@ -95,17 +126,96 @@ def _split_operators(token: str) -> list[str]:
     return parts
 
 
+def _substitutions(script: str) -> list[str]:
+    """The script of each command substitution a Bash script holds, `$(...)` or backticks, quoted or not, outside
+    single quotes, comments, and arithmetic `$((...))`."""
+    found: list[str] = []
+    index, quoted = 0, False
+    while index < len(script):
+        character = script[index]
+        if character == "\\":
+            index += 2
+            continue
+        if character == "'" and not quoted:
+            index = script.find("'", index + 1) + 1 or len(script)
+            continue
+        if character == "#" and not quoted and (index == 0 or script[index - 1] in " \t\n;&|("):
+            index = script.find("\n", index) + 1 or len(script)
+            continue
+        if character == '"':
+            quoted = not quoted
+        if script.startswith("$(", index) and not script.startswith("$((", index):
+            depth, end = 1, index + 2
+            while end < len(script) and depth:
+                depth += {"(": 1, ")": -1}.get(script[end], 0)
+                end += 1
+            found.append(script[index + 2 : end - 1])
+            index = end
+            continue
+        if character == "`":
+            end = script.find("`", index + 1)
+            end = len(script) if end < 0 else end
+            found.append(script[index + 1 : end])
+            index = end + 1
+            continue
+        index += 1
+    return found
+
+
+def _program_word(word: str) -> set[str]:
+    """What a word a wrapper runs as a program names: a literal command, nothing for a template token or a path, which
+    a command word is read as too, and UNREAD_PROGRAM for one built from a variable or a substitution."""
+    if COMMAND_NAME.fullmatch(word):
+        return {word}
+    if "$" in word or "`" in word:
+        return {f"{UNREAD_PROGRAM}{word}"}
+    return set()
+
+
+def _wrapped_programs(words: list[str]) -> set[str]:
+    """The programs a simple command runs through its first word: what a wrapper such as xargs or env runs, what find's
+    -exec runs, and what eval or a shell's -c script runs, followed through a wrapper of a wrapper."""
+    found: set[str] = set()
+    while words:
+        head, rest = words[0], words[1:]
+        if head == "eval":
+            return found | shell_commands(" ".join(rest))
+        if head in SCRIPT_SHELLS:
+            script = rest[rest.index("-c") + 1 : rest.index("-c") + 2] if "-c" in rest else []
+            return found | {name for text in script for name in shell_commands(text)}
+        if head == "find":
+            actions = [index for index, word in enumerate(rest) if word in FIND_ACTIONS and index + 1 < len(rest)]
+            for index in actions:
+                found |= _program_word(rest[index + 1]) | _wrapped_programs(rest[index + 1 :])
+            return found
+        options = COMMAND_WRAPPERS.get(head)
+        if options is None or (head == "command" and LOOKUP_ONLY_OPTIONS & set(rest)):
+            return found
+        index = 0
+        while index < len(rest) and (rest[index].startswith("-") or (head == "env" and ASSIGNMENT.match(rest[index]))):
+            index += 2 if rest[index] in options else 1
+        index += 1 if head == "timeout" else 0
+        if index >= len(rest):
+            return found
+        found |= _program_word(rest[index])
+        words = rest[index:]
+    return found
+
+
 def shell_commands(script: str) -> set[str]:
-    """Literal command names a Bash script runs, ignoring keywords, case patterns, and its own functions."""
+    """Literal command names a Bash script runs, ignoring keywords, case patterns, and its own functions: each command
+    word, each program a wrapper, find's -exec, eval, or a shell's -c script runs, and every command of a command
+    substitution, quoted or not. A program a wrapper runs that no literal names is recorded as UNREAD_PROGRAM."""
     lexer = shlex.shlex(script.replace("\\\n", " "), posix=True, punctuation_chars=";&|()<>\n")
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
     tokens = [part for token in lexer for part in _split_operators(token)]
     functions = {tokens[i] for i in range(len(tokens) - 1) if tokens[i + 1] == "()"}
     functions |= {tokens[i + 1] for i in range(len(tokens) - 1) if tokens[i] == "function"}
-    found: set[str] = set()
+    found: set[str] = {name for inner in _substitutions(script) for name in shell_commands(inner)}
     state = "command"
-    for word in tokens:
+    words: list[str] = []
+    for word in [*tokens, "\n"]:
         if state == "case-word":
             state = "patterns" if word == "in" else state
         elif state == "patterns":
@@ -118,21 +228,26 @@ def shell_commands(script: str) -> set[str]:
             if word in COMMAND_SEPARATORS or word in LEADING_KEYWORDS or ASSIGNMENT.match(word):
                 continue
             state = "case-word" if word == "case" else "arguments"
-            if word not in HEADER_KEYWORDS and COMMAND_NAME.fullmatch(word) and word not in functions:
+            words = [word] if word not in HEADER_KEYWORDS and word not in functions else []
+            if words and COMMAND_NAME.fullmatch(word):
                 found.add(word)
         elif word in COMMAND_SEPARATORS:
-            state = "command"
-    return found
+            found |= _wrapped_programs(words)
+            words, state = [], "command"
+        else:
+            words.append(word)
+    return found - functions
 
 
 def _fences(markdown: str, context: str) -> list[str]:
-    """The body of each closed fence that deployer/render.py renders in a context: shell for a Bash, sh, or shell
-    fence, and powershell for a PowerShell, ps1, or pwsh fence."""
+    """The body of each fence that deployer/render.py renders in a context: shell for a Bash, sh, or shell fence, and
+    powershell for a PowerShell, ps1, or pwsh fence. A fence left open runs to the end of what holds it, as the
+    renderer reads it, so its commands are held like any other's; unclosed_fence_problems reports it."""
     lines = markdown.splitlines()
     return [
         "\n".join(fence.text(lines[index]) for index in fence.body())
         for fence in find_fences(lines)
-        if fence.closer is not None and render.fence_context(fence) == context
+        if render.fence_context(fence) == context
     ]
 
 
@@ -160,6 +275,17 @@ COMMAND_RUNNERS: dict[str, tuple[int, str]] = {
     "bounded_process.run_bounded": (0, "command"),
     "bounded_process.streaming": (0, "command"),
 }
+# The runners that run their command through a shell, whose every program the Bash reader reads; a runner that hands its
+# keywords to subprocess.Popen does too when given shell= anything but False.
+SHELL_RUNNERS = frozenset(
+    {
+        "os.system",
+        "os.popen",
+        "subprocess.getoutput",
+        "subprocess.getstatusoutput",
+        "asyncio.create_subprocess_shell",
+    }
+)
 # The runners that hand their keywords to subprocess.Popen, whose executable= replaces the program the command names.
 EXECUTABLE_RUNNERS = frozenset(
     {
@@ -282,6 +408,12 @@ def _read_literal(source: ast.Constant) -> Source:
     if not COMMAND_NAME.fullmatch(name):
         return Unreadable(source, f"the program in `{ast.unparse(source)}`, a path that names none")
     return ast.copy_location(ast.Constant(name), source)
+
+
+def _text_constant(node: ast.Constant) -> ast.Constant:
+    """A string or bytes literal as the text it holds, so a bytes command names its program as a string one does."""
+    value = node.value.decode("utf-8", "replace") if isinstance(node.value, bytes) else node.value
+    return ast.copy_location(ast.Constant(value), node)
 
 
 def _read_literals(sources: list[Source]) -> list[Source]:
@@ -488,9 +620,28 @@ class CommandReader:
                 for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
                     if isinstance(target, ast.Attribute):
                         self.attributes[target.attr].append(node.value)
+        self.clients = self._client_classes()
+        self._texts: dict[int, ast.Constant] = {}
         self._commands: dict[frozenset[str], set[str]] = {}
         self._problems: dict[str, list[str]] = {}
         self._unreadable: list[Unreadable] | None = None
+
+    def _client_classes(self) -> dict[str, str]:
+        """The command each skill-core client runs, by the client's qualified name, and the module's own classes that
+        derive from one, each by its local name, so a call through a subclass runs the client's command."""
+        clients = dict(CLIENT_CLASSES)
+        classes = [node for node in ast.walk(self.tree) if isinstance(node, ast.ClassDef)]
+        while True:
+            derived = {
+                f"<local>.{node.name}": command
+                for node in classes
+                if f"<local>.{node.name}" not in clients
+                for base in node.bases
+                if (command := clients.get(self.resolver.name(base)))
+            }
+            if not derived:
+                return clients
+            clients.update(derived)
 
     def _read_function(self, function: Function) -> None:
         if not isinstance(function, ast.Lambda):
@@ -510,7 +661,7 @@ class CommandReader:
         if node is None:
             return []
         if isinstance(node, ast.Constant):
-            return [node] if isinstance(node.value, str) else []
+            return [self._as_text(node)] if isinstance(node.value, (str, bytes)) else []
         if isinstance(node, ast.JoinedStr):
             first = node.values[0] if node.values else None
             if isinstance(first, ast.Constant) and isinstance(first.value, str) and _program_name(first.value):
@@ -538,6 +689,15 @@ class CommandReader:
         if isinstance(node, ast.Attribute):
             return self._attribute_sources(node, seen)
         return [Unreadable(node, f"the program in `{ast.unparse(node)}`")]
+
+    def _as_text(self, node: ast.Constant) -> ast.Constant:
+        """A string literal itself, or a bytes literal as the string it holds, placed in the literal's scope."""
+        if isinstance(node.value, str):
+            return node
+        if id(node) not in self._texts:
+            self._texts[id(node)] = _text_constant(node)
+            self.scope_names[id(self._texts[id(node)])] = self.scope_names.get(id(node), MODULE_SCOPE)
+        return self._texts[id(node)]
 
     def _call_sources(self, call: ast.Call, seen: frozenset[object]) -> list[Source]:
         function = call.func
@@ -737,9 +897,41 @@ class CommandReader:
             and (name := _program_name(source.value))
         ]
 
+    def _runs_a_shell(self, call: ast.Call) -> bool:
+        """Whether a runner call runs its command through a shell: one of SHELL_RUNNERS, or shell= anything but
+        False given to a runner that hands it to subprocess.Popen."""
+        name = self.resolver.name(call.func)
+        shell = next((item.value for item in call.keywords if item.arg == "shell"), None)
+        given = shell is not None and not (isinstance(shell, ast.Constant) and not shell.value)
+        return name in SHELL_RUNNERS or (name in EXECUTABLE_RUNNERS and given)
+
+    def _shell_scripts(self, call: ast.Call) -> list[tuple[int, str]]:
+        """The line and program of each command a script runs that a runner's list starts a shell with -c to run."""
+        found: list[tuple[int, str]] = []
+        for argument in self._command_arguments(call):
+            items = argument.elts[:3] if isinstance(argument, (ast.List, ast.Tuple)) else []
+            texts = [_text_constant(item).value if isinstance(item, ast.Constant) else None for item in items]
+            if len(texts) == 3 and isinstance(texts[0], str) and isinstance(texts[2], str):
+                shell = platform_support.program_name(PureWindowsPath(texts[0]).name)
+                if shell in SCRIPT_SHELLS and texts[1] == "-c":
+                    found += [(items[2].lineno, name) for name in sorted(shell_commands(texts[2]))]
+        return found
+
     def started(self, call: ast.Call) -> list[tuple[int, str]]:
-        """The line and program of each command a COMMAND_RUNNERS call may start, and nothing for another call."""
-        return self._named(self._sources(call))
+        """The line and program of each command a COMMAND_RUNNERS call may start, and nothing for another call: every
+        program a command it runs through a shell names, as the Bash reader reads it, and every program the script a
+        list starts a shell with -c to run names."""
+        sources = self._sources(call)
+        if self._runs_a_shell(call):
+            named = [
+                (source.lineno, name)
+                for source in sources
+                if isinstance(source, ast.Constant) and isinstance(source.value, str)
+                for name in sorted(shell_commands(source.value))
+            ]
+        else:
+            named = self._named(sources)
+        return named + self._shell_scripts(call)
 
     def starts_process(self) -> bool:
         """Whether the module calls a command runner or a skill-core client, even with a dynamic command.
@@ -748,7 +940,7 @@ class CommandReader:
         runs code from the target repository; that is the script's RUNS_REPOSITORY_CODE declaration.
         """
         return bool(self._runners_handed_on()) or any(
-            self.resolver.name(node.func) in COMMAND_RUNNERS or self.resolver.name(node.func) in CLIENT_CLASSES
+            self.resolver.name(node.func) in COMMAND_RUNNERS or self.resolver.name(node.func) in self.clients
             for node in self.calls
         )
 
@@ -814,10 +1006,11 @@ class CommandReader:
             for node in ast.walk(self.tree):
                 if isinstance(node, (ast.List, ast.Tuple)) and node.elts:
                     first = node.elts[0]
-                    if isinstance(first, ast.Constant) and first.value in known:
-                        found.add(first.value)
+                    text = _text_constant(first).value if isinstance(first, ast.Constant) else None
+                    if isinstance(text, str) and text in known:
+                        found.add(text)
                 elif isinstance(node, ast.Call):
-                    client = CLIENT_CLASSES.get(self.resolver.name(node.func))
+                    client = self.clients.get(self.resolver.name(node.func))
                     found |= {client} if client else set()
                     if _is_lookup(node, self.resolver.aliases(node.func)):
                         looked_up = _read_literals(self.program_literals(_lookup_argument(node)))
@@ -829,19 +1022,24 @@ class CommandReader:
 
 @functools.cache
 def _read_commands(source: str) -> CommandReader:
-    return CommandReader(ast.parse(source))
+    return CommandReader(parse_source(source, "<commands>"))
 
 
 def command_reader(path: Path) -> CommandReader:
     """The CommandReader of a Python file as it is now, built once for each content in a validation run, so every
-    policy that reads a file's commands shares one reading of it and a file that changes is read again."""
-    return _read_commands(path.read_text(encoding="utf-8", errors="replace"))
+    policy that reads a file's commands shares one reading of it and a file that changes is read again. A file no
+    policy can read raises UnreadablePython."""
+    return _read_commands(python_source(path))
 
 
 # Prints one JSON array of {source, name} for each external command run by the PowerShell sources in the JSON file
-# COMMAND_SOURCES names, as PowerShell's own parser reads them. A function a source defines is its own, and so is
-# what PowerShell ships: its aliases and the commands of its core and of the modules under its home, such as
-# Get-ChildItem and ForEach-Object. A module installed elsewhere, such as PSScriptAnalyzer, is not standard.
+# COMMAND_SOURCES names, as PowerShell's own parser reads them, and {source, unread} for each program it cannot read. A
+# function a source defines is its own, and so is what PowerShell ships: its aliases and the commands of its core and
+# of the modules under its home, such as Get-ChildItem and ForEach-Object. A module installed elsewhere, such as
+# PSScriptAnalyzer, is not standard. What Start-Process starts, by -FilePath or its first positional argument, what
+# `& (Get-Command name)` runs, and every command of a string Invoke-Expression runs are read as commands too; a program
+# any of these, or `&` or `.`, names other than by a literal is unread, but for a .ps1 script a path names, whose own
+# commands the policy reads in its file.
 POWERSHELL_COMMANDS_RUN = (
     "$ErrorActionPreference = 'Stop'; "
     "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); "
@@ -852,16 +1050,46 @@ POWERSHELL_COMMANDS_RUN = (
     "foreach ($command in Get-Command -Module @($shipped + 'Microsoft.PowerShell.Core')) { "
     "[void]$own.Add($command.Name) }; "
     "foreach ($alias in Get-Alias) { [void]$own.Add($alias.Name) }; "
+    "function Get-Literal($element) { "
+    "if ($element -is [Management.Automation.Language.StringConstantExpressionAst]) { return $element.Value }; "
+    "if ($element -is [Management.Automation.Language.ExpandableStringExpressionAst] -and "
+    "$element.NestedExpressions.Count -eq 0) { return $element.Value }; "
+    "return $null }; "
+    "function Get-Argument($elements, $named, $switches) { "
+    "for ($at = 1; $at -lt $elements.Count; $at++) { $element = $elements[$at]; "
+    "if ($element -is [Management.Automation.Language.CommandParameterAst]) { "
+    "if ($named -contains $element.ParameterName) { "
+    "if ($element.Argument) { return $element.Argument }; return $elements[$at + 1] }; "
+    "if (-not ($switches -contains $element.ParameterName) -and -not $element.Argument) { $at++ }; continue }; "
+    "return $element }; "
+    "return $null }; "
     "$found = [Collections.Generic.List[object]]::new(); "
-    "for ($index = 0; $index -lt $sources.Count; $index++) { "
+    "$queue = [Collections.Generic.Queue[object]]::new(); "
+    "for ($index = 0; $index -lt $sources.Count; $index++) { $queue.Enqueue(@($index, $sources[$index])) }; "
+    "while ($queue.Count) { $item = $queue.Dequeue(); $index = $item[0]; "
     "$tokens = $null; $errors = $null; "
-    "$tree = [Management.Automation.Language.Parser]::ParseInput($sources[$index], [ref]$tokens, [ref]$errors); "
+    "$tree = [Management.Automation.Language.Parser]::ParseInput($item[1], [ref]$tokens, [ref]$errors); "
     "$functions = @($tree.FindAll({ param($node) "
     "$node -is [Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object Name); "
     "foreach ($command in $tree.FindAll({ param($node) "
     "$node -is [Management.Automation.Language.CommandAst] }, $true)) { "
-    "$name = $command.GetCommandName(); "
-    "if (-not $name -or $functions -contains $name -or $own.Contains($name)) { continue }; "
+    "$name = $command.GetCommandName(); $elements = $command.CommandElements; "
+    "if (-not $name -and $elements[0].Extent.Text -match '\\.ps1\\W*$') { continue }; "
+    "if (-not $name) { $first = $elements[0]; "
+    "$inner = @($first.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] }, $true)); "
+    "if ($inner.Count -eq 1 -and @('Get-Command', 'gcm') -contains $inner[0].GetCommandName()) { "
+    "$name = Get-Literal (Get-Argument $inner[0].CommandElements @('Name') @()) }; "
+    "if (-not $name) { $found.Add([ordered]@{ source = $index; unread = $first.Extent.Text }); continue } }; "
+    "if (@('Start-Process', 'saps', 'start') -contains $name) { "
+    "$program = Get-Argument $elements @('FilePath', 'PSPath', 'Path', 'FilePa', 'File') "
+    "@('Wait', 'NoNewWindow', 'PassThru', 'UseNewEnvironment', 'LoadUserProfile'); "
+    "$name = if ($program) { Get-Literal $program } else { $null }; "
+    "if (-not $name) { $found.Add([ordered]@{ source = $index; unread = $command.Extent.Text }); continue } }; "
+    "if (@('Invoke-Expression', 'iex') -contains $name) { "
+    "$script = Get-Argument $elements @('Command') @(); $text = if ($script) { Get-Literal $script } else { $null }; "
+    "if ($null -eq $text) { $found.Add([ordered]@{ source = $index; unread = $command.Extent.Text }) } "
+    "else { $queue.Enqueue(@($index, $text)) }; continue }; "
+    "if ($functions -contains $name -or $own.Contains($name)) { continue }; "
     "$found.Add([ordered]@{ source = $index; name = $name }) } }; "
     "[Console]::Out.WriteLine((ConvertTo-Json -InputObject $found.ToArray() -Compress -Depth 3))"
 )
@@ -889,7 +1117,9 @@ def powershell_commands(sources: list[str]) -> list[set[str]]:
         )
     commands: list[set[str]] = [set() for _ in sources]
     for item in found:
-        if name := _program_name(item["name"]):
+        if "unread" in item:
+            commands[item["source"]].add(f"{UNREAD_PROGRAM}{item['unread']}")
+        elif name := _program_name(item["name"]):
             commands[item["source"]].add(name)
     return commands
 
@@ -905,12 +1135,14 @@ def _powershell_sources(path: Path) -> list[str]:
 
 
 def _file_commands(path: Path, known: set[str], powershell: dict[str, set[str]]) -> set[str]:
-    """The programs a file runs, where powershell holds what each PowerShell source read for the run runs."""
+    """The programs a file runs, where powershell holds what each PowerShell source read for the run runs. A Python
+    file no policy can read runs nothing here; skill_command_problems reports it."""
     text = path.read_text(encoding="utf-8", errors="replace")
     suffix = path.suffix.casefold()
     found = {command for source in _powershell_sources(path) for command in powershell[source]}
     if suffix == ".py":
-        found |= command_reader(path).commands(known)
+        with contextlib.suppress(UnreadablePython):
+            found |= command_reader(path).commands(known)
     elif suffix in {".sh", ".bash"}:
         found |= shell_commands(text)
     elif suffix == ".md":
@@ -927,8 +1159,14 @@ NAMED_SCRIPT = re.compile(r"/([a-z0-9-]+)/scripts/([A-Za-z_]\w*)\.py\b")
 
 
 def _referenced_scripts(path: Path) -> frozenset[str]:
-    """Module names a file imports, and script names it gives by a path through another skill's scripts/."""
-    return _references(path.read_text(encoding="utf-8", errors="replace"), path.suffix.casefold() == ".py")
+    """Module names a file imports, and script names it gives by a path through another skill's scripts/; none for a
+    Python file no policy can read, which skill_command_problems reports."""
+    if path.suffix.casefold() != ".py":
+        return _references(path.read_text(encoding="utf-8", errors="replace"), False)
+    try:
+        return _references(python_source(path), True)
+    except UnreadablePython:
+        return frozenset()
 
 
 @functools.cache
@@ -936,14 +1174,20 @@ def _references(text: str, python: bool) -> frozenset[str]:
     """What _referenced_scripts finds in a file's text, read once for each content in a validation run."""
     if not python:
         return frozenset(name for _, name in NAMED_SCRIPT.findall(text))
-    tree = ast.parse(text)
+    try:
+        tree = parse_source(text, "<references>")
+    except UnreadablePython:
+        return frozenset()
     # A module-level sanction such as DUPLICATION_ALLOWED names, in its reasons, the other files that hold a copy,
     # which the module does not run.
     sanctions = {
         line
         for node in tree.body
-        if isinstance(node, ast.Assign)
-        and any(isinstance(target, ast.Name) and target.id.endswith("_ALLOWED") for target in node.targets)
+        if isinstance(node, (ast.Assign, ast.AnnAssign))
+        and any(
+            isinstance(target, ast.Name) and target.id.endswith("_ALLOWED")
+            for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+        )
         for line in range(node.lineno, (node.end_lineno or node.lineno) + 1)
     }
     unsanctioned = "".join(
@@ -1013,12 +1257,24 @@ def skill_command_problems(root: Path, known: set[str], standard: set[str]) -> l
     for skill, declared, own, dependency_scripts in skills:
         for path in own + dependency_scripts:
             if path.suffix.casefold() == ".py":
-                problems += command_reader(path).problems(path.relative_to(root).as_posix())
+                name = path.relative_to(root).as_posix()
+                try:
+                    problems += command_reader(path).problems(name)
+                except UnreadablePython as error:
+                    problems.append(f"{name} {error}")
         used = {command for path in own for command in _file_commands(path, known, powershell)}
         reached: dict[str, Path] = {}
         for path in dependency_scripts:
             for command in _file_commands(path, known, powershell):
                 reached.setdefault(command, path)
+        unread = sorted(name for name in [*used, *reached] if name.startswith(UNREAD_PROGRAM))
+        problems += [
+            f"skill {skill} runs a program it names by `{name.removeprefix(UNREAD_PROGRAM)}`, which the policy cannot "
+            f"read; name the program with a literal; see {COMMANDS_DOC}"
+            for name in dict.fromkeys(unread)
+        ]
+        used -= set(unread)
+        reached = {name: path for name, path in reached.items() if name not in unread}
         for name in sorted((used & known) - declared):
             problems.append(f"skill {skill} runs {name} without declaring it in tools")
         for name in sorted((set(reached) & known) - used - declared):
@@ -1036,6 +1292,20 @@ GH_SHELL_CALL = re.compile(r"(?:^|[\s;|&(])gh\s")
 GH_SHELL_FILTER = re.compile(r"\s(--jq|--template|-q)(?=[\s=]|$)")
 
 
+def _gh_filter_flags(tree: ast.Module) -> list[tuple[int, str]]:
+    """The line and flag of each gh filter a Python module passes."""
+    found: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and node.value in GH_FILTERS:
+            found.append((node.lineno, node.value))
+        elif isinstance(node, (ast.List, ast.Tuple)):
+            values = {item.value for item in node.elts if isinstance(item, ast.Constant)}
+            # gh's -q applies a jq filter to --json output; git's -q never comes with --json.
+            if {"-q", "--json"} <= values:
+                found.append((node.lineno, "-q"))
+    return found
+
+
 def gh_filter_problems(root: Path) -> list[str]:
     """Report skill scripts that filter gh output with --jq, -q, or --template instead of parsing its JSON.
 
@@ -1050,14 +1320,8 @@ def gh_filter_problems(root: Path) -> list[str]:
         text = path.read_text(encoding="utf-8", errors="replace")
         found: list[tuple[int, str]] = []
         if path.suffix.casefold() == ".py":
-            for node in ast.walk(ast.parse(text)):
-                if isinstance(node, ast.Constant) and node.value in GH_FILTERS:
-                    found.append((node.lineno, node.value))
-                elif isinstance(node, (ast.List, ast.Tuple)):
-                    values = {item.value for item in node.elts if isinstance(item, ast.Constant)}
-                    # gh's -q applies a jq filter to --json output; git's -q never comes with --json.
-                    if {"-q", "--json"} <= values:
-                        found.append((node.lineno, "-q"))
+            for _, _, tree in python_trees([path], root, problems):
+                found += _gh_filter_flags(tree)
         elif path.suffix.casefold() in {".sh", ".bash", ".ps1"}:
             for number, line in enumerate(text.splitlines(), start=1):
                 match = GH_SHELL_FILTER.search(line) if GH_SHELL_CALL.search(line) else None
@@ -1173,6 +1437,49 @@ def _stream_change_lines(tree: ast.Module, aliases: dict[str, str]) -> list[int]
     )
 
 
+def is_main_guard(test: ast.expr) -> bool:
+    """Whether an if's test compares __name__ with "__main__", written either way round."""
+    if not (isinstance(test, ast.Compare) and len(test.ops) == 1 and isinstance(test.ops[0], ast.Eq)):
+        return False
+    sides = [test.left, test.comparators[0]]
+    return any(isinstance(side, ast.Name) and side.id == "__name__" for side in sides) and any(
+        isinstance(side, ast.Constant) and side.value == "__main__" for side in sides
+    )
+
+
+def main_blocks(tree: ast.Module) -> list[ast.If]:
+    """Each `if __name__ == "__main__":` block that runs at module level, one in a module-level if, try, or with block
+    included, and its test written either way round."""
+    return [node for node in module_statements(tree.body) if isinstance(node, ast.If) and is_main_guard(node.test)]
+
+
+# The functions an entry point runs as its program, by name.
+ENTRY_FUNCTIONS = frozenset({"main", "_main"})
+
+
+def _unguarded_main_lines(tree: ast.Module, aliases: dict[str, str]) -> list[int]:
+    """The lines of each module-level statement outside every __main__ block that runs main, or run_main, as the
+    program, itself or as what sys.exit or SystemExit is given, so it runs whenever the module is imported."""
+    guarded = {id(node) for block in main_blocks(tree) for node in ast.walk(block)}
+    lines: list[int] = []
+    for statement in module_statements(tree.body):
+        if id(statement) in guarded:
+            continue
+        call = statement.value if isinstance(statement, ast.Expr) else getattr(statement, "exc", None)
+        if (
+            isinstance(call, ast.Call)
+            and qualified_name(call.func, aliases) in {"sys.exit", "SystemExit"}
+            and call.args
+        ):
+            call = call.args[0]
+        if isinstance(call, ast.Call) and (
+            (isinstance(call.func, ast.Name) and call.func.id in ENTRY_FUNCTIONS)
+            or qualified_name(call.func, aliases) == CONSOLE_FUNCTION
+        ):
+            lines.append(statement.lineno)
+    return lines
+
+
 def _runs_through_the_runner(statement: ast.stmt, aliases: dict[str, str]) -> bool:
     """Whether a statement calls skill-core's run_main, resolved through the module's imports."""
     return (
@@ -1191,23 +1498,24 @@ def console_setup_problems(root: Path) -> list[str]:
     the console and keeps that promise, so the copies cannot drift apart again.
     """
     problems: list[str] = []
-    for path in console_entry_points(root):
-        name = path.relative_to(root).as_posix()
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+    for _, name, tree in python_trees(console_entry_points(root), root, problems):
         aliases = import_aliases(tree)
         problems += [
             f"{name}:{line} reconfigures a stream itself; call {CONSOLE_RUNNER}() from {CONSOLE_CORE} instead; "
             f"see {CONSOLE_DOC}"
             for line in _stream_change_lines(tree, aliases)
         ]
-        for node in tree.body:
-            if not (isinstance(node, ast.If) and ast.unparse(node.test) == "__name__ == '__main__'"):
-                continue
+        for node in main_blocks(tree):
             if not _runs_through_the_runner(node.body[0], aliases):
                 problems.append(
                     f"{name}:{node.lineno} does not call {CONSOLE_CORE}'s {CONSOLE_RUNNER}() first in its __main__ "
                     f"block; see {CONSOLE_DOC}"
                 )
+        problems += [
+            f'{name}:{line} runs main outside an `if __name__ == "__main__":` block, so importing it runs it; run '
+            f"{CONSOLE_CORE}'s {CONSOLE_RUNNER}(main) first in that block instead; see {CONSOLE_DOC}"
+            for line in _unguarded_main_lines(tree, aliases)
+        ]
     return problems
 
 
@@ -1231,15 +1539,83 @@ def _contract_exemption(tree: ast.Module) -> str | None:
 
 
 def _mentions_failed(node: ast.expr) -> bool:
-    parts = node.values if isinstance(node, ast.JoinedStr) else [node]
+    """Whether a message holds the word FAILED in any literal it is built from: a string, an f-string, a
+    concatenation, or a % or .format() template."""
     return any(
-        isinstance(part, ast.Constant) and isinstance(part.value, str) and "FAILED" in part.value for part in parts
+        isinstance(part, ast.Constant) and isinstance(part.value, str) and "FAILED" in part.value
+        for part in ast.walk(node)
     )
 
 
+# The standard streams, by every name sys gives them, and what ends the process with a code: sys.exit, the exit and
+# quit builtins, os._exit, and raising SystemExit.
+STANDARD_ERROR = frozenset({"sys.stderr", "sys.__stderr__"})
+STANDARD_OUTPUT = frozenset({"sys.stdout", "sys.__stdout__"})
+EXIT_CALLS = frozenset({"sys.exit", "exit", "quit", "builtins.exit", "builtins.quit", "os._exit", "SystemExit"})
+PARSER_CLASS = "argparse.ArgumentParser"
+
+
+def _parser_names(tree: ast.Module, resolver: CallableResolver) -> set[str]:
+    """The names the module binds to an argparse.ArgumentParser it builds, in any scope."""
+    return {
+        target.id
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Assign, ast.AnnAssign))
+        and isinstance(node.value, ast.Call)
+        and resolver.name(node.value.func) == PARSER_CLASS
+        for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+        if isinstance(target, ast.Name)
+    }
+
+
+def _is_parser(receiver: ast.expr, parsers: set[str]) -> bool:
+    """Whether a receiver is an argument parser: a name or attribute named for one, or a name bound to one."""
+    name = (
+        receiver.id if isinstance(receiver, ast.Name) else receiver.attr if isinstance(receiver, ast.Attribute) else ""
+    )
+    return "parser" in name.casefold() or name in parsers
+
+
+def _call_breaches(node: ast.Call, resolver: CallableResolver, parsers: set[str], in_handler: bool) -> list[str]:
+    """What one call does that "Script results" rules out."""
+    breaches: list[str] = []
+    function = resolver.name(node.func)
+    if (
+        isinstance(node.func, ast.Attribute)
+        and node.func.attr == "error"
+        and in_handler
+        and _is_parser(node.func.value, parsers)
+    ):
+        breaches.append("reports a failure through parser.error; print FAILED <reason> and exit 1")
+    code = call_argument(node, 0, "status" if function == "os._exit" else "code") if function in EXIT_CALLS else None
+    if isinstance(code, ast.Constant) and type(code.value) is int and code.value not in CONTRACT_EXIT_CODES:
+        breaches.append(f"exits {code.value}; scripts exit only 0, 1, or 2")
+    stream: ast.expr | None = None
+    message = node.args[0] if node.args else None
+    if function == "print":
+        stream = next((keyword.value for keyword in node.keywords if keyword.arg == "file"), None)
+    elif isinstance(node.func, ast.Attribute) and node.func.attr == "write":
+        stream = node.func.value
+    elif function == "json.dump":
+        stream, message = call_argument(node, 1, "fp"), node
+    target = resolver.name(stream) if stream is not None else "sys.stdout" if function == "print" else ""
+    if target in STANDARD_ERROR and message is not None and _mentions_failed(message):
+        breaches.append("prints FAILED on stderr; print it on stdout")
+    if (
+        target in STANDARD_OUTPUT
+        and isinstance(message, ast.Call)
+        and resolver.name(message.func) in {"json.dumps", "json.dump"}
+    ):
+        breaches.append("prints JSON; print one fact per line")
+    return breaches
+
+
 def _contract_breaches(tree: ast.Module) -> list[tuple[int, str]]:
-    """Where a script reports in a way "Script results" rules out, with what it does instead."""
+    """Where a script reports in a way "Script results" rules out, with what it does instead, each name read through
+    the module's imports and the names it binds to one."""
     breaches: list[tuple[int, str]] = []
+    resolver = CallableResolver(tree)
+    parsers = _parser_names(tree, resolver)
     handlers = [node for node in ast.walk(tree) if isinstance(node, ast.ExceptHandler)]
     in_handler = {id(inner) for handler in handlers for statement in handler.body for inner in ast.walk(statement)}
     entry_points = [
@@ -1255,42 +1631,10 @@ def _contract_breaches(tree: ast.Module) -> list[tuple[int, str]]:
             ):
                 breaches.append((node.lineno, f"exits {node.value.value}; scripts exit only 0, 1, or 2"))
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        function = node.func
-        if (
-            isinstance(function, ast.Attribute)
-            and function.attr == "error"
-            and id(node) in in_handler
-            and isinstance(function.value, ast.Name)
-            and "parser" in function.value.id
-        ):
-            breaches.append((node.lineno, "reports a failure through parser.error; print FAILED <reason> and exit 1"))
-        exits = (
-            isinstance(function, ast.Attribute)
-            and function.attr == "exit"
-            and isinstance(function.value, ast.Name)
-            and function.value.id == "sys"
-        )
-        if (exits or (isinstance(function, ast.Name) and function.id == "SystemExit")) and node.args:
-            code = node.args[0]
-            if isinstance(code, ast.Constant) and type(code.value) is int and code.value not in CONTRACT_EXIT_CODES:
-                breaches.append((node.lineno, f"exits {code.value}; scripts exit only 0, 1, or 2"))
-        if isinstance(function, ast.Name) and function.id == "print" and node.args:
-            stderr = any(
-                keyword.arg == "file" and ast.unparse(keyword.value) == "sys.stderr" for keyword in node.keywords
-            )
-            if stderr and _mentions_failed(node.args[0]):
-                breaches.append((node.lineno, "prints FAILED on stderr; print it on stdout"))
-            first = node.args[0]
-            if (
-                not stderr
-                and isinstance(first, ast.Call)
-                and isinstance(first.func, ast.Attribute)
-                and first.func.attr == "dumps"
-                and ast.unparse(first.func.value) == "json"
-            ):
-                breaches.append((node.lineno, "prints JSON; print one fact per line"))
+        if isinstance(node, ast.Call):
+            breaches += [
+                (node.lineno, breach) for breach in _call_breaches(node, resolver, parsers, id(node) in in_handler)
+            ]
     return sorted(breaches)
 
 
@@ -1305,11 +1649,11 @@ def secret_named_function_problems(root: Path) -> list[str]:
     files = [root / "deploy.py", *(root / "deployer").rglob("*.py"), *(root / "tools").rglob("*.py")]
     files += [path for scripts in skill_script_directories(root) for path in scripts.rglob("*.py")]
     problems: list[str] = []
-    for path in sorted(
+    ordered = sorted(
         (path for path in files if path.is_file() and not is_test_script(path)), key=lambda p: p.as_posix()
-    ):
-        name = path.relative_to(root).as_posix()
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"))):
+    )
+    for _, name, tree in python_trees(ordered, root, problems):
+        for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and CODEQL_SECRET_NAME.search(node.name):
                 problems.append(
                     f"{name}:{node.lineno}: function {node.name} is named so CodeQL treats its result as a secret "
@@ -1329,7 +1673,11 @@ def script_contract_problems(root: Path) -> list[str]:
         name = path.relative_to(root).as_posix()
         text = path.read_text(encoding="utf-8", errors="replace")
         if path.suffix == ".py":
-            tree = ast.parse(text)
+            try:
+                tree = parse_python(path)
+            except UnreadablePython as error:
+                problems.append(f"{name} {error}")
+                continue
             exemption = _contract_exemption(tree)
             if exemption is None:
                 problems.append(f"{name}: {CONTRACT_EXEMPTION} must be a non-empty string saying why")
@@ -1356,8 +1704,8 @@ def _client_commands(node: ast.AST, reader: CommandReader) -> list[tuple[int, st
     found: list[tuple[int, str]] = []
     if isinstance(node, (ast.List, ast.Tuple)) and node.elts:
         first = node.elts[0]
-        if isinstance(first, ast.Constant) and isinstance(first.value, str):
-            found = [(first.lineno, first.value.split(" ", 1)[0])]
+        if isinstance(first, ast.Constant) and isinstance(first.value, (str, bytes)):
+            found = [(first.lineno, str(_text_constant(first).value).split(" ", 1)[0])]
     elif isinstance(node, ast.Call):
         found = reader.started(node)
     return [(line, command) for line, command in found if command in CLIENT_COMMANDS]
@@ -1374,7 +1722,11 @@ def client_command_problems(root: Path) -> list[str]:
         name = path.relative_to(root).as_posix()
         if is_test_script(path) or name.startswith(f"{SKILL_CORE_SCRIPTS}/"):
             continue
-        reader = command_reader(path)
+        try:
+            reader = command_reader(path)
+        except UnreadablePython as error:
+            problems.append(f"{name} {error}")
+            continue
         problems += reader.problems(name)
         commands = {found for node in ast.walk(reader.tree) for found in _client_commands(node, reader)}
         for line, command in sorted(commands):

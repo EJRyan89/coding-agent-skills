@@ -7,6 +7,7 @@ from __future__ import annotations
 import ast
 import fnmatch
 import functools
+import itertools
 import re
 import sys
 import tomllib
@@ -25,13 +26,19 @@ from validation_support import (
     TEST_NAME_PATTERNS,
     TEST_SCRIPT_EXTENSIONS,
     CallableResolver,
+    UnreadablePython,
     call_argument,
     import_aliases,
     is_executable_script,
     is_test_script,
     markdown_section,
-    module_imports,
     module_statements,
+    name_values,
+    parse_python,
+    parse_source,
+    path_parts,
+    python_source,
+    python_trees,
     qualified_name,
     relative,
     repository_files,
@@ -76,61 +83,27 @@ def _needs_a_test(name: str, scripts: list[str]) -> bool:
     return in_scope and name.endswith(".py") and parts[-1] != "__init__.py" and not is_test_script(Path(name))
 
 
-def _import_name(name: str) -> str:
-    """The name a test imports a module by: deployer.x and tools.x as packages, a skill's script by its bare name."""
-    parts = name.removesuffix(".py").split("/")
-    return ".".join(parts) if parts[0] in {"deployer", "tools"} else parts[-1]
-
-
-def imported_modules(source: str) -> set[str]:
-    """The modules a test imports: every `import a.b`, `from a import b`, and importlib.import_module("a.b"), as a.b
-    and each package above it, and every file spec_from_file_location loads, as `*` and the path it names without
-    .py, such as *tools/b for "tools/b.py" or *b for a path built from "b.py"."""
-    tree = ast.parse(source)
-    imported = [[found.module, *(target for _, target in found.bindings)] for found in module_imports(tree)]
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and isinstance(node.func, (ast.Name, ast.Attribute)):
-            function = node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id
-            strings = [
-                part.value for part in ast.walk(node) if isinstance(part, ast.Constant) and isinstance(part.value, str)
-            ]
-            if function == "import_module":
-                names = strings[:1]
-            elif function == "spec_from_file_location":
-                names = [f"*{value.removesuffix('.py')}" for value in strings if value.endswith(".py")]
-            else:
-                continue
-            imported.append(names)
-    found: set[str] = set()
-    for names in imported:
-        for name in names:
-            parts = name.split(".")
-            found |= {".".join(parts[: count + 1]) for count in range(len(parts))}
-    return found
-
-
 def untested_module_problems(root: Path) -> list[str]:
     """Report each module under skills/*/scripts/, deployer/, or tools/ that no test_*.py imports.
 
-    A test imports the module itself, by an import statement or through importlib; naming, mentioning, or running it
+    A test imports the module itself: an import statement, an importlib.import_module or __import__ of a literal name,
+    or a load of its file by path, each resolved to the file it loads as RepositoryModules resolves it, so another
+    skill's module of the same name, or a standard-library module, is not this one. Naming, mentioning, or running it
     is not enough, and neither is a test file named after it. A package's __init__.py needs no test.
     """
     files = repository_files(root)
-    imported: set[str] = set()
+    modules = RepositoryModules(root)
+    tested: set[Path] = set()
     for path in files:
         if fnmatch.fnmatchcase(path.name, "test_*.py"):
-            imported |= imported_modules(path.read_text(encoding="utf-8"))
-    by_path = {name.removeprefix("*") for name in imported if name.startswith("*")}
+            tested |= set(modules.imports(path, unique_loads=True))
     scripts = [directory.relative_to(root).as_posix() for directory in skill_script_directories(root)]
     problems: list[str] = []
     for path in sorted(files, key=lambda path: path.relative_to(root).as_posix()):
         name = path.relative_to(root).as_posix()
-        if not _needs_a_test(name, scripts):
-            continue
-        loaded = any(f"/{name.removesuffix('.py')}".endswith(f"/{stem}") for stem in by_path)
-        if _import_name(name) not in imported and not loaded:
+        if _needs_a_test(name, scripts) and path.resolve() not in tested:
             problems.append(f"{name} is imported by no test_*.py; add a test that imports it")
-    return problems
+    return problems + modules.unreadable_problems()
 
 
 def suite_discovery_documentation_problems(root: Path) -> list[str]:
@@ -175,8 +148,12 @@ def regression_suites(root: Path = REPOSITORY_ROOT) -> list[Path]:
 
 
 def suite_cost(suite: Path, recorded: Mapping[str, float]) -> float:
-    """A Python suite's cost in typical tests: one for each test, or its recorded seconds."""
-    tests = len(defined_tests(suite.read_text(encoding="utf-8")))
+    """A Python suite's cost in typical tests: one for each test, or its recorded seconds. A suite no policy can read
+    costs one test; the policies that read it report it."""
+    try:
+        tests = len(defined_tests(parse_python(suite)))
+    except UnreadablePython:
+        tests = 1
     return tests + sum(seconds - 1 for seconds in recorded.values())
 
 
@@ -220,33 +197,52 @@ def suite_jobs(
     return jobs
 
 
-def defined_tests(source: str) -> list[str]:
-    """Each Class.test the source defines directly in a class body, named test* as unittest's loader finds them: the
-    one reader of a suite's tests, for its cost, its shards, and the tests its recorded seconds name."""
-    return sorted(
-        f"{node.name}.{item.name}"
-        for node in ast.walk(ast.parse(source))
+def _class_tests(tree: ast.Module) -> list[tuple[str, bool]]:
+    """Each Class.test a class body defines, named test* as unittest's loader finds them, and whether a block of the
+    class body holds it, such as an `if sys.platform == "win32":`, so the loader finds it on some platforms only."""
+    return [
+        (f"{node.name}.{item.name}", item not in node.body)
+        for node in ast.walk(tree)
         if isinstance(node, ast.ClassDef)
-        for item in node.body
+        for item in module_statements(node.body)
         if isinstance(item, ast.FunctionDef | ast.AsyncFunctionDef) and item.name.startswith("test")
-    )
+    ]
+
+
+def defined_tests(tree: ast.Module) -> list[str]:
+    """Each Class.test the module defines in a class body, named test* as unittest's loader finds them, one in an if,
+    try, or with block of the body included: the one reader of a suite's tests, for its cost, its shards, and the tests
+    its recorded seconds name."""
+    return sorted({test for test, _ in _class_tests(tree)})
 
 
 def recorded_cost_problems(
     root: Path, recorded: Mapping[str, Mapping[str, float]] = RECORDED_TEST_SECONDS
 ) -> list[str]:
-    """Report a recorded test cost that names no Python regression suite, a test the suite does not define, or a cost
-    no heavier than a typical test."""
+    """Report a recorded test cost that names no Python regression suite, a test the suite does not define, a test it
+    defines on some platforms only, which tests/run_shard.py refuses where the loader does not find it, or a cost no
+    heavier than a typical test."""
     problems: list[str] = []
     for name, tests in recorded.items():
         path = root / name
         if not (path.is_file() and is_test_script(path) and path.suffix == ".py"):
             problems.append(f"{name} records test costs but is not a regression suite")
             continue
-        defined = defined_tests(path.read_text(encoding="utf-8"))
+        try:
+            found = _class_tests(parse_python(path))
+        except UnreadablePython as error:
+            problems.append(f"{name} {error}")
+            continue
+        defined = {test for test, _ in found}
+        conditional = {test for test, held in found if held}
         for test, seconds in tests.items():
             if test not in defined:
                 problems.append(f"{name} records {test}, which it does not define")
+            elif test in conditional:
+                problems.append(
+                    f"{name} records {test}, which a block of its class body holds, so the loader finds it on some "
+                    "platforms only; record only a test every platform runs"
+                )
             elif seconds <= 1:
                 problems.append(f"{name} records {test} at {seconds} seconds; record only tests that cost more than 1")
     return problems
@@ -266,7 +262,11 @@ def recorded_shard_problems(
         path = root / name
         if not (path.is_file() and path.suffix == ".py"):
             continue
-        shards = shard_runner.deal(defined_tests(path.read_text(encoding="utf-8")), shard_count(path, seconds), seconds)
+        try:
+            defined = defined_tests(parse_python(path))
+        except UnreadablePython:
+            continue
+        shards = shard_runner.deal(defined, shard_count(path, seconds), seconds)
         for test in sorted(set(seconds) & set(shards)):
             if list(shards.values()).count(shards[test]) > 1:
                 problems.append(
@@ -294,11 +294,8 @@ def suite_entry_point_problems(root: Path) -> list[str]:
     the block comes last, after every test it runs is defined.
     """
     problems: list[str] = []
-    for path in regression_suites(root):
-        if path.suffix.casefold() != ".py":
-            continue
-        name = path.relative_to(root).as_posix()
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+    suites = [path for path in regression_suites(root) if path.suffix.casefold() == ".py"]
+    for _, name, tree in python_trees(suites, root, problems):
         last = tree.body[-1] if tree.body else None
         if not (isinstance(last, ast.If) and ast.unparse(last.test) == "__name__ == '__main__'"):
             problems.append(f"{name} does not end with an `{PYTHON_ENTRY_POINT}` block, so it runs no tests")
@@ -341,14 +338,29 @@ def _starts_git(node: ast.AST) -> bool:
     )
 
 
+# The calls that load a module from a file by its path, by their last name, and the position and keyword of the path.
+PATH_LOADERS = {
+    "spec_from_file_location": (1, "location"),
+    "SourceFileLoader": (1, "path"),
+    "run_path": (0, "path_name"),
+}
+# The calls that import a module by its name, by their last name.
+NAME_LOADERS = frozenset({"import_module", "__import__"})
+
+
 class RepositoryModules:
     """The repository modules a Python file imports, resolved as they are at run time, and whether each runs git.
 
     A dotted import resolves beside the file, then from the repository root, as deployer.x, tools.x, and tests.x
     do; a relative import from the file's package; and a name each candidate resolves to in the mypy_path
-    directories, which validation keeps equal to the directories code puts on sys.path. A module runs git as
-    skill_scripts.CommandReader reads it: a list or tuple that starts with git, a command runner or a lookup given
-    git, or a GitClient.
+    directories, which validation keeps equal to the directories code puts on sys.path. A standard-library name
+    resolves beside the file only, since the interpreter finds its own module before any other directory's. A
+    module named by a literal to importlib.import_module or __import__ is imported as a statement imports it, and a
+    file loaded by its path, by spec_from_file_location, a SourceFileLoader, or runpy.run_path, is found by the
+    literal end of the path: beside the file, at the root, or every repository file whose path ends so. A module
+    runs git as skill_scripts.CommandReader reads it: a list or tuple that starts with git, a command runner or a
+    lookup given git, or a GitClient. A file no policy can read imports nothing and runs nothing here, and
+    unreadable_problems names it.
     """
 
     def __init__(self, root: Path) -> None:
@@ -357,21 +369,49 @@ class RepositoryModules:
         configuration = tomllib.loads(pyproject.read_text(encoding="utf-8")) if pyproject.is_file() else {}
         entries = configuration.get("tool", {}).get("mypy", {}).get("mypy_path", [])
         self.path_directories = [root / entry.removeprefix(MYPY_PATH_PREFIX) for entry in entries]
+        self._sources: dict[Path, str] = {}
         self._trees: dict[Path, ast.Module] = {}
         self._aliases: dict[Path, dict[str, str]] = {}
-        self._imports: dict[Path, list[Path]] = {}
+        self._resolvers: dict[Path, CallableResolver] = {}
+        self._imports: dict[tuple[Path, bool], list[Path]] = {}
         self._resolved: dict[tuple[Path, str, int], list[Path]] = {}
         self._runs_git: dict[Path, bool] = {}
+        self._unreadable: dict[Path, str] = {}
+
+    def source(self, path: Path) -> str:
+        if path not in self._sources:
+            try:
+                self._sources[path] = python_source(path)
+            except UnreadablePython as error:
+                self._unreadable[path] = str(error)
+                self._sources[path] = ""
+        return self._sources[path]
 
     def tree(self, path: Path) -> ast.Module:
         if path not in self._trees:
-            self._trees[path] = ast.parse(path.read_text(encoding="utf-8"))
+            try:
+                self._trees[path] = parse_source(self.source(path), path.name)
+            except UnreadablePython as error:
+                self._unreadable[path] = str(error)
+                self._trees[path] = ast.Module(body=[], type_ignores=[])
         return self._trees[path]
+
+    def unreadable_problems(self) -> list[str]:
+        """Each file read that no policy can read, by its name relative to the root."""
+        return sorted(
+            f"{path.resolve().relative_to(self.root.resolve()).as_posix()} {reason}"
+            for path, reason in self._unreadable.items()
+        )
 
     def aliases(self, path: Path) -> dict[str, str]:
         if path not in self._aliases:
             self._aliases[path] = import_aliases(self.tree(path))
         return self._aliases[path]
+
+    def resolver(self, path: Path) -> CallableResolver:
+        if path not in self._resolvers:
+            self._resolvers[path] = CallableResolver(self.tree(path))
+        return self._resolvers[path]
 
     @staticmethod
     def _module_file(base: Path, parts: list[str]) -> Path | None:
@@ -395,6 +435,8 @@ class RepositoryModules:
             for _ in range(level - 1):
                 base = base.parent
             bases = [base]
+        elif parts and parts[0] in sys.stdlib_module_names:
+            bases = [path.parent]
         else:
             bases = [path.parent, self.root, *self.path_directories]
         found: list[Path] = []
@@ -407,10 +449,41 @@ class RepositoryModules:
                 break
         return [file for file in found if file.is_relative_to(self.root.resolve())]
 
-    def imports(self, path: Path) -> list[Path]:
-        """The repository files path's imports may load, in the order they appear."""
-        if path in self._imports:
-            return self._imports[path]
+    def loaded_files(self, path: Path, unique: bool) -> list[Path]:
+        """The repository files path loads by their path, each found by the literal end of the path it names: beside
+        path, then at the root, then every repository file whose path ends so, or, when unique, only the one file."""
+        tree = self.tree(path)
+        names = name_values(tree)
+        found: list[Path] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            loader = PATH_LOADERS.get(ast.unparse(node.func).rsplit(".", 1)[-1])
+            if loader is None:
+                continue
+            parts = path_parts(call_argument(node, *loader), names)
+            tail = list(itertools.takewhile(lambda part: part is not None, reversed(parts)))[::-1]
+            if not tail or not str(tail[-1]).endswith(".py"):
+                continue
+            ending = "/".join(str(part) for part in tail)
+            candidates = [base / ending for base in (path.parent, self.root) if (base / ending).is_file()][:1]
+            if not candidates:
+                candidates = [
+                    file
+                    for file in self.root.rglob(str(tail[-1]))
+                    if f"/{file.relative_to(self.root).as_posix()}".endswith(f"/{ending}")
+                ]
+            if not unique or len(candidates) == 1:
+                found += [candidate.resolve() for candidate in candidates]
+        return found
+
+    def imports(self, path: Path, unique_loads: bool = False) -> list[Path]:
+        """The repository files path's imports may load, in the order they appear: import statements, literal names
+        given importlib.import_module or __import__, and files loaded by path, every file a load may name, or, with
+        unique_loads, only a load whose path names one file."""
+        key = (path, unique_loads)
+        if key in self._imports:
+            return self._imports[key]
         found: list[Path] = []
         for node in ast.walk(self.tree(path)):
             if isinstance(node, ast.Import):
@@ -419,17 +492,25 @@ class RepositoryModules:
                 module = node.module or ""
                 names = [(module, node.level)]
                 names += [(f"{module}.{alias.name}" if module else alias.name, node.level) for alias in node.names]
+            elif (
+                isinstance(node, ast.Call)
+                and ast.unparse(node.func).rsplit(".", 1)[-1] in NAME_LOADERS
+                and isinstance(argument := call_argument(node, 0, "name"), ast.Constant)
+                and isinstance(argument.value, str)
+            ):
+                names = [(argument.value, 0)]
             else:
                 continue
             found += [file for name, level in names for file in self.resolve(path, name, level)]
-        self._imports[path] = list(dict.fromkeys(found))
-        return self._imports[path]
+        found += self.loaded_files(path, unique_loads)
+        self._imports[key] = list(dict.fromkeys(found))
+        return self._imports[key]
 
     def runs_git_itself(self, path: Path) -> bool:
         if path not in self._runs_git:
             # The reader finds git only in a string that starts with it or in GitClient, so a module without either
             # is not read, and a command list that starts with git answers before the reader resolves every name.
-            source = path.read_text(encoding="utf-8")
+            source = self.source(path)
             if not GIT_MARKER.search(source):
                 self._runs_git[path] = False
             elif any(_starts_git(node) for node in ast.walk(self.tree(path))):
@@ -463,9 +544,12 @@ class RepositoryModules:
         if definition is None or (path, name) in seen:
             return set()
         aliases = self.aliases(path)
+        resolver = self.resolver(path)
         found: set[str] = set()
         for base in definition.bases:
-            qualified = qualified_name(base, aliases)
+            # A base is read through the names the module binds to one by assignment, as `Base = unittest.TestCase`,
+            # and otherwise through its imports, as a class a module-level block defines twice is.
+            qualified = resolver.name(base).removeprefix("<local>.") or qualified_name(base, aliases)
             if qualified in TEST_CASE_BASES or qualified == GIT_TEST_BASE:
                 found.add(qualified)
             elif "." not in qualified:
@@ -546,7 +630,7 @@ def git_isolation_problems(root: Path) -> list[str]:
             continue
         name = path.relative_to(root).as_posix()
         problems += _suite_git_problems(modules, path.resolve(), name, runner.relative_to(root.resolve()).as_posix())
-    return problems
+    return problems + modules.unreadable_problems()
 
 
 # What the validation pool's thread reads while the policy checks run on the main thread: it starts each job from a
@@ -663,11 +747,10 @@ def _shares_state(node: ast.AST, resolver: CallableResolver, imports: dict[str, 
     return f"patches {patched[0]}" if patched else ""
 
 
-def shared_state_lines(source: str) -> list[tuple[int, str]]:
+def shared_state_lines(tree: ast.Module) -> list[tuple[int, str]]:
     """Each line on which a module swaps a standard stream or changes os.environ or the working directory, and how,
     resolved through its imports and the names it binds to one by a simple assignment, as CallableResolver reads
     them."""
-    tree = ast.parse(source)
     resolver = CallableResolver(tree)
     imports = import_aliases(tree)
     found = {
@@ -682,7 +765,7 @@ def policy_module_files(root: Path) -> list[Path]:
     """The runner and every module whose policy checks it runs in its own process, from POLICY_MODULES in the
     runner."""
     runner = root / RUNNER
-    for node in ast.parse(runner.read_text(encoding="utf-8")).body:
+    for node in parse_python(runner).body:
         if isinstance(node, ast.Assign) and any(
             isinstance(target, ast.Name) and target.id == "POLICY_MODULES" for target in node.targets
         ):
@@ -701,15 +784,15 @@ def pool_shared_state_problems(root: Path) -> list[str]:
     """
     problems: list[str] = []
     for path in policy_module_files(root):
-        name = path.relative_to(root).as_posix()
         if not path.is_file():
-            problems.append(f"{name}: a policy module {RUNNER} runs is missing")
+            problems.append(f"{path.relative_to(root).as_posix()}: a policy module {RUNNER} runs is missing")
             continue
-        for line, change in shared_state_lines(path.read_text(encoding="utf-8")):
-            problems.append(
+        for _, name, tree in python_trees([path], root, problems):
+            problems += [
                 f"{name}:{line} {change}, which the validation pool reads while the policy checks run; take it as a "
                 "parameter, or move the check into a regression suite"
-            )
+                for line, change in shared_state_lines(tree)
+            ]
     return problems
 
 

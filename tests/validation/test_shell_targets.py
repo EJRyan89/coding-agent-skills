@@ -5,7 +5,6 @@ Each policy fails on a violating input and passes on a conforming one.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -19,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 import job_pool
 import shell_targets
 import toolchain
+from bounded_process import Finished
 from git_test_base import GitTestCase
 from job_pool import Terminated
 from shell_targets import (
@@ -31,6 +31,7 @@ from shell_targets import (
     script_analyzer_check,
     shell_script_targets,
     shell_token_problems,
+    unclosed_fence_problems,
 )
 from toolchain import PREREQUISITES, find_psscriptanalyzer, missing_prerequisites, outdated_prerequisites
 from validation_support import REPOSITORY_ROOT, write_fixture_tree
@@ -99,14 +100,43 @@ class ShellTargetsFixtures(GitTestCase):
                 (root / name).parent.mkdir(parents=True, exist_ok=True)
                 (root / name).write_text(text, encoding="utf-8")
             targets = markdown_shell_targets(root, [root / name for name in files])
+        # A fence left open runs to the end of the file, so ShellCheck reads it as GitHub shows it.
         self.assertEqual(
             [
                 (".claude/skills/a/SKILL.md", 2, "echo three"),
                 ("docs/guide.md", 4, "echo one"),
                 ("docs/guide.md", 12, "echo two"),
+                ("docs/unclosed.md", 2, "echo never\n"),
             ],
             [(target.name, target.first_line, target.text) for target in targets],
         )
+
+    def test_an_unclosed_fence_is_reported_by_file_and_line_and_its_commands_reach_every_check(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            files = {
+                "docs/guide.md": "# Guide\n\n```bash\n# shell" + "check disable=SC2086\nrm -rf $DIR/*\n",
+                "docs/ps.md": "```powershell\nGet-Item x\n",
+                "docs/closed.md": "```bash\necho closed\n```\n",
+                "README.md": "~~~\nplain\n",
+                "tests/fixtures/review/notes.md": "```bash\nleft open on purpose\n",
+            }
+            write_fixture_tree(root, files)
+            paths = [root / name for name in files]
+            self.assertEqual(
+                [
+                    "README.md:1 opens a plain fence it never closes; close it",
+                    "docs/guide.md:3 opens a bash fence it never closes; close it",
+                    "docs/ps.md:1 opens a powershell fence it never closes; close it",
+                ],
+                unclosed_fence_problems(root, paths),
+            )
+            # The suppression in the unclosed fence is read, as the rest of the fence is.
+            self.assertEqual(
+                ["docs/guide.md:4"],
+                [problem.split(" ", 1)[0] for problem in shell_targets.shell_suppression_problems(root, paths)],
+            )
+            self.assertEqual(["docs/ps.md"], [target.name for target in powershell_targets(root, paths)])
 
     def test_missing_shellcheck_fails_the_markdown_shell_check_with_the_install_command(self) -> None:
         with (
@@ -425,14 +455,14 @@ class ProgramEndingFixtures(GitTestCase):
         bash = "C:/Program Files/Git/bin/bash.exe"
         started: list[list[str]] = []
 
-        def ended(arguments: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
+        def ended(arguments: list[str], *_: object, **__: object) -> Finished:
             started.append(arguments)
-            return subprocess.CompletedProcess(arguments, 2_147_483_652)
+            return Finished(2_147_483_652, b"", b"")
 
         with (
             mock.patch.object(shell_targets, "find_git_bash", return_value=bash),
             mock.patch.object(shell_targets, "find_shellcheck", return_value="C:/tools/shell check/shellcheck.exe"),
-            mock.patch.object(job_pool.subprocess, "run", side_effect=ended),
+            mock.patch.object(job_pool, "run_bounded", side_effect=ended),
             self.assertRaises(Terminated) as raised,
         ):
             run_git_bash("bash 'suite.sh'")

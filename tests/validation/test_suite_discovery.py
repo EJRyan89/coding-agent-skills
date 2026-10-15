@@ -5,6 +5,7 @@ Each policy fails on a violating input and passes on a conforming one.
 
 from __future__ import annotations
 
+import ast
 import subprocess
 import sys
 import tempfile
@@ -22,6 +23,7 @@ from suite_discovery import (
     MAXIMUM_SHARDS,
     SHARD_RUNNER,
     TESTS_PER_SHARD,
+    defined_tests,
     git_isolation_problems,
     pool_shared_state_problems,
     recorded_cost_problems,
@@ -232,6 +234,28 @@ class SuiteDiscoveryFixtures(GitTestCase):
                 + recorded_cost_problems(root, {"tests/test_costly.py": {"Slow.test_long": 0}}),
             )
 
+    def test_a_test_a_block_of_its_class_body_holds_is_counted_and_never_recorded(self) -> None:
+        source = (
+            "import sys\nimport unittest\n\n\nclass Case(unittest.TestCase):\n    def test_everywhere(self): pass\n\n"
+            "    if sys.platform == 'win32':\n        def test_on_windows(self): pass\n    else:\n"
+            "        def test_elsewhere(self): pass\n\n\nif __name__ == '__main__':\n    unittest.main()\n"
+        )
+        # The loader finds a test a block of the class body defines on the platforms that run the block.
+        self.assertEqual(
+            ["Case.test_elsewhere", "Case.test_everywhere", "Case.test_on_windows"], defined_tests(ast.parse(source))
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(root, {"tests/test_platforms.py": source})
+            self.assertEqual([], recorded_cost_problems(root, {"tests/test_platforms.py": {"Case.test_everywhere": 4}}))
+            self.assertEqual(
+                [
+                    "tests/test_platforms.py records Case.test_on_windows, which a block of its class body holds, so "
+                    "the loader finds it on some platforms only; record only a test every platform runs"
+                ],
+                recorded_cost_problems(root, {"tests/test_platforms.py": {"Case.test_on_windows": 4}}),
+            )
+
     def test_suite_discovery_documentation_policy_detects_each_missing_rule(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -394,6 +418,37 @@ class TestedModulePolicy(GitTestCase):
             ),
         )
 
+    def test_a_module_counts_as_tested_only_by_an_import_that_loads_its_own_file(self) -> None:
+        missing = "is imported by no test_*.py; add a test that imports it"
+        common = "def f():\n    return 1\n"
+        self.assertEqual(
+            [
+                f"skills/b/scripts/common.py {missing}",
+                f"skills/b/scripts/inspect.py {missing}",
+                f"skills/b/scripts/loaded.py {missing}",
+            ],
+            self.problems(
+                {
+                    "skills/a/SKILL.md": "",
+                    "skills/a/scripts/common.py": common,
+                    "skills/a/scripts/loaded.py": common,
+                    "skills/b/SKILL.md": "",
+                    "skills/b/scripts/common.py": common,
+                    "skills/b/scripts/inspect.py": common,
+                    "skills/b/scripts/loaded.py": common,
+                    "skills/c/SKILL.md": "",
+                    "skills/c/scripts/only.py": common,
+                    # Skill a's own common, the standard library's inspect, and a by-path load that names its own
+                    # loaded.py: none is skill b's module of that name.
+                    "skills/a/scripts/test_common.py": "import importlib.util\nimport inspect\n\nimport common\n\n"
+                    "SPEC = importlib.util.spec_from_file_location('loaded', HERE / 'loaded.py')\n",
+                    # A by-path load whose literal end names one repository file loads that file.
+                    "tests/test_only.py": "import importlib.util\n\n"
+                    "SPEC = importlib.util.spec_from_file_location('only', ROOT / 'c' / 'scripts' / 'only.py')\n",
+                }
+            ),
+        )
+
     def test_package_initializers_need_no_test(self) -> None:
         self.assertEqual(
             [], self.problems({"deployer/__init__.py": "", "tools/__init__.py": "", "skills/s/scripts/__init__.py": ""})
@@ -514,6 +569,36 @@ class GitIsolationPolicy(GitTestCase):
                     "git_test_base.isolate_module()",
                     "tests/test_nested_with.py:10 Case.setUpClass does not start with super().setUpClass(), which "
                     "isolates its git, and the suite runs git (through lib/runner.py)",
+                ],
+                git_isolation_problems(root),
+            )
+
+    def test_a_module_loaded_by_path_and_a_base_bound_by_assignment_are_read(self) -> None:
+        case = "    def test_it(self):\n        gitty.status()\n\n\nif __name__ == '__main__':\n    unittest.main()\n"
+        files = {
+            "tools/__init__.py": "",
+            "tools/gitty.py": "import subprocess\n\n\ndef status():\n    subprocess.run(['git', 'status'])\n",
+            "tests/test_by_path.py": "import importlib.util\nimport unittest\nfrom pathlib import Path\n\n"
+            "LOCATION = Path(__file__).parents[1] / 'tools' / 'gitty.py'\n"
+            "SPEC = importlib.util.spec_from_file_location('gitty', LOCATION)\n"
+            "gitty = importlib.util.module_from_spec(SPEC)\nSPEC.loader.exec_module(gitty)\n\n\n"
+            f"class T(unittest.TestCase):\n{case}",
+            "tests/test_aliased_base.py": "import unittest\n\nfrom tools import gitty\n\n"
+            f"Base = unittest.TestCase\n\n\nclass T(Base):\n{case}",
+            "tests/test_by_name.py": "import importlib\nimport unittest\n\n"
+            f"gitty = importlib.import_module('tools.gitty')\n\n\nclass T(unittest.TestCase):\n{case}",
+            "tests/test_isolated.py": "import unittest\n\nfrom git_test_base import GitTestCase\n"
+            f"from tools import gitty\n\nBase = GitTestCase\n\n\nclass T(Base):\n{case}",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(root, files)
+            plain = "T does not inherit git_test_base.GitTestCase, and the suite runs git (through tools/gitty.py)"
+            self.assertEqual(
+                [
+                    f"tests/test_aliased_base.py:8 {plain}",
+                    f"tests/test_by_name.py:7 {plain}",
+                    f"tests/test_by_path.py:11 {plain}",
                 ],
                 git_isolation_problems(root),
             )
