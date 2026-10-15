@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-c
 
 from bounded_process import without_repository_variables
 from console import run_main
+from executable_locator import located_command
 
 from deployer import platform_support
 
@@ -169,10 +170,11 @@ def git(cwd: Path, *arguments: str, environment: Mapping[str, str] | None = None
     repository, index, or object store than the checkout's own."""
     source = os.environ if environment is None else environment
     # Found on this process's PATH, as Windows looks a program up, rather than on the PATH the command is given, as
-    # POSIX would: the guard reads that PATH to judge a command, and never to choose which git it runs itself.
-    program = platform_support.find_executable("git") or "git"
+    # POSIX would: the guard reads that PATH to judge a command, and never to choose which git it runs itself. A git
+    # the locator cannot find raises FileNotFoundError, as starting a missing program does, rather than leaving the
+    # bare name to Windows, which looks it up in the working directory first.
     return subprocess.run(
-        [program, "-C", str(cwd), *arguments],
+        located_command(["git", "-C", str(cwd), *arguments]),
         capture_output=True,
         text=True,
         encoding="utf-8",

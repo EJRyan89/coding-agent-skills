@@ -309,5 +309,18 @@ class ReleaseProcedureTests(GitTestCase):
         self.assertEqual([], release_notes.body_entries(template))
 
 
+class GitProgramTests(GitTestCase):
+    def test_git_is_started_at_the_path_the_locator_finds_never_by_name(self) -> None:
+        # Windows looks a bare name up in the working directory before PATH.
+        completed = subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(release_notes.subprocess, "run", return_value=completed) as run:
+            release_notes._git(Path("a checkout"), "log")
+        command = run.call_args.args[0]
+        self.assertEqual(
+            (release_notes.located_command(["git"])[0], ["-C", "a checkout", "log"]), (command[0], command[1:])
+        )
+        self.assertTrue(Path(command[0]).is_absolute())
+
+
 if __name__ == "__main__":
     unittest.main()

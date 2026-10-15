@@ -31,6 +31,7 @@ import review_io
 import review_runtime
 import review_state
 import skill_roots
+from executable_locator import located_command
 from git_client import GitError, GitResult
 from git_test_base import GitTestCase
 from github_client import CommandResult
@@ -3033,7 +3034,8 @@ class RuntimeContractTests(GitTestCase):
         finished = bounded_process.Finished(0, b"caf\xe9\r\nok\r\n", b"fatal: caf\xe9\n")
         with mock.patch("git_client.run_bounded", return_value=finished) as run:
             result = review_runtime.subprocess_runner(["git", "show", "HEAD:latin1.md"], 60)
-        self.assertEqual(mock.call(["git", "show", "HEAD:latin1.md"], 60), run.call_args)
+        git = located_command(["git"])[0]
+        self.assertEqual(mock.call([git, "show", "HEAD:latin1.md"], 60), run.call_args)
         self.assertEqual(b"caf\xe9\r\nok\r\n", result.stdout.encode("utf-8", "surrogateescape"))
         self.assertEqual("fatal: caf�\n", result.stderr)
         self.assertEqual(0, result.returncode)
