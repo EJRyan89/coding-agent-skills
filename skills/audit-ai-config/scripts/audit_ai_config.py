@@ -43,8 +43,8 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from console import run_main
-from flat_text import flat_text
 from frontmatter import COMMENT, NESTED_KEY, SEQUENCE_ITEM, Frontmatter, FrontmatterError
+from markdown_literal import markdown_line
 
 # ---------------------------------------------------------------------------
 # Finding model
@@ -372,8 +372,16 @@ NESTED_FILE_NAMES: frozenset[str] = frozenset({*RECURSIVE_INVENTORY_NAMES, ".mcp
 GENERATOR_CANDIDATES: list[str] = [".github/scripts/ai_config.py", "scripts/ai_config.py"]
 
 
+# The fixed files a check reads with no finding of its own when it cannot read or decode one, or with only a WARNING:
+# the canonical source, which the authority signals, the behavioral checks, and Copilot parity read, the manifest, the
+# Copilot instructions, and each generator. The inventory reports each of them, every AGENTS.md, and every workflow it
+# cannot read as an ERROR, so an audit that skipped the checks reading one is never COMPLIANT.
+READ_FILES: list[str] = ["CLAUDE.md", ".github/ai-config-manifest.json", ".github/copilot-instructions.md"]
+
+
 def check_inventory(root: Path) -> list[Finding]:
     return [
+        *_inventory_unreadable(root, [root / rel for rel in (*READ_FILES, *GENERATOR_CANDIDATES)]),
         *_inventory_fixed_files(root),
         *_inventory_recursive_files(root),
         *_inventory_skill_directories(root),
@@ -386,6 +394,21 @@ def check_inventory(root: Path) -> list[Finding]:
 
 def _inventory_finding(path: str, message: str) -> Finding:
     return Finding(severity="INFO", check="inventory", path=path, message=message)
+
+
+def _inventory_unreadable(root: Path, paths: list[Path]) -> list[Finding]:
+    """An ERROR for each of these files that exists but cannot be read or decoded."""
+    findings: list[Finding] = []
+    for path in paths:
+        if not path.is_file():
+            continue
+        try:
+            read_text(path)
+        except (OSError, UnicodeError) as error:
+            rel = path.relative_to(root).as_posix()
+            message = f"Could not read, so the checks that read it did not run: {error}"
+            findings.append(Finding("ERROR", "inventory", rel, message=message))
+    return findings
 
 
 def _inventory_fixed_files(root: Path) -> list[Finding]:
@@ -403,7 +426,8 @@ def _inventory_recursive_files(root: Path) -> list[Finding]:
         for name in RECURSIVE_INVENTORY_NAMES
         for rel in (path.relative_to(root).as_posix() for path in walk.paths if path.name == name)
     ]
-    return [*found, *outside_link_findings(root, walk)]
+    unreadable = _inventory_unreadable(root, [path for path in walk.paths if path.name == "AGENTS.md"])
+    return [*unreadable, *found, *outside_link_findings(root, walk)]
 
 
 def skill_files(root: Path, directory: Path) -> Listing:
@@ -476,21 +500,20 @@ def _inventory_generator_scripts(root: Path) -> list[Finding]:
 
 
 def _inventory_parity_workflows(root: Path) -> list[Finding]:
-    """Workflows under .github/workflows that name ai-config or ai_config; unreadable ones are skipped."""
+    """Workflows under .github/workflows that name ai-config or ai_config, and an ERROR for each one that cannot be
+    read, which the CI parity signal cannot read either."""
     workflows_dir = root / ".github/workflows"
     if not workflows_dir.is_dir():
         return []
     findings: list[Finding] = []
     for pattern in ("*.yml", "*.yaml"):
         listing = list_directory(root, workflows_dir, pattern)
+        findings.extend(_inventory_unreadable(root, listing.paths))
         for wf in listing.paths:
-            try:
-                wf_content = read_text(wf)
-                if "ai-config" in wf_content.lower() or "ai_config" in wf_content.lower():
-                    rel = wf.relative_to(root).as_posix()
-                    findings.append(_inventory_finding(rel, "AI config parity workflow found"))
-            except (OSError, UnicodeError):
-                pass
+            wf_content = read_text_or_none(wf)
+            if wf_content is not None and ("ai-config" in wf_content.lower() or "ai_config" in wf_content.lower()):
+                rel = wf.relative_to(root).as_posix()
+                findings.append(_inventory_finding(rel, "AI config parity workflow found"))
         findings.extend(outside_link_findings(root, listing))
     return findings
 
@@ -1165,12 +1188,8 @@ def _has_claude_md(root: Path) -> bool:
 
 
 def _has_maintaining_section(root: Path) -> bool:
-    claude_path = root / "CLAUDE.md"
-    if not claude_path.is_file():
-        return False
-    try:
-        content = read_text(claude_path)
-    except (OSError, UnicodeError):
+    content = read_text_or_none(root / "CLAUDE.md")  # the inventory reports one it cannot read as an ERROR
+    if content is None:
         return False
     return re.search(r"^##\s+Maintaining\s+AI\s+Agent\s+Config", content, re.MULTILINE | re.IGNORECASE) is not None
 
@@ -1277,26 +1296,9 @@ def _extract_sections(content: str, section_names: list[str]) -> str:
     return "\n\n".join(parts)
 
 
-def _expected_copilot_sections_body(root: Path, manifest: dict[str, Any]) -> str | None:
-    """Return the expected sections body for copilot-instructions parity.
-
-    Only the projected sections are compared — the title line is
-    repository-specific and allowed to vary.
-    """
-    claude_path = root / "CLAUDE.md"
-    if not claude_path.is_file():
-        return None
-    try:
-        claude_content = read_text(claude_path)
-    except (OSError, UnicodeError):
-        return None
-    section_names = manifest.get("copilot_sections", DEFAULT_COPILOT_SECTIONS)
-    if not isinstance(section_names, list) or not all(isinstance(section, str) for section in section_names):
-        return None
-    projected = _extract_sections(claude_content, section_names)
-    if not projected:
-        return None
-    return projected
+NO_PROJECTED_SECTION = (
+    "CLAUDE.md holds none of the sections the manifest projects, so the Copilot instructions were not compared"
+)
 
 
 def _expected_agents_adapter(repo_name: str) -> str:
@@ -1369,13 +1371,21 @@ def _hash_problem(content: str, stored_hash: Any) -> str | None:
 
 
 def _copilot_content_problem(root: Path, manifest: dict[str, Any], content: str) -> str | None:
-    expected_body = _expected_copilot_sections_body(root, manifest)
-    if expected_body is None:
-        return None
+    """The banner, then the sections the manifest projects from CLAUDE.md, which the schema holds to a list of names.
+
+    Only the projected sections are compared: the title line is repository-specific and allowed to vary. A canonical
+    source that projects no section leaves nothing to compare, which is a problem rather than a pass.
+    """
     if COPILOT_BANNER not in content:
         return "Copilot instructions missing banner"
+    claude_content = read_text_or_none(root / "CLAUDE.md")
+    if claude_content is None:
+        return None  # the inventory reports the canonical source it cannot read as an ERROR
+    projected = _extract_sections(claude_content, manifest.get("copilot_sections", DEFAULT_COPILOT_SECTIONS))
+    if not projected:
+        return NO_PROJECTED_SECTION
     after_banner = content[content.index(COPILOT_BANNER) + len(COPILOT_BANNER) :].strip()
-    if after_banner != expected_body.strip():
+    if after_banner != projected.strip():
         return "Copilot instructions sections do not match CLAUDE.md content"
     return None
 
@@ -1491,12 +1501,24 @@ def check_orphans(root: Path, manifest: dict[str, Any] | None = None) -> list[Fi
 # ---------------------------------------------------------------------------
 
 
-def _parse_mcp_json(
-    path: Path,
-    rel_path: str,
-    wrapper_key: str,
-) -> tuple[dict[str, Any], list[Finding]]:
-    """Parse a JSON MCP config file with full type guards. Returns (servers, findings)."""
+# Each JSON MCP configuration file and the key its servers sit under. The audit and the handshake read every one of
+# them through read_mcp_json, so both report the same problems for the same file.
+MCP_JSON_FILES: dict[str, str] = {
+    ".mcp.json": "mcpServers",
+    ".github/mcp.json": "mcpServers",
+    ".vscode/mcp.json": "servers",
+}
+# The files whose missing wrapper is an ERROR, with its message: VS Code reads no other key, and the 'mcpServers' the
+# other files use is the usual mistake.
+MISSING_WRAPPER_ERRORS: dict[str, str] = {
+    ".vscode/mcp.json": "VS Code MCP must use 'servers' wrapper (not 'mcpServers')"
+}
+
+
+def read_mcp_json(root: Path, rel_path: str) -> tuple[dict[str, Any], list[Finding]]:
+    """Parse one of MCP_JSON_FILES with full type guards. Returns (servers, findings)."""
+    path = root / rel_path
+    wrapper_key = MCP_JSON_FILES[rel_path]
     findings: list[Finding] = []
     if not path.is_file():
         return {}, findings
@@ -1523,14 +1545,17 @@ def _parse_mcp_json(
         )
         return {}, findings
     if wrapper_key not in data:
-        findings.append(
-            Finding(
-                severity="WARNING",
-                check="mcp",
-                path=rel_path,
-                message=f"'{wrapper_key}' key not found",
+        if rel_path in MISSING_WRAPPER_ERRORS:
+            findings.append(Finding("ERROR", "mcp", rel_path, message=MISSING_WRAPPER_ERRORS[rel_path]))
+        else:
+            findings.append(
+                Finding(
+                    severity="WARNING",
+                    check="mcp",
+                    path=rel_path,
+                    message=f"'{wrapper_key}' key not found",
+                )
             )
-        )
         return {}, findings
     servers = data[wrapper_key]
     if not isinstance(servers, dict):
@@ -1585,31 +1610,13 @@ def _check_duplicate_mcp_names(
     ]
 
 
-def _read_vscode_mcp(root: Path) -> tuple[dict[str, Any], list[Finding]]:
-    """Parse .vscode/mcp.json, which wraps its servers in 'servers', not 'mcpServers'."""
-    path = root / ".vscode/mcp.json"
-    if not path.is_file():
-        return {}, []
-    try:
-        data = json.loads(read_text(path))
-    except (json.JSONDecodeError, OSError, UnicodeError) as e:
-        message = f"Could not read or parse: {e}"
-    else:
-        if not isinstance(data, dict):
-            message = "Top-level value must be an object"
-        elif "servers" not in data:
-            message = "VS Code MCP must use 'servers' wrapper (not 'mcpServers')"
-        elif not isinstance(data["servers"], dict):
-            message = "'servers' must be an object"
-        else:
-            return data["servers"], []
-    return {}, [Finding(severity="ERROR", check="mcp", path=".vscode/mcp.json", message=message)]
+CODEX_CONFIG = ".codex/config.toml"
 
 
 def _read_codex_mcp(root: Path) -> tuple[dict[str, dict[str, Any]], list[Finding]]:
     """Read the table-valued mcp_servers entries of .codex/config.toml, reporting what is not a table as
-    _parse_mcp_json reports what is not an object. The handshake reads Codex servers through this too."""
-    rel = ".codex/config.toml"
+    read_mcp_json reports what is not an object. The handshake reads Codex servers through this too."""
+    rel = CODEX_CONFIG
     path = root / rel
     if not path.is_file():
         return {}, []
@@ -1751,11 +1758,11 @@ def _check_mcp_parity(sources: list[tuple[str, dict[str, Any]]]) -> list[Finding
 
 
 def check_mcp(root: Path, manifest: dict[str, Any]) -> list[Finding]:
-    mcp_servers, findings = _parse_mcp_json(root / ".mcp.json", ".mcp.json", "mcpServers")
-    github_mcp_servers, github_findings = _parse_mcp_json(root / ".github/mcp.json", ".github/mcp.json", "mcpServers")
+    mcp_servers, findings = read_mcp_json(root, ".mcp.json")
+    github_mcp_servers, github_findings = read_mcp_json(root, ".github/mcp.json")
     findings.extend(github_findings)
     findings.extend(_check_duplicate_mcp_names(mcp_servers, github_mcp_servers))
-    vscode_servers, vscode_findings = _read_vscode_mcp(root)
+    vscode_servers, vscode_findings = read_mcp_json(root, ".vscode/mcp.json")
     findings.extend(vscode_findings)
     codex_servers, codex_findings = _read_codex_mcp(root)
     findings.extend(codex_findings)
@@ -1788,7 +1795,6 @@ class InstructionSources:
     claude_md: bool
     agents_md: bool
     agents_redirects: bool
-    agents_override: bool
     copilot_instructions: bool
     gemini_md: bool
     path_instructions: bool
@@ -1805,7 +1811,6 @@ def _instruction_sources(root: Path) -> InstructionSources:
         claude_md=(root / "CLAUDE.md").is_file(),
         agents_md=agents_md,
         agents_redirects=agents_redirects,
-        agents_override=(root / "AGENTS.override.md").is_file(),
         copilot_instructions=(root / ".github/copilot-instructions.md").is_file(),
         gemini_md=(root / "GEMINI.md").is_file(),
         # The inventory reports a link this walk skips.
@@ -1818,37 +1823,105 @@ def _nested_files(root: Path, name: str) -> list[Path]:
     return [path for path in named_files(root, name) if path != root / name]
 
 
-def _layering_codex(sources: InstructionSources) -> list[Finding]:
-    """How Codex reaches CLAUDE.md from the repository root."""
-    if sources.agents_override and sources.agents_md and sources.agents_redirects:
-        return [
-            Finding(
-                severity="ERROR",
-                check="layering",
-                path="AGENTS.override.md",
-                message="AGENTS.override.md masks the generated AGENTS.md adapter"
-                " — Codex will not load CLAUDE.md through the adapter",
-            )
-        ]
-    if sources.agents_md and sources.agents_redirects:
-        return [Finding(severity="INFO", check="layering", message="Codex: AGENTS.md adapter redirects to CLAUDE.md")]
-    if sources.agents_md:
-        return [
-            Finding(
-                severity="WARNING",
-                check="layering",
-                message="Codex: non-redirecting AGENTS.md — CLAUDE.md not loaded through adapter",
-            )
-        ]
-    if sources.claude_md:
-        return [Finding(severity="INFO", check="layering", message="Codex: no AGENTS.md, CLAUDE.md used via fallback")]
+# The files Codex looks for in each directory from the project root to its working directory, before the fallbacks
+# its project_doc_fallback_filenames setting names: it takes the first that exists, at most one per directory.
+CODEX_INSTRUCTION_FILES = ("AGENTS.override.md", "AGENTS.md")
+CODEX_FALLBACK_SETTING = "project_doc_fallback_filenames"
+
+
+def _codex_fallback_filenames(root: Path) -> list[str]:
+    """The fallback names the repository's .codex/config.toml gives Codex, keeping only the plain file names Codex
+    keeps. A config that cannot be read names none; check_mcp reports it. A user's own Codex configuration may name
+    others, which a static audit cannot read."""
+    try:
+        with (root / CODEX_CONFIG).open("rb") as handle:
+            names = tomllib.load(handle).get(CODEX_FALLBACK_SETTING, [])
+    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+        return []
+    if not isinstance(names, list):
+        return []
     return [
-        Finding(
-            severity="ERROR",
-            check="layering",
-            message="Codex: no AGENTS.md or CLAUDE.md — no instructions available",
-        )
+        name
+        for name in names
+        if isinstance(name, str)
+        and name not in ("", ".", "..", *CODEX_INSTRUCTION_FILES)
+        and not any(character in name for character in "/\\:\0")
     ]
+
+
+def _codex_choice(root: Path, directory: Path, fallbacks: list[str]) -> tuple[str, bool] | None:
+    """The file Codex chooses in `directory`, and whether it holds text, or None when it chooses none.
+
+    Codex takes the first of its instruction files and fallbacks that exists and skips it, without trying the next,
+    when it holds only whitespace; it reads bytes, so no file is undecodable to it. A file this audit must not read, one
+    behind a link that leads out of the root or one it cannot open, counts as holding text.
+    """
+    for name in (*CODEX_INSTRUCTION_FILES, *fallbacks):
+        candidate = directory / name
+        if not candidate.is_file():
+            continue
+        if leaves_root(root, candidate):
+            return name, True
+        try:
+            return name, bool(candidate.read_bytes().decode("utf-8", "replace").strip())
+        except OSError:
+            return name, True
+    return None
+
+
+def _codex_layering_finding(severity: str, message: str, path: str | None = None) -> list[Finding]:
+    return [Finding(severity=severity, check="layering", path=path, message=message)]
+
+
+def _layering_codex(root: Path, sources: InstructionSources) -> list[Finding]:
+    """The root file Codex loads, and whether CLAUDE.md reaches it through that file."""
+    choice = _codex_choice(root, root, _codex_fallback_filenames(root))
+    if choice is None:
+        if sources.claude_md:
+            return _codex_layering_finding(
+                "WARNING",
+                f"Codex: no AGENTS.md, and .codex/config.toml does not name CLAUDE.md in {CODEX_FALLBACK_SETTING}"
+                " — Codex loads CLAUDE.md only when a user's own configuration names it",
+            )
+        return _codex_layering_finding(
+            "ERROR", "Codex: no AGENTS.override.md, AGENTS.md, or CLAUDE.md — no instructions available"
+        )
+    name, holds_text = choice
+    if name == "AGENTS.override.md" and sources.agents_md and sources.agents_redirects:
+        return _codex_layering_finding(
+            "ERROR",
+            "AGENTS.override.md masks the generated AGENTS.md adapter"
+            " — Codex will not load CLAUDE.md through the adapter",
+            name,
+        )
+    if not holds_text:
+        return _codex_layering_finding(
+            "ERROR",
+            f"Codex: the root {name} is empty — Codex chooses it, skips it, and loads no root instructions",
+            name,
+        )
+    if name == "AGENTS.override.md":
+        return _codex_layering_finding(
+            "ERROR",
+            "AGENTS.override.md masks CLAUDE.md — Codex loads the root override instead of AGENTS.md or a fallback",
+            name,
+        )
+    if name == "AGENTS.md" and sources.agents_redirects:
+        return _codex_layering_finding("INFO", "Codex: AGENTS.md adapter redirects to CLAUDE.md")
+    if name == "AGENTS.md":
+        return _codex_layering_finding(
+            "WARNING", "Codex: non-redirecting AGENTS.md — CLAUDE.md not loaded through adapter"
+        )
+    if name == "CLAUDE.md":
+        return _codex_layering_finding(
+            "INFO", f"Codex: no AGENTS.md, CLAUDE.md loaded as a {CODEX_FALLBACK_SETTING} entry in .codex/config.toml"
+        )
+    return _codex_layering_finding(
+        "WARNING",
+        f"Codex: no AGENTS.md, {name} loaded as a {CODEX_FALLBACK_SETTING} entry in .codex/config.toml"
+        " — CLAUDE.md not loaded",
+        name,
+    )
 
 
 def _nested_codex_instructions(root: Path, sources: InstructionSources) -> list[Finding]:
@@ -1867,6 +1940,8 @@ def _nested_codex_instructions(root: Path, sources: InstructionSources) -> list[
     if not (sources.agents_md and sources.agents_redirects):
         return findings
     for nested in _nested_files(root, "AGENTS.md"):
+        if (nested.parent / "AGENTS.override.md").is_file():
+            continue  # Codex takes the override beside it, which the warning above names
         try:
             if is_redirecting_agents_md(read_text(nested)):
                 continue
@@ -2047,7 +2122,7 @@ def check_instruction_layering(
     sources = _instruction_sources(root)
     findings: list[Finding] = []
     if "codex" in set(manifest.get("runtimes", [])):
-        findings.extend(_layering_codex(sources))
+        findings.extend(_layering_codex(root, sources))
         findings.extend(_nested_codex_instructions(root, sources))
     if {"copilot_cli", "copilot_app"} & surfaces:
         findings.extend(_layering_copilot_cli(sources))
@@ -2106,13 +2181,8 @@ QUALITY_GATE_PATTERNS = (
 
 def check_behavioral_constraints(root: Path) -> list[Finding]:
     findings: list[Finding] = []
-    claude_path = root / "CLAUDE.md"
-    if not claude_path.is_file():
-        return findings
-
-    try:
-        content = read_text(claude_path)
-    except (OSError, UnicodeError):
+    content = read_text_or_none(root / "CLAUDE.md")
+    if content is None:  # absent, or unreadable, which the inventory reports as an ERROR
         return findings
 
     lower = content.lower()
@@ -2197,52 +2267,37 @@ def check_collisions(
     root: Path,
     manifest: dict[str, Any],
 ) -> list[Finding]:
+    """An unmarked AGENTS.md or Copilot instructions file; one that cannot be read is the inventory's ERROR, since
+    whether it carries the marker is unknown."""
     findings: list[Finding] = []
     runtimes = manifest.get("runtimes", [])
 
-    if "codex" in runtimes:
-        agents_path = root / "AGENTS.md"
-        if agents_path.is_file():
-            try:
-                content = read_text(agents_path)
-            except (OSError, UnicodeError):
-                content = ""
-            if not has_ownership_marker(content):
-                findings.append(
-                    Finding(
-                        severity="ERROR",
-                        check="collision",
-                        path="AGENTS.md",
-                        message="User-authored AGENTS.md would conflict with generated adapter",
-                    )
-                )
+    content = read_text_or_none(root / "AGENTS.md")
+    if "codex" in runtimes and content is not None and not has_ownership_marker(content):
+        findings.append(
+            Finding(
+                severity="ERROR",
+                check="collision",
+                path="AGENTS.md",
+                message="User-authored AGENTS.md would conflict with generated adapter",
+            )
+        )
 
-    copilot_path = root / ".github/copilot-instructions.md"
-    if copilot_path.is_file():
-        try:
-            content = read_text(copilot_path)
-        except (OSError, UnicodeError):
-            content = ""
-        if not has_ownership_marker(content):
-            surfaces = manifest.get("surfaces", [])
-            copilot_surfaces = {
-                "vscode",
-                "jetbrains",
-                "copilot_app",
-                "copilot_cli",
-                "cloud_agent",
-                "code_review",
-            }
-            if copilot_surfaces & set(surfaces):
-                findings.append(
-                    Finding(
-                        severity="ERROR",
-                        check="collision",
-                        path=".github/copilot-instructions.md",
-                        message="User-authored copilot-instructions.md would conflict with generated projection",
-                    )
-                )
-
+    copilot_surfaces = {"vscode", "jetbrains", "copilot_app", "copilot_cli", "cloud_agent", "code_review"}
+    content = read_text_or_none(root / ".github/copilot-instructions.md")
+    if (
+        copilot_surfaces & set(manifest.get("surfaces", []))
+        and content is not None
+        and not has_ownership_marker(content)
+    ):
+        findings.append(
+            Finding(
+                severity="ERROR",
+                check="collision",
+                path=".github/copilot-instructions.md",
+                message="User-authored copilot-instructions.md would conflict with generated projection",
+            )
+        )
     return findings
 
 
@@ -2381,12 +2436,6 @@ def summary_lines(findings: list[Finding]) -> list[str]:
     return lines
 
 
-def _cell(text: str) -> str:
-    """A table cell for text the audited repository controls: a pipe would end the cell, and a line break, U+0085,
-    U+2028, or U+2029 the row, so the text is flattened onto one line first."""
-    return flat_text(text).replace("|", r"\|")
-
-
 def _validated_scope_status(status: str) -> str:
     if status not in SCOPE_STATUSES:
         raise ValueError(f"Unknown scope status: {status!r}")
@@ -2416,7 +2465,10 @@ def format_markdown(result: AuditResult) -> str:
     lines.append("|---|---|---|---|---|")
     for f in sorted_findings:
         line = "" if f.line is None else str(f.line)
-        lines.append(f"| {f.severity} | {f.check} | {_cell(f.path or '')} | {line} | {_cell(f.message)} |")
+        # A path and a message are text the audited repository controls, so each is a literal cell on one line.
+        lines.append(
+            f"| {f.severity} | {f.check} | {markdown_line(f.path or '')} | {line} | {markdown_line(f.message)} |"
+        )
     return "\n".join(lines) + "\n"
 
 

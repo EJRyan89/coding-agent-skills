@@ -88,15 +88,17 @@ SUMMARY INFO inventory 1
 
 | Severity | Check | Path | Line | Message |
 |---|---|---|---|---|
-| ERROR | copilot-config | .github/skills/demo/SKILL.md | 4 | Frontmatter must use key: value entries, block scalars, block lists, or nested mappings |
-| WARNING | mcp |  |  | Copilot repository MCP (cloud agent/code review) configured via repository settings — cannot validate statically |
-| INFO | inventory | CLAUDE.md |  | Found CLAUDE.md |
+| ERROR | copilot-config | &#46;github&#47;skills&#47;demo&#47;SKILL&#46;md | 4 | Frontmatter must use key&#58; value entries&#44; block scalars&#44; block lists&#44; or nested mappings |
+| WARNING | mcp |  |  | Copilot repository MCP &#40;cloud agent&#47;code review&#41; configured via repository settings — cannot validate statically |
+| INFO | inventory | CLAUDE&#46;md |  | Found CLAUDE&#46;md |
 ```
 
 `Authority` and `Scope` print the same lowercase values as the JSON `authority` and `scopeStatus`. A finding with no
-path or line leaves that cell empty. A path or message is text the audited repository controls, so a `|` in it is
-written `\|`, and each run of whitespace, a line break, U+0085, U+2028, or U+2029 among it, is written as one space,
-so each finding stays one row of five cells; the JSON output carries the text as it is.
+path or line leaves that cell empty. A path or message is text the audited repository controls, so it is written as
+literal text by skill-core's `markdown_literal.markdown_line`: each run of whitespace, a line break, U+0085, U+2028, or
+U+2029 among it, is written as one space, and every ASCII punctuation character as a character entity (`.` as
+`&#46;`, `|` as `&#124;`, `<` as `&lt;`), so each finding stays one row of five cells and no text in it opens markup,
+an HTML comment included, that would hide the rows after it; the JSON output carries the text as it is.
 
 The `SUMMARY` lines come before the findings: one per severity, always in `ERROR`, `WARNING`, `INFO` order and
 printed even when the count is `0`, then one per check that produced an `INFO` finding, sorted by check name. JSON

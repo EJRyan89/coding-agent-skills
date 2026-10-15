@@ -1,6 +1,6 @@
 # Generated Layout
 
-The layout a repository's own generator, `.github/scripts/ai_config.py`, produces from `CLAUDE.md`. The audit checks it in a conforming repository, as described in `audit-policy.md`. This source no longer ships a skill that writes this layout. The page records what the audit expects, so that a finding about a generated file can be explained and the file fixed by hand.
+The layout a repository's own generator, `ai_config.py` at `.github/scripts/ai_config.py` or `scripts/ai_config.py`, produces from `CLAUDE.md`. The audit checks it in a conforming repository, as described in `audit-policy.md`. This source no longer ships a skill that writes this layout. The page records what the audit expects, so that a finding about a generated file can be explained and the file fixed by hand.
 
 ## Declared scope
 
