@@ -20,6 +20,7 @@ from toolchain import find_powershell
 from validation_support import (
     REPOSITORY_ROOT,
     CallableResolver,
+    find_fences,
     import_aliases,
     is_test_script,
     module_allowance,
@@ -129,9 +130,9 @@ def _fences(markdown: str, context: str) -> list[str]:
     fence, and powershell for a PowerShell, ps1, or pwsh fence."""
     lines = markdown.splitlines()
     return [
-        "\n".join(lines[index] for index in fence.body(len(lines)))
-        for fence in render.find_fences(lines)
-        if fence.closer is not None and fence.context == context
+        "\n".join(fence.text(lines[index]) for index in fence.body())
+        for fence in find_fences(lines)
+        if fence.closer is not None and render.fence_context(fence) == context
     ]
 
 

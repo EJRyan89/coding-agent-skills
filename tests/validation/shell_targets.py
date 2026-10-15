@@ -16,10 +16,11 @@ import frontmatter
 from job_pool import refuse_termination, run_process
 from toolchain import VALIDATION_FLOORS, find_git_bash, find_powershell, find_psscriptanalyzer, find_shellcheck
 from validation_support import (
-    CODE_SPAN,
     REPOSITORY_ROOT,
     TEMPLATE_TOKEN,
+    find_fences,
     is_shell_script,
+    prose_code_spans,
     relative,
     repository_files,
     repository_skill_directories,
@@ -51,9 +52,9 @@ def _shell_units(path: Path) -> list[tuple[str, int, str]]:
         return []
     lines = text.split("\n")
     return [
-        (fence.context, fence.opener + 2, "\n".join(lines[index] for index in fence.body(len(lines))))
-        for fence in render.find_fences(lines)
-        if fence.closer is not None and fence.context in SHELL_LABELS
+        (render.fence_context(fence), fence.opener + 2, "\n".join(fence.text(lines[index]) for index in fence.body()))
+        for fence in find_fences(lines)
+        if fence.closer is not None and render.fence_context(fence) in SHELL_LABELS
     ]
 
 
@@ -219,12 +220,7 @@ def shell_token_problems(root: Path) -> list[str]:
 def _prose_code_spans(path: Path) -> list[tuple[int, str]]:
     """Each inline code span outside a Markdown file's fences, as (line number, text)."""
     lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
-    fenced: set[int] = set()
-    for fence in render.find_fences(lines):
-        fenced.update(range(fence.opener, len(lines) if fence.closer is None else fence.closer + 1))
-    return [
-        (index + 1, span) for index, line in enumerate(lines) if index not in fenced for span in CODE_SPAN.findall(line)
-    ]
+    return [(index + 1, span) for index, span in prose_code_spans(lines)]
 
 
 def interpreter_problems(root: Path) -> list[str]:

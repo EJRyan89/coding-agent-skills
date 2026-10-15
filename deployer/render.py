@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import frontmatter
+from markdown_sections import Fence, find_fences
 
 from . import fsops, hashing, platform_support
 from .config import DERIVED_VARIABLES, INTERPRETER_VARIABLES
@@ -136,58 +137,9 @@ def _substitute(text: str, values: dict[str, str], context: str, logical: str) -
     return TOKEN.sub(replace, text)
 
 
-FENCE_OPENER = re.compile(r"(`{3,}|~{3,})(.*)")
-
-
-@dataclass(frozen=True)
-class Fence:
-    """A fenced code block: its opening and closing line indexes (None when unclosed) and its info string's language."""
-
-    opener: int
-    closer: int | None
-    language: str
-
-    @property
-    def context(self) -> str:
-        """The substitution context, such as shell for ```bash, ~~~sh, or ````shell."""
-        return FENCE_CONTEXT.get(self.language.casefold(), "text")
-
-    def body(self, line_count: int) -> range:
-        """The indexes of the lines between the opener and the closer, or the document's end when it is unclosed."""
-        return range(self.opener + 1, self.closer if self.closer is not None else line_count)
-
-
-def find_fences(lines: list[str]) -> list[Fence]:
-    """Every fenced code block, by CommonMark's rules for the forms this repository's Markdown can hold.
-
-    A run of three or more backticks or tildes opens a fence, except a backtick run whose info string holds a backtick,
-    which is inline code. Only a run of the same character at least as long as the opener's, with nothing after it,
-    closes it, so a ``` line inside a ```` fence is body, and a fence left open runs to the end. Indentation is
-    ignored rather than limited to three spaces, so a fence nested in a list item counts. Rendering, the extraction of
-    Bash for ShellCheck, and validation's Markdown policies all read fences through this one function.
-    """
-    fences: list[Fence] = []
-    index = 0
-    while index < len(lines):
-        match = FENCE_OPENER.fullmatch(lines[index].strip())
-        if match is None or (match.group(1)[0] == "`" and "`" in match.group(2)):
-            index += 1
-            continue
-        marker = match.group(1)
-        closer = next(
-            (
-                later
-                for later in range(index + 1, len(lines))
-                if len(closing := lines[later].strip()) >= len(marker) and set(closing) == {marker[0]}
-            ),
-            None,
-        )
-        words = match.group(2).split()
-        fences.append(Fence(index, closer, words[0] if words else ""))
-        if closer is None:
-            break
-        index = closer + 1
-    return fences
+def fence_context(fence: Fence) -> str:
+    """A fence's substitution context, such as shell for ```bash, ~~~sh, or ````shell."""
+    return FENCE_CONTEXT.get(fence.language.casefold(), "text")
 
 
 def _substitute_markdown(text: str, values: dict[str, str], logical: str) -> str:
@@ -204,8 +156,8 @@ def _substitute_markdown(text: str, values: dict[str, str], logical: str) -> str
     # Each body line takes its fence's context; an opening or closing line, and prose, take the text context.
     contexts = ["text"] * len(lines)
     for fence in find_fences(lines):
-        for index in fence.body(len(lines)):
-            contexts[index] = fence.context
+        for index in fence.body():
+            contexts[index] = fence_context(fence)
     rendered += [_substitute(line, values, context, logical) for line, context in zip(lines, contexts, strict=True)]
     return "\n".join(rendered)
 
@@ -377,12 +329,12 @@ def _extract_units(staged: Staged, workspace: Path) -> list[ShellUnit]:
             continue
         lines = files[logical].decode("utf-8", "replace").split("\n")
         # Validate every fence substituted as shell, whichever name its info string uses.
-        shell = [fence for fence in find_fences(lines) if fence.context == "shell"]
+        shell = [fence for fence in find_fences(lines) if fence_context(fence) == "shell"]
         for block_number, fence in enumerate(shell, start=1):
             if fence.closer is None:
                 raise DeployError(f"ERROR: Unclosed Bash code fence in {logical}")
             target = workspace / "blocks" / f"{len(units)}.sh"
-            body = "".join(f"{lines[index]}\n" for index in fence.body(len(lines)))
+            body = "".join(f"{fence.text(lines[index])}\n" for index in fence.body())
             _write(target, (SHELLCHECK_HEADER + body).encode("utf-8"))
             units.append(ShellUnit(target, f"{logical} block {block_number}", True))
     return units

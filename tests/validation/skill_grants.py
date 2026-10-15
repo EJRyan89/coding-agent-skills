@@ -46,10 +46,11 @@ def skill_grant_problems(
     root: Path, skill_files: list[Path] | None = None, own: re.Pattern[str] = OWN_SCRIPT_COMMAND
 ) -> list[str]:
     """Report shell grants that cover every command or one shell only, a sibling's folder rather than its scripts,
-    or a path a * continues, such as the skill's own scripts/*, rather than a script by name, grants no step uses,
-    own-script commands left ungranted, grants that pre-approve a script that starts code from the target
-    repository, shell patterns that match no command the skill shows, and any grant in a hidden skill, which no turn
-    starts.
+    a path a * continues, such as the skill's own scripts/*, rather than a script by name, or a program with no
+    script, such as python *, grants no step uses, own-script commands left ungranted, grants that pre-approve a
+    script that starts code from the target repository, shell patterns that match no command the skill shows, and any
+    grant in a hidden skill, which no turn starts. A command is read from every fence Markdown allows and from each
+    code span outside one that runs a script.
 
     The rules are the analyze-skill-cost inventory's, so the audit and this policy cannot disagree. A shipped skill's
     own scripts run through ${CLAUDE_SKILL_DIR}; a repository skill's are the repository's tools and tests.
@@ -80,6 +81,11 @@ def skill_grant_problems(
                 problems.append(
                     f"{name} grants {detail}, whose * continues a path, so it reaches every skill's scripts through "
                     f"..; grant each script by name; see {GRANTS_DOC}"
+                )
+            elif kind == "NO_SCRIPT_ALLOWED":
+                problems.append(
+                    f"{name} grants {detail}, whose text before its * names no script or git or gh subcommand, so it "
+                    f"pre-approves any code the * supplies; grant each script by name; see {GRANTS_DOC}"
                 )
             elif kind == "UNUSED_ALLOWED":
                 problems.append(f"{name} grants {detail}, which no step uses; see {GRANTS_DOC}")

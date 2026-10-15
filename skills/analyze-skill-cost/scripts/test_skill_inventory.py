@@ -609,6 +609,88 @@ class ToolsTests(TemporaryTestCase):
                 expected = [f"OPEN_PATH_ALLOWED {tool}({pattern})" for tool in ("Bash", "PowerShell")]
                 self.assertEqual(expected if reported else [], [x for x in lines if x.startswith("OPEN_PATH")])
 
+    def test_a_pattern_that_names_no_script_before_its_wildcard_is_reported(self) -> None:
+        own = 'python -B "${CLAUDE_SKILL_DIR}/scripts/'
+        cases = {
+            "python *": True,
+            "python -B *": True,
+            "{{PYTHON}} -c *": True,
+            "python -m pytest *": True,
+            "python -X a.py *": True,
+            "python -Bc *": True,
+            "bash -c *": True,
+            "pwsh -Command *": True,
+            "pwsh -File a.ps1 *": True,
+            "node -e *": True,
+            "git *": True,
+            "git -C repo *": True,
+            "gh *": True,
+            "ls *": True,
+            f'{own}a.py" *': False,
+            "python tools/a.py *": False,
+            "python -B -I tools/a.py *": False,
+            'bash "${CLAUDE_SKILL_DIR}/scripts/update.sh" *': False,
+            '"${CLAUDE_SKILL_DIR}/scripts/run.sh" *': False,
+            "pwsh a.ps1 *": False,
+            "gh pr create *": False,
+            "git status:*": False,
+            # A pattern with no * matches only the command it names.
+            "git rev-parse --show-toplevel": False,
+            'python -c "print(1)"': False,
+            # A pattern whose * continues a path is reported once, as OPEN_PATH_ALLOWED.
+            f"{own}*": False,
+        }
+        for pattern, reported in cases.items():
+            with self.subTest(pattern=pattern):
+                allowed = json.dumps([f"Bash({pattern})", f"PowerShell({pattern})"])
+                lines = self.tools(f"---\nallowed-tools: {allowed}\n---\n")
+                expected = [f"NO_SCRIPT_ALLOWED {tool}({pattern})" for tool in ("Bash", "PowerShell")]
+                self.assertEqual(expected if reported else [], [x for x in lines if x.startswith("NO_SCRIPT")])
+
+    def test_commands_are_read_from_every_fence_form_and_from_code_spans_that_run_a_script(self) -> None:
+        # The grant checks read a command wherever the body shows one: a fence Markdown allows anywhere, under any
+        # command shell's label, and a code span outside a fence in which a program runs a script.
+        write(self.root / "skill" / "scripts" / "start.py", 'RUNS_REPOSITORY_CODE = "starts configured servers"\n')
+        command = 'python -B "${CLAUDE_SKILL_DIR}/scripts/start.py" go'
+        shapes = {
+            "a top-level fence": f"```bash\n{command}\n```\n",
+            "a fence indented under a list item": f"1. Run:\n\n    ```bash\n    {command}\n    ```\n",
+            "a fence on a list item's marker line": f"- ```sh\n  {command}\n  ```\n",
+            "a fence in a blockquote": f"> ```bash\n> {command}\n> ```\n",
+            "a tilde fence": f"~~~powershell\n{command}\n~~~\n",
+            "a zsh fence": f"```zsh\n{command}\n```\n",
+            "a code span": f"Run `{command}` from the root.\n",
+        }
+        wide = json.dumps(['Bash(python -B "${CLAUDE_SKILL_DIR}/scripts/start.py" *)'])
+        for shape, body in shapes.items():
+            with self.subTest(shape=shape):
+                found = [line for line in self.repository_code(wide, body) if line.startswith("GRANTED")]
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0].endswith(command), found)
+        not_commands = {
+            "a span that only names the script": "See `${CLAUDE_SKILL_DIR}/scripts/start.py`.\n",
+            "a span that starts with the script": "Its `start.py go` command.\n",
+            "a text fence": f"```text\n{command}\n```\n",
+            "a span inside a fence": f"```text\n`{command}`\n```\n",
+        }
+        for shape, body in not_commands.items():
+            with self.subTest(shape=shape):
+                self.assertEqual([], self.repository_code(wide, body))
+
+    def test_a_code_span_that_runs_a_script_is_checked_as_a_fence_command_is(self) -> None:
+        own = 'python -B "${CLAUDE_SKILL_DIR}/scripts/'
+        allowed = json.dumps([f'Bash({own}a.py" *)', f'PowerShell({own}a.py" *)'])
+        body = f'Run `{own}a.py" go`, then `{own}b.py" go`, and `{own}a.py" --cwd "$PWD"`.\n'
+        lines = self.tools(f"---\nallowed-tools: {allowed}\n---\n{body}")
+        self.assertEqual(
+            [
+                f'UNGRANTED Bash 4 {own}b.py" go',
+                f'UNGRANTED PowerShell 4 {own}b.py" go',
+                f'EXPANDS 4 {own}a.py" --cwd "$PWD"',
+            ],
+            [line for line in lines if line.startswith(("UNGRANTED", "EXPANDS"))],
+        )
+
     def test_each_parenthesized_entry_of_a_plain_scalar_is_its_own_grant(self) -> None:
         cases = {
             "Bash(ls *), PowerShell(ls *)": [],
