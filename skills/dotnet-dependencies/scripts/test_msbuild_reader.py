@@ -1099,12 +1099,16 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual([f".NETCoreApp,Version=v{digits}"], list(assets.nodes))
 
     def test_a_restore_records_each_frameworks_project_references_where_the_project_now_is(self) -> None:
-        # Restored at another path, as in a checkout moved since; a path sharing no root is taken as written.
-        restored = "D:\\old\\src\\Harbor.Api\\Harbor.Api.csproj"
+        # Restored at another path, as in a checkout moved since; a path on the restore's drive outside its tree is
+        # taken from the project too, and a path sharing no root is taken as written. The restore's drive is one the
+        # temporary root is not on, so the last path shares no root with it on every machine.
         elsewhere = (self.root / "Elsewhere" / "Other.csproj").resolve()
+        drive = "E:" if elsewhere.drive.casefold() == "d:" else "D:"
+        restored = f"{drive}\\old\\src\\Harbor.Api\\Harbor.Api.csproj"
         recorded: dict[str, dict[str, str]] = {
-            "D:\\old\\src\\Harbor.Legacy\\Harbor.Legacy.csproj": {},
-            "D:\\old\\src\\Harbor.Api\\Inner\\Inner.csproj": {},
+            f"{drive}\\old\\src\\Harbor.Legacy\\Harbor.Legacy.csproj": {},
+            f"{drive}\\old\\src\\Harbor.Api\\Inner\\Inner.csproj": {},
+            f"{drive}\\shared\\Shared.csproj": {},
             str(elsewhere): {},
         }
         restore: dict[str, Any] = {
@@ -1129,6 +1133,7 @@ class ReaderTests(unittest.TestCase):
                 "net472": [
                     (api.parent / "Harbor.Legacy" / "Harbor.Legacy.csproj").resolve(),
                     (api / "Inner" / "Inner.csproj").resolve(),
+                    (self.root.parent / "shared" / "Shared.csproj").resolve(),
                     elsewhere,
                 ],
             },

@@ -480,7 +480,8 @@ def run_command(
             text,
         ]
     # The isolation of the Copilot review host in code-review-core, except --disallow-temp-dir, since the home is
-    # a temporary directory, and with shell allowed only for Python and Bash, which is what the skills run.
+    # a temporary directory, and with shell allowed only for the platform's Python command and Bash, which is what the
+    # skills run.
     return [
         executable,
         "--no-custom-instructions",
@@ -490,7 +491,7 @@ def run_command(
         "--disable-builtin-mcps",
         "--stream=off",
         "--output-format=json",
-        "--allow-tool=shell(python:*)",
+        f"--allow-tool=shell({platform_support.PYTHON}:*)",
         "--allow-tool=shell(bash:*)",
         "--deny-tool=write",
         "--deny-tool=url",
