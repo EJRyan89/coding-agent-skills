@@ -530,6 +530,8 @@ Create exactly one marker pair in the configured dashboard before running `updat
 
 Missing or duplicate markers fail without modifying the file.
 
+A pull request's title and its author's name are the author's text, so the tracker writes them as review reports write a title: on one line, every line break and line separator made a space, with punctuation encoded as character entities by skill-core's `markdown_literal.py`. A title cannot add a marker, open an HTML comment, add a table cell, or format itself, and the next update finds the same marker pair and rows. A pull request link stays active only for an absolute HTTPS destination, with its delimiters percent-encoded.
+
 The tracker renders one section per state, each headed with its row count: `To Review`, `Awaiting Response`, `Drafts`, one section per pinned override, and `My PRs`. When there are rows, the Findings legend line comes first, above every section. Each section is a collapsible `<details>` block whose table groups rows by requestor (`Requestor | PR | AI Result | Findings | AI Review`; `My PRs` shows `PR | Status | ...` with GitHub's review decision). AI Result is the latest review's verdict, Findings its open findings and then what moved since your review, or what was addressed before you reviewed (see the **Findings** paragraph after the command table above), and AI Review a `vscode://file/` link to its report, marked `(stale)` or `(incomplete)` when applicable. Empty sections are omitted. Section placement depends only on the configured user's own latest GitHub review:
 
 | User's latest review | PR changed since that review | Section |
