@@ -3,11 +3,13 @@ properties, once for each build of the project.
 
 The property pass reads the project's files in the order MSBuild imports them, each element where it sits. An SDK-style
 project begins with the SDK's props, which import the nearest `Directory.Build.props` at or above the project and then
-the nearest `Directory.Packages.props` up to the solution's folder (NuGet's props, from `Microsoft.Common.props`), so
-both come before the project's body; it ends with the SDK's targets, which import the nearest `Directory.Build.targets`
-and turn each `GlobalPackageReference` into a `PackageReference`. A project that is not SDK-style meets the same points
-where it imports `Microsoft.Common.props` and its language's targets. Every other `Import` is read where it sits,
-resolved against the importing file's folder, and an `ImportGroup`'s condition applies to each import in it. An import
+the nearest `Directory.Packages.props` at or above it (NuGet's props, from `Microsoft.Common.props`), so both come
+before the project's body; it ends with the SDK's targets, which import the nearest `Directory.Build.targets` and
+turn each `GlobalPackageReference` into a `PackageReference`. Each search goes up to the filesystem's root, as MSBuild's
+does, and a file it finds outside the examined tree is reported as an import not read, naming its path. A project that
+is not SDK-style meets the same points where it imports `Microsoft.Common.props` and its language's targets. Every
+other `Import` is read where it sits, resolved against the importing file's folder, and an `ImportGroup`'s condition
+applies to each import in it. An import
 from the toolset's folders (`$(MSBuildExtensionsPath)`, `$(MSBuildToolsPath)`, `$(VSToolsPath)`, and the like) or of an
 SDK sets no property the reader reads, so it is not read. An import the reader does not read for any other reason, a
 condition or a path it cannot settle, a file outside the examined tree, missing, or unreadable, is reported, and from it
@@ -64,7 +66,6 @@ from msbuild_reader import (
     PackageRef,
     Redirect,
     Unreadable,
-    central_versions_file,
     framework_key,
     is_sdk_style,
     item_specs,
@@ -136,11 +137,10 @@ def evaluation_root(path: Path) -> Element:
 @dataclass
 class Sources:
     """The files one run evaluates its projects from, each read and parsed once, and what MSBuild gives every project
-    of the run: the examined tree no file is read outside (`refusal`), the folder the search for
-    Directory.Packages.props stops at, and the solution, whose `$(SolutionDir)` and siblings a solution build sets."""
+    of the run: the examined tree no file is read outside (`refusal`), and the solution, whose `$(SolutionDir)` and
+    siblings a solution build sets."""
 
     tree: Path
-    base: Path
     solution: Path | None = None
     roots: dict[str, Element | Unreadable] = field(default_factory=dict)
 
@@ -240,8 +240,9 @@ class Placed:
     branch: str | None = None
 
 
-# A metadata value as written, whether it applies, and the condition it sits under.
-Candidate = tuple[str, Decision, str]
+# A metadata value with its property references expanded, None when they cannot be settled, whether it applies, and
+# the condition it sits under.
+Candidate = tuple[str | None, Decision, str]
 
 
 @dataclass(frozen=True)
@@ -272,6 +273,11 @@ class Unsettled:
     def reason(self, subject: str) -> str:
         """The UNREADABLE reason, naming the item as `subject`."""
         build = f"for {self.framework}" if self.framework else "for a build that names no framework"
+        if self.metadata and not self.condition:
+            return (
+                f"the {self.metadata} of {self.kind} {subject} names a value the reader cannot settle {build}, so that "
+                f"{self.metadata} is not applied"
+            )
         if self.metadata:
             return (
                 f"the condition {self.condition} on the {self.metadata} of {self.kind} {subject} cannot be evaluated "
@@ -474,13 +480,10 @@ class Evaluation:
         if "props" in self.points:
             return
         self.points.add("props")
-        directory = self.project.path.parent
-        found = nearest_file(directory, BUILD_PROPS)
-        if found is not None:
-            self.import_file(found, BUILD_PROPS)
-        central = central_versions_file(directory, self.project.sources.base)
-        if central is not None:
-            self.import_file(central, CENTRAL_VERSIONS)
+        for name in (BUILD_PROPS, CENTRAL_VERSIONS):
+            found = nearest_file(self.project.path.parent, name)
+            if found is not None:
+                self.import_file(found, found.as_posix())
 
     def targets_point(self) -> None:
         """Where the common targets import Directory.Build.targets, and NuGet's add the GlobalPackageReference items."""
@@ -489,7 +492,7 @@ class Evaluation:
         self.points.add("targets")
         found = nearest_file(self.project.path.parent, BUILD_TARGETS)
         if found is not None:
-            self.import_file(found, BUILD_TARGETS)
+            self.import_file(found, found.as_posix())
         self.items.append(Placed(GLOBAL_PACKAGES, "Include", None))
 
     def target(self, target: Element) -> None:
@@ -547,17 +550,18 @@ class Evaluation:
             found.append((self.metadata_value((child.text or "").strip()), decision, condition))
         return found
 
-    def metadata_value(self, text: str) -> str:
-        """A metadata value with its property references expanded, or as written when they cannot be settled."""
+    def metadata_value(self, text: str) -> str | None:
+        """A metadata value with its property references expanded, None when they cannot be settled, so a value such as
+        `$(LibVersion)` from a property no file sets is never taken as a version."""
         values = expanded(text, self.value_of, self.files)
-        return values[0] if len(values) == 1 and values[0] is not None else text
+        return values[0] if len(values) == 1 and values[0] is not None else None
 
 
 @dataclass
 class Step:
     """One item of the item pass of a build or of the view with no restore: the item, the names it lists, whether it
-    applies, the metadata it gives, and the metadata it leaves unsettled with the condition, and the framework
-    named for what it leaves unsettled."""
+    applies, the metadata it gives, and the metadata it leaves unsettled with the condition, `""` for a value that
+    cannot be settled, and the framework named for what it leaves unsettled."""
 
     placed: Placed
     names: tuple[str, ...] | None
@@ -569,14 +573,18 @@ class Step:
 
 def build_step(resolved: Resolved, framework: str) -> Step:
     """A step of one build: each metadata value the last that applies, and one whose condition cannot be settled after
-    it named and not applied."""
+    it named and not applied, as is one that applies but whose value cannot be settled, named with no condition."""
     metadata: dict[str, str] = {}
     unsettled: list[tuple[str, str]] = []
     for name, candidates in resolved.metadata.items():
         pending: str | None = None
         for value, decision, _ in candidates:
             if decision is True:
-                metadata[name], pending = value, None
+                if value is None:
+                    metadata.pop(name, None)
+                else:
+                    metadata[name] = value
+                pending = "" if value is None else None
             elif decision is not False:
                 pending = pending or decision
         if pending is not None:
@@ -598,7 +606,7 @@ def merged_decision(placed: Placed, decisions: list[tuple[str, Decision]]) -> tu
 def merged_steps(builds: list[Build]) -> list[Step]:
     """The steps of the view with no restore: each item any build reaches, in the order the builds reach them, its
     names and metadata read as the first build where it may apply reads them, and a metadata value the last that may
-    apply in any build."""
+    apply in any build, one whose value cannot be settled not applied and named with no condition."""
     reached: dict[object, list[tuple[str, Resolved]]] = {}
     order: list[object] = []
     for build in builds:
@@ -619,12 +627,20 @@ def merged_steps(builds: list[Build]) -> list[Step]:
         decision, framework = merged_decision(present[0][1].placed, decisions)
         chosen = next((item for _, item in present if item.decision is not False), present[0][1])
         metadata: dict[str, str] = {}
+        unsettled: dict[str, str] = {}
         for name, candidates in chosen.metadata.items():
             each = [item.metadata.get(name, []) for _, item in present]
             for index, (value, _, _) in enumerate(candidates):
-                if any(len(other) > index and other[index][1] is not False for other in each):
+                if not any(len(other) > index and other[index][1] is not False for other in each):
+                    continue
+                if value is None:
+                    metadata.pop(name, None)
+                    unsettled[name] = ""
+                else:
                     metadata[name] = value
-        steps.append(Step(chosen.placed, chosen.names, decision, metadata, [], framework or present[0][0]))
+                    unsettled.pop(name, None)
+        pending = list(unsettled.items())
+        steps.append(Step(chosen.placed, chosen.names, decision, metadata, pending, framework or present[0][0]))
     return steps
 
 

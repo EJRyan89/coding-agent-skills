@@ -243,22 +243,14 @@ def item_specs(text: str) -> list[str]:
     return [part.strip() for part in text.split(";") if part.strip()]
 
 
-def central_versions_file(project_dir: Path, stop: Path) -> Path | None:
-    """The nearest Directory.Packages.props from the project's directory up to `stop`, or None."""
-    return nearest_file(project_dir, CENTRAL_VERSIONS, stop)
-
-
-def nearest_file(project_dir: Path, name: str, stop: Path | None = None) -> Path | None:
-    """The nearest file named `name` from the project's directory up to `stop`, or to the filesystem's root without
-    one, as MSBuild searches for Directory.Build.props; None when there is none."""
-    directory = project_dir
-    while True:
+def nearest_file(project_dir: Path, name: str) -> Path | None:
+    """The nearest file named `name` from the project's directory up to the filesystem's root, as MSBuild searches
+    for Directory.Build.props and Directory.Packages.props; None when there is none."""
+    for directory in (project_dir, *project_dir.parents):
         candidate = directory / name
         if candidate.is_file():
             return candidate
-        if directory == stop or directory.parent == directory:
-            return None
-        directory = directory.parent
+    return None
 
 
 def child_text_anywhere(root: Element, name: str) -> str | None:

@@ -20,10 +20,10 @@ import msbuild_reader
 from msbuild_reader import (
     PackageRef,
     Unreadable,
-    central_versions_file,
     examined_tree,
     framework_key,
     matching_framework,
+    nearest_file,
     package_assemblies,
     read_assets,
     read_bounded,
@@ -254,10 +254,14 @@ class ReaderTests(unittest.TestCase):
         self.assertIsNone(matching_framework("net8.0-windows10.0.22621.0", names))
         self.assertIsNone(matching_framework("net8.0", names))
 
-    def test_central_versions_stop_at_the_solution_directory(self) -> None:
+    def test_the_nearest_file_is_searched_for_up_to_the_filesystems_root(self) -> None:
+        # As MSBuild searches for Directory.Build.props and Directory.Packages.props: past the folder a run starts in.
         props = self.write("Directory.Packages.props", "<Project />")
-        self.assertIsNone(central_versions_file(self.root / "src", self.root / "src"))
-        self.assertEqual(props, central_versions_file(self.root / "src", self.root))
+        (self.root / "src" / "App").mkdir(parents=True)
+        self.assertEqual(props, nearest_file(self.root / "src" / "App", "Directory.Packages.props"))
+        nearer = self.write("src/Directory.Packages.props", "<Project />")
+        self.assertEqual(nearer, nearest_file(self.root / "src" / "App", "Directory.Packages.props"))
+        self.assertIsNone(nearest_file(self.root / "src" / "App", "Nothing.Above.props"))
 
     def test_packages_config_lists_each_package_with_its_version_and_framework(self) -> None:
         self.assertEqual(
