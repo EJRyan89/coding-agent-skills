@@ -20,6 +20,7 @@ from typing import Any
 from unittest import mock
 
 import audit_ai_config as audit
+import markdown_literal
 
 OWNERSHIP = audit.OWNERSHIP_MARKER
 
@@ -2270,13 +2271,6 @@ LAYERING_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
             "subtree — review for conflicting guidance with the root adapter",
         ),
         (
-            "WARNING",
-            "layering",
-            "sub/AGENTS.md",
-            "Nested AGENTS.md adds instructions alongside the root adapter "
-            "in this subtree — review for conflicting or redundant guidance",
-        ),
-        (
             "INFO",
             "layering",
             None,
@@ -2436,7 +2430,13 @@ LAYERING_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
         ),
     ],
     "claude_only": [
-        ("INFO", "layering", None, "Codex: no AGENTS.md, CLAUDE.md used via fallback"),
+        (
+            "WARNING",
+            "layering",
+            None,
+            "Codex: no AGENTS.md, and .codex/config.toml does not name CLAUDE.md in project_doc_fallback_filenames "
+            "— Codex loads CLAUDE.md only when a user's own configuration names it",
+        ),
         ("INFO", "layering", None, "Copilot CLI/app: effective sources: CLAUDE.md"),
         (
             "WARNING",
@@ -2483,7 +2483,12 @@ LAYERING_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
         ),
     ],
     "gemini_only": [
-        ("ERROR", "layering", None, "Codex: no AGENTS.md or CLAUDE.md — no instructions available"),
+        (
+            "ERROR",
+            "layering",
+            None,
+            "Codex: no AGENTS.override.md, AGENTS.md, or CLAUDE.md — no instructions available",
+        ),
         ("INFO", "layering", None, "Copilot CLI/app: effective sources: GEMINI.md"),
         (
             "WARNING",
@@ -2530,7 +2535,12 @@ LAYERING_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
         ),
     ],
     "nothing": [
-        ("ERROR", "layering", None, "Codex: no AGENTS.md or CLAUDE.md — no instructions available"),
+        (
+            "ERROR",
+            "layering",
+            None,
+            "Codex: no AGENTS.override.md, AGENTS.md, or CLAUDE.md — no instructions available",
+        ),
         ("ERROR", "layering", None, "Copilot CLI/app: no instruction sources available"),
         (
             "WARNING",
@@ -2807,19 +2817,22 @@ PARITY_SCENARIOS: dict[str, tuple[dict[str, str | bytes], dict]] = {
         {"copilot_sections": ["Formatting Rules"], "artifacts": [{"path": ".github/copilot-instructions.md"}]},
     ),
     "copilot_without_claude": (
-        {".github/copilot-instructions.md": MARKED},
+        {".github/copilot-instructions.md": COPILOT_HEADER + "Anything.\n"},
         {"artifacts": [{"path": ".github/copilot-instructions.md"}]},
     ),
     "copilot_with_undecodable_claude": (
+        {"CLAUDE.md": UNDECODABLE, ".github/copilot-instructions.md": COPILOT_HEADER + "Anything.\n"},
+        {"artifacts": [{"path": ".github/copilot-instructions.md"}]},
+    ),
+    "copilot_without_banner_beside_undecodable_claude": (
         {"CLAUDE.md": UNDECODABLE, ".github/copilot-instructions.md": MARKED},
         {"artifacts": [{"path": ".github/copilot-instructions.md"}]},
     ),
-    "copilot_sections_invalid": (
-        {"CLAUDE.md": PARITY_CLAUDE, ".github/copilot-instructions.md": MARKED},
-        {"copilot_sections": "Overview", "artifacts": [{"path": ".github/copilot-instructions.md"}]},
-    ),
     "copilot_sections_absent_from_claude": (
-        {"CLAUDE.md": "# CLAUDE.md\n\n## Other\n\nText.\n", ".github/copilot-instructions.md": MARKED},
+        {
+            "CLAUDE.md": "# CLAUDE.md\n\n## Other\n\nText.\n",
+            ".github/copilot-instructions.md": COPILOT_HEADER + "Text.\n",
+        },
         {"artifacts": [{"path": ".github/copilot-instructions.md"}]},
     ),
     "shims_without_a_reconstructable_canonical": (
@@ -3045,10 +3058,20 @@ PARITY_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
         ),
     ],
     "copilot_custom_sections_match": [],
+    # The manifest is not accepted without CLAUDE.md, and the inventory reports one it cannot read.
     "copilot_without_claude": [],
     "copilot_with_undecodable_claude": [],
-    "copilot_sections_invalid": [],
-    "copilot_sections_absent_from_claude": [],
+    "copilot_without_banner_beside_undecodable_claude": [
+        ("ERROR", "parity", ".github/copilot-instructions.md", "Copilot instructions missing banner"),
+    ],
+    "copilot_sections_absent_from_claude": [
+        (
+            "ERROR",
+            "parity",
+            ".github/copilot-instructions.md",
+            "CLAUDE.md holds none of the sections the manifest projects, so the Copilot instructions were not compared",
+        ),
+    ],
     "shims_without_a_reconstructable_canonical": [],
     "no_artifacts": [],
 }
@@ -3413,6 +3436,13 @@ INVENTORY_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
     ],
     "workflow_not_naming_ai_config": [],
     "unreadable_workflows": [
+        (
+            "ERROR",
+            "inventory",
+            ".github/workflows/broken.yml",
+            "Could not read, so the checks that read it did not run: 'utf-8' codec can't decode byte 0x80 in "
+            "position 0: invalid start byte",
+        ),
         ("INFO", "inventory", ".github/workflows/parity.yaml", "AI config parity workflow found"),
     ],
     "workflows_is_a_file": [],
@@ -3629,8 +3659,8 @@ class ReportFormatTests(unittest.TestCase):
         self.assertEqual(
             [
                 "| Severity | Check | Path | Line | Message |",
-                "| ERROR | copilot-config | a/SKILL.md | 4 | Bad entry |",
-                "| ERROR | copilot-config | a/SKILL.md | 5 | Bad entry |",
+                "| ERROR | copilot-config | a&#47;SKILL&#46;md | 4 | Bad entry |",
+                "| ERROR | copilot-config | a&#47;SKILL&#46;md | 5 | Bad entry |",
                 "| INFO | scope |  |  | No scope |",
             ],
             rows,
@@ -3814,14 +3844,54 @@ class ScopeWithoutAValidManifestTests(unittest.TestCase):
 class MarkdownCellTests(unittest.TestCase):
     """A value the repository controls cannot split a findings row or add a column."""
 
-    def test_pipes_are_escaped_and_line_breaks_flattened_in_a_cell(self) -> None:
+    def _row(self, path: str, message: str) -> str:
         result = audit.AuditResult(
-            repository="example",
-            authority="conforming",
-            findings=[audit.Finding("ERROR", "mcp", "a|b\r\nc.json", 3, "Server 'a|b\nc': bad")],
+            repository="example", authority="conforming", findings=[audit.Finding("ERROR", "mcp", path, 3, message)]
         )
         rows = [line for line in audit.format_markdown(result).splitlines() if line.startswith("| ERROR")]
-        self.assertEqual([r"| ERROR | mcp | a\|b c.json | 3 | Server 'a\|b c': bad |"], rows)
+        self.assertEqual(1, len(rows), rows)
+        return rows[0]
+
+    def test_pipes_are_encoded_and_line_breaks_flattened_in_a_cell(self) -> None:
+        self.assertEqual(
+            "| ERROR | mcp | a&#124;b c&#46;json | 3 | Server &#39;a&#124;b c&#39;&#58; bad |",
+            self._row("a|b\r\nc.json", "Server 'a|b\nc': bad"),
+        )
+
+    def test_a_cell_opens_no_comment_and_an_escaped_pipe_adds_no_cell(self) -> None:
+        for text, cell in (
+            ("a<!-- hidden", "a&lt;&#33;&#45;&#45; hidden"),
+            ("a\\|b", "a&#92;&#124;b"),
+            ("b\u2028x", "b x"),
+            ("c\u0085x", "c x"),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(f"| ERROR | mcp | {cell} | 3 | {cell} |", self._row(text, text))
+
+    def test_every_repository_controlled_cell_is_skill_cores_markdown_line(self) -> None:
+        self.assertFalse(hasattr(audit, "_cell"))
+        self.assertIs(markdown_literal.markdown_line, audit.markdown_line)
+        text = "x`*_[a](b)<i>&|\\"
+        line = markdown_literal.markdown_line(text)
+        self.assertEqual(f"| ERROR | mcp | {line} | 3 | {line} |", self._row(text, text))
+
+    def test_server_names_that_open_markup_or_end_a_line_stay_literal_in_their_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _setup_conforming_repo(root)
+            names = ["a<!-- hidden", "b\u2028x", "c\u0085x"]
+            (root / ".mcp.json").write_text(json.dumps({"mcpServers": {name: {} for name in names}}), encoding="utf-8")
+            result = audit.audit(root)
+            report = audit.format_markdown(result)
+        self.assertNotIn("<!--", report)
+        rows = report[report.index("| Severity") :].splitlines()[2:]
+        self.assertEqual(len(result.findings), len(rows))
+        for name in ("a&lt;&#33;&#45;&#45; hidden", "b x", "c x"):
+            self.assertIn(
+                f"Server &#39;{name}&#39;&#58; must have &#39;command&#39; &#40;STDIO&#47;local&#41; or &#39;url&#39; "
+                "&#40;HTTP&#47;SSE&#41;",
+                report,
+            )
 
     def test_no_line_separator_in_a_value_starts_a_report_line(self) -> None:
         for separator in ("\n", "\r", "\u0085", "\u2028", "\u2029"):
@@ -4005,6 +4075,293 @@ class OutsideLinkTests(unittest.TestCase):
         self.assertTrue(audit.leaves_root(self.root, self.root / ".." / "outside"))
         self.assertFalse(audit.leaves_root(self.root, self.root / ".github" / ".." / "CLAUDE.md"))
         self.assertFalse(audit.leaves_root(self.root, self.root))
+
+
+class UnreadInputTests(unittest.TestCase):
+    """A file a check reads but cannot read or decode is an ERROR, so the audit is never COMPLIANT having skipped it."""
+
+    UNREAD = "Could not read, so the checks that read it did not run: "
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        _setup_conforming_repo(self.root)
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _manifest(self) -> dict[str, Any]:
+        return json.loads((self.root / MANIFEST_PATH).read_text(encoding="utf-8"))
+
+    def _unread(self, result: audit.AuditResult) -> list[str | None]:
+        return [f.path for f in result.findings if f.severity == "ERROR" and f.message.startswith(self.UNREAD)]
+
+    def test_an_undecodable_canonical_source_is_one_error_and_the_audit_is_not_compliant(self) -> None:
+        self.assertEqual("COMPLIANT", audit.audit(self.root).result)
+        (self.root / "CLAUDE.md").write_bytes(b"\xff\xfe\x00bad \x80\x81")
+        result = audit.audit(self.root)
+        self.assertEqual(("conforming", "ERRORS"), (result.authority, result.result))
+        self.assertEqual(["CLAUDE.md"], [f.path for f in result.findings if f.severity == "ERROR"])
+        self.assertEqual(["CLAUDE.md"], self._unread(result))
+
+    def test_every_file_a_check_reads_silently_is_an_error_when_it_cannot_be_decoded(self) -> None:
+        for rel in (
+            "CLAUDE.md",
+            MANIFEST_PATH,
+            ".github/copilot-instructions.md",
+            ".github/scripts/ai_config.py",
+            "scripts/ai_config.py",
+            "AGENTS.md",
+            "src/AGENTS.md",
+            ".github/workflows/parity.yml",
+            ".github/workflows/parity.yaml",
+        ):
+            with self.subTest(rel=rel):
+                path = self.root / rel
+                original = path.read_bytes() if path.is_file() else None
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(UNDECODABLE)
+                result = audit.audit(self.root)
+                self.assertIn(rel, self._unread(result))
+                self.assertNotEqual("COMPLIANT", result.result)
+                if original is None:
+                    path.unlink()
+                else:
+                    path.write_bytes(original)
+
+    def test_an_unreadable_instruction_file_is_not_called_user_authored(self) -> None:
+        for rel in ("AGENTS.md", ".github/copilot-instructions.md"):
+            with self.subTest(rel=rel):
+                original = (self.root / rel).read_bytes()
+                (self.root / rel).write_bytes(UNDECODABLE)
+                result = audit.audit(self.root)
+                self.assertEqual([], [f for f in result.findings if f.check == "collision"])
+                self.assertIn(rel, self._unread(result))
+                (self.root / rel).write_bytes(original)
+
+    def test_a_copilot_projection_compared_with_no_projected_section_is_a_parity_error(self) -> None:
+        manifest = self._manifest()
+        manifest["artifacts"][0].pop("hash")
+        (self.root / MANIFEST_PATH).write_text(json.dumps(manifest), encoding="utf-8")
+        (self.root / "CLAUDE.md").write_text(
+            "# CLAUDE.md\n\n## Maintaining AI Agent Config\n\nRegenerate. Never disable checks.\n", encoding="utf-8"
+        )
+        result = audit.audit(self.root)
+        self.assertIn(
+            (
+                ".github/copilot-instructions.md",
+                "CLAUDE.md holds none of the sections the manifest projects, so the Copilot instructions were not "
+                "compared",
+            ),
+            [(f.path, f.message) for f in result.findings if f.check == "parity" and f.severity == "ERROR"],
+        )
+
+    def test_the_banner_is_checked_beside_an_unreadable_canonical_source(self) -> None:
+        manifest = self._manifest()
+        manifest["artifacts"][0].pop("hash")
+        (self.root / MANIFEST_PATH).write_text(json.dumps(manifest), encoding="utf-8")
+        (self.root / ".github/copilot-instructions.md").write_text(f"# {OWNERSHIP}\n\nAnything.\n", encoding="utf-8")
+        (self.root / "CLAUDE.md").write_bytes(UNDECODABLE)
+        result = audit.audit(self.root)
+        self.assertIn(
+            (".github/copilot-instructions.md", "Copilot instructions missing banner"),
+            [(f.path, f.message) for f in result.findings if f.check == "parity"],
+        )
+
+
+class CodexLayeringTests(unittest.TestCase):
+    """Codex takes, in each directory, the first of AGENTS.override.md, AGENTS.md, and its configured fallbacks that
+    exists, skips it when it holds only whitespace, and reads CLAUDE.md only as a fallback a configuration names."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _codex(self, files: dict[str, str | bytes]) -> list[tuple[str, str | None, str]]:
+        _write_fixture(self.root, files)
+        findings = [
+            *audit._layering_codex(self.root, audit._instruction_sources(self.root)),
+            *audit._nested_codex_instructions(self.root, audit._instruction_sources(self.root)),
+        ]
+        return [(f.severity, f.path, f.message) for f in findings]
+
+    def test_a_root_override_without_agents_md_masks_claude_md(self) -> None:
+        self.assertEqual(
+            [
+                (
+                    "ERROR",
+                    "AGENTS.override.md",
+                    "AGENTS.override.md masks CLAUDE.md — Codex loads the root override instead of AGENTS.md or a "
+                    "fallback",
+                )
+            ],
+            self._codex({"CLAUDE.md": "# Rules\n", "AGENTS.override.md": "Use spaces, never tabs.\n"}),
+        )
+
+    def test_a_root_override_beside_a_non_redirecting_agents_md_is_the_file_codex_loads(self) -> None:
+        self.assertEqual(
+            [
+                (
+                    "ERROR",
+                    "AGENTS.override.md",
+                    "AGENTS.override.md masks CLAUDE.md — Codex loads the root override instead of AGENTS.md or a "
+                    "fallback",
+                )
+            ],
+            self._codex({"CLAUDE.md": "# Rules\n", "AGENTS.md": PLAIN_AGENTS, "AGENTS.override.md": "Override.\n"}),
+        )
+
+    def test_a_root_override_beside_the_adapter_masks_the_adapter(self) -> None:
+        self.assertEqual(
+            [
+                (
+                    "ERROR",
+                    "AGENTS.override.md",
+                    "AGENTS.override.md masks the generated AGENTS.md adapter — Codex will not load CLAUDE.md "
+                    "through the adapter",
+                )
+            ],
+            self._codex({"AGENTS.md": REDIRECTING_AGENTS, "AGENTS.override.md": "Override.\n"}),
+        )
+
+    def test_an_empty_file_codex_chooses_is_skipped_without_trying_the_next(self) -> None:
+        for name in ("AGENTS.override.md", "AGENTS.md"):
+            with self.subTest(name=name):
+                self.assertEqual(
+                    [
+                        (
+                            "ERROR",
+                            name,
+                            f"Codex: the root {name} is empty — Codex chooses it, skips it, and loads no root "
+                            "instructions",
+                        )
+                    ],
+                    self._codex({"CLAUDE.md": "# Rules\n", "AGENTS.md": " \n\t\n", name: " \n\t\n"}),
+                )
+                (self.root / name).unlink()
+
+    def test_the_adapter_and_a_plain_agents_md(self) -> None:
+        self.assertEqual(
+            [("INFO", None, "Codex: AGENTS.md adapter redirects to CLAUDE.md")],
+            self._codex({"AGENTS.md": REDIRECTING_AGENTS}),
+        )
+        self.assertEqual(
+            [("WARNING", None, "Codex: non-redirecting AGENTS.md — CLAUDE.md not loaded through adapter")],
+            self._codex({"AGENTS.md": PLAIN_AGENTS}),
+        )
+
+    def test_claude_md_is_loaded_only_as_a_configured_fallback(self) -> None:
+        self.assertEqual(
+            [
+                (
+                    "WARNING",
+                    None,
+                    "Codex: no AGENTS.md, and .codex/config.toml does not name CLAUDE.md in "
+                    "project_doc_fallback_filenames — Codex loads CLAUDE.md only when a user's own configuration "
+                    "names it",
+                )
+            ],
+            self._codex({"CLAUDE.md": "# Rules\n"}),
+        )
+        self.assertEqual(
+            [
+                (
+                    "INFO",
+                    None,
+                    "Codex: no AGENTS.md, CLAUDE.md loaded as a project_doc_fallback_filenames entry in "
+                    ".codex/config.toml",
+                )
+            ],
+            self._codex({".codex/config.toml": 'project_doc_fallback_filenames = ["TEAM.md", "CLAUDE.md"]\n'}),
+        )
+
+    def test_the_first_configured_fallback_that_exists_is_the_one_codex_loads(self) -> None:
+        self.assertEqual(
+            [
+                (
+                    "WARNING",
+                    "TEAM.md",
+                    "Codex: no AGENTS.md, TEAM.md loaded as a project_doc_fallback_filenames entry in "
+                    ".codex/config.toml — CLAUDE.md not loaded",
+                )
+            ],
+            self._codex(
+                {
+                    "CLAUDE.md": "# Rules\n",
+                    "TEAM.md": "# Team\n",
+                    ".codex/config.toml": 'project_doc_fallback_filenames = ["TEAM.md", "CLAUDE.md"]\n',
+                }
+            ),
+        )
+
+    def test_a_fallback_that_is_not_a_plain_file_name_is_ignored_as_codex_ignores_it(self) -> None:
+        names = '"", ".", "..", "docs/CLAUDE.md", "a\\\\b", "c:d", "AGENTS.md", 3, "TEAM.md"'
+        _write_fixture(self.root, {".codex/config.toml": f"project_doc_fallback_filenames = [{names}]\n"})
+        self.assertEqual(["TEAM.md"], audit._codex_fallback_filenames(self.root))
+        _write_fixture(self.root, {".codex/config.toml": "project_doc_fallback_filenames = [\n"})
+        self.assertEqual([], audit._codex_fallback_filenames(self.root))
+
+    def test_no_root_instruction_file_is_an_error(self) -> None:
+        self.assertEqual(
+            [("ERROR", None, "Codex: no AGENTS.override.md, AGENTS.md, or CLAUDE.md — no instructions available")],
+            self._codex({"GEMINI.md": "# Gemini\n"}),
+        )
+
+    def test_a_nested_agents_md_beside_a_nested_override_is_never_loaded(self) -> None:
+        rows = self._codex(
+            {"AGENTS.md": REDIRECTING_AGENTS, "sub/AGENTS.override.md": "Override.\n", "sub/AGENTS.md": PLAIN_AGENTS}
+        )
+        self.assertEqual(["sub/AGENTS.override.md"], [path for _, path, _ in rows if path])
+
+    def test_the_reported_repository_with_only_a_root_override_is_not_compliant(self) -> None:
+        _setup_conforming_repo(self.root)
+        (self.root / ".git").mkdir()
+        (self.root / "AGENTS.md").unlink()
+        manifest = json.loads((self.root / MANIFEST_PATH).read_text(encoding="utf-8"))
+        manifest["artifacts"] = [a for a in manifest["artifacts"] if a["path"] != "AGENTS.md"]
+        (self.root / MANIFEST_PATH).write_text(json.dumps(manifest), encoding="utf-8")
+        (self.root / "AGENTS.override.md").write_text("Use spaces, never tabs.\n", encoding="utf-8")
+        result = audit.audit(self.root)
+        self.assertEqual("ERRORS", result.result)
+        self.assertNotIn("Codex: no AGENTS.md, CLAUDE.md used via fallback", [f.message for f in result.findings])
+
+
+class GeneratorPathTests(unittest.TestCase):
+    """The skill runs the generator the engine found, which is one of the paths the engine recognizes."""
+
+    SKILL_DIRECTORY = Path(audit.__file__).resolve().parent.parent
+
+    def test_the_engine_recognizes_both_generator_paths(self) -> None:
+        self.assertEqual([".github/scripts/ai_config.py", "scripts/ai_config.py"], audit.GENERATOR_CANDIDATES)
+
+    def test_the_skill_takes_the_generator_from_the_engines_inventory_finding(self) -> None:
+        skill = (self.SKILL_DIRECTORY / "SKILL.md").read_text(encoding="utf-8")
+        step = skill[skill.index("## 3. Optional operational validation") :]
+        self.assertIn('`{{PYTHON}} -B "<path>" --check`', step)
+        self.assertIn("message begins `Generator script found:` in the engine's `--json` report", step)
+        for candidate in audit.GENERATOR_CANDIDATES:
+            self.assertNotIn(candidate, skill)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for candidate in reversed(audit.GENERATOR_CANDIDATES):
+                _write_fixture(root, {candidate: "SOURCE = 'CLAUDE.md'\n"})
+            found = [
+                (f.path, f.message)
+                for f in audit.AuditResult(findings=audit.check_inventory(root)).sorted_findings()
+                if f.message.startswith("Generator script found: ")
+            ]
+        # The first finding is the generator the scope check reads, the first candidate that exists.
+        self.assertEqual([(path, f"Generator script found: {path}") for path in audit.GENERATOR_CANDIDATES], found)
+
+    def test_every_reference_that_names_a_generator_path_names_each_one(self) -> None:
+        for reference in sorted((self.SKILL_DIRECTORY / "references").glob("*.md")):
+            text = reference.read_text(encoding="utf-8")
+            named = [candidate for candidate in audit.GENERATOR_CANDIDATES if f"`{candidate}`" in text]
+            with self.subTest(reference=reference.name):
+                self.assertIn(named, ([], audit.GENERATOR_CANDIDATES))
 
 
 if __name__ == "__main__":
