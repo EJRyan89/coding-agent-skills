@@ -89,6 +89,29 @@ SHELL_BUILTINS = {
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=")
 COMMAND_NAME = re.compile(r"[A-Za-z][A-Za-z0-9._-]*")
 COMMANDS_DOC = '"Commands skills may run" in docs/adding-a-skill.md'
+# The commands that run the program a later word names, each with its options that take the next word as their value:
+# the program is the first word after the options, after the assignments env takes, and after the duration timeout
+# takes. command -v and -V only look a program up.
+COMMAND_WRAPPERS: dict[str, frozenset[str]] = {
+    "command": frozenset(),
+    "builtin": frozenset(),
+    "exec": frozenset({"-a"}),
+    "nohup": frozenset(),
+    "time": frozenset(),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "env": frozenset({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}),
+    "timeout": frozenset({"-s", "--signal", "-k", "--kill-after"}),
+    "stdbuf": frozenset({"-i", "-o", "-e"}),
+    "xargs": frozenset({"-I", "-n", "-L", "-d", "-P", "-s", "-E", "-a", "--arg-file", "--delimiter", "--max-args"}),
+}
+LOOKUP_ONLY_OPTIONS = frozenset({"-v", "-V"})
+# The commands that run a script a word holds: eval its arguments, and a shell the script after its -c.
+SCRIPT_SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
+# find's actions that run the program the next word names.
+FIND_ACTIONS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+# What a reader records for a program a wrapper runs but that no literal names, such as `xargs "$tool"`, so the command
+# policy refuses it rather than passing it unseen; it never names a program.
+UNREAD_PROGRAM = "<unread> "
 
 
 def _split_operators(token: str) -> list[str]:
@@ -103,17 +126,96 @@ def _split_operators(token: str) -> list[str]:
     return parts
 
 
+def _substitutions(script: str) -> list[str]:
+    """The script of each command substitution a Bash script holds, `$(...)` or backticks, quoted or not, outside
+    single quotes, comments, and arithmetic `$((...))`."""
+    found: list[str] = []
+    index, quoted = 0, False
+    while index < len(script):
+        character = script[index]
+        if character == "\\":
+            index += 2
+            continue
+        if character == "'" and not quoted:
+            index = script.find("'", index + 1) + 1 or len(script)
+            continue
+        if character == "#" and not quoted and (index == 0 or script[index - 1] in " \t\n;&|("):
+            index = script.find("\n", index) + 1 or len(script)
+            continue
+        if character == '"':
+            quoted = not quoted
+        if script.startswith("$(", index) and not script.startswith("$((", index):
+            depth, end = 1, index + 2
+            while end < len(script) and depth:
+                depth += {"(": 1, ")": -1}.get(script[end], 0)
+                end += 1
+            found.append(script[index + 2 : end - 1])
+            index = end
+            continue
+        if character == "`":
+            end = script.find("`", index + 1)
+            end = len(script) if end < 0 else end
+            found.append(script[index + 1 : end])
+            index = end + 1
+            continue
+        index += 1
+    return found
+
+
+def _program_word(word: str) -> set[str]:
+    """What a word a wrapper runs as a program names: a literal command, nothing for a template token or a path, which
+    a command word is read as too, and UNREAD_PROGRAM for one built from a variable or a substitution."""
+    if COMMAND_NAME.fullmatch(word):
+        return {word}
+    if "$" in word or "`" in word:
+        return {f"{UNREAD_PROGRAM}{word}"}
+    return set()
+
+
+def _wrapped_programs(words: list[str]) -> set[str]:
+    """The programs a simple command runs through its first word: what a wrapper such as xargs or env runs, what find's
+    -exec runs, and what eval or a shell's -c script runs, followed through a wrapper of a wrapper."""
+    found: set[str] = set()
+    while words:
+        head, rest = words[0], words[1:]
+        if head == "eval":
+            return found | shell_commands(" ".join(rest))
+        if head in SCRIPT_SHELLS:
+            script = rest[rest.index("-c") + 1 : rest.index("-c") + 2] if "-c" in rest else []
+            return found | {name for text in script for name in shell_commands(text)}
+        if head == "find":
+            actions = [index for index, word in enumerate(rest) if word in FIND_ACTIONS and index + 1 < len(rest)]
+            for index in actions:
+                found |= _program_word(rest[index + 1]) | _wrapped_programs(rest[index + 1 :])
+            return found
+        options = COMMAND_WRAPPERS.get(head)
+        if options is None or (head == "command" and LOOKUP_ONLY_OPTIONS & set(rest)):
+            return found
+        index = 0
+        while index < len(rest) and (rest[index].startswith("-") or (head == "env" and ASSIGNMENT.match(rest[index]))):
+            index += 2 if rest[index] in options else 1
+        index += 1 if head == "timeout" else 0
+        if index >= len(rest):
+            return found
+        found |= _program_word(rest[index])
+        words = rest[index:]
+    return found
+
+
 def shell_commands(script: str) -> set[str]:
-    """Literal command names a Bash script runs, ignoring keywords, case patterns, and its own functions."""
+    """Literal command names a Bash script runs, ignoring keywords, case patterns, and its own functions: each command
+    word, each program a wrapper, find's -exec, eval, or a shell's -c script runs, and every command of a command
+    substitution, quoted or not. A program a wrapper runs that no literal names is recorded as UNREAD_PROGRAM."""
     lexer = shlex.shlex(script.replace("\\\n", " "), posix=True, punctuation_chars=";&|()<>\n")
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
     tokens = [part for token in lexer for part in _split_operators(token)]
     functions = {tokens[i] for i in range(len(tokens) - 1) if tokens[i + 1] == "()"}
     functions |= {tokens[i + 1] for i in range(len(tokens) - 1) if tokens[i] == "function"}
-    found: set[str] = set()
+    found: set[str] = {name for inner in _substitutions(script) for name in shell_commands(inner)}
     state = "command"
-    for word in tokens:
+    words: list[str] = []
+    for word in [*tokens, "\n"]:
         if state == "case-word":
             state = "patterns" if word == "in" else state
         elif state == "patterns":
@@ -126,11 +228,15 @@ def shell_commands(script: str) -> set[str]:
             if word in COMMAND_SEPARATORS or word in LEADING_KEYWORDS or ASSIGNMENT.match(word):
                 continue
             state = "case-word" if word == "case" else "arguments"
-            if word not in HEADER_KEYWORDS and COMMAND_NAME.fullmatch(word) and word not in functions:
+            words = [word] if word not in HEADER_KEYWORDS and word not in functions else []
+            if words and COMMAND_NAME.fullmatch(word):
                 found.add(word)
         elif word in COMMAND_SEPARATORS:
-            state = "command"
-    return found
+            found |= _wrapped_programs(words)
+            words, state = [], "command"
+        else:
+            words.append(word)
+    return found - functions
 
 
 def _fences(markdown: str, context: str) -> list[str]:
@@ -169,6 +275,17 @@ COMMAND_RUNNERS: dict[str, tuple[int, str]] = {
     "bounded_process.run_bounded": (0, "command"),
     "bounded_process.streaming": (0, "command"),
 }
+# The runners that run their command through a shell, whose every program the Bash reader reads; a runner that hands its
+# keywords to subprocess.Popen does too when given shell= anything but False.
+SHELL_RUNNERS = frozenset(
+    {
+        "os.system",
+        "os.popen",
+        "subprocess.getoutput",
+        "subprocess.getstatusoutput",
+        "asyncio.create_subprocess_shell",
+    }
+)
 # The runners that hand their keywords to subprocess.Popen, whose executable= replaces the program the command names.
 EXECUTABLE_RUNNERS = frozenset(
     {
@@ -780,9 +897,41 @@ class CommandReader:
             and (name := _program_name(source.value))
         ]
 
+    def _runs_a_shell(self, call: ast.Call) -> bool:
+        """Whether a runner call runs its command through a shell: one of SHELL_RUNNERS, or shell= anything but
+        False given to a runner that hands it to subprocess.Popen."""
+        name = self.resolver.name(call.func)
+        shell = next((item.value for item in call.keywords if item.arg == "shell"), None)
+        given = shell is not None and not (isinstance(shell, ast.Constant) and not shell.value)
+        return name in SHELL_RUNNERS or (name in EXECUTABLE_RUNNERS and given)
+
+    def _shell_scripts(self, call: ast.Call) -> list[tuple[int, str]]:
+        """The line and program of each command a script runs that a runner's list starts a shell with -c to run."""
+        found: list[tuple[int, str]] = []
+        for argument in self._command_arguments(call):
+            items = argument.elts[:3] if isinstance(argument, (ast.List, ast.Tuple)) else []
+            texts = [_text_constant(item).value if isinstance(item, ast.Constant) else None for item in items]
+            if len(texts) == 3 and isinstance(texts[0], str) and isinstance(texts[2], str):
+                shell = platform_support.program_name(PureWindowsPath(texts[0]).name)
+                if shell in SCRIPT_SHELLS and texts[1] == "-c":
+                    found += [(items[2].lineno, name) for name in sorted(shell_commands(texts[2]))]
+        return found
+
     def started(self, call: ast.Call) -> list[tuple[int, str]]:
-        """The line and program of each command a COMMAND_RUNNERS call may start, and nothing for another call."""
-        return self._named(self._sources(call))
+        """The line and program of each command a COMMAND_RUNNERS call may start, and nothing for another call: every
+        program a command it runs through a shell names, as the Bash reader reads it, and every program the script a
+        list starts a shell with -c to run names."""
+        sources = self._sources(call)
+        if self._runs_a_shell(call):
+            named = [
+                (source.lineno, name)
+                for source in sources
+                if isinstance(source, ast.Constant) and isinstance(source.value, str)
+                for name in sorted(shell_commands(source.value))
+            ]
+        else:
+            named = self._named(sources)
+        return named + self._shell_scripts(call)
 
     def starts_process(self) -> bool:
         """Whether the module calls a command runner or a skill-core client, even with a dynamic command.
@@ -884,9 +1033,13 @@ def command_reader(path: Path) -> CommandReader:
 
 
 # Prints one JSON array of {source, name} for each external command run by the PowerShell sources in the JSON file
-# COMMAND_SOURCES names, as PowerShell's own parser reads them. A function a source defines is its own, and so is
-# what PowerShell ships: its aliases and the commands of its core and of the modules under its home, such as
-# Get-ChildItem and ForEach-Object. A module installed elsewhere, such as PSScriptAnalyzer, is not standard.
+# COMMAND_SOURCES names, as PowerShell's own parser reads them, and {source, unread} for each program it cannot read. A
+# function a source defines is its own, and so is what PowerShell ships: its aliases and the commands of its core and
+# of the modules under its home, such as Get-ChildItem and ForEach-Object. A module installed elsewhere, such as
+# PSScriptAnalyzer, is not standard. What Start-Process starts, by -FilePath or its first positional argument, what
+# `& (Get-Command name)` runs, and every command of a string Invoke-Expression runs are read as commands too; a program
+# any of these, or `&` or `.`, names other than by a literal is unread, but for a .ps1 script a path names, whose own
+# commands the policy reads in its file.
 POWERSHELL_COMMANDS_RUN = (
     "$ErrorActionPreference = 'Stop'; "
     "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); "
@@ -897,16 +1050,46 @@ POWERSHELL_COMMANDS_RUN = (
     "foreach ($command in Get-Command -Module @($shipped + 'Microsoft.PowerShell.Core')) { "
     "[void]$own.Add($command.Name) }; "
     "foreach ($alias in Get-Alias) { [void]$own.Add($alias.Name) }; "
+    "function Get-Literal($element) { "
+    "if ($element -is [Management.Automation.Language.StringConstantExpressionAst]) { return $element.Value }; "
+    "if ($element -is [Management.Automation.Language.ExpandableStringExpressionAst] -and "
+    "$element.NestedExpressions.Count -eq 0) { return $element.Value }; "
+    "return $null }; "
+    "function Get-Argument($elements, $named, $switches) { "
+    "for ($at = 1; $at -lt $elements.Count; $at++) { $element = $elements[$at]; "
+    "if ($element -is [Management.Automation.Language.CommandParameterAst]) { "
+    "if ($named -contains $element.ParameterName) { "
+    "if ($element.Argument) { return $element.Argument }; return $elements[$at + 1] }; "
+    "if (-not ($switches -contains $element.ParameterName) -and -not $element.Argument) { $at++ }; continue }; "
+    "return $element }; "
+    "return $null }; "
     "$found = [Collections.Generic.List[object]]::new(); "
-    "for ($index = 0; $index -lt $sources.Count; $index++) { "
+    "$queue = [Collections.Generic.Queue[object]]::new(); "
+    "for ($index = 0; $index -lt $sources.Count; $index++) { $queue.Enqueue(@($index, $sources[$index])) }; "
+    "while ($queue.Count) { $item = $queue.Dequeue(); $index = $item[0]; "
     "$tokens = $null; $errors = $null; "
-    "$tree = [Management.Automation.Language.Parser]::ParseInput($sources[$index], [ref]$tokens, [ref]$errors); "
+    "$tree = [Management.Automation.Language.Parser]::ParseInput($item[1], [ref]$tokens, [ref]$errors); "
     "$functions = @($tree.FindAll({ param($node) "
     "$node -is [Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object Name); "
     "foreach ($command in $tree.FindAll({ param($node) "
     "$node -is [Management.Automation.Language.CommandAst] }, $true)) { "
-    "$name = $command.GetCommandName(); "
-    "if (-not $name -or $functions -contains $name -or $own.Contains($name)) { continue }; "
+    "$name = $command.GetCommandName(); $elements = $command.CommandElements; "
+    "if (-not $name -and $elements[0].Extent.Text -match '\\.ps1\\W*$') { continue }; "
+    "if (-not $name) { $first = $elements[0]; "
+    "$inner = @($first.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] }, $true)); "
+    "if ($inner.Count -eq 1 -and @('Get-Command', 'gcm') -contains $inner[0].GetCommandName()) { "
+    "$name = Get-Literal (Get-Argument $inner[0].CommandElements @('Name') @()) }; "
+    "if (-not $name) { $found.Add([ordered]@{ source = $index; unread = $first.Extent.Text }); continue } }; "
+    "if (@('Start-Process', 'saps', 'start') -contains $name) { "
+    "$program = Get-Argument $elements @('FilePath', 'PSPath', 'Path', 'FilePa', 'File') "
+    "@('Wait', 'NoNewWindow', 'PassThru', 'UseNewEnvironment', 'LoadUserProfile'); "
+    "$name = if ($program) { Get-Literal $program } else { $null }; "
+    "if (-not $name) { $found.Add([ordered]@{ source = $index; unread = $command.Extent.Text }); continue } }; "
+    "if (@('Invoke-Expression', 'iex') -contains $name) { "
+    "$script = Get-Argument $elements @('Command') @(); $text = if ($script) { Get-Literal $script } else { $null }; "
+    "if ($null -eq $text) { $found.Add([ordered]@{ source = $index; unread = $command.Extent.Text }) } "
+    "else { $queue.Enqueue(@($index, $text)) }; continue }; "
+    "if ($functions -contains $name -or $own.Contains($name)) { continue }; "
     "$found.Add([ordered]@{ source = $index; name = $name }) } }; "
     "[Console]::Out.WriteLine((ConvertTo-Json -InputObject $found.ToArray() -Compress -Depth 3))"
 )
@@ -934,7 +1117,9 @@ def powershell_commands(sources: list[str]) -> list[set[str]]:
         )
     commands: list[set[str]] = [set() for _ in sources]
     for item in found:
-        if name := _program_name(item["name"]):
+        if "unread" in item:
+            commands[item["source"]].add(f"{UNREAD_PROGRAM}{item['unread']}")
+        elif name := _program_name(item["name"]):
             commands[item["source"]].add(name)
     return commands
 
@@ -1082,6 +1267,14 @@ def skill_command_problems(root: Path, known: set[str], standard: set[str]) -> l
         for path in dependency_scripts:
             for command in _file_commands(path, known, powershell):
                 reached.setdefault(command, path)
+        unread = sorted(name for name in [*used, *reached] if name.startswith(UNREAD_PROGRAM))
+        problems += [
+            f"skill {skill} runs a program it names by `{name.removeprefix(UNREAD_PROGRAM)}`, which the policy cannot "
+            f"read; name the program with a literal; see {COMMANDS_DOC}"
+            for name in dict.fromkeys(unread)
+        ]
+        used -= set(unread)
+        reached = {name: path for name, path in reached.items() if name not in unread}
         for name in sorted((used & known) - declared):
             problems.append(f"skill {skill} runs {name} without declaring it in tools")
         for name in sorted((set(reached) & known) - used - declared):

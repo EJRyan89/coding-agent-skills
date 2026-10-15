@@ -189,6 +189,14 @@ module-level assignment's target; validation fails on an allowance that sanction
 that `COMMAND_RUNNERS` in `tests/validation/skill_scripts.py` names, such as `run_bounded`'s command, is read at
 each caller instead.
 
+A command that runs another reads as both. In Bash, validation reads the program each command substitution, quoted
+or not, runs, and the program a wrapper runs: `xargs`, `env`, `command`, `exec`, `nohup`, `timeout`, `nice`,
+`stdbuf`, and `find`'s `-exec`, and every command of the script `eval` or a shell's `-c` runs; `command -v` only looks
+one up. In PowerShell it reads what `Start-Process` starts, what `& (Get-Command <name>)` runs, and every command of
+the string `Invoke-Expression` runs. In Python it reads every program of a command a runner gives a shell, such as
+`os.system` or `shell=True`, and of the script a list such as `["bash", "-c", "<script>"]` runs. A wrapper's program,
+or what `&` runs, held in a variable is a program the policy cannot read, and fails the declared-tool policy.
+
 Reach for these substitutes instead:
 
 | Instead of | Use |

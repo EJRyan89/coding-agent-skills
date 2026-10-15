@@ -23,6 +23,7 @@ from git_test_base import GitTestCase
 from skill_scripts import (
     CLIENT_CLASSES,
     COMMAND_RUNNERS,
+    UNREAD_PROGRAM,
     CommandReader,
     client_command_problems,
     console_entry_points,
@@ -881,6 +882,54 @@ class SkillScriptsFixtures(GitTestCase):
                 [problem.split(" is named", 1)[0] for problem in secret_named_function_problems(mark_skills(root))],
             )
 
+    def test_shell_command_extraction_reads_the_program_every_wrapper_and_substitution_runs(self) -> None:
+        for script in (
+            'echo "$(rg foo)"',
+            "y=`rg foo`",
+            "xargs rg foo",
+            "xargs -I {} rg {}",
+            "find . -exec rg foo {} \\;",
+            "env A=1 rg foo",
+            "command rg foo",
+            "exec rg foo",
+            "nohup rg foo",
+            "timeout -s KILL 5 rg foo",
+            'eval "rg foo"',
+            'bash -c "rg foo"',
+        ):
+            with self.subTest(script=script):
+                self.assertIn("rg", shell_commands(script))
+        # A lookup, a substitution in single quotes or a comment, and arithmetic run nothing.
+        for script in ("command -v rg", "echo '$(rg foo)'", "# run `rg foo` here", "echo $((1 + 2))"):
+            with self.subTest(script=script):
+                self.assertNotIn("rg", shell_commands(script))
+        self.assertIn(f"{UNREAD_PROGRAM}$tool", shell_commands('xargs "$tool" foo'))
+
+    def test_powershell_and_python_shell_readers_read_the_program_each_way_runs(self) -> None:
+        sources = [
+            "Start-Process rg -ArgumentList foo",
+            'Start-Process -Wait -FilePath "rg"',
+            'Invoke-Expression "rg foo"',
+            "& (Get-Command rg) foo",
+            '$p = "rg"; & $p foo',
+            '. "$PSScriptRoot/helper.ps1"',
+        ]
+        self.assertEqual(
+            [{"rg"}, {"rg"}, {"rg"}, {"rg"}, {f"{UNREAD_PROGRAM}$p"}, set()], skill_scripts.powershell_commands(sources)
+        )
+        for source in (
+            'import subprocess\nsubprocess.run("cd x && rg foo", shell=True)\n',
+            'import os\nos.system("git log | rg foo")\n',
+            'import subprocess\nsubprocess.run(["bash", "-c", "rg foo"])\n',
+        ):
+            with self.subTest(source=source):
+                self.assertIn("rg", CommandReader(ast.parse(source)).commands(set()))
+        # Without a shell, the command's first word is its program, and the rest are its arguments.
+        self.assertEqual(
+            {"git"},
+            CommandReader(ast.parse('import subprocess\nsubprocess.run("git log rg", shell=False)\n')).commands(set()),
+        )
+
     def test_shell_command_extraction_ignores_keywords_patterns_and_functions(self) -> None:
         script = (
             "set -euo pipefail\n"
@@ -1147,8 +1196,9 @@ class SkillScriptsFixtures(GitTestCase):
                 "deploy-meta/beta.json": json.dumps({"tools": ["gh"]}),
                 "skills/beta/SKILL.md": "# beta\n\n```powershell\njq . data.json\n```\n\n"
                 "```pwsh\ncopilot --version\n```\n",
-                # A function the script defines, a cmdlet or alias PowerShell ships, a path, and a command held in a
-                # variable are not programs it names; a cmdlet of a module PowerShell does not ship is one.
+                # A function the script defines, a cmdlet or alias PowerShell ships, and a path are not programs it
+                # names; a cmdlet of a module PowerShell does not ship is one, and a command held in a variable is one
+                # the policy cannot read.
                 "skills/beta/scripts/run.ps1": "function Invoke-Helper { param($Value) $Value }\n"
                 "Get-ChildItem | ForEach-Object { $_.Name }\n"
                 "git status\n"
@@ -1165,6 +1215,8 @@ class SkillScriptsFixtures(GitTestCase):
             doc = '"Commands skills may run" in docs/adding-a-skill.md'
             self.assertEqual(
                 [
+                    "skill beta runs a program it names by `$env:TOOL`, which the policy cannot read; name the "
+                    f"program with a literal; see {doc}",
                     "skill beta runs copilot without declaring it in tools",
                     "skill beta runs dotnet-format without declaring it in tools",
                     f"skill beta runs Invoke-ScriptAnalyzer, which a standard install lacks; see {doc}",
