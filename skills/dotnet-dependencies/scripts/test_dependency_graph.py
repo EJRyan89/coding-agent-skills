@@ -11,7 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
-from collections.abc import Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from unittest import mock
 
@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import dependency_graph
+import msbuild_reader
 from dependency_graph import Services, main
 from dotnet_solution import same_path
 from sdk_why import Completed
@@ -1976,7 +1977,7 @@ class UnreadableSolutionTests(Fixture):
     def test_a_solution_the_system_refuses_to_read_is_reported_unreadable_and_the_run_goes_on(self) -> None:
         root = self.mixed_solution()
         refused = PermissionError(13, "Permission denied", str(root))
-        with mock.patch.object(dependency_graph, "read_listed_projects", side_effect=refused):
+        with mock.patch.object(Path, "open", side_effect=refused):
             code, rows = self.run_main("why", "Lantern.Json", "--root", str(root))
         self.assertEqual(1, code)
         self.assertEqual([["Harbor.sln", "Permission denied"]], self.lines(rows, "UNREADABLE"))
@@ -2016,6 +2017,163 @@ class FailedSdkHeadingTests(Fixture):
             ],
             self.lines(rows, "PATH"),
         )
+
+
+# A project outside the examined tree whose package only reading it would find.
+OUTSIDE_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+  <ItemGroup><PackageReference Include="Outside.Pkg" Version="1.0.0" /></ItemGroup>
+</Project>
+"""
+# Paths in the forms the reader refuses whatever the tree, as a project file writes them: a network share, under a
+# host that never resolves, with either separator, and a device.
+NETWORK_REFERENCE = "\\\\example.invalid\\share\\Remote\\Remote.csproj"
+NETWORK_SLASHES = "//example.invalid/share/Other/Other.csproj"
+DEVICE_REFERENCE = "\\\\?\\C:\\Device\\Device.csproj"
+SHARE_REASON = "the path names a network share, which the reader does not open, so no host is contacted"
+DEVICE_REASON = "the path names a device, which the reader does not open"
+# The Path methods that reach the file system, which no refused path may meet.
+FILE_SYSTEM_METHODS = ("stat", "exists", "is_file", "is_dir", "open", "resolve", "iterdir", "read_bytes", "read_text")
+# A checkout marker no folder above the temporary directory holds, so a stray one there cannot widen the tree.
+TEST_MARKER = ".dotnet-dependencies-test-checkout"
+
+
+def referencing(*paths: str) -> str:
+    items = "".join(f'<ProjectReference Include="{path}" />' for path in paths)
+    return LIB_PROJECT.replace("</Project>", f"<ItemGroup>{items}</ItemGroup></Project>")
+
+
+def recording(method: Callable[..., object], touched: list[str]) -> Callable[..., object]:
+    """`method`, a Path method, recording in `touched` each path it is called on."""
+
+    def spy(path: Path, *args: object, **kwargs: object) -> object:
+        touched.append(str(path).replace("\\", "/"))
+        return method(path, *args, **kwargs)
+
+    return spy
+
+
+def refused_reached(touched: Iterable[str]) -> list[str]:
+    """The touched paths that are refused ones: outside the fixture's tree, or a share or a device."""
+    return [path for path in touched if "/outside/" in path or "example.invalid" in path or path.startswith("//")]
+
+
+class PathBoundTests(Fixture):
+    """Every path a file names stays inside the examined tree, and every read is of a regular file within the bound."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        marker = mock.patch.object(msbuild_reader, "CHECKOUT_MARKER", TEST_MARKER)
+        marker.start()
+        self.addCleanup(marker.stop)
+
+    def touching(self, *arguments: str) -> tuple[int, list[list[str]], list[str]]:
+        """Run the script, recording every path a Path method reached the file system with."""
+        touched: list[str] = []
+        with contextlib.ExitStack() as stack:
+            for name in FILE_SYSTEM_METHODS:
+                stack.enter_context(mock.patch.object(Path, name, recording(getattr(Path, name), touched)))
+            code, rows = self.run_main(*arguments)
+        return code, rows, touched
+
+    def test_a_reference_outside_the_tree_or_to_a_share_or_device_is_reported_and_never_reached(self) -> None:
+        self.write("outside/Outside.csproj", OUTSIDE_PROJECT)
+        self.write("repo/Lib/Lib.csproj", LIB_PROJECT)
+        refused = ("..\\..\\outside\\Outside.csproj", NETWORK_REFERENCE, NETWORK_SLASHES, DEVICE_REFERENCE)
+        self.write("repo/App/App.csproj", referencing("..\\Lib\\Lib.csproj", *refused))
+        code, rows, touched = self.touching("why", "Lib.Pkg", "Outside.Pkg", "--root", str(self.root / "repo"))
+        self.assertEqual(1, code)
+        outside = (self.root / "outside" / "Outside.csproj").as_posix()
+        tree = (self.root / "repo").as_posix()
+        self.assertEqual(
+            [
+                [outside, f"the path is outside the examined tree {tree}, which the reader does not leave"],
+                ["//example.invalid/share/Remote/Remote.csproj", SHARE_REASON],
+                ["//example.invalid/share/Other/Other.csproj", SHARE_REASON],
+                ["//?/C:/Device/Device.csproj", DEVICE_REASON],
+            ],
+            self.lines(rows, "UNREADABLE"),
+        )
+        # Each refused project keeps its name, unread, and the accepted reference answers.
+        self.assertIn([outside, "legacy", "direct", "referenced"], self.lines(rows, "PROJECT"))
+        self.assertEqual(6, len(self.lines(rows, "PROJECT")))
+        chain = ["App/App.csproj", "-", "Lib.Pkg", "graph", "Lib (project) > Lib.Pkg (v1.0.0)"]
+        self.assertIn(chain, self.lines(rows, "PATH"))
+        self.assertEqual([["Outside.Pkg"]], self.lines(rows, "MISSING"))
+        self.assertEqual([], refused_reached(touched))
+
+    def test_a_solution_entry_outside_the_tree_is_reported_and_never_reached(self) -> None:
+        self.write("outside/Outside.csproj", OUTSIDE_PROJECT)
+        self.write("repo/Lib/Lib.csproj", LIB_PROJECT)
+        self.write("repo/Repo.sln", solution("Lib\\Lib.csproj", "..\\outside\\Outside.csproj", NETWORK_REFERENCE))
+        code, rows, touched = self.touching("why", "Outside.Pkg", "--root", str(self.root / "repo"))
+        self.assertEqual(1, code)
+        self.assertEqual(
+            [(self.root / "outside" / "Outside.csproj").as_posix(), "//example.invalid/share/Remote/Remote.csproj"],
+            [file for file, _ in self.lines(rows, "UNREADABLE")],
+        )
+        self.assertEqual([["Lib/Lib.csproj", "sdk", "direct", "listed"]], self.lines(rows, "PROJECT"))
+        self.assertEqual([], refused_reached(touched))
+
+    def test_the_examined_tree_is_the_checkout_holding_the_solution_else_the_solutions_directory(self) -> None:
+        # A solution under src/ naming a project under tests/: inside the checkout, outside the solution's directory.
+        self.write("outside/Outside.csproj", OUTSIDE_PROJECT)
+        self.write("repo/tests/Lib/Lib.csproj", LIB_PROJECT)
+        self.write("repo/src/Repo.sln", solution("..\\tests\\Lib\\Lib.csproj", "..\\..\\outside\\Outside.csproj"))
+        lib = (self.root / "repo" / "tests" / "Lib" / "Lib.csproj").as_posix()
+        outside = (self.root / "outside" / "Outside.csproj").as_posix()
+        _, rows = self.run_main("conflicts", "--root", str(self.root / "repo" / "src"))
+        self.assertEqual([lib, outside], [file for file, _ in self.lines(rows, "UNREADABLE")])
+        self.assertEqual([], self.lines(rows, "PROJECT"))
+        tree = (self.root / "repo").as_posix()
+        reason = f"the path is outside the examined tree {tree}, which the reader does not leave"
+        marker = self.root / "repo" / TEST_MARKER
+        for kind in ("folder", "file"):
+            with self.subTest(marker=kind):
+                marker.mkdir() if kind == "folder" else marker.write_text("gitdir: elsewhere\n", encoding="utf-8")
+                _, rows = self.run_main("conflicts", "--root", str(self.root / "repo" / "src"))
+                self.assertEqual([[outside, reason]], self.lines(rows, "UNREADABLE"))
+                self.assertEqual([[lib, "sdk", "direct", "listed"]], self.lines(rows, "PROJECT"))
+                marker.rmdir() if kind == "folder" else marker.unlink()
+
+    def test_the_search_above_a_project_still_finds_a_directory_build_props_above_the_tree(self) -> None:
+        # The reader leaves the tree only to search, by name, above a project it accepted, as MSBuild does: the props
+        # file may set the framework before App's Choose, so the Remove of Lib is not applied.
+        (self.root / "repo" / TEST_MARKER).mkdir(parents=True)
+        self.write("repo/App/App.csproj", DEFAULT_CHOOSE_PROJECT)
+        self.write("repo/Lib/Lib.csproj", LIB_PROJECT)
+        self.write("Directory.Build.props", FRAMEWORK_BUILD_PROPS)
+        _, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root / "repo"))
+        chain = ["App/App.csproj", "-", "Lib.Pkg", "graph", "Lib (project) > Lib.Pkg (v1.0.0)"]
+        self.assertIn(chain, self.lines(rows, "PATH"))
+
+    def test_a_file_above_the_bound_or_not_a_regular_file_is_reported_and_the_run_goes_on(self) -> None:
+        limit = 2048
+        self.write("repo/Lib/Lib.csproj", LIB_PROJECT)
+        self.write("repo/Big/Big.csproj", LIB_PROJECT.replace("</Project>", f"<!--{'x' * limit}--></Project>"))
+        (self.root / "repo" / "Folder" / "Folder.csproj").mkdir(parents=True)
+        references = ("..\\Lib\\Lib.csproj", "..\\Big\\Big.csproj", "..\\Folder\\Folder.csproj")
+        self.write("repo/App/App.csproj", referencing(*references))
+        devices: list[str] = []
+        # A pipe and a device are made where the platform makes them; a device elsewhere is refused by its form.
+        if hasattr(os, "mkfifo"):
+            os.mkfifo(self.root / "repo" / "Pipe.csproj")
+            devices.append("Pipe.csproj")
+        if Path("/dev/zero").exists():
+            (self.root / "repo" / "Zero.csproj").symlink_to("/dev/zero")
+            devices.append("Zero.csproj")
+        self.write("repo/Repo.sln", solution("App\\App.csproj", *devices))
+        with mock.patch.object(msbuild_reader, "READ_LIMIT_BYTES", limit):
+            code, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root / "repo"))
+        self.assertEqual(1, code)
+        bound = f"the file is larger than the reader's bound of {limit} bytes, so it is not read"
+        regular = "not a regular file, so the reader does not open it"
+        self.assertEqual(
+            sorted([["Big/Big.csproj", bound], *[[path, regular] for path in ["Folder/Folder.csproj", *devices]]]),
+            sorted(self.lines(rows, "UNREADABLE")),
+        )
+        chain = ["App/App.csproj", "-", "Lib.Pkg", "graph", "Lib (project) > Lib.Pkg (v1.0.0)"]
+        self.assertIn(chain, self.lines(rows, "PATH"))
 
 
 if __name__ == "__main__":

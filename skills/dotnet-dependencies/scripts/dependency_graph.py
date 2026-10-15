@@ -16,8 +16,9 @@ forward slashes:
     PROJECT       <project> <sdk|legacy> <assets|nuspec|direct> <listed|referenced>
                   where package-to-package edges came from: obj/project.assets.json, the packages' nuspecs in the
                   packages folder or the NuGet cache, or neither, leaving the direct references alone
-    UNREADABLE    <file> <reason>                            a file the readers refused, a condition they
-                  cannot evaluate, or an item inside a Target; its facts are missing
+    UNREADABLE    <file> <reason>                            a file the readers refused, a path a file names
+                  outside the examined tree, a condition they cannot evaluate, or an item inside a Target; its
+                  facts are missing
     SDK_FAILED    <project> <name> <reason>                  `dotnet nuget why` failed; the graph walk answered
     PATH          <project> <frameworks> <name> <sdk|graph> <hop> > <hop> ...    one chain, each hop
                   `name (vversion)`, `name (project)`, `name (vversion, assembly)`, `name (assembly)` for an
@@ -58,6 +59,8 @@ versions, and the walk's version of a package after `graph` where a referenced p
 apart, a split `conflicts` reports; the walk adds every chain the SDK cannot see, such as one ending in an assembly
 or one through a packages.config project; for every other project it answers alone. So whether dotnet is installed
 changes which source a route names and which version leads where the two differ, never which routes are printed.
+A path a solution or project names is read only inside the examined tree, the checkout holding the solution or
+directory searched, and every read only of a regular file within READ_LIMIT_BYTES (msbuild_reader's docstring).
 The script changes nothing on disk but the graph file, runs no restore or build, and exits 1 when it printed a
 CONFLICT, REDIRECT_STALE, or UNREADABLE line, else 0; a FAILED <reason> line and exit 1 when the root cannot be
 resolved, and a usage error exits 2.
@@ -79,7 +82,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from console import run_main
-from dotnet_solution import is_solution, read_listed_projects, same_path
+from dotnet_solution import is_solution, same_path
 from flat_text import flat_text
 from msbuild_reader import (
     ASSETS_FILE,
@@ -98,9 +101,12 @@ from msbuild_reader import (
     Unreadable,
     assemblies_for,
     central_versions_file,
+    examined_tree,
+    lexical_absolute,
     matching_framework,
     package_assemblies,
     packages_for,
+    project_path,
     project_refs_for,
     read_assets,
     read_central_versions,
@@ -108,10 +114,11 @@ from msbuild_reader import (
     read_packages_config,
     read_project,
     read_redirects,
+    read_solution,
+    refusal,
 )
 from sdk_why import DEFAULT_TIMEOUT_SECONDS, SdkPath, Services, run_why
 from skill_roots import skills_directory_holding
-from xml_reader import XmlRefused
 
 PROJECT_SUFFIX = ".csproj"
 IGNORED_DIRECTORIES = frozenset({".git", "bin", "obj", "node_modules", "packages", ".vs"})
@@ -167,15 +174,19 @@ class Project:
 class Graph:
     root: Path
     base: Path
+    tree: Path  # the examined tree, outside which no path a file names is read (`refusal`)
     projects: dict[str, Project] = field(default_factory=dict)  # same_path -> project
     unreadable: list[tuple[Path, str]] = field(default_factory=list)
     central: dict[str, list[PackageItem]] = field(default_factory=dict)  # same_path of a props file -> its items
 
     def relative(self, path: Path) -> str:
+        """`path` relative to the solution's directory, made absolute without reaching the file system, so naming a
+        refused path never opens it."""
+        absolute = lexical_absolute(path)
         try:
-            return path.resolve().relative_to(self.base.resolve()).as_posix()
+            return absolute.relative_to(self.base).as_posix()
         except ValueError:
-            return path.resolve().as_posix()
+            return absolute.as_posix()
 
     def label(self, project: Project) -> str:
         return self.relative(project.file.path)
@@ -248,25 +259,26 @@ def resolve_root(path: Path, graph_unreadable: list[tuple[Path, str]]) -> tuple[
     """The solution or directory the graph is built from, the directory paths are shown relative to, and the
     project files to read: a solution's listed .csproj files, the one solution in a directory, or the .csproj files
     under a directory holding none. A solution that cannot be read is reported unreadable and lists no project, so
-    the answer says why it is empty."""
+    the answer says why it is empty, and an entry `refusal` refuses is reported before anything looks it up."""
     path = path.resolve()
     if path.is_file():
         if not is_solution(path):
             raise Failed(f"{path} is not a .sln or .slnx solution")
         projects: list[Path] = []
         try:
-            entries = read_listed_projects(path)
-        except XmlRefused as error:
-            graph_unreadable.append((path, str(error)))
+            entries = read_solution(path)
+        except Unreadable as error:
+            graph_unreadable.append((error.file, error.reason))
             entries = []
-        except OSError as error:
-            graph_unreadable.append((path, error.strerror or str(error)))
-            entries = []
+        tree = examined_tree(path.parent)
         for listed in entries:
             if not listed.casefold().endswith(PROJECT_SUFFIX):
                 continue
-            candidate = (path.parent / listed.replace("\\", "/")).resolve()
-            if candidate.is_file():
+            candidate = project_path(path.parent, listed)
+            refused = refusal(candidate, tree)
+            if refused is not None:
+                graph_unreadable.append((candidate, refused))
+            elif candidate.exists():
                 projects.append(candidate)
             else:
                 graph_unreadable.append((candidate, "listed by the solution but not found"))
@@ -287,13 +299,17 @@ def resolve_root(path: Path, graph_unreadable: list[tuple[Path, str]]) -> tuple[
 
 def load_projects(graph: Graph, listed: Iterable[Path]) -> None:
     """Read each listed project and, through ProjectReference, every project they reach under any framework, so a
-    project one framework removes is still read for the others."""
+    project one framework removes is still read for the others. A referenced project `refusal` refuses is reported
+    and never read, so no search for the files above a project starts from its folder."""
     queue = deque((path, True) for path in listed)
     while queue:
         path, is_listed = queue.popleft()
         if same_path(path) in graph.projects:
             continue
         try:
+            refused = refusal(path, graph.tree)
+            if refused is not None:
+                raise Unreadable(path, refused)
             file = read_project(path, graph.central_versions)
         except Unreadable as error:
             graph.refuse(error)
@@ -518,7 +534,7 @@ def build_graph(root: Path, services: Services) -> Graph:
     """Read the solution's projects and, for each one whose file could be read, its packages and redirects."""
     unreadable: list[tuple[Path, str]] = []
     resolved, base, listed = resolve_root(root, unreadable)
-    graph = Graph(resolved, base, unreadable=unreadable)
+    graph = Graph(resolved, base, examined_tree(base), unreadable=unreadable)
     load_projects(graph, listed)
     for project in graph.projects.values():
         if project.readable:

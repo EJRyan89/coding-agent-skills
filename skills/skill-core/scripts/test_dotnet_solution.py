@@ -12,7 +12,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import dotnet_solution
 from dotnet_solution import (
+    decode_text,
     is_solution,
+    listed_projects,
     read_listed_projects,
     read_text,
     same_path,
@@ -75,6 +77,20 @@ class SolutionReaderTests(unittest.TestCase):
         solution.write_bytes(b"\xff\xfe" + SLN.encode("utf-16-le"))
         self.assertEqual(3, len(read_listed_projects(solution)))
         self.assertTrue(read_text(solution).startswith("Microsoft Visual Studio"))
+
+    def test_text_a_caller_read_itself_is_decoded_and_listed_as_the_file_is(self) -> None:
+        self.assertEqual(SLN, decode_text(b"\xff\xfe" + SLN.encode("utf-16-le")))
+        self.assertEqual(SLN, decode_text(SLN.encode("utf-8-sig")))
+        self.assertEqual(SLN, decode_text(SLN.encode("utf-8")))
+        solution = self.root / "Harbor.sln"
+        solution.write_bytes(SLN.encode("utf-8"))
+        self.assertEqual(read_listed_projects(solution), listed_projects(SLN, solution))
+        self.assertEqual(
+            ["src\\Harbor.Web\\Harbor.Web.csproj", "src/Harbor.Core/Harbor.Core.csproj"],
+            listed_projects(SLNX, self.root / "Harbor.SLNX"),
+        )
+        with self.assertRaises(XmlRefused):
+            listed_projects("<!DOCTYPE x>" + SLNX, self.root / "Harbor.slnx")
 
     def test_slnx_lists_each_project_element_path_in_any_folder(self) -> None:
         solution = self.root / "Harbor.slnx"

@@ -21,7 +21,12 @@ SOLUTION_SUFFIXES = (".sln", ".slnx")
 
 def read_text(path: Path) -> str:
     """Read an MSBuild or solution file whatever its encoding; only ASCII syntax matters to the readers."""
-    data = path.read_bytes()
+    return decode_text(path.read_bytes())
+
+
+def decode_text(data: bytes) -> str:
+    """The text of an MSBuild or solution file's bytes, UTF-16 by its byte order mark, else UTF-8, so a caller that
+    reads the bytes itself, such as within a bound, decodes them as `read_text` does."""
     if data.startswith((b"\xff\xfe", b"\xfe\xff")):
         return data.decode("utf-16", errors="replace")
     return data.decode("utf-8-sig", errors="replace")
@@ -40,7 +45,12 @@ def read_listed_projects(solution: Path) -> list[str]:
     """The project paths a solution lists, as written: `Project(...) = "name", "path"` lines in a .sln, and the Path
     of each Project element in a .slnx. A .slnx that is not well-formed XML, or declares a DOCTYPE or an entity,
     raises `XmlRefused`, so a caller can tell an unreadable solution from one that lists no project."""
-    text = read_text(solution)
+    return listed_projects(read_text(solution), solution)
+
+
+def listed_projects(text: str, solution: Path) -> list[str]:
+    """The project paths the text of `solution` lists, as written, read as `read_listed_projects` reads the file, for
+    a caller that read the text itself."""
     if solution.name.casefold().endswith(".slnx"):
         document = read_xml(text)
         return [path for element in document.iter("Project") if (path := element.get("Path"))]
