@@ -27,6 +27,9 @@ It writes no scripts: validation requires a regression suite for any script unde
 a placeholder that lands untested. Given --skill-dep, it records the skill, with skill-core, in skill_deps and prints
 one SCRIPT_HEADER line for each line a script of the skill starts with: the line that puts skill-core on sys.path,
 then a sibling_scripts call for each other dependency.
+
+--root DIR scaffolds into another checkout of this repository, as the regression suite does. It refuses, as a usage
+error, a directory that does not hold source.json and .claude/skills, or that lies in a skills directory.
 """
 
 from __future__ import annotations
@@ -46,6 +49,7 @@ from deployer import runtime_support
 from deployer import source as deploy_source
 from deployer.tools import SKILL_TOOLS
 from tools import skill_reference, skill_shims
+from tools.checkout import ROOT_HELP, checkout_root
 
 # The analyze-skill-cost inventory owns the shell-grant rules. A deployed skill cannot import from this
 # repository, so this imports the skill's script rather than keeping a second copy here.
@@ -297,7 +301,7 @@ def main(argv: list[str] | None = None) -> int:
         help="comma-separated allowed-tools entries (default: Bash and PowerShell for scripts/<name with "
         "underscores>.py, and Read; none for a repository skill)",
     )
-    parser.add_argument("--root", type=Path, default=REPOSITORY_ROOT, help=argparse.SUPPRESS)
+    parser.add_argument("--root", type=checkout_root, default=REPOSITORY_ROOT, metavar="DIR", help=ROOT_HELP)
     arguments = parser.parse_args(argv)
     allowed = None if arguments.allowed_tools is None else arguments.allowed_tools.split(",")
     if arguments.repository:

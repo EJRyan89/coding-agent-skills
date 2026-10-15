@@ -22,6 +22,7 @@ from skill_grants import (
     repository_code_declaration_problems,
     repository_skill_files,
     repository_skill_problems,
+    root_option_problems,
     skill_grant_problems,
 )
 from validation_support import write_fixture_tree
@@ -105,6 +106,54 @@ class SkillGrantsFixtures(GitTestCase):
                 ],
                 skill_grant_problems(root, repository_skill_files(root), REPOSITORY_TOOL_COMMAND),
             )
+
+    def test_root_option_policy_refuses_a_star_over_an_unbounded_root(self) -> None:
+        parser = 'import argparse\nparser = argparse.ArgumentParser()\nparser.add_argument("--write")\n'
+        tools = {
+            # Each bounds --root through the checkout check, imported by name or reached through its module.
+            "named": "from tools.checkout import checkout_root\n"
+            + parser
+            + ('parser.add_argument("--root", type=checkout_root)\n'),
+            "module": "from tools import checkout\n"
+            + parser
+            + ('parser.add_argument("--root", type=checkout.checkout_root)\n'),
+            # Each lets --root name any directory.
+            "path": "from pathlib import Path\n" + parser + 'parser.add_argument("--root", type=Path)\n',
+            "untyped": parser + 'parser.add_argument("--root")\n',
+            "lookalike": "from tools.other import checkout_root\n"
+            + parser
+            + ('parser.add_argument("--root", type=checkout_root)\n'),
+            "plain": parser,
+        }
+        skills = {f"star-{tool}": f"python tools/{tool}.py *" for tool in tools}
+        # A grant with no * names one command, which cannot carry --root.
+        skills["exact-path"] = "python tools/path.py --write"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    **{f"tools/{tool}.py": text for tool, text in tools.items()},
+                    **{
+                        f".claude/skills/{skill}/SKILL.md": (
+                            f"---\nname: {skill}\nallowed-tools: "
+                            f"{json.dumps([f'Bash({command})', f'PowerShell({command})'])}\n---\n"
+                        )
+                        for skill, command in skills.items()
+                    },
+                },
+            )
+            found = root_option_problems(root, repository_skill_files(root))
+        self.assertEqual(
+            [
+                f".claude/skills/star-{tool}/SKILL.md grants {shell}(python tools/{tool}.py *), whose * covers "
+                f"tools/{tool}.py --root, which it does not parse with tools.checkout.checkout_root; bound the option "
+                f"or grant the forms the skill runs; see {GRANTS_DOC}"
+                for tool in ("lookalike", "path", "untyped")
+                for shell in ("Bash", "PowerShell")
+            ],
+            found,
+        )
 
     def test_description_policy_holds_repository_skills(self) -> None:
         descriptions = {

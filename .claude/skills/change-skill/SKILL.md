@@ -4,7 +4,7 @@ description: >-
   Procedure for adding or changing a skill in this repository, shipped under skills/ or repository-only under
   .claude/skills: its SKILL.md, scripts, metadata, or documentation. Use it when asked to add, create, change, fix,
   or extend a skill here. Not for deployer-only, repository-tool, or documentation-only changes.
-allowed-tools: ["Bash(python tools/new_skill.py *)", "PowerShell(python tools/new_skill.py *)", "Bash(python tools/skill_shims.py *)", "PowerShell(python tools/skill_shims.py *)", "Bash(python tools/skill_reference.py *)", "PowerShell(python tools/skill_reference.py *)", "Bash(python -B tests/run_validation.py *)", "PowerShell(python -B tests/run_validation.py *)"]
+allowed-tools: ["Bash(python tools/new_skill.py *)", "PowerShell(python tools/new_skill.py *)", "Bash(python tools/skill_shims.py --write)", "PowerShell(python tools/skill_shims.py --write)", "Bash(python tools/skill_reference.py --write)", "PowerShell(python tools/skill_reference.py --write)", "Bash(python tools/skill_reference.py)", "PowerShell(python tools/skill_reference.py)", "Bash(python -B tests/run_validation.py *)", "PowerShell(python -B tests/run_validation.py *)"]
 ---
 
 # Adding or changing a skill
@@ -54,7 +54,7 @@ Keep `SKILL.md` to orchestration: the commands to run, what their output means, 
 
 ## 4. Document in the same change
 
-After any frontmatter or metadata change to a shipped skill, regenerate the reference; run it again without `--write` to list anything still missing:
+After any frontmatter or metadata change to a shipped skill, regenerate the reference, then run `python tools/skill_reference.py` without `--write` to list anything still missing:
 
 ```bash
 python tools/skill_reference.py --write

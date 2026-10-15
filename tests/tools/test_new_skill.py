@@ -42,7 +42,7 @@ class FixtureRepositoryTestCase(GitTestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="new-skill-test.")
         self.root = Path(self._temporary.name).resolve() / "Repo With Spaces"
-        for directory in ("docs", "skills/alpha", "skills/beta", "deploy-meta"):
+        for directory in ("docs", "skills/alpha", "skills/beta", "deploy-meta", ".claude/skills"):
             (self.root / directory).mkdir(parents=True)
         (self.root / "source.json").write_text(
             json.dumps({"id": "test/skills", "bundles": {"suite": {"members": ["beta"]}}}), encoding="utf-8"
@@ -267,6 +267,19 @@ class NewSkillTestCase(FixtureRepositoryTestCase):
         code, stdout, stderr = run("widget-report", "--description", DESCRIPTION)
         self.assertEqual((2, ""), (code, stdout))
         self.assertIn("FAILED 'widget-report' is already a skill", stderr)
+
+    def test_a_root_outside_a_checkout_is_refused_and_nothing_is_scaffolded(self) -> None:
+        # A source.json alone does not make a checkout: it also holds the repository skills under .claude/skills.
+        (self.root / ".claude" / "skills").rmdir()
+        before = self.snapshot()
+        for arguments in (["--repository"], []):
+            with self.subTest(arguments=arguments):
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as raised:
+                    new_skill.main(["widget-check", "--description", DESCRIPTION, "--root", str(self.root), *arguments])
+                self.assertEqual(2, raised.exception.code)
+                self.assertIn(f"argument --root: {self.root} is not a checkout of this repository", stderr.getvalue())
+                self.assertEqual(before, self.snapshot())
 
 
 class SkillDependencyTestCase(FixtureRepositoryTestCase):
