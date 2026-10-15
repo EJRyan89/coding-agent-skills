@@ -37,6 +37,8 @@ HIDDEN_REASON = "A hidden dependency no runtime starts."
 NO_ADAPTER = "the deployer gave it no runtime adapter, so deploy.py verify expects no runtime to list it"
 # What a RAN line adds for a Python script that exits 0: the recorder sees a Python script end only from 3.12.
 PYTHON_EXIT = " exit=0" if sys.version_info >= (3, 12) else ""
+# The platform's Python command, which the fixture renders and Copilot is granted, written here as a literal.
+PYTHON = "python" if sys.platform == "win32" else "python3"
 # A line Codex 0.160 wrote to stderr when its execution policy refused the canary's first command.
 CODEX_REJECTION = (
     "2026-10-03T22:35:23.161504Z ERROR codex_core::tools::router: error=exec_command failed: CreateProcess { "
@@ -255,6 +257,15 @@ class DeploymentTests(RuntimeCanaryTestCase):
         adapter = (self.home / ".agents" / "skills" / FIXTURE / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn(f"`${{CLAUDE_SKILL_DIR}}` stands for `{self.skill_dir()}`", adapter)
         self.assertTrue((self.home / ".deploy-canary-home").is_file())
+        # The probe is started by the platform's Python command, in its grants and its fence alike.
+        skill = (self.home / ".claude" / "skills" / FIXTURE / "SKILL.md").read_text(encoding="utf-8")
+        self.assertNotIn("{{", skill)
+        for line in (
+            f'allowed-tools: ["Bash({PYTHON} -B \\"${{CLAUDE_SKILL_DIR}}/scripts/*)", '
+            f'"PowerShell({PYTHON} -B \\"${{CLAUDE_SKILL_DIR}}/scripts/*)"]',
+            f'{PYTHON} -B "${{CLAUDE_SKILL_DIR}}/scripts/canary_probe.py"',
+        ):
+            self.assertIn(line, skill.splitlines())
 
     def test_the_repository_and_the_fixture_deploy_side_by_side(self) -> None:
         for source in (REPOSITORY_ROOT, runtime_canary.FIXTURE_SOURCE):
@@ -763,7 +774,7 @@ class RunTests(RuntimeCanaryTestCase):
                 "--disable-builtin-mcps",
                 "--stream=off",
                 "--output-format=json",
-                "--allow-tool=shell(python:*)",
+                f"--allow-tool=shell({PYTHON}:*)",
                 "--allow-tool=shell(bash:*)",
                 "--deny-tool=write",
                 "--deny-tool=url",

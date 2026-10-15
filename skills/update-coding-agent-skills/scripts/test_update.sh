@@ -8,13 +8,18 @@ trap 'rm -rf -- "$FIXTURE"' EXIT
 
 # Isolate git from the shell that started the suite, as skill-core's git_test_base.py does for the Python suites: a
 # home and global configuration of its own with the fixture identity, no hooks, and git's automatic maintenance off,
-# no system configuration or attributes, no prompt or editor, and none of the shell's other GIT_* variables.
-while IFS= read -r name; do
-  case "$name" in
-    GIT_EXEC_PATH | GIT_BASH) ;;
-    GIT_*) unset "$name" ;;
-  esac
-done < <(compgen -e)
+# no system configuration or attributes, no prompt or editor, and none of the shell's other GIT_* variables. A name is
+# matched in any case, as update.sh unsets it, because Windows reads a name so: git there takes git_dir as GIT_DIR.
+unset_git_variables() {
+  local name
+  while IFS= read -r name; do
+    case "${name^^}" in
+      GIT_EXEC_PATH | GIT_BASH) ;;
+      GIT_*) unset "$name" ;;
+    esac
+  done < <(compgen -e)
+}
+unset_git_variables
 unset XDG_CONFIG_HOME
 export HOME="$FIXTURE/home"
 export GIT_CONFIG_GLOBAL="$HOME/.gitconfig" GIT_CONFIG_NOSYSTEM=1 GIT_ATTR_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 GIT_EDITOR=:
@@ -78,6 +83,16 @@ set -e
 grep -q "missing repository" <(tail -n +2 "$FIXTURE/stderr") || fail "failed setup command: git's stderr not shown: $(<"$FIXTURE/stderr")"
 (git_quiet -C "$SEED" status) 2>"$FIXTURE/stderr"
 [ ! -s "$FIXTURE/stderr" ] || fail "succeeding setup command: wrote to stderr: $(<"$FIXTURE/stderr")"
+
+# The suite's isolation unsets a git variable named in any case, and keeps the two that locate git itself.
+LEFT=$(
+  export git_common_dir="$MISSING/.git" Git_Work_Tree="$MISSING" GIT_OBJECT_DIRECTORY="$MISSING/objects"
+  export GIT_BASH=bash GIT_EXEC_PATH=exec-path
+  unset_git_variables
+  compgen -e | grep -i '^git_' || true
+  printf '%s %s\n' "${GIT_BASH-}" "${GIT_EXEC_PATH-}"
+)
+[ "$LEFT" = "GIT_BASH"$'\n'"GIT_EXEC_PATH"$'\n'"bash exec-path" ] || fail "isolation: git variables left: $LEFT"
 
 publish() {
   printf '%s\n' "$1" >>"$SEED/notes.txt"
