@@ -206,6 +206,10 @@ class DeploymentDeadlineTests(DeadlineCase):
         self.lock = self.home / ".claude" / "deployer" / ".deploy.lock.d"
         self.staging = self.home / ".claude" / "deployer" / "staging"
 
+    def staging_runs(self) -> list[str]:
+        """The runs staging holds; a home the deployment never staged in holds none."""
+        return sorted(path.name for path in self.staging.iterdir()) if self.staging.is_dir() else []
+
     def make_script_skill(self, content: str) -> None:
         directory = self.make_skill("alpha", content)
         self.write(directory / "run.sh", '#!/usr/bin/env bash\nprintf "%s\\n" "alpha"\n')
@@ -227,7 +231,7 @@ class DeploymentDeadlineTests(DeadlineCase):
         self.assertNotIn("Rendered and validated.", result.output)
         self.assertNotIn("Traceback", result.output)
         self.assertFalse(self.lock.exists())
-        self.assertEqual([], sorted(path.name for path in self.staging.iterdir()))
+        self.assertEqual([], self.staging_runs())
         self.assertFalse(self.manifest_file.exists())
         self.assertFalse((self.skills_dir / "alpha").exists())
         self.assert_ended(self.stubs.started())
@@ -261,7 +265,7 @@ class DeploymentDeadlineTests(DeadlineCase):
         self.assertFalse((self.skills_dir / "alpha.deploying-bak").exists())
         self.assertEqual(installed, self.manifest())
         self.assertFalse(self.lock.exists())
-        self.assertEqual([], sorted(path.name for path in self.staging.iterdir()))
+        self.assertEqual([], self.staging_runs())
         self.assert_ended(self.stubs.started())
 
     def test_git_that_hangs_reading_the_checkout_s_commit_refuses_before_any_change(self) -> None:
@@ -276,7 +280,7 @@ class DeploymentDeadlineTests(DeadlineCase):
         self.assertIn("Rendered and validated.", result.output, "git reads the commit once the checks have passed")
         self.assertNotIn("Traceback", result.output)
         self.assertFalse(self.lock.exists())
-        self.assertEqual([], sorted(path.name for path in self.staging.iterdir()))
+        self.assertEqual([], self.staging_runs())
         self.assertFalse(self.manifest_file.exists())
         self.assertFalse((self.skills_dir / "alpha").exists())
         self.assert_ended(self.stubs.started())

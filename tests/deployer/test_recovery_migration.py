@@ -907,7 +907,7 @@ class RecoveryBranchTests(RecoveryTestCase):
         self.write(self.skills_dir / "alpha" / "SKILL.md", "edited by hand\n")
         self.make_skill("alpha", "Updated alpha")
         with mock.patch("deployer.pipeline._finalize", side_effect=SystemExit(1)), self.assertRaises(SystemExit):
-            self.deploy("--all", "--force-item", "alpha")
+            self.deploy("--all", "--force-item", "alpha", changes_home=FAILS_PARTWAY)
         run_id = self.manifest()["last_run_id"]
         self.assertTrue((self.skills_dir / "alpha.deploying-bak").is_dir())
         result = self.deploy_ok("--all", probe=lambda pid: platform_support.ProcessStatus(False, None))
@@ -1146,7 +1146,7 @@ class UnkeptBackupTests(RecoveryTestCase):
             self.killed_while_journaling("preserve", "alpha"),
             self.assertRaises(SystemExit),
         ):
-            self.deploy("--all")
+            self.deploy("--all", changes_home=FAILS_PARTWAY)
         run_id = self.manifest()["last_run_id"]
         self.assertEqual(self.EDIT, (self.skills_dir / "alpha.deploying-bak" / "SKILL.md").read_text())
         result = self.deploy_ok("--all", probe=lambda pid: platform_support.ProcessStatus(False, None))
@@ -1219,7 +1219,7 @@ class TornJournalTests(RecoveryTestCase):
         self.deployed(("alpha", "Original alpha"))
         self.make_skill("alpha", "Updated alpha")
         with self.killed_while_journaling("install", "alpha"), self.assertRaises(SystemExit):
-            self.deploy("--all")
+            self.deploy("--all", changes_home=FAILS_PARTWAY)
         [run] = self.staging_runs()
         text = (run / "journal.jsonl").read_text(encoding="utf-8")
         torn = text.split("\n")[-1]
@@ -1244,7 +1244,7 @@ class TornJournalTests(RecoveryTestCase):
         self.deployed(("alpha", "Alpha content"))
         self.make_skill("alpha", "Updated alpha")
         with self.killed_while_journaling("backup", "alpha"), self.assertRaises(SystemExit):
-            self.deploy("--all")
+            self.deploy("--all", changes_home=FAILS_PARTWAY)
         [run] = self.staging_runs()
         self.assertIn("Alpha content", self.skill_text("alpha"))
         result = self.deploy_ok("--all", probe=lambda pid: platform_support.ProcessStatus(False, None))

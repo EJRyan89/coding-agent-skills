@@ -99,8 +99,24 @@ def git(directory: Path, *arguments: str) -> str:
 
 @dataclass
 class Result:
+    """A run's exit code and its output as the user saw it, with each stream apart for a test that tells them apart."""
+
     code: int
     output: str
+    stdout: str = ""
+    stderr: str = ""
+
+
+class _Tee(io.StringIO):
+    """One stream of a run, kept apart and copied into the output both streams share, in the order they wrote it."""
+
+    def __init__(self, shared: io.StringIO) -> None:
+        super().__init__()
+        self.shared = shared
+
+    def write(self, text: str) -> int:
+        self.shared.write(text)
+        return super().write(text)
 
 
 class DeployerTestCase(GitTestCase):
@@ -111,13 +127,9 @@ class DeployerTestCase(GitTestCase):
         self.home = self.root / "home"
         self.source = self.root / "source"
         self.repos = self.root / "repos"
-        for directory in (
-            self.home / ".claude" / "skills",
-            self.home / ".claude" / "deployer" / "config",
-            self.home / ".claude" / "deployer" / "staging",
-            self.source / "skills",
-            self.source / "deploy-meta",
-        ):
+        # The home starts as a fresh profile folder holds it, empty, so a refusal that makes a root the deployer
+        # manages is seen changing it.
+        for directory in (self.home, self.source / "skills", self.source / "deploy-meta"):
             directory.mkdir(parents=True, exist_ok=True)
 
     def tearDown(self) -> None:
@@ -214,6 +226,7 @@ class DeployerTestCase(GitTestCase):
         repos = repos_root or self.repos
         repos.mkdir(parents=True, exist_ok=True)
         path = self.config_file(source_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(f"_source_id={source_id}\nREPOS_ROOT={forward(repos)}\n{extra}".encode())
         return path
 
@@ -264,15 +277,40 @@ class DeployerTestCase(GitTestCase):
         home: Path | None = None,
         changes_home: str = "",
     ) -> Result:
-        """Run a deployer entry point under the same source and refusal guards, including usage and cancellation."""
+        """Run a deployer entry point under the same source and refusal guards, including usage and cancellation.
+
+        A run that raises, as a killed deployment does, is a failure: its source is compared, and its home unless
+        changes_home says why it changes it, before the exception reaches the test.
+        """
         source, home = source or self.source, home or self.home
         source_before, home_before = tree_state(source), tree_state(home)
-        captured = io.StringIO()
-        with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
-            code = command()
-        result = Result(code, captured.getvalue())
+        output = io.StringIO()
+        stdout, stderr = _Tee(output), _Tee(output)
+        try:
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                code = command()
+        except BaseException as raised:
+            failed = Result(1, f"{output.getvalue()}\nThe run raised {raised!r}.")
+            self.assert_run_unchanged(failed, source, source_before, home, home_before, changes_home)
+            raise
+        result = Result(code, output.getvalue(), stdout.getvalue(), stderr.getvalue())
         self.assert_run_unchanged(result, source, source_before, home, home_before, changes_home)
         return result
+
+    def run_entry_point(self, *arguments: str, environment: dict[str, str], changes_home: str = "") -> Result:
+        """Run deploy.py as a program, from a copy of this checkout, under the harness's source and refusal guards.
+
+        The copy is the source the program deploys and the tree compared; the checkout itself is never a fixture.
+        """
+        checkout = self.entry_point_source()
+        program = [sys.executable, "-B", str(checkout / "deploy.py"), *arguments]
+
+        def run() -> int:
+            completed = platform_support.run_tool(program, environment)
+            print(completed.output, end="")
+            return completed.returncode
+
+        return self.run_command(run, source=checkout, changes_home=changes_home)
 
     def run_cli(
         self,
@@ -303,6 +341,17 @@ class DeployerTestCase(GitTestCase):
                 destination / directory,
                 ignore=shutil.ignore_patterns("__pycache__", "*.py[cod]"),
             )
+        return destination
+
+    def entry_point_source(self) -> Path:
+        """Copy this repository's deployable source with deploy.py and the deployer beside it, a checkout to run."""
+        destination = self.repository_source()
+        shutil.copy2(REPOSITORY_ROOT / "deploy.py", destination / "deploy.py")
+        shutil.copytree(
+            REPOSITORY_ROOT / "deployer",
+            destination / "deployer",
+            ignore=shutil.ignore_patterns("__pycache__", "*.py[cod]"),
+        )
         return destination
 
     def snapshot_source(self, name: str) -> Path:
@@ -377,6 +426,7 @@ class DeployerTestCase(GitTestCase):
         return json.loads(self.manifest_file.read_text(encoding="utf-8"))
 
     def write_manifest(self, data: dict[str, Any]) -> None:
+        self.manifest_file.parent.mkdir(parents=True, exist_ok=True)
         self.manifest_file.write_text(json.dumps(data), encoding="utf-8")
 
     def rewrite_as_version_7(self, requested_bundles: list[str], source_id: str = SOURCE_ID) -> None:
