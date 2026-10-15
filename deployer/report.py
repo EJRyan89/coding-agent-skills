@@ -156,7 +156,7 @@ def members_recorded(owned: manifest.Ownership) -> bool:
     return owned.bundle_members_recorded and owned.requested_bundles <= owned.requested_bundle_members.keys()
 
 
-def requested_members(owned: manifest.Ownership) -> set[str]:
+def requested_members(owned: manifest.Ownership, src: source.Source) -> set[str]:
     """The skills the manifest's requested roots stand for: each skill requested on its own and each member of a
     requested bundle.
 
@@ -165,16 +165,15 @@ def requested_members(owned: manifest.Ownership) -> set[str]:
     requests stood for, and an earlier release's --migrate-from recorded no bundle request at all, relying on the
     installed members, so such an entry's requests also stand for each installed skill no other installed skill
     depends on, by an edge a deployment recorded rather than one the upgrade of a manifest that recorded none filled in
-    (`Ownership.installed_roots`). That is what the user chose, never a skill installed only as another's dependency
-    a deployment recorded, and it is read
-    from the installed skills rather than from the bundle this source gives the request's name, which may hold other
-    skills since the source regrouped them.
+    (`Ownership.installed_roots`, read against this source's bundles). That is what the user chose, never a skill
+    installed only as another's dependency a deployment recorded, and it is read from the installed skills rather than
+    from the bundle this source gives the request's name, which may hold other skills since the source regrouped them.
     """
     members = set(owned.requested_skills)
     for bundle in owned.requested_bundles:
         members |= owned.requested_bundle_members.get(bundle, set())
     if not members_recorded(owned):
-        members |= owned.installed_roots()
+        members |= owned.installed_roots(src.bundles)
     return members
 
 
@@ -188,7 +187,7 @@ def currently_chosen(src: source.Source, owned: manifest.Ownership, name: str, k
     deployed on its own, or through a bundle the source renamed, and then joined this bundle keeps being deployed by
     `--all`, which completes the bundle, instead of being removed as no longer selected.
     """
-    requested = requested_members(owned)
+    requested = requested_members(owned, src)
     if kind == "bundle":
         return name in owned.requested_bundles or any(member in requested for member in src.bundles[name])
     return name in requested

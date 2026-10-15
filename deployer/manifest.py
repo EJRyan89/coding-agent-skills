@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,29 @@ def _by_dependency_kind() -> dict[str, dict[str, list[str]]]:
     return {kind.key: {} for kind in DEPENDENCY_KINDS}
 
 
+def _independent(skills: Collection[str], edges: Mapping[str, list[str]]) -> set[str]:
+    """The skills no other skill depends on by these edges, less any edge on a cycle."""
+
+    def reaches(start: str, goal: str) -> bool:
+        seen, pending = {start}, [start]
+        while pending:
+            for dependency in edges.get(pending.pop(), []):
+                if dependency == goal:
+                    return True
+                if dependency not in seen:
+                    seen.add(dependency)
+                    pending.append(dependency)
+        return False
+
+    depended = {
+        dependency
+        for name, dependencies in edges.items()
+        for dependency in dependencies
+        if dependency != name and not reaches(dependency, name)
+    }
+    return set(skills) - depended
+
+
 @dataclass
 class Ownership:
     hashes: dict[str, dict[str, str]] = field(default_factory=_by_kind)  # kind key -> item name -> hash
@@ -66,8 +90,9 @@ class Ownership:
     def skills(self) -> dict[str, str]:
         return self.of(SKILL)
 
-    def installed_roots(self) -> set[str]:
-        """The installed skills that no other installed skill was deployed depending on.
+    def installed_roots(self, bundles: Mapping[str, Collection[str]]) -> set[str]:
+        """The installed skills that no other installed skill was deployed depending on, read against the source's
+        `bundles`.
 
         A deployment refuses a dependency cycle, so the skill dependencies it records never form one. An edge on a
         cycle is one `_upgrade_dependencies` filled in for an entry that recorded none, giving each skill every other
@@ -78,53 +103,42 @@ class Ownership:
         The first deployer to write version 8 recorded no bundle members, and a skill it left in place, preserved or
         skipped, kept the edges the upgrade filled in beside the exact ones it recorded for the skills it installed, so
         they need not form a cycle. That deployment may also have installed a skill the upgraded manifest did not own,
-        which a filled-in list therefore does not name, and it may have preserved a skill the user deselected. An entry
-        that requests a bundle whose members it does not record is one an earlier release wrote, and when it requests a
-        skill on its own, a skill's recorded dependencies may be those filled-in edges when they name every other skill
-        the entry owns except ones requested on their own or depended on, by another skill's recorded edges, by one
-        that is: they exclude no skill either, and are set aside. The upgrade filled in every list from the same skills
-        and a deployment only added skills beside them, so a skill's list is exact, and read as recorded, when another
-        skill's list, with that skill, names the first skill, every skill its list names, and more. Such an entry may
-        count as chosen a skill a deployment recorded only as a dependency of a skill that depends on every other skill
-        no such request reaches and that no other list names more than, which keeps more until its next deployment
-        records what its requests stand for.
+        which a filled-in list therefore does not name, and it may have preserved a skill the user deselected. So in an
+        entry that requests a bundle whose members it does not record and a skill on its own, a skill's list may be
+        filled in when every skill it leaves out is requested on its own or depended on, by another skill's recorded
+        edges, by one that is. The entry cannot tell such a list from an exact one: an exact list leaves out the same
+        skills whenever other requests reach them, and a skill that deployment installed may depend on a preserved
+        skill and on every skill its filled-in list names. Each reading is wrong somewhere, so both are taken. Read as
+        recorded, the edges count no dependency as chosen. With every such list set aside, they keep what the
+        conservative edges kept, and a skill only that reading finds stands for a request only where counting it keeps
+        and never adds: when no bundle of the source holds it, or the entry holds every member of its bundle. Otherwise
+        it would choose a bundle one of whose members is not installed and make --all install that member, which is how
+        a skill installed only as another root's dependency would choose itself and its bundle.
 
-        A skill that deployment installed only through a bundle request, whose members it did not record, is one no
-        request on its own reaches, so beside it a filled-in list reads as exact and the entry keeps less: the skills
-        that list names count as dependencies, and a bundle the source has since renamed stays chosen only when named
-        with --include. The entry cannot tell that history from one whose deployment preserved nothing and installed a
-        requested bundle's members that nothing depends on, where setting the list aside would count an opt-in
-        dependency as chosen and install the rest of its bundle. An entry that requests no skill on its own cannot tell
-        a filled-in list from an exact one either, and its edges are read as recorded.
+        So the entry cannot tell a renamed bundle that has since gained a member, beside a preserved skill, from an
+        unchosen bundle one of whose members another skill depends on: it reads both as unchosen, and --all keeps the
+        renamed one only when it is named with --include. Nor can it tell a renamed bundle from an unchosen one every
+        member of which another skill depends on: it reads both as chosen, which installs nothing. A skill that
+        deployment installed only through a bundle request is one no request on its own reaches, so beside it a
+        filled-in list is read as recorded and a bundle the source has since renamed stays chosen only when named with
+        --include: the entry cannot tell that history from one whose deployment preserved nothing and installed a
+        requested bundle's members that nothing depends on. An entry that requests no skill on its own cannot tell a
+        filled-in list from an exact one either, and its edges are read as recorded.
         """
         edges = self.deps_of(SKILL)
-        if self.requested_bundles - self.requested_bundle_members.keys() and self.requested_skills:
-            named = [{name, *dependencies} for name, dependencies in edges.items()]
-            edges = {
+        roots = _independent(self.skills, edges)
+        if not (self.requested_bundles - self.requested_bundle_members.keys() and self.requested_skills):
+            return roots
+        kept = _independent(
+            self.skills,
+            {
                 name: dependencies
                 for name, dependencies in edges.items()
-                if any({name, *dependencies} < other for other in named)
-                or not set(self.skills) - {name, *dependencies} <= self._requested_reach(without=name)
-            }
-
-        def reaches(start: str, goal: str) -> bool:
-            seen, pending = {start}, [start]
-            while pending:
-                for dependency in edges.get(pending.pop(), []):
-                    if dependency == goal:
-                        return True
-                    if dependency not in seen:
-                        seen.add(dependency)
-                        pending.append(dependency)
-            return False
-
-        depended = {
-            dependency
-            for name, dependencies in edges.items()
-            for dependency in dependencies
-            if dependency != name and not reaches(dependency, name)
-        }
-        return set(self.skills) - depended
+                if not set(self.skills) - {name, *dependencies} <= self._requested_reach(without=name)
+            },
+        )
+        bundle_of = {member: set(members) for members in bundles.values() for member in members}
+        return roots | {name for name in kept - roots if bundle_of.get(name, set()) <= self.skills.keys()}
 
     def _requested_reach(self, without: str) -> set[str]:
         """The skills requested on their own and every skill they depend on, by the recorded edges of each skill but

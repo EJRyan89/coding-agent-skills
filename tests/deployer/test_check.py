@@ -418,6 +418,50 @@ class CheckCommandTests(DeployerTestCase):
                 groups = self.report_groups(self.check(machine).output, "CHECK")
                 self.assertEqual(["dotnet-format (used by pack2)"], groups["MISSING"])
 
+    def test_a_member_requested_beside_a_preserved_skill_whose_list_a_new_skills_list_contains_still_needs_its_tools(
+        self,
+    ) -> None:
+        # newer's exact list names plain, every skill plain's filled-in list names, and more; as for --all, both are
+        # set aside and pack2 is complete, so its members stand for the renamed request.
+        self.make_source_json(bundles={"pack": {"members": ["formatter", "reporter"], "opt_in": True}})
+        self.make_skill("helper", "Helper")
+        self.make_skill("newer", "Newer", skill_deps=["core", "formatter", "helper", "plain", "reporter", "reviewer"])
+        self.make_config()
+        machine = Machine(missing=("dotnet-format",))
+        with machine.patches():
+            self.deploy_ok("--all", "--include", "pack")
+        self.rewrite_as_preserved_through_the_upgrade("plain", installed_since=("helper", "newer"))
+        self.make_source_json(bundles={"pack2": {"members": ["formatter", "reporter"], "opt_in": True}})
+        self.make_skill("newer", "Newer", skill_deps=["helper"])
+        groups = self.report_groups(self.check(machine).output, "CHECK")
+        self.assertEqual(["dotnet-format (used by pack2)"], groups["MISSING"])
+
+    def test_a_member_installed_only_as_a_dependency_beside_requests_reaching_around_it_leaves_its_tools_optional(
+        self,
+    ) -> None:
+        # s reaches p1, the only skill r's exact list leaves out but requests on their own; as for --all, hb, which
+        # helper would choose, has a member not installed, so it stays unchosen and the formatter's tool optional.
+        self.make_source_json(
+            bundles={
+                "hb": {"members": ["helper", "formatter"], "opt_in": True},
+                "pack": {"members": ["p1"], "opt_in": True},
+            }
+        )
+        self.make_skill("r", "R", skill_deps=["helper"])
+        self.make_skill("s", "S", skill_deps=["p1"])
+        self.make_skill("helper", "Helper")
+        self.make_skill("p1", "P1")
+        self.make_config()
+        machine = Machine(missing=("dotnet-format",))
+        with machine.patches():
+            self.deploy_ok("--all", "--include", "pack")
+        data = self.manifest()
+        del data["sources"]["test/skills"]["requested_bundle_members"]
+        self.write_manifest(data)
+        groups = self.report_groups(self.check(machine).output, "CHECK")
+        self.assertIn("dotnet-format (not installed; used by opt-in hb)", groups["OPTIONAL"])
+        self.assertNotIn("MISSING", groups)
+
     def test_the_runtimes_verify_lists_are_reported_whether_or_not_a_skill_declares_them(self) -> None:
         # deploy.py verify runs Codex CLI and Copilot CLI, so check reports both even when no skill runs either.
         set_tools(self, "core", ["gh"])
