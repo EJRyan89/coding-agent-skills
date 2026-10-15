@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import io
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -482,6 +484,150 @@ class FlagCliTests(unittest.TestCase):
                     1,
                     "FAILED flag-store.flags[0].finding_id must be a string or null, found an array\n",
                 )
+
+    def test_findings_print_a_path_spread_over_lines_on_one_line(self) -> None:
+        versions = copy.deepcopy(review_fixture.VERSIONS)
+        first = versions[0]["findings"][0]
+        path = "src/a\u2028b\u2029c\x85d\re\nADDED RF-999999.py"
+        first.update(path=path, evidence=f"{path}:10 adds: lock.acquire()")
+        with mock.patch.object(review_fixture, "VERSIONS", versions):
+            review_fixture.commit_fixture(self.archive, versions=1)
+        self.assert_result(
+            self.store_cli("findings", "--repository", "example/one", "--pull", "12"),
+            0,
+            "FINDING v1 F001 MUST_FIX src/a b c d e ADDED RF-999999.py:10 Lock is never released\n"
+            "FINDING v1 F002 SHOULD_FIX src/parse.py:20 Null result is not checked\n"
+            "COUNT 2\n",
+        )
+
+    def test_a_category_or_body_past_its_limit_is_refused_before_the_lock(self) -> None:
+        self.assert_result(self.store_cli("add", "c" * 120, "b" * 4000), 0, "ADDED RF-000001\n")
+        self.assert_result(
+            self.store_cli("edit", "RF-000001", "--category", "d" * 120, "--body", "e" * 4000), 0, "EDITED RF-000001\n"
+        )
+        stored = json.loads(Path(self.store).read_text(encoding="utf-8"))["flags"][0]
+        self.assertEqual(("d" * 120, "e" * 4000), (stored["category"], stored["body"]))
+        category = "Flag category holds 121 characters; the most it holds is 120"
+        body = "Flag body holds 4001 characters; the most it holds is 4000"
+        for reason, arguments in (
+            (category, ("add", "c" * 121, "Body")),
+            (body, ("add", "guideline", "b" * 4001)),
+            (category, ("edit", "RF-000001", "--category", "c" * 121)),
+            (body, ("edit", "RF-000001", "--body", "b" * 4001)),
+        ):
+            with self.subTest(reason=reason, command=arguments[0]):
+                self.assert_refusal_preserves_store_and_locks(reason, *arguments)
+
+    def write_store_of_size(self, size: int) -> None:
+        """A store of open flags, RF-000001 first with the body "a", whose file is `size` bytes as the store writes it.
+        It is padded through RF-000002's body, which grows the file a byte a character."""
+
+        def flag(number: int, body: str) -> dict[str, Any]:
+            return {
+                "id": f"RF-{number:06d}",
+                "status": "open",
+                "created_at": "2026-10-15T12:00:00+00:00",
+                "resolved_at": None,
+                "repository": None,
+                "pull_number": None,
+                "review_version": None,
+                "finding_id": None,
+                "category": "noise",
+                "body": body,
+                "resolution": None,
+            }
+
+        def serialized(store: dict[str, Any]) -> bytes:
+            return (json.dumps(store, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
+
+        flags = [flag(1, "a"), flag(2, "")]
+        flags.extend(flag(number, "x" * 4000) for number in range(3, 3 + size // 4500))
+        store = {"schema_version": 2, "next_id": len(flags) + 1, "flags": flags}
+        flags[1]["body"] = "p" * (size - len(serialized(store)))
+        Path(self.store).parent.mkdir(parents=True, exist_ok=True)
+        Path(self.store).write_bytes(serialized(store))
+        self.assertEqual(size, Path(self.store).stat().st_size)
+
+    def test_a_change_that_takes_the_store_past_four_mebibytes_is_refused_and_the_store_still_reads(self) -> None:
+        self.write_store_of_size(4194304 - 3)
+        # Three more characters in a body make the store exactly as large as it may be.
+        self.assert_result(self.store_cli("edit", "RF-000001", "--body", "abcd"), 0, "EDITED RF-000001\n")
+        self.assertEqual(4194304, Path(self.store).stat().st_size)
+        self.assertEqual("abcd", json.loads(Path(self.store).read_text(encoding="utf-8"))["flags"][0]["body"])
+        self.assertRegex(self.store_cli("list").stdout, r"\nCOUNT \d+\n\Z")
+        # Refused under the store lock, which leaves the store as it was.
+        reason = "The flag store would exceed 4194304 bytes, the most a flag store is read at"
+        before = Path(self.store).read_bytes()
+        for arguments in (
+            ("edit", "RF-000001", "--body", "abcde"),
+            ("add", "noise", "Body"),
+            ("resolve", "RF-000001", "Done"),
+        ):
+            with self.subTest(command=arguments[0]):
+                self.assert_result(self.store_cli(*arguments), 1, f"FAILED {reason}\n")
+                self.assertEqual(before, Path(self.store).read_bytes())
+        self.write_store_of_size(4194304 + 1)
+        listed = self.store_cli("list")
+        self.assertEqual((1, ""), (listed.returncode, listed.stderr))
+        self.assertIn("exceeds 4194304 bytes", listed.stdout)
+
+    def test_add_refuses_a_pull_without_its_repository_and_a_review_version_without_its_finding(self) -> None:
+        pull = "A flag that names a pull request must name its repository"
+        version = "A flag that names a review version must name the finding in it"
+        for existing in (False, True):
+            if existing:
+                self.assert_result(self.store_cli("add", "guideline", "Body"), 0, "ADDED RF-000001\n")
+            for reason, options in (
+                (pull, ("--pull", "7")),
+                (version, ("--repository", "example/one", "--pull", "7", "--review-version", "3")),
+                (version, ("--pull", "7", "--review-version", "3")),
+            ):
+                with self.subTest(existing=existing, options=options):
+                    self.assert_refusal_preserves_store_and_locks(reason, "add", "noise", "Body", *options)
+        self.assertEqual(1, len(json.loads(Path(self.store).read_text(encoding="utf-8"))["flags"]))
+
+    @staticmethod
+    def skill_command(command: str, values: dict[str, str]) -> list[str]:
+        """The arguments of SKILL.md's `command` command, each placeholder replaced by its value in `values`."""
+        text = SCRIPT.parents[1].joinpath("SKILL.md").read_text(encoding="utf-8")
+        lines = [line for line in text.splitlines() if f'flag_review_finding.py" {command} ' in line]
+        if len(lines) != 1:
+            raise AssertionError(f"SKILL.md has {len(lines)} {command} commands")
+        arguments = shlex.split(lines[0].split('flag_review_finding.py" ', 1)[1])
+        for placeholder, value in values.items():
+            arguments = [argument.replace(placeholder, value) for argument in arguments]
+        return arguments
+
+    def test_values_that_begin_with_a_dash_are_taken_in_the_skill_command_forms(self) -> None:
+        review_fixture.commit_fixture(self.archive)
+        target = {"<owner/repo>": "example/one", "<number>": "12", "<version>": "3", "<finding id>": "F002"}
+        add = self.skill_command("add", {**target, "<category>": "-noise", "<rationale>": "--verbose"})
+        self.assert_result(self.store_cli(*add), 0, "ADDED RF-000001\n")
+        # Without a finding, the options before -- are left out.
+        add = self.skill_command("add", {"<category>": "-x", "<rationale>": "-y"})
+        self.assert_result(self.store_cli(add[0], *add[add.index("--") :]), 0, "ADDED RF-000002\n")
+        edit = self.skill_command(
+            "edit", {"<flag id>": "RF-000002", "<category>": "-category", "<rationale>": "--body"}
+        )
+        self.assert_result(self.store_cli(*edit), 0, "EDITED RF-000002\n")
+        resolve = self.skill_command("resolve", {"<flag id>": "RF-000001", "<resolution>": "-done"})
+        self.assert_result(self.store_cli(*resolve), 0, "RESOLVED RF-000001\n")
+        first, second = json.loads(Path(self.store).read_text(encoding="utf-8"))["flags"]
+        fields = ("repository", "pull_number", "review_version", "finding_id", "category", "body", "resolution")
+        self.assertEqual(
+            ("example/one", 12, 3, "F002", "-noise", "--verbose", "-done"), tuple(first[field] for field in fields)
+        )
+        self.assertEqual(
+            (None, None, None, None, "-category", "--body", None), tuple(second[field] for field in fields)
+        )
+
+    def test_refusing_a_flag_id_without_a_store_creates_nothing(self) -> None:
+        folder = Path(self._temporary.name) / "new folder"
+        store = str(folder / "flags.json")
+        for arguments in (("resolve", "RF-000001", "Done"), ("edit", "RF-000001", "--body", "x")):
+            with self.subTest(command=arguments[0]):
+                self.assert_result(self.run_cli("--store", store, *arguments), 1, "FAILED Unknown flag ID: RF-000001\n")
+                self.assertFalse(folder.exists())
 
     def test_usage_errors_exit_2(self) -> None:
         for arguments in (

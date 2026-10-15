@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -33,6 +34,11 @@ FIELDS = frozenset(
         "resolution",
     }
 )
+# The most a flag store is read at, and so the most a write may leave it holding.
+STORE_MAXIMUM_BYTES = 4 * 1024 * 1024
+# The most characters a new or edited category and body hold, so one flag cannot take the store near its bound.
+CATEGORY_LIMIT = 120
+BODY_LIMIT = 4000
 
 
 class FlagError(ValueError):
@@ -166,14 +172,35 @@ def _upgraded_flag(flag: Any) -> Any:
 
 
 def load_store(path: Path) -> dict[str, Any]:
-    return validate_store(upgrade_store(read_json(path))) if path.exists() else empty_store()
+    if not path.exists():
+        return empty_store()
+    return validate_store(upgrade_store(read_json(path, maximum_bytes=STORE_MAXIMUM_BYTES)))
+
+
+def _write_store(path: Path, store: dict[str, Any]) -> None:
+    """Write the store as atomic_write_json serializes it, or refuse, writing nothing, a store too large to read."""
+    size = len((json.dumps(store, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8"))
+    if size > STORE_MAXIMUM_BYTES:
+        raise FlagError(f"The flag store would exceed {STORE_MAXIMUM_BYTES} bytes, the most a flag store is read at")
+    atomic_write_json(path, store, validator=validate_store)
+
+
+def _check_text(text: str, field: str) -> str:
+    """A category or body that is not blank and within its limit."""
+    if not text.strip():
+        raise FlagError(f"Flag {field} must not be blank")
+    limit = CATEGORY_LIMIT if field == "category" else BODY_LIMIT
+    if len(text) > limit:
+        raise FlagError(f"Flag {field} holds {len(text)} characters; the most it holds is {limit}")
+    return text
 
 
 def validate_target(
     repository: str | None, pull_number: int | None, review_version: int | None, finding_id: str | None
 ) -> str | None:
     """What a new flag is about, checked before anything is read: a finding ID in the form reports give it, named
-    with the repository, pull request, and review version that make it one finding. Returns the repository."""
+    with the repository, pull request, and review version that make it one finding; a pull request named with its
+    repository; and a review version named with the finding it gives the version of. Returns the repository."""
     if finding_id is not None and not FINDING_ID.fullmatch(finding_id):
         raise FlagError(
             f"Finding ID {finding_id!r} is not a finding ID such as F001; a report label such as v2 F003 names "
@@ -183,6 +210,10 @@ def validate_target(
         raise FlagError("A flag that names a finding must name its repository, pull request, and review version")
     if review_version is not None and (pull_number is None or review_version < 1):
         raise FlagError("Review version must be positive and name a pull request")
+    if review_version is not None and finding_id is None:
+        raise FlagError("A flag that names a review version must name the finding in it")
+    if pull_number is not None and repository is None:
+        raise FlagError("A flag that names a pull request must name its repository")
     if repository is not None:
         repository = validate_repository_identity(repository)
     if pull_number is not None and pull_number < 1:
@@ -204,6 +235,8 @@ def add_flag(
     finding exists is the caller's to check, against the archive."""
     if not category.strip() or not body.strip():
         raise FlagError("Flag category and body are required")
+    _check_text(category, "category")
+    _check_text(body, "body")
     repository = validate_target(repository, pull_number, review_version, finding_id)
     lock = path.parent / ".locks" / "flags.lock"
     with ResourceLock(lock):
@@ -225,7 +258,7 @@ def add_flag(
         }
         store["next_id"] = numeric + 1
         store["flags"].append(flag)
-        atomic_write_json(path, store, validator=validate_store)
+        _write_store(path, store)
         return flag
 
 
@@ -236,14 +269,17 @@ def _stored_flag(store: dict[str, Any], flag_id: str) -> dict[str, Any]:
     return matching[0]
 
 
+def _refuse_without_store(path: Path, flag_id: str) -> None:
+    """Refuse a flag ID when there is no store, before the lock creates the store's folder."""
+    if not path.exists():
+        raise FlagError(f"Unknown flag ID: {flag_id}")
+
+
 def _new_text(value: Any, field: str) -> str | None:
     """A replacement for a flag's category or body: a string that is not blank, or None to keep the old one."""
     if value is None:
         return None
-    text = READ.string(value, f"flag.{field}", empty=True)
-    if not text.strip():
-        raise FlagError(f"Flag {field} must not be blank")
-    return text
+    return _check_text(READ.string(value, f"flag.{field}", empty=True), field)
 
 
 def edit_flag(path: Path, flag_id: str, *, category: str | None = None, body: str | None = None) -> dict[str, Any]:
@@ -253,6 +289,7 @@ def edit_flag(path: Path, flag_id: str, *, category: str | None = None, body: st
     changes = {field: text for field, text in replacements.items() if text is not None}
     if not changes:
         raise FlagError("Name a new category, a new body, or both")
+    _refuse_without_store(path, flag_id)
     lock = path.parent / ".locks" / "flags.lock"
     with ResourceLock(lock):
         store = load_store(path)
@@ -260,7 +297,7 @@ def edit_flag(path: Path, flag_id: str, *, category: str | None = None, body: st
         if flag["status"] != "open":
             raise FlagError(f"Flag {flag_id} is resolved; only an open flag is edited")
         flag.update(changes)
-        atomic_write_json(path, store, validator=validate_store)
+        _write_store(path, store)
         return flag
 
 
@@ -268,6 +305,7 @@ def resolve_flag(path: Path, flag_id: str, resolution: str) -> dict[str, Any]:
     """Resolve under the store lock, or raise FlagAlreadyResolved without changing the earlier resolution."""
     if not resolution.strip():
         raise FlagError("Resolution is required")
+    _refuse_without_store(path, flag_id)
     lock = path.parent / ".locks" / "flags.lock"
     with ResourceLock(lock):
         store = load_store(path)
@@ -277,5 +315,5 @@ def resolve_flag(path: Path, flag_id: str, resolution: str) -> dict[str, Any]:
         flag["status"] = "resolved"
         flag["resolved_at"] = datetime.now(UTC).isoformat()
         flag["resolution"] = resolution
-        atomic_write_json(path, store, validator=validate_store)
+        _write_store(path, store)
         return flag
