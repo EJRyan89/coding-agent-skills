@@ -7,13 +7,13 @@ A review runs it as a specialists manifest's condition. Its environment names th
 CODE_REVIEW_DIFF_FILE and the file to write in CODE_REVIEW_CONDITION_OUTPUT. From the diff it takes the names to look
 for: each changed script's file name (`skill_evals.py`) and, for Python, its module name (`skill_evals`), a renamed
 script's old ones as well as its new, and each top-level function or class a hunk adds, removes, or changes inside
-(`def`/`class` lines and the hunk header's function context). It searches the documents under the snapshot (`docs/`,
-the top-level README.md, CONTRIBUTING.md, and CLAUDE.md, and every skill's SKILL.md, but no release's notes or
-evaluation results) for those names, but only where a document writes code: inside a code span or a fenced block. A
-file name counts as a path's last segment there; a module, function, or class name counts as the whole span, a call
-(`name(`), or a dotted part (`module.name`). Prose never counts, nor `main`, which every entry point defines, nor a
-name shorter than MIN_NAME_LENGTH, so a name that is also a common word does not match every sentence that uses the
-word. A suite's names, by validation's rule, are left out.
+(`def`/`class` lines and the hunk header's function context). It searches the documents under the snapshot (the
+top-level Markdown, `docs/`, the agent definitions, and every skill's SKILL.md and references, a repository skill's
+included, but no release's notes or evaluation results) for those names, but only where a document writes code:
+inside a code span or a fenced block. A file name counts as a path's last segment there; a module, function, or class
+name counts as the whole span, a call (`name(`), or a dotted part (`module.name`). Prose never counts, nor `main`,
+which every entry point defines, nor a name shorter than MIN_NAME_LENGTH, so a name that is also a common word does
+not match every sentence that uses the word. A suite's names, by validation's rule, are left out.
 
 It writes each matching passage (a paragraph, a list item, a table row, a heading, or a fenced block) as
 `PASSAGE <document>:<line> names <name> (<kind> in <changed file>), hunk <header> at new lines <first>-<last>`, with
@@ -57,12 +57,13 @@ EXIT_CONTRACT_EXEMPT = (
 )
 # The documents searched, as globs under the snapshot; the route's `reads` in specialists.json declares the same.
 DOCUMENTS = (
+    "*.md",
     "docs/**/*.md",
-    "README.md",
-    "CONTRIBUTING.md",
-    "CLAUDE.md",
+    "agents/*.md",
     "skills/*/SKILL.md",
+    "skills/*/references/**/*.md",
     ".claude/skills/*/SKILL.md",
+    ".claude/skills/*/references/**/*.md",
 )
 # Records of the past or of results, not descriptions of the code: a release's notes describe what it shipped then,
 # and the evaluation results are written by a tool.
