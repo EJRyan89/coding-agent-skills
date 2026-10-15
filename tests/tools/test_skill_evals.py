@@ -16,7 +16,7 @@ import shutil
 import sys
 import tempfile
 import unittest
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
 from unittest import mock
@@ -28,11 +28,14 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("code-review-core")))
 sys.path.insert(0, str(sibling_scripts("review-document")))
+sys.path.insert(0, str(sibling_scripts("analyze-skill-cost")))
 
 import review_document
 import review_guard
 import review_pipeline
+import review_source
 import review_specialists
+import skill_inventory
 from git_client import GitClient, GitResult
 from git_test_base import GitTestCase
 from review_config import write_config
@@ -1623,30 +1626,79 @@ class RunPieceTests(GitTestCase):
         )
 
     def test_the_command_pins_the_session_and_isolates_the_run(self) -> None:
-        agents = self.root / "agents.json"
-        command = skill_evals.claude_command("claude.exe", '/review-prs "fixture"', agents)
+        home = self.root / "haiku"
+        command = skill_evals.claude_command("claude.exe", '/review-prs "fixture"', home, "review-prs")
         self.assertEqual(["claude.exe", "-p", '/review-prs "fixture"'], command[:3])
         pairs = {command[index]: command[index + 1] for index in range(3, len(command) - 1)}
         self.assertEqual("claude-opus-5-5", pairs["--model"])
         self.assertEqual("project,local", pairs["--setting-sources"])
-        self.assertEqual(str(agents), pairs["--agents"])
+        self.assertEqual(str(home / ".skill-evals" / "agents.json"), pairs["--agents"])
         self.assertEqual("Workflow", pairs["--disallowedTools"])
         self.assertEqual("acceptEdits", pairs["--permission-mode"])
         self.assertEqual("stream-json", pairs["--output-format"])
         flags = ("--verbose", "--forward-subagent-text", "--include-hook-events", "--strict-mcp-config")
         for flag in (*flags, "--no-session-persistence"):
             self.assertIn(flag, command)
+        # Each script at the home's deployed core, spelled through the started skill as Claude Code fills in its
+        # folder, and as its resolved path, which on a POSIX system is the same text.
+        started = f"{home.as_posix()}/.claude/skills/review-prs/../code-review-core/scripts/"
+        resolved = f"{home / '.claude' / 'skills' / 'code-review-core' / 'scripts'}{os.sep}"
+        python = platform_support.PYTHON
         self.assertEqual(
             [
-                'Bash(python -B "*review_pipeline.py" validate-result --run *)',
-                'PowerShell(python -B "*review_pipeline.py" validate-result --run *)',
-                'Bash(python -B "*review_source.py" source-file --run *)',
-                'PowerShell(python -B "*review_source.py" source-file --run *)',
-                'Bash(python -B "*review_source.py" source-search --run *)',
-                'PowerShell(python -B "*review_source.py" source-search --run *)',
+                f'{shell}({python} -B "{folder}{script}" {subcommand} --run *)'
+                for folder in dict.fromkeys([started, resolved])
+                for script, subcommand in (
+                    ("review_pipeline.py", "validate-result"),
+                    ("review_source.py", "source-file"),
+                    ("review_source.py", "source-search"),
+                )
+                for shell in ("Bash", "PowerShell")
             ],
             command[command.index("--allowedTools") + 1 :],
         )
+
+    def test_the_grants_match_the_commands_the_pipeline_writes_and_no_other_script(self) -> None:
+        # The home holds a space, as a profile folder may. The commands are the ones the pipeline writes into a role's
+        # prompt, for the script spelled as the session started it and as its resolved path.
+        home = self.root / "sonnet"
+        grants = skill_evals.reviewer_grants(home, "review-document")
+        bash = [pattern for tool, pattern in skill_inventory.allowed_entries(grants) if tool == "Bash" and pattern]
+        run, role = self.root / "run", "generic-review"
+        core = home / ".claude" / "skills" / "code-review-core" / "scripts"
+        for folder in (
+            f"{home.as_posix()}/.claude/skills/review-document/../code-review-core/scripts/",
+            f"{core}{os.sep}",
+        ):
+            commands = [
+                review_pipeline.SELF_CHECK_COMMAND.format(script=f"{folder}review_pipeline.py", run=run, role=role),
+                *(
+                    command.replace("<path>", "src/a b.py").replace("<pattern>", "TODO")
+                    for command in review_source.source_commands(run, role, script=f"{folder}review_source.py")
+                ),
+            ]
+            for command in commands:
+                with self.subTest(command=command):
+                    self.assertTrue(any(skill_inventory.grants(pattern, command) for pattern in bash))
+        self_check = review_pipeline.SELF_CHECK_COMMAND
+        elsewhere = [
+            # A file named like the script beside it, in the home, or through a path out of the core's folder.
+            self_check.format(script=f"{core}{os.sep}x_review_pipeline.py", run=run, role=role),
+            self_check.format(script=f"{home.as_posix()}/review_pipeline.py", run=run, role=role),
+            self_check.format(script=f"{core}{os.sep}..{os.sep}..{os.sep}review_pipeline.py", run=run, role=role),
+            self_check.format(script=f"{self.root.as_posix()}/elsewhere/review_pipeline.py", run=run, role=role),
+        ]
+        for command in elsewhere:
+            with self.subTest(command=command):
+                self.assertFalse(any(skill_inventory.grants(pattern, command) for pattern in bash))
+
+    def test_a_home_whose_path_holds_a_star_is_refused_before_anything_is_deployed(self) -> None:
+        home = self.root / "a*b" / "haiku"
+        reason = skill_evals.prepare_home(home, "haiku", fake_deploy)
+        self.assertEqual(
+            f"the home's path {home.as_posix()} holds a *, which a reviewer's grant would read as any text", reason
+        )
+        self.assertFalse(home.parent.exists())
 
     def test_the_session_model_is_the_strongest_and_one_of_the_models(self) -> None:
         self.assertEqual(
@@ -1801,17 +1853,16 @@ class RunPieceTests(GitTestCase):
             skill_evals.stream_models(output),
         )
 
-    def test_the_record_is_the_highest_version_in_the_canary_roots(self) -> None:
+    def test_only_a_pull_requests_record_in_a_canary_root_is_the_runs(self) -> None:
+        # A record anywhere else, or a file in the pull request's folder that is not one of its records, is none.
+        (self.root / "elsewhere.json").write_text(json.dumps(record(version=1)), encoding="utf-8")
+        with self.assertRaisesRegex(RecordError, "^the run recorded no review$"):
+            skill_evals.find_record(self.root, 1)
         pulls = self.root / "code-review-canary-abc" / "example" / "inventory" / "pulls" / "1"
         pulls.mkdir(parents=True)
         (pulls / "v1.json").write_text(json.dumps(record(version=1)), encoding="utf-8")
-        (pulls / "review.json").write_text(json.dumps(record(version=2, verdict="CHANGES_REQUESTED")), encoding="utf-8")
-        (pulls / "other.json").write_text(json.dumps({"review": "not a record"}), encoding="utf-8")
-        (pulls / "broken.json").write_text("{", encoding="utf-8")
-        (self.root / "elsewhere.json").write_text(json.dumps(record(version=9)), encoding="utf-8")
-        self.assertEqual(2, skill_evals.find_record(self.root)["review"]["version"])
-        with self.assertRaisesRegex(RecordError, "recorded no review"):
-            skill_evals.find_record(self.root / "code-review-canary-abc")
+        with self.assertRaisesRegex(RecordError, "^the run recorded no review version 1; it holds no record$"):
+            skill_evals.find_record(self.root, 1)
 
     def test_why_a_run_counts_for_nothing(self) -> None:
         completed = skill_evals.Completed
@@ -1967,12 +2018,19 @@ class StubClaude:
     fixture, or of the fixture review-document's build step writes for the prompt's document, with stream-json naming
     the session's model and the reviewer model the --agents definition sets, and, unless `guarded` is false, each
     role's read log started as the reviewer guard's claim starts it. Each reviewer does what the scenario the run's
-    folder is named for expects."""
+    folder is named for expects. `after`, if given, is called with the record JSON finalize wrote, as what happened to
+    the run's canary root after it."""
 
     def __init__(
-        self, test: unittest.TestCase, *, review: bool = True, reviewer: str | None = None, guarded: bool = True
+        self,
+        test: unittest.TestCase,
+        *,
+        review: bool = True,
+        reviewer: str | None = None,
+        guarded: bool = True,
+        after: Callable[[Path], None] | None = None,
     ) -> None:
-        self.test, self.review, self.reviewer, self.guarded = test, review, reviewer, guarded
+        self.test, self.review, self.reviewer, self.guarded, self.after = test, review, reviewer, guarded, after
         self.calls: list[tuple[list[str], Path, dict[str, str]]] = []
         self.built: dict[str, list[str]] = {}
         # Each fixture run's fixture, by its scenario and model, and its files as the session found them.
@@ -2001,7 +2059,11 @@ class StubClaude:
                     stage = prepare[prepare.index("--stage") + 1] if "--stage" in prepare else None
                     built = self.built[f"{run.name} {model}"] = build_document(Path(prepare[0]), stage)
                     prepare = ["--canary", "--fixture", fixture_of(built)]
-                Pipeline(self.test, Path(environment["CODE_REVIEW_CONFIG"])).review(prepare, spec, self.guarded)
+                written = Pipeline(self.test, Path(environment["CODE_REVIEW_CONFIG"])).review(
+                    prepare, spec, self.guarded
+                )
+            if self.after is not None:
+                self.after(written)
         reviewer = self.reviewer or model
         return skill_evals.Completed(0, f"{assistant('claude-opus-5-5')}\n{assistant(reviewer, subagent=True)}", "")
 
@@ -2216,6 +2278,44 @@ class EvaluateTests(GitTestCase):
         self.assertIn(f'FAIL review-document committed-edit haiku verdict CHANGES_REQUESTED "{reason}"', lines)
         self.assertIn("REVIEWER haiku none", lines)
         self.assertEqual([["claude.exe", "--version"]], [arguments for arguments, _, _ in claude.calls])
+
+    def test_a_run_whose_own_record_is_not_its_latest_at_its_version_fails_and_never_judges_another(self) -> None:
+        # A re-review's canary root holds the prior record as version 1 before the run's review, so a finalize that
+        # failed after committing it leaves the prior as the latest record, which no run may be judged by.
+        def dropped(path: Path) -> None:
+            path.unlink()
+            path.with_suffix(".md").unlink()
+
+        def unreadable(path: Path) -> None:
+            path.write_text("{", encoding="utf-8")
+
+        def followed(path: Path) -> None:
+            shutil.copy(path, path.with_name("review-v2.json"))
+            shutil.copy(path.with_suffix(".md"), path.with_name("review-v2.md"))
+
+        def repeated(path: Path) -> None:
+            root = path.parents[4]
+            shutil.copytree(root, root.with_name(f"{root.name}-again"))
+
+        no_review = "the run recorded no review version"
+        cases = (
+            ("re-review", dropped, f"{no_review} 2; its latest record is version 1"),
+            ("re-review", unreadable, f"{no_review} 2; its latest record cannot be read: "),
+            ("clean-change", unreadable, f"{no_review} 1; its latest record cannot be read: "),
+            ("clean-change", followed, f"{no_review} 1; its latest record is version 2"),
+            ("clean-change", repeated, "the run recorded 2 reviews at version 1, so which is its own is unknown"),
+        )
+        for index, (scenario, damage, reason) in enumerate(cases):
+            with self.subTest(scenario=scenario, damage=damage.__name__):
+                self.homes = self.root / f"homes-{index}"
+                claude = StubClaude(self, after=damage)
+                status, lines = self.evaluate(["--model", "haiku", "--scenario", scenario], self.seams(claude))
+                self.assertEqual(1, status)
+                failed = [line for line in lines if line.startswith("FAIL ")]
+                self.assertTrue(failed, lines)
+                for line in failed:
+                    self.assertIn(f'"{reason}', line)
+                self.assertFalse(any(line.startswith(("PASS", "GUARDED")) for line in lines))
 
     def test_a_record_no_guard_held_fails_the_run(self) -> None:
         claude = StubClaude(self, guarded=False)

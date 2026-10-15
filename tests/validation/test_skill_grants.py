@@ -24,6 +24,7 @@ from skill_grants import (
     repository_skill_problems,
     root_option_problems,
     skill_grant_problems,
+    tool_grant_problems,
 )
 from validation_support import write_fixture_tree
 
@@ -151,6 +152,58 @@ class SkillGrantsFixtures(GitTestCase):
                 f"or grant the forms the skill runs; see {GRANTS_DOC}"
                 for tool in ("lookalike", "path", "untyped")
                 for shell in ("Bash", "PowerShell")
+            ],
+            found,
+        )
+
+    def test_tool_grant_policy_holds_a_sessions_grants_to_the_skill_grant_rules(self) -> None:
+        # A grant a tool passes with --allowedTools pre-approves its commands for the whole session, so a * that
+        # continues a script's path matches any file named like it there too; a quoted path ends before the *.
+        wildcard = 'python -B "*review_pipeline.py" validate-result --run *'
+        exact = '{PYTHON} -B "{folder}review_pipeline.py" validate-result --run *'
+        start = 'command = [\n    "claude",\n    "--allowedTools",\n'
+        tools = {
+            "wildcard": f"{start}    'Bash({wildcard})',\n    'PowerShell({wildcard})',\n    \"--model\",\n]\n",
+            "exact": (
+                "def grants(folder):\n"
+                '    """The grants, each script by its quoted path."""\n'
+                f"    return [f'Bash({exact})', f'PowerShell({exact})']\n"
+                f"{start}    *grants('C:/home/'),\n]\n"
+            ),
+            "one_shell": f"PYTHON = 'python'\n{start}    f'Bash({exact})',\n]\n",
+            "built": (
+                f"COMMANDS = ('{wildcard}',)\nSHELLS = ('Bash', 'PowerShell')\n"
+                f"{start}    *(f'{{tool}}({{command}})' for command in COMMANDS for tool in SHELLS),\n]\n"
+            ),
+            "helper": (
+                "def grants():\n"
+                "    script = 'review_pipeline.py'\n"
+                "    return [f'Bash(python -B \"{script}\" *)', f'PowerShell(python -B \"{script}\" *)']\n"
+                f"{start}    *grants(),\n]\n"
+            ),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(root, {f"tools/{tool}.py": text for tool, text in tools.items()})
+            found = tool_grant_problems(root)
+
+        def unreadable(tool: str, line: int, source: str) -> str:
+            return (
+                f"tools/{tool}.py:{line} passes {source} to --allowedTools, which this policy cannot read as "
+                f"grants; write each grant as a string or an f-string, or return them from a function of the module; "
+                f"see {GRANTS_DOC}"
+            )
+
+        self.assertEqual(
+            [
+                unreadable("built", 5, "*(f'{tool}({command})' for command in COMMANDS for tool in SHELLS)"),
+                unreadable("helper", 6, "*grants()"),
+                f"tools/one_shell.py:4 grants Bash({exact}) in one shell only; see {GRANTS_DOC}",
+                *(
+                    f"tools/wildcard.py:3 grants {shell}({wildcard}), whose * continues a path, so it reaches every "
+                    f"skill's scripts through ..; grant each script by name; see {GRANTS_DOC}"
+                    for shell in ("Bash", "PowerShell")
+                ),
             ],
             found,
         )
