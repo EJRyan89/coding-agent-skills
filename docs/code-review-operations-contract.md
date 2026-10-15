@@ -119,7 +119,7 @@ How to read a table:
 - **One of** in a field's meaning lists every value it may have, besides `null` when its type allows null.
 - A validated object rejects any field its table does not list. A field whose meaning says what it is keyed by is an object of named entries rather than of fixed fields.
 - Paths are repository-relative POSIX paths: no leading `/`, no `\`, and no `..` part. Absolute paths take the platform's form: drive-letter paths on Windows, and elsewhere POSIX paths from one leading `/`, neither a filesystem root. Hashes are lowercase hexadecimal, 40 or 64 characters for a commit, 64 for SHA-256.
-- The validators in `code-review-core`, which hold every format before the [Insights report](#insights-report), read a field's type through the one typed-field reader, `typed_fields.py` in skill-core, by these kinds: `string` (not blank, unless its meaning allows an empty one), `integer` (never `true` or a float such as `1.0`), `number` (finite), `boolean`, `hex_digest` (the hashes above), `one_of` (the values **One of** lists), `array`, `json_object` (with the fields its table lists), `optional` (a type that allows `null`), and `either` (several types joined by `or`). A value of another kind is refused as `<path> must be <expected>, found <what it is>`, the path starting with the format's name from its table's heading, as in `config.repositories.owner/repo.reviewer.id`. `review-insights` checks the types in the insights report, the synthesis result, and the synthesis input itself, with messages of its own.
+- The validators in `code-review-core` and `validate_tracker_record` in `update_pr_tracker.py`, which together hold every format before the [Insights report](#insights-report), read a field's type through the one typed-field reader, `typed_fields.py` in skill-core, by these kinds: `string` (not blank, unless its meaning allows an empty one), `integer` (never `true` or a float such as `1.0`), `number` (finite), `boolean`, `hex_digest` (the hashes above), `one_of` (the values **One of** lists), `array`, `json_object` (with the fields its table lists), `optional` (a type that allows `null`), and `either` (several types joined by `or`). A value of another kind is refused as `<path> must be <expected>, found <what it is>`, the path starting with the format's name from its table's heading, as in `config.repositories.owner/repo.reviewer.id`. `review-insights` checks the types in the insights report, the synthesis result, and the synthesis input itself, with messages of its own.
 
 ### Configuration
 
@@ -254,8 +254,9 @@ started, but for one that leaves a process group by starting a session or group 
 is killed, and none holds the review waiting. It writes its file in a throwaway folder, which is removed,
 with anything a condition left there, before the plan writes anything. Only the file of a condition that opened is
 read: an empty file is no file, and anything at its name but a regular file fails the review with `Condition output is
-not a regular file: <condition>.txt`. What a closed condition leaves there is never read. Each specialist the condition opened is given the
-file's first `CONDITION_FILE_BYTES` (in `review_specialists.py`) as its own `CONDITION_FILE`.
+not a regular file: <condition>.txt`. What a closed condition leaves there is never read. Each specialist the condition opened is given at
+most the file's first `CONDITION_FILE_BYTES` (in `review_specialists.py`), stopping before a character the bound
+splits, as its own `CONDITION_FILE`.
 
 ### Adapter request
 

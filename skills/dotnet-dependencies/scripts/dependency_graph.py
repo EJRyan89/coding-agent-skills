@@ -41,11 +41,12 @@ project with no restore, whose facts are not kept per framework: every item coun
 Remove counts only where it holds for every framework the project names, and one whose condition cannot be evaluated
 for one of them is reported. A line that holds for several frameworks is printed once. Two frameworks of one project
 resolving different versions build apart and are not a conflict. A framework is named as the project names it,
-whichever form its restore writes (`net8.0` or `.NETCoreApp,Version=v8.0`). A framework's direct packages and project
-references are those its restore recorded; for a framework the restore did not record them for, and for its assembly
-references, which a restore never records, they are the project file's PackageReference, ProjectReference, and
-Reference items whose conditions hold for it, a package without a version of its own taking the central PackageVersion
-whose conditions do, and a Choose applying its first When that holds when MSBuild enters it. An item whose condition
+whichever form its restore writes (`net8.0` or `.NETCoreApp,Version=v8.0`). A framework's direct packages are those its
+restore recorded, and its project references are the project file's ProjectReference items its restore also
+recorded; for a framework the restore did not record them for, and for its assembly references, which a restore never
+records, they are the project file's PackageReference, ProjectReference, and Reference items whose conditions hold for
+it, a package without a version of its own taking the central PackageVersion whose conditions do, and a Choose
+applying its first When that holds when MSBuild enters it. An item whose condition
 the reader cannot evaluate is not applied and is reported as an UNREADABLE line naming the condition and what was done
 instead, and an item inside a Target, which MSBuild defines only when the target runs, is left out and reported so.
 
