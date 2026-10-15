@@ -23,16 +23,15 @@ goes through `same_framework`, so a restore's long name, such as `.NETCoreApp,Ve
 spelled alike.
 
 The readers read only what the examined tree holds and only so much of it. A path a file names, a solution's entry, a
-ProjectReference, or a project a restore recorded, is made absolute without reaching the file system (`project_path`),
-and the caller asks `refusal` before anything opens or looks it up: one outside the tree (`examined_tree`), or in a
-device or network form, is refused unread. A read opens only a regular file and refuses one holding more than
-skill-core's `READ_LIMIT_BYTES` in `dotnet_solution.py`, the one bound (`read_bounded`).
+ProjectReference, or a project a restore recorded, is made absolute without reaching the file system (skill-core's
+`project_path`), and the caller asks skill-core's `refusal` before anything opens or looks it up: one outside the tree
+(`examined_tree`), or in a device or network form, is refused unread. A read opens only a regular file and refuses one
+holding more than skill-core's `READ_LIMIT_BYTES` in `dotnet_solution.py`, the one bound (`read_bounded`).
 """
 
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
 from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -44,13 +43,11 @@ from xml.etree.ElementTree import Element
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import dotnet_solution
-from dotnet_solution import FileRefused, decode_text, listed_projects, same_path
+from dotnet_solution import FileRefused, decode_text, lexical_absolute, listed_projects, project_path, same_path
 from xml_reader import XmlRefused, read_xml
 
 # What marks the folder a checkout starts in: a folder, or a file in a linked worktree or a submodule.
 CHECKOUT_MARKER = ".git"
-# The forms of a path that name a device rather than a file, as a path written with `/` for `\` starts.
-DEVICE_PREFIXES = ("//?/", "//./")
 
 ASSEMBLY_VERSION = re.compile(r"\bVersion\s*=\s*([^,\s]+)", re.IGNORECASE)
 # One token of a condition: a quoted operand, the bare property, a StartsWith call on it, an operator, a parenthesis,
@@ -274,18 +271,6 @@ def read_solution(path: Path) -> list[str]:
         raise Unreadable(path, str(error)) from None
 
 
-def lexical_absolute(path: str | Path) -> Path:
-    """`path` made absolute against the working directory and normalized without reaching the file system."""
-    return Path(os.path.abspath(path))  # noqa: PTH100 - Path.resolve reaches the file system, which this must not
-
-
-def project_path(project_dir: Path, include: str) -> Path:
-    """A path a file names, with Windows separators, joined to its directory and made absolute without reaching the
-    file system: nothing is opened, followed, or looked up to resolve it, so a path that names another host contacts
-    none before `refusal` judges it."""
-    return lexical_absolute(project_dir / include.replace("\\", "/"))
-
-
 def examined_tree(base: Path) -> Path:
     """The tree a run reads the paths files name in: the checkout holding `base`, the solution's directory or the
     directory searched, which is the nearest folder at or above it holding `CHECKOUT_MARKER`, else `base` itself."""
@@ -296,20 +281,6 @@ def examined_tree(base: Path) -> Path:
         except OSError:
             continue
     return base
-
-
-def refusal(path: Path, tree: Path) -> str | None:
-    """Why the reader does not read `path`, a path a file names, made absolute by `project_path`, or None when it lies
-    inside `tree`. The test is lexical, so it decides before anything touches the path: a device or network form,
-    or any other path outside the tree, is refused unopened."""
-    if Path(same_path(path)).is_relative_to(same_path(tree)):
-        return None
-    written = str(path).replace("\\", "/")
-    if written.startswith(DEVICE_PREFIXES):
-        return "the path names a device, which the reader does not open"
-    if written.startswith("//"):
-        return "the path names a network share, which the reader does not open, so no host is contacted"
-    return f"the path is outside the examined tree {tree.as_posix()}, which the reader does not leave"
 
 
 def is_sdk_style(root: Element) -> bool:

@@ -30,7 +30,6 @@ from msbuild_reader import (
     matching_framework,
     package_assemblies,
     packages_for,
-    project_path,
     project_refs_for,
     read_assets,
     read_bounded,
@@ -40,7 +39,6 @@ from msbuild_reader import (
     read_project,
     read_redirects,
     read_solution,
-    refusal,
     same_framework,
 )
 from xml_reader import read_xml
@@ -1172,30 +1170,6 @@ class PathBoundTests(unittest.TestCase):
 
     def test_the_checkout_marker_is_the_documented_one(self) -> None:
         self.assertEqual(".git", msbuild_reader.CHECKOUT_MARKER)
-
-    def test_a_named_path_is_made_absolute_and_judged_without_reaching_the_file_system(self) -> None:
-        tree = self.root / "repo"
-        project_dir = tree / "App"
-        written = {
-            "..\\Lib\\Lib.csproj": None,
-            "Inner/../Inner.csproj": None,
-            "..\\..\\outside\\Outside.csproj": "outside the examined tree",
-            "..\\..\\repo-sibling\\Sibling.csproj": "outside the examined tree",
-            "\\\\example.invalid\\share\\x.csproj": "network share",
-            "//example.invalid/share/x.csproj": "network share",
-            "\\\\?\\C:\\x\\x.csproj": "device",
-        }
-        with mock.patch.object(Path, "stat", side_effect=AssertionError("reached the file system")):
-            for text, reason in written.items():
-                with self.subTest(written=text):
-                    refused = refusal(project_path(project_dir, text), tree)
-                    if reason is None:
-                        self.assertIsNone(refused)
-                    else:
-                        self.assertIn(reason, refused or "")
-            # A local device form is refused on every platform: as a device where it names one, else as a share.
-            self.assertIsNotNone(refusal(project_path(project_dir, "\\\\.\\pipe\\x.csproj"), tree))
-        self.assertEqual(tree / "Lib" / "Lib.csproj", project_path(project_dir, "..\\Lib\\Lib.csproj"))
 
     def test_the_examined_tree_is_the_nearest_folder_holding_the_marker_else_the_base(self) -> None:
         base = self.root / "repo" / "src"

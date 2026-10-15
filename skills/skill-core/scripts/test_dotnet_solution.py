@@ -18,9 +18,11 @@ from dotnet_solution import (
     decode_text,
     is_solution,
     listed_projects,
+    project_path,
     read_bounded,
     read_listed_projects,
     read_text,
+    refusal,
     same_path,
     solution_projects,
 )
@@ -192,6 +194,38 @@ class BoundedReadTests(unittest.TestCase):
                     with self.subTest(solution=name, reader=reader.__name__), self.assertRaises(FileRefused) as refused:
                         reader(solution)
                     self.assertIn("larger than the reader's bound of 8 bytes", refused.exception.reason)
+
+
+class NamedPathTests(unittest.TestCase):
+    """The lexical rule for a path a solution or project names, which both .NET skills apply."""
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp(prefix="dotnet-solution-paths-")).resolve()
+        self.addCleanup(self.root.rmdir)
+
+    def test_a_named_path_is_made_absolute_and_judged_without_reaching_the_file_system(self) -> None:
+        tree = self.root / "repo"
+        project_dir = tree / "App"
+        written = {
+            "..\\Lib\\Lib.csproj": None,
+            "Inner/../Inner.csproj": None,
+            "..\\..\\outside\\Outside.csproj": "outside the examined tree",
+            "..\\..\\repo-sibling\\Sibling.csproj": "outside the examined tree",
+            "\\\\example.invalid\\share\\x.csproj": "network share",
+            "//example.invalid/share/x.csproj": "network share",
+            "\\\\?\\C:\\x\\x.csproj": "device",
+        }
+        with mock.patch.object(Path, "stat", side_effect=AssertionError("reached the file system")):
+            for text, reason in written.items():
+                with self.subTest(written=text):
+                    refused = refusal(project_path(project_dir, text), tree)
+                    if reason is None:
+                        self.assertIsNone(refused)
+                    else:
+                        self.assertIn(reason, refused or "")
+            # A local device form is refused on every platform: as a device where it names one, else as a share.
+            self.assertIsNotNone(refusal(project_path(project_dir, "\\\\.\\pipe\\x.csproj"), tree))
+        self.assertEqual(tree / "Lib" / "Lib.csproj", project_path(project_dir, "..\\Lib\\Lib.csproj"))
 
 
 if __name__ == "__main__":

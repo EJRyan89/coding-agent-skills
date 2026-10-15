@@ -83,7 +83,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from console import run_main
-from dotnet_solution import is_solution, same_path
+from dotnet_solution import is_solution, lexical_absolute, project_path, refusal, same_path
 from flat_text import flat_text
 from msbuild_reader import (
     ASSETS_FILE,
@@ -103,11 +103,9 @@ from msbuild_reader import (
     assemblies_for,
     central_versions_file,
     examined_tree,
-    lexical_absolute,
     matching_framework,
     package_assemblies,
     packages_for,
-    project_path,
     project_refs_for,
     read_assets,
     read_central_versions,
@@ -116,7 +114,6 @@ from msbuild_reader import (
     read_project,
     read_redirects,
     read_solution,
-    refusal,
 )
 from sdk_why import DEFAULT_TIMEOUT_SECONDS, SdkPath, Services, run_why
 from skill_roots import skills_directory_holding
