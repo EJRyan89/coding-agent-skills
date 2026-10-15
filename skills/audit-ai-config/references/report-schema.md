@@ -95,8 +95,8 @@ SUMMARY INFO inventory 1
 
 `Authority` and `Scope` print the same lowercase values as the JSON `authority` and `scopeStatus`. A finding with no
 path or line leaves that cell empty. A path or message is text the audited repository controls, so a `|` in it is
-written `\|` and a line break `<br>`, and each finding stays one row of five cells; the JSON output carries the text
-as it is.
+written `\|`, and each run of whitespace, a line break, U+0085, U+2028, or U+2029 among it, is written as one space,
+so each finding stays one row of five cells; the JSON output carries the text as it is.
 
 The `SUMMARY` lines come before the findings: one per severity, always in `ERROR`, `WARNING`, `INFO` order and
 printed even when the count is `0`, then one per check that produced an `INFO` finding, sorted by check name. JSON
