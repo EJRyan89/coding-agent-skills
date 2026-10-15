@@ -16,11 +16,17 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import bounded_process
+import executable_locator
 import git_client
 from git_client import GitClient, GitError, GitResult, classify_failure
 from git_test_base import GitTestCase
 
 NOT_A_REPOSITORY = "fatal: not a git repository (or any of the parent directories): .git\n"
+
+
+def git() -> str:
+    """The absolute path the client starts git at."""
+    return git_client.located_command(["git"])[0]
 
 
 def scripted(
@@ -126,7 +132,7 @@ class ClientTests(GitTestCase):
                 mock.patch.object(git_client, "run_bounded", return_value=finished) as run,
             ):
                 self.assertEqual("id\n", client.output(["hash-object", "--stdin"], input_bytes=b"blob"))
-            self.assertEqual(mock.call(["git", "hash-object", "--stdin"], 300.0, input_bytes=b"blob"), run.call_args)
+            self.assertEqual(mock.call([git(), "hash-object", "--stdin"], 300.0, input_bytes=b"blob"), run.call_args)
 
     def test_rev_parse_path_names_the_absolute_path_git_prints(self) -> None:
         runner, calls = scripted(GitResult(0, "C:/a repo/.git\n", ""), GitResult(0, "C:/a repo\n", ""))
@@ -408,14 +414,14 @@ class SubprocessRunnerTests(GitTestCase):
         finished = bounded_process.Finished(2, b"out \xff", b"bad \xff")
         with mock.patch.object(git_client, "run_bounded", return_value=finished) as run:
             result = git_client.subprocess_runner(["git", "status"], 12)
-        self.assertEqual(mock.call(["git", "status"], 12), run.call_args)
+        self.assertEqual(mock.call([git(), "status"], 12), run.call_args)
         self.assertEqual(GitResult(2, "out \udcff", "bad �"), result)
 
     def test_given_input_goes_through_the_bounded_layer(self) -> None:
         finished = bounded_process.Finished(0, b"id\n", b"")
         with mock.patch.object(git_client, "run_bounded", return_value=finished) as run:
             result = git_client.subprocess_runner(["git", "hash-object", "--stdin"], 12, input_bytes=b"blob")
-        self.assertEqual(mock.call(["git", "hash-object", "--stdin"], 12, input_bytes=b"blob"), run.call_args)
+        self.assertEqual(mock.call([git(), "hash-object", "--stdin"], 12, input_bytes=b"blob"), run.call_args)
         self.assertEqual(GitResult(0, "id\n", ""), result)
 
     def test_missing_git_is_a_prerequisite_error(self) -> None:
@@ -547,7 +553,7 @@ class StreamTests(GitTestCase):
         @contextlib.contextmanager
         def recording(command: Sequence[str], *, idle_timeout: float) -> Iterator[bounded_process.Streaming]:
             bounds.append(idle_timeout)
-            self.assertEqual(["git", "-C", "here", "cat-file", "--batch"], list(command))
+            self.assertEqual([git(), "-C", "here", "cat-file", "--batch"], list(command))
             with bounded_process.streaming([sys.executable, "-c", "pass"], idle_timeout=idle_timeout) as running:
                 running.stdin.close()
                 yield running
@@ -558,6 +564,80 @@ class StreamTests(GitTestCase):
             with GitClient(timeout=20).stream(["cat-file", "--batch"], directory="here", idle_timeout=5):
                 pass
         self.assertEqual([20, 5], bounds)
+
+
+class WorkingDirectoryTests(GitTestCase):
+    """A git in the working directory is never the git the client starts: Windows process creation looks a bare name
+    up there before PATH, and a relative PATH entry such as `.` names it on every platform."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        temporary = tempfile.TemporaryDirectory(prefix="git client ")
+        self.addCleanup(temporary.cleanup)
+        self.planted = Path(temporary.name)
+        # Not a program Windows can start, and a script that answers in git's place elsewhere.
+        program = self.planted / ("git.exe" if sys.platform == "win32" else "git")
+        program.write_bytes(b"#!/bin/sh\necho planted git\n")
+        program.chmod(0o755)
+        # Without the variable that stops it, Windows' own search finds the planted git on any Python.
+        stop = "NoDefaultCurrentDirectoryInExePath".casefold()
+        environment = {key: value for key, value in os.environ.items() if key.casefold() != stop}
+        patcher = mock.patch.dict(os.environ, environment, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # Registered after the folder's cleanup, so it runs first: Windows refuses to remove a working directory.
+        self.addCleanup(os.chdir, Path.cwd())
+        os.chdir(self.planted)
+
+    def path_values(self) -> dict[str, str]:
+        """PATH as it is, and with entries that name the working directory relative to it before it."""
+        path = os.environ.get("PATH", "")
+        return {"as it is": path, "relative entries first": os.pathsep.join((".", "", path))}
+
+    def test_run_starts_the_git_on_path_and_never_one_in_the_working_directory(self) -> None:
+        for label, path in self.path_values().items():
+            with self.subTest(path=label), mock.patch.dict(os.environ, {"PATH": path}):
+                result = GitClient(timeout=60).run(["--version"])
+                self.assertEqual((0, "git version"), (result.returncode, result.stdout[:11]))
+                self.assertNotEqual(self.planted, Path(git()).parent)
+
+    def test_stream_starts_the_git_on_path_and_never_one_in_the_working_directory(self) -> None:
+        for label, path in self.path_values().items():
+            with (
+                self.subTest(path=label),
+                mock.patch.dict(os.environ, {"PATH": path}),
+                GitClient(timeout=60).stream(["--version"]) as stream,
+            ):
+                stream.stdin.close()
+                self.assertEqual(b"git version", stream.read(11))
+
+    def test_git_is_looked_up_once_for_each_search_environment(self) -> None:
+        finished = bounded_process.Finished(0, b"", b"")
+        program = git()
+        with (
+            mock.patch.dict(git_client.FOUND, clear=True),
+            mock.patch.object(
+                executable_locator, "find_executable", wraps=executable_locator.find_executable
+            ) as lookup,
+            mock.patch.object(git_client, "run_bounded", return_value=finished) as run,
+        ):
+            GitClient().run(["status"])
+            GitClient().run(["log"])
+            self.assertEqual(1, lookup.call_count)
+            self.assertEqual([[program, "status"], [program, "log"]], [call.args[0] for call in run.call_args_list])
+            self.assertTrue(Path(program).is_absolute())
+            with mock.patch.dict(os.environ, {"PATH": os.pathsep.join((os.environ["PATH"], str(self.planted)))}):
+                GitClient().run(["status"])
+            self.assertEqual(2, lookup.call_count, "a changed PATH is looked up again")
+
+    def test_a_git_the_locator_cannot_find_is_a_prerequisite_error(self) -> None:
+        with mock.patch.dict(os.environ, {"PATH": str(self.planted / "never a folder")}):
+            with self.assertRaises(GitError) as context:
+                GitClient().run(["--version"])
+            self.assertEqual("prerequisite", context.exception.kind)
+            with self.assertRaises(GitError) as context, GitClient().stream(["--version"]):
+                pass
+            self.assertEqual("prerequisite", context.exception.kind)
 
 
 # The listing the issue reproduces the defect with, and what each of its two repositories answers.

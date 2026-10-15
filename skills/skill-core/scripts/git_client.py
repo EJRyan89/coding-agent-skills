@@ -18,6 +18,10 @@ client given a `runner` alone refuses a call with input rather than run real git
 `stream` runs a git command that answers requests while it runs, such as `cat-file --batch`, with the same
 environment; there the time limit bounds each wait for output rather than the whole command.
 
+Both start git at the absolute path skill-core's `executable_locator` finds for it, never by its bare name, which
+process creation on Windows looks up in the working directory before PATH, so a `git.exe` in the folder a skill runs
+from is never the git it runs. The path is looked up once for each value of the variables the locator reads.
+
 A transient failure of a command that only fetches from a remote, a connection dropped or a host briefly not found, is
 retried a few times with short waits inside the call's own time limit, and `run` returns the last answer. Every other
 command runs once, and `push` is never repeated. Tests inject the sleeper and the clock.
@@ -34,6 +38,7 @@ from pathlib import Path
 from typing import IO, Protocol, TypeVar
 
 from bounded_process import Streaming, run_bounded, streaming
+from executable_locator import Found, located_command
 
 T = TypeVar("T")
 
@@ -133,16 +138,21 @@ COMMANDS_ALLOWED = {
 }
 
 
+# The git the runner and `stream` found, kept so a run of many git commands looks it up once.
+FOUND: Found = {}
+
+
 def subprocess_runner(command: Sequence[str], timeout: float, *, input_bytes: bytes | None = None) -> GitResult:
-    """Run a command through the bounded, non-interactive layer, classifying why it could not run or finish.
+    """Run a command through the bounded, non-interactive layer, its program at the path the locator finds,
+    classifying why it could not run or finish.
 
     With `input_bytes`, the command's stdin is exactly those bytes and then closed.
     """
     try:
         if input_bytes is None:
-            finished = run_bounded(command, timeout)
+            finished = run_bounded(located_command(command, kept=FOUND), timeout)
         else:
-            finished = run_bounded(command, timeout, input_bytes=input_bytes)
+            finished = run_bounded(located_command(command, kept=FOUND), timeout, input_bytes=input_bytes)
     except FileNotFoundError as exc:
         raise GitError(MISSING_GIT, kind="prerequisite") from exc
     except subprocess.TimeoutExpired as exc:
@@ -365,7 +375,10 @@ class GitClient:
         with ExitStack() as stack:
             try:
                 running = stack.enter_context(
-                    streaming(command, idle_timeout=self.timeout if idle_timeout is None else idle_timeout)
+                    streaming(
+                        located_command(command, kept=FOUND),
+                        idle_timeout=self.timeout if idle_timeout is None else idle_timeout,
+                    )
                 )
             except FileNotFoundError as exc:
                 raise GitError(MISSING_GIT, kind="prerequisite") from exc

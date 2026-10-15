@@ -53,6 +53,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 from audit_ai_config import _parse_mcp_json, _read_codex_mcp
 from bounded_process import Streaming, streaming
 from console import run_main
+from executable_locator import find_executable
 
 # Every server this starts is a command the target repository configures, so the skill leaves this script ungranted
 # and the user approves each run.
@@ -233,10 +234,11 @@ COMMANDS_ALLOWED = {
 
 def resolve_command(command: str, cwd: Path) -> str | None:
     """The program a server's command names: a path is relative to the server's working directory, the directory a
-    client starts it in, and a bare name is looked up on PATH."""
+    client starts it in, and a bare name is the program skill-core's locator finds for it, so the folder this script
+    runs from, which `shutil.which` searches first on Windows, never decides it."""
     if any(separator in command for separator in (os.sep, os.altsep) if separator):
         return shutil.which(str(cwd / command))
-    return shutil.which(command)
+    return find_executable(command)
 
 
 def handshake(root: Path, entry: dict[str, Any], timeout: float) -> str:
