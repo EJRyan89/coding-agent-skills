@@ -46,7 +46,7 @@ def failed(stderr: str, head: str = "") -> CommandResult:
     return CommandResult(1, head, stderr)
 
 
-def search_page(items: list[Any], total: int | None = None) -> dict[str, Any]:
+def search_page(items: list[Any], total: object = None) -> dict[str, Any]:
     return {"total_count": len(items) if total is None else total, "incomplete_results": False, "items": items}
 
 
@@ -72,6 +72,19 @@ def scripted(*responses: CommandResult) -> tuple[Callable[[Sequence[str]], Comma
     def run(arguments: Sequence[str]) -> CommandResult:
         calls.append(list(arguments))
         return queue.pop(0)
+
+    return run, calls
+
+
+def bounded(*answers: CommandResult) -> tuple[Callable[[Sequence[str]], CommandResult], list[list[str]]]:
+    """A runner that answers with `answers` in turn, repeating the last, and fails a test that pages without end."""
+    calls: list[list[str]] = []
+
+    def run(arguments: Sequence[str]) -> CommandResult:
+        calls.append(list(arguments))
+        if len(calls) > 5:
+            raise AssertionError("pagination did not stop")
+        return answers[min(len(calls), len(answers)) - 1]
 
     return run, calls
 
@@ -272,12 +285,12 @@ class SearchTests(unittest.TestCase):
     def test_a_search_count_must_be_a_non_negative_integer(self) -> None:
         counts: tuple[object, ...] = (True, False, "1", 1.0, -1)
         for count in counts:
-            client, _ = client_for(scripted(ok({"items": [], "total_count": count}))[0])
+            client, _ = client_for(scripted(ok(search_page([], count)))[0])
             with self.subTest(count=count), self.assertRaises(GitHubError) as context:
                 client.search_all("search/issues", "q", KEY)
             self.assertEqual("malformed", context.exception.kind)
             self.assertIn("response.total_count must be an integer of at least 0", str(context.exception))
-        client, _ = client_for(scripted(ok({"items": rows(1), "total_count": 1}))[0])
+        client, _ = client_for(scripted(ok(search_page(rows(1), 1)))[0])
         self.assertEqual(1, fetch(client))
 
     def test_a_graphql_search_count_must_be_a_non_negative_integer(self) -> None:
@@ -308,6 +321,46 @@ class SearchTests(unittest.TestCase):
             with self.subTest(search=search), self.assertRaises(GitHubError) as context:
                 client.graphql_search_range("q {span}", "octo", date(2026, 1, 1), date(2026, 1, 31))
             self.assertEqual("malformed", context.exception.kind)
+
+    def test_incomplete_results_must_be_a_boolean(self) -> None:
+        for value in ("true", 1, None):
+            run, calls = scripted(ok(dict(search_page([], 0), incomplete_results=value)))
+            client, sleeper = client_for(run)
+            with self.subTest(value=value), self.assertRaises(GitHubError) as context:
+                fetch(client)
+            self.assertEqual(("malformed", 1, []), (context.exception.kind, len(calls), sleeper.waits))
+            self.assertIn("response.incomplete_results must be a boolean", str(context.exception))
+
+    def test_a_search_result_must_be_an_object(self) -> None:
+        client, _ = client_for(scripted(ok(search_page([{"id": "i0"}, "i1"])))[0])
+        with self.assertRaises(GitHubError) as context:
+            fetch(client)
+        self.assertEqual("malformed", context.exception.kind)
+        self.assertIn("response.items[1] must be an object", str(context.exception))
+
+    def test_graphql_search_page_info_must_be_typed_and_advance(self) -> None:
+        def page(page_info: dict[str, Any]) -> CommandResult:
+            return ok({"data": {"search": {"issueCount": 5, "pageInfo": page_info, "nodes": [{"id": "PR_1"}]}}})
+
+        cases: dict[str, dict[str, Any]] = {
+            "data.search.pageInfo.hasNextPage must be a boolean": {"hasNextPage": "false", "endCursor": None},
+            "data.search.pageInfo.endCursor must be a non-empty string": {"hasNextPage": True, "endCursor": None},
+            "data.search.pageInfo.endCursor must be a cursor not already followed": {
+                "hasNextPage": True,
+                "endCursor": "c1",
+            },
+        }
+        calls: list[list[str]] = []
+        for message, page_info in cases.items():
+            run, calls = bounded(page(page_info))
+            client, _ = client_for(run)
+            with self.subTest(message=message), self.assertRaises(GitHubError) as context:
+                client.graphql_search_range("q {span}", "octo", date(2026, 1, 1), date(2026, 1, 31))
+            self.assertEqual("malformed", context.exception.kind)
+            self.assertIn(message, str(context.exception))
+            self.assertLessEqual(len(calls), 2)
+        self.assertIn("-f", calls[1])
+        self.assertIn("after=c1", calls[1], "the cursor GitHub gave is followed once, then refused when it repeats")
 
     def test_invalid_json_fails_closed(self) -> None:
         client, _ = client_for(scripted(CommandResult(0, "not json", ""))[0])
@@ -648,6 +701,75 @@ class CollectTests(unittest.TestCase):
             f"{REVIEWED}2026-03-01..2026-05-20", next(query for query in github.queries if "reviewed-by" in query)
         )
 
+    def reviews_of(self, page_info: dict[str, Any], nodes: list[Any], author: object = None) -> tuple[Any, list[Any]]:
+        """`_review_dates` over one pull request whose every review page answers `page_info` and `nodes`."""
+        connection = {"pageInfo": page_info, "nodes": nodes}
+        pull = {"id": "PR_1", "author": author, "reviews": connection}
+        search = {"data": {"search": {"issueCount": 1, "pageInfo": {"hasNextPage": False}, "nodes": [pull]}}}
+        run, calls = bounded(ok(search), ok({"data": {"node": pull}}))
+        client = GitHubSearchClient(run, Recorder())
+        try:
+            return report._review_dates(client, "acme", "octo", [date(2026, 1, 1)], date(2026, 1, 31), {}), calls
+        except GitHubError as exc:
+            return exc, calls
+
+    def test_review_page_info_must_be_typed_and_advance(self) -> None:
+        cases: dict[str, dict[str, Any]] = {
+            "reviews.pageInfo.hasNextPage must be a boolean": {"hasNextPage": "false"},
+            "reviews.pageInfo.endCursor must be a non-empty string": {"hasNextPage": True, "endCursor": 7},
+            "reviews.pageInfo.endCursor must be a cursor not already followed": {
+                "hasNextPage": True,
+                "endCursor": "r1",
+            },
+        }
+        for message, page_info in cases.items():
+            failure, calls = self.reviews_of(page_info, [])
+            with self.subTest(message=message):
+                self.assertIsInstance(failure, GitHubError)
+                self.assertEqual("malformed", failure.kind)
+                self.assertIn(message, str(failure))
+                self.assertLessEqual(len(calls), 2)
+
+    def test_a_review_must_be_an_object_with_a_state(self) -> None:
+        submitted = {"submittedAt": "2026-01-10T00:00:00Z"}
+        cases: dict[str, list[Any]] = {
+            "reviews.nodes[0] must be an object, found null": [None, dict(submitted, state="APPROVED")],
+            "reviews.nodes[1] must be an object, found string": [dict(submitted, state="APPROVED"), "x"],
+            "reviews.nodes[0].state must be a non-empty string, found null": [submitted],
+            "reviews.nodes[0].state must be a non-empty string, found integer 5": [dict(submitted, state=5)],
+        }
+        for message, nodes in cases.items():
+            failure, _ = self.reviews_of({"hasNextPage": False}, nodes)
+            with self.subTest(message=message):
+                self.assertIsInstance(failure, GitHubError)
+                self.assertEqual("malformed", failure.kind)
+                self.assertIn(message, str(failure))
+
+    def test_a_review_timestamp_must_state_its_offset(self) -> None:
+        failure, _ = self.reviews_of({"hasNextPage": False}, [review("APPROVED", "2026-01-31T22:00:00")])
+        self.assertIsInstance(failure, GitHubError)
+        self.assertEqual("malformed", failure.kind)
+        self.assertIn("reviews.nodes[0].submittedAt must be an ISO 8601 timestamp with a UTC offset", str(failure))
+        accepted = [review("APPROVED", "2026-01-31T22:00:00Z"), review("COMMENTED", "2026-01-31T22:00:00-05:00")]
+        dates, _ = self.reviews_of({"hasNextPage": False}, accepted)
+        self.assertEqual({"PR_1": [date(2026, 1, 31), date(2026, 2, 1)]}, dates)
+
+    def test_a_pull_request_author_must_be_an_object_with_a_login(self) -> None:
+        for author in ({"login": 5}, {}, "octo"):
+            failure, _ = self.reviews_of({"hasNextPage": False}, [], author)
+            with self.subTest(author=author):
+                self.assertIsInstance(failure, GitHubError)
+                self.assertEqual("malformed", failure.kind)
+                self.assertIn("author", str(failure))
+
+    def test_a_search_result_timestamp_must_state_its_offset(self) -> None:
+        github = self.fake()
+        github.dated[AUTHORED] = [(date(2026, 3, 31), {"node_id": "PR_a", "created_at": "2026-03-31T22:00:00"})]
+        with self.assertRaises(GitHubError) as context:
+            self.collect(github)
+        self.assertEqual("malformed", context.exception.kind)
+        self.assertIn("created_at must be an ISO 8601 timestamp with a UTC offset", str(context.exception))
+
     def test_search_results_without_identity_fail_closed(self) -> None:
         github = self.fake()
         github.dated[AUTHORED] = [(date(2026, 3, 15), {"created_at": "2026-03-15T10:00:00Z"})]
@@ -734,6 +856,17 @@ class MainTests(unittest.TestCase):
         self.assertEqual(
             (1, "FAILED gh: HTTP 404: Not Found (https://api.github.com/search/issues) [not_found]\n"), (code, stdout)
         )
+
+    def test_an_unsearchable_user_fails_with_the_reason_github_gives(self) -> None:
+        reason = (
+            "The listed users cannot be searched either because the users do not exist or you do not have "
+            "permission to view the users."
+        )
+        body = json.dumps({"message": "Validation Failed", "errors": [{"message": reason, "code": "invalid"}]})
+        head = "HTTP/2.0 422 Unprocessable Entity\r\nContent-Type: application/json\r\n\r\n"
+        run, _ = scripted(failed("gh: Validation Failed (HTTP 422)\n", head + body))
+        code, stdout, _ = self.run_main(["--org", "acme", "--user", "octo"], GitHubSearchClient(run, Recorder()))
+        self.assertEqual((1, f"FAILED gh: Validation Failed (HTTP 422): {reason} [api]\n"), (code, stdout))
 
     def test_output_survives_a_console_that_cannot_encode_it(self) -> None:
         # A Windows pipe defaults to a legacy code page, and a failure quotes gh's stderr as it came. The child runs
