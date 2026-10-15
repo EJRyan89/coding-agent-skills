@@ -31,18 +31,19 @@ def link_folders() -> list[Path]:
     return [local / "Microsoft" / "WinGet" / "Links"] if local.is_absolute() else []
 
 
-def path_programs(name: str) -> list[str]:
+def path_programs(name: str, search_path: str | None = None) -> list[str]:
     """Every file PATH holds for the command `name`, in the order `shutil.which` would look: PATH's folders in turn,
     each folder once, and within one, `name` itself when it already ends in a PATHEXT extension, then `name` with each
-    extension in PATHEXT's order. The current directory, which `shutil.which` searches first on Windows, is never
-    searched, because PATH does not name it."""
+    extension in PATHEXT's order. `search_path` is the PATH value searched, this process's own when it is None. The
+    current directory, which `shutil.which` searches first on Windows, is never searched, because PATH does not name
+    it."""
     extensions = [extension for extension in os.environ.get("PATHEXT", "").split(os.pathsep) if extension]
     names = [name + extension for extension in extensions] or [name]
     if any(name.casefold().endswith(extension.casefold()) for extension in extensions):
         names.insert(0, name)
     found: list[str] = []
     seen: set[str] = set()
-    for folder in os.environ.get("PATH", "").split(os.pathsep):
+    for folder in (os.environ.get("PATH", "") if search_path is None else search_path).split(os.pathsep):
         if not folder or os.path.normcase(folder) in seen:
             continue
         seen.add(os.path.normcase(folder))

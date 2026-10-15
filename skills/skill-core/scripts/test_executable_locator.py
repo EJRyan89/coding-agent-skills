@@ -101,6 +101,18 @@ class FindExecutableTests(LocatorTestCase):
         self.program(self.local)
         self.assertIsNone(find_executable(PROGRAM))
 
+    def test_a_search_path_given_is_searched_in_place_of_path_and_never_the_working_directory(self) -> None:
+        second = self.path_folder.parent / "second"
+        second.mkdir()
+        program = self.program(second)
+        self.program(self.path_folder)
+        self.addCleanup(os.chdir, Path.cwd())
+        os.chdir(self.local)
+        self.program(self.local)
+        self.assertEqual([program], [Path(path) for path in path_programs(PROGRAM, str(second))])
+        self.assertEqual([], path_programs(PROGRAM, str(self.links)))
+        self.assertEqual([], path_programs(PROGRAM, ""))
+
 
 class FindExecutablesTests(LocatorTestCase):
     def test_every_candidate_in_search_order_path_first_then_the_links_folder(self) -> None:

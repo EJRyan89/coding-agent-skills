@@ -214,6 +214,98 @@ class ReadTests(GuardFixture):
                     self.assert_denied(self.decide(tool, **tool_input))
 
 
+class LocalPathTests(GuardFixture):
+    """A path is held to the temporary directory and the skill's folder by its text, before anything resolves it."""
+
+    @contextlib.contextmanager
+    def untouched(self, marker: str) -> Any:
+        """Fail on any resolve or file test of a path holding `marker`: resolving a path to a host that does not
+        answer blocks past the hook's timeout, and Claude Code lets a call through when its hook times out."""
+        touched: list[str] = []
+        resolve, is_file = Path.resolve, Path.is_file
+
+        def spy(real: Any) -> Any:
+            def call(path: Path, *args: Any, **kwargs: Any) -> Any:
+                if marker in os.path.normcase(str(path)):
+                    touched.append(str(path))
+                return real(path, *args, **kwargs)
+
+            return call
+
+        with mock.patch.object(Path, "resolve", spy(resolve)), mock.patch.object(Path, "is_file", spy(is_file)):
+            yield
+        self.assertEqual([], touched, "a path the guard refuses by its text is never resolved or tested")
+
+    def calls(self, path: str) -> list[tuple[str, dict[str, str]]]:
+        """Every guarded call that names `path`, as a file, a folder, or a command's run."""
+        return [
+            ("Read", {"file_path": path}),
+            ("Grep", {"pattern": "class", "path": path}),
+            ("Glob", {"pattern": "*.cs", "path": path}),
+            ("Write", {"file_path": path}),
+            ("Edit", {"file_path": path}),
+            ("Bash", {"command": rp.self_check_command(Path(path), "csharp-review")}),
+        ]
+
+    def test_network_and_device_paths_are_denied_by_their_text(self) -> None:
+        marker = "unreachable.invalid"
+        paths = [f"//{marker}/share/code-review-run-abc/work/csharp-review.prompt.md"]
+        if sys.platform == "win32":
+            paths += [
+                f"\\\\{marker}\\share\\code-review-run-abc\\work\\csharp-review.prompt.md",
+                f"\\\\?\\UNC\\{marker}\\share\\x.cs",
+                f"//?/UNC/{marker}/share/x.cs",
+                f"\\\\.\\{marker}\\x.cs",
+                f"\\\\?\\{self.run_directory / marker}",  # a device spelling of a path in the run
+            ]
+        with self.untouched(marker):
+            for path in paths:
+                with self.subTest(path=path, claimed=False):
+                    self.assert_denied(self.decide("Read", file_path=path), "not a network or device path")
+            self.assertFalse(self.claims.exists(), "a denied first read claims nothing")
+            self.claim()
+            for path in paths:
+                for tool, tool_input in self.calls(path):
+                    with self.subTest(path=path, tool=tool):
+                        self.assert_denied(self.decide(tool, **tool_input), "not a network or device path")
+            # A relative path names the session's working directory, which a hook event may give as a network one.
+            event = {"tool_name": "Read", "tool_input": {"file_path": "x.cs"}, "agent_id": AGENT}
+            reason = guard.decide({**event, "cwd": f"//{marker}/share"})
+            self.assert_denied(reason, "not a network or device path")
+
+    def test_a_path_outside_the_temporary_directory_and_the_skill_is_denied_unresolved(self) -> None:
+        marker = "unreachable-mount"
+        outside = Path(self.root.anchor) / marker
+        paths = [str(outside / "code-review-run-abc" / "work" / "csharp-review.prompt.md"), str(outside / "x.cs")]
+        if sys.platform == "win32":
+            drive = next(f"{letter}:" for letter in "ZYXWVUTSRQ" if not self.root.anchor.upper().startswith(letter))
+            paths += [f"{drive}\\{marker}\\x.cs", f"{drive}{marker}\\x.cs"]  # another drive, and drive-relative
+        with self.untouched(marker):
+            for path in paths:
+                with self.subTest(path=path, claimed=False):
+                    self.assert_denied(self.decide("Read", file_path=path), "is outside every folder it may use")
+            self.claim()
+            for path in paths:
+                for tool, tool_input in self.calls(path):
+                    with self.subTest(path=path, tool=tool):
+                        self.assert_denied(self.decide(tool, **tool_input), "is outside every folder it may use")
+            event = {"tool_name": "Read", "tool_input": {"file_path": "x.cs"}, "agent_id": AGENT}
+            self.assert_denied(guard.decide({**event, "cwd": str(outside)}), "is outside every folder it may use")
+
+    def test_local_paths_under_the_run_and_the_skill_are_resolved_and_allowed(self) -> None:
+        roundabout = self.run_directory / "work" / ".." / "work" / "csharp-review.prompt.md"
+        self.assertIsNone(self.decide("Read", file_path=str(roundabout)))
+        self.assertIsNone(self.decide("Read", file_path=str(self.run_directory / "source" / "app" / "Service.cs")))
+        self.assertIsNone(self.decide("Read", file_path=str(guard.REFERENCES / "generic-reviewer.md")))
+        self.assertIsNone(self.decide("Grep", pattern="class", path=str(self.run_directory / "source")))
+        self.assertIsNone(self.decide("Write", file_path=self.result()))
+        self.assertIsNone(self.decide("Bash", command=rp.self_check_command(self.run_directory, "csharp-review")))
+        event = {"tool_name": "Read", "tool_input": {"file_path": "app/Service.cs"}, "agent_id": AGENT}
+        self.assertIsNone(guard.decide({**event, "cwd": str(self.run_directory / "source")}))
+        # Inside the roots, the resolved path is still held to the claimed run.
+        self.assert_denied(self.decide("Read", file_path=str(self.checkout / "app" / "x.cs")), "may only look inside")
+
+
 class ReadLogTests(GuardFixture):
     """The guard logs each snapshot file a reviewer reads to its role's read log, which only `check` reads."""
 
@@ -436,6 +528,46 @@ class ClaimTests(GuardFixture):
                     if allowed:
                         self.assert_denied(self.decide("Write", file_path=self.result()))
 
+    def test_a_run_folder_inside_another_runs_tree_is_never_claimed(self) -> None:
+        # A pull request's tree, copied into the snapshot, may hold a run folder whose run.json names a result file
+        # of the author's choosing.
+        chosen = self.root / "chosen" / "anywhere.txt"
+        planted = [
+            self.run_directory / "source" / "code-review-run-planted",
+            self.run_directory / "source" / "app" / "code-review-run-planted",
+            self.run_directory / "work" / "code-review-run-planted",
+        ]
+        for nested in planted:
+            nested.mkdir(parents=True)
+            role = {"id": "csharp-review", "prompt_file": str(nested / "p.md"), "result_file": str(chosen)}
+            (nested / "run.json").write_text(json.dumps({"roles": [role]}), encoding="utf-8")
+            with self.subTest(nested=nested):
+                self.assert_denied(
+                    self.decide("Read", file_path=str(nested / "p.md")),
+                    f"{nested} sits inside the review run {self.run_directory}",
+                )
+                self.assertFalse(self.claims.exists(), "a denied first read claims nothing")
+                self.assert_denied(self.decide("Write", file_path=str(chosen)), "read the prompt file")
+        self.claim()
+        self.assertEqual(
+            {"run": str(self.run_directory), "role": "csharp-review"},
+            json.loads((self.claims / f"{AGENT}.json").read_text(encoding="utf-8")),
+        )
+        self.assertIsNone(self.decide("Write", file_path=self.result()))
+        for nested in planted:
+            with self.subTest(nested=nested, claimed=True):
+                self.assert_denied(self.decide("Write", file_path=str(chosen)), "write only your own result file")
+                command = rp.self_check_command(nested, "csharp-review")
+                self.assert_denied(self.decide("Bash", command=command), "sits inside the review run")
+
+    def test_a_run_is_found_only_under_the_temporary_directory(self) -> None:
+        # The fixture's runs sit in a folder of the temporary directory; held to another one, they are no runs.
+        elsewhere = guard._spellings(self.root / "elsewhere")
+        with mock.patch.object(guard, "TEMPORARY_ROOTS", elsewhere):
+            self.assert_denied(self.decide("Read", file_path=self.prompt()), "is not a reviewer prompt")
+        self.assertFalse(self.claims.exists())
+        self.claim()
+
     def test_without_an_agent_id_every_guarded_call_is_denied(self) -> None:
         for agent in (None, "", "../escape", "a b", 7):
             with self.subTest(agent=agent):
@@ -598,9 +730,8 @@ class FieldKindTests(GuardFixture):
 
 class HookTests(GuardFixture):
     def hook(self, stdin: str | bytes, **environment: str) -> subprocess.CompletedProcess[Any]:
-        # The hook process finds its claims under the system temporary directory, here this test's own.
-        temporary = str(self.root / "tmp")
-        Path(temporary).mkdir(exist_ok=True)
+        # The hook process finds its runs and claims under the system temporary directory, here this test's own.
+        temporary = str(self.root)
         return subprocess.run(
             [sys.executable, "-B", str(SCRIPT_DIRECTORY / "review_guard.py")],
             input=stdin.encode("utf-8") if isinstance(stdin, str) else stdin,
@@ -622,7 +753,7 @@ class HookTests(GuardFixture):
             "agent_id": AGENT,
         }
         self.assertEqual("", self.hook(json.dumps(event), PYTHONIOENCODING="utf-8").stdout.decode(), "allowed")
-        self.assertTrue((self.root / "tmp" / "code-review-reviewer-claims" / f"{AGENT}.json").is_file())
+        self.assertTrue((self.root / "code-review-reviewer-claims" / f"{AGENT}.json").is_file())
         outside = {**event, "tool_input": {"file_path": str(self.checkout / "app" / "x.cs")}}
         decision = json.loads(self.hook(json.dumps(outside)).stdout)["hookSpecificOutput"]
         self.assertEqual(("PreToolUse", "deny"), (decision["hookEventName"], decision["permissionDecision"]))

@@ -38,7 +38,7 @@ if platform_support.WINDOWS:
         def which(self, git: str | None) -> Any:
             wsl_bash = r"C:\Windows\System32\bash.exe"
             return mock.patch(
-                "deployer.platform_support.shutil.which",
+                "deployer.platform_support.find_executable",
                 side_effect=lambda name: {"git": git, "bash": wsl_bash}.get(name),
             )
 
@@ -159,6 +159,57 @@ else:
             program = make_program(self.bin, "fixture-deployer-tool")
             self.assertEqual(str(program), platform_support.find_executable("fixture-deployer-tool"))
             self.assertIsNone(platform_support.find_executable("fixture-absent-tool"))
+
+
+class WorkingDirectoryTests(DeployerTestCase):
+    """A program in the working directory is never the PowerShell, the git, or the program on a given PATH the
+    deployer and the validation runner look up: `shutil.which` searches the working directory first on Windows, and
+    PATH does not name it."""
+
+    PROGRAMS = ("pwsh", "powershell", "git", "mypy")
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.planted = self.root / "working directory"
+        self.planted.mkdir()
+        self.empty = self.root / "empty path"
+        self.empty.mkdir()
+        for name in self.PROGRAMS:
+            program = self.planted / (f"{name}.exe" if platform_support.WINDOWS else name)
+            program.write_bytes(b"#!/bin/sh\nexit 0\n")
+            program.chmod(0o755)
+        # Without the variable that stops it, Windows' own search would find the planted programs on any Python.
+        stop = "NoDefaultCurrentDirectoryInExePath".casefold()
+        environment = {key: value for key, value in os.environ.items() if key.casefold() != stop}
+        environment.update(PATH=str(self.empty), LOCALAPPDATA=str(self.root / "local app data"))
+        if platform_support.WINDOWS:
+            environment["PATHEXT"] = ".EXE"
+        patcher = mock.patch.dict(os.environ, environment, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.started_in = Path.cwd()
+        os.chdir(self.planted)
+
+    def tearDown(self) -> None:
+        # Leave the folder before the harness removes it, which Windows refuses while it is a working directory.
+        os.chdir(self.started_in)
+        super().tearDown()
+
+    def test_powershell_is_not_found_in_the_working_directory(self) -> None:
+        self.assertIsNone(platform_support.find_powershell())
+
+    def test_pwsh_and_a_program_on_a_given_path_are_not_found_in_the_working_directory(self) -> None:
+        self.assertIsNone(platform_support.find_pwsh(str(self.empty)))
+        self.assertIsNone(platform_support.find_on_path("mypy", str(self.empty)))
+        # The control: the planted programs are found where a search path names their folder.
+        found = platform_support.find_on_path("mypy", str(self.planted))
+        self.assertEqual(self.planted, Path(str(found)).parent, "the same folder named by the path is searched")
+        self.assertEqual(self.planted, Path(str(platform_support.find_pwsh(str(self.planted)))).parent)
+
+    def test_the_git_whose_bash_is_asked_for_is_not_found_in_the_working_directory(self) -> None:
+        with mock.patch("deployer.platform_support.run_tool") as run_tool:
+            self.assertIsNone(platform_support._bash_beside_git())
+        run_tool.assert_not_called()
 
 
 class HiddenWindowTests(GitTestCase):
