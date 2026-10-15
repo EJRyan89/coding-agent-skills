@@ -1,7 +1,9 @@
-"""Audit, reindex, and delete from a Claude Code memory directory.
+"""Audit, reindex, and delete from a Claude Code memory directory, and find a skill's source.
 
 Every command prints one fact per line on stdout. An expected failure is a last line `FAILED <reason>`
-with exit code 1; a usage error exits 2.
+with exit code 1; a usage error exits 2. Text read from a settings file, the manifest, a memory file's
+name, or a memory reaches a line or a MEMORY.md entry only through skill-core's flat_text, and a path
+holding a line break, which no line can name for a later command, is refused rather than printed.
 
 resolve and audit are read-only. They never decide what to keep or delete; the calling agent verifies
 every candidate. resolve locates the memory directory for --repo, else for the Git repository holding
@@ -9,7 +11,9 @@ the current directory, and prints `REPO <root>`; then `MEMORY_DIR <path>`, `SOUR
 from>`, and `EXISTS yes|no`, or `NO_MEMORY_DIR` when settings name no usable directory; one
 `CANDIDATE <dir>` per memory directory under the configuration directory's projects folder when no
 existing directory resolved, whether settings named a missing one, the default one is missing, or
-none is usable; and one `NOTE <text>` per caveat. No directory is a result, not a failure.
+none is usable; and one `NOTE <text>` per caveat. No directory is a result, not a failure. A
+directory a repository's settings choose is not used while permissions.blockReadsOutsideWorkingDirectories
+is on in any scope, since Claude Code then loads no memory from it and saves none to it.
 
 audit writes its JSON report of mechanical problems and candidate overlaps to --output, else to a new
 temporary file, and prints `REPORT <path>`. It refuses an --output inside the skills directory it runs
@@ -32,20 +36,30 @@ characters, because Claude Code loads the index into every session and stops at 
 It prints `INDEX_LINE`, `ADDED`, and `DROPPED` lines, then
 `NEAR_LIMIT` or `OVER_LIMIT` when the index nears or passes Claude Code's load limit, then
 `UNCHANGED`, `WOULD_WRITE <path>`, or `WROTE <path>`. OVER_LIMIT is a finding: it exits 1.
+A memory whose file name holds a line break, which no entry can link on one line, is a
+`FAILED` line, and nothing is written.
 
 delete removes the named memory files and nothing else. Each name must be a bare .md file name
 directly inside the memory directory: not MEMORY.md, not a path (no separator, drive, `.`, or
-`..`), not named twice, and an existing regular file, never a directory, symbolic link, or
-junction. Every name is checked before any is deleted. When any name is refused it prints one
+`..`), holding no line break, not named twice, and an existing regular file, never a directory,
+symbolic link, or junction. Every name is checked before any is deleted. When any name is refused it prints one
 `FAILED <name>: <reason>` line per refusal, deletes nothing, and exits 1; otherwise it prints one
 `DELETED <name>` line per file. When a deletion fails part way, the files already printed as
 DELETED are gone, a last `FAILED <name>: <reason>` names the one that failed, and the rest remain.
+
+skill-source prints `SKILL_FILE <path>` for each editable source of the named skill: the
+skills/<name>/SKILL.md of the checkout the deployer's manifest records for it, and the repository's
+.claude/skills/<name>/SKILL.md; with --file it checks a source file named instead. It never names a
+file inside a skills directory, the deployed copy among them, because the deployer stops updating a
+skill whose deployed copy changed, and prints a `NOTE` for each such file it passes over. With no
+source left, it prints `FAILED <reason>` and exits 1.
 
 Usage:
   python memory_audit.py resolve [--repo ROOT]
   python memory_audit.py audit --memory-dir DIR [--repo ROOT] [--user-dir DIR] [--instructions FILE ...] [--output FILE]
   python memory_audit.py reindex --memory-dir DIR [--write]
   python memory_audit.py delete --memory-dir DIR FILE [FILE ...]
+  python memory_audit.py skill-source (NAME | --file FILE) [--repo ROOT] [--home DIR]
 """
 
 from __future__ import annotations
@@ -69,11 +83,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 from console import run_main
 from flat_text import flat_text
-from git_client import GitClient
+from git_client import GitClient, GitError
 from markdown_sections import CODE_SPAN
 from skill_roots import skills_directory_holding
 
 INDEX_NAME = "MEMORY.md"
+# The deployer's ownership manifest beside the skills it deploys, and where a source checkout keeps a skill.
+MANIFEST_NAME = ".deploy-manifest.json"
+SETTINGS_NOTE = (
+    "A --settings file passed when Claude Code starts can also set autoMemoryDirectory; this audit cannot see it."
+)
+BLOCK_READS = "blockReadsOutsideWorkingDirectories"
 # Claude Code loads the first 200 lines or 25KB of MEMORY.md, whichever comes first.
 INDEX_LINE_LIMIT = 200
 INDEX_BYTE_LIMIT = 25_000
@@ -187,6 +207,11 @@ class Memory:
     broken_links: list[str] = field(default_factory=list)
     cited_paths: list[CitedPath] = field(default_factory=list)
     overlaps: list[Overlap] = field(default_factory=list)
+
+
+def holds_line_break(text: str) -> bool:
+    """Whether `text` holds a character `str.splitlines` breaks a line at, so no one line can carry it whole."""
+    return "".join(text.splitlines()) != text
 
 
 def indentation(line: str) -> int:
@@ -546,10 +571,17 @@ def write_index(path: Path, content: str) -> None:
         raise
 
 
+def bare_name(name: str) -> bool:
+    """Whether name names one entry directly inside a folder: no separator, drive, `.`, or `..`."""
+    return bool(name) and "/" not in name and "\\" not in name and not Path(name).anchor and name not in (".", "..")
+
+
 def refusal(memory_dir: Path, name: str) -> str | None:
     """Why name must not be deleted, or None when it is a memory file directly inside memory_dir."""
-    if not name or "/" in name or "\\" in name or Path(name).anchor or name in (".", ".."):
+    if not bare_name(name):
         return "not a file name directly inside the memory directory"
+    if holds_line_break(name):
+        return "the name holds a line break, so no line can name it; rename the file first"
     if not name.lower().endswith(".md"):
         return "not a .md file"
     if name.casefold() == INDEX_NAME.casefold():
@@ -559,7 +591,7 @@ def refusal(memory_dir: Path, name: str) -> str | None:
     except FileNotFoundError:
         return "no such file"
     except OSError as exc:
-        return f"cannot inspect: {exc.strerror or exc}"
+        return f"cannot inspect: {reason(exc)}"
     # A symbolic link or Windows junction is never followed, whatever it points at.
     reparse = getattr(status, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
     if not stat.S_ISREG(status.st_mode) or reparse:
@@ -572,19 +604,19 @@ def delete(memory_dir: Path, names: list[str]) -> tuple[int, list[str]]:
     output: list[str] = []
     seen: set[str] = set()
     for name in names:
-        reason = "named more than once" if name.casefold() in seen else refusal(memory_dir, name)
+        refused = "named more than once" if name.casefold() in seen else refusal(memory_dir, name)
         seen.add(name.casefold())
-        if reason:
-            output.append(f"FAILED {name}: {reason}")
+        if refused:
+            output.append(f"FAILED {flat_text(name)}: {refused}")
     if output:
         return 1, output
     for name in names:
         try:
             (memory_dir / name).unlink()
         except OSError as exc:
-            output.append(f"FAILED {name}: {exc.strerror or exc}")
+            output.append(f"FAILED {flat_text(name)}: {reason(exc)}")
             return 1, output
-        output.append(f"DELETED {name}")
+        output.append(f"DELETED {flat_text(name)}")
     return 0, output
 
 
@@ -622,57 +654,94 @@ def resolve(repo: Path, home: Path, environment: dict[str, str], managed: Path) 
     """Locate the auto-memory directory for repo, with the memory directories found when none exists there."""
     config_dir = config_directory(home, environment)
     result = locate(repo, home, environment, managed, config_dir)
+    if result["memory_dir"] is not None and holds_line_break(result["memory_dir"]):
+        result = unresolved(
+            [
+                *result["notes"],
+                f"The memory directory from {result['source']} holds a line break: {result['memory_dir']!r}",
+            ]
+        )
     if not result["exists"]:
-        projects = config_dir / "projects"
-        result["candidates"] = sorted(str(path) for path in projects.glob("*/memory") if path.is_dir())
+        found = sorted(str(path) for path in (config_dir / "projects").glob("*/memory") if path.is_dir())
+        result["candidates"] = [path for path in found if not holds_line_break(path)]
+        result["notes"] += [
+            f"Left out a memory directory whose path holds a line break: {path!r}"
+            for path in found
+            if holds_line_break(path)
+        ]
     return result
+
+
+class UnreadableSettings(Exception):
+    """A settings file that exists but holds no readable JSON."""
+
+
+def unresolved(notes: list[str]) -> dict:
+    return {"memory_dir": None, "source": None, "exists": False, "notes": notes}
+
+
+def read_settings(path: Path) -> dict:
+    """A settings file's top-level object, empty when the file is absent or holds another value."""
+    if not path.is_file():
+        return {}
+    try:
+        settings = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise UnreadableSettings(f"Cannot read {path}: {exc}") from exc
+    return settings if isinstance(settings, dict) else {}
+
+
+def repository_supplied(repo: Path, scope: str) -> bool:
+    """Whether Claude Code counts a scope's file as supplied by the repository rather than by the user.
+
+    The project's settings.json always is; its settings.local.json is when git tracks it or `.claude` is a symbolic
+    link (https://code.claude.com/docs/en/permissions, "When your local settings file needs trust"). When git cannot
+    tell, the file counts as the repository's, the answer that never uses a directory Claude Code may ignore.
+    """
+    if scope != "local":
+        return scope == "project"
+    if (repo / ".claude").is_symlink():
+        return True
+    try:
+        listed = GitClient().run(["ls-files", "--error-unmatch", "--", ".claude/settings.local.json"], directory=repo)
+    except GitError:
+        return True
+    return listed.returncode == 0
+
+
+def blocking_scope(scopes: tuple[tuple[str, Path], ...]) -> str | None:
+    """The first scope whose settings turn permissions.blockReadsOutsideWorkingDirectories on, or None.
+
+    Claude Code honors `true` from any scope, even over a managed `false` (https://code.claude.com/docs/en/settings,
+    "Exceptions to managed settings precedence").
+    """
+    for scope, path in scopes:
+        permissions = read_settings(path).get("permissions")
+        if isinstance(permissions, dict) and permissions.get(BLOCK_READS) is True:
+            return scope
+    return None
 
 
 def locate(repo: Path, home: Path, environment: dict[str, str], managed: Path, config_dir: Path) -> dict:
     """The auto-memory directory Claude Code uses for repo, following its documented order."""
-    notes = [
-        "A --settings file passed when Claude Code starts can also set autoMemoryDirectory; this audit cannot see it."
-    ]
+    notes = [SETTINGS_NOTE]
     # Claude Code reads autoMemoryDirectory from every settings scope, in their precedence order, and honors a
-    # project's settings.json or settings.local.json under workspace trust (https://code.claude.com/docs/en/memory,
-    # "Storage location", checked 2026-10-08); the --settings scope between managed and local is in the note above.
+    # project's settings.json or settings.local.json under workspace trust, but not while reads outside the working
+    # directories are blocked (https://code.claude.com/docs/en/memory, "Storage location"); the --settings scope
+    # between managed and local is in the note above.
     scopes = (
         ("managed", managed),
         ("local", repo / ".claude" / "settings.local.json"),
         ("project", repo / ".claude" / "settings.json"),
         ("user", config_dir / "settings.json"),
     )
-    for scope, path in scopes:
-        if not path.is_file():
-            continue
-        try:
-            settings = json.loads(path.read_text(encoding="utf-8-sig"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            return {
-                "memory_dir": None,
-                "source": None,
-                "exists": False,
-                "notes": [*notes, f"Cannot read {path}: {exc}"],
-            }
-        value = settings.get("autoMemoryDirectory") if isinstance(settings, dict) else None
-        if value is None:
-            continue
-        if not isinstance(value, str) or not (Path(value).is_absolute() or value.startswith("~/")):
-            return {
-                "memory_dir": None,
-                "source": None,
-                "exists": False,
-                "notes": [*notes, f"autoMemoryDirectory in {path} is not an absolute or ~/ path: {value!r}"],
-            }
-        directory = home / value[2:] if value.startswith("~/") else Path(value)
-        if scope in ("local", "project"):
-            notes.append("Claude Code honors a repository-level autoMemoryDirectory only after the folder is trusted.")
-        return {
-            "memory_dir": str(directory),
-            "source": f"autoMemoryDirectory in {scope} settings ({path})",
-            "exists": directory.is_dir(),
-            "notes": notes,
-        }
+    try:
+        for scope, path in scopes:
+            value = read_settings(path).get("autoMemoryDirectory")
+            if value is not None:
+                return chosen_directory(repo, home, scopes, (scope, path, value), notes)
+    except UnreadableSettings as exc:
+        return unresolved([*notes, str(exc)])
     projects = config_dir / "projects"
     name = environment.get("CLAUDE_CODE_PROJECT_DIR_NAME")
     if name:
@@ -686,6 +755,42 @@ def locate(repo: Path, home: Path, environment: dict[str, str], managed: Path, c
     return {"memory_dir": str(directory), "source": source, "exists": directory.is_dir(), "notes": notes}
 
 
+def chosen_directory(
+    repo: Path, home: Path, scopes: tuple[tuple[str, Path], ...], chosen: tuple[str, Path, object], notes: list[str]
+) -> dict:
+    """The directory autoMemoryDirectory names in the first scope that sets it, unless Claude Code would not use it.
+
+    Raises UnreadableSettings when a repository's choice needs every scope read for the block on outside reads.
+    """
+    scope, path, value = chosen
+    if not isinstance(value, str) or not (Path(value).is_absolute() or value.startswith("~/")):
+        return unresolved([*notes, f"autoMemoryDirectory in {path} is not an absolute or ~/ path: {value!r}"])
+    if holds_line_break(value):
+        return unresolved([*notes, f"autoMemoryDirectory in {path} holds a line break: {value!r}"])
+    directory = home / value[2:] if value.startswith("~/") else Path(value)
+    supplied = repository_supplied(repo, scope)
+    blocked_by = blocking_scope(scopes) if supplied else None
+    if blocked_by:
+        return unresolved(
+            [
+                *notes,
+                f"permissions.{BLOCK_READS} is on in {blocked_by} settings, so Claude Code loads no auto memory from "
+                f"{str(directory)!r}, which autoMemoryDirectory in {scope} settings ({path}) chooses, and saves none "
+                "to it.",
+            ]
+        )
+    if scope in ("local", "project"):
+        notes.append("Claude Code honors a repository-level autoMemoryDirectory only after the folder is trusted.")
+    if supplied:
+        notes.append(f"Claude Code ignores it while permissions.{BLOCK_READS} is on, which a --settings file can set.")
+    return {
+        "memory_dir": str(directory),
+        "source": f"autoMemoryDirectory in {scope} settings ({path})",
+        "exists": directory.is_dir(),
+        "notes": notes,
+    }
+
+
 def reason(exc: OSError) -> str:
     """An expected OSError's reason on one line."""
     return flat_text(exc.strerror or str(exc))
@@ -693,7 +798,7 @@ def reason(exc: OSError) -> str:
 
 def describe(exc: OSError) -> str:
     """An expected OSError as one line: its reason and the file it names."""
-    return f"{reason(exc)}: {exc.filename}" if exc.strerror and exc.filename else reason(exc)
+    return f"{reason(exc)}: {flat_text(str(exc.filename))}" if exc.strerror and exc.filename else reason(exc)
 
 
 def output_refusal(explicit: Path) -> str | None:
@@ -723,12 +828,16 @@ def store_refusal(memory_dir: Path) -> str | None:
 
 
 def resolve_lines(repo: Path, result: dict) -> list[str]:
-    """One fact per line: the repository, the directory and where it came from, candidates, then notes."""
+    """One fact per line: the repository, the directory and where it came from, candidates, then notes.
+
+    The repository, the directory, and each candidate are paths a later command takes, so `resolve` refuses one that
+    holds a line break and they print as they are; the source and the notes are flattened.
+    """
     lines = [f"REPO {repo}"]
     if result["memory_dir"]:
         lines += [
             f"MEMORY_DIR {result['memory_dir']}",
-            f"SOURCE {result['source']}",
+            f"SOURCE {flat_text(result['source'])}",
             f"EXISTS {'yes' if result['exists'] else 'no'}",
         ]
     else:
@@ -740,10 +849,14 @@ def resolve_lines(repo: Path, result: dict) -> list[str]:
 
 def reindex_lines(memory_dir: Path, write: bool) -> tuple[int, list[str]]:
     """The rebuilt entries, what changed, and what was written; exit 1 when the index is over its load limit."""
+    unlinkable = [path.name for path in memory_files(memory_dir) if holds_line_break(path.name)]
+    if unlinkable:
+        names = ", ".join(repr(name) for name in unlinkable)
+        return 1, [f"FAILED {flat_text(f'a memory file name holds a line break, so no entry can link it: {names}')}"]
     result = reindex(memory_dir)
-    output = [f"INDEX_LINE {file}" for file in result["entries"]]
-    output += [f"ADDED {file}" for file in result["added"]]
-    output += [f"DROPPED {reason} {file}" for reason, file in result["dropped"]]
+    output = [f"INDEX_LINE {flat_text(file)}" for file in result["entries"]]
+    output += [f"ADDED {flat_text(file)}" for file in result["added"]]
+    output += [f"DROPPED {why} {flat_text(file)}" for why, file in result["dropped"]]
     if result["over_limit"] or result["near_limit"]:
         label = "OVER_LIMIT" if result["over_limit"] else "NEAR_LIMIT"
         output.append(f"{label} lines={result['lines']}/{INDEX_LINE_LIMIT} bytes={result['bytes']}/{INDEX_BYTE_LIMIT}")
@@ -760,6 +873,67 @@ def reindex_lines(memory_dir: Path, write: bool) -> tuple[int, list[str]]:
     else:
         output.append(f"WOULD_WRITE {result['path'].as_posix()}")
     return code, output
+
+
+def manifest_skill_files(home: Path, name: str) -> list[Path]:
+    """The skills/<name>/SKILL.md of each source checkout the deployer's manifest records as deploying `name`.
+
+    Raises OSError or ValueError when the manifest exists but cannot be read as JSON.
+    """
+    manifest = home / ".claude" / "skills" / MANIFEST_NAME
+    if not manifest.is_file():
+        return []
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    sources = data.get("sources") if isinstance(data, dict) else None
+    entries = sources.values() if isinstance(sources, dict) else []
+    return [
+        Path(entry["source_dir"]) / "skills" / name / "SKILL.md"
+        for entry in entries
+        if isinstance(entry, dict)
+        and isinstance(entry.get("source_dir"), str)
+        and isinstance(entry.get("skills"), dict)
+        and name in entry["skills"]
+    ]
+
+
+def source_refusal(path: Path) -> str | None:
+    """Why a skill's file at `path` must not be edited as its source, or None when it may be."""
+    if holds_line_break(str(path)):
+        return f"{path!r} holds a line break"
+    root = skills_directory_holding(path)
+    if root:
+        return f"{path} is inside the skills directory {root}; the deployer stops updating a skill changed there"
+    if not path.is_file():
+        return f"{path} is not a file"
+    return None
+
+
+def skill_source_lines(args: argparse.Namespace) -> tuple[int, list[str]]:
+    """Each editable source file of a skill, or the file named with --file, never one inside a skills directory."""
+    if args.file is not None:
+        candidates = [args.file]
+        missing = f"{args.file} cannot be edited as a skill's source"
+    elif not bare_name(args.name) or holds_line_break(args.name):
+        return 1, [f"FAILED {flat_text(repr(args.name))} is not a skill name"]
+    else:
+        try:
+            candidates = manifest_skill_files(args.home, args.name)
+        except (OSError, UnicodeError, ValueError) as exc:
+            return 1, [f"FAILED {flat_text(f'cannot read the deployer manifest: {exc}')}"]
+        repo = args.repo or repository_root(Path.cwd())
+        project = None if repo is None else repo / ".claude" / "skills" / args.name / "SKILL.md"
+        candidates += [project] if project is not None and project.is_file() else []
+        missing = (
+            f"no editable source of skill {args.name}: the deployer's manifest records none, and the repository has "
+            "no project skill of that name; name its source file with --file"
+        )
+    output: list[str] = []
+    for path in candidates:
+        refused = source_refusal(path)
+        output.append(f"NOTE {flat_text(refused)}" if refused else f"SKILL_FILE {path}")
+    if not any(line.startswith("SKILL_FILE ") for line in output):
+        return 1, [*output, f"FAILED {flat_text(missing)}"]
+    return 0, output
 
 
 def audit_lines(args: argparse.Namespace) -> tuple[int, list[str]]:
@@ -787,7 +961,11 @@ def run(args: argparse.Namespace) -> tuple[int, list[str]]:
         repo = args.repo or repository_root(Path.cwd())
         if repo is None:
             return 1, ["FAILED not inside a Git repository; pass --repo"]
+        if holds_line_break(str(repo)):
+            return 1, [f"FAILED {flat_text(f'the repository path holds a line break: {str(repo)!r}')}"]
         return 0, resolve_lines(repo, resolve(repo, args.home, dict(os.environ), managed_settings_path()))
+    if args.command == "skill-source":
+        return skill_source_lines(args)
     if not args.memory_dir.is_dir():
         return 1, [f"FAILED memory directory not found: {args.memory_dir}"]
     if args.command in ("reindex", "delete"):
@@ -821,6 +999,14 @@ def main(arguments: list[str] | None = None) -> int:
     remove = commands.add_parser("delete", help="delete approved memory files from the memory directory")
     remove.add_argument("--memory-dir", type=Path, required=True)
     remove.add_argument("names", nargs="+", metavar="FILE", help="a memory file name, such as old-rule.md")
+    source = commands.add_parser("skill-source", help="name the file to edit when moving a rule into a skill")
+    named = source.add_mutually_exclusive_group(required=True)
+    named.add_argument("name", nargs="?", metavar="NAME", help="the skill's name, such as review-prs")
+    named.add_argument("--file", type=Path, help="a skill source file the user named, to check instead")
+    source.add_argument(
+        "--repo", type=Path, help="default: the root of the Git repository holding the current directory"
+    )
+    source.add_argument("--home", type=Path, default=Path.home())
     args = parser.parse_args(arguments)
     try:
         code, lines = run(args)

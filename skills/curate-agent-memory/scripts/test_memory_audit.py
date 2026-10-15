@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 import memory_audit
 import skill_roots
 from flat_text import flat_text
+from git_client import GitError
 from git_test_base import GitTestCase
 
 
@@ -32,6 +33,36 @@ def temporary_store_folds_case() -> bool:
 # The tests that need a store where MEMORY.md and memory.md are one file run where the store is one, and their
 # counterparts where it is not.
 FOLDS_CASE = temporary_store_folds_case()
+
+# Characters a reader splits a line at: the two a shell does, and the three str.splitlines also does.
+LINE_BREAKS = ("\n", "\r", "\u2028", "\u2029", "\x85")
+
+
+def file_name_breaks() -> tuple[str, ...]:
+    """The line breaks the temporary directory's file system takes in a file name: Windows refuses CR and LF."""
+    accepted = []
+    with tempfile.TemporaryDirectory() as directory:
+        for character in LINE_BREAKS:
+            try:
+                (Path(directory) / f"probe{character}.md").write_bytes(b"")
+            except OSError:
+                continue
+            accepted.append(character)
+    return tuple(accepted)
+
+
+NAME_BREAKS = file_name_breaks()
+RESOLVE_LABELS = ("REPO ", "MEMORY_DIR ", "SOURCE ", "EXISTS ", "NO_MEMORY_DIR", "CANDIDATE ", "NOTE ", "FAILED ")
+
+
+def one_fact_per_line(test: unittest.TestCase, output: str, prefixes: tuple[str, ...]) -> list[str]:
+    """The lines of `output`, after asserting that each starts with a fact's label and holds no other line break."""
+    lines = output.split("\n")
+    test.assertEqual("", lines.pop(), "output ends with one newline")
+    for line in lines:
+        test.assertEqual([line], line.splitlines(), "a line holds another line break")
+        test.assertTrue(line.startswith(prefixes), line)
+    return lines
 
 
 def write(path: Path, text: str) -> Path:
@@ -785,6 +816,39 @@ class ReindexTests(GitTestCase):
         with mock.patch.object(Path, "read_text", side_effect=PermissionError(13, "Access is denied", "one.md")):
             self.assertEqual(["FAILED Access is denied: one.md"], self.reindex(code=1))
 
+    def test_a_memory_named_with_a_line_break_is_refused_and_nothing_is_written(self) -> None:
+        write(self.memory_dir / "one.md", memory("one", "Body."))
+        for character in NAME_BREAKS:
+            name = f"bad{character}ADDED forged.md"
+            with self.subTest(character=repr(character)):
+                write(self.memory_dir / name, memory("bad", "Body."))
+                code, output, error = run_main("reindex", "--memory-dir", str(self.memory_dir), "--write")
+                self.assertEqual((1, ""), (code, error))
+                self.assertEqual(
+                    [f"FAILED a memory file name holds a line break, so no entry can link it: {name!r}"],
+                    one_fact_per_line(self, output, ("FAILED ",)),
+                )
+                self.assertEqual(b"", self.index.read_bytes())
+                (self.memory_dir / name).unlink()
+
+    def test_printed_file_names_are_flattened_and_entries_keep_the_exact_target(self) -> None:
+        write(self.memory_dir / "two  spaces.md", memory("two  spaces", "Body."))
+        write(self.index, "- [Gone](gone  twice.md) — missing\n")
+        code, output, error = run_main("reindex", "--memory-dir", str(self.memory_dir), "--write")
+        self.assertEqual((0, ""), (code, error))
+        self.assertEqual(
+            [
+                "INDEX_LINE two spaces.md",
+                "ADDED two spaces.md",
+                "DROPPED missing gone twice.md",
+                f"WROTE {self.index.as_posix()}",
+            ],
+            one_fact_per_line(self, output, ("INDEX_LINE ", "ADDED ", "DROPPED ", "WROTE ")),
+        )
+        self.assertEqual(
+            "- [two spaces](two  spaces.md) — two spaces description\n", self.index.read_text(encoding="utf-8")
+        )
+
 
 class DeleteTests(GitTestCase):
     def setUp(self) -> None:
@@ -906,6 +970,37 @@ class DeleteTests(GitTestCase):
                 "outside.md",
             ],
             sorted(self.snapshot()),
+        )
+
+    def test_a_name_holding_a_line_break_is_refused_on_one_line(self) -> None:
+        for character in LINE_BREAKS:
+            name = f"gone{character}DELETED keep.md"
+            with self.subTest(character=repr(character)):
+                if character in NAME_BREAKS:
+                    write(self.memory_dir / name, memory("bad", "Bad."))
+                before = self.snapshot()
+                code, output, error = run_main("delete", "--memory-dir", str(self.memory_dir), name, "gone.md")
+                self.assertEqual((1, ""), (code, error))
+                self.assertEqual(
+                    [
+                        "FAILED gone DELETED keep.md: the name holds a line break, so no line can name it; "
+                        "rename the file first"
+                    ],
+                    one_fact_per_line(self, output, ("FAILED ",)),
+                )
+                self.assertEqual(before, self.snapshot())
+
+    def test_deleted_and_failed_names_are_flattened(self) -> None:
+        write(self.memory_dir / "two  spaces.md", memory("two", "Two."))
+        code, output, error = run_main("delete", "--memory-dir", str(self.memory_dir), "two  spaces.md")
+        self.assertEqual(
+            (0, ["DELETED two spaces.md"], ""), (code, one_fact_per_line(self, output, ("DELETED ",)), error)
+        )
+        self.assertFalse((self.memory_dir / "two  spaces.md").exists())
+        with mock.patch.object(Path, "unlink", side_effect=PermissionError(13, " Access\r\n is\u2028denied ")):
+            code, output, error = run_main("delete", "--memory-dir", str(self.memory_dir), "gone.md")
+        self.assertEqual(
+            (1, ["FAILED gone.md: Access is denied"], ""), (code, one_fact_per_line(self, output, ("FAILED ",)), error)
         )
 
 
@@ -1104,7 +1199,8 @@ class ResolveTests(GitTestCase):
     DERIVED_NOTE = "NOTE The directory name is derived by convention; confirm it before changing anything."
 
     def resolve_lines(self, *arguments: str, cwd: Path | None = None, code: int = 0) -> list[str]:
-        """Run resolve from cwd with no Claude Code environment overrides and the test's managed settings."""
+        """Run resolve from cwd with no Claude Code environment overrides and the test's managed settings, holding
+        its output to one fact per line."""
         with (
             mock.patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": str(self.root)}),
             mock.patch.object(Path, "cwd", return_value=cwd or self.repo),
@@ -1114,7 +1210,181 @@ class ResolveTests(GitTestCase):
                 os.environ.pop(name, None)
             result = run_main("resolve", "--home", str(self.home), *arguments)
         self.assertEqual((code, ""), (result[0], result[2]), result[1])
-        return result[1].splitlines()
+        return one_fact_per_line(self, result[1], RESOLVE_LABELS)
+
+    def test_a_settings_value_holding_a_line_break_is_refused_on_one_line(self) -> None:
+        user = self.home / ".claude" / "settings.json"
+        for settings in (user, self.repo / ".claude" / "settings.json"):
+            for character in LINE_BREAKS:
+                value = f"~/forged{character}SOURCE autoMemoryDirectory in user settings ({user}){character}EXISTS yes"
+                with self.subTest(settings=settings.parent.name, character=repr(character)):
+                    write(settings, json.dumps({"autoMemoryDirectory": value}))
+                    self.assertEqual(
+                        [
+                            f"REPO {self.repo.resolve()}",
+                            "NO_MEMORY_DIR",
+                            self.SETTINGS_NOTE,
+                            f"NOTE autoMemoryDirectory in {settings} holds a line break: {flat_text(repr(value))}",
+                        ],
+                        self.resolve_lines(),
+                    )
+            settings.unlink()
+
+    def test_a_directory_holding_a_line_break_resolves_to_none(self) -> None:
+        for character in LINE_BREAKS:
+            name = f"shared{character}EXISTS yes"
+            with self.subTest(character=repr(character)):
+                result = self.resolve({"CLAUDE_CODE_PROJECT_DIR_NAME": name})
+                lines = one_fact_per_line(
+                    self, "\n".join(memory_audit.resolve_lines(self.repo, result)) + "\n", RESOLVE_LABELS
+                )
+                directory = self.home / ".claude" / "projects" / name / "memory"
+                self.assertEqual(
+                    [
+                        f"REPO {self.repo}",
+                        "NO_MEMORY_DIR",
+                        self.SETTINGS_NOTE,
+                        "NOTE The memory directory from CLAUDE_CODE_PROJECT_DIR_NAME holds a line break: "
+                        f"{flat_text(repr(str(directory)))}",
+                    ],
+                    lines,
+                )
+
+    def test_a_candidate_holding_a_line_break_is_left_out_with_a_note(self) -> None:
+        projects = self.home / ".claude" / "projects"
+        (projects / "C--elsewhere" / "memory").mkdir(parents=True)
+        for character in NAME_BREAKS:
+            (projects / f"C--x{character}CANDIDATE forged" / "memory").mkdir(parents=True)
+        lines = self.resolve_lines()
+        self.assertEqual(
+            [f"CANDIDATE {projects / 'C--elsewhere' / 'memory'}"],
+            [line for line in lines if line.startswith("CANDIDATE ")],
+        )
+        left_out = sorted(str(projects / f"C--x{character}CANDIDATE forged" / "memory") for character in NAME_BREAKS)
+        self.assertEqual(
+            [
+                f"NOTE Left out a memory directory whose path holds a line break: {flat_text(repr(path))}"
+                for path in left_out
+            ],
+            [line for line in lines if line.startswith("NOTE Left out")],
+        )
+
+    def test_a_repository_path_holding_a_line_break_is_a_failed_line(self) -> None:
+        for character in LINE_BREAKS:
+            repo = self.root / f"re{character}REPO forged"
+            with self.subTest(character=repr(character)):
+                self.assertEqual(
+                    [f"FAILED the repository path holds a line break: {flat_text(repr(str(repo)))}"],
+                    self.resolve_lines("--repo", str(repo), code=1),
+                )
+
+    def test_the_source_is_flattened(self) -> None:
+        for character in LINE_BREAKS:
+            result = {
+                "memory_dir": "memory dir",
+                "source": f"settings{character}EXISTS yes",
+                "exists": True,
+                "notes": [],
+            }
+            with self.subTest(character=repr(character)):
+                self.assertEqual(
+                    [f"REPO {self.repo}", "MEMORY_DIR memory dir", "SOURCE settings EXISTS yes", "EXISTS yes"],
+                    one_fact_per_line(
+                        self, "\n".join(memory_audit.resolve_lines(self.repo, result)) + "\n", RESOLVE_LABELS
+                    ),
+                )
+
+    def block_reads(self, path: Path, value: object = True, **settings: object) -> None:
+        write(path, json.dumps({**settings, "permissions": {"blockReadsOutsideWorkingDirectories": value}}))
+
+    def blocked_note(self, by: str, scope: str, path: Path) -> str:
+        return (
+            f"permissions.blockReadsOutsideWorkingDirectories is on in {by} settings, so Claude Code loads no auto "
+            f"memory from {str(self.home / 'chosen')!r}, which autoMemoryDirectory in {scope} settings ({path}) "
+            "chooses, and saves none to it."
+        )
+
+    def test_a_repository_choice_is_not_used_while_reads_outside_are_blocked(self) -> None:
+        (self.home / "chosen").mkdir(parents=True)
+        project = self.repo / ".claude" / "settings.json"
+        other = self.home / ".claude" / "projects" / "C--elsewhere" / "memory"
+        other.mkdir(parents=True)
+        for by, path in (
+            ("managed", self.managed),
+            ("local", self.repo / ".claude" / "settings.local.json"),
+            ("project", project),
+            ("user", self.home / ".claude" / "settings.json"),
+        ):
+            with self.subTest(by=by):
+                write(project, json.dumps({"autoMemoryDirectory": "~/chosen"}))
+                self.block_reads(path, **({"autoMemoryDirectory": "~/chosen"} if path == project else {}))
+                result = self.resolve()
+                self.assertIsNone(result["memory_dir"])
+                self.assertEqual([str(other)], result["candidates"])
+                self.assertEqual(self.blocked_note(by, "project", project), result["notes"][-1])
+                path.unlink()
+
+    def test_only_a_true_block_from_any_scope_counts(self) -> None:
+        (self.home / "chosen").mkdir(parents=True)
+        project = self.repo / ".claude" / "settings.json"
+        write(project, json.dumps({"autoMemoryDirectory": "~/chosen"}))
+        self.block_reads(self.managed, value=False)
+        self.block_reads(self.home / ".claude" / "settings.json", value="true")
+        self.assertEqual(str(self.home / "chosen"), self.resolve()["memory_dir"])
+        self.block_reads(self.home / ".claude" / "settings.json")
+        self.assertEqual(self.blocked_note("user", "project", project), self.resolve()["notes"][-1])
+
+    def test_an_untracked_local_choice_is_the_user_own_and_used(self) -> None:
+        (self.home / "chosen").mkdir(parents=True)
+        local = self.repo / ".claude" / "settings.local.json"
+        write(local, json.dumps({"autoMemoryDirectory": "~/chosen"}))
+        self.block_reads(self.home / ".claude" / "settings.json")
+        result = self.resolve()
+        self.assertEqual(str(self.home / "chosen"), result["memory_dir"])
+        self.assertEqual(
+            [
+                self.SETTINGS_NOTE.removeprefix("NOTE "),
+                "Claude Code honors a repository-level autoMemoryDirectory only after the folder is trusted.",
+            ],
+            result["notes"],
+        )
+        for supplied, patch in (
+            ("tracked", None),
+            ("a symbolic link", mock.patch.object(Path, "is_symlink", return_value=True)),
+            ("unknown to git", mock.patch.object(memory_audit.GitClient, "run", side_effect=GitError("no git"))),
+        ):
+            with self.subTest(supplied=supplied):
+                if patch is None:
+                    git("-C", str(self.repo), "add", "--force", ".claude/settings.local.json")
+                    result = self.resolve()
+                    git("-C", str(self.repo), "rm", "--cached", "-q", ".claude/settings.local.json")
+                else:
+                    with patch:
+                        result = self.resolve()
+                self.assertIsNone(result["memory_dir"])
+                self.assertEqual(self.blocked_note("user", "local", local), result["notes"][-1])
+
+    def test_a_used_repository_choice_states_the_block_rule(self) -> None:
+        (self.home / "chosen").mkdir(parents=True)
+        project = self.repo / ".claude" / "settings.json"
+        write(project, json.dumps({"autoMemoryDirectory": "~/chosen"}))
+        self.assertEqual(
+            [
+                f"REPO {self.repo.resolve()}",
+                f"MEMORY_DIR {self.home / 'chosen'}",
+                f"SOURCE autoMemoryDirectory in project settings ({project.resolve()})",
+                "EXISTS yes",
+                self.SETTINGS_NOTE,
+                "NOTE Claude Code honors a repository-level autoMemoryDirectory only after the folder is trusted.",
+                "NOTE Claude Code ignores it while permissions.blockReadsOutsideWorkingDirectories is on, which a "
+                "--settings file can set.",
+            ],
+            self.resolve_lines(),
+        )
+        write(self.home / ".claude" / "settings.json", json.dumps({"autoMemoryDirectory": "~/chosen"}))
+        project.unlink()
+        self.block_reads(self.managed)
+        self.assertEqual(str(self.home / "chosen"), self.resolve()["memory_dir"], "a user's choice is not blocked")
 
     def test_command_line_defaults_to_the_current_repository(self) -> None:
         self.derived().mkdir(parents=True)
@@ -1180,13 +1450,13 @@ class ResolveTests(GitTestCase):
             ],
             lines,
         )
-        self.assertEqual([mock.call(note), mock.call(" \r\n\t ")], flatten.call_args_list)
+        self.assertEqual([mock.call("settings"), mock.call(note), mock.call(" \r\n\t ")], flatten.call_args_list)
 
     def test_error_reasons_use_shared_flattening_and_preserve_strerror_selection(self) -> None:
         message = " \tCannot\r\n read  café\u00a0設計\u2003memory.\v "
-        for error, reason, description in (
-            (OSError(13, message, "one.md"), message, "Cannot read café 設計 memory.: one.md"),
-            (OSError(message), message, "Cannot read café 設計 memory."),
+        for error, flattened, description in (
+            (OSError(13, message, "one.md"), [message, "one.md"], "Cannot read café 設計 memory.: one.md"),
+            (OSError(message), [message], "Cannot read café 設計 memory."),
         ):
             with (
                 self.subTest(error=error),
@@ -1194,7 +1464,7 @@ class ResolveTests(GitTestCase):
                 mock.patch.object(memory_audit, "run", side_effect=error),
             ):
                 self.assertEqual((1, f"FAILED {description}\n", ""), run_main("resolve", "--repo", str(self.repo)))
-            flatten.assert_called_once_with(reason)
+            self.assertEqual([mock.call(text) for text in flattened], flatten.call_args_list)
 
     def test_command_line_reports_no_directory_as_a_result(self) -> None:
         write(self.home / ".claude" / "settings.json", json.dumps({"autoMemoryDirectory": "relative/path"}))
@@ -1220,6 +1490,110 @@ class ResolveTests(GitTestCase):
         self.assertIsNone(self.resolve()["memory_dir"])
         write(settings, "{not json")
         self.assertIsNone(self.resolve()["memory_dir"])
+
+
+class SkillSourceTests(GitTestCase):
+    """skill-source names a skill's editable source, never a file inside a skills directory."""
+
+    LABELS = ("SKILL_FILE ", "NOTE ", "FAILED ")
+
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self._temporary.name)
+        self.home = self.root / "home"
+        self.repo = self.root / "repo"
+        self.checkout = self.root / "source checkout"
+        self.skills_root = self.root / "running skills"
+        self.source_file = write(self.checkout / "skills" / "demo" / "SKILL.md", "---\nname: demo\n---\n")
+
+    def tearDown(self) -> None:
+        self._temporary.cleanup()
+
+    def manifest(self, **sources: str) -> Path:
+        """A deployer manifest recording each source ID's checkout as deploying the skill demo."""
+        entries = {
+            source: {"source_dir": folder, "skills": {"demo": {"hash": "0" * 64}}} for source, folder in sources.items()
+        }
+        return write(self.home / ".claude" / "skills" / ".deploy-manifest.json", json.dumps({"sources": entries}))
+
+    def source(self, *arguments: str, code: int = 0) -> list[str]:
+        with (
+            mock.patch.object(Path, "home", return_value=self.home),
+            mock.patch.object(skill_roots, "SKILLS_ROOT", self.skills_root),
+        ):
+            result = run_main("skill-source", *arguments, "--repo", str(self.repo), "--home", str(self.home))
+        self.assertEqual((code, ""), (result[0], result[2]), result[1])
+        return one_fact_per_line(self, result[1], self.LABELS)
+
+    def test_the_manifest_source_and_a_project_skill_are_named(self) -> None:
+        self.manifest(main=str(self.checkout))
+        project = write(self.repo / ".claude" / "skills" / "demo" / "SKILL.md", "---\nname: demo\n---\n")
+        write(self.home / ".claude" / "skills" / "demo" / "SKILL.md", "---\nname: demo\n---\n")
+        self.assertEqual([f"SKILL_FILE {self.source_file}", f"SKILL_FILE {project}"], self.source("demo"))
+
+    def test_a_skill_with_no_source_is_a_failed_line(self) -> None:
+        missing = (
+            "FAILED no editable source of skill {}: the deployer's manifest records none, and the repository has no "
+            "project skill of that name; name its source file with --file"
+        )
+        write(self.home / ".claude" / "skills" / "demo" / "SKILL.md", "---\nname: demo\n---\n")
+        self.assertEqual([missing.format("demo")], self.source("demo", code=1))
+        self.manifest(main=str(self.checkout))
+        self.assertEqual([missing.format("other")], self.source("other", code=1))
+
+    def test_a_source_inside_a_skills_directory_or_holding_a_line_break_is_passed_over(self) -> None:
+        deployed = self.home / ".claude" / "skills" / "demo-home"
+        write(deployed / "skills" / "demo" / "SKILL.md", "---\nname: demo\n---\n")
+        self.manifest(deployed=str(deployed), gone=str(self.root / "gone"))
+        self.assertEqual(
+            [
+                f"NOTE {deployed / 'skills' / 'demo' / 'SKILL.md'} is inside the skills directory "
+                f"{self.home / '.claude' / 'skills'}; the deployer stops updating a skill changed there",
+                f"NOTE {self.root / 'gone' / 'skills' / 'demo' / 'SKILL.md'} is not a file",
+                "FAILED no editable source of skill demo: the deployer's manifest records none, and the repository "
+                "has no project skill of that name; name its source file with --file",
+            ],
+            self.source("demo", code=1),
+        )
+        for character in LINE_BREAKS:
+            folder = f"{self.checkout}{character}SKILL_FILE forged"
+            with self.subTest(character=repr(character)):
+                self.manifest(forged=folder, main=str(self.checkout))
+                self.assertEqual(
+                    [
+                        f"NOTE {flat_text(repr(Path(folder) / 'skills' / 'demo' / 'SKILL.md'))} holds a line break",
+                        f"SKILL_FILE {self.source_file}",
+                    ],
+                    self.source("demo"),
+                )
+
+    def test_a_named_file_is_checked_against_every_skills_directory(self) -> None:
+        self.assertEqual([f"SKILL_FILE {self.source_file}"], self.source("--file", str(self.source_file)))
+        for root in (self.home / ".claude" / "skills", self.home / ".agents" / "skills", self.skills_root):
+            target = write(root / "demo" / "SKILL.md", "---\nname: demo\n---\n")
+            with self.subTest(root=root):
+                self.assertEqual(
+                    [
+                        f"NOTE {target} is inside the skills directory {root}; the deployer stops updating a skill "
+                        "changed there",
+                        f"FAILED {target} cannot be edited as a skill's source",
+                    ],
+                    self.source("--file", str(target), code=1),
+                )
+
+    def test_an_unreadable_manifest_or_a_bad_name_is_a_failed_line(self) -> None:
+        write(self.home / ".claude" / "skills" / ".deploy-manifest.json", "{not json")
+        lines = self.source("demo", code=1)
+        self.assertEqual(1, len(lines))
+        self.assertTrue(lines[0].startswith("FAILED cannot read the deployer manifest: "), lines)
+        for name in ("../demo", "demo\nSKILL_FILE forged", "demo\u2028x"):
+            with self.subTest(name=repr(name)):
+                self.assertEqual([f"FAILED {flat_text(repr(name))} is not a skill name"], self.source(name, code=1))
+
+    def test_a_name_and_a_file_together_are_a_usage_error(self) -> None:
+        code, output, error = run_main("skill-source", "demo", "--file", str(self.source_file))
+        self.assertEqual((2, ""), (code, output))
+        self.assertIn("not allowed with argument", error)
 
 
 if __name__ == "__main__":
