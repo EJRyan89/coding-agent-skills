@@ -43,6 +43,7 @@ from console import run_main
 from git_client import GitClient, GitResult
 from github_client import GitHubClient, GitHubError, replace_undecodable, subprocess_runner
 from github_client import Runner as GhRunner
+from github_remote import github_repository
 from skill_roots import skills_directory_holding
 
 T = TypeVar("T")
@@ -69,11 +70,6 @@ WORKTREE_AREA = "Worktrees"
 REPOSITORY_AREA = (".claude", "worktrees")
 # What a clean linked worktree becomes, by its branch's planned action: removed, offered, or else kept.
 WORKTREE_ACTIONS = {"remove-worktree": "remove", "remove-worktree-ask": "remove", "ask-remove-worktree": "ask"}
-GITHUB_REMOTE = re.compile(
-    r"(?:https?://(?:[^@/]+@)?github\.com/|ssh://git@github\.com(?::\d+)?/|git@github\.com:)"
-    r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?",
-    re.IGNORECASE,
-)
 # Control characters and the line separators str.splitlines also breaks on, so every fact stays on one line.
 CONTROL = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]+")
 SUMMARY_WIDTH = 25
@@ -248,9 +244,9 @@ def name_with_owner(services: Services, root: str | Path) -> str | None:
     """owner/name of a github.com origin, from the configured URL or its insteadOf expansion."""
     for arguments in (("config", "--get", "remote.origin.url"), ("remote", "get-url", "origin")):
         result = git(services, root, *arguments)
-        match = GITHUB_REMOTE.fullmatch(result.stdout.strip()) if result.returncode == 0 else None
-        if match:
-            return match.group(1)
+        repository = github_repository(result.stdout) if result.returncode == 0 else None
+        if repository:
+            return repository
     return None
 
 

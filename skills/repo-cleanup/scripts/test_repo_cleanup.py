@@ -2005,12 +2005,19 @@ class UnitTests(CleanupTestCase):
             ("git@github.com:owner/repo.git", "owner/repo"),
             ("ssh://git@github.com/owner/repo.git", "owner/repo"),
             ("https://gitlab.com/owner/repo.git", None),
+            ("https://example.invalid/github.com/owner/repo", None),
+            ("git@example.invalid:github.com/owner/repo", None),
             ("https://github.com/owner/repo/extra", None),
             ("C:/remotes/repo.git", None),
         ):
             with self.subTest(url=url):
-                match = rc.GITHUB_REMOTE.fullmatch(url)
-                self.assertEqual(expected, match.group(1) if match else None)
+                answer = GitResult(0, f"{url}\n", "")
+
+                def origin(command: Sequence[str], timeout: float, answer: GitResult = answer) -> GitResult:
+                    return answer
+
+                services = rc.Services(git=GitClient(origin))
+                self.assertEqual(expected, rc.name_with_owner(services, "C:/checkout"))
 
     def test_empty_directory_pruning_stays_inside_its_boundary(self) -> None:
         root = Path(tempfile.mkdtemp(prefix="repo cleanup prune ")).resolve()

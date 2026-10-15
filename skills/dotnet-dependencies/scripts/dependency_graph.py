@@ -60,7 +60,8 @@ apart, a split `conflicts` reports; the walk adds every chain the SDK cannot see
 or one through a packages.config project; for every other project it answers alone. So whether dotnet is installed
 changes which source a route names and which version leads where the two differ, never which routes are printed.
 A path a solution or project names is read only inside the examined tree, the checkout holding the solution or
-directory searched, and every read only of a regular file within READ_LIMIT_BYTES (msbuild_reader's docstring).
+directory searched, and every read only of a regular file within skill-core's READ_LIMIT_BYTES (msbuild_reader's
+docstring).
 The script changes nothing on disk but the graph file, runs no restore or build, and exits 1 when it printed a
 CONFLICT, REDIRECT_STALE, or UNREADABLE line, else 0; a FAILED <reason> line and exit 1 when the root cannot be
 resolved, and a usage error exits 2.

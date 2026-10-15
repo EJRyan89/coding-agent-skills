@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import dependency_graph
+import dotnet_solution
 import msbuild_reader
 from dependency_graph import Services, main
 from dotnet_solution import same_path
@@ -2163,7 +2164,7 @@ class PathBoundTests(Fixture):
             (self.root / "repo" / "Zero.csproj").symlink_to("/dev/zero")
             devices.append("Zero.csproj")
         self.write("repo/Repo.sln", solution("App\\App.csproj", *devices))
-        with mock.patch.object(msbuild_reader, "READ_LIMIT_BYTES", limit):
+        with mock.patch.object(dotnet_solution, "READ_LIMIT_BYTES", limit):
             code, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root / "repo"))
         self.assertEqual(1, code)
         bound = f"the file is larger than the reader's bound of {limit} bytes, so it is not read"

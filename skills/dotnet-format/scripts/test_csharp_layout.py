@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import csharp_layout as layout
+import dotnet_solution
 from git_test_base import GitTestCase
 
 
@@ -661,6 +662,16 @@ class ConfigTests(GitTestCase):
         (failure,) = [kind for kind in grouped if kind.startswith("FAILED ")]
         self.assertTrue(failure.startswith(f"FAILED {self.root / 'App.slnx'} cannot be read: "), failure)
         self.assertIn("not well-formed", failure)
+        self.assertNotIn("SETTING", grouped)
+
+    def test_a_solution_above_the_read_bound_fails_with_the_reason(self) -> None:
+        limit = 16
+        with mock.patch.object(dotnet_solution, "READ_LIMIT_BYTES", limit):
+            status, grouped = self.run_config()
+        self.assertEqual(1, status)
+        bound = f"the file is larger than the reader's bound of {limit} bytes, so it is not read"
+        (failure,) = [kind for kind in grouped if kind.startswith("FAILED ")]
+        self.assertEqual(f"FAILED {self.root / 'App.sln'} cannot be read: {bound}", failure)
         self.assertNotIn("SETTING", grouped)
 
     def test_a_single_star_section_does_not_configure_deeper_files(self) -> None:
