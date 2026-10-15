@@ -500,13 +500,14 @@ def analyze(
 
 
 def _render_recommendation(item: dict[str, Any], heading: str, report: dict[str, Any]) -> list[str]:
-    lines = [f"### {item['id']} — {heading}", "", f"Finding count: {item['finding_count']}"]
+    lines = [f"### {item['id']} — {flat_text(heading)}", "", f"Finding count: {item['finding_count']}"]
     if item["kind"] == "analyzer":
         lines.append(f"Repositories: {', '.join(item['repositories'])}")
     lines.extend([f"Decision: {item['decision']}", f"Linked flags: {', '.join(item['linked_flags']) or 'none'}", ""])
     # A recorded synthesis's topics replace the generic sentence of a category recommendation.
     entry = synthesis_stage.category_entry(report, item["category"]) if item["kind"] == "category" else None
-    lines.extend(synthesis_stage.category_markdown(report, entry) if entry else [item["recommendation"], ""])
+    # The generic sentence names the record's category, which may hold a line break.
+    lines.extend(synthesis_stage.category_markdown(report, entry) if entry else [flat_text(item["recommendation"]), ""])
     if item["reviewers"]:
         lines.extend(
             [
@@ -543,9 +544,10 @@ def _decision_history(item: dict[str, Any]) -> list[str]:
 
 
 def _example(entry: dict[str, Any]) -> str:
-    """One finding an analyzer recommendation covers: where it is, then its headline when the record has one."""
+    """One finding an analyzer recommendation covers, on one line: where it is, then its headline when the record has
+    one, or else its path, which a pull request may give a line break."""
     location = f"{entry['repository']}#{entry['pull_number']} v{entry['review_version']} {entry['finding_id']}"
-    return f"{location} {entry['title'] or entry['path'] + ':' + str(entry['line'])}"
+    return flat_text(f"{location} {entry['title'] or entry['path'] + ':' + str(entry['line'])}")
 
 
 def render(report: dict[str, Any]) -> str:
@@ -589,8 +591,9 @@ def render(report: dict[str, Any]) -> str:
 
 
 def _cell(value: str) -> str:
-    """A table cell: a reviewer ID from an older record's source is free text and may hold a pipe."""
-    return value.replace("\\", "\\\\").replace("|", "\\|")
+    """A table cell on one line: a reviewer ID from an older record's source is free text and may hold a pipe or a
+    line break."""
+    return flat_text(value).replace("\\", "\\\\").replace("|", "\\|")
 
 
 def _outcome(count: int | None) -> str:
@@ -1154,7 +1157,7 @@ def _print_synthesized(item: dict[str, Any]) -> None:
     print(f"CHANGE {item['id']} {flat_text(item['change'])}")
     print(f"RATIONALE {item['id']} {flat_text(item['rationale'])}")
     for ref in item["evidence"][:EXAMPLES_PRINTED]:
-        print(f"EXAMPLE {item['id']} {ref}")
+        print(f"EXAMPLE {item['id']} {flat_text(ref)}")
 
 
 def custom_candidates(report: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1200,7 +1203,7 @@ def _print_report(report: dict[str, Any]) -> None:
             )
         for row in item["reviewers"]:
             print(
-                f"REVIEWER {item['id']} {row['reviewer']} model={row['model']} "
+                f"REVIEWER {item['id']} {flat_text(row['reviewer'])} model={flat_text(row['model'])} "
                 f"findings={row['findings']} flagged={row['flagged_findings']} "
                 f"addressed={_outcome(row['addressed'])} still_present={_outcome(row['still_present'])}"
             )

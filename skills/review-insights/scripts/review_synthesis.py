@@ -1225,7 +1225,7 @@ def _render_item(item: dict[str, Any], decision_history: Any) -> list[str]:
         "",
     ]
     if item["evidence"]:
-        lines.extend([f"Evidence: {', '.join(item['evidence'])}", ""])
+        lines.extend([f"Evidence: {', '.join(flat_text(ref) for ref in item['evidence'])}", ""])
     return lines + decision_history(item)
 
 

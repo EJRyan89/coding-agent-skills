@@ -38,6 +38,9 @@ from review_records import build_record, carried_findings, validate_adapter_resu
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
 DECIDED_AT = datetime(2026, 2, 3, 9, 30, tzinfo=UTC)
+# Each character Python's str.splitlines breaks a line at that record text, a path a pull request named, or an older
+# flag's finding ID may hold.
+LINE_BREAKS = ("\u2028", "\u2029", "\x85", "\r", "\n")
 
 
 def reviewer(identifier: str, model: str | None = None) -> dict:
@@ -1024,6 +1027,46 @@ class AnalyzerTests(InsightFixture):
             "rejected",
         )
         self.assertEqual(0, code, err)
+
+    def test_record_text_holding_a_line_break_prints_one_fact_per_line_and_one_markdown_line(self) -> None:
+        # A reviewer ID, a finding's source in a record without reviewers, a category, and the path of a
+        # finding with no headline are record text, and a path is whatever a pull request named.
+        for index, character in enumerate(LINE_BREAKS, start=1):
+            forged = f"{character}FORGED"
+            shared = record(
+                "owner/repo",
+                index,
+                [covered("available", "Tool", f"R{index}"), "Correctness"],
+                reviewers=[reviewer(f"rev{index}{forged} a", "model-b"), reviewer("other")],
+            )
+            older = record("owner/other", index, [(f"Cat{index}{forged}", f"old{index}{forged} c")])
+            for finding in shared["findings"]:
+                finding["source"] = f"rev{index}{forged} a + other"
+            shared["findings"][0].pop("title")
+            shared["findings"][0]["path"] = f"src/a{index}{forged} b.cs"
+            commit_record(self.archive, "owner/repo", index, shared, expected_latest_version=None)
+            commit_record(self.archive, "owner/other", index, older, expected_latest_version=None)
+        code, out, err = self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31")
+        self.assertEqual(0, code, err)
+        lines = out.splitlines()
+        markdown = Path(lines[1].removeprefix("MARKDOWN ")).read_text(encoding="utf-8").splitlines()
+        for printed in (lines, markdown):
+            self.assertEqual([], [line for line in printed if line.startswith("FORGED")])
+        self.assertEqual(["SYNTHESIS_PROMPT", "SYNTHESIS_RESULT"], [line[:16] for line in lines if "SYNTHESIS" in line])
+        # Each line and Markdown line with its recommendation's ID left out, which the order of the subjects decides.
+        unnumbered = [re.sub(r" REC-\d{3}( —)?", "", line, count=1) for line in [*lines, *markdown]]
+        for index, character in enumerate(LINE_BREAKS, start=1):
+            with self.subTest(character=repr(character)):
+                example = f"owner/repo#{index} v1 F001 src/a{index} FORGED b.cs:3"
+                for start in (
+                    f"REVIEWER rev{index} FORGED a model=model-b ",
+                    f"REVIEWER old{index} FORGED c model=unknown ",
+                    f"EXAMPLE {example}",
+                    f"| rev{index} FORGED a | model-b |",
+                    f"### Cat{index} FORGED",
+                    f"- {example}",
+                ):
+                    self.assertTrue(any(line.startswith(start) for line in unnumbered), (start, unnumbered))
 
     def test_analyzer_findings_become_recommendations_ranked_cheapest_first(self) -> None:
         self.commit_covered()

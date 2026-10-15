@@ -713,17 +713,17 @@ class UnsafeDiffPathTests(GitTestCase):
         )
         self.assertEqual((["src/A.cs"], ["../evil.py", "a\\b.py", "x\ny"]), _keys(rs.split_unified_diff(text)))
 
-    def test_safe_path_rejects_each_control_and_line_breaking_character(self) -> None:
+    def test_reviewable_path_rejects_each_control_and_line_breaking_character(self) -> None:
         rejected = [chr(code) for code in range(0x20)] + ["\x7f", "\x85", "\u2028", "\u2029"]
         for character in rejected:
             with self.subTest(code=hex(ord(character))):
-                self.assertIsNone(rs._safe_path(f"src/a{character}b.py"))
+                self.assertIsNone(rs.reviewable_path(f"src/a{character}b.py"))
         for character in (" ", "~", "\x80", "\xa0", "é", "�", "?", ":"):
             with self.subTest(code=hex(ord(character))):
-                self.assertEqual(f"src/a{character}b.py", rs._safe_path(f"src/a{character}b.py"))
+                self.assertEqual(f"src/a{character}b.py", rs.reviewable_path(f"src/a{character}b.py"))
         for path in ("", "/abs.py", "a/../b.py", "./a.py", "a//b.py", "a\\b.py", "C:/x.py", "c:/x.py", "C:x.py"):
             with self.subTest(path=path):
-                self.assertIsNone(rs._safe_path(path))
+                self.assertIsNone(rs.reviewable_path(path))
 
     def test_a_quoted_path_that_is_not_utf8_decodes_with_replacement(self) -> None:
         # The source snapshot and the GitHub client write one U+FFFD per undecodable byte; this agrees with them.
