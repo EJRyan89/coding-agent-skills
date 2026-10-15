@@ -17,8 +17,9 @@ forward slashes:
                   where package-to-package edges came from: obj/project.assets.json, the packages' nuspecs in the
                   packages folder or the NuGet cache, or neither, leaving the direct references alone
     UNREADABLE    <file> <reason>                            a file the readers refused, a path a file names
-                  outside the examined tree, a condition, name, or AssemblyName they cannot settle, an Import
-                  not read, or an item inside a Target; its facts are missing
+                  outside the examined tree, a condition, name, metadata value, or AssemblyName they cannot
+                  settle, an Import not read, an item inside a Target, or a folder the search for projects does
+                  not enter, a junction, a symbolic link, or one it cannot list; its facts are missing
     SDK_FAILED    <project> <name> <reason>                  `dotnet nuget why` failed; the graph walk answered
     PATH          <project> <frameworks> <name> <sdk|graph> <hop> > <hop> ...    one chain, each hop
                   `name (vversion)`, `name (project)`, `name (vversion, assembly)`, `name (assembly)` for an
@@ -72,6 +73,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
+import stat
 import sys
 import tempfile
 from collections import deque
@@ -226,16 +229,45 @@ class Emitter:
         self.emit("\t".join([key, *(flat_text(str(value)) for value in fields)]))
 
 
-def raise_error(error: OSError) -> None:
-    raise error
+def is_folder_link(entry: os.DirEntry[str]) -> bool:
+    """Whether a listed entry is a Windows junction or a symbolic link to a folder, judged from the entry's own
+    metadata, so a junction whose target is gone counts too. Only Windows has the tag and the field, so elsewhere no
+    entry is a junction."""
+    tag = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", None)
+    junction = tag is not None and getattr(entry.stat(follow_symlinks=False), "st_reparse_tag", None) == tag
+    return junction or (entry.is_symlink() and entry.is_dir())
 
 
-def find_projects(directory: Path) -> list[Path]:
-    """Every .csproj under the directory, skipping build, dependency, and version-control directories."""
+def find_projects(directory: Path, unreadable: list[tuple[Path, str]]) -> list[Path]:
+    """Every .csproj under the directory, skipping build, dependency, and version-control directories, each folder's
+    projects before its subfolders'. A folder that is a junction or a symbolic link is reported and never entered,
+    since it may lead outside the directory or back into it, and so is a folder that cannot be listed; each costs only
+    the projects it holds."""
+    try:
+        with os.scandir(directory) as listing:
+            entries = sorted(listing, key=lambda entry: entry.name)
+    except OSError as error:
+        unreadable.append((directory, f"the folder cannot be listed: {error.strerror or error}"))
+        return []
     found: list[Path] = []
-    for current, directories, files in os.walk(directory, onerror=raise_error):
-        directories[:] = sorted(name for name in directories if name.casefold() not in IGNORED_DIRECTORIES)
-        found += [Path(current) / name for name in sorted(files) if name.casefold().endswith(PROJECT_SUFFIX)]
+    folders: list[Path] = []
+    for entry in entries:
+        path = Path(entry.path)
+        try:
+            if entry.name.casefold() in IGNORED_DIRECTORIES:
+                continue
+            if is_folder_link(entry):
+                unreadable.append(
+                    (path, "the folder is a junction or a symbolic link, which the search does not follow")
+                )
+            elif entry.is_dir(follow_symlinks=False):
+                folders.append(path)
+            elif entry.name.casefold().endswith(PROJECT_SUFFIX):
+                found.append(path)
+        except OSError as error:
+            unreadable.append((path, f"the entry cannot be examined: {error.strerror or error}"))
+    for folder in folders:
+        found += find_projects(folder, unreadable)
     return found
 
 
@@ -275,9 +307,10 @@ def resolve_root(path: Path, graph_unreadable: list[tuple[Path, str]]) -> tuple[
         raise Failed(f"{path} holds more than one solution ({names}); name one with --root")
     if solutions:
         return resolve_root(solutions[0], graph_unreadable)
-    projects = find_projects(path)
+    projects = find_projects(path, graph_unreadable)
     if not projects:
-        raise Failed(f"no solution or .csproj found under {path}")
+        skipped = "".join(f"; {folder} not searched: {reason}" for folder, reason in graph_unreadable)
+        raise Failed(f"no solution or .csproj found under {path}{skipped}")
     return path, path, projects
 
 
@@ -294,7 +327,7 @@ def load_projects(graph: Graph, listed: Iterable[Path]) -> None:
             refused = refusal(path, graph.tree)
             if refused is not None:
                 raise Unreadable(path, refused)
-            file = read_project(path, graph.sources or Sources(graph.tree, graph.base))
+            file = read_project(path, graph.sources or Sources(graph.tree))
         except Unreadable as error:
             graph.refuse(error)
             placeholder = ProjectFile(path, "legacy", path.stem, [], [], [], [])
@@ -487,7 +520,7 @@ def build_graph(root: Path, services: Services) -> Graph:
     resolved, base, listed = resolve_root(root, unreadable)
     tree = examined_tree(base)
     solution = resolved if resolved.is_file() else None
-    graph = Graph(resolved, base, tree, unreadable=unreadable, sources=Sources(tree, base, solution))
+    graph = Graph(resolved, base, tree, unreadable=unreadable, sources=Sources(tree, solution))
     load_projects(graph, listed)
     for project in graph.projects.values():
         if project.readable:
@@ -996,23 +1029,35 @@ def render_mermaid(nodes: Nodes, edges: list[tuple[str, str]]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def output_path(requested: Path | None, fmt: str) -> Path:
-    """Where the graph is written: the requested path, refused inside a skills directory, else a file in a new
-    temporary directory named for the skill."""
+def refuse_output(requested: Path | None) -> None:
+    """Refuse a requested graph file inside a skills directory, before the query runs."""
+    owner = None if requested is None else skills_directory_holding(requested)
+    if owner is not None:
+        raise Failed(f"{requested} is inside the skills directory {owner}; choose a path outside it")
+
+
+def write_graph(text: str, requested: Path | None, fmt: str) -> Path:
+    """Write the graph to the requested path, else to a file in a new temporary directory named for the skill, made
+    only once there is a graph to write and removed again when the write fails, so a failed query leaves nothing."""
     if requested is not None:
-        owner = skills_directory_holding(requested)
-        if owner is not None:
-            raise Failed(f"{requested} is inside the skills directory {owner}; choose a path outside it")
+        requested.parent.mkdir(parents=True, exist_ok=True)
+        requested.write_text(text, encoding="utf-8", newline="\n")
         return requested
-    return Path(tempfile.mkdtemp(prefix="dotnet-dependencies-")) / ("graph.dot" if fmt == "dot" else "graph.mmd")
+    folder = Path(tempfile.mkdtemp(prefix="dotnet-dependencies-"))
+    target = folder / ("graph.dot" if fmt == "dot" else "graph.mmd")
+    try:
+        target.write_text(text, encoding="utf-8", newline="\n")
+    except OSError:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
+    return target
 
 
 def graph_query(graph: Graph, narrowed: Path | None, fmt: str, requested: Path | None, out: Emitter) -> None:
-    target = output_path(requested, fmt)
+    refuse_output(requested)
     nodes, edges = graph_edges(graph, with_references(graph, selected_projects(graph, narrowed)))
     text = render_dot(nodes, edges) if fmt == "dot" else render_mermaid(nodes, edges)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(text, encoding="utf-8", newline="\n")
+    target = write_graph(text, requested, fmt)
     out.line("WROTE", target.resolve().as_posix(), len(nodes), len(edges))
     out.line("SUMMARY", len(nodes), len(edges))
 

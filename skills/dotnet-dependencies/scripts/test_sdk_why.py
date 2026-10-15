@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from collections.abc import Sequence
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
@@ -146,12 +148,27 @@ class RunTests(unittest.TestCase):
         self.assertEqual([], answer.paths[tools])
 
     def test_failures_name_the_reason_and_leave_the_project_unanswered(self) -> None:
-        for text, code, reason in ((NO_ASSETS_TEXT, 0, "no restored assets file"), ("boom", 1, "exit code 1")):
+        # A run with no heading names the first line it printed, which the parser could not read, such as an answer
+        # in a language other than English.
+        unread = "; the first line it printed, which the script cannot read: "
+        localized = (
+            f'\r\n  {CYAN}Projekt "Harbor.Core" weist keine Abh\u00e4ngigkeit von "Lantern.Json" auf.{RESET}\r\n'
+        )
+        for text, code, reason in (
+            (NO_ASSETS_TEXT, 0, "(no restored assets file)"),
+            ("boom", 1, f"(exit code 1){unread}boom"),
+            ("", 1, "(exit code 1)"),
+            (
+                localized,
+                0,
+                f'(exit code 0){unread}Projekt "Harbor.Core" weist keine Abh\u00e4ngigkeit von "Lantern.Json" auf.',
+            ),
+        ):
             with self.subTest(reason=reason):
                 runs = Runs({"Harbor.Core.csproj": Completed(code, text)})
                 answer = run_why([Path("Harbor.Core.csproj")], "Lantern.Json", Services(run=runs), 30)
                 self.assertEqual(
-                    {Path("Harbor.Core.csproj"): f"dotnet nuget why answered nothing ({reason})"}, answer.failures
+                    {Path("Harbor.Core.csproj"): f"dotnet nuget why answered nothing {reason}"}, answer.failures
                 )
                 self.assertEqual(set(), answer.answered)
         # A run that timed out after printing part of an answer is not taken as an answer.
@@ -191,6 +208,18 @@ class RunTests(unittest.TestCase):
         slow = sdk_why.subprocess_runner([sys.executable, "-c", "import time; time.sleep(30)"], 0.5)
         self.assertTrue(slow.timed_out)
         self.assertEqual(-1, slow.returncode)
+
+    def test_the_default_runner_runs_the_cli_in_english_and_keeps_every_other_variable(self) -> None:
+        # Whatever language the machine or a variable names, the CLI prints the English the parser reads; the
+        # environment is otherwise the one every bounded command gets, with each prompt off.
+        script = (
+            "import os; print(os.environ.get('DOTNET_CLI_UI_LANGUAGE'), os.environ.get('VSLANG'),"
+            " os.environ.get('DOTNET_DEPENDENCIES_KEPT'), os.environ.get('GIT_TERMINAL_PROMPT'), sep='|')"
+        )
+        named = {"DOTNET_CLI_UI_LANGUAGE": "de", "VSLANG": "1031", "DOTNET_DEPENDENCIES_KEPT": "a kept value"}
+        with mock.patch.dict(os.environ, named):
+            result = sdk_why.subprocess_runner([sys.executable, "-c", script], 60)
+        self.assertEqual((0, "en|1031|a kept value|0"), (result.returncode, result.text.strip()))
 
     def test_the_runner_states_why_the_policy_cannot_read_its_program(self) -> None:
         self.assertIn("subprocess_runner", sdk_why.COMMANDS_ALLOWED)
