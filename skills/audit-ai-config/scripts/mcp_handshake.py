@@ -15,21 +15,25 @@ GIT_DIR, which skill-core's bounded_process.streaming removes; it receives initi
 notifications/initialized, and tools/list, each one line of JSON ended by a line feed and never a carriage
 return, and is then stopped. --timeout bounds each server from its start to its stop, so neither the server nor a
 program its launcher started and left holding its output keeps the run waiting past it; a server still running
-then is killed, and up to ten seconds more are allowed for it to be reported gone. Identical definitions in
+then is killed, and up to ten seconds more are allowed for it to be reported gone. A definition the operating system
+would refuse to start, with a NUL character in its command, args, cwd, or env, or an env name that is empty or holds
+'=', fails that server before it starts, and the servers after it still run. Identical definitions in
 several files are started once. A handshake passes only when the initialize result has the fields
 the MCP schema requires and a protocol version this client supports, and every tools/list page, followed
-through nextCursor, is a valid list of tools. Each config is read as audit_ai_config.py reads it. One line per
+through nextCursor, is a valid list of tools. Each config is read by audit_ai_config.py's reader of that file, so
+the audit and the handshake report the same problems for it. One line per
 config problem, then one per server, each on one line: a name, command, type, or reason the repository's
 configuration or a server supplies is flattened onto it with skill-core's flat_text.
 
     CONFIG_ERROR <file> <reason>        the file could not be read or parsed, so none of its servers was checked,
-                                        or its servers are not an object (a table in TOML), or one server
+                                        or its servers are not an object (a table in TOML), or
+                                        .vscode/mcp.json has no 'servers' wrapper, or one server
                                         names neither a command nor a url, or its cwd or relative command is
                                         outside the repository (Server '<name>': cwd '<cwd>' is outside the
                                         repository, or command '<command>' is), which is then SKIPPED while
                                         the others run
-    CONFIG_WARNING <file> <reason>      the file lacks its servers key, or an entry is not an object (a
-                                        table in TOML) and is not a server; the others run
+    CONFIG_WARNING <file> <reason>      .mcp.json or .github/mcp.json lacks its servers key, or an entry is
+                                        not an object (a table in TOML) and is not a server; the others run
     HANDSHAKE_OK <name> source=<files> protocol=<version> tools=<count|none>
     HANDSHAKE_FAILED <name> source=<files> <reason>
     SKIPPED <name> source=<files> transport=<transport>
@@ -57,7 +61,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
-from audit_ai_config import _parse_mcp_json, _read_codex_mcp, leaves_root
+from audit_ai_config import CODEX_CONFIG, MCP_JSON_FILES, _read_codex_mcp, leaves_root, read_mcp_json
 from bounded_process import Streaming, streaming
 from console import run_main
 from executable_locator import find_executable
@@ -72,8 +76,6 @@ SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2024-11-05", "2025-03-26", PROTOCOL_VE
 MAX_TOOL_PAGES = 100
 # Seconds a server gets to exit once its stdin closes, within --timeout, before it is killed.
 EXIT_WAIT_SECONDS = 2.0
-JSON_SOURCES = ((".mcp.json", "mcpServers"), (".github/mcp.json", "mcpServers"), (".vscode/mcp.json", "servers"))
-CODEX_CONFIG = ".codex/config.toml"
 
 
 Problem = tuple[str, str, str]  # (ERROR or WARNING, source, message)
@@ -87,8 +89,8 @@ def declared_servers(root: Path) -> tuple[list[tuple[str, str, dict[str, Any]]],
     """
     found: list[tuple[str, str, dict[str, Any]]] = []
     problems: list[Problem] = []
-    for rel, wrapper in JSON_SOURCES:
-        servers, findings = _parse_mcp_json(root / rel, rel, wrapper)
+    for rel in MCP_JSON_FILES:
+        servers, findings = read_mcp_json(root, rel)
         problems.extend((finding.severity, rel, finding.message) for finding in findings)
         found.extend((name, rel, entry) for name, entry in servers.items() if isinstance(entry, dict))
     codex_servers, codex_findings = _read_codex_mcp(root)
@@ -253,13 +255,36 @@ def resolve_command(command: str, cwd: Path) -> str | None:
     return find_executable(command)
 
 
+def definition_problem(entry: dict[str, Any]) -> str | None:
+    """Why a stdio server's definition cannot start, or None: a cwd, args, or env of the wrong kind, or a value the
+    operating system refuses, a NUL character in the command, an argument, the cwd, or an env name or value, or an env
+    name that is empty or holds '=', which starting it would raise as ValueError rather than fail as that server."""
+    cwd = entry.get("cwd", ".")
+    if not isinstance(cwd, str):
+        return "cwd must be a string"
+    args = entry.get("args") or []
+    if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
+        return "args must be a list of strings"
+    env = entry.get("env") or {}
+    if not isinstance(env, dict) or not all(isinstance(value, str) for value in env.values()):
+        return "env must map names to strings"
+    fields = (("command", [entry["command"]]), ("args", args), ("cwd", [cwd]), ("env", [*env, *env.values()]))
+    for field, values in fields:
+        if any("\0" in value for value in values):
+            return f"{field} holds a NUL character"
+    refused = next((name for name in env if not name or "=" in name), None)
+    if refused is not None:
+        return f"env name '{refused}' is empty or holds '='"
+    return None
+
+
 def outside_problem(root: Path, entry: dict[str, Any]) -> str | None:
     """Why a stdio server would start outside the repository, or None: its cwd, or a command with a directory part
-    that is not absolute, leads out of the root once `..` parts and links are resolved, or cannot be resolved. A cwd
-    that is not a string is the handshake's failure to report."""
-    configured_cwd = entry.get("cwd", ".")
-    if not isinstance(configured_cwd, str):
+    that is not absolute, leads out of the root once `..` parts and links are resolved, or cannot be resolved. A
+    definition that cannot start, which definition_problem names, is the handshake's failure to report."""
+    if definition_problem(entry) is not None:
         return None
+    configured_cwd = entry.get("cwd", ".")
     cwd = root / configured_cwd
     if leaves_root(root, cwd):
         return f"cwd '{configured_cwd}' is outside the repository"
@@ -271,22 +296,18 @@ def outside_problem(root: Path, entry: dict[str, Any]) -> str | None:
 
 def handshake(root: Path, entry: dict[str, Any], timeout: float) -> str:
     """Return 'protocol=<v> tools=<n>' or raise RuntimeError with the failure reason."""
-    configured_cwd = entry.get("cwd", ".")
-    if not isinstance(configured_cwd, str):
-        raise RuntimeError("cwd must be a string")
+    problem = definition_problem(entry)
+    if problem is not None:
+        raise RuntimeError(problem)
     problem = outside_problem(root, entry)
     if problem is not None:  # main reports it as a CONFIG_ERROR and never gets here; another caller fails
         raise RuntimeError(problem)
-    cwd = root / configured_cwd
+    cwd = root / entry.get("cwd", ".")
     command = resolve_command(entry["command"], cwd)
     if command is None:
         raise RuntimeError(f"command not found: {entry['command']}")
     args = entry.get("args") or []
     env_values = entry.get("env") or {}
-    if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
-        raise RuntimeError("args must be a list of strings")
-    if not isinstance(env_values, dict) or not all(isinstance(v, str) for v in env_values.values()):
-        raise RuntimeError("env must map names to strings")
     try:
         with streaming(
             [command, *args],

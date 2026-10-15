@@ -25,6 +25,8 @@ The engine never writes, modifies, or deletes files. It does not run generators,
 
 Reports each AI configuration file found as an `INFO` finding: `CLAUDE.md`, `GEMINI.md`, `REVIEW.md`, `.codex/config.toml`, `.mcp.json`, `.github/mcp.json`, `.vscode/mcp.json`, `.github/copilot-instructions.md`, `.github/workflows/copilot-setup-steps.yml`, `.github/ai-config-manifest.json`, every `AGENTS.md` and `AGENTS.override.md` at any depth outside version-control and dependency directories (`.git`, `.hg`, `.svn`, `node_modules`, `.venv`, `venv`, `__pycache__`, `.tox`, `.nox`), which no nested-file check walks into, skills under `.claude/skills`, `.agents/skills`, and `.github/skills`, custom agents under `.github/agents` and `.claude/agents`, path-specific `.github/instructions/**/*.instructions.md`, a generator at `.github/scripts/ai_config.py` or `scripts/ai_config.py`, and any workflow mentioning `ai-config` or `ai_config`.
 
+A file a check reads that cannot be read or decoded is an inventory `ERROR`, `Could not read, so the checks that read it did not run`, so an audit that skipped those checks is never `COMPLIANT`: `CLAUDE.md`, the manifest, `.github/copilot-instructions.md`, each generator, every `AGENTS.md`, and every workflow. The other files a check reads report their own read failure, as the checks below say.
+
 No walk or directory listing in any check follows a symbolic link or junction that leads out of the repository root: the link is skipped, so nothing behind it is read or named, and it is reported once as an inventory `WARNING` at its path, `Link leads out of the repository; the audit does not follow it`. A link whose target stays inside the root is followed.
 
 **Why**: Establishes the baseline and surfaces files that may conflict, overlap, or be orphaned.
@@ -72,7 +74,8 @@ Parsed statically, never started:
 
 - `.mcp.json` and `.github/mcp.json` need an `mcpServers` object; each server needs `command` or `url`.
 - A server name in both `.mcp.json` and `.github/mcp.json` is an `ERROR`: `.mcp.json` wins, so the other entry is unreachable.
-- `.vscode/mcp.json` needs a `servers` wrapper, not `mcpServers`.
+- `.vscode/mcp.json` needs a `servers` object, and a missing one is an `ERROR` (`mcpServers` is the usual mistake); each server needs `command` or `url`. A missing `mcpServers` in the other two files, or an entry that is not an object, is a `WARNING`.
+- One reader reads each JSON file for the audit and for the handshake, so both report the same problems for it.
 - `.codex/config.toml` must parse; an HTTP server there must not carry `env` or `env_vars`.
 - Each manifest server's transport must support each of its targets (the transport matrix below).
 - A `tools` allowlist other than `["*"]` on a server in the shared `.mcp.json` is an `ERROR` when `copilot_local` is targeted, because the shared file cannot enforce it.
@@ -94,14 +97,14 @@ Each targeted surface is resolved with its own algorithm:
 
 | Surface | Sources it reads | Unsatisfied (`ERROR`) when |
 |---|---|---|
-| Codex | Per directory from root to cwd: `AGENTS.override.md`, else `AGENTS.md`, else fallbacks such as `CLAUDE.md` | Neither `AGENTS.md` nor `CLAUDE.md` exists, or a root `AGENTS.override.md` masks the generated adapter |
+| Codex | Per directory from root to cwd, the first that exists of `AGENTS.override.md`, `AGENTS.md`, and the names `project_doc_fallback_filenames` gives in `.codex/config.toml`, skipped when it holds only whitespace; `CLAUDE.md` only as such a name | No root `AGENTS.override.md`, `AGENTS.md`, or `CLAUDE.md` exists, the root file Codex chooses is empty, or a root `AGENTS.override.md` masks `CLAUDE.md` or the generated adapter |
 | Copilot CLI/app | `CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`, `GEMINI.md`, path-specific instructions, combined | No source exists |
 | Cloud agent | Nearest `AGENTS.md`; without one, root `CLAUDE.md`, then `GEMINI.md` | None of them exists |
 | Code review | A non-redirecting `AGENTS.md`, `.github/copilot-instructions.md`, path-specific instructions; never `CLAUDE.md` or `GEMINI.md` | None of them exists, including when `AGENTS.md` only redirects to `CLAUDE.md` |
 | JetBrains | `.github/copilot-instructions.md` and path-specific instructions only | Neither exists |
 | VS Code | All sources, each gated by a setting | Never; a `WARNING` says the settings are unverifiable |
 
-Nested `AGENTS.md` and `AGENTS.override.md` files under a redirecting root adapter produce `WARNING` findings for review. Code review also produces a `trust-boundary` `WARNING`: GitHub loads its instructions, agents, and skills from the PR head, which is advisory context, not a trusted-base review contract. Copilot surfaces produce a `runtime` `WARNING` that settings, policy, authentication, model availability, and enablement are not statically verifiable.
+Nested `AGENTS.md` and `AGENTS.override.md` files under a redirecting root adapter produce `WARNING` findings for review, except an `AGENTS.md` beside an `AGENTS.override.md`, which Codex never loads. A root `CLAUDE.md` that `.codex/config.toml` does not name as a fallback is a `WARNING`: Codex loads it only when a user's own configuration names it, which a static audit cannot read; a fallback other than `CLAUDE.md` that Codex chooses is a `WARNING` too. Code review also produces a `trust-boundary` `WARNING`: GitHub loads its instructions, agents, and skills from the PR head, which is advisory context, not a trusted-base review contract. Copilot surfaces produce a `runtime` `WARNING` that settings, policy, authentication, model availability, and enablement are not statically verifiable.
 
 The engine does not judge whether the effective sources contradict or overlap each other; the skill asks the agent to review that.
 
