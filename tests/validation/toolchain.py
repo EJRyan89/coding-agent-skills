@@ -128,6 +128,35 @@ VALIDATION_FLOORS: dict[str, tuple[int, ...]] = {
 }
 
 
+# The Python packages validation and CI take from PyPI, which "Development dependencies" in the dependency document
+# lists, and no others.
+DEVELOPMENT_PACKAGES = ("ruff", "mypy")
+REQUIREMENT_PIN = re.compile(r"(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)==[0-9][0-9A-Za-z.+!-]*")
+
+
+def requirements_problems(text: str, packages: tuple[str, ...]) -> list[str]:
+    """Every line of a requirements file that is not a comment, a blank line, or `name==version` for one of `packages`,
+    so an unpinned package, another index, an included file, or an install from a repository fails, and every package
+    it does not pin exactly once."""
+    problems: list[str] = []
+    pinned: list[str] = []
+    for number, line in enumerate(text.splitlines(), start=1):
+        content = line.strip()
+        if not content or content.startswith("#"):
+            continue
+        match = REQUIREMENT_PIN.fullmatch(content)
+        if match is None or match.group("name") not in packages:
+            problems.append(f"line {number} is not name==version for one of {list(packages)}: {content!r}")
+        else:
+            pinned.append(match.group("name"))
+    problems += [
+        f"{package} is pinned {pinned.count(package)} times, not once"
+        for package in packages
+        if pinned.count(package) != 1
+    ]
+    return problems
+
+
 def read_tool_version(path: str) -> tuple[int, ...] | None:
     if path.casefold().endswith(".psd1"):
         return read_module_version(path)
@@ -237,8 +266,15 @@ class ToolchainPolicies(unittest.TestCase):
         # Both matrix entries install the pinned development dependencies, so ruff and mypy run at their floors.
         self.assertIn("python -m pip install -r requirements-dev.txt", workflow)
         self.assertIn("python -m mypy --version", workflow)
-        requirements = (REPOSITORY_ROOT / "requirements-dev.txt").read_text(encoding="utf-8").splitlines()
-        self.assertEqual(["ruff==0.16.10", "mypy==2.4.0"], [line for line in requirements if "==" in line])
+        requirements = (REPOSITORY_ROOT / "requirements-dev.txt").read_text(encoding="utf-8")
+        self.assertEqual(["ruff==0.16.10", "mypy==2.4.0"], [line for line in requirements.splitlines() if "==" in line])
+        # Every other line is a comment or blank, and the packages are the two the dependency document lists.
+        self.assertEqual(("ruff", "mypy"), DEVELOPMENT_PACKAGES)
+        self.assertEqual([], requirements_problems(requirements, DEVELOPMENT_PACKAGES))
+        document = (REPOSITORY_ROOT / DEPENDENCY_DOC).read_text(encoding="utf-8")
+        self.assertIn(
+            "pinned in `requirements-dev.txt`, and no others: `ruff`, the formatter and linter, and `mypy`", document
+        )
         dependabot = (REPOSITORY_ROOT / ".github/dependabot.yml").read_text(encoding="utf-8")
         self.assertRegex(
             dependabot, r"(?m)^  - package-ecosystem: pip\n    directory: /\n    schedule:\n      interval: weekly$"
