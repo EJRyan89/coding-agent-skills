@@ -231,8 +231,10 @@ class Emitter:
 
 def is_folder_link(entry: os.DirEntry[str]) -> bool:
     """Whether a listed entry is a Windows junction or a symbolic link to a folder, judged from the entry's own
-    metadata, so a junction whose target is gone counts too."""
-    junction = getattr(entry.stat(follow_symlinks=False), "st_reparse_tag", 0) == stat.IO_REPARSE_TAG_MOUNT_POINT
+    metadata, so a junction whose target is gone counts too. Only Windows has the tag and the field, so elsewhere no
+    entry is a junction."""
+    tag = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", None)
+    junction = tag is not None and getattr(entry.stat(follow_symlinks=False), "st_reparse_tag", None) == tag
     return junction or (entry.is_symlink() and entry.is_dir())
 
 
