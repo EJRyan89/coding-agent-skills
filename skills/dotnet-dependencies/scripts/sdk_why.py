@@ -5,10 +5,13 @@ project by its file stem, then for each target framework a tree of the dependenc
 drawn with box-drawing branches and the package highlighted with a terminal color. The heading wraps at the console
 width even when the output is a pipe, the tree lines are padded to it instead, and the command exits 0 whether it
 found the package, found no dependency on it, or found no assets file for a project, so the text alone says which.
-The parser strips the colors, reads a chain's depth from the column of its branch, and keeps every chain that ends
-at the package; a project with no heading in the output, or whose run exited nonzero after printing one, was not
-answered, and the caller walks its own graph. The
-answer is keyed by the project path the run was for, never by the heading's stem, which two projects may share.
+That text is in the CLI's language, which follows the machine's display language unless `DOTNET_CLI_UI_LANGUAGE` or
+`VSLANG` names another, so the command runs with `DOTNET_CLI_UI_LANGUAGE` set to English (`CLI_LANGUAGE`) and every
+other variable kept, and prints the English the parser reads on every machine. The parser strips the colors, reads
+a chain's depth from the column of its branch, and keeps every chain that ends at the package; a project with no
+heading in the output, or whose run exited nonzero after printing one, was not answered, and the caller walks its own
+graph, a run with no heading naming the first line it printed, which the parser could not read. The answer is keyed by
+the project path the run was for, never by the heading's stem, which two projects may share.
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
-from bounded_process import run_bounded
+from bounded_process import non_interactive_environment, run_bounded
 from executable_locator import find_executable, located_command
 
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -32,6 +35,10 @@ HEADING = re.compile(
 FRAMEWORK = re.compile(r"^\s*\[(?P<framework>[^\]]+)\]\s*$")
 NODE = re.compile(r"^(?P<indent>[\s│]*)[├└]──\s+(?P<name>.+?)\s+\(v(?P<version>[^)]+)\)\s*$")
 NO_ASSETS = "No assets file was found"
+# The CLI language the command runs in, whatever the machine's display language or the variables naming another, so
+# its text is the English HEADING and NO_ASSETS match. The invariant globalization setting is not added: with it the
+# CLI refuses any language a variable names, printing an error line, and falls back to its own default.
+CLI_LANGUAGE = {"DOTNET_CLI_UI_LANGUAGE": "en"}
 # The column of the first branch, and the columns each deeper level adds.
 TREE_BASE = 2
 TREE_STEP = 4
@@ -57,9 +64,10 @@ COMMANDS_ALLOWED = {
 
 
 def subprocess_runner(arguments: Sequence[str], timeout: float) -> Completed:
-    """Run the command with no stdin and every prompt off, at the path skill-core's locator finds for its program."""
+    """Run the command with no stdin, every prompt off, and the CLI in English (`CLI_LANGUAGE`), at the path
+    skill-core's locator finds for its program."""
     try:
-        result = run_bounded(located_command(arguments), timeout)
+        result = run_bounded(located_command(arguments), timeout, env={**non_interactive_environment(), **CLI_LANGUAGE})
     except subprocess.TimeoutExpired as expired:
         output = expired.output if isinstance(expired.output, bytes) else b""
         return Completed(-1, output.decode("utf-8", errors="replace"), timed_out=True)
@@ -137,6 +145,11 @@ def parse_why(text: str, package: str) -> ParsedWhy:
     return answer
 
 
+def first_line(text: str) -> str:
+    """The first line of a run's output that holds anything but spaces, without its colors, or `""`."""
+    return next((line.strip() for line in ANSI.sub("", text).splitlines() if line.strip()), "")
+
+
 def run_why(projects: Sequence[Path], package: str, services: Services, timeout: float) -> WhyAnswer:
     """Ask the SDK why each project depends on `package`, one run per project: the command's usage shows several
     projects, but it refuses a second path as an unrecognized argument.
@@ -158,9 +171,12 @@ def run_why(projects: Sequence[Path], package: str, services: Services, timeout:
             answer.failures[project] = (
                 f"dotnet nuget why exited with code {result.returncode} after printing part of an answer"
             )
+        elif NO_ASSETS in result.text and not part.answered:
+            answer.failures[project] = "dotnet nuget why answered nothing (no restored assets file)"
         elif not part.answered:
-            reason = "no restored assets file" if NO_ASSETS in result.text else f"exit code {result.returncode}"
-            answer.failures[project] = f"dotnet nuget why answered nothing ({reason})"
+            first = first_line(result.text)
+            unread = f"; the first line it printed, which the script cannot read: {first}" if first else ""
+            answer.failures[project] = f"dotnet nuget why answered nothing (exit code {result.returncode}){unread}"
         else:
             answer.answered.add(project)
             answer.paths[project] = [chain for chains in part.paths.values() for chain in chains]

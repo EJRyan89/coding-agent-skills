@@ -6,6 +6,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -343,7 +344,11 @@ class GraphTests(Fixture):
     def test_a_failed_sdk_run_is_reported_and_leaves_the_project_to_the_graph(self) -> None:
         root = self.mixed_solution()
         for run, reason in (
-            (lambda arguments, timeout: Completed(1, "boom"), "dotnet nuget why answered nothing (exit code 1)"),
+            (
+                lambda arguments, timeout: Completed(1, "boom"),
+                "dotnet nuget why answered nothing (exit code 1); the first line it printed, which the script cannot"
+                " read: boom",
+            ),
             # A run that fails after printing a heading and part of a tree is no answer either.
             (
                 lambda arguments, timeout: Completed(1, SDK_CORE_TEXT),
@@ -650,6 +655,23 @@ class GraphTests(Fixture):
         self.assertEqual(1, code)
         self.assertIn("inside the skills directory", rows[-1][0])
         self.assertFalse(inside.exists())
+
+    def test_a_graph_query_or_write_that_fails_leaves_no_temporary_folder(self) -> None:
+        # The folder the graph file goes in is made only once there is a graph to write, and removed when the write
+        # fails, so neither a project the solution does not hold nor a failed write leaves an empty folder behind.
+        root = self.mixed_solution()
+        temporary = Path(tempfile.mkdtemp(prefix="dotnet-dependencies-graph-temporary-")).resolve()
+        self.addCleanup(shutil.rmtree, temporary, True)
+        with mock.patch.object(tempfile, "tempdir", str(temporary)):
+            missing = self.root / "Nope" / "Nope.csproj"
+            code, rows = self.run_main("graph", "--project", str(missing), "--root", str(root))
+            self.assertEqual(1, code)
+            self.assertIn("is not a project of", rows[-1][0])
+            self.assertEqual([], list(temporary.iterdir()))
+            with mock.patch.object(Path, "write_text", side_effect=OSError(28, "No space left on device")):
+                code, rows = self.run_main("graph", "--root", str(root))
+            self.assertEqual((1, "FAILED [Errno 28] No space left on device"), (code, rows[-1][0]))
+            self.assertEqual([], list(temporary.iterdir()))
 
     def test_more_chains_than_the_limit_are_truncated(self) -> None:
         root = self.mixed_solution()
@@ -2022,6 +2044,19 @@ FILE_SYSTEM_METHODS = ("stat", "exists", "is_file", "is_dir", "open", "resolve",
 TEST_MARKER = ".dotnet-dependencies-test-checkout"
 
 
+# A project taking Lib.Pkg's version from a Directory.Packages.props, and one such file at a repository's top.
+CENTRALLY_VERSIONED_APP = """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+  <ItemGroup><PackageReference Include="Lib.Pkg" /></ItemGroup>
+</Project>
+"""
+TOP_CENTRAL = """<Project>
+  <PropertyGroup><ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally></PropertyGroup>
+  <ItemGroup><PackageVersion Include="Lib.Pkg" Version="2.0.0" /></ItemGroup>
+</Project>
+"""
+
+
 def referencing(*paths: str) -> str:
     items = "".join(f'<ProjectReference Include="{path}" />' for path in paths)
     return LIB_PROJECT.replace("</Project>", f"<ItemGroup>{items}</ItemGroup></Project>")
@@ -2131,6 +2166,29 @@ class PathBoundTests(Fixture):
         chain = ["App/App.csproj", "-", "Lib.Pkg", "graph", "Lib (project) > Lib.Pkg (v1.0.0)"]
         self.assertIn(chain, self.lines(rows, "PATH"))
 
+    def test_a_central_versions_file_above_the_solutions_folder_is_read_inside_the_tree_else_reported(self) -> None:
+        # MSBuild finds Directory.Packages.props up to the filesystem's root wherever the solution is: one at the top
+        # of the checkout holding src/App.sln gives the version, and one above the checkout is reported, not read.
+        (self.root / "repo" / TEST_MARKER).mkdir(parents=True)
+        self.write("repo/src/App/App.csproj", CENTRALLY_VERSIONED_APP)
+        self.write("repo/src/App.sln", solution("App\\App.csproj"))
+        self.write("repo/Directory.Packages.props", TOP_CENTRAL)
+        code, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root / "repo" / "src"))
+        chain = ["App/App.csproj", "-", "Lib.Pkg", "graph", "Lib.Pkg (v2.0.0)"]
+        self.assertEqual((0, [chain], []), (code, self.lines(rows, "PATH"), self.lines(rows, "UNREADABLE")))
+        (self.root / "repo" / "Directory.Packages.props").unlink()
+        props = self.write("Directory.Packages.props", TOP_CENTRAL)
+        code, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root / "repo" / "src"))
+        reason = (
+            f"the Import of {props.as_posix()} is not read: the path is outside the examined tree "
+            f"{(self.root / 'repo').as_posix()}, which the reader does not leave, so every property is unsettled"
+            " after it"
+        )
+        self.assertEqual(
+            (1, [[*chain[:4], "Lib.Pkg (v?)"]], [["App/App.csproj", reason]]),
+            (code, self.lines(rows, "PATH"), self.lines(rows, "UNREADABLE")),
+        )
+
     def test_a_file_above_the_bound_or_not_a_regular_file_is_reported_and_the_run_goes_on(self) -> None:
         limit = 2048
         self.write("repo/Lib/Lib.csproj", LIB_PROJECT)
@@ -2173,8 +2231,151 @@ LIB_CHAIN = ["App/App.csproj", "-", "Lib.Pkg", "graph", "Lib (project) > Lib.Pkg
 LIB_OWN = ["Lib/Lib.csproj", "-", "Lib.Pkg", "graph", "Lib.Pkg (v1.0.0)"]
 
 
+def link_folder(target: Path, link: Path) -> None:
+    """A real link to a folder: a junction on Windows, which needs no privilege, else a symbolic link."""
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+def remove_link(link: Path) -> None:
+    """Remove a link `link_folder` made, never what it points at."""
+    if sys.platform == "win32":
+        link.rmdir()
+    else:
+        link.unlink()
+
+
+LINK_REASON = "the folder is a junction or a symbolic link, which the search does not follow"
+
+
+class ProjectSearchTests(Fixture):
+    """The search of a directory holding no solution for its .csproj files."""
+
+    def link(self, target: Path, relative: str) -> Path:
+        link = self.root / relative
+        link_folder(target, link)
+        self.addCleanup(remove_link, link)
+        return link
+
+    def test_a_linked_folder_is_reported_and_never_entered_and_the_other_projects_answer(self) -> None:
+        # A link to a folder elsewhere would read its projects as the directory's own, and one back into the
+        # directory would loop; a junction whose target is gone cannot be listed. Each is reported, and the run
+        # answers for the projects outside them.
+        search = self.root / "search"
+        self.write("search/App/App.csproj", LIB_PROJECT)
+        self.write("elsewhere/Other/Other.csproj", LIB_PROJECT.replace("Lib.Pkg", "Other.Pkg"))
+        self.link(self.root / "elsewhere", "search/Linked")
+        self.link(search, "search/App/Loop")
+        expected = [["Linked", LINK_REASON]]
+        if sys.platform == "win32":
+            gone = self.root / "gone"
+            gone.mkdir()
+            self.link(gone, "search/Stale")
+            gone.rmdir()
+            expected.append(["Stale", LINK_REASON])
+        code, rows = self.run_main("why", "Lib.Pkg", "Other.Pkg", "--root", str(search))
+        self.assertEqual(1, code)
+        self.assertEqual([*expected, ["App/Loop", LINK_REASON]], self.lines(rows, "UNREADABLE"))
+        self.assertEqual([["App/App.csproj", "sdk", "direct", "listed"]], self.lines(rows, "PROJECT"))
+        self.assertEqual([["App/App.csproj", "-", "Lib.Pkg", "graph", "Lib.Pkg (v1.0.0)"]], self.lines(rows, "PATH"))
+        self.assertEqual([["Other.Pkg"]], self.lines(rows, "MISSING"))
+
+    def test_a_folder_that_cannot_be_listed_is_reported_and_a_search_finding_nothing_names_it(self) -> None:
+        self.write("search/App/App.csproj", LIB_PROJECT)
+        self.write("search/Locked/Hidden/Hidden.csproj", LIB_PROJECT)
+        listing = os.scandir
+
+        def scandir(path: str | os.PathLike[str]) -> object:
+            if Path(path).name == "Locked":
+                raise PermissionError(13, "Access is denied")
+            return listing(path)
+
+        with mock.patch.object(dependency_graph.os, "scandir", scandir):
+            code, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root / "search"))
+            self.assertEqual(
+                (1, [["Locked", "the folder cannot be listed: Access is denied"]]),
+                (code, self.lines(rows, "UNREADABLE")),
+            )
+            self.assertEqual([["App/App.csproj", "sdk", "direct", "listed"]], self.lines(rows, "PROJECT"))
+            (self.root / "search" / "App" / "App.csproj").unlink()
+            code, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root / "search"))
+        self.assertEqual(1, code)
+        self.assertTrue(rows[-1][0].startswith("FAILED no solution or .csproj found under"), rows[-1][0])
+        self.assertTrue(
+            rows[-1][0].endswith("not searched: the folder cannot be listed: Access is denied"), rows[-1][0]
+        )
+
+
 class MSBuildEvaluationTests(Fixture):
     """What MSBuild evaluates, read through the script's lines: each case is a shape an earlier reading got wrong."""
+
+    def test_a_version_from_a_property_is_its_value_and_one_the_reader_cannot_settle_is_reported_not_compared(
+        self,
+    ) -> None:
+        # MSBuild gives both references 1.0.0 when the property is set, so there is no conflict. A property no file
+        # sets, or one an import the reader does not read may set, leaves the version unknown: it is reported and
+        # never compared as the text `$(LibVersion)`, so it makes no conflict with B's 1.0.0 or with another such text.
+        framework = "<PropertyGroup><TargetFramework>net8.0</TargetFramework>{0}</PropertyGroup>"
+        reference = '<ItemGroup><PackageReference Include="Lib.Pkg"{0}</ItemGroup>'
+        attribute = reference.format(' Version="$(LibVersion)" />')
+        self.write("B/B.csproj", sdk_project(framework.format("") + reference.format(' Version="1.0.0" />')))
+        self.write("A/A.csproj", sdk_project(framework.format("<LibVersion>1.0.0</LibVersion>") + attribute))
+        code, rows = self.run_main("conflicts", "--root", str(self.root))
+        self.assertEqual((0, [], []), (code, self.lines(rows, "CONFLICT"), self.lines(rows, "UNREADABLE")))
+        unsettled = (
+            "the Version of {0} Lib.Pkg names a value the reader cannot settle for net8.0, so that Version is not"
+            " applied"
+        )
+        not_read = (
+            "the Import of Versions.props is not read: the file it names is not found, so every property is unsettled"
+            " after it"
+        )
+        cases = [
+            ("an attribute", framework.format("") + attribute, ["A/A.csproj"], []),
+            (
+                "a child",
+                framework.format("") + reference.format("><Version>$(LibVersion)</Version></PackageReference>"),
+                ["A/A.csproj"],
+                [],
+            ),
+            (
+                "after an import not read",
+                f'<Import Project="Versions.props" />{framework.format("")}{attribute}',
+                ["A/A.csproj"],
+                [["A/A.csproj", not_read]],
+            ),
+        ]
+        for name, body, projects, imports in cases:
+            with self.subTest(version=name):
+                self.write("A/A.csproj", sdk_project(body))
+                code, rows = self.run_main("conflicts", "--root", str(self.root))
+                expected = [*imports, *([project, unsettled.format("PackageReference")] for project in projects)]
+                self.assertEqual(
+                    (1, [], expected), (code, self.lines(rows, "CONFLICT"), self.lines(rows, "UNREADABLE"))
+                )
+                _, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root))
+                self.assertIn(["A/A.csproj", "-", "Lib.Pkg", "graph", "Lib.Pkg (v?)"], self.lines(rows, "PATH"))
+        # Two projects that both write the unsettled text are not in conflict either, whatever the property holds.
+        self.write("A/A.csproj", sdk_project(framework.format("") + attribute))
+        self.write("B/B.csproj", sdk_project(framework.format("") + attribute))
+        code, rows = self.run_main("conflicts", "--root", str(self.root))
+        expected = [[project, unsettled.format("PackageReference")] for project in ("A/A.csproj", "B/B.csproj")]
+        self.assertEqual((1, [], expected), (code, self.lines(rows, "CONFLICT"), self.lines(rows, "UNREADABLE")))
+        # A central PackageVersion's version the reader cannot settle is reported the same way.
+        self.write(
+            "Directory.Packages.props",
+            '<Project><ItemGroup><PackageVersion Include="Lib.Pkg" Version="$(CentralVersion)" />'
+            "</ItemGroup></Project>",
+        )
+        self.write("B/B.csproj", sdk_project(framework.format("") + reference.format(" />")))
+        self.write("A/A.csproj", sdk_project(framework.format("") + reference.format(' Version="1.0.0" />')))
+        code, rows = self.run_main("conflicts", "--root", str(self.root))
+        expected = [["B/B.csproj", unsettled.format("PackageVersion")]]
+        self.assertEqual((1, [], expected), (code, self.lines(rows, "CONFLICT"), self.lines(rows, "UNREADABLE")))
 
     def why_lib_pkg(self, app: str) -> tuple[int, list[list[str]], list[list[str]]]:
         self.write("App/App.csproj", app)

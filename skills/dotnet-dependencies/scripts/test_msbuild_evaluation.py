@@ -234,7 +234,7 @@ class EvaluationTests(unittest.TestCase):
 
     def read(self, relative: str, text: str | None = None) -> ProjectFile:
         path = self.write(relative, text) if text is not None else self.root / relative
-        return read_project(path, Sources(self.root, self.root))
+        return read_project(path, Sources(self.root))
 
     def test_legacy_project_gives_assembly_references_with_version_and_hint_path(self) -> None:
         project = self.read("src/Harbor.Web/Harbor.Web.csproj", LEGACY_PROJECT)
@@ -341,13 +341,24 @@ class EvaluationTests(unittest.TestCase):
             [("Beacon.One", "1.0.0.0"), ("Beacon.Two", None)], [(a.name, a.version) for a in project.assemblies]
         )
 
-    def test_central_versions_come_from_the_nearest_props_file_up_to_the_solution_directory(self) -> None:
-        self.write("Directory.Packages.props", CENTRAL)
+    def test_central_versions_come_from_the_nearest_props_file_at_or_above_the_project_inside_the_tree(self) -> None:
+        # MSBuild searches for Directory.Packages.props up to the filesystem's root, past the solution's folder; one
+        # it finds outside the examined tree is reported as an import not read, naming its path, and never opened.
+        props = self.write("Directory.Packages.props", CENTRAL)
         text = '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Lantern.Core" /></ItemGroup>'
         path = self.write("src/App/App.csproj", f"{text}</Project>")
-        self.assertEqual([PackageRef("Lantern.Core", "2.0.0", "central")], self.read("src/App/App.csproj").packages)
-        found = read_project(path, Sources(self.root, self.root / "src"))
+        project = self.read("src/App/App.csproj")
+        self.assertEqual(([PackageRef("Lantern.Core", "2.0.0", "central")], []), (project.packages, project.reports))
+        tree = self.root / "src"
+        with mock.patch.object(msbuild_evaluation, "evaluation_root", wraps=msbuild_evaluation.evaluation_root) as read:
+            found = read_project(path, Sources(tree))
         self.assertEqual([PackageRef("Lantern.Core", None, "PackageReference")], found.packages)
+        self.assertNotIn(props, [call.args[0] for call in read.call_args_list])
+        reason = (
+            f"the Import of {props.as_posix()} is not read: the path is outside the examined tree {tree.as_posix()},"
+            " which the reader does not leave, so every property is unsettled after it"
+        )
+        self.assertEqual([(path, reason)], [(report.file, report.reason) for report in found.reports])
 
     def test_sdk_element_and_sdk_import_count_as_sdk_style(self) -> None:
         for text in (
@@ -731,7 +742,7 @@ class EvaluationTests(unittest.TestCase):
         # file parsed once for every project that imports it, and asking for a build again evaluates nothing.
         self.write("Directory.Packages.props", CENTRAL)
         body = "<PropertyGroup><TargetFrameworks>net8.0;net472</TargetFrameworks></PropertyGroup>"
-        sources = Sources(self.root, self.root)
+        sources = Sources(self.root)
         parsed: list[Path] = []
         evaluated: list[object] = []
         parse = msbuild_evaluation.parse_xml
