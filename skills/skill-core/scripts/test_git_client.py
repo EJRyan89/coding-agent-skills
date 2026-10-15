@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -20,6 +21,8 @@ import executable_locator
 import git_client
 from git_client import GitClient, GitError, GitResult, classify_failure
 from git_test_base import GitTestCase
+from job_tree import GroupTree, JobTree, TreeNotEnded
+from process_identity import process_status
 
 NOT_A_REPOSITORY = "fatal: not a git repository (or any of the parent directories): .git\n"
 
@@ -27,6 +30,37 @@ NOT_A_REPOSITORY = "fatal: not a git repository (or any of the parent directorie
 def git() -> str:
     """The absolute path the client starts git at."""
     return git_client.located_command(["git"])[0]
+
+
+# Starts a program that runs on, writes its PID to the file named by its first argument once it has started it, and
+# then runs on itself, as a git that starts a transport or an alias's program and hangs does.
+SPAWNING_PROGRAM = (
+    "import os, subprocess, sys, time\n"
+    "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+    "open(sys.argv[1] + '.partial', 'w').write(str(child.pid))\n"
+    "os.replace(sys.argv[1] + '.partial', sys.argv[1])\n"
+    "time.sleep(120)\n"
+)
+# The first time limit a spawning command gets, doubled until the command had started its program within it, so a
+# loaded machine's slow start never decides the test.
+FIRST_LIMIT_SECONDS = 2.0
+LAST_LIMIT_SECONDS = 64.0
+NOT_ENDED = "The job's processes may still run: process 7 had not ended 10 seconds on"
+
+
+def bounded_call(
+    command: Sequence[str], timeout: float, **options: object
+) -> tuple[tuple[object, ...], dict[str, object]]:
+    """A call of the bounded layer as the client makes it, its process tree checked and left out."""
+    tree = options.pop("tree", None)
+    if not isinstance(tree, (JobTree, GroupTree)) or not tree.hidden_window:
+        raise AssertionError(f"git runs in a process tree that hides its window, not {tree!r}")
+    return (list(command), timeout), options
+
+
+def call_shape(call: Any) -> tuple[tuple[object, ...], dict[str, object]]:
+    """A recorded call of the bounded layer, its process tree checked and left out."""
+    return bounded_call(*call.args, **call.kwargs)
 
 
 def scripted(
@@ -132,7 +166,9 @@ class ClientTests(GitTestCase):
                 mock.patch.object(git_client, "run_bounded", return_value=finished) as run,
             ):
                 self.assertEqual("id\n", client.output(["hash-object", "--stdin"], input_bytes=b"blob"))
-            self.assertEqual(mock.call([git(), "hash-object", "--stdin"], 300.0, input_bytes=b"blob"), run.call_args)
+            self.assertEqual(
+                (([git(), "hash-object", "--stdin"], 300.0), {"input_bytes": b"blob"}), call_shape(run.call_args)
+            )
 
     def test_rev_parse_path_names_the_absolute_path_git_prints(self) -> None:
         runner, calls = scripted(GitResult(0, "C:/a repo/.git\n", ""), GitResult(0, "C:/a repo\n", ""))
@@ -414,14 +450,14 @@ class SubprocessRunnerTests(GitTestCase):
         finished = bounded_process.Finished(2, b"out \xff", b"bad \xff")
         with mock.patch.object(git_client, "run_bounded", return_value=finished) as run:
             result = git_client.subprocess_runner(["git", "status"], 12)
-        self.assertEqual(mock.call([git(), "status"], 12), run.call_args)
+        self.assertEqual((([git(), "status"], 12), {}), call_shape(run.call_args))
         self.assertEqual(GitResult(2, "out \udcff", "bad �"), result)
 
     def test_given_input_goes_through_the_bounded_layer(self) -> None:
         finished = bounded_process.Finished(0, b"id\n", b"")
         with mock.patch.object(git_client, "run_bounded", return_value=finished) as run:
             result = git_client.subprocess_runner(["git", "hash-object", "--stdin"], 12, input_bytes=b"blob")
-        self.assertEqual(mock.call([git(), "hash-object", "--stdin"], 12, input_bytes=b"blob"), run.call_args)
+        self.assertEqual((([git(), "hash-object", "--stdin"], 12), {"input_bytes": b"blob"}), call_shape(run.call_args))
         self.assertEqual(GitResult(0, "id\n", ""), result)
 
     def test_missing_git_is_a_prerequisite_error(self) -> None:
@@ -443,6 +479,42 @@ class SubprocessRunnerTests(GitTestCase):
         ):
             GitClient().run(["status"])
         self.assertEqual("execution", context.exception.kind)
+
+    def test_a_program_a_timed_out_command_started_is_ended_with_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            started = Path(temporary) / "started pid"
+            limit = FIRST_LIMIT_SECONDS
+            while True:
+                with self.assertRaises(GitError) as context:
+                    git_client.subprocess_runner([sys.executable, "-c", SPAWNING_PROGRAM, str(started)], limit)
+                self.assertEqual("timeout", context.exception.kind)
+                if started.exists() or limit >= LAST_LIMIT_SECONDS:
+                    break
+                limit *= 2
+            child = int(started.read_text(encoding="utf-8"))
+        self.assertFalse(process_status(child).alive, "the program the timed-out command started was ended")
+
+    def test_a_program_a_finished_command_left_running_is_ended_with_it(self) -> None:
+        program = (
+            "import subprocess, sys\n"
+            "print(subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)']).pid)\n"
+        )
+        result = git_client.subprocess_runner([sys.executable, "-c", program], 60)
+        self.assertEqual(0, result.returncode)
+        self.assertFalse(process_status(int(result.stdout)).alive, "the program the command left was ended")
+
+    def test_programs_that_could_not_be_ended_are_an_execution_error(self) -> None:
+        not_ended = TreeNotEnded(NOT_ENDED)
+        with (
+            mock.patch.object(git_client, "run_bounded", side_effect=not_ended),
+            self.assertRaises(GitError) as context,
+        ):
+            GitClient().run(["fetch"])
+        self.assertEqual("execution", context.exception.kind)
+        self.assertEqual(
+            f"git fetch left programs it started that could not be ended: {NOT_ENDED}", str(context.exception)
+        )
+        self.assertIs(not_ended, context.exception.__cause__)
 
     def test_a_command_that_runs_too_long_is_a_timeout(self) -> None:
         with self.assertRaises(GitError) as context:
@@ -551,7 +623,10 @@ class StreamTests(GitTestCase):
         bounds: list[float] = []
 
         @contextlib.contextmanager
-        def recording(command: Sequence[str], *, idle_timeout: float) -> Iterator[bounded_process.Streaming]:
+        def recording(
+            command: Sequence[str], *, idle_timeout: float, tree: object
+        ) -> Iterator[bounded_process.Streaming]:
+            bounded_call(command, idle_timeout, tree=tree)
             bounds.append(idle_timeout)
             self.assertEqual([git(), "-C", "here", "cat-file", "--batch"], list(command))
             with bounded_process.streaming([sys.executable, "-c", "pass"], idle_timeout=idle_timeout) as running:
@@ -564,6 +639,47 @@ class StreamTests(GitTestCase):
             with GitClient(timeout=20).stream(["cat-file", "--batch"], directory="here", idle_timeout=5):
                 pass
         self.assertEqual([20, 5], bounds)
+
+    def test_a_program_git_left_running_is_ended_once_the_stream_closes(self) -> None:
+        program = (
+            "import subprocess, sys\n"
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+            "sys.stdout.write(str(child.pid) + chr(10))\n"
+            "sys.stdout.flush()\n"
+            "sys.stdin.read()\n"
+        )
+        with (
+            mock.patch.object(git_client, "located_command", return_value=[sys.executable, "-c", program]),
+            GitClient(timeout=60).stream(["cat-file", "--batch"]) as stream,
+        ):
+            child = int(stream.readline())
+            self.assertTrue(process_status(child).alive, "the program runs while the stream is open")
+            stream.stdin.close()
+            self.assertEqual(0, stream.wait())
+        self.assertFalse(process_status(child).alive, "the program git left was ended once the stream closed")
+
+    def test_programs_a_stream_could_not_end_are_an_execution_error(self) -> None:
+        not_ended = TreeNotEnded(NOT_ENDED)
+
+        @contextlib.contextmanager
+        def unending(command: Sequence[str], **_options: object) -> Iterator[bounded_process.Streaming]:
+            with bounded_process.streaming([sys.executable, "-c", "pass"], idle_timeout=60) as running:
+                running.stdin.close()
+                yield running
+            raise not_ended
+
+        with (
+            mock.patch.object(git_client, "streaming", unending),
+            self.assertRaises(GitError) as context,
+            GitClient().stream(["cat-file", "--batch"]),
+        ):
+            pass
+        self.assertEqual("execution", context.exception.kind)
+        self.assertEqual(
+            f"git cat-file --batch left programs it started that could not be ended: {NOT_ENDED}",
+            str(context.exception),
+        )
+        self.assertIs(not_ended, context.exception.__cause__)
 
 
 class WorkingDirectoryTests(GitTestCase):

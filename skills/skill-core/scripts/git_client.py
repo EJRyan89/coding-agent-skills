@@ -18,6 +18,11 @@ client given a `runner` alone refuses a call with input rather than run real git
 `stream` runs a git command that answers requests while it runs, such as `cat-file --batch`, with the same
 environment; there the time limit bounds each wait for output rather than the whole command.
 
+Both hold git in a process tree (`job_tree`), because git starts programs of its own: Git for Windows' launcher starts
+the real git, a fetch starts its transport and pack programs, and a command may run a credential helper, a hook, or an
+alias. So a call that times out, and a stream once closed, leave none of them running, and a tree that cannot be
+ended fails the call as an `execution` error saying they may still run.
+
 Both start git at the absolute path skill-core's `executable_locator` finds for it, never by its bare name, which
 process creation on Windows looks up in the working directory before PATH, so a `git.exe` in the folder a skill runs
 from is never the git it runs. The path is looked up once for each value of the variables the locator reads.
@@ -39,6 +44,7 @@ from typing import IO, Protocol, TypeVar
 
 from bounded_process import Streaming, run_bounded, streaming
 from executable_locator import Found, located_command
+from job_tree import TreeNotEnded, process_tree
 
 T = TypeVar("T")
 
@@ -146,17 +152,21 @@ def subprocess_runner(command: Sequence[str], timeout: float, *, input_bytes: by
     """Run a command through the bounded, non-interactive layer, its program at the path the locator finds,
     classifying why it could not run or finish.
 
-    With `input_bytes`, the command's stdin is exactly those bytes and then closed.
+    With `input_bytes`, the command's stdin is exactly those bytes and then closed. Every program the command
+    started is ended with it, once it has finished or been killed.
     """
+    tree = process_tree(hidden_window=True)
     try:
         if input_bytes is None:
-            finished = run_bounded(located_command(command, kept=FOUND), timeout)
+            finished = run_bounded(located_command(command, kept=FOUND), timeout, tree=tree)
         else:
-            finished = run_bounded(located_command(command, kept=FOUND), timeout, input_bytes=input_bytes)
+            finished = run_bounded(located_command(command, kept=FOUND), timeout, input_bytes=input_bytes, tree=tree)
     except FileNotFoundError as exc:
         raise GitError(MISSING_GIT, kind="prerequisite") from exc
     except subprocess.TimeoutExpired as exc:
         raise GitError(f"{' '.join(command)} did not finish within {timeout:g} seconds", kind="timeout") from exc
+    except TreeNotEnded as exc:
+        raise GitError(_not_ended(command, exc), kind="execution") from exc
     except OSError as exc:
         raise GitError(f"Git could not be started: {exc}", kind="execution") from exc
     return GitResult(
@@ -164,6 +174,11 @@ def subprocess_runner(command: Sequence[str], timeout: float, *, input_bytes: by
         finished.stdout.decode("utf-8", "surrogateescape"),
         finished.stderr.decode("utf-8", "replace"),
     )
+
+
+def _not_ended(command: Sequence[str], error: TreeNotEnded) -> str:
+    """The message of a git command whose programs could not be ended."""
+    return f"{' '.join(str(part) for part in command)} left programs it started that could not be ended: {error}"
 
 
 def classify_failure(stderr: str) -> str:
@@ -369,19 +384,26 @@ class GitClient:
 
         Each read fails as a `timeout` when no output arrives for `idle_timeout` seconds (the client's default when
         None), so a long answer that keeps arriving never times out. Leaving the block closes git's output, so git
-        exits by itself; see `bounded_process.Streaming`.
+        exits by itself; see `bounded_process.Streaming`. Every program git started is then ended with it, and a
+        program that could not be ended fails the block as an `execution` GitError.
         """
         command = _command(arguments, directory)
-        with ExitStack() as stack:
-            try:
-                running = stack.enter_context(
-                    streaming(
-                        located_command(command, kept=FOUND),
-                        idle_timeout=self.timeout if idle_timeout is None else idle_timeout,
+        try:
+            with ExitStack() as stack:
+                try:
+                    running = stack.enter_context(
+                        streaming(
+                            located_command(command, kept=FOUND),
+                            idle_timeout=self.timeout if idle_timeout is None else idle_timeout,
+                            tree=process_tree(hidden_window=True),
+                        )
                     )
-                )
-            except FileNotFoundError as exc:
-                raise GitError(MISSING_GIT, kind="prerequisite") from exc
-            except OSError as exc:
-                raise GitError(f"Git could not be started: {exc}", kind="execution") from exc
-            yield GitStream(running)
+                except FileNotFoundError as exc:
+                    raise GitError(MISSING_GIT, kind="prerequisite") from exc
+                except TreeNotEnded:
+                    raise
+                except OSError as exc:
+                    raise GitError(f"Git could not be started: {exc}", kind="execution") from exc
+                yield GitStream(running)
+        except TreeNotEnded as exc:
+            raise GitError(_not_ended(command, exc), kind="execution") from exc

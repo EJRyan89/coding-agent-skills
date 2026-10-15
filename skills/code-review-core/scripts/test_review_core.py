@@ -3035,7 +3035,7 @@ class RuntimeContractTests(GitTestCase):
         with mock.patch("git_client.run_bounded", return_value=finished) as run:
             result = review_runtime.subprocess_runner(["git", "show", "HEAD:latin1.md"], 60)
         git = located_command(["git"])[0]
-        self.assertEqual(mock.call([git, "show", "HEAD:latin1.md"], 60), run.call_args)
+        self.assertEqual(([git, "show", "HEAD:latin1.md"], 60), run.call_args.args)
         self.assertEqual(b"caf\xe9\r\nok\r\n", result.stdout.encode("utf-8", "surrogateescape"))
         self.assertEqual("fatal: caf�\n", result.stderr)
         self.assertEqual(0, result.returncode)
