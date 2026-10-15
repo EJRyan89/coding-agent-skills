@@ -16,8 +16,10 @@ exits 1; only a usage error exits 2.
 
 Token estimate: ceil(prose_chars / 4 + code_chars / 3), in characters of the UTF-8 text. Every
 character of a helper script or data file is code. In Markdown, lines inside fenced code blocks,
-including the fence lines, are code and the rest is prose. A file that is not UTF-8 text counts 0;
-tools and scan, which read the text itself, fail on one.
+including the fence lines, are code and the rest is prose. A helper script or data file that is not UTF-8 text
+counts 0, since it is measured rather than loaded. A Markdown file the skill loads, its own or one it reads from
+outside its folder, that is not UTF-8 text prints UNREADABLE <path> <reason> instead of a cost, the path relative to
+the skill folder, and inventory exits 1 after it; tools and scan, which read the text itself, fail on one.
 The estimate is a relative signal, not the active model's tokenizer.
 
 Structure: BODY_OVER_500_LINES <lines> counts SKILL.md lines after the frontmatter. DOC_NO_TOC <lines> <path> is
@@ -60,8 +62,10 @@ code or subcommand the * supplies. A command is a fence command, or a code span 
 a program and a script's path as that rule reads them. UNGRANTED <tool> <line> <command> is a command that no
 pattern of a shell with patterns matches, so running it through that tool prompts. A pattern matches the command's
 text, quotes included, with * for any text, and one whose only * ends it after a space also matches the bare command
-before it. EXPANDS <line> <command> is a command that expands a shell variable or command substitution other than
-${CLAUDE_SKILL_DIR} or $ARGUMENTS, which prompts in both shells whatever is granted. IDLE_ALLOWED <entry> is a
+before it. A line that joins commands with &&, ||, ;, or | outside quotes is judged one command at a time, as Claude
+Code checks it, and UNGRANTED names the command no pattern matches. EXPANDS <line> <command> is a command line that
+expands a shell variable or command substitution other than ${CLAUDE_SKILL_DIR} or $ARGUMENTS, which prompts in both
+shells whatever is granted, so it is reported whether or not the skill has allowed-tools. IDLE_ALLOWED <entry> is a
 scoped Bash or PowerShell pattern that matches no fence command and no code span outside a fence, so it pre-approves
 a command the skill never asks for. HIDDEN_ALLOWED is a hidden skill with any grant: no turn starts it, so its
 grants approve nothing, and it takes the place of its IDLE_ALLOWED lines.
@@ -108,6 +112,8 @@ CATEGORIES = ("main", "helper", "doc", "data")
 BODY_LINE_LIMIT = 500
 DOC_TOC_LINE_LIMIT = 100
 SKIPPED_DIRECTORIES = frozenset({".git", "__pycache__", "node_modules"})
+# Why a file the skill loads cannot be measured.
+NOT_UTF8 = "not UTF-8 text"
 SKILL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 # The labels of a fence whose lines are commands the model may run through its Bash or PowerShell tool: a command
 # shell's, and PowerShell's.
@@ -225,9 +231,25 @@ SHELL_FILE_COMMAND = r"(?:cat|head|tail|find|grep|rg|sed|awk|wc|ls)"
 # Word edges that also treat hyphens as part of a word, so "rev-parse" is not "parse".
 WORD_START = r"(?<![\w-])"
 WORD_END = r"(?![\w-])"
-# Python told to run code given on its command line: a source tree writes the interpreter as the PYTHON template
-# token, which a deployment renders as python or python3, and short options such as -B or -I may come before -c.
-INLINE_PYTHON = rf"(?:\{{\{{PYTHON\}}\}}|{WORD_START}python3?)(?:\s+-[A-Za-z]+{WORD_END})*?\s+-c{WORD_END}"
+# An interpreter named as a command word, quoted or not, with or without a folder: the PYTHON template token, which a
+# deployment renders as python or python3; python with any version or .exe; py, the Windows launcher; node; and
+# PowerShell. inline_code reads the options after it.
+INTERPRETER = re.compile(
+    r"(?<![\w.{}$/\\-])[\"']?(?:[\w.:~/\\-]*[/\\])?"
+    r"(\{\{PYTHON\}\}|python(?:\d+(?:\.\d+)*)?|py|node|pwsh|powershell)(?:\.exe)?[\"']?(?=\s|$|[`|;&)])",
+    re.IGNORECASE,
+)
+# The words after a command's program up to the end of the command: a quoted string, a run of other text, or the
+# operator, backtick, or parenthesis that ends it.
+INTERPRETER_WORD = re.compile(r"[|;&`)]|\"[^\"]*\"?|'[^']*'?|[^\s\"'|;&`)]+")
+# Python's options that take a value, as the next word when written alone, and the Windows launcher's version
+# selectors, such as -3 or -3.11-64, which come before Python's own options.
+PYTHON_VALUE_OPTIONS = frozenset({"X", "W"})
+PYTHON_LONG_VALUE_OPTIONS = frozenset({"--check-hash-based-pycs"})
+LAUNCHER_VERSION = re.compile(r"-(?:\d[\w.-]*|V:\S+)")
+# Node's options that run code from the command line, and those that take the next word as a value.
+NODE_INLINE_OPTIONS = frozenset({"--eval", "--print"})
+NODE_VALUE_OPTIONS = frozenset({"-r", "--require", "--import", "--input-type"})
 CUES = (
     ("wide-glob", re.compile(r"\*\*/\*|\*\*[\\/]")),
     (
@@ -244,7 +266,7 @@ CUES = (
     (
         "generated-code",
         re.compile(
-            rf"(?i){INLINE_PYTHON}|<<-?\s*['\"]?[A-Z_]+['\"]?|"
+            rf"(?i)<<-?\s*['\"]?[A-Z_]+['\"]?|"
             rf"{WORD_START}(?:write|writes|generate|generates|compose)"
             rf"{WORD_END}.{{0,40}}{WORD_START}(?:script|code|glue|program|one-liner){WORD_END}"
         ),
@@ -318,7 +340,7 @@ def require_text(path: Path) -> str:
     """A file's UTF-8 text; one that is binary or not UTF-8 fails rather than reading as empty."""
     text = read_text(path)
     if text is None:
-        raise InputError(f"cannot read {posix(path)}: not UTF-8 text")
+        raise InputError(f"cannot read {posix(path)}: {NOT_UTF8}")
     return text
 
 
@@ -399,13 +421,44 @@ def entry_text(name: str, pattern: str | None) -> str:
     return name if pattern is None else f"{name}({pattern})"
 
 
+def command_parts(command: str) -> list[str]:
+    """The commands a command line joins with &&, ||, ;, or |, each stripped, which Claude Code checks against the
+    grants one by one. An operator inside quotes, or escaped with a backslash outside single quotes, joins nothing."""
+    parts: list[str] = []
+    start, index, quote = 0, 0, ""
+    while index < len(command):
+        character = command[index]
+        if character == "\\" and quote != "'":
+            index += 2
+            continue
+        if quote:
+            quote = "" if character == quote else quote
+        elif character in "\"'":
+            quote = character
+        elif character in "&|;" and (character != "&" or command.startswith("&&", index)):
+            parts.append(command[start:index])
+            index += 2 if command.startswith(("&&", "||"), index) else 1
+            start = index
+            continue
+        index += 1
+    parts.append(command[start:])
+    return [part.strip() for part in parts if part.strip()]
+
+
 def grants(pattern: str, command: str) -> bool:
     """Whether a Bash or PowerShell permission pattern matches a command, by Claude Code's rules.
 
     The comparison is on the command's text, quotes included, and `*` matches any text. The legacy `prefix:*` is
     read as `prefix *`, and a pattern whose only `*` ends it after a space also matches the bare command before it.
+    A command line that joins commands, as command_parts reads it, matches only when the pattern matches each of them.
     Where the rules are unclear this errs toward no match, so a grant is never overstated.
     """
+    parts = command_parts(command)
+    return bool(parts) and all(grants_one(pattern, part) for part in parts)
+
+
+def grants_one(pattern: str, command: str) -> bool:
+    """Whether a pattern matches one command, which joins no other."""
     pattern = trailing_wildcard(pattern)
     if pattern.endswith(" *") and pattern.count("*") == 1 and command == pattern[:-2]:
         return True
@@ -436,10 +489,12 @@ def runs_repository_code(script: Path) -> bool:
 
 
 def repository_code_commands(skill_dir: Path, commands: list[tuple[int, str]]) -> frozenset[str]:
-    """The commands that run a script, through the skill's directory, that declares it starts repository code."""
+    """The commands, each part of a joined line on its own, that run a script, through the skill's directory, that
+    declares it starts repository code."""
     return frozenset(
         command
-        for _, command in commands
+        for _, line in commands
+        for command in command_parts(line)
         if any(runs_repository_code(skill_dir / script) for script in SKILL_DIR_SCRIPT.findall(command))
     )
 
@@ -559,19 +614,20 @@ def grant_findings(
         and ends_its_path_before_the_wildcard(pattern)
         and not names_what_it_runs(pattern)
     ]
-    for number, command in commands:
+    for number, line in commands:
         for tool in SHELL_TOOLS:
             patterns = [pattern for name, pattern in shell if name == tool]
-            covered = any(
-                pattern is None or pattern.strip() in UNSCOPED_PATTERNS or grants(pattern, command)
-                for pattern in patterns
-            )
-            if command in repository_code:
-                output.append(
-                    f"{'GRANTED_REPOSITORY_CODE' if covered else 'REPOSITORY_CODE'} {tool} {number} {command}"
+            for command in command_parts(line):
+                covered = any(
+                    pattern is None or pattern.strip() in UNSCOPED_PATTERNS or grants(pattern, command)
+                    for pattern in patterns
                 )
-            elif patterns and not covered:
-                output.append(f"UNGRANTED {tool} {number} {command}")
+                if command in repository_code:
+                    output.append(
+                        f"{'GRANTED_REPOSITORY_CODE' if covered else 'REPOSITORY_CODE'} {tool} {number} {command}"
+                    )
+                elif patterns and not covered:
+                    output.append(f"UNGRANTED {tool} {number} {command}")
     output += [f"EXPANDS {number} {command}" for number, command in commands if SHELL_EXPANSION.search(command)]
     return output
 
@@ -586,7 +642,7 @@ def idle_findings(entries: list[tuple[str, str | None]], commands: list[str]) ->
         if name in SHELL_TOOLS
         and pattern is not None
         and pattern.strip() not in UNSCOPED_PATTERNS
-        and not any(grants(pattern, command) for command in commands)
+        and not any(grants(pattern, part) for command in commands for part in command_parts(command))
     ]
 
 
@@ -722,18 +778,20 @@ def inventory(directory: Path) -> list[str]:
     totals = {name: [0, 0, 0] for name in CATEGORIES}
     flags: list[str] = []
     texts: dict[str, tuple[str, str]] = {}
+    unreadable: list[str] = []
     for path in files:
         relative = path.relative_to(directory)
         kind = category(relative)
         size = path.stat().st_size
         text = read_text(path)
+        if text is None and kind in ("main", "doc"):
+            unreadable.append(f"UNREADABLE {posix(relative)} {NOT_UTF8}")
         tokens = estimate_tokens(text, kind)
         lines.append(f"FILE {kind} {size} {tokens} {posix(relative)}")
         for index, value in enumerate((1, size, tokens)):
             totals[kind][index] += value
         if text is not None:
             texts[posix(relative)] = (kind, text)
-        if text is not None:
             flags.extend(structure_flags(kind, text, posix(relative)))
     for kind in CATEGORIES:
         lines.append(f"TOTAL {kind} {totals[kind][0]} {totals[kind][1]} {totals[kind][2]}")
@@ -742,6 +800,7 @@ def inventory(directory: Path) -> list[str]:
         flags.insert(0, "NO_MAIN")
     return [
         *lines,
+        *unreadable,
         *flags,
         *duplicate_flags(texts),
         *nested_flags(directory, texts),
@@ -805,6 +864,7 @@ def outside_lines(directory: Path, texts: dict[str, tuple[str, str]]) -> list[st
     root = directory.resolve()
     lines: list[str] = []
     counted: dict[str, tuple[int, int]] = {}
+    unreadable: dict[str, str] = {}
     for relative, (kind, text) in texts.items():
         if kind not in ("main", "doc"):
             continue
@@ -822,13 +882,27 @@ def outside_lines(directory: Path, texts: dict[str, tuple[str, str]]) -> list[st
                     lines.append(f"OUTSIDE_MISSING {where} {reference}")
                     continue
                 key = identity(target)
+                if key in unreadable:
+                    continue
                 if key not in counted:
-                    counted[key] = (target.stat().st_size, estimate_tokens(read_text(target), "doc"))
+                    outside = read_text(target)
+                    if outside is None:
+                        unreadable[key] = f"UNREADABLE {outside_path(root, target)} {NOT_UTF8}"
+                        continue
+                    counted[key] = (target.stat().st_size, estimate_tokens(outside, "doc"))
                 size, tokens = counted[key]
                 lines.append(f"OUTSIDE_READ {where} {size} {tokens} {reference}")
     sizes = list(counted.values())
     lines.append(f"TOTAL outside {len(sizes)} {sum(size for size, _ in sizes)} {sum(tokens for _, tokens in sizes)}")
-    return lines
+    return [*lines, *unreadable.values()]
+
+
+def outside_path(root: Path, target: Path) -> str:
+    """A file outside the skill folder, relative to the folder, or absolute on another drive."""
+    try:
+        return posix(Path(os.path.relpath(target, root)))
+    except ValueError:
+        return posix(target)
 
 
 def source_root(directory: Path) -> Path | None:
@@ -986,8 +1060,10 @@ def tools(path: Path) -> list[str]:
         output += [f"IMPLIED {name} {first_implied[name]}" for name in implied]
         output += [f"UNUSED_ALLOWED {name}" for name in allowed if name not in first_use and name not in implied]
         output += [f"MISSING_ALLOWED {name} {line}" for name, line in used if name not in allowed]
-        commands = sorted(fence_commands(body, start) + span_commands(body, start))
-        output += grant_findings(entries, commands, repository_code_commands(path.parent, commands))
+    # A command prompts or expands whether or not the skill grants anything, so its lines need no allowed-tools.
+    commands = sorted(fence_commands(body, start) + span_commands(body, start))
+    output += grant_findings(entries, commands, repository_code_commands(path.parent, commands))
+    if allowed is not None:
         if "INVOCATION hidden" in listed:
             output += ["HIDDEN_ALLOWED"] if allowed else []
         else:
@@ -1014,6 +1090,81 @@ def listing(document: frontmatter.Frontmatter) -> list[str]:
 # --- scan -----------------------------------------------------------------------------------------
 
 
+def inline_code(line: str) -> bool:
+    """Whether a line runs an interpreter on code written in the command rather than a script file: Python told -c or
+    - (the program read from a pipe or a here-document), Node told -e or -p, or PowerShell told -Command or
+    -EncodedCommand, each read by the options its program takes before the code."""
+    for match in INTERPRETER.finditer(line):
+        words: list[str] = []
+        for word in INTERPRETER_WORD.findall(line, match.end()):
+            if word in ("|", ";", "&", "`", ")"):
+                break
+            words.append(word.strip("\"'"))
+        program = match.group(1).casefold()
+        if program == "node":
+            found = node_inline_code(words)
+        elif program in ("pwsh", "powershell"):
+            found = powershell_inline_code(words)
+        else:
+            found = python_inline_code(list(dropwhile(LAUNCHER_VERSION.fullmatch, words)) if program == "py" else words)
+        if found:
+            return True
+    return False
+
+
+def python_inline_code(words: list[str]) -> bool:
+    """Whether Python's arguments run code they hold: -c, alone or ending a group of flags such as -Bc, or - for the
+    program on standard input, before any script or -m."""
+    rest = iter(words)
+    for word in rest:
+        if word == "-":
+            return True
+        if not word.startswith("-") or word == "--":
+            return False
+        if word.startswith("--"):
+            if word in PYTHON_LONG_VALUE_OPTIONS:
+                next(rest, None)
+            continue
+        for position, flag in enumerate(word[1:], start=1):
+            if flag in "cm":
+                return flag == "c"
+            if flag in PYTHON_VALUE_OPTIONS:
+                if position == len(word) - 1:
+                    next(rest, None)
+                break
+    return False
+
+
+def node_inline_code(words: list[str]) -> bool:
+    """Whether Node's arguments run code they hold, by -e or -p, alone or in a group, or their long forms, or - for
+    the program on standard input, before any script."""
+    rest = iter(words)
+    for word in rest:
+        if word == "-" or word.split("=", 1)[0] in NODE_INLINE_OPTIONS:
+            return True
+        if not word.startswith("-") or word == "--":
+            return False
+        if word in NODE_VALUE_OPTIONS:
+            next(rest, None)
+        elif not word.startswith("--") and ("e" in word or "p" in word):
+            return True
+    return False
+
+
+def powershell_inline_code(words: list[str]) -> bool:
+    """Whether PowerShell's parameters run a command they hold: -Command or -EncodedCommand, by any prefix PowerShell
+    reads as one, before any -File."""
+    for word in words:
+        name = word.casefold()[1:] if word.startswith("-") else ""
+        if name == "f" or (len(name) >= 2 and "file".startswith(name)):
+            return False
+        if name in ("c", "e", "ec") or (len(name) >= 3 and "command".startswith(name)):
+            return True
+        if len(name) >= 2 and "encodedcommand".startswith(name):
+            return True
+    return False
+
+
 def scan(paths: list[Path]) -> list[str]:
     missing = [posix(path) for path in paths if not path.is_file()]
     if missing:
@@ -1033,7 +1184,11 @@ def scan(paths: list[Path]) -> list[str]:
             text = line.strip()
             if not text:
                 continue
-            cues = [name for name, pattern in CUES if pattern.search(line)]
+            cues = [
+                name
+                for name, pattern in CUES
+                if pattern.search(line) or (name == "generated-code" and inline_code(line))
+            ]
             if language is not None:
                 cues = [cue for cue in cues if cue in CODE_CUES]
             shell = (
@@ -1125,7 +1280,8 @@ def measure_sample(root: Path, sample: Path) -> list[str]:
     for relative in sorted(named):
         target = root / relative
         if target.suffix.casefold() not in HELPER_SUFFIXES and target.is_file():
-            output.append(f"RUNTIME_PROMPT_READ {posix(sample)} {relative} {estimate_tokens(read_text(target), 'doc')}")
+            tokens = estimate_tokens(require_text(target), "doc")
+            output.append(f"RUNTIME_PROMPT_READ {posix(sample)} {relative} {tokens}")
     output.append(f"REPLY_BOUNDED {posix(sample)} {'yes' if REPLY_BOUND.search(text) else 'no'}")
     return output
 
@@ -1159,7 +1315,7 @@ def main(arguments: list[str] | None = None) -> int:
         print(f"FAILED cannot read{where}: {exc.strerror or exc}")
         return 1
     print("\n".join(output))
-    return 1 if any(line.startswith(("NOT_FOUND ", "AMBIGUOUS ")) for line in output) else 0
+    return 1 if any(line.startswith(("NOT_FOUND ", "AMBIGUOUS ", "UNREADABLE ")) for line in output) else 0
 
 
 if __name__ == "__main__":

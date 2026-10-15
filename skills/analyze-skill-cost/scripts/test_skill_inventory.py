@@ -386,6 +386,33 @@ class InventoryTests(TemporaryTestCase):
             ["TOTAL outside 0 0 0"], [line for line in lines if line.startswith(("OUTSIDE", "TOTAL outside"))]
         )
 
+    def test_markdown_the_skill_loads_that_is_not_utf8_is_unreadable_and_fails_the_inventory(self) -> None:
+        # A runtime's file reader decodes UTF-16, so such a file still costs tokens; it is never reported as free.
+        skill = self.root / "skills" / "u"
+        long_doc = ("# Guide\n" + "line\n" * 200).encode("utf-16")
+        write(skill / "SKILL.md", "---\nname: u\n---\nRead `references/guide.md`.\nAnd `../shared.md`.\n")
+        write(skill / "references" / "guide.md", long_doc)
+        write(skill / "references" / "legacy.md", "caf\xe9\n".encode("cp1252"))
+        write(self.root / "skills" / "shared.md", long_doc)
+        # A helper or data file is measured rather than loaded, so one that is not UTF-8 still counts 0.
+        write(skill / "scripts" / "tool.ps1", "Write-Output 1\n".encode("utf-16"))
+        write(skill / "logo.png", b"\x89PNG\0\x01")
+        code, lines, error = run("inventory", str(skill))
+        self.assertEqual((1, ""), (code, error))
+        self.assertEqual(
+            [
+                "UNREADABLE references/guide.md not UTF-8 text",
+                "UNREADABLE references/legacy.md not UTF-8 text",
+                "TOTAL outside 0 0 0",
+                "UNREADABLE ../shared.md not UTF-8 text",
+            ],
+            [line for line in lines if line.startswith(("UNREADABLE", "OUTSIDE", "TOTAL outside", "DOC_"))],
+        )
+        self.assertIn("FILE helper", next(line for line in lines if line.endswith("scripts/tool.ps1")))
+        unreadable = write(self.root / "skills" / "v" / "SKILL.md", "x\n".encode("utf-16"))
+        code, lines, _ = run("inventory", str(unreadable.parent))
+        self.assertEqual((1, ["UNREADABLE SKILL.md not UTF-8 text"]), (code, [x for x in lines if "UNREADABLE" in x]))
+
     def test_missing_directory_fails(self) -> None:
         code, lines, error = run("inventory", str(self.root / "absent"))
         self.assertEqual((1, ""), (code, error))
@@ -842,6 +869,25 @@ class ToolsTests(TemporaryTestCase):
             with self.subTest(pattern=pattern, command=command):
                 self.assertEqual(expected, skill_inventory.grants(pattern, command))
 
+    def test_a_joined_command_is_granted_only_when_the_pattern_matches_each_command(self) -> None:
+        cases = [
+            ("git status *", "git status --short && rm -rf build", False),
+            ("git status *", "git status ; rm -rf build", False),
+            ("git status *", "git status || rm -rf build", False),
+            ("git status *", "git status | rm -rf build", False),
+            ("git status *", "git status && git status --short", True),
+            ("git *", 'git commit -m "a && b; c | d"', True),
+            ("git *", "git commit -m 'a && b'", True),
+            ("git *", "git log 2>&1", True),
+        ]
+        for pattern, command, expected in cases:
+            with self.subTest(pattern=pattern, command=command):
+                self.assertEqual(expected, skill_inventory.grants(pattern, command))
+        self.assertEqual(
+            ["a", "b", "c", "d", "e 'f; g' \"h | i\"", "j \\&& k"],
+            skill_inventory.command_parts("a && b || c; d | e 'f; g' \"h | i\" | j \\&& k"),
+        )
+
     def test_commands_that_expand_shell_variables_are_reported(self) -> None:
         # Claude Code 2.1.288 asked for approval of a granted command whose arguments held "$PWD", in both shells.
         # It fills in ${CLAUDE_SKILL_DIR} and $ARGUMENTS itself before the command runs.
@@ -859,6 +905,57 @@ class ToolsTests(TemporaryTestCase):
                 'EXPANDS 7 python -B x.py --home "${HOME}" --at "$(date)"',
             ],
             [line for line in self.tools(f"---\nallowed-tools: {allowed}\n---\n{body}") if line.startswith("EXPANDS")],
+        )
+
+    def test_a_skill_with_no_allowed_tools_still_reports_commands_that_expand(self) -> None:
+        # No grant and no user rule pre-approves a command that expands a variable, so it prompts either way.
+        body = '```bash\ngit -C "$REPO" log\n```\n'
+        self.assertEqual(
+            [
+                "MODEL none",
+                "DESCRIPTION 17 5",
+                "INVOCATION user-only",
+                "NO_ALLOWED_TOOLS",
+                "USED Bash 5",
+                'EXPANDS 6 git -C "$REPO" log',
+            ],
+            self.tools(f"---\ndescription: x. Use it when y.\ndisable-model-invocation: true\n---\n{body}"),
+        )
+
+    def test_each_command_a_line_joins_is_judged_on_its_own(self) -> None:
+        # Claude Code checks each command of a line joined by &&, ||, ;, or | against the grants, so a pattern for
+        # the first command approves none of the rest.
+        allowed = json.dumps(["Bash(git status *)", "PowerShell(git status *)", "Bash(sort)", "PowerShell(sort)"])
+        body = (
+            "```bash\n"
+            "git status --short && rm -rf build\n"  # 5
+            "git status || git log; git status | sort\n"  # 6
+            'git status --format "a && b; c | d"\n'  # 7: quoted operators join nothing
+            "git status \\; sort\n"  # 8: an escaped operator joins nothing
+            "```\n"
+        )
+        self.assertEqual(
+            [
+                "UNGRANTED Bash 5 rm -rf build",
+                "UNGRANTED PowerShell 5 rm -rf build",
+                "UNGRANTED Bash 6 git log",
+                "UNGRANTED PowerShell 6 git log",
+            ],
+            self.grants(allowed, body),
+        )
+
+    def test_a_pattern_that_matches_any_command_of_a_joined_line_is_not_idle(self) -> None:
+        allowed = json.dumps(["Bash(git status *)", "PowerShell(git status *)", "Bash(sort)", "PowerShell(sort)"])
+        self.assertEqual([], self.idle(f"allowed-tools: {allowed}", "```bash\ngit log | sort && git status\n```\n"))
+
+    def test_a_joined_line_runs_repository_code_only_in_the_command_that_runs_the_script(self) -> None:
+        skill = self.root / "skill"
+        write(skill / "scripts" / "start.py", 'RUNS_REPOSITORY_CODE = "starts configured servers"\n')
+        own = 'python -B "${CLAUDE_SKILL_DIR}/scripts/'
+        allowed = json.dumps(["Bash(git status)", "PowerShell(git status)"])
+        self.assertEqual(
+            [f'REPOSITORY_CODE Bash 5 {own}start.py"', f'REPOSITORY_CODE PowerShell 5 {own}start.py"'],
+            self.repository_code(allowed, f'```bash\ngit status && {own}start.py"\n```\n'),
         )
 
     def test_without_shell_grants_no_command_is_reported_ungranted(self) -> None:
@@ -1021,15 +1118,55 @@ class ScanTests(TemporaryTestCase):
                         self.assertEqual(0, code, error)
                         self.assertEqual(["generated-code"], [line.split()[3] for line in lines])
 
+    def test_code_given_to_an_interpreter_on_its_command_line_is_generated_code_in_every_form(self) -> None:
+        token = "{{" + "PYTHON}}"
+        for command in (
+            f"{token} -Bc 'print(1)'",
+            f"{token} -config",  # Python reads it as -c with the code onfig
+            "python -X utf8 -c 'print(1)'",
+            "python -Xutf8 -W ignore --check-hash-based-pycs never -c 'print(1)'",
+            "python3.11 -c 'print(1)'",
+            "python.exe -c 'x'",
+            "/usr/bin/python3 -c 'x'",
+            "py -c 'print(1)'",
+            "py -3 -c 'print(1)'",
+            "py -3.11-64 -I -c 'print(1)'",
+            f'"{token}" -c "print(1)"',
+            "echo 'print(1)' | python -",
+            "echo 'print(1)' | python -B -",
+            "git status && python3 -c 'x'",
+            "node -e 'console.log(1)'",
+            "node --no-warnings -pe '1'",
+            "node --eval='1'",
+            "pwsh -Command '1'",
+            "pwsh -NoProfile -c '1'",
+            "powershell.exe -ExecutionPolicy Bypass -EncodedCommand ZQBjAGgAbwA=",
+        ):
+            for place, content in (
+                ("fence", f"```bash\n{command}\n```\n"),
+                ("inline code", f"Run `{command}` to count them.\n"),
+            ):
+                with self.subTest(command=command, place=place):
+                    skill = write(self.root / "SKILL.md", content)
+                    code, lines, error = run("scan", str(skill))
+                    self.assertEqual(0, code, error)
+                    self.assertIn("generated-code", [line.split()[3] for line in lines])
+
     def test_a_plain_python_command_is_not_generated_code(self) -> None:
         token = "{{" + "PYTHON}}"
         for command in (
             token + ' -B "${CLAUDE_SKILL_DIR}/scripts/count.py" -c 3',
             f"{token} -m json.tool -c",
             "python3 scripts/count.py --config -c",
-            f"{token} -config",
+            "python -X dev scripts/count.py -c",
+            "py -3 scripts/count.py -c",
             f"{token}-c",
             "cpython -c 'print(1)'",
+            "node scripts/count.js -e",
+            "node -r ./setup.js scripts/count.js -e",
+            "pwsh -File scripts/count.ps1 -Command x",
+            "pwsh -NoProfile -ExecutionPolicy Bypass -File x.ps1",
+            "the .py file and py.typed -c",
         ):
             for place, content in (
                 ("fence", f"```bash\n{command}\n```\n"),
@@ -1132,6 +1269,17 @@ class ScanTests(TemporaryTestCase):
             "a sample is measured once, a script it runs is not a read, and only .txt files are samples",
         )
 
+    def test_a_file_a_sample_names_that_is_not_utf8_fails(self) -> None:
+        skill = self.source_skill()
+        reviewer = write(self.root / "skills" / "core" / "references" / "reviewer.md", "x\n".encode("utf-16"))
+        write(
+            self.root / "docs" / "runtime-prompts" / "alpha" / "reviewer.txt",
+            "Follow <source>/skills/core/references/reviewer.md.\n",
+        )
+        code, lines, error = run("scan", str(skill))
+        self.assertEqual((1, ""), (code, error))
+        self.assertEqual(f"FAILED cannot read {reviewer.as_posix()}: not UTF-8 text", lines[-1])
+
     def test_long_lines_are_truncated(self) -> None:
         skill = write(self.root / "SKILL.md", "For each " + "x" * 300 + "\n")
         _, lines, _ = run("scan", str(skill))
@@ -1188,6 +1336,20 @@ class InstructionsTests(GitTestCase):
         self.assertEqual(
             [], sorted(name for name in printed if not re.search(rf"`{name}(?:[ `])", instructions)), "unhandled"
         )
+
+
+class TemplateValueTests(unittest.TestCase):
+    def test_every_template_value_the_skill_requires_is_one_a_command_or_grant_uses(self) -> None:
+        # A value only a sentence names promises what no command reads, as a home folder the script never searches
+        # would, and the deployment would require it for that sentence alone.
+        skill = SCRIPT.parents[1]
+        lines = (skill / "SKILL.md").read_text(encoding="utf-8").splitlines()
+        languages, _ = skill_inventory.parse_fences(lines)
+        start = skill_inventory.body_start(lines)
+        commands = [line for index, line in enumerate(lines) if index < start or languages[index] is not None]
+        used = set(re.findall(r"\{\{([A-Z_]+)\}\}", "\n".join(commands)))
+        metadata = json.loads((skill.parents[1] / "deploy-meta" / f"{skill.name}.json").read_text(encoding="utf-8"))
+        self.assertEqual(sorted(used), sorted(metadata["required_vars"]))
 
 
 class ExitContractTests(TemporaryTestCase):

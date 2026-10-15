@@ -19,7 +19,7 @@ Trim leading/trailing whitespace. If empty, print `usage: analyze-skill-cost <Sk
 {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py" locate "<SKILL_NAME>"
 ```
 
-It searches `{{HOME}}/.claude/skills/`, the current repository's `.agents/skills/` and `.claude/skills/`, and, in a skill source tree, `skills/` (`SCOPE source`, preferred over the deployed copy).
+It searches `.claude/skills/` in your home folder, the current repository's `.agents/skills/` and `.claude/skills/`, and, in a skill source tree, `skills/` (`SCOPE source`, preferred over the deployed copy).
 
 - `REPO <path>` or `REPO none`: the repository searched; nothing to do.
 - `SKILL_FILE <path>`, `SKILL_DIR <path>`, `SCOPE <scope>`: continue with these.
@@ -32,7 +32,7 @@ It searches `{{HOME}}/.claude/skills/`, the current repository's `.agents/skills
 {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py" inventory "<SKILL_DIR>"
 ```
 
-`FILE` lines list every file by category; a `doc` file is Markdown other than the main `SKILL.md`. `TOTAL` lines fill the report's Scope, and so do `DECLARED <kind> <name>` lines, or `DECLARED_UNREADABLE <path>` when the skill's metadata is not valid JSON. `NO_MAIN` means the folder lost its `SKILL.md`: stop and report it. Step 4 judges the rest.
+`FILE` lines list every file by category; a `doc` file is Markdown other than the main `SKILL.md`. `TOTAL` lines fill the report's Scope, and so do `DECLARED <kind> <name>` lines, or `DECLARED_UNREADABLE <path>` when the skill's metadata is not valid JSON. `NO_MAIN` means the folder lost its `SKILL.md`, and `UNREADABLE <path> <reason>` that a Markdown file it loads cannot be measured: stop and report either. Step 4 judges the rest.
 
 ## Step 3 — Read what the judgment needs
 
