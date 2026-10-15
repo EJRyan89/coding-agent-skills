@@ -11,7 +11,7 @@ import unittest
 from collections.abc import Callable, Iterable, Sequence
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -166,18 +166,18 @@ class LayoutTests(unittest.TestCase):
             "| Requestor | PR | AI Result | Findings | AI Review |\n| :--- | :--- | :--- | :--- | :--- |", content
         )
         self.assertIn(
-            "| Ada Lovelace | [#3 Improve \\| "
+            "| Ada Lovelace | [#3 Improve &#124; "
             "behavior](https://github.com/owner/repo/pull/3) | Changes Requested | 1M 2H open | "
             "[AI Review](vscode://file/C:/Reviews/a%20b/review.md) (stale) |",
             content,
         )
         self.assertIn(
-            "|  | [#7 Improve \\| behavior](https://github.com/owner/repo/pull/7) | Approved | 2S open | "
+            "|  | [#7 Improve &#124; behavior](https://github.com/owner/repo/pull/7) | Approved | 2S open | "
             "[AI Review](vscode://file/C:/Reviews/a%20b/review.md) |",
             content,
         )
         self.assertIn(
-            "| bob | [other#5 Improve \\| behavior](https://github.com/owner/other/pull/5) | - | - | - |", content
+            "| bob | [other#5 Improve &#124; behavior](https://github.com/owner/other/pull/5) | - | - | - |", content
         )
         self.assertIn("### Drafts (1)\n\n<details>\n", content)
         mine = content[content.index("### My PRs (2)") :]
@@ -414,7 +414,7 @@ class TrackerTests(unittest.TestCase):
         content, _ = run([item()])
         self.assertTrue(content.startswith("Before\n"))
         self.assertTrue(content.endswith("\nAfter\n"))
-        self.assertIn("Improve \\| behavior", content)
+        self.assertIn("Improve &#124; behavior", content)
         self.assertEqual({"To Review": ["owner/repo#1"]}, sections(content))
         self.assertIn("### To Review (1)", content)
 
@@ -647,10 +647,10 @@ class RecordingDetector(FakeDetector):
         return super().detect(repository, number, base_ref, since_sha, head_sha)
 
 
-def dashboard_files(root: Path, dashboard_bytes: bytes) -> tuple[Path, Path]:
+def dashboard_files(root: Path, dashboard_bytes: bytes, items: list[dict] | None = None) -> tuple[Path, Path]:
     source = root / "input.json"
     dashboard = root / "dashboard.md"
-    source.write_text(json.dumps([item()]), encoding="utf-8")
+    source.write_text(json.dumps([item()] if items is None else items), encoding="utf-8")
     dashboard.write_bytes(dashboard_bytes)
     return source, dashboard
 
@@ -855,6 +855,91 @@ class DashboardWriteTests(unittest.TestCase):
                     self.assertNotIn(b"\r", owned)
                 else:
                     self.assertEqual(owned.count(b"\n"), owned.count(b"\r\n"))
+
+
+class PullRequestTextTests(unittest.TestCase):
+    """A pull request's title and its author's name are the author's text: written into the dashboard as literal text,
+    they add no marker, comment, cell, or line, so the next update finds one marker pair and the same rows."""
+
+    SHAPES: ClassVar[dict[str, str]] = {
+        "end marker": f"Fix {END_MARKER} parsing",
+        "start marker": f"Fix {START_MARKER} parsing",
+        "comment opener": "Hide <!-- the rest",
+        "comment closer": "Close --> early",
+        "escaped pipe": "Split \\| cells",
+        "pipe": "Split | cells",
+        "carriage return": "One\rTwo",
+        "line feed": "One\nTwo",
+        "next line": "One\u0085Two",
+        "line separator": "One\u2028Two",
+        "paragraph separator": "One\u2029Two",
+        "link": "[click](https://example.com) ![image](x.png)",
+        "code and emphasis": "`code` *bold* _it_ <b>tag</b> &amp;",
+        "leading spaces": "    indented",
+    }
+
+    def owned(self, dashboard: Path) -> str:
+        content = dashboard.read_text(encoding="utf-8")
+        self.assertEqual(1, content.count(START_MARKER))
+        self.assertEqual(1, content.count(END_MARKER))
+        return content[content.index(START_MARKER) + len(START_MARKER) : content.index(END_MARKER)]
+
+    def assert_structure_holds(self, owned: str, text: str) -> None:
+        rows = [line for line in owned.split("\n") if line.startswith("| ") and "/pull/" in line]
+        self.assertEqual(2, len(rows), owned)
+        for row in rows:
+            self.assertEqual(6, row.count("|"), row)
+        self.assertNotIn("<!--", owned)
+        self.assertNotIn("-->", owned)
+        self.assertNotIn("\\", owned)
+        for separator in ("\r", "\u0085", "\u2028", "\u2029"):
+            self.assertNotIn(separator, owned)
+        for word in re.findall(r"[A-Za-z]{3,}", text):
+            self.assertIn(word, owned)
+
+    def update_twice(self, first: dict[str, Any], text: str) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source, dashboard = dashboard_files(
+                Path(temporary), f"Before\n{START_MARKER}\nold\n{END_MARKER}\nAfter\n".encode(), [first, item(number=2)]
+            )
+            for _ in range(2):
+                rows = update_dashboard_rows(source, dashboard, "reviewer", detector=FakeDetector())
+                self.assertEqual(2, len(rows))
+                self.assert_structure_holds(self.owned(dashboard), text)
+            self.assertTrue(dashboard.read_text(encoding="utf-8").endswith(f"{END_MARKER}\nAfter\n"))
+
+    def test_a_title_cannot_change_the_dashboard_s_structure(self) -> None:
+        for name, title in self.SHAPES.items():
+            first = item(number=1)
+            first["title"] = title
+            with self.subTest(name):
+                self.update_twice(first, title)
+
+    def test_an_author_s_profile_name_cannot_change_the_dashboard_s_structure(self) -> None:
+        for name, author_name in self.SHAPES.items():
+            first = item(number=1)
+            first.update(author="writer", author_name=author_name)
+            with self.subTest(name):
+                self.update_twice(first, author_name)
+
+    def test_a_title_is_shown_as_its_text(self) -> None:
+        first = item(number=1)
+        first["title"] = "Fix <!-- a | b \\| c\u2028d"
+        content, _ = run([first])
+        self.assertIn("[repo#1 Fix &lt;&#33;&#45;&#45; a &#124; b &#92;&#124; c d](", content)
+
+    def test_a_link_destination_that_is_not_absolute_https_leaves_the_title_unlinked(self) -> None:
+        first = item(number=1)
+        first["url"] = "javascript:alert(1) --> |"
+        content, _ = run([first])
+        self.assertIn("| someone | repo#1 Improve &#124; behavior | - | - | (stale) |", content)
+        self.assertNotIn("javascript", content)
+
+    def test_a_link_destination_s_delimiters_are_percent_encoded(self) -> None:
+        first = item(number=1)
+        first["url"] = "https://github.com/owner/repo/pull/1?a=(b)|<c>"
+        content, _ = run([first])
+        self.assertIn("](https://github.com/owner/repo/pull/1?a=%28b%29%7C%3Cc%3E) |", content)
 
 
 def raised(call: Callable[[], object]) -> tuple[str, str]:
