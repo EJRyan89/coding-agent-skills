@@ -566,6 +566,24 @@ class ToolsTests(TemporaryTestCase):
             self.grants('["Bash(git status)", "Bash(ls *)", "PowerShell(ls *)", "PowerShell(gh auth status)"]'),
         )
 
+    def test_a_sibling_grant_that_does_not_end_at_one_script_is_reported(self) -> None:
+        sibling = 'python -B "${CLAUDE_SKILL_DIR}/../core/scripts/'
+        cases = {
+            f"{sibling}*": True,
+            f'{sibling}a*.py" *': True,
+            f"{sibling}": True,
+            "python -B ${CLAUDE_SKILL_DIR}/../core/scripts/a.py *": True,
+            f'{sibling}a.py" *': False,
+            f'{sibling}a.py"': False,
+            'python -B "${CLAUDE_SKILL_DIR}/scripts/*': False,
+        }
+        for pattern, reported in cases.items():
+            with self.subTest(pattern=pattern):
+                allowed = json.dumps([f"Bash({pattern})", f"PowerShell({pattern})"])
+                lines = self.tools(f"---\nallowed-tools: {allowed}\n---\n")
+                expected = [f"SIBLING_FOLDER_ALLOWED {tool}({pattern})" for tool in ("Bash", "PowerShell")]
+                self.assertEqual(expected if reported else [], [x for x in lines if x.startswith("SIBLING_")])
+
     def test_each_parenthesized_entry_of_a_plain_scalar_is_its_own_grant(self) -> None:
         cases = {
             "Bash(ls *), PowerShell(ls *)": [],
@@ -680,6 +698,23 @@ class ToolsTests(TemporaryTestCase):
             ("git rev-parse:*", "git rev-parsed", False),
             ("ls *", "ls -la", True),
             ("ls *", "lsof", False),
+            # No path is normalized, so a pattern ending in a folder also matches a `..` path out of it, and one
+            # ending at a script's closing quote matches only that script.
+            (
+                'python -B "${CLAUDE_SKILL_DIR}/scripts/*',
+                'python -B "${CLAUDE_SKILL_DIR}/scripts/../../core/scripts/config.py" write x',
+                True,
+            ),
+            (
+                'python -B "${CLAUDE_SKILL_DIR}/../core/scripts/a.py" *',
+                'python -B "${CLAUDE_SKILL_DIR}/../core/scripts/a.py" run',
+                True,
+            ),
+            (
+                'python -B "${CLAUDE_SKILL_DIR}/../core/scripts/a.py" *',
+                'python -B "${CLAUDE_SKILL_DIR}/../core/scripts/a.py/../config.py" write x',
+                False,
+            ),
         ]
         for pattern, command, expected in cases:
             with self.subTest(pattern=pattern, command=command):

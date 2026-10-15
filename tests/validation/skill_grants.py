@@ -45,9 +45,10 @@ def repository_skill_files(root: Path) -> list[Path]:
 def skill_grant_problems(
     root: Path, skill_files: list[Path] | None = None, own: re.Pattern[str] = OWN_SCRIPT_COMMAND
 ) -> list[str]:
-    """Report shell grants that cover every command or one shell only, grants no step uses, own-script commands
-    left ungranted, grants that pre-approve a script that starts code from the target repository, shell patterns that
-    match no command the skill shows, and any grant in a hidden skill, which no turn starts.
+    """Report shell grants that cover every command or one shell only, or a sibling's folder rather than its scripts,
+    grants no step uses, own-script commands left ungranted, grants that pre-approve a script that starts code from the
+    target repository, shell patterns that match no command the skill shows, and any grant in a hidden skill, which
+    no turn starts.
 
     The rules are the analyze-skill-cost inventory's, so the audit and this policy cannot disagree. A shipped skill's
     own scripts run through ${CLAUDE_SKILL_DIR}; a repository skill's are the repository's tools and tests.
@@ -70,6 +71,10 @@ def skill_grant_problems(
                 problems.append(f"{name} grants {detail} for every command; see {GRANTS_DOC}")
             elif kind == "UNPAIRED_ALLOWED":
                 problems.append(f"{name} grants {detail} in one shell only; see {GRANTS_DOC}")
+            elif kind == "SIBLING_FOLDER_ALLOWED":
+                problems.append(
+                    f"{name} grants {detail}, a sibling skill's folder rather than one script by name; see {GRANTS_DOC}"
+                )
             elif kind == "UNUSED_ALLOWED":
                 problems.append(f"{name} grants {detail}, which no step uses; see {GRANTS_DOC}")
             elif kind == "MISSING_ALLOWED" and detail.split(" ")[0] == "Bash":

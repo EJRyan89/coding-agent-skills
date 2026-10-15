@@ -5235,6 +5235,52 @@ class BatchTests(PipelineFixture):
         self.assertEqual(state_before, self.state_path.read_bytes())
         self.assertEqual(batch_before, batch_path.read_bytes())
 
+    def _enumerated_batch_and_state(self) -> tuple[Path, bytes]:
+        self.state_path.parent.mkdir(parents=True)
+        self.state_path.write_text(
+            json.dumps({"schema_version": 1, "repositories": {REPOSITORY: {"merged_since": "2026-03-01"}}}),
+            encoding="utf-8",
+        )
+        self.github.listing = []
+        batch_path = self.root / "batch.json"
+        code, _, err = self.run_main("enumerate", "--output", str(batch_path))
+        self.assertEqual((0, ""), (code, err))
+        return batch_path, self.state_path.read_bytes()
+
+    def test_advance_refuses_a_batch_dated_after_the_pipelines_today_without_changing_state(self) -> None:
+        # The batch file is input: a date in it later than the pipeline's own clock would set a watermark no merged
+        # pull request ever passes again.
+        batch_path, state_before = self._enumerated_batch_and_state()
+        batch = json.loads(batch_path.read_text(encoding="utf-8"))
+        batch["today"] = "2099-01-01"
+        batch_path.write_text(json.dumps(batch), encoding="utf-8")
+        code, out, err = self.run_main("advance", "--batch", str(batch_path))
+        self.assertEqual(
+            (1, f"FAILED {batch_path} is dated 2099-01-01, after today, 2026-03-10\n", ""), (code, out, err)
+        )
+        self.assertEqual(state_before, self.state_path.read_bytes())
+
+    def test_advance_refuses_a_batch_that_would_move_a_watermark_past_today_without_changing_state(self) -> None:
+        batch_path, state_before = self._enumerated_batch_and_state()
+        batch = json.loads(batch_path.read_text(encoding="utf-8"))
+        batch["repositories"][REPOSITORY]["previous_watermark"] = "2099-01-01"
+        batch_path.write_text(json.dumps(batch), encoding="utf-8")
+        code, out, err = self.run_main("advance", "--batch", str(batch_path))
+        self.assertEqual(
+            (
+                1,
+                f"FAILED {batch_path} would move the {REPOSITORY} watermark to 2099-01-01, after today, 2026-03-10\n",
+                "",
+            ),
+            (code, out, err),
+        )
+        self.assertEqual(state_before, self.state_path.read_bytes())
+
+    def test_advance_accepts_a_batch_dated_today(self) -> None:
+        batch_path, _ = self._enumerated_batch_and_state()
+        code, out, err = self.run_main("advance", "--batch", str(batch_path))
+        self.assertEqual((0, "WATERMARK example/one 2026-03-01 -> 2026-03-10\n", ""), (code, out, err))
+
     def test_advance_does_not_read_incomplete_enumeration_or_change_existing_state(self) -> None:
         self.github.listing = [rest_pull(12, self.head, self.base, state="closed", merged_at="2026-03-10T10:00:00Z")]
         batch_path = self.root / "batch.json"

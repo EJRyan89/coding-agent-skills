@@ -1037,12 +1037,12 @@ class AdvanceTests(MainCase):
             ),
             self.run_main("--config", CONFIG, "advance", "--batch", "batch.json"),
         )
-        self.assertEqual([((Path("batch.json"),), {"config_path": Path(CONFIG)})], stub.calls)
+        self.assertEqual([((Path("batch.json"),), {"config_path": Path(CONFIG), "services": SERVICES})], stub.calls)
 
     def test_advance_with_nothing_to_move(self) -> None:
         stub = self.stub("advance_watermarks", {})
         self.assertEqual((0, "", ""), self.run_main("advance", "--batch", "batch.json"))
-        self.assertEqual([((Path("batch.json"),), {"config_path": None})], stub.calls)
+        self.assertEqual([((Path("batch.json"),), {"config_path": None, "services": SERVICES})], stub.calls)
 
 
 # Each subcommand whose work can raise outside a per-item catch, with the stub that raises and a stub set that
