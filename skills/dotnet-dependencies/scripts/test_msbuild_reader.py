@@ -315,7 +315,7 @@ ASSETS = {
 
 class ReaderTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.root = Path(tempfile.mkdtemp(prefix="dotnet-dependencies-reader-"))
+        self.root = Path(tempfile.mkdtemp(prefix="dotnet-dependencies-reader-")).resolve()
         self.addCleanup(self.remove_root)
 
     def remove_root(self) -> None:
