@@ -1099,6 +1099,20 @@ class SpecialistTests(PlanFixture):
         )
         self.assertEqual(("model", "compat-review"), self.effects[6])
 
+    def test_a_file_renamed_out_of_a_specialists_pattern_stays_with_that_specialist(self) -> None:
+        renamed = (
+            "diff --git a/db/Procs.sql b/archive/Procs.txt\nsimilarity index 90%\nrename from db/Procs.sql\n"
+            "rename to archive/Procs.txt\n--- a/db/Procs.sql\n+++ b/archive/Procs.txt\n@@ -1 +1 @@\n-a\n+b\n"
+        )
+        (self.root / "diff.patch").write_bytes((renamed + BLOCKS["README.md"]).encode("utf-8"))
+
+        result = self.build(self.reviewer())
+
+        self.assertEqual(
+            [("db-review", ["archive/Procs.txt"]), ("generic-review", ["README.md"])],
+            [(value["id"], value["files"]) for value in result["roles"]],
+        )
+
     def test_a_condition_runs_once_and_only_when_its_specialists_match_files(self) -> None:
         second = {**COMPAT, "id": "compat-two", "include": ["^db/"]}
         files = {key: value for key, value in REVIEWER_FILES.items() if key != "agents/cs.md"}

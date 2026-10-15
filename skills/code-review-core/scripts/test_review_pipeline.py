@@ -3674,6 +3674,29 @@ class ReviewerSourceTests(PipelineFixture):
             route = lines.index("ROUTE python-reviewer files=1")
             self.assertEqual(["UNCOVERED CLAUDE.md", last, "VALID"], lines[route + 1 :], settings)
 
+    def test_validate_reviewer_routes_a_file_renamed_out_of_a_pattern_by_its_old_path(self) -> None:
+        git(self.checkout, "mv", "app/service.py", "app/service.txt")
+        self.push({})
+        self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(self.local_manifest())))
+
+        code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
+
+        self.assertEqual(0, code, err)
+        lines = out.splitlines()
+        # The diff the pull request is served names the file by both paths.
+        self.assertIn("rename to app/service.txt", git(self.checkout, "diff", f"{self.base}...HEAD"))
+        # The Python specialist matches the file by its old path, so its condition runs, and the file is its own to
+        # skip while the condition is closed, not the generic reviewer's.
+        condition = lines.index("CONDITION window closed")
+        self.assertEqual(
+            [
+                "UNCOVERED CLAUDE.md",
+                "GENERIC files=1 (no specialist covers them; the generic reviewer reviews them)",
+                "VALID",
+            ],
+            lines[condition + 1 :],
+        )
+
     def test_a_file_whose_only_specialist_is_closed_is_not_uncovered(self) -> None:
         manifest = self.local_manifest(
             specialists=[

@@ -11,6 +11,7 @@ import hashlib
 import io
 import itertools
 import json
+import lzma
 import os
 import shutil
 import subprocess
@@ -31,8 +32,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 import review_documents as documents
 import review_pipeline as rp
 import review_runtime
+import review_source
 from git_test_base import GitTestCase
 from review_documents import ExtractionRefused, document_diff, document_format, extract, locations
+from review_guard import read_log
 from review_runtime import (
     RuntimeContractError,
     fetch_source_file,
@@ -59,8 +62,9 @@ STYLES = (
 )
 
 
-def paragraph(text: str = "", *, style: str | None = None, level: int | None = None, inner: str = "") -> str:
-    """One `w:p`: its style, its list level, a run holding `text`, and any other markup inside it."""
+def paragraph(text: str = "", *, style: str | None = None, level: int | str | None = None, inner: str = "") -> str:
+    """One `w:p`: its style, its list level (as a number or the attribute's text), a run holding `text`, and any
+    other markup inside it."""
     properties = ""
     if style is not None:
         properties += f'<w:pStyle w:val="{style}"/>'
@@ -83,17 +87,37 @@ def body_xml(*blocks: str) -> bytes:
     ).encode("utf-8")
 
 
-def word_document(*blocks: str, document: bytes | None = None, extra: dict[str, bytes] | None = None) -> bytes:
-    """A `.docx` package holding these body blocks (or `document` as its main part), the styles above, and any
-    `extra` members, by name."""
+def word_document(
+    *blocks: str, document: bytes | None = None, extra: dict[str, bytes] | None = None, styles: str = STYLES
+) -> bytes:
+    """A `.docx` package holding these body blocks (or `document` as its main part), `styles`, and any `extra`
+    members, by name."""
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as package:
         package.writestr("[Content_Types].xml", '<?xml version="1.0"?><Types/>')
         package.writestr("word/document.xml", document if document is not None else body_xml(*blocks))
-        package.writestr("word/styles.xml", STYLES)
+        package.writestr("word/styles.xml", styles)
         for name, content in (extra or {}).items():
             package.writestr(name, content)
     return buffer.getvalue()
+
+
+def lzma_word_document() -> bytes:
+    """A `.docx` whose main part is stored with LZMA under properties no LZMA filter accepts."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as package:
+        package.writestr("[Content_Types].xml", '<?xml version="1.0"?><Types/>')
+        member = zipfile.ZipInfo(documents.MAIN_PART)
+        member.compress_type = zipfile.ZIP_LZMA
+        package.writestr(member, body_xml(paragraph("x")))
+    content = bytearray(buffer.getvalue())
+    with zipfile.ZipFile(io.BytesIO(bytes(content))) as package:
+        member = package.getinfo(documents.MAIN_PART)
+    # The member's data starts after its 30-byte local header, name, and extra field, with a 2-byte LZMA version
+    # and a 2-byte properties size; the 5 property bytes follow.
+    properties = member.header_offset + 30 + len(member.filename.encode("utf-8")) + len(member.extra) + 4
+    content[properties : properties + 5] = b"\xff" * 5
+    return bytes(content)
 
 
 def lines(content: bytes) -> list[str]:
@@ -472,6 +496,29 @@ class RefusalTests(GitTestCase):
         many = {f"part{index}.xml": b"x" for index in range(documents.MAX_DOCUMENT_MEMBERS)}
         self.assertRefused(word_document(paragraph("x"), extra=many), "more than 2000 members")
         self.assertRefused(word_document(paragraph("x"), extra={"WORD/document.xml": b"x"}), "share a name")
+
+    def test_a_member_whose_lzma_properties_no_filter_accepts_is_refused(self) -> None:
+        content = lzma_word_document()
+        with zipfile.ZipFile(io.BytesIO(content)) as package, self.assertRaises(lzma.LZMAError):
+            package.read(documents.MAIN_PART)
+
+        self.assertRefused(content, "word/document.xml cannot be read")
+
+    def test_a_level_written_in_superscript_digits_is_no_level(self) -> None:
+        # str.isdigit passes a superscript digit, which int refuses.
+        outlined = '<w:p><w:pPr><w:outlineLvl w:val="\u00b2"/></w:pPr><w:r><w:t>Body</w:t></w:r></w:p>'
+        self.assertEqual(["[P1] Body"], lines(word_document(document=body_xml(outlined))))
+        self.assertEqual(["[P1] - Item"], lines(word_document(paragraph("Item", level="\u00b3"))))
+        styles = STYLES.replace('<w:outlineLvl w:val="2"/>', '<w:outlineLvl w:val="\u00b9"/>')
+        self.assertEqual(["[P1] Section"], lines(word_document(paragraph("Section", style="Custom"), styles=styles)))
+
+    def test_any_other_failure_of_the_extractor_is_refused_by_its_type_alone(self) -> None:
+        for form, reader in (("docx", "extract_docx"), ("pdf", "extract_pdf")):
+            with self.subTest(form=form), mock.patch.object(documents, reader, side_effect=RuntimeError("secret")):
+                with self.assertRaises(ExtractionRefused) as caught:
+                    extract(form, b"content")
+                self.assertEqual("its text could not be read (RuntimeError)", str(caught.exception))
+                self.assertIsInstance(caught.exception.__cause__, RuntimeError)
 
     def test_extracted_text_over_the_limit_is_refused(self) -> None:
         text = "x" * 1000
@@ -1084,6 +1131,42 @@ class SnapshotRouteTests(GitTestCase):
                 with self.assertRaises(RuntimeContractError):
                     verify_source_snapshot(destination, expected_repository=REPOSITORY, expected_commit=self.head)
 
+    def test_a_document_the_extractor_fails_on_is_unextractable_and_the_others_are_still_held(self) -> None:
+        head = commit(self.checkout, {"docs/lzma.docx": lzma_word_document()})
+        refused: dict[str, str] = {}
+        destination = self.root / "failing"
+        with mock.patch.object(documents, "_heading_styles", side_effect=ValueError("quoted text")):
+            metadata = materialize_source_snapshot(
+                self.checkout,
+                REPOSITORY,
+                head,
+                destination,
+                changed_paths=("docs/lzma.docx", "docs/design.docx"),
+                refused=refused,
+            )
+
+        self.assertEqual(
+            {
+                "docs/lzma.docx": "word/document.xml cannot be read",
+                "docs/design.docx": "its text could not be read (ValueError)",
+            },
+            refused,
+        )
+        self.assertEqual("unextractable", metadata["excluded_paths"]["docs/lzma.docx"])
+        self.assertEqual("unextractable", metadata["excluded_paths"]["docs/design.docx"])
+        verify_source_snapshot(destination, expected_repository=REPOSITORY, expected_commit=head)
+
+    def test_a_base_version_the_extractor_fails_on_shows_the_head_as_added_and_says_why(self) -> None:
+        def read(_path: str, _blob: str) -> bytes:
+            return lzma_word_document()
+
+        self.assertEqual(("", "word/document.xml cannot be read"), rp._extracted_base("docx", "a.docx", "1" * 7, read))
+        with mock.patch.object(documents, "extract_docx", side_effect=KeyError("quoted text")):
+            self.assertEqual(
+                ("", "its text could not be read (KeyError)"),
+                rp._extracted_base("docx", "a.docx", "1" * 7, lambda _path, _blob: BASE_DOCUMENT),
+            )
+
     def test_the_base_version_is_read_by_the_blob_the_diff_names(self) -> None:
         blob = git(self.checkout, "rev-parse", f"{self.base}:docs/design.docx")
         read = rp._base_reader(self.checkout, REPOSITORY, {}, rp.Services())
@@ -1166,6 +1249,37 @@ class PdfSnapshotTests(GitTestCase):
                         self.checkout, destination, relative, repository=REPOSITORY, commit=self.head, staging=staging
                     ),
                 )
+
+    def test_a_pdf_fetched_by_source_file_counts_as_a_read_of_the_text_held_beside_it(self) -> None:
+        run = self.root / "code-review-run-pdf"
+        run.mkdir()
+        materialize_source_snapshot(
+            self.checkout,
+            REPOSITORY,
+            self.head,
+            run / "source",
+            changed_paths=["docs/spec.pdf"],
+            upfront=lambda _: False,
+        )
+        request = {"repository": REPOSITORY, "pull_request": {"head_sha": self.head}}
+        (run / "request.json").write_text(json.dumps(request), encoding="utf-8")
+        state = {
+            "request_path": str(run / "request.json"),
+            "roles": [{"id": "generic-review"}],
+            "source_repository": str(self.checkout),
+        }
+        (run / "run.json").write_text(json.dumps(state), encoding="utf-8")
+        log = read_log(run, "generic-review")
+        log.parent.mkdir()
+        log.touch()
+
+        lines = review_source.source_file(run, "generic-review", "docs/spec.pdf")
+
+        self.assertEqual([f"SOURCE_FILE {run / 'source' / 'source-snapshot-text' / 'docs' / 'spec.pdf.txt'}"], lines)
+        self.assertEqual([json.dumps(HELD)], log.read_text(encoding="utf-8").splitlines())
+        counted: dict[str, Any] = {"reads": {}}
+        self.assertTrue(rp.count_reads(run, counted, ["generic-review"]))
+        self.assertEqual({"generic-review": {"files": 1, "bytes": len(HEAD_PDF_LINES)}}, counted["reads"])
 
     def test_source_search_leaves_out_a_held_pdf_as_it_does_a_word_document(self) -> None:
         # The PDF's bytes hold the line uncompressed, and so do the text held beside it and a text file.
