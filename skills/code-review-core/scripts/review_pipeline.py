@@ -42,7 +42,7 @@ import tempfile
 import threading
 import time
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
@@ -177,6 +177,7 @@ from review_specialists import (
     load_materialized_manifest,
     parse_unified_diff,
     patch_fingerprints,
+    renamed_from,
     render_entrypoint_prompt,
     reviewer_models,
     route,
@@ -544,7 +545,12 @@ def lazy_upfront(reads: Sequence[str]) -> Callable[[str], bool]:
 
 
 def _snapshot_reads(
-    snapshot: dict[str, Any], dispatch: str, kind: str, reviewer_root: Path | None, changed: list[str]
+    snapshot: dict[str, Any],
+    dispatch: str,
+    kind: str,
+    reviewer_root: Path | None,
+    changed: list[str],
+    renamed: Mapping[str, Sequence[str]],
 ) -> list[str] | None:
     """The glob patterns of the snapshot paths a run's condition scripts read, which its lazy snapshot must hold from
     the start; empty when it runs none or the snapshot is already whole. None when its reviewers need every file from
@@ -558,19 +564,25 @@ def _snapshot_reads(
             manifest = load_materialized_manifest(reviewer_root)[0]
         except SpecialistError as exc:
             raise PipelineError(str(exc)) from exc
-    return _route_reads(dispatch, manifest, changed)
+    return _route_reads(dispatch, manifest, changed, renamed)
 
 
-def _route_reads(dispatch: str | None, manifest: dict[str, Any] | None, changed: list[str]) -> list[str] | None:
+def _route_reads(
+    dispatch: str | None,
+    manifest: dict[str, Any] | None,
+    changed: list[str],
+    renamed: Mapping[str, Sequence[str]],
+) -> list[str] | None:
     """The route a checkout's snapshot takes for a run dispatched as `dispatch` (None when it is not the Copilot CLI
-    host) whose reviewer's `manifest` (None for the generic reviewer) sees these changed files: the glob patterns of
+    host) whose reviewer's `manifest` (None for the generic reviewer) sees these changed files, with the earlier paths
+    `renamed` gives them (see `review_specialists.renamed_from`): the glob patterns of
     the paths its lazy snapshot holds from the start, or None when it is written whole, as `_snapshot_reads` says.
     prepare and validate-reviewer both decide the route here, so they measure the same snapshot."""
     if dispatch == "copilot-host":
         return None
     if manifest is None or manifest.get("kind") != "specialists":
         return []
-    return condition_reads(manifest, changed)
+    return condition_reads(manifest, changed, renamed)
 
 
 def _retake_snapshot(
@@ -1272,7 +1284,7 @@ def _prepare_run(
             services=services,
             notes=notes,
         )
-        reads = _snapshot_reads(manifest, dispatch, kind, reviewer_root, list(parsed))
+        reads = _snapshot_reads(manifest, dispatch, kind, reviewer_root, list(parsed), renamed_from(parsed))
         if repository_path is not None and reads != []:
             manifest = _retake_snapshot(
                 repository_path, repository, head, source, changed, services, snapshot, review.snapshot_exclude, reads
@@ -1511,6 +1523,7 @@ def _route_condition(
     repository: str,
     head: str,
     changed: list[str],
+    renamed: Mapping[str, Sequence[str]],
     reviewer_root: Path,
     manifest: dict[str, Any],
     source: Path,
@@ -1524,7 +1537,7 @@ def _route_condition(
     and record it: lazy, holding the paths the conditions routing runs declare they read, when each declares them.
     The script is given the pull request's diff, `diff_file`, and a file to write, as a review gives them."""
     if not source.exists():
-        reads = condition_reads(manifest, changed)
+        reads = condition_reads(manifest, changed, renamed)
         materialize_source_snapshot(
             checkout,
             repository,
@@ -1571,19 +1584,8 @@ def validate_reviewer(
         scratch = Path(temporary)
         for index, target in enumerate(targets):
             pull = target.pull
-            changed: list[str] = []
-            pull_lines: list[str] = []
             diff_file = scratch / f"diff-{index}.patch"
-            if pull is not None:
-                diff_text = services.github.get_pull_diff(repository, pull["number"])[0]
-                changed = list(parse_unified_diff(diff_text))
-                atomic_write_text(diff_file, diff_text)
-                pull_lines = [
-                    f"PULL {repository}#{pull['number']} base={pull['baseRefOid'][:12]} "
-                    f"head={pull['headRefOid'][:12]} files={len(changed)} reviewer={target.source}",
-                    _body_line(pull.get("body", "")),
-                    *(f"NOTE {note}" for note in target.notes),
-                ]
+            changed, renamed, pull_lines = _pull_changes(repository, target, diff_file, services)
             if target.commit is None or target.resolved is None:
                 # The suite's generic reviewer stands in, on the lazy snapshot prepare gives it.
                 lines.extend(pull_lines)
@@ -1619,7 +1621,7 @@ def validate_reviewer(
                 lines.extend(_unmatched_patterns(manifest, repository_files(checkout, commit, services.git)))
             # Only an entrypoint reviewer can run on the Copilot CLI host, whose snapshot is whole.
             dispatch = choose_dispatch(services.resolve_runtime(runtime, host), kind) if kind == "entrypoint" else None
-            reads = _route_reads(dispatch, manifest, changed)
+            reads = _route_reads(dispatch, manifest, changed, renamed)
             lines.extend(pull_lines)
             if pull is None:
                 lines.append(_snapshot_line(checkout, commit, [], services, exclude, reads))
@@ -1640,9 +1642,29 @@ def validate_reviewer(
                 exclude,
                 default_effort,
             )
-            lines.extend(_routing_lines(manifest, changed, routing))
+            lines.extend(_routing_lines(manifest, changed, renamed, routing))
     lines.append("VALID")
     return lines
+
+
+def _pull_changes(
+    repository: str, target: _ValidationTarget, diff_file: Path, services: Services
+) -> tuple[list[str], dict[str, list[str]], list[str]]:
+    """The changed paths of the pull request a validation target reviews, the earlier paths its renames give them,
+    and its PULL, BODY, and NOTE lines, with its diff written to `diff_file`; none of them for a target without one."""
+    pull = target.pull
+    if pull is None:
+        return [], {}, []
+    diff_text = services.github.get_pull_diff(repository, pull["number"])[0]
+    parsed = parse_unified_diff(diff_text)
+    atomic_write_text(diff_file, diff_text)
+    lines = [
+        f"PULL {repository}#{pull['number']} base={pull['baseRefOid'][:12]} "
+        f"head={pull['headRefOid'][:12]} files={len(parsed)} reviewer={target.source}",
+        _body_line(pull.get("body", "")),
+        *(f"NOTE {note}" for note in target.notes),
+    ]
+    return list(parsed), renamed_from(parsed), lines
 
 
 def _body_line(body: str) -> str:
@@ -1665,9 +1687,11 @@ class _Routing(NamedTuple):
     default_effort: str | None  # the configuration's reviewer_effort, which a specialist without its own effort gets
 
 
-def _routing_lines(manifest: dict[str, Any], changed: list[str], routing: _Routing) -> list[str]:
-    """What a specialists manifest does with a pull request's changes: each condition's result, each route with its
-    settings, and the changed files no specialist matches."""
+def _routing_lines(
+    manifest: dict[str, Any], changed: list[str], renamed: Mapping[str, Sequence[str]], routing: _Routing
+) -> list[str]:
+    """What a specialists manifest does with a pull request's changes, a renamed file matched by each of its paths:
+    each condition's result, each route with its settings, and the changed files no specialist matches."""
     results: dict[str, bool] = {}
     condition = functools.partial(
         _route_condition,
@@ -1675,6 +1699,7 @@ def _routing_lines(manifest: dict[str, Any], changed: list[str], routing: _Routi
         repository=routing.repository,
         head=routing.head,
         changed=changed,
+        renamed=renamed,
         reviewer_root=routing.reviewer_root,
         manifest=manifest,
         source=routing.scratch / f"source-{routing.target}",
@@ -1684,7 +1709,7 @@ def _routing_lines(manifest: dict[str, Any], changed: list[str], routing: _Routi
         services=routing.services,
         exclude=routing.exclude,
     )
-    routes = route(manifest, changed, condition)
+    routes = route(manifest, changed, condition, renamed)
     lines = [f"CONDITION {name} {'open' if value else 'closed'}" for name, value in results.items()]
     specialists = {specialist["id"]: specialist for specialist in manifest["specialists"]}
     for identity, files in routes.items():
@@ -1697,7 +1722,7 @@ def _routing_lines(manifest: dict[str, Any], changed: list[str], routing: _Routi
             + (f" effort={effort}" if effort else "")
         )
         lines.extend([f"NOTE {note}"] if note else [])
-    outside = uncovered(manifest, changed)
+    outside = uncovered(manifest, changed, renamed)
     if len(outside) == len(changed):
         lines.append(f"GENERIC files={len(changed)} (no specialist matched; the generic reviewer reviews it)")
         return lines
