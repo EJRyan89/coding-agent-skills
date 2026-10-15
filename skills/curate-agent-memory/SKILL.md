@@ -20,8 +20,8 @@ Everything later deletes or rewrites files, so the target must be the store Clau
   {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" resolve
   ```
 
-  It prints `REPO <root>`, the repository to use from here on; then `MEMORY_DIR <path>`, `SOURCE <where it came from>`, and `EXISTS yes` or `EXISTS no`, or `NO_MEMORY_DIR` when no usable directory resolves; a `CANDIDATE <dir>` line for each memory directory it found when no existing directory resolved, whatever named it; and a `NOTE` line for each caveat, such as the `--settings` launch flag it cannot see. `FAILED not inside a Git repository` means you must pass `--repo`.
-- On `NO_MEMORY_DIR` or `EXISTS no`, show the notes, list the `CANDIDATE` lines, and ask the user to choose or supply `--memory-dir`. Never guess.
+  It prints `REPO <root>`, the repository to use from here on; then `MEMORY_DIR <path>`, `SOURCE <where it came from>`, `EXISTS yes` or `EXISTS no`, and `REFUSED <reason>` when the later steps would refuse that directory, or `NO_MEMORY_DIR` when no usable directory resolves; a `CANDIDATE <dir>` line for each other memory directory it found when no usable one resolved; and a `NOTE` line for each caveat, such as the `--settings` launch flag it cannot see. `FAILED not inside a Git repository` means you must pass `--repo`; any other `FAILED <reason>` means git could not read the repository, so show it and stop.
+- On `NO_MEMORY_DIR`, `EXISTS no`, or `REFUSED`, show the reason and notes, list the `CANDIDATE` lines, and ask the user to choose or supply `--memory-dir`. Never guess.
 - Show the user the resolved directory and its source, and get explicit confirmation before continuing.
 
 ## Step 2: Run the mechanical audit
@@ -30,7 +30,7 @@ Everything later deletes or rewrites files, so the target must be the store Clau
 {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" audit --memory-dir "<memory dir>" --repo "<repository>"
 ```
 
-It prints `REPORT <path>`, a new JSON file in the system temporary directory; read that file. `FAILED <reason>` means it wrote no report; show the reason. Its overlaps (up to three passages in the repository's or the user's guidance per memory) are candidates only; the script cannot tell whether a passage states the same rule.
+It prints `REPORT <path>`, a new JSON file in the system temporary directory; read that file. `FAILED <reason>` means it wrote no report; show the reason. A `FAILED <memory dir> ...` line means the later steps would refuse the directory too, so go back to Step 1 before changing anything. Its overlaps (up to three passages in the repository's or the user's guidance per memory) are candidates only; the script cannot tell whether a passage states the same rule.
 
 ## Step 3: Verify and classify every memory
 
@@ -59,7 +59,7 @@ It prints `SKILL_FILE <path>` for each source of the skill: the checkout the dep
 
 A memory whose rule is not yet at its destination is never simply deleted. Its outcome is the move, and the memory is deleted only after the destination change is applied. If the user declines the move, keep the memory. Record nothing about deferrals; the next run checks again.
 
-Fix mechanical problems from Step 2 as part of the relevant outcome: repair or remove broken links, and bring an index that is over or near its load limit back under it by merging or moving entries. Memories missing from the index, entries whose file is gone, and duplicate entries form one "Rebuild index" group rather than per-memory outcomes.
+Fix mechanical problems from Step 2 as part of the relevant outcome: repair or remove broken links, and bring an index that is over or near its load limit back under it by merging or moving entries. Memories missing from the index, entries whose file is gone, and duplicate entries form one "Rebuild index" group rather than per-memory outcomes. Show each `unreadable` entry with its reason; the script never reads, indexes, or deletes one, so it is the user's to resolve.
 
 ## Step 4: Get approval by group
 
@@ -84,7 +84,7 @@ Ask which groups to apply with a multi-select question, one option per non-empty
   {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" reindex --memory-dir "<memory dir>" --write
   ```
 
-  It writes the index from the memory files and prints `WROTE <path>`, or `UNCHANGED`; report its `DROPPED` and `ADDED` lines. `OVER_LIMIT` (it still writes the index) or `NEAR_LIMIT` means the index still needs merging or moving entries. A last `FAILED <reason>` means it could not write the index; show the reason.
+  It writes the index from the memory files and prints `WROTE <path>`, or `UNCHANGED`; report its `DROPPED`, `ADDED`, and `UNREADABLE` lines. `OVER_LIMIT` (it still writes the index) or `NEAR_LIMIT` means the index still needs merging or moving entries. A last `FAILED <reason>` means it could not write the index; show the reason.
 - Do not commit, push, or open pull requests; report which repository files changed so the user can review them, and that a change to a skill's source reaches the deployed skill at its next deployment.
 
 ## Step 6: Re-audit and report

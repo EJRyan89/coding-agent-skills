@@ -5,24 +5,36 @@ with exit code 1; a usage error exits 2. Text read from a settings file, the man
 name, or a memory reaches a line or a MEMORY.md entry only through skill-core's flat_text, and a path
 holding a line break, which no line can name for a later command, is refused rather than printed.
 
+A memory store is a directory holding MEMORY.md, outside the skills directory this script runs from,
+~/.claude/skills, and ~/.agents/skills. audit, reindex, and delete take only a memory store: given any
+other directory, they print one `FAILED <dir> ...` line, read and change nothing, and exit 1. resolve
+reports the same check as a `REFUSED` line, so the skill learns before any change that the later
+commands refuse the directory. A memory is a regular file named *.md directly in the store, other than
+MEMORY.md; any other entry so named, a directory, symbolic link, or junction, is reported unreadable with
+its reason and never read, added to the index, or deleted.
+
 resolve and audit are read-only. They never decide what to keep or delete; the calling agent verifies
-every candidate. resolve locates the memory directory for --repo, else for the Git repository holding
-the current directory, and prints `REPO <root>`; then `MEMORY_DIR <path>`, `SOURCE <where it came
-from>`, and `EXISTS yes|no`, or `NO_MEMORY_DIR` when settings name no usable directory; one
-`CANDIDATE <dir>` per memory directory under the configuration directory's projects folder when no
-existing directory resolved, whether settings named a missing one, the default one is missing, or
-none is usable; and one `NOTE <text>` per caveat. No directory is a result, not a failure. A
-directory a repository's settings choose is not used while permissions.blockReadsOutsideWorkingDirectories
-is on in any scope, since Claude Code then loads no memory from it and saves none to it.
+every candidate. resolve locates the memory directory for --repo, else for the current directory, and
+prints `REPO <root>`, the top level of the Git worktree holding that folder, or the folder itself when
+--repo names one in no Git repository; then `MEMORY_DIR <path>`, `SOURCE <where it came from>`,
+`EXISTS yes|no`, and `REFUSED <reason>` when the directory exists but is no memory store, or
+`NO_MEMORY_DIR` when no usable directory resolves; one `CANDIDATE <dir>` per memory directory under the
+configuration directory's projects folder when no memory store resolved, whether settings named a
+missing one, the default one is missing or refused, or none is usable; and one `NOTE <text>` per caveat.
+No directory is a result, not a failure. A directory a repository's settings choose is not used while
+permissions.blockReadsOutsideWorkingDirectories is on in any scope, since Claude Code then loads no
+memory from it and saves none to it. Without settings, the directory is derived from the top level of
+the repository's main worktree, which all its worktrees share (see main_worktree). The current
+directory outside any repository, and a git that cannot run, does not finish, or fails, are each a
+`FAILED <reason>` line.
 
 audit writes its JSON report of mechanical problems and candidate overlaps to --output, else to a new
-temporary file, and prints `REPORT <path>`. It refuses an --output inside the skills directory it runs
-from, ~/.claude/skills, or ~/.agents/skills, before writing anything. It searches the user's Claude
-configuration directory (CLAUDE_CONFIG_DIR, else ~/.claude) unless --user-dir names another.
-
-reindex and delete change only a memory store: a directory holding MEMORY.md, outside the skills
-directory this script runs from, ~/.claude/skills, and ~/.agents/skills. Given any other directory,
-they print one `FAILED <dir> ...` line, change nothing, and exit 1.
+temporary file, and prints `REPORT <path>`. It never replaces a file: it refuses, before reading
+anything, an --output that exists or lies inside the memory directory, the configuration directory's
+projects folder, the skills directory it runs from, ~/.claude/skills, or ~/.agents/skills. The report's
+`unreadable` list names each entry it could not read as a memory, with the reason, and the rest are
+audited. It searches the user's Claude configuration directory (CLAUDE_CONFIG_DIR, else ~/.claude)
+unless --user-dir names another.
 
 reindex rebuilds MEMORY.md from the memory files' frontmatter, one line per memory:
 `- [Title](file.md) — hook`. It writes only MEMORY.md, only with --write, and never deletes
@@ -36,8 +48,10 @@ characters, because Claude Code loads the index into every session and stops at 
 It prints `INDEX_LINE`, `ADDED`, and `DROPPED` lines, then
 `NEAR_LIMIT` or `OVER_LIMIT` when the index nears or passes Claude Code's load limit, then
 `UNCHANGED`, `WOULD_WRITE <path>`, or `WROTE <path>`. OVER_LIMIT is a finding: it exits 1.
-A memory whose file name holds a line break, which no entry can link on one line, is a
-`FAILED` line, and nothing is written.
+An entry whose file exists but is not a regular file stays as written, and it and each such
+unindexed name print an `UNREADABLE <file>: <reason>` line before those. A memory it cannot read,
+or whose file name holds a line break, which no entry can link on one line, is a `FAILED` line,
+and nothing is written.
 
 delete removes the named memory files and nothing else. Each name must be a bare .md file name
 directly inside the memory directory: not MEMORY.md, not a path (no separator, drive, `.`, or
@@ -51,8 +65,9 @@ skill-source prints `SKILL_FILE <path>` for each editable source of the named sk
 skills/<name>/SKILL.md of the checkout the deployer's manifest records for it, and the repository's
 .claude/skills/<name>/SKILL.md; with --file it checks a source file named instead. It never names a
 file inside a skills directory, the deployed copy among them, because the deployer stops updating a
-skill whose deployed copy changed, and prints a `NOTE` for each such file it passes over. With no
-source left, it prints `FAILED <reason>` and exits 1.
+skill whose deployed copy changed, and prints a `NOTE` for each such file it passes over, and one
+when git cannot read the repository to look for a project skill. With no source left, it prints
+`FAILED <reason>` and exits 1.
 
 Usage:
   python memory_audit.py resolve [--repo ROOT]
@@ -331,10 +346,50 @@ def target_identity(memory_dir: Path, file: str) -> str:
     return os.path.normcase(str((memory_dir / file).resolve()))
 
 
-def memory_files(memory_dir: Path) -> list[Path]:
-    """Enumerate memories without treating the index, however its name is spelled, as a memory."""
+# What entry_problem gives for a path that names nothing, such as an index entry whose file is gone.
+MISSING = "no such file"
+
+
+def entry_problem(path: Path) -> str | None:
+    """Why the entry at path is no memory file to read, or None when it is a regular file.
+
+    A directory, symbolic link, or Windows junction is never followed, whatever it points at, so an entry named like
+    a memory that is one of them is never read through, indexed, or deleted.
+    """
+    try:
+        status = os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return MISSING
+    except OSError as exc:
+        return f"cannot inspect: {reason(exc)}"
+    reparse = getattr(status, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    if not stat.S_ISREG(status.st_mode) or reparse:
+        return "not a regular file"
+    return None
+
+
+def memory_entries(memory_dir: Path) -> tuple[list[Path], list[tuple[str, str]]]:
+    """The store's memory files, and each other entry named like one with why it is none, both in name order.
+
+    The index, however its name is spelled, is neither.
+    """
     index_identity = target_identity(memory_dir, INDEX_NAME)
-    return sorted(path for path in memory_dir.glob("*.md") if target_identity(memory_dir, path.name) != index_identity)
+    files: list[Path] = []
+    others: list[tuple[str, str]] = []
+    for path in sorted(memory_dir.glob("*.md")):
+        if target_identity(memory_dir, path.name) == index_identity:
+            continue
+        problem = entry_problem(path)
+        if problem is None:
+            files.append(path)
+        elif problem != MISSING:
+            others.append((path.name, problem))
+    return files, others
+
+
+def memory_files(memory_dir: Path) -> list[Path]:
+    """The store's memory files: its regular *.md files other than the index."""
+    return memory_entries(memory_dir)[0]
 
 
 def words(text: str) -> set[str]:
@@ -434,10 +489,19 @@ def audit(
     entries, index_lines = parse_index(index_path)
     index_bytes = index_path.stat().st_size if index_path.is_file() else 0
     indexed_files = Counter(target_identity(memory_dir, entry["target"]) for entry in entries)
-    files = memory_files(memory_dir)
-    parsed: dict[Path, tuple[dict[str, str], str]] = {
-        path: parse_frontmatter(path.read_text(encoding="utf-8", errors="replace")) for path in files
-    }
+    candidates, others = memory_entries(memory_dir)
+    unreadable = {target_identity(memory_dir, name): (name, problem) for name, problem in others}
+    for entry in entries:
+        problem = entry_problem(memory_dir / entry["target"])
+        if problem is not None and problem != MISSING:
+            unreadable.setdefault(target_identity(memory_dir, entry["target"]), (entry["file"], problem))
+    parsed: dict[Path, tuple[dict[str, str], str]] = {}
+    for path in candidates:
+        try:
+            parsed[path] = parse_frontmatter(path.read_text(encoding="utf-8", errors="replace"))
+        except OSError as exc:
+            unreadable[target_identity(memory_dir, path.name)] = (path.name, reason(exc))
+    files = list(parsed)
     known_names = {path.stem for path in files} | {meta.get("name", "") for meta, _ in parsed.values()}
     blocks = destination_blocks(destination_files(repo, instructions or [], user_dir))
     bases = [base for base in (repo, memory_dir) if base is not None]
@@ -472,12 +536,15 @@ def audit(
             "over_limit": len(index_lines) > INDEX_LINE_LIMIT or index_bytes > INDEX_BYTE_LIMIT,
             "near_limit": len(index_lines) > INDEX_LINE_LIMIT * NEAR_LIMIT_FRACTION
             or index_bytes > INDEX_BYTE_LIMIT * NEAR_LIMIT_FRACTION,
-            "missing_files": [entry["file"] for entry in entries if not (memory_dir / entry["target"]).is_file()],
+            "missing_files": [
+                entry["file"] for entry in entries if entry_problem(memory_dir / entry["target"]) == MISSING
+            ],
             "duplicate_entries": sorted(
                 {entry["file"] for entry in entries if indexed_files[target_identity(memory_dir, entry["target"])] > 1}
             ),
         },
         "unindexed_files": [memory.file for memory in memories if not memory.indexed],
+        "unreadable": [{"file": file, "reason": problem} for file, problem in sorted(unreadable.values())],
         "memories": [asdict(memory) for memory in memories],
     }
 
@@ -513,13 +580,15 @@ def reindex(memory_dir: Path) -> dict:
     entries: list[str] = []
     seen: set[str] = set()
     dropped: list[tuple[str, str]] = []
+    unreadable: list[tuple[str, str]] = []
     for line in current.splitlines():
         entry = parse_index_entry(line)
         if entry is None:
             lines.append(line)
             continue
         file = entry["target"]
-        if not (memory_dir / file).is_file():
+        problem = entry_problem(memory_dir / file)
+        if problem == MISSING:
             dropped.append(("missing", entry["file"]))
             continue
         identity = target_identity(memory_dir, file)
@@ -527,13 +596,20 @@ def reindex(memory_dir: Path) -> dict:
             dropped.append(("duplicate", entry["file"]))
             continue
         seen.add(identity)
+        if problem is not None:
+            unreadable.append((entry["file"], problem))
+            lines.append(line)
+            entries.append(entry["file"])
+            continue
         meta, body = frontmatter(file)
         hook = one_line(meta["description"]) if meta.get("description") else entry["hook"] or derived_hook(body)
         lines.append(
             index_line(entry["title"].strip() or derived_title(meta, file), file, hook, original_target=entry["file"])
         )
         entries.append(entry["file"])
-    added = sorted(path.name for path in memory_files(memory_dir) if target_identity(memory_dir, path.name) not in seen)
+    files, others = memory_entries(memory_dir)
+    added = sorted(path.name for path in files if target_identity(memory_dir, path.name) not in seen)
+    unreadable += [(name, problem) for name, problem in others if target_identity(memory_dir, name) not in seen]
     if added:
         while lines and not lines[-1].strip():
             lines.pop()
@@ -550,6 +626,7 @@ def reindex(memory_dir: Path) -> dict:
         "entries": entries,
         "added": added,
         "dropped": dropped,
+        "unreadable": unreadable,
         "changed": content != current,
         "over_limit": len(lines) > INDEX_LINE_LIMIT or size > INDEX_BYTE_LIMIT,
         "near_limit": len(lines) > INDEX_LINE_LIMIT * NEAR_LIMIT_FRACTION
@@ -586,17 +663,7 @@ def refusal(memory_dir: Path, name: str) -> str | None:
         return "not a .md file"
     if name.casefold() == INDEX_NAME.casefold():
         return "the index is rebuilt with reindex, never deleted"
-    try:
-        status = os.lstat(memory_dir / name)
-    except FileNotFoundError:
-        return "no such file"
-    except OSError as exc:
-        return f"cannot inspect: {reason(exc)}"
-    # A symbolic link or Windows junction is never followed, whatever it points at.
-    reparse = getattr(status, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
-    if not stat.S_ISREG(status.st_mode) or reparse:
-        return "not a regular file"
-    return None
+    return entry_problem(memory_dir / name)
 
 
 def delete(memory_dir: Path, names: list[str]) -> tuple[int, list[str]]:
@@ -632,17 +699,63 @@ def encode_project(path: str) -> str:
     return re.sub(r"[^A-Za-z0-9-]", "-", path)
 
 
+class UnknownMainWorktree(Exception):
+    """A linked worktree whose shared Git directory names no working tree, so its main worktree cannot be found."""
+
+
+def rev_parse_paths(directory: Path, *options: str) -> list[Path] | None:
+    """The absolute path `git rev-parse` prints for each option in directory, or None when it lies in no repository.
+
+    Raises GitError when git cannot run or finish, or fails for any other reason, such as a folder it cannot enter.
+    """
+    try:
+        output = GitClient().output(["rev-parse", "--path-format=absolute", *options], directory=directory)
+    except GitError as exc:
+        if exc.kind == "not_repository":
+            return None
+        raise
+    paths = output.splitlines()
+    if len(paths) != len(options) or not all(paths):
+        raise GitError(f"git rev-parse printed {len(paths)} lines for {' '.join(options)} in {directory}")
+    return [Path(path) for path in paths]
+
+
 def main_worktree(repo: Path) -> Path | None:
-    """Return the main worktree of the repository containing repo, which every worktree shares."""
-    common = GitClient().rev_parse_path("--git-common-dir", directory=repo)
-    if common is None:
+    """The top level of the main worktree of the repository holding repo, which every worktree shares, or None when
+    repo lies in no repository.
+
+    In the main worktree, its Git directory is the shared one, and the answer is its own top level, whether that Git
+    directory is its `.git`, a submodule's under the superproject, or one made with --separate-git-dir. A linked
+    worktree's shared Git directory belongs to the main worktree: the folder holding it when it is named `.git`, else
+    the working tree its configuration names, as a submodule's does. One that names none, as a separate Git
+    directory does, raises UnknownMainWorktree. Raises GitError when git cannot run, does not finish, or fails.
+    """
+    paths = rev_parse_paths(repo, "--show-toplevel", "--absolute-git-dir", "--git-common-dir")
+    if paths is None:
         return None
-    return common.parent if common.name == ".git" else common
+    top, git_dir, common = paths
+    if git_dir == common:
+        return top
+    if common.name == ".git":
+        return common.parent
+    if GitClient().output(["rev-parse", "--is-inside-git-dir"], directory=common).strip() == "true":
+        raise UnknownMainWorktree(
+            f"{top} is a linked worktree whose shared Git directory {common} names no main worktree; run resolve "
+            "with --repo naming the main worktree, or pass --memory-dir."
+        )
+    shared = rev_parse_paths(common, "--show-toplevel")
+    if shared is None:
+        raise GitError(f"git no longer reads {common} as a repository")
+    return shared[0]
 
 
 def repository_root(directory: Path) -> Path | None:
-    """The root of the Git repository or worktree containing directory, or None outside one."""
-    return GitClient().rev_parse_path("--show-toplevel", directory=directory)
+    """The top level of the Git worktree holding directory, or None when it lies in no repository.
+
+    Raises GitError when git cannot run, does not finish, or fails for another reason.
+    """
+    paths = rev_parse_paths(directory, "--show-toplevel")
+    return None if paths is None else paths[0]
 
 
 def config_directory(home: Path, environment: dict[str, str]) -> Path:
@@ -661,9 +774,14 @@ def resolve(repo: Path, home: Path, environment: dict[str, str], managed: Path) 
                 f"The memory directory from {result['source']} holds a line break: {result['memory_dir']!r}",
             ]
         )
-    if not result["exists"]:
+    if result["exists"]:
+        refused = store_refusal(Path(result["memory_dir"]))
+        if refused:
+            result["refused"] = refused
+    if not result["exists"] or result.get("refused"):
         found = sorted(str(path) for path in (config_dir / "projects").glob("*/memory") if path.is_dir())
-        result["candidates"] = [path for path in found if not holds_line_break(path)]
+        refused_dir = result["memory_dir"] if result.get("refused") else None
+        result["candidates"] = [path for path in found if not holds_line_break(path) and path != refused_dir]
         result["notes"] += [
             f"Left out a memory directory whose path holds a line break: {path!r}"
             for path in found
@@ -748,9 +866,17 @@ def locate(repo: Path, home: Path, environment: dict[str, str], managed: Path, c
         directory = projects / name / "memory"
         source = "CLAUDE_CODE_PROJECT_DIR_NAME"
     else:
-        root = main_worktree(repo) or repo.resolve()
+        try:
+            root = main_worktree(repo)
+        except UnknownMainWorktree as exc:
+            return unresolved([*notes, str(exc)])
+        if root is None:
+            # Claude Code uses the project's own folder for a project in no Git repository.
+            root = repo.resolve()
+            source = f"derived from the folder ({root}), which is in no Git repository"
+        else:
+            source = f"derived from the repository's main worktree ({root})"
         directory = projects / encode_project(str(root)) / "memory"
-        source = f"derived from the repository's main worktree ({root})"
         notes.append("The directory name is derived by convention; confirm it before changing anything.")
     return {"memory_dir": str(directory), "source": source, "exists": directory.is_dir(), "notes": notes}
 
@@ -801,23 +927,34 @@ def describe(exc: OSError) -> str:
     return f"{reason(exc)}: {flat_text(str(exc.filename))}" if exc.strerror and exc.filename else reason(exc)
 
 
-def output_refusal(explicit: Path) -> str | None:
+def output_refusal(explicit: Path, memory_dir: Path, projects: Path) -> str | None:
     """Why the audit report must not be written to explicit, or None when it may be.
 
-    A file left inside a skill directory makes the deployer see that skill as modified and stop updating it, so an
-    explicit path inside any skills directory is refused before anything is written.
+    audit is read-only, so it never replaces a file, a memory, MEMORY.md, or CLAUDE.md among them, and never leaves
+    its report in a memory store, where it would pass for a memory. A file left inside a skill directory makes the
+    deployer see that skill as modified and stop updating it, so an explicit path inside any skills directory is
+    refused too.
     """
     root = skills_directory_holding(explicit)
     if root:
         return f"{explicit} is inside the skills directory {root}; omit --output to write a new temporary file"
+    if os.path.lexists(explicit):
+        return (
+            f"{explicit} already exists, and audit never replaces a file; omit --output to write a new temporary file"
+        )
+    target = explicit.resolve()
+    for kind, store in (("the memory directory", memory_dir), ("Claude Code's projects folder", projects)):
+        if target.is_relative_to(store.resolve()):
+            return f"{explicit} is inside {kind} {store}; omit --output to write a new temporary file"
     return None
 
 
 def store_refusal(memory_dir: Path) -> str | None:
-    """Why delete and reindex must not change memory_dir, or None when it is a memory store.
+    """Why audit, reindex, and delete must not take memory_dir, or None when it is a memory store.
 
-    A deletion is permanent, so both change only a directory holding the MEMORY.md index Claude Code keeps beside its
-    memories, and never one inside a skills directory, where a SKILL.md would pass for a memory.
+    A deletion is permanent, so they take only a directory holding the MEMORY.md index Claude Code keeps beside its
+    memories, and never one inside a skills directory, where a SKILL.md would pass for a memory. audit takes the same,
+    so the skill learns that the later commands refuse a directory before it changes anything.
     """
     root = skills_directory_holding(memory_dir)
     if root:
@@ -840,6 +977,7 @@ def resolve_lines(repo: Path, result: dict) -> list[str]:
             f"SOURCE {flat_text(result['source'])}",
             f"EXISTS {'yes' if result['exists'] else 'no'}",
         ]
+        lines += [f"REFUSED {result['refused']}"] if result.get("refused") else []
     else:
         lines.append("NO_MEMORY_DIR")
     lines += [f"CANDIDATE {candidate}" for candidate in result.get("candidates", [])]
@@ -857,6 +995,7 @@ def reindex_lines(memory_dir: Path, write: bool) -> tuple[int, list[str]]:
     output = [f"INDEX_LINE {flat_text(file)}" for file in result["entries"]]
     output += [f"ADDED {flat_text(file)}" for file in result["added"]]
     output += [f"DROPPED {why} {flat_text(file)}" for why, file in result["dropped"]]
+    output += [f"UNREADABLE {flat_text(file)}: {problem}" for file, problem in result["unreadable"]]
     if result["over_limit"] or result["near_limit"]:
         label = "OVER_LIMIT" if result["over_limit"] else "NEAR_LIMIT"
         output.append(f"{label} lines={result['lines']}/{INDEX_LINE_LIMIT} bytes={result['bytes']}/{INDEX_BYTE_LIMIT}")
@@ -910,6 +1049,7 @@ def source_refusal(path: Path) -> str | None:
 
 def skill_source_lines(args: argparse.Namespace) -> tuple[int, list[str]]:
     """Each editable source file of a skill, or the file named with --file, never one inside a skills directory."""
+    unread = ""
     if args.file is not None:
         candidates = [args.file]
         missing = f"{args.file} cannot be edited as a skill's source"
@@ -920,14 +1060,18 @@ def skill_source_lines(args: argparse.Namespace) -> tuple[int, list[str]]:
             candidates = manifest_skill_files(args.home, args.name)
         except (OSError, UnicodeError, ValueError) as exc:
             return 1, [f"FAILED {flat_text(f'cannot read the deployer manifest: {exc}')}"]
-        repo = args.repo or repository_root(Path.cwd())
+        try:
+            repo = args.repo or repository_root(Path.cwd())
+        except GitError as exc:
+            repo = None
+            unread = f"NOTE {flat_text(f'no project skill was looked for: git could not read the repository: {exc}')}"
         project = None if repo is None else repo / ".claude" / "skills" / args.name / "SKILL.md"
         candidates += [project] if project is not None and project.is_file() else []
         missing = (
             f"no editable source of skill {args.name}: the deployer's manifest records none, and the repository has "
             "no project skill of that name; name its source file with --file"
         )
-    output: list[str] = []
+    output: list[str] = [unread] if unread else []
     for path in candidates:
         refused = source_refusal(path)
         output.append(f"NOTE {flat_text(refused)}" if refused else f"SKILL_FILE {path}")
@@ -937,16 +1081,16 @@ def skill_source_lines(args: argparse.Namespace) -> tuple[int, list[str]]:
 
 
 def audit_lines(args: argparse.Namespace) -> tuple[int, list[str]]:
-    """Write the JSON audit report to --output or a new temporary file and name it."""
-    if args.output:
-        refused = output_refusal(args.output)
-        if refused:
-            return 1, [f"FAILED {refused}"]
+    """Write the JSON audit report to a new file, --output or a temporary one, and name it."""
     user_dir = args.user_dir or config_directory(Path.home(), dict(os.environ))
     report = json.dumps(audit(args.memory_dir, args.repo, args.instructions, user_dir=user_dir), indent=2) + "\n"
     if args.output:
         try:
-            args.output.write_text(report, encoding="utf-8")
+            # Created exclusively, so a file that appeared since the check is never replaced either.
+            with args.output.open("x", encoding="utf-8") as handle:
+                handle.write(report)
+        except FileExistsError:
+            return 1, [f"FAILED {args.output} already exists, and audit never replaces a file"]
         except OSError as exc:
             return 1, [f"FAILED cannot write {args.output}: {reason(exc)}"]
         return 0, [f"REPORT {args.output}"]
@@ -956,22 +1100,38 @@ def audit_lines(args: argparse.Namespace) -> tuple[int, list[str]]:
     return 0, [f"REPORT {name}"]
 
 
-def run(args: argparse.Namespace) -> tuple[int, list[str]]:
-    if args.command == "resolve":
-        repo = args.repo or repository_root(Path.cwd())
-        if repo is None:
+def resolve_command(args: argparse.Namespace) -> tuple[int, list[str]]:
+    """resolve's lines for the top level of the worktree holding --repo or the current directory."""
+    if args.repo is not None and holds_line_break(str(args.repo)):
+        return 1, [f"FAILED {flat_text(f'the repository path holds a line break: {str(args.repo)!r}')}"]
+    try:
+        repo = repository_root(args.repo or Path.cwd())
+        if repo is None and args.repo is None:
             return 1, ["FAILED not inside a Git repository; pass --repo"]
+        # A folder in no Git repository is a project of its own.
+        repo = repo or args.repo.resolve()
         if holds_line_break(str(repo)):
             return 1, [f"FAILED {flat_text(f'the repository path holds a line break: {str(repo)!r}')}"]
         return 0, resolve_lines(repo, resolve(repo, args.home, dict(os.environ), managed_settings_path()))
+    except GitError as exc:
+        return 1, [f"FAILED {flat_text(f'git could not read the repository: {exc}')}"]
+
+
+def run(args: argparse.Namespace) -> tuple[int, list[str]]:
+    if args.command == "resolve":
+        return resolve_command(args)
     if args.command == "skill-source":
         return skill_source_lines(args)
-    if not args.memory_dir.is_dir():
-        return 1, [f"FAILED memory directory not found: {args.memory_dir}"]
-    if args.command in ("reindex", "delete"):
-        refused = store_refusal(args.memory_dir)
+    if args.command == "audit" and args.output:
+        projects = config_directory(Path.home(), dict(os.environ)) / "projects"
+        refused = output_refusal(args.output, args.memory_dir, projects)
         if refused:
             return 1, [f"FAILED {refused}"]
+    if not args.memory_dir.is_dir():
+        return 1, [f"FAILED memory directory not found: {args.memory_dir}"]
+    refused = store_refusal(args.memory_dir)
+    if refused:
+        return 1, [f"FAILED {refused}"]
     if args.command == "reindex":
         return reindex_lines(args.memory_dir, args.write)
     if args.command == "delete":
