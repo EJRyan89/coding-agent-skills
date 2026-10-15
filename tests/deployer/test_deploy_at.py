@@ -212,11 +212,13 @@ class DeployAtTests(DeployerTestCase):
         )
 
     def test_the_update_skill_reads_the_pin_from_the_line_check_prints(self) -> None:
-        # update-coding-agent-skills stops with PINNED <ref> <commit>, read from this line of check's output.
+        # update-coding-agent-skills stops with PINNED <ref> <commit>, and reads the deployed commit its major-version
+        # stop compares, from this line of check's output.
         script = REPOSITORY_ROOT / "skills" / "update-coding-agent-skills" / "scripts" / "update.sh"
         text = script.read_text(encoding="utf-8")
         self.assertIn('PIN_MARK=", pinned with --at "', text)
-        self.assertIn('grep -m 1 -e "^Deployed commit: .*$PIN_MARK"', text)
+        self.assertIn('grep -m 1 -e "^Deployed commit: ")', text)
+        self.assertIn('*"$PIN_MARK"*) PIN_REF=', text)
         self.deploy_ok("--all", "--at", "v1.0.0")
         self.assertIn(f"\nDeployed commit: v1.0.0 ({self.release}), pinned with --at v1.0.0\n", self.check().output)
 
