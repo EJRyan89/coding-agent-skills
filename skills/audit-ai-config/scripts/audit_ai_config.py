@@ -35,6 +35,7 @@ import re
 import sys
 import tomllib
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -42,6 +43,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from console import run_main
+from flat_text import flat_text
 from frontmatter import COMMENT, NESTED_KEY, SEQUENCE_ITEM, Frontmatter, FrontmatterError
 
 # ---------------------------------------------------------------------------
@@ -147,13 +149,77 @@ SKIPPED_DIRECTORIES: frozenset[str] = frozenset(
 )
 
 
+def leaves_root(root: Path, path: Path) -> bool:
+    """Whether `path` lies outside `root` once its links and `..` parts are resolved, as a symbolic link or junction
+    that leads out of the repository makes it. A path that cannot be resolved counts as outside, so nothing is read
+    through it."""
+    try:
+        return not path.resolve().is_relative_to(root.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return True
+
+
+@dataclass
+class Listing:
+    """The paths a walk or listing found inside the root, and the links it did not follow because they lead out."""
+
+    paths: list[Path] = field(default_factory=list)
+    outside: list[Path] = field(default_factory=list)
+
+    def add(self, root: Path, path: Path) -> None:
+        (self.outside if leaves_root(root, path) else self.paths).append(path)
+
+
+def list_directory(root: Path, directory: Path, pattern: str | None = None) -> Listing:
+    """The entries of `directory`, or those `pattern` matches, sorted, never listing or naming one through a link
+    that leads out of the root; raises OSError when the directory cannot be listed."""
+    listing = Listing()
+    if leaves_root(root, directory):
+        listing.outside.append(directory)
+        return listing
+    for path in sorted(directory.iterdir() if pattern is None else directory.glob(pattern)):
+        listing.add(root, path)
+    return listing
+
+
+def walk_files(root: Path, base: Path, wanted: Callable[[str], bool], skipped: frozenset[str] = frozenset()) -> Listing:
+    """Every file below `base` whose name `wanted` accepts, outside directories named in `skipped`, in a stable order.
+
+    A directory or wanted file that leads out of the root is neither entered nor read: it goes in `outside`. Neither
+    `os.walk`, which enters a junction on Windows, nor `rglob` would stop there.
+    """
+    listing = Listing()
+    if leaves_root(root, base):
+        listing.outside.append(base)
+        return listing
+    for directory, subdirectories, files in os.walk(base):
+        inside = Listing()
+        for name in sorted(subdirectories):
+            if name not in skipped:
+                inside.add(root, Path(directory, name))
+        subdirectories[:] = [path.name for path in inside.paths]
+        listing.outside.extend(inside.outside)
+        for name in sorted(files):
+            if wanted(name):
+                listing.add(root, Path(directory, name))
+    return listing
+
+
 def named_files(root: Path, *names: str) -> list[Path]:
-    """Every file below the root with one of these names, outside SKIPPED_DIRECTORIES, in a stable order."""
-    found: list[Path] = []
-    for directory, subdirectories, files in os.walk(root):
-        subdirectories[:] = sorted(name for name in subdirectories if name not in SKIPPED_DIRECTORIES)
-        found.extend(Path(directory, name) for name in sorted(files) if name in names)
-    return found
+    """Every file below the root with one of these names, outside SKIPPED_DIRECTORIES, in a stable order, never
+    through a link that leads out of the root; the inventory reports each such link."""
+    return walk_files(root, root, lambda name: name in names, SKIPPED_DIRECTORIES).paths
+
+
+OUTSIDE_LINK = "Link leads out of the repository; the audit does not follow it"
+
+
+def outside_link_findings(root: Path, listing: Listing) -> list[Finding]:
+    """One inventory WARNING per link a walk or listing did not follow; audit() keeps one per path."""
+    return [
+        Finding("WARNING", "inventory", path.relative_to(root).as_posix(), message=OUTSIDE_LINK)
+        for path in listing.outside
+    ]
 
 
 def content_hash(content: str) -> str:
@@ -301,6 +367,8 @@ INVENTORY_FILES: list[str] = [
     ".github/ai-config-manifest.json",
 ]
 RECURSIVE_INVENTORY_NAMES: list[str] = ["AGENTS.md", "AGENTS.override.md"]
+# Every name a nested-file check walks the repository for; the inventory's walk reports a link to one that leads out.
+NESTED_FILE_NAMES: frozenset[str] = frozenset({*RECURSIVE_INVENTORY_NAMES, ".mcp.json"})
 GENERATOR_CANDIDATES: list[str] = [".github/scripts/ai_config.py", "scripts/ai_config.py"]
 
 
@@ -327,11 +395,29 @@ def _inventory_fixed_files(root: Path) -> list[Finding]:
 
 
 def _inventory_recursive_files(root: Path) -> list[Finding]:
-    return [
+    """Each nested instruction file, and each directory or nested-file link that leads out of the repository, which
+    the nested-file checks' walks do not follow either."""
+    walk = walk_files(root, root, lambda name: name in NESTED_FILE_NAMES, SKIPPED_DIRECTORIES)
+    found = [
         _inventory_finding(rel, f"Found {rel}")
         for name in RECURSIVE_INVENTORY_NAMES
-        for rel in (found.relative_to(root).as_posix() for found in named_files(root, name))
+        for rel in (path.relative_to(root).as_posix() for path in walk.paths if path.name == name)
     ]
+    return [*found, *outside_link_findings(root, walk)]
+
+
+def skill_files(root: Path, directory: Path) -> Listing:
+    """`<directory>/<name>/SKILL.md` for each folder directly in `directory`, as `glob("*/SKILL.md")` finds them, but
+    never through a link that leads out of the root; a directory that cannot be listed holds none."""
+    try:
+        folders = list_directory(root, directory)
+    except OSError:
+        return Listing()
+    listing = Listing(outside=folders.outside)
+    for folder in folders.paths:
+        if (folder / "SKILL.md").is_file():
+            listing.add(root, folder / "SKILL.md")
+    return listing
 
 
 def _inventory_skill_directories(root: Path) -> list[Finding]:
@@ -339,9 +425,11 @@ def _inventory_skill_directories(root: Path) -> list[Finding]:
     for skill_dir in (".claude/skills", ".agents/skills", ".github/skills"):
         d = root / skill_dir
         if d.is_dir():
-            skills = [p.parent.name for p in d.glob("*/SKILL.md")]
+            listing = skill_files(root, d)
+            skills = [p.parent.name for p in listing.paths]
             if skills:
                 findings.append(_inventory_finding(skill_dir, f"Skills found: {', '.join(sorted(skills))}"))
+            findings.extend(outside_link_findings(root, listing))
     return findings
 
 
@@ -351,11 +439,13 @@ def _inventory_agent_directories(root: Path) -> list[Finding]:
         d = root / agent_dir
         if d.is_dir():
             try:
-                agents = [p.name for p in d.iterdir() if p.is_file()]
+                listing = list_directory(root, d)
             except OSError:
                 continue  # check_copilot_configuration reports a directory it cannot list
+            agents = [p.name for p in listing.paths if p.is_file()]
             if agents:
                 findings.append(_inventory_finding(agent_dir, f"Custom agent files found: {', '.join(sorted(agents))}"))
+            findings.extend(outside_link_findings(root, listing))
     return findings
 
 
@@ -364,10 +454,17 @@ def _inventory_path_instructions(root: Path) -> list[Finding]:
     instructions_dir = root / ".github/instructions"
     if not instructions_dir.is_dir():
         return []
-    instr_files = list(instructions_dir.rglob("*.instructions.md"))
-    if not instr_files:
-        return []
-    return [_inventory_finding(".github/instructions", f"{len(instr_files)} path-specific instruction file(s)")]
+    walk = walk_files(root, instructions_dir, _is_path_instructions)
+    findings = outside_link_findings(root, walk)
+    if walk.paths:
+        findings.insert(
+            0, _inventory_finding(".github/instructions", f"{len(walk.paths)} path-specific instruction file(s)")
+        )
+    return findings
+
+
+def _is_path_instructions(name: str) -> bool:
+    return name.endswith(".instructions.md")
 
 
 def _inventory_generator_scripts(root: Path) -> list[Finding]:
@@ -385,7 +482,8 @@ def _inventory_parity_workflows(root: Path) -> list[Finding]:
         return []
     findings: list[Finding] = []
     for pattern in ("*.yml", "*.yaml"):
-        for wf in workflows_dir.glob(pattern):
+        listing = list_directory(root, workflows_dir, pattern)
+        for wf in listing.paths:
             try:
                 wf_content = read_text(wf)
                 if "ai-config" in wf_content.lower() or "ai_config" in wf_content.lower():
@@ -393,6 +491,7 @@ def _inventory_parity_workflows(root: Path) -> list[Finding]:
                     findings.append(_inventory_finding(rel, "AI config parity workflow found"))
             except (OSError, UnicodeError):
                 pass
+        findings.extend(outside_link_findings(root, listing))
     return findings
 
 
@@ -733,7 +832,9 @@ def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Fi
         directory = root / skill_dir
         if not directory.is_dir():
             continue
-        for path in sorted(directory.rglob("SKILL.md")):
+        walk = walk_files(root, directory, lambda name: name == "SKILL.md")
+        findings.extend(outside_link_findings(root, walk))
+        for path in sorted(walk.paths):
             findings.extend(_validate_skill(path, root))
             if skill_dir == ".github/skills":
                 findings.extend(_provenance(path, path.relative_to(root).as_posix(), "skill", manifest_paths))
@@ -742,13 +843,14 @@ def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Fi
         if not directory.is_dir():
             continue
         try:
-            files = sorted(p for p in directory.iterdir() if p.is_file())
+            listing = list_directory(root, directory)
         except OSError as error:
             findings.append(
                 Finding("ERROR", "copilot-config", agent_dir, message=f"Could not list the directory: {error.strerror}")
             )
             continue
-        for path in files:
+        findings.extend(outside_link_findings(root, listing))
+        for path in (p for p in listing.paths if p.is_file()):
             findings.extend(_validate_agent(path, root))
             findings.extend(_provenance(path, path.relative_to(root).as_posix(), "agent", manifest_paths))
     return findings
@@ -1093,7 +1195,7 @@ def _has_ci_parity_workflow(root: Path) -> bool:
     if not workflows_dir.is_dir():
         return False
     for pattern in ("*.yml", "*.yaml"):
-        for wf in workflows_dir.glob(pattern):
+        for wf in list_directory(root, workflows_dir, pattern).paths:  # the inventory reports a link it skips
             try:
                 wf_content = read_text(wf)
             except (OSError, UnicodeError):
@@ -1339,9 +1441,9 @@ def check_orphans(root: Path, manifest: dict[str, Any] | None = None) -> list[Fi
     orphan_shims: set[str] = set()
     if agents_dir.is_dir():
         canonical_names = set()
-        if claude_dir.is_dir():
-            canonical_names = {p.parent.name for p in claude_dir.glob("*/SKILL.md")}
-        for shim in agents_dir.glob("*/SKILL.md"):
+        if claude_dir.is_dir():  # the inventory reports a link either skill listing skips
+            canonical_names = {p.parent.name for p in skill_files(root, claude_dir).paths}
+        for shim in skill_files(root, agents_dir).paths:
             if shim.parent.name not in canonical_names:
                 rel = shim.relative_to(root).as_posix()
                 orphan_shims.add(rel)
@@ -1362,7 +1464,7 @@ def check_orphans(root: Path, manifest: dict[str, Any] | None = None) -> list[Fi
             root / pattern for pattern in MANIFEST_ALLOWED_PATHS if "*" not in pattern and not pattern.endswith(".json")
         ]
         if agents_dir.is_dir():
-            candidates.extend(sorted(agents_dir.glob("*/SKILL.md")))
+            candidates.extend(skill_files(root, agents_dir).paths)
         for path in candidates:
             rel = path.relative_to(root).as_posix()
             if rel in listed or rel in orphan_shims or not path.is_file():
@@ -1706,7 +1808,8 @@ def _instruction_sources(root: Path) -> InstructionSources:
         agents_override=(root / "AGENTS.override.md").is_file(),
         copilot_instructions=(root / ".github/copilot-instructions.md").is_file(),
         gemini_md=(root / "GEMINI.md").is_file(),
-        path_instructions=instructions.is_dir() and any(instructions.rglob("*.instructions.md")),
+        # The inventory reports a link this walk skips.
+        path_instructions=instructions.is_dir() and bool(walk_files(root, instructions, _is_path_instructions).paths),
     )
 
 
@@ -2172,7 +2275,7 @@ def check_limitations(root: Path, manifest: dict[str, Any]) -> list[Finding]:
         base = root / directory
         if not base.is_dir():
             continue
-        for path in sorted(p for p in base.rglob("*.md") if p.is_file()):
+        for path in sorted(p for p in walk_files(root, base, lambda name: name.endswith(".md")).paths if p.is_file()):
             rel = path.relative_to(root).as_posix()
             try:
                 generated = has_ownership_marker(read_text(path))
@@ -2181,7 +2284,7 @@ def check_limitations(root: Path, manifest: dict[str, Any]) -> list[Finding]:
             if generated or rel in artifact_paths:
                 note(rel, "Generated Copilot projection is provenance-checked only, not reconstructed")
     instructions = root / ".github/instructions"
-    if instructions.is_dir() and any(instructions.rglob("*.instructions.md")):
+    if instructions.is_dir() and walk_files(root, instructions, _is_path_instructions).paths:
         note(".github/instructions", "Path-specific instructions are not checked for contradictions or overlap")
     for nested in _nested_files(root, ".mcp.json"):
         note(nested.relative_to(root).as_posix(), "Nested .mcp.json files are not validated")
@@ -2200,7 +2303,26 @@ def audit(root: Path) -> AuditResult:
 
     # Step 1: Inventory
     result.findings.extend(check_inventory(root))
+    _authority_and_checks(root, result)
+    result.findings = _one_finding_per_link(result.findings)
+    return result
 
+
+def _one_finding_per_link(findings: list[Finding]) -> list[Finding]:
+    """The findings with each link that leads out of the repository reported once, though several listings skip it."""
+    seen: set[str | None] = set()
+    kept: list[Finding] = []
+    for finding in findings:
+        if finding.message == OUTSIDE_LINK:
+            if finding.path in seen:
+                continue
+            seen.add(finding.path)
+        kept.append(finding)
+    return kept
+
+
+def _authority_and_checks(root: Path, result: AuditResult) -> None:
+    """Classify the authority into `result`, then add the findings of checks 3 to 12 when it is conforming."""
     # Step 2: Authority classification
     classification, manifest, authority_findings = classify_authority(root)
     result.authority = classification
@@ -2208,7 +2330,7 @@ def audit(root: Path) -> AuditResult:
 
     # Steps 3-9 only apply to conforming repos
     if classification != "conforming":
-        return result
+        return
 
     # Vocabulary validation (before any checks that depend on manifest values)
     if manifest:
@@ -2244,8 +2366,6 @@ def audit(root: Path) -> AuditResult:
 
     result.findings.extend(check_limitations(root, manifest or {}))
 
-    return result
-
 
 # ---------------------------------------------------------------------------
 # Output formatting
@@ -2262,8 +2382,9 @@ def summary_lines(findings: list[Finding]) -> list[str]:
 
 
 def _cell(text: str) -> str:
-    """A table cell for text the audited repository controls: a pipe or a line break would end the cell or the row."""
-    return re.sub(r"\r\n|\r|\n", "<br>", text.replace("|", r"\|"))
+    """A table cell for text the audited repository controls: a pipe would end the cell, and a line break, U+0085,
+    U+2028, or U+2029 the row, so the text is flattened onto one line first."""
+    return flat_text(text).replace("|", r"\|")
 
 
 def _validated_scope_status(status: str) -> str:

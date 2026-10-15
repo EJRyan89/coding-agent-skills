@@ -25,6 +25,8 @@ The engine never writes, modifies, or deletes files. It does not run generators,
 
 Reports each AI configuration file found as an `INFO` finding: `CLAUDE.md`, `GEMINI.md`, `REVIEW.md`, `.codex/config.toml`, `.mcp.json`, `.github/mcp.json`, `.vscode/mcp.json`, `.github/copilot-instructions.md`, `.github/workflows/copilot-setup-steps.yml`, `.github/ai-config-manifest.json`, every `AGENTS.md` and `AGENTS.override.md` at any depth outside version-control and dependency directories (`.git`, `.hg`, `.svn`, `node_modules`, `.venv`, `venv`, `__pycache__`, `.tox`, `.nox`), which no nested-file check walks into, skills under `.claude/skills`, `.agents/skills`, and `.github/skills`, custom agents under `.github/agents` and `.claude/agents`, path-specific `.github/instructions/**/*.instructions.md`, a generator at `.github/scripts/ai_config.py` or `scripts/ai_config.py`, and any workflow mentioning `ai-config` or `ai_config`.
 
+No walk or directory listing in any check follows a symbolic link or junction that leads out of the repository root: the link is skipped, so nothing behind it is read or named, and it is reported once as an inventory `WARNING` at its path, `Link leads out of the repository; the audit does not follow it`. A link whose target stays inside the root is followed.
+
 **Why**: Establishes the baseline and surfaces files that may conflict, overlap, or be orphaned.
 
 ### 2. Authority Classification (`authority`)
