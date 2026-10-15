@@ -970,6 +970,26 @@ class CommandReadingTests(WorktreesTestCase):
             with self.subTest(command=command):
                 self.assertEqual(self.at(self.hub, "commit"), self.read(f"{command}; git commit"))
 
+    def test_powershell_reads_a_location_variable_assigned_in_parentheses_or_a_multiple_assignment(self) -> None:
+        # PowerShell sets the variable in each shape, so git started after it reads it.
+        for command in (
+            f"($env:GIT_WORK_TREE) = '{self.hub}'",
+            f"(([string]${{Environment::GIT_DIR}})) = '{self.hub}'",
+            f"$env:GIT_WORK_TREE, $other = '{self.hub}', 2",
+            f"$other, $env:GIT_WORK_TREE = 2, '{self.hub}'",
+            "($env:GIT_DIR, $other) = 'x', 2",
+            "([string]$env:GIT_DIR), $other = 'x', 2",
+            # A single value on the right is spread over the targets, so the text does not settle what each gets.
+            "$other, $env:GIT_COMMON_DIR = $values",
+            "$env:GIT_DIR, $other = @(Get-Content values.txt)",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self.at(None, "reset"), self.read(f"{command}; git reset --hard"))
+                self.assertEqual([], self.notes)
+        for command in ("($env:NOTES) = 'x'", "$env:NOTES, $other = 'x', 2", "($GIT_DIR, $other) = 'x', 2"):
+            with self.subTest(command=command):
+                self.assertEqual(self.at(self.hub, "reset"), self.read(f"{command}; git reset --hard"))
+
     def test_powershell_does_not_read_a_separator_after_the_provider_qualified_path_as_setting_a_variable(self) -> None:
         # After Environment:: PowerShell keeps a separator in the variable's name, so \GIT_DIR is set, which git never
         # reads. On the provider's root, New-Item's -Name and Rename-Item's -NewName still name the variable set.
@@ -1064,6 +1084,11 @@ class PowerShellGuardTests(WorktreesTestCase):
 
     def test_a_location_variable_assigned_through_variable_notation_on_the_provider_reaches_the_judgment(self) -> None:
         command = f"${{Environment::GIT_WORK_TREE}} = '{self.hub}'; git reset --hard"
+        self.assertIsNone(self.powershell(command, self.tree))
+        self.assertIn("could not tell where `git reset` runs", self.stderr)
+
+    def test_a_location_variable_assigned_in_parentheses_or_a_multiple_assignment_reaches_the_judgment(self) -> None:
+        command = f"($env:GIT_WORK_TREE) = '{self.hub}'; $other, $env:GIT_DIR = 2, 'x'; git reset --hard"
         self.assertIsNone(self.powershell(command, self.tree))
         self.assertIn("could not tell where `git reset` runs", self.stderr)
 

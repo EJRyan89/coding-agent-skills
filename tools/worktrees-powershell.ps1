@@ -110,6 +110,30 @@ function Get-CommandLeaf([CommandAst] $Command) {
     [IO.Path]::GetFileNameWithoutExtension(($name -split '[\\/]')[-1]).ToLowerInvariant()
 }
 
+# The variables an assignment's left side assigns. A cast or attribute, as in [string]$env:NAME = ..., still assigns
+# the variable it wraps, and so do parentheses, as in ($env:NAME) = ...; a multiple assignment, as in
+# $env:NAME, $other = ..., assigns each of its targets, whatever value PowerShell gives each.
+function Get-AssignedVariable([ExpressionAst] $Left) {
+    while ($true) {
+        if ($Left -is [AttributedExpressionAst]) {
+            $Left = $Left.Child
+        } elseif ($Left -is [ParenExpressionAst] -and $Left.Pipeline -is [PipelineAst] -and
+            $Left.Pipeline.PipelineElements.Count -eq 1 -and
+            $Left.Pipeline.PipelineElements[0] -is [CommandExpressionAst]) {
+            $Left = $Left.Pipeline.PipelineElements[0].Expression
+        } else {
+            break
+        }
+    }
+    if ($Left -is [VariableExpressionAst]) {
+        , $Left
+    } elseif ($Left -is [ArrayLiteralAst]) {
+        foreach ($element in $Left.Elements) {
+            Get-AssignedVariable $element
+        }
+    }
+}
+
 # The script pwsh -Command runs: every word after the switch, joined. $null when there is no -Command, '' when
 # what follows it is missing or not static.
 function Get-ChildScript([object[]] $Words) {
@@ -153,14 +177,11 @@ function Read-CommandEvent([string] $Text, [int] $Depth, [Collections.Generic.Li
 
     foreach ($node in $nodes) {
         if ($node -is [AssignmentStatementAst]) {
-            # A cast or attribute, as in [string]$env:NAME = ..., still assigns the variable it wraps.
-            $left = $node.Left
-            while ($left -is [AttributedExpressionAst]) {
-                $left = $left.Child
-            }
             # worktrees.py judges whether the path names a location variable on the environment provider.
-            if ($left -is [VariableExpressionAst] -and $left.VariablePath.IsDriveQualified) {
-                $Events.Add([ordered]@{ kind = 'assigned'; path = $left.VariablePath.UserPath })
+            foreach ($variable in Get-AssignedVariable $node.Left) {
+                if ($variable.VariablePath.IsDriveQualified) {
+                    $Events.Add([ordered]@{ kind = 'assigned'; path = $variable.VariablePath.UserPath })
+                }
             }
             continue
         }
