@@ -387,19 +387,20 @@ class HandshakeTests(unittest.TestCase):
             self._run(),
         )
 
-    def test_a_relative_command_resolves_against_the_configured_directory_not_the_callers(self) -> None:
-        # A launcher as each platform runs one: a batch file on Windows, and an executable shell script elsewhere.
+    def _launcher(self, folder: Path, stem: str) -> str:
+        """A launcher of the fake server in `folder` as each platform runs one: a batch file on Windows, and an
+        executable shell script elsewhere. Returns its file name."""
         if sys.platform == "win32":
-            name = "fake server.cmd"
-            launcher = self.root / "tools" / name
-            launcher.write_text(f'@"{sys.executable}" "%~dp0fake server.py" %*\n', encoding="utf-8")
+            name = f"{stem}.cmd"
+            (folder / name).write_text(f'@"{sys.executable}" "{self.server}" %*\n', encoding="utf-8")
         else:
-            name = "fake server"
-            launcher = self.root / "tools" / name
-            launcher.write_text(
-                f'#!/bin/sh\nexec "{sys.executable}" "$(dirname "$0")/fake server.py" "$@"\n', encoding="utf-8"
-            )
-            launcher.chmod(0o755)
+            name = stem
+            (folder / name).write_text(f'#!/bin/sh\nexec "{sys.executable}" "{self.server}" "$@"\n', encoding="utf-8")
+            (folder / name).chmod(0o755)
+        return name
+
+    def test_a_relative_command_resolves_against_the_configured_directory_not_the_callers(self) -> None:
+        name = self._launcher(self.root / "tools", "fake server")
         self._write(
             ".mcp.json",
             "mcpServers",
@@ -422,6 +423,27 @@ class HandshakeTests(unittest.TestCase):
             ),
             (code, lines),
         )
+
+    def test_a_bare_command_is_found_on_path_and_never_in_the_folder_the_script_runs_from(self) -> None:
+        # shutil.which searches the working directory first on Windows.
+        elsewhere, on_path = Path(self.temp.name) / "elsewhere", Path(self.temp.name) / "on path"
+        for folder in (elsewhere, on_path):
+            folder.mkdir()
+            self._launcher(folder, "fake-mcp-server")
+        self._write(".mcp.json", "mcpServers", {"bare": {"command": "fake-mcp-server", "args": ["ok"]}})
+        missing = (1, ["HANDSHAKE_FAILED bare source=.mcp.json command not found: fake-mcp-server"])
+        found = (0, ["HANDSHAKE_OK bare source=.mcp.json protocol=2025-06-18 tools=2"])
+        # Without the variable that stops it, Windows' own search would find the launcher in the working directory.
+        stop = "NoDefaultCurrentDirectoryInExePath".casefold()
+        environment = {key: value for key, value in os.environ.items() if key.casefold() != stop}
+        environment["LOCALAPPDATA"] = str(elsewhere)
+        for path, expected in ((str(Path(self.temp.name) / "empty"), missing), (str(on_path), found)):
+            with (
+                self.subTest(found=expected is found),
+                contextlib.chdir(elsewhere),
+                mock.patch.dict(os.environ, {**environment, "PATH": path}, clear=True),
+            ):
+                self.assertEqual(expected, self._run())
 
     def test_a_relative_command_that_is_not_there_fails_naming_it(self) -> None:
         self._write(".mcp.json", "mcpServers", {"gone": {"command": "./missing.cmd", "cwd": "tools"}})

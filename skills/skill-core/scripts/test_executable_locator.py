@@ -113,6 +113,26 @@ class FindExecutableTests(LocatorTestCase):
         self.assertEqual([], path_programs(PROGRAM, str(self.links)))
         self.assertEqual([], path_programs(PROGRAM, ""))
 
+    def test_a_relative_path_entry_is_skipped_rather_than_resolved_against_the_working_directory(self) -> None:
+        # Each entry would name a folder holding the program, were it resolved against the working directory.
+        self.addCleanup(os.chdir, Path.cwd())
+        os.chdir(self.local)
+        self.program(self.local)
+        nested = self.local / "bin"
+        nested.mkdir()
+        self.program(nested)
+        relative = ["", ".", "bin", os.curdir + os.sep + "bin"]
+        if WINDOWS:
+            drive = self.local.drive
+            relative += [drive + "bin", "\\" + str(nested.relative_to(self.local.anchor))]
+        for entry in relative:
+            with self.subTest(entry=entry):
+                self.assertEqual([], path_programs(PROGRAM, entry))
+                with mock.patch.dict(os.environ, {"PATH": os.pathsep.join((entry, str(self.path_folder)))}):
+                    self.assertIsNone(find_executable(PROGRAM))
+        # The control: the same folder named by its absolute path is searched.
+        self.assertEqual([nested / PROGRAM_FILE], [Path(path) for path in path_programs(PROGRAM, str(nested))])
+
 
 class FindExecutablesTests(LocatorTestCase):
     def test_every_candidate_in_search_order_path_first_then_the_links_folder(self) -> None:
@@ -145,6 +165,22 @@ class LocatedCommandTests(LocatorTestCase):
         self.assertTrue(Path(command[0]).is_absolute())
         on_path = self.program(self.path_folder)
         self.assertEqual(on_path, Path(located_command([PROGRAM])[0]), "PATH comes first")
+
+    def test_a_program_kept_is_reused_until_a_variable_the_lookup_reads_changes(self) -> None:
+        kept: executable_locator.Found = {}
+        on_path = self.program(self.path_folder)
+        first = located_command([PROGRAM, "status"], kept=kept)
+        self.assertEqual((on_path, ["status"]), (Path(first[0]), first[1:]))
+        on_path.unlink()
+        self.assertEqual([first[0], "log"], located_command([PROGRAM, "log"], kept=kept), "kept, not looked up")
+        linked = self.program(self.links)
+        # The variables a lookup reads; a change to any of them makes the kept program stale.
+        self.assertEqual(("PATH", "PATHEXT", "LOCALAPPDATA"), executable_locator.LOOKUP_VARIABLES)
+        with mock.patch.dict(os.environ, {"PATH": os.environ["PATH"] + os.pathsep}):
+            self.assertEqual(linked, Path(located_command([PROGRAM], kept=kept)[0]), "looked up again")
+        with self.assertRaises(FileNotFoundError):
+            located_command(["fixture-locator-missing"], kept=kept)
+        self.assertNotIn("fixture-locator-missing", [key[0] for key in kept])
 
     def test_a_program_named_by_a_path_is_left_as_it_is(self) -> None:
         self.assertEqual([sys.executable, "-c", "pass"], located_command([sys.executable, "-c", "pass"]))
