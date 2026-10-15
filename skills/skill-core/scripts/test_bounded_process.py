@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bounded_process
 import job_tree
 from bounded_process import Finished, run_bounded
+from process_identity import process_status
 
 ENVIRONMENT_PROGRAM = (
     "import json, os, sys; "
@@ -93,6 +94,7 @@ LAUNCHER_PROGRAM = (
     "subprocess.Popen([sys.executable, '-c', waiter, sys.argv[1]])\n"
     "print('ready'); sys.stdout.flush()\n"
 )
+SLEEPING = [sys.executable, "-c", "import time; time.sleep(120)"]
 # Appended to LAUNCHER_PROGRAM, keeps the launcher running after it says ready, as a command that stalls does.
 STALL_PROGRAM = "import time\ntime.sleep(60)\n"
 # The grace a stalled command gets to exit by itself before it is killed.
@@ -469,6 +471,60 @@ class StreamingTests(unittest.TestCase):
             raise RuntimeError("the caller failed")
         self.assertLess(time.monotonic() - started, IDLE_MARGIN_SECONDS)
         self.assertEqual(0, running.wait())  # it exited by itself rather than being killed
+
+    def test_a_tree_starts_the_command_and_is_left_once_it_has_been_closed(self) -> None:
+        tree = RecordingTree({"close_fds": True})
+        popen = subprocess.Popen
+        with (
+            mock.patch.object(bounded_process.subprocess, "Popen", side_effect=popen) as started,
+            bounded_process.streaming(
+                [sys.executable, "-c", "pass"], idle_timeout=STARTUP_SECONDS, tree=tree
+            ) as running,
+        ):
+            self.assertEqual(["held"], tree.events)
+            running.stdin.close()
+        self.assertEqual(0, running.wait())
+        self.assertIs(True, started.call_args.kwargs["close_fds"])
+        self.assertEqual(["held", "left with the command gone"], tree.events)
+
+    def test_a_program_left_running_is_ended_with_the_tree_once_closed(self) -> None:
+        program = (
+            "import subprocess, sys\n"
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+            "sys.stdout.write(str(child.pid) + chr(10))\n"
+            "sys.stdout.flush()\n"
+        )
+        command = [sys.executable, "-c", program]
+        with bounded_process.streaming(command, idle_timeout=STARTUP_SECONDS, tree=job_tree.process_tree()) as running:
+            child = int(running.readline())
+            running.stdin.close()
+        self.assertFalse(process_status(child).alive, "the program the command left was ended with its tree")
+
+    def test_a_command_its_tree_refuses_is_never_streamed_and_its_pipes_are_closed(self) -> None:
+        started: list[subprocess.Popen[bytes]] = []
+        popen = subprocess.Popen
+
+        def recorded(*arguments: Any, **options: Any) -> subprocess.Popen[bytes]:
+            started.append(popen(*arguments, **options))
+            return started[-1]
+
+        class Refusing(RecordingTree):
+            @contextmanager
+            def hold(self, process: subprocess.Popen[bytes]) -> Iterator[None]:
+                process.kill()
+                process.wait(timeout=STARTUP_SECONDS)
+                raise job_tree.JobRefused("it could not join a Windows job object")
+                yield
+
+        with (
+            mock.patch.object(bounded_process.subprocess, "Popen", side_effect=recorded),
+            self.assertRaisesRegex(job_tree.JobRefused, "could not join"),
+            bounded_process.streaming(SLEEPING, idle_timeout=STARTUP_SECONDS, tree=Refusing({})),
+        ):
+            self.fail("a refused command is never streamed")
+        process = started[0]
+        self.assertTrue(process.stdin is not None and process.stdin.closed)
+        self.assertTrue(process.stdout is not None and process.stdout.closed)
 
     def test_closing_after_the_caller_closed_stdin_is_harmless(self) -> None:
         with bounded_process.streaming([sys.executable, "-c", "pass"], idle_timeout=STARTUP_SECONDS) as running:

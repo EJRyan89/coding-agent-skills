@@ -125,6 +125,74 @@ class RefusalTests(GitTestCase):
             with self.subTest(block=block), self.assertRaisesRegex(FrontmatterError, f"^key: .*{message}"):
                 parse(block).value("key")
 
+    def test_values_yaml_reads_otherwise_or_not_at_all_are_refused_when_read(self) -> None:
+        # Each is a block a runtime's YAML parser refuses or reads as something other than the reader's string.
+        cases = {
+            "key: run it: now": "holding ': ' or ending in ':'",
+            "key: foo:": "holding ': ' or ending in ':'",
+            "key: foo:\tbar": "holding ': ' or ending in ':'",
+            "key: foo\n  bar: baz": "holding ': ' or ending in ':'",
+            "key: foo:\n  bar": "holding ': ' or ending in ':'",
+            "key: - x": "starting with '-' and a space",
+            "key: -": "starting with '-' and a space",
+            "key: ? x": "starting with '\\?' and a space",
+            "key: : x": "starting with ':' and a space",
+            "key:\n  ? x": "starting with '\\?' and a space",
+            "key: ,x": "starting with ',', a flow indicator",
+            "key: ]x": "starting with '\\]', a flow indicator",
+            "key: }x": "starting with '}', a flow indicator",
+            "key:\n  [a, b]": "flow sequence that does not start on its key's line",
+            "key:\n  |\n  text": "block scalar that does not start on its key's line",
+            "key:\n  - a b: c": "holding ': ' or ending in ':'",
+            "key: [a: b]": "holding ': ' or ending in ':'",
+            "key: [a:]": "holding ': ' or ending in ':'",
+            "key: [- a]": "starting with '-' and a space",
+            "key:\n  - a\n  \t- b": "indented with a tab",
+            "key: |\n  one\n# two\n  three": "comment at column 0 ends a block scalar",
+            "key: >-\n  one\n# two\n  three": "comment at column 0 ends a block scalar",
+            "key: foo\n# note\n  bar": "comment at column 0 ends the value",
+            "key: 'foo\n# note\n  bar'": "comment at column 0 ends the value",
+            "key: foo\n  # note\n  bar": "comment ends a plain value",
+            "key: foo # note\n  bar": "comment ends a plain value",
+        }
+        for block, message in cases.items():
+            with self.subTest(block=block), self.assertRaisesRegex(FrontmatterError, f"^key: .*{message}"):
+                parse(block).value("key")
+
+    def test_yaml_values_near_the_refused_ones_are_still_read(self) -> None:
+        cases = {
+            "key: a:b": "a:b",
+            "key: http://example.com/x": "http://example.com/x",
+            "key: Bash(git status:*)": "Bash(git status:*)",
+            "key: a - b ? c": "a - b ? c",
+            "key: -1": "-1",
+            "key: -x": "-x",
+            "key: ?x": "?x",
+            "key: :x": ":x",
+            "key: foo # see: bar": "foo",
+            "key: 'run it: now'": "run it: now",
+            'key: "- x"': "- x",
+            "key: [a:b, 'c: d']": ["a:b", "c: d"],
+            "key:\n  - 'a: b'\n  - a:b": ["a: b", "a:b"],
+            "key:\n# before the value\n  value": "value",
+            "key:\n  # before the value\n  value": "value",
+            "key:\n  # before the value\n  'quoted'": "quoted",
+            "key:\n  - a\n# between items\n  - b\n  # and again\n  - c": ["a", "b", "c"],
+            "key: |\n  one\n  # indented, so text\n  three": "one\n# indented, so text\nthree\n",
+            "key: |+\n  one\n\n# after the block": "one\n\n",
+            "key: plain\n  # a last comment": "plain",
+            "key: |\n  \tcode after the indentation": "\tcode after the indentation\n",
+        }
+        for block, expected in cases.items():
+            with self.subTest(block=block):
+                self.assertEqual(expected, parse(block).value("key"))
+
+    def test_a_comment_at_column_0_after_a_value_ends_it_before_the_next_key(self) -> None:
+        document = parse("first: |\n  one\n# ends the block\nsecond: two\n# ends the plain value\nthird:\n  - x")
+        self.assertEqual(
+            ("one\n", "two", ["x"]), (document.value("first"), document.value("second"), document.value("third"))
+        )
+
     def test_unread_keys_are_never_parsed(self) -> None:
         document = parse(
             "name: reviewer\n"
@@ -152,6 +220,9 @@ class RefusalTests(GitTestCase):
         for block, message in (
             ("  indented first line", "line 1 belongs to no key"),
             ("name: a\nnot a key", "line 2 is not a 'key: value' line"),
+            ("tools:\n\t- a\n\t- b", "line 2 is indented with a tab"),
+            ("name: a\nhooks:\n  Pre:\n\t  - x", "line 4 is indented with a tab"),
+            ("name: a\n\tmore", "line 2 is indented with a tab"),
         ):
             with self.subTest(block=block), self.assertRaisesRegex(FrontmatterError, message):
                 parse(block)

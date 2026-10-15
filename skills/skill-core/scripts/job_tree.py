@@ -13,7 +13,9 @@ would join has nothing left to hold.
 Leaving `hold` returns only once every process of the job has ended and Windows has let go of what it held, its
 working directory and open files among them, so a caller may remove the folder the command ran in at once. Ending a
 job is asynchronous, so `hold` waits for each process, up to KILL_WAIT_SECONDS; a job whose processes it cannot list,
-end, or see end in that time leaves `hold` with `TreeNotEnded`, an OSError saying they may still run.
+end, or see end in that time leaves `hold` with `TreeNotEnded`, an OSError saying they may still run. A process the job
+lists that Windows will not open to wait on is gone only when Windows says no process has its ID; one it refuses for
+another reason, such as access denied, is waited for until the job no longer lists it.
 
 A `GroupTree` starts the command as the leader of a new session, so the command and every process it starts that does
 not leave the group share one process group, which the command cannot fail to join: it leads the group before it
@@ -37,7 +39,7 @@ from pathlib import Path
 from typing import Any
 
 from bounded_process import KILL_WAIT_SECONDS
-from process_identity import ENDED_STATES, PROC, stat_fields
+from process_identity import ENDED_STATES, PROC, open_failure_status, stat_fields
 
 PROCESS_TERMINATE = 0x0001
 PROCESS_SET_QUOTA = 0x0100
@@ -58,7 +60,8 @@ RESUME_FAILED = 0xFFFFFFFF
 INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 # Processes a job's first listing has room for; a longer listing is asked for again with room for all.
 LISTED_PROCESSES = 64
-# Seconds between two looks at whether a killed process group still has a process running.
+# Seconds between two looks at whether a killed process group still has a process running, and at whether an ended
+# job still lists a process it could not open to wait on.
 GROUP_POLL_SECONDS = 0.05
 
 
@@ -221,26 +224,29 @@ def _process_ids(job: int) -> list[int]:
         room = max(room * 2, listing.NumberOfAssignedProcesses)
 
 
-def _watch(job: int, watched: dict[int, int]) -> OSError | None:
-    """Open a handle to wait on each process the job lists that is not yet in `watched`, or the listing's error; a
-    process already gone needs none."""
+def _watch(job: int, watched: dict[int, int], unopened: dict[int, OSError]) -> OSError | None:
+    """Open a handle to wait on each process the job lists that is not yet in `watched` or `unopened`, or return the
+    listing's error. A process Windows says is gone needs none; one Windows would not open for another reason goes in
+    `unopened` with the error, to be waited for by the job's listing."""
     kernel32 = _kernel32()
     try:
         pids = _process_ids(job)
     except OSError as error:
         return error
     for pid in pids:
-        if pid not in watched:
-            handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
-            if handle:
-                watched[pid] = handle
+        if pid in watched or pid in unopened:
+            continue
+        handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+        if handle:
+            watched[pid] = handle
+        elif open_failure_status(ctypes.get_last_error()).alive:  # type: ignore[attr-defined]  # Windows only
+            unopened[pid] = _failed("OpenProcess")
     return None
 
 
-def _until_ended(watched: dict[int, int]) -> None:
-    """Wait, up to KILL_WAIT_SECONDS in all, for each watched process to end."""
+def _until_ended(watched: dict[int, int], deadline: float) -> None:
+    """Wait, up to `deadline`, for each watched process to end."""
     kernel32 = _kernel32()
-    deadline = time.monotonic() + KILL_WAIT_SECONDS
     for pid, handle in watched.items():
         remaining = max(0, int((deadline - time.monotonic()) * 1000))
         if kernel32.WaitForSingleObject(handle, remaining) != WAIT_OBJECT_0:
@@ -249,31 +255,65 @@ def _until_ended(watched: dict[int, int]) -> None:
             )
 
 
+def _until_unlisted(job: int | None, unopened: dict[int, OSError], deadline: float) -> None:
+    """Wait, up to `deadline`, until the ended job lists none of the processes it could not open to wait on, since a
+    job drops a process once it has ended. A job already closed, `None`, can no longer be asked."""
+    while unopened:
+        pid, error = next(iter(unopened.items()))
+        if job is None:
+            raise TreeNotEnded(
+                f"The job's processes may still run: process {pid} could not be watched ({error}), and the job "
+                "that could tell was closed"
+            )
+        try:
+            listed = set(_process_ids(job))
+        except OSError as listing:
+            raise TreeNotEnded(f"The job's processes may still run: {listing}") from listing
+        for gone in [pid for pid in unopened if pid not in listed]:
+            del unopened[gone]
+        if not unopened:
+            return
+        if time.monotonic() >= deadline:
+            pid, error = next(iter(unopened.items()))
+            raise TreeNotEnded(
+                f"The job's processes may still run: process {pid}, which could not be watched ({error}), was still "
+                f"in the job {KILL_WAIT_SECONDS:g} seconds on"
+            )
+        time.sleep(GROUP_POLL_SECONDS)
+
+
 def _end_job(job: int) -> None:
-    """End every process of the job, close it, and wait until each has ended. Ending them through the job or closing
-    it either ends them, since the job kills its processes when its last handle closes, so this raises only when
-    both fail, or when the job cannot be listed or its processes have not ended within KILL_WAIT_SECONDS.
+    """End every process of the job, wait until each has ended, and close the job. Ending them through the job or
+    closing it either ends them, since the job kills its processes when its last handle closes, so this raises only
+    when both fail, or when the job cannot be listed or its processes have not ended within KILL_WAIT_SECONDS.
 
     Each process is watched from before the job ends it, while its ID still names it, and so is any the job still
     lists once ended, which one started meanwhile would be. Windows signals a process once it has let go of everything.
+    A process that cannot be opened to wait on is waited for until the job, kept open meanwhile, no longer lists it.
     """
     kernel32 = _kernel32()
     watched: dict[int, int] = {}
+    unopened: dict[int, OSError] = {}
+    held: int | None = job
     try:
-        problem = _watch(job, watched)
+        problem = _watch(job, watched, unopened)
+        deadline = time.monotonic() + KILL_WAIT_SECONDS
         if kernel32.TerminateJobObject(job, 1):
-            problem = problem or _watch(job, watched)
-            kernel32.CloseHandle(job)  # its processes are ended, so a failure leaks only the handle
+            problem = problem or _watch(job, watched, unopened)
         else:
             error = _failed("TerminateJobObject")
+            held = None
             if not kernel32.CloseHandle(job):
                 raise TreeNotEnded(f"The job's processes may still run: {error}; {_failed('CloseHandle')}") from error
         if problem is not None:
             raise TreeNotEnded(f"The job's processes may still run: {problem}") from problem
-        _until_ended(watched)
+        _until_ended(watched, deadline)
+        _until_unlisted(held, unopened, deadline)
     finally:
         for handle in watched.values():
             kernel32.CloseHandle(handle)
+        if held is not None:
+            kernel32.CloseHandle(held)  # its processes are ended, so a failure leaks only the handle
 
 
 def job_holding(pid: int) -> int:

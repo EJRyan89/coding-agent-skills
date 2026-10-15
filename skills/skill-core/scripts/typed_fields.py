@@ -125,8 +125,9 @@ class FieldReader:
         return value
 
     def number(self, value: Any, path: str) -> int | float:
-        """A finite number, an integer or a float but never a boolean."""
-        if type(value) not in {int, float} or not math.isfinite(value):
+        """A finite number, an integer or a float but never a boolean, nor an integer too large for a float to hold,
+        which JSON reads intact."""
+        if type(value) not in {int, float} or not _finite(value):
             raise self.fail(path, "a finite number", describe(value))
         return value  # type: ignore[no-any-return]  # value is an int or a float, checked above
 
@@ -249,6 +250,14 @@ class FieldReader:
                     raise
                 expected.append(exc.expected)
         raise self.fail(path, " or ".join(expected), describe(value))
+
+
+def _finite(value: int | float) -> bool:
+    """Whether a number is finite as a float, which an integer too large to convert to one is not."""
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 def _plural(names: list[str], noun: str) -> str:

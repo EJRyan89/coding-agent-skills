@@ -32,6 +32,11 @@ RELEASE_SECONDS = 10.0
 SHORT_LIMIT_SECONDS = 1
 REFUSAL_MARGIN_SECONDS = 30
 ACCESS_DENIED = 5
+# What OpenProcess sets for a PID that names no process, and for a process it lacks the quota to open.
+INVALID_PARAMETER = 87
+NOT_ENOUGH_QUOTA = 1816
+# A PID no process has, which a stubbed listing adds to a job's processes.
+PHANTOM_PID = 4294967292
 # What a kernel call that does not report failure by returning no result returns when it fails: (DWORD)-1.
 FAILED_RESULTS = {"ResumeThread": 0xFFFFFFFF}
 # Starts a program that holds the file named by its first argument open and then creates "<file>.ready", and waits
@@ -189,6 +194,31 @@ class FailingKernel:
             return FAILED_RESULTS.get(name, 0)
 
         return fail
+
+
+class UnopenableKernel(FailingKernel):
+    """kernel32 as FailingKernel gives it, with OpenProcess for the access a job's processes are waited on with failing
+    with `error` as the thread's last error, as it does for a process this user may not open. The PIDs refused are
+    kept in order."""
+
+    def __init__(self, error: int, *failing: str) -> None:
+        super().__init__(*failing)
+        self.error = error
+        self.refused: list[int] = []
+
+    def __getattr__(self, name: str) -> Callable[..., Any]:
+        call = super().__getattr__(name)
+        if name != "OpenProcess":
+            return call
+
+        def open_process(access: int, inherit: bool, pid: int) -> Any:
+            if access != job_tree.SYNCHRONIZE:
+                return call(access, inherit, pid)
+            self.refused.append(pid)
+            job_tree.ctypes.set_last_error(self.error)  # type: ignore[attr-defined]  # Windows only
+            return None
+
+        return open_process
 
 
 if sys.platform == "win32":
@@ -381,6 +411,82 @@ if sys.platform == "win32":
                 ),
             ):
                 run_bounded(command, STARTUP_SECONDS, tree=SignalledTree(self.ready))
+            self.assert_released()
+
+        def test_a_process_it_may_not_open_is_waited_for_until_the_job_no_longer_lists_it(self) -> None:
+            command = [sys.executable, "-c", LAUNCHER_PROGRAM, str(self.held)]
+            process_ids = job_tree._process_ids
+            for error in (ACCESS_DENIED, NOT_ENOUGH_QUOTA):
+                with self.subTest(error=error):
+                    kernel = UnopenableKernel(error)
+                    listed: list[int] = []
+
+                    def listing(job: int, listed: list[int] = listed) -> list[int]:
+                        ids = process_ids(job)
+                        listed.append(len(ids))
+                        return ids
+
+                    with (
+                        mock.patch.object(job_tree, "_kernel32", return_value=kernel),
+                        mock.patch.object(job_tree, "_process_ids", side_effect=listing),
+                    ):
+                        finished = run_bounded(command, STARTUP_SECONDS, tree=SignalledTree(self.ready))
+                    self.assertEqual(0, finished.returncode)
+                    self.assertTrue(kernel.refused, "the job's processes were refused to their watcher")
+                    self.assertGreater(len(listed), 2, "the ended job was asked again for what it still holds")
+                    self.assert_released()
+                    self.ready.unlink()
+
+        def test_a_process_it_may_not_open_that_the_job_still_lists_is_reported(self) -> None:
+            command = [sys.executable, "-c", LAUNCHER_PROGRAM, str(self.held)]
+            process_ids = job_tree._process_ids
+
+            def with_phantom(job: int) -> list[int]:
+                return [*process_ids(job), PHANTOM_PID]
+
+            for error in (ACCESS_DENIED, NOT_ENOUGH_QUOTA):
+                with self.subTest(error=error):
+                    with (
+                        mock.patch.object(job_tree, "_kernel32", return_value=UnopenableKernel(error)),
+                        mock.patch.object(job_tree, "_process_ids", side_effect=with_phantom),
+                        mock.patch.object(job_tree, "KILL_WAIT_SECONDS", 1),
+                        self.assertRaisesRegex(
+                            TreeNotEnded,
+                            rf"^The job's processes may still run: process \d+, which could not be watched "
+                            rf"\(OpenProcess failed: .+ \(Windows error {error}\)\), was still in the job 1 "
+                            "seconds on$",
+                        ),
+                    ):
+                        run_bounded(command, STARTUP_SECONDS, tree=SignalledTree(self.ready))
+                    self.assert_released()
+                    self.ready.unlink()
+
+        def test_a_process_it_may_not_open_is_reported_when_only_closing_the_job_ended_it(self) -> None:
+            command = [sys.executable, "-c", LAUNCHER_PROGRAM, str(self.held)]
+            with (
+                mock.patch.object(
+                    job_tree, "_kernel32", return_value=UnopenableKernel(ACCESS_DENIED, "TerminateJobObject")
+                ),
+                self.assertRaisesRegex(
+                    TreeNotEnded,
+                    r"^The job's processes may still run: process \d+ could not be watched \(OpenProcess failed: .+"
+                    r"\(Windows error 5\)\), and the job that could tell was closed$",
+                ),
+            ):
+                run_bounded(command, STARTUP_SECONDS, tree=SignalledTree(self.ready))
+            self.assert_released()
+
+        def test_a_process_windows_says_is_gone_is_not_waited_for(self) -> None:
+            command = [sys.executable, "-c", LAUNCHER_PROGRAM, str(self.held)]
+            kernel = UnopenableKernel(INVALID_PARAMETER)
+            with (
+                mock.patch.object(job_tree, "_kernel32", return_value=kernel),
+                mock.patch.object(job_tree, "_until_unlisted", wraps=job_tree._until_unlisted) as waited,
+            ):
+                finished = run_bounded(command, STARTUP_SECONDS, tree=SignalledTree(self.ready))
+            self.assertEqual(0, finished.returncode)
+            self.assertTrue(kernel.refused, "the job's processes were refused to their watcher")
+            self.assertEqual({}, waited.call_args.args[1], "no process was left to wait for")
             self.assert_released()
 
         def test_a_process_has_ended_only_once_windows_has_let_go_of_it(self) -> None:
