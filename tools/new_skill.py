@@ -93,8 +93,8 @@ def skill_markdown(
 
 
 def shell_grant_problems(allowed_tools: list[str]) -> list[str]:
-    """Why each Bash or PowerShell entry grants every command, leaves one shell prompting, or leaves a path open
-    before its *; empty when none."""
+    """Why each Bash or PowerShell entry grants every command, leaves one shell prompting, leaves a path open before
+    its *, or names no script before it; empty when none."""
     found = []
     for line in skill_inventory.grant_findings(skill_inventory.allowed_entries(allowed_tools), []):
         kind, entry = line.split(" ", 1)
@@ -106,6 +106,11 @@ def shell_grant_problems(allowed_tools: list[str]) -> list[str]:
             found.append(
                 f"allowed-tools entry {entry} leaves a path open before its *, so it matches every script through "
                 "..; grant each script by name, ending at its closing quote"
+            )
+        elif kind == "NO_SCRIPT_ALLOWED":
+            found.append(
+                f"allowed-tools entry {entry} names no script or git or gh subcommand before its *, so it pre-approves "
+                "any code the * supplies; grant each script by name"
             )
         else:
             twin = "PowerShell" if entry.startswith("Bash") else "Bash"

@@ -24,6 +24,7 @@ from validation_support import (
     all_skill_directories,
     fence_body_line,
     fence_holders,
+    find_fences,
     is_executable_script,
     is_test_script,
     path_order,
@@ -33,7 +34,7 @@ from validation_support import (
     skills_by_name,
 )
 
-from deployer import platform_support, render
+from deployer import platform_support
 
 MAXIMUM_INLINE_EXECUTABLE_LINES = 5
 
@@ -62,7 +63,7 @@ class ExecutableFence:
 
 def find_executable_fences(lines: list[str]) -> list[ExecutableFence]:
     fences: list[ExecutableFence] = []
-    for fence in render.find_fences(lines):
+    for fence in find_fences(lines):
         if fence.language.casefold() not in EXECUTABLE_FENCE_LANGUAGES:
             continue
         if fence.closer is None:
