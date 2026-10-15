@@ -1,4 +1,4 @@
-"""Coordinate parallel sessions: one hub checkout that stays on main, one worktree per task under .claude/worktrees.
+﻿"""Coordinate parallel sessions: one hub checkout that stays on main, one worktree per task under .claude/worktrees.
 
 Usage:
   python tools/worktrees.py new <kind> <name>   create .claude/worktrees/<kind>-<name> on branch <kind>/<name>
@@ -1941,7 +1941,7 @@ def row(hub: Path, entry: dict[str, str]) -> Row:
     dirty = len(git(path, "status", "--porcelain").stdout.splitlines())
     if same_path(path, hub):
         problems = [*(["off main"] if branch != MAIN else []), *(["dirty"] if dirty else [])]
-        state = " · ".join(["hub", *problems])
+        state = " Â· ".join(["hub", *problems])
     else:
         state = "no commits" if ahead == "0" else "in progress"
     return Row(branch, state, ahead, behind, str(dirty), shown)
@@ -1979,3 +1979,4 @@ def main(arguments: list[str]) -> int:
 
 if __name__ == "__main__":
     run_main(lambda: main(sys.argv[1:]), errors="backslashreplace")
+
