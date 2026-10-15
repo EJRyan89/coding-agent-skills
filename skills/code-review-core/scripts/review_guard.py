@@ -4,9 +4,15 @@ A reviewer's prompt told it never to read the local checkout, and reviewers did 
 working copy and the whole workspace, which may hold another branch's code. This hook enforces the boundary the
 prompt describes. It reads the hook event as JSON on stdin and prints a deny decision for any call outside it:
 
+- Every path a call names is held, by its text alone and before anything resolves it, to a local absolute path under
+  the temporary directory, where prepare makes every run, or this skill's folder. A network or device path, or any
+  other path, is denied unresolved, because resolving a path to a host that does not answer can block past the hook's
+  timeout, and Claude Code lets a call through when its hook times out.
 - First, one Read of a role's prompt file, which binds the reviewer to that role and its run: its claim. The task
   names the prompt, and nothing else may be read before it, so no content from the pull request can choose the
-  role. Every other call is denied until then.
+  role. The run is the outermost `code-review-run-*` folder holding `run.json` under the temporary directory, the
+  one prepare made; a snapshot can hold a folder of that shape, so a run folder inside another run's tree is denied.
+  Every other call is denied until then.
 - Read, Grep, and Glob only under the claimed review run folder (a `code-review-run-*` directory holding
   `run.json`: the snapshot, the trusted reviewer files, and the work files) or this skill's `references` folder.
   Nested source folders cannot redefine the claimed root. Grep and Glob must name their folder explicitly, because
@@ -79,12 +85,27 @@ SOURCE_COMMAND = re.compile(
 SOURCE_OPTIONS = {"source-file": "path", "source-search": "pattern"}
 SOURCE_SCRIPT = SCRIPT_DIRECTORY / "review_source.py"
 SHELL_DRIVE = re.compile(r"^/([A-Za-z])(/|$)")
+# A normalized path that starts with two separators names a host or a device: `\\host\share`, `//host/share`, `\\?\`,
+# and `\\.\` on Windows, and `//host` where POSIX leaves its meaning to the system.
+NETWORK_OR_DEVICE = re.compile(r"^[\\/]{2}")
 AGENT_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 CLAIMS = Path(tempfile.gettempdir()) / "code-review-reviewer-claims"
 FIRST = "read the prompt file your task names first"
 ROLE_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 
 Claim = tuple[Path, dict[str, str]]
+
+
+def _spellings(root: Path) -> tuple[Path, ...]:
+    """A trusted local folder as it is given and as it resolves, each in the case the file system compares, so a path
+    in either spelling is held to it by its text."""
+    return tuple(Path(os.path.normcase(os.path.normpath(form))) for form in (root.absolute(), root.resolve()))
+
+
+# The folders every path the guard accepts lies under: the temporary directory, where prepare makes every run, and
+# this skill's folder, which holds the references and the scripts the allowed commands run.
+TEMPORARY_ROOTS = _spellings(Path(tempfile.gettempdir()))
+LOCAL_ROOTS = (*TEMPORARY_ROOTS, *_spellings(Path(__file__).absolute().parents[1]))
 
 
 class Denied(Exception):
@@ -135,7 +156,23 @@ def _path(value: Any, cwd: Path) -> Path:
     path = Path(text)
     if not path.is_absolute():
         path = cwd / path
+    return _resolve_local(Path(os.path.normpath(path)))
+
+
+def _resolve_local(path: Path) -> Path:
+    """Resolve a normalized path only once its text shows it local and under `LOCAL_ROOTS`. Resolving a network path
+    to a host that does not answer blocks for longer than the hook's timeout, and Claude Code lets a call through when
+    its hook times out, so such a path is denied by its text alone."""
+    if NETWORK_OR_DEVICE.match(str(path)):
+        raise Denied(f"give a local path, not a network or device path; {path} is one")
+    if not any(_lexically_inside(path, root) for root in LOCAL_ROOTS):
+        raise Denied(f"give an absolute path inside your review run folder; {path} is outside every folder it may use")
     return Path(os.path.normpath(path.resolve(strict=False)))
+
+
+def _lexically_inside(path: Path, root: Path) -> bool:
+    """Whether a normalized path lies in a root `_spellings` gave, by text alone."""
+    return Path(os.path.normcase(str(path))).is_relative_to(root)
 
 
 def _same(first: Path, second: Path) -> bool:
@@ -148,11 +185,19 @@ def _inside(path: Path, root: Path) -> bool:
 
 
 def run_root(path: Path) -> Path | None:
-    """Discover a run for a first prompt read or an explicit command root, never for a claimed source read."""
-    for candidate in (path, *path.parents):
-        if candidate.name.startswith(RUN_PREFIX) and (candidate / RUN_FILE).is_file():
-            return candidate
-    return None
+    """Discover a run for a first prompt read or an explicit command root, never for a claimed source read: the
+    outermost `code-review-run-*` folder holding `run.json` under the temporary directory, which prepare made. A pull
+    request's snapshot can hold a folder of that shape, so one inside another run's tree is denied, never a run."""
+    runs = [
+        candidate
+        for candidate in (path, *path.parents)
+        if candidate.name.startswith(RUN_PREFIX)
+        and any(_lexically_inside(candidate, root) for root in TEMPORARY_ROOTS)
+        and (candidate / RUN_FILE).is_file()
+    ]
+    if len(runs) > 1:
+        raise Denied(f"{runs[0]} sits inside the review run {runs[-1]}, so it is not a review run")
+    return runs[-1] if runs else None
 
 
 def _roles(run: Path) -> list[dict[str, str]]:
