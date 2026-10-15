@@ -32,7 +32,7 @@
       "id": "deployer",
       "category": "Deployer",
       "profile": ".claude/skills/review-repository/references/deployer.md",
-      "include": ["^deployer/", "^deploy\\.py$"],
+      "include": ["(?i)^deployer/", "(?i)^deploy\\.py$"],
       "exclude": [],
       "resources": [],
       "when": null
@@ -42,22 +42,37 @@
       "category": "Skill contract",
       "profile": ".claude/skills/review-repository/references/skill-contract.md",
       "include": [
-        "^skills/[^/]+/SKILL\\.md$",
-        "^agents/",
-        "^deploy-meta/",
-        "^source\\.json$",
-        "^\\.claude/skills/[^/]+/SKILL\\.md$",
-        "^\\.agents/skills/"
+        "(?i)^skills/[^/]+/SKILL\\.md$",
+        "(?i)^agents/",
+        "(?i)^deploy-meta/",
+        "(?i)^source\\.json$",
+        "(?i)^\\.claude/skills/[^/]+/SKILL\\.md$",
+        "(?i)^\\.agents/skills/"
       ],
       "exclude": [],
       "resources": [],
       "when": null
     },
     {
+      "id": "skill-scripts",
+      "category": "Skill contract",
+      "profile": ".claude/skills/review-repository/references/skill-contract.md",
+      "include": ["(?i)^skills/[^/]+/scripts/", "(?i)^\\.claude/skills/[^/]+/scripts/"],
+      "exclude": ["(?i)/(?:test_[^/]*|test-[^/]*|[^/]*_test(?:\\.[^/]*)?|[^/]*-test(?:\\.[^/]*)?|[^/]*\\.test\\.[^/]*)$"],
+      "resources": [],
+      "when": null,
+      "shares_files": true
+    },
+    {
       "id": "validation-policy",
       "category": "Validation",
       "profile": ".claude/skills/review-repository/references/validation-policy.md",
-      "include": ["^tests/validation/", "^tests/run_validation\\.py$", "^tests/run_shard\\.py$", "^pyproject\\.toml$"],
+      "include": [
+        "(?i)^tests/validation/",
+        "(?i)^tests/run_validation\\.py$",
+        "(?i)^tests/run_shard\\.py$",
+        "(?i)^pyproject\\.toml$"
+      ],
       "exclude": [],
       "resources": ["CLAUDE.md"],
       "when": null
@@ -67,10 +82,11 @@
       "category": "Trust boundary",
       "profile": ".claude/skills/review-repository/references/trust-boundary.md",
       "include": [
-        "^docs/code-review-operations-contract\\.md$",
-        "^skills/code-review-core/scripts/review_(?:analyzers|documents|github|guard|hosts|pipeline|process|records|runtime|source|specialists)\\.py$",
-        "^skills/code-review-core/scripts/test_adversarial_inputs\\.py$",
-        "^skills/skill-core/scripts/(?:bounded_process|executable_locator|git_client|github_client|job_tree|markdown_literal|pdf_tool|process_identity|typed_fields|xml_reader)\\.py$"
+        "(?i)^docs/code-review-operations-contract\\.md$",
+        "(?i)^skills/code-review-core/scripts/review_(?:analyzers|canary|documents|github|guard|hosts|pipeline|process|records|reviewers|runtime|source|specialists)\\.py$",
+        "(?i)^skills/code-review-core/scripts/test_adversarial_inputs\\.py$",
+        "(?i)^skills/review-document/scripts/review_document\\.py$",
+        "(?i)^skills/skill-core/scripts/(?:bounded_process|diff_paths|executable_locator|flat_text|git_client|github_client|github_remote|job_tree|markdown_literal|pdf_tool|process_identity|typed_fields|xml_reader)\\.py$"
       ],
       "exclude": [],
       "resources": ["docs/code-review-operations-contract.md"],
@@ -80,7 +96,12 @@
       "id": "documentation",
       "category": "Documentation",
       "profile": ".claude/skills/review-repository/references/documentation.md",
-      "include": ["^docs/.+\\.md$", "^[^/]+\\.md$", "^\\.github/pull_request_template\\.md$", "^\\.github/ISSUE_TEMPLATE/"],
+      "include": [
+        "(?i)^docs/.+\\.md$",
+        "(?i)^[^/]+\\.md$",
+        "(?i)^\\.github/pull_request_template\\.md$",
+        "(?i)^\\.github/ISSUE_TEMPLATE/"
+      ],
       "exclude": [],
       "resources": ["docs/implementing-changes.md"],
       "when": null
@@ -89,7 +110,7 @@
       "id": "documentation-drift",
       "category": "Documentation",
       "profile": ".claude/skills/review-repository/references/documentation-drift.md",
-      "include": ["\\.(?:py|ps1|sh)$"],
+      "include": ["(?i)\\.(?:py|ps1|sh)$"],
       "exclude": [],
       "resources": [],
       "when": "doc-passages",
@@ -99,7 +120,7 @@
       "id": "untested-changes",
       "category": "Test coverage",
       "profile": ".claude/skills/review-repository/references/untested-changes.md",
-      "include": ["\\.(?:py|ps1|sh)$"],
+      "include": ["(?i)\\.(?:py|ps1|sh)$"],
       "exclude": [],
       "resources": [],
       "when": "untested-functions",
@@ -110,12 +131,12 @@
       "category": "Upgrade notes",
       "profile": ".claude/skills/review-repository/references/upgrade-notes.md",
       "include": [
-        "^deployer/(?:manifest|tools|arguments)\\.py$",
-        "^skills/skill-core/scripts/pdf_tool\\.py$",
-        "^deploy-meta/[^/]+\\.json$",
-        "^skills/code-review-core/references/[^/]+\\.schema\\.json$",
-        "^docs/code-review-operations-contract\\.md$",
-        "^skills/[^/]+/SKILL\\.md$"
+        "(?i)^deployer/(?:manifest|tools|arguments)\\.py$",
+        "(?i)^skills/skill-core/scripts/pdf_tool\\.py$",
+        "(?i)^deploy-meta/[^/]+\\.json$",
+        "(?i)^skills/code-review-core/references/[^/]+\\.schema\\.json$",
+        "(?i)^docs/code-review-operations-contract\\.md$",
+        "(?i)^skills/[^/]+/SKILL\\.md$"
       ],
       "exclude": [],
       "resources": ["docs/releasing.md"],
@@ -126,12 +147,13 @@
     "doc-passages": {
       "script": ".claude/skills/review-repository/scripts/doc_passages.py",
       "reads": [
+        "*.md",
         "docs/**/*.md",
-        "README.md",
-        "CONTRIBUTING.md",
-        "CLAUDE.md",
+        "agents/*.md",
         "skills/*/SKILL.md",
-        ".claude/skills/*/SKILL.md"
+        "skills/*/references/**/*.md",
+        ".claude/skills/*/SKILL.md",
+        ".claude/skills/*/references/**/*.md"
       ]
     },
     "untested-functions": {

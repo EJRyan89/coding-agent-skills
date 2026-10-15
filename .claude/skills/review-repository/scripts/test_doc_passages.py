@@ -134,6 +134,28 @@ class ConditionTests(unittest.TestCase):
         self.assertIn("PASSAGE CLAUDE.md:1 names Sweeper (class in skills/demo/scripts/sweep.py)", written)
         self.assertIn("PASSAGE skills/demo/SKILL.md:4 names sweep.py (script in skills/demo/scripts/sweep.py)", written)
 
+    def test_every_document_an_agent_or_a_user_acts_on_is_searched(self) -> None:
+        # The top-level Markdown beside the README, the agent definitions, and the references a skill or a repository
+        # skill reads, at any depth below them, each name scripts as the guides do.
+        searched = [
+            "SECURITY.md",
+            "AGENTS.md",
+            "agents/helper.md",
+            "skills/demo/references/policy.md",
+            "skills/demo/references/nested/policy.md",
+            ".claude/skills/reviewer/references/brief.md",
+        ]
+        for path in searched:
+            self.document(path, "# Notes\n\nRun `python -B tools/sweep.py` daily.\n")
+        self.document("skills/demo/notes.md", "Run `python -B tools/sweep.py` daily.\n")
+        diff = changed("tools/sweep.py", ("", ["-DAYS = 30", "+DAYS = 7"]))
+        code, out, written = self.run_condition(diff)
+        self.assertEqual((0, f"PASSAGES {len(searched)} given={len(searched)}\n"), (code, out))
+        self.assertEqual(
+            sorted(f"{path}:3" for path in searched),
+            sorted(line.split(" ", 2)[1] for line in written.splitlines() if line.startswith("PASSAGE ")),
+        )
+
     def test_a_change_nothing_documents_closes_the_route_and_writes_nothing(self) -> None:
         self.document("docs/guide.md", "Run `python -B tools/other.py` first.\n")
         # A release's notes record what it shipped, so a name there is history, not a passage to keep current.

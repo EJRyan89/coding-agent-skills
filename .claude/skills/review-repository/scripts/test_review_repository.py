@@ -20,6 +20,7 @@ from skill_roots import sibling_scripts
 sys.path.insert(0, str(sibling_scripts("code-review-core")))
 
 import conditions
+import doc_passages
 import untested_functions
 from git_client import GitClient
 from git_test_base import GitTestCase
@@ -34,6 +35,60 @@ UNTESTED = f"{SKILL}/scripts/untested_functions.py"
 SKILL_CORE = "skills/skill-core/scripts"
 SCENARIOS = REPOSITORY / "tests" / "fixtures" / "skill-evals" / "review-repository"
 MANIFEST = validate_adapter_manifest(json.loads((REPOSITORY / MANIFEST_PATH).read_text(encoding="utf-8")))
+PIPELINE_SCRIPTS = "skills/code-review-core/scripts"
+# The trust-boundary route's modules by folder, as the route names them.
+TRUST_BOUNDARY_PIPELINE = (
+    "analyzers",
+    "canary",
+    "documents",
+    "github",
+    "guard",
+    "hosts",
+    "pipeline",
+    "process",
+    "records",
+    "reviewers",
+    "runtime",
+    "source",
+    "specialists",
+)
+TRUST_BOUNDARY_SKILL_CORE = (
+    "bounded_process",
+    "diff_paths",
+    "executable_locator",
+    "flat_text",
+    "git_client",
+    "github_client",
+    "github_remote",
+    "job_tree",
+    "markdown_literal",
+    "pdf_tool",
+    "process_identity",
+    "typed_fields",
+    "xml_reader",
+)
+TRUST_BOUNDARY_MODULES = [
+    *(f"{PIPELINE_SCRIPTS}/review_{name}.py" for name in TRUST_BOUNDARY_PIPELINE),
+    "skills/review-document/scripts/review_document.py",
+    *(f"{SKILL_CORE}/{name}.py" for name in TRUST_BOUNDARY_SKILL_CORE),
+]
+# The repository modules a trust-boundary module imports that the boundary does not depend on, each with its reason.
+OUTSIDE_THE_BOUNDARY = {
+    f"{PIPELINE_SCRIPTS}/review_archive.py": "allocates paths in the review archive, which the threat model trusts",
+    f"{PIPELINE_SCRIPTS}/review_config.py": "reads the code-review configuration, which the threat model trusts",
+    f"{PIPELINE_SCRIPTS}/review_flags.py": "keeps the user's flag store, which no author's content reaches",
+    f"{PIPELINE_SCRIPTS}/review_io.py": "writes JSON atomically and holds locks where the routed modules decide",
+    f"{PIPELINE_SCRIPTS}/review_operation.py": "parses the user's pull request selectors for the producer's workflow",
+    f"{PIPELINE_SCRIPTS}/review_state.py": "keeps the per-repository review state, which the threat model trusts",
+    f"{SKILL_CORE}/console.py": "sets each entry point's output encoding; its FAILED line flattens through flat_text",
+    f"{SKILL_CORE}/frontmatter.py": "reads the frontmatter of a reviewer skill from the trusted commit",
+    f"{SKILL_CORE}/skill_roots.py": "finds a sibling skill's scripts folder in the checkout or the deployed home",
+}
+# The scripts the threat model names that another route holds, each with its reason.
+NAMED_ELSEWHERE = {
+    "deploy.py": "the deployer route; the threat model names `deploy.py check`, which reports pdf_tool.py's floors",
+    "review_config.py": "named as a script a grant must not reach, which the skill-scripts route reviews",
+}
 
 
 def tracked_files() -> list[str]:
@@ -46,6 +101,15 @@ def tracked_files() -> list[str]:
         encoding="utf-8",
     )
     return [path for path in listed.stdout.split("\0") if path]
+
+
+def reached(paths: list[str]) -> dict[str, set[str]]:
+    """The specialists each path reaches, with every condition open."""
+    found: dict[str, set[str]] = {path: set() for path in paths}
+    for specialist, matched in route(MANIFEST, paths, lambda name: True).items():
+        for path in matched:
+            found[path].add(specialist)
+    return found
 
 
 class ManifestTests(GitTestCase):
@@ -70,107 +134,30 @@ class ManifestTests(GitTestCase):
         self.assertNotIn("Unreleased", profile)
 
     def test_each_file_reaches_the_reviewers_its_route_names(self) -> None:
+        script = {"documentation-drift", "untested-changes"}
+        skill_script = {"skill-scripts", *script}
+        trusted = {"trust-boundary", *skill_script}
         expected = {
-            "deployer/plan.py": {"deployer", "documentation-drift", "untested-changes"},
-            "deploy.py": {"deployer", "documentation-drift", "untested-changes"},
-            "deployer/manifest.py": {"deployer", "upgrade-notes", "documentation-drift", "untested-changes"},
-            "deployer/arguments.py": {"deployer", "upgrade-notes", "documentation-drift", "untested-changes"},
+            "deployer/plan.py": {"deployer", *script},
+            "deploy.py": {"deployer", *script},
+            "deployer/manifest.py": {"deployer", "upgrade-notes", *script},
+            "deployer/arguments.py": {"deployer", "upgrade-notes", *script},
             "skills/repo-cleanup/SKILL.md": {"skill-contract", "upgrade-notes"},
+            "skills/repo-cleanup/scripts/repo_cleanup.py": skill_script,
+            "skills/repo-cleanup/scripts/test_repo_cleanup.py": script,
+            f"{SKILL}/scripts/doc_passages.py": skill_script,
             "deploy-meta/review-prs.json": {"skill-contract", "upgrade-notes"},
             "agents/code-review-reviewer.md": {"skill-contract"},
             "source.json": {"skill-contract"},
             ".claude/skills/audit-repository/SKILL.md": {"skill-contract"},
             ".agents/skills/audit-repository/SKILL.md": {"skill-contract"},
-            "tests/validation/skill_scripts.py": {"validation-policy", "documentation-drift", "untested-changes"},
-            "tests/run_validation.py": {"validation-policy", "documentation-drift", "untested-changes"},
+            "tests/validation/skill_scripts.py": {"validation-policy", *script},
+            "tests/run_validation.py": {"validation-policy", *script},
             "pyproject.toml": {"validation-policy"},
             "docs/code-review-operations-contract.md": {"trust-boundary", "documentation", "upgrade-notes"},
-            "skills/code-review-core/scripts/review_documents.py": {
-                "trust-boundary",
-                "documentation-drift",
-                "untested-changes",
-            },
-            "skills/code-review-core/scripts/review_guard.py": {
-                "trust-boundary",
-                "documentation-drift",
-                "untested-changes",
-            },
-            "skills/code-review-core/scripts/review_source.py": {
-                "trust-boundary",
-                "documentation-drift",
-                "untested-changes",
-            },
-            "skills/code-review-core/scripts/review_pipeline.py": {
-                "trust-boundary",
-                "documentation-drift",
-                "untested-changes",
-            },
-            "skills/code-review-core/scripts/review_specialists.py": {
-                "trust-boundary",
-                "documentation-drift",
-                "untested-changes",
-            },
-            "skills/code-review-core/scripts/test_adversarial_inputs.py": {
-                "trust-boundary",
-                "documentation-drift",
-                "untested-changes",
-            },
-            "skills/code-review-core/scripts/review_analyzers.py": {
-                "trust-boundary",
-                "documentation-drift",
-                "untested-changes",
-            },
-            "skills/code-review-core/scripts/review_github.py": {
-                "trust-boundary",
-                "documentation-drift",
-                "untested-changes",
-            },
-            "skills/code-review-core/scripts/review_hosts.py": {
-                "trust-boundary",
-                "documentation-drift",
-                "untested-changes",
-            },
-            "skills/code-review-core/scripts/review_process.py": {
-                "trust-boundary",
-                "documentation-drift",
-                "untested-changes",
-            },
-            "skills/code-review-core/scripts/review_records.py": {
-                "trust-boundary",
-                "documentation-drift",
-                "untested-changes",
-            },
-            "skills/skill-core/scripts/bounded_process.py": {
-                "trust-boundary",
-                "documentation-drift",
-                "untested-changes",
-            },
-            "skills/skill-core/scripts/executable_locator.py": {
-                "trust-boundary",
-                "documentation-drift",
-                "untested-changes",
-            },
-            "skills/skill-core/scripts/git_client.py": {"trust-boundary", "documentation-drift", "untested-changes"},
-            "skills/skill-core/scripts/github_client.py": {"trust-boundary", "documentation-drift", "untested-changes"},
-            "skills/skill-core/scripts/job_tree.py": {"trust-boundary", "documentation-drift", "untested-changes"},
-            "skills/skill-core/scripts/markdown_literal.py": {
-                "trust-boundary",
-                "documentation-drift",
-                "untested-changes",
-            },
-            "skills/skill-core/scripts/process_identity.py": {
-                "trust-boundary",
-                "documentation-drift",
-                "untested-changes",
-            },
-            "skills/skill-core/scripts/pdf_tool.py": {
-                "trust-boundary",
-                "upgrade-notes",
-                "documentation-drift",
-                "untested-changes",
-            },
-            "skills/skill-core/scripts/typed_fields.py": {"trust-boundary", "documentation-drift", "untested-changes"},
-            "skills/skill-core/scripts/xml_reader.py": {"trust-boundary", "documentation-drift", "untested-changes"},
+            **{path: trusted for path in TRUST_BOUNDARY_MODULES},
+            f"{SKILL_CORE}/pdf_tool.py": {"upgrade-notes", *trusted},
+            f"{PIPELINE_SCRIPTS}/test_adversarial_inputs.py": {"trust-boundary", *script},
             "skills/code-review-core/references/review-adapter.schema.json": {"upgrade-notes"},
             "docs/upgrade-notes.md": {"documentation"},
             "docs/design.md": {"documentation"},
@@ -179,12 +166,53 @@ class ManifestTests(GitTestCase):
             ".github/pull_request_template.md": {"documentation"},
             ".github/ISSUE_TEMPLATE/bug.md": {"documentation"},
         }
-        routes = route(MANIFEST, list(expected), lambda name: True)
-        reached: dict[str, set[str]] = {path: set() for path in expected}
-        for specialist, paths in routes.items():
-            for path in paths:
-                reached[path].add(specialist)
-        self.assertEqual(expected, reached)
+        self.assertEqual(expected, reached(list(expected)))
+
+    def test_a_path_reaches_the_same_reviewers_however_its_folders_are_cased(self) -> None:
+        # A checkout on a case-insensitive file system puts `Skills/<name>/SKILL.md` in the skills folder and
+        # `Deployer/<module>.py` among the deployer's modules, so each reaches the reviewer its folder has.
+        paths = [
+            "skills/repo-cleanup/SKILL.md",
+            "skills/repo-cleanup/scripts/repo_cleanup.py",
+            "deployer/plan.py",
+            "source.json",
+            "docs/design.md",
+            ".claude/skills/audit-repository/SKILL.md",
+            f"{SKILL_CORE}/bounded_process.py",
+            f"{PIPELINE_SCRIPTS}/test_adversarial_inputs.py",
+        ]
+        for path in paths:
+            for variant in (path[:1].upper() + path[1:], path.upper(), path.swapcase()):
+                with self.subTest(variant=variant):
+                    self.assertEqual(reached([path])[path], reached([variant])[variant])
+                    self.assertEqual(len(uncovered(MANIFEST, [path])), len(uncovered(MANIFEST, [variant])))
+
+    def test_every_pattern_matches_without_regard_to_case(self) -> None:
+        for specialist in MANIFEST["specialists"]:
+            for pattern in [*specialist["include"], *specialist["exclude"]]:
+                with self.subTest(specialist=specialist["id"], pattern=pattern):
+                    self.assertTrue(pattern.startswith("(?i)"))
+
+    def test_every_script_a_skill_runs_reaches_the_grant_reviewer_beside_its_other_reviewers(self) -> None:
+        # A change to what a granted script runs leaves its grant pre-approved, so the reviewer briefed on grants
+        # reads it, sharing it with the reviewer it would have without that route. A suite runs nothing a grant
+        # approves.
+        entry = next(item for item in MANIFEST["specialists"] if item["id"] == "skill-scripts")
+        self.assertEqual(
+            (f"{SKILL}/references/skill-contract.md", "Skill contract", None, True),
+            (entry["profile"], entry["category"], entry["when"], entry.get("shares_files")),
+        )
+        scripts = [
+            path
+            for path in tracked_files()
+            if re.match(r"(?:\.claude/)?skills/[^/]+/scripts/", path) and path.endswith(conditions.SCRIPT_SUFFIXES)
+        ]
+        self.assertIn("skills/repo-cleanup/scripts/repo_cleanup.py", scripts)
+        self.assertIn(f"{SKILL}/scripts/untested_functions.py", scripts)
+        routed = set(route(MANIFEST, scripts, lambda name: True)["skill-scripts"])
+        self.assertEqual(
+            [path for path in scripts if not conditions.is_suite(path)], [p for p in scripts if p in routed]
+        )
 
     def test_entry_validation_and_reviewer_judgment_are_distinct_on_both_surfaces(self) -> None:
         for name in ("SKILL.md", "references/upgrade-notes.md"):
@@ -211,7 +239,7 @@ class ManifestTests(GitTestCase):
         others = [
             "tools/worktrees.py",
             "skills/repo-cleanup/scripts/repo_cleanup.py",
-            "skills/code-review-core/scripts/review_canary.py",
+            "skills/code-review-core/scripts/review_archive.py",
             "skills/code-review-core/scripts/test_review_pipeline.py",
             "tests/deployer/test_plan.py",
             "tests/tools/test_skill_evals.py",
@@ -235,42 +263,64 @@ class ManifestTests(GitTestCase):
     def test_every_trust_boundary_script_the_route_names_is_in_the_repository(self) -> None:
         # A rename would leave the route matching nothing, and the specialist would stop seeing the file.
         files = set(tracked_files())
-        named = [
-            "skills/code-review-core/scripts/review_" + name + ".py"
-            for name in (
-                "analyzers",
-                "documents",
-                "github",
-                "guard",
-                "hosts",
-                "pipeline",
-                "process",
-                "records",
-                "runtime",
-                "source",
-                "specialists",
-            )
-        ] + [
-            "skills/skill-core/scripts/" + name + ".py"
-            for name in (
-                "bounded_process",
-                "executable_locator",
-                "git_client",
-                "github_client",
-                "job_tree",
-                "markdown_literal",
-                "pdf_tool",
-                "process_identity",
-                "typed_fields",
-                "xml_reader",
-            )
-        ]
-        trust = next(item for item in MANIFEST["specialists"] if item["id"] == "trust-boundary")
-        patterns = [re.compile(pattern) for pattern in trust["include"]]
-        for path in named:
+        for path in TRUST_BOUNDARY_MODULES:
             with self.subTest(path=path):
                 self.assertIn(path, files)
-                self.assertTrue(any(pattern.search(path) for pattern in patterns))
+                self.assertIn("trust-boundary", reached([path])[path])
+
+    def test_every_module_a_trust_boundary_module_imports_is_routed_or_named_outside_the_boundary(self) -> None:
+        # A module the boundary's code imports carries the boundary with it, as the decoder of an author's diff
+        # paths and the check of a checkout's origin do, so a new one reaches the trust-boundary reviewer or is named
+        # here with the reason the boundary does not depend on it.
+        files = set(tracked_files())
+        routed = {
+            path
+            for path in files
+            if path.endswith(".py") and not conditions.is_suite(path) and "trust-boundary" in reached([path])[path]
+        }
+        imported: dict[str, set[str]] = {}
+        for module in sorted(routed):
+            folders = {module.rsplit("/", 1)[0], SKILL_CORE, PIPELINE_SCRIPTS}
+            for node in ast.walk(ast.parse((REPOSITORY / module).read_text(encoding="utf-8"))):
+                names = (
+                    [alias.name for alias in node.names]
+                    if isinstance(node, ast.Import)
+                    else [node.module or ""]
+                    if isinstance(node, ast.ImportFrom) and node.level == 0
+                    else []
+                )
+                for name in names:
+                    for folder in folders:
+                        path = f"{folder}/{name.split('.')[0]}.py"
+                        if path in files:
+                            imported.setdefault(path, set()).add(module)
+        self.assertIn(f"{SKILL_CORE}/diff_paths.py", imported)
+        self.assertIn(f"{SKILL_CORE}/github_remote.py", imported)
+        self.assertEqual(
+            {},
+            {
+                path: sorted(importers)
+                for path, importers in imported.items()
+                if path not in routed and path not in OUTSIDE_THE_BOUNDARY
+            },
+        )
+        self.assertEqual([], [path for path in OUTSIDE_THE_BOUNDARY if path not in imported or path in routed])
+
+    def test_every_script_the_threat_model_names_reaches_the_trust_boundary_reviewer(self) -> None:
+        # The threat model states the boundary row by row, so a script a row names, such as review-document's, is
+        # one the trust-boundary reviewer holds to its row, unless another route holds it for the reason given.
+        contract = (REPOSITORY / "docs" / "code-review-operations-contract.md").read_text(encoding="utf-8")
+        section = contract.split("\n## Threat model\n", 1)[1].split("\n## ", 1)[0]
+        named = {name for name in re.findall(r"\b([A-Za-z_]\w*\.py)\b", section) if not conditions.is_suite(name)}
+        self.assertIn("review_document.py", named)
+        self.assertLessEqual(set(NAMED_ELSEWHERE), named)
+        paths = [
+            path
+            for path in tracked_files()
+            if path.rsplit("/", 1)[-1] in named - set(NAMED_ELSEWHERE) and not path.startswith("tests/fixtures/")
+        ]
+        self.assertEqual(named - set(NAMED_ELSEWHERE), {path.rsplit("/", 1)[-1] for path in paths})
+        self.assertEqual([], [path for path in paths if "trust-boundary" not in reached([path])[path]])
 
     def test_each_profile_names_design_sections_that_exist(self) -> None:
         design = (REPOSITORY / "docs" / "design.md").read_text(encoding="utf-8")
@@ -354,19 +404,20 @@ class DocumentationDriftTests(GitTestCase):
             {
                 "category": "Documentation",
                 "profile": f"{SKILL}/references/documentation-drift.md",
-                "include": [r"\.(?:py|ps1|sh)$"],
+                "include": [r"(?i)\.(?:py|ps1|sh)$"],
                 "when": "doc-passages",
                 "shares_files": True,
             },
             {key: route_entry[key] for key in ("category", "profile", "include", "when", "shares_files")},
         )
         documents = [
+            "*.md",
             "docs/**/*.md",
-            "README.md",
-            "CONTRIBUTING.md",
-            "CLAUDE.md",
+            "agents/*.md",
             "skills/*/SKILL.md",
+            "skills/*/references/**/*.md",
             ".claude/skills/*/SKILL.md",
+            ".claude/skills/*/references/**/*.md",
         ]
         self.assertEqual({"script": CONDITION, "reads": documents}, MANIFEST["conditions"]["doc-passages"])
         script = ast.parse((REPOSITORY / CONDITION).read_text(encoding="utf-8"))
@@ -381,6 +432,23 @@ class DocumentationDriftTests(GitTestCase):
         # Sharing, it takes no script from the generic reviewer.
         self.assertIn("documentation-drift", route(MANIFEST, ["tools/worktrees.py"], lambda name: True))
         self.assertEqual(["tools/worktrees.py"], uncovered(MANIFEST, ["tools/worktrees.py"]))
+
+    def test_every_document_that_names_a_script_in_code_is_one_the_condition_searches(self) -> None:
+        # A change to a script can leave untrue any document that writes its name in code, so a document outside
+        # the searched ones fails here rather than going stale unseen. A record of the past is not searched.
+        searched = [glob_matcher(pattern) for pattern in doc_passages.DOCUMENTS]
+        script = re.compile(r"[\w.-]+\.(?:py|ps1|sh)(?![\w-])")
+        naming = []
+        for path in tracked_files():
+            if not path.lower().endswith(".md") or path.startswith("tests/fixtures/") or path in doc_passages.RECORDS:
+                continue
+            text = (REPOSITORY / path).read_text(encoding="utf-8", errors="replace")
+            if any(script.search(span) for unit in doc_passages.units(text) for _, span in unit.spans()):
+                naming.append(path)
+        self.assertIn("SECURITY.md", naming)
+        self.assertIn(f"{SKILL}/references/trust-boundary.md", naming)
+        self.assertIn("skills/audit-ai-config/references/audit-policy.md", naming)
+        self.assertEqual([], [path for path in naming if not any(matches(path) for matches in searched)])
 
     def test_each_condition_imports_only_the_standard_library_and_the_modules_the_manifest_declares(self) -> None:
         # A review materializes only the files a manifest declares, so every module of this skill or skill-core a
@@ -572,7 +640,7 @@ class UntestedChangesTests(GitTestCase):
             {
                 "category": "Test coverage",
                 "profile": f"{SKILL}/references/untested-changes.md",
-                "include": [r"\.(?:py|ps1|sh)$"],
+                "include": [r"(?i)\.(?:py|ps1|sh)$"],
                 "when": "untested-functions",
                 "shares_files": True,
             },
