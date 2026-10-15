@@ -1635,17 +1635,33 @@ class MigrationTests(DeployerTestCase):
     def test_a_migration_carries_no_request_for_a_member_installed_only_as_a_dependency_beside_a_preserved_skill(
         self,
     ) -> None:
-        # everyday's filled-in dependencies name tool, its dependency helper, and more, so tool's list is read as
+        # everyday's filled-in dependencies name tool, its dependency helper, and more, and tool's list is read as
         # recorded: helper stays a dependency, and the opt-in bundle hb that holds it stays unrequested.
+        self.assert_a_migration_carries_no_request_for_a_dependency_only_member(())
+
+    def test_a_migration_carries_no_request_for_a_member_beside_a_skill_preserved_by_the_deployment_that_installed_it(
+        self,
+    ) -> None:
+        # tool and helper are new, so everyday's filled-in dependencies name only alpha and beta and reach every skill
+        # tool's list leaves out. Setting tool's list aside would request hb, which has a member not installed.
+        self.assert_a_migration_carries_no_request_for_a_dependency_only_member(("helper", "tool"))
+
+    def assert_a_migration_carries_no_request_for_a_dependency_only_member(
+        self, installed_since: tuple[str, ...]
+    ) -> None:
+        """Deploy everyday, tool, which depends on helper, a member of the opt-in bundle hb nobody requests, and opt-in
+        bundle pack from test/old, rewrite the old entry as preserving everyday in a deployment that also installed the
+        skills installed_since names, and migrate: hb stays unrequested and --all keeps what is installed."""
         self.make_skill("everyday", "Everyday")
         self.make_skill("tool", "Tool", skill_deps=["helper"])
         self.make_skill("helper", "Helper")
         self.make_skill("mate", "Mate")
         hb = {"hb": {"members": ["helper", "mate"], "opt_in": True}}
         self.pack_from_the_old_source(hb)
-        self.rewrite_as_preserved_through_the_upgrade("everyday", "test/old")
+        self.rewrite_as_preserved_through_the_upgrade("everyday", "test/old", installed_since=installed_since)
         self.assertEqual(
-            ["alpha", "beta", "helper", "tool"], self.owned("skills", "test/old")["everyday"]["skill_deps"]
+            sorted({"alpha", "beta", "helper", "tool"} - set(installed_since)),
+            self.owned("skills", "test/old")["everyday"]["skill_deps"],
         )
         self.make_source_json(bundles={"pack": {"members": ["alpha", "beta"], "opt_in": True}, **hb})
         self.make_config()
@@ -1656,6 +1672,28 @@ class MigrationTests(DeployerTestCase):
             "Selected 3 items (5 skills):\n  pack (bundle)\n    alpha\n    beta\n  everyday\n  tool\n"
             "    helper (dependency)\n",
             ["alpha", "beta", "everyday", "helper", "tool"],
+        )
+
+    def test_a_migration_carries_a_bundle_request_beside_a_preserved_skill_whose_list_a_new_skills_list_contains(
+        self,
+    ) -> None:
+        # newer's exact list names everyday, alpha, beta, and more, and this source no longer has newer depend on
+        # alpha and beta: as for --all, both lists are set aside and kit is complete, so its request is carried.
+        self.make_skill("everyday", "Everyday")
+        self.make_skill("helper", "Helper")
+        self.make_skill("newer", "Newer", skill_deps=["alpha", "beta", "everyday", "helper"])
+        self.pack_from_the_old_source()
+        self.rewrite_as_preserved_through_the_upgrade("everyday", "test/old", installed_since=("helper", "newer"))
+        self.assertEqual(["alpha", "beta"], self.owned("skills", "test/old")["everyday"]["skill_deps"])
+        self.make_source_json(bundles={"kit": {"members": ["alpha", "beta"], "opt_in": True}})
+        self.make_skill("newer", "Newer", skill_deps=["helper"])
+        self.make_config()
+        self.deploy_ok("--migrate-from", "test/old")
+        self.assertEqual(["test/skills"], list(self.manifest()["sources"]))
+        self.assertEqual((["kit"], {"kit": ["alpha", "beta"]}, ["everyday", "helper", "newer"]), self.requests())
+        self.kept_by_all(
+            "Selected 4 items (5 skills):\n  kit (bundle)\n    alpha\n    beta\n  everyday\n  helper\n  newer\n",
+            ["alpha", "beta", "everyday", "helper", "newer"],
         )
 
     def test_a_version_7_entry_left_beside_a_migration_keeps_its_bundle_request(self) -> None:

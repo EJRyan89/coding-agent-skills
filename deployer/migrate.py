@@ -87,14 +87,14 @@ def _carry_requests(context: Context, old: str, old_entry: dict, new_entry: dict
     gives it.
     """
     src = context.source
-    requested = requested_members(context.manifest.ownership(old)) & moved
+    requested = requested_members(context.manifest.ownership(old), src) & moved
     current = context.manifest.ownership(context.source_id)
     roots = set(source.root_names(src))
     skills = set(new_entry.get("requested_skills", [])) | (requested & roots)
     bundles = set(new_entry.get("requested_bundles", []))
     members = {name: set(values) for name, values in current.requested_bundle_members.items()}
     if not members_recorded(current):
-        skills |= requested_members(current)
+        skills |= requested_members(current, src)
         members |= {bundle: set(src.bundles.get(bundle, ())) for bundle in bundles if bundle not in members}
     for bundle in {src.skill_bundle[name] for name in requested if name in src.skill_bundle}:
         bundles.add(bundle)
