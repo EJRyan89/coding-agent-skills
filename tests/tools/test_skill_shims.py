@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -32,6 +33,7 @@ class SkillShimsTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="skill-shims-test.")
         self.root = Path(self._temporary.name).resolve() / "Repo With Spaces"
+        self.write("source.json", "{}\n")
         self.write(".claude/skills/widget-check/SKILL.md", SKILL)
 
     def tearDown(self) -> None:
@@ -108,6 +110,30 @@ class SkillShimsTestCase(unittest.TestCase):
         self.write(".claude/skills/other/SKILL.md", "---\nname: other\n---\n")
         self.assertEqual([SHIM_PATH], skill_shims.write(self.root, ["widget-check"]))
         self.assertFalse((self.root / ".agents/skills/other/SKILL.md").exists())
+
+    def test_a_root_outside_a_checkout_is_refused_and_no_adapter_is_rewritten(self) -> None:
+        # A home holds .claude/skills and the adapters the deployer owns under .agents/skills, but no source.json.
+        home = self.root.parent / "Fake Home"
+        adapter = "the deployer's adapter\n"
+        for relative, text in ((".claude/skills/widget-check/SKILL.md", SKILL), (SHIM_PATH.as_posix(), adapter)):
+            (home / relative).parent.mkdir(parents=True, exist_ok=True)
+            (home / relative).write_text(text, encoding="utf-8")
+
+        def refused() -> tuple[str | int | None, str]:
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as raised:
+                skill_shims.main(["--write", "--root", str(home)])
+            return raised.exception.code, stderr.getvalue()
+
+        code, stderr = refused()
+        self.assertEqual(2, code)
+        self.assertIn(f"argument --root: {home} is not a checkout of this repository", stderr)
+        (home / "source.json").write_text("{}\n", encoding="utf-8")
+        with mock.patch.object(Path, "home", return_value=home):
+            code, stderr = refused()
+        self.assertEqual(2, code)
+        self.assertIn(f"lies in the skills directory {home / '.claude' / 'skills'}", stderr)
+        self.assertEqual(adapter, (home / SHIM_PATH).read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

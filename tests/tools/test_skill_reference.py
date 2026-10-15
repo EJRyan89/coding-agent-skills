@@ -33,6 +33,7 @@ class SkillReferenceTestCase(GitTestCase):
         self._temporary = tempfile.TemporaryDirectory(prefix="skill-reference-test.")
         self.root = Path(self._temporary.name).resolve() / "Repo With Spaces"
         (self.root / "docs").mkdir(parents=True)
+        (self.root / ".claude" / "skills").mkdir(parents=True)
         self.write_json("source.json", {"id": "test/skills", "bundles": {"suite": {"members": ["beta"]}}})
         self.add_skill(
             "alpha",
@@ -310,6 +311,16 @@ class SkillReferenceTestCase(GitTestCase):
         skill_md.write_text("---\nname: alpha\ndescription: Open.\n", encoding="utf-8")
         with self.assertRaisesRegex(skill_reference.ReferenceError, "not closed"):
             skill_reference.read_frontmatter(skill_md)
+
+    def test_a_root_outside_a_checkout_is_refused_and_the_reference_is_not_written(self) -> None:
+        # A source.json alone does not make a checkout: it also holds the repository skills under .claude/skills.
+        (self.root / ".claude" / "skills").rmdir()
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as raised:
+            skill_reference.main(["--write", "--root", str(self.root)])
+        self.assertEqual(2, raised.exception.code)
+        self.assertIn(f"argument --root: {self.root} is not a checkout of this repository", stderr.getvalue())
+        self.assertEqual(INITIAL_REFERENCE, self.reference.read_text(encoding="utf-8"))
 
     def test_the_command_exits_by_outcome(self) -> None:
         def run(*arguments: str) -> tuple[int, str, str]:
