@@ -280,9 +280,33 @@ def write_record(path: Path, entries: list[Entry]) -> None:
 
 # --- briefs ---------------------------------------------------------------------------------------
 
+# What a brief tells its reader about the paths and refs it names, each written by code_literal.
+QUOTING_NOTE = (
+    "Each path and ref in this brief is a JSON string in code formatting: unquote it before you use it, and quote it "
+    "again for the shell."
+)
+
+
+def code_literal(value: str) -> str:
+    """A path or ref a brief names, as a JSON string in a code span.
+
+    The value comes from the repository, so every character that is not printable, the line breaks U+0085, U+2028,
+    and U+2029 among them, and the backtick are written as JSON escapes: the value stays on its line, cannot open or
+    close the code span or start a heading, and a JSON parser reads it back exactly.
+    """
+    quoted = json.dumps(value, ensure_ascii=False)
+    return "`" + "".join(char if char.isprintable() and char != "`" else json_escape(char) for char in quoted) + "`"
+
+
+def json_escape(char: str) -> str:
+    """`char` as JSON's `\\uXXXX` escape, a surrogate pair for a character beyond the Basic Multilingual Plane."""
+    units = char.encode("utf-16-be", "surrogatepass")
+    return "".join(f"\\u{units[index] << 8 | units[index + 1]:04x}" for index in range(0, len(units), 2))
+
 
 def common_sections(area: Area) -> list[str]:
-    lines = ["", "## Read beside them", "", *(f"- `{path}`" for path in area.consult), "", "## Kinds of drift", ""]
+    lines = ["", "## Read beside them", "", *(f"- {code_literal(path)}" for path in area.consult)]
+    lines += ["", "## Kinds of drift", ""]
     lines += [f"- **{kind}**: {what}." for kind, what in DRIFT_KINDS]
     lines += [
         "",
@@ -312,9 +336,10 @@ def release_brief(area: Area, files: list[Change], base: str, base_commit: str, 
         "Audit one area of this repository read-only: do not edit, commit, deploy, or open issues. Report what you "
         "find.",
         "",
-        f"The release under audit is every commit from {base} ({base_commit}) to {head}. The files below are this "
-        f"area's changes in it. Read each one whole with its diff (`git diff {base_commit} {head} -- <file>`), beside "
-        "the contracts, documents, tests, and upgrade notes that describe it; "
+        f"The release under audit is every commit from {code_literal(base)} ({base_commit}) to {head}. The files below "
+        "are this area's changes in it. Read each one whole with its diff "
+        f"(`git diff {base_commit} {head} -- <file>`), beside the contracts, documents, tests, and upgrade notes that "
+        "describe it; "
         f"`git log --oneline {base_commit}..{head} -- <file>` names the pull requests that changed it. A deleted file "
         "(D) is read through its diff and whatever still refers to it.",
         "",
@@ -324,7 +349,9 @@ def release_brief(area: Area, files: list[Change], base: str, base_commit: str, 
         "",
         "## Changed files",
         "",
-        *(f"- {change.status} `{change.path}`" for change in files),
+        QUOTING_NOTE,
+        "",
+        *(f"- {change.status} {code_literal(change.path)}" for change in files),
         *common_sections(area),
     ]
     return "\n".join(lines) + "\n"
@@ -345,7 +372,9 @@ def rotation_brief(area: Area, files: list[str], head: str) -> str:
         "",
         "## Files",
         "",
-        *(f"- `{path}`" for path in files),
+        QUOTING_NOTE,
+        "",
+        *(f"- {code_literal(path)}" for path in files),
         *common_sections(area),
     ]
     return "\n".join(lines) + "\n"
