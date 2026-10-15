@@ -21,7 +21,7 @@ Some skills need more when you use them, not when you deploy them:
 | Claude Code (optional) | Running the skills from Claude Code; the deployer itself does not need it |
 | Codex CLI 0.88.0 or newer (optional) | Verifying Codex skill discovery |
 | GitHub Copilot CLI 1.0.88 or newer (optional) | Verifying Copilot skill discovery, and the bounded Copilot code-review host |
-| .NET SDK and the `dotnet-format` global tool; .NET SDK 9.0.200 or newer for a `.slnx` solution | `dotnet-format`, which checks for them and reports the install command; `dotnet-dependencies` uses the SDK, when present, for `dotnet nuget why` |
+| .NET SDK and the `dotnet-format` global tool; .NET SDK 9.0.200 or newer for a `.slnx` solution or a `.sln` of SDK-style projects, which the SDK's `dotnet format` formats, and the global tool for any other `.sln` | `dotnet-format`, which checks for them and reports the install command; `dotnet-dependencies` uses the SDK, when present, for `dotnet nuget why` |
 | `pdftotext` from Xpdf or Poppler, meeting its [provider-specific support floor](dependency-updates.md#runtime-tool-floors) (optional) | The code-review skills, to review a PDF a pull request changes; a missing, unsupported, or unidentifiable parser leaves that review `INCOMPLETE` |
 
 `python deploy.py check` and the skills find each of these tools the same way: the first on your `PATH`, else the one in WinGet's Links folder (`%LOCALAPPDATA%\Microsoft\WinGet\Links`), where WinGet puts a portable install that may not be on `PATH`; on Linux, `PATH` alone. A skill runs the tool at the path it found, so a tool `check` reports is the one the skill starts.

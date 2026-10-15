@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import sys
 import tempfile
 import unittest
+from collections.abc import Sequence
 from pathlib import Path
 from unittest import mock
 
@@ -14,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 import csharp_layout as layout
 import dotnet_solution
 from git_test_base import GitTestCase
+from run_dotnet_format import Completed, Services
 
 LINKED_FILE = "the file is a symbolic link or junction, which the script does not write through"
 
@@ -446,6 +449,40 @@ class FileTests(GitTestCase):
                 )
                 self.assertEqual((0, [["SUMMARY", "0", "0", "-"]]), (status, lines))
 
+    def test_a_file_whose_byte_order_mark_does_not_fit_its_bytes_is_unreadable_and_the_rest_are_checked(self) -> None:
+        # An editor saving one Windows-1252 character into a UTF-8 file with a byte order mark leaves this behind.
+        bad = b'\xef\xbb\xbfclass A { string s = "\xff"; }\n'
+        odd = b"\xff\xfe" + "class B { }\n".encode("utf-16-le") + b"\x00"
+        (self.root / "Bad.cs").write_bytes(bad)
+        (self.root / "Odd.cs").write_bytes(odd)
+        (self.root / "Good.cs").write_bytes(b"#region R\n\n#endregion R\n")
+        file_list = self.file_list("Good.cs", "Bad.cs", "Odd.cs")
+        status, lines = self.main("check", "--repo-root", str(self.root), "--file-list", str(file_list))
+        self.assertEqual(1, status)
+        self.assertEqual(
+            [
+                [
+                    "UNREADABLE",
+                    "Bad.cs",
+                    "it starts with a UTF-8 byte order mark, but byte 25 is not UTF-8 text (invalid start byte)",
+                ],
+                [
+                    "UNREADABLE",
+                    "Odd.cs",
+                    "it starts with a UTF-16-LE byte order mark, but byte 26 is not UTF-16-LE text (truncated data)",
+                ],
+                ["VIOLATION", "Good.cs", "3", "warning", "endregion-description"],
+                ["SUMMARY", "1", "1", "endregion-description"],
+            ],
+            [fields[:5] for fields in lines],
+        )
+        status, lines = self.main("check", "--repo-root", str(self.root), "--file-list", str(file_list), "--fix")
+        self.assertEqual(1, status, "an unreadable file is never clean")
+        self.assertEqual(["FIXED", "UNREADABLE", "UNREADABLE", "SUMMARY"], [fields[0] for fields in lines])
+        self.assertEqual(["SUMMARY", "0", "0", "-"], lines[-1])
+        self.assertEqual((bad, odd), ((self.root / "Bad.cs").read_bytes(), (self.root / "Odd.cs").read_bytes()))
+        self.assertEqual(b"#region R\n\n#endregion\n", (self.root / "Good.cs").read_bytes())
+
     def test_a_listed_file_that_does_not_exist_fails_before_any_check_or_fix(self) -> None:
         fixable = self.root / "Fixable.cs"
         original = b"#region A\n\n#endregion A\n"
@@ -576,6 +613,31 @@ SDK_PROJECT = '<Project Sdk="Microsoft.NET.Sdk"></Project>\n'
 SOLUTION = 'Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "src\\App\\App.csproj", "{1}"\r\nEndProject\r\n'
 
 
+class MSBuild:
+    """Answers `dotnet msbuild ./<project> -getItem:...` as MSBuild's evaluation would, with the items given for each
+    project by its path from the root, and none for any other, or with the one result given for every project."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.items: dict[str, dict[str, list[dict[str, str]]]] = {}
+        self.result: Completed | None = None
+        self.calls: list[tuple[list[str], Path, float]] = []
+
+    def __call__(self, arguments: Sequence[str], cwd: Path, timeout: float) -> Completed:
+        self.calls.append((list(arguments), cwd, timeout))
+        if self.result is not None:
+            return self.result
+        project = (cwd / arguments[2]).resolve().relative_to(self.root).as_posix()
+        items = {"PackageReference": [], "Analyzer": [], **self.items.get(project, {})}
+        return Completed(0, json.dumps({"Items": items}, indent=2).encode("utf-8"))
+
+    def evaluated(self) -> list[str]:
+        return [(cwd / arguments[2]).resolve().relative_to(self.root).as_posix() for arguments, cwd, _ in self.calls]
+
+
+PACKAGE_REFERENCE = {"PackageReference": [{"Identity": "Roslynator.Formatting.Analyzers", "Version": "4.12.0"}]}
+
+
 class ConfigTests(GitTestCase):
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
@@ -586,6 +648,8 @@ class ConfigTests(GitTestCase):
         (self.root / "App.sln").write_text(SOLUTION, encoding="utf-8")
         self.file_list = self.root / "files.txt"
         self.changed("src/App/Program.cs")
+        self.msbuild = MSBuild(self.root)
+        self.services = Services(run=self.msbuild, which=lambda name: name)
 
     def changed(self, *names: str) -> None:
         self.file_list.write_text("".join(f"{name}\n" for name in names), encoding="utf-8")
@@ -603,7 +667,8 @@ class ConfigTests(GitTestCase):
                     "--file-list",
                     str(self.file_list),
                     *extra,
-                ]
+                ],
+                self.services,
             )
         self.assertEqual("", errors.getvalue())
         grouped: dict[str, list[list[str]]] = {}
@@ -716,28 +781,235 @@ class ConfigTests(GitTestCase):
         self.changed("src/App/Program.cs", "tools/Build.cs")
         self.assertEqual("missing", self.states(self.config())[key])
         self.config("--apply")
-        self.assertEqual(
-            "none", layout.effective_settings([editorconfig], self.root / "src/App/Program.cs")[key.casefold()]
-        )
-        self.assertEqual(
-            "warning", layout.effective_settings([editorconfig], self.root / "tools/Build.cs")[key.casefold()]
-        )
+        configs = layout.AnalyzerConfigs(self.root)
+        self.assertEqual("none", configs.settings(self.root / "src/App/Program.cs")[key.casefold()])
+        self.assertEqual("warning", configs.settings(self.root / "tools/Build.cs")[key.casefold()])
         self.assertTrue(editorconfig.read_text(encoding="utf-8").startswith("root = true\n\n[*.cs]\n"))
 
-    def test_detects_package_in_project_or_directory_files(self) -> None:
+    def package(self, *extra: str) -> list[str]:
+        (line,) = self.config(*extra)["PACKAGE"]
+        self.assertEqual("Roslynator.Formatting.Analyzers", line[0])
+        return line[1:]
+
+    def test_the_package_is_read_from_the_projects_evaluation_never_from_its_text(self) -> None:
+        # A comment, an item under a false condition, and a props file MSBuild does not import all name the package,
+        # and the evaluation holds none of them.
         project = self.root / "src" / "App" / "App.csproj"
         project.write_text(
-            '<Project><ItemGroup><PackageReference Include="roslynator.formatting.analyzers" '
-            'Version="4.12.0" /></ItemGroup></Project>\n',
+            '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup Condition="false">'
+            '<PackageReference Include="Roslynator.Formatting.Analyzers" /></ItemGroup></Project>\n',
             encoding="utf-8",
         )
-        self.assertEqual([["Roslynator.Formatting.Analyzers", "present"]], self.config()["PACKAGE"])
-        project.write_text(SDK_PROJECT, encoding="utf-8")
-        (self.root / "Directory.Build.props").write_bytes(
-            '<Project><ItemGroup><PackageReference Include="Roslynator.Formatting.Analyzers" /></ItemGroup>'
-            "</Project>\n".encode("utf-16")
+        (self.root / "src" / "Directory.Build.props").write_text(
+            "<Project><!-- TODO: add Roslynator.Formatting.Analyzers once the team agrees --></Project>\n",
+            encoding="utf-8",
         )
-        self.assertEqual([["Roslynator.Formatting.Analyzers", "present"]], self.config()["PACKAGE"])
+        (self.root / "Directory.Build.props").write_text(
+            '<Project><ItemGroup><PackageReference Include="Roslynator.Formatting.Analyzers" /></ItemGroup>'
+            "</Project>\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(["missing"], self.package())
+        self.assertEqual(
+            [
+                (
+                    [
+                        "dotnet",
+                        "msbuild",
+                        "./App.csproj",
+                        "-nologo",
+                        "-nodeReuse:false",
+                        "-getItem:PackageReference",
+                        "-getItem:Analyzer",
+                    ],
+                    self.root / "src" / "App",
+                    120,
+                )
+            ],
+            self.msbuild.calls,
+        )
+        cases = (
+            ({"PackageReference": [{"Identity": "roslynator.formatting.analyzers"}]}, "present"),
+            ({"Analyzer": [{"Filename": "Roslynator.Formatting.Analyzers", "Extension": ".dll"}]}, "present"),
+            ({"Analyzer": [{"Filename": "Roslynator.Formatting.Analyzers.CodeFixes"}]}, "missing"),
+            ({"PackageReference": [{"Identity": "Roslynator.Analyzers"}]}, "missing"),
+        )
+        for items, state in cases:
+            with self.subTest(items=items):
+                self.msbuild.items["src/App/App.csproj"] = items
+                self.assertEqual([state], self.package())
+
+    def test_the_package_is_judged_for_each_solution_project_owning_a_listed_file(self) -> None:
+        for name in ("Lib", "Other", "Loose"):
+            (self.root / "src" / name).mkdir()
+            (self.root / "src" / name / f"{name}.csproj").write_text(SDK_PROJECT, encoding="utf-8")
+        (self.root / "App.sln").write_text(
+            SOLUTION
+            + SOLUTION.replace("App", "Lib").replace("{1}", "{2}")
+            + SOLUTION.replace("App", "Other").replace("{1}", "{3}"),
+            encoding="utf-8",
+        )
+        self.changed("src/App/Program.cs", "src/Lib/Code.cs", "src/App/More.cs", "src/Loose/Script.cs")
+        self.msbuild.items["src/App/App.csproj"] = PACKAGE_REFERENCE
+        self.assertEqual(["missing"], self.package())
+        self.msbuild.calls.clear()
+        self.msbuild.items["src/Lib/Lib.csproj"] = PACKAGE_REFERENCE
+        self.assertEqual(["present"], self.package())
+        self.assertEqual(["src/App/App.csproj", "src/Lib/Lib.csproj"], self.msbuild.evaluated())
+
+    def test_an_evaluation_that_cannot_tell_leaves_the_package_unknown_with_the_reason(self) -> None:
+        cases = (
+            (Completed(1, b"error MSB4019: The imported project was not found.\n"), "could not evaluate"),
+            (Completed(-1, b"", timed_out=True), "timed out"),
+            (Completed(0, b"Welcome to .NET!\nnot the items\n"), "not JSON"),
+            (Completed(0, b'{"Items": [1]}'), "not the items"),
+        )
+        reasons = (
+            "MSBuild could not evaluate src/App/App.csproj: it exited with code 1",
+            "MSBuild did not evaluate src/App/App.csproj within 120 seconds",
+            "MSBuild's evaluation of src/App/App.csproj is not the items it was asked for",
+            "MSBuild's evaluation of src/App/App.csproj is not the items it was asked for",
+        )
+        for (result, case), reason in zip(cases, reasons, strict=True):
+            with self.subTest(case=case):
+                self.msbuild.result = result
+                self.assertEqual(["unknown", reason], self.package())
+        self.msbuild.result = Completed(0, b"Welcome to .NET!\n" + json.dumps({"Items": PACKAGE_REFERENCE}).encode())
+        self.assertEqual(["present"], self.package(), "text before the evaluation is passed over")
+
+        self.msbuild.result = None
+        self.msbuild.calls.clear()
+        self.services.which = lambda name: None
+        self.assertEqual(
+            ["unknown", "dotnet is not installed, so MSBuild cannot evaluate the projects"], self.package()
+        )
+        self.assertEqual([], self.msbuild.calls)
+
+    def test_a_project_lacking_the_package_is_missing_whatever_another_evaluation_says(self) -> None:
+        (self.root / "src" / "Lib").mkdir()
+        (self.root / "src" / "Lib" / "Lib.csproj").write_text(SDK_PROJECT, encoding="utf-8")
+        (self.root / "App.sln").write_text(SOLUTION + SOLUTION.replace("App", "Lib"), encoding="utf-8")
+        self.changed("src/Lib/Code.cs", "src/App/Program.cs")
+        failing = self.msbuild.__call__
+
+        def lib_fails(arguments: Sequence[str], cwd: Path, timeout: float) -> Completed:
+            result = failing(arguments, cwd, timeout)
+            return Completed(1, b"") if cwd.name == "Lib" else result
+
+        self.services.run = lib_fails
+        self.assertEqual(["missing"], self.package())
+        self.msbuild.items["src/App/App.csproj"] = PACKAGE_REFERENCE
+        self.assertEqual(
+            ["unknown", "MSBuild could not evaluate src/Lib/Lib.csproj: it exited with code 1"], self.package()
+        )
+
+    def severity(self, rule: str, *extra: str) -> str:
+        return self.states(self.config(*extra))[f"dotnet_diagnostic.{rule}.severity"]
+
+    def added(self, *extra: str) -> list[list[str]]:
+        return self.config("--apply", *extra).get("ADDED", [])
+
+    def test_a_globalconfig_severity_is_read_and_apply_never_overrides_it(self) -> None:
+        for text in ("is_global = true\n", "# no is_global: the name makes it global\n"):
+            with self.subTest(text=text):
+                (self.root / ".globalconfig").write_text(
+                    f"{text}dotnet_diagnostic.RCS0063.severity = none\n", encoding="utf-8"
+                )
+                self.assertEqual("other:none", self.severity("RCS0063"))
+                added = self.added()
+                self.assertEqual(6, len(added))
+                self.assertNotIn("dotnet_diagnostic.RCS0063.severity", {key for _, key, _ in added})
+                self.assertEqual("other:none", self.severity("RCS0063"))
+                (self.root / ".editorconfig").unlink()
+
+    def test_an_editorconfig_value_wins_over_a_global_configs(self) -> None:
+        (self.root / ".globalconfig").write_text("dotnet_diagnostic.RCS0063.severity = none\n", encoding="utf-8")
+        (self.root / ".editorconfig").write_text(
+            "[*.cs]\ndotnet_diagnostic.RCS0063.severity = warning\n", encoding="utf-8"
+        )
+        self.assertEqual("present", self.severity("RCS0063"))
+
+    def test_only_the_nearest_globalconfig_at_or_above_the_project_folder_is_read(self) -> None:
+        (self.root / ".globalconfig").write_text("dotnet_diagnostic.RCS0063.severity = none\n", encoding="utf-8")
+        (self.root / "src" / ".globalconfig").write_text(
+            "dotnet_diagnostic.RCS0063.severity = error\n", encoding="utf-8"
+        )
+        self.assertEqual("present", self.severity("RCS0063"), "the nearer file is the one the SDK adds")
+        (self.root / "src" / ".globalconfig").unlink()
+        (self.root / "src" / "App" / "Sub").mkdir()
+        (self.root / "src" / "App" / "Sub" / ".globalconfig").write_text(
+            "dotnet_diagnostic.RCS0041.severity = none\n", encoding="utf-8"
+        )
+        self.changed("src/App/Sub/Code.cs")
+        self.assertEqual("other:none", self.severity("RCS0063"))
+        self.assertEqual("missing", self.severity("RCS0041"), "the SDK looks from the project's folder up")
+
+        repository = self.root / "repository"
+        (repository / "src").mkdir(parents=True)
+        (repository / "src" / "App.csproj").write_text(SDK_PROJECT, encoding="utf-8")
+        self.assertEqual({}, layout.AnalyzerConfigs(repository).settings(repository / "src" / "Program.cs"))
+
+    def test_the_higher_global_level_wins_and_one_level_set_twice_is_unset(self) -> None:
+        (self.root / ".globalconfig").write_text("dotnet_diagnostic.RCS0063.severity = warning\n", encoding="utf-8")
+        inner = self.root / "src" / "App" / ".editorconfig"
+        cases = (
+            ("global_level = 200\n", "other:none"),
+            ("global_level = 100\n", "missing"),
+            ("", "present"),
+            ("global_level = 99\n", "present"),
+            ("global_level = high\n", "present"),
+        )
+        for level, state in cases:
+            with self.subTest(level=level):
+                inner.write_text(
+                    f"is_global = true\n{level}dotnet_diagnostic.RCS0063.severity = none\n", encoding="utf-8"
+                )
+                self.assertEqual(state, self.severity("RCS0063"))
+        added = self.added()
+        self.assertEqual({".editorconfig"}, {target for target, _, _ in added}, "a global file is no chain member")
+        self.assertTrue(inner.read_text(encoding="utf-8").startswith("is_global = true\n"))
+
+    def test_a_global_configs_section_applies_only_to_the_file_whose_absolute_path_it_names(self) -> None:
+        program = (self.root / "src" / "App" / "Program.cs").as_posix()
+        (self.root / ".globalconfig").write_text(
+            f"is_global = true\n[{program}]\ndotnet_diagnostic.RCS0063.severity = none\n"
+            f"[{program}.bak]\ndotnet_diagnostic.RCS0010.severity = none\n"
+            "[*.cs]\ndotnet_diagnostic.RCS0041.severity = none\n",
+            encoding="utf-8",
+        )
+        states = self.states(self.config())
+        self.assertEqual("other:none", states["dotnet_diagnostic.RCS0063.severity"])
+        self.assertEqual("missing", states["dotnet_diagnostic.RCS0010.severity"])
+        self.assertEqual("missing", states["dotnet_diagnostic.RCS0041.severity"], "a glob is not a global section")
+
+    def test_root_true_ends_the_chain_only_in_a_files_preamble(self) -> None:
+        (self.root / ".editorconfig").write_text(
+            "[*.cs]\ndotnet_diagnostic.CA1822.severity = warning\ndotnet_diagnostic.RCS0063.severity = none\n",
+            encoding="utf-8",
+        )
+        nested = self.root / "src" / ".editorconfig"
+        nested.write_text("[*.cs]\nroot = true\nindent_size = 4\n", encoding="utf-8")
+        self.assertEqual("other:none", self.severity("RCS0063"), "the compiler ignores root inside a section")
+        added = self.added()
+        self.assertEqual({".editorconfig"}, {target for target, _, _ in added})
+        self.assertNotIn("dotnet_diagnostic.RCS0063.severity", {key for _, key, _ in added})
+        self.assertEqual("[*.cs]\nroot = true\nindent_size = 4\n", nested.read_text(encoding="utf-8"))
+
+        nested.write_text("root = true\n\n[*.cs]\nindent_size = 4\n", encoding="utf-8")
+        self.assertEqual("missing", self.severity("RCS0063"))
+        self.assertEqual({"src/.editorconfig"}, {target for target, _, _ in self.added()})
+
+    def test_apply_reports_an_editorconfig_it_cannot_decode_and_writes_nothing_there(self) -> None:
+        editorconfig = self.root / ".editorconfig"
+        undecodable = b"\xef\xbb\xbf# caf\xe9\n"
+        editorconfig.write_bytes(undecodable)
+        status, grouped = self.run_config("--apply")
+        self.assertEqual(1, status, "the settings it could not add are still missing")
+        ((target, reason),) = grouped["UNREADABLE"]
+        self.assertEqual(".editorconfig", target)
+        self.assertTrue(reason.startswith("it starts with a UTF-8 byte order mark, but byte 8 "), reason)
+        self.assertNotIn("ADDED", grouped)
+        self.assertEqual(undecodable, editorconfig.read_bytes())
 
     def test_a_solution_it_cannot_read_fails_instead_of_searching_only_its_folder(self) -> None:
         (self.root / "App.slnx").write_text(
