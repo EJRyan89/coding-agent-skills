@@ -94,13 +94,14 @@ def _count(log: Path, relative: str) -> None:
 
 
 def source_file(run: Path, role: str, relative: str) -> list[str]:
+    """The file a reviewer asked for, counted by the snapshot path it prints, as the guard counts a Read of it: a
+    document held as its extracted text, as a PDF is, is held beside the path the reviewer named."""
     repository, name, head, log = _run(run, role)
-    found = fetch_source_file(
-        repository, run.resolve() / "source", relative, repository=name, commit=head, staging=run.resolve()
-    )
+    source = run.resolve() / "source"
+    found = fetch_source_file(repository, source, relative, repository=name, commit=head, staging=run.resolve())
     if isinstance(found, str):
         return [f"EXCLUDED {json.dumps(relative)} {found}"]
-    _count(log, relative)
+    _count(log, found.relative_to(source).as_posix())
     return [f"SOURCE_FILE {found}"]
 
 
