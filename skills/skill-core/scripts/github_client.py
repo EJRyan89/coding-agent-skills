@@ -27,6 +27,7 @@ from typing import IO, Any, NamedTuple, Protocol, TypeVar
 
 from bounded_process import Finished, run_bounded
 from executable_locator import located_command
+from flat_text import flat_text
 
 T = TypeVar("T")
 
@@ -300,6 +301,23 @@ def graphql_failure(payload: Any) -> GitHubError | None:
     )
 
 
+def body_reasons(body: str) -> list[str]:
+    """The reasons a refused `gh api` request's JSON body gives in `errors[].message`, each on one line.
+
+    gh's stderr names only the status, as in `Validation Failed (HTTP 422)`; GitHub says why in the body, such as
+    a search naming a user it cannot see. A body that is not such JSON gives none.
+    """
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return []
+    errors = payload.get("errors") if isinstance(payload, dict) else None
+    if not isinstance(errors, list):
+        return []
+    messages = (error.get("message") for error in errors if isinstance(error, dict))
+    return [flat_text(message) for message in messages if isinstance(message, str) and message.strip()]
+
+
 class Response(NamedTuple):
     status: int | None
     headers: dict[str, str]
@@ -532,6 +550,9 @@ class GitHubClient:
         if result.returncode != 0:
             kind = classify_failure(result.stderr, response.status, response.headers)
             message = result.stderr.strip() or f"gh {command[1]} failed with exit code {result.returncode}"
+            if command[1] == "api":
+                reasons = [reason for reason in body_reasons(result.stdout) if reason not in message]
+                message = f"{message}: {'; '.join(reasons)}" if reasons else message
             raise GitHubError(
                 message,
                 kind=kind,

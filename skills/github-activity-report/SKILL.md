@@ -33,4 +33,5 @@ The script fails closed and never prints a partial table. On failure it prints o
 - `[rate_limit]`: GitHub kept rate-limiting after retries, or asked for a long wait. Suggest rerunning later.
 - `[network]`: `gh` could not reach GitHub. Suggest checking the connection and rerunning.
 - `[incomplete]`: a search kept returning fewer results than GitHub reported, usually because results changed while it was paging or the search timed out. Suggest rerunning.
+- `[api]` saying the listed users or repositories cannot be searched: `USER` or `ORG` does not exist or the token cannot see it. Suggest checking both logins' spelling (the organization's login, not its display name) and that the token can read the organization.
 - Any other kind: report the message unchanged.
