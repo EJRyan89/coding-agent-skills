@@ -163,17 +163,18 @@ class RunTests(unittest.TestCase):
         self.assertEqual(({}, set()), (answer.paths, answer.answered))
 
     def test_a_run_that_exits_nonzero_after_printing_a_heading_is_a_failure_not_an_answer(self) -> None:
-        # Part of a package tree, or a heading saying there is no dependency, followed by a failed exit.
+        # Part of a package tree, or a heading saying there is no dependency, followed by a failed exit, whichever
+        # code other than 0 it exits with.
         partial = CORE_TEXT[: CORE_TEXT.index("  [net472]")]
-        for text in (partial, ABSENT_TEXT):
-            with self.subTest(text=text[:40]):
-                runs = Runs({"Harbor.Core.csproj": Completed(1, text)})
+        for text, code in ((partial, 1), (ABSENT_TEXT, 1), (partial, 2), (ABSENT_TEXT, 2)):
+            with self.subTest(text=text[:40], code=code):
+                runs = Runs({"Harbor.Core.csproj": Completed(code, text)})
                 answer = run_why([Path("Harbor.Core.csproj")], "Lantern.Json", Services(run=runs), 30)
                 self.assertEqual(
                     {
                         Path(
                             "Harbor.Core.csproj"
-                        ): "dotnet nuget why exited with code 1 after printing part of an answer"
+                        ): f"dotnet nuget why exited with code {code} after printing part of an answer"
                     },
                     answer.failures,
                 )

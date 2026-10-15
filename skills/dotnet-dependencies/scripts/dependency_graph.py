@@ -17,8 +17,8 @@ forward slashes:
                   where package-to-package edges came from: obj/project.assets.json, the packages' nuspecs in the
                   packages folder or the NuGet cache, or neither, leaving the direct references alone
     UNREADABLE    <file> <reason>                            a file the readers refused, a path a file names
-                  outside the examined tree, a condition they cannot evaluate, or an item inside a Target; its
-                  facts are missing
+                  outside the examined tree, a condition, name, or AssemblyName they cannot settle, an Import
+                  not read, or an item inside a Target; its facts are missing
     SDK_FAILED    <project> <name> <reason>                  `dotnet nuget why` failed; the graph walk answered
     PATH          <project> <frameworks> <name> <sdk|graph> <hop> > <hop> ...    one chain, each hop
                   `name (vversion)`, `name (project)`, `name (vversion, assembly)`, `name (assembly)` for an
@@ -38,18 +38,19 @@ forward slashes:
                   where <projects>; conflicts <names in conflict> <stale redirects>; graph <nodes> <edges>
 
 <frameworks> names the target frameworks of the project's restore that hold the line, joined by `;`, or `-` for a
-project with no restore, whose facts are not kept per framework: every item counts whatever its condition, but a
-Remove counts only where it holds for every framework the project names, and one whose condition cannot be evaluated
-for one of them is reported. A line that holds for several frameworks is printed once. Two frameworks of one project
-resolving different versions build apart and are not a conflict. A framework is named as the project names it,
-whichever form its restore writes (`net8.0` or `.NETCoreApp,Version=v8.0`). A framework's direct packages are those its
-restore recorded, and its project references are the project file's ProjectReference items its restore also
+project with no restore, whose facts are not kept per framework. Each project is evaluated as MSBuild evaluates it,
+once per build (msbuild_evaluation's docstring): its files and the files it imports in import order for the
+properties, then its items with the final properties. A project with no restore counts every Include and Update that
+may apply in one of its builds, and a Remove only where it applies in every build, and one that cannot be settled in
+a build and fails in none is reported. A line that holds for several frameworks is printed once. Two frameworks of one
+project resolving different versions build apart and are not a conflict. A framework is named as the project names
+it, whichever form its restore writes (`net8.0` or `.NETCoreApp,Version=v8.0`). A framework's direct packages are those
+its restore recorded, and its project references are the project file's ProjectReference items its restore also
 recorded; for a framework the restore did not record them for, and for its assembly references, which a restore never
-records, they are the project file's PackageReference, ProjectReference, and Reference items whose conditions hold for
-it, a package without a version of its own taking the central PackageVersion whose conditions do, and a Choose
-applying its first When that holds when MSBuild enters it. An item whose condition
-the reader cannot evaluate is not applied and is reported as an UNREADABLE line naming the condition and what was done
-instead, and an item inside a Target, which MSBuild defines only when the target runs, is left out and reported so.
+records, they are the items that framework's build leaves, a package without a version of its own taking the central
+PackageVersion that build leaves. An item, or a metadata value, whose condition or name the reader cannot settle is
+not applied and is reported as an UNREADABLE line naming it and what was done instead; an item inside a Target, which
+MSBuild defines only when the target runs, is left out and reported so, and so is an Import the reader does not read.
 
 `why` asks `dotnet nuget why` for a project that is SDK-style, uses PackageReference, has an obj/project.assets.json
 no older than the project file, and only when dotnet is installed. A run that fails, even after printing part of an
@@ -74,7 +75,7 @@ import os
 import sys
 import tempfile
 from collections import deque
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from itertools import combinations
 from pathlib import Path
@@ -85,33 +86,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from console import run_main
 from dotnet_solution import is_solution, lexical_absolute, project_path, refusal, same_path
 from flat_text import flat_text
+from msbuild_evaluation import Build, ProjectFile, Sources, Unsettled, read_project
 from msbuild_reader import (
     ASSETS_FILE,
     CONFIG_FILES,
     PACKAGES_CONFIG,
     AssemblyRef,
     Assets,
-    PackageItem,
     PackageNode,
     PackageRef,
-    ProjectFile,
-    ProjectItem,
-    ReferenceItem,
-    TargetItem,
-    Unevaluated,
     Unreadable,
-    assemblies_for,
-    central_versions_file,
     examined_tree,
     matching_framework,
     package_assemblies,
-    packages_for,
-    project_refs_for,
     read_assets,
-    read_central_versions,
     read_nuspec,
     read_packages_config,
-    read_project,
     read_redirects,
     read_solution,
 )
@@ -175,7 +165,7 @@ class Graph:
     tree: Path  # the examined tree, outside which no path a file names is read (`refusal`)
     projects: dict[str, Project] = field(default_factory=dict)  # same_path -> project
     unreadable: list[tuple[Path, str]] = field(default_factory=list)
-    central: dict[str, list[PackageItem]] = field(default_factory=dict)  # same_path of a props file -> its items
+    sources: Sources | None = None  # the files the projects are evaluated from, each parsed once
 
     def relative(self, path: Path) -> str:
         """`path` relative to the solution's directory, made absolute without reaching the file system, so naming a
@@ -193,31 +183,27 @@ class Graph:
         return self.projects.get(same_path(path))
 
     def refuse(self, error: Unreadable) -> None:
-        self.unreadable.append((error.file, error.reason))
+        """Report a file the readers refused, each file and reason once, so a file several projects import, such as
+        an unreadable Directory.Packages.props, is reported once."""
+        key = (same_path(error.file), error.reason)
+        if key not in {(same_path(file), reason) for file, reason in self.unreadable}:
+            self.unreadable.append((error.file, error.reason))
 
-    def refuse_in_targets(self, file: Path, items: Iterable[TargetItem]) -> None:
-        """Report each item inside a Target, which the reader leaves out."""
-        for item in items:
-            reason = f"the {item.kind} {item.name} inside Target {item.target} is left out: MSBuild defines it only "
-            self.refuse(Unreadable(file, reason + "when that target runs"))
+    def refuse_unsettled(self, project: Project, unsettled: Iterable[Unsettled], kinds: Iterable[str]) -> None:
+        """Report each item of `kinds`, or metadata value of one, a build did not apply because it could not settle
+        it, saying what it did instead."""
+        wanted = set(kinds)
+        for entry in unsettled:
+            if entry.kind in wanted:
+                subject = self.relative(entry.path) if entry.path is not None else entry.name
+                self.refuse(Unreadable(project.file.path, entry.reason(subject)))
 
-    def central_versions(self, project_dir: Path) -> list[PackageItem]:
-        """The central PackageVersion items that apply in a project's directory, each props file read once; an
-        unreadable one is reported once and gives none, so each project it covers keeps its own facts."""
-        found = central_versions_file(project_dir, self.base)
-        if found is None:
-            return []
-        key = same_path(found)
-        if key not in self.central:
-            try:
-                central = read_central_versions(found)
-            except Unreadable as error:
-                self.refuse(error)
-                self.central[key] = []
-            else:
-                self.central[key] = central.items
-                self.refuse_in_targets(found, central.in_targets)
-        return self.central[key]
+    def build_of(self, project: Project, framework: str) -> Build:
+        """The project's build of a framework, with what its evaluation could not read reported."""
+        build = project.file.build(framework)
+        for report in build.reports:
+            self.refuse(report)
+        return build
 
 
 def references_of(targets: Iterable[Target]) -> tuple[list[Path], list[AssemblyRef]]:
@@ -308,14 +294,15 @@ def load_projects(graph: Graph, listed: Iterable[Path]) -> None:
             refused = refusal(path, graph.tree)
             if refused is not None:
                 raise Unreadable(path, refused)
-            file = read_project(path, graph.central_versions)
+            file = read_project(path, graph.sources or Sources(graph.tree, graph.base))
         except Unreadable as error:
             graph.refuse(error)
             placeholder = ProjectFile(path, "legacy", path.stem, [], [], [], [])
             graph.projects[same_path(path)] = Project(placeholder, is_listed, readable=False)
             continue
         graph.projects[same_path(path)] = Project(file, is_listed)
-        graph.refuse_in_targets(path, file.in_targets)
+        for report in file.reports:
+            graph.refuse(report)
         queue.extend((reference, False) for reference in file.project_refs)
 
 
@@ -387,9 +374,10 @@ def nuspec_node(graph: Graph, folders: Sequence[Path], reference: PackageRef) ->
 
 
 def file_target(project: Project, direct: list[PackageRef]) -> Target:
-    """The one target of a project with no restore: the direct packages, and every project and assembly reference
-    its file states, whatever its condition, but those a Remove takes out for every framework the file names; a Remove
-    whose condition cannot be evaluated for one of them is reported (`refuse_file_unevaluated`)."""
+    """The one target of a project with no restore: the direct packages, and the project and assembly references of
+    the view its builds give together (`ProjectFile`), every Include and Update that may apply in one, but those a
+    Remove takes out in every one; a Remove that cannot be settled in one and fails in none is reported
+    (`refuse_file_unevaluated`)."""
     file = project.file
     return Target(NO_FRAMEWORK, direct=direct, project_refs=list(file.project_refs), assemblies=list(file.assemblies))
 
@@ -406,80 +394,45 @@ def closure_from_nuspecs(graph: Graph, project: Project, direct: list[PackageRef
     project.edges = "nuspec" if target.nodes else "direct"
 
 
-# What the reader does instead of applying an item whose condition it cannot evaluate, by the item's operation.
-NOT_APPLIED = {"Include": "it is left out", "Update": "the Update is not applied", "Remove": "it is not removed"}
-
-
-def refuse_unevaluated(graph: Graph, project: Project, unevaluated: Iterable[tuple[str, str, str, str, str]]) -> None:
-    """Report each item, given as its kind, operation, name, condition, and the framework that condition cannot be
-    evaluated for, saying what the reader did instead."""
-    for kind, operation, name, condition, framework in unevaluated:
-        item = f"{kind} {name}" if operation == "Include" else f"the {operation} of {kind} {name}"
-        reason = f"the condition {condition} on {item} cannot be evaluated for {framework}, so {NOT_APPLIED[operation]}"
-        graph.refuse(Unreadable(project.file.path, reason))
-
-
-def package_rows(unevaluated: Iterable[Unevaluated[PackageItem]]) -> Iterator[tuple[str, str, str, str, str]]:
-    for item, condition, framework in unevaluated:
-        kind = "PackageVersion" if item.origin == "central" else "PackageReference"
-        yield kind, item.operation, item.id, condition, framework
-
-
-def project_rows(
-    graph: Graph, unevaluated: Iterable[Unevaluated[ProjectItem]]
-) -> Iterator[tuple[str, str, str, str, str]]:
-    for item, condition, framework in unevaluated:
-        yield "ProjectReference", item.operation, graph.relative(item.path), condition, framework
-
-
-def reference_rows(unevaluated: Iterable[Unevaluated[ReferenceItem]]) -> Iterator[tuple[str, str, str, str, str]]:
-    for item, condition, framework in unevaluated:
-        yield "Reference", item.operation, item.spec, condition, framework
+PACKAGE_KINDS = ("PackageReference", "PackageVersion", "GlobalPackageReference")
 
 
 def refuse_file_unevaluated(graph: Graph, project: Project, packages: bool) -> None:
-    """Report each Remove that the one target of a project with no restore keeps because its condition cannot be
-    evaluated for a framework the project names (`file_target`): of its project and assembly references, and of its
-    packages unless a packages.config gives them."""
-    file = project.file
-    rows = [
-        *project_rows(graph, project_refs_for(file.project_items, None, file.frameworks)[1]),
-        *reference_rows(assemblies_for(file.reference_items, None, file.frameworks)[1]),
-    ]
-    if packages:
-        rows += package_rows(packages_for(file.package_items, None, file.central_items, file.frameworks)[1])
-    refuse_unevaluated(graph, project, rows)
+    """Report what the one target of a project with no restore leaves unsettled (`file_target`): each Remove kept
+    because it cannot be settled in a build and fails in none, and each item whose name cannot be settled, of its
+    project and assembly references, and of its packages unless a packages.config gives them."""
+    kinds = ("ProjectReference", "Reference", *(PACKAGE_KINDS if packages else ()))
+    graph.refuse_unsettled(project, project.file.unsettled, kinds)
 
 
 def direct_references(graph: Graph, project: Project, assets: Assets, framework: str) -> list[PackageRef]:
-    """A framework's direct packages: those its restore recorded, an empty list included, else the project file's
-    references whose conditions hold for it, at the central versions whose conditions do, each item whose condition
-    cannot be evaluated reported and not applied."""
+    """A framework's direct packages: those its restore recorded, an empty list included, else those its build
+    leaves, at the central versions it leaves, each item it cannot settle reported and not applied."""
     if framework in assets.direct:
         return assets.direct[framework]
-    references, unevaluated = packages_for(project.file.package_items, framework, project.file.central_items)
-    refuse_unevaluated(graph, project, package_rows(unevaluated))
-    return references
+    build = graph.build_of(project, framework)
+    graph.refuse_unsettled(project, build.unsettled, PACKAGE_KINDS)
+    return build.packages
 
 
 def project_references(graph: Graph, project: Project, assets: Assets, framework: str) -> list[Path]:
-    """A framework's project references: the project file's that its restore recorded for it, else those whose
-    conditions hold for it, each item whose condition cannot be evaluated reported and not applied."""
+    """A framework's project references: the project file's that its restore recorded for it, else those its build
+    leaves, each item it cannot settle reported and not applied."""
     recorded = assets.project_refs.get(framework)
     if recorded is not None:
         keys = {same_path(path) for path in recorded}
         return [path for path in project.file.project_refs if same_path(path) in keys]
-    references, unevaluated = project_refs_for(project.file.project_items, framework)
-    refuse_unevaluated(graph, project, project_rows(graph, unevaluated))
-    return references
+    build = graph.build_of(project, framework)
+    graph.refuse_unsettled(project, build.unsettled, ("ProjectReference",))
+    return build.project_refs
 
 
 def assembly_references(graph: Graph, project: Project, framework: str) -> list[AssemblyRef]:
-    """A framework's assembly references, which a restore does not record: the project file's whose conditions hold
-    for it, each item whose condition cannot be evaluated reported and not applied."""
-    references, unevaluated = assemblies_for(project.file.reference_items, framework)
-    refuse_unevaluated(graph, project, reference_rows(unevaluated))
-    return references
+    """A framework's assembly references, which a restore does not record: those its build leaves, each item it
+    cannot settle reported and not applied."""
+    build = graph.build_of(project, framework)
+    graph.refuse_unsettled(project, build.unsettled, ("Reference",))
+    return build.assemblies
 
 
 def closure_from_assets(graph: Graph, project: Project, assets_path: Path, services: Services) -> None:
@@ -532,7 +485,9 @@ def build_graph(root: Path, services: Services) -> Graph:
     """Read the solution's projects and, for each one whose file could be read, its packages and redirects."""
     unreadable: list[tuple[Path, str]] = []
     resolved, base, listed = resolve_root(root, unreadable)
-    graph = Graph(resolved, base, examined_tree(base), unreadable=unreadable)
+    tree = examined_tree(base)
+    solution = resolved if resolved.is_file() else None
+    graph = Graph(resolved, base, tree, unreadable=unreadable, sources=Sources(tree, base, solution))
     load_projects(graph, listed)
     for project in graph.projects.values():
         if project.readable:

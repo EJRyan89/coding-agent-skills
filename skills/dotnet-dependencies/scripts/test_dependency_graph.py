@@ -1780,7 +1780,7 @@ class ConditionalItemTests(Fixture):
                     (code, self.lines(rows, "PATH"), self.lines(rows, "UNREADABLE")),
                 )
 
-    def test_a_choose_on_an_unset_framework_is_not_chosen_when_a_directory_build_props_may_set_it(self) -> None:
+    def test_a_choose_reads_the_framework_a_directory_build_props_sets_before_the_project_body(self) -> None:
         # The issue's two projects: with no import, MSBuild enters App's Choose with the framework unset, so the When
         # applies and removes Lib, as before.
         app, lib = "App/App.csproj", "Lib/Lib.csproj"
@@ -1789,37 +1789,20 @@ class ConditionalItemTests(Fixture):
         own = [lib, "-", "Lib.Pkg", "graph", "Lib.Pkg (v1.0.0)"]
         code, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root))
         self.assertEqual((0, [own], []), (code, self.lines(rows, "PATH"), self.lines(rows, "UNREADABLE")))
-        # A Directory.Build.props above both may set the framework before the Choose, which the reader does not read,
-        # so the When is not chosen: its Remove is kept and reported, with no restore.
+        # MSBuild imports a Directory.Build.props above both before the project's body, so App's Choose is entered
+        # with the framework it sets: the When fails, Lib is kept, and the Otherwise's Reference is added.
         self.write("Directory.Build.props", FRAMEWORK_BUILD_PROPS)
-        when = "'$(TargetFramework)'==''"
         code, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root))
         chain = [app, "-", "Lib.Pkg", "graph", "Lib (project) > Lib.Pkg (v1.0.0)"]
-        self.assertEqual([chain, own], self.lines(rows, "PATH"))
-        self.assertEqual(
-            [
-                [
-                    app,
-                    f"the condition {when} on the Remove of ProjectReference Lib/Lib.csproj cannot be evaluated for "
-                    "net472, so it is not removed",
-                ]
-            ],
-            self.lines(rows, "UNREADABLE"),
-        )
-        self.assertEqual(1, code)
-        # With a restore keyed by the imported framework, the Otherwise's Reference is named, not guessed either way.
+        self.assertEqual((0, [chain, own], []), (code, self.lines(rows, "PATH"), self.lines(rows, "UNREADABLE")))
+        code, rows = self.run_main("where", "Beacon.Imported", "--root", str(self.root))
+        self.assertEqual([[app, "-", "Beacon.Imported", "framework", "-", "-"]], self.lines(rows, "WHERE"))
+        # With a restore of the framework the props file names, that framework's build holds the Reference too.
         document = {"version": 3, "targets": {"net8.0": {}}, "project": {}}
         self.write("App/obj/project.assets.json", json.dumps(document))
         code, rows = self.run_main("where", "Beacon.Imported", "--root", str(self.root))
-        self.assertEqual([], self.lines(rows, "WHERE"))
-        self.assertIn(
-            [
-                app,
-                f"the condition {when} on Reference Beacon.Imported cannot be evaluated for net8.0, so it is left out",
-            ],
-            self.lines(rows, "UNREADABLE"),
-        )
-        self.assertEqual(1, code)
+        self.assertEqual([[app, "net8.0", "Beacon.Imported", "framework", "-", "-"]], self.lines(rows, "WHERE"))
+        self.assertEqual((0, []), (code, self.lines(rows, "UNREADABLE")))
 
     def test_with_no_restore_a_remove_it_cannot_evaluate_is_reported_and_not_applied(self) -> None:
         # The issue's projects: App removes Lib under a condition the reader cannot evaluate, and a central
@@ -1870,7 +1853,7 @@ class ConditionalItemTests(Fixture):
             [
                 [
                     label,
-                    f"the condition {debug} on the Remove of Reference Beacon.Classic cannot be evaluated for v4.7.2, "
+                    f"the condition {debug} on the Remove of Reference Beacon.Classic cannot be evaluated for net472, "
                     "so it is not removed",
                 ]
             ],
@@ -2175,6 +2158,373 @@ class PathBoundTests(Fixture):
         )
         chain = ["App/App.csproj", "-", "Lib.Pkg", "graph", "Lib (project) > Lib.Pkg (v1.0.0)"]
         self.assertIn(chain, self.lines(rows, "PATH"))
+
+
+def sdk_project(body: str) -> str:
+    return f'<Project Sdk="Microsoft.NET.Sdk">{body}</Project>'
+
+
+# A project that references Lib and removes it under a condition, the framework set as given.
+REMOVING_LIB = sdk_project(
+    '{0}<ItemGroup><ProjectReference Include="../Lib/Lib.csproj" />'
+    '<ProjectReference Remove="../Lib/Lib.csproj" Condition="{1}" /></ItemGroup>'
+)
+LIB_CHAIN = ["App/App.csproj", "-", "Lib.Pkg", "graph", "Lib (project) > Lib.Pkg (v1.0.0)"]
+LIB_OWN = ["Lib/Lib.csproj", "-", "Lib.Pkg", "graph", "Lib.Pkg (v1.0.0)"]
+
+
+class MSBuildEvaluationTests(Fixture):
+    """What MSBuild evaluates, read through the script's lines: each case is a shape an earlier reading got wrong."""
+
+    def why_lib_pkg(self, app: str) -> tuple[int, list[list[str]], list[list[str]]]:
+        self.write("App/App.csproj", app)
+        self.write("Lib/Lib.csproj", LIB_PROJECT)
+        code, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root))
+        return code, self.lines(rows, "PATH"), self.lines(rows, "UNREADABLE")
+
+    def test_a_legacy_project_leaves_target_framework_unset_so_a_condition_on_it_reads_it_empty(self) -> None:
+        # A project that is not SDK-style names its framework by TargetFrameworkVersion; its $(TargetFramework) is
+        # empty, so a Remove under '$(TargetFramework)'=='' applies, and a Choose on it takes its When for items.
+        legacy = (
+            '<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">'
+            "<PropertyGroup><TargetFrameworkVersion>v4.8</TargetFrameworkVersion></PropertyGroup>{0}</Project>"
+        )
+        self.write(
+            "App/App.csproj",
+            legacy.format(
+                '<ItemGroup><Reference Include="Old" /><Reference Include="Alpha" /><Reference Include="Beta" />'
+                "<Reference Remove=\"Old\" Condition=\"'$(TargetFramework)'==''\" /></ItemGroup>"
+                "<Choose><When Condition=\"'$(TargetFramework)'==''\">"
+                '<ItemGroup><Reference Remove="Alpha" /></ItemGroup></When>'
+                '<Otherwise><ItemGroup><Reference Remove="Beta" /></ItemGroup></Otherwise></Choose>'
+            ),
+        )
+        for name, expected in (
+            ("Old", []),
+            ("Alpha", []),
+            ("Beta", [["App/App.csproj", "-", "Beta", "framework", "-", "-"]]),
+        ):
+            with self.subTest(name=name):
+                code, rows = self.run_main("where", name, "--root", str(self.root))
+                self.assertEqual((0, expected, []), (code, self.lines(rows, "WHERE"), self.lines(rows, "UNREADABLE")))
+        # A Remove the reader cannot settle names the framework MSBuild builds, not the TargetFrameworkVersion value.
+        debug = "'$(Configuration)'=='Debug'"
+        self.write(
+            "App/App.csproj",
+            legacy.format(
+                f'<ItemGroup><Reference Include="Old" /><Reference Remove="Old" Condition="{debug}" /></ItemGroup>'
+            ),
+        )
+        code, rows = self.run_main("where", "Old", "--root", str(self.root))
+        reason = (
+            f"the condition {debug} on the Remove of Reference Old cannot be evaluated for net48, so it is not removed"
+        )
+        self.assertEqual((1, [["App/App.csproj", reason]]), (code, self.lines(rows, "UNREADABLE")))
+
+    def test_a_framework_only_a_directory_build_props_sets_decides_a_remove(self) -> None:
+        # MSBuild imports Directory.Build.props before the project's body, so its framework is the project's.
+        self.write("Directory.Build.props", FRAMEWORK_BUILD_PROPS.replace("net8.0", "net472"))
+        code, paths, unreadable = self.why_lib_pkg(REMOVING_LIB.format("", "'$(TargetFramework)'=='net472'"))
+        self.assertEqual((0, [LIB_OWN], []), (code, paths, unreadable))
+        # A props file the reader cannot read leaves the framework unsettled: the Remove is kept and reported.
+        self.write("Directory.Build.props", "<!DOCTYPE x><Project />")
+        code, paths, unreadable = self.why_lib_pkg(REMOVING_LIB.format("", "'$(TargetFramework)'=='net472'"))
+        self.assertEqual((1, [LIB_CHAIN, LIB_OWN]), (code, paths))
+        self.assertEqual(
+            [
+                ["Directory.Build.props", "the document declares a DOCTYPE, which could expand entities without bound"],
+                [
+                    "App/App.csproj",
+                    "the condition '$(TargetFramework)'=='net472' on the Remove of ProjectReference Lib/Lib.csproj "
+                    "cannot be evaluated for a build that names no framework, so it is not removed",
+                ],
+            ],
+            unreadable,
+        )
+
+    def test_assembly_name_is_the_last_one_set_outside_a_target_whose_condition_holds(self) -> None:
+        lib = LIB_PROJECT.replace(
+            "</Project>",
+            "<PropertyGroup Condition=\"'$(Configuration)'=='Legacy'\"><AssemblyName>Old.Name</AssemblyName>"
+            "</PropertyGroup><PropertyGroup><AssemblyName>New.Name</AssemblyName></PropertyGroup>"
+            '<Target Name="Rename"><PropertyGroup><AssemblyName>Target.Name</AssemblyName></PropertyGroup></Target>'
+            "</Project>",
+        )
+        self.write("App/App.csproj", REMOVING_LIB.format("", "false"))
+        self.write("Lib/Lib.csproj", lib)
+        code, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root))
+        chain = ["App/App.csproj", "-", "Lib.Pkg", "graph", "New.Name (project) > Lib.Pkg (v1.0.0)"]
+        self.assertEqual((0, [chain, LIB_OWN]), (code, self.lines(rows, "PATH")))
+        # One the reader cannot settle is reported, and the project is named by its file.
+        self.write(
+            "Lib/Lib.csproj", lib.replace("<PropertyGroup><AssemblyName>New.Name</AssemblyName></PropertyGroup>", "")
+        )
+        code, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root))
+        self.assertEqual([LIB_CHAIN, LIB_OWN], self.lines(rows, "PATH"))
+        reason = "the AssemblyName cannot be settled, so the project is named by its file name Lib"
+        self.assertEqual((1, [["Lib/Lib.csproj", reason]]), (code, self.lines(rows, "UNREADABLE")))
+
+    def test_a_choose_in_directory_packages_props_reads_the_framework_as_it_is_before_the_project_body(self) -> None:
+        # NuGet's props import the central file before the project's body: a single framework is unset there, and
+        # each framework TargetFrameworks names is fixed for its build from the start.
+        self.write(
+            "Directory.Packages.props",
+            "<Project><Choose><When Condition=\"'$(TargetFramework)'==''\"><ItemGroup>"
+            '<PackageVersion Include="Lib.Pkg" Version="1.0.0" /></ItemGroup></When><Otherwise><ItemGroup>'
+            '<PackageVersion Include="Lib.Pkg" Version="9.0.0" /></ItemGroup></Otherwise></Choose></Project>',
+        )
+        reference = '<ItemGroup><PackageReference Include="Lib.Pkg" /></ItemGroup>'
+        for frameworks, version in (
+            ("<TargetFramework>net8.0</TargetFramework>", "1.0.0"),
+            ("<TargetFrameworks>net8.0;net472</TargetFrameworks>", "9.0.0"),
+        ):
+            with self.subTest(version=version):
+                self.write("App/App.csproj", sdk_project(f"<PropertyGroup>{frameworks}</PropertyGroup>{reference}"))
+                code, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root))
+                self.assertEqual(
+                    (0, [["App/App.csproj", "-", "Lib.Pkg", "graph", f"Lib.Pkg (v{version})"]]),
+                    (code, self.lines(rows, "PATH")),
+                )
+
+    def test_an_import_is_read_where_it_sits(self) -> None:
+        # The framework common.props sets reaches the Choose after the Import, so its When fails and Lib is kept.
+        self.write("common.props", FRAMEWORK_BUILD_PROPS)
+        choose = (
+            "<Choose><When Condition=\"'$(TargetFramework)'==''\"><PropertyGroup><TargetFramework>net472"
+            '</TargetFramework></PropertyGroup><ItemGroup><ProjectReference Remove="../Lib/Lib.csproj" />'
+            "</ItemGroup></When><Otherwise><PropertyGroup><Keep>1</Keep></PropertyGroup></Otherwise></Choose>"
+        )
+        include = '<ItemGroup><ProjectReference Include="../Lib/Lib.csproj" /></ItemGroup>'
+        imported = '<Import Project="../common.props" />'
+        code, paths, unreadable = self.why_lib_pkg(sdk_project(f"{imported}{include}{choose}"))
+        self.assertEqual((0, [LIB_CHAIN, LIB_OWN], []), (code, paths, unreadable))
+        # An Import after the Choose sets the framework only after the Choose chose its When.
+        code, paths, unreadable = self.why_lib_pkg(sdk_project(f"{include}{choose}{imported}"))
+        self.assertEqual((0, [LIB_OWN], []), (code, paths, unreadable))
+        # An Import the reader cannot read is reported, and the Choose after it is not chosen either way.
+        code, paths, unreadable = self.why_lib_pkg(
+            sdk_project(f'<Import Project="$(Elsewhere)/common.props" />{include}{choose}')
+        )
+        self.assertEqual((1, [LIB_CHAIN, LIB_OWN]), (code, paths))
+        self.assertEqual(
+            [
+                [
+                    "App/App.csproj",
+                    "the Import of $(Elsewhere)/common.props is not read: its path names a value the reader cannot "
+                    "settle, so every property is unsettled after it",
+                ],
+                [
+                    "App/App.csproj",
+                    "the condition '$(TargetFramework)'=='' on the Remove of ProjectReference Lib/Lib.csproj cannot "
+                    "be evaluated for net472, so it is not removed",
+                ],
+            ],
+            unreadable,
+        )
+
+    def test_a_framework_set_from_another_property_is_that_property_s_value(self) -> None:
+        tfm = "<PropertyGroup><Tfm>net472</Tfm><TargetFramework>$(Tfm)</TargetFramework></PropertyGroup>"
+        for condition in ("$(TargetFramework.StartsWith('net4'))", "$(TargetFramework) == 'net472'"):
+            with self.subTest(condition=condition):
+                code, paths, unreadable = self.why_lib_pkg(REMOVING_LIB.format(tfm, condition))
+                self.assertEqual((0, [LIB_OWN], []), (code, paths, unreadable))
+        # A property an Import the reader cannot read may set is unsettled, so the Remove is reported.
+        unread = (
+            '<Import Project="$(Elsewhere)/tfm.props" />'
+            "<PropertyGroup><TargetFramework>$(Tfm)</TargetFramework></PropertyGroup>"
+        )
+        code, paths, unreadable = self.why_lib_pkg(REMOVING_LIB.format(unread, "$(TargetFramework.StartsWith('net4'))"))
+        self.assertEqual((1, [LIB_CHAIN, LIB_OWN]), (code, paths))
+        self.assertIn(
+            [
+                "App/App.csproj",
+                "the condition $(TargetFramework.StartsWith('net4')) on the Remove of ProjectReference Lib/Lib.csproj "
+                "cannot be evaluated for a build that names no framework, so it is not removed",
+            ],
+            unreadable,
+        )
+
+    def test_the_frameworks_a_project_builds_are_target_frameworks_else_target_framework(self) -> None:
+        # An SDK-style project builds TargetFrameworks when it names any, else TargetFramework, and the SDK derives
+        # TargetFrameworkVersion: a Remove that holds for every framework built removes everywhere.
+        cases = [
+            (
+                "<PropertyGroup><TargetFramework>net472</TargetFramework>"
+                "<TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion></PropertyGroup>",
+                "'$(TargetFramework)'=='net472'",
+            ),
+            (
+                "<PropertyGroup><TargetFramework>net8.0</TargetFramework>"
+                "<TargetFrameworks>net472;net48</TargetFrameworks></PropertyGroup>",
+                "$(TargetFramework.StartsWith('net4'))",
+            ),
+        ]
+        for properties, condition in cases:
+            with self.subTest(properties=properties):
+                code, paths, unreadable = self.why_lib_pkg(REMOVING_LIB.format(properties, condition))
+                self.assertEqual((0, [LIB_OWN], []), (code, paths, unreadable))
+
+    def test_metadata_is_an_attribute_or_the_last_child_whose_condition_holds(self) -> None:
+        self.write(
+            "Directory.Packages.props",
+            '<Project><ItemGroup><PackageVersion Include="Over.Pkg" Version="2.0.0" />'
+            '<PackageVersion Include="Cond.Pkg" Version="5.0.0" /></ItemGroup></Project>',
+        )
+        items = (
+            '<ItemGroup><PackageReference Include="Over.Pkg"><VersionOverride>3.0.0</VersionOverride>'
+            '</PackageReference><PackageReference Include="Cond.Pkg">'
+            "<VersionOverride Condition=\"'$(TargetFramework)'=='net472'\">1.0.0</VersionOverride>"
+            "<VersionOverride Condition=\"'$(TargetFramework)'=='net8.0'\">4.0.0</VersionOverride>"
+            '</PackageReference><PackageReference Include="Twice.Pkg"><Version>1.0.0</Version>'
+            "<Version>2.0.0</Version></PackageReference>"
+            '<Reference Include="Hinted" HintPath="../libs/Hinted.dll" /></ItemGroup>'
+        )
+        framework = "<PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>"
+        self.write("App/App.csproj", sdk_project(f"{framework}{items}"))
+        code, rows = self.run_main("why", "Over.Pkg", "Cond.Pkg", "Twice.Pkg", "Hinted", "--root", str(self.root))
+        app = "App/App.csproj"
+        self.assertEqual(
+            [
+                [app, "-", "Over.Pkg", "graph", "Over.Pkg (v3.0.0)"],
+                [app, "-", "Cond.Pkg", "graph", "Cond.Pkg (v4.0.0)"],
+                [app, "-", "Twice.Pkg", "graph", "Twice.Pkg (v2.0.0)"],
+                [app, "-", "Hinted", "graph", "Hinted (assembly)"],
+            ],
+            self.lines(rows, "PATH"),
+        )
+        self.assertEqual((0, []), (code, self.lines(rows, "UNREADABLE")))
+        _, rows = self.run_main("where", "Hinted", "--root", str(self.root))
+        self.assertEqual([[app, "-", "Hinted", "reference", "-", "../libs/Hinted.dll"]], self.lines(rows, "WHERE"))
+        # A metadata condition the reader cannot settle is reported for the build that reads it, and not applied.
+        debug = "'$(Configuration)'=='Debug'"
+        unsettled = items.replace("<VersionOverride>3.0.0", f'<VersionOverride Condition="{debug}">3.0.0')
+        self.write("App/App.csproj", sdk_project(f"{framework}{unsettled}"))
+        self.write("App/obj/project.assets.json", json.dumps({"version": 3, "targets": {"net8.0": {}}, "project": {}}))
+        code, rows = self.run_main("why", "Over.Pkg", "--root", str(self.root))
+        self.assertEqual([[app, "net8.0", "Over.Pkg", "graph", "Over.Pkg (v2.0.0)"]], self.lines(rows, "PATH"))
+        reason = (
+            f"the condition {debug} on the VersionOverride of PackageReference Over.Pkg cannot be evaluated for "
+            "net8.0, so that VersionOverride is not applied"
+        )
+        self.assertEqual((1, [[app, reason]]), (code, self.lines(rows, "UNREADABLE")))
+
+    def test_property_item_and_metadata_names_are_matched_without_case(self) -> None:
+        body = (
+            "<PropertyGroup><targetframeworks>net472;net48</targetframeworks></PropertyGroup><ItemGroup>"
+            '<packagereference Include="Case.Pkg"><version>3.1.0</version></packagereference>'
+            '<ProjectReference Include="../Lib/Lib.csproj" />'
+            "<ProjectReference Remove=\"../Lib/Lib.csproj\" Condition=\"'$(TargetFramework)'=='net472' or "
+            "'$(TargetFramework)'=='net48'\" /></ItemGroup>"
+        )
+        self.write("App/App.csproj", sdk_project(body))
+        self.write("Lib/Lib.csproj", LIB_PROJECT)
+        code, rows = self.run_main(
+            "why", "Case.Pkg", "Lib.Pkg", "--project", str(self.root / "App" / "App.csproj"), "--root", str(self.root)
+        )
+        self.assertEqual(
+            (0, [["App/App.csproj", "-", "Case.Pkg", "graph", "Case.Pkg (v3.1.0)"]], [["Lib.Pkg"]]),
+            (code, self.lines(rows, "PATH"), self.lines(rows, "MISSING")),
+        )
+
+    def test_a_global_package_reference_is_a_package_reference_of_every_project(self) -> None:
+        self.write(
+            "Directory.Packages.props",
+            "<Project><PropertyGroup><ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>"
+            '</PropertyGroup><ItemGroup><GlobalPackageReference Include="Global.Analyzer" Version="1.2.0" />'
+            "</ItemGroup></Project>",
+        )
+        self.write(
+            "App/App.csproj", CORE_PROJECT.replace('<PackageReference Include="Quill.Http" Version="1.2.0" />', "")
+        )
+        code, rows = self.run_main("why", "Global.Analyzer", "--root", str(self.root))
+        self.assertEqual(
+            (0, [["App/App.csproj", "-", "Global.Analyzer", "graph", "Global.Analyzer (v1.2.0)"]]),
+            (code, self.lines(rows, "PATH")),
+        )
+
+    def test_a_remove_in_an_inner_choose_s_branch_it_did_not_take_is_never_applied(self) -> None:
+        # The outer When holds and the inner When, entered with the framework still unset, holds too, so the inner
+        # Otherwise's Remove is never applied, though the inner When sets the framework it tested.
+        choose = (
+            "<Choose><When Condition=\"'$(TargetFramework)'==''\"><Choose>"
+            "<When Condition=\"'$(TargetFramework)'==''\"><PropertyGroup><TargetFramework>net8.0</TargetFramework>"
+            '</PropertyGroup></When><Otherwise><ItemGroup><ProjectReference Remove="../Lib/Lib.csproj" />'
+            "</ItemGroup></Otherwise></Choose></When></Choose>"
+        )
+        include = '<ItemGroup><ProjectReference Include="../Lib/Lib.csproj" /></ItemGroup>'
+        code, paths, unreadable = self.why_lib_pkg(sdk_project(f"{include}{choose}"))
+        self.assertEqual((0, [LIB_CHAIN, LIB_OWN], []), (code, paths, unreadable))
+        self.write("App/obj/project.assets.json", json.dumps({"version": 3, "targets": {"net8.0": {}}, "project": {}}))
+        code, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root))
+        self.assertEqual([["App/App.csproj", "net8.0", *LIB_CHAIN[2:]], LIB_OWN], self.lines(rows, "PATH"))
+
+    def test_a_when_chosen_before_an_unsettled_framework_assignment_keeps_its_items(self) -> None:
+        # The Choose is entered with the framework unset, so its When holds whatever a later group under a
+        # condition the reader cannot settle sets, and its items count for the framework that group names.
+        body = (
+            "<Choose><When Condition=\"'$(TargetFramework)'==''\"><ItemGroup><Reference Include=\"Kept\" />"
+            "</ItemGroup></When></Choose><PropertyGroup Condition=\"'$(Configuration)'=='Debug'\">"
+            "<TargetFramework>net8.0</TargetFramework></PropertyGroup>"
+        )
+        self.write("App/App.csproj", sdk_project(body))
+        self.write("App/obj/project.assets.json", json.dumps({"version": 3, "targets": {"net8.0": {}}, "project": {}}))
+        code, rows = self.run_main("where", "Kept", "--root", str(self.root))
+        self.assertEqual([["App/App.csproj", "net8.0", "Kept", "framework", "-", "-"]], self.lines(rows, "WHERE"))
+        self.assertEqual((0, []), (code, self.lines(rows, "UNREADABLE")))
+
+    def test_with_no_usable_restore_each_unsettled_remove_is_reported_once(self) -> None:
+        # An assets file that is not JSON, or that restored no framework, leaves the project's one target, whose
+        # Remove the reader cannot settle is reported once, beside the assets file's own line.
+        debug = "'$(Configuration)'=='Debug'"
+        reason = (
+            f"the condition {debug} on the Remove of ProjectReference Lib/Lib.csproj cannot be evaluated for "
+            "{0}, so it is not removed"
+        )
+        self.write("App/App.csproj", REMOVING_PROJECT.format(debug))
+        self.write("Lib/Lib.csproj", LIB_PROJECT)
+        for text, assets_line in (("{not json", True), (json.dumps({"version": 3, "targets": {}}), False)):
+            with self.subTest(assets=text):
+                self.write("App/obj/project.assets.json", text)
+                code, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root))
+                unreadable = self.lines(rows, "UNREADABLE")
+                self.assertEqual(
+                    ["App/obj/project.assets.json"] if assets_line else [],
+                    [file for file, _ in unreadable if "assets" in file],
+                )
+                self.assertEqual(
+                    [["App/App.csproj", reason.format("net8.0")]],
+                    [row for row in unreadable if row[0] == "App/App.csproj"],
+                )
+                self.assertEqual((1, [LIB_CHAIN, LIB_OWN]), (code, self.lines(rows, "PATH")))
+
+    def test_a_cut_chain_names_every_framework_it_holds_for(self) -> None:
+        # The SDK's chain fills the limit, so the walk's chain, which holds for both frameworks, is the one cut.
+        label = "src/Harbor.Core/Harbor.Core.csproj"
+        self.write(
+            label,
+            CORE_PROJECT.replace(
+                "<TargetFramework>net8.0</TargetFramework>", "<TargetFrameworks>net8.0;net9.0</TargetFrameworks>"
+            ),
+        )
+        direct = {"dependencies": {"Lantern.Json": {"target": "Package", "version": "[12.0.3, )"}}}
+        assets = {
+            "version": 3,
+            "targets": {framework: {"Lantern.Json/12.0.3": {"type": "package"}} for framework in ("net8.0", "net9.0")},
+            "project": {"frameworks": {"net8.0": direct, "net9.0": direct}},
+        }
+        self.write("src/Harbor.Core/obj/project.assets.json", json.dumps(assets))
+        core = self.root / label
+        sdk = TableSdk({(same_path(core), "lantern.json"): OTHER_ROUTE_SDK_TEXT})
+        services = Services(run=sdk, which=self.with_dotnet.which)
+        original = dependency_graph.PATH_LIMIT
+        dependency_graph.PATH_LIMIT = 1
+        self.addCleanup(setattr, dependency_graph, "PATH_LIMIT", original)
+        _, rows = self.run_main("why", "Lantern.Json", "--root", str(self.root), services=services)
+        self.assertEqual(
+            [[label, "net8.0", "Lantern.Json", "sdk", "Other.Pkg (v1.0.0) > Lantern.Json (v12.0.3)"]],
+            self.lines(rows, "PATH"),
+        )
+        self.assertEqual([[label, "net8.0;net9.0", "Lantern.Json", "1"]], self.lines(rows, "TRUNCATED"))
 
 
 if __name__ == "__main__":
