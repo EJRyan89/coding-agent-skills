@@ -10,12 +10,12 @@ import argparse
 import re
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
@@ -33,8 +33,9 @@ from github_client import (
     json_body,
     subprocess_runner,
 )
-from typed_fields import FieldError, FieldReader
+from typed_fields import FieldError, FieldReader, describe
 
+T = TypeVar("T")
 SEARCH_PAGE_SIZE = 100
 SEARCH_RESULT_CAP = 1000
 SEARCH_INTERVAL = 2.1
@@ -121,15 +122,39 @@ def _shape_of(response: str) -> Iterator[None]:
         raise GitHubError(f"{response} has an unexpected shape: {exc}", kind="malformed") from exc
 
 
-def _payload(result: CommandResult) -> Any:
-    """The JSON body, failing on GraphQL errors and retrying a search GitHub cut short."""
-    payload = json_body(result)
-    if isinstance(payload, dict) and payload.get("incomplete_results") is True:
+def _search_payload(result: CommandResult) -> dict[str, Any]:
+    """A REST search response, retrying one GitHub cut short."""
+    with _shape_of("Search response"):
+        response = READ.json_object(json_body(result), "response")
+        incomplete = READ.boolean(response.get("incomplete_results"), "response.incomplete_results")
+    if incomplete:
         raise GitHubError("GitHub search timed out and returned incomplete results", kind="incomplete", retryable=True)
+    return response
+
+
+def _graphql_payload(result: CommandResult) -> Any:
+    """A GraphQL response, failing on the errors its body reports."""
+    payload = json_body(result)
     problem = graphql_failure(payload)
     if problem is not None:
         raise problem
     return payload
+
+
+def _next_cursor(page_info: Any, path: str, followed: set[str]) -> str | None:
+    """The cursor of the next page a GraphQL connection's `pageInfo` promises, or None on its last page.
+
+    `hasNextPage` must be a boolean and, when it promises a page, `endCursor` a string not already in `followed`, so a
+    page that repeats fails instead of paging without end. The cursor is added to `followed`.
+    """
+    info = READ.json_object(page_info, path)
+    if not READ.boolean(info.get("hasNextPage"), f"{path}.hasNextPage"):
+        return None
+    cursor = READ.string(info.get("endCursor"), f"{path}.endCursor")
+    if cursor in followed:
+        raise READ.fail(f"{path}.endCursor", "a cursor not already followed", describe(cursor))
+    followed.add(cursor)
+    return cursor
 
 
 class GitHubSearchClient:
@@ -149,14 +174,15 @@ class GitHubSearchClient:
     def interval(self) -> float:
         return self.pacer.interval
 
-    def _request(self, arguments: list[str], *, search: bool) -> Any:
-        return self.github.request(["api", *arguments], _payload, headers=True, pacer=self.pacer if search else None)
+    def _request(self, arguments: list[str], parse: Callable[[CommandResult], T], *, search: bool) -> T:
+        return self.github.request(["api", *arguments], parse, headers=True, pacer=self.pacer if search else None)
 
     def _search_page(self, endpoint: str, query: str, page: int, per_page: int) -> dict[str, Any]:
-        payload = self._request([f"{endpoint}?q={quote(query, safe='')}&per_page={per_page}&page={page}"], search=True)
+        response = self._request(
+            [f"{endpoint}?q={quote(query, safe='')}&per_page={per_page}&page={page}"], _search_payload, search=True
+        )
         with _shape_of(f"Search response for {query!r}"):
-            response = READ.json_object(payload, "response")
-            READ.array(response.get("items"), "response.items")
+            READ.array(response.get("items"), "response.items", READ.json_object)
             READ.integer(response.get("total_count"), "response.total_count", minimum=0)
         return response
 
@@ -211,7 +237,7 @@ class GitHubSearchClient:
         arguments = ["graphql", "-f", f"query={query}"]
         for name, value in variables.items():
             arguments.extend(["-f", f"{name}={value}"])
-        payload = self._request(arguments, search=search)
+        payload = self._request(arguments, _graphql_payload, search=search)
         data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, dict):
             raise GitHubError("GraphQL response has no data", kind="malformed")
@@ -242,8 +268,13 @@ class GitHubSearchClient:
             if attempt:
                 page = self._graphql_search_page(query, user, None)
             nodes = list(page["nodes"])
-            while page["pageInfo"].get("hasNextPage") and len(nodes) < SEARCH_RESULT_CAP:
-                page = self._graphql_search_page(query, user, str(page["pageInfo"].get("endCursor")))
+            followed: set[str] = set()
+            while True:
+                with _shape_of(f"GraphQL search for {query!r}"):
+                    cursor = _next_cursor(page["pageInfo"], "data.search.pageInfo", followed)
+                if cursor is None or len(nodes) >= SEARCH_RESULT_CAP:
+                    break
+                page = self._graphql_search_page(query, user, cursor)
                 nodes.extend(page["nodes"])
             expected = min(page["issueCount"], SEARCH_RESULT_CAP)
             unique = _distinct_pull_requests(nodes)
@@ -286,13 +317,22 @@ def month_label(value: date) -> str:
     return f"{value:%Y-%m}"
 
 
-def _utc_date(timestamp: Any, context: str) -> date:
-    if not isinstance(timestamp, str):
-        raise GitHubError(f"{context} has no timestamp", kind="malformed")
+def _utc_date(value: Any, path: str) -> date:
+    """The UTC date of an ISO 8601 timestamp that states its offset or `Z`.
+
+    A timestamp without one is refused: read in the machine's zone, the same text would fall in a different month
+    depending on where the report runs.
+    """
+    expected = "an ISO 8601 timestamp with a UTC offset"
+    if not isinstance(value, str):
+        raise READ.fail(path, expected, describe(value))
     try:
-        return datetime.fromisoformat(timestamp).astimezone(UTC).date()
-    except ValueError as exc:
-        raise GitHubError(f"{context} has an invalid timestamp: {timestamp!r}", kind="malformed") from exc
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        raise READ.fail(path, expected, describe(value)) from None
+    if moment.utcoffset() is None:
+        raise READ.fail(path, expected, describe(value))
+    return moment.astimezone(UTC).date()
 
 
 @dataclass
@@ -345,13 +385,16 @@ def _monthly(
     if truncated:
         capped.setdefault(column, []).extend(truncated)
     for item in items:
-        label = month_label(_utc_date(_field(item, date_path), f"{column} result {_field(item, key)}"))
+        with _shape_of(f"{column} result {_field(item, key)}"):
+            label = month_label(_utc_date(_field(item, date_path), ".".join(date_path)))
         if label in counts:
             counts[label] += 1
     return counts
 
 
-def _review_connection(node: Any, node_id: str) -> tuple[list[Any], dict[str, Any]]:
+def _review_connection(node: Any, node_id: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """One page of a pull request's reviews and its `pageInfo`. A missing connection means the token cannot read the
+    pull request; a review that is not an object is malformed."""
     reviews = node.get("reviews") if isinstance(node, dict) else None
     if (
         not isinstance(reviews, dict)
@@ -359,7 +402,26 @@ def _review_connection(node: Any, node_id: str) -> tuple[list[Any], dict[str, An
         or not isinstance(reviews.get("pageInfo"), dict)
     ):
         raise GitHubError(f"Pull request {node_id} is not readable with this token", kind="forbidden")
-    return reviews["nodes"], reviews["pageInfo"]
+    with _shape_of(f"Reviews of pull request {node_id}"):
+        return READ.array(reviews["nodes"], "reviews.nodes", READ.json_object), reviews["pageInfo"]
+
+
+def _submitted_dates(reviews: list[dict[str, Any]], node_id: str) -> list[date]:
+    """The submission dates of the reviews that are not pending; a pending review has none yet."""
+    dates: list[date] = []
+    with _shape_of(f"Reviews of pull request {node_id}"):
+        for index, review in enumerate(reviews):
+            path = f"reviews.nodes[{index}]"
+            if READ.string(review.get("state"), f"{path}.state") != "PENDING":
+                dates.append(_utc_date(review.get("submittedAt"), f"{path}.submittedAt"))
+    return dates
+
+
+def _author_login(node: dict[str, Any], node_id: str) -> str | None:
+    """The pull request author's login, or None for an author GitHub no longer has, such as a deleted account."""
+    with _shape_of(f"Pull request {node_id}"):
+        author = READ.optional(READ.json_object, node.get("author"), "author")
+        return None if author is None else READ.string(author.get("login"), "author.login")
 
 
 def _review_dates(
@@ -375,21 +437,20 @@ def _review_dates(
         node_id = node.get("id") if isinstance(node, dict) else None
         if not isinstance(node_id, str):
             raise GitHubError("Review search returned a result that is not a readable pull request", kind="forbidden")
-        login = _field(node, ("author", "login"))
-        if node_id in dates or (isinstance(login, str) and login.casefold() == user.casefold()):
+        login = _author_login(node, node_id)
+        if node_id in dates or (login is not None and login.casefold() == user.casefold()):
             continue
         reviews, page_info = _review_connection(node, node_id)
-        while page_info.get("hasNextPage"):
-            data = client.graphql(
-                REVIEW_PAGE_QUERY, {"id": node_id, "user": user, "after": str(page_info.get("endCursor"))}
-            )
+        followed: set[str] = set()
+        while True:
+            with _shape_of(f"Reviews of pull request {node_id}"):
+                cursor = _next_cursor(page_info, "reviews.pageInfo", followed)
+            if cursor is None:
+                break
+            data = client.graphql(REVIEW_PAGE_QUERY, {"id": node_id, "user": user, "after": cursor})
             more, page_info = _review_connection(data.get("node"), node_id)
             reviews = reviews + more
-        dates[node_id] = [
-            _utc_date(review.get("submittedAt"), f"Review on {node_id}")
-            for review in reviews
-            if isinstance(review, dict) and review.get("state") != "PENDING"
-        ]
+        dates[node_id] = _submitted_dates(reviews, node_id)
     return dates
 
 
