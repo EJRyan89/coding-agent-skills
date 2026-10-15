@@ -761,12 +761,14 @@ def module_allowance(tree: ast.Module, name: str) -> dict[str, str] | None:
     """A module's allowance, such as PLATFORM_ALLOWED, or None when it does not map each token to its reason.
 
     Every policy that lets a module sanction an exception beside the code it excuses reads the allowance here, so
-    they agree on its shape: a module-level literal dictionary of non-empty reasons, empty when the module has none.
+    they agree on its shape: a module-level literal dictionary of non-empty reasons, assigned with or without an
+    annotation, empty when the module has none.
     """
     for node in tree.body:
-        if isinstance(node, ast.Assign) and any(
-            isinstance(target, ast.Name) and target.id == name for target in node.targets
-        ):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if any(isinstance(target, ast.Name) and target.id == name for target in targets):
             try:
                 allowance = ast.literal_eval(node.value)
             except ValueError:

@@ -996,8 +996,11 @@ def _references(text: str, python: bool) -> frozenset[str]:
     sanctions = {
         line
         for node in tree.body
-        if isinstance(node, ast.Assign)
-        and any(isinstance(target, ast.Name) and target.id.endswith("_ALLOWED") for target in node.targets)
+        if isinstance(node, (ast.Assign, ast.AnnAssign))
+        and any(
+            isinstance(target, ast.Name) and target.id.endswith("_ALLOWED")
+            for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+        )
         for line in range(node.lineno, (node.end_lineno or node.lineno) + 1)
     }
     unsanctioned = "".join(

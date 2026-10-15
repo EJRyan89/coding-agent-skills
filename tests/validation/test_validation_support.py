@@ -342,6 +342,9 @@ class SharedReaderFixtures(GitTestCase):
 
         self.assertEqual({}, allowance("OTHER = {'a': 'reason'}\n"))
         self.assertEqual({"a": "reason"}, allowance("ALLOWED = {'a': 'reason'}\n"))
+        # An annotated allowance is read as a plain one is, and held to the same shape.
+        self.assertEqual({"a": "reason"}, allowance("ALLOWED: dict[str, str] = {'a': 'reason'}\n"))
+        self.assertIsNone(allowance("ALLOWED: dict[str, str] = {'a': ''}\n"))
         for invalid in ("ALLOWED = {'a': ''}", "ALLOWED = {'a': 1}", "ALLOWED = ['a']", "ALLOWED = make()"):
             with self.subTest(invalid=invalid):
                 self.assertIsNone(allowance(invalid))

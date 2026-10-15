@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import re
 import sys
 import unittest
@@ -34,7 +35,7 @@ MINIMUM_CONSTANT_LENGTH = 12
 # __all__ lists a module's own exports, and another module may export the same names.
 UNCOMPARED_CONSTANTS = frozenset({"__all__"})
 # A sanction dictionary, such as PLATFORM_ALLOWED or DUPLICATION_ALLOWED itself, names what its module excuses, and
-# another module may excuse the same thing.
+# another module may excuse the same thing. Only a dictionary under such a name is one; any other value is compared.
 SANCTION_SUFFIX = "_ALLOWED"
 # A constant's group key starts with this, so a constant and a definition never share a group.
 CONSTANT_KEY = "constant:"
@@ -116,7 +117,7 @@ def _module_copies(name: str, tree: ast.Module) -> Iterator[tuple[str, Copy]]:
                 for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
                 if isinstance(target, ast.Name)
                 and target.id not in UNCOMPARED_CONSTANTS
-                and not target.id.endswith(SANCTION_SUFFIX)
+                and not (target.id.endswith(SANCTION_SUFFIX) and isinstance(node.value, ast.Dict))
             ]
             key = _constant_key(node.value, resolver) if targets else None
             if key is not None:
@@ -239,9 +240,28 @@ def _skill_core_statement_lines(tree: ast.Module) -> list[int]:
     return lines
 
 
+# The calls that import a module by its name, as the module's imports resolve them.
+MODULE_LOADERS = frozenset({"importlib.import_module", "__import__", "builtins.__import__"})
+
+
 def _imported_modules(tree: ast.Module) -> list[tuple[int, str]]:
-    """Each absolute import in the module, as its line and the dotted module name it imports."""
-    return sorted({(found.line, found.module) for found in module_imports(tree)})
+    """Each absolute import in the module, and each module it imports by name through importlib.import_module or
+    __import__, as its line and the dotted module name it imports; "" for a name that is not one string literal."""
+    found = {(found.line, found.module) for found in module_imports(tree)}
+    resolver = CallableResolver(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and resolver.name(node.func) in MODULE_LOADERS:
+            name = call_argument(node, 0, "name")
+            literal = name.value if isinstance(name, ast.Constant) and isinstance(name.value, str) else ""
+            found.add((node.lineno, literal))
+    return sorted(found)
+
+
+def _unreadable_import(name: str, line: int) -> str:
+    return (
+        f"{name}:{line} imports a module by a name it cannot read; import it by a statement or one string literal; "
+        f"see {SKILL_CORE_DOC}"
+    )
 
 
 def skill_core_import_problems(root: Path) -> list[str]:
@@ -279,7 +299,9 @@ def skill_core_import_problems(root: Path) -> list[str]:
                 statements = [0] if package_lines else []
             for line, module in _imported_modules(tree):
                 first = module.split(".")[0]
-                if top == SKILL_CORE_SCRIPTS and first in {"deployer", "tools"}:
+                if not module:
+                    problems.append(_unreadable_import(name, line))
+                elif top == SKILL_CORE_SCRIPTS and first in {"deployer", "tools"}:
                     problems.append(
                         f"{name}:{line} imports {module}; {SKILL_CORE} imports nothing from the deployer or tools/; "
                         f"see {SKILL_CORE_DOC}"
@@ -297,6 +319,52 @@ def skill_core_import_problems(root: Path) -> list[str]:
     return sorted(problems)
 
 
+def _skill_dependency_closure(root: Path, skill: str) -> set[str]:
+    """The skills a skill's skill_deps reach, directly or through each other, from deploy-meta."""
+    found: set[str] = set()
+    pending = [skill]
+    while pending:
+        metadata = root / "deploy-meta" / f"{pending.pop()}.json"
+        declared = json.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", []) if metadata.is_file() else []
+        pending += [name for name in declared if name not in found and name != skill]
+        found |= set(declared) - {skill}
+    return found
+
+
+def _module_names(scripts: Path) -> set[str]:
+    return {path.stem for path in scripts.glob("*.py") if not is_test_script(path)}
+
+
+def skill_script_import_problems(root: Path) -> list[str]:
+    """Report a shipped skill script outside skill-core that imports a module other than the standard library's,
+    skill-core's, its own skill's, or one of a skill its skill_deps reach, by a statement or by name.
+
+    A deployed skill runs on a machine with the prerequisites and nothing else, so a module beyond these is missing
+    wherever the skill is deployed, and an installed development dependency would hide that until then.
+    """
+    allowed = set(sys.stdlib_module_names) | skill_core_modules(root)
+    problems: list[str] = []
+    skills = root / "skills"
+    for scripts in sorted(path for path in skills.glob("*/scripts") if (path.parent / "SKILL.md").is_file()):
+        skill = scripts.parent.name
+        if skill == SKILL_CORE:
+            continue
+        reachable = allowed | _module_names(scripts)
+        for dependency in _skill_dependency_closure(root, skill):
+            reachable |= _module_names(skills / dependency / "scripts")
+        files = sorted(path for path in scripts.glob("*.py") if not is_test_script(path))
+        for _, name, tree in python_trees(files, root, problems):
+            for line, module in _imported_modules(tree):
+                if not module:
+                    problems.append(_unreadable_import(name, line))
+                elif module.split(".")[0] not in reachable:
+                    problems.append(
+                        f"{name}:{line} imports {module}, which is neither the standard library, {SKILL_CORE}, the "
+                        f"skill's own scripts, nor a skill its skill_deps reach; see {SKILL_CORE_DOC}"
+                    )
+    return sorted(problems)
+
+
 class DuplicationPolicies(unittest.TestCase):
     def test_repository_copies_only_what_it_sanctions(self) -> None:
         # Copied helpers began identical and then drifted, so a copy is caught while it is still identical.
@@ -305,3 +373,6 @@ class DuplicationPolicies(unittest.TestCase):
     def test_repository_keeps_shared_modules_in_skill_core(self) -> None:
         self.assertEqual([], skill_core_copy_problems(REPOSITORY_ROOT))
         self.assertEqual([], skill_core_import_problems(REPOSITORY_ROOT))
+
+    def test_shipped_skill_scripts_import_only_what_a_deployment_holds(self) -> None:
+        self.assertEqual([], skill_script_import_problems(REPOSITORY_ROOT))
