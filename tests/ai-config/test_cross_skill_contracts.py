@@ -746,13 +746,19 @@ class CrossSkillContractTests(GitTestCase):
         for line in ("f\"INLINE {result['run']}\"", 'f"INLINE_ROLE {selector} ', 'f"INLINE_DONE {selector}"'):
             self.assertIn(line, source)
 
-    def test_an_inline_role_s_commands_match_the_grant_review_prs_started_the_pipeline_under(self) -> None:
-        # An inline role runs its prompt's commands in the session review-prs runs in, under the skill's grant, which
-        # Claude Code matches as text: the resolved path of the same script, with no `..`, never matches it.
-        skill = REPOSITORY_ROOT / "skills/review-prs"
+    def test_an_inline_role_s_commands_match_the_grants_the_review_skills_started_the_pipeline_under(self) -> None:
+        # An inline role runs its prompt's commands in the session the review skill runs in, under the skill's grant,
+        # which Claude Code matches as text, normalizing no path: the resolved path of the same script, with no `..`,
+        # never matches it. The grants name the scripts, so no other code-review-core script and no `..` path out of a
+        # named one matches either.
+        for name in ("review-prs", "review-document"):
+            with self.subTest(skill=name):
+                self.assert_inline_commands_match_only_the_named_grants(REPOSITORY_ROOT / "skills" / name)
+
+    def assert_inline_commands_match_only_the_named_grants(self, skill: Path) -> None:
         value = skill_frontmatter.read(skill / "SKILL.md").value("allowed-tools")
         if not isinstance(value, list):
-            self.fail(f"review-prs grants no list of tools: {value!r}")
+            self.fail(f"{skill.name} grants no list of tools: {value!r}")
         # Each grant as the deployer renders it here, with Python named as this platform names it.
         grants = [
             entry.removeprefix(f"{shell}(").removesuffix(")").replace("{{PYTHON}}", platform_support.PYTHON)
@@ -760,11 +766,13 @@ class CrossSkillContractTests(GitTestCase):
             for shell in ("Bash", "PowerShell")
             if entry.startswith(f"{shell}(")
         ]
-        self.assertEqual(2, len(grants), value)
+        for grant in grants:
+            with self.subTest(grant=grant):
+                self.assertRegex(grant, r'/[a-z_]+\.py" \*$')
         _, body = frontmatter_and_body((skill / "SKILL.md").read_text(encoding="utf-8-sig"))
         started = re.search(r'\{\{PYTHON\}\} -B "(\$\{CLAUDE_SKILL_DIR\}[^"]+)" prepare ', body)
         if started is None:
-            self.fail("review-prs names no prepare command")
+            self.fail(f"{skill.name} names no prepare command")
         run = Path(tempfile.gettempdir()) / "code-review-run-example"
 
         def commands(argv: list[str]) -> list[str]:
@@ -775,15 +783,21 @@ class CrossSkillContractTests(GitTestCase):
                 check = review_pipeline.self_check_command(run, "generic-review")
             return [check, fetch.replace("<path>", "src/app.py"), search.replace("<pattern>", "def main")]
 
-        spelled = commands([started.group(1).replace("${CLAUDE_SKILL_DIR}", str(skill)), "prepare"])
-        resolved = commands(["review_pipeline.py", "prepare"])
-        for grant in grants:
-            for command in spelled:
-                with self.subTest(grant=grant, command=command):
-                    self.assertTrue(claude_code_grants(grant, command, skill))
-            for command in resolved:
-                with self.subTest(grant=grant, resolved=command):
-                    self.assertFalse(claude_code_grants(grant, command, skill))
+        pipeline = started.group(1).replace("${CLAUDE_SKILL_DIR}", str(skill))
+        core = pipeline.removesuffix("review_pipeline.py")
+        python = platform_support.PYTHON
+        never = [
+            *commands(["review_pipeline.py", "prepare"]),
+            f'{python} -B "{core}review_config.py" write config.json',
+            f'{python} -B "{core}review_pipeline.py/../review_config.py" write config.json',
+            f'{python} -B "{skill}/scripts/../../code-review-core/scripts/review_config.py" write config.json',
+        ]
+        for command in commands([pipeline, "prepare"]):
+            with self.subTest(command=command):
+                self.assertTrue(any(claude_code_grants(grant, command, skill) for grant in grants))
+        for command in never:
+            with self.subTest(never=command):
+                self.assertFalse(any(claude_code_grants(grant, command, skill) for grant in grants))
 
     def test_review_prs_states_its_runtime_instead_of_leaving_it_to_path(self) -> None:
         # PATH says which CLIs are installed, not which one is orchestrating, so review-prs names its host.
