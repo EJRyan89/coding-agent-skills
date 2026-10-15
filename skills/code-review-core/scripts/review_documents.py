@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import difflib
 import io
+import lzma
 import re
 import subprocess
 import sys
@@ -95,7 +96,15 @@ EXTRACTED_NOTES = {
 UNCHANGED_NOTE = "; no line of its text differs, so the change is to formatting, images, or parts not extracted"
 NO_BASE_NOTE = "; the base version could not be extracted ({reason}), so every line shows as added"
 # What reading a hostile package can raise: a damaged archive, an unsupported or corrupt compression, a cut stream.
-PACKAGE_ERRORS = (zipfile.BadZipFile, zipfile.LargeZipFile, NotImplementedError, EOFError, OSError, zlib.error)
+PACKAGE_ERRORS = (
+    zipfile.BadZipFile,
+    zipfile.LargeZipFile,
+    NotImplementedError,
+    EOFError,
+    OSError,
+    zlib.error,
+    lzma.LZMAError,
+)
 
 
 _Start = Callable[[str, dict[str, str]], None]
@@ -114,17 +123,29 @@ def document_format(path: str) -> str | None:
 
 
 def extract(form: str, content: bytes) -> bytes:
-    """The extracted text of a document in format `form`, as UTF-8 lines each ending in LF."""
-    if form == "docx":
-        lines = extract_docx(content)
-    elif form == "pdf":
-        lines = extract_pdf(content)
-    else:
-        raise ExtractionRefused(f"no extraction for {form}")
+    """The extracted text of a document in format `form`, as UTF-8 lines each ending in LF.
+
+    Every failure to extract it is an `ExtractionRefused`, so each caller refuses that one document and goes on. A
+    failure the readers below do not name is refused by its type alone, since its message may quote the document.
+    """
+    try:
+        lines = _extracted_lines(form, content)
+    except ExtractionRefused:
+        raise
+    except Exception as exc:
+        raise ExtractionRefused(f"its text could not be read ({type(exc).__name__})") from exc
     text = "".join(f"[{label}] {line}\n" for label, line in lines).encode("utf-8")
     if len(text) > MAX_EXTRACTED_BYTES:
         raise ExtractionRefused(f"its text is over {_size(MAX_EXTRACTED_BYTES)}")
     return text
+
+
+def _extracted_lines(form: str, content: bytes) -> list[tuple[str, str]]:
+    if form == "docx":
+        return extract_docx(content)
+    if form == "pdf":
+        return extract_pdf(content)
+    raise ExtractionRefused(f"no extraction for {form}")
 
 
 def extract_docx(content: bytes) -> list[tuple[str, str]]:
@@ -311,8 +332,8 @@ def _heading_styles(data: bytes) -> dict[str, int]:
             named[style] = value.casefold()
         elif name == WORD + "basedOn":
             based[style] = value
-        elif name == WORD + "outlineLvl" and value.isdigit():
-            outline[style] = int(value)
+        elif name == WORD + "outlineLvl" and (level := _number(value)) is not None:
+            outline[style] = level
 
     def end(name: str) -> None:
         if name == WORD + "style":
@@ -342,6 +363,12 @@ def _style_level(style: str, named: dict[str, str], outline: dict[str, int], bas
             return _outline_level(outline[current])
         current = based.get(current)
     return None
+
+
+def _number(value: str) -> int | None:
+    """An attribute's whole number in ASCII digits, as Word writes it, or None: `str.isdigit` also passes a
+    superscript digit, which `int` refuses."""
+    return int(value) if value.isascii() and value.isdigit() else None
 
 
 def _outline_level(value: int) -> int | None:
@@ -423,10 +450,10 @@ class _Body:
         properties = parent == WORD + "pPr" and self.paragraphs == 1 and not self.tables
         if properties and local == "pStyle":
             block.style = value
-        elif properties and local == "outlineLvl" and value.isdigit():
-            block.outline = int(value)
+        elif properties and local == "outlineLvl" and (level := _number(value)) is not None:
+            block.outline = level
         elif local == "ilvl" and parent == WORD + "numPr" and self.paragraphs == 1 and not self.tables:
-            block.list_level = int(value) if value.isdigit() else 0
+            block.list_level = _number(value) or 0
         elif local == "numPr" and parent == WORD + "pPr" and self.paragraphs == 1 and not self.tables:
             block.list_level = block.list_level or 0
         elif local == "numId" and parent == WORD + "numPr" and value == "0":
