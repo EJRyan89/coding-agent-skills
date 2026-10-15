@@ -5,7 +5,6 @@ Each policy fails on a violating input and passes on a conforming one.
 
 from __future__ import annotations
 
-import shutil
 import sys
 import tempfile
 import unittest
@@ -92,7 +91,7 @@ class PythonChecksFixtures(GitTestCase):
     def test_missing_mypy_is_reported_with_the_install_command(self) -> None:
         self.assertIn(("mypy", "mypy", find_mypy), PREREQUISITES)
         with (
-            mock.patch.object(shutil, "which", return_value=None),
+            mock.patch.object(platform_support, "find_on_path", return_value=None),
             mock.patch.object(platform_support, "find_executable", return_value=None),
         ):
             self.assertIsNone(find_mypy())

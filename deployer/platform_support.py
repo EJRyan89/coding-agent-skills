@@ -5,7 +5,6 @@ from __future__ import annotations
 import errno
 import os
 import re
-import shutil
 import signal
 import sys
 from collections.abc import Mapping
@@ -310,8 +309,8 @@ def find_bash() -> str | None:
 
 
 def _bash_beside_git() -> str | None:
-    """Locate the Bash shipped with the git on PATH, as Scoop and per-user Git installs place it."""
-    git = shutil.which("git")
+    """Locate the Bash shipped with the git the locator finds, as Scoop and per-user Git installs place it."""
+    git = find_executable("git")
     if git is None:
         return None
     result = run_tool([git, "--exec-path"])
@@ -326,15 +325,21 @@ def _bash_beside_git() -> str | None:
 
 
 def find_powershell() -> str | None:
-    """PowerShell 7, or on Windows Windows PowerShell when it is not installed."""
+    """PowerShell 7, or on Windows Windows PowerShell when it is not installed, found by the locator."""
     if not WINDOWS:
-        return shutil.which("pwsh")
-    return shutil.which("pwsh") or shutil.which("powershell")
+        return find_executable("pwsh")
+    return find_executable("pwsh") or find_executable("powershell")
+
+
+def find_on_path(name: str, search_path: str) -> str | None:
+    """The first program `name` runs on exactly this PATH value, by skill-core's walk of PATH: never the caller's own
+    PATH, no link folder, and never the working directory, which `shutil.which` searches first on Windows."""
+    return next(iter(executable_locator.path_programs(name, search_path)), None) if search_path else None
 
 
 def find_pwsh(search_path: str) -> str | None:
     """Find PowerShell 7 on exactly this PATH value; never Windows PowerShell, and never the caller's own PATH."""
-    return shutil.which("pwsh", path=search_path) if search_path else None
+    return find_on_path("pwsh", search_path)
 
 
 class HiddenWindow(TypedDict, total=False):

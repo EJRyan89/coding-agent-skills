@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import shutil
 import sys
 import sysconfig
 import unittest
@@ -62,7 +61,7 @@ def read_module_version(manifest: str) -> tuple[int, ...] | None:
 
 
 def find_powershell() -> str:
-    found = shutil.which("pwsh")
+    found = platform_support.find_executable("pwsh")
     if found:
         return found
     raise AssertionError("PowerShell 7 (pwsh) was not found in PATH. It is required for repository validation.")
@@ -80,7 +79,8 @@ def find_ruff() -> str | None:
 
 def find_mypy() -> str | None:
     """mypy from this interpreter's scripts directory, where requirements-dev.txt installs it, or else from PATH."""
-    return shutil.which("mypy", path=sysconfig.get_path("scripts")) or platform_support.find_executable("mypy")
+    scripts = sysconfig.get_path("scripts")
+    return platform_support.find_on_path("mypy", scripts) or platform_support.find_executable("mypy")
 
 
 PREREQUISITES: tuple[tuple[str, str, Callable[[], str | None]], ...] = (
