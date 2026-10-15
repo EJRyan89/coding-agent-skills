@@ -26,7 +26,7 @@ The readers read only what the examined tree holds and only so much of it. A pat
 ProjectReference, or a project a restore recorded, is made absolute without reaching the file system (`project_path`),
 and the caller asks `refusal` before anything opens or looks it up: one outside the tree (`examined_tree`), or in a
 device or network form, is refused unread. A read opens only a regular file and refuses one holding more than
-`READ_LIMIT_BYTES` (`read_bounded`).
+skill-core's `READ_LIMIT_BYTES` in `dotnet_solution.py`, the one bound (`read_bounded`).
 """
 
 from __future__ import annotations
@@ -34,7 +34,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import stat
 import sys
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
@@ -44,13 +43,10 @@ from xml.etree.ElementTree import Element
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
-from dotnet_solution import decode_text, listed_projects, same_path
+import dotnet_solution
+from dotnet_solution import FileRefused, decode_text, listed_projects, same_path
 from xml_reader import XmlRefused, read_xml
 
-# The most bytes the readers read of one file; a larger file is refused unread, so no file can exhaust the memory a
-# run has. A large solution's restore writes the largest file the readers take, its project.assets.json, which stays
-# well below it.
-READ_LIMIT_BYTES = 64 * 1024 * 1024
 # What marks the folder a checkout starts in: a folder, or a file in a linked worktree or a submodule.
 CHECKOUT_MARKER = ".git"
 # The forms of a path that name a device rather than a file, as a path written with `/` for `\` starts.
@@ -254,22 +250,12 @@ def child_text(element: Element, name: str) -> str | None:
 
 
 def read_bounded(path: Path) -> bytes:
-    """The bytes of the regular file at `path`, or `Unreadable` when it cannot be read, is not a regular file, such as
-    a device, a pipe, or a folder, which the reader never opens, or holds more than `READ_LIMIT_BYTES`."""
-    too_large = f"the file is larger than the reader's bound of {READ_LIMIT_BYTES} bytes, so it is not read"
+    """The bytes of the regular file at `path`, read by skill-core's `read_bounded`, or `Unreadable` with its reason
+    when it refuses the file: it cannot be read, is not a regular file, or holds more than `READ_LIMIT_BYTES`."""
     try:
-        status = path.stat()
-        if not stat.S_ISREG(status.st_mode):
-            raise Unreadable(path, "not a regular file, so the reader does not open it")
-        if status.st_size > READ_LIMIT_BYTES:
-            raise Unreadable(path, too_large)
-        with path.open("rb") as stream:
-            data = stream.read(READ_LIMIT_BYTES + 1)
-    except OSError as error:
-        raise Unreadable(path, error.strerror or str(error)) from None
-    if len(data) > READ_LIMIT_BYTES:
-        raise Unreadable(path, too_large)
-    return data
+        return dotnet_solution.read_bounded(path)
+    except FileRefused as error:
+        raise Unreadable(path, error.reason) from None
 
 
 def parse_xml(path: Path) -> Element:

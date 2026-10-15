@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 from executable_locator import find_executable
 from git_client import GitClient, GitError, GitResult, GitStream, Runner, subprocess_runner
 from github_client import GitHubClient, GitHubError, replace_undecodable
+from github_remote import github_repository
 from review_config import REVIEWER_EFFORTS, validate_glob_patterns, validate_repository_identity
 from review_documents import DOCUMENT_FORMATS, EXTRACTED_WHEN_TEXT, ExtractionRefused, document_format, extract
 from review_guard import ROLE_ID as SLUG
@@ -720,11 +721,10 @@ def _run_git(checkout: Path, runner: Runner, *arguments: str) -> str:
 
 
 def _normalize_remote(value: str) -> str:
-    value = value.strip().removesuffix(".git")
-    match = re.search(r"github\.com[/:]([^/]+)/([^/]+)$", value, re.IGNORECASE)
-    if not match:
+    repository = github_repository(value)
+    if repository is None:
         raise RuntimeContractError("Checkout origin is not a recognizable GitHub remote")
-    return f"{match.group(1)}/{match.group(2)}".lower()
+    return repository.lower()
 
 
 def verify_checkout_remote(checkout: Path, repository: str, runner: Runner = subprocess_runner) -> None:

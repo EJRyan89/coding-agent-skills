@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 import bounded_process
 import dotnet_format_targets as targets
+import dotnet_solution
 import git_client
 import github_client
 from flat_text import flat_text
@@ -581,8 +582,9 @@ class ResolveTests(GitTestCase):
         self.repository.write("Lib/Code.cs")
         self.repository.commit("code")
         denied = PermissionError(13, "Permission denied", "Lib/Lib.csproj")
-        with mock.patch.object(Path, "read_bytes", side_effect=denied):
-            self.assertEqual("[Errno 13] Permission denied: 'Lib/Lib.csproj'", self.failed())
+        with mock.patch.object(Path, "open", side_effect=denied):
+            failure = self.failed()
+        self.assertEqual(f"{self.repository.root / 'Lib' / 'Lib.csproj'} cannot be read: Permission denied", failure)
 
     def test_an_unreadable_directory_fails_instead_of_hiding_a_solution(self) -> None:
         repo = self.repository
@@ -698,6 +700,27 @@ class ResolveTests(GitTestCase):
             [["changed files do not belong to any solution found: Other.slnx"]],
             self.values(self.resolve(), "STOP"),
         )
+
+    def test_a_solution_above_the_read_bound_or_not_a_regular_file_fails_with_the_reason(self) -> None:
+        # Every read opens only a regular file within skill-core's one bound, so a very large solution, or a device a
+        # solution's name points at, never holds the run or exhausts its memory.
+        repo = self.repository
+        repo.write("Lib/Lib.csproj", SDK_PROJECT)
+        repo.write("Lib/Code.cs")
+        repo.write("App.sln", solution("Lib\\Lib.csproj"))
+        repo.commit("solution")
+        limit = 64
+        with mock.patch.object(dotnet_solution, "READ_LIMIT_BYTES", limit):
+            failure = self.failed()
+        bound = f"the file is larger than the reader's bound of {limit} bytes, so it is not read"
+        self.assertEqual(f"{repo.root / 'App.sln'} cannot be read: {bound}", failure)
+        if Path("/dev/zero").exists():
+            (repo.root / "App.sln").unlink()
+            (repo.root / "App.sln").symlink_to("/dev/zero")
+            failure = self.failed()
+            self.assertEqual(
+                f"{repo.root / 'App.sln'} cannot be read: not a regular file, so the reader does not open it", failure
+            )
 
     def test_an_slnx_declaring_another_encoding_is_read_as_decoded(self) -> None:
         repo = self.repository
