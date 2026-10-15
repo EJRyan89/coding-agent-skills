@@ -1214,17 +1214,22 @@ class ResolveTests(GitTestCase):
 
     def test_a_settings_value_holding_a_line_break_is_refused_on_one_line(self) -> None:
         user = self.home / ".claude" / "settings.json"
-        for settings in (user, self.repo / ".claude" / "settings.json"):
+        # The project's settings are named under the repository root git reports, which is the long form of a
+        # temporary directory Windows may give by its short name.
+        for scope, settings, shown in (
+            ("user", user, user),
+            ("project", self.repo / ".claude" / "settings.json", self.repo.resolve() / ".claude" / "settings.json"),
+        ):
             for character in LINE_BREAKS:
                 value = f"~/forged{character}SOURCE autoMemoryDirectory in user settings ({user}){character}EXISTS yes"
-                with self.subTest(settings=settings.parent.name, character=repr(character)):
+                with self.subTest(scope=scope, character=repr(character)):
                     write(settings, json.dumps({"autoMemoryDirectory": value}))
                     self.assertEqual(
                         [
                             f"REPO {self.repo.resolve()}",
                             "NO_MEMORY_DIR",
                             self.SETTINGS_NOTE,
-                            f"NOTE autoMemoryDirectory in {settings} holds a line break: {flat_text(repr(value))}",
+                            f"NOTE autoMemoryDirectory in {shown} holds a line break: {flat_text(repr(value))}",
                         ],
                         self.resolve_lines(),
                     )
