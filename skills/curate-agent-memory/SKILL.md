@@ -2,7 +2,7 @@
 name: curate-agent-memory
 description: "Audit and clean up Claude Code auto-memory for a project: find stale, duplicated, or misplaced memories, move durable rules to their proper home, and apply only the changes the user approves. Use it when asked to review, tidy, or prune a project's memories."
 argument-hint: "[repository path] [--memory-dir DIR]"
-allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "Read", "Edit", "Grep", "AskUserQuestion", "Skill"]
+allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/memory_audit.py\" *)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/memory_audit.py\" *)", "Read", "Edit", "Grep", "AskUserQuestion", "Skill"]
 ---
 
 # Curate agent memory

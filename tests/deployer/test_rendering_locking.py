@@ -148,11 +148,10 @@ class RenderedExecutableTests(DeployerTestCase):
                 referenced += 1
                 path = match.group(1)
                 with self.subTest(document=document.relative_to(self.skills_dir).as_posix(), path=path):
-                    if "*" in path:
-                        # An allowed-tools pattern such as scripts/*) must name a directory that is deployed.
-                        self.assertTrue((self.skills_dir / skill / path.split("*")[0]).resolve().is_dir())
-                    else:
-                        self.assertTrue((self.skills_dir / skill / path).resolve().exists())
+                    # A grant names each script, ending at its closing quote, never a folder a * continues, which
+                    # would also match a `..` path to any deployed skill's scripts.
+                    self.assertNotIn("*", path)
+                    self.assertTrue((self.skills_dir / skill / path).resolve().exists())
         self.assertGreater(referenced, 20, "the bundled skills name their scripts through ${CLAUDE_SKILL_DIR}")
         for adapter in sorted(self.agents_dir.glob("*/SKILL.md")):
             with self.subTest(adapter=adapter.parent.name):

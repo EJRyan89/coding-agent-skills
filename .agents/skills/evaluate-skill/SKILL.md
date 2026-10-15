@@ -5,7 +5,7 @@ description: >-
   Use it before a pull request that changes a skill's prompt, model guidance, or reviewer instructions. Each run
   calls models.
 argument-hint: "SKILL [--scenario NAME ...] [--model NAME ...]"
-allowed-tools: ["Bash(python -B tools/skill_evals.py*)", "PowerShell(python -B tools/skill_evals.py*)"]
+allowed-tools: ["Bash(python -B tools/skill_evals.py *)", "PowerShell(python -B tools/skill_evals.py *)"]
 ---
 
 Read and follow `../../../.claude/skills/evaluate-skill/SKILL.md` as the authoritative workflow.

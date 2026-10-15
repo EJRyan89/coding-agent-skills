@@ -76,10 +76,10 @@ class SkillGrantsFixtures(GitTestCase):
 
     def test_grant_policy_holds_repository_skills_to_the_repository_tools_they_run(self) -> None:
         own = "python -B tools/a.py"
-        twin = json.dumps([f"Bash({own}*)", f"PowerShell({own}*)"])
+        twin = json.dumps([f"Bash({own} *)", f"PowerShell({own} *)"])
         skills = {
             "bare": ('["Bash"]', own),
-            "unpaired": (json.dumps([f"Bash({own}*)"]), own),
+            "unpaired": (json.dumps([f"Bash({own} *)"]), own),
             # gh acts outside the conversation, so it may keep prompting; tools/b.py is the repository's own.
             "ungranted": (twin, f'{own}\npython -B tools/b.py\ngh pr create --body-file "<file>"'),
             "good": (twin, f'{own} "<skill>"'),
@@ -101,7 +101,7 @@ class SkillGrantsFixtures(GitTestCase):
                     f".claude/skills/ungranted/SKILL.md:8 no Bash grant covers python -B tools/b.py; see {GRANTS_DOC}",
                     ".claude/skills/ungranted/SKILL.md:8 no PowerShell grant covers python -B tools/b.py; "
                     f"see {GRANTS_DOC}",
-                    f".claude/skills/unpaired/SKILL.md grants Bash({own}*) in one shell only; see {GRANTS_DOC}",
+                    f".claude/skills/unpaired/SKILL.md grants Bash({own} *) in one shell only; see {GRANTS_DOC}",
                 ],
                 skill_grant_problems(root, repository_skill_files(root), REPOSITORY_TOOL_COMMAND),
             )
@@ -136,20 +136,21 @@ class SkillGrantsFixtures(GitTestCase):
 
     def test_skill_grant_policy_detects_unscoped_unpaired_unused_and_ungranted_grants(self) -> None:
         own = 'python -B "${CLAUDE_SKILL_DIR}/scripts/'
+        script = f'{own}x.py" *'
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "deploy-meta").mkdir()
             skills = {
                 "bare": ('["Bash"]', f'{own}x.py"'),
-                "unpaired": (json.dumps([f"Bash({own}*)"]), f'{own}x.py"'),
+                "unpaired": (json.dumps([f"Bash({script})"]), f'{own}x.py"'),
                 "ungranted": (
-                    json.dumps([f"Bash({own}*)", f"PowerShell({own}*)"]),
+                    json.dumps([f"Bash({script})", f"PowerShell({script})"]),
                     f'{own}x.py"\npython -B "${{CLAUDE_SKILL_DIR}}/../core/scripts/y.py"\ngit status',
                 ),
                 "none": ('["Read"]', f'{own}x.py"'),
-                "unused": (json.dumps([f"Bash({own}*)", f"PowerShell({own}*)", "Glob"]), f'{own}x.py"'),
-                "expands": (json.dumps([f"Bash({own}*)", f"PowerShell({own}*)"]), f'{own}x.py" --cwd "$PWD"'),
-                "good": (json.dumps([f"Bash({own}*)", f"PowerShell({own}*)"]), f'{own}x.py" --plan "<plan file>"'),
+                "unused": (json.dumps([f"Bash({script})", f"PowerShell({script})", "Glob"]), f'{own}x.py"'),
+                "expands": (json.dumps([f"Bash({script})", f"PowerShell({script})"]), f'{own}x.py" --cwd "$PWD"'),
+                "good": (json.dumps([f"Bash({script})", f"PowerShell({script})"]), f'{own}x.py" --plan "<plan file>"'),
             }
             for skill, (allowed, command) in skills.items():
                 (root / "deploy-meta" / f"{skill}.json").write_text("{}", encoding="utf-8")
@@ -171,7 +172,7 @@ class SkillGrantsFixtures(GitTestCase):
                     f'python -B "${{CLAUDE_SKILL_DIR}}/../core/scripts/y.py"; see {GRANTS_DOC}',
                     f"skills/ungranted/SKILL.md:8 no PowerShell grant covers "
                     f'python -B "${{CLAUDE_SKILL_DIR}}/../core/scripts/y.py"; see {GRANTS_DOC}',
-                    f"skills/unpaired/SKILL.md grants Bash({own}*) in one shell only; see {GRANTS_DOC}",
+                    f"skills/unpaired/SKILL.md grants Bash({script}) in one shell only; see {GRANTS_DOC}",
                     f"skills/unused/SKILL.md grants Glob, which no step uses; see {GRANTS_DOC}",
                 ],
                 skill_grant_problems(root),
@@ -202,14 +203,60 @@ class SkillGrantsFixtures(GitTestCase):
                 skill_grant_problems(root),
             )
 
+    def test_grant_policy_fails_a_wildcard_that_continues_a_path(self) -> None:
+        # Claude Code normalizes no path in a shell grant, so a pattern whose * continues the path before it also
+        # matches scripts/../../<other skill>/scripts/<script>.py; one that ends the path first matches one script.
+        own = 'python -B "${CLAUDE_SKILL_DIR}/scripts/'
+        shipped = {
+            "folder": f"{own}*",
+            "prefix": f'{own}x*.py" *',
+            "named": f'{own}x.py" *',
+        }
+        repository = {"glued": "python -B tools/a.py*", "spaced": "python -B tools/a.py *"}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            files: dict[str, str] = {}
+            for skill, pattern in shipped.items():
+                allowed = json.dumps([f"Bash({pattern})", f"PowerShell({pattern})"])
+                files[f"deploy-meta/{skill}.json"] = "{}"
+                files[f"skills/{skill}/SKILL.md"] = (
+                    f'---\nname: {skill}\nallowed-tools: {allowed}\n---\n\n```bash\n{own}x.py" run\n```\n'
+                )
+            for skill, pattern in repository.items():
+                allowed = json.dumps([f"Bash({pattern})", f"PowerShell({pattern})"])
+                files[f".claude/skills/{skill}/SKILL.md"] = (
+                    f"---\nname: {skill}\nallowed-tools: {allowed}\n---\n\n```bash\npython -B tools/a.py\n```\n"
+                )
+            write_fixture_tree(root, files)
+
+            def problems(name: str, pattern: str) -> list[str]:
+                return [
+                    f"{name} grants {tool}({pattern}), whose * continues a path, so it reaches every skill's scripts "
+                    f"through ..; grant each script by name; see {GRANTS_DOC}"
+                    for tool in ("Bash", "PowerShell")
+                ]
+
+            self.assertEqual(
+                [
+                    *problems("skills/folder/SKILL.md", shipped["folder"]),
+                    *problems("skills/prefix/SKILL.md", shipped["prefix"]),
+                ],
+                skill_grant_problems(root),
+            )
+            self.assertEqual(
+                problems(".claude/skills/glued/SKILL.md", repository["glued"]),
+                skill_grant_problems(root, repository_skill_files(root), REPOSITORY_TOOL_COMMAND),
+            )
+
     def test_grant_policy_fails_grants_that_approve_nothing_the_skill_runs(self) -> None:
         own = 'python -B "${CLAUDE_SKILL_DIR}/scripts/'
+        script = f'{own}x.py" *'
         hidden = "disable-model-invocation: true\nuser-invocable: false\n"
         skills = {
             "hidden": (f'{hidden}allowed-tools: ["Read"]\n', "Use the `Read` tool."),
             "quiet": (hidden, "Imported by other skills."),
             "idle": (
-                "allowed-tools: " + json.dumps([f"Bash({own}*)", f"PowerShell({own}*)"]) + "\n",
+                "allowed-tools: " + json.dumps([f"Bash({script})", f"PowerShell({script})"]) + "\n",
                 "```bash\ngit status\n```",
             ),
             "spanned": (
@@ -229,7 +276,7 @@ class SkillGrantsFixtures(GitTestCase):
                     f"skills/hidden/SKILL.md is hidden, so no turn starts it and its allowed-tools approve nothing; "
                     f"see {GRANTS_DOC}",
                     *(
-                        f"skills/idle/SKILL.md grants {tool}({own}*), which matches no command in its fences or code "
+                        f"skills/idle/SKILL.md grants {tool}({script}), which matches no command in its fences or code "
                         f"spans; see {GRANTS_DOC}"
                         for tool in ("Bash", "PowerShell")
                     ),
@@ -245,7 +292,9 @@ class SkillGrantsFixtures(GitTestCase):
             f"COMMANDS_ALLOWED = {CONFIGURED}\n"
         )
         grants = {
-            "wide": json.dumps([f"Bash({own}*)", f"PowerShell({own}*)"]),
+            "wide": json.dumps(
+                [f'{tool}({own}{script}.py" *)' for script in ("audit", "start") for tool in ("Bash", "PowerShell")]
+            ),
             "narrow": json.dumps([f'Bash({own}audit.py" *)', f'PowerShell({own}audit.py" *)']),
         }
         with tempfile.TemporaryDirectory() as temporary:
@@ -296,8 +345,10 @@ class SkillGrantsFixtures(GitTestCase):
             with self.subTest(source=source), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 files: dict[str, str] = {}
-                for skill, pattern in (("wide", f"{own}*"), ("narrow", f'{own}audit.py" *')):
-                    grants = json.dumps([f"Bash({pattern})", f"PowerShell({pattern})"])
+                for skill, scripts in (("wide", ("audit", "start")), ("narrow", ("audit",))):
+                    grants = json.dumps(
+                        [f'{tool}({own}{script}.py" *)' for script in scripts for tool in ("Bash", "PowerShell")]
+                    )
                     files[f"deploy-meta/{skill}.json"] = "{}"
                     files[f"skills/{skill}/scripts/start.py"] = (
                         'RUNS_REPOSITORY_CODE = "starts configured repository code"\n' + source

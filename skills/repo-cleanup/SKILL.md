@@ -2,7 +2,7 @@
 name: repo-cleanup
 description: "Clean up GitHub repos: switch to default branch, prune gone branches, remove stale worktrees, and fast-forward remaining branches. Sweeps all repos under {{REPOS_ROOT}} or targets a single repo by name/path."
 argument-hint: "[<repo-name-or-path>]"
-allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "AskUserQuestion"]
+allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py\" *)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py\" *)", "AskUserQuestion"]
 disable-model-invocation: true
 ---
 
