@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
@@ -21,17 +24,22 @@ from msbuild_reader import (
     assemblies_for,
     central_versions_file,
     condition_holds,
+    examined_tree,
     framework_key,
     matching_framework,
     package_assemblies,
     packages_for,
+    project_path,
     project_refs_for,
     read_assets,
+    read_bounded,
     read_central_versions,
     read_nuspec,
     read_packages_config,
     read_project,
     read_redirects,
+    read_solution,
+    refusal,
     same_framework,
 )
 from xml_reader import read_xml
@@ -307,7 +315,7 @@ ASSETS = {
 
 class ReaderTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.root = Path(tempfile.mkdtemp(prefix="dotnet-dependencies-reader-"))
+        self.root = Path(tempfile.mkdtemp(prefix="dotnet-dependencies-reader-")).resolve()
         self.addCleanup(self.remove_root)
 
     def remove_root(self) -> None:
@@ -1147,6 +1155,97 @@ class ReaderTests(unittest.TestCase):
     def test_module_names_the_files_it_reads(self) -> None:
         self.assertEqual(("web.config", "app.config"), msbuild_reader.CONFIG_FILES)
         self.assertEqual("project.assets.json", msbuild_reader.ASSETS_FILE)
+
+
+class PathBoundTests(unittest.TestCase):
+    """The lexical rule for the paths files name, the examined tree, and the bounded read."""
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp(prefix="dotnet-dependencies-bounds-")).resolve()
+        self.addCleanup(self.remove_root)
+
+    def remove_root(self) -> None:
+        for path in sorted(self.root.rglob("*"), reverse=True):
+            path.rmdir() if path.is_dir() else path.unlink()
+        self.root.rmdir()
+
+    def test_the_bound_and_the_checkout_marker_are_the_documented_ones(self) -> None:
+        self.assertEqual(67108864, msbuild_reader.READ_LIMIT_BYTES)
+        self.assertEqual(".git", msbuild_reader.CHECKOUT_MARKER)
+
+    def test_a_named_path_is_made_absolute_and_judged_without_reaching_the_file_system(self) -> None:
+        tree = self.root / "repo"
+        project_dir = tree / "App"
+        written = {
+            "..\\Lib\\Lib.csproj": None,
+            "Inner/../Inner.csproj": None,
+            "..\\..\\outside\\Outside.csproj": "outside the examined tree",
+            "..\\..\\repo-sibling\\Sibling.csproj": "outside the examined tree",
+            "\\\\example.invalid\\share\\x.csproj": "network share",
+            "//example.invalid/share/x.csproj": "network share",
+            "\\\\?\\C:\\x\\x.csproj": "device",
+        }
+        with mock.patch.object(Path, "stat", side_effect=AssertionError("reached the file system")):
+            for text, reason in written.items():
+                with self.subTest(written=text):
+                    refused = refusal(project_path(project_dir, text), tree)
+                    if reason is None:
+                        self.assertIsNone(refused)
+                    else:
+                        self.assertIn(reason, refused or "")
+            # A local device form is refused on every platform: as a device where it names one, else as a share.
+            self.assertIsNotNone(refusal(project_path(project_dir, "\\\\.\\pipe\\x.csproj"), tree))
+        self.assertEqual(tree / "Lib" / "Lib.csproj", project_path(project_dir, "..\\Lib\\Lib.csproj"))
+
+    def test_the_examined_tree_is_the_nearest_folder_holding_the_marker_else_the_base(self) -> None:
+        base = self.root / "repo" / "src"
+        base.mkdir(parents=True)
+        marker = ".dotnet-dependencies-test-checkout"
+        with mock.patch.object(msbuild_reader, "CHECKOUT_MARKER", marker):
+            self.assertEqual(base, examined_tree(base))
+            (self.root / marker).mkdir()
+            self.assertEqual(self.root, examined_tree(base))
+            (self.root / "repo" / marker).write_text("gitdir: elsewhere\n", encoding="utf-8")
+            self.assertEqual(self.root / "repo", examined_tree(base))
+            (base / marker).mkdir()
+            self.assertEqual(base, examined_tree(base))
+
+    def test_a_read_takes_a_regular_file_within_the_bound_and_refuses_any_other(self) -> None:
+        path = self.root / "Lib.csproj"
+        path.write_bytes(b"x" * 16)
+        with mock.patch.object(msbuild_reader, "READ_LIMIT_BYTES", 16):
+            self.assertEqual(b"x" * 16, read_bounded(path))
+            path.write_bytes(b"x" * 17)
+            with self.assertRaises(Unreadable) as refused:
+                read_bounded(path)
+            self.assertEqual(
+                "the file is larger than the reader's bound of 16 bytes, so it is not read", refused.exception.reason
+            )
+            # A file whose size the system understates, as a growing file's or a special file's, is cut at the bound.
+            small = os.stat_result((stat.S_IFREG | 0o644, 0, 0, 1, 0, 0, 1, 0, 0, 0))
+            with mock.patch.object(Path, "stat", return_value=small), self.assertRaises(Unreadable) as refused:
+                read_bounded(path)
+            self.assertIn("larger than the reader's bound", refused.exception.reason)
+        with self.assertRaises(Unreadable) as refused:
+            read_bounded(self.root)
+        self.assertEqual("not a regular file, so the reader does not open it", refused.exception.reason)
+        with self.assertRaises(Unreadable) as refused:
+            read_bounded(self.root / "Missing.csproj")
+        self.assertEqual(self.root / "Missing.csproj", refused.exception.file)
+
+    def test_an_assets_file_or_solution_above_the_bound_is_unreadable(self) -> None:
+        assets = self.root / "project.assets.json"
+        assets.write_text(json.dumps({"targets": {"net8.0": {}}}), encoding="utf-8")
+        listed = self.root / "Harbor.slnx"
+        listed.write_text('<Solution><Project Path="a.csproj" /></Solution>', encoding="utf-8")
+        self.assertEqual(["a.csproj"], read_solution(listed))
+        with mock.patch.object(msbuild_reader, "READ_LIMIT_BYTES", 8):
+            with self.assertRaises(Unreadable) as refused:
+                read_assets(assets)
+            self.assertIn("larger than the reader's bound of 8 bytes", refused.exception.reason)
+            with self.assertRaises(Unreadable) as refused:
+                read_solution(listed)
+            self.assertIn("larger than the reader's bound of 8 bytes", refused.exception.reason)
 
 
 if __name__ == "__main__":

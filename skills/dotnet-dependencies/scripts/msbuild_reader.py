@@ -21,12 +21,20 @@ a project whose When has no Condition, which MSBuild refuses, is unreadable. Eve
 goes through `same_framework`, so a restore's long name, such as `.NETCoreApp,Version=v8.0`, matches the project's
 `net8.0`, and every search for a name among a project's names through `matching_framework`, which prefers the name
 spelled alike.
+
+The readers read only what the examined tree holds and only so much of it. A path a file names, a solution's entry, a
+ProjectReference, or a project a restore recorded, is made absolute without reaching the file system (`project_path`),
+and the caller asks `refusal` before anything opens or looks it up: one outside the tree (`examined_tree`), or in a
+device or network form, is refused unread. A read opens only a regular file and refuses one holding more than
+`READ_LIMIT_BYTES` (`read_bounded`).
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
+import stat
 import sys
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
@@ -36,8 +44,17 @@ from xml.etree.ElementTree import Element
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
-from dotnet_solution import read_text, same_path
+from dotnet_solution import decode_text, listed_projects, same_path
 from xml_reader import XmlRefused, read_xml
+
+# The most bytes the readers read of one file; a larger file is refused unread, so no file can exhaust the memory a
+# run has. A large solution's restore writes the largest file the readers take, its project.assets.json, which stays
+# well below it.
+READ_LIMIT_BYTES = 64 * 1024 * 1024
+# What marks the folder a checkout starts in: a folder, or a file in a linked worktree or a submodule.
+CHECKOUT_MARKER = ".git"
+# The forms of a path that name a device rather than a file, as a path written with `/` for `\` starts.
+DEVICE_PREFIXES = ("//?/", "//./")
 
 ASSEMBLY_VERSION = re.compile(r"\bVersion\s*=\s*([^,\s]+)", re.IGNORECASE)
 # One token of a condition: a quoted operand, the bare property, a StartsWith call on it, an operator, a parenthesis,
@@ -236,21 +253,77 @@ def child_text(element: Element, name: str) -> str | None:
     return None
 
 
+def read_bounded(path: Path) -> bytes:
+    """The bytes of the regular file at `path`, or `Unreadable` when it cannot be read, is not a regular file, such as
+    a device, a pipe, or a folder, which the reader never opens, or holds more than `READ_LIMIT_BYTES`."""
+    too_large = f"the file is larger than the reader's bound of {READ_LIMIT_BYTES} bytes, so it is not read"
+    try:
+        status = path.stat()
+        if not stat.S_ISREG(status.st_mode):
+            raise Unreadable(path, "not a regular file, so the reader does not open it")
+        if status.st_size > READ_LIMIT_BYTES:
+            raise Unreadable(path, too_large)
+        with path.open("rb") as stream:
+            data = stream.read(READ_LIMIT_BYTES + 1)
+    except OSError as error:
+        raise Unreadable(path, error.strerror or str(error)) from None
+    if len(data) > READ_LIMIT_BYTES:
+        raise Unreadable(path, too_large)
+    return data
+
+
 def parse_xml(path: Path) -> Element:
     """The root of the XML file at `path`, or `Unreadable` when it cannot be read or parsed."""
     try:
-        text = read_text(path)
-    except OSError as error:
-        raise Unreadable(path, error.strerror or str(error)) from None
-    try:
-        return read_xml(text)
+        return read_xml(decode_text(read_bounded(path)))
     except XmlRefused as error:
         raise Unreadable(path, str(error)) from None
 
 
+def read_solution(path: Path) -> list[str]:
+    """The project paths the solution at `path` lists, as written, or `Unreadable` when it cannot be read or parsed."""
+    try:
+        return listed_projects(decode_text(read_bounded(path)), path)
+    except XmlRefused as error:
+        raise Unreadable(path, str(error)) from None
+
+
+def lexical_absolute(path: str | Path) -> Path:
+    """`path` made absolute against the working directory and normalized without reaching the file system."""
+    return Path(os.path.abspath(path))  # noqa: PTH100 - Path.resolve reaches the file system, which this must not
+
+
 def project_path(project_dir: Path, include: str) -> Path:
-    """A path a project names, with Windows separators, resolved against the project's directory."""
-    return (project_dir / include.replace("\\", "/")).resolve()
+    """A path a file names, with Windows separators, joined to its directory and made absolute without reaching the
+    file system: nothing is opened, followed, or looked up to resolve it, so a path that names another host contacts
+    none before `refusal` judges it."""
+    return lexical_absolute(project_dir / include.replace("\\", "/"))
+
+
+def examined_tree(base: Path) -> Path:
+    """The tree a run reads the paths files name in: the checkout holding `base`, the solution's directory or the
+    directory searched, which is the nearest folder at or above it holding `CHECKOUT_MARKER`, else `base` itself."""
+    for folder in (base, *base.parents):
+        try:
+            if (folder / CHECKOUT_MARKER).exists():
+                return folder
+        except OSError:
+            continue
+    return base
+
+
+def refusal(path: Path, tree: Path) -> str | None:
+    """Why the reader does not read `path`, a path a file names, made absolute by `project_path`, or None when it lies
+    inside `tree`. The test is lexical, so it decides before anything touches the path: a device or network form,
+    or any other path outside the tree, is refused unopened."""
+    if Path(same_path(path)).is_relative_to(same_path(tree)):
+        return None
+    written = str(path).replace("\\", "/")
+    if written.startswith(DEVICE_PREFIXES):
+        return "the path names a device, which the reader does not open"
+    if written.startswith("//"):
+        return "the path names a network share, which the reader does not open, so no host is contacted"
+    return f"the path is outside the examined tree {tree.as_posix()}, which the reader does not leave"
 
 
 def is_sdk_style(root: Element) -> bool:
@@ -965,8 +1038,8 @@ def read_assets(path: Path, declared: Sequence[str] = ()) -> Assets:
     the target, whichever form the restore wrote it in, a name spelled alike before one that leaves its platform
     version to the default (`matching_framework`), else the target's name as written."""
     try:
-        document = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError) as error:
+        document = json.loads(read_bounded(path).decode("utf-8-sig"))
+    except ValueError as error:
         raise Unreadable(path, str(error)) from None
     targets = document.get("targets") if isinstance(document, dict) else None
     if not isinstance(targets, dict):
@@ -1017,12 +1090,13 @@ def restored_project_refs(restore: dict[str, Any], named: Callable[[str], str], 
 def restored_path(recorded: str, restored_project: str, project_dir: Path) -> Path:
     """A project path a restore recorded, taken relative to the directory of the project the restore ran for and
     resolved from `project_dir`, so a checkout moved since its restore still names its own projects; a path sharing
-    no root with that project is taken as written."""
+    no root with that project is taken as written. Either is made absolute without reaching the file system
+    (`project_path`), since it is only compared with the paths the project file names, never opened."""
     parts = recorded.replace("\\", "/").split("/")
     base = restored_project.replace("\\", "/").split("/")[:-1]
     shared = 0
     while shared < min(len(base), len(parts) - 1) and parts[shared].casefold() == base[shared].casefold():
         shared += 1
     if shared == 0:
-        return Path("/".join(parts)).resolve()
-    return (project_dir / "/".join([*[".."] * (len(base) - shared), *parts[shared:]])).resolve()
+        return lexical_absolute("/".join(parts))
+    return project_path(project_dir, "/".join([*[".."] * (len(base) - shared), *parts[shared:]]))
