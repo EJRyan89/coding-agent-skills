@@ -12,6 +12,7 @@ import inspect
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -295,6 +296,8 @@ class DeploymentTests(RuntimeCanaryTestCase):
         elsewhere = self.root / "Somewhere Else"
         elsewhere.mkdir()
         script = self.home / ".claude" / "skills" / FIXTURE / "scripts" / "canary_probe.py"
+        (self.home / ".runtime-canary").mkdir()
+        (self.home / ".runtime-canary" / "run-id").write_text("run one\n", encoding="utf-8")
         process = subprocess.run(
             [sys.executable, "-B", str(script), "--help", "two words"],
             cwd=elsewhere,
@@ -305,7 +308,15 @@ class DeploymentTests(RuntimeCanaryTestCase):
         self.assertEqual(f"RUNTIME_CANARY_PROBE RAN {forward(script)}\n", process.stdout)
         records = runtime_canary.read_records(self.home / ".runtime-canary" / "probe.jsonl")
         self.assertEqual(
-            [{"script": forward(script), "cwd": forward(elsewhere), "arguments": ["--help", "two words"]}], records
+            [
+                {
+                    "script": forward(script),
+                    "cwd": forward(elsewhere),
+                    "arguments": ["--help", "two words"],
+                    "run": "run one",
+                }
+            ],
+            records,
         )
 
     def test_unknown_skills_are_refused_before_a_home_is_made(self) -> None:
@@ -373,11 +384,42 @@ class RemoveHomeTests(GitTestCase):
 
     def test_a_home_the_canary_made_is_removed(self) -> None:
         home = runtime_canary.create_home()
+        runtime_canary.claim_home(home)
         (home / ".runtime-canary" / "transcripts").mkdir(parents=True)
         (home / ".runtime-canary" / "transcripts" / "claude.txt").write_text("a run\n", encoding="utf-8")
         code, output = self.remove(str(home))
         self.assertEqual((0, f'REMOVED "{home.as_posix()}"\n'), (code, output))
         self.assertFalse(home.exists())
+
+    def test_a_folder_named_like_a_home_without_the_marker_naming_it_is_refused_and_kept(self) -> None:
+        state = Path(".runtime-canary")
+        cases: dict[str, Callable[[Path], object]] = {
+            "no marker": lambda home: None,
+            "a marker naming another home": lambda home: (home / state / "home.json").write_text(
+                json.dumps({"made_by": "tools/runtime_canary.py", "home": forward(home.parent / "elsewhere")}),
+                encoding="utf-8",
+            ),
+            "a marker that is not JSON": lambda home: (home / state / "home.json").write_text("{", encoding="utf-8"),
+            "a marker that is a folder": lambda home: (home / state / "home.json").mkdir(),
+        }
+        for name, prepare in cases.items():
+            with self.subTest(case=name):
+                # Named and placed as the canary names and places its homes, but made here.
+                home = Path(tempfile.mkdtemp(prefix="runtime-canary-")).resolve()
+                self.addCleanup(shutil.rmtree, home, ignore_errors=True)
+                (home / state).mkdir()
+                (home / "notes.txt").write_text("someone's notes\n", encoding="utf-8")
+                prepare(home)
+                code, output = self.remove(str(home))
+                self.assertEqual(
+                    (
+                        1,
+                        f'FAILED "{home.as_posix()} holds no .runtime-canary/home.json naming it, so the canary did '
+                        'not make it"\n',
+                    ),
+                    (code, output),
+                )
+                self.assertEqual("someone's notes\n", (home / "notes.txt").read_text(encoding="utf-8"))
 
     def test_any_other_directory_is_refused_and_kept(self) -> None:
         with tempfile.TemporaryDirectory(prefix="runtime-canary-") as directory:
@@ -467,6 +509,9 @@ class RunTests(RuntimeCanaryTestCase):
     def test_a_script_run_from_another_path_is_a_wrong_path_failure(self) -> None:
         runner = FakeRuntimes()
         wrong = forward(self.root / "elsewhere" / FIXTURE / "scripts" / "canary_probe.py")
+        # A script there that exists, since one that does not never started.
+        Path(wrong).parent.mkdir(parents=True)
+        Path(wrong).write_text("print('elsewhere')\n", encoding="utf-8")
         runner.actions["codex"] = run_python(wrong, "--help")
         lines = self.canary(runner)
         self.assertIn(
@@ -560,6 +605,8 @@ class RunTests(RuntimeCanaryTestCase):
             "fails at import.py": ("import runtime_canary_no_such_module\n", 1),
             "calls sys.exit(5).py": ("import sys\n\ndef main():\n    sys.exit(5)\n\nmain()\n", 5),
             "catches its own error.py": ("try:\n    raise KeyError\nexcept KeyError:\n    pass\nprint('ok')\n", 0),
+            # Python opened it but never started it, so nothing unwound, and it exits 1 all the same.
+            "does not compile.py": ("def broken(:\n", 1),
         }
         for name, (text, status) in scripts.items():
             with self.subTest(script=name):
@@ -576,6 +623,72 @@ class RunTests(RuntimeCanaryTestCase):
                     [(forward(path), forward(self.root), recorded)],
                     runtime_canary.recorded_scripts(runtime_canary.read_records(log)),
                 )
+
+    def test_the_python_recorder_counts_no_script_for_a_missing_file_a_folder_or_a_module(self) -> None:
+        self.canary(FakeRuntimes(), discovery_only=True)
+        log = self.home / ".runtime-canary" / "scripts" / "direct.jsonl"
+        environment = runtime_canary.environment(dict(os.environ), log, self.home)
+        scripts = Path(self.skill_dir()) / "scripts"
+        (scripts / "a folder.py").mkdir()
+        (scripts / "canary_module.py").write_text("print('module')\n", encoding="utf-8")
+        cases = {
+            "a missing file": ([str(scripts / "missing.py")], self.home, 2),
+            "a folder": ([str(scripts / "a folder.py")], self.home, 1),
+            # A module that runs from the skill's folder is still no script file, as a command string is not.
+            "a module": (["-m", "canary_module"], scripts, 0),
+            "a command string": (["-c", "print('c')"], scripts, 0),
+        }
+        for name, (arguments, cwd, status) in cases.items():
+            with self.subTest(case=name):
+                log.write_text("", encoding="utf-8")
+                process = subprocess.run(
+                    [sys.executable, "-B", *arguments], cwd=cwd, env=environment, capture_output=True, check=False
+                )
+                self.assertEqual(status, process.returncode, process.stderr)
+                started = runtime_canary.read_records(log)
+                self.assertEqual([], started)
+                self.assertEqual(
+                    'FAILED "never ran a script from the skill"',
+                    runtime_canary.verdict(
+                        FIXTURE,
+                        self.home,
+                        probes=[],
+                        started=started,
+                        completed=Completed(0, "", ""),
+                        denials=[],
+                        timeout=60,
+                    ),
+                )
+
+    def test_a_marker_without_the_runs_identifier_does_not_count(self) -> None:
+        script = f"{self.skill_dir()}/scripts/canary_probe.py"
+        probe_log = self.home / ".runtime-canary" / "probe.jsonl"
+        for name, extra in (("no identifier", {}), ("another run's identifier", {"run": "an earlier run"})):
+            with self.subTest(case=name):
+                # The runtime's shell appends a marker line itself and never starts the probe.
+                forged = json.dumps({"script": script, "cwd": forward(self.home), "arguments": [], **extra})
+
+                def append(command: list[str], cwd: Path, environment: dict[str, str], line: str = forged) -> Completed:
+                    with probe_log.open("a", encoding="utf-8") as handle:
+                        handle.write(line + "\n")
+                    return Completed(0, "", "")
+
+                runner = FakeRuntimes()
+                runner.actions["codex"] = append
+                code, lines = self.outcome(runner)
+                self.assertEqual(1, code, lines)
+                self.assertIn(
+                    f'RUNTIME codex {FIXTURE} FAILED "never ran a script from the skill" {self.kept("codex")}', lines
+                )
+        # The probe itself copies the identifier the canary wrote for its run, which is new each run.
+        runner = FakeRuntimes()
+        runner.actions["codex"] = run_python(script, "--help")
+        identifiers = []
+        for _ in range(2):
+            self.assertIn(f'RUNTIME codex {FIXTURE} RAN "{script}"', "\n".join(self.canary(runner)))
+            identifiers.append(runtime_canary.read_records(probe_log)[0]["run"])
+            self.assertEqual(identifiers[-1], (self.home / ".runtime-canary" / "run-id").read_text(encoding="utf-8"))
+        self.assertNotEqual(identifiers[0], identifiers[1])
 
     # Codex is given a Windows sandbox mode only on Windows; the case holds on every platform as Windows runs it.
     @mock.patch.object(runtime_canary, "CODEX_HAS_WINDOWS_SANDBOX", True)
@@ -924,6 +1037,11 @@ class BashTests(RuntimeCanaryTestCase):
         # A command string or a script read from standard input is not a script file.
         self.assertEqual((0, "c", ""), bash("-c", "printf c"))
         self.assertEqual((0, "s\n", ""), bash("-s", stdin="echo s\n"))
+        # Nor is a script Bash cannot open: Bash reads the recorder first, then refuses it.
+        scripts = Path(self.tool()).parent
+        (scripts / "a folder.sh").mkdir()
+        self.assertEqual(127, bash(str(scripts / "missing.sh"))[0])
+        self.assertEqual(126, bash(str(scripts / "a folder.sh"))[0])
         self.assertEqual([], runtime_canary.read_records(log))
         self.assertEqual((3, "tool two words (1)\n", ""), bash(self.tool(), "two words", "(1)"))
         started = runtime_canary.read_records(log)
@@ -1451,6 +1569,11 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
     def test_output_starts_with_the_home_and_each_deployment(self) -> None:
         lines = self.canary(FakeRuntimes(), discovery_only=True)
         self.assertEqual([f'HOME "{forward(self.home)}"', "DEPLOYED test/runtime-canary"], lines[:2])
+        # After the deployments, which take only an empty home or one a deployment marked, the run marks the home as
+        # one it made, naming it, which --remove-home requires.
+        marker = json.loads((self.home / ".runtime-canary" / "home.json").read_text(encoding="utf-8"))
+        self.assertEqual({"made_by": "tools/runtime_canary.py", "home": forward(self.home)}, marker)
+        self.assertTrue(runtime_canary.claimed(self.home))
 
     def test_a_failed_deployment_stops_before_any_runtime(self) -> None:
         broken = self.make_source()
@@ -1474,6 +1597,8 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
         self.assertIn(f'DEPLOY_FAILED test/shipped "{forward(log)}"', output.getvalue())
         self.assertIn("invalid metadata shape", log.read_text(encoding="utf-8"))
         self.assertEqual([], runner.calls)
+        # A home whose deployment failed is still one the canary made, so --remove-home may delete it.
+        self.assertTrue(runtime_canary.claimed(self.home))
 
 
 if __name__ == "__main__":

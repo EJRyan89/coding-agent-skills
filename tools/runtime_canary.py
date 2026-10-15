@@ -41,16 +41,19 @@ still loads. Codex on Windows refuses every command without a Windows sandbox mo
 from config.toml, so the canary supplies that one value itself (--codex-sandbox, default elevated) and prints it
 as SUPPLIED. Every prompt carries RUNTIME_CANARY_MARKER, so a session the runtime saves can be found later.
 
-The canary judges nothing from a transcript. The fixture's script writes a marker from its own location, a
-sitecustomize.py on PYTHONPATH records every Python process the runtime starts, and a BASH_ENV file records every
-Bash script, however the runtime names Bash. RAN means the script ran from the canary's copy of the skill or of a
-skill it declares in skill_deps, whatever it exited with; a script from the installed copy is a failure, never RAN.
-RAN adds exit=<n> when a recorder saw the script end (Python 3.12 or later; a Bash script that sets no EXIT trap of
-its own) and timed-out when the session ran out of time after the script started. The fixture must also exit 0, or
-it is FAILED with the status. Copilot's headless mode
-cannot start a skill only the user may start, so such a skill is UNSUPPORTED there and no model is called for it.
---discovery-only lists skills without running any model. --remove-home deletes a home an earlier run printed and
-nothing else: only a runtime-canary- directory directly under the temporary directory.
+The canary judges nothing from a transcript. The fixture's script writes a marker from its own location, carrying
+the identifier the canary writes into the home before each run, a sitecustomize.py on PYTHONPATH records every
+Python script the runtime starts, and a BASH_ENV file records every Bash script, however the runtime names Bash. A
+recorder counts a script only when it names a file the interpreter can open: a missing file, a folder, `python -c`,
+and `python -m` are no script. RAN means the script ran from the canary's copy of the skill or of a skill it
+declares in skill_deps, whatever it exited with; a script from the installed copy is a failure, never RAN. RAN adds
+exit=<n> when a recorder saw the script end (Python 3.12 or later, where a script that does not compile exits 1; a
+Bash script that sets no EXIT trap of its own) and timed-out when the session ran out of time after the script
+started. The fixture must also exit 0, or it is FAILED with the status. Copilot's headless mode cannot start a skill
+only the user may start, so such a skill is UNSUPPORTED there and no model is called for it. --discovery-only lists
+skills without running any model. --remove-home deletes a home an earlier run printed and nothing else: a
+runtime-canary- directory directly under the temporary directory that holds the .runtime-canary/home.json marker
+each run writes, naming that home; it refuses any other with FAILED.
 
 Each skill's runtime_support in deploy-meta, the matrix docs/skills.md prints, says what to expect: `full` must be
 RAN, `partial` must be RAN or, when the runtime lacks user-only-start, UNSUPPORTED, since the limits of the other
@@ -81,6 +84,7 @@ import io
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -116,6 +120,10 @@ FIXTURE_SOURCE = REPOSITORY_ROOT / "tests" / "fixtures" / "runtime-canary"
 FIXTURE_SKILL = "runtime-canary-probe"
 STATE = ".runtime-canary"
 HOME_PREFIX = "runtime-canary-"
+# The file in STATE that names a home the canary made, which --remove-home requires before it deletes anything.
+HOME_MARKER = "home.json"
+# The file in STATE holding the run's identifier, new for each run, which the fixture's probe copies into its marker.
+RUN_ID = "run-id"
 DEFAULT_TIMEOUT = 600
 RUNTIME_CANARY_MARKER = "RUNTIME-CANARY-RUN"
 # What each runtime still loads from the user's real configuration once the canary's flags have switched off all
@@ -148,7 +156,7 @@ CODEX_HAS_WINDOWS_SANDBOX = platform_support.WINDOWS
 COPILOT_SUPPORT = "docs/copilot-support.md#headless-sessions"
 USER_ONLY_UNSUPPORTED = {"copilot": f"copilot -p cannot start a user-only skill; see {COPILOT_SUPPORT}"}
 SCRIPT_LOG = "RUNTIME_CANARY_SCRIPT_LOG"
-RECORDER = '''"""Written by tools/runtime_canary.py: record each Python process a runtime starts and how it exited."""
+RECORDER = '''"""Written by tools/runtime_canary.py: record each Python script a runtime starts and how it exited."""
 import atexit
 import json
 import os
@@ -156,6 +164,7 @@ import sys
 
 # A copy, since runpy rewrites sys.argv in place. The exit record repeats the start record, so the two pair up.
 _record = {"argv": list(sys.argv), "cwd": os.getcwd(), "pid": os.getpid()}
+_started = []
 _unwound = []
 
 
@@ -164,9 +173,34 @@ def _write(record):
         log.write(json.dumps(record) + "\\n")
 
 
-def _unwinding(code, offset, exception):
+def _script():
+    """Whether Python was given a script file it can open: not -c, -m, or standard input, which name no script,
+    and not a missing file or a folder, which Python refuses before running anything."""
+    first = _record["argv"][0] if _record["argv"] else ""
+    if first in ("", "-", "-c", "-m"):
+        return False
+    path = os.path.join(_record["cwd"], first)
+    try:
+        with open(path, "rb"):
+            pass
+    except OSError:
+        return False
+    return os.path.isfile(path)
+
+
+def _main(code):
     main = getattr(sys.modules.get("__main__"), "__file__", None)
-    if code.co_name == "<module>" and main and os.path.abspath(code.co_filename) == os.path.abspath(main):
+    return code.co_name == "<module>" and main and os.path.abspath(code.co_filename) == os.path.abspath(main)
+
+
+def _starting(code, offset):
+    if _main(code):
+        _started.append(code)
+    return _monitoring.DISABLE
+
+
+def _unwinding(code, offset, exception):
+    if _main(code):
         _unwound.append(exception)
 
 
@@ -178,7 +212,8 @@ def _exited():
         code = exception.code
         status = 0 if code is None else code if isinstance(code, int) else 1
     else:
-        status = 0 if exception is None else 1
+        # An exception left the main module, or Python never started it because the file did not compile.
+        status = 1 if exception is not None or not _started else 0
     try:
         _write({**_record, "exit": status})
     except Exception:
@@ -186,14 +221,18 @@ def _exited():
 
 
 try:
-    _write(_record)
-    # sys.monitoring, from Python 3.12, reports the main module leaving by an exception, SystemExit included, and
-    # costs nothing while none is raised. Without it, or with its tool slot taken, the exit goes unrecorded.
-    _monitoring = sys.monitoring
-    _monitoring.use_tool_id(4, "runtime-canary")
-    _monitoring.register_callback(4, _monitoring.events.PY_UNWIND, _unwinding)
-    _monitoring.set_events(4, _monitoring.events.PY_UNWIND)
-    atexit.register(_exited)
+    if _script():
+        _write(_record)
+        # sys.monitoring, from Python 3.12, reports the main module starting once Python has compiled it and
+        # leaving by an exception, SystemExit included. Its start event is switched off for each function after
+        # the first call, and the unwind event costs nothing while none is raised. Without it, or with its tool
+        # slot taken, the exit goes unrecorded.
+        _monitoring = sys.monitoring
+        _monitoring.use_tool_id(4, "runtime-canary")
+        _monitoring.register_callback(4, _monitoring.events.PY_START, _starting)
+        _monitoring.register_callback(4, _monitoring.events.PY_UNWIND, _unwinding)
+        _monitoring.set_events(4, _monitoring.events.PY_START | _monitoring.events.PY_UNWIND)
+        atexit.register(_exited)
 except Exception:
     pass
 '''
@@ -204,10 +243,13 @@ PLATFORM_ALLOWED = {
 # Bash reads BASH_ENV before it runs a script, whether the runtime started `bash` from PATH or Git Bash by its full
 # path, and before each `bash -c` command, which is not a script and is left out. Git Bash names the temporary
 # directory /tmp, so cygpath, where it exists, gives the Windows paths the canary compares. It takes the place of
-# any BASH_ENV of the user's, which is ambient configuration the canary leaves out. Its EXIT trap records the status
-# the script exits with, unless the script replaces the trap with its own; a subshell inherits no EXIT trap.
+# any BASH_ENV of the user's, which is ambient configuration the canary leaves out. Bash reads it before it opens the
+# script, so a script that is not a readable file, which Bash then refuses, is left out too. Its EXIT trap records
+# the status the script exits with, unless the script replaces the trap with its own; a subshell inherits no EXIT
+# trap.
 BASH_RECORDER = r"""# Written by tools/runtime_canary.py: record each Bash script a runtime starts and how it exited.
-if [ -z "${BASH_EXECUTION_STRING+set}" ] && [ -n "${RUNTIME_CANARY_SCRIPT_LOG-}" ]; then
+if [ -z "${BASH_EXECUTION_STRING+set}" ] && [ -n "${RUNTIME_CANARY_SCRIPT_LOG-}" ] && [ -f "$0" ] && [ -r "$0" ]
+then
   case ${0##*[/\\]} in
     bash | bash.exe | sh | sh.exe) ;;
     *)
@@ -569,7 +611,8 @@ def discovery_lines(
 
 
 def recorded_scripts(started: list[dict]) -> list[tuple[str, str, int | None]]:
-    """Each script file the recorders saw start, with its directory and the status it exited with, if recorded."""
+    """Each script file the recorders saw start, with its directory and the status it exited with, if recorded.
+    A command string, a module run with -m, and standard input name no script file, so none counts."""
 
     def key(record: dict) -> str:
         return json.dumps([record.get("argv"), record.get("cwd"), record.get("pid")])
@@ -582,7 +625,7 @@ def recorded_scripts(started: list[dict]) -> list[tuple[str, str, int | None]]:
     scripts = []
     for record in started:
         argv = record.get("argv") or []
-        if "exit" in record or not argv or not isinstance(argv[0], str) or argv[0] in ("", "-c", "-"):
+        if "exit" in record or not argv or not isinstance(argv[0], str) or argv[0] in ("", "-c", "-m", "-"):
             continue
         cwd = str(record.get("cwd", ""))
         scripts.append((forward(Path(cwd) / argv[0] if cwd else argv[0]), forward(cwd), exits.get(key(record))))
@@ -654,6 +697,11 @@ def verdict(
     return f"FAILED {quote(reason)}"
 
 
+def marked(probes: list[dict], run: str) -> list[dict]:
+    """The probe records that carry the run's identifier, which the fixture's probe reads from the home it ran in."""
+    return [record for record in probes if record.get("run") == run]
+
+
 def run_skill(
     runtime: str,
     executable: str,
@@ -672,6 +720,9 @@ def run_skill(
     # sandbox creates belongs to its sandbox user, and the permissions that sandbox sets leave it unreadable here.
     probe_log.write_text("", encoding="utf-8")
     script_log.write_text("", encoding="utf-8")
+    # A marker counts only with this run's identifier, so a line a runtime's shell appended to the file is not one.
+    run = secrets.token_hex(16)
+    (state / RUN_ID).write_text(run, encoding="utf-8")
     completed = runner(
         run_command(runtime, executable, skill, home, codex_sandbox), home, environment(base, script_log, home), timeout
     )
@@ -686,7 +737,7 @@ def run_skill(
         if listed is not None:
             lines.append(f"DISCOVERED claude {skill}" if skill in listed else f"UNDISCOVERED claude {skill}")
     try:
-        probes, started = read_records(probe_log), read_records(script_log)
+        probes, started = marked(read_records(probe_log), run), read_records(script_log)
     except OSError as exc:
         reason = f"cannot read what the run recorded in {forward(exc.filename or probe_log)}: {exc.strerror or exc}"
         outcome = f"FAILED {quote(reason)}"
@@ -771,16 +822,19 @@ def canary(
     base = dict(os.environ if base_environment is None else base_environment)
     state = home / STATE
     print(f"HOME {quote(forward(home))}", flush=True)
-    for source_dir in sources:
-        identifier = source_id(source_dir)
-        code, log = deploy(home, source_dir)
-        if code != 0:
-            state.mkdir(exist_ok=True)
-            log_file = state / f"deploy-{identifier.replace('/', '-')}.log"
-            log_file.write_text(log, encoding="utf-8")
-            print(f"DEPLOY_FAILED {identifier} {quote(forward(log_file))}")
-            return 1
-        print(f"DEPLOYED {identifier}", flush=True)
+    try:
+        for source_dir in sources:
+            identifier = source_id(source_dir)
+            code, log = deploy(home, source_dir)
+            if code != 0:
+                state.mkdir(exist_ok=True)
+                log_file = state / f"deploy-{identifier.replace('/', '-')}.log"
+                log_file.write_text(log, encoding="utf-8")
+                print(f"DEPLOY_FAILED {identifier} {quote(forward(log_file))}")
+                return 1
+            print(f"DEPLOYED {identifier}", flush=True)
+    finally:
+        claim_home(home)
     for folder in ("recorder", "scripts", "transcripts"):
         (state / folder).mkdir(parents=True, exist_ok=True)
     (state / "recorder" / "sitecustomize.py").write_text(RECORDER, encoding="utf-8")
@@ -835,8 +889,31 @@ def create_home() -> Path:
     return Path(tempfile.mkdtemp(prefix=HOME_PREFIX)).resolve()
 
 
+def claim_home(home: Path) -> None:
+    """Mark the home as one the canary made, naming it, which --remove-home requires. The deployer takes a
+    --canary-home only while it is empty or holds the deployer's own marker, so this is written after the
+    deployments, a failed one included."""
+    (home / STATE).mkdir(exist_ok=True)
+    record = {"made_by": "tools/runtime_canary.py", "home": forward(home)}
+    (home / STATE / HOME_MARKER).write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+
+def claimed(home: Path) -> bool:
+    """Whether the home holds the marker claim_home writes, naming this home, with no link on the way to it."""
+    state, marker = home / STATE, home / STATE / HOME_MARKER
+    if any(platform_support.is_link(path) or platform_support.is_reparse_point(path) for path in (state, marker)):
+        return False
+    try:
+        record = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    named = record.get("home") if isinstance(record, dict) else None
+    return isinstance(named, str) and lexical(named) == lexical(home)
+
+
 def remove_home(directory: str) -> int:
-    """Delete a home the canary made, a HOME_PREFIX directory directly in the temporary directory, and nothing else."""
+    """Delete a home the canary made, a HOME_PREFIX directory directly in the temporary directory that holds the
+    marker naming it, and nothing else."""
     home = Path(directory)
     temporary = Path(tempfile.gettempdir()).resolve()
     resolved = home.resolve()
@@ -847,6 +924,10 @@ def remove_home(directory: str) -> int:
         or not resolved.name.startswith(HOME_PREFIX)
     ):
         print(f"FAILED {quote(f'{forward(home)} is not a home the canary made under {forward(temporary)}')}")
+        return 1
+    if not claimed(resolved):
+        marker = f"{STATE}/{HOME_MARKER}"
+        print(f"FAILED {quote(f'{forward(resolved)} holds no {marker} naming it, so the canary did not make it')}")
         return 1
     try:
         shutil.rmtree(resolved)

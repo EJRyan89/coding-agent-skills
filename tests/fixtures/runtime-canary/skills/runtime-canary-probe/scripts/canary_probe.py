@@ -2,7 +2,9 @@
 
 The record is appended to .runtime-canary/probe.jsonl in the home this skill was deployed into. That home is found
 from this file's own location, <home>/.claude/skills/runtime-canary-probe/scripts/, and never from the environment,
-so a record exists only when the runtime resolved the skill's directory to the deployed copy.
+so a record exists only when the runtime resolved the skill's directory to the deployed copy. The record carries the
+run's identifier, which the canary writes to .runtime-canary/run-id in the same home before each run, so a line
+appended to the file by anything but this script does not count.
 """
 
 from __future__ import annotations
@@ -14,10 +16,14 @@ from pathlib import Path
 
 def main(arguments: list[str]) -> int:
     script = Path(__file__).resolve()
-    log = script.parents[4] / ".runtime-canary" / "probe.jsonl"
-    log.parent.mkdir(exist_ok=True)
-    record = {"script": script.as_posix(), "cwd": Path.cwd().as_posix(), "arguments": arguments}
-    with log.open("a", encoding="utf-8", newline="\n") as handle:
+    state = script.parents[4] / ".runtime-canary"
+    state.mkdir(exist_ok=True)
+    try:
+        run = (state / "run-id").read_text(encoding="utf-8").strip()
+    except OSError:
+        run = None
+    record = {"script": script.as_posix(), "cwd": Path.cwd().as_posix(), "arguments": arguments, "run": run}
+    with (state / "probe.jsonl").open("a", encoding="utf-8", newline="\n") as handle:
         handle.write(json.dumps(record) + "\n")
     print(f"RUNTIME_CANARY_PROBE RAN {script.as_posix()}")
     return 0
