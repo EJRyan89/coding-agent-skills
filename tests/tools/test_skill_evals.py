@@ -15,6 +15,7 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from collections.abc import Callable, Sequence
 from pathlib import Path, PurePosixPath
@@ -41,7 +42,7 @@ from git_test_base import GitTestCase
 from review_config import write_config
 from review_documents import document_format, extract, locations, split_label
 from review_github import GitHubClient
-from review_records import validate_record
+from review_records import build_record, validate_record
 from review_runtime import validate_adapter_manifest
 from test_review_documents import StubPdftotext
 
@@ -154,6 +155,60 @@ def record(
     return value
 
 
+def contract_record(
+    found: Sequence[dict[str, Any]] = (), model: str = "claude-haiku-5-5", files_read: int | None = 0
+) -> dict[str, Any]:
+    """An initial review's record as finalize writes it, which code-review-core's record contract accepts: each
+    finding raised, by one reviewer that reports `model` and that the guard held, unless `files_read` is None."""
+    request = {
+        "repository": "example/one",
+        "pull_number": 1,
+        "pull_url": "https://github.com/example/one/pull/1",
+        "title": "A change",
+        "base_ref": "main",
+        "base_sha": "0" * 40,
+        "head_sha": "1" * 40,
+        "mode": "initial",
+        "adapter": {"name": "generic", "scope": "generic"},
+        "reviewers": [
+            {
+                "id": "generic",
+                "category": "General",
+                "files": 1,
+                "findings": len(found),
+                "retries": 0,
+                "dispositions_only": False,
+                "model": model,
+                "files_read": files_read,
+                "bytes_read": files_read,
+            }
+        ],
+    }
+    result = {
+        "summary": "Reviewed.",
+        "reviewer": "generic",
+        "status": "complete",
+        "usage": None,
+        "prior_dispositions": [],
+        "findings": [
+            {
+                "candidate_key": f"k{index}",
+                "severity": item["severity"],
+                "category": "Correctness",
+                "path": item["path"],
+                "line": item["line"],
+                "body": "Planted.",
+                "evidence": f"{item['path']}:{item['line']}",
+                "source": "generic",
+            }
+            for index, item in enumerate(found, 1)
+        ],
+    }
+    policy = {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3}
+    built = build_record(request, result, version=1, policy=policy, reviewed_at="2026-10-15T09:30:00+00:00")
+    return validate_record(built)
+
+
 def check(spec: dict[str, Any], value: dict[str, Any], mode: str = "re-review") -> str | None:
     return skill_evals.expectation(spec, mode).check(value)
 
@@ -226,6 +281,79 @@ class LoaderTests(GitTestCase):
             skill_evals.load_scenarios("demo", ["one", "one", "three"], root=self.root)
         with self.assertRaisesRegex(ScenarioError, "no scenarios for other"):
             skill_evals.load_scenarios("other", root=self.root)
+
+    def test_a_skill_with_no_scenario_fails_and_nothing_runs(self) -> None:
+        (self.root / "empty-skill" / "not-a-scenario").mkdir(parents=True)
+        with self.assertRaisesRegex(ScenarioError, "no scenarios for empty-skill: each is a <scenario>/scenario.json"):
+            skill_evals.load_scenarios("empty-skill", root=self.root)
+        records = self.root / "records"
+        status, lines = run_main(["empty-skill", "--records", str(records)], self.root)
+        self.assertEqual(1, status)
+        self.assertEqual(1, len(lines), lines)
+        self.assertTrue(lines[0].startswith('FAILED "no scenarios for empty-skill: '), lines)
+
+        def unreached(*_: Any) -> Any:
+            raise AssertionError("a skill with no scenario reached the run")
+
+        seams = skill_evals.Seams(runner=unreached, which=unreached, deploy=unreached, make_home=unreached)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(1, skill_evals.main(["empty-skill", "--write"], self.root, seams))
+        self.assertTrue(output.getvalue().startswith('FAILED "no scenarios for empty-skill: '))
+
+    def test_a_skill_is_named_by_its_name_alone(self) -> None:
+        write_scenario(self.root, "one", scenario_spec())
+        for name in (".", "..", "demo/one", "demo\\one", "Demo", ""):
+            with (
+                self.subTest(name=name),
+                contextlib.redirect_stderr(io.StringIO()) as error,
+                self.assertRaises(SystemExit) as raised,
+            ):
+                skill_evals.main([name, "--records", str(self.root / "records")], self.root)
+            self.assertEqual(2, raised.exception.code)
+            self.assertIn("must be a skill's name", error.getvalue())
+
+    def test_a_path_on_a_drive_is_refused_on_every_platform(self) -> None:
+        for prior in ("C:/outside/prior.json", "C:prior.json", "c:\\outside\\prior.json"):
+            with self.subTest(prior=prior):
+                message = self.load_error(scenario_spec(mode="re-review", prior=prior))
+                self.assertIn(f"path must be a plain relative path, not {json.dumps(prior)}", message)
+        for path in ("C:/a.go", "D:a.go"):
+            with self.subTest(path=path):
+                spec = {"kind": "finding", "path": path, "lines": [1], "severity": "MUST_FIX"}
+                self.assertIn("plain relative path", refusal(spec, "initial"))
+
+    def test_no_finding_above_the_highest_severity_holds_nothing_and_is_refused(self) -> None:
+        highest = skill_evals.SEVERITIES[-1]
+        self.assertEqual("MUST_FIX", highest)
+        message = refusal({"kind": "no_finding_above", "severity": "MUST_FIX"}, "initial")
+        self.assertEqual("no_finding_above MUST_FIX holds for every record: no severity ranks above it", message)
+        self.assertIn(
+            "holds for every record",
+            self.load_error(scenario_spec({"kind": "no_finding_above", "severity": "MUST_FIX"})),
+        )
+        self.assertIsNotNone(skill_evals.expectation({"kind": "no_finding_above", "severity": "SHOULD_FIX"}, "initial"))
+
+    def test_a_category_the_manifest_does_not_list_is_refused(self) -> None:
+        shutil.copytree(REVIEW_PRS / "design-gaps", self.root / "review-prs" / "design-gaps")
+        shutil.copytree(REVIEW_DOCUMENT / "design-gaps", self.root / "review-document" / "design-gaps")
+        scenarios = {"review-prs": self.root / "review-prs", "review-document": self.root / "review-document"}
+        for skill, folder in scenarios.items():
+            with self.subTest(skill=skill):
+                path = folder / "design-gaps" / "scenario.json"
+                spec = json.loads(path.read_text(encoding="utf-8"))
+                # Ignoring case, as the judge matches a finding's category.
+                spec["expectations"][0]["category"] = "INCONSISTENCY"
+                path.write_text(json.dumps(spec), encoding="utf-8")
+                self.assertEqual(1, len(skill_evals.load_scenarios(skill, root=self.root)))
+                spec["expectations"][0]["category"] = "inconsistancy"
+                path.write_text(json.dumps(spec), encoding="utf-8")
+                with self.assertRaisesRegex(
+                    ScenarioError,
+                    'design-gaps: category "inconsistancy" is not one of the manifest\'s finding_categories: '
+                    "requirement-gap, ",
+                ):
+                    skill_evals.load_scenarios(skill, root=self.root)
 
     def test_unknown_expectation_kind_fails(self) -> None:
         self.assertIn('unknown expectation kind "vibes"', self.load_error(scenario_spec({"kind": "vibes"})))
@@ -621,32 +749,15 @@ class RepeatsTests(GitTestCase):
             with self.subTest(severity=severity):
                 self.assertIsNone(check(self.spec, self.reviewed(found, severity)))
 
-    def test_the_entry_must_be_in_the_ledger_with_a_severity(self) -> None:
+    def test_the_entry_must_be_in_the_ledger(self) -> None:
         found = [finding("store.go", 45, "MUST_FIX", "F002")]
         cases = {
             "the record's ledger has no v1:F001": record(found, version=2, ledger=[entry(1, "F002")]),
-            "the record's ledger gives v1:F001 no severity": record(
-                found, version=2, ledger=[{**entry(1, "F001"), "severity": None}]
-            ),
             "the record has no ledger": record(found, version=2),
         }
         for reason, value in cases.items():
             with self.subTest(reason=reason), self.assertRaisesRegex(RecordError, reason):
                 check(self.spec, value)
-
-
-class RecordShapeTests(GitTestCase):
-    def test_malformed_records_raise(self) -> None:
-        verdict = skill_evals.expectation({"kind": "verdict", "verdict": "APPROVED"}, "initial")
-        clean = skill_evals.expectation({"kind": "no_finding_above", "severity": "SUGGESTION"}, "initial")
-        with self.assertRaisesRegex(RecordError, "no review version and verdict"):
-            verdict.check({"findings": []})
-        for findings in ("none", [{"path": "a.go", "line": "1", "severity": "MUST_FIX"}], [finding("a.go", 1, "HIGH")]):
-            with self.subTest(findings=findings), self.assertRaisesRegex(RecordError, "findings are malformed"):
-                clean.check({"review": {"version": 1, "verdict": "APPROVED"}, "findings": findings})
-        ledger = skill_evals.expectation({"kind": "ledger", "addressed": 0, "still_present": 0}, "re-review")
-        with self.assertRaisesRegex(RecordError, "ledger is malformed"):
-            ledger.check(record(ledger=[{"version": 1, "id": "F001"}]))
 
 
 class JudgeTests(GitTestCase):
@@ -665,14 +776,16 @@ class JudgeTests(GitTestCase):
             ),
         )
 
-    def write_record(self, model: str, value: Any, scenario: str = "defects") -> None:
+    def write_record(self, model: str, value: Any, scenario: str = "defects") -> Path:
         folder = self.records / scenario
         folder.mkdir(parents=True, exist_ok=True)
-        (folder / f"{model}.json").write_text(json.dumps(value), encoding="utf-8")
+        path = folder / f"{model}.json"
+        path.write_text(json.dumps(value), encoding="utf-8")
+        return path
 
     def test_every_expectation_passes(self) -> None:
-        for model in skill_evals.MODELS:
-            self.write_record(model, record([finding("a.go", 3, "MUST_FIX")], "CHANGES_REQUESTED"))
+        for model, model_id in skill_evals.MODELS.items():
+            self.write_record(model, contract_record([finding("a.go", 3, "MUST_FIX")], model_id))
         status, lines = run_main(["demo", "--records", str(self.records)], self.scenarios)
         self.assertEqual(0, status)
         self.assertEqual(
@@ -691,7 +804,7 @@ class JudgeTests(GitTestCase):
         )
 
     def test_a_fail_exits_1_and_a_missing_record_fails_each_expectation(self) -> None:
-        self.write_record("haiku", record([finding("a.go", 3, "SHOULD_FIX")], "APPROVED"))
+        self.write_record("haiku", contract_record([finding("a.go", 3, "SHOULD_FIX")]))
         self.write_record("opus", "not a record")
         status, lines = run_main(["demo", "--records", str(self.records)], self.scenarios)
         self.assertEqual(1, status)
@@ -705,7 +818,7 @@ class JudgeTests(GitTestCase):
         )
         self.assertTrue(
             any(
-                line.startswith("FAIL demo defects opus finding") and "does not hold a record" in line for line in lines
+                line.startswith("FAIL demo defects opus finding") and "is not a review record" in line for line in lines
             )
         )
         self.assertEqual("| defects | 0/2 | 0/2 | 0/2 |", lines[-1])
@@ -718,7 +831,7 @@ class JudgeTests(GitTestCase):
         self.assertIn("cannot read", lines[0])
 
     def test_only_the_named_models_in_the_order_given(self) -> None:
-        self.write_record("opus", record([finding("a.go", 3, "MUST_FIX")], "CHANGES_REQUESTED"))
+        self.write_record("opus", contract_record([finding("a.go", 3, "MUST_FIX")], "claude-opus-5-5"))
         argv = ["demo", "--records", str(self.records), "--model", "opus", "--model", "haiku", "--model", "opus"]
         status, lines = run_main(argv, self.scenarios)
         self.assertEqual(1, status)
@@ -727,7 +840,7 @@ class JudgeTests(GitTestCase):
 
     def test_repeated_scenarios_print_each_expectation_and_table_row_once(self) -> None:
         write_scenario(self.scenarios, "clean", scenario_spec())
-        self.write_record("haiku", record(), "clean")
+        self.write_record("haiku", contract_record(), "clean")
         argv = [
             "demo",
             "--records",
@@ -758,6 +871,61 @@ class JudgeTests(GitTestCase):
             ],
             lines,
         )
+
+    def test_a_record_the_record_contract_refuses_fails_as_unreadable(self) -> None:
+        # The shape the judge reads, without the rest of a record: no schema_version, repository, or pull request.
+        path = self.write_record("opus", {"review": {"version": 1, "verdict": "CHANGES_REQUESTED"}, "findings": []})
+        status, lines = run_main(["demo", "--records", str(self.records), "--model", "opus"], self.scenarios)
+        self.assertEqual(1, status)
+        reason = f"{path} is not a review record: record.schema_version must be an integer, found null"
+        self.assertIn(f"FAIL demo defects opus verdict CHANGES_REQUESTED {json.dumps(reason)}", lines)
+        self.assertEqual("| defects | 0/2 |", lines[-1])
+
+    def test_a_record_a_run_would_not_count_counts_for_nothing(self) -> None:
+        defect = [finding("a.go", 3, "MUST_FIX")]
+        again = write_scenario(self.scenarios, "again", scenario_spec(mode="re-review", prior="prior.json"))
+        (again / "prior.json").write_text("{}", encoding="utf-8")
+        cases = {
+            # Another model's record, copied under this model's name.
+            "its reviewers did not all run on claude-haiku-5-5: generic on claude-opus-5-5": (
+                "defects",
+                contract_record(defect, "claude-opus-5-5"),
+            ),
+            "no reviewer guard held generic: its files_read is null": (
+                "defects",
+                contract_record(defect, files_read=None),
+            ),
+            "it is review version 1, not the 2 a re-review run records": ("again", contract_record(defect)),
+        }
+        for reason, (scenario, value) in cases.items():
+            with self.subTest(reason=reason):
+                path = self.write_record("haiku", value, scenario)
+                argv = ["demo", "--records", str(self.records), "--model", "haiku", "--scenario", scenario]
+                status, lines = run_main(argv, self.scenarios)
+                self.assertEqual(1, status)
+                self.assertIn(
+                    f"FAIL demo {scenario} haiku verdict APPROVED {json.dumps(f'{path} counts for nothing: {reason}')}"
+                    if scenario == "again"
+                    else f"FAIL demo {scenario} haiku verdict CHANGES_REQUESTED "
+                    f"{json.dumps(f'{path} counts for nothing: {reason}')}",
+                    lines,
+                )
+        # A reviewer that reports the model's ID with a dated suffix ran on it.
+        self.write_record("haiku", contract_record(defect, "claude-haiku-5-5-20261001"))
+        argv = ["demo", "--records", str(self.records), "--model", "haiku", "--scenario", "defects"]
+        self.assertEqual(0, run_main(argv, self.scenarios)[0])
+
+    def test_a_timeout_is_a_positive_number_of_seconds(self) -> None:
+        for value in ("0", "-1", "nan", "inf", "-inf", "soon"):
+            with (
+                self.subTest(value=value),
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                skill_evals.main(["demo", "--timeout", value], self.scenarios)
+            self.assertEqual(2, raised.exception.code)
+        self.assertEqual(0.5, skill_evals.parser().parse_args(["demo", "--timeout", "0.5"]).timeout)
+        self.assertEqual(skill_evals.DEFAULT_TIMEOUT, skill_evals.parser().parse_args(["demo"]).timeout)
 
     def test_an_unknown_kind_fails_the_run_before_judging(self) -> None:
         write_scenario(self.scenarios, "odd", scenario_spec({"kind": "vibes"}))
@@ -1374,6 +1542,16 @@ class ReviewerScenarioTests(GitTestCase):
                 (directory / "draft.md").write_text("# Draft\n", encoding="utf-8")
                 self.assertIn(message, self.refusal())
 
+    def test_a_category_the_reviewer_s_manifest_does_not_list_is_refused(self) -> None:
+        listed = {"kind": "finding", "path": "tools/a.sh", "lines": [1], "severity": "SHOULD_FIX"}
+        spec = reviewer_spec()
+        spec["expectations"] = [{**listed, "category": "test coverage"}]
+        write_reviewer_scenario(self.root, spec)
+        self.assertEqual(1, len(skill_evals.load_scenarios("review-repository", root=self.root)))
+        spec["expectations"] = [{**listed, "category": "Tset coverage"}]
+        write_reviewer_scenario(self.root, spec)
+        self.assertIn('case: category "Tset coverage" is not one of the manifest\'s finding_categories', self.refusal())
+
     def test_a_fixture_that_holds_a_file_the_run_places_is_refused(self) -> None:
         directory = write_reviewer_scenario(self.root, reviewer_spec())
         (directory / "head" / "CLAUDE.md").write_text("# A stale copy\n", encoding="utf-8")
@@ -1836,7 +2014,6 @@ class RunPieceTests(GitTestCase):
         )
         self.assertEqual("the record names no reviewer", skill_evals.unguarded(reviewed()))
         self.assertEqual("the record names no reviewer", skill_evals.unguarded(record()))
-        self.assertEqual("the record has no review version and verdict", skill_evals.unguarded({}))
 
     def test_stream_models_tells_the_session_from_its_subagents(self) -> None:
         output = "\n".join(
@@ -1908,6 +2085,33 @@ class RunPieceTests(GitTestCase):
             skill_evals.run_failure("haiku", unstarted, 60, "review-prs", missing),
         )
 
+    def test_the_reason_the_results_file_records_names_no_path(self) -> None:
+        completed = skill_evals.Completed
+        home = "D:/scratch/skill-evals-x1/haiku"
+        command = f'python -B "{home}/.claude/skills/code-review-core/scripts/review_pipeline.py" prepare'
+        denials = [{"tool_name": "Bash", "tool_input": {"command": command}}] * 2
+        denied = json.dumps({"type": "result", "permission_denials": denials})
+        missing = f"the run recorded no review version 1; its latest record cannot be read: {home}/x.json"
+        cases = [
+            (completed(1, denied, ""), "the run recorded no review; Claude Code exited with code 1; denied 2 commands"),
+            (
+                completed(-1, "", "", error=f"cannot run {home}/claude.exe: gone"),
+                "the run recorded no review; Claude Code could not start",
+            ),
+            (completed(-1, "", "", timed_out=True), "the run recorded no review; timed out after 60 seconds"),
+        ]
+        for run, phrase in cases:
+            with self.subTest(phrase=phrase):
+                self.assertIn(home, skill_evals.run_failure("haiku", run, 60, "review-prs", missing) or "")
+                self.assertEqual(phrase, skill_evals.run_failure("haiku", run, 60, "review-prs", missing, True))
+        one = json.dumps({"type": "result", "permission_denials": denials[:1]})
+        self.assertEqual(
+            "the run recorded no review; denied 1 command",
+            skill_evals.run_failure("haiku", completed(0, one, ""), 60, "review-prs", missing, recorded=True),
+        )
+        reviewed = completed(0, f"{assistant('claude-opus-5-5')}\n{assistant('claude-haiku-5-5', subagent=True)}", "")
+        self.assertIsNone(skill_evals.run_failure("haiku", reviewed, 60, "review-prs", None, recorded=True))
+
 
 def outcome(scenario: str, model: str, failure: str | None = None) -> Outcome:
     return Outcome(scenario, model, "verdict APPROVED", failure)
@@ -1935,16 +2139,18 @@ class ResultsTests(GitTestCase):
         scenarios = [Scenario("review-prs", name, Path(name), "initial", None, ()) for name in ("a", "b")]
         run = skill_evals.Run
         session = frozenset({"claude-opus-5-5"})
+        # The reason a run failed may name the machine's paths; the row takes the phrase recorded for it.
+        failed = "the run recorded no review; denied: Bash: D:/scratch/home/script.py | here"
         runs = {
             ("a", "haiku"): run({}, None, frozenset({"claude-haiku-4"}), session),
-            ("b", "haiku"): run(None, "x", frozenset({"claude-haiku-4"}), session),
-            ("a", "sonnet"): run(None, "no such model | here", frozenset(), frozenset()),
-            ("b", "sonnet"): run(None, "no such model", frozenset(), frozenset()),
+            ("b", "haiku"): run(None, "x", frozenset({"claude-haiku-4"}), session, "x"),
+            ("a", "sonnet"): run(None, failed, frozenset(), frozenset(), "no such model | here"),
+            ("b", "sonnet"): run(None, "no such model", frozenset(), frozenset(), "no such model"),
         }
         outcomes = [
             outcome("a", "haiku"),
             outcome("b", "haiku", "x"),
-            outcome("a", "sonnet", "no such model | here"),
+            outcome("a", "sonnet", failed),
             outcome("b", "sonnet", "no such model"),
         ]
         rows = skill_evals.result_rows(
@@ -1997,6 +2203,43 @@ class ResultsTests(GitTestCase):
         self.assertEqual(original[:begin], written[:begin])
         self.assertEqual(["", "Written by hand after the table.", ""], written[end + 1 :])
 
+    def test_another_skills_row_and_its_order_are_kept_as_written(self) -> None:
+        lines = RESULTS_TEXT.split("\n")
+        # A row written by hand without the spaces, an aligned separator, and two rows of one skill out of order.
+        lines[4] = "| :--- | --- | --- | ---: | --- | --- | --- | --- |"
+        lines[5] = "|alpha|sonnet|claude-sonnet-5-5|1/1|one 1/1|claude-opus-5-5|2.1.0|2026-01-01|"
+        lines.insert(6, "| alpha | haiku | claude-haiku-5-5 | 1/1 | one 1/1 | claude-opus-5-5 | 2.1.0 | 2026-01-01 |")
+        text = "\n".join(lines)
+        rows = ["| review-prs | haiku | h | 1/1 | a 1/1 | s | 2.1.291 | 2026-10-08 |"]
+        written = skill_evals.replace_results(text, "review-prs", rows).split("\n")
+        begin, end = written.index(skill_evals.RESULTS_BEGIN), written.index(skill_evals.RESULTS_END)
+        self.assertEqual([*skill_evals.RESULTS_HEADER, lines[5], lines[6], rows[0], lines[8]], written[begin + 1 : end])
+
+    def test_a_table_it_cannot_read_is_refused(self) -> None:
+        lines = RESULTS_TEXT.split("\n")
+        old_header = "| Skill | Model | Model ID | Passed | By scenario | Session model | Claude Code | Date | Note |"
+        cases = {
+            "must start with the header": (3, old_header),
+            "must be followed by its separator": (4, "| --- | --- |"),
+            "line 6 of the results file is not a row": (5, ""),
+            "line 7 of the results file is not a row": (6, "a hand note"),
+            "line 8 of the results file is not a row": (7, f"{lines[7]} n |"),
+            "line 6 of the results file is not a row of the table's 8 columns naming a skill": (
+                5,
+                lines[5].replace("alpha", " "),
+            ),
+        }
+        for reason, (index, line) in cases.items():
+            text = "\n".join([*lines[:index], line, *lines[index + 1 :]])
+            with self.subTest(reason=reason):
+                with self.assertRaisesRegex(ScenarioError, reason):
+                    skill_evals.results_table(text)
+                with self.assertRaisesRegex(ScenarioError, reason):
+                    skill_evals.replace_results(text, "review-prs", [])
+        empty = "\n".join([skill_evals.RESULTS_BEGIN, skill_evals.RESULTS_END])
+        with self.assertRaisesRegex(ScenarioError, "must start with the header"):
+            skill_evals.results_table(empty)
+
     def test_the_markers_are_required_once_each_in_order(self) -> None:
         texts = ("no markers", f"{skill_evals.RESULTS_END}\n{skill_evals.RESULTS_BEGIN}", RESULTS_TEXT * 2)
         for text in texts:
@@ -2005,7 +2248,7 @@ class ResultsTests(GitTestCase):
 
     def test_the_shipped_results_file_has_its_table(self) -> None:
         text = skill_evals.RESULTS.read_text(encoding="utf-8")
-        begin, end = skill_evals.results_table(text)
+        begin, end, _ = skill_evals.results_table(text)
         lines = text.split("\n")
         self.assertEqual(list(skill_evals.RESULTS_HEADER), lines[begin + 1 : begin + 3])
         columns = len(skill_evals.RESULTS_HEADER[0].split("|"))
@@ -2360,6 +2603,58 @@ class EvaluateTests(GitTestCase):
             self.results.read_text(encoding="utf-8"),
         )
 
+    def test_a_model_that_did_not_run_is_recorded_without_the_machine_s_paths(self) -> None:
+        def denied(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Any:
+            if arguments[1:] == ["--version"]:
+                return skill_evals.Completed(0, "2.1.291 (Claude Code)\n", "")
+            command = f'python -B "{cwd}/.claude/skills/code-review-core/scripts/review_pipeline.py" prepare'
+            refused = {
+                "type": "result",
+                "permission_denials": [{"tool_name": "Bash", "tool_input": {"command": command}}],
+            }
+            return skill_evals.Completed(1, f"{assistant('claude-opus-5-5')}\n{json.dumps(refused)}", "")
+
+        status, lines = self.evaluate(["--write"], self.seams(denied))
+        self.assertEqual(1, status)
+        home = str(self.homes / "haiku")
+        self.assertTrue(
+            any(
+                line.startswith("FAIL review-prs clean-change haiku")
+                and "denied: Bash" in line
+                and json.dumps(home)[1:-1] in line
+                for line in lines
+            ),
+            lines,
+        )
+        results = self.results.read_text(encoding="utf-8")
+        self.assertIn(
+            "| review-prs | haiku | not run | 0/21 | the run recorded no review; Claude Code exited with code 1; "
+            "denied 1 command |",
+            results,
+        )
+        self.assertNotIn(str(self.root), results)
+        self.assertNotIn(self.root.as_posix(), results)
+
+    def test_a_session_ends_at_its_limit_with_everything_it_started(self) -> None:
+        # Claude Code started through a launcher, as npm's claude.cmd starts node, whose child holds its output.
+        started = self.root / "child.pid"
+        child = self.root / "child.py"
+        child.write_text(
+            f"import os, pathlib, time\npathlib.Path({str(started)!r}).write_text(str(os.getpid()))\ntime.sleep(60)\n",
+            encoding="utf-8",
+        )
+        launcher = self.root / "launcher.py"
+        launcher.write_text(
+            f"import subprocess, sys\nsubprocess.run([sys.executable, {str(child)!r}])\n", encoding="utf-8"
+        )
+        began = time.monotonic()
+        completed = skill_evals.Seams().runner([sys.executable, "-B", str(launcher)], self.root, dict(os.environ), 5)
+        self.assertLess(time.monotonic() - began, 30, "the session's limit waited for the child it started")
+        self.assertTrue(completed.timed_out, completed)
+        self.assertTrue(started.is_file(), "the launcher's child never started within the limit")
+        pid = int(started.read_text(encoding="utf-8"))
+        self.assertFalse(platform_support.process_status(pid).alive, "the session's child outlived its limit")
+
     def test_a_reviewer_on_another_model_fails_the_run(self) -> None:
         claude = StubClaude(self, reviewer="claude-opus-5-5")
         status, lines = self.evaluate(["--model", "haiku", "--scenario", "clean-change"], self.seams(claude))
@@ -2374,9 +2669,12 @@ class EvaluateTests(GitTestCase):
     def test_nothing_runs_without_claude_code_or_the_results_table(self) -> None:
         no_table = self.root / "empty.md"
         no_table.write_text("# Skill evaluations\n", encoding="utf-8")
+        stray = self.root / "stray.md"
+        stray.write_text(RESULTS_TEXT.replace("| zeta |", "a hand note\n| zeta |"), encoding="utf-8")
         cases: dict[str, tuple[list[str], dict[str, Any]]] = {
             "Claude Code (claude) is not installed": ([], {"which": lambda _: None}),
             "needs one": (["--write"], {"results": no_table}),
+            "is not a row": (["--write"], {"results": stray}),
         }
         for reason, (argv, changes) in cases.items():
             with self.subTest(reason=reason):

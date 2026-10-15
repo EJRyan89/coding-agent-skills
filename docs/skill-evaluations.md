@@ -44,7 +44,8 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   reviewers' self-check and source commands are granted at the exact quoted paths of the home's scripts. A narrowed run
   can repeat `--scenario` and `--model`; each distinct name counts once, in first-occurrence order, both when
   running scenarios and when judging existing records with `--records`. Without `--scenario`, scenarios are selected
-  in name order.
+  in name order. `--records` holds each record to what a run's is held to: code-review-core's record contract, the
+  version the run writes, the reviewer guard, and each reviewer's model, as the reviewer's result reports it.
 - **What is recorded** is pass or fail per expectation, the model identifiers the reviewers and the session ran
   on, the Claude Code version, and the date. Nothing else: no tokens, cost, or timings.
 
@@ -53,8 +54,10 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
 One row per skill and reviewer model, replaced by each full run with `--write`. "Passed" counts expectations over
 every scenario a reviewer ran on. A scenario is "not run" for a model when none of its reviewers started, such as
 when the session refused before reviewing, since it holds no judgment of the model; the notes below say why. A model
-is "not run" when none of its reviewers ran, with the first reason in place of the scenarios. A pull request that
-changes a skill's prompt, model guidance, or reviewer instructions cites this run.
+is "not run" when none of its reviewers ran, with the first reason in place of the scenarios, in fixed phrases that
+name no path of the machine; the run's `FAIL` lines keep the whole reason. A run with `--write` refuses, before it
+starts, a table between the markers that holds anything but the header, its separator, and rows of its columns. A
+pull request that changes a skill's prompt, model guidance, or reviewer instructions cites this run.
 
 <!-- skill-evals:begin -->
 | Skill | Model | Model ID | Passed | By scenario | Session model | Claude Code | Date |
