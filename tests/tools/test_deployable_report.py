@@ -615,6 +615,86 @@ class DeployableReportTests(GitTestCase):
         self.assertEqual(0, code)
         self.assertIn("Deployability", output)
 
+    def run_results_command(self, command: str) -> tuple[int, str]:
+        """Exercise each results reader with real temporary files and the fake runtime listings."""
+        arguments = [
+            command,
+            "--results",
+            str(self.results_file),
+            "--home",
+            str(self.home),
+            "--source",
+            str(self.paths.source_dir),
+        ]
+        if command in ("verify", "layout"):
+            arguments += ["--label", "first deploy"]
+        if command == "verify":
+            arguments += [
+                "--deploy-verify-exit",
+                "0",
+                "--deploy-verify-log",
+                str(self.results_file.parent / "verify.log"),
+            ]
+        elif command == "leftovers":
+            arguments += ["--owned", str(self.record_owned())]
+        elif command == "summary":
+            arguments += ["--no-probe", "--summary", str(self.summary_file)]
+        return self.run_main(*arguments)
+
+    def test_unreadable_results_are_contextual_errors_in_every_command(self) -> None:
+        self.use_fake_runtimes()
+        for content in (b"{not json", b"", b"\xff", b"{}"):
+            for command in ("summary", "verify", "layout", "leftovers"):
+                with self.subTest(content=content, command=command):
+                    self.results_file.write_bytes(content)
+                    self.summary_file.write_text("earlier summary\n", encoding="utf-8")
+                    code, output = self.run_results_command(command)
+                    self.assertEqual(1, code, output)
+                    self.assertIn("ERROR:", output)
+                    self.assertIn(str(self.results_file), output)
+                    self.assertNotIn("FAILED", output)
+                    self.assertEqual(content, self.results_file.read_bytes())
+                    self.assertEqual("earlier summary\n", self.summary_file.read_text(encoding="utf-8"))
+
+    def test_a_results_directory_is_a_contextual_error_in_every_command(self) -> None:
+        self.use_fake_runtimes()
+        self.results_file.mkdir()
+        for command in ("summary", "verify", "layout", "leftovers"):
+            with self.subTest(command=command):
+                code, output = self.run_results_command(command)
+                self.assertEqual(1, code, output)
+                self.assertIn(f"ERROR: Cannot read results file: {self.results_file}:", output)
+                self.assertNotIn("FAILED", output)
+                self.assertTrue(self.results_file.is_dir())
+                self.assertFalse(self.summary_file.exists())
+
+    def test_results_permission_error_names_the_path_and_reason(self) -> None:
+        with mock.patch.object(Path, "read_text", side_effect=PermissionError("access denied")):
+            code, output = self.run_results_command("summary")
+        self.assertEqual(1, code, output)
+        self.assertIn(f"ERROR: Cannot read results file: {self.results_file}: access denied", output)
+        self.assertFalse(self.summary_file.exists())
+
+    def test_missing_results_still_start_a_complete_report(self) -> None:
+        self.use_fake_runtimes()
+        self.deploy_everything()
+        code, output = self.run_results_command("summary")
+        self.assertEqual(0, code, output)
+        self.assertFalse(self.results_file.exists())
+        for command in ("verify", "layout"):
+            code, output = self.run_results_command(command)
+            self.assertEqual(0, code, output)
+        owned = self.record_owned()
+        self.uninstall()
+        code, output, left = self.check_leftovers(owned)
+        self.assertEqual((0, []), (code, left), output)
+        code, output = self.run_results_command("summary")
+        self.assertEqual(0, code, output)
+        for expected in ("codex", "copilot", "claude", "Nothing deployed is left."):
+            self.assertIn(expected, output)
+        records = json.loads(self.results_file.read_text(encoding="utf-8"))
+        self.assertEqual(["first deploy", "uninstall"], [item["label"] for item in records])
+
     def test_tool_versions_report_a_missing_tool_and_a_failing_version_command(self) -> None:
         def find(name: str) -> str | None:
             return None if name == "copilot" else f"C:/tools/{name}.cmd"

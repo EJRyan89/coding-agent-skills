@@ -27,6 +27,9 @@ path that is still there, each entry those directories gained, and each item the
 them for the summary; it exits 1 when it names any. It allows what the uninstall leaves by design: the manifest, which
 keeps the source's entry with no items, and each directory's retained backups.
 
+A missing results file starts an empty report. An unreadable results file or invalid JSON is an ERROR naming the
+file and its reason; it is never replaced. These errors exit 1, like a non-array results file.
+
 Nothing here starts a model.
 """
 
@@ -287,6 +290,8 @@ def _read_results(path: Path) -> list[dict]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return []
+    except (OSError, ValueError) as exc:
+        raise DeployError(f"ERROR: Cannot read results file: {path}: {exc}") from exc
     if not isinstance(data, list):
         raise DeployError(f"ERROR: Results file is not a JSON array: {path}")
     return data
@@ -326,12 +331,12 @@ def _verify(arguments: argparse.Namespace) -> int:
     paths = Paths(Path(arguments.source), Path(arguments.home))
     try:
         results = check_runtimes(paths, dict(os.environ))
+        _record(Path(arguments.results), arguments.label, results)
     except DeployError as exc:
         print_error(exc)
         return exc.exit_code
     for result in results:
         print(f"{result.status} {result.runtime} {result.detail}".rstrip())
-    _record(Path(arguments.results), arguments.label, results)
     return exit_code(results, arguments.deploy_verify_exit, _verify_log(arguments.deploy_verify_log))
 
 
@@ -339,11 +344,11 @@ def _layout(arguments: argparse.Namespace) -> int:
     paths = Paths(Path(arguments.source), Path(arguments.home))
     try:
         result = check_layout(paths)
+        _record(Path(arguments.results), arguments.label, [result])
     except DeployError as exc:
         print_error(exc)
         return exc.exit_code
     print(f"{result.status} {result.runtime} {result.detail}".rstrip())
-    _record(Path(arguments.results), arguments.label, [result])
     return 0 if result.status == PASSED else 1
 
 
@@ -363,10 +368,10 @@ def _leftovers(arguments: argparse.Namespace) -> int:
     paths = Paths(Path(arguments.source), Path(arguments.home))
     try:
         left = leftovers(paths, _read_owned(Path(arguments.owned)))
+        _record_leftovers(Path(arguments.results), left)
     except DeployError as exc:
         print_error(exc)
         return exc.exit_code
-    _record_leftovers(Path(arguments.results), left)
     for item in left:
         print(f"::error::left after uninstall: {item}")
     if left:
