@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -109,11 +110,14 @@ class FieldReaderTests(unittest.TestCase):
     def test_a_number_is_finite_and_never_a_boolean(self) -> None:
         self.assertEqual(0.5, READ.number(0.5, "x"))
         self.assertEqual(2, READ.number(2, "x"))
+        self.assertEqual(10**300, READ.number(10**300, "x"))
         for value, found in (
             (True, "boolean true"),
             (float("inf"), "number inf"),
             (float("nan"), "number nan"),
             ("0.5", 'string "0.5"'),
+            (json.loads("1" + "0" * 400), "an integer too long to quote"),
+            (json.loads("-1" + "0" * 400), "an integer too long to quote"),
         ):
             with self.subTest(value=value):
                 self.refused(f"x must be a finite number, found {found}", READ.number, value, "x")

@@ -19,7 +19,7 @@ is operating-system-specific, so this module only calls it.
 
 `Streaming` runs a command that answers requests while it runs, such as `git cat-file --batch`, with the same
 environment unless its caller gives another, which loses the same variables; its stdin is the caller's pipe of
-requests, never the terminal.
+requests, never the terminal. It takes a `ProcessTree` as `run_bounded` does, ended once the command is closed.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import AbstractContextManager, contextmanager, nullcontext, suppress
+from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, Protocol
@@ -188,6 +188,7 @@ def streaming(
     cwd: Path | None = None,
     exit_wait: float = EXIT_WAIT_SECONDS,
     merge_stderr: bool = False,
+    tree: ProcessTree | None = None,
 ) -> Iterator[Streaming]:
     """Start a command that takes requests on stdin and answers on stdout while it runs, and close it on leaving.
 
@@ -195,7 +196,8 @@ def streaming(
     `Streaming` describes. With `env`, that is the command's whole environment but git's repository-selecting
     variables, and no prompt is turned off for it; otherwise it is `non_interactive_environment()`. Raises OSError
     when the command cannot start (FileNotFoundError when it does not exist). With `merge_stderr`, both output
-    streams go through the bounded stdout reader, rather than keeping diagnostics in a file.
+    streams go through the bounded stdout reader, rather than keeping diagnostics in a file. With `tree`, the command
+    starts as the tree says, and every process it started that stays in the tree is ended once it has been closed.
     """
     with tempfile.TemporaryFile() as errors:
         process = subprocess.Popen(
@@ -205,12 +207,32 @@ def streaming(
             stderr=subprocess.STDOUT if merge_stderr else errors,
             env=non_interactive_environment() if env is None else without_repository_variables(env),
             cwd=cwd,
+            **({} if tree is None else tree.start_options()),
         )
-        running = Streaming(process, errors, idle_timeout=idle_timeout, exit_wait=exit_wait, timeout=timeout)
+        with _held(process, tree):
+            running = Streaming(process, errors, idle_timeout=idle_timeout, exit_wait=exit_wait, timeout=timeout)
+            try:
+                yield running
+            finally:
+                running.close()
+
+
+@contextmanager
+def _held(process: subprocess.Popen[bytes], tree: ProcessTree | None) -> Iterator[None]:
+    """Hold a streaming command in `tree`, closing its pipes when the tree refuses it, since no `Streaming` will."""
+    if tree is None:
+        yield
+        return
+    with ExitStack() as stack:
         try:
-            yield running
-        finally:
-            running.close()
+            stack.enter_context(tree.hold(process))
+        except BaseException:
+            for pipe in (process.stdin, process.stdout):
+                if pipe is not None:
+                    with suppress(OSError):
+                        pipe.close()
+            raise
+        yield
 
 
 class Streaming:

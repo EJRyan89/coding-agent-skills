@@ -9,8 +9,12 @@ subset of YAML that skill and agent frontmatter uses. Values come back as text, 
 - a block sequence (`- item`) or flow sequence (`[a, "b"]`) of one-line scalars.
 
 Reading a key whose value has any other form, such as a nested mapping, a flow mapping, an anchor, an alias, a
-tag, or an explicit indentation indicator, raises FrontmatterError rather than guessing. A key that is never read is
-never parsed, so a skill or agent may carry hooks or other structured settings this reader does not interpret.
+tag, or an explicit indentation indicator, raises FrontmatterError rather than guessing. So does a value YAML itself
+reads otherwise or not at all, which a runtime's parser would refuse to load: a plain value holding `: ` or ending in
+`:`, which YAML reads as a mapping, or starting with an indicator such as `- ` or `? `, and a scalar that goes on after
+a comment has ended it, as a comment line at column 0 ends a block scalar. A key that is never read is never parsed,
+so a skill or agent may carry hooks or other structured settings this reader does not interpret; a line indented with
+a tab, which YAML forbids anywhere, is refused when the frontmatter is parsed.
 
 This is the one reader. skill-core is the home of the repository's shared modules, so skill scripts, the deployer,
 the repository tools, and the tests all import it from here as `frontmatter`.
@@ -33,6 +37,22 @@ DOUBLE_QUOTED = re.compile(r'^"((?:[^"\\]|\\.)*)"(?:[ \t]+#.*)?$', re.DOTALL)
 SINGLE_QUOTED = re.compile(r"^'((?:[^']|'')*)'(?:[ \t]+#.*)?$", re.DOTALL)
 FLOW_ITEM = re.compile(r"""[ \t]*(?:"((?:[^"\\]|\\.)*)"|'((?:[^']|'')*)'|([^,\[\]{}"'#][^,\[\]{}]*?))[ \t]*(,|$)""")
 COMMENT = re.compile(r"[ \t]+#.*$")
+# Where a comment starts on a line of a plain value stripped of its indentation.
+COMMENT_START = re.compile(r"(?:^|[ \t])#")
+# A colon YAML reads as a mapping indicator: one followed by whitespace, or ending the value.
+MAPPING_INDICATOR = re.compile(r":(?:[ \t\n]|$)")
+# The indicators a plain value may not start with when whitespace or its end follows: a block sequence entry, an
+# explicit mapping key, and a mapping value.
+PLAIN_INDICATORS = re.compile(r"^[-?:](?:[ \t]|$)")
+# What else a plain value may not start with, beside UNSUPPORTED's indicators, and why.
+PLAIN_FIRST = {
+    ",": "a flow indicator",
+    "]": "a flow indicator",
+    "}": "a flow indicator",
+    "[": "a flow sequence that does not start on its key's line",
+    "|": "a block scalar that does not start on its key's line",
+    ">": "a block scalar that does not start on its key's line",
+}
 UNSUPPORTED = {
     "{": "a flow mapping",
     "&": "an anchor",
@@ -67,6 +87,8 @@ class Frontmatter:
         current: list[str] | None = None
         for number, line in enumerate(lines, start=1):
             line = line.rstrip("\r")
+            if line.startswith("\t") and line.strip():
+                raise FrontmatterError(f"frontmatter line {number} is indented with a tab, which YAML forbids")
             if not line.strip() or line[0] in " \t" or line.startswith("-"):
                 if current is None:
                     if line.strip():
@@ -75,6 +97,8 @@ class Frontmatter:
                 current.append(line)
                 continue
             if line.startswith("#"):
+                if current is not None:
+                    current.append(line)  # it may end a scalar, which the value's reader checks
                 continue
             match = KEY.match(line)
             if match is None:
@@ -156,23 +180,87 @@ def _value(inline: str, following: list[str]) -> Value:
     header = COMMENT.sub("", inline)
     block = BLOCK_HEADER.match(header)
     if block:
-        return _block_scalar(block.group(1), block.group(2), following)
+        return _block_scalar(block.group(1), block.group(2), _before_column_comment(following))
     if inline.startswith(("|", ">")):
         raise FrontmatterError("a block scalar with an indentation indicator is not supported")
-    content = _trim(following)
     if not inline:
-        lines = [line for line in content if line.strip()]
+        # A comment line between a sequence's items, or a nested mapping's lines, is no part of either.
+        lines = [line for line in following if line.strip() and not line.strip().startswith("#")]
         if not lines:
             return None
         if all(SEQUENCE_ITEM.match(line.strip()) for line in lines):
             return _block_sequence(lines)
         if NESTED_KEY.match(lines[0].strip()) or any(SEQUENCE_ITEM.match(line.strip()) for line in lines):
             raise FrontmatterError("a nested mapping is not supported")
+    content = _scalar_lines(inline, following)
     if inline.startswith("["):
-        if content:
+        if len(content) > 1:
             raise FrontmatterError("a flow sequence must be on one line")
         return _flow_sequence(inline)
-    return _scalar(_fold([inline, *content]) if content else inline)
+    if content[0].strip().startswith(('"', "'")):
+        return _scalar(_fold(content))
+    return _plain_lines(content)
+
+
+def _before_column_comment(following: list[str]) -> list[str]:
+    """A block scalar's lines before a comment line at column 0, which ends it; refused when lines follow that
+    comment, since they then belong to no key."""
+    for index, line in enumerate(following):
+        if line.startswith("#"):
+            if any(rest.strip() for rest in following[index + 1 :]):
+                raise FrontmatterError(
+                    "a comment at column 0 ends a block scalar, so the lines after it belong to no key"
+                )
+            return following[:index]
+    return following
+
+
+def _scalar_lines(inline: str, following: list[str]) -> list[str]:
+    """A scalar's lines, from the first that holds it to the last before a comment line at column 0, which ends it.
+    A comment line before the scalar starts is no part of it; lines after the one that ends it are refused, since
+    they then belong to no key."""
+    lines = [inline] if inline else []
+    for index, line in enumerate(following):
+        if not lines:
+            if line.strip() and not line.strip().startswith("#"):
+                lines.append(line)
+        elif line.startswith("#"):
+            if any(rest.strip() for rest in following[index + 1 :]):
+                raise FrontmatterError("a comment at column 0 ends the value, so the lines after it belong to no key")
+            break
+        else:
+            lines.append(line)
+    return _trim(lines)
+
+
+def _plain_lines(lines: list[str]) -> str:
+    """A plain scalar on one line or continued on indented ones, folded, without the comment that ends it; refused
+    when it goes on after that comment."""
+    kept = []
+    for index, line in enumerate(lines):
+        text = line.strip()
+        comment = COMMENT_START.search(text)
+        if comment is None:
+            kept.append(text)
+            continue
+        if any(rest.strip() for rest in lines[index + 1 :]):
+            raise FrontmatterError("a comment ends a plain value, so the lines after it belong to no key")
+        kept.append(text[: comment.start()])
+        break
+    return _plain(_fold(kept))
+
+
+def _plain(text: str) -> str:
+    """A plain scalar, refused when YAML would read it as something other than a scalar or not at all."""
+    if text[:1] in UNSUPPORTED:
+        raise FrontmatterError(f"{UNSUPPORTED[text[0]]} is not supported")
+    if text[:1] in PLAIN_FIRST:
+        raise FrontmatterError(f"a plain value starting with {text[0]!r}, {PLAIN_FIRST[text[0]]}, is not supported")
+    if PLAIN_INDICATORS.match(text):
+        raise FrontmatterError(f"a plain value starting with {text[0]!r} and a space is not a scalar; quote it")
+    if MAPPING_INDICATOR.search(text):
+        raise FrontmatterError("a plain value holding ': ' or ending in ':' is a mapping; quote it")
+    return text
 
 
 def _scalar(text: str) -> str:
@@ -192,7 +280,7 @@ def _scalar(text: str) -> str:
         if match is None:
             raise FrontmatterError("a single-quoted value is not closed")
         return match.group(1).replace("''", "'")
-    return COMMENT.sub("", text).strip()
+    return _plain(COMMENT.sub("", text).strip())
 
 
 def _block_scalar(style: str, chomping: str, following: list[str]) -> str:
@@ -231,6 +319,8 @@ def _block_sequence(lines: list[str]) -> list[str]:
         raise FrontmatterError("a block sequence's items must be indented alike")
     items = []
     for line in lines:
+        if line[_indent(line)] == "\t":
+            raise FrontmatterError("a block sequence item is indented with a tab, which YAML forbids")
         match = SEQUENCE_ITEM.match(line.strip())
         if match is None:
             raise FrontmatterError("a block sequence item must start with '-'")
@@ -256,7 +346,7 @@ def _flow_sequence(text: str) -> list[str]:
         elif single is not None:
             items.append(single.replace("''", "'"))
         else:
-            items.append(plain.strip())
+            items.append(_plain(plain.strip()))
         position = match.end()
         if not separator:
             break
