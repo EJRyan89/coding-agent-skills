@@ -32,10 +32,10 @@ A `CHECKOUT failed <reason>` line means the switch to the default branch failed;
 
 ## 3. Dirty main worktrees
 
-For each `dirty` repository, call `AskUserQuestion` with question `"<REPO_NAME>: The main worktree has uncommitted changes. Continue (branch switch will be skipped) or abort this repo?"`, header `"Dirty tree"`, and options `"Continue"` and `"Abort"`. For Abort, report the repository as aborted. For Continue, sweep that repository again without switching its branch, passing its path as the target:
+For each `dirty` repository, call `AskUserQuestion` with question `"<REPO_NAME>: The main worktree has uncommitted changes. Continue (branch switch will be skipped) or abort this repo?"`, header `"Dirty tree"`, and options `"Continue"` and `"Abort"`. For Abort, report the repository as aborted. For Continue, sweep that repository again without switching its branch, passing its path as the target and the first sweep's `PLANS` directory as the record it adds to, so that directory keeps every repository's plan:
 
 ```bash
-{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" sweep --repos-root "{{REPOS_ROOT}}" --skip-checkout "<repo>"
+{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" sweep --repos-root "{{REPOS_ROOT}}" --record "<plans directory>" --skip-checkout "<repo>"
 ```
 
 It prints the same block as the first sweep, now with the repository's state after cleaning; handle that state as step 2 describes.
@@ -68,6 +68,10 @@ It prints `REMOVED` for a worktree, `DELETED_DIR` for a directory, `PRUNED_DIR <
 
 ## 5. Summary
 
-The sweep (for every repository that is not `quiet`), `delete-local`, `force-delete`, and `remove-directory` each give the repository's current summary as `SUMMARY <text>` lines. Show the text of the last summary printed for each repository exactly as given; `summary --plan "<plan file>"` prints it again. Once a later command's summary for a repository is headed `cleanup complete`, do not report an earlier stop in that repository as outstanding.
+Once every question is answered, print the run's report from the first sweep's `PLANS` directory, with one `--aborted` for each repository the user aborted in step 3, by its `REPO` path, or none:
 
-Finish with `Processed <N> repositories.` from `SWEPT`, followed by how many were skipped because their fetch failed, the user aborted them, or they reported an `ERROR`.
+```bash
+{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" report --record "<plans directory>" --aborted "<repo>"
+```
+
+Show its lines' text as given: each `REPO <path> <state>` with the `SUMMARY`, `ERROR`, `CHECKOUT`, and `FF_DEFAULT` lines after it, the `QUIET` repositories on one line, and the last line, `PROCESSED`. A line `FAILED <reason>` instead means no report was given: when it names a dirty repository still to handle, handle it as step 3 says and run the report again; otherwise relay it.

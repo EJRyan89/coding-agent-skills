@@ -3,6 +3,8 @@
 Every command prints one fact per line:
   add       ADDED <id>. A pull request is named with its repository, and a review version with its finding; a flag
             that names a finding is refused unless that review of the pull request is archived and has that finding.
+            --finding takes the finding's report label, as findings prints it (v2 F003), or its ID (F003) beside
+            --review-version; a --review-version beside a label must be the version the label names.
             A category or body past its length limit is refused, naming the limit, and so is a write that would take
             the store past the size it is read at.
   edit      EDITED <id>. Only an open flag is edited, and only its category and body change.
@@ -20,9 +22,10 @@ A failure prints `FAILED <reason>` and exits 1; a usage error exits 2.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
@@ -45,9 +48,11 @@ from review_flags import (
     validate_target,
 )
 from review_io import PersistenceError
-from review_records import RecordError, carried_findings, validate_record_pair
+from review_records import FINDING_ID, RecordError, carried_findings, validate_record_pair
 
 BODY_LIMIT = 160
+# A finding's label in its review report and on a findings line: v<review version> <finding ID>.
+REPORT_LABEL = re.compile(rf"v([1-9][0-9]*) ({FINDING_ID.pattern})")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -70,9 +75,9 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument(
         "--review-version",
         type=int,
-        help="the version of the review whose report gave the finding ID; required with --finding",
+        help="the version of the review whose report gave the finding ID; required with a --finding ID",
     )
-    add.add_argument("--finding")
+    add.add_argument("--finding", help="the finding's report label, such as v2 F003, or its ID, such as F003")
     commands.add_parser("list")
     findings = commands.add_parser("findings")
     findings.add_argument("--repository", required=True)
@@ -107,6 +112,23 @@ def flag_line(flag: dict[str, Any]) -> str:
     return f"FLAG {flag['id']} {flat_text(flag['category'])} {target(flag)} {cut(flag['body'])}"
 
 
+def report_label(ledger_entry_id: str) -> str:
+    """A ledger entry's ID, v<version>:<finding ID>, as its report labels it and REPORT_LABEL reads it back."""
+    return ledger_entry_id.replace(":", " ")
+
+
+def named_finding(review_version: int | None, finding: str | None) -> tuple[int | None, str | None]:
+    """The review version and finding ID that --finding names: a report label carries its review version, and
+    anything else is a finding ID that --review-version gives the version of, left for validate_target to check."""
+    match = REPORT_LABEL.fullmatch(finding) if finding is not None else None
+    if match is None:
+        return review_version, finding
+    version = int(match[1])
+    if review_version not in (None, version):
+        raise FlagError(f"Report label {finding!r} names review version {version}, not {review_version}")
+    return version, match[2]
+
+
 def check_finding(config: Path | None, repository: str, pull: int, version: int, finding_id: str) -> None:
     """Refuse a finding that review `version` of the pull request, as archived, does not have."""
     directory = pull_directory(Path(load_config(config)["archive_root"]), repository, pull)
@@ -124,7 +146,7 @@ def finding_lines(config: Path | None, repository: str, pull: int) -> list[str]:
     if not records:
         raise FlagError(f"{repository}#{pull} has no review in the archive")
     lines = [
-        f"FINDING {item['id'].replace(':', ' ')} {item['severity']} {flat_text(item['path'])}:{item['line']} "
+        f"FINDING {report_label(item['id'])} {item['severity']} {flat_text(item['path'])}:{item['line']} "
         f"{cut(item.get('title') or item['body'])}"
         for item in carried_findings(records)
     ]
@@ -135,17 +157,19 @@ def run(args: argparse.Namespace) -> list[str]:
     if args.command == "findings":
         return finding_lines(args.config, args.repository, args.pull)
     if args.command == "add":
-        if args.finding is not None:
-            validate_target(args.repository, args.pull, args.review_version, args.finding)
-            check_finding(args.config, args.repository, args.pull, args.review_version, args.finding)
+        review_version, finding = named_finding(args.review_version, args.finding)
+        if finding is not None:
+            validate_target(args.repository, args.pull, review_version, finding)
+            # validate_target refuses a finding without its review version.
+            check_finding(args.config, args.repository, args.pull, cast(int, review_version), finding)
         flag = add_flag(
             args.store,
             category=args.category,
             body=args.body,
             repository=args.repository,
             pull_number=args.pull,
-            review_version=args.review_version,
-            finding_id=args.finding,
+            review_version=review_version,
+            finding_id=finding,
         )
         return [f"ADDED {flag['id']}"]
     if args.command == "edit":
