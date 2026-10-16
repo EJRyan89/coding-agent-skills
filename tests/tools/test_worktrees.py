@@ -421,6 +421,18 @@ class CommandGuardTests(WorktreesTestCase):
         self.assertEqual("main\n", self.git(self.hub, "branch", "--show-current"))
         self.assertEqual("", self.git(self.hub, "status", "--porcelain"))
 
+    def test_a_monitor_command_is_read_as_bash_in_the_hub(self) -> None:
+        # Monitor runs its command in the shell the Bash tool uses, so a refused git call through it is refused too.
+        def monitor(command: str, cwd: Path) -> str | None:
+            event = {"tool_name": "Monitor", "tool_input": {"command": command, "timeout_ms": 60000}, "cwd": str(cwd)}
+            return self.decision(event)
+
+        self.assertEqual("deny", monitor("git switch feat/demo", self.hub))
+        self.assertEqual("deny", monitor(f'cd "{self.hub}" && git commit -m "a message with spaces"', self.tree))
+        self.assertIsNone(monitor("git status; git log --oneline -1", self.hub))
+        self.assertIsNone(monitor("git switch -c other", self.tree))
+        self.assertEqual("main\n", self.git(self.hub, "branch", "--show-current"))
+
     def test_commands_that_move_or_write_the_hub_are_denied(self) -> None:
         for command in (
             "git switch feat/demo",
@@ -1486,17 +1498,43 @@ class NewWorktreeTests(WorktreesTestCase):
         (self.worktrees / "fix-taken").mkdir()
         self.git(self.hub, "branch", "inv/existing")
         for arguments, message in (
-            (["Feat", "x"], "lowercase"),
+            (["Feat", "x"], "must be one of"),
             (["feat", "a/b"], "lowercase"),
             (["feat", "-x"], "lowercase"),
             (["feat", "demo"], "already exists"),
             (["inv", "existing"], "already exists"),
             (["fix", "taken"], "already exists"),
+            # A kind outside the title types escapes the title check's agreement rule, so new refuses it.
+            (["fixx", "thing"], "must be one of feat, fix, docs, test, refactor, chore, ci, build, inv"),
+            (["feature", "thing"], "must be one of"),
+            (["bugfix", "thing"], "must be one of"),
         ):
             with self.subTest(arguments=arguments):
                 result = self.run_script(["new", "--", *arguments], cwd=self.hub)
                 self.assertEqual(1, result.returncode)
                 self.assertIn(message, result.stderr)
+
+    def test_new_accepts_every_title_type_and_inv_as_the_kind(self) -> None:
+        # The kinds pinned as literals, independently of the constant new reads.
+        for kind in ("feat", "fix", "docs", "test", "refactor", "chore", "ci", "build", "inv"):
+            with self.subTest(kind=kind):
+                result = self.run_script(["new", kind, "accepted"], cwd=self.hub)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual(
+                    f"{kind}/accepted",
+                    self.git(self.worktrees / f"{kind}-accepted", "branch", "--show-current").strip(),
+                )
+        refused = self.run_script(["new", "fixx", "thing"], cwd=self.hub)
+        self.assertEqual(1, refused.returncode)
+        self.assertFalse((self.worktrees / "fixx-thing").exists())
+        self.assertNotEqual(
+            0,
+            subprocess.run(
+                ["git", "-C", str(self.hub), "show-ref", "--verify", "--quiet", "refs/heads/fixx/thing"],
+                env=self.environment,
+                check=False,
+            ).returncode,
+        )
 
     def test_new_refuses_while_the_hub_does_not_ignore_its_worktrees(self) -> None:
         (self.hub / ".gitignore").write_text("local.json\n", encoding="utf-8")

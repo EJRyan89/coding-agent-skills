@@ -35,7 +35,8 @@ Two things follow from nesting:
 - `git clean -x` in the hub would remove them. The guard refuses `clean` in the hub.
 
 `python tools/worktrees.py new <kind> <name>` creates a worktree from the hub's local `main`, with no upstream.
-Pull `main` in the hub first if it may be behind. `python tools/worktrees.py list` shows one row per worktree:
+The kind is a pull request title type, which the title check then holds the branch's pull request to, or `inv`;
+`new` refuses any other kind and names the ones it takes. Pull `main` in the hub first if it may be behind. `python tools/worktrees.py list` shows one row per worktree:
 
 | Column | Meaning |
 |---|---|
@@ -157,7 +158,7 @@ With the guard enabled:
   it runs, through further aliases. A shell alias (`!...`) is read as Bash from the top of the hub. An alias that
   cannot be read, nests more than four deep, or runs something the guard cannot judge is refused.
 - **Both shell tools.** The same commands are refused, with the same allowances, whether they run through the
-  `Bash` tool or the `PowerShell` tool.
+  `Bash` tool or the `PowerShell` tool, or as a `Monitor` tool's command, which runs in the `Bash` tool's shell.
 
 Runtimes other than Claude Code do not run the hook, so for them the `CLAUDE.md` rules are the guard.
 
@@ -275,8 +276,9 @@ links for this repository, and nothing else. A rule about what a developer must 
 user settings or `settings.local.json`. `tests/run_validation.py` fails if any other top-level key appears, if
 `$schema` names another schema, if `attribution` is anything but `{"commit": "", "pr": "", "sessionUrl": false}`, or
 if a `settings.local.json` is ever committed. It also fails when the guard's hook stops matching any tool that can
-edit a file or run git (`Edit`, `Write`, `MultiEdit`, `NotebookEdit`, `Bash`, and `PowerShell`). A tool
-missing from the matcher is never shown to the guard, so the hub would be open through it.
+edit a file or run git (`Edit`, `Write`, `MultiEdit`, `NotebookEdit`, `Bash`, `PowerShell`, and `Monitor`, whose
+command runs in the shell the `Bash` tool uses and which the guard reads as Bash). A tool missing from the matcher is
+never shown to the guard, so the hub would be open through it.
 
 ## Session context in a worktree
 

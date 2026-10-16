@@ -9,8 +9,9 @@ from pathlib import Path
 
 from validation_support import REPOSITORY_ROOT, repository_files
 
-# Every Claude Code tool that can edit a file or run git, each of which the hub guard's hook must see.
-HUB_GUARD_TOOLS = {"Bash", "Edit", "MultiEdit", "NotebookEdit", "PowerShell", "Write"}
+# Every Claude Code tool that can edit a file or run git, each of which the hub guard's hook must see. Monitor runs its
+# command in the shell the Bash tool uses, so it can run git.
+HUB_GUARD_TOOLS = {"Bash", "Edit", "MultiEdit", "Monitor", "NotebookEdit", "PowerShell", "Write"}
 
 
 # Defense in depth only: the private-name scan in docs/releasing.md runs before every release. YourName is the
