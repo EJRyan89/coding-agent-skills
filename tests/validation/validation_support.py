@@ -12,7 +12,6 @@ import builtins
 import codecs
 import fnmatch
 import re
-import subprocess
 import sys
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
@@ -27,6 +26,10 @@ from markdown_sections import markdown_section as markdown_section
 from markdown_sections import prose_code_spans as prose_code_spans
 
 from deployer import platform_support
+
+# Every git call the policies and the runner make goes through `git`, tools/release_notes.py's run through skill-core's
+# GitClient, so each reads the checkout it names whatever GIT_DIR or GIT_INDEX_FILE the shell or a git hook exported.
+from tools.release_notes import git as git
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
@@ -567,14 +570,14 @@ def fence_body_line(holder: Fence | None, index: int) -> bool:
 
 
 def repository_files(root: Path) -> list[Path]:
-    """Tracked files plus untracked ones Git does not ignore, which is what a commit could include."""
-    listed = subprocess.run(
-        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-        cwd=root,
-        capture_output=True,
-        check=True,
-    ).stdout.decode("utf-8")
-    return [root / name for name in listed.split("\0") if name and (root / name).is_file()]
+    """Tracked files plus untracked ones Git does not ignore, which is what a commit could include.
+
+    Raises ValueError when git cannot list them.
+    """
+    listed = git(root, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
+    if listed.returncode != 0:
+        raise ValueError(f"git ls-files failed in {root}: {listed.stderr.strip()}")
+    return [root / name for name in listed.stdout.split("\0") if name and (root / name).is_file()]
 
 
 # skill-core's lookup of a sibling skill's scripts directory, which a script puts on sys.path after the line that puts

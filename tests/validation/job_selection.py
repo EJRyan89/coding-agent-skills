@@ -9,7 +9,6 @@ import ast
 import fnmatch
 import functools
 import json
-import subprocess
 import unittest
 from collections import Counter
 from collections.abc import Iterable, Mapping
@@ -19,7 +18,7 @@ from job_pool import UNSPLIT_SUITE_WEIGHT, Job
 from python_checks import static_format_check, static_lint_check, type_check_jobs
 from shell_targets import static_markdown_shell_check, static_powershell_check, static_shell_check
 from suite_discovery import FIXTURE_ROOT, regression_suites, suite_jobs
-from validation_support import REPOSITORY_ROOT, UnreadablePython, parse_python, repository_files
+from validation_support import REPOSITORY_ROOT, UnreadablePython, git, parse_python, repository_files
 
 from tests.run_shard import deal, flatten
 
@@ -245,7 +244,10 @@ def changed_paths(root: Path, base: str) -> list[str] | None:
         ["diff", "--name-only", "--no-renames", "HEAD"],
         ["ls-files", "--others", "--exclude-standard"],
     ):
-        result = subprocess.run(["git", "-C", str(root), *command], capture_output=True, text=True, encoding="utf-8")
+        try:
+            result = git(root, *command)
+        except ValueError:
+            return None
         if result.returncode != 0:
             return None
         paths.update(line for line in result.stdout.splitlines() if line)
