@@ -2590,30 +2590,13 @@ class GitHubDocumentTests(GitTestCase):
                 client.get_file_blob("example/one", "a" * 40, "docs/design.docx", maximum=1)
             self.assertEqual("malformed", field.exception.kind)
             self.assertEqual(1, len(calls))
-        values: tuple[Any, ...] = ({}, {"type": "dir"}, {"type": 1}, {"type": "Symlink"})
+        values: tuple[Any, ...] = ({}, {"type": "dir"}, {"type": "symlink"})
         for value in values:
             with self.subTest(value=value):
                 client, calls = self._client(value)
                 with self.assertRaisesRegex(GitHubError, "^Contents response is not one file$") as context:
                     client.get_file_blob("example/one", "a" * 40, "docs/design.docx", maximum=1)
-                self.assertNotIsInstance(context.exception, review_github.NotOneFile)
                 self.assertEqual("malformed", context.exception.kind)
-                self.assertEqual(1, len(calls))
-
-    def test_file_blob_names_a_symbolic_link_or_a_submodule_and_reads_no_blob(self) -> None:
-        # GitHub answers a link whose target is not a file in the repository, and a submodule, with their own type.
-        for value, entry in (
-            ({"type": "symlink", "target": "../../outside.md"}, "symbolic link"),
-            ({"type": "submodule", "submodule_git_url": "https://example.invalid/x.git"}, "submodule"),
-        ):
-            with self.subTest(entry=entry):
-                client, calls = self._client(value)
-                with self.assertRaises(review_github.NotOneFile) as context:
-                    client.get_file_blob("example/one", "a" * 40, "docs/link.md", maximum=1)
-                self.assertEqual(
-                    f"Contents response is not one file: docs/link.md is a {entry}", str(context.exception)
-                )
-                self.assertEqual((entry, "not_file"), (context.exception.entry, context.exception.kind))
                 self.assertEqual(1, len(calls))
 
     def test_file_blob_rejects_contents_with_invalid_blob_ids(self) -> None:

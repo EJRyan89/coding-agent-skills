@@ -569,6 +569,47 @@ def skill_tree_problems(root: Path) -> list[str]:
     return problems
 
 
+# Where each repository skill's shim for Codex and Copilot sits, a folder named as the skill's.
+REPOSITORY_SKILL_SHIMS = ".agents/skills"
+SKILL_NAMES_DOC = '"Files" in docs/adding-a-skill.md'
+
+
+def repository_skill_name_problems(root: Path) -> list[str]:
+    """Report a repository skill or shim whose folder breaks the skill naming rules the deployer holds a shipped
+    skill to, or whose frontmatter `name` is not its folder's name.
+
+    A runtime lists a skill by its frontmatter name and the shim, the cost audit, and validation find it by its
+    folder, so the two must agree; tools/new_skill.py --repository refuses the same names when it scaffolds one.
+    """
+    import frontmatter
+
+    from deployer import source as deploy_source
+
+    problems: list[str] = []
+    for tree in (REPOSITORY_SKILLS, REPOSITORY_SKILL_SHIMS):
+        for skill_md in sorted((root / tree).glob("*/SKILL.md"), key=lambda path: path.parent.name):
+            name, where = skill_md.parent.name, skill_md.relative_to(root).as_posix()
+            if not deploy_source.is_valid_name(name):
+                problems.append(
+                    f"{where}: {name!r} is not a skill name: at most 64 lowercase letters, digits, and hyphens, "
+                    f"neither first nor last, and no Windows device name; see {SKILL_NAMES_DOC}"
+                )
+            elif word := deploy_source.reserved_word(name):
+                problems.append(
+                    f"{where}: {name!r} contains the reserved word {word!r}, {deploy_source.AGENT_SKILLS_RULE}; see "
+                    f"{SKILL_NAMES_DOC}"
+                )
+            try:
+                declared = frontmatter.read(skill_md).string("name")
+            except (OSError, UnicodeError, frontmatter.FrontmatterError) as exc:
+                problems.append(f"{where}: its frontmatter cannot be read: {exc}")
+                continue
+            if declared != name:
+                shown = "no name" if declared is None else f"name {declared!r}"
+                problems.append(f"{where} declares {shown}, not its folder's name {name!r}; see {SKILL_NAMES_DOC}")
+    return problems
+
+
 def shared_guidance_problems(root: Path) -> list[str]:
     """Report a shipped skill whose SKILL.md names a shared Markdown asset from source.json.
 
@@ -591,6 +632,10 @@ class SkillLayoutPolicies(unittest.TestCase):
 
     def test_every_directory_under_skills_is_a_skill_or_a_shared_asset(self) -> None:
         self.assertEqual([], skill_tree_problems(REPOSITORY_ROOT))
+
+    def test_repository_skills_and_their_shims_are_named_as_skills_and_as_their_folders(self) -> None:
+        self.assertTrue(list((REPOSITORY_ROOT / REPOSITORY_SKILL_SHIMS).glob("*/SKILL.md")))
+        self.assertEqual([], repository_skill_name_problems(REPOSITORY_ROOT))
 
     def test_skill_markdown_does_not_embed_programs(self) -> None:
         self.assertEqual([], embedded_program_problems(REPOSITORY_ROOT))

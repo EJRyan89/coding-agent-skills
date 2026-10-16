@@ -5,7 +5,8 @@ confirms what they find, and files it.
               and write one brief per area that changed, for the release audit before tagging
     rotation  name the area the rotation record shows read whole least recently and write its whole-area brief, for
               the rotation audit after tagging; with --record TAG, append that area to the record for TAG instead,
-              which is the only write to the repository
+              which is the only write to the repository: it writes a copy beside the record and replaces the record
+              with it, so a write that fails leaves the record as it was
 
 Every line is one fact:
 
@@ -25,6 +26,9 @@ Every line is one fact:
     BRIEFS "<directory>"               the new directory holding the briefs
     BRIEF <area> "<file>"              one brief, the whole prompt for one read-only reader
 
+A git command that fails is reported with git's own reason; a ref is reported as naming no commit only when git
+finds none, and a repository with no tag reachable from HEAD only when git lists none.
+
 Exit status 0 means the briefs were written, or the entry recorded; 1 a last line FAILED <reason>; 2 a usage error.
 """
 
@@ -32,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import tempfile
@@ -43,7 +48,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-core" / "scripts"))
 
 from console import run_main
-from git_client import GitClient, GitError
+from git_client import GitClient, GitError, classify_failure
 
 # The rotation record, relative to the top of the repository it describes.
 RECORD_PATH = ".claude/skills/audit-repository/references/rotation.json"
@@ -190,28 +195,29 @@ def git_output(git: GitClient, repository: Path, arguments: Sequence[str]) -> st
 
 
 def commit_of(git: GitClient, repository: Path, ref: str) -> str:
-    """The commit a ref names, or AuditError when it names none."""
+    """The commit a ref names, or AuditError naming why there is none: the ref names no commit only when
+    `rev-parse --verify --quiet` exits 1 and says nothing, which is how it reports one; any other failure is git's."""
     if ref.startswith("-"):
         raise AuditError(f"{ref} is not a ref")
     try:
         result = git.run(["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], directory=repository)
     except GitError as exc:
         raise AuditError(f"git rev-parse: {exc}") from exc
-    if result.returncode != 0:
-        if "not a git repository" in result.stderr:
-            raise AuditError(f"{repository.as_posix()} is not a Git repository")
+    if result.returncode == 0:
+        return result.stdout.strip()
+    if classify_failure(result.stderr) == "not_repository":
+        raise AuditError(f"{repository.as_posix()} is not a Git repository")
+    if result.returncode == 1 and not result.stderr.strip():
         raise AuditError(f"{ref} names no commit in {repository.as_posix()}")
-    return result.stdout.strip()
+    reason = result.stderr.strip() or f"exit code {result.returncode}"
+    raise AuditError(f"git rev-parse: {reason}")
 
 
 def latest_tag(git: GitClient, repository: Path, head: str) -> str:
-    try:
-        result = git.run(["describe", "--tags", "--abbrev=0", head], directory=repository)
-    except GitError as exc:
-        raise AuditError(f"git describe: {exc}") from exc
-    if result.returncode != 0:
+    """The latest tag reachable from `head`, or AuditError: none is reachable only when git lists none."""
+    if not git_output(git, repository, ["tag", "--merged", head]).strip():
         raise AuditError("no tag is reachable from HEAD; pass --since <ref>")
-    return result.stdout.strip()
+    return git_output(git, repository, ["describe", "--tags", "--abbrev=0", head]).strip()
 
 
 def changes(git: GitClient, repository: Path, base: str, head: str) -> list[Change]:
@@ -274,8 +280,21 @@ def next_area(entries: list[Entry]) -> Area:
 
 
 def write_record(path: Path, entries: list[Entry]) -> None:
+    """Replace the record with `entries` through a copy written beside it, so a write that fails leaves the record as
+    it was and removes the copy. Raises OSError, naming the copy too when it cannot be removed."""
     document = {"audits": [{"date": entry.date, "tag": entry.tag, "area": entry.area} for entry in entries]}
-    path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
+    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    copy = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(json.dumps(document, indent=2) + "\n")
+        copy.replace(path)
+    except OSError as exc:
+        try:
+            copy.unlink(missing_ok=True)
+        except OSError as left:
+            raise OSError(f"{exc}; the unfinished copy {copy.as_posix()} remains: {left}") from exc
+        raise
 
 
 # --- briefs ---------------------------------------------------------------------------------------
@@ -450,7 +469,7 @@ def append_entry(git: GitClient, repository: Path, path: Path, entries: list[Ent
     try:
         write_record(path, [*entries, entry])
     except OSError as exc:
-        raise AuditError(f"cannot write the rotation record {path.as_posix()}: {exc}") from exc
+        raise AuditError(f"cannot write the rotation record {path.as_posix()}, which is unchanged: {exc}") from exc
     return f"RECORDED {entry.tag} {entry.area} {entry.date}"
 
 

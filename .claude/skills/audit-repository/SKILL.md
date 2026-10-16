@@ -57,3 +57,5 @@ python -B .claude/skills/audit-repository/scripts/audit_repository.py rotation -
 ```
 
 `RECORDED <tag> <area> <date>` confirms the entry it appended to `.claude/skills/audit-repository/references/rotation.json`. Then delete the `BRIEFS` directory.
+
+The script writes the new record beside the old one and then replaces it. If that write fails, it exits 1 with `FAILED cannot write the rotation record <path>, which is unchanged: <reason>` and removes its copy. If the copy cannot be removed, the line names it so you can delete it. Fix the cause and run the command again.
