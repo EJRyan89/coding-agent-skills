@@ -30,7 +30,6 @@ import ast
 import contextlib
 import hashlib
 import json
-import os
 import re
 import sys
 import tomllib
@@ -42,7 +41,9 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+import folder_walk
 from console import run_main
+from folder_walk import LINKED, SKIPPED_FOLDERS
 from frontmatter import COMMENT, NESTED_KEY, SEQUENCE_ITEM, Frontmatter, FrontmatterError
 from markdown_literal import markdown_line
 
@@ -143,12 +144,6 @@ def read_text_or_none(path: Path) -> str | None:
         return None
 
 
-# Directories no repository author writes agent configuration into: version control and installed dependencies.
-SKIPPED_DIRECTORIES: frozenset[str] = frozenset(
-    {".git", ".hg", ".svn", "node_modules", ".venv", "venv", "__pycache__", ".tox", ".nox"}
-)
-
-
 def leaves_root(root: Path, path: Path) -> bool:
     """Whether `path` lies outside `root` once its links and `..` parts are resolved, as a symbolic link or junction
     that leads out of the repository makes it. A path that cannot be resolved counts as outside, so nothing is read
@@ -183,32 +178,29 @@ def list_directory(root: Path, directory: Path, pattern: str | None = None) -> L
 
 
 def walk_files(root: Path, base: Path, wanted: Callable[[str], bool], skipped: frozenset[str] = frozenset()) -> Listing:
-    """Every file below `base` whose name `wanted` accepts, outside directories named in `skipped`, in a stable order.
+    """Every file below `base` whose name `wanted` accepts, outside folders named in `skipped` and nested checkouts,
+    in the order of skill-core's folder walk.
 
-    A directory or wanted file that leads out of the root is neither entered nor read: it goes in `outside`. Neither
-    `os.walk`, which enters a junction on Windows, nor `rglob` would stop there.
+    A folder or wanted file that leads out of the root is neither entered nor read: it goes in `outside`. A link that
+    stays inside the root is followed, but never back into a folder the walk is inside, and a folder that cannot be
+    listed holds nothing.
     """
     listing = Listing()
     if leaves_root(root, base):
         listing.outside.append(base)
         return listing
-    for directory, subdirectories, files in os.walk(base):
-        inside = Listing()
-        for name in sorted(subdirectories):
-            if name not in skipped:
-                inside.add(root, Path(directory, name))
-        subdirectories[:] = [path.name for path in inside.paths]
-        listing.outside.extend(inside.outside)
-        for name in sorted(files):
-            if wanted(name):
-                listing.add(root, Path(directory, name))
+    walk = folder_walk.walk_files(base, wanted, skipped=skipped, follow=lambda path: not leaves_root(root, path))
+    listing.outside.extend(entry.path for entry in walk.not_entered if entry.kind == LINKED)
+    for path in walk.files:
+        listing.add(root, path)
     return listing
 
 
 def named_files(root: Path, *names: str) -> list[Path]:
-    """Every file below the root with one of these names, outside SKIPPED_DIRECTORIES, in a stable order, never
-    through a link that leads out of the root; the inventory reports each such link."""
-    return walk_files(root, root, lambda name: name in names, SKIPPED_DIRECTORIES).paths
+    """Every file below the root with one of these names, outside the folders skill-core's folder walk skips by
+    name (`SKIPPED_FOLDERS`) and nested checkouts, in a stable order, never through a link that leads out of the root;
+    the inventory reports each such link."""
+    return walk_files(root, root, lambda name: name in names, SKIPPED_FOLDERS).paths
 
 
 OUTSIDE_LINK = "Link leads out of the repository; the audit does not follow it"
@@ -420,7 +412,7 @@ def _inventory_fixed_files(root: Path) -> list[Finding]:
 def _inventory_recursive_files(root: Path) -> list[Finding]:
     """Each nested instruction file, and each directory or nested-file link that leads out of the repository, which
     the nested-file checks' walks do not follow either."""
-    walk = walk_files(root, root, lambda name: name in NESTED_FILE_NAMES, SKIPPED_DIRECTORIES)
+    walk = walk_files(root, root, lambda name: name in NESTED_FILE_NAMES, SKIPPED_FOLDERS)
     found = [
         _inventory_finding(rel, f"Found {rel}")
         for name in RECURSIVE_INVENTORY_NAMES
@@ -1819,7 +1811,7 @@ def _instruction_sources(root: Path) -> InstructionSources:
 
 
 def _nested_files(root: Path, name: str) -> list[Path]:
-    """Every file with this name below the repository root, outside SKIPPED_DIRECTORIES."""
+    """Every file with this name below the repository root, outside SKIPPED_FOLDERS and nested checkouts."""
     return [path for path in named_files(root, name) if path != root / name]
 
 

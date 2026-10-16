@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import dotnet_solution
 from dotnet_solution import (
+    SEARCH_SKIPPED_FOLDERS,
     FileRefused,
     decode_text,
     is_solution,
@@ -46,6 +47,17 @@ SLNX = (
     "  </Folder>\n"
     "</Solution>\n"
 )
+
+
+class SearchSkippedFolderTests(unittest.TestCase):
+    def test_a_dotnet_search_also_skips_the_packages_folder_a_restore_fills(self) -> None:
+        self.assertEqual(
+            {
+                *(".git", ".hg", ".svn", "node_modules", ".venv", "venv", ".tox", ".nox", "__pycache__"),
+                *("bin", "obj", ".vs", "packages"),
+            },
+            SEARCH_SKIPPED_FOLDERS,
+        )
 
 
 class SolutionReaderTests(unittest.TestCase):
