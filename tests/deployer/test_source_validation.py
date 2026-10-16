@@ -218,7 +218,7 @@ class MetadataValidationTests(DeployerTestCase):
         self.make_source_json()
         self.make_skill("con", "Test")
         self.make_config()
-        self.deploy_fails("--all", pattern="reserved name")
+        self.deploy_fails("--all", pattern=r"ERROR: Skill name 'con' is a Windows reserved name\r?\n")
 
     def test_frontmatter_name_must_match_directory(self) -> None:
         self.make_source_json()
@@ -487,6 +487,20 @@ class SharedAssetValidationTests(DeployerTestCase):
         for name in ("alpha", "notes.md", "deploying-bak.md", "tmp.md", "alpha.deploying-bak.md"):
             with self.subTest(name=name):
                 self.assertIsNone(names.safe_name_problem(name, "item"))
+
+    def test_item_and_skill_names_refuse_the_same_windows_device_names(self) -> None:
+        for name in ("con", "PRN", "Aux", "nul", "com1", "COM9", "lpt1", "LPT9"):
+            with self.subTest(name=name):
+                for item in (name, f"{name}.md", f"{name}.tar.gz"):
+                    self.assertEqual(
+                        f"ERROR: item '{item}' is a Windows reserved name", names.safe_name_problem(item, "item")
+                    )
+                self.assertFalse(source.is_valid_name(name.lower()))
+        for name in ("console", "con-alpha", "nul-check", "com", "lpt10", "aux2"):
+            with self.subTest(name=name):
+                self.assertIsNone(names.safe_name_problem(name, "item"))
+                self.assertIsNone(names.safe_name_problem(f"{name}.md", "item"))
+                self.assertTrue(source.is_valid_name(name))
 
     def write_shared_assets(self, value: object) -> None:
         self.make_source_json()
