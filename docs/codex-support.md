@@ -51,13 +51,7 @@ It replies `42`. Each session also records the policy it actually used: the `tur
 
 The [runtime canary](../tools/runtime_canary.py) starts Codex with `--ignore-user-config`, so it does not read this setting. It passes the value on the command line instead, as `-c windows.sandbox=elevated`, which Codex applies even when it ignores `config.toml`, and prints it as `SUPPLIED codex "windows.sandbox=elevated"`. Use `--codex-sandbox unelevated` to try the other mode. If Codex still refuses every command, the canary's `BLOCKED` line names the mode it used and points here.
 
-The mode Codex will actually use can be checked without calling a model. `codex debug prompt-input` prints the instructions Codex would send, including a line saying which `sandbox_mode` is in effect:
-
-```powershell
-codex debug prompt-input -c sandbox_mode=workspace-write | Select-String 'sandbox_mode` is `[a-z-]+' | ForEach-Object { $_.Matches.Value }
-```
-
-The mode it prints is `workspace-write` when the Windows sandbox setting is present, and `read-only` when it is missing. Add `-c windows.sandbox=elevated` to the command to see the mode the canary's override gives.
+`python deploy.py check` reports the mode Codex will actually use, without calling a model, whenever Codex CLI is installed on Windows and meets its version floor. Its `codex sandbox` line is `FOUND` with `workspace-write` when the setting is read, and `UNUSABLE` while it is missing, naming the mode Codex would use instead, usually `read-only`, and this section. It reads the mode from `codex debug prompt-input -c sandbox_mode=workspace-write`, which prints the instructions Codex would send, including a line saying which `sandbox_mode` is in effect. Add `-c windows.sandbox=elevated` to that command to see the mode the canary's override gives.
 
 ## Python app execution aliases
 
@@ -67,12 +61,6 @@ Windows registers `python.exe` and `python3.exe` as app execution aliases: 0-byt
 Program 'python.exe' failed to run: The file cannot be accessed by the system
 ```
 
-Turn off those two aliases under **Settings > Apps > Advanced app settings > App execution aliases**, so that `python` resolves to a real executable: the install manager's launcher in `%LOCALAPPDATA%\Python\bin`, or the `python.exe` the classic installer put on your `PATH`. With the install manager, keep its `py` and `pymanager` aliases on. Check the result in a new terminal:
-
-```powershell
-Get-Command python -All
-```
-
-The first entry should be your Python installation, not `WindowsApps`.
+Turn off those two aliases under **Settings > Apps > Advanced app settings > App execution aliases**, so that `python` resolves to a real executable: the install manager's launcher in `%LOCALAPPDATA%\Python\bin`, or the `python.exe` the classic installer put on your `PATH`. With the install manager, keep its `py` and `pymanager` aliases on. Check the result with `python deploy.py check` in a new terminal: its `python command` line is `FOUND` with the program `python` runs, your Python installation, and `UNUSABLE` while that is an alias in `WindowsApps`, naming the alias and this section.
 
 Moving your Python installation ahead of `WindowsApps` in your user `PATH` is not always enough. Some installers also add `WindowsApps` to the system `PATH`, which Windows searches before the user `PATH`, so the aliases still win. Turning the aliases off works regardless of `PATH` order.

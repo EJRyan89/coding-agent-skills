@@ -95,6 +95,7 @@ def parser() -> _Parser:
             metavar="NAME",
             help="with --all, also deploy this opt-in item; repeatable",
         ),
+        top.add_argument("--uninstall", action="store_true", help="select nothing, removing what this source deployed"),
         top.add_argument("--dry-run", action="store_true", help="show what would change; change nothing"),
         top.add_argument("--force", action="store_true", help="replace modified or unmanaged items (backed up)"),
         top.add_argument(
@@ -176,9 +177,11 @@ def _parse(arguments: list[str]) -> argparse.Namespace:
 
 
 # The deploy options each one refuses beside it, in the order they are checked. --migrate-from only moves ownership
-# and returns, so an option that selects, previews, or replaces items would otherwise be silently ignored with it.
+# and returns, so an option that selects, previews, or replaces items would otherwise be silently ignored with it, and
+# --uninstall selects nothing, so it has nothing to select more of or to replace.
 _EXCLUSIVE = (
     ("--migrate-from", ("--dry-run", "--all", "--include", "--force", "--force-item")),
+    ("--uninstall", ("--all", "--include", "--force", "--force-item", "--migrate-from")),
     ("--take-over-source", ("--dry-run",)),
     ("--canary-home", ("--dry-run", "--migrate-from", "--take-over-source")),
     ("--at", ("--migrate-from",)),

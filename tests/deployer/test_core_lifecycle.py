@@ -4,7 +4,9 @@ import time
 import unittest
 from unittest import mock
 
-from harness import DeployerTestCase, forward
+from harness import DeployerTestCase, forward, tree_state
+
+from deployer import fsops, journal
 
 
 class CoreLifecycleTests(DeployerTestCase):
@@ -138,6 +140,44 @@ class CoreLifecycleTests(DeployerTestCase):
         self.deploy_ok("--all")
         self.assertFalse((self.home / ".claude" / "deployer" / ".deploy.lock.d").exists())
         self.assertEqual([], list((self.home / ".claude" / "deployer" / "staging").iterdir()))
+
+    def test_a_redeploy_with_nothing_to_change_leaves_every_item_as_it_is(self) -> None:
+        self.make_source_json(shared_assets={"guide.md": "owner"})
+        self.make_shared_asset("guide.md")
+        self.make_agent("reviewer")
+        directory = self.make_skill("alpha", "Alpha", shared_deps=["guide.md"], agent_deps=["reviewer"])
+        self.write(directory / "scripts" / "tool.py", "print('tool')\n")
+        self.make_config()
+        self.deploy_ok("--all")
+        first_run = self.manifest()["last_run_id"]
+        # What running an installed script leaves, and the hash of the installed skill ignores.
+        cache = self.skills_dir / "alpha" / "scripts" / "__pycache__" / "tool.cpython-311.pyc"
+        cache.parent.mkdir()
+        cache.write_bytes(b"bytecode")
+        roots = (self.skills_dir, self.agents_dir, self.claude_agents_dir)
+        before = [tree_state(root) for root in roots]
+        identity = (self.skills_dir / "alpha" / "SKILL.md").stat()
+        with (
+            mock.patch.object(fsops, "move", wraps=fsops.move) as moved,
+            mock.patch.object(journal.Journal, "backup", autospec=True, side_effect=journal.Journal.backup) as backed,
+            mock.patch.object(journal.Journal, "install", autospec=True, side_effect=journal.Journal.install) as put,
+        ):
+            result = self.deploy_ok("--all")
+        self.assertEqual(
+            {"UNCHANGED": ["alpha", "guide.md (shared asset)", "reviewer.md (agent)"]},
+            self.report_groups(result.output, "DEPLOYED"),
+        )
+        self.assertEqual((0, 0, 0), (moved.call_count, backed.call_count, put.call_count), moved.call_args_list)
+        manifest = self.manifest_file.relative_to(self.skills_dir).as_posix()
+        after = [tree_state(root) for root in roots]
+        for state in (before[0], after[0]):
+            state.pop(manifest)
+        self.assertEqual(before, after)
+        self.assertEqual(b"bytecode", cache.read_bytes())
+        renamed = (self.skills_dir / "alpha" / "SKILL.md").stat()
+        self.assertEqual((identity.st_dev, identity.st_ino), (renamed.st_dev, renamed.st_ino))
+        self.assertNotEqual(first_run, self.manifest()["last_run_id"])
+        self.assertEqual(["guide.md"], self.owned("skills")["alpha"]["shared_deps"])
 
 
 class RunIdTests(DeployerTestCase):

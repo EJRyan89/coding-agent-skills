@@ -9,7 +9,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from markdown_sections import CODE_SPAN, find_fences, markdown_section, prose_code_spans
+from markdown_sections import (
+    CODE_SPAN,
+    EXECUTABLE_FENCES,
+    FENCE_LANGUAGES,
+    POWERSHELL_FENCES,
+    SHELL_FENCES,
+    find_fences,
+    markdown_section,
+    prose_code_spans,
+)
 
 
 class MarkdownSectionTests(unittest.TestCase):
@@ -86,6 +95,22 @@ class FenceReaderTests(unittest.TestCase):
         for name, (text, expected) in cases.items():
             with self.subTest(case=name):
                 self.assertEqual(expected, self.fences(text))
+
+
+class FenceLanguageTests(unittest.TestCase):
+    def test_each_label_names_one_language_and_the_sets_are_drawn_from_them(self) -> None:
+        labels = [label for found in FENCE_LANGUAGES.values() for label in found]
+        self.assertEqual(len(labels), len(set(labels)), "a label names two languages")
+        self.assertEqual(frozenset(labels), EXECUTABLE_FENCES)
+        self.assertEqual(
+            frozenset({"bash", "sh", "shell", "console", "zsh", "ksh", "dash", "fish", "cmd", "bat", "batch"}),
+            SHELL_FENCES,
+        )
+        self.assertEqual(frozenset({"powershell", "pwsh", "ps1"}), POWERSHELL_FENCES)
+        for label in ("py", "python3", "js", "node", "ts"):
+            with self.subTest(label=label):
+                self.assertIn(label, EXECUTABLE_FENCES)
+        self.assertTrue(all(label == label.casefold() for label in labels), "labels are compared casefolded")
 
 
 if __name__ == "__main__":

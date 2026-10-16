@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 
 import harness  # noqa: F401 - imported for its effect: it puts the repository root on sys.path for deployer
 from git_test_base import GitTestCase
-from markdown_sections import find_fences
+from markdown_sections import EXECUTABLE_FENCES, FENCE_LANGUAGES, find_fences
 
 from deployer import hashing, platform_support, render
 from deployer.errors import DeployError
@@ -138,6 +138,63 @@ class FenceTests(GitTestCase):
         self.assertEqual(
             b"~~~text\necho O'Brien\n~~~\n",
             render.render_file("s/SKILL.md", b"~~~text\necho {{X}}\n~~~\n", {"X": "O'Brien"}),
+        )
+
+    def test_every_executable_label_takes_its_languages_context_and_no_other_label_does(self) -> None:
+        expected = {
+            **{label: "shell" for label in ("bash", "sh", "shell", "console", "zsh", "ksh", "dash")},
+            **{label: "powershell" for label in ("powershell", "pwsh", "ps1")},
+            **{label: "python" for label in ("python", "python3", "py")},
+            "fish": "fish",
+            **{label: "cmd" for label in ("cmd", "bat", "batch")},
+            **{label: "javascript" for label in ("javascript", "js", "node", "mjs", "cjs")},
+            **{label: "typescript" for label in ("typescript", "ts")},
+        }
+        self.assertEqual(set(expected), set(EXECUTABLE_FENCES))
+        for label, context in expected.items():
+            with self.subTest(label=label):
+                self.assertEqual([(0, 2, label.upper(), context)], self.fences(f"```{label.upper()}\necho\n```"))
+        self.assertEqual([(0, 2, "markdown", "text")], self.fences("```markdown\necho\n```"))
+        self.assertEqual(set(FENCE_LANGUAGES), render.ESCAPED_LANGUAGES | render.UNESCAPED_CONTEXTS)
+
+    def test_another_name_for_bash_or_python_holds_a_token_to_that_languages_unsafe_characters(self) -> None:
+        for label, context, value in (
+            ("zsh", "shell", "O'Brien"),
+            ("ksh", "shell", "a$b"),
+            ("dash", "shell", "a`b"),
+            ("console", "shell", "a\\b"),
+            ("py", "python", 'a"b'),
+            ("python3", "python", "a\\b"),
+        ):
+            with self.subTest(label=label), self.assertRaisesRegex(DeployError, rf"\({context} context\)"):
+                render.render_file("s/SKILL.md", f"```{label}\necho '{{{{X}}}}'\n```\n".encode(), {"X": value})
+        self.assertEqual(
+            b"```py\nprint('C:/My Repos (work)')\n```\n",
+            render.render_file("s/SKILL.md", b"```py\nprint('{{X}}')\n```\n", {"X": "C:/My Repos (work)"}),
+        )
+
+    def test_a_token_in_a_fence_of_a_language_with_no_known_escaping_is_refused_whatever_its_value(self) -> None:
+        for label, context in (
+            ("cmd", "cmd"),
+            ("bat", "cmd"),
+            ("batch", "cmd"),
+            ("fish", "fish"),
+            ("js", "javascript"),
+            ("node", "javascript"),
+            ("ts", "typescript"),
+        ):
+            with self.subTest(label=label), self.assertRaises(DeployError) as raised:
+                render.render_file("s/SKILL.md", f'```{label}\necho "{{{{X}}}}"\n```\n'.encode(), {"X": "plain"})
+            self.assertEqual(
+                (
+                    "ERROR: Variable X cannot be substituted into s/SKILL.md: the deployer knows no escaping for a "
+                    f"{context} fence; write the example in a Bash, PowerShell, or Python fence",
+                ),
+                raised.exception.lines,
+            )
+        fence = b"```cmd\necho %CD%\n```\n"
+        self.assertEqual(
+            fence + b"Under plain\n", render.render_file("s/SKILL.md", fence + b"Under {{X}}\n", {"X": "plain"})
         )
 
     def test_an_inner_three_backtick_line_stays_in_a_four_backtick_fence(self) -> None:

@@ -962,6 +962,22 @@ class SkillScriptsFixtures(GitTestCase):
                 skill_command_problems(root, set(), set()),
             )
 
+    def test_skill_command_policy_reads_every_command_shell_fence(self) -> None:
+        for label in ("zsh", "console", "dash", "fish", "cmd", "bat"):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                write_fixture_tree(
+                    root,
+                    {
+                        "deploy-meta/alpha.json": '{"tools": []}',
+                        "skills/alpha/SKILL.md": f"# alpha\n\n```{label}\nrg foo\n```\n",
+                    },
+                )
+                self.assertEqual(
+                    [f"skill alpha runs rg, which a standard install lacks; see {COMMANDS_DOC}"],
+                    skill_command_problems(root, set(), set()),
+                )
+
     def test_command_policies_read_a_bytes_command_and_a_subclass_of_a_client(self) -> None:
         reader = CommandReader(
             ast.parse('import subprocess\nsubprocess.run(b"git status", shell=True)\nsubprocess.run([b"gh", b"api"])\n')

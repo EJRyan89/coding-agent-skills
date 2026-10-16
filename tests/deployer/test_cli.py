@@ -71,8 +71,8 @@ class SingleEntryPointTests(DeployerTestCase):
         # Usage continues under the first option, past the command line the platform runs deploy.py by.
         pad = " " * len(f"usage: {DEPLOY_COMMAND} ")
         usage = (
-            f"usage: {DEPLOY_COMMAND} [-h] [--all] [--include NAME] [--dry-run] [--force]\n"
-            f"{pad}[--force-item NAME] [--migrate-from ID]\n"
+            f"usage: {DEPLOY_COMMAND} [-h] [--all] [--include NAME] [--uninstall] [--dry-run]\n"
+            f"{pad}[--force] [--force-item NAME] [--migrate-from ID]\n"
             f"{pad}[--take-over-source] [--canary-home DIR] [--at REF]\n"
             f"{pad}[--unpin] [--debug]\n"
             f"{pad}COMMAND ...\n"
@@ -85,6 +85,7 @@ class SingleEntryPointTests(DeployerTestCase):
             "  -h, --help          show this help message and exit\n"
             "  --all               deploy everything except opt-in items not already chosen\n"
             "  --include NAME      with --all, also deploy this opt-in item; repeatable\n"
+            "  --uninstall         select nothing, removing what this source deployed\n"
             "  --dry-run           show what would change; change nothing\n"
             "  --force             replace modified or unmanaged items (backed up)\n"
             "  --force-item NAME   replace one item (backed up); repeatable\n"

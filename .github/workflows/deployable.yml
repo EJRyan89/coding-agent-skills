@@ -205,12 +205,12 @@ jobs:
           python tools/deployable_report.py owned --owned (Join-Path $env:LOGS 'owned.json')
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      # The README's `none` selection, answered on stdin.
+      # The README's uninstall, which selects nothing and shows no prompt.
       - name: Uninstall
         run: |
-          'none' | python deploy.py --dry-run 2>&1 | Tee-Object -FilePath (Join-Path $env:LOGS 'uninstall-dry-run.log')
+          python deploy.py --uninstall --dry-run 2>&1 | Tee-Object -FilePath (Join-Path $env:LOGS 'uninstall-dry-run.log')
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          'none' | python deploy.py 2>&1 | Tee-Object -FilePath (Join-Path $env:LOGS 'uninstall.log')
+          python deploy.py --uninstall 2>&1 | Tee-Object -FilePath (Join-Path $env:LOGS 'uninstall.log')
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # Names each recorded path still there, each entry added where items deploy, and each item the manifest still
@@ -386,11 +386,11 @@ jobs:
         run: |
           python3 tools/deployable_report.py owned --owned "$LOGS/owned.json"
 
-      # The README's `none` selection, answered on stdin.
+      # The README's uninstall, which selects nothing and shows no prompt.
       - name: Uninstall
         run: |
-          printf 'none\n' | python3 deploy.py --dry-run 2>&1 | tee "$LOGS/uninstall-dry-run.log"
-          printf 'none\n' | python3 deploy.py 2>&1 | tee "$LOGS/uninstall.log"
+          python3 deploy.py --uninstall --dry-run 2>&1 | tee "$LOGS/uninstall-dry-run.log"
+          python3 deploy.py --uninstall 2>&1 | tee "$LOGS/uninstall.log"
 
       # Names each recorded path still there, each entry added where items deploy, and each item the manifest still
       # records, beside the manifest and retained backups the uninstall keeps; the step summary lists them.

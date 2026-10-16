@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 
 import process_identity
 from harness import REPOSITORY_ROOT, TAKES_THE_LOCK, DeployerTestCase, forward
+from markdown_sections import find_fences
 
 from deployer import fsops, lock, platform_support
 from deployer.paths import Paths
@@ -40,6 +41,42 @@ class RenderedExecutableTests(DeployerTestCase):
         result = platform_support.run_tool([bash, forward(self.skills_dir / "alpha" / "run.sh")])
         self.assertEqual(0, result.returncode, result.output)
         self.assertEqual(forward(repos), result.output.strip())
+
+    def test_every_name_for_bash_and_python_renders_in_its_language_and_executes_with_spaces(self) -> None:
+        shells = ("zsh", "ksh", "dash", "console")
+        pythons = ("py", "python3")
+        shell_line = "printf '%s\\n' \"{{REPOS_ROOT}}\""
+        python_line = 'print("{{REPOS_ROOT}}")'
+        fences = [f"```{label}\n{shell_line}\n```" for label in shells]
+        fences += [f"```{label}\n{python_line}\n```" for label in pythons]
+        self.make_source_json()
+        self.make_skill("alpha", "Fence names fixture\n\n" + "\n\n".join(fences), ["REPOS_ROOT"])
+        repos = self.root / "Repos With Spaces"
+        self.make_config(repos_root=repos)
+        self.deploy_ok("--all")
+        lines = self.skill_text("alpha").split("\n")
+        bodies = {fence.language: lines[fence.opener + 1] for fence in find_fences(lines)}
+        self.assertEqual([*shells, *pythons], list(bodies))
+        bash = platform_support.find_bash()
+        if bash is None:
+            self.fail("Git Bash is a validation prerequisite")
+        for label in shells:
+            with self.subTest(label=label):
+                result = platform_support.run_tool([bash, "-c", bodies[label]])
+                self.assertEqual(0, result.returncode, result.output)
+                self.assertEqual(forward(repos), result.output.strip())
+        for label in pythons:
+            with self.subTest(label=label):
+                result = platform_support.run_tool([sys.executable, "-c", bodies[label]])
+                self.assertEqual(0, result.returncode, result.output)
+                self.assertEqual(forward(repos), result.output.strip())
+
+    def test_a_token_in_a_cmd_fence_is_refused_before_anything_is_deployed(self) -> None:
+        self.make_source_json()
+        self.make_skill("alpha", 'Cmd fixture\n\n```cmd\necho "{{REPOS_ROOT}}"\n```', ["REPOS_ROOT"])
+        self.make_config()
+        self.deploy_fails("--all", pattern=r"knows no escaping for a cmd fence")
+        self.assertFalse((self.skills_dir / "alpha").exists())
 
     def test_the_interpreter_renders_as_the_platform_names_it_and_executes_with_spaces(self) -> None:
         # The command word renders unquoted, as Python's command on this platform, beside a quoted spaced value.
