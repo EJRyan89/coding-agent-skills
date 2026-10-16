@@ -5,6 +5,7 @@ Each policy fails on a violating input and passes on a conforming one.
 
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -23,6 +24,7 @@ from toolchain import (
     find_ruff,
     missing_prerequisites,
     outdated_prerequisites,
+    powershell_json,
     read_tool_version,
     requirements_problems,
     tool_versions,
@@ -185,6 +187,45 @@ class ToolchainFixtures(GitTestCase):
                 missing_prerequisites(prerequisite),
             )
             self.assertEqual({}, tool_versions(prerequisite, read_version=lambda path: (1, 25, 0)))
+
+
+class PowerShellJsonRunner(GitTestCase):
+    def run_script(self, result: platform_support.ToolResult) -> tuple[list[object], list[dict[str, str]]]:
+        """The runner's list for a fake pwsh's result, and each environment it was started with."""
+        seen: list[dict[str, str]] = []
+
+        def fake(command: list[str], environment: dict[str, str]) -> platform_support.ToolResult:
+            seen.append(environment)
+            self.assertEqual(["C:/tools/pwsh.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command"], command[:5])
+            self.assertEqual(["a", 1], json.loads(Path(environment["INPUTS"]).read_text(encoding="utf-8")))
+            return result
+
+        with (
+            mock.patch.object(toolchain, "find_powershell", return_value="C:/tools/pwsh.exe"),
+            mock.patch.object(platform_support, "run_tool", side_effect=fake),
+        ):
+            return powershell_json("Get-Thing", ["a", 1], "INPUTS", "Could not run", {"FLOOR": "1.0"}), seen
+
+    def test_the_last_line_s_list_is_the_result_and_the_inputs_reach_the_script(self) -> None:
+        found, seen = self.run_script(platform_support.ToolResult(0, 'warming up\n[{"line": 3}]\n\n'))
+        self.assertEqual([{"line": 3}], found)
+        self.assertEqual("1.0", seen[0]["FLOOR"])
+
+    def test_a_failed_exit_or_output_that_is_not_a_list_is_a_failure_naming_the_status(self) -> None:
+        for result in (
+            platform_support.ToolResult(1, "[]\n"),
+            platform_support.ToolResult(0, '{"line": 3}\n'),
+            platform_support.ToolResult(0, "not json\n"),
+            platform_support.ToolResult(0, ""),
+        ):
+            with self.subTest(output=result.output), self.assertRaises(AssertionError) as raised:
+                self.run_script(result)
+            self.assertTrue(str(raised.exception).startswith(f"Could not run (exit code {result.returncode}):\n"))
+
+    @mock.patch.object(platform_support, "WINDOWS", True)
+    def test_a_pwsh_ended_before_output_is_a_termination(self) -> None:
+        with self.assertRaises(Terminated):
+            self.run_script(platform_support.ToolResult(2_147_483_652, ""))
 
 
 if __name__ == "__main__":

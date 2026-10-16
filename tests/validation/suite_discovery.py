@@ -23,13 +23,14 @@ from validation_support import (
     PYTHON_ENTRY_POINT,
     REPOSITORY_ROOT,
     SKILL_GUIDE,
-    TEST_NAME_PATTERNS,
-    TEST_SCRIPT_EXTENSIONS,
+    SUITE_EXTENSIONS,
+    SUITE_NAME_PATTERNS,
     CallableResolver,
     UnreadablePython,
     call_argument,
     import_aliases,
     is_executable_script,
+    is_main_guard,
     is_test_script,
     markdown_section,
     module_statements,
@@ -111,7 +112,7 @@ def suite_discovery_documentation_problems(root: Path) -> list[str]:
     section = markdown_section((root / SKILL_GUIDE).read_text(encoding="utf-8"), "## Validation")
     if section is None:
         return [f'{SKILL_GUIDE} has no "Validation" section']
-    rules = [*TEST_NAME_PATTERNS, *sorted(TEST_SCRIPT_EXTENSIONS), PYTHON_ENTRY_POINT]
+    rules = [*SUITE_NAME_PATTERNS, *sorted(SUITE_EXTENSIONS), PYTHON_ENTRY_POINT]
     return [f'{SKILL_GUIDE} "Validation" does not name `{rule}`' for rule in rules if f"`{rule}`" not in section]
 
 
@@ -297,7 +298,7 @@ def suite_entry_point_problems(root: Path) -> list[str]:
     suites = [path for path in regression_suites(root) if path.suffix.casefold() == ".py"]
     for _, name, tree in python_trees(suites, root, problems):
         last = tree.body[-1] if tree.body else None
-        if not (isinstance(last, ast.If) and ast.unparse(last.test) == "__name__ == '__main__'"):
+        if not (isinstance(last, ast.If) and is_main_guard(last.test)):
             problems.append(f"{name} does not end with an `{PYTHON_ENTRY_POINT}` block, so it runs no tests")
         elif not any(_calls_unittest_main(statement, import_aliases(tree)) for statement in last.body):
             problems.append(f"{name}:{last.lineno} its `{PYTHON_ENTRY_POINT}` block does not call unittest.main()")

@@ -55,8 +55,26 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-core" / "scripts"))
 
-from conditions import DIFF_VARIABLE, OUTPUT_VARIABLE, SCRIPT_SUFFIXES, is_suite, read_files, refusal_line
+from conditions import (
+    DIFF_VARIABLE,
+    FAILURE_STATUS,
+    OUTPUT_VARIABLE,
+    SCRIPT_SUFFIXES,
+    is_suite,
+    read_files,
+    refusal_line,
+    run_condition,
+    unset_variables_line,
+)
 from console import failed_line, run_main
+from diff_paths import HUNK_HEADER
+
+DUPLICATION_ALLOWED = {
+    "EXIT_CONTRACT_EXEMPT": (
+        ".claude/skills/review-repository/scripts/doc_passages.py speaks the same condition protocol and states "
+        "the same exemption; validation reads an exemption from the script it excuses, so neither imports it"
+    ),
+}
 
 EXIT_CONTRACT_EXEMPT = (
     "a code-review condition: exit 0 opens its route and 1 closes it, so a failure exits 2, which fails the review "
@@ -78,7 +96,6 @@ MAX_LINE_RANGES = 10
 # The tests of an entry's file it names, where the reviewer looks for one that reaches the entry through a caller.
 MAX_RELATED_TESTS = 3
 
-HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 PYTHON_HEADER = re.compile(r"^\s*(?:async\s+def|def|class)\s+[A-Za-z_]")
 POWERSHELL_HEADER = re.compile(r"^\s*function\s+(?:(?:global|script|local|private):)?([A-Za-z_][\w-]*)", re.IGNORECASE)
 BASH_HEADER = re.compile(r"^\s*(?:function\s+([A-Za-z_][\w-]*)(?:\s*\(\s*\))?|([A-Za-z_][\w-]*)\s*\(\s*\))\s*(?:\{|$)")
@@ -525,10 +542,10 @@ def _run() -> int:
     parser = argparse.ArgumentParser(description="List the changed functions no test names.")
     parser.add_argument("--source-root", required=True, type=Path)
     arguments = parser.parse_args()
-    missing = [variable for variable in (DIFF_VARIABLE, OUTPUT_VARIABLE) if not os.environ.get(variable)]
-    if missing:
-        print(f"FAILED {' and '.join(missing)} not set; a review sets them for a condition")
-        return 2
+    unset = unset_variables_line()
+    if unset:
+        print(unset)
+        return FAILURE_STATUS
     diff = Path(os.environ[DIFF_VARIABLE]).read_bytes().decode("utf-8", errors="replace")
     changes, refused = read_diff(diff, arguments.source_root)
     for path in refused:
@@ -545,12 +562,7 @@ def _run() -> int:
 
 
 def main() -> int:
-    try:
-        return _run()
-    except Exception as error:
-        # Exit 1 would close the route, so a failure run_main would report that way exits 2 and fails the review.
-        print(failed_line(error))
-        return 2
+    return run_condition(_run)
 
 
 if __name__ == "__main__":

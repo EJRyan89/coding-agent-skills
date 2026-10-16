@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import contextlib
+import io
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-core" / "scripts"))
 
@@ -25,6 +29,34 @@ class SuiteRuleTests(unittest.TestCase):
         for path in ("tests/harness.py", "tests/test_a.txt", "tests/contest.py", "tests/a.tests.py", "test_a.js"):
             with self.subTest(path=path):
                 self.assertFalse(conditions.is_suite(path))
+
+
+class FailureTests(unittest.TestCase):
+    def test_a_failure_prints_its_failed_line_and_exits_2_since_1_closes_the_route(self) -> None:
+        def broken() -> int:
+            raise LookupError("no diff")
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(2, conditions.run_condition(broken))
+            self.assertEqual(1, conditions.run_condition(lambda: 1))
+        self.assertEqual("FAILED LookupError: no diff\n", output.getvalue())
+
+    def test_the_unset_variables_line_names_each_variable_a_review_did_not_set(self) -> None:
+        both = {"CODE_REVIEW_DIFF_FILE": "diff.txt", "CODE_REVIEW_CONDITION_OUTPUT": "out.txt"}
+        with mock.patch.dict(os.environ, both, clear=True):
+            self.assertIsNone(conditions.unset_variables_line())
+        with mock.patch.dict(os.environ, {"CODE_REVIEW_DIFF_FILE": "diff.txt"}, clear=True):
+            self.assertEqual(
+                "FAILED CODE_REVIEW_CONDITION_OUTPUT not set; a review sets them for a condition",
+                conditions.unset_variables_line(),
+            )
+        with mock.patch.dict(os.environ, {"CODE_REVIEW_DIFF_FILE": ""}, clear=True):
+            self.assertEqual(
+                "FAILED CODE_REVIEW_DIFF_FILE and CODE_REVIEW_CONDITION_OUTPUT not set; a review sets them for a "
+                "condition",
+                conditions.unset_variables_line(),
+            )
 
 
 class ReadFilesTests(unittest.TestCase):

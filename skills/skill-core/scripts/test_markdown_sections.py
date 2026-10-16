@@ -11,8 +11,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from markdown_sections import (
     CODE_SPAN,
+    COMMONMARK_CODE_SPAN,
     EXECUTABLE_FENCES,
     FENCE_LANGUAGES,
+    HTML_COMMENT,
     POWERSHELL_FENCES,
     SHELL_FENCES,
     find_fences,
@@ -45,6 +47,20 @@ class CodeSpanTests(unittest.TestCase):
 
     def test_a_span_does_not_cross_a_line_or_match_an_unclosed_backtick(self) -> None:
         self.assertEqual([], CODE_SPAN.findall("`open\nclose and `unclosed"))
+
+    def test_a_commonmark_span_closes_on_a_run_of_its_opener_s_length_and_may_hold_a_backtick(self) -> None:
+        self.assertEqual(
+            [("`", "a"), ("``", "b ` c"), ("```", "d")],
+            COMMONMARK_CODE_SPAN.findall("`a` and ``b ` c`` and ```d```"),
+        )
+        self.assertEqual("see  and [x](y)", COMMONMARK_CODE_SPAN.sub("", "see ``[a](b)`` and [x](y)"))
+        self.assertEqual([], COMMONMARK_CODE_SPAN.findall("``open\nclose``"))
+
+
+class HtmlCommentTests(unittest.TestCase):
+    def test_a_comment_is_removed_across_lines_and_each_one_ends_at_its_own_close(self) -> None:
+        self.assertEqual("a  b  c", HTML_COMMENT.sub("", "a <!-- one\ntwo --> b <!-- three --> c"))
+        self.assertEqual("a <!-- open", HTML_COMMENT.sub("", "a <!-- open"))
 
     def test_prose_spans_skip_every_fence_form_and_keep_the_line_index(self) -> None:
         text = "Run `a`.\n```bash\n`b`\n```\n> ~~~sh\n> `c`\n> ~~~\n    ```\n    `d`\n    ```\nthen `e`"

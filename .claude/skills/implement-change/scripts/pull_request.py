@@ -54,11 +54,11 @@ from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError
 from github_client import GitHubClient, GitHubError, subprocess_runner
+from markdown_sections import HTML_COMMENT
 
 TEMPLATE_NAME = "pull_request_template.md"
 # The folders GitHub reads a pull request template from, relative to the top of the repository.
 TEMPLATE_FOLDERS = (".github", "", "docs")
-COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 # A line GitHub reads as closing an issue: a closing keyword, then an issue reference.
 CLOSING_LINE = re.compile(r"(?i)\s*(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b:?\s+(?:[\w.-]+/[\w.-]+)?#")
 BARE_CLOSING_LINE = re.compile(r"(?i)(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b:?\s+#")
@@ -95,7 +95,7 @@ def issue_argument(value: str) -> int:
 
 def blank_comments(text: str) -> str:
     """`text` with every comment's characters but its line breaks made spaces, so each line keeps its number."""
-    return COMMENT.sub(lambda match: re.sub(r"[^\n]", " ", match.group()), text)
+    return HTML_COMMENT.sub(lambda match: re.sub(r"[^\n]", " ", match.group()), text)
 
 
 def find_template(top: Path) -> Path | None:
@@ -141,7 +141,7 @@ def line_of(text: str, index: int) -> int:
 def body_problems(body: str, template: str) -> list[str]:
     """One line per placeholder the template left in the body, closing line, and template heading it dropped."""
     problems: list[tuple[int, str]] = []
-    for comment in {match.group() for match in COMMENT.finditer(template)}:
+    for comment in {match.group() for match in HTML_COMMENT.finditer(template)}:
         start = body.find(comment)
         while start != -1:
             number = line_of(body, start)

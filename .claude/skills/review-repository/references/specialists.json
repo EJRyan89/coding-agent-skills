@@ -11,7 +11,9 @@
     ".claude/skills/review-repository/scripts/conditions.py",
     "skills/skill-core/scripts/console.py",
     "skills/skill-core/scripts/diff_paths.py",
-    "skills/skill-core/scripts/flat_text.py"
+    "skills/skill-core/scripts/flat_text.py",
+    "skills/skill-core/scripts/markdown_sections.py",
+    "skills/skill-core/scripts/suite_names.py"
   ],
   "finding_categories": [
     "Correctness",

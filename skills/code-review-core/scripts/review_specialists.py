@@ -25,7 +25,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from bounded_process import non_interactive_environment, run_bounded
-from diff_paths import DiffPathError, header_path, unquote
+from diff_paths import HUNK_HEADER, DiffPathError, header_path, unquote
 from job_tree import TreeNotEnded, process_tree
 from review_analyzers import inventory, tool_names
 from review_config import safe_repository_path
@@ -60,6 +60,18 @@ from review_runtime import (
 )
 from typed_fields import FieldError, FieldReader
 
+# The condition protocol's variables, which a repository's condition script names on its side of the protocol.
+DUPLICATION_ALLOWED = {
+    "CONDITION_DIFF_VARIABLE": (
+        ".claude/skills/review-repository/scripts/conditions.py reads it, from a reviewer folder that holds only the "
+        "resources its manifest declares, where this module and its imports are not"
+    ),
+    "CONDITION_OUTPUT_VARIABLE": (
+        ".claude/skills/review-repository/scripts/conditions.py reads it, from a reviewer folder that holds only the "
+        "resources its manifest declares, where this module and its imports are not"
+    ),
+}
+
 PLAN_SCHEMA_VERSION = 1
 CONDITION_TIMEOUT_SECONDS = 120
 # Bytes of each of a condition script's output streams kept for a failure's detail; the rest is cut and the cut named.
@@ -82,7 +94,6 @@ SEVERITY = {
 # The fields OUTPUT gives a result and each of its findings; a result with any other is invalid.
 RESULT_FIELDS = {"model", "summary", "findings", "prior_dispositions", "comment_dispositions"}
 FINDING_FIELDS = {"path", "line", "severity", "title", "category", "body", "analyzer", "repeats"}
-HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 SOURCE_TAG = re.compile(r"^\s*\[[^\]]+\]\s*")
 DEFAULT_GENERIC_INSTRUCTIONS = Path(__file__).resolve().parents[1] / "references" / "generic-reviewer.md"
 
@@ -180,7 +191,7 @@ def split_unified_diff(text: str) -> tuple[dict[str, dict[str, Any]], list[str]]
         numbered = line
         if not in_hunk:
             _read_diff_header(current, line)
-        match = HUNK.match(line)
+        match = HUNK_HEADER.match(line)
         if match:
             in_hunk = True
             new_line = int(match.group(1))
@@ -201,7 +212,7 @@ def diff_block_sides(block: str) -> tuple[str | None, str | None]:
     added = deleted = False
     for raw in lines[1:]:
         line = raw.removesuffix("\r")
-        if HUNK.match(line) or line.startswith("diff --git "):
+        if HUNK_HEADER.match(line) or line.startswith("diff --git "):
             break
         _read_diff_header(current, line)
         added = added or line.startswith("new file mode ")
@@ -281,7 +292,7 @@ def patch_fingerprints(diff: dict[str, dict[str, Any]]) -> dict[str, dict[str, A
         for line in entry["block"].split("\n"):
             if line.startswith("diff --git "):
                 in_hunk = False
-            elif HUNK.match(line):
+            elif HUNK_HEADER.match(line):
                 in_hunk = True
             elif in_hunk:
                 if line.startswith(("+", "-")):

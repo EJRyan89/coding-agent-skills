@@ -1,6 +1,6 @@
 """The Markdown readers shared by skills, repository tools, the deployer, and validation: the second-level section
-reader, the fenced code block reader, the labels of a fence in an executable language, and the inline code span
-pattern."""
+reader, the fenced code block reader, the labels of a fence in an executable language, the inline code span
+patterns, and the HTML comment pattern."""
 
 from __future__ import annotations
 
@@ -9,6 +9,12 @@ from dataclasses import dataclass
 
 # An inline code span on one line, with its text as the first group, as a skill reads commands or cited paths from it.
 CODE_SPAN = re.compile(r"`([^`\n]+)`")
+# An inline code span as CommonMark reads one: a run of backticks, its text, and a run of the same length, with the run
+# as the first group and the text as the second. A reader that must not take a span's text for prose, such as a link
+# or a name a document cites, reads spans by it, since a span written with two backticks may hold one.
+COMMONMARK_CODE_SPAN = re.compile(r"(`+)(.+?)\1")
+# An HTML comment, which Markdown renders as nothing, across lines.
+HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 # A fence's opening line: the blockquote and list item markers that hold it, any indentation, a run of three or more
 # backticks or tildes, and its info string. Whitespace is read once, after each marker, so no run of it can be split
 # between two markers and the match stays linear.

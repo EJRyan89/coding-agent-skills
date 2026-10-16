@@ -7,7 +7,7 @@ import re
 import unittest
 from pathlib import Path
 
-from validation_support import REPOSITORY_ROOT, git, markdown_section
+from validation_support import REPOSITORY_ROOT, git, listed, markdown_section
 
 # The squash commit takes the pull request's title, so main's history reads by these types, which tools/worktrees.py
 # also takes as a worktree's kind. A breaking-change `!` is refused: the Level in the body's `## Upgrade note` is the
@@ -23,8 +23,7 @@ TITLE_GUIDES = (
 
 
 def _either(words: tuple[str, ...]) -> str:
-    quoted = [f"`{word}`" for word in words]
-    return f"{', '.join(quoted[:-1])}, or {quoted[-1]}"
+    return listed([f"`{word}`" for word in words])
 
 
 def title_problems(title: str, branch: str | None) -> list[str]:

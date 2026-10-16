@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 import sysconfig
+import tempfile
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import Any
 
 from job_pool import Terminated, refuse_termination
 from validation_support import REPOSITORY_ROOT
@@ -65,6 +68,32 @@ def find_powershell() -> str:
     if found:
         return found
     raise AssertionError("PowerShell 7 (pwsh) was not found in PATH. It is required for repository validation.")
+
+
+def powershell_json(
+    script: str, inputs: object, variable: str, failure: str, environment: Mapping[str, str] | None = None
+) -> list[Any]:
+    """The JSON list the last line of a PowerShell script's output holds, the script given inputs as JSON in a
+    throwaway file whose path it finds in the environment variable named `variable`, beside `environment`.
+
+    Every policy that asks PowerShell to read something runs it here, so each refuses a termination, an exit status
+    other than 0, and output that is not a list the same way. Raises Terminated when pwsh was ended before it wrote
+    anything, and AssertionError opening with `failure`, the exit status, and the output otherwise.
+    """
+    command = [find_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script]
+    with tempfile.TemporaryDirectory(prefix="powershell-json-") as directory:
+        request = Path(directory) / "inputs.json"
+        request.write_text(json.dumps(inputs), encoding="utf-8")
+        result = platform_support.run_tool(command, {**(environment or {}), variable: str(request)})
+    refuse_termination(command, result.returncode, result.output)
+    lines = [line for line in result.output.splitlines() if line.strip()]
+    try:
+        found = json.loads(lines[-1]) if result.returncode == 0 and lines else None
+    except json.JSONDecodeError:
+        found = None
+    if not isinstance(found, list):
+        raise AssertionError(f"{failure} (exit code {result.returncode}):\n{result.output}")
+    return found
 
 
 def find_ruff() -> str | None:

@@ -12,12 +12,16 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+# release_levels is imported before validation_support, which puts skill-core on sys.path too, so this module
+# states the path itself.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 from release_levels import RELEASING_DOC, VERSION, VERSIONING_HEADING, level_word, versioning_levels
 from validation_support import (
+    OPERATIONS_CONTRACT,
     REPOSITORY_ROOT,
     is_skill_file,
+    listed,
     markdown_section,
     module_statements,
     parse_python,
@@ -50,7 +54,7 @@ TOOL_FLOOR_FIELDS = frozenset({"minimum", "provider_minimum"})
 PDF_POLICY_MODULE = "skills/skill-core/scripts/pdf_tool.py"
 DEPLOY_META = re.compile(r"deploy-meta/[^/]+\.json")
 REVIEW_SCHEMA = re.compile(r"skills/code-review-core/references/.+\.schema\.json")
-FORMATS_DOC = "docs/code-review-operations-contract.md"
+FORMATS_DOC = OPERATIONS_CONTRACT
 FORMATS_HEADING = "## Formats"
 NOTES_FIELDS = ("Level", "Contract", "User action")
 # The only sections the notes file has below its title are versions', which tools/release_notes.py writes.
@@ -250,10 +254,6 @@ def contract_list_problems(document: str, text: str, heading: str) -> list[str]:
     ]
 
 
-def _either(words: list[str]) -> str:
-    return words[0] if len(words) == 1 else f"{', '.join(words[:-1])}, or {words[-1]}"
-
-
 def notes_entry_problems(item: SourcedEntry, levels: list[str]) -> list[str]:
     """Each field an entry leaves out or fills wrongly; one written by hand in the notes file also names its pull
     request, which the release script otherwise takes from the squash title."""
@@ -269,7 +269,7 @@ def notes_entry_problems(item: SourcedEntry, levels: list[str]) -> list[str]:
     if level and level.lower() not in levels:
         problems.append(
             f"{where} starts its Level with '{level}', not one of the levels in the Versioning section of "
-            f"{RELEASING_DOC}: {_either(levels)}"
+            f"{RELEASING_DOC}: {listed(levels)}"
         )
     contract = entry.fields.get("Contract")
     if contract and contract.lower() not in ("none", "none.") and not entry.contract_items:
@@ -323,7 +323,7 @@ def upgrade_notes_problems(root: Path, body: str | None = None) -> list[str]:
     named = {item for sourced_entry in sourced for item in sourced_entry.entry.contract_items}
     problems += [
         f"{item}: {description} changed since {tag}, and no upgrade note since then names it; add an entry under "
-        f"{BODY_HEADING} in the pull request body naming `{item}` with its level ({_either(levels)}, per the "
+        f"{BODY_HEADING} in the pull request body naming `{item}` with its level ({listed(levels)}, per the "
         f"Versioning section of {RELEASING_DOC}) and the user action or none (a local run reads the body from "
         "--pr-body <file>, and otherwise the branch's commit messages)"
         for item, description in changed_contract_items(tag_snapshot(root, tag), current)

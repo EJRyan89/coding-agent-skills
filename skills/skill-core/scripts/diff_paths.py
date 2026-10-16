@@ -1,4 +1,4 @@
-"""The repository paths a git diff's file headers name.
+"""The repository paths a git diff's file headers name, and the line each of its hunks starts at.
 
 Git writes a path in a `--- a/<path>` or `+++ b/<path>` line, and in a `rename from` or `rename to` line, as is, unless
 it holds a byte outside printable ASCII, a double quote, or a backslash: then it writes the whole name, its prefix
@@ -22,6 +22,8 @@ OCTAL_DIGITS = frozenset("01234567")
 # What no path a script reads by may hold: a backslash, which Windows reads as a separator, or a control character.
 UNSAFE_CHARACTERS = re.compile(r"[\\\x00-\x1f\x7f]")
 DRIVE = re.compile(r"^[A-Za-z]:")
+# A unified diff's hunk header, with the first line of its new side as the first group.
+HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
 class DiffPathError(ValueError):

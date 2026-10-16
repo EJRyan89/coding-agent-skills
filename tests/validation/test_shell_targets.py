@@ -487,7 +487,7 @@ class ProgramEndingFixtures(GitTestCase):
             files = [root / "tools" / "run.ps1", root / "docs" / "guide.md"]
             with (
                 mock.patch.object(shell_targets, "find_psscriptanalyzer", return_value="C:/m/PSScriptAnalyzer.psd1"),
-                mock.patch.object(shell_targets, "find_powershell", return_value="C:/tools/pwsh.exe"),
+                mock.patch.object(toolchain, "find_powershell", return_value="C:/tools/pwsh.exe"),
                 mock.patch.object(shell_targets, "find_shellcheck", return_value="C:/tools/shellcheck.exe"),
                 mock.patch.object(
                     platform_support, "run_tool", return_value=platform_support.ToolResult(2_147_483_652, "")

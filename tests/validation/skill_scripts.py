@@ -10,7 +10,6 @@ import functools
 import json
 import re
 import shlex
-import tempfile
 import unittest
 from collections import defaultdict
 from dataclasses import dataclass
@@ -18,14 +17,16 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from duplication import SKILL_CORE, SKILL_CORE_SCRIPTS
 from markdown_sections import SHELL_FENCES
-from toolchain import find_powershell
+from toolchain import powershell_json
 from validation_support import (
+    MODULE_SCOPE,
     REPOSITORY_ROOT,
     CallableResolver,
     UnreadablePython,
     call_argument,
     find_fences,
     import_aliases,
+    is_main_guard,
     is_test_script,
     module_allowance,
     module_imports,
@@ -35,6 +36,7 @@ from validation_support import (
     python_source,
     python_trees,
     qualified_name,
+    scoped_nodes,
     skill_script_directories,
     skills_by_name,
 )
@@ -336,7 +338,6 @@ INTERPRETER_PROGRAM = platform_support.PYTHON
 # COMMANDS_ALLOWED = {scope: reason}, where a scope is the function or class holding what cannot be read, by qualified
 # name, or a module-level assignment's target. An allowance the module no longer needs is reported.
 COMMANDS_ALLOWANCE = "COMMANDS_ALLOWED"
-MODULE_SCOPE = "<module>"
 
 
 @dataclass(frozen=True)
@@ -379,9 +380,7 @@ def _is_lookup(call: ast.Call, aliases: dict[str, str]) -> bool:
 
 def _lookup_argument(call: ast.Call) -> ast.expr | None:
     """The name a lookup looks up: its first argument, or its cmd or name keyword."""
-    if call.args:
-        return call.args[0]
-    return next((item.value for item in call.keywords if item.arg in LOOKUP_KEYWORDS), None)
+    return call_argument(call, 0, *sorted(LOOKUP_KEYWORDS))
 
 
 def _program_name(command: str) -> str | None:
@@ -491,28 +490,8 @@ class _NameBindings:
 
 
 def _scope_names(tree: ast.Module) -> dict[int, str]:
-    """The scope holding each node: the innermost function or class holding it, by qualified name, or else the
-    module-level assignment holding it, by its target, or else the module."""
-    scopes: dict[int, str] = {}
-
-    def visit(node: ast.AST, scope: str) -> None:
-        scopes[id(node)] = scope
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                visit(child, child.name if scope == MODULE_SCOPE else f"{scope}.{child.name}")
-            else:
-                visit(child, scope)
-
-    for statement in tree.body:
-        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            visit(statement, statement.name)
-            continue
-        targets = statement.targets if isinstance(statement, ast.Assign) else []
-        if isinstance(statement, ast.AnnAssign):
-            targets = [statement.target]
-        named = [target.id for target in targets if isinstance(target, ast.Name)]
-        visit(statement, named[0] if len(targets) == len(named) == 1 else MODULE_SCOPE)
-    return scopes
+    """The scope holding each node, by its id, as scoped_nodes names it."""
+    return {id(node): scope for node, scope in scoped_nodes(tree.body)}
 
 
 def _own_nodes(function: Function) -> list[ast.AST]:
@@ -825,16 +804,10 @@ class CommandReader:
         executable = next((item.value for item in call.keywords if item.arg == "executable"), None)
         if executable is not None and name in EXECUTABLE_RUNNERS:
             return [executable]
-        position, keyword = runner
-        starred = any(isinstance(item, ast.Starred) for item in call.args[: position + 1])
-        given = next((item.value for item in call.keywords if item.arg == keyword), None)
-        if len(call.args) > position and not starred:
-            return [call.args[position]]
-        if given is not None:
-            return [given]
-        if starred or any(item.arg is None for item in call.keywords):
+        argument = call_argument(call, *runner)
+        if isinstance(argument, ast.Starred):
             return [Unreadable(call, f"the program in `{ast.unparse(call)}`, which unpacks its arguments")]
-        return []
+        return [] if argument is None else [argument]
 
     def _sources(self, call: ast.Call) -> list[Source]:
         return _read_literals(
@@ -1104,22 +1077,9 @@ def powershell_commands(sources: list[str]) -> list[set[str]]:
     """The external programs each PowerShell source runs, read by PowerShell's own parser in one call for them all."""
     if not sources:
         return []
-    with tempfile.TemporaryDirectory(prefix="powershell-commands-") as directory:
-        request = Path(directory) / "sources.json"
-        request.write_text(json.dumps(sources), encoding="utf-8")
-        result = platform_support.run_tool(
-            [find_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", POWERSHELL_COMMANDS_RUN],
-            {"COMMAND_SOURCES": str(request)},
-        )
-    lines = [line for line in result.output.splitlines() if line.strip()]
-    try:
-        found = json.loads(lines[-1]) if result.returncode == 0 and lines else None
-    except json.JSONDecodeError:
-        found = None
-    if not isinstance(found, list):
-        raise AssertionError(
-            f"PowerShell could not read the commands (exit code {result.returncode}):\n{result.output}"
-        )
+    found = powershell_json(
+        POWERSHELL_COMMANDS_RUN, sources, "COMMAND_SOURCES", "PowerShell could not read the commands"
+    )
     commands: list[set[str]] = [set() for _ in sources]
     for item in found:
         if "unread" in item:
@@ -1439,16 +1399,6 @@ def _stream_change_lines(tree: ast.Module, aliases: dict[str, str]) -> list[int]
             for node in ast.walk(tree)
             if isinstance(node, (ast.stmt, ast.expr)) and _changes_a_stream(node, aliases, reconfigures)
         }
-    )
-
-
-def is_main_guard(test: ast.expr) -> bool:
-    """Whether an if's test compares __name__ with "__main__", written either way round."""
-    if not (isinstance(test, ast.Compare) and len(test.ops) == 1 and isinstance(test.ops[0], ast.Eq)):
-        return False
-    sides = [test.left, test.comparators[0]]
-    return any(isinstance(side, ast.Name) and side.id == "__name__" for side in sides) and any(
-        isinstance(side, ast.Constant) and side.value == "__main__" for side in sides
     )
 
 
