@@ -382,6 +382,21 @@ class LooseFileTests(DocumentTestCase):
                 self.assertTrue(lines[0].startswith(f"FAILED {path} {reason}"), lines)
         self.assertFalse(self.output.exists())
 
+    def test_the_binary_refusal_is_the_snapshots_own_test(self) -> None:
+        # A NUL past the snapshot's probe is text to both, and one inside it is binary to both, so build never
+        # accepts a document prepare would leave out as binary.
+        document = self.root / "notes.txt"
+        document.write_bytes(b"# Notes\n" + b"x" * 20 + b"\0")
+        with mock.patch.object(review_runtime, "BINARY_PROBE_BYTES", 8):
+            code, lines = run_main("build", str(document), "--output", str(self.output))
+            self.assertEqual(0, code, lines)
+            self.assertFalse(review_runtime.is_binary(document.read_bytes()))
+        with mock.patch.object(review_runtime, "BINARY_PROBE_BYTES", 40):
+            code, lines = run_main("build", str(document), "--output", str(self.root / "second"))
+            self.assertEqual(1, code)
+            self.assertTrue(lines[0].endswith("is not a text file, a Word document, or a PDF"), lines)
+            self.assertTrue(review_runtime.is_binary(document.read_bytes()))
+
     def test_a_file_name_holding_a_line_break_is_refused_on_one_line_before_any_fixture(self) -> None:
         # A file system may allow any of them in a name; the pipeline's rule refuses the path, which printed raw
         # would break the DOCUMENT line.

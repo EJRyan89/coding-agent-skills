@@ -7,7 +7,6 @@ Prints the Markdown report on stdout and progress on stderr. A failure prints no
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 import time
 from collections.abc import Callable, Iterator
@@ -33,6 +32,7 @@ from github_client import (
     json_body,
     subprocess_runner,
 )
+from github_logins import is_login
 from typed_fields import FieldError, FieldReader, describe
 
 T = TypeVar("T")
@@ -44,7 +44,6 @@ INTERVAL_GROWTH = 1.5
 RECOVERY_STREAK = 10
 PAGINATION_PASSES = 3
 MAX_MONTHS = 36
-LOGIN_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}")
 READ = FieldReader()
 
 REVIEW_SEARCH_QUERY = """
@@ -553,7 +552,7 @@ def render_report(activity: Activity, org: str, user: str, today: date) -> str:
 
 
 def _login(value: str) -> str:
-    if not LOGIN_PATTERN.fullmatch(value):
+    if not is_login(value):
         raise argparse.ArgumentTypeError(f"not a valid GitHub login: {value!r}")
     return value
 

@@ -1925,10 +1925,10 @@ class FixtureInputTests(AdversarialFixture):
         self.assertEqual([], calls)
 
         # A link has no place in a fixture: refused before any run exists.
-        real = review_canary._is_reparse_point
+        real = review_canary.is_link_or_junction
         with mock.patch.object(
             review_canary,
-            "_is_reparse_point",
+            "is_link_or_junction",
             lambda path, metadata=None: path.name == "CLAUDE.md" or real(path, metadata),
         ):
             code, out, err = self.main("prepare", "--canary", "--fixture", str(fixture))

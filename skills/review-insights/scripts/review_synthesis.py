@@ -39,7 +39,7 @@ from flat_text import flat_text
 from review_config import safe_repository_path
 from review_guidance import Guidance, is_prose
 from review_io import PersistenceError, atomic_write_text, read_json
-from review_records import ANALYZER_COVERAGES, SEVERITIES, SEVERITY_RANK, valid_analyzer
+from review_records import ANALYZER_COVERAGES, SEVERITIES, SEVERITY_RANK, finding_reference, valid_analyzer
 
 RESULT_SCHEMA_VERSION = 1
 INPUT_NAME = "synthesis-input.jsonl"
@@ -146,9 +146,8 @@ class SynthesisError(ValueError):
 
 
 def finding_ref(record: dict[str, Any], finding: dict[str, Any]) -> str:
-    return (
-        f"{record['repository'].lower()}#{record['pull_request']['number']} "
-        f"v{record['review']['version']} {finding['id']}"
+    return finding_reference(
+        record["repository"], record["pull_request"]["number"], record["review"]["version"], finding["id"]
     )
 
 
@@ -263,7 +262,7 @@ def flag_ref(flag: dict[str, Any]) -> str | None:
     named = (flag["repository"], flag["pull_number"], flag["review_version"], flag["finding_id"])
     if None in named:
         return None
-    return f"{flag['repository'].lower()}#{flag['pull_number']} v{flag['review_version']} {flag['finding_id']}"
+    return finding_reference(*named)
 
 
 def scoped_flags(flags: list[dict[str, Any]], repositories: list[str], start: date, end: date) -> list[dict[str, Any]]:

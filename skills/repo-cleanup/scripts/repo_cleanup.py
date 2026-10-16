@@ -48,10 +48,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 import git_client
 import pr_status
 from console import run_main
+from flat_text import flat_text
 from git_client import GitClient, GitResult
 from github_client import GitHubClient, GitHubError, replace_undecodable, subprocess_runner
 from github_client import Runner as GhRunner
 from github_remote import github_repository
+from link_probe import is_plain_directory
 from skill_roots import skills_directory_holding
 
 T = TypeVar("T")
@@ -115,8 +117,6 @@ SWEEP_AGAIN = "run the sweep again for a new plan"
 REPOSITORY_AREA = (".claude", "worktrees")
 # What a clean linked worktree becomes, by its branch's planned action: removed, offered, or else kept.
 WORKTREE_ACTIONS = {"remove-worktree": "remove", "remove-worktree-ask": "remove", "ask-remove-worktree": "ask"}
-# Control characters and the line separators str.splitlines also breaks on, so every fact stays on one line.
-CONTROL = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]+")
 SUMMARY_WIDTH = 25
 # The file in a sweep's plans directory naming each repository a sweep there reported, its state, and its plan file,
 # so the report covers every repository, those no plan was made for included. No plan file is named like it: plan
@@ -172,8 +172,9 @@ class Services:
 
 
 def one_line(value: Any) -> str:
-    """`value` on one line, with each byte Git gave that is not UTF-8, such as in a branch name, as U+FFFD."""
-    return CONTROL.sub(" ", replace_undecodable(str(value))[0]).rstrip()
+    """`value` on one line, as `flat_text` flattens it, with each byte Git gave that is not UTF-8, such as in a branch
+    name, as U+FFFD."""
+    return flat_text(replace_undecodable(str(value))[0])
 
 
 _capture = threading.local()
@@ -878,15 +879,6 @@ def unchanged(
         record(plan, "PRESERVED", name, "moved" if worktree is not None else "checked out")
         return False
     return True
-
-
-def is_plain_directory(path: Path) -> bool:
-    try:
-        status = os.lstat(path)
-    except OSError:
-        return False
-    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
-    return stat.S_ISDIR(status.st_mode) and not getattr(status, "st_file_attributes", 0) & reparse
 
 
 def strictly_inside(path: str, boundary: str, *, lexical: bool = False) -> bool:

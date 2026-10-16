@@ -24,7 +24,7 @@ from itertools import pairwise
 from typing import Any
 
 from flat_text import flat_text
-from review_records import SEVERITIES, SEVERITY_RANK
+from review_records import SEVERITIES, SEVERITY_RANK, finding_reference, source_parts
 from review_synthesis import finding_ref, group_key, headline
 from typed_fields import FieldReader
 
@@ -241,7 +241,8 @@ def _held(record: dict[str, Any], by_version: dict[int, dict[str, Any]]) -> list
         holding = _holding(record, finding or {"severity": entry["severity"], "path": None, "line": None}, None)
         repository, number, _ = _review_key(record)
         holding.update(
-            entry=(entry["version"], entry["id"]), ref=f"{repository}#{number} v{latest['version']} {latest['id']}"
+            entry=(entry["version"], entry["id"]),
+            ref=finding_reference(repository, number, latest["version"], latest["id"]),
         )
         held.append(holding)
     return held
@@ -343,7 +344,7 @@ def verdict_flips(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _reviewers(finding: dict[str, Any]) -> frozenset[str]:
-    return frozenset(part.strip() for part in finding["source"].split(" + ") if part.strip())
+    return frozenset(source_parts(finding["source"]))
 
 
 def _disagree(first: dict[str, Any], second: dict[str, Any]) -> bool:

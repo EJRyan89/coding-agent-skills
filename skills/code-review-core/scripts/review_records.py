@@ -394,6 +394,37 @@ def ledger_id(version: int, identifier: str) -> str:
     return f"v{version}:{identifier}"
 
 
+def display_id(version: int, identifier: str) -> str:
+    """A finding's ID as reports show it, `v1 F001`, since finding IDs restart in every review."""
+    return f"v{version} {identifier}"
+
+
+def ledger_display_id(entry_id: str) -> str:
+    """A ledger entry's ID, as `ledger_id` writes it, in the form `display_id` gives."""
+    version, identifier = entry_id.removeprefix("v").split(":", 1)
+    return display_id(int(version), identifier)
+
+
+def finding_reference(repository: str, pull: int, version: int, identifier: str) -> str:
+    """The one reference to a finding across reviews, `owner/repo#12 v1 F001`, its repository lowercased as GitHub
+    compares it."""
+    return f"{repository.lower()}#{pull} {display_id(version, identifier)}"
+
+
+SOURCE_SEPARATOR = " + "
+
+
+def joined_source(sources: Iterable[str]) -> str:
+    """A merged finding's `source`: the reviewers that raised it, in order, as `source_parts` reads them back."""
+    return SOURCE_SEPARATOR.join(sources)
+
+
+def source_parts(source: str) -> list[str]:
+    """The reviewers a finding's `source` names, as `joined_source` joins them: each part trimmed and named once, in
+    order, with an empty part dropped."""
+    return list(dict.fromkeys(part.strip() for part in source.split(SOURCE_SEPARATOR) if part.strip()))
+
+
 def _entry_key(entry: dict[str, Any]) -> tuple[int, int]:
     return entry["version"], int(entry["id"][1:])
 
@@ -1368,11 +1399,6 @@ def _description_row(pull: dict[str, Any]) -> list[str]:
     return [f"| **Description** | {stated} |"]
 
 
-def _display_id(version: int, identifier: str) -> str:
-    """A finding's ID as reports show it, `v1 F001`, since finding IDs restart in every review."""
-    return f"v{version} {identifier}"
-
-
 def _finding_block(
     finding: dict[str, Any], label: str, *, repeats: str | None = None, status: Iterable[str] = ()
 ) -> list[str]:
@@ -1665,7 +1691,7 @@ def _findings_section(ledger: _Ledger, re_review: bool) -> list[str]:
             continue
         lines.extend(["<details open>", f"<summary><strong>{title} ({len(group)})</strong></summary>", ""])
         for entry in group:
-            label = _display_id(entry["version"], entry["id"])
+            label = display_id(entry["version"], entry["id"])
             block = _finding_block(
                 ledger.raised(entry), label, status=ledger.status(entry) if re_review else ledger.flag_lines(entry)
             )
@@ -1673,7 +1699,7 @@ def _findings_section(ledger: _Ledger, re_review: bool) -> list[str]:
                 if repeat["version"] == ledger.version:
                     block[-2:-2] = _finding_block(
                         ledger.finding(repeat["version"], repeat["id"]),
-                        _display_id(repeat["version"], repeat["id"]),
+                        display_id(repeat["version"], repeat["id"]),
                         repeats=label,
                     )
             lines.extend(block)
@@ -1686,7 +1712,7 @@ def _findings_section(ledger: _Ledger, re_review: bool) -> list[str]:
             title = f" {_text(finding['title'])}," if "title" in finding else ""
             location = _code(f"{finding['path']}:{finding['line']}")
             item = (
-                f"- **{_display_id(entry['version'], entry['id'])}.** {_label(entry['severity'])} "
+                f"- **{display_id(entry['version'], entry['id'])}.** {_label(entry['severity'])} "
                 f"[{_text(entry['category'])}]{title} {location}. {ledger.judgment(entry)}"
             )
             lines.extend(part if index == 0 else f"  {part}" for index, part in enumerate(item.splitlines()))

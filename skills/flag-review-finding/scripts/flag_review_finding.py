@@ -48,7 +48,7 @@ from review_flags import (
     validate_target,
 )
 from review_io import PersistenceError
-from review_records import FINDING_ID, RecordError, carried_findings, validate_record_pair
+from review_records import FINDING_ID, RecordError, carried_findings, ledger_display_id, validate_record_pair
 
 BODY_LIMIT = 160
 # A finding's label in its review report and on a findings line: v<review version> <finding ID>.
@@ -112,11 +112,6 @@ def flag_line(flag: dict[str, Any]) -> str:
     return f"FLAG {flag['id']} {flat_text(flag['category'])} {target(flag)} {cut(flag['body'])}"
 
 
-def report_label(ledger_entry_id: str) -> str:
-    """A ledger entry's ID, v<version>:<finding ID>, as its report labels it and REPORT_LABEL reads it back."""
-    return ledger_entry_id.replace(":", " ")
-
-
 def named_finding(review_version: int | None, finding: str | None) -> tuple[int | None, str | None]:
     """The review version and finding ID that --finding names: a report label carries its review version, and
     anything else is a finding ID that --review-version gives the version of, left for validate_target to check."""
@@ -146,7 +141,7 @@ def finding_lines(config: Path | None, repository: str, pull: int) -> list[str]:
     if not records:
         raise FlagError(f"{repository}#{pull} has no review in the archive")
     lines = [
-        f"FINDING {report_label(item['id'])} {item['severity']} {flat_text(item['path'])}:{item['line']} "
+        f"FINDING {ledger_display_id(item['id'])} {item['severity']} {flat_text(item['path'])}:{item['line']} "
         f"{cut(item.get('title') or item['body'])}"
         for item in carried_findings(records)
     ]

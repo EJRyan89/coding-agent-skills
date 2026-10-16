@@ -82,7 +82,15 @@ from review_config import (
 )
 from review_flags import FlagAlreadyResolved, FlagError, default_flags_path, load_store, resolve_flag
 from review_io import PersistenceError, ResourceLock, atomic_write_text, read_json
-from review_records import ANALYZER_COVERAGES, RecordError, ledger_history, valid_analyzer, validate_record_pair
+from review_records import (
+    ANALYZER_COVERAGES,
+    RecordError,
+    finding_reference,
+    ledger_history,
+    source_parts,
+    valid_analyzer,
+    validate_record_pair,
+)
 from skill_roots import skills_directory_holding
 from typed_fields import FieldError
 
@@ -274,7 +282,7 @@ def raised_by(record: dict[str, Any], finding: dict[str, Any]) -> list[tuple[str
     reviewers = {item["id"]: item.get("model", UNKNOWN_MODEL) for item in record["review"].get("reviewers", [])}
     if len(reviewers) == 1:
         return list(reviewers.items())
-    parts = list(dict.fromkeys(part.strip() for part in finding["source"].split(" + ") if part.strip()))
+    parts = source_parts(finding["source"])
     named = [(part, reviewers[part]) for part in parts if part in reviewers]
     return named or [(part, UNKNOWN_MODEL) for part in parts]
 
@@ -561,7 +569,9 @@ def _decision_history(item: dict[str, Any]) -> list[str]:
 def _example(entry: dict[str, Any]) -> str:
     """One finding an analyzer recommendation covers, on one line: where it is, then its headline when the record has
     one, or else its path, which a pull request may give a line break."""
-    location = f"{entry['repository']}#{entry['pull_number']} v{entry['review_version']} {entry['finding_id']}"
+    location = finding_reference(
+        entry["repository"], entry["pull_number"], entry["review_version"], entry["finding_id"]
+    )
     return flat_text(f"{location} {entry['title'] or entry['path'] + ':' + str(entry['line'])}")
 
 

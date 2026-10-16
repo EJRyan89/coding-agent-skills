@@ -123,6 +123,7 @@ from review_records import (
     describe_scope,
     ledger_history,
     snapshot_seconds,
+    source_parts,
     validate_adapter_result,
     validate_record,
 )
@@ -2340,7 +2341,7 @@ def reviewer_summaries(
     summaries = []
     for role in roles:
         raised = (
-            len(findings) if single else sum(1 for finding in findings if role["id"] in finding["source"].split(" + "))
+            len(findings) if single else sum(1 for finding in findings if role["id"] in source_parts(finding["source"]))
         )
         summaries.append(
             {

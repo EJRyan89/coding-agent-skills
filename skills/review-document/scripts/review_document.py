@@ -70,6 +70,7 @@ from review_runtime import (
     MAX_CHANGED_FILE_BYTES,
     PathRoom,
     blob_matches,
+    is_binary,
     path_room,
     unsafe_path_reason,
 )
@@ -84,8 +85,6 @@ PULL_URL_FORM = "https://github.com/<owner>/<repo>/pull/<number>"
 # Where the fixture keeps its specialists manifest, in both trees, so the manifest is never part of the change.
 MANIFEST_PATH = ".review-document/specialists.json"
 FINDING_CATEGORIES = ["requirement-gap", "alternative-unstated", "risk", "open-question", "inconsistency", "rollout"]
-# git's own test for a binary file: a NUL byte in the first 8,000 bytes.
-BINARY_PROBE = 8000
 # The fixture's owner. No GitHub account name holds a dot, so the pull request URL a report shows names nobody's
 # repository.
 LOCAL_OWNER = "review-document.local"
@@ -161,7 +160,7 @@ def checked_content(name: str, content: bytes, form: str | None) -> bytes:
         if not document_text(name, form, content).strip():
             raise DocumentError(f"{name} holds no text to review")
         return content
-    if b"\0" in content[:BINARY_PROBE]:
+    if is_binary(content):
         raise DocumentError(f"{name} is not a text file, a Word document, or a PDF")
     return normalized(content)
 
