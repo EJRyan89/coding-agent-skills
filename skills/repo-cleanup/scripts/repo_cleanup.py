@@ -30,7 +30,6 @@ import argparse
 import dataclasses
 import json
 import os
-import re
 import shutil
 import stat
 import sys
@@ -48,7 +47,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 import git_client
 import pr_status
 from console import run_main
-from flat_text import flat_text
+from flat_text import single_line
 from git_client import GitClient, GitResult
 from github_client import GitHubClient, GitHubError, replace_undecodable, subprocess_runner
 from github_client import Runner as GhRunner
@@ -172,9 +171,9 @@ class Services:
 
 
 def one_line(value: Any) -> str:
-    """`value` on one line, as `flat_text` flattens it, with each byte Git gave that is not UTF-8, such as in a branch
+    """`value` on one line, as `single_line` keeps it, with each byte Git gave that is not UTF-8, such as in a branch
     name, as U+FFFD."""
-    return flat_text(replace_undecodable(str(value))[0])
+    return single_line(replace_undecodable(str(value))[0])
 
 
 _capture = threading.local()

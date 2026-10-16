@@ -86,7 +86,7 @@
         "(?i)^skills/code-review-core/scripts/review_(?:analyzers|canary|documents|github|guard|hosts|pipeline|process|records|reviewers|runtime|source|specialists)\\.py$",
         "(?i)^skills/code-review-core/scripts/test_adversarial_inputs\\.py$",
         "(?i)^skills/review-document/scripts/review_document\\.py$",
-        "(?i)^skills/skill-core/scripts/(?:bounded_process|diff_paths|executable_locator|flat_text|git_client|github_client|github_remote|job_tree|markdown_literal|pdf_tool|process_identity|typed_fields|xml_reader)\\.py$"
+        "(?i)^skills/skill-core/scripts/(?:bounded_process|diff_paths|executable_locator|flat_text|git_client|github_client|github_remote|job_tree|link_probe|markdown_literal|pdf_tool|process_identity|typed_fields|xml_reader)\\.py$"
       ],
       "exclude": [],
       "resources": ["docs/code-review-operations-contract.md"],
