@@ -67,13 +67,12 @@ from msbuild_reader import (
     Redirect,
     Unreadable,
     framework_key,
-    is_sdk_style,
     item_specs,
-    local_name,
     matching_framework,
     nearest_file,
     parse_xml,
 )
+from msbuild_xml import implicit_sdk, is_sdk_style, local_name
 
 BUILD_PROPS = "Directory.Build.props"
 BUILD_TARGETS = "Directory.Build.targets"
@@ -337,7 +336,7 @@ class Evaluation:
 
     def run(self, root: Element) -> None:
         self.imported.add(same_path(self.project.path))
-        implicit = bool(root.get("Sdk")) or any(local_name(child) == "Sdk" for child in root)
+        implicit = implicit_sdk(root)
         if implicit:
             self.props_point()
         self.walk(root, None)

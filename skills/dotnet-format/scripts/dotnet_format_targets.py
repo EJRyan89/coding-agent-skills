@@ -49,10 +49,10 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from xml.etree import ElementTree
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+import msbuild_xml
 from console import run_main
 from dotnet_solution import (
     SEARCH_SKIPPED_FOLDERS,
@@ -68,6 +68,7 @@ from dotnet_solution import (
 from executable_locator import find_executable
 from flat_text import flat_text
 from folder_walk import LINKED, LOOP, NESTED_CHECKOUT, walk_files
+from folders_up import folders_up
 from git_client import GitClient, GitError, GitResult, classify_failure
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_client import Runner as GhRunner
@@ -232,37 +233,24 @@ def changed_files(services: Services, root: Path, base: str) -> list[str]:
 
 def owning_projects(root: Path, file: Path) -> list[Path]:
     """The .csproj files in the nearest directory at or above the file, up to and including the root."""
-    directory = file.parent
-    while True:
-        projects = sorted(path for path in directory.glob("*.csproj") if path.is_file())
+    for folder in folders_up(file.parent, root):
+        projects = sorted(path for path in folder.glob("*.csproj") if path.is_file())
         if projects:
             return projects
-        if same_path(directory) == same_path(root) or directory.parent == directory:
-            return []
-        directory = directory.parent
+    return []
 
 
 def is_web_project(project: Path) -> bool:
     return bool(WEB_PROJECT.search(read_text(project)))
 
 
-def local_name(element: ElementTree.Element) -> str:
-    """An element's tag without the MSBuild namespace an older project file declares."""
-    return element.tag.rpartition("}")[2]
-
-
 def is_sdk_style(project: Path) -> bool:
-    """Whether a project file is SDK-style, as MSBuild reads one: its Project element names an Sdk, or it holds an
-    Sdk element or an Import of an Sdk. A file that cannot be read is not shown to be one."""
+    """Whether a project file is SDK-style, as skill-core's `msbuild_xml` reads one: its Project element names an
+    Sdk, or it holds an Sdk element or an Import of an Sdk. A file that cannot be read is not shown to be one."""
     try:
-        document = read_xml(read_text(project))
+        return msbuild_xml.is_sdk_style(read_xml(read_text(project)))
     except (OSError, XmlRefused):
         return False
-    if local_name(document) != "Project":
-        return False
-    if document.get("Sdk"):
-        return True
-    return any(local_name(child) == "Sdk" or (local_name(child) == "Import" and child.get("Sdk")) for child in document)
 
 
 def formatter_for(root: Path, solution: Path) -> str:
@@ -302,15 +290,12 @@ def formatter_skips(root: Path, formatter: str, names: list[str]) -> dict[str, P
 
 def nearest_solutions(root: Path, cwd: Path) -> list[Path]:
     """Solutions in the nearest directory from cwd up to the root, or none."""
-    inside = same_path(cwd) == same_path(root) or any(same_path(parent) == same_path(root) for parent in cwd.parents)
-    directory = cwd if inside else root
-    while True:
-        found = sorted(path for path in directory.iterdir() if is_solution(path) and path.is_file())
+    inside = any(same_path(folder) == same_path(root) for folder in folders_up(cwd))
+    for folder in folders_up(cwd if inside else root, root):
+        found = sorted(path for path in folder.iterdir() if is_solution(path) and path.is_file())
         if found:
             return found
-        if same_path(directory) == same_path(root) or directory.parent == directory:
-            return []
-        directory = directory.parent
+    return []
 
 
 def find_solutions(root: Path) -> list[Path]:

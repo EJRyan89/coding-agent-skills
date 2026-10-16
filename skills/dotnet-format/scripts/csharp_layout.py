@@ -64,6 +64,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from console import run_main
 from dotnet_format_targets import owning_projects, read_file_list
 from dotnet_solution import project_path, read_listed_projects, read_text, refusal, same_path
+from folders_up import folders_up
 from run_dotnet_format import Services
 from xml_reader import XmlRefused
 
@@ -812,14 +813,9 @@ class AnalyzerConfigs:
 
     def above(self, directory: Path, name: str) -> list[AnalyzerConfig]:
         """The files named `name` in directory and each folder above it up to the root, nearest first."""
-        found: list[AnalyzerConfig] = []
-        while True:
-            config = self.config(directory / name)
-            if config is not None:
-                found.append(config)
-            if same_path(directory) == same_path(self.root) or directory.parent == directory:
-                return found
-            directory = directory.parent
+        return [
+            config for folder in folders_up(directory, self.root) if (config := self.config(folder / name)) is not None
+        ]
 
     def chain(self, probe: Path) -> list[AnalyzerConfig]:
         """The .editorconfig files that configure the file, nearest first, up to the root or the first root file."""
