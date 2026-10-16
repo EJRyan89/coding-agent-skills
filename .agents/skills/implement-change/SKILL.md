@@ -4,7 +4,7 @@ description: >-
   Procedure for making a change in a repository that publishes an implementation profile
   (docs/implementing-changes.md), from the worktree and the plan to the pull request. Use it when asked to implement
   an issue or make a change in such a repository.
-allowed-tools: ["Bash(gh pr create *)", "PowerShell(gh pr create *)"]
+allowed-tools: ["Bash(python -B .claude/skills/implement-change/scripts/pull_request.py *)", "PowerShell(python -B .claude/skills/implement-change/scripts/pull_request.py *)"]
 ---
 
 Read and follow `../../../.claude/skills/implement-change/SKILL.md` as the authoritative workflow.
