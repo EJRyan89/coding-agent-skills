@@ -615,6 +615,33 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(["[*.cs] dotnet_diagnostic.CA1000.severity = none"], self.settings(result, ".editorconfig"))
         self.assertEqual([UNREAD], self.settings(result, "Comment.props"), "any declaration text refuses the file")
 
+    def test_a_project_that_imports_its_sdk_is_sdk_style(self) -> None:
+        paths = self.write(
+            {
+                "imported/App.csproj": (
+                    '<Project><Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />'
+                    '<Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" /></Project>\n'
+                ),
+                "legacy/App.csproj": '<Project><Import Project="Common.targets" /></Project>\n',
+            }
+        )
+        tools = self.tools(inventory(self.root, paths))
+        self.assertEqual(["imported/App.csproj"], tools["Microsoft.CodeAnalysis.NetAnalyzers"])
+        self.assertEqual(["imported/App.csproj"], tools["Microsoft.CodeAnalysis.CSharp.CodeStyle"])
+
+    def test_a_project_with_a_byte_that_is_not_utf8_is_read_as_the_dotnet_skills_read_it(self) -> None:
+        project = (
+            b'<Project Sdk="Microsoft.NET.Sdk"><!-- caf\xe9 --><PropertyGroup>'
+            b"<AnalysisLevel>latest</AnalysisLevel></PropertyGroup></Project>\n"
+        )
+        paths = self.write({"App.csproj": project, ".editorconfig": b"# caf\xe9\n[*.cs]\nindent_size = 4\n"})
+        result = inventory(self.root, paths)
+        self.assertEqual(["App.csproj"], self.tools(result)["Microsoft.CodeAnalysis.NetAnalyzers"])
+        self.assertEqual(["<AnalysisLevel>latest</AnalysisLevel>"], self.settings(result, "App.csproj"))
+        self.assertEqual(
+            [UNREAD], self.settings(result, ".editorconfig"), "a file of any other format is decoded strictly"
+        )
+
     def test_settings_truncate_only_past_four_hundred(self) -> None:
         for count, truncated in ((400, False), (401, True)):
             with self.subTest(count=count):
