@@ -621,7 +621,7 @@ The mutable state `review-prs` keeps per repository, at `~/.coding-agent-skills/
 
 ### Tracker record
 
-The pull requests `update-pr-dashboard` holds and the AI review of each row it showed, beside the file the code-review configuration path leads to, through any symbolic link: `tracker.json` for a configuration named `config.json`, and `<name>.tracker.json` for a configuration named `<name>.json`, so two configurations in one folder keep records of their own. `validate_tracker_record` in `update_pr_dashboard.py` validates it whenever it is read or written. Each `update` that writes the dashboard reads it, to name each review that went stale since, then replaces it, and `override` reads it: a `--set` must name a pull request it lists, and the listing marks each override it does not. A missing file holds no pull request.
+The pull requests `update-pr-dashboard` holds and the AI review of each row it showed, beside the file the code-review configuration path leads to, through any symbolic link: `tracker.json` for a configuration named `config.json`, and `<name>.tracker.json` for a configuration named `<name>.json`, so two configurations in one folder keep records of their own. `validate_tracker_record` in `update_pr_dashboard.py` validates it whenever it is read or written. Each `update` that writes the dashboard reads it, to name each review that went stale since, then replaces it. `override` reads it: a `--set` must name a pull request it lists, and the listing marks each override it does not. `review-arguments` reads it: a confirmed pull request must be a row it holds as `missing` or `stale`. A missing file holds no pull request.
 
 #### Tracker record (`tracker`)
 
