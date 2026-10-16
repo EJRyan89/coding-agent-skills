@@ -66,6 +66,9 @@ VALIDATION_DOC = f'"Validation" in {SKILL_GUIDE}'
 OPERATIONS_CONTRACT = "docs/code-review-operations-contract.md"
 # The calls that import a module by its name, as the module's imports resolve them.
 MODULE_LOADERS = frozenset({"importlib.import_module", "__import__", "builtins.__import__"})
+# What stands for a part of a dotted name a module looks up by a name it computes, such as the module in
+# importlib.import_module(name).run, which no policy can settle.
+COMPUTED_NAME = "?"
 # The scope a node outside every function, class, and named module-level assignment is in.
 MODULE_SCOPE = "<module>"
 TEMPLATE_TOKEN = re.compile(r"\{\{([A-Z][A-Z0-9_]*)\}\}")
@@ -314,7 +317,7 @@ def _literal_items(node: ast.expr) -> list[ast.expr | None] | None:
 
 
 class _BindingReader(ast.NodeVisitor):
-    def __init__(self, tree: ast.Module) -> None:
+    def __init__(self, tree: ast.Module, in_place_updates: bool) -> None:
         self.scope = _NameScope(None)
         self.scopes: dict[int, _NameScope] = {}
         self.values: dict[int, list[ast.expr | None]] = {}
@@ -327,6 +330,12 @@ class _BindingReader(ast.NodeVisitor):
                     self._pair(node.target, item)
         self.annotations = {
             id(node.target) for node in ast.walk(tree) if isinstance(node, ast.AnnAssign) and node.value is None
+        }
+        # The names an augmented assignment updates, which keep their binding when it updates the object in place.
+        self.updates = {
+            id(node.target)
+            for node in ast.walk(tree)
+            if in_place_updates and isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name)
         }
         self._declare(tree)
         self.visit(tree)
@@ -389,7 +398,7 @@ class _BindingReader(ast.NodeVisitor):
         super().visit(node)
 
     def visit_Name(self, node: ast.Name) -> None:
-        if isinstance(node.ctx, (ast.Store, ast.Del)) and id(node) not in self.annotations:
+        if isinstance(node.ctx, (ast.Store, ast.Del)) and id(node) not in self.annotations | self.updates:
             for value in self.values.get(id(node), [None]):
                 self.scope.bind(node.id, value)
 
@@ -565,11 +574,15 @@ class CallableResolver:
     a literal tuple or list unpacked or looped over, a parameter's default, or the subject a case captures whole.
     Other value construction is not an alias, such as a call's result, an item of anything but a literal, a with
     target, or a caught exception. Once a name is an alias, any other binding makes it unresolvable.
+
+    An augmented assignment to a name binds it again, since `name += ...` may bind a new object, unless the reader is
+    given in_place_updates, for a policy whose objects an augmented assignment updates in place, as `environ |= ...`
+    updates os.environ and leaves the name bound to it.
     """
 
-    def __init__(self, tree: ast.Module) -> None:
+    def __init__(self, tree: ast.Module, in_place_updates: bool = False) -> None:
         self.tree = tree
-        self.scopes = _BindingReader(tree).scopes
+        self.scopes = _BindingReader(tree, in_place_updates).scopes
         self._aliases: dict[int, dict[str, str]] = {}
 
     def _bound_name(self, name: str, scope: _NameScope, seen: frozenset[tuple[int, str]]) -> str:
@@ -611,7 +624,11 @@ class CallableResolver:
 
     def function(self, call: ast.Call) -> ast.expr:
         """The original callable expression, so a bound path method keeps its receiver and argument positions."""
-        node = call.func
+        return self.original(call.func)
+
+    def original(self, node: ast.expr) -> ast.expr:
+        """The expression a name stands for, followed through each name the module binds once to a name or an
+        attribute, or the expression itself."""
         seen: set[int] = set()
         while isinstance(node, ast.Name) and id(node) not in seen:
             seen.add(id(node))
@@ -659,6 +676,30 @@ class CallableResolver:
             for node in ast.walk(self.tree)
             if isinstance(node, ast.Call) and (skipped is None or id(node) not in skipped) and self.unresolved(node)
         ]
+
+
+def module_lookup(node: ast.expr, resolver: CallableResolver) -> str:
+    """The module an expression reaches by its name rather than by an import statement, through the module's imports:
+    an importlib.import_module or __import__ call, sys.modules indexed, or a name the module binds once to one of
+    these, as its dotted name when that name is one string literal and COMPUTED_NAME when it is anything else; "" for
+    any other expression. An __import__ of a dotted name without a fromlist returns its top-level package, as Python's
+    does."""
+    if isinstance(node, ast.Name):
+        owner = resolver.scopes[id(node)].owner(node.id)
+        values = owner.bindings[node.id] if owner is not None else []
+        bound = values[0] if len(values) == 1 else None
+        return module_lookup(bound, resolver) if isinstance(bound, ast.Call | ast.Subscript) else ""
+    if isinstance(node, ast.Subscript) and resolver.name(node.value) == "sys.modules":
+        key = node.slice
+        return key.value if isinstance(key, ast.Constant) and isinstance(key.value, str) else COMPUTED_NAME
+    if not isinstance(node, ast.Call) or (loader := resolver.name(node.func)) not in MODULE_LOADERS:
+        return ""
+    name = call_argument(node, 0, "name")
+    if not isinstance(name, ast.Constant) or not isinstance(name.value, str):
+        return COMPUTED_NAME
+    if loader != "importlib.import_module" and call_argument(node, 3, "fromlist") is None:
+        return name.value.partition(".")[0]
+    return name.value
 
 
 def fence_holders(lines: list[str]) -> list[Fence | None]:

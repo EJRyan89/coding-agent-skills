@@ -726,6 +726,49 @@ class PoolSharedStatePolicy(GitTestCase):
             [problem.split(",", 1)[0] for problem in problems],
         )
 
+    def test_an_aliased_in_place_union_dup2_the_bytes_environment_and_a_lookup_by_name_are_reported(self) -> None:
+        alpha = (
+            "import importlib\n"
+            "import os\n"
+            "import sys\n"
+            "from os import environb as raw\n"
+            "\n"
+            "def check(descriptor, name):\n"
+            "    env = os.environ\n"
+            "    env |= {'A': 'b'}\n"
+            "    os.dup2(descriptor, 1)\n"
+            "    os.environb[b'A'] = b'b'\n"
+            "    raw.update({b'A': b'b'})\n"
+            "    getattr(os, 'environ')['A'] = 'b'\n"
+            "    sys.modules['os'].environ['A'] = 'b'\n"
+            "    importlib.import_module('os').chdir('..')\n"
+            "    __import__('os.path').environ.pop('A')\n"
+            "    getattr(sys.modules['sys'], 'stdout').write\n"
+            "    sys.modules['sys'].stderr = None\n"
+            "    getattr(os, name)('..')\n"
+            "    setattr(sys, name, None)\n"
+            "    sys.modules[name].environ['A'] = 'b'\n"
+        )
+        problems = self.problems({"tests/validation/alpha.py": alpha})
+        lookup = "may change a standard stream, os.environ, or the working directory through"
+        self.assertEqual(
+            [
+                "tests/validation/alpha.py:8 changes env",
+                "tests/validation/alpha.py:9 calls os.dup2",
+                "tests/validation/alpha.py:10 changes os.environb[b'A']",
+                "tests/validation/alpha.py:11 calls os.environb.update",
+                "tests/validation/alpha.py:12 changes getattr(os, 'environ')['A']",
+                "tests/validation/alpha.py:13 changes sys.modules['os'].environ['A']",
+                "tests/validation/alpha.py:14 calls os.chdir",
+                "tests/validation/alpha.py:15 calls os.environ.pop",
+                "tests/validation/alpha.py:17 changes sys.modules['sys'].stderr",
+                f"tests/validation/alpha.py:18 {lookup} `getattr(os, name)`",
+                f"tests/validation/alpha.py:19 {lookup} `setattr(sys, name, None)`",
+                f"tests/validation/alpha.py:20 {lookup} `sys.modules[name].environ['A']`",
+            ],
+            [problem.split(", a lookup", 1)[0].split(", which", 1)[0] for problem in problems],
+        )
+
     def test_the_runner_itself_is_read_and_a_missing_policy_module_is_reported(self) -> None:
         runner = self.RUNNER + "import contextlib, io\n\ndef f():\n    contextlib.redirect_stderr(io.StringIO())\n"
         with tempfile.TemporaryDirectory() as temporary:
@@ -781,6 +824,28 @@ class PoolSharedStatePolicy(GitTestCase):
             "    (other := {})['A'] = 'b'\n"
             "    stream = sys.stdout; stream = io.StringIO()\n"
             "    print(environ.get('A'), os.environ.get('A'), directory)\n"
+        )
+        self.assertEqual([], self.problems({"tests/validation/alpha.py": alpha}))
+
+    def test_a_rebound_name_a_copy_and_a_read_through_a_lookup_pass(self) -> None:
+        alpha = (
+            "import importlib\n"
+            "import os\n"
+            "import sys\n"
+            "\n"
+            "def check(node, name, first, second):\n"
+            "    env = os.environ\n"
+            "    env = {}\n"
+            "    env |= {'A': 'b'}\n"
+            "    copied = dict(os.environb)\n"
+            "    copied |= {b'A': b'b'}\n"
+            "    os.dup(1)\n"
+            "    print(getattr(os, 'environ')['A'], sys.modules['os'].environ.get('A'))\n"
+            "    print(importlib.import_module('os').getcwd(), getattr(os, name), sys.modules[name])\n"
+            "    getattr(node, name)()\n"
+            "    setattr(node, name, None)\n"
+            "    sys.modules['json'].dumps = None\n"
+            "    first |= second\n"
         )
         self.assertEqual([], self.problems({"tests/validation/alpha.py": alpha}))
 

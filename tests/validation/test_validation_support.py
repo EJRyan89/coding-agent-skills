@@ -23,6 +23,7 @@ import skill_scripts
 from git_test_base import GitTestCase
 from validation_support import (
     CODE_SPAN,
+    COMPUTED_NAME,
     MODULE_SCOPE,
     CallableResolver,
     ModuleImport,
@@ -39,6 +40,7 @@ from validation_support import (
     markdown_section,
     module_allowance,
     module_imports,
+    module_lookup,
     parse_python,
     python_trees,
     qualified_name,
@@ -58,6 +60,14 @@ SOURCE = (
     "def load():\n"
     "    import bounded_process\n"
 )
+
+
+def last_expression(tree: ast.Module) -> ast.expr:
+    """The expression a fixture module's last statement is."""
+    statement = tree.body[-1]
+    if not isinstance(statement, ast.Expr):
+        raise AssertionError(f"the fixture ends with {ast.unparse(statement)}, not an expression")
+    return statement.value
 
 
 class ImportReaderFixtures(GitTestCase):
@@ -239,6 +249,35 @@ class CallableResolverFixtures(GitTestCase):
         call = next(node for node in ast.walk(resolver.tree) if isinstance(node, ast.Call))
         self.assertEqual("open", resolver.name(call.func))
         self.assertEqual([], resolver.problems("fixture.py"))
+
+    def test_an_augmented_assignment_rebinds_a_name_unless_it_updates_in_place(self) -> None:
+        source = "import os\nenv = os.environ\nenv |= {}\nenv\n"
+        for in_place, expected in ((False, ""), (True, "os.environ")):
+            with self.subTest(in_place_updates=in_place):
+                tree = ast.parse(source)
+                self.assertEqual(expected, CallableResolver(tree, in_place).name(last_expression(tree)))
+        # A name bound twice stays unresolved however an augmented assignment is read.
+        rebound = ast.parse("import os\nenv = os.environ\nenv = {}\nenv |= {}\nenv\n")
+        self.assertEqual("", CallableResolver(rebound, in_place_updates=True).name(last_expression(rebound)))
+
+    def test_a_module_looked_up_by_its_name_is_read_through_the_imports(self) -> None:
+        cases = {
+            "import importlib\nimportlib.import_module('a.b')": "a.b",
+            "from importlib import import_module as load\nload(name='a.b')": "a.b",
+            "__import__('a.b')": "a",
+            "__import__('a.b', fromlist=['c'])": "a.b",
+            "import sys\nsys.modules['a.b']": "a.b",
+            "import importlib\nmodule = importlib.import_module('a')\nmodule": "a",
+            "import importlib\nimportlib.import_module(name)": COMPUTED_NAME,
+            "import sys\nsys.modules[name]": COMPUTED_NAME,
+            "import importlib\nmodule = importlib.import_module('a')\nmodule = None\nmodule": "",
+            "modules = {}\nmodules['a']": "",
+            "load('a')": "",
+        }
+        for source, expected in cases.items():
+            with self.subTest(source=source):
+                tree = ast.parse(source)
+                self.assertEqual(expected, module_lookup(last_expression(tree), CallableResolver(tree)))
 
     def test_dynamic_callable_construction_is_not_a_simple_assignment_alias(self) -> None:
         resolver = CallableResolver(ast.parse("callback = library().callback\ncallback()\n"))

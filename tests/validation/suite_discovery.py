@@ -20,6 +20,7 @@ from shell_targets import run_git_bash, shell_quote
 from skill_scripts import STANDARD_STREAMS, command_reader
 from toolchain import find_powershell
 from validation_support import (
+    COMPUTED_NAME,
     PYTHON_ENTRY_POINT,
     REPOSITORY_ROOT,
     SKILL_GUIDE,
@@ -33,6 +34,7 @@ from validation_support import (
     is_main_guard,
     is_test_script,
     markdown_section,
+    module_lookup,
     module_statements,
     name_values,
     parse_python,
@@ -646,12 +648,21 @@ SHARED_STATE_CALLS = frozenset(
         "os.unsetenv",
         "os.chdir",
         "os.fchdir",
+        # Points a standard stream's file descriptor at another file.
+        "os.dup2",
     }
 )
 ENVIRONMENT_CHANGES = frozenset(
     {"update", "pop", "popitem", "clear", "setdefault", "__setitem__", "__delitem__", "__ior__"}
 )
-PATCHED_TARGETS = frozenset({*STANDARD_STREAMS, "os.environ"})
+# The process environment as text and as bytes, each a view of the one environment a job starts from.
+ENVIRONMENTS = frozenset({"os.environ", "os.environb"})
+ENVIRONMENT_METHODS = frozenset(
+    f"{environment}.{method}" for environment in ENVIRONMENTS for method in ENVIRONMENT_CHANGES
+)
+PATCHED_TARGETS = frozenset({*STANDARD_STREAMS, *ENVIRONMENTS})
+# The calls that look an attribute up by its name, as getattr(os, "environ") looks up os.environ.
+ATTRIBUTE_LOOKUPS = frozenset({"getattr", "builtins.getattr"})
 MOCK_PATCHES = ("unittest.mock.patch", "mock.patch")
 PATCH_CALLS = frozenset(MOCK_PATCHES)
 PATCH_DICT_CALLS = frozenset(f"{patch}.dict" for patch in MOCK_PATCHES)
@@ -666,15 +677,42 @@ def _constant(node: ast.expr | None) -> str | None:
 
 
 def _name(node: ast.expr | None, resolver: CallableResolver) -> str:
-    """The dotted name an expression stands for through the module's imports and the names it binds to one by a simple
+    """The dotted name an expression stands for through the module's imports, the names it binds to one by a simple
     assignment, such as os.environ for `environment` after `environment = os.environ`, or for an assignment
-    expression `(environment := os.environ)`; "" when it stands for none."""
+    expression `(environment := os.environ)`, and what it looks up by a literal name, such as os.environ for
+    getattr(os, "environ") or for sys.modules["os"].environ. A part a lookup computes stands for COMPUTED_NAME, as
+    getattr(os, name) stands for os.?; "" when it stands for none."""
     if isinstance(node, ast.NamedExpr):
         return _name(node.value, resolver)
     if isinstance(node, ast.Attribute):
         base = _name(node.value, resolver)
         return f"{base}.{node.attr}" if base else ""
-    return resolver.name(node) if isinstance(node, ast.Name) else ""
+    if isinstance(node, ast.Name):
+        return module_lookup(node, resolver) or resolver.name(node)
+    if isinstance(node, ast.Call) and resolver.name(node.func) in ATTRIBUTE_LOOKUPS and len(node.args) > 1:
+        owner = _name(node.args[0], resolver)
+        return f"{owner}.{_constant(node.args[1]) or COMPUTED_NAME}" if owner else ""
+    return module_lookup(node, resolver) if node is not None else ""
+
+
+def _computed(name: str) -> bool:
+    return COMPUTED_NAME in name.split(".")
+
+
+def _reaches(name: str, targets: frozenset[str]) -> bool:
+    """Whether a dotted name is one of targets, or may be one where a lookup computes a part of it, which stands for
+    any one or more parts."""
+    if not _computed(name):
+        return name in targets
+    pattern = r"\.".join(r"[^.]+(?:\.[^.]+)*" if part == COMPUTED_NAME else re.escape(part) for part in name.split("."))
+    return any(re.fullmatch(pattern, target) for target in targets)
+
+
+def _through_lookup(node: ast.AST) -> str:
+    return (
+        "may change a standard stream, os.environ, or the working directory through "
+        f"`{ast.unparse(node)}`, a lookup by a computed name"
+    )
 
 
 def _stored(node: ast.expr) -> list[ast.expr]:
@@ -684,17 +722,21 @@ def _stored(node: ast.expr) -> list[ast.expr]:
     return _stored(node.value) if isinstance(node, ast.Starred) else [node]
 
 
-def _changed_target(node: ast.expr, resolver: CallableResolver, imports: dict[str, str] | None) -> bool:
-    """Whether an assignment or deletion target is a standard stream, os.environ, or an entry of os.environ.
+def _changed_target(node: ast.expr, resolver: CallableResolver, augmented: bool) -> str:
+    """The standard stream or environment an assignment or deletion target changes, itself or by an entry, or ""
+    when it changes none.
 
     A name an assignment or deletion binds changes only the name, never what it stood for, so a bare name counts only
-    for an augmented assignment, given its imports, which changes os.environ in place through `environ |= ...`.
+    for an augmented assignment, which changes os.environ in place through `environ |= ...` and leaves the name bound
+    to it, as the resolver given in_place_updates reads it.
     """
     if isinstance(node, ast.Subscript):
-        return _name(node.value, resolver) == "os.environ"
-    if isinstance(node, ast.Name):
-        return imports is not None and qualified_name(node, imports) in PATCHED_TARGETS
-    return _name(node, resolver) in PATCHED_TARGETS
+        name = _name(node.value, resolver)
+        return name if _reaches(name, ENVIRONMENTS) else ""
+    if isinstance(node, ast.Name) and not augmented:
+        return ""
+    name = _name(node, resolver)
+    return name if _reaches(name, PATCHED_TARGETS) else ""
 
 
 def _replaced_attributes(call: ast.Call) -> list[str]:
@@ -709,7 +751,8 @@ def _replaced_attributes(call: ast.Call) -> list[str]:
 def _patched(call: ast.Call, called: str, resolver: CallableResolver) -> list[str]:
     """The dotted names a patch, patch.dict, patch.object, patch.multiple, or setattr call replaces, each target and
     attribute read by position or by keyword. A patch target is a string import path; a patch.dict or patch.multiple
-    target is a string or an object; a patch.object or setattr target is an object."""
+    target is a string or an object; a patch.object or setattr target is an object, and its attribute given by
+    anything but a literal is COMPUTED_NAME."""
     if called in PATCH_CALLS:
         return [_constant(call_argument(call, 0, "target")) or ""]
     if called in PATCH_DICT_CALLS:
@@ -717,7 +760,8 @@ def _patched(call: ast.Call, called: str, resolver: CallableResolver) -> list[st
         return [_constant(dictionary) or _name(dictionary, resolver)]
     if called in PATCH_OBJECT_CALLS:
         owner = _name(call_argument(call, 0, "target"), resolver)
-        attribute = _constant(call_argument(call, 1, "attribute"))
+        given = call_argument(call, 1, "attribute")
+        attribute = "" if given is None else _constant(given) or COMPUTED_NAME
         return [f"{owner}.{attribute}"] if owner and attribute else []
     if called in PATCH_MULTIPLE_CALLS:
         target = call_argument(call, 0, "target")
@@ -726,38 +770,42 @@ def _patched(call: ast.Call, called: str, resolver: CallableResolver) -> list[st
     return []
 
 
-def _shares_state(node: ast.AST, resolver: CallableResolver, imports: dict[str, str]) -> str:
+def _shares_state(node: ast.AST, resolver: CallableResolver) -> str:
     """What a node changes of the state the pool reads, or an empty string."""
     if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Delete)):
         targets = node.targets if isinstance(node, (ast.Assign, ast.Delete)) else [node.target]
-        augmented = imports if isinstance(node, ast.AugAssign) else None
+        augmented = isinstance(node, ast.AugAssign)
         changed = [
-            ast.unparse(stored)
+            (stored, name)
             for target in targets
             for stored in _stored(target)
-            if _changed_target(stored, resolver, augmented)
+            if (name := _changed_target(stored, resolver, augmented))
         ]
-        return f"changes {changed[0]}" if changed else ""
+        if not changed:
+            return ""
+        stored, name = changed[0]
+        return _through_lookup(stored) if _computed(name) else f"changes {ast.unparse(stored)}"
     if not isinstance(node, ast.Call):
         return ""
     called = _name(node.func, resolver)
-    owner, _, method = called.rpartition(".")
-    if called in SHARED_STATE_CALLS or (owner == "os.environ" and method in ENVIRONMENT_CHANGES):
-        return f"calls {called}"
-    patched = [name for name in _patched(node, called, resolver) if name in PATCHED_TARGETS]
-    return f"patches {patched[0]}" if patched else ""
+    if _reaches(called, SHARED_STATE_CALLS | ENVIRONMENT_METHODS):
+        return _through_lookup(node.func) if _computed(called) else f"calls {called}"
+    patched = [name for name in _patched(node, called, resolver) if _reaches(name, PATCHED_TARGETS)]
+    if not patched:
+        return ""
+    return _through_lookup(node) if _computed(patched[0]) else f"patches {patched[0]}"
 
 
 def shared_state_lines(tree: ast.Module) -> list[tuple[int, str]]:
     """Each line on which a module swaps a standard stream or changes os.environ or the working directory, and how,
-    resolved through its imports and the names it binds to one by a simple assignment, as CallableResolver reads
-    them."""
-    resolver = CallableResolver(tree)
-    imports = import_aliases(tree)
+    resolved through its imports, the names it binds to one by a simple assignment, as CallableResolver reads them,
+    and what it looks up by name. A lookup by a computed name that may reach one is reported, since the policy
+    cannot settle what it changes."""
+    resolver = CallableResolver(tree, in_place_updates=True)
     found = {
         (node.lineno, change)
         for node in ast.walk(tree)
-        if isinstance(node, (ast.stmt, ast.expr)) and (change := _shares_state(node, resolver, imports))
+        if isinstance(node, (ast.stmt, ast.expr)) and (change := _shares_state(node, resolver))
     }
     return sorted(found)
 
