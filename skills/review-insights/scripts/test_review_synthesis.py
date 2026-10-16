@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+import shlex
 import shutil
 import sys
 import tempfile
@@ -314,26 +315,34 @@ class RecordTests(SynthesisFixture):
                 "CHANGE REC-003 Add: every scheduling rule names the timezone it is evaluated in.",
                 "RATIONALE REC-003 Two findings and a missed-finding flag.",
                 "EXAMPLE REC-003 owner/repo#7 v1 F001",
+                f'DECIDE REC-003 --synthesized "{TITLE}" --flags "{self.unlinked}"',
                 "SYNTHESIZED_COUNT 1",
             ],
             out.splitlines(),
         )
+        printed = shlex.split(out.splitlines()[-2].removeprefix("DECIDE "))
         self.assertFailed(self.synthesize(json_path, result_path), "already has a recorded synthesis")
-        code, out, _ = self.run_main(
-            "decide",
-            "--report",
-            str(json_path),
-            "REC-003",
-            "--synthesized",
-            TITLE,
-            "--flags",
-            self.unlinked,
-            "accepted",
-        )
+        code, out, _ = self.run_main("decide", "--report", str(json_path), *printed, "accepted")
         self.assertEqual((0, [f"FLAG_RESOLVED {self.unlinked}", "DECIDED REC-003 accepted"]), (code, out.splitlines()))
         status = {flag["id"]: flag["status"] for flag in load_store(self.flags)["flags"]}
         self.assertEqual("resolved", status[self.unlinked])
         self.assertEqual("open", status[self.general])
+
+    def test_a_title_that_begins_with_a_dash_is_decided_from_its_printed_arguments(self) -> None:
+        json_path, _ = self.run_report()
+        title = "--enforce the timezone rule"
+        result = self.valid_result(json_path)
+        result["recommendations"][0]["title"] = title
+        for entry in result["categories"]:
+            entry["addressed_by"] = [title]
+        code, out, err = self.synthesize(json_path, self.write_result(json_path, result))
+        self.assertEqual((0, ""), (code, err))
+        printed = [line.removeprefix("DECIDE ") for line in out.splitlines() if line.startswith("DECIDE ")]
+        self.assertEqual([f'REC-003 --synthesized "{title}" --flags "{self.unlinked}"'], printed)
+        code, out, err = self.run_main("decide", "--report", str(json_path), *shlex.split(printed[0]), "rejected")
+        self.assertEqual((0, ["DECIDED REC-003 rejected"]), (code, out.splitlines()), err)
+        decided = [item for item in ri.load_report(json_path)["recommendations"] if item["id"] == "REC-003"]
+        self.assertEqual("rejected", decided[0]["decision"])
 
     def test_a_decision_must_name_the_title_the_user_was_shown(self) -> None:
         json_path, _ = self.run_report()
@@ -601,6 +610,7 @@ class RecordTests(SynthesisFixture):
                 "ASSESSMENT REC-002 What the Style findings show.",
                 "ADDRESSED_BY REC-002 REC-003",
                 "FINDING REC-002 owner/repo#7 v1 F002 Valid; acted on.",
+                'DECIDE REC-002 --category "Style" --flags "RF-000001"',
             ],
             [line for line in lines if " REC-002 " in line and not line.startswith("REVIEWER ")],
         )

@@ -1,6 +1,7 @@
 """Create reproducible insights from validated structured review records, and record decisions on them.
 
-    scope       name the configured repository the working directory is in, and the default repository set
+    scope       name the configured repository the working directory is in, and the default repository set, each
+                with the report arguments that choose it
     report      analyze the configured archive for a date range and repository scope; write insights.json and .md,
                 and the synthesis input, context, and prompt
     synthesize  check or record an analyst agent's synthesis result in its report
@@ -175,14 +176,16 @@ def current_repository(config: dict[str, Any], services: Services) -> str | None
 
 
 def working_scope(config_path: Path | None, services: Services) -> list[str]:
-    """`scope`: the repository the working directory suggests, and the set a report uses when none is named."""
+    """`scope`: the repository the working directory suggests, and the set a report uses when none is named, each
+    followed by a `SCOPE_ARGUMENTS` line with the `report` arguments that choose it. A repository identity and a set
+    name hold no character a shell expands, so each passes as printed."""
     config = load_config(config_path)
     name = selected_repository_set(config, repository_set=None, operation="review-insights")
     members = resolve_repositories(config, explicit=None, repository_set=None, operation="review-insights")
     current = current_repository(config, services)
-    default = f"DEFAULT_SET {name} {','.join(members)}"
+    default = [f"DEFAULT_SET {name} {','.join(members)}", f'SCOPE_ARGUMENTS default --repository-set "{name}"']
     if current is None:
-        return ["NO_CURRENT_REPOSITORY", default]
+        return ["NO_CURRENT_REPOSITORY", *default]
     # A set of just this repository keeps its reports, and their decisions, where that set's reports already are;
     # an explicit repository list is summarized apart from every set.
     alone = sorted(
@@ -190,7 +193,12 @@ def working_scope(config_path: Path | None, services: Services) -> list[str]:
         for set_name, repositories in config["repository_sets"].items()
         if [item.lower() for item in repositories] == [current.lower()]
     )
-    return [f"CURRENT_REPOSITORY {current} set={alone[0][1] if alone else 'none'}", default]
+    chosen = f'--repository-set "{alone[0][1]}"' if alone else f'--repository "{current}"'
+    return [
+        f"CURRENT_REPOSITORY {current} set={alone[0][1] if alone else 'none'}",
+        f"SCOPE_ARGUMENTS current {chosen}",
+        *default,
+    ]
 
 
 def parse_date(value: str) -> date:
@@ -1128,6 +1136,27 @@ def _as_printed(key: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(synthesis_stage.screened(part) for part in key)
 
 
+def _quoted(value: str) -> str:
+    return f'"{synthesis_stage.screened(value)}"'
+
+
+def decide_arguments(item: dict[str, Any]) -> str:
+    """The `decide` arguments, before the decision, that name one recommendation as its lines showed it: its ID, its
+    subject (a category, an analyzer's coverage, tool, and rule, or a synthesized title), and its linked flags.
+
+    Each value is double-quoted and screened as every line prints it: on one line, with `?` for each character a shell
+    would expand in double quotes, so the arguments pass through Bash and PowerShell unchanged, and `decide` matches a
+    subject named as printed (see _as_printed). A subject that begins with `-` is bound to its option (see
+    bound_values), so it is read as the value it is."""
+    if item["kind"] == "category":
+        subject = f"--category {_quoted(item['category'])}"
+    elif item["kind"] == "analyzer":
+        subject = "--analyzer " + " ".join(_quoted(item[part]) for part in ("coverage", "tool", "rule"))
+    else:
+        subject = f"--synthesized {_quoted(item['title'])}"
+    return f"{item['id']} {subject} --flags {_quoted(','.join(item['linked_flags']) or 'none')}"
+
+
 def _shown_subject(
     category: str | None, analyzer: tuple[str, str, str] | None, synthesized: str | None
 ) -> tuple[str, str, tuple[str, ...]]:
@@ -1171,6 +1200,7 @@ def _print_synthesized(item: dict[str, Any]) -> None:
     print(f"RATIONALE {item['id']} {flat_text(item['rationale'])}")
     for ref in item["evidence"][:EXAMPLES_PRINTED]:
         print(f"EXAMPLE {item['id']} {flat_text(ref)}")
+    print(f"DECIDE {decide_arguments(item)}")
 
 
 def custom_candidates(report: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1178,7 +1208,8 @@ def custom_candidates(report: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _print_custom_candidates(report: dict[str, Any]) -> None:
-    """One summary line for every custom-candidate rule, decided together, then the synthesis's patterns of them."""
+    """One summary line for every custom-candidate rule, decided together, then the synthesis's patterns of them, and
+    last the `decide-custom` arguments, before the decision, that name the flags the summary line showed."""
     items = custom_candidates(report)
     if not items:
         return
@@ -1190,6 +1221,7 @@ def _print_custom_candidates(report: dict[str, Any]) -> None:
     )
     for fact in synthesis_stage.custom_pattern_facts(report):
         print(fact)
+    print(f'DECIDE_CUSTOM --flags "{flags}"')
 
 
 def _print_report(report: dict[str, Any]) -> None:
@@ -1222,6 +1254,7 @@ def _print_report(report: dict[str, Any]) -> None:
             )
         for entry in item.get("evidence", [])[:EXAMPLES_PRINTED]:
             print(f"EXAMPLE {item['id']} {_example(entry)}")
+        print(f"DECIDE {decide_arguments(item)}")
     _print_custom_candidates(report)
 
 
