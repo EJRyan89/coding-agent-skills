@@ -21,9 +21,6 @@ from review_state import utc_date
 from typed_fields import FieldError, FieldReader
 
 PULL_PAGE_SIZE = 100  # the most GitHub's REST API returns per page
-# The entries GitHub's contents API answers as one object that is not a file, in words: a symbolic link whose target
-# is not a file in the repository, and a submodule.
-NOT_FILE_ENTRIES = {"symlink": "symbolic link", "submodule": "submodule"}
 
 
 class GitHubFieldError(FieldError, GitHubError):
@@ -37,14 +34,6 @@ class GitHubFieldError(FieldError, GitHubError):
         self.kind = self.kind_of_error
         self.retryable = False
         self.returncode = None
-
-
-class NotOneFile(GitHubError):
-    """A path GitHub answers as a symbolic link or a submodule rather than one file; `entry` names which, in words."""
-
-    def __init__(self, path: str, entry: str) -> None:
-        super().__init__(f"Contents response is not one file: {path} is a {entry}", kind="not_file")
-        self.entry = entry
 
 
 class GitHubInputError(GitHubFieldError):
@@ -210,16 +199,13 @@ class GitHubClient:
 
     def get_file_blob(self, repository: str, commit: str, path: str, *, maximum: int) -> tuple[str, bytes | None]:
         """The blob id of the file at `path` in `commit`, and its bytes, or None for a file over `maximum` bytes, whose
-        content is never fetched. NotOneFile names a path GitHub answers as a symbolic link or a submodule."""
+        content is never fetched."""
         repository = validate_repository_identity(repository)
         ARGUMENTS.hex_digest(commit, "commit", 40, 64)
         entry = READ.json_object(
             self.api_json(f"repos/{repository}/contents/{quote(path, safe='/')}?ref={commit}"), "contents"
         )
-        entry_type = entry.get("type")
-        if entry_type != "file":
-            if isinstance(entry_type, str) and entry_type in NOT_FILE_ENTRIES:
-                raise NotOneFile(path, NOT_FILE_ENTRIES[entry_type])
+        if entry.get("type") != "file":
             raise GitHubError("Contents response is not one file", kind="malformed")
         sha = READ.hex_digest(entry.get("sha"), "contents.sha", 40, 64)
         if READ.integer(entry.get("size"), "contents.size", minimum=0) > maximum:
