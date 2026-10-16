@@ -373,7 +373,8 @@ class SharedReaderFixtures(GitTestCase):
 
 def _call(source: str) -> ast.Call:
     expression = ast.parse(source, mode="eval").body
-    assert isinstance(expression, ast.Call)
+    if not isinstance(expression, ast.Call):
+        raise TypeError(f"{source!r} is not a call")
     return expression
 
 
@@ -422,9 +423,7 @@ class ScopeAndGuardFixtures(GitTestCase):
             "    def guarded():\n"
             "        return n()\n"
         )
-        calls = {
-            ast.unparse(node.func): scope for node, scope in scoped_nodes(tree.body) if isinstance(node, ast.Call)
-        }
+        calls = {ast.unparse(node.func): scope for node, scope in scoped_nodes(tree.body) if isinstance(node, ast.Call)}
         self.assertEqual(
             {
                 "f": "TABLE",
