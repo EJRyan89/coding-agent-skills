@@ -37,9 +37,8 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
 
-from bounded_process import without_repository_variables
 from console import run_main
-from executable_locator import located_command
+from git_client import GitClient, GitResult
 
 from deployer import platform_support
 from tools import bash_syntax
@@ -229,23 +228,23 @@ class UsageError(Exception):
     pass
 
 
-def git(cwd: Path, *arguments: str, environment: Mapping[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    """Runs git on the checkout at cwd, without git's repository-selecting variables, which would point it at another
-    repository, index, or object store than the checkout's own."""
-    source = os.environ if environment is None else environment
-    # Found on this process's PATH, as Windows looks a program up, rather than on the PATH the command is given, as
-    # POSIX would: the guard reads that PATH to judge a command, and never to choose which git it runs itself. A git
-    # the locator cannot find raises FileNotFoundError, as starting a missing program does, rather than leaving the
-    # bare name to Windows, which looks it up in the working directory first.
-    return subprocess.run(
-        located_command(["git", "-C", str(cwd), *arguments]),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        env=without_repository_variables(source),
-        check=False,
-    )
+# The one git this tool runs: skill-core's client, which starts git at the path the locator finds on this process's
+# PATH, never by its bare name, which Windows looks up in the working directory first, and never on the PATH a judged
+# command is given, which the guard only reads; without git's repository-selecting variables, which would point it at
+# another repository, index, or object store than the checkout's own; with no prompt; and within a time limit.
+CLIENT = GitClient()
+# Bounds each git call the guard makes, so a git that hangs fails the call well inside the hook's own 30-second timeout
+# in .claude/settings.json. new and list run under the client's own limit, since adding a worktree checks out a tree.
+GUARD_GIT_TIMEOUT_SECONDS = 10.0
+
+
+def git(cwd: Path, *arguments: str, timeout: float | None = GUARD_GIT_TIMEOUT_SECONDS) -> GitResult:
+    """Runs git on the checkout at cwd through CLIENT, within timeout seconds, or the client's own limit for None.
+
+    Raises GitError when git is missing, cannot start, or does not finish in time; the guard then skips its decision,
+    as it does for any error, and new and list end with a FAILED line.
+    """
+    return CLIENT.run(arguments, directory=cwd, timeout=timeout)
 
 
 def same_path(left: Path, right: Path) -> bool:
@@ -1552,10 +1551,12 @@ def powershell_events(command: str, reading: Reading, depth: int) -> list[dict[s
     return events
 
 
-def mentions_alias(command: str, directories: Iterable[Path], environment: Mapping[str, str]) -> bool:
-    """Whether the text names an alias git defines in any of these checkouts; true when one cannot be listed."""
+def mentions_alias(command: str, directories: Iterable[Path]) -> bool:
+    """Whether the text names an alias git defines in any of these checkouts; true when one cannot be listed.
+
+    git lists them in the environment the hook was given, which is the one the command runs in."""
     for directory in directories:
-        result = git(directory, "config", "--name-only", "--get-regexp", r"^alias\.", environment=environment)
+        result = git(directory, "config", "--name-only", "--get-regexp", r"^alias\.")
         if result.returncode == 1:
             continue
         if result.returncode != 0:
@@ -1579,7 +1580,7 @@ def may_refuse(command: str, cwd: Path | None, reading: Reading) -> bool:
         return True
     if cwd is None or checkout_of(cwd) is None:
         return True
-    return mentions_alias(command, [cwd, *sorted(reading.context_hubs)], reading.environment)
+    return mentions_alias(command, [cwd, *sorted(reading.context_hubs)])
 
 
 @dataclass
@@ -1915,7 +1916,7 @@ def new(kind: str, name: str) -> int:
         raise UsageError(f"{platform_support.normalize(path)} already exists.")
     if git(hub, "check-ignore", "-q", "--no-index", str(path)).returncode != 0:
         raise UsageError(f"{WORKTREES.as_posix()}/ must be ignored in the hub's .gitignore before it holds worktrees.")
-    result = git(hub, "worktree", "add", "--no-track", "-b", branch, str(path), MAIN)
+    result = git(hub, "worktree", "add", "--no-track", "-b", branch, str(path), MAIN, timeout=None)
     if result.returncode != 0:
         raise UsageError(result.stderr.strip() or "git worktree add failed.")
     print(f"Created {platform_support.normalize(path)} on {branch} from {MAIN}.")
@@ -1935,13 +1936,28 @@ class Row:
 
 def worktrees(hub: Path) -> list[dict[str, str]]:
     entries: list[dict[str, str]] = []
-    for line in git(hub, "worktree", "list", "--porcelain").stdout.splitlines():
-        key, _, value = line.partition(" ")
+    # The NUL-separated listing, so a path that holds a line break is read whole.
+    for record in git(hub, "worktree", "list", "--porcelain", "-z", timeout=None).stdout.split("\0"):
+        key, _, value = record.partition(" ")
         if key == "worktree":
             entries.append({"worktree": value})
         elif entries and key:
             entries[-1][key] = value
     return entries
+
+
+def changed_paths(path: Path) -> int:
+    """The paths with changes in the checkout at path, untracked files included whatever status.showUntrackedFiles
+    says, from the NUL-separated listing, where a rename or a copy is one path followed by the one it came from."""
+    listed = git(path, "status", "--porcelain", "-z", "--untracked-files=normal", timeout=None).stdout
+    entries = iter(listed.split("\0"))
+    count = 0
+    for entry in entries:
+        if entry:
+            count += 1
+            if "R" in entry[:2] or "C" in entry[:2]:
+                next(entries, None)
+    return count
 
 
 def row(hub: Path, entry: dict[str, str]) -> Row:
@@ -1950,9 +1966,11 @@ def row(hub: Path, entry: dict[str, str]) -> Row:
     shown = platform_support.normalize(path)
     if not path.is_dir():
         return Row(branch, "missing", "-", "-", "-", shown)
-    counts = git(hub, "rev-list", "--left-right", "--count", f"{MAIN}...{entry.get('HEAD', 'HEAD')}").stdout.split()
+    counts = git(
+        hub, "rev-list", "--left-right", "--count", f"{MAIN}...{entry.get('HEAD', 'HEAD')}", timeout=None
+    ).stdout.split()
     behind, ahead = counts if len(counts) == 2 else ("-", "-")
-    dirty = len(git(path, "status", "--porcelain").stdout.splitlines())
+    dirty = changed_paths(path)
     if same_path(path, hub):
         problems = [*(["off main"] if branch != MAIN else []), *(["dirty"] if dirty else [])]
         state = " · ".join(["hub", *problems])

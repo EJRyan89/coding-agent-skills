@@ -189,17 +189,21 @@ if ! OUTPUT=$(git -C "$CLONE" fetch --quiet --tags origin "+$MAIN:$ORIGIN_MAIN" 
   exit 1
 fi
 
-# The highest release tag reachable from a commit, or nothing when there is none; when Git refuses the lookup, a FAILED
-# line naming the second argument, and status 1. A release tag is vMAJOR.MINOR.PATCH with an optional pre-release
-# suffix, which sorts before its release; any other tag is ignored. Only refs/tags/ is read.
+# The highest release tag reachable from a commit, or nothing when there is none; when it cannot be read, a FAILED line
+# naming the second argument, and status 1. What a release tag is, and their order, is skill-core's release_tags.py in
+# the clone, the one definition the release notes and the upgrade-notes check read too, run with the Python that runs
+# the clone's deployer: vMAJOR.MINOR.PATCH and nothing after it, so a pre-release such as v1.0.0-rc.1 and every other
+# tag are not releases.
+RELEASE_TAGS="$CLONE/skills/skill-core/scripts/release_tags.py"
 release_of() {
-  local tags
-  if ! tags=$(git -C "$CLONE" -c versionsort.suffix=- for-each-ref --merged "$1" --sort=-version:refname \
-    --format='%(refname:strip=2)' 'refs/tags/v*' 2>&1); then
-    echo "FAILED cannot read the release tags reaching $2: $(one_line "$tags")"
+  local answer
+  answer=$("$PYTHON" "$RELEASE_TAGS" "$CLONE" "$1" </dev/null 2>&1 | tr -d '\r')
+  if [[ "$answer" =~ ^RELEASE\ (v[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+  elif [ "$answer" != NO_RELEASE ]; then
+    echo "FAILED cannot read the release tags reaching $2: $(one_line "${answer#FAILED }")"
     return 1
   fi
-  printf '%s\n' "$tags" | tr -d '\r' | grep -E -m 1 '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' || true
 }
 # A version component is compared as a number without its leading zeros, of at most MAX_DIGITS digits, so Bash's
 # 64-bit integers hold it exactly.
