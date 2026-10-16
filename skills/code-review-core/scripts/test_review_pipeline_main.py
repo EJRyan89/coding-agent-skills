@@ -6,7 +6,10 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
+import shutil
 import sys
+import tempfile
 import threading
 import unittest
 from collections.abc import Callable
@@ -35,6 +38,8 @@ from review_state import StateError
 Call = tuple[tuple[Any, ...], dict[str, Any]]
 
 SERVICES_TYPE = rp.Services  # setUp replaces rp.Services, so the class is kept here
+UNFINALIZED_SELECTOR = rp.unfinalized_selector  # and these functions, which some tests run unstubbed
+WORKED_BY_SUBAGENTS = rp.worked_by_subagents
 SERVICES = SERVICES_TYPE()
 CONFIG = "review config.json"
 EXPECTED = (
@@ -67,6 +72,7 @@ STUBBED = (
     "workflow_script",
     "wait_for_reviewers",
     "unfinalized_selector",
+    "worked_by_subagents",
     "dispatch_copilot",
     "run_host",
     "wait_for_host",
@@ -321,6 +327,10 @@ def ready(selector: str, run: str, runtime: str = "claude-code", dispatch: str |
     }
 
 
+def run_lines(out: str) -> list[str]:
+    return [line for line in out.splitlines() if line.startswith("RUN ")]
+
+
 def prepare_call(
     selector: str,
     *,
@@ -347,7 +357,43 @@ def prepare_call(
     )
 
 
-class PrepareTests(MainCase):
+AT_LEAST_ONE = "prepare takes at least one --pull, --re-review, --canary selector, --batch, or --runs"
+BATCH_ALONE = "--batch takes no other selector, no --scope, and no --canary"
+RUNS_ALONE = "--runs takes no other option; the run list holds them"
+
+
+class RunListCase(MainCase):
+    """A case whose prepare writes its run list, or whose commands read one, in a temporary directory of its own."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.directory = Path(tempfile.mkdtemp(prefix="review-pipeline-main-"))
+        self.addCleanup(shutil.rmtree, self.directory, ignore_errors=True)
+        self.run_list = self.directory / "runs list.json"
+        self.stub("working_path", self.run_list)
+
+    def runs_line(self, pending: int = 0) -> str:
+        return f"RUNS {self.run_list} pending={pending}\n"
+
+    def listed(self) -> dict[str, Any]:
+        return dict(json.loads(self.run_list.read_text(encoding="utf-8")))
+
+    def write_list(self, runs: list[tuple[str, str]], pending: list[dict[str, str]] | None = None) -> None:
+        """A run list naming each (run, status) pair as a run of example/app#<its place in the list>."""
+        options: dict[str, Any] = dict.fromkeys(rp.RUN_LIST_OPTIONS)
+        options.update(inline=False, force=False, canary=False)
+        value = rp.new_run_list(pending or [], options)
+        value["runs"] = [
+            {"run": run, "selector": f"example/app#{index}", "status": status}
+            for index, (run, status) in enumerate(runs, 1)
+        ]
+        self.run_list.write_text(json.dumps(value), encoding="utf-8")
+
+    def statuses(self) -> list[str]:
+        return [entry["status"] for entry in self.listed()["runs"]]
+
+
+class PrepareTests(RunListCase):
     def test_ready_skip_and_copilot_runs(self) -> None:
         prepare = self.stub(
             "prepare",
@@ -390,7 +436,7 @@ class PrepareTests(MainCase):
                 "RUN example/lib#7 run seven\n"
                 "NOTE example/lib#7 first note\n"
                 "NOTE example/lib#7 second note\n"
-                "HOST copilot-cli run seven\n",
+                "HOST copilot-cli run seven\n" + self.runs_line(),
                 "",
             ),
             result,
@@ -419,7 +465,7 @@ class PrepareTests(MainCase):
                 "RUN example/app#3 run three\n"
                 "NOTE example/app#3 first note\n"
                 "NOTE example/app#3 second note\n"
-                "INLINE run three\n",
+                "INLINE run three\n" + self.runs_line(),
                 "",
             ),
             result,
@@ -456,7 +502,7 @@ class PrepareTests(MainCase):
                         "ROLE generic-review generic.md\n"
                         "MODEL example/app#3 generic-review opus\n"
                         "ROLE security security.md\n"
-                        "ROLE style style.md\n",
+                        "ROLE style style.md\n" + self.runs_line(),
                         "",
                     ),
                     result,
@@ -474,7 +520,7 @@ class PrepareTests(MainCase):
     def test_a_failed_fixture_canary_is_one_line_naming_its_directory(self) -> None:
         self.stub("prepare_fixture", effect=raising(FixtureError("pull.json number must be a positive integer")))
         self.assertEqual(
-            (1, "FAILED fixture dir pull.json number must be a positive integer\n", ""),
+            (1, "FAILED fixture dir pull.json number must be a positive integer\n" + self.runs_line(), ""),
             self.run_main("prepare", "--canary", "--fixture", "fixture dir"),
         )
 
@@ -507,7 +553,7 @@ class PrepareTests(MainCase):
                 "FAILED example/app#3 bad config\n"
                 "FAILED example/app#5 None\n"
                 "SKIP example/app#7 draft\n"
-                "FAILED example/app#9 disk gone\n",
+                "FAILED example/app#9 disk gone\n" + self.runs_line(),
                 "",
             ),
             result,
@@ -526,7 +572,7 @@ class PrepareTests(MainCase):
                     ),
                 )
                 self.assertEqual(
-                    (1, "FAILED example/app#3 boom\nSKIP example/app#5 draft\n", ""),
+                    (1, "FAILED example/app#3 boom\nSKIP example/app#5 draft\n" + self.runs_line(), ""),
                     self.run_main("prepare", "--pull", "example/app#3", "--pull", "example/app#5"),
                 )
 
@@ -572,7 +618,7 @@ class PrepareTests(MainCase):
                 "ROLE generic-review generic.md\n"
                 "MODEL example/app#7 generic-review opus\n"
                 "ROLE security security.md\n"
-                "ROLE style style.md\n",
+                "ROLE style style.md\n" + self.runs_line(),
                 "",
             ),
             self.run_main("prepare", "--pull", "example/app#3", "--pull", "example/app#5", "--pull", "example/app#7"),
@@ -588,7 +634,7 @@ class PrepareTests(MainCase):
                 removed.calls.clear()
                 self.stub("mark_dispatched", effect=raising(error_class("boom")))
                 self.assertEqual(
-                    (1, "FAILED example/app#3 boom\n", ""),
+                    (1, "FAILED example/app#3 boom\n" + self.runs_line(), ""),
                     self.run_main("prepare", "--pull", "example/app#3"),
                 )
                 self.assertEqual([((Path("run three"),), {})], removed.calls)
@@ -598,7 +644,7 @@ class PrepareTests(MainCase):
         self.stub("mark_dispatched", effect=raising(PersistenceError("disk full")))
         removed = self.stub("remove_run")
         self.assertEqual(
-            (1, "FAILED fixture dir disk full\n", ""),
+            (1, "FAILED fixture dir disk full\n" + self.runs_line(), ""),
             self.run_main("prepare", "--canary", "--fixture", "fixture dir"),
         )
         self.assertEqual([((Path("run three"),), {})], removed.calls)
@@ -619,38 +665,180 @@ class PrepareTests(MainCase):
             (
                 1,
                 "FAILED not-a-pull Pull selector must be owner/repository#number\n"
-                "FAILED not-a-pull Pull selector must be owner/repository#number\n",
+                "FAILED not-a-pull Pull selector must be owner/repository#number\n" + self.runs_line(),
                 "",
             ),
             self.run_main("prepare", "--pull", "not-a-pull", "--pull", "not-a-pull"),
         )
         self.assertEqual(2, len(prepare.calls))
 
+    def test_more_than_four_pull_requests_are_prepared_four_at_a_time_from_the_run_list(self) -> None:
+        selectors = [f"example/app#{number}" for number in range(1, 7)]
+        prepare = self.stub(
+            "prepare", effect=lambda selector, **_: ready(selector, f"run {selector[-1]}", dispatch="inline")
+        )
+        self.stub("mark_dispatched")
+        arguments = [part for selector in selectors[:5] for part in ("--pull", selector)]
+        code, out, _ = self.run_main(
+            "--config", CONFIG, "prepare", *arguments, "--re-review", selectors[5], "--scope", "full", "--force"
+        )
+        self.assertEqual(0, code)
+        self.assertEqual([f"RUN {selector} run {selector[-1]}" for selector in selectors[:4]], run_lines(out))
+        self.assertTrue(out.endswith(self.runs_line(2)))
+        common: dict[str, Any] = {"force": True, "config_path": Path(CONFIG)}
+        self.assertEqual(
+            [prepare_call(selector, **common) for selector in selectors[:4]],
+            sorted(prepare.calls, key=lambda call: call[0][0]),
+        )
+        listed = self.listed()
+        self.assertEqual(
+            [{"kind": "pull", "target": selectors[4]}, {"kind": "re-review", "target": selectors[5]}],
+            listed["pending"],
+        )
+        self.assertEqual(
+            [{"run": f"run {selector[-1]}", "selector": selector, "status": "published"} for selector in selectors[:4]],
+            listed["runs"],
+        )
+        # The next call takes the run list alone: the options are the first call's, and the list grows.
+        prepare.calls.clear()
+        code, out, _ = self.run_main("prepare", "--runs", str(self.run_list))
+        self.assertEqual(0, code)
+        self.assertEqual([f"RUN {selector} run {selector[-1]}" for selector in selectors[4:]], run_lines(out))
+        self.assertTrue(out.endswith(self.runs_line()))
+        self.assertEqual(
+            [
+                prepare_call(selectors[4], **common),
+                prepare_call(selectors[5], re_review=True, scope="full", **common),
+            ],
+            sorted(prepare.calls, key=lambda call: call[0][0]),
+        )
+        self.assertEqual([], self.listed()["pending"])
+        self.assertEqual(selectors, [entry["selector"] for entry in self.listed()["runs"]])
+        # A list with nothing left to prepare prepares nothing.
+        prepare.calls.clear()
+        self.assertEqual((0, self.runs_line(), ""), self.run_main("prepare", "--runs", str(self.run_list)))
+        self.assertEqual([], prepare.calls)
+
+    def test_the_run_list_drops_a_group_before_preparing_it(self) -> None:
+        seen: list[list[dict[str, str]]] = []
+
+        def prepare(selector: str, **_: Any) -> dict[str, Any]:
+            seen.append(self.listed()["pending"])
+            raise GitHubError("gh down")
+
+        self.stub("prepare", effect=prepare)
+        arguments = [part for number in range(1, 6) for part in ("--pull", f"example/app#{number}")]
+        code, out, _ = self.run_main("prepare", *arguments)
+        self.assertEqual(1, code)
+        self.assertEqual(
+            "".join(f"FAILED example/app#{number} gh down\n" for number in range(1, 5)) + self.runs_line(1), out
+        )
+        # A call stopped mid-group never prepares that group again: the list already moved past it.
+        self.assertEqual([[{"kind": "pull", "target": "example/app#5"}]] * 4, seen)
+        self.assertEqual([], self.listed()["runs"], "a failed pull request publishes no run")
+
+    def test_a_batch_file_is_prepared_in_the_order_enumerate_printed_it(self) -> None:
+        batch = self.directory / "batch.json"
+        value = {"schema_version": 1, **EnumerateTests.BATCH}
+        batch.write_text(json.dumps(value), encoding="utf-8")
+        prepare = self.stub(
+            "prepare", effect=lambda selector, **_: {"status": "skip", "selector": selector, "reason": "x"}
+        )
+        code, out, _ = self.run_main("prepare", "--batch", str(batch), "--force", "--host", "codex")
+        self.assertEqual(
+            (0, "SKIP example/app#3 x\nSKIP example/app#5 x\nSKIP example/lib#7 x\n" + self.runs_line()), (code, out)
+        )
+        self.assertEqual(
+            [
+                prepare_call(selector, force=True, host="codex")
+                for selector in ("example/app#3", "example/app#5", "example/lib#7")
+            ],
+            sorted(prepare.calls, key=lambda call: call[0][0]),
+        )
+
+    def test_an_empty_batch_writes_an_empty_run_list(self) -> None:
+        batch = self.directory / "batch.json"
+        batch.write_text(json.dumps({"schema_version": 1, "repositories": {}}), encoding="utf-8")
+        self.assertEqual((0, self.runs_line(), ""), self.run_main("prepare", "--batch", str(batch)))
+        self.assertEqual(([], []), (self.listed()["pending"], self.listed()["runs"]))
+        self.assertEqual((0, "ALL_FINALIZED\n", ""), self.run_main("unfinalized", "--runs", str(self.run_list)))
+
+    def test_a_batch_file_that_is_not_one_fails_before_any_run_list(self) -> None:
+        batch = self.directory / "batch.json"
+        for value, reason in (
+            ({"schema_version": 2}, f"{batch} is not a review batch file"),
+            ({"schema_version": 1, "repositories": {"example/app": {"eligible": [{"number": "3"}]}}}, "number"),
+        ):
+            with self.subTest(reason=reason):
+                batch.write_text(json.dumps(value), encoding="utf-8")
+                code, out, _ = self.run_main("prepare", "--batch", str(batch))
+                self.assertEqual(1, code)
+                self.assertTrue(out.startswith("FAILED ") and reason in out, out)
+                self.assertFalse(self.run_list.exists())
+
+    def test_canary_selectors_are_canaries_of_those_pull_requests(self) -> None:
+        prepare = self.stub(
+            "prepare", effect=lambda selector, **_: {"status": "skip", "selector": selector, "reason": "x"}
+        )
+        code, _, _ = self.run_main("prepare", "--canary", "example/app#3", "--canary", "example/lib#7")
+        self.assertEqual(0, code)
+        self.assertEqual(
+            [prepare_call("example/app#3", canary=True), prepare_call("example/lib#7", canary=True)],
+            sorted(prepare.calls, key=lambda call: call[0][0]),
+        )
+        self.assertTrue(self.listed()["options"]["canary"])
+
+    def test_several_fixtures_are_prepared_as_one_run_list(self) -> None:
+        directories = [f"fixture {number}" for number in range(1, 6)]
+        prepare = self.stub(
+            "prepare_fixture", effect=lambda directory, **_: ready("example/app#1", f"run of {directory.name}")
+        )
+        self.stub("mark_dispatched")
+        arguments = [part for directory in directories for part in ("--fixture", directory)]
+        code, out, _ = self.run_main("prepare", "--host", "claude-code", "--canary", *arguments)
+        self.assertEqual(0, code)
+        self.assertEqual([f"RUN example/app#1 run of {directory}" for directory in directories[:4]], run_lines(out))
+        self.assertTrue(out.endswith(self.runs_line(1)))
+        expected = {"prior": None, "host": "claude-code", "inline": False, "config_path": None, "services": SERVICES}
+        self.assertEqual(
+            [((Path(directory),), expected) for directory in directories[:4]],
+            sorted(prepare.calls, key=lambda call: str(call[0][0])),
+        )
+        self.assertEqual([{"kind": "fixture", "target": directories[4]}], self.listed()["pending"])
+
+    def test_a_run_list_that_is_not_one_is_refused(self) -> None:
+        cases: list[tuple[Any, str]] = [
+            ({"schema_version": 2}, "is not a review run list"),
+            ([], "run list must be an object"),
+            ({"schema_version": 1, "options": {}, "pending": [], "runs": []}, "run list.options"),
+        ]
+        for value, reason in cases:
+            with self.subTest(reason=reason):
+                self.run_list.write_text(json.dumps(value), encoding="utf-8")
+                code, out, _ = self.run_main("prepare", "--runs", str(self.run_list))
+                self.assertEqual(1, code)
+                self.assertTrue(out.startswith("FAILED ") and reason in out, out)
+                self.assertEqual(value, json.loads(self.run_list.read_text(encoding="utf-8")), "left as it was")
+
+    def test_a_run_list_inside_a_skills_directory_is_refused(self) -> None:
+        self.write_list([])
+        holding = self.stub("skills_directory_holding", Path("skills root"))
+        self.assertEqual(
+            (
+                1,
+                f"FAILED {self.run_list} is inside the skills directory skills root; "
+                "pass the run list prepare printed\n",
+                "",
+            ),
+            self.run_main("prepare", "--runs", str(self.run_list)),
+        )
+        self.assertEqual([((self.run_list,), {})], holding.calls)
+
     def test_usage_errors(self) -> None:
         cases = [
-            ("prepare takes at least one --pull or --re-review", ["prepare"]),
-            ("prepare takes at least one --pull or --re-review", ["prepare", "--canary", "--force", "--scope", "full"]),
-            (
-                "prepare takes at most 4 pull requests",
-                ["prepare", *[part for number in (1, 2, 3, 4, 5) for part in ("--pull", f"example/app#{number}")]],
-            ),
-            (
-                "prepare takes at most 4 pull requests",
-                [
-                    "prepare",
-                    "--canary",
-                    "--pull",
-                    "example/app#1",
-                    "--pull",
-                    "example/app#1",
-                    "--pull",
-                    "example/app#2",
-                    "--re-review",
-                    "example/app#3",
-                    "--re-review",
-                    "example/app#4",
-                ],
-            ),
+            (AT_LEAST_ONE, ["prepare"]),
+            (AT_LEAST_ONE, ["prepare", "--canary", "--force", "--scope", "full"]),
+            (AT_LEAST_ONE, ["prepare", "--canary", "--host", "codex", "--inline"]),
             (
                 "--canary takes only --pull selectors and no --force",
                 ["prepare", "--canary", "--pull", "example/app#1", "--force"],
@@ -659,6 +847,29 @@ class PrepareTests(MainCase):
                 "--canary takes only --pull selectors and no --force",
                 ["prepare", "--canary", "--re-review", "example/app#1"],
             ),
+            (
+                "--canary takes only --pull selectors and no --force",
+                ["prepare", "--canary", "example/app#1", "--force"],
+            ),
+            (
+                "example/app#1 is named more than once",
+                ["prepare", "--canary", "example/app#1", "--pull", "example/app#1"],
+            ),
+            (
+                "example/app#1 is named more than once",
+                ["prepare", "--canary", "example/app#1", "--canary", "example/app#1"],
+            ),
+            (BATCH_ALONE, ["prepare", "--batch", "batch.json", "--pull", "example/app#1"]),
+            (BATCH_ALONE, ["prepare", "--batch", "batch.json", "--re-review", "example/app#1", "--scope", "full"]),
+            (BATCH_ALONE, ["prepare", "--batch", "batch.json", "--canary"]),
+            (BATCH_ALONE, ["prepare", "--batch", "batch.json", "--canary", "example/app#1"]),
+            (BATCH_ALONE, ["prepare", "--batch", "batch.json", "--scope", "full"]),
+            (RUNS_ALONE, ["prepare", "--runs", "runs.json", "--pull", "example/app#1"]),
+            (RUNS_ALONE, ["prepare", "--runs", "runs.json", "--batch", "batch.json"]),
+            (RUNS_ALONE, ["prepare", "--runs", "runs.json", "--host", "codex"]),
+            (RUNS_ALONE, ["prepare", "--runs", "runs.json", "--inline"]),
+            (RUNS_ALONE, ["prepare", "--runs", "runs.json", "--force"]),
+            (RUNS_ALONE, ["prepare", "--runs", "runs.json", "--canary", "--fixture", "fixture"]),
             (
                 "--scope is required with --re-review and taken only with it",
                 ["prepare", "--re-review", "example/app#1"],
@@ -698,6 +909,12 @@ class PrepareTests(MainCase):
             (paired, [*fixture, "--canary", "--re-review"]),
             (paired, [*fixture, "--canary", "--prior", "prior.json"]),
             (paired, [*fixture, "--canary", "--re-review", "--re-review", "--prior", "prior.json"]),
+            (only, [*fixture, "--canary", "example/app#1"]),
+            (only, [*fixture, "--canary", "--batch", "batch.json"]),
+            (
+                "--prior takes one --fixture",
+                [*fixture, "--canary", "--fixture", "other", "--re-review", "--prior", "prior.json"],
+            ),
             (elsewhere, ["prepare", "--canary", "--pull", "example/app#1", "--prior", "prior.json"]),
             (elsewhere, ["prepare", "--re-review", "--scope", "full"]),
         ]
@@ -1017,6 +1234,185 @@ class RunListTests(MainCase):
                 self.assertIs(error, caught.exception)
 
 
+class RunListCommandTests(RunListCase):
+    """The commands that take a run list: which listed runs each works on, and the statuses it records."""
+
+    def test_check_works_on_the_published_runs_and_records_what_it_found(self) -> None:
+        self.write_list(
+            [
+                ("run a", "published"),
+                ("run b", "valid"),
+                ("run c", "failed"),
+                ("run d", "published"),
+                ("run e", "published"),
+                ("run f", "recorded"),
+                ("run g", "published"),
+                ("run h", "published"),
+            ]
+        )
+        valid: dict[str, Any] = {"retry": [], "errors": {}, "failed": {}, "running": {}}
+        stub = self.stub(
+            "check_run",
+            effect=by_first_argument(
+                {
+                    Path("run a"): {"selector": "example/app#1", **valid},
+                    Path("run d"): {
+                        "selector": "example/app#4",
+                        "retry": [],
+                        "errors": {"x": "bad"},
+                        "failed": {"x": "bad"},
+                        "running": {},
+                    },
+                    Path("run e"): {
+                        "selector": "example/app#5",
+                        "retry": [{"id": "x", "prompt_file": "x.md"}],
+                        "errors": {"x": "bad"},
+                        "failed": {},
+                        "running": {},
+                    },
+                    Path("run g"): {
+                        "selector": "example/app#7",
+                        "retry": [],
+                        "errors": {},
+                        "failed": {},
+                        "running": {"x": 4},
+                    },
+                    Path("run h"): rp.PipelineError("run h is not a prepared review run"),
+                }
+            ),
+        )
+        self.assertEqual(
+            (
+                1,
+                "ALL_VALID example/app#1\n"
+                "FAILED example/app#4 x bad\n"
+                "RETRY example/app#5 x x.md bad\n"
+                "RUNNING example/app#7 x 4s\n"
+                "FAILED run h run h is not a prepared review run\n",
+                "",
+            ),
+            self.run_main("check", "--runs", str(self.run_list)),
+        )
+        self.assertEqual([Path(f"run {name}") for name in "adegh"], [call[0][0] for call in stub.calls])
+        self.assertEqual(
+            ["valid", "valid", "failed", "failed", "published", "recorded", "published", "failed"], self.statuses()
+        )
+
+    def test_finalize_works_on_the_runs_check_accepted(self) -> None:
+        self.write_list([("run a", "valid"), ("run b", "published"), ("run c", "valid"), ("run d", "failed")])
+        recorded: dict[str, Any] = {
+            "selector": "example/app#1",
+            "notes": [],
+            "canary_root": None,
+            "hashes": {},
+            "verdict": "approve",
+            "findings": 0,
+            "markdown": "review.md",
+        }
+        stub = self.stub(
+            "finalize", effect=by_first_argument({Path("run a"): recorded, Path("run c"): StateError("state locked")})
+        )
+        self.assertEqual(
+            (1, "RECORDED example/app#1 verdict=approve findings=0 review.md\nFAILED run c state locked\n", ""),
+            self.run_main("finalize", "--runs", str(self.run_list)),
+        )
+        self.assertEqual([Path("run a"), Path("run c")], [call[0][0] for call in stub.calls])
+        self.assertEqual(["recorded", "published", "failed", "failed"], self.statuses())
+
+    def test_unfinalized_names_every_listed_run_and_every_pull_request_never_prepared(self) -> None:
+        self.write_list(
+            [("run a", "recorded"), ("run b", "failed"), ("run c", "published")],
+            pending=[{"kind": "pull", "target": "example/app#9"}, {"kind": "fixture", "target": "fixture dir"}],
+        )
+        stub = self.stub(
+            "unfinalized_selector",
+            effect=by_first_argument({Path("run a"): None, Path("run b"): "example/app#2", Path("run c"): None}),
+        )
+        self.assertEqual(
+            (
+                1,
+                f"UNFINALIZED example/app#2 {Path('run b').resolve()}\n"
+                "UNPREPARED example/app#9\n"
+                "UNPREPARED fixture dir\n",
+                "",
+            ),
+            self.run_main("unfinalized", "--runs", str(self.run_list)),
+        )
+        self.assertEqual([Path(f"run {name}") for name in "abc"], [call[0][0] for call in stub.calls])
+
+    def test_unfinalized_over_an_empty_run_list_is_all_finalized(self) -> None:
+        self.write_list([])
+        self.assertEqual((0, "ALL_FINALIZED\n", ""), self.run_main("unfinalized", "--runs", str(self.run_list)))
+
+    def test_a_listed_directory_that_is_not_a_prepared_run_fails_alone(self) -> None:
+        self.stub("unfinalized_selector", effect=UNFINALIZED_SELECTOR)
+        stray = self.directory / "not a run"
+        stray.mkdir()
+        gone = self.directory / "recorded run"
+        self.write_list([(str(stray), "published"), (str(gone), "recorded")])
+        code, out, _ = self.run_main("unfinalized", "--runs", str(self.run_list))
+        self.assertEqual(1, code)
+        self.assertEqual(1, len(out.splitlines()), out)
+        self.assertTrue(out.startswith(f"FAILED {stray} "), out)
+
+    def test_a_malformed_run_list_fails_every_command_that_reads_it(self) -> None:
+        self.write_list([("run a", "published")])
+        value = self.listed()
+        value["runs"][0]["status"] = "done"
+        self.run_list.write_text(json.dumps(value), encoding="utf-8")
+        for arguments in (["check"], ["finalize"], ["unfinalized"], ["workflow"], ["wait-reviewers", "--timeout", "5"]):
+            with self.subTest(command=arguments[0]):
+                code, out, _ = self.run_main(*arguments, "--runs", str(self.run_list))
+                self.assertEqual(1, code)
+                self.assertTrue(out.startswith("FAILED run list.runs[0].status must be one of"), out)
+
+    def test_workflow_and_wait_reviewers_take_the_published_runs_started_as_subagents(self) -> None:
+        self.write_list([("run a", "published"), ("run b", "published"), ("run c", "valid"), ("run d", "published")])
+        self.stub(
+            "worked_by_subagents",
+            effect=by_first_argument({Path("run a"): True, Path("run b"): False, Path("run d"): True}),
+        )
+        workflow = self.stub("workflow_script", (Path("flow.js"), "text\n", 2))
+        self.assertEqual(
+            (0, "WORKFLOW flow.js roles=2\nBEGIN_WORKFLOW_SCRIPT\ntext\nEND_WORKFLOW_SCRIPT\n", ""),
+            self.run_main("workflow", "--runs", str(self.run_list)),
+        )
+        self.assertEqual([(([Path("run a"), Path("run d")],), {})], workflow.calls)
+        waited = self.stub("wait_for_reviewers", ([], {}))
+        self.assertEqual((0, "", ""), self.run_main("wait-reviewers", "--runs", str(self.run_list), "--timeout", "5"))
+        self.assertEqual([(([Path("run a"), Path("run d")], 5, SERVICES), {})], waited.calls)
+
+    def test_workflow_with_no_run_started_as_subagents_prints_none(self) -> None:
+        self.write_list([("run a", "published"), ("run b", "valid")])
+        self.stub("worked_by_subagents", False)
+        self.assertEqual((0, "WORKFLOW none\n", ""), self.run_main("workflow", "--runs", str(self.run_list)))
+
+    def test_a_run_list_and_run_directories_exclude_each_other(self) -> None:
+        for command in ("workflow", "check", "finalize", "unfinalized"):
+            with self.subTest(command=command):
+                self.assert_usage(
+                    "argument --runs: not allowed with argument --run",
+                    command,
+                    "--run",
+                    "run a",
+                    "--runs",
+                    "runs.json",
+                )
+
+    def test_worked_by_subagents_reads_the_run(self) -> None:
+        self.stub("worked_by_subagents", effect=WORKED_BY_SUBAGENTS)
+        cases = {"subagents": True, "inline": False, "copilot-host": False}
+        for dispatch, expected in cases.items():
+            with self.subTest(dispatch=dispatch):
+                run = self.directory / dispatch
+                run.mkdir()
+                (run / rp.RUN_FILE).write_text(
+                    json.dumps({"schema_version": rp.RUN_SCHEMA_VERSION, "dispatch": dispatch}), encoding="utf-8"
+                )
+                self.assertIs(expected, rp.worked_by_subagents(run))
+        self.assertTrue(rp.worked_by_subagents(self.directory / "missing"), "the command it was listed for reports it")
+
+
 class AdvanceTests(MainCase):
     def test_advance(self) -> None:
         stub = self.stub(
@@ -1051,6 +1447,7 @@ TOP_LEVEL: list[tuple[str, list[str], str, dict[str, Any]]] = [
     ("inspect-reviewer", ["inspect-reviewer", "--repository", "example/app"], "inspect_reviewer", {}),
     ("validate-reviewer", ["validate-reviewer", "--repository", "example/app"], "validate_reviewer", {}),
     ("enumerate path", ["enumerate"], "working_path", {}),
+    ("prepare path", ["prepare", "--pull", "example/app#1"], "working_path", {}),
     ("enumerate", ["enumerate"], "enumerate_batch", {"working_path": Path("batch.json")}),
     ("validate-result", ["validate-result", "--run", "run a", "--role", "security"], "validate_result", {}),
     ("workflow", ["workflow", "--run", "run a"], "workflow_script", {}),
@@ -1098,7 +1495,7 @@ class ErrorTranslationTests(MainCase):
                     self.assertEqual("", out.getvalue())
 
 
-class ServicesTests(MainCase):
+class ServicesTests(RunListCase):
     def test_host_commands_build_services_when_none_are_given(self) -> None:
         cases = [
             (["dispatch", "--run", "run a"], "dispatch_copilot", Path("host.log"), (Path("run a"),)),
@@ -1124,7 +1521,6 @@ class ServicesTests(MainCase):
     def test_other_commands_pass_none_through(self) -> None:
         self.stub("inspect_reviewer", [])
         self.stub("validate_reviewer", [])
-        self.stub("working_path", Path("batch.json"))
         self.stub("enumerate_batch", {"repositories": {}})
         self.stub("prepare", {"status": "skip", "selector": "example/app#3", "reason": "draft"})
         self.stub("check_run", {"selector": "example/app#3", "retry": [], "errors": {}, "failed": {}, "running": {}})
@@ -1155,12 +1551,12 @@ class UsageTests(MainCase):
             (["dispatch"], "the following arguments are required: --run"),
             (["wait", "--run", "run a"], "the following arguments are required: --timeout"),
             (["host", "--run", "run a"], "the following arguments are required: --token"),
-            (["workflow"], "the following arguments are required: --run"),
-            (["wait-reviewers", "--timeout", "5"], "the following arguments are required: --run"),
+            (["workflow"], "one of the arguments --run --runs is required"),
+            (["wait-reviewers", "--timeout", "5"], "one of the arguments --run --runs is required"),
             (["validate-result", "--run", "run a"], "the following arguments are required: --role"),
-            (["check"], "the following arguments are required: --run"),
-            (["finalize"], "the following arguments are required: --run"),
-            (["unfinalized"], "the following arguments are required: --run"),
+            (["check"], "one of the arguments --run --runs is required"),
+            (["finalize"], "one of the arguments --run --runs is required"),
+            (["unfinalized"], "one of the arguments --run --runs is required"),
             (["advance"], "the following arguments are required: --batch"),
             (["inspect-reviewer"], "the following arguments are required: --repository"),
             (["validate-reviewer"], "the following arguments are required: --repository"),

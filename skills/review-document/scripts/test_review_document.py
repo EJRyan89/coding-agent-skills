@@ -520,7 +520,13 @@ class PipelineTestCase(DocumentTestCase):
         }
         result = {"model": "fixture-model", "summary": "One gap.", "findings": [finding], "prior_dispositions": []}
         Path(roles[0]["result_file"]).write_text(json.dumps(result), encoding="utf-8")
-        recorded = next(fact for fact in self.pipeline("finalize", "--run", str(run)) if fact.startswith("RECORDED "))
+        # Every later command takes the run list prepare printed, as the skill passes it.
+        listed = next(fact for fact in prepared if fact.startswith("RUNS "))
+        self.assertTrue(listed.endswith(" pending=0"), listed)
+        runs = listed.removeprefix("RUNS ").removesuffix(" pending=0")
+        self.assertEqual([f"ALL_VALID {rp.load_run(run)['selector']}"], self.pipeline("check", "--runs", runs))
+        recorded = next(fact for fact in self.pipeline("finalize", "--runs", runs) if fact.startswith("RECORDED "))
+        self.assertEqual(["ALL_FINALIZED"], self.pipeline("unfinalized", "--runs", runs))
         code, lines = run_main("report", "--fixture", str(fixture), "--report", recorded.split(" ", 4)[4])
         self.assertEqual(0, code, lines)
         record = json.loads(Path(facts(lines)["RECORD"]).read_text(encoding="utf-8"))
