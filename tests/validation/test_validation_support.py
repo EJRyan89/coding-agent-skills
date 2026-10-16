@@ -1,15 +1,19 @@
 """Fixture tests for the helpers in tests/validation/validation_support.py that several policies share: the import
-reader, the Markdown section and fence readers, the allowance reader, and the docstring finder.
+reader, the Markdown section and fence readers, the allowance reader, the docstring finder, and the repository's file
+list.
 """
 
 from __future__ import annotations
 
 import ast
 import codecs
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
@@ -33,6 +37,7 @@ from validation_support import (
     parse_python,
     python_trees,
     qualified_name,
+    repository_files,
     scripts_entries,
     write_fixture_tree,
 )
@@ -476,6 +481,30 @@ class ScriptsEntryFixtures(GitTestCase):
             [ScriptsEntry(3, None, False)],
             self.entries('import sys\nNAME = "dep"\nsys.path.insert(0, str(sibling_scripts(NAME)))\n'),
         )
+
+
+class RepositoryFilesFixtures(GitTestCase):
+    @staticmethod
+    def repository(path: Path, files: dict[str, str]) -> None:
+        write_fixture_tree(path, files)
+        for arguments in (["init", "-q", "-b", "main"], ["add", "."], ["commit", "-q", "-m", "base"]):
+            subprocess.run(["git", "-C", str(path), *arguments], check=True, capture_output=True)
+
+    def test_the_files_are_the_checkouts_whatever_repository_git_dir_names(self) -> None:
+        # The other repository tracks a file the checkout ignores, so its index would add that file to the list.
+        with tempfile.TemporaryDirectory() as temporary:
+            checkout, other = Path(temporary) / "checkout", Path(temporary) / "another repository"
+            self.repository(checkout, {".gitignore": "ignored.txt\n", "tracked.txt": "tracked\n"})
+            self.repository(other, {"ignored.txt": "theirs\n"})
+            (checkout / "ignored.txt").write_text("ignored\n", encoding="utf-8")
+            (checkout / "untracked.txt").write_text("untracked\n", encoding="utf-8")
+            expected = [checkout / ".gitignore", checkout / "tracked.txt", checkout / "untracked.txt"]
+            self.assertEqual(expected, sorted(repository_files(checkout)))
+            with mock.patch.dict(os.environ, {"GIT_DIR": str(other / ".git")}):
+                self.assertEqual(expected, sorted(repository_files(checkout)))
+            # Outside any repository git cannot list them, and the failure says so rather than reading as no files.
+            with self.assertRaisesRegex(ValueError, "git ls-files failed"):
+                repository_files(Path(temporary))
 
 
 if __name__ == "__main__":

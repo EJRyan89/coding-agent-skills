@@ -5,15 +5,18 @@ Each policy fails on a violating input and passes on a conforming one.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
+import job_selection
 from git_test_base import GitTestCase
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job
 from job_selection import (
@@ -233,6 +236,28 @@ class JobSelectionFixtures(GitTestCase):
             )
             self.assertIsNone(changed_paths(root, "no-such-base"))
             self.assertIsNone(changed_paths(Path(temporary), "main"))
+
+    def test_changed_files_are_the_checkouts_whatever_repository_git_dir_names(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            checkout, other = Path(temporary) / "checkout", Path(temporary) / "another repository"
+            for root, name in ((checkout, "docs/mine.md"), (other, "skills/a/theirs.py")):
+                root.mkdir()
+
+                def git(*arguments: str, root: Path = root) -> None:
+                    subprocess.run(["git", "-C", str(root), *arguments], check=True, capture_output=True)
+
+                git("init", "-q", "-b", "main")
+                git("commit", "-q", "--allow-empty", "-m", "base")
+                git("switch", "-q", "-c", "work")
+                (root / name).parent.mkdir(parents=True)
+                (root / name).write_text(f"{name}\n", encoding="utf-8")
+                git("add", ".")
+                git("commit", "-q", "-m", "change")
+            with mock.patch.dict(os.environ, {"GIT_DIR": str(other / ".git")}):
+                self.assertEqual(["docs/mine.md"], changed_paths(checkout, "main"))
+            # A git that cannot run at all cannot tell either.
+            with mock.patch.object(job_selection, "git", side_effect=ValueError("git was not found")):
+                self.assertIsNone(changed_paths(checkout, "main"))
 
     @staticmethod
     def documentation_failures(files: dict[str, str], changed: list[str]) -> dict[str, str]:
