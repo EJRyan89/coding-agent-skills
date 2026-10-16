@@ -8,21 +8,13 @@ import subprocess
 import sys
 import unittest
 from functools import partial
-from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from harness import DEPLOY_COMMAND, REPOSITORY_ROOT, DeployerTestCase, Result, forward
+from harness import DEPLOY_COMMAND, REPOSITORY_ROOT, DeployerTestCase, Result, forward, interrupting
 
 from deployer import check, configure, platform_support, verify
 from deployer.arguments import USAGE_ERROR, debug_given, parse_command
-
-
-def interrupting() -> io.StringIO:
-    """Standard input whose next read behaves as if the user pressed Ctrl+C."""
-    # A mock rather than a subclass: typeshed's StringIO.readline cannot be overridden without breaking the override
-    # rule against io's binary base class.
-    return mock.Mock(io.StringIO, readline=mock.Mock(side_effect=KeyboardInterrupt))
 
 
 class SingleEntryPointTests(DeployerTestCase):
@@ -234,12 +226,6 @@ def unwrapped(output: str) -> str:
     return " ".join(output.split())
 
 
-def shell_path(path: Path) -> str:
-    """The Git Bash form of a drive-letter path, such as /c/Tools for C:/Tools."""
-    text = forward(path)
-    return f"/{text[0].lower()}{text[2:]}"
-
-
 class HomeTests(DeployerTestCase):
     """Every run names its home, and warns when HOME names another directory than the profile folder."""
 
@@ -290,7 +276,7 @@ class HomeTests(DeployerTestCase):
             self.assertFalse(self.other.exists())
 
         def test_home_equal_to_the_profile_folder_is_not_warned_about(self) -> None:
-            for home in (str(self.home), forward(self.home).upper(), shell_path(self.home)):
+            for home in (str(self.home), forward(self.home).upper(), platform_support.to_shell_path(str(self.home))):
                 with self.subTest(home=home), self.environment(home):
                     self.assertNotIn("WARNING", self.deploy_ok("--all", "--dry-run").output)
 
@@ -298,7 +284,9 @@ class HomeTests(DeployerTestCase):
             source_id = json.loads((REPOSITORY_ROOT / "source.json").read_text(encoding="utf-8"))["id"]
             self.make_config(source_id)
             result = self.run_entry_point(
-                "--all", "--dry-run", environment={"HOME": shell_path(self.other), "USERPROFILE": str(self.home)}
+                "--all",
+                "--dry-run",
+                environment={"HOME": platform_support.to_shell_path(str(self.other)), "USERPROFILE": str(self.home)},
             )
             self.assertEqual(0, result.code, result.output)
             self.assertIn(f"\nHome: {forward(self.home)}\n", result.output.replace("\r\n", "\n"))
