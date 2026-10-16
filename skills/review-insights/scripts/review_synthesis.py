@@ -120,6 +120,11 @@ TEXT_LIMITS = {"short": 300, "rationale": 1500, "change": 2000}
 # A title, category, or analyzer name is passed back on the command line inside double quotes as the subject of a
 # decision, and printed on a fact line, so it holds no character a shell expands there and no control character.
 UNSAFE_ARGUMENT = re.compile(r'["`$\\\x00-\x1f\x7f-\x9f\u2028\u2029]')
+# What UNSAFE_ARGUMENT matches, as the prompt states the limit and a problem names it.
+UNSAFE_TEXT = (
+    "quotes, backticks, dollar signs, backslashes, the line separators U+2028 and U+2029, or control characters such "
+    "as tabs and line breaks"
+)
 # A `move-to-script` target names a file no record lists, chosen by the synthesis, and is printed on a fact line, so
 # it holds no character UNSAFE_ARGUMENT matches and is at most this long.
 TARGET_PATH = 260
@@ -362,38 +367,56 @@ def seal(directory: Path) -> str:
     return actual if sealed == actual else ""
 
 
-def write_inputs(directory: Path, lines: list[dict[str, Any]], context: dict[str, Any]) -> str:
-    """Write the input, its seal line first, and the context; return the seal. A context larger than `synthesize`
-    reads back is refused before anything is written."""
+@dataclass
+class Staged:
+    """A report's synthesis and the files it puts beside the report, held until `write`, so a report refused for its
+    size leaves the files the earlier report sealed as they were."""
+
+    synthesis: dict[str, Any]
+    files: dict[Path, str] = field(default_factory=dict)
+
+    def write(self) -> None:
+        for path, text in self.files.items():
+            atomic_write_text(path, text)
+
+
+def staged_inputs(directory: Path, lines: list[dict[str, Any]], context: dict[str, Any]) -> tuple[str, dict[Path, str]]:
+    """The seal, and the context and the input, its seal line first, by the path each is written to. A context
+    larger than `synthesize` reads back is refused."""
     body = _jsonl(lines)
     context_text = json.dumps(context, indent=1, sort_keys=True) + "\n"
     if len(context_text.encode("utf-8")) > MAXIMUM_BYTES:
         raise PersistenceError(f"The synthesis context would exceed {MAXIMUM_BYTES} bytes; report a shorter range")
     digest = _digest(body, context_text)
-    atomic_write_text(directory / CONTEXT_NAME, context_text)
-    atomic_write_text(directory / INPUT_NAME, _jsonl([{"kind": "seal", "input_sha256": digest}]) + body)
-    return digest
+    seal_line = _jsonl([{"kind": "seal", "input_sha256": digest}])
+    return digest, {directory / CONTEXT_NAME: context_text, directory / INPUT_NAME: seal_line + body}
+
+
+def prompt_text(directory: Path, *, script: Path, report_path: Path, repositories: list[str], span: str) -> str:
+    return PROMPT.format(
+        repositories=", ".join(repositories),
+        span=span,
+        input=directory / INPUT_NAME,
+        result=directory / RESULT_NAME,
+        check=f'{PYTHON} -B "{script}" synthesize --report "{report_path}" --result "{directory / RESULT_NAME}" '
+        "--check",
+        unsafe=UNSAFE_TEXT,
+        target_path=TARGET_PATH,
+        types=", ".join(f"`{item}`" for item in TYPES),
+        coverages=", ".join(f"`{item}`" for item in ANALYZER_COVERAGES),
+        small_category=SMALL_CATEGORY,
+        headline=HEADLINE,
+        examples=EXAMPLES_LIMIT,
+        evidence=EVIDENCE_LIMIT,
+        **LIMITS,
+    )
 
 
 def write_prompt(directory: Path, *, script: Path, report_path: Path, repositories: list[str], span: str) -> Path:
     prompt = directory / PROMPT_NAME
     atomic_write_text(
         prompt,
-        PROMPT.format(
-            repositories=", ".join(repositories),
-            span=span,
-            input=directory / INPUT_NAME,
-            result=directory / RESULT_NAME,
-            check=f'{PYTHON} -B "{script}" synthesize --report "{report_path}" --result "{directory / RESULT_NAME}" '
-            "--check",
-            types=", ".join(f"`{item}`" for item in TYPES),
-            coverages=", ".join(f"`{item}`" for item in ANALYZER_COVERAGES),
-            small_category=SMALL_CATEGORY,
-            headline=HEADLINE,
-            examples=EXAMPLES_LIMIT,
-            evidence=EVIDENCE_LIMIT,
-            **LIMITS,
-        ),
+        prompt_text(directory, script=script, report_path=report_path, repositories=repositories, span=span),
     )
     return prompt
 
@@ -467,9 +490,9 @@ def prepare(
     guidance: Guidance,
     previous: tuple[Path, dict[str, Any]] | None,
     script: Path,
-) -> dict[str, Any]:
-    """Write the input, context, and prompt for a report, and return its pending synthesis; one with no findings and
-    no open flags in scope is skipped, with nothing written."""
+) -> Staged:
+    """A report's pending synthesis, staged with its input, context, and prompt; one with no findings and no open
+    flags in scope is skipped, with no file."""
     report = analyzed.report
     start, end = date.fromisoformat(report["start_date"]), date.fromisoformat(report["end_date"])
     flag_lines = scoped_flags(flags, report["repositories"], start, end)
@@ -477,7 +500,7 @@ def prepare(
     refs = {finding_ref(record, finding) for record in analyzed.records for finding in record["findings"]}
     refs.update(line["finding"] for line in flag_lines if line["finding"] is not None)
     if not analyzed.pairs and not flag_lines:
-        return empty_synthesis("skipped")
+        return Staged(empty_synthesis("skipped"))
     totals = {
         "kind": "totals",
         "start": report["start_date"],
@@ -511,22 +534,23 @@ def prepare(
         },
         "custom_rules": sorted(line["rule"] for line in custom_lines),
     }
-    digest = write_inputs(directory, lines, context)
-    prompt = write_prompt(
+    digest, files = staged_inputs(directory, lines, context)
+    files[directory / PROMPT_NAME] = prompt_text(
         directory,
         script=script,
         report_path=directory / "insights.json",
         repositories=report["repositories"],
         span=f"{report['start_date']} to {report['end_date']}",
     )
-    return {
+    synthesis = {
         **empty_synthesis("pending"),
         "input_sha256": digest,
         "input": str(directory / INPUT_NAME),
-        "prompt": str(prompt),
+        "prompt": str(directory / PROMPT_NAME),
         "result": str(directory / RESULT_NAME),
         "previous_report": str(previous[0]) if previous else None,
     }
+    return Staged(synthesis, files)
 
 
 def load_context(synthesis: dict[str, Any]) -> dict[str, Any]:
@@ -653,12 +677,13 @@ Write one JSON object:
   targets `{{"repository": "...", "path": "...", "merge": ["..."]}}`: the guidance file whose wording survives, then
   each other guidance file it merges; its `change` gives the surviving wording and what to delete from each other
   file. `move-to-script` targets `{{"repository": "...", "path": "..."}}` naming the script, validator, or test that
-  takes over the rule, a listed `code` file or a new one but never a prose file; its `change` says what the check
-  does and which prose it replaces. Every other type targets a repository and a guidance file. `flagged` addresses
-  flags no finding pattern covers.
-- `title` is one line of at most {headline} characters without quotes, backticks, dollar signs, backslashes, tabs, or
-  other control characters, unique among the recommendations. `change` says exactly what text or configuration to
-  add, change, or remove.
+  takes over the rule, a listed `code` file or a new one but never a prose file, as a repository-relative path of at
+  most {target_path} characters; its `change` says what the check does and which prose it replaces. Every other type
+  targets a repository and a guidance file. `flagged` addresses flags no finding pattern covers.
+- `title` is one line of at most {headline} characters, unique among the recommendations. `change` says exactly what
+  text or configuration to add, change, or remove.
+- Neither a `title` nor a `move-to-script` target's `path` holds any of these:
+  {unsafe}.
 - `categories` has one entry for every `category` line, no more. `topics` names 1 to {topics} concrete patterns or
   topics within the category, each with its count and up to {examples} examples, never just the category's name.
   `assessment` says what the category's findings show and what should change, or why nothing should. `addressed_by`
@@ -711,6 +736,11 @@ def _count(value: Any) -> bool:
     return type(value) is int and value >= 1
 
 
+def _member(value: Any, known: Container[str]) -> bool:
+    """Whether a value is one of the known strings: a value of another kind, such as a list, is none of them."""
+    return isinstance(value, str) and value in known
+
+
 class _Checker:
     """Collects every problem in a result, so the agent can fix them in one pass."""
 
@@ -728,7 +758,7 @@ class _Checker:
             self.problem(where, f"must be a list of {minimum} to {maximum} finding references")
             return
         for ref in value:
-            if ref not in self.refs:
+            if not _member(ref, self.refs):
                 self.problem(where, f"names {ref!r}, which is not an analyzed finding")
 
     def items(self, result: dict[str, Any], name: str, fields: dict[str, str], *, where: str | None = None) -> None:
@@ -822,8 +852,7 @@ class _Checker:
                 self.problem(
                     where,
                     "path must name the script, validator, or test that takes over the rule: a repository-relative "
-                    f"file that is not prose guidance, of at most {TARGET_PATH} characters without quotes, "
-                    "backticks, $, \\, or control characters",
+                    f"file that is not prose guidance, of at most {TARGET_PATH} characters without {UNSAFE_TEXT}",
                 )
             return
         named = [path, *value["merge"]] if kind == "consolidate" and isinstance(value["merge"], list) else [path]
@@ -851,11 +880,7 @@ class _Checker:
         self.target(f"{where}.target", item["type"], item["target"])
         title = item["title"]
         if not _text(title, HEADLINE) or UNSAFE_ARGUMENT.search(title):
-            self.problem(
-                f"{where}.title",
-                f"must be one line of at most {HEADLINE} characters without quotes, backticks, $, \\, or control "
-                "characters",
-            )
+            self.problem(f"{where}.title", f"must be one line of at most {HEADLINE} characters without {UNSAFE_TEXT}")
         elif title.casefold() in titles:
             self.problem(f"{where}.title", "repeats another recommendation's title")
         else:
@@ -872,7 +897,7 @@ class _Checker:
             self.problem(f"{where}.flags", "must be a list of distinct flag IDs")
             return
         for flag in flags:
-            if flag not in self.flags:
+            if not _member(flag, self.flags):
                 self.problem(f"{where}.flags", f"names {flag!r}, which is not an open flag in the input")
         if item["type"] == "flagged" and not flags:
             self.problem(f"{where}.flags", "must name at least one flag for a flagged recommendation")
@@ -892,7 +917,7 @@ class _Checker:
                 self.problem(where, f"must have exactly the fields {', '.join(sorted(CATEGORY_FIELDS))}")
                 continue
             name = item["category"]
-            if name not in expected or name in seen:
+            if not _member(name, expected) or name in seen:
                 self.problem(f"{where}.category", f"{name!r} is not an analyzed category, or repeats one")
                 continue
             seen.add(name)
@@ -909,7 +934,7 @@ class _Checker:
             self.items(item, "topics", TOPIC_FIELDS, where=f"{where}.topics")
         self.field(f"{where}.assessment", item["assessment"], "long")
         addressed = item["addressed_by"]
-        if not isinstance(addressed, list) or any(title not in titles for title in addressed):
+        if not isinstance(addressed, list) or any(not _member(title, titles) for title in addressed):
             self.problem(f"{where}.addressed_by", "must list titles of this result's recommendations")
         self.category_findings(where, item["findings"], small)
 
@@ -930,7 +955,8 @@ class _Checker:
                 continue
             self.field(f"{where}.pattern", item["pattern"], "text")
             self.field(f"{where}.assessment", item["assessment"], "long")
-            if not isinstance(item["addressed_by"], list) or any(title not in titles for title in item["addressed_by"]):
+            addressed = item["addressed_by"]
+            if not isinstance(addressed, list) or any(not _member(title, titles) for title in addressed):
                 self.problem(f"{where}.addressed_by", "must list titles of this result's recommendations")
             if not isinstance(item["rules"], list) or not item["rules"]:
                 self.problem(f"{where}.rules", "must name at least one custom-rule line's rule")
