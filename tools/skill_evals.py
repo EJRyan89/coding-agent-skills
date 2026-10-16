@@ -129,18 +129,35 @@ Output, one fact per line:
   GUARDED <scenario> <model> <role> files_read=<n>
                                                   a reviewer of a run that counts, which the guard held, and the
                                                   snapshot files the guard counted it reading
+  NOT_COUNTED <scenario> <model> <kind> "<reason>"
+                                                  a record that counts for nothing, so each expectation of its
+                                                  scenario and model fails with this kind and reason: `run` when the
+                                                  run recorded no review of its own, because the session ended
+                                                  before finalize, timed out, could not start, did not list the
+                                                  skill, had a command denied, or its fixture or document could not
+                                                  be staged, or, with --records, no record file can be read; `record`
+                                                  when a record does not show the model judged: no reviewer subagent
+                                                  ran, reviewers or the session ran on another model, a reviewer no
+                                                  guard held, or a record the record contract or the scenario's
+                                                  review version refuses
   PASS <skill> <scenario> <model> <expectation>
-  FAIL <skill> <scenario> <model> <expectation> "<reason>"
+  FAIL <skill> <scenario> <model> <expectation> <kind> "<reason>"
+                                                  <kind> is `judgment` for what the record shows, or the `run` or
+                                                  `record` of its NOT_COUNTED line
   FAILED "<reason>"                               nothing was run or judged: the scenarios could not be loaded,
                                                   Claude Code is missing, or --write's existing results file
                                                   cannot be read or its table cannot be read
-then a Markdown table, one row per scenario and one column per model, each cell the expectations passed of those
-checked, then `WROTE <file>` when --write replaced the skill's rows in docs/skill-evaluations.md, and `REMOVED
-"<dir>"` when nothing failed and the home is gone; otherwise the home stays for its transcripts. A model none of whose
-reviewers ran is written there as not run with a fixed phrase for its first reason, such as `timed out after 1800
-seconds` or `denied 2 commands`, which names no path of the machine; the FAIL lines and the transcript keep the whole
-reason. --write reads the results table strictly before any run: the header, its separator, then rows of the header's
-columns, each naming a skill, and nothing else between the markers. Every other skill's row is written back as it was.
+A run then prints, between a `CITATION BEGIN` and a `CITATION END` line, the Markdown a pull request's Validation
+section cites it with: the command, a table with one row per scenario and one column per model, each cell the
+expectations passed of those checked, and in a text fence the RUNTIME, REVIEWER, and GUARDED lines, each NOT_COUNTED
+line with its reason as the results file records it, and each judgment's FAIL line, so the block names no path of the
+machine. With --records, the table alone follows the outcomes. Then `WROTE <file>` when --write replaced the skill's
+rows in docs/skill-evaluations.md, and `REMOVED "<dir>"` when nothing failed and the home is gone; otherwise the home
+stays for its transcripts. A model none of whose reviewers ran is written in the results file as not run with a fixed
+phrase for its first reason, such as `timed out after 1800 seconds` or `denied 2 commands`, which names no path of the
+machine; the FAIL lines and the transcript keep the whole reason. --write reads the results table strictly before any
+run: the header, its separator, then rows of the header's columns, each naming a skill, and nothing else between the
+markers. Every other skill's row is written back as it was.
 It exits 1 on any FAIL, FAILED, or DEPLOY_FAILED line, 0 otherwise, and 2 on a usage error.
 
 It records pass or fail, the model identifiers, the runtime version, and the date, and nothing else: no tokens,
@@ -234,6 +251,9 @@ SEPARATOR_CELL = re.compile(r":?-{3,}:?")
 # A run that recorded no review, as the results file records it: why the record is missing may name the machine's
 # paths, which the FAIL lines keep.
 NO_REVIEW = "the run recorded no review"
+# What a failure is, decided where the failure is made: a judgment the record shows, a run that recorded no review of
+# its own, or a record that counts for nothing, since it is not the judged model's or no guard held its reviewers.
+JUDGMENT, RUN, RECORD = "judgment", "run", "record"
 # The record's own vocabulary, from code-review-core's record module, in a stable order for messages: severities from
 # the lowest rank, dispositions alphabetically.
 SEVERITIES = tuple(sorted(SEVERITY_RANK, key=SEVERITY_RANK.__getitem__))
@@ -262,7 +282,12 @@ class ScenarioError(Exception):
 
 
 class RecordError(Exception):
-    """A record that is missing, unreadable, refused, or lacks what an expectation reads."""
+    """A record that is missing, unreadable, refused, or lacks what an expectation reads. A record source's error
+    says which kind of failure it is, RUN or RECORD; one an expectation's check raises is a JUDGMENT."""
+
+    def __init__(self, message: str, kind: str = RUN) -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 @dataclass(frozen=True)
@@ -300,6 +325,8 @@ class Outcome:
     model: str
     label: str
     failure: str | None
+    # JUDGMENT, RUN, or RECORD for a failure; None when the expectation passed.
+    kind: str | None = None
 
 
 RecordSource = Callable[[Scenario, str], Record]
@@ -901,7 +928,7 @@ def records_in(directory: Path) -> RecordSource:
         try:
             validate_record(record)
         except ValueError as exc:
-            raise RecordError(f"{path} is not a review record: {exc}") from exc
+            raise RecordError(f"{path} is not a review record: {exc}", RECORD) from exc
         version, wanted = record["review"]["version"], RECORD_VERSION[scenario.mode]
         reason = (
             f"it is review version {version}, not the {wanted} a {scenario.mode} run records"
@@ -909,7 +936,7 @@ def records_in(directory: Path) -> RecordSource:
             else unguarded(record) or unreported_model(record, model)
         )
         if reason:
-            raise RecordError(f"{path} counts for nothing: {reason}")
+            raise RecordError(f"{path} counts for nothing: {reason}", RECORD)
         return record
 
     return source
@@ -928,6 +955,8 @@ class Run:
     reviewers: frozenset[str]
     session: frozenset[str]
     recorded: str | None = None
+    # RUN or RECORD when the run counts for nothing; None when it counts.
+    kind: str | None = None
 
 
 def review_config(directory: Path) -> dict[str, Any]:
@@ -1260,7 +1289,7 @@ def run_scenario(scenario: Scenario, model: str, home: Path, session: Session) -
             transcript.write_text("", encoding="utf-8")
             staged = "fixture" if scenario.document is None else "document"
             failure = f"the {staged} could not be staged"
-            return Run(None, f"{failure}: {exc}", frozenset(), frozenset(), failure), transcript
+            return Run(None, f"{failure}: {exc}", frozenset(), frozenset(), failure, RUN), transcript
         return _session_run(scenario, model, home, session, arguments, transcript)
 
 
@@ -1287,7 +1316,20 @@ def _session_run(
     if failure is None and record is not None:
         failure = recorded = unguarded(record)
     orchestrators, reviewers = stream_models(completed.stdout)
-    return Run(None if failure else record, failure, reviewers, orchestrators, recorded), transcript
+    kind = None if failure is None else RUN if missing is not None else RECORD
+    return Run(None if failure else record, failure, reviewers, orchestrators, recorded, kind), transcript
+
+
+def run_lines(scenarios: Sequence[Scenario], models: Sequence[str], runs: Mapping[tuple[str, str], Run]) -> list[str]:
+    """The REVIEWER line of each model, then the GUARDED lines of each run."""
+    lines = []
+    for model in models:
+        used = sorted({name for scenario in scenarios for name in runs[(scenario.name, model)].reviewers})
+        lines.append(f"REVIEWER {model} {','.join(used) or 'none'}")
+    for scenario in scenarios:
+        for model in models:
+            lines += guarded_lines(scenario.name, model, runs[(scenario.name, model)])
+    return lines
 
 
 def guarded_lines(scenario: str, model: str, run: Run) -> list[str]:
@@ -1359,7 +1401,7 @@ def runs_source(runs: Mapping[tuple[str, str], Run]) -> RecordSource:
     def source(scenario: Scenario, model: str) -> Record:
         run = runs[(scenario.name, model)]
         if run.record is None:
-            raise RecordError(run.failure or "the run recorded no review")
+            raise RecordError(run.failure or NO_REVIEW, run.kind or RUN)
         return run.record
 
     return source
@@ -1477,14 +1519,16 @@ def replace_results(text: str, skill: str, rows: Sequence[str]) -> str:
 
 
 def judge(scenarios: Sequence[Scenario], models: Sequence[str], source: RecordSource) -> list[Outcome]:
+    """Every expectation of every scenario on every model. A record the source could not give fails each of its
+    expectations with the source's reason and kind; an expectation the record fails is a judgment."""
     outcomes = []
     for scenario in scenarios:
         for model in models:
             try:
                 record: Record | None = source(scenario, model)
-                missing = None
+                missing, kind = None, None
             except RecordError as exc:
-                record, missing = None, str(exc)
+                record, missing, kind = None, str(exc), exc.kind
             for item in scenario.expectations:
                 failure = missing
                 if record is not None:
@@ -1492,13 +1536,29 @@ def judge(scenarios: Sequence[Scenario], models: Sequence[str], source: RecordSo
                         failure = item.check(record)
                     except RecordError as exc:
                         failure = str(exc)
-                outcomes.append(Outcome(scenario.name, model, item.label, failure))
+                    kind = None if failure is None else JUDGMENT
+                outcomes.append(Outcome(scenario.name, model, item.label, failure, kind))
     return outcomes
 
 
 def outcome_line(skill: str, outcome: Outcome) -> str:
     fact = f"{skill} {outcome.scenario} {outcome.model} {outcome.label}"
-    return f"PASS {fact}" if outcome.failure is None else f"FAIL {fact} {quote(outcome.failure)}"
+    return f"PASS {fact}" if outcome.failure is None else f"FAIL {fact} {outcome.kind} {quote(outcome.failure)}"
+
+
+def not_counted_line(scenario: str, model: str, kind: str, reason: str) -> str:
+    return f"NOT_COUNTED {scenario} {model} {kind} {quote(reason)}"
+
+
+def not_counted(outcomes: Sequence[Outcome]) -> list[str]:
+    """One line per scenario and model whose record counts for nothing, with the reason each of its expectations
+    failed with, in the order judged."""
+    lines = {
+        (outcome.scenario, outcome.model): not_counted_line(outcome.scenario, outcome.model, outcome.kind, failure)
+        for outcome in outcomes
+        if (failure := outcome.failure) is not None and outcome.kind in (RUN, RECORD)
+    }
+    return list(lines.values())
 
 
 def table(scenarios: Sequence[Scenario], models: Sequence[str], outcomes: Sequence[Outcome]) -> list[str]:
@@ -1513,13 +1573,54 @@ def table(scenarios: Sequence[Scenario], models: Sequence[str], outcomes: Sequen
     return lines
 
 
-def report(skill: str, scenarios: Sequence[Scenario], models: Sequence[str], outcomes: Sequence[Outcome]) -> bool:
-    """Print every outcome and the table; return whether any expectation failed."""
-    for outcome in outcomes:
-        print(outcome_line(skill, outcome))
-    for line in table(scenarios, models, outcomes):
+def report(skill: str, outcomes: Sequence[Outcome]) -> bool:
+    """Print each record that counts for nothing, then every outcome; return whether any expectation failed."""
+    for line in [*not_counted(outcomes), *(outcome_line(skill, outcome) for outcome in outcomes)]:
         print(line)
     return any(outcome.failure is not None for outcome in outcomes)
+
+
+def command_line(options: argparse.Namespace) -> str:
+    """The command that made the run, without --jobs, which changes no result."""
+    words = ["python", "-B", "tools/skill_evals.py", options.skill]
+    words += [word for name in dict.fromkeys(options.scenario) for word in ("--scenario", name)]
+    words += [word for name in dict.fromkeys(options.model or []) for word in ("--model", name)]
+    if options.timeout != DEFAULT_TIMEOUT:
+        words += ["--timeout", f"{options.timeout:g}"]
+    return " ".join([*words, *(["--write"] if options.write else [])])
+
+
+def citation(
+    skill: str,
+    options: argparse.Namespace,
+    version: str,
+    scenarios: Sequence[Scenario],
+    models: Sequence[str],
+    runs: Mapping[tuple[str, str], Run],
+    outcomes: Sequence[Outcome],
+) -> list[str]:
+    """The Markdown a pull request's Validation section cites the run with: the command, the table, and in a text
+    fence the runtime, the models the reviewers ran on, each guarded reviewer, each run that counts for nothing with
+    its reason as the results file records it, and each judgment that failed, none of which names a path of the
+    machine."""
+    facts = [f"RUNTIME claude {version}", *run_lines(scenarios, models, runs)]
+    facts += [
+        not_counted_line(scenario.name, model, run.kind or RUN, run.recorded or NO_REVIEW)
+        for scenario in scenarios
+        for model in models
+        if (run := runs[(scenario.name, model)]).record is None
+    ]
+    facts += [outcome_line(skill, outcome) for outcome in outcomes if outcome.kind == JUDGMENT]
+    fence = "`" * max([3, *(len(run) + 1 for fact in facts for run in re.findall("`+", fact))])
+    return [
+        f"`{command_line(options)}`",
+        "",
+        *table(scenarios, models, outcomes),
+        "",
+        f"{fence}text",
+        *facts,
+        fence,
+    ]
 
 
 def new_home() -> Path:
@@ -1580,15 +1681,14 @@ def evaluate(skill: str, scenarios: Sequence[Scenario], options: argparse.Namesp
     print(f"RUNTIME claude {version}", flush=True)
     session = Session(executable, base, seams.runner, options.timeout, seams.git)
     runs = run_all(scenarios, homes, session, options.jobs)
-    for model in models:
-        used = sorted({name for scenario in scenarios for name in runs[(scenario.name, model)].reviewers})
-        print(f"REVIEWER {model} {','.join(used) or 'none'}")
-    for scenario in scenarios:
-        for model in models:
-            for line in guarded_lines(scenario.name, model, runs[(scenario.name, model)]):
-                print(line)
+    for line in run_lines(scenarios, models, runs):
+        print(line)
     outcomes = judge(scenarios, models, runs_source(runs))
-    failed = report(skill, scenarios, models, outcomes)
+    failed = report(skill, outcomes)
+    print("CITATION BEGIN")
+    for line in citation(skill, options, version, scenarios, models, runs, outcomes):
+        print(line)
+    print("CITATION END")
     if results_text is not None:
         rows = result_rows(skill, scenarios, models, outcomes, runs, version, seams.today())
         seams.results.write_text(replace_results(results_text, skill, rows), encoding="utf-8", newline="\n")
@@ -1648,7 +1748,11 @@ def main(argv: Sequence[str], root: Path = SCENARIO_ROOT, seams: Seams | None = 
     if options.records is None:
         return evaluate(options.skill, scenarios, options, seams or Seams())
     models = list(dict.fromkeys(options.model or MODELS))
-    return 1 if report(options.skill, scenarios, models, judge(scenarios, models, records_in(options.records))) else 0
+    outcomes = judge(scenarios, models, records_in(options.records))
+    failed = report(options.skill, outcomes)
+    for line in table(scenarios, models, outcomes):
+        print(line)
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
