@@ -85,7 +85,6 @@ import itertools
 import json
 import os
 import re
-import stat
 import string
 import sys
 import tempfile
@@ -99,6 +98,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError
+from link_probe import is_plain_file
 from markdown_sections import CODE_SPAN
 from skill_roots import skills_directory_holding
 
@@ -362,8 +362,7 @@ def entry_problem(path: Path) -> str | None:
         return MISSING
     except OSError as exc:
         return f"cannot inspect: {reason(exc)}"
-    reparse = getattr(status, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
-    if not stat.S_ISREG(status.st_mode) or reparse:
+    if not is_plain_file(path, status):
         return "not a regular file"
     return None
 

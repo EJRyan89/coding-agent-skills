@@ -23,10 +23,16 @@ from review_records import (
     build_record,
     calculate_verdict,
     carried_findings,
+    display_id,
+    finding_reference,
     flagged_entries,
+    joined_source,
+    ledger_display_id,
     ledger_history,
+    ledger_id,
     ledger_summary,
     render_markdown,
+    source_parts,
     validate_adapter_result,
     validate_record,
 )
@@ -707,6 +713,20 @@ def flag(
         "body": "The context manager\nreleases the lock.",
         "resolution": "Prompt adjusted." if resolved else None,
     }
+
+
+class FindingNameTests(unittest.TestCase):
+    def test_a_finding_is_shown_and_referenced_in_one_form(self) -> None:
+        self.assertEqual("v3 F012", display_id(3, "F012"))
+        self.assertEqual("v3 F012", ledger_display_id(ledger_id(3, "F012")))
+        self.assertEqual("v3:F012", ledger_id(3, "F012"))
+        self.assertEqual("owner/repo#41 v3 F012", finding_reference("Owner/Repo", 41, 3, "F012"))
+
+    def test_a_merged_source_splits_back_into_its_reviewers(self) -> None:
+        self.assertEqual("correctness + security", joined_source(["correctness", "security"]))
+        self.assertEqual(["correctness", "security"], source_parts(joined_source(["correctness", "security"])))
+        self.assertEqual(["a", "b"], source_parts(" a + b + a +  + b"))
+        self.assertEqual(["free text a+b"], source_parts("free text a+b"))
 
 
 class LedgerReportTests(unittest.TestCase):

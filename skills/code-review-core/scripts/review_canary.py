@@ -32,10 +32,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 from git_client import GitClient, GitError, Runner
 from github_client import replace_undecodable
+from link_probe import is_link_or_junction
 from review_config import ConfigurationError, validate_repository_identity
 from review_io import PersistenceError, read_json
 from review_records import RecordError, validate_record
-from review_runtime import DOCUMENT_STAGES, RuntimeContractError, _is_reparse_point, _safe_relative_path
+from review_runtime import DOCUMENT_STAGES, RuntimeContractError, _safe_relative_path
 from typed_fields import FieldError, FieldReader
 
 FIXTURE_SCHEMA_VERSION = 1
@@ -131,7 +132,7 @@ def _tree_files(root: Path) -> list[tuple[str, Path]]:
 
     Each entry is judged from the metadata its folder's listing already holds, reparse flag included, so the walk
     makes no file-system call per entry, and the POSIX path is built as a string rather than through pathlib."""
-    if not root.is_dir() or _is_reparse_point(root):
+    if not root.is_dir() or is_link_or_junction(root):
         raise FixtureError(f"The fixture has no {root.name}/ tree")
     files: list[tuple[str, Path]] = []
     folders = [("", str(root))]
@@ -141,7 +142,7 @@ def _tree_files(root: Path) -> list[tuple[str, Path]]:
             for entry in entries:
                 relative = prefix + entry.name
                 path, metadata = Path(entry.path), entry.stat(follow_symlinks=False)
-                if _is_reparse_point(path, metadata):
+                if is_link_or_junction(path, metadata):
                     raise FixtureError(f"The fixture holds a link or special file: {relative}")
                 if stat.S_ISDIR(metadata.st_mode):
                     folders.append((relative + "/", entry.path))

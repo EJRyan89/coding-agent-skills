@@ -432,11 +432,11 @@ class FixtureChangeTests(GitTestCase):
 
     def test_a_link_or_special_file_in_a_tree_is_refused(self) -> None:
         directory = write_fixture(self.root / "fixture", {"a.txt": b"a\n"}, {"a.txt": b"b\n", "link": b"a.txt"})
-        real = review_canary._is_reparse_point
+        real = review_canary.is_link_or_junction
         with (
             mock.patch.object(
                 review_canary,
-                "_is_reparse_point",
+                "is_link_or_junction",
                 lambda path, metadata=None: path.name == "link" or real(path, metadata),
             ),
             self.assertRaisesRegex(FixtureError, "The fixture holds a link or special file: link"),

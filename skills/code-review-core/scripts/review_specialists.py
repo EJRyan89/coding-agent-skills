@@ -35,6 +35,7 @@ from review_records import (
     SEVERITY_RANK,
     TITLE_MAXIMUM_LENGTH,
     RecordError,
+    joined_source,
     read_analyzer,
     read_model,
     read_title,
@@ -1837,7 +1838,7 @@ def assemble(plan: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
                 "title": item["title"],
                 "body": item["body"],
                 "evidence": item["evidence"],
-                "source": " + ".join(item["sources"]),
+                "source": joined_source(item["sources"]),
                 **({"analyzer": item["analyzer"]} if "analyzer" in item else {}),
                 **(
                     {"repeats": links[index] if isinstance(links[index], str) else keys[links[index]]}

@@ -831,6 +831,10 @@ class MainTests(unittest.TestCase):
         for arguments in (
             ["--org", "acme corp", "--user", "octo"],
             ["--org", "acme", "--user", "octo:repo"],
+            ["--org", "acme", "--user", "o" * 40],
+            ["--org", "acme", "--user", "octo--cat"],
+            ["--org", "acme", "--user", "octo_"],
+            ["--org", "-acme", "--user", "octo"],
             ["--org", "acme", "--user", "octo", "--months", "0"],
             ["--org", "acme", "--user", "octo", "--months", "37"],
         ):
@@ -839,6 +843,12 @@ class MainTests(unittest.TestCase):
                 code, _, _ = self.run_main(arguments, GitHubSearchClient(run, Recorder()))
                 self.assertEqual(2, code)
                 self.assertEqual([], calls)
+
+    def test_an_enterprise_managed_login_is_reported(self) -> None:
+        client = GitHubSearchClient(CollectTests().fake(), Recorder())
+        code, stdout, _ = self.run_main(["--org", "acme", "--user", "mona-lisa_acme", "--months", "3"], client)
+        self.assertEqual(0, code)
+        self.assertTrue(stdout.startswith("## GitHub activity for mona-lisa_acme in acme"))
 
     def test_api_errors_print_a_failed_line_and_exit_1(self) -> None:
         run, _ = scripted(failed("gh: HTTP 401: Bad credentials"))

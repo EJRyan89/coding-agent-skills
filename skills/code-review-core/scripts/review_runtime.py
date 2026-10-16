@@ -27,6 +27,7 @@ from executable_locator import find_executable
 from git_client import GitClient, GitError, GitResult, GitStream, Runner, subprocess_runner
 from github_client import GitHubClient, GitHubError, replace_undecodable
 from github_remote import github_repository
+from link_probe import is_link_or_junction
 from review_config import REVIEWER_EFFORTS, validate_glob_patterns, validate_repository_identity
 from review_documents import DOCUMENT_FORMATS, EXTRACTED_WHEN_TEXT, ExtractionRefused, document_format, extract
 from review_guard import ROLE_ID as SLUG
@@ -886,7 +887,7 @@ def load_manifest_from_file(path: Path) -> dict[str, Any]:
     if not path.is_absolute():
         raise RuntimeContractError(f"Local reviewer manifest path must be absolute: {path}")
     try:
-        if not path.is_file() or _is_reparse_point(path):
+        if not path.is_file() or is_link_or_junction(path):
             raise RuntimeContractError(f"Local reviewer manifest is not a regular file: {path}")
         if path.stat().st_size > MAX_LOCAL_MANIFEST_BYTES:
             raise RuntimeContractError(f"Local reviewer manifest is too large: {path}")
@@ -1063,21 +1064,11 @@ def _is_agent_instruction_path(relative: str) -> bool:
     return False
 
 
-def _is_reparse_point(path: Path, metadata: os.stat_result | None = None) -> bool:
-    """Whether `path` is a symbolic link, a junction, or any other reparse point, judged from its own metadata, never
-    its target's: `metadata` when a directory listing already holds it, else one `lstat`."""
-    if metadata is None:
-        metadata = os.lstat(path)
-    attributes = getattr(metadata, "st_file_attributes", 0)
-    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
-    return stat.S_ISLNK(metadata.st_mode) or bool(attributes & reparse_flag)
-
-
 def _require_safe_snapshot_path(root: Path, target: Path) -> None:
     resolved_root = root.resolve(strict=True)
     current = target
     while True:
-        if _is_reparse_point(current):
+        if is_link_or_junction(current):
             raise RuntimeContractError(f"Source snapshot path contains a reparse point: {target}")
         if current == root:
             break
@@ -1125,7 +1116,7 @@ class _SnapshotTree:
         current = target
         while current != self.root and current.parent != current:
             with suppress(OSError):  # a path that cannot be read is no reparse point found; it is missing below
-                if _is_reparse_point(current):
+                if is_link_or_junction(current):
                     raise RuntimeContractError(f"Source snapshot path contains a reparse point: {target}")
             current = current.parent
         if relative in self.irregular:
@@ -1164,7 +1155,7 @@ def _walk_snapshot(root: Path) -> _SnapshotTree:
             if not is_folder:
                 continue
             child, relative = folder / name, prefix + name
-            if _is_reparse_point(child, metadata):
+            if is_link_or_junction(child, metadata):
                 tree.reparse.add(relative)
                 tree.faults.append(f"Source snapshot contains a reparse-point directory: {child}")
             else:
@@ -1173,7 +1164,7 @@ def _walk_snapshot(root: Path) -> _SnapshotTree:
             if is_folder:
                 continue
             child, relative = folder / name, prefix + name
-            if _is_reparse_point(child, metadata):
+            if is_link_or_junction(child, metadata):
                 tree.reparse.add(relative)
             elif stat.S_ISREG(metadata.st_mode):
                 tree.files[relative] = metadata.st_size
@@ -1293,7 +1284,7 @@ def _verify_snapshot(
 ) -> tuple[dict[str, Any], _SnapshotTree, int, str]:
     """`verify_source_snapshot`'s manifest, the walk the file set was checked against, the bytes the files it holds
     total, and the SHA-256 of the manifest's bytes."""
-    if not root.is_absolute() or not root.is_dir() or _is_reparse_point(root):
+    if not root.is_absolute() or not root.is_dir() or is_link_or_junction(root):
         raise RuntimeContractError("Source snapshot root must be an existing absolute non-reparse directory")
     metadata, manifest_digest = _read_snapshot_metadata(root)
     require_snapshot_source(metadata, expected_repository, expected_commit)
@@ -1539,7 +1530,7 @@ def _kept_content(
     merge.
     """
     form = document_format(relative) if relative in documents.changed else None
-    binary = _binary(content)
+    binary = is_binary(content)
     if form is None or not (binary or form in EXTRACTED_WHEN_TEXT):
         if binary:
             return relative, "binary"
@@ -1558,7 +1549,7 @@ def _kept_content(
     return held, content
 
 
-def _binary(content: bytes) -> bool:
+def is_binary(content: bytes) -> bool:
     """The snapshot's test of whether a file is binary: a NUL byte in its first BINARY_PROBE_BYTES bytes."""
     return b"\0" in content[:BINARY_PROBE_BYTES]
 
@@ -1945,7 +1936,7 @@ def fetch_source_file(
             close()
     if content is None or not blob_matches(blob, content):
         raise RuntimeContractError(f"The checkout did not return blob {blob} of {json.dumps(relative)}")
-    if _binary(content):
+    if is_binary(content):
         return "binary"
     if held + len(content) > MAX_SOURCE_SNAPSHOT_BYTES:
         raise RuntimeContractError("Source snapshot would exceed the size limit")
@@ -2037,7 +2028,7 @@ def _blob_binary_test(checkout: Path) -> Iterator[Callable[[str], bool]]:
                 raise RuntimeContractError(f"Not a git object id: {blob!r}")
             stream.stdin.write(f"{blob}\n".encode("ascii"))
             stream.stdin.flush()
-            return _binary(_read_batch_blob(stream, blob))
+            return is_binary(_read_batch_blob(stream, blob))
 
         yield binary
         stream.stdin.close()

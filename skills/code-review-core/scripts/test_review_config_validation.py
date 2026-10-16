@@ -597,11 +597,11 @@ ACCEPTED: list[tuple[str, Mutation, Mutation]] = [
         "model and author names trimmed",
         _chain(
             _set(("model_names",), {"m": " M ", "x" * 200: "y" * 100}),
-            _set(("dashboard", "author_names"), {"a": " A ", "B-" + "c" * 37: "Bc"}),
+            _set(("dashboard", "author_names"), {"a": " A ", "B-" + "c" * 37: "Bc", "mona_acme": " Mona "}),
         ),
         _chain(
             _set(("model_names",), {"m": "M", "x" * 200: "y" * 100}),
-            _set(("dashboard", "author_names"), {"a": "A", "B-" + "c" * 37: "Bc"}),
+            _set(("dashboard", "author_names"), {"a": "A", "B-" + "c" * 37: "Bc", "mona_acme": "Mona"}),
         ),
     ),
 ]
@@ -1489,6 +1489,18 @@ REJECTED: list[Case] = [
         _set(("dashboard", "author_names"), {"-octo": "Octo"}),
         C,
         "Invalid dashboard author name login: '-octo'",
+    ),
+    (
+        "author_names login with a doubled hyphen",
+        _set(("dashboard", "author_names"), {"octo--cat": "Octo"}),
+        C,
+        "Invalid dashboard author name login: 'octo--cat'",
+    ),
+    (
+        "author_names login longer than GitHub allows",
+        _set(("dashboard", "author_names"), {"B-" + "c" * 38: "Octo"}),
+        C,
+        "Invalid dashboard author name login: 'B-" + "c" * 38 + "'",
     ),
     (
         "author_names logins equal ignoring case",

@@ -16,6 +16,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from console import run_main
+from github_logins import is_login
 from review_io import PersistenceError, atomic_write_json, read_json
 from typed_fields import FieldError, FieldReader, describe
 
@@ -59,7 +60,6 @@ MAX_SNAPSHOT_EXCLUDE_PATTERNS = 100
 MAX_SNAPSHOT_EXCLUDE_PATTERN_LENGTH = 200
 REVIEWER_KEYS = {"id", "protocol_version", "trusted_ref", "scope", "manifest_path", "skill", "manifest"}
 DASHBOARD_KEYS = {"start_marker", "end_marker", "status_overrides", "author_names"}
-GITHUB_LOGIN_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}")
 # The sections the pull-request tracker computes. update-pr-dashboard renders these names, and they live here, beside
 # the validation that refuses a status override naming one, so the names refused and the names rendered cannot drift:
 # an override named like a computed section rendered that section twice and dropped the rows placed in it.
@@ -462,7 +462,7 @@ def normalize_author_names(value: Any) -> dict[str, str]:
     seen: set[str] = set()
     for key, name in names.items():
         login = READ.string(key, "a key of config.dashboard.author_names")
-        if not GITHUB_LOGIN_PATTERN.fullmatch(login):
+        if not is_login(login):
             raise ConfigurationError(f"Invalid dashboard author name login: {login!r}")
         if login.casefold() in seen:
             raise ConfigurationError(f"Duplicate dashboard author name login ignoring case: {login}")

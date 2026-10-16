@@ -857,12 +857,12 @@ class SourceSnapshotVerificationTests(GitTestCase):
 
     def verify(self, snapshot: Snapshot, root: Path) -> dict[str, Any]:
         marked = {root if name == "." else root.joinpath(*name.split("/")) for name in snapshot.reparse}
-        original = review_runtime._is_reparse_point
+        original = review_runtime.is_link_or_junction
 
         def is_reparse_point(path: Path, metadata: os.stat_result | None = None) -> bool:
             return path in marked or original(path, metadata)
 
-        patches: dict[str, Any] = {"_is_reparse_point": is_reparse_point, **snapshot.limits}
+        patches: dict[str, Any] = {"is_link_or_junction": is_reparse_point, **snapshot.limits}
         with mock.patch.multiple(review_runtime, **patches):
             return verify_source_snapshot(
                 root,
@@ -997,12 +997,12 @@ class SnapshotLinkTests(GitTestCase):
     def test_a_folder_that_resolves_outside_the_root_is_refused_when_no_reparse_point_is_seen(self) -> None:
         # The escape check stands on its own: with the reparse check blinded, resolving each folder still refuses it.
         self.link_src_outside()
-        with mock.patch.object(review_runtime, "_is_reparse_point", lambda path, metadata=None: False):
+        with mock.patch.object(review_runtime, "is_link_or_junction", lambda path, metadata=None: False):
             self.assert_refused(f"Source snapshot path escapes its root: {self.root / 'src' / 'app.py'}")
 
     def test_an_unlisted_folder_that_resolves_outside_the_root_is_refused_when_no_reparse_point_is_seen(self) -> None:
         directory_link(self.root / "linked", self.outside)
-        with mock.patch.object(review_runtime, "_is_reparse_point", lambda path, metadata=None: False):
+        with mock.patch.object(review_runtime, "is_link_or_junction", lambda path, metadata=None: False):
             self.assert_refused(f"Source snapshot path escapes its root: {self.root / 'linked'}")
 
     def test_a_listed_path_the_walk_never_visited_is_missing(self) -> None:
