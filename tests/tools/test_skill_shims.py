@@ -11,6 +11,9 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+
+from git_test_base import GitTestCase
 
 from tools import skill_shims
 
@@ -29,7 +32,7 @@ SHIM = (
 SHIM_PATH = Path(".agents/skills/widget-check/SKILL.md")
 
 
-class SkillShimsTestCase(unittest.TestCase):
+class SkillShimsTestCase(GitTestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="skill-shims-test.")
         self.root = Path(self._temporary.name).resolve() / "Repo With Spaces"
