@@ -102,7 +102,13 @@ class LocateTests(TemporaryTestCase):
         code, lines, _ = self.locate("alpha", "--repo", str(self.repo))
         self.assertEqual(1, code)
         self.assertEqual(
-            [f"AMBIGUOUS user {user.as_posix()}", f"AMBIGUOUS project-claude {project.as_posix()}"], lines[1:]
+            [
+                f"AMBIGUOUS user {user.as_posix()}",
+                f"AMBIGUOUS project-claude {project.as_posix()}",
+                f"STOP ambiguous skill name 'alpha' — found at: {user.as_posix()}, {project.as_posix()}."
+                " Rename one or delete the duplicate.",
+            ],
+            lines[1:],
         )
 
     def test_a_shim_that_points_to_the_project_skill_is_that_skill(self) -> None:
@@ -121,8 +127,9 @@ class LocateTests(TemporaryTestCase):
         self.assertEqual(1, code)
         self.assertEqual(
             [f"AMBIGUOUS project-agents {agents.as_posix()}", f"AMBIGUOUS project-claude {project.as_posix()}"],
-            lines[1:],
+            lines[1:3],
         )
+        self.assertTrue(lines[3].startswith("STOP ambiguous skill name 'alpha'"))
 
     def source_skill(self, name: str) -> Path:
         write(self.repo / "deploy-meta" / f"{name}.json", "{}")
@@ -164,15 +171,23 @@ class LocateTests(TemporaryTestCase):
         code, lines, _ = self.locate("alpha", "--repo", str(self.repo))
         self.assertEqual(1, code)
         self.assertEqual(
-            [f"AMBIGUOUS project-claude {project.as_posix()}", f"AMBIGUOUS source {source.as_posix()}"], lines[1:]
+            [f"AMBIGUOUS project-claude {project.as_posix()}", f"AMBIGUOUS source {source.as_posix()}"], lines[1:3]
         )
+        self.assertTrue(lines[3].startswith("STOP ambiguous skill name 'alpha'"))
 
     def test_missing_skill_lists_available_source_skills(self) -> None:
         self.source_skill("alpha")
         write(self.repo / "skills" / "shared-asset" / "SKILL.md", "x")
         code, lines, _ = self.locate("missing", "--repo", str(self.repo))
         self.assertEqual(1, code)
-        self.assertEqual(["NOT_FOUND missing", "AVAILABLE source alpha"], lines[1:])
+        self.assertEqual(
+            [
+                "NOT_FOUND missing",
+                "AVAILABLE source alpha",
+                "STOP skill 'missing' not found. Available skills: source: alpha",
+            ],
+            lines[1:],
+        )
 
     def test_missing_skill_lists_available_skills_per_scope(self) -> None:
         write(self.user_skills / "Beta" / "SKILL.md", "x")
@@ -182,17 +197,46 @@ class LocateTests(TemporaryTestCase):
         code, lines, _ = self.locate("missing", "--repo", str(self.repo))
         self.assertEqual(1, code)
         self.assertEqual(
-            ["NOT_FOUND missing", "AVAILABLE user alpha", "AVAILABLE user Beta", "AVAILABLE project-agents gamma"],
+            [
+                "NOT_FOUND missing",
+                "AVAILABLE user alpha",
+                "AVAILABLE user Beta",
+                "AVAILABLE project-agents gamma",
+                "STOP skill 'missing' not found. Available skills: user: alpha, Beta / project-agents: gamma",
+            ],
             lines[1:],
+        )
+
+    def test_the_stop_line_names_every_scope_as_locate_prints_it(self) -> None:
+        write(self.user_skills / "alpha" / "SKILL.md", "x")
+        write(self.repo / ".agents" / "skills" / "beta" / "SKILL.md", "x")
+        write(self.repo / ".claude" / "skills" / "gamma" / "SKILL.md", "x")
+        write(self.repo / ".claude" / "skills" / "delta" / "SKILL.md", "x")
+        self.source_skill("epsilon")
+        code, lines, _ = self.locate("missing", "--repo", str(self.repo))
+        self.assertEqual(1, code)
+        self.assertEqual(
+            "STOP skill 'missing' not found. Available skills: user: alpha / project-agents: beta"
+            " / project-claude: delta, gamma / source: epsilon",
+            lines[-1],
         )
 
     def test_outside_a_repository_only_the_user_scope_is_searched(self) -> None:
         write(self.root / ".claude" / "skills" / "alpha" / "SKILL.md", "x")
         lines = skill_inventory.locate("alpha", self.home, None)
-        self.assertEqual(["REPO none", "NOT_FOUND alpha"], lines)
+        self.assertEqual(
+            ["REPO none", "NOT_FOUND alpha", "STOP skill 'alpha' not found. Available skills: none"], lines
+        )
+
+    def test_an_empty_name_stops_with_the_usage_line(self) -> None:
+        for arguments in (("",), ("  ",), ()):
+            with self.subTest(arguments=arguments):
+                code, lines, error = run("locate", *arguments, "--home", str(self.home), "--repo", str(self.repo))
+                self.assertEqual((1, ""), (code, error))
+                self.assertEqual(["STOP usage: analyze-skill-cost <SkillName>"], lines)
 
     def test_invalid_names_are_rejected(self) -> None:
-        for name in ("../alpha", "a/b", "", "a b"):
+        for name in ("../alpha", "a/b", "a b"):
             with self.subTest(name=name):
                 code, lines, error = self.locate(name)
                 self.assertEqual((1, ""), (code, error))
@@ -1279,6 +1323,30 @@ class ScanTests(TemporaryTestCase):
         code, lines, error = run("scan", str(skill))
         self.assertEqual((1, ""), (code, error))
         self.assertEqual(f"FAILED cannot read {reviewer.as_posix()}: not UTF-8 text", lines[-1])
+
+    def test_a_skill_folder_scans_its_main_file_and_every_doc(self) -> None:
+        folder = self.root / "skill"
+        main = write(folder / "SKILL.md", "---\nname: x\n---\nFor each file, read it.\n")
+        zeta = write(folder / "references" / "zeta.md", "For each item.\n")
+        alpha = write(folder / "references" / "Alpha.md", "Then sort the output.\n")
+        write(folder / "scripts" / "tool.py", "# for each line\n")
+        write(folder / "data.json", '{"for each": 1}\n')
+        write(folder / "node_modules" / "skipped.md", "For each skipped.\n")
+        code, lines, error = run("scan", str(folder))
+        self.assertEqual(0, code, error)
+        self.assertEqual(
+            [main.as_posix(), alpha.as_posix(), zeta.as_posix()],
+            list(dict.fromkeys(line.split(" ")[1] for line in lines)),
+        )
+        # The folder form scans exactly what naming the main file and then every doc file does.
+        self.assertEqual(run("scan", str(main), str(alpha), str(zeta)), (code, lines, error))
+
+    def test_a_folder_without_its_main_file_fails_before_any_output(self) -> None:
+        folder = self.root / "no main"
+        write(folder / "references" / "a.md", "For each item.\n")
+        code, lines, error = run("scan", str(folder))
+        self.assertEqual((1, ""), (code, error))
+        self.assertEqual([f"FAILED no SKILL.md in {folder.as_posix()}"], lines)
 
     def test_long_lines_are_truncated(self) -> None:
         skill = write(self.root / "SKILL.md", "For each " + "x" * 300 + "\n")

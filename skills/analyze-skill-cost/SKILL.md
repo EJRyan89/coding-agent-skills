@@ -9,11 +9,9 @@ Audit a named agent skill for cost and efficiency regressions and render a bucke
 
 The measurements are commands of `skill_inventory.py`, run exactly as shown. Each prints one fact per line, with paths in forward-slash form; a missing or unreadable input prints `FAILED <reason>` as its last line; stop and report it. Do not re-measure, re-count, or write your own code for anything a command reports. Your job is the judgment the commands cannot make.
 
-## Step 0 — Parse `$ARGUMENTS`
-
-Trim leading/trailing whitespace. If empty, print `usage: analyze-skill-cost <SkillName>` and stop. Otherwise `SKILL_NAME=$ARGUMENTS`. No flags.
-
 ## Step 1 — Locate the skill
+
+`<SKILL_NAME>` is `$ARGUMENTS` as given, even when empty; the skill takes no flags.
 
 ```bash
 {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py" locate "<SKILL_NAME>"
@@ -23,8 +21,7 @@ It searches `.claude/skills/` in your home folder, the current repository's `.ag
 
 - `REPO <path>` or `REPO none`: the repository searched; nothing to do.
 - `SKILL_FILE <path>`, `SKILL_DIR <path>`, `SCOPE <scope>`: continue with these.
-- `NOT_FOUND <name>` followed by `AVAILABLE <scope> <name>` lines: stop with `skill '<SKILL_NAME>' not found. Available skills: <user: …> / <project: …>`.
-- `AMBIGUOUS <scope> <path>` lines: stop with `ambiguous skill name '<SKILL_NAME>' — found at: <paths>. Rename one or delete the duplicate.`
+- `STOP <message>`: show the message and stop. It ends the `NOT_FOUND <name>` and `AVAILABLE <scope> <name>` lines of a skill not found and the `AMBIGUOUS <scope> <path>` lines of one found twice, and is the only line for an empty name.
 
 ## Step 2 — Inventory and token estimate
 
@@ -51,10 +48,10 @@ Judge content, not size: a long body whose every section earns its space passes,
 
 ## Step 5 — Tool-call efficiency
 
-Pass the main file followed by every `doc` path:
+It scans the main file and every `doc` file:
 
 ```bash
-{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py" scan "<SKILL_FILE>" "<doc path>"
+{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py" scan "<SKILL_DIR>"
 ```
 
 Each `CUE <file> <line> <cue> <text>` is a candidate, not a finding. Read it in context and keep only real findings, anchored as `file:line`. Frontmatter is skipped, and only `wide-glob`, `generated-code`, and `shell-file-command` apply inside fenced blocks.
