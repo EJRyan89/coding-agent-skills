@@ -442,16 +442,16 @@ class ConfigOperationSetTests(GitTestCase):
         return validate_config(value)
 
     def test_operation_set_overrides_default_but_not_explicit_choices(self) -> None:
-        config = self.config(operation_repository_sets={"update-pr-tracker": "tracked"})
-        self.assertEqual(["owner/one", "owner/two"], resolve_repositories(config, operation="update-pr-tracker"))
+        config = self.config(operation_repository_sets={"update-pr-dashboard": "tracked"})
+        self.assertEqual(["owner/one", "owner/two"], resolve_repositories(config, operation="update-pr-dashboard"))
         self.assertEqual(["owner/one"], resolve_repositories(config, operation="review-prs"))
         self.assertEqual(
-            ["owner/one"], resolve_repositories(config, operation="update-pr-tracker", repository_set="primary")
+            ["owner/one"], resolve_repositories(config, operation="update-pr-dashboard", repository_set="primary")
         )
         self.assertEqual(
-            ["owner/two"], resolve_repositories(config, explicit=["owner/two"], operation="update-pr-tracker")
+            ["owner/two"], resolve_repositories(config, explicit=["owner/two"], operation="update-pr-dashboard")
         )
-        self.assertEqual("tracked", selected_repository_set(config, operation="update-pr-tracker"))
+        self.assertEqual("tracked", selected_repository_set(config, operation="update-pr-dashboard"))
         self.assertEqual("primary", selected_repository_set(config, operation="review-insights"))
         self.assertEqual("tracked", selected_repository_set(config, repository_set="tracked", operation="review-prs"))
 
@@ -1099,8 +1099,8 @@ class CoverageTests(GitTestCase):
 
 class TrackerIncompleteTests(GitTestCase):
     def test_incomplete_review_is_shown_but_not_reoffered_until_head_changes(self) -> None:
-        sys.path.insert(0, str(sibling_scripts("update-pr-tracker")))
-        import update_pr_tracker as tracker
+        sys.path.insert(0, str(sibling_scripts("update-pr-dashboard")))
+        import update_pr_dashboard as tracker
         from pr_change import CHANGED, UNCHANGED
 
         class Detector:

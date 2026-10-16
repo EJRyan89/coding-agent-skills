@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import json
 import re
+import stat
 import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from review_config import (
     DASHBOARD_AI_REVIEW_INCOMPLETE,
     DASHBOARD_AI_REVIEW_MISSING,
     DASHBOARD_AI_REVIEW_STALE,
+    DASHBOARD_AI_REVIEW_STATES,
     DASHBOARD_SECTION_AWAITING,
     DASHBOARD_SECTION_DRAFTS,
     DASHBOARD_SECTION_MINE,
@@ -80,7 +82,11 @@ OPEN_SECTIONS = {SECTION_TO_REVIEW, SECTION_AWAITING, SECTION_MINE}
 FINDINGS_LEGEND = (
     "Findings: M must fix, H should fix, S suggestion; flagged means you flagged it with flag-review-finding."
 )
-TRACKER_SCHEMA_VERSION = 1
+# The tracker record's version: 2 adds each shown row's AI review, which a version 1 record, still read, lacks.
+TRACKER_SCHEMA_VERSION = 2
+TRACKER_SCHEMA_VERSIONS = (1, TRACKER_SCHEMA_VERSION)
+# A new file the tracker writes is readable by its owner alone; a file it replaces keeps the mode it had.
+NEW_FILE_MODE = 0o600
 PULL_KEY_PATTERN = re.compile(r"([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*)#([1-9][0-9]*)")
 
 
@@ -292,11 +298,78 @@ def tracked_pulls(items: list[dict[str, Any]], login: str) -> list[str]:
 
 def validate_tracker_record(value: Any) -> dict[str, Any]:
     """The tracker record `update` keeps beside the configuration: the pull requests its last run held, keyed as a
-    status override is, so `override` can refuse one naming none of them."""
-    record = READ.json_object(value, "tracker", required={"schema_version", "pulls"})
-    READ.one_of(record["schema_version"], "tracker.schema_version", (TRACKER_SCHEMA_VERSION,))
+    status override is, so `override` can refuse one naming none of them, and the AI review each shown row had, so the
+    next update can name a review that went stale since. A version 1 record holds no reviews and reads as holding
+    none."""
+    version = READ.one_of(
+        READ.json_object(value, "tracker").get("schema_version"), "tracker.schema_version", TRACKER_SCHEMA_VERSIONS
+    )
+    fields = {"schema_version", "pulls"} | ({"reviews"} if version == TRACKER_SCHEMA_VERSION else set())
+    record = READ.json_object(value, "tracker", required=fields)
     pulls = normalize_pull_keys(READ.array(record["pulls"], "tracker.pulls", READ.string), "tracker")
-    return {"schema_version": TRACKER_SCHEMA_VERSION, "pulls": sorted(pulls)}
+    reviews = _validate_record_reviews(record.get("reviews", {}), pulls)
+    return {"schema_version": TRACKER_SCHEMA_VERSION, "pulls": sorted(pulls), "reviews": reviews}
+
+
+def _validate_record_reviews(value: Any, pulls: set[str]) -> dict[str, dict[str, Any]]:
+    """Each recorded row's AI review state and the head its review covered, which only a missing review lacks, keyed
+    as `pulls` is and naming only pull requests it holds."""
+    reviews: dict[str, dict[str, Any]] = {}
+    for raw_key, raw_review in READ.json_object(value, "tracker.reviews").items():
+        key = next(iter(normalize_pull_keys([raw_key], "tracker review")))
+        if key not in pulls or key in reviews:
+            raise TrackerError(f"Tracker review {key} names no pull request the record holds, or is named twice")
+        path = f"tracker.reviews.{raw_key}"
+        review = READ.json_object(raw_review, path, required={"state", "reviewed_head_sha"})
+        state = READ.one_of(review["state"], f"{path}.state", DASHBOARD_AI_REVIEW_STATES)
+        head = READ.optional(READ.string, review["reviewed_head_sha"], f"{path}.reviewed_head_sha")
+        if (head is None) != (state == DASHBOARD_AI_REVIEW_MISSING):
+            raise TrackerError(f"Tracker review {key} must name a reviewed head exactly when its review is not missing")
+        reviews[key] = {"state": state, "reviewed_head_sha": head}
+    return dict(sorted(reviews.items()))
+
+
+def stale_since(previous: dict[str, Any] | None, rows: list[Row]) -> list[str]:
+    """The rows whose AI review went stale since the update that wrote `previous`, in row order: one that update held
+    as current or incomplete, or whose review was written since, so it covers another head, and is now stale. A row a
+    status override pins is never offered for review, so it is left out, as is one `previous` did not show."""
+    if previous is None:
+        return []
+    went: list[str] = []
+    for row in rows:
+        before = previous["reviews"].get(row.key)
+        if row.ai_review != DASHBOARD_AI_REVIEW_STALE or row.overridden or before is None:
+            continue
+        held = before["state"] in {DASHBOARD_AI_REVIEW_CURRENT, DASHBOARD_AI_REVIEW_INCOMPLETE}
+        if held or before["reviewed_head_sha"] != row.item["reviewed_head_sha"]:
+            went.append(row.key)
+    return went
+
+
+def _record_reviews(rows: list[Row]) -> dict[str, dict[str, Any]]:
+    return {
+        row.key: {"state": row.ai_review, "reviewed_head_sha": row.item["reviewed_head_sha"]}
+        for row in sorted(rows, key=lambda row: row.key)
+    }
+
+
+def replacement(path: Path) -> tuple[Path, int]:
+    """Where a replacement of `path` is written and the mode it takes: the file the path leads to, through any
+    symbolic link, so a link stays a link and its target is what changes, with the mode that file has, or
+    `NEW_FILE_MODE` for a file not yet written. A file with another hard link is refused, since a replacement would
+    leave that name with the old content."""
+    target = path.resolve()
+    try:
+        status = target.stat()
+    except FileNotFoundError:
+        return target, NEW_FILE_MODE
+    except OSError as exc:
+        raise TrackerError(f"Cannot examine {path}: {exc.strerror or exc}") from exc
+    if status.st_nlink > 1:
+        raise TrackerError(
+            f"{path} has another hard link, which a replacement would leave with the old content; give it one name"
+        )
+    return target, stat.S_IMODE(status.st_mode)
 
 
 def apply_author_names(items: list[dict[str, Any]], author_names: dict[str, str] | None) -> list[dict[str, Any]]:
@@ -547,8 +620,8 @@ def render(
         if not members:
             continue
         summary = (
-            f"Pinned by a status override in {config_link}. Set or clear one through update-pr-tracker, which runs "
-            "<code>tracker_pipeline.py override</code>; do not edit the file by hand."
+            f"Pinned by a status override in {config_link}. Set or clear one through update-pr-dashboard, which runs "
+            "<code>dashboard_pipeline.py override</code>; do not edit the file by hand."
             if pinned
             else SECTION_SUMMARIES[section]
         )
@@ -612,21 +685,35 @@ def update_dashboard_rows(
     record: Path | None = None,
 ) -> list[Row]:
     """Update the owned section and return the rendered rows, then, given a `record` path, write there the pull
-    requests the tracker holds."""
+    requests the tracker holds and each shown row's AI review. A removal naming no pull request the tracker holds, and
+    a dashboard or record `replacement` refuses, are refused before GitHub is asked anything. Each write replaces the
+    file its path leads to, through any symbolic link, and keeps that file's mode."""
     try:
         items = validate_items(json.loads(input_path.read_text(encoding="utf-8-sig")))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise TrackerError(str(exc)) from exc
     if not start_marker or not end_marker or start_marker == end_marker:
         raise TrackerError("Dashboard markers must be distinct non-empty strings")
-    # Refuse a dashboard without its markers before asking GitHub anything.
+    # Refuse a dashboard without its markers, or one a write would not reach, before asking GitHub anything.
     _owned_span(_read_dashboard(dashboard), start_marker, end_marker)
+    dashboard_file, dashboard_mode = replacement(dashboard)
+    record_file, record_mode = (None, NEW_FILE_MODE) if record is None else replacement(record)
+    if not login:
+        raise TrackerError("GitHub login is required")
+    excluded = normalize_pull_keys(removals or [], "removal")
+    tracked = tracked_pulls(items, login)
+    unmatched = sorted(excluded - set(tracked))
+    if unmatched:
+        raise TrackerError(
+            f"Removal {unmatched[0]} names no collected pull request the configured user authored, is asked to "
+            "review, or takes part in; check the number, or leave it out if the pull request has closed"
+        )
     rows = evaluate(
         apply_author_names(items, author_names),
         login,
         detector or ChangeDetector(GitHubClient()),
         overrides=normalize_overrides(overrides),
-        removals=normalize_pull_keys(removals or [], "removal"),
+        removals=excluded,
     )
     owned = render(
         rows,
@@ -638,8 +725,9 @@ def update_dashboard_rows(
     # The GitHub calls above take seconds; read the dashboard again so edits saved meanwhile outside the owned
     # section are kept, since the owned section is rendered from the input alone.
     current = _read_dashboard(dashboard)
-    atomic_write_text(dashboard, splice(current, owned, start_marker=start_marker, end_marker=end_marker))
-    if record is not None:
-        tracked = {"schema_version": TRACKER_SCHEMA_VERSION, "pulls": tracked_pulls(items, login)}
-        atomic_write_json(record, tracked, validator=validate_tracker_record)
+    spliced = splice(current, owned, start_marker=start_marker, end_marker=end_marker)
+    atomic_write_text(dashboard_file, spliced, mode=dashboard_mode)
+    if record_file is not None:
+        held = {"schema_version": TRACKER_SCHEMA_VERSION, "pulls": tracked, "reviews": _record_reviews(rows)}
+        atomic_write_json(record_file, held, validator=validate_tracker_record, mode=record_mode)
     return rows

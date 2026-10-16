@@ -959,6 +959,14 @@ class StateAndLockTests(GitTestCase):
             if os.name != "nt":
                 self.assertEqual(0o600, path.stat().st_mode & 0o777)
 
+    def test_atomic_json_gives_the_replacement_the_mode_it_is_asked_for(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "state.json"
+            atomic_write_json(path, {"answer": 42}, mode=0o644)
+            self.assertEqual({"answer": 42}, read_json(path))
+            if os.name != "nt":  # Windows keeps no permission bits but read-only
+                self.assertEqual(0o644, path.stat().st_mode & 0o777)
+
 
 class AtomicWriteTests(GitTestCase):
     @contextlib.contextmanager

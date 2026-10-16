@@ -39,7 +39,7 @@ When a required argument is missing, a skill asks for it rather than guessing.
 | [`review-insights`](#review-insights) | You or the agent | `code-review-operations` bundle | Nothing extra |
 | [`review-prs`](#review-prs) | You or the agent | `code-review-operations` bundle | `copilot` (optional), `gh`, `pdftotext` (optional) |
 | [`update-coding-agent-skills`](#update-coding-agent-skills) | You | By default | Nothing extra |
-| [`update-pr-tracker`](#update-pr-tracker) | You or the agent | `code-review-operations` bundle | `gh` |
+| [`update-pr-dashboard`](#update-pr-dashboard) | You or the agent | `code-review-operations` bundle | `gh` |
 <!-- /generated:summary -->
 
 The summary and the first block of each section below are generated from each skill's `SKILL.md` frontmatter and `deploy-meta/<name>.json`. Change those, then run `python tools/skill_reference.py --write`; validation fails while this file is stale. The explanation after each generated block is written by hand.
@@ -63,7 +63,7 @@ Which runtimes run each skill. **Full** means every step runs there as it does i
 | [`review-insights`](#review-insights) | Full | Full | Partial |
 | [`review-prs`](#review-prs) | Full | Partial | Partial |
 | [`update-coding-agent-skills`](#update-coding-agent-skills) | Full | Full | Partial |
-| [`update-pr-tracker`](#update-pr-tracker) | Full | Partial | Partial |
+| [`update-pr-dashboard`](#update-pr-dashboard) | Full | Partial | Partial |
 
 - `repo-cleanup` on Copilot CLI: partial, lacking `user-only-start`. A headless copilot -p session cannot start it; start it from an interactive session.
 - `review-document` on Copilot CLI: partial, lacking `agent-delegation`. The reviewer role runs inline in the session, without the reviewer agent's guard.
@@ -71,8 +71,8 @@ Which runtimes run each skill. **Full** means every step runs there as it does i
 - `review-prs` on Codex CLI: partial, lacking `workflow`. Reviewers start as native subagents on the session's model, so a reviewer model or effort setting has no effect.
 - `review-prs` on Copilot CLI: partial, lacking `agent-delegation` and `workflow`. The generic reviewer and delegation-free specialists run inline; a specialists manifest that keeps agent-delegation fails.
 - `update-coding-agent-skills` on Copilot CLI: partial, lacking `user-only-start`. A headless copilot -p session cannot start it; start it from an interactive session.
-- `update-pr-tracker` on Codex CLI: partial, lacking `workflow`. The reviews it starts run through review-prs, which loses reviewer effort settings here.
-- `update-pr-tracker` on Copilot CLI: partial, lacking `agent-delegation` and `workflow`. The reviews it starts run through review-prs, which here runs the generic reviewer and delegation-free specialists inline and fails a specialists manifest that keeps agent-delegation.
+- `update-pr-dashboard` on Codex CLI: partial, lacking `workflow`. The reviews it starts run through review-prs, which loses reviewer effort settings here.
+- `update-pr-dashboard` on Copilot CLI: partial, lacking `agent-delegation` and `workflow`. The reviews it starts run through review-prs, which here runs the generic reviewer and delegation-free specialists inline and fails a specialists manifest that keeps agent-delegation.
 <!-- /generated:runtime-support -->
 
 ## `analyze-skill-cost`
@@ -404,23 +404,23 @@ In Copilot CLI, start it from an interactive session: a headless `copilot -p` se
 /update-coding-agent-skills --unpin
 ```
 
-## `update-pr-tracker`
+## `update-pr-dashboard`
 
-<!-- generated:update-pr-tracker -->
-Update the owned dashboard section for pull requests the configured user authors, reviews, or participates in. Use it when asked to refresh the pull request tracker or see which pull requests need attention.
+<!-- generated:update-pr-dashboard -->
+Update the owned dashboard section for pull requests the configured user authors, reviews, or participates in. Use it when asked to refresh the pull request dashboard or tracker, or to see which pull requests need attention.
 
 ```text
-/update-pr-tracker [owner/repo ... | --repository-set NAME] [--no-review] [--remove owner/repo#number ...]
+/update-pr-dashboard [owner/repo ... | --repository-set NAME] [--no-review] [--remove owner/repo#number ...]
 ```
 
 Started by you or the agent. Installed with the `code-review-operations` bundle. Needs `gh`.
-<!-- /generated:update-pr-tracker -->
+<!-- /generated:update-pr-dashboard -->
 
-- `owner/repo ...` or `--repository-set NAME`: which repositories' pull requests to track. With neither, it uses the configured `update-pr-tracker` set. Use the same scope on every run, or the rows for the other repositories disappear.
+- `owner/repo ...` or `--repository-set NAME`: which repositories' pull requests to track. With neither, it uses the configured `update-pr-dashboard` set. Use the same scope on every run, or the rows for the other repositories disappear.
 - `--no-review`: update the dashboard without offering reviews for pull requests whose AI review is missing or out of date.
-- `--remove owner/repo#number ...`: leave those pull requests out of this run's dashboard, for example one you consider approved. It removes only the row and never acts on GitHub.
+- `--remove owner/repo#number ...`: leave those pull requests out of this run's dashboard, for example one you consider approved. It removes only the row and never acts on GitHub. A number that matches none of your open pull requests is refused, naming it, rather than ignored.
 
-Without `--no-review`, it lists the pull requests that need a review, asks whether to review them, and, once you confirm, asks once for a re-review scope when any of them is out of date. A review is out of date when the pull request changed since it or GitHub's answers can't show that it didn't, never because a GitHub call failed: then the dashboard keeps its previous rows, no review is offered, and the skill names each pull request it couldn't compare, with the error. The pull requests it collects are kept in a new temporary directory, never in a skill directory.
+Without `--no-review`, it lists the pull requests that need a review, asks whether to review them, and, once you confirm, asks once for a re-review scope when any of them is out of date. A review is out of date when the pull request changed since it or GitHub's answers can't show that it didn't, never because a GitHub call failed: then the dashboard keeps its previous rows, no review is offered, and the skill names each pull request it couldn't compare, with the error. When the refresh after the reviews finds a review already out of date, because the pull request received commits while the run was reviewing, the skill says so; that pull request is offered again next run. The pull requests it collects are kept in a new temporary directory, never in a skill directory. A dashboard or configuration reached through a symbolic link is updated where the link leads, and the link and the file's permissions stay as they were.
 
 To keep a pull request under a status of your own, such as `on hold` or `delegated`, ask for it: the skill records it in `dashboard.status_overrides` in the code-review configuration through a validated write, which keeps every other value but rewrites the file with sorted keys and two-space indentation, and from the next update the row sits in a section named after that status. The pull request must be one the tracker held at its last update, so a mistyped number is refused rather than saved, and a new pull request needs an update first. The status can't be a state the tracker computed itself (`to review`, `awaiting response`, `my prs`, `my pull requests`, `drafts`, `missing`, `current`, `stale`, or `incomplete`). Unlike `--remove`, it lasts until you ask to clear it, which also works once the pull request has closed; listing the overrides marks each one whose pull request the tracker no longer holds.
 
@@ -429,6 +429,6 @@ The reviews it offers run through `review-prs`, so in Codex and Copilot CLI they
 Each row's Findings cell first shows the work that remains, then the progress. The remaining work is the latest AI review's open findings by severity, including those carried from earlier reviews, and how many of them you have flagged with `flag-review-finding`, for example `1M 1S open (1 flagged)` or `none open`. A legend line above the first section spells out the letters: `M` must fix, `H` should fix, `S` suggestion. The progress is what moved since your own last review of that pull request, for example `· 1 new, 1 addressed since your review`, or `· unchanged since your review`. "New" counts findings first raised after the AI review of the commit you reviewed and still open; "addressed" counts findings raised by then that a later review found fixed. Before you have reviewed, or when GitHub can't place your review's commit, it counts every finding the reviews found fixed instead, such as `1H 3S open · 2 addressed`, and shows the open findings alone when none has been fixed yet. A review recorded before the finding ledger reads the same way, and a migrated legacy review shows only its open findings, because it can't say what was addressed. The AI Review link opens the latest report, whose file name carries the review version, and which lists every open finding in full.
 
 ```text
-/update-pr-tracker
-/update-pr-tracker --remove octo-org/widgets#42
+/update-pr-dashboard
+/update-pr-dashboard --remove octo-org/widgets#42
 ```
