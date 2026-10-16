@@ -1,10 +1,23 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 SUBJECT="$SCRIPT_DIR/update.sh"
 FIXTURE=$(mktemp -d "${TMPDIR:-/tmp}/update-skills-test.XXXXXX")
-trap 'rm -rf -- "$FIXTURE"' EXIT
+# A command that fails can print nothing, so an exit set -e makes would leave only its status. The ERR trap keeps the
+# last command that failed, and an exit no FAIL line announced names its status and that command before the fixture is
+# removed.
+FAILED_COMMAND=""
+REPORTED=""
+trap 'FAILED_COMMAND="line $LINENO: $BASH_COMMAND"' ERR
+end_suite() {
+  local status=$?
+  if [ "$status" -ne 0 ] && [ -z "$REPORTED" ]; then
+    printf 'FAIL: the suite exited %s; the last command that failed: %s\n' "$status" "${FAILED_COMMAND:-none}" >&2
+  fi
+  rm -rf -- "$FIXTURE"
+}
+trap end_suite EXIT
 
 # Isolate git from the shell that started the suite, as skill-core's git_test_base.py does for the Python suites: a
 # home and global configuration of its own with the fixture identity, no hooks, and git's automatic maintenance off,
@@ -30,19 +43,34 @@ git_quiet() {
   git -c user.name=Test -c user.email=test@example.invalid "$@" >/dev/null 2>"$FIXTURE/git-quiet.stderr" || status=$?
   if [ "$status" -ne 0 ]; then
     printf 'FAIL: setup command exited %s: git %s\n%s\n' "$status" "$*" "$(<"$FIXTURE/git-quiet.stderr")" >&2
+    REPORTED=1
     exit "$status"
   fi
 }
-fail() { echo "FAIL: $*" >&2; exit 1; }
+fail() {
+  echo "FAIL: $*" >&2
+  REPORTED=1
+  exit 1
+}
 
+# The global configuration is one plain write, as git_test_base.py makes it. Each git config call replaces the file by
+# renaming a lock file onto it, which Windows refuses while another process holds the file open, such as a scanner
+# reading what the call before wrote, and git config then exits 4. The hooks folder is named from the home, which git
+# expands in its own form of the path.
 mkdir -p "$HOME/no-hooks"
-git_quiet config --file "$GIT_CONFIG_GLOBAL" user.name Fixture
-git_quiet config --file "$GIT_CONFIG_GLOBAL" user.email fixture@example.invalid
-git_quiet config --file "$GIT_CONFIG_GLOBAL" core.hooksPath "$HOME/no-hooks"
-git_quiet config --file "$GIT_CONFIG_GLOBAL" maintenance.auto false
-git_quiet config --file "$GIT_CONFIG_GLOBAL" maintenance.autoDetach false
-git_quiet config --file "$GIT_CONFIG_GLOBAL" gc.auto 0
-git_quiet config --file "$GIT_CONFIG_GLOBAL" gc.autoDetach false
+cat >"$GIT_CONFIG_GLOBAL" <<'EOF'
+[user]
+  name = Fixture
+  email = fixture@example.invalid
+[core]
+  hooksPath = ~/no-hooks
+[maintenance]
+  auto = false
+  autoDetach = false
+[gc]
+  auto = 0
+  autoDetach = false
+EOF
 
 # The upstream carries a stand-in deploy.py that records its arguments and exits with $FAKE_DEPLOY_EXIT. A deployment
 # that succeeds records the commit it ran from, as the real one does, and check names that commit, or prints
@@ -106,32 +134,57 @@ if [ -n "${UPDATE_TEST_SETUP_ONLY:-}" ]; then
   exit 0
 fi
 
-# A setup command that fails names itself and git's stderr on the suite's stderr, whether it is the self-test's
-# succeeding call or the global configuration, and the suite exits non-zero. A child run of the setup meets a Git
-# wrapper that fails the command whose arguments match the first argument with exit 4.
-SETUP_WRAPPER="$FIXTURE/setup git wrapper"
-mkdir -p "$SETUP_WRAPPER"
-expect_setup_failure() {
-  cat >"$SETUP_WRAPPER/git" <<EOF
+# The global configuration reads back as written, its hooks folder resolved from the home.
+for SETTING in user.name=Fixture user.email=fixture@example.invalid maintenance.auto=false maintenance.autoDetach=false \
+  gc.auto=0 gc.autoDetach=false; do
+  [ "$(git config --file "$GIT_CONFIG_GLOBAL" --get "${SETTING%%=*}")" = "${SETTING#*=}" ] ||
+    fail "global configuration: ${SETTING%%=*} is not ${SETTING#*=}"
+done
+[ "$(git config --file "$GIT_CONFIG_GLOBAL" --type=path --get core.hooksPath)" -ef "$HOME/no-hooks" ] ||
+  fail "global configuration: core.hooksPath does not name $HOME/no-hooks"
+
+# A child run of the setup meets a wrapper of the program the first argument names, which runs the third argument for
+# a command whose arguments match the second and the program itself for any other.
+SETUP_WRAPPER="$FIXTURE/setup wrapper"
+run_setup_child() {
+  rm -rf -- "$SETUP_WRAPPER"
+  mkdir -p "$SETUP_WRAPPER"
+  cat >"$SETUP_WRAPPER/$1" <<EOF
 #!/usr/bin/env bash
 case " \$* " in
-  $1) echo "error: refused by the test" >&2; exit 4 ;;
+  $2) $3 ;;
 esac
-exec "$(command -v git)" "\$@"
+exec "$(command -v "$1")" "\$@"
 EOF
-  chmod +x "$SETUP_WRAPPER/git"
+  chmod +x "$SETUP_WRAPPER/$1"
   set +e
   UPDATE_TEST_SETUP_ONLY=1 PATH="$SETUP_WRAPPER:$PATH" bash "$SCRIPT_DIR/${0##*/}" >"$FIXTURE/child.out" 2>"$FIXTURE/child.err"
   status=$?
   set -e
+}
+
+# A setup command that fails names itself and git's stderr on the suite's stderr, whether it is the self-test's
+# succeeding call or a repository the setup makes, and the suite exits non-zero. Git fails the matching command with 4.
+expect_setup_failure() {
+  run_setup_child git "$1" 'echo "error: refused by the test" >&2; exit 4'
   [ "$status" -ne 0 ] || fail "$3: the suite passed"
   grep -q -E "$2" "$FIXTURE/child.err" || fail "$3: exit $status, the command not named: $(<"$FIXTURE/child.err")"
   grep -q -x "error: refused by the test" "$FIXTURE/child.err" || fail "$3: git's stderr not shown: $(<"$FIXTURE/child.err")"
 }
 expect_setup_failure '*"/seed status "*' "^FAIL: succeeding setup command: exited 4: FAIL: setup command exited 4: git -C .*/seed status$" \
   "failing self-test call"
-expect_setup_failure '*" config --file "*" user.name Fixture "*' \
-  "^FAIL: setup command exited 4: git config --file .* user\.name Fixture$" "failing global configuration"
+expect_setup_failure '*" init --bare "*' "^FAIL: setup command exited 4: git init --bare -b main .*/upstream\.git$" \
+  "failing upstream repository"
+
+# The setup runs no git config, so a configuration write Git refuses with 4 cannot fail it.
+run_setup_child git '*" config "*' 'echo "error: refused by the test" >&2; exit 4'
+[ "$status" -eq 0 ] || fail "setup without git config: exit $status: $(<"$FIXTURE/child.err")"
+
+# A command that fails silently ends the suite with its status and a line naming it.
+run_setup_child mkdir '*"/no-hooks "*' 'exit 4'
+[ "$status" -eq 4 ] || fail "silent failure: expected exit 4, got $status: $(<"$FIXTURE/child.err")"
+grep -q -x -E "FAIL: the suite exited 4; the last command that failed: line [0-9]+: mkdir -p \"\\\$HOME/no-hooks\"" \
+  "$FIXTURE/child.err" || fail "silent failure: the command not named: $(<"$FIXTURE/child.err")"
 
 # The suite's isolation unsets a git variable named in any case, and keeps the two that locate git itself.
 LEFT=$(
@@ -156,8 +209,6 @@ new_clone() {
   case_number=$((case_number + 1))
   CLONE="$FIXTURE/clone $case_number (dev)"
   git_quiet clone "$@" "$UPSTREAM" "$CLONE"
-  git_quiet -C "$CLONE" config user.name Test
-  git_quiet -C "$CLONE" config user.email test@example.invalid
   git -C "$CLONE" rev-parse HEAD >"$CLONE/.fake-deployed"
 }
 
