@@ -577,6 +577,31 @@ class ReportTests(InsightFixture):
                     "Review record has no artifact hashes",
                 )
 
+    def test_an_invalid_record_outside_the_range_fails_the_report_naming_it(self) -> None:
+        self.commit("owner/repo", 7, ["Correctness"])
+        self.commit("owner/repo", 8, ["Correctness"], reviewed_at="2025-06-01T12:00:00+00:00")
+        json_path = self.archive / "owner" / "repo" / "pulls" / "8" / "review.json"
+        stored_json = json_path.read_bytes()
+        markdown_path = json_path.with_suffix(".md")
+        stored_markdown = markdown_path.read_bytes()
+        cases = {
+            "Markdown changed since its hash": lambda: markdown_path.write_bytes(stored_markdown + b"\nEdited.\n"),
+            "an unsupported schema version": lambda: json_path.write_text(
+                json.dumps({**json.loads(stored_json), "schema_version": 99}), encoding="utf-8"
+            ),
+        }
+        for name, tamper in cases.items():
+            with self.subTest(name):
+                tamper()
+                self.assertFailed(
+                    self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31"),
+                    f"Invalid review pair {json_path}: ",
+                )
+                json_path.write_bytes(stored_json)
+                markdown_path.write_bytes(stored_markdown)
+        code, out, err = self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31")
+        self.assertEqual(0, code, out + err)
+
     def test_output_survives_a_console_that_cannot_encode_it(self) -> None:
         # Windows pipes default to a legacy code page; RECOMMENDATION quotes a reviewer's category as written.
         self.commit("owner/repo", 7, ["Naming → clarity ✓"])
