@@ -1218,6 +1218,31 @@ class ChangeTypeTests(SynthesisFixture):
             with self.subTest(name):
                 self.refused(json_path, self.recommendation(json_path, "move-to-script", "Move", target), message)
 
+    def test_a_move_to_script_path_of_260_characters_is_accepted_and_a_longer_or_shell_expanded_one_refused(
+        self,
+    ) -> None:
+        json_path, _ = self.run_report()
+        longest = "tools/" + "a" * 251 + ".py"
+        self.assertEqual(260, len(longest))
+        recommendation = self.recommendation(
+            json_path, "move-to-script", "Move", {"repository": "owner/repo", "path": longest}
+        )
+        code, out, _ = self.synthesize(
+            json_path, self.write_result(json_path, self.result(json_path, [recommendation])), "--check"
+        )
+        self.assertEqual(0, code, out)
+        script = "path must name the script, validator, or test that takes over the rule"
+        cases = {
+            "261 characters": "tools/" + "a" * 252 + ".py",
+            "a backtick": "tools/`check`.py",
+            "a dollar sign": "tools/$check.py",
+            "a line separator": "tools/check\u2028.py",
+        }
+        for name, path in cases.items():
+            with self.subTest(name):
+                target = {"repository": "owner/repo", "path": path}
+                self.refused(json_path, self.recommendation(json_path, "move-to-script", "Move", target), script)
+
     def test_recommendations_are_shown_by_priority_then_cheapest_fix_first(self) -> None:
         json_path, _ = self.run_report()
         guide = {"repository": "owner/repo", "path": GUIDE}

@@ -225,6 +225,28 @@ class LeftoverTests(Fixture):
         self.assertIsNotNone(self.tip("nested"))
         self.assertIsNotNone(self.tip("nested-tree"))
 
+    def test_a_branch_tracking_another_remotes_branch_of_its_name_is_kept_and_a_nested_name_is_cleaned(self) -> None:
+        for name in ("forked", "feature/x"):
+            self.landed(name)
+        git(self.clone, "remote", "add", "fork", str(self.remote))
+        git(self.clone, "fetch", "--quiet", "fork")
+        git(self.clone, "branch", "--quiet", "--set-upstream-to", "fork/forked", "forked")
+        self.assertEqual(
+            ("refs/remotes/fork/forked", "refs/remotes/origin/feature/x"),
+            tuple(
+                git(self.clone, "rev-parse", "--symbolic-full-name", f"{name}@{{upstream}}")
+                for name in ("forked", "feature/x")
+            ),
+        )
+        planned, applied = self.clean()
+        self.assertEqual(
+            {"forked": "keep", "feature/x": "delete"},
+            {fields[0]: fields[4] for fields in facts(planned, "BRANCH")},
+        )
+        self.assertEqual([["feature/x"]], facts(applied, "DELETED"))
+        self.assertIsNotNone(self.tip("forked"))
+        self.assertIsNone(self.tip("feature/x"))
+
     def test_a_detached_worktree_is_offered_when_clean_and_on_a_remote_branch_else_kept_with_why(self) -> None:
         main = git(self.clone, "rev-parse", "main")
         pushed = self.push_branch("pushed")
@@ -282,6 +304,47 @@ class LeftoverTests(Fixture):
         self.assertIn(" (detached)", self.summary(lines))
         code, lines = self.invoke("remove-directory", "--plan", str(self.plan_file), "--path", str(trees["on-main"]))
         self.preserved(lines, (trees["on-main"], "not a detached worktree or orphan directory offered by this plan"))
+
+    def test_a_worktree_or_branch_that_moves_after_planning_is_preserved_as_moved_and_never_offered(self) -> None:
+        main = git(self.clone, "rev-parse", "main")
+        trees = {name: self.area / f"{name} wt" for name in ("kept", "moving")}
+        for path in trees.values():
+            git(self.clone, "worktree", "add", "--quiet", "--detach", str(path), main)
+        git(self.clone, "branch", "fresh", "main")
+        git(self.clone, "branch", "in-tree", "main")
+        git(self.clone, "worktree", "add", "--quiet", str(self.area / "in-tree wt"), "in-tree")
+        finished, lines = self.sync()
+        self.assertTrue(finished, lines)
+        _, planned = self.plan()
+        self.assertEqual(
+            {"fresh": "ask-delete", "in-tree": "ask-remove-worktree"},
+            {fields[0]: fields[4] for fields in facts(planned, "BRANCH") if fields[0] in {"fresh", "in-tree"}},
+        )
+        self.assertEqual(
+            {"kept wt": "ask", "moving wt": "ask"},
+            {
+                Path(fields[0]).name: fields[2]
+                for fields in facts(planned, "WORKTREE")
+                if Path(fields[0]).name in {"kept wt", "moving wt"}
+            },
+        )
+        moved = self.commit(trees["moving"], "work started after the plan")
+        fresh = self.commit_locally("fresh")
+        in_tree = self.commit(self.area / "in-tree wt", "work started after the plan")
+        _, applied = self.apply()
+        self.assertEqual({"kept wt": main}, {Path(path).name: sha for path, sha in facts(applied, "CONFIRM_DETACHED")})
+        self.assertEqual([], facts(applied, "CONFIRM_LOCAL"))
+        preserved = {Path(fields[0]).name: fields[1] for fields in facts(applied, "PRESERVED")}
+        self.assertEqual({"fresh": "moved", "in-tree": "moved", "moving wt": "moved"}, preserved)
+        self.assertEqual((fresh, in_tree), (self.tip("fresh"), self.tip("in-tree")))
+        self.assertEqual(moved, git(trees["moving"], "rev-parse", "HEAD"))
+
+        self.commit(trees["kept"], "work started after the offer")
+        code, lines = self.invoke("remove-directory", "--plan", str(self.plan_file), "--path", str(trees["kept"]))
+        self.assertEqual(0, code, lines)
+        self.preserved(lines, (trees["kept"], "moved"))
+        self.assertEqual([], facts(lines, "REMOVED"))
+        self.assertTrue(trees["kept"].is_dir())
 
     def test_directories_git_no_longer_tracks_are_reported_and_deleted_only_on_confirmation(self) -> None:
         self.push_branch("live")
@@ -472,6 +535,19 @@ class LeftoverTests(Fixture):
         )
         self.assertTrue((claude / "worktrees" / "victim" / "keep.txt").exists())
         self.assertTrue((shared / "my repo" / "victim" / "keep.txt").exists())
+
+    def test_a_worktree_area_that_is_itself_a_link_is_never_searched(self) -> None:
+        # A junction on Windows and a symbolic link elsewhere, in place of the repository's .claude/worktrees.
+        target = self.outside_area("worktrees target")
+        (self.clone / ".claude").mkdir()
+        link_directory(target, self.clone / ".claude" / "worktrees")
+        (self.clone / ".git" / "info").mkdir(exist_ok=True)
+        (self.clone / ".git" / "info" / "exclude").write_text(".claude\n", encoding="utf-8")
+        _, applied = self.clean()
+        self.assertEqual([], facts(applied, "ORPHAN"))
+        plan = rc.load_plan(self.plan_file)
+        self.assertEqual([], rc.orphan_directories([], plan["orphan_areas"], rc.area_anchors(plan)))
+        self.assertTrue((target / "victim" / "keep.txt").exists())
 
     def test_the_confirmed_deletion_refuses_a_directory_that_resolves_outside_its_worktree_area(self) -> None:
         stale = self.area / "stale wt"

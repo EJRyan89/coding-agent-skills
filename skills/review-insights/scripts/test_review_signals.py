@@ -260,6 +260,46 @@ class DisagreementTests(SignalFixture):
             lines,
         )
 
+    def test_a_finding_between_a_disagreeing_pair_in_place_order_never_hides_it(self) -> None:
+        # The middle finding agrees with each end: it shares the first's reviewer and the last's severity.
+        self.review(
+            7,
+            1,
+            [
+                finding("MUST_FIX", "src/a.cs", 10, "Unvalidated path", source="security"),
+                finding("SUGGESTION", "src/a.cs", 11, "Log the path", source="security"),
+                finding("SUGGESTION", "src/a.cs", 12, "Name the path variable", source="style"),
+            ],
+            reviewers=self.REVIEWERS,
+        )
+        _, lines = self.signal_lines()
+        self.assertEqual(
+            [
+                f"REVIEWER_DISAGREEMENT R1 owner/repo#7 head={HEAD[:12]} src/a.cs:10",
+                "DISAGREEING R1 MUST_FIX owner/repo#7 v1 F001 security",
+                "DISAGREEING R1 SUGGESTION owner/repo#7 v1 F003 style",
+            ],
+            lines,
+        )
+
+    def test_findings_three_lines_apart_disagree_and_four_lines_apart_do_not(self) -> None:
+        self.review(
+            7,
+            1,
+            [
+                finding("MUST_FIX", "src/a.cs", 10, "Unvalidated path", source="security"),
+                finding("SUGGESTION", "src/a.cs", 13, "Name the path variable", source="style"),
+                finding("MUST_FIX", "src/b.cs", 10, "Unvalidated path", source="security"),
+                finding("SUGGESTION", "src/b.cs", 14, "Name the path variable", source="style"),
+            ],
+            reviewers=self.REVIEWERS,
+        )
+        _, lines = self.signal_lines()
+        self.assertEqual(
+            [f"REVIEWER_DISAGREEMENT R1 owner/repo#7 head={HEAD[:12]} src/a.cs:10"],
+            [line for line in lines if line.startswith("REVIEWER_DISAGREEMENT")],
+        )
+
     def test_findings_joined_by_disagreeing_pairs_are_one_place_and_distant_ones_are_another(self) -> None:
         self.review(
             7,
