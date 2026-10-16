@@ -45,6 +45,13 @@ SUITE_PROFILE = "suite:design-review"
 SUITE_SOURCES = ["docs/design.md", SUITE_PROFILE]
 
 
+# The characters a title or a move-to-script path may not hold, as the prompt and the self-check state them.
+UNSAFE = (
+    "quotes, backticks, dollar signs, backslashes, the line separators U+2028 and U+2029, or control characters such "
+    "as tabs and line breaks"
+)
+
+
 def _lines(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
@@ -346,6 +353,30 @@ class RecordTests(SynthesisFixture):
             "is now synthesized",
         )
 
+    def test_a_title_that_begins_with_a_dash_is_decided_as_printed(self) -> None:
+        json_path, _ = self.run_report()
+        result = self.valid_result(json_path)
+        result["recommendations"][0]["title"] = "-Timezones"
+        for entry in result["categories"]:
+            entry["addressed_by"] = ["-Timezones"]
+        code, out, err = self.synthesize(json_path, self.write_result(json_path, result))
+        self.assertEqual(0, code, err)
+        self.assertIn("TITLE REC-003 -Timezones", out.splitlines())
+        code, out, err = self.run_main(
+            "decide",
+            "--report",
+            str(json_path),
+            "REC-003",
+            "--synthesized",
+            "-Timezones",
+            "--flags",
+            self.unlinked,
+            "accepted",
+        )
+        self.assertEqual(
+            (0, [f"FLAG_RESOLVED {self.unlinked}", "DECIDED REC-003 accepted"]), (code, out.splitlines()), err
+        )
+
     def test_each_invalid_result_is_refused_with_its_problems_and_changes_nothing(self) -> None:
         json_path, _ = self.run_report()
 
@@ -400,6 +431,40 @@ class RecordTests(SynthesisFixture):
             "a theme without examples": (
                 {"themes": [{"theme": "Time", "count": 1, "examples": [], "areas": []}]},
                 "must be a list of 1 to 3 finding references",
+            ),
+            # An entry of the wrong kind is a problem naming its field, never an error escaping the check.
+            "evidence that is not a reference": (
+                {"recommendations": recommendation(evidence=[["owner/repo#7 v1 F001"]])},
+                "recommendations[0].evidence names",
+            ),
+            "an example that is not a reference": (
+                {"themes": [{"theme": "Time", "count": 1, "examples": [{}], "areas": []}]},
+                "themes[0].examples names",
+            ),
+            "a flag that is not an ID": (
+                {"recommendations": recommendation(flags=[{"id": 1}])},
+                "which is not an open flag in the input",
+            ),
+            "a category name that is not text": (
+                {"categories": [{**self.categories(json_path)[0], "category": ["Correctness"]}]},
+                "categories[0].category",
+            ),
+            "a category addressed by a title that is not text": (
+                {"categories": [{**self.categories(json_path)[0], "addressed_by": [[TITLE]]}]},
+                "categories[0].addressed_by must list titles",
+            ),
+            "a pattern addressed by a title that is not text": (
+                {
+                    "custom_rule_patterns": [
+                        {
+                            "pattern": "Retry loops",
+                            "rules": [],
+                            "assessment": "Worth a rule.",
+                            "addressed_by": [[TITLE]],
+                        }
+                    ]
+                },
+                "custom_rule_patterns[0].addressed_by must list titles",
             ),
             # A boolean or an integral float compares equal to the version; only the integer itself is it.
             **{
@@ -590,6 +655,22 @@ class RecordTests(SynthesisFixture):
 
 
 class RegenerationTests(SynthesisFixture):
+    def test_a_regeneration_refused_for_size_leaves_the_report_and_its_synthesis_files_as_they_were(self) -> None:
+        json_path, _ = self.run_report()
+        names = ("insights.json", "insights.md", rs.INPUT_NAME, rs.CONTEXT_NAME, rs.PROMPT_NAME)
+        before = {name: (json_path.parent / name).read_bytes() for name in names}
+        self.commit("owner/repo", 8, ["Correctness", "Correctness", "Style"])
+        # The regenerated report outgrows the cap while its context does not.
+        with mock.patch.object(rs, "MAXIMUM_BYTES", json_path.stat().st_size):
+            code, out, err = self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31")
+        self.assertEqual((1, ""), (code, err))
+        self.assertIn("FAILED The report would exceed", out)
+        self.assertEqual(before, {name: (json_path.parent / name).read_bytes() for name in names})
+        result_path = self.write_result(json_path, self.valid_result(json_path))
+        code, out, err = self.synthesize(json_path, result_path)
+        self.assertEqual(0, code, err)
+        self.assertIn("SYNTHESIZED_COUNT 1", out)
+
     def test_a_recorded_synthesis_is_kept_while_its_input_is_unchanged_and_superseded_after(self) -> None:
         json_path, _ = self.run_report()
         self.synthesize(json_path, self.write_result(json_path, self.valid_result(json_path)))
@@ -807,7 +888,7 @@ class StageTests(GitTestCase):
         self.addCleanup(temporary.cleanup)
         directory = Path(temporary.name)
         with mock.patch.object(rs, "MAXIMUM_BYTES", 10), self.assertRaises(rs.PersistenceError) as raised:
-            rs.write_inputs(directory, [{"kind": "totals"}], {"refs": ["owner/repo#1 v1 F001"]})
+            rs.staged_inputs(directory, [{"kind": "totals"}], {"refs": ["owner/repo#1 v1 F001"]})
         self.assertIn("would exceed 10 bytes", str(raised.exception))
         self.assertEqual([], list(directory.iterdir()))
 
@@ -986,8 +1067,35 @@ class ClaimTests(SynthesisFixture):
             "into at most 15 patterns",
             "At most 10 themes",
             "and 12 recommendations",
+            "`title` is one line of at most 120 characters",
+            "as a repository-relative path of at most 260 characters",
+            f"Neither a `title` nor a `move-to-script` target's `path` holds any of these: {UNSAFE}.",
         ):
             self.assertIn(phrase, prompt)
+
+    def test_a_refused_title_and_target_name_the_limit_the_prompt_states(self) -> None:
+        json_path, _ = self.run_report()
+        item = copy.deepcopy(self.valid_result(json_path)["recommendations"][0])
+        script = {"type": "move-to-script", "title": "Script"}
+        unsafe = [
+            {**item, "title": "Line\u2028separator"},
+            {**item, **script, "target": {"repository": "owner/repo", "path": "checks/a\u2029.py"}},
+            {**item, **script, "title": "Long", "target": {"repository": "owner/repo", "path": "a" * 258 + ".py"}},
+        ]
+        result_path = self.write_result(json_path, self.valid_result(json_path, recommendations=unsafe))
+        _, out, _ = self.synthesize(json_path, result_path, "--check")
+        target = (
+            "target path must name the script, validator, or test that takes over the rule: a repository-relative "
+            f"file that is not prose guidance, of at most 260 characters without {UNSAFE}"
+        )
+        self.assertEqual(
+            [
+                f"PROBLEM recommendations[0].title must be one line of at most 120 characters without {UNSAFE}",
+                f"PROBLEM recommendations[1].{target}",
+                f"PROBLEM recommendations[2].{target}",
+            ],
+            [line for line in out.splitlines() if line.startswith("PROBLEM recommendations")],
+        )
 
 
 class ChangeTypeTests(SynthesisFixture):

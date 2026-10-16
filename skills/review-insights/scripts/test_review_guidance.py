@@ -103,6 +103,54 @@ class RuleTests(GitTestCase):
         self.assertIsNone(rg.compare(conventions[0], checklist[1]), "unrelated rules make no candidate")
 
 
+def generated(tag: str, planted: str) -> str:
+    """A guidance file of list items near READ_BYTES, each rule's words its own but two every rule shares, and one
+    planted rule."""
+    lines = [f"- {planted}"]
+    while sum(map(len, lines)) < rg.READ_BYTES - 200:
+        index = len(lines)
+        lines.append(f"- Reviewers check {' '.join(f'{tag}{index}{letter}' for letter in 'abcde')} handling.")
+    return "\n".join(lines) + "\n"
+
+
+class OverlapBoundTests(GitTestCase):
+    """The overlap search stays bounded however large the guidance files it reads."""
+
+    def counted(self, limit: int) -> mock.Mock:
+        """A stand-in for `compare` that fails once it has been called more than `limit` times."""
+        real = rg.compare
+
+        def compare(first: rg.Rule, second: rg.Rule) -> dict[str, Any] | None:
+            if stand_in.call_count > limit:
+                raise AssertionError(f"compared more than {limit} rule pairs")
+            return real(first, second)
+
+        stand_in = mock.Mock(side_effect=compare)
+        return stand_in
+
+    def test_two_files_near_the_read_limit_compare_only_rules_that_share_their_rarer_words(self) -> None:
+        texts = {
+            ("docs/a.md", "1"): generated("a", "Reviewers must flag unchecked inputs in request handlers."),
+            ("docs/b.md", "2"): generated("b", "Reviewers should flag unchecked inputs in request handlers."),
+        }
+        compare = self.counted(100)
+        with mock.patch.object(rg, "compare", compare):
+            found = rg.overlaps("owner/repo", texts, {})
+        self.assertEqual(
+            [("conflict", [1, 1], ["must", "should"])], [(i["relation"], i["lines"], i["differs"]) for i in found]
+        )
+        self.assertGreater(len(rg.rules("docs/a.md", texts["docs/a.md", "1"])), 10_000, "the files hold many rules")
+
+    def test_files_of_near_identical_rules_compare_at_most_the_budget(self) -> None:
+        rule = "- Reviewers flag unchecked inputs in request handlers.\n"
+        texts = {("docs/a.md", "1"): rule * 300, ("docs/b.md", "2"): rule * 300}
+        compare = self.counted(1_000)
+        with mock.patch.object(rg, "CANDIDATE_BUDGET", 1_000), mock.patch.object(rg, "compare", compare):
+            found = rg.overlaps("owner/repo", texts, {})
+        self.assertLessEqual(compare.call_count, 1_000)
+        self.assertTrue(found and {"duplicate"} == {item["relation"] for item in found})
+
+
 class ReadTests(GitTestCase):
     def setUp(self) -> None:
         super().setUp()
@@ -123,6 +171,19 @@ class ReadTests(GitTestCase):
         return rg.read_guidance(
             ["owner/repo"], self.records, {"owner/repo": self.checkout} if checkouts is None else checkouts
         )
+
+    def read_at(self, commit: str) -> rg.Guidance:
+        """The guidance of reviewers whose records were built at `commit`."""
+        self.records = {
+            path: reviewed(
+                record["review"]["adapter"]["name"],
+                record["review"]["reviewed_at"],
+                {name: self.files[name] for name in record["review"]["adapter"]["source_hashes"]},
+                commit,
+            )
+            for path, record in self.records.items()
+        }
+        return self.read()
 
     def statuses(self, guidance: rg.Guidance) -> dict[str, tuple[str, str, bool]]:
         return {line["path"]: (line["role"], line["status"], line["content"] is not None) for line in guidance.lines}
@@ -190,17 +251,20 @@ class ReadTests(GitTestCase):
         commit = git.output(["rev-parse", "HEAD"], directory=self.checkout).strip()
         path = self.checkout / "docs" / "checklist.md"
         path.write_text("Rewritten since.\n", encoding="utf-8")
-        content = rg.read_pinned(self.checkout, commit, "docs/checklist.md", digest(CHECKLIST))
-        self.assertEqual(rg.Pinned(CHECKLIST.encode("utf-8")), content)
-        self.assertEqual(rg.Pinned(None), rg.read_pinned(self.checkout, None, "docs/checklist.md", digest(CHECKLIST)))
-        self.assertEqual(rg.Pinned(None), rg.read_pinned(self.checkout, commit, "docs/checklist.md", "0" * 64))
+        self.assertNotEqual(digest(CHECKLIST), rg.read_working_copy(self.checkout, "docs/checklist.md").digest)
+        content = rg.read_committed(self.checkout, commit, "docs/checklist.md", digest(CHECKLIST))
+        self.assertEqual(CHECKLIST.encode("utf-8"), content)
+        self.assertIsNone(rg.read_committed(self.checkout, None, "docs/checklist.md", digest(CHECKLIST)))
+        self.assertIsNone(rg.read_committed(self.checkout, commit, "docs/checklist.md", "0" * 64))
+        self.assertEqual("included", self.statuses(self.read_at(commit))["docs/checklist.md"][1])
 
     def test_a_path_that_leaves_the_checkout_is_never_read(self) -> None:
         outside = self.checkout.parent / "outside.md"
         outside.write_text(CHECKLIST, encoding="utf-8", newline="\n")
         for path in ("../outside.md", str(outside).replace("\\", "/")):
             with self.subTest(path):
-                self.assertEqual(rg.Pinned(None), rg.read_pinned(self.checkout, None, path, digest(CHECKLIST)))
+                self.assertEqual(rg.WorkingCopy(None), rg.read_working_copy(self.checkout, path))
+                self.assertIsNone(rg.read_committed(self.checkout, "f" * 40, path, digest(CHECKLIST)))
 
     def test_an_unreadable_working_copy_falls_back_to_the_commit_and_says_why(self) -> None:
         git = GitClient()
@@ -209,14 +273,13 @@ class ReadTests(GitTestCase):
         git.output(["commit", "--quiet", "-m", "Guidance"], directory=self.checkout)
         commit = git.output(["rev-parse", "HEAD"], directory=self.checkout).strip()
         with unreadable("checklist.md"):
-            pinned = rg.read_pinned(self.checkout, commit, "docs/checklist.md", digest(CHECKLIST))
-            missing = rg.read_pinned(self.checkout, None, "docs/checklist.md", digest(CHECKLIST))
+            copy = rg.read_working_copy(self.checkout, "docs/checklist.md")
+            guidance = self.read_at(commit)
+        self.assertEqual(rg.WorkingCopy(None, None, "PermissionError: Permission denied"), copy)
+        self.assertEqual("included", self.statuses(guidance)["docs/checklist.md"][1])
         self.assertEqual(
-            [
-                rg.Pinned(CHECKLIST.encode("utf-8"), "PermissionError: Permission denied"),
-                rg.Pinned(None, "PermissionError: Permission denied"),
-            ],
-            [pinned, missing],
+            ["GUIDANCE_UNREADABLE owner/repo docs/checklist.md fallback=commit PermissionError: Permission denied"],
+            guidance.unreadable,
         )
 
     def test_a_report_names_an_unreadable_file_and_reads_the_rest(self) -> None:
@@ -235,6 +298,54 @@ class ReadTests(GitTestCase):
             guidance.unreadable,
         )
         self.assertEqual([], self.read().unreadable)
+
+    def test_the_working_copy_is_read_once_however_many_commits_and_versions_pinned_it(self) -> None:
+        self.records = {
+            Path("a.json"): reviewed(
+                "security", "2026-01-02T00:00:00+00:00", {"docs/checklist.md": CHECKLIST}, "1" * 40
+            ),
+            Path("b.json"): reviewed("style", "2026-01-03T00:00:00+00:00", {"docs/checklist.md": CHECKLIST}, "2" * 40),
+            Path("c.json"): reviewed("docs", "2026-01-04T00:00:00+00:00", {"docs/checklist.md": CONVENTIONS}, "3" * 40),
+        }
+        (self.checkout / "docs" / "checklist.md").write_text("Rewritten since.\n", encoding="utf-8")
+        with mock.patch.object(rg, "_working_copy", side_effect=rg._working_copy) as read:
+            guidance = self.read()
+        self.assertEqual(1, read.call_count)
+        self.assertEqual(["unavailable", "unavailable"], [line["status"] for line in guidance.lines])
+
+    def test_a_file_unreadable_at_every_version_is_named_once(self) -> None:
+        self.two_versions()
+        with unreadable("conventions.md"):
+            guidance = self.read()
+        self.assertEqual(
+            ["GUIDANCE_UNREADABLE owner/repo docs/conventions.md fallback=none PermissionError: Permission denied"],
+            guidance.unreadable,
+        )
+
+    def test_a_file_found_at_a_commit_for_some_versions_only_says_so_once(self) -> None:
+        git = GitClient()
+        git.output(["init", "--quiet"], directory=self.checkout)
+        git.output(["add", "."], directory=self.checkout)
+        git.output(["commit", "--quiet", "-m", "Guidance"], directory=self.checkout)
+        commit = git.output(["rev-parse", "HEAD"], directory=self.checkout).strip()
+        self.records = {
+            Path("a.json"): reviewed(
+                "security", "2026-01-02T00:00:00+00:00", {"docs/conventions.md": CONVENTIONS}, commit
+            ),
+            Path("b.json"): reviewed(
+                "style", "2026-01-03T00:00:00+00:00", {"docs/conventions.md": CONVENTIONS_LOWERED}, commit
+            ),
+        }
+        with unreadable("conventions.md"):
+            guidance = self.read()
+        self.assertEqual(
+            ["GUIDANCE_UNREADABLE owner/repo docs/conventions.md fallback=partial PermissionError: Permission denied"],
+            guidance.unreadable,
+        )
+        self.assertEqual(
+            {("security",): "included", ("style",): "unavailable"},
+            {tuple(line["reviewers"]): line["status"] for line in guidance.lines},
+        )
 
     def two_versions(self) -> None:
         """Two reviewers given the same checklist and different versions of the conventions."""
@@ -258,7 +369,10 @@ class ReadTests(GitTestCase):
             ["owner/repo"],
             self.records,
             {"owner/repo": self.checkout},
-            lambda _checkout, _commit, _path, pinned: rg.Pinned(texts.get(pinned)),
+            rg.Reader(
+                working=lambda _checkout, _path: rg.WorkingCopy(None),
+                committed=lambda _checkout, _commit, _path, pinned: texts.get(pinned),
+            ),
         )
         conventions = sorted(
             [
