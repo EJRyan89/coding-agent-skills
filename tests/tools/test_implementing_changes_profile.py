@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 import frontmatter
+from git_test_base import GitTestCase
 
 from deployer import platform_support
 
@@ -44,7 +45,7 @@ def headings(text: str) -> dict[str, str]:
     return {parts[index].strip(): parts[index + 1].strip() for index in range(1, len(parts), 2)}
 
 
-class ImplementingChangesProfileTest(unittest.TestCase):
+class ImplementingChangesProfileTest(GitTestCase):
     def test_profile_has_every_required_heading_with_content(self) -> None:
         found = headings(PROFILE.read_text(encoding="utf-8"))
         for name in REQUIRED_HEADINGS:
