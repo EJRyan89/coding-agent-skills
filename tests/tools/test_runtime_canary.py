@@ -1771,6 +1771,37 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
         # A home whose deployment failed is still one the canary made, so --remove-home may delete it.
         self.assertTrue(runtime_canary.claimed(self.home))
 
+    def test_a_named_skill_with_a_source_that_cannot_be_read_reports_the_deployment_error(self) -> None:
+        # A broken source names no skills, so the skill it holds is not refused as unknown; the deployment says why.
+        broken = self.make_source()
+        (broken / "deploy-meta" / "alpha.json").write_text("[]", encoding="utf-8")
+        output = io.StringIO()
+        with (
+            mock.patch.object(runtime_canary, "REPOSITORY_ROOT", broken),
+            mock.patch.object(runtime_canary, "create_home", return_value=self.home),
+            contextlib.redirect_stdout(output),
+            contextlib.redirect_stderr(output),
+        ):
+            code = runtime_canary.main(["alpha", "--runtime", "codex"])
+        self.assertEqual(1, code, output.getvalue())
+        log = self.home / ".runtime-canary" / "deploy-test-shipped.log"
+        self.assertIn(f'DEPLOY_FAILED test/shipped "{forward(log)}"', output.getvalue())
+        self.assertNotIn("unknown skill", output.getvalue())
+        self.assertIn("invalid metadata shape", log.read_text(encoding="utf-8"))
+        # With every source readable, a name none of them holds is still the usage error.
+        (broken / "deploy-meta" / "alpha.json").write_text(json.dumps({"required_vars": []}), encoding="utf-8")
+        self.assertTrue(runtime_canary.discoverable(broken))
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(runtime_canary, "REPOSITORY_ROOT", broken),
+            mock.patch("tempfile.mkdtemp", side_effect=AssertionError("made a home")),
+            contextlib.redirect_stderr(stderr),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            runtime_canary.main(["alpha", "no-such-skill"])
+        self.assertEqual(2, raised.exception.code)
+        self.assertIn("unknown skill: no-such-skill", stderr.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
