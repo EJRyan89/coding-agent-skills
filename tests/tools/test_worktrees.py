@@ -1559,8 +1559,8 @@ class NewWorktreeTests(WorktreesTestCase):
 
 
 class ListTests(WorktreesTestCase):
-    def rows(self, environment: dict[str, str] | None = None) -> dict[str, list[str]]:
-        result = self.run_script(["list"], cwd=self.tree, environment=environment)
+    def rows(self, environment: dict[str, str] | None = None, cwd: Path | None = None) -> dict[str, list[str]]:
+        result = self.run_script(["list"], cwd=cwd or self.tree, environment=environment)
         self.assertEqual(0, result.returncode, result.stderr)
         lines = result.stdout.splitlines()
         self.assertTrue(lines[0].startswith("BRANCH"))
@@ -1604,8 +1604,11 @@ class ListTests(WorktreesTestCase):
         self.assertEqual(before, index.read_bytes())
 
     def test_list_marks_a_checkout_git_cannot_read_rather_than_counting_it_clean(self) -> None:
-        (self.tree / ".git").write_text(f"gitdir: {self.root / 'gone'}\n", encoding="utf-8")
-        self.assertEqual(["feat/demo", "unreadable", "0", "0", "-"], self.rows()["feat/demo"][:5])
+        # Rewritten in place: git for Windows hides the file, and Windows refuses to create a hidden file anew.
+        with (self.tree / ".git").open("r+", encoding="utf-8") as dot_git:
+            dot_git.write(f"gitdir: {self.root / 'gone'}\n")
+            dot_git.truncate()
+        self.assertEqual(["feat/demo", "unreadable", "0", "0", "-"], self.rows(cwd=self.hub)["feat/demo"][:5])
 
 
 class GitProgramTests(GitTestCase):

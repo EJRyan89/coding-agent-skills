@@ -2408,25 +2408,16 @@ class UnitTests(CleanupTestCase):
         self.assertTrue(repository.is_dir(), "the repository root itself is never removed")
         self.assertTrue(area.is_dir())
 
-    def test_dirty_count_counts_a_rename_once(self) -> None:
+    def test_a_rename_is_one_change_and_the_path_it_came_from_never_an_ignored_one(self) -> None:
         root = Path(tempfile.mkdtemp(prefix="repo cleanup status ")).resolve()
-        self.addCleanup(remove_tree, root)
-        git(root, "init", "--quiet")
-        (root / "old name.txt").write_text("content\n", encoding="utf-8")
-        git(root, "add", ".")
-        git(root, "commit", "--quiet", "-m", "initial")
-        git(root, "mv", "old name.txt", "new name.txt")
-        (root / "untracked.txt").write_text("x\n", encoding="utf-8")
-        self.assertEqual(2, rc.dirty_count(rc.Services(), root))
-
-    def test_the_path_a_rename_came_from_is_never_read_as_an_ignored_path(self) -> None:
-        root = Path(tempfile.mkdtemp(prefix="repo cleanup ignored ")).resolve()
         self.addCleanup(remove_tree, root)
         git(root, "init", "--quiet")
         (root / "!! notes.txt").write_text("content\n", encoding="utf-8")
         git(root, "add", ".")
         git(root, "commit", "--quiet", "-m", "initial")
         git(root, "mv", "!! notes.txt", "notes.txt")
+        (root / "untracked.txt").write_text("x\n", encoding="utf-8")
+        self.assertEqual(2, rc.dirty_count(rc.Services(), root))
         (root / ".gitignore").write_text("*.log\n", encoding="utf-8")
         (root / "build.log").write_text("log\n", encoding="utf-8")
         self.assertEqual(["build.log"], rc.ignored_entries(rc.Services(), root))
