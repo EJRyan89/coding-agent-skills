@@ -4,7 +4,7 @@ description: >-
   Procedure for adding or changing a skill in this repository, shipped under skills/ or repository-only under
   .claude/skills: its SKILL.md, scripts, metadata, or documentation. Use it when asked to add, create, change, fix,
   or extend a skill here. Not for deployer-only, repository-tool, or documentation-only changes.
-allowed-tools: ["Bash(python tools/new_skill.py *)", "PowerShell(python tools/new_skill.py *)", "Bash(python tools/skill_shims.py --write)", "PowerShell(python tools/skill_shims.py --write)", "Bash(python tools/skill_reference.py --write)", "PowerShell(python tools/skill_reference.py --write)", "Bash(python tools/skill_reference.py)", "PowerShell(python tools/skill_reference.py)", "Bash(python -B tests/run_validation.py *)", "PowerShell(python -B tests/run_validation.py *)"]
+allowed-tools: ["Bash(python tools/new_skill.py *)", "PowerShell(python tools/new_skill.py *)", "Bash(python tools/skill_shims.py --write)", "PowerShell(python tools/skill_shims.py --write)", "Bash(python tools/skill_reference.py --write)", "PowerShell(python tools/skill_reference.py --write)", "Bash(python tools/skill_reference.py)", "PowerShell(python tools/skill_reference.py)", "Bash(python tools/runtime_prompts.py --write)", "PowerShell(python tools/runtime_prompts.py --write)", "Bash(python -B tests/run_validation.py *)", "PowerShell(python -B tests/run_validation.py *)"]
 ---
 
 # Adding or changing a skill
@@ -64,6 +64,8 @@ python tools/skill_reference.py --write
 - A new skill, or bundle, gets a row in the "Included skills" table in `README.md`, linking its section in `docs/skills.md`.
 - A code-review skill's configuration or records belong in `docs/code-review-operations.md`.
 - After a repository skill's frontmatter change, rewrite its shim with `python tools/skill_shims.py --write`; validation fails while a shim differs.
+- After a change to a prompt a skill's script writes for a subagent, rewrite the samples under `docs/runtime-prompts/` with `python tools/runtime_prompts.py --write`; validation fails while a sample is stale.
+- When the change sets or clears `disable-model-invocation`, or adds or removes an `Agent` or `Workflow` grant, update the shipped skill's `runtime_support` in `deploy-meta/<name>.json` as "Metadata" describes; validation fails while it disagrees with the frontmatter.
 
 ## 5. Verify
 
@@ -77,6 +79,8 @@ Then read the whole diff once more for personal paths, organization names, and g
 
 Validation never starts a runtime. When the change touches how a shipped skill names its own files, its `allowed-tools`, its runtime adapter, or the agents it declares, also run the `runtime-canary` repository skill for the changed skills and record its result in the pull request.
 
+When the change touches a skill's prompt, model guidance, or reviewer instructions and the skill has scenarios under `tests/fixtures/skill-evals/<name>/`, also run the `evaluate-skill` repository skill for it, and commit the result it writes to `docs/skill-evaluations.md`. It calls models, so validation never runs it.
+
 ## 6. Audit the cost
 
 Validation checks the contract; `analyze-skill-cost` judges what the change costs: token footprint, deterministic work left to prose, delegation, and the `model`, `allowed-tools`, and listing frontmatter. From the worktree, run `analyze-skill-cost <name>` for each changed skill, shipped or repository, and check its `Scope`: `locate` reports `SCOPE source` for `skills/<name>` here and `SCOPE project-claude` for `.claude/skills/<name>`, never the deployed copy.
@@ -85,4 +89,4 @@ Validation checks the contract; `analyze-skill-cost` judges what the change cost
 
 ## 7. Open the pull request
 
-Follow `implement-change` for the rebase, the typed title, the body from the template, and `gh pr create`, naming each issue the change resolves in its own `Closes #<number>` line. Put the `runtime-canary` result and any SUGGESTION left from the audit in the body.
+Follow `implement-change` for the rebase, the typed title, the body from the template, and `gh pr create`, naming each issue the change resolves in its own `Closes #<number>` line. Put the `runtime-canary` result, the `evaluate-skill` run with its table, and any SUGGESTION left from the audit in the body. A change to a skill's arguments or status lines is a contract change that no check compares, so state it under `## Upgrade note` as "Contract files" in `docs/implementing-changes.md` says.
