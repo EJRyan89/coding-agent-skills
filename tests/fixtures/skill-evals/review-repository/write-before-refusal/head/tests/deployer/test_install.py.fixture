@@ -1,0 +1,23 @@
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from deployer.install import Refusal, install
+
+
+class InstallTests(unittest.TestCase):
+    def test_a_skill_another_source_owns_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source, home = Path(temporary) / "source", Path(temporary) / "home"
+            (source / "notes").mkdir(parents=True)
+            home.mkdir()
+            (home / ".owners.json").write_text(json.dumps({"notes": "other"}), encoding="utf-8")
+            with self.assertRaisesRegex(Refusal, "notes belongs to other"):
+                install(source, home, "notes", "mine")
+
+
+if __name__ == "__main__":
+    unittest.main()

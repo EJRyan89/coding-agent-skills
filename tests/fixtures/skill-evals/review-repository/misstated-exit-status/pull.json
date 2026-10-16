@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "repository": "example/report-exports",
+  "number": 15,
+  "title": "Say how the export sweep exits on a missing folder",
+  "head_ref": "sweep-exit",
+  "body": "Documents the export sweep's exit status, for the scheduled run that checks it.\n\n## Upgrade note\n\nNone.\n",
+  "base_ref": "main",
+  "threads": [],
+  "manifest_path": ".claude/skills/review-repository/references/specialists.json"
+}

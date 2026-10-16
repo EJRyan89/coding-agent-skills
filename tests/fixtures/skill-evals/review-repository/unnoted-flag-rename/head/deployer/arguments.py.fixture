@@ -1,0 +1,15 @@
+"""The deploy command's options."""
+
+from __future__ import annotations
+
+import argparse
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="deploy.py", description="Install skills into a home folder.")
+    parser.add_argument("--home", required=True, help="the home folder to install into")
+    parser.add_argument(
+        "--preview", dest="dry_run", action="store_true", help="print what would change and change nothing"
+    )
+    parser.add_argument("--all", action="store_true", help="install every skill the source holds")
+    return parser

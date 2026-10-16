@@ -1,0 +1,23 @@
+"""Read a pull request's commits into a local checkout for review."""
+
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+from typing import Any
+
+
+def fetch_head(checkout: Path, pull: dict[str, Any]) -> str:
+    """Fetch the pull request's head into the checkout and return the commit fetched. The number is checked to be a
+    positive integer before it reaches the command."""
+    number = pull["number"]
+    if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+        raise ValueError(f"pull request number {number!r} is not a positive integer")
+    subprocess.run(
+        ["git", "-C", str(checkout), "fetch", "--quiet", "origin", f"refs/pull/{number}/head"],
+        check=True,
+        capture_output=True,
+    )
+    return subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "FETCH_HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()

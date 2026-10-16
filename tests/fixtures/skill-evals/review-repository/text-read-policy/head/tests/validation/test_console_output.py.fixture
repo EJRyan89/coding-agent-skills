@@ -1,0 +1,26 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+from console_output import print_call_problems
+
+
+class PrintCallTests(unittest.TestCase):
+    def problems(self, source: str) -> list[str]:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "tools").mkdir()
+            (root / "tools" / "sweep.py").write_text(source, encoding="utf-8")
+            return print_call_problems(root)
+
+    def test_a_print_call_fails(self) -> None:
+        self.assertEqual(["tools/sweep.py:2 calls print"], self.problems("def main():\n    print('done')\n"))
+
+    def test_a_report_call_passes(self) -> None:
+        self.assertEqual([], self.problems("def main():\n    report('done')\n"))
+
+
+if __name__ == "__main__":
+    unittest.main()
