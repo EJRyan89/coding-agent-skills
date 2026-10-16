@@ -13,6 +13,7 @@ from itertools import pairwise
 from pathlib import Path
 
 from validation_support import (
+    ATTRIBUTE_LOOKUPS,
     MODULE_LOADERS,
     REPOSITORY_ROOT,
     CallableResolver,
@@ -707,8 +708,6 @@ REFERENCED_PATH_COPIES = frozenset({"pathlib.Path.copy", "pathlib.Path.move"})
 # The callables that make a callable of a method or an attribute named by a string: methodcaller("write_text", text)
 # calls path.write_text(text) on the path it is given, and attrgetter("unlink") returns path.unlink.
 METHOD_NAMERS = frozenset({"operator.methodcaller", "operator.attrgetter"})
-# The calls that return the attribute their literal second argument names, read as that attribute.
-LITERAL_ATTRIBUTE_GETTERS = frozenset({"getattr", "builtins.getattr"})
 WRITE_CALLABLES = FILESYSTEM_WRITES["qualified"] | MODE_OPENERS.keys() | IN_PLACE_READERS | {"os.open", BASIC_CONFIG}
 # The modules that hold a write callable, each of them with every package above it: a module passed as a value, as in
 # self.fs = shutil, is called through an attribute the policy cannot follow. A class, named in CapWords, as
@@ -783,7 +782,7 @@ def _literal_callee(node: ast.expr, resolver: CallableResolver) -> ast.expr | No
     if not isinstance(node, ast.Call):
         return None
     loader = resolver.name(node.func)
-    if loader in LITERAL_ATTRIBUTE_GETTERS and (read := _literal_attribute_owner(node, resolver)) is not None:
+    if loader in ATTRIBUTE_LOOKUPS and (read := _literal_attribute_owner(node, resolver)) is not None:
         owner, attribute = read
         receiver = _literal_callee(owner, resolver) or owner
         return built(ast.Attribute(value=receiver, attr=attribute, ctx=ast.Load()))
