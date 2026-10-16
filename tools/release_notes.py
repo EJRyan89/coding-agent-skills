@@ -15,8 +15,10 @@ and gains `- Pull request: #N` from the commit's squash title when it names none
 --from defaults to the last tag before --to, and --to to HEAD. It prints the `## VERSION` section, or with --write
 inserts it into docs/upgrade-notes.md above the newest version's section, refusing a version the file already has.
 The section opens with the largest leading Level word of its entries, ordered by docs/releasing.md, or states that
-there are no upgrade-note entries. It exits 0 on success, 1 when --write is refused, and 2 when git cannot read the
-range or the documented levels or an entry's Level cannot be read. The release procedure in docs/releasing.md runs
+there are no upgrade-note entries. It exits 0 on success, 1 when --write is refused because the file already has the
+version, and 2, with an `ERROR:` line naming what it could not read or write, when git cannot read the range, when
+docs/releasing.md or its documented levels or an entry's Level cannot be read, or, with --write, when
+docs/upgrade-notes.md cannot be read as UTF-8 text or written. The release procedure in docs/releasing.md runs
 it before tagging, and the upgrade-notes check in tests/validation reads the same entries.
 """
 
@@ -223,6 +225,13 @@ def insert_section(notes: str, version: str, section: str) -> str:
     return notes[: newest.start()] + section + "\n" + notes[newest.start() :]
 
 
+def _read_releasing(root: Path) -> str:
+    try:
+        return (root / RELEASING_DOC).read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ValueError(f"cannot read {RELEASING_DOC}: {error}") from error
+
+
 def main(argv: list[str] | None = None, root: Path = REPOSITORY_ROOT) -> int:
     parser = argparse.ArgumentParser(description="Write a release's upgrade-notes section from its merged commits.")
     parser.add_argument("version", help="the version being released, such as v0.5.0")
@@ -234,7 +243,7 @@ def main(argv: list[str] | None = None, root: Path = REPOSITORY_ROOT) -> int:
         parser.error(f"the version must look like v1.2.3, not {options.version!r}")
     try:
         start = options.start or last_tag_before(root, options.end)
-        levels = versioning_levels((root / RELEASING_DOC).read_text(encoding="utf-8"))
+        levels = versioning_levels(_read_releasing(root))
         section = version_section(options.version, range_entries(root, start, options.end), levels)
     except (OSError, ValueError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
@@ -244,11 +253,20 @@ def main(argv: list[str] | None = None, root: Path = REPOSITORY_ROOT) -> int:
         return 0
     path = root / UPGRADE_NOTES
     try:
-        updated = insert_section(path.read_text(encoding="utf-8").replace("\r\n", "\n"), options.version, section)
+        notes = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+    except (OSError, UnicodeError) as error:
+        print(f"ERROR: cannot read {UPGRADE_NOTES}: {error}", file=sys.stderr)
+        return 2
+    try:
+        updated = insert_section(notes, options.version, section)
     except ValueError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
-    path.write_text(updated, encoding="utf-8", newline="\n")
+    try:
+        path.write_text(updated, encoding="utf-8", newline="\n")
+    except OSError as error:
+        print(f"ERROR: cannot write {UPGRADE_NOTES}: {error}", file=sys.stderr)
+        return 2
     print(f"Wrote ## {options.version} from {start}..{options.end} into {UPGRADE_NOTES}.")
     return 0
 

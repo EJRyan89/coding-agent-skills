@@ -53,20 +53,24 @@ class RepositoryHygieneFixtures(GitTestCase):
             group = {"matcher": matcher, "hooks": [{"type": "command", "command": hook_command}]}
             return {"hooks": {"PreToolUse": [group]}}
 
-        self.assertEqual([], hub_guard_matcher_problems(settings("Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell")))
+        every = "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell|Monitor"
+        self.assertEqual([], hub_guard_matcher_problems(settings(every)))
         self.assertEqual([], hub_guard_matcher_problems(settings("*")))
         # The tracked command checks the opt-in before starting Python; the guard it runs is still the one matched.
         gated = '[ "$(git config --type=bool --get coding-agent-skills.hubGuard)" = true ] || exit 0; ' + command
-        self.assertEqual(
-            [], hub_guard_matcher_problems(settings("Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell", gated))
-        )
+        self.assertEqual([], hub_guard_matcher_problems(settings(every, gated)))
         self.assertEqual(
             ["the hub guard's hook does not match the PowerShell tool"],
-            hub_guard_matcher_problems(settings("Edit|Write|MultiEdit|NotebookEdit|Bash")),
+            hub_guard_matcher_problems(settings("Edit|Write|MultiEdit|NotebookEdit|Bash|Monitor")),
+        )
+        # Monitor runs a shell command, so a matcher naming every editing tool and both shells still misses one.
+        self.assertEqual(
+            ["the hub guard's hook does not match the Monitor tool"],
+            hub_guard_matcher_problems(settings("Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell")),
         )
         self.assertEqual(
             ["the hub guard's hook does not match the Bash tool", "the hub guard's hook does not match the Write tool"],
-            hub_guard_matcher_problems(settings("Edit|MultiEdit|NotebookEdit|PowerShell")),
+            hub_guard_matcher_problems(settings("Edit|MultiEdit|NotebookEdit|PowerShell|Monitor")),
         )
         broken_settings: list[dict[str, object]] = [
             settings("Bash|PowerShell", "python -B tools/other.py guard"),

@@ -13,15 +13,20 @@ inventory.
 
 It writes skills/<name>/SKILL.md (frontmatter and a title only), deploy-meta/<name>.json, and the generated
 part of the skill's docs/skills.md section, then prints one REMAINING line for each thing validation still needs
-from a person, such as the reference's hand-written explanation and the README entry. It refuses, changing
-nothing, when the name is invalid or already used, when the name or description breaks the Agent Skills
-frontmatter rules, when a tool is not in deployer/tools.py, or when a --skill-dep names no skill in the source.
+from a person: each problem the skill reference check reports, such as the section's hand-written explanation and
+the README entry; each allowed-tools grant that no step uses or whose pattern matches no command the skill shows,
+by the analyze-skill-cost inventory's rules, which validation applies; and each --tool, which nothing the skill runs
+yet runs. It refuses, changing nothing, when the name is invalid or already a shipped skill, a bundle, or a
+repository skill under .claude/skills, which would make the cost audit's lookup by name ambiguous, when the name or
+description breaks the Agent Skills frontmatter rules, a description over the length a runtime adapter allows
+included, when a tool is not in deployer/tools.py, when a --skill-dep names no skill in the source, or when the
+skill reference cannot be read or lacks a generated block; a write that fails partway removes what it wrote.
 
 With --repository it scaffolds one of this repository's own skills instead: .claude/skills/<name>/SKILL.md, with
 no allowed-tools unless given, since a repository skill runs the repository's tools rather than scripts of its own,
-and its .agents/skills shim, written by tools/skill_shims.py. A repository skill has no metadata or reference
-section, so it takes no --tool or --opt-in, and its name must not be a shipped skill's, which would make the cost
-audit's lookup by name ambiguous.
+and its .agents/skills shim, written by tools/skill_shims.py, then prints the REMAINING lines for its grants. A
+repository skill has no metadata or reference section, so it takes no --tool or --opt-in, and its name must not be a
+shipped skill's, which would make the cost audit's lookup by name ambiguous.
 
 It writes no scripts: validation requires a regression suite for any script under scripts/, so a stub would be
 a placeholder that lands untested. Given --skill-dep, it records the skill, with skill-core, in skill_deps and prints
@@ -47,6 +52,7 @@ from skill_roots import sibling_scripts
 
 from deployer import runtime_support
 from deployer import source as deploy_source
+from deployer.render import MAX_DESCRIPTION
 from deployer.tools import SKILL_TOOLS
 from tools import skill_reference, skill_shims
 from tools.checkout import ROOT_HELP, checkout_root
@@ -190,6 +196,10 @@ def _frontmatter_values(
     tag = deploy_source.xml_tag(description)
     if tag:
         raise ScaffoldError(f"--description contains the XML tag '{tag}', {deploy_source.AGENT_SKILLS_RULE}")
+    if len(description) > MAX_DESCRIPTION:
+        raise ScaffoldError(
+            f"--description is {len(description)} characters; runtime adapters allow at most {MAX_DESCRIPTION}"
+        )
     if not user_only and not skill_reference.says_when(description):
         raise ScaffoldError(f"--description must {skill_reference.WHEN_RULE}")
     if argument_hint is not None:
@@ -240,18 +250,77 @@ def scaffold(
     meta = root / "deploy-meta" / f"{name}.json"
     if name in existing.skills or name in existing.bundles or skill_md.parent.exists() or meta.exists():
         raise ScaffoldError(f"'{name}' is already a skill, a bundle, or an existing path")
-    if not (root / skill_reference.REFERENCE).is_file():
-        raise ScaffoldError(f"{skill_reference.REFERENCE.as_posix()} does not exist")
+    if (root / skill_shims.SKILLS / name).exists():
+        raise ScaffoldError(
+            f"'{name}' is already a repository skill under {skill_shims.SKILLS.as_posix()}, "
+            "which would make the cost audit's lookup by name ambiguous"
+        )
+    reference = _current_reference(root, existing)
 
-    skill_md.parent.mkdir(parents=True)
-    skill_md.write_text(
-        skill_markdown(name, description, argument_hint, user_only, allowed),
-        encoding="utf-8",
-        newline="\n",
-    )
-    meta.write_text(metadata(tools, opt_in, user_only, allowed, dependencies), encoding="utf-8", newline="\n")
-    skill_reference.write(root)
-    return skill_reference.problems(root)
+    try:
+        skill_md.parent.mkdir(parents=True)
+        skill_md.write_text(
+            skill_markdown(name, description, argument_hint, user_only, allowed),
+            encoding="utf-8",
+            newline="\n",
+        )
+        meta.write_text(metadata(tools, opt_in, user_only, allowed, dependencies), encoding="utf-8", newline="\n")
+        skill_reference.write(root)
+        found = skill_reference.problems(root)
+    except BaseException:
+        _remove_scaffold(root, skill_md, meta, reference)
+        raise
+    unrun = [
+        f"deploy-meta/{name}.json declares the tool {tool}, which nothing the skill runs yet runs; run it from a "
+        "script or a step, or remove it from tools"
+        for tool in tools
+    ]
+    return [*found, *grant_remaining(root, skill_md.relative_to(root)), *unrun]
+
+
+def _current_reference(root: Path, source: deploy_source.Source) -> str:
+    """The skill reference's text, once it is known to hold every generated block and the reference check can read
+    everything it reads, so a scaffold never stops after writing for want of them."""
+    reference = root / skill_reference.REFERENCE
+    if not reference.is_file():
+        raise ScaffoldError(f"{skill_reference.REFERENCE.as_posix()} does not exist")
+    try:
+        document = reference.read_text(encoding="utf-8")
+        skill_reference.regenerate(document, skill_reference.entries(source))
+        skill_reference.problems(root)
+    except UnicodeError as exc:
+        raise ScaffoldError(f"{skill_reference.REFERENCE.as_posix()} or a file it reads is not UTF-8: {exc}") from exc
+    return document
+
+
+def _remove_scaffold(root: Path, skill_md: Path, meta: Path, reference: str) -> None:
+    """Undo a scaffold that failed after it started writing: its two files, its folder, and the reference's update."""
+    for path in (skill_md, meta):
+        path.unlink(missing_ok=True)
+    if skill_md.parent.is_dir() and not any(skill_md.parent.iterdir()):
+        skill_md.parent.rmdir()
+    path = root / skill_reference.REFERENCE
+    if path.read_text(encoding="utf-8") != reference:
+        path.write_text(reference, encoding="utf-8", newline="\n")
+
+
+# What validation still needs of a fresh skill's grants, by the inventory line that says so.
+GRANT_REMAINING = {
+    "UNUSED_ALLOWED": "grants {detail}, which no step uses yet; use it in a step or remove it from allowed-tools",
+    "IDLE_ALLOWED": "grants {detail}, which matches no command in its fences or code spans yet; show the command it "
+    "covers or remove the grant",
+}
+
+
+def grant_remaining(root: Path, skill_md: Path) -> list[str]:
+    """Each allowed-tools grant of the skill at skill_md, relative to root, that validation's grant check still fails,
+    read by the analyze-skill-cost inventory as that check reads it."""
+    found = []
+    for line in skill_inventory.tools(root / skill_md):
+        kind, _, detail = line.partition(" ")
+        if kind in GRANT_REMAINING:
+            found.append(f"{skill_md.as_posix()} " + GRANT_REMAINING[kind].format(detail=detail))
+    return found
 
 
 def scaffold_repository(
@@ -262,7 +331,8 @@ def scaffold_repository(
     user_only: bool = False,
     allowed_tools: list[str] | None = None,
 ) -> list[Path]:
-    """Write a new repository skill's SKILL.md and its shim, and return the paths written, relative to root."""
+    """Write a new repository skill's SKILL.md and its shim, and return the paths written, relative to root, its
+    SKILL.md first."""
     description, argument_hint, allowed = _frontmatter_values(
         name, description, argument_hint, user_only, allowed_tools
     )
@@ -345,6 +415,8 @@ def _main_repository(arguments: argparse.Namespace, allowed: list[str] | None) -
         return 2
     for path in written:
         print(f"CREATED {path.as_posix()}")
+    for problem in grant_remaining(arguments.root, written[0]):
+        print(f"REMAINING {problem}")
     return 0
 
 

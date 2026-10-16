@@ -283,6 +283,43 @@ class MainTests(FixtureRepository):
             (1, "", f"ERROR: {NOTES} already has a ## v0.2.0 section\n"), self.run_main("v0.2.0", "--write")
         )
 
+    def test_a_notes_file_that_cannot_be_read_or_written_exits_2_naming_it_and_is_left_alone(self) -> None:
+        self.history()
+        notes = self.root / NOTES
+        notes.unlink()
+        self.assertEqual(
+            (2, ""), self.run_main("v0.2.0", "--write")[:2], "a missing notes file is unreadable, not refused"
+        )
+        self.assertIn(f"ERROR: cannot read {NOTES}: ", self.run_main("v0.2.0", "--write")[2])
+        self.assertFalse(notes.exists())
+        notes.mkdir()
+        code, printed, error = self.run_main("v0.2.0", "--write")
+        self.assertEqual((2, ""), (code, printed))
+        self.assertTrue(error.startswith(f"ERROR: cannot read {NOTES}: "), error)
+        notes.rmdir()
+        notes.write_bytes(b"\xff\xfe not UTF-8\n")
+        code, printed, error = self.run_main("v0.2.0", "--write")
+        self.assertEqual((2, ""), (code, printed))
+        self.assertTrue(error.startswith(f"ERROR: cannot read {NOTES}: "), error)
+        self.assertEqual(b"\xff\xfe not UTF-8\n", notes.read_bytes())
+        notes.write_bytes(f"{INTRO}\n{RELEASED}".encode())
+        with mock.patch.object(Path, "write_text", side_effect=PermissionError("denied")):
+            code, printed, error = self.run_main("v0.2.0", "--write")
+        self.assertEqual((2, "", f"ERROR: cannot write {NOTES}: denied\n"), (code, printed, error))
+
+    def test_a_releasing_document_that_cannot_be_read_exits_2_naming_it(self) -> None:
+        self.history()
+        releasing = self.root / "docs" / "releasing.md"
+        for content in (None, b"\xff not UTF-8\n"):
+            with self.subTest(content=content):
+                if content is None:
+                    releasing.unlink()
+                else:
+                    releasing.write_bytes(content)
+                code, printed, error = self.run_main("v0.2.0")
+                self.assertEqual((2, ""), (code, printed))
+                self.assertTrue(error.startswith("ERROR: cannot read docs/releasing.md: "), error)
+
     def test_a_range_git_cannot_read_exits_2_and_a_malformed_version_is_a_usage_error(self) -> None:
         code, printed, error = self.run_main("v0.2.0", "--from", "v9.9.9")
         self.assertEqual((2, ""), (code, printed))

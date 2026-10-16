@@ -5,11 +5,15 @@ Usage:
   python tools/worktrees.py list                one row per worktree: branch, state, ahead/behind main, dirt
   python tools/worktrees.py guard               Claude Code PreToolUse hook; reads the hook JSON on stdin
 
+new takes as the kind a pull request title type, which the title check then holds the branch's pull request to, or inv
+for an investigation, and refuses any other kind with the list of those it takes, exiting 1.
+
 The guard refuses file edits inside the hub and git commands that would move the hub's HEAD or write its tree,
-whether they run through the Bash tool or the PowerShell tool. Each command is read by its shell's own grammar: Bash
-by tools/bash_syntax.py, PowerShell by PowerShell's own parser (tools/worktrees-powershell.ps1). What a reader
-settles is judged; a git call it cannot place is refused while a guarded hub is in view; what it does not see is
-named in docs/parallel-sessions.md ("The guard's contract"). Every decision is made here. It is inert unless
+whether they run through the Bash tool, the PowerShell tool, or the Monitor tool, whose command runs in Bash. Each
+command is read by its shell's own grammar: Bash by tools/bash_syntax.py, PowerShell by PowerShell's own parser
+(tools/worktrees-powershell.ps1). What a reader settles is judged; a git call it cannot place is refused while a
+guarded hub is in view; what it does not see is named in docs/parallel-sessions.md ("The guard's contract"). Every
+decision is made here. It is inert unless
 `git config coding-agent-skills.hubGuard true` was set in this clone.
 """
 
@@ -45,6 +49,12 @@ MAIN = "main"
 WORKTREES = Path(".claude") / "worktrees"
 GUARD_SETTING = "coding-agent-skills.hubGuard"
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+# The pull request title types. A branch whose kind is one of them holds its pull request's title to that type, which
+# validation's title check reads from here.
+TITLE_TYPES = ("feat", "fix", "docs", "test", "refactor", "chore", "ci", "build")
+# The kinds new accepts: a title type, or an investigation's, which may produce no commits and so no pull request.
+INVESTIGATION = "inv"
+KINDS = (*TITLE_TYPES, INVESTIGATION)
 FILE_TOOLS = {"Edit", "MultiEdit", "NotebookEdit", "Write"}
 # Git subcommands that can move HEAD or the branch it names, or write the index or the tracked files of the
 # checkout they run in, whichever subcommand or option makes them do it: the plumbing and porcelain that do, the
@@ -1820,7 +1830,8 @@ def read_powershell(command: str, cwd: Path | None, reading: Reading, depth: int
 
 
 ShellReader = Callable[[str, "Path | None", Reading, int, Variables], None]
-SHELL_READERS: dict[str, ShellReader] = {"Bash": read_bash, "PowerShell": read_powershell}
+# Monitor's command runs in the shell the Bash tool uses, so the guard reads it as Bash.
+SHELL_READERS: dict[str, ShellReader] = {"Bash": read_bash, "Monitor": read_bash, "PowerShell": read_powershell}
 
 
 def read_command(tool: str, command: str, cwd: Path, environment: Mapping[str, str]) -> Reading:
@@ -1889,9 +1900,12 @@ def current_hub() -> Path:
 
 
 def new(kind: str, name: str) -> int:
-    for label, value in (("kind", kind), ("name", name)):
-        if not SLUG.fullmatch(value):
-            raise UsageError(f"The {label} '{value}' must be lowercase letters, digits, and hyphens.")
+    if kind not in KINDS:
+        raise UsageError(
+            f"The kind '{kind}' must be one of {', '.join(KINDS)}: a pull request title type, or {INVESTIGATION}."
+        )
+    if not SLUG.fullmatch(name):
+        raise UsageError(f"The name '{name}' must be lowercase letters, digits, and hyphens.")
     hub = current_hub()
     branch = f"{kind}/{name}"
     path = hub / WORKTREES / f"{kind}-{name}"
@@ -1961,7 +1975,7 @@ def main(arguments: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="worktrees.py", description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
     create = commands.add_parser("new", help="create a worktree for a task under .claude/worktrees")
-    create.add_argument("kind", help="branch prefix, such as feat, fix, or inv")
+    create.add_argument("kind", help=f"branch prefix: {', '.join(KINDS)}")
     create.add_argument("name", help="task name")
     commands.add_parser("list", help="survey every worktree of this repository")
     commands.add_parser("guard", help="Claude Code PreToolUse hook")

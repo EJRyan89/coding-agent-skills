@@ -27,6 +27,10 @@ path that is still there, each entry those directories gained, and each item the
 them for the summary; it exits 1 when it names any. It allows what the uninstall leaves by design: the manifest, which
 keeps the source's entry with no items, and each directory's retained backups.
 
+An absent results file starts an empty record. A results file that cannot be read, is not JSON, or does not hold a
+JSON array, a saved-paths file that cannot be read as a non-empty JSON array of paths, and a results file that cannot
+be written are each an `ERROR:` line naming the file, and the command exits 2, leaving the file as it was.
+
 Nothing here starts a model.
 """
 
@@ -59,6 +63,9 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 PASSED = "PASSED"
 SKIPPED = "SKIPPED"
 FAILED = "FAILED"
+# The exit code of a results or saved-paths file the tool cannot read or write, apart from the 1 a check's failure
+# returns.
+INPUT_ERROR = 2
 CLAUDE = "claude"
 # What a runtime says when it will not list skills for want of a sign-in. Anything else is a failure.
 SIGN_IN = re.compile(r"\b(?:log(?:ged)?[ -]?in|sign(?:ed)?[ -]?in|authenticat\w*|unauthori[sz]ed|401)\b", re.IGNORECASE)
@@ -283,13 +290,24 @@ def render_summary(passes: list[dict], versions: list[tuple[str, str]], notes: l
 
 
 def _read_results(path: Path) -> list[dict]:
+    """The recorded passes, none when the file is absent; a file that cannot be read as a JSON array is an input
+    error, which leaves the file as it is."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return []
+    except (OSError, ValueError) as exc:
+        raise DeployError(f"ERROR: Cannot read the results file: {path}: {exc}", exit_code=INPUT_ERROR) from exc
     if not isinstance(data, list):
-        raise DeployError(f"ERROR: Results file is not a JSON array: {path}")
+        raise DeployError(f"ERROR: Results file is not a JSON array: {path}", exit_code=INPUT_ERROR)
     return data
+
+
+def _write_results(path: Path, passes: list[dict]) -> None:
+    try:
+        path.write_text(json.dumps(passes, indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:
+        raise DeployError(f"ERROR: Cannot write the results file: {path}: {exc}", exit_code=INPUT_ERROR) from exc
 
 
 def _record(results_file: Path, label: str, results: list[RuntimeResult]) -> None:
@@ -302,23 +320,28 @@ def _record(results_file: Path, label: str, results: list[RuntimeResult]) -> Non
             break
     else:
         passes.append({"label": label, "results": items})
-    results_file.write_text(json.dumps(passes, indent=2) + "\n", encoding="utf-8")
+    _write_results(results_file, passes)
 
 
 def _record_leftovers(results_file: Path, left: list[str]) -> None:
     """Replace the uninstall's record of what was left, or start it."""
     passes = [item for item in _read_results(results_file) if item.get("label") != UNINSTALL]
     passes.append({"label": UNINSTALL, "left": left})
-    results_file.write_text(json.dumps(passes, indent=2) + "\n", encoding="utf-8")
+    _write_results(results_file, passes)
 
 
 def _read_owned(path: Path) -> list[str]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        raise DeployError(f"ERROR: Cannot read the paths saved before the uninstall: {path}: {exc}") from exc
+        raise DeployError(
+            f"ERROR: Cannot read the paths saved before the uninstall: {path}: {exc}", exit_code=INPUT_ERROR
+        ) from exc
     if not isinstance(data, list) or not data or not all(isinstance(item, str) for item in data):
-        raise DeployError(f"ERROR: The paths saved before the uninstall are not a non-empty JSON array: {path}")
+        raise DeployError(
+            f"ERROR: The paths saved before the uninstall are not a non-empty JSON array: {path}",
+            exit_code=INPUT_ERROR,
+        )
     return data
 
 
@@ -331,7 +354,11 @@ def _verify(arguments: argparse.Namespace) -> int:
         return exc.exit_code
     for result in results:
         print(f"{result.status} {result.runtime} {result.detail}".rstrip())
-    _record(Path(arguments.results), arguments.label, results)
+    try:
+        _record(Path(arguments.results), arguments.label, results)
+    except DeployError as exc:
+        print_error(exc)
+        return exc.exit_code
     return exit_code(results, arguments.deploy_verify_exit, _verify_log(arguments.deploy_verify_log))
 
 
@@ -343,18 +370,28 @@ def _layout(arguments: argparse.Namespace) -> int:
         print_error(exc)
         return exc.exit_code
     print(f"{result.status} {result.runtime} {result.detail}".rstrip())
-    _record(Path(arguments.results), arguments.label, [result])
+    try:
+        _record(Path(arguments.results), arguments.label, [result])
+    except DeployError as exc:
+        print_error(exc)
+        return exc.exit_code
     return 0 if result.status == PASSED else 1
 
 
 def _owned(arguments: argparse.Namespace) -> int:
     paths = Paths(Path(arguments.source), Path(arguments.home))
+    target = Path(arguments.owned)
     try:
         found = owned_paths(paths)
+        try:
+            target.write_text(json.dumps(found, indent=2) + "\n", encoding="utf-8")
+        except OSError as exc:
+            raise DeployError(
+                f"ERROR: Cannot save the paths the deployment owns: {target}: {exc}", exit_code=INPUT_ERROR
+            ) from exc
     except DeployError as exc:
         print_error(exc)
         return exc.exit_code
-    Path(arguments.owned).write_text(json.dumps(found, indent=2) + "\n", encoding="utf-8")
     print(f"Saved {len(found)} paths the deployment owns or created.")
     return 0
 
@@ -363,10 +400,10 @@ def _leftovers(arguments: argparse.Namespace) -> int:
     paths = Paths(Path(arguments.source), Path(arguments.home))
     try:
         left = leftovers(paths, _read_owned(Path(arguments.owned)))
+        _record_leftovers(Path(arguments.results), left)
     except DeployError as exc:
         print_error(exc)
         return exc.exit_code
-    _record_leftovers(Path(arguments.results), left)
     for item in left:
         print(f"::error::left after uninstall: {item}")
     if left:

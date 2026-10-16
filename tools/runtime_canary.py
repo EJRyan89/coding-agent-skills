@@ -32,6 +32,9 @@ runtime-canary-probe, then each SKILL given. It prints one fact per line:
   MATRIX <runtime> <skill> DISAGREES <level> "<what ran instead>"
   NOTHING_CHECKED "<reason>"                    no runtime was listed or run, with why for each; the canary exits 1
 
+A SKILL that no source names is a usage error, exit 2, before a home is made, while every source can be read; when
+one cannot, a SKILL is not judged by it, and the run's deployment reports the deployer's reason as DEPLOY_FAILED.
+
 With --remove-home DIR it prints REMOVED "<dir>", or FAILED "<reason>" and exits 1.
 
 The isolation is of configuration, not of credentials: each runtime keeps its real configuration folder and so
@@ -363,6 +366,16 @@ def source_id(source_dir: Path) -> str:
         return deploy_source.load_source_id(Paths(source_dir, source_dir))
     except DeployError:
         return source_dir.name
+
+
+def discoverable(source_dir: Path) -> bool:
+    """Whether the deployer can read the source, so its skills are known."""
+    paths = Paths(source_dir, source_dir)
+    try:
+        deploy_source.discover(paths, deploy_source.load_source_id(paths))
+    except DeployError:
+        return False
+    return True
 
 
 def dependencies(sources: list[Path]) -> dict[str, list[str]]:
@@ -986,8 +999,10 @@ def main(arguments: list[str]) -> int:
             parser.error("--remove-home takes no SKILL")
         return remove_home(options.remove_home)
     sources = [REPOSITORY_ROOT, FIXTURE_SOURCE]
+    # A source the deployer cannot read names no skills, so a SKILL is judged only when every source can be read;
+    # otherwise the deployment stops the run with the deployer's own reason.
     unknown = [skill for skill in options.skills if skill not in dependencies(sources)]
-    if unknown:
+    if unknown and all(discoverable(source) for source in sources):
         parser.error(f"unknown skill: {', '.join(unknown)}")
     return canary(
         options.skills,
