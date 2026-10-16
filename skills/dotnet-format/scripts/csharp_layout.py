@@ -52,7 +52,6 @@ import functools
 import json
 import os
 import re
-import stat
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -65,6 +64,7 @@ from console import run_main
 from dotnet_format_targets import owning_projects, read_file_list
 from dotnet_solution import project_path, read_listed_projects, read_text, refusal, same_path
 from folders_up import folders_up
+from link_probe import is_link_or_junction
 from run_dotnet_format import Services
 from xml_reader import XmlRefused
 
@@ -506,15 +506,6 @@ def write_source(path: Path, source: Source, text: str) -> None:
     path.write_bytes(source.bom + text.encode(source.encoding, errors="surrogatepass"))
 
 
-def is_link(path: Path) -> bool:
-    """Whether `path` is a symbolic link or, on Windows, a junction or any other reparse point; raises `OSError`,
-    `FileNotFoundError` for a path that does not exist. The skill's own test, since skill-core holds no link test
-    the skills share yet; this one moves there when it does."""
-    status = os.lstat(path)
-    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
-    return stat.S_ISLNK(status.st_mode) or bool(getattr(status, "st_file_attributes", 0) & reparse)
-
-
 def link_refusal(root: Path, path: Path) -> str | None:
     """Why `path`, a file under `root` the script would write, is not written, or None: it, or a folder between it
     and `root`, is a link, so the write would land wherever the link points. A path that does not exist yet, such
@@ -523,7 +514,7 @@ def link_refusal(root: Path, path: Path) -> str | None:
     for part in path.relative_to(root).parts:
         current = current / part
         try:
-            if is_link(current):
+            if is_link_or_junction(current):
                 where = "the file" if current == path else f"its folder {current.relative_to(root).as_posix()}"
                 return f"{where} is a symbolic link or junction, which the script does not write through"
         except FileNotFoundError:
