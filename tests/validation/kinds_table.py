@@ -17,6 +17,8 @@ from validation_support import (
     module_allowance,
     python_trees,
     qualified_name,
+    scoped_nodes,
+    statement_scope,
 )
 
 # Each kind's manifest key, report label, and journal root, written out here rather than read from deployer/kinds.py,
@@ -50,7 +52,6 @@ KIND_NAMES = frozenset(
 KINDS_ALLOWANCE = "KINDS_ALLOWED"
 # The table itself, which names every kind on purpose.
 KINDS_MODULE = "deployer/kinds.py"
-MODULE_SCOPE = "<module>"
 
 
 def _scanned_files(root: Path) -> list[Path]:
@@ -149,14 +150,6 @@ def _node_findings(
     return []
 
 
-def _statement_scope(node: ast.stmt) -> str:
-    """The pass a module-level statement is: the name it assigns, or the module itself."""
-    targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
-    if len(targets) == 1 and isinstance(targets[0], ast.Name):
-        return targets[0].id
-    return MODULE_SCOPE
-
-
 def kind_findings(tree: ast.Module, package: str) -> list[tuple[int, str, str]]:
     """Each place a module treats a kind apart, as (line, pass, description), ignoring docstrings, path components,
     and the module's allowance. A pass is the innermost function or class holding it, by qualified name, or the
@@ -164,26 +157,16 @@ def kind_findings(tree: ast.Module, package: str) -> list[tuple[int, str, str]]:
     skipped = docstring_ids(tree) | _path_components(tree)
     lookups = _lookups(tree)
     aliases = {**import_aliases(tree), **_relative_import_aliases(tree, package)}
-    found: list[tuple[int, str, str]] = []
-
-    def visit(node: ast.AST, scope: str) -> None:
-        found.extend(
-            (line, scope, description) for line, description in _node_findings(node, skipped, lookups, aliases)
-        )
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                visit(child, f"{scope}.{child.name}")
-            else:
-                visit(child, scope)
-
-    for statement in tree.body:
-        if isinstance(statement, (ast.Assign, ast.AnnAssign)) and _statement_scope(statement) == KINDS_ALLOWANCE:
-            continue
-        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            visit(statement, statement.name)
-        else:
-            visit(statement, _statement_scope(statement))
-    return found
+    statements = [
+        statement
+        for statement in tree.body
+        if not (isinstance(statement, (ast.Assign, ast.AnnAssign)) and statement_scope(statement) == KINDS_ALLOWANCE)
+    ]
+    return [
+        (line, scope, description)
+        for node, scope in scoped_nodes(statements)
+        for line, description in _node_findings(node, skipped, lookups, aliases)
+    ]
 
 
 def kinds_table_problems(root: Path) -> list[str]:

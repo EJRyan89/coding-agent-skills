@@ -17,6 +17,7 @@ from pathlib import Path
 
 from python_checks import FORMAT_ROOTS, ISSUE_REFERENCE_EXCLUDED, file_comments
 from validation_support import (
+    MODULE_SCOPE,
     REPOSITORY_ROOT,
     import_aliases,
     module_allowance,
@@ -26,7 +27,6 @@ from validation_support import (
 )
 
 ALLOWANCE = "SKIP_ALLOWED"
-MODULE_SCOPE = "<module>"
 # What skips a test or expects it to fail, by the dotted name the module's imports resolve it to.
 UNITTEST_MARKERS = frozenset({"skip", "skipIf", "skipUnless", "expectedFailure", "SkipTest"})
 UNITTEST_MODULES = ("unittest", "unittest.case")

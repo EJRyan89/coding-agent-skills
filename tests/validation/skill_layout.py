@@ -22,6 +22,7 @@ from validation_support import (
     SKILL_GUIDE,
     TEMPLATE_TOKEN,
     UNSUPPORTED_SCRIPT_EXTENSIONS,
+    VALIDATION_DOC,
     all_skill_directories,
     fence_body_line,
     fence_holders,
@@ -375,7 +376,7 @@ def script_dependency_problems(root: Path) -> list[str]:
 # The skill whose scripts every module reaches by its own fixed sys.path line, which skill_roots needs to be found.
 BOOTSTRAP_SKILL = "skill-core"
 SIBLING_PATH_ROOTS = ("skills", REPOSITORY_SKILLS, "tools", "tests", "deployer")
-SIBLING_LOOKUP_DOC = '"Validation" in docs/adding-a-skill.md'
+SIBLING_LOOKUP_DOC = VALIDATION_DOC
 
 
 def _sibling_path_files(root: Path) -> list[Path]:

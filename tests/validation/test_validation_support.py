@@ -1,6 +1,6 @@
 """Fixture tests for the helpers in tests/validation/validation_support.py that several policies share: the import
-reader, the Markdown section and fence readers, the allowance reader, the docstring finder, and the repository's file
-list.
+reader, the call-argument and scope readers, the main-guard test, the Markdown section and fence readers, the allowance
+reader, the docstring finder, and the repository's file list.
 """
 
 from __future__ import annotations
@@ -23,14 +23,19 @@ import skill_scripts
 from git_test_base import GitTestCase
 from validation_support import (
     CODE_SPAN,
+    MODULE_SCOPE,
     CallableResolver,
     ModuleImport,
     ScriptsEntry,
     UnreadablePython,
+    call_argument,
+    call_arguments,
     docstring_ids,
     fence_body_line,
     fence_holders,
     import_aliases,
+    is_main_guard,
+    listed,
     markdown_section,
     module_allowance,
     module_imports,
@@ -38,7 +43,9 @@ from validation_support import (
     python_trees,
     qualified_name,
     repository_files,
+    scoped_nodes,
     scripts_entries,
+    statement_scope,
     write_fixture_tree,
 )
 
@@ -323,11 +330,13 @@ class SharedReaderFixtures(GitTestCase):
         self.assertIsNone(markdown_section(text, "## On"))
 
     def test_the_code_span_reader_is_skill_core_s(self) -> None:
+        import markdown_links
         import markdown_sections
         import skill_layout
 
         self.assertIs(markdown_sections.CODE_SPAN, CODE_SPAN)
         self.assertIs(CODE_SPAN, skill_layout.CODE_SPAN)
+        self.assertIs(markdown_sections.COMMONMARK_CODE_SPAN, markdown_links.COMMONMARK_CODE_SPAN)
 
     def test_a_fence_body_line_excludes_the_opener_and_the_closer(self) -> None:
         lines = ["text", "```bash", "echo hi", "```", "after"]
@@ -360,6 +369,92 @@ class SharedReaderFixtures(GitTestCase):
         tree = ast.parse('"""Module."""\nclass C:\n    """Class."""\ndef f():\n    """Function."""\n    x = "text"\n')
         strings = {node.value: id(node) for node in ast.walk(tree) if isinstance(node, ast.Constant)}
         self.assertEqual({strings["Module."], strings["Class."], strings["Function."]}, docstring_ids(tree))
+
+
+def _call(source: str) -> ast.Call:
+    expression = ast.parse(source, mode="eval").body
+    if not isinstance(expression, ast.Call):
+        raise TypeError(f"{source!r} is not a call")
+    return expression
+
+
+class CallArgumentFixtures(GitTestCase):
+    def read(self, source: str, position: int | None, *keywords: str) -> str | None:
+        found = call_argument(_call(source), position, *keywords)
+        return None if found is None else ast.unparse(found)
+
+    def test_a_plain_positional_or_keyword_argument_is_the_value(self) -> None:
+        self.assertEqual("'w'", self.read("open(path, 'w')", 1, "mode"))
+        self.assertEqual("'w'", self.read("open(path, mode='w')", 1, "mode"))
+        self.assertEqual("'git'", self.read("which(name='git')", 0, "cmd", "name"))
+        self.assertIsNone(self.read("open(path)", 1, "mode"))
+
+    def test_an_unpacking_that_may_hold_the_parameter_is_returned_as_one_either_way(self) -> None:
+        self.assertEqual("*rest", self.read("open(*rest, 'w')", 1, "mode"))
+        self.assertEqual("*rest", self.read("open(path, *rest)", 1, "mode"))
+        unpacked = call_argument(_call("open(path, **options)"), 1, "mode")
+        self.assertIsInstance(unpacked, ast.Starred)
+        self.assertEqual("*options", ast.unparse(unpacked) if unpacked else None)
+
+    def test_a_keyword_wins_over_an_unpacking_since_python_refuses_one_given_twice(self) -> None:
+        self.assertEqual("'r'", self.read("open(*rest, mode='r')", 1, "mode"))
+        self.assertEqual("'r'", self.read("open(path, **options, mode='r')", 1, "mode"))
+
+    def test_a_position_of_none_reads_keywords_alone(self) -> None:
+        self.assertEqual("'log'", self.read("basicConfig(level, filename='log')", None, "filename"))
+        self.assertIsNone(self.read("basicConfig('log')", None, "filename"))
+
+    def test_every_argument_that_may_give_a_parameter_is_listed_in_the_call_s_order(self) -> None:
+        found = call_arguments(_call("os.open(*rest, path, flags, dir_fd=fd, **more)"), 1, {"path", "dir_fd"})
+        self.assertEqual(["*rest", "path", "fd", "*more"], [ast.unparse(argument) for argument in found])
+        self.assertEqual([], call_arguments(_call("extractall()"), 0, {"path"}))
+
+
+class ScopeAndGuardFixtures(GitTestCase):
+    def test_each_node_is_in_its_innermost_definition_or_its_named_assignment(self) -> None:
+        tree = ast.parse(
+            "TABLE = {'a': f()}\n"
+            "x, y = g(), h()\n"
+            "@decorate(1)\n"
+            "class Outer:\n"
+            "    def method(self, value=k()):\n"
+            "        return m()\n"
+            "if READY:\n"
+            "    def guarded():\n"
+            "        return n()\n"
+        )
+        calls = {ast.unparse(node.func): scope for node, scope in scoped_nodes(tree.body) if isinstance(node, ast.Call)}
+        self.assertEqual(
+            {
+                "f": "TABLE",
+                "g": MODULE_SCOPE,
+                "h": MODULE_SCOPE,
+                "decorate": "Outer",
+                "k": "Outer.method",
+                "m": "Outer.method",
+                "n": "guarded",
+            },
+            calls,
+        )
+        self.assertEqual(["TABLE", MODULE_SCOPE], [statement_scope(statement) for statement in tree.body[:2]])
+
+    def test_the_main_guard_is_read_either_way_round_and_nothing_else_is_one(self) -> None:
+        for test, expected in (
+            ("__name__ == '__main__'", True),
+            ("'__main__' == __name__", True),
+            ("__name__ != '__main__'", False),
+            ("__name__ == 'main'", False),
+            ("name == '__main__'", False),
+            ("__name__ == '__main__' == x", False),
+        ):
+            with self.subTest(test=test):
+                self.assertEqual(expected, is_main_guard(ast.parse(test, mode="eval").body))
+
+    def test_words_are_listed_with_a_comma_before_the_conjunction_only_past_two(self) -> None:
+        self.assertEqual("a", listed(["a"]))
+        self.assertEqual("a or b", listed(["a", "b"]))
+        self.assertEqual("a, b, and c", listed(["a", "b", "c"], "and"))
+        self.assertEqual("", listed([]))
 
 
 class PythonFileReaderFixtures(GitTestCase):

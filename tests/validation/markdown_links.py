@@ -9,10 +9,17 @@ import re
 import unittest
 from pathlib import Path
 
-from validation_support import REPOSITORY_ROOT, fence_holders, markdown_section, python_trees, repository_files
+from validation_support import (
+    COMMONMARK_CODE_SPAN,
+    OPERATIONS_CONTRACT,
+    REPOSITORY_ROOT,
+    fence_holders,
+    markdown_section,
+    python_trees,
+    repository_files,
+)
 
 MARKDOWN_HEADING = re.compile(r"^ {0,3}#{1,6}[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$")
-MARKDOWN_CODE_SPAN = re.compile(r"(`+).+?\1")
 MARKDOWN_LINK = re.compile(r"\]\(\s*(?:<([^>\n]+)>|([^\s()<>]+))")
 MARKDOWN_REFERENCE = re.compile(r"^ {0,3}\[[^\]]+\]:\s*(?:<([^>\n]+)>|(\S+))")
 URL_SCHEME = re.compile(r"^(?:[A-Za-z][A-Za-z0-9+.-]*:|//)")
@@ -53,7 +60,8 @@ def markdown_link_problems(root: Path) -> list[str]:
         if path.suffix.casefold() != ".md" or name.startswith(".claude/worktrees/"):
             continue
         for number, line in enumerate(_outside_fences(path.read_text(encoding="utf-8")), start=1):
-            text = MARKDOWN_CODE_SPAN.sub("", line)
+            # A span may hold a link's brackets, and one written with two backticks a backtick, so neither is a link.
+            text = COMMONMARK_CODE_SPAN.sub("", line)
             for match in [*MARKDOWN_LINK.finditer(text), *MARKDOWN_REFERENCE.finditer(text)]:
                 target = match.group(1) or match.group(2)
                 if URL_SCHEME.match(target):
@@ -72,7 +80,7 @@ def markdown_link_problems(root: Path) -> list[str]:
     return problems
 
 
-THREAT_MODEL_DOC = "docs/code-review-operations-contract.md"
+THREAT_MODEL_DOC = OPERATIONS_CONTRACT
 THREAT_MODEL_HEADING = "## Threat model"
 THREAT_MODEL_SUITES = "skills/code-review-core/scripts"
 # The suite that holds the threat model one row at a time: every row names at least one of its tests.

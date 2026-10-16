@@ -106,7 +106,7 @@ class DuplicatedDefinitionPolicy(GitTestCase):
         allowed = 'DUPLICATION_ALLOWED = {"shared": "a deployed skill cannot import the deployer"}\n'
         self.assertEqual(
             [
-                "shared is defined identically in deployer/one.py:2, skills/s/scripts/two.py:2 and tools/three.py:1"
+                "shared is defined identically in deployer/one.py:2, skills/s/scripts/two.py:2, and tools/three.py:1"
                 + self.FIX
             ],
             self.problems(
@@ -140,7 +140,7 @@ class DuplicatedDefinitionPolicy(GitTestCase):
         nested = "".join(f"    {line}" for line in self.SHARED.splitlines(keepends=True))
         self.assertEqual(
             [
-                "shared is defined identically in deployer/branch.py:4, deployer/guarded.py:4, deployer/one.py:1 and "
+                "shared is defined identically in deployer/branch.py:4, deployer/guarded.py:4, deployer/one.py:1, and "
                 f"tools/managed.py:2{self.FIX}"
             ],
             self.problems(
@@ -149,6 +149,22 @@ class DuplicatedDefinitionPolicy(GitTestCase):
                     "deployer/branch.py": "if FLAG:\n    pass\nelse:\n" + nested,
                     "deployer/guarded.py": "try:\n    import json\nexcept ImportError:\n" + nested,
                     "tools/managed.py": "with OPENED:\n" + nested,
+                }
+            ),
+        )
+
+    def test_a_copy_in_a_repository_skill_or_a_policy_module_fails(self) -> None:
+        self.assertEqual(
+            [
+                "shared is defined identically in .claude/skills/r/scripts/a.py:1 and tests/validation/policy.py:1"
+                f"{self.FIX}"
+            ],
+            self.problems(
+                {
+                    ".claude/skills/r/scripts/a.py": self.SHARED,
+                    "tests/validation/policy.py": self.SHARED,
+                    # A policy's fixture suite is a suite, not one of the policies.
+                    "tests/validation/test_policy.py": self.SHARED,
                 }
             ),
         )
@@ -165,6 +181,7 @@ class DuplicatedDefinitionPolicy(GitTestCase):
                     "deployer/test_one.py": self.SHARED,
                     "skills/s/scripts/test_two.py": self.SHARED,
                     "tests/three.py": self.SHARED,
+                    "tests/deployer/four.py": self.SHARED,
                     "tools/short.py": short,
                 }
             ),
@@ -225,7 +242,7 @@ class DuplicatedConstantPolicy(GitTestCase):
         self.assertEqual(
             [
                 f"ROOTS at deployer/one.py:2 and FOLDERS at tools/two.py:3{self.FIX}",
-                f"SPAN at deployer/one.py:1, FIRST at tools/two.py:1 and SECOND at tools/two.py:1{self.FIX}",
+                f"SPAN at deployer/one.py:1, FIRST at tools/two.py:1, and SECOND at tools/two.py:1{self.FIX}",
             ],
             self.problems(
                 {
@@ -328,17 +345,23 @@ class SkillCoreHomePolicy(GitTestCase):
     def test_a_module_named_like_a_skill_core_module_outside_it_is_a_copy(self) -> None:
         self.assertEqual(
             [
+                ".claude/skills/r/scripts/shared.py has the name of skills/skill-core/scripts/shared.py; import shared "
+                f"from skill-core instead of keeping another copy; see {self.DOC}",
                 "deployer/shared.py has the name of skills/skill-core/scripts/shared.py; import shared from "
                 f"skill-core instead of keeping another copy; see {self.DOC}",
                 "skills/other/scripts/shared.py has the name of skills/skill-core/scripts/shared.py; import shared "
                 f"from skill-core instead of keeping another copy; see {self.DOC}",
+                "tests/validation/shared.py has the name of skills/skill-core/scripts/shared.py; import shared from "
+                f"skill-core instead of keeping another copy; see {self.DOC}",
             ],
             self.run_policy(
                 skill_core_copy_problems,
                 {
+                    ".claude/skills/r/scripts/shared.py": "import json\n",
                     "deployer/shared.py": "import json\n",
                     "skills/other/scripts/shared.py": "import json\n",
-                    # Suites, and files outside deployer/, tools/, and skills/, may carry the name.
+                    "tests/validation/shared.py": "import json\n",
+                    # Suites, and files outside the duplication policy's roots, may carry the name.
                     "skills/other/scripts/test_shared.py": "import shared\n",
                     "tests/shared.py": "import json\n",
                     "tools/sharing.py": "import json\n",

@@ -13,8 +13,11 @@ from itertools import pairwise
 from pathlib import Path
 
 from validation_support import (
+    MODULE_LOADERS,
     REPOSITORY_ROOT,
     CallableResolver,
+    call_argument,
+    call_arguments,
     docstring_ids,
     import_aliases,
     module_allowance,
@@ -131,7 +134,6 @@ PLATFORM_PATH = re.compile(
 # The calls that name an attribute or a module by a string literal: getattr(subprocess, "CREATE_NO_WINDOW", 0) and
 # hasattr(os, "fork") name the attribute's token, and importlib.import_module("ntpath") the module's.
 ATTRIBUTE_BY_NAME = frozenset({"getattr", "hasattr", "builtins.getattr", "builtins.hasattr"})
-MODULE_BY_NAME = frozenset({"importlib.import_module", "__import__", "builtins.__import__"})
 # What the platform policy cannot read: a token built at run time, such as an attribute, keyword, environment name,
 # module, or path joined from parts, as in Path("/") / "proc", or held in a variable; a keyword dict another module
 # builds, which is the intended route when that module is deployer/platform_support.py; and a module reached through a
@@ -216,10 +218,10 @@ def _platform_node_names(
 
 
 def _platform_names_by_string(node: ast.Call, aliases: dict[str, str]) -> list[tuple[int, str]]:
-    """The token a call of ATTRIBUTE_BY_NAME or MODULE_BY_NAME names by its literal argument."""
+    """The token a call of ATTRIBUTE_BY_NAME or MODULE_LOADERS names by its literal argument."""
     function = qualified_name(node.func, aliases)
-    if function in MODULE_BY_NAME and node.args:
-        module = node.args[0]
+    if function in MODULE_LOADERS:
+        module = call_argument(node, 0, "name")
         if isinstance(module, ast.Constant) and isinstance(module.value, str):
             return _platform_module_name(node.lineno, module.value)
     if function in ATTRIBUTE_BY_NAME and len(node.args) > 1:
@@ -519,15 +521,9 @@ def _string_bindings(tree: ast.Module) -> dict[str, set[str] | None]:
 
 
 def _mode_argument(call: ast.Call, position: int, name: str = "mode") -> ast.expr | None:
-    """The argument that gives a call's mode, or None when it gives none. A `*` unpacking at or before the mode's
-    position, or a `**` unpacking without a mode keyword, may hold the mode, so it is returned as the mode."""
-    for index, argument in enumerate(call.args):
-        if index == position or isinstance(argument, ast.Starred):
-            return argument
-    named = next((keyword.value for keyword in call.keywords if keyword.arg == name), None)
-    if named is not None:
-        return named
-    return next((keyword.value for keyword in call.keywords if keyword.arg is None), None)
+    """The argument that gives a call's mode, or None when it gives none. An unpacking that may hold the mode is
+    returned as the mode, which no mode reader takes for a literal."""
+    return call_argument(call, position, name)
 
 
 def _writes_with_mode(
@@ -547,7 +543,7 @@ def _writes_with_mode(
 def _os_open_writes(call: ast.Call, resolver: CallableResolver) -> bool:
     """Whether os.open is given flags that may write: any flag outside READ_FLAGS, a nonzero number, or flags held in
     anything but os.O_* names joined by |."""
-    flags = call.args[1] if len(call.args) > 1 else next((k.value for k in call.keywords if k.arg == "flags"), None)
+    flags = call_argument(call, 1, "flags")
     if flags is None:
         return True
     pending: list[ast.expr] = [flags]
@@ -739,11 +735,6 @@ def _temporary_directory_names(tree: ast.Module, resolver: CallableResolver) -> 
 TWO_PATH_METHODS = frozenset({"rename", "replace", "symlink_to", "hardlink_to"})
 
 
-def _keyword_arguments(call: ast.Call, names: set[str]) -> list[ast.expr]:
-    """The values of a call's keywords named here, and of each ** unpacking, which may hold any of them."""
-    return [keyword.value for keyword in call.keywords if keyword.arg is None or keyword.arg in names]
-
-
 # The writes that name where they land in one argument, by its position, or None when only a keyword gives it, and
 # the keywords that may give it: open() and os.open() write to their file, and os.open() also relative to its dir_fd;
 # an archive, compressed file, or database opener to its file; unpack_archive to its extract_dir; make_archive to its
@@ -767,28 +758,17 @@ METHOD_DESTINATIONS: dict[str, tuple[int, frozenset[str]]] = {
 }
 
 
-def _named_destination(call: ast.Call, position: int | None, names: frozenset[str]) -> list[ast.expr]:
-    """The argument at position or a `*` unpacking at or before it, and each keyword in names or `**` unpacking. A
-    call that gives none, such as an extraction into the working directory, names no destination."""
-    positional = [
-        argument
-        for index, argument in enumerate(call.args[: position + 1] if position is not None else [])
-        if index == position or isinstance(argument, ast.Starred)
-    ]
-    return positional + _keyword_arguments(call, set(names))
-
-
 def _write_destinations(call: ast.Call, aliases: dict[str, str]) -> list[ast.expr]:
     """The arguments that may name where a write lands. A write in NAMED_DESTINATIONS or METHOD_DESTINATIONS lands at
     the argument it names; a path method writes to its receiver and, for a rename or a link, to its target; any other
     function may write to every argument but a constant that is not a string, such as a mode or a flag."""
     target = qualified_name(call.func, aliases)
     if target in NAMED_DESTINATIONS:
-        return _named_destination(call, *NAMED_DESTINATIONS[target])
+        return call_arguments(call, *NAMED_DESTINATIONS[target])
     if isinstance(call.func, ast.Attribute) and call.func.attr in METHOD_DESTINATIONS:
-        return _named_destination(call, *METHOD_DESTINATIONS[call.func.attr])
+        return call_arguments(call, *METHOD_DESTINATIONS[call.func.attr])
     if target not in FILESYSTEM_WRITES["qualified"] and isinstance(call.func, ast.Attribute):
-        second = [*call.args, *_keyword_arguments(call, {"target"})] if call.func.attr in TWO_PATH_METHODS else []
+        second = [*call.args, *call_arguments(call, None, {"target"})] if call.func.attr in TWO_PATH_METHODS else []
         return [call.func.value, *second]
     arguments = [*call.args, *(keyword.value for keyword in call.keywords)]
     return [

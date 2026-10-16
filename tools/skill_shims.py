@@ -35,6 +35,14 @@ from console import run_main
 from deployer.render import CODEX_METADATA, CODEX_USER_ONLY
 from tools.checkout import ROOT_HELP, checkout_root
 
+# change-skill names this command among the regenerations a change owes, from the checkout without the deployer.
+DUPLICATION_ALLOWED = {
+    "WRITE_COMMAND": (
+        ".claude/skills/change-skill/scripts/change_skill.py names it among what a change owes, and runs without "
+        "the deployer, which this module imports"
+    ),
+}
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SKILLS = Path(".claude") / "skills"
 SHIMS = Path(".agents") / "skills"

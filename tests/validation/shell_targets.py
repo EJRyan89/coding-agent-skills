@@ -5,7 +5,6 @@ Bash fences, and PSScriptAnalyzer on .ps1 files and PowerShell fences.
 from __future__ import annotations
 
 import ast
-import json
 import re
 import tempfile
 import unittest
@@ -14,7 +13,7 @@ from pathlib import Path
 
 import frontmatter
 from job_pool import refuse_termination, run_process
-from toolchain import VALIDATION_FLOORS, find_git_bash, find_powershell, find_psscriptanalyzer, find_shellcheck
+from toolchain import VALIDATION_FLOORS, find_git_bash, find_psscriptanalyzer, find_shellcheck, powershell_json
 from validation_support import (
     REPOSITORY_ROOT,
     TEMPLATE_TOKEN,
@@ -375,30 +374,13 @@ def script_analyzer_check(root: Path, files: list[Path]) -> None:
     targets = powershell_targets(root, files)
     if not targets:
         return
-    with tempfile.TemporaryDirectory(prefix="psscriptanalyzer-") as directory:
-        request = Path(directory) / "targets.json"
-        request.write_text(
-            json.dumps(
-                [{"path": str(target.path) if target.path else None, "text": target.text} for target in targets]
-            ),
-            encoding="utf-8",
-        )
-        analyzer = [find_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", SCRIPT_ANALYZER_RUN]
-        result = platform_support.run_tool(
-            analyzer,
-            {
-                "PSSA_TARGETS": str(request),
-                "PSSA_FLOOR": tools.format_version(VALIDATION_FLOORS["PSScriptAnalyzer"]),
-            },
-        )
-    refuse_termination(analyzer, result.returncode, result.output)
-    lines = [line for line in result.output.splitlines() if line.strip()]
-    try:
-        findings = json.loads(lines[-1]) if result.returncode == 0 and lines else None
-    except json.JSONDecodeError:
-        findings = None
-    if not isinstance(findings, list):
-        raise AssertionError(f"PSScriptAnalyzer could not run (exit code {result.returncode}):\n{result.output}")
+    findings = powershell_json(
+        SCRIPT_ANALYZER_RUN,
+        [{"path": str(target.path) if target.path else None, "text": target.text} for target in targets],
+        "PSSA_TARGETS",
+        "PSScriptAnalyzer could not run",
+        {"PSSA_FLOOR": tools.format_version(VALIDATION_FLOORS["PSScriptAnalyzer"])},
+    )
     if findings:
         reported = [
             f"  {targets[finding['target']].name}:{targets[finding['target']].first_line + finding['line'] - 1}: "

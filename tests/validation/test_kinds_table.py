@@ -122,6 +122,16 @@ class KindsTableFixtures(GitTestCase):
                 "    def build(self, kind):\n"
                 '        return {SKILL: 0, SHARED: 1}[kind] if kind is SKILL else self.owned["shared"]\n'
             ),
+            # A pass defined in a module-level block is named as one at the top is.
+            "deployer/guarded.py": (
+                'KINDS_ALLOWED = {"plan_first": "plans skills before the kinds that depend on them"}\n'
+                "from .kinds import SKILL\n"
+                "\n"
+                "if True:\n"
+                "\n"
+                "    def plan_first(kind):\n"
+                "        return kind is SKILL\n"
+            ),
         }
         self.assertEqual([], self.problems(files))
 
