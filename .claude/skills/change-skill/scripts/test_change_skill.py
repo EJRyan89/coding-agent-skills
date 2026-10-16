@@ -82,7 +82,7 @@ def run(argv: list[str], root: Path) -> tuple[int, list[str]]:
     return code, output.getvalue().splitlines()
 
 
-class SectionTests(unittest.TestCase):
+class SectionTests(GitTestCase):
     DOCUMENT = (
         "# Title\n\n## Files\n\nThe paragraph before the first subsection.\n\n"
         "### Granting tools\n\nGrant both shells.\n\n```markdown\n## Not a heading\n```\n\nStill granting.\n\n"
@@ -316,7 +316,7 @@ class GateTests(GitTestCase):
         self.assertIn("is not a ref", stderr.getvalue())
 
 
-class RuntimePromptSourceTests(unittest.TestCase):
+class RuntimePromptSourceTests(GitTestCase):
     def test_the_sources_are_the_skills_and_fixtures_the_sample_tool_renders_from(self) -> None:
         tool = REPOSITORY / "tools" / "runtime_prompts.py"
         tree = ast.parse(tool.read_text(encoding="utf-8"))
