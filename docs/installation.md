@@ -156,7 +156,7 @@ To deploy a release or an earlier commit instead of the clone's working tree, wi
 
 ## Uninstalling
 
-Run `python deploy.py --dry-run`, answer `none` at the selection prompt to preview the removal, then run `python deploy.py` and answer `none` again to remove every unmodified skill, shared asset, runtime adapter, and agent deployed from this repository.
+Run `python deploy.py --uninstall --dry-run` to preview the removal, then run `python deploy.py --uninstall` to remove every unmodified skill, shared asset, runtime adapter, and agent deployed from this repository. `--uninstall` selects nothing, as answering `none` at the selection prompt does, and shows no prompt, so a script runs it without piping an answer.
 
 Locally modified deployment outputs are preserved and reported for manual review. A preserved skill keeps its recorded transitive skill dependencies and their shared assets and agents, and a shared asset another installed source still needs is also kept. A skill that stays, preserved or kept for another, keeps its runtime adapter, so Codex and Copilot CLI still find it; a modified adapter is preserved like any other item. These dependencies are reported as `KEEP` in the preview and `KEPT` in the deployment report; resolve the preserved skill or uninstall that source, then rerun this uninstall to remove them. The manifest records deployed direct skill dependencies as `skill_deps`, shared assets as `shared_deps`, and agents as `agent_deps`, so a source change cannot erase what a preserved copy needs.
 

@@ -40,6 +40,10 @@ def select(context: Context) -> Selection | None:
     if context.options.select_all:
         return select_all(context, context.options.include)
     print("")
+    if context.options.uninstall:
+        # The menu's answer none, given on the command line, so no prompt is shown and nothing is read.
+        selection.deselect_all = True
+        return selection
     if not src.skills:
         print("No current skills discovered; previously owned skills will be considered for removal.")
         selection.deselect_all = True

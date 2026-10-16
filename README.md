@@ -58,7 +58,7 @@ If you use Codex CLI, make its two [Windows settings](docs/installation.md#codex
 
 ## Updating and uninstalling
 
-Start `update-coding-agent-skills` from any runtime, or update by hand with `git pull --ff-only` and the same dry run and deployment as above. To uninstall, run `python deploy.py` and answer `none` at the selection prompt; locally modified copies are kept. [Installation](docs/installation.md#updating) covers both.
+Start `update-coding-agent-skills` from any runtime, or update by hand with `git pull --ff-only` and the same dry run and deployment as above. To uninstall, run `python deploy.py --uninstall`; locally modified copies are kept. [Installation](docs/installation.md#updating) covers both.
 
 ## Safety model
 

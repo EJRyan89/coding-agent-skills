@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import argparse
 import unittest
 from unittest import mock
 
 from harness import DEPLOY_COMMAND, DeployerTestCase, tree_state
+
+from deployer.arguments import parse_command
 
 # Every option and command the hand-written usage named before the subparsers replaced it, per help page.
 OLD_USAGE_NAMES = {
@@ -111,6 +114,25 @@ class DeployUsageErrorTests(DeployerTestCase):
         ):
             with self.subTest(arguments=arguments):
                 self.assert_usage_error(arguments, message)
+
+    def test_the_uninstall_refuses_every_option_that_selects_or_replaces(self) -> None:
+        for extra, message in (
+            (("--all",), "ERROR: --uninstall cannot be combined with --all"),
+            (("--all", "--include", "alpha"), "ERROR: --uninstall cannot be combined with --all"),
+            (("--include", "alpha"), "ERROR: --include can only be used with --all"),
+            (("--force",), "ERROR: --uninstall cannot be combined with --force"),
+            (("--force-item", "alpha"), "ERROR: --uninstall cannot be combined with --force-item"),
+            (("--migrate-from", "old/source"), "ERROR: --uninstall cannot be combined with --migrate-from"),
+        ):
+            with self.subTest(extra=extra):
+                self.assert_usage_error(("--uninstall", *extra), message)
+
+    def test_the_uninstall_goes_with_the_options_the_answer_none_goes_with(self) -> None:
+        for extra in (("--dry-run",), ("--take-over-source",), ("--at", "v1.0.0"), ("--canary-home", "C:/x")):
+            with self.subTest(extra=extra):
+                namespace = parse_command(["--uninstall", *extra])
+                self.assertIsInstance(namespace, argparse.Namespace)
+                self.assertTrue(vars(namespace)["uninstall"])
 
     def test_migration_refuses_every_option_it_would_ignore(self) -> None:
         for extra, message in (
