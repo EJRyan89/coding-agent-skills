@@ -87,6 +87,56 @@ class RuntimePromptsTestCase(GitTestCase):
             self.assertEqual(0, runtime_prompts.main(["--root", str(self.root), "--write"]))
         self.assertIn("does not exist", output.getvalue())
 
+    def run_main(self, renderers: runtime_prompts.Renderers, *arguments: str) -> tuple[int, str, str]:
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with (
+            mock.patch.object(runtime_prompts, "RENDERERS", renderers),
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+        ):
+            code = runtime_prompts.main(["--root", str(self.root), *arguments])
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def test_a_renderer_that_fails_exits_2_naming_the_skill_never_1_like_a_stale_sample(self) -> None:
+        folders: list[Path] = []
+
+        def failing(error: Exception) -> Callable[[Path], dict[str, str]]:
+            def render(directory: Path) -> dict[str, str]:
+                folders.append(directory)
+                raise error
+
+            return render
+
+        for error in (KeyError("reviewers"), ValueError("bad fixture"), OSError("no room"), RuntimeError("pipeline")):
+            for arguments in ((), ("--write",)):
+                with self.subTest(error=error, arguments=arguments):
+                    code, stdout, stderr = self.run_main({"alpha": failing(error)}, *arguments)
+                    self.assertEqual((2, ""), (code, stdout))
+                    self.assertTrue(stderr.startswith("FAILED alpha's prompts cannot be rendered: "), stderr)
+                    self.assertIn(type(error).__name__, stderr)
+                    self.assertFalse(folders[-1].exists(), "the throwaway folder goes even when rendering fails")
+        self.assertFalse((self.root / "docs").exists())
+
+    def test_a_sample_that_cannot_be_read_or_written_exits_2_and_one_not_utf8_is_stale(self) -> None:
+        renderers = {"alpha": renderer({"reviewer": "Review it."})}
+        sample = self.root / "docs" / "runtime-prompts" / "alpha" / "reviewer.txt"
+        sample.parent.mkdir(parents=True)
+        sample.write_bytes(b"\xff\xfe not UTF-8\n")
+        self.assertEqual(
+            (1, f"docs/runtime-prompts/alpha/reviewer.txt is stale; {runtime_prompts.WRITE_HINT}\n", ""),
+            self.run_main(renderers),
+        )
+        with mock.patch.object(Path, "read_text", side_effect=PermissionError("denied")):
+            code, stdout, stderr = self.run_main(renderers)
+        self.assertEqual(
+            (2, "", "FAILED cannot read docs/runtime-prompts/alpha/reviewer.txt: denied\n"), (code, stdout, stderr)
+        )
+        with mock.patch.object(Path, "write_text", side_effect=PermissionError("denied")):
+            code, stdout, stderr = self.run_main(renderers, "--write")
+        self.assertEqual(
+            (2, "", "FAILED cannot write docs/runtime-prompts/alpha/reviewer.txt: denied\n"), (code, stdout, stderr)
+        )
+
     def test_each_skill_renders_its_prompts_without_a_model_and_bounds_their_replies(self) -> None:
         # The real renderers, into a throwaway root: every prompt the skills' scripts write today.
         runtime_prompts.write(self.root)

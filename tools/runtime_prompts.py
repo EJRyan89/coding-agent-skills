@@ -4,6 +4,9 @@ Usage:
   python tools/runtime_prompts.py           report every missing, stale, or extra sample; exit 1 if there is one
   python tools/runtime_prompts.py --write   render every sample again and remove the extra ones
 
+Either exits 2, with a FAILED line naming the skill or the path, when a skill's prompts cannot be rendered, whatever
+its renderer raised, or a sample cannot be read or written; that is never reported as a stale sample.
+
 A skill whose subagent reads a prompt file a script writes at runtime shows the audit nothing of that prompt in its
 own files. This tool renders one such prompt per role from the repository's fixtures, the way a fixture canary
 does, with no model and no network, in a throwaway folder under the system temporary directory, and keeps it as
@@ -204,13 +207,30 @@ def rendered(renderers: Renderers) -> dict[Path, str]:
     for skill, render in sorted(renderers.items()):
         directory = Path(tempfile.mkdtemp(prefix="runtime-prompt-")).resolve()
         try:
-            prompts = render(directory)
+            try:
+                prompts = render(directory)
+            except RenderError:
+                raise
+            # A renderer runs a skill's own pipeline, whose errors are its own; any of them is a render failure, never
+            # a stale sample.
+            except Exception as exc:
+                raise RenderError(f"{skill}'s prompts cannot be rendered: {type(exc).__name__}: {exc}") from exc
             samples.update(
                 {SAMPLES / skill / f"{role}.txt": normalized(text, directory) for role, text in prompts.items()}
             )
         finally:
             shutil.rmtree(directory)
     return samples
+
+
+def _sample(root: Path, relative: Path) -> str | None:
+    """A sample's text, or None when it is not UTF-8 and so differs from every rendered prompt."""
+    try:
+        return (root / relative).read_text(encoding="utf-8")
+    except UnicodeError:
+        return None
+    except OSError as exc:
+        raise RenderError(f"cannot read {relative.as_posix()}: {exc}") from exc
 
 
 def problems(root: Path, renderers: Renderers | None = None) -> list[str]:
@@ -221,7 +241,7 @@ def problems(root: Path, renderers: Renderers | None = None) -> list[str]:
         path = root / relative
         if not path.is_file():
             found.append(f"{relative.as_posix()} does not exist; {WRITE_HINT}")
-        elif path.read_text(encoding="utf-8") != text:
+        elif _sample(root, relative) != text:
             found.append(f"{relative.as_posix()} is stale; {WRITE_HINT}")
     for path in sorted((root / SAMPLES).rglob("*")) if (root / SAMPLES).is_dir() else []:
         if path.is_file() and path.relative_to(root) not in expected:
@@ -233,13 +253,19 @@ def write(root: Path, renderers: Renderers | None = None) -> None:
     expected = rendered(RENDERERS if renderers is None else renderers)
     for relative, text in expected.items():
         path = root / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8", newline="\n")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8", newline="\n")
+        except OSError as exc:
+            raise RenderError(f"cannot write {relative.as_posix()}: {exc}") from exc
     for path in sorted((root / SAMPLES).rglob("*"), reverse=True) if (root / SAMPLES).is_dir() else []:
-        if path.is_file() and path.relative_to(root) not in expected:
-            path.unlink()
-        elif path.is_dir() and not any(path.iterdir()):
-            path.rmdir()
+        try:
+            if path.is_file() and path.relative_to(root) not in expected:
+                path.unlink()
+            elif path.is_dir() and not any(path.iterdir()):
+                path.rmdir()
+        except OSError as exc:
+            raise RenderError(f"cannot remove {path.relative_to(root).as_posix()}: {exc}") from exc
 
 
 def main(argv: list[str] | None = None) -> int:
