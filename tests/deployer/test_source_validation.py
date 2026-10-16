@@ -458,6 +458,21 @@ class SharedAssetValidationTests(DeployerTestCase):
         self.make_config()
         self.deploy_fails("--all", pattern="shared asset name '../escape.md' contains path separator")
 
+    def test_unsafe_shared_asset_names_are_refused_before_anything_changes(self) -> None:
+        for asset, reason in (
+            (".hidden.md", "starts with dot"),
+            ("notes.md.", "has a trailing dot or space"),
+            ("notes.md ", "has a trailing dot or space"),
+            ("..", "is a dot segment"),
+            ("docs\\notes.md", "contains path separator"),
+        ):
+            with self.subTest(asset=asset):
+                self.make_source_json(shared_assets={asset: "owner"})
+                self.make_skill("alpha", "Test", shared_deps=[asset])
+                self.make_config()
+                line = f"ERROR: shared asset name '{asset}' {reason}"
+                self.deploy_fails("--all", pattern=rf"(?m)^{re.escape(line)}\r?$")
+
     def test_names_the_deployer_reserves_for_its_own_files_are_rejected(self) -> None:
         for asset, reason in (
             ("alpha.deploying-bak", "ends in '.deploying-bak'"),
@@ -480,10 +495,37 @@ class SharedAssetValidationTests(DeployerTestCase):
                 (self.source / "skills" / asset).unlink()
 
     def test_every_reader_of_item_names_refuses_a_reserved_name(self) -> None:
-        for name in ("alpha.deploying-bak", "ALPHA.DEPLOYING-BAK", "a.tmp.1", "agent.TMP.md"):
+        for name, reason in (
+            ("alpha.deploying-bak", "ends in '.deploying-bak'"),
+            ("ALPHA.DEPLOYING-BAK", "ends in '.deploying-bak'"),
+            ("a.tmp.1", "contains '.tmp.'"),
+            ("agent.TMP.md", "contains '.tmp.'"),
+        ):
             with self.subTest(name=name):
-                self.assertIn("reserves for its own files", names.safe_name_problem(name, "item") or "")
+                self.assertEqual(
+                    f"ERROR: item '{name}' {reason}, which the deployer reserves for its own files",
+                    names.safe_name_problem(name, "item"),
+                )
         for name in ("alpha", "notes.md", "deploying-bak.md", "tmp.md", "alpha.deploying-bak.md"):
+            with self.subTest(name=name):
+                self.assertIsNone(names.safe_name_problem(name, "item"))
+
+    def test_each_unsafe_item_name_is_refused_with_its_own_line(self) -> None:
+        self.assertEqual("ERROR: Empty item", names.safe_name_problem("", "item"))
+        for name, reason in (
+            ("docs/notes.md", "contains path separator"),
+            ("docs\\notes.md", "contains path separator"),
+            (".", "is a dot segment"),
+            ("..", "is a dot segment"),
+            (".hidden", "starts with dot"),
+            ("...", "starts with dot"),
+            ("notes&.md", "contains disallowed character"),
+            ("notes.md.", "has a trailing dot or space"),
+            ("notes.md ", "has a trailing dot or space"),
+        ):
+            with self.subTest(name=name):
+                self.assertEqual(f"ERROR: item '{name}' {reason}", names.safe_name_problem(name, "item"))
+        for name in ("notes.md", "my notes.md", "a.b.c", "notes-1_final.md"):
             with self.subTest(name=name):
                 self.assertIsNone(names.safe_name_problem(name, "item"))
 
