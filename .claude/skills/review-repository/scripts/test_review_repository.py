@@ -97,6 +97,7 @@ OUTSIDE_THE_BOUNDARY = {
     f"{PIPELINE_SCRIPTS}/review_operation.py": "parses the user's pull request selectors for the producer's workflow",
     f"{PIPELINE_SCRIPTS}/review_state.py": "keeps the per-repository review state, which the threat model trusts",
     f"{SKILL_CORE}/console.py": "sets each entry point's output encoding; its FAILED line flattens through flat_text",
+    f"{SKILL_CORE}/folder_walk.py": "dotnet_solution takes only its skipped folder names; the inventory walks none",
     f"{SKILL_CORE}/frontmatter.py": "reads the frontmatter of a reviewer skill from the trusted commit",
     f"{SKILL_CORE}/skill_roots.py": "finds a sibling skill's scripts folder in the checkout or the deployed home",
 }

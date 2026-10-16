@@ -26,7 +26,9 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+from dotnet_solution import read_bounded, read_text
 from flat_text import flat_text
+from msbuild_xml import is_sdk_style, local_name
 from xml_reader import XmlRefused, read_xml
 
 INVENTORY_SCHEMA_VERSION = 1
@@ -157,18 +159,20 @@ class _Inventory:
 
 
 def _text(root: Path, path: str) -> str | None:
-    """A file's text. Older Visual Studio projects are UTF-16 with a byte-order mark."""
+    """A file's text, or None when it cannot be read. An MSBuild file is read as the .NET skills read one, through
+    skill-core's `read_text`, which decodes a UTF-16 file by its byte-order mark, as older Visual Studio projects are
+    written, and replaces a byte that is not UTF-8. Every other file is decoded strictly, by the same byte-order marks,
+    so one whose text is not valid is listed unread rather than read with its settings garbled."""
+    file = root.joinpath(*PurePosixPath(path).parts)
     try:
-        data = root.joinpath(*PurePosixPath(path).parts).read_bytes()
+        if PurePosixPath(path).suffix.lower() in MSBUILD_SUFFIXES:
+            return read_text(file)
+        data = read_bounded(file)
         if data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
             return data.decode("utf-16")
         return data.decode("utf-8-sig")
     except (OSError, UnicodeError):
         return None
-
-
-def _local(tag: Any) -> str:
-    return tag.rsplit("}", 1)[-1] if isinstance(tag, str) else ""
 
 
 def _msbuild(found: _Inventory, path: str, text: str) -> None:
@@ -178,13 +182,12 @@ def _msbuild(found: _Inventory, path: str, text: str) -> None:
         found.setting(path, UNREAD)
         return
     suffix = PurePosixPath(path).suffix.lower()
-    sdk_style = bool(project.get("Sdk")) or any(_local(element.tag) == "Sdk" for element in project)
-    if sdk_style and suffix in {".csproj", ".vbproj", ".fsproj"}:
+    if is_sdk_style(project) and suffix in {".csproj", ".vbproj", ".fsproj"}:
         found.tool(SDK_ANALYZERS, path)
         if suffix in CODE_STYLE_ANALYZERS:
             found.tool(CODE_STYLE_ANALYZERS[suffix], path)
     for element in project.iter():
-        name = _local(element.tag)
+        name = local_name(element)
         if name in ANALYZER_ITEMS:
             package = (element.get("Include") or "").strip()
             if name == "Analyzer" and package:

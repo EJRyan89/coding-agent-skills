@@ -3,8 +3,9 @@
 Every XML file goes through skill-core's `xml_reader`, which refuses a DOCTYPE or an entity before parsing, and the
 project.assets.json a restore writes through the json module. A file a reader cannot read raises `Unreadable`, which
 names the file and the reason, so the caller prints one UNREADABLE line and goes on: a bad file costs its own facts,
-never the whole answer. Element names are matched without their namespace, because an old-style project carries the
-MSBuild 2003 namespace, a nuspec one of several, and a binding redirect the assembly-binding one.
+never the whole answer. Element names are matched without their namespace (skill-core's `msbuild_xml`), because an
+old-style project carries the MSBuild 2003 namespace, a nuspec one of several, and a binding redirect the
+assembly-binding one.
 
 A project file and the files it imports are evaluated as MSBuild evaluates them by `msbuild_evaluation`, which reads
 them through `parse_xml`. Every comparison of two framework names goes through `same_framework`, so a restore's long
@@ -33,6 +34,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 import dotnet_solution
 from dotnet_solution import FileRefused, decode_text, lexical_absolute, listed_projects, project_path
+from folders_up import folders_up
+from msbuild_xml import local_name
 from xml_reader import XmlRefused, read_xml
 
 # What marks the folder a checkout starts in: a folder, or a file in a linked worktree or a submodule.
@@ -113,12 +116,6 @@ class Assets:
     project_refs: dict[str, list[Path]] = field(default_factory=dict)  # framework -> the projects it references
 
 
-def local_name(element: Element) -> str:
-    """An element's tag without its namespace."""
-    tag = element.tag
-    return tag.rsplit("}", 1)[-1] if isinstance(tag, str) else ""
-
-
 def children(element: Element, name: str) -> list[Element]:
     """Every descendant named `name`, in document order, whatever its namespace."""
     return [child for child in element.iter() if local_name(child) == name]
@@ -152,20 +149,13 @@ def read_solution(path: Path) -> list[str]:
 def examined_tree(base: Path) -> Path:
     """The tree a run reads the paths files name in: the checkout holding `base`, the solution's directory or the
     directory searched, which is the nearest folder at or above it holding `CHECKOUT_MARKER`, else `base` itself."""
-    for folder in (base, *base.parents):
+    for folder in folders_up(base):
         try:
             if (folder / CHECKOUT_MARKER).exists():
                 return folder
         except OSError:
             continue
     return base
-
-
-def is_sdk_style(root: Element) -> bool:
-    """Whether a project is SDK-style: a Sdk attribute on the root, a Sdk element, or an Import of an Sdk."""
-    if root.get("Sdk"):
-        return True
-    return any(local_name(child) == "Sdk" or child.get("Sdk") for child in root)
 
 
 def platform_version(version: str) -> str:
@@ -246,7 +236,7 @@ def item_specs(text: str) -> list[str]:
 def nearest_file(project_dir: Path, name: str) -> Path | None:
     """The nearest file named `name` from the project's directory up to the filesystem's root, as MSBuild searches
     for Directory.Build.props and Directory.Packages.props; None when there is none."""
-    for directory in (project_dir, *project_dir.parents):
+    for directory in folders_up(project_dir):
         candidate = directory / name
         if candidate.is_file():
             return candidate
