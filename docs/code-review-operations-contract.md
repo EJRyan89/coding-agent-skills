@@ -810,10 +810,10 @@ The report `review-insights report` writes to `<summary_root>/<set>/<start>--<en
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `severity_drift` | array | yes | The strongest groups and ledger entries whose findings carry more than one severity. |
-| `verdict_flips` | array | yes | The strongest pairs of consecutive reviews of one head commit whose verdicts differ. |
-| `reviewer_disagreements` | array | yes | The strongest places where reviewers that share no source gave one head commit's findings different severities. |
-| `guidance_overlaps` | array | yes | The strongest candidate pairs of rules from two guidance files that conflict or repeat each other. |
+| `severity_drift` | array | yes | The strongest groups and ledger entries whose findings carry more than one severity: the most severities first, then the most findings. |
+| `verdict_flips` | array | yes | The strongest pairs of consecutive reviews of one head commit whose verdicts differ: a flip between `APPROVED` and `CHANGES_REQUESTED` first, then the most findings that differ. |
+| `reviewer_disagreements` | array | yes | The strongest places where reviewers that share no source gave one head commit's findings different severities: the widest spread of severities first, then the most findings. |
+| `guidance_overlaps` | array | yes | The strongest candidate pairs of rules from two guidance files that conflict or repeat each other: conflicts first, then the most similar. |
 | `unsupplied_references` | array | yes | The first Markdown files a reviewer's guidance names that the reviewer is not given. |
 | `counts` | object | yes | Keyed by each of the fields above, how many it found before it kept the strongest. |
 
@@ -854,7 +854,7 @@ The report `review-insights report` writes to `<summary_root>/<set>/<start>--<en
 | `head_sha` | string | yes | The head commit the findings were raised on. |
 | `path` | string | yes | The file. |
 | `line` | integer | yes | The first finding's line; the others are joined to it through disagreeing pairs, each pair within three lines of one another, so a cluster may span more than three lines. |
-| `reports` | array | yes | Up to five findings there, each `<severity> <reference> <source>`. |
+| `reports` | array | yes | Up to five findings there, in place order, each `<severity> <reference> <source>`: a pair that disagrees is always among them, then one of each other severity. |
 
 #### Guidance overlap (`insights.signals.guidance_overlaps[]`, `synthesis-input:guidance-overlap`)
 

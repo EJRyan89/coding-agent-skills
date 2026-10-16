@@ -747,6 +747,52 @@ class DecideTests(InsightFixture):
         code, out, _ = self.decide(json_path, "REC-001", "Correctness", correctness, "accepted")
         self.assertEqual([f"FLAG_ALREADY_RESOLVED {correctness}", "DECIDED REC-001 accepted"], out.splitlines())
 
+    def test_a_subject_or_note_that_begins_with_a_dash_is_read_as_its_value(self) -> None:
+        # A category or an analyzer name is whatever a record holds, and a note whatever the user said.
+        self.commit("owner/repo", 7, ["-Style", covered("available", "-Roslyn", "-RS0001")])
+        json_path, lines = self.report()
+        self.assertIn("RECOMMENDATION REC-001 -Style findings=1 decision=deferred flags=none", lines)
+        report = str(json_path)
+        result = self.execute(
+            "decide",
+            "--report",
+            report,
+            "REC-001",
+            "--category",
+            "-Style",
+            "--flags",
+            "none",
+            "accepted",
+            "--note",
+            "-x",
+        )
+        self.assertEqual((0, "DECIDED REC-001 accepted\n", ""), (result.returncode, result.stdout, result.stderr))
+        code, out, err = self.run_main(
+            "decide",
+            "--report",
+            report,
+            "REC-003",
+            "--analyzer",
+            "available",
+            "-Roslyn",
+            "-RS0001",
+            "--flags",
+            "none",
+            "rejected",
+            "--note",
+            "-y",
+        )
+        self.assertEqual((0, "DECIDED REC-003 rejected\n"), (code, out), err)
+        items = {item["id"]: item for item in json.loads(json_path.read_text(encoding="utf-8"))["recommendations"]}
+        self.assertEqual(
+            [("accepted", "-x"), ("rejected", "-y")],
+            [
+                (entry["decision"], entry["note"])
+                for key in ("REC-001", "REC-003")
+                for entry in items[key]["decision_history"]
+            ],
+        )
+
     def test_regenerating_keeps_decisions_and_ids_by_category(self) -> None:
         self.commit("owner/repo", 7, ["Style"])
         json_path, _ = self.report()
@@ -1525,6 +1571,86 @@ class RecordingTests(InsightFixture):
                 f"is inside the skills directory {deployed}",
             )
         self.assertFalse(deployed.exists())
+
+
+class SignalsLoadTests(InsightFixture):
+    """A report's signals are read field by field, as every other format is."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.commit("owner/repo", 7, ["Correctness"])
+        self.json_path, _ = self.report()
+        self.written = json.loads(self.json_path.read_text(encoding="utf-8"))
+
+    def with_signals(self, **changes: Any) -> None:
+        report = json.loads(json.dumps(self.written))
+        report["signals"].update(changes)
+        self.json_path.write_text(json.dumps(report), encoding="utf-8")
+
+    def test_a_generated_report_loads_with_its_signals(self) -> None:
+        self.assertEqual(self.written["signals"], ri.load_report(self.json_path)["signals"])
+
+    def test_a_malformed_signal_is_refused_on_load_naming_its_field(self) -> None:
+        drift = {
+            "id": "D1",
+            "basis": "group",
+            "repository": "owner/repo",
+            "category": "Correctness",
+            "headline": "Alpha",
+            "severity": {"MUST_FIX": 1, "SHOULD_FIX": 1},
+            "examples": ["MUST_FIX owner/repo#7 v1 F001"],
+        }
+        counts = {**self.written["signals"]["counts"], "severity_drift": 1}
+        cases: dict[str, tuple[dict[str, Any], str]] = {
+            "a signal that is not an array": ({"severity_drift": 7}, "signals.severity_drift must be an array"),
+            "an entry that is not an object": ({"verdict_flips": [7]}, "signals.verdict_flips[0] must be an object"),
+            "an entry missing a field": (
+                {
+                    "severity_drift": [{key: value for key, value in drift.items() if key != "examples"}],
+                    "counts": counts,
+                },
+                "signals.severity_drift[0] must be an object with field examples",
+            ),
+            "an entry field of the wrong kind": (
+                {"severity_drift": [{**drift, "severity": {"MUST_FIX": "1"}}], "counts": counts},
+                "signals.severity_drift[0].severity.MUST_FIX must be an integer of at least 1",
+            ),
+            "a count that is not an integer": (
+                {"counts": {**self.written["signals"]["counts"], "verdict_flips": "0"}},
+                "signals.counts.verdict_flips must be an integer of at least 0",
+            ),
+            "a count below the items kept": (
+                {"severity_drift": [drift]},
+                "signals.counts.severity_drift must be an integer of at least 1",
+            ),
+            "counts missing a kind": (
+                {"counts": {"severity_drift": 0}},
+                "signals.counts must be an object with fields",
+            ),
+        }
+        for name, (changes, message) in cases.items():
+            with self.subTest(name):
+                self.with_signals(**changes)
+                with self.assertRaises(ri.InsightError) as raised:
+                    ri.load_report(self.json_path)
+                self.assertIn(f"{self.json_path} has invalid signals: {message}", str(raised.exception))
+                self.assertFailed(
+                    self.run_main(
+                        "decide",
+                        "--report",
+                        str(self.json_path),
+                        "REC-001",
+                        "--category",
+                        "Correctness",
+                        "--flags",
+                        "none",
+                        "accepted",
+                    ),
+                    message,
+                )
+        with self.subTest("a well-formed entry"):
+            self.with_signals(severity_drift=[drift], counts=counts)
+            self.assertEqual([drift], ri.load_report(self.json_path)["signals"]["severity_drift"])
 
 
 class ScopeTests(InsightFixture):

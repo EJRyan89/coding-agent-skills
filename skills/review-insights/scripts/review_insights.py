@@ -54,7 +54,7 @@ import sys
 from collections import Counter
 from collections.abc import Callable, Iterable
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -83,6 +83,7 @@ from review_flags import FlagAlreadyResolved, FlagError, default_flags_path, loa
 from review_io import PersistenceError, ResourceLock, atomic_write_text, read_json
 from review_records import ANALYZER_COVERAGES, RecordError, ledger_history, valid_analyzer, validate_record_pair
 from skill_roots import skills_directory_holding
+from typed_fields import FieldError
 
 # Version 2 adds each recommendation's decision_history and linked_flags. Version 3 links a flag only to the
 # finding in the review version it names; earlier reports linked it to whatever finding had its ID in the latest
@@ -108,6 +109,12 @@ SET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 REC_ID = re.compile(r"REC-(\d{3,})")
 EXAMPLES_PRINTED = 3
 EVIDENCE_RENDERED = 10
+# The options whose values are a subject as a report printed it or a note as the user gave it, each with how many
+# values it takes. Such a value may begin with `-`, which argparse would read as an option, so each is bound to its
+# option before parsing (see bound_values).
+BOUND_OPTIONS = {"--category": 1, "--synthesized": 1, "--note": 1, "--analyzer": 3}
+# Joins the analyzer's three bound values; no command-line argument can hold it.
+BOUND_SEPARATOR = "\0"
 
 ReviewKey = tuple[str, int, int]
 FindingKey = tuple[str, int, int, str]
@@ -144,7 +151,7 @@ class Services:
     git_common_dir: Callable[[Path], Path | None] = lambda directory: GitClient().rev_parse_path(
         "--git-common-dir", directory=directory
     )
-    read_pinned: review_guidance.PinnedReader = review_guidance.read_pinned
+    guidance_reader: review_guidance.Reader = field(default_factory=review_guidance.Reader)
     report_lock: Callable[[Path], AbstractContextManager[Any]] = lambda json_path: ResourceLock(
         json_path.parent / ".locks" / "insights.lock"
     )
@@ -605,9 +612,9 @@ def _validate_reviewers(value: Any, identifier: str) -> None:
     if not isinstance(value, list) or any(
         not isinstance(row, dict)
         or set(row) != REVIEWER_FIELDS
-        or not all(isinstance(row[field], str) and row[field] for field in ("reviewer", "model"))
-        or not all(type(row[field]) is int and row[field] >= 0 for field in ("findings", "flagged_findings"))
-        or not all(row[field] is None or (type(row[field]) is int and row[field] >= 0) for field in OUTCOMES)
+        or not all(isinstance(row[key], str) and row[key] for key in ("reviewer", "model"))
+        or not all(type(row[key]) is int and row[key] >= 0 for key in ("findings", "flagged_findings"))
+        or not all(row[key] is None or (type(row[key]) is int and row[key] >= 0) for key in OUTCOMES)
         for row in value
     ):
         raise InsightError(f"{identifier}.reviewers must be a list of reviewer counts")
@@ -709,8 +716,10 @@ def load_report(path: Path) -> dict[str, Any]:
         report["synthesis"] = None
     if report["schema_version"] < 9:
         report["signals"] = review_signals.empty()
-    if not isinstance(report.get("signals"), dict) or set(report["signals"]) != {*review_signals.SIGNALS, "counts"}:
-        raise InsightError(f"{path} has invalid signals")
+    try:
+        review_signals.read(report.get("signals"))
+    except FieldError as exc:
+        raise InsightError(f"{path} has invalid signals: {exc}") from exc
     # A synthesis recorded before category commentary was required has none.
     if isinstance(report.get("synthesis"), dict):
         report["synthesis"].setdefault("categories", [])
@@ -736,18 +745,23 @@ def _given(report: dict[str, Any]) -> list[dict[str, Any]]:
     return [*report["recommendations"], *(item for run in superseded for item in run["recommendations"])]
 
 
-def write_report(json_path: Path, report: dict[str, Any]) -> Path:
-    """Write the report and its Markdown. A report larger than `load_report` reads is refused before anything is
-    written, so the script never writes a report it would then refuse."""
+def write_report(json_path: Path, report: dict[str, Any], synthesis: synthesis_stage.Staged | None = None) -> Path:
+    """Write the report and its Markdown, after the synthesis files `synthesis` stages beside it. A report larger than
+    `load_report` reads is refused before anything is written, so the script never writes a report it would then
+    refuse, nor replaces the synthesis files an earlier report sealed."""
     content = json.dumps(report, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
     if len(content.encode("utf-8")) > synthesis_stage.MAXIMUM_BYTES:
         raise InsightError(
             f"The report would exceed {synthesis_stage.MAXIMUM_BYTES} bytes, more than it could be read back with; "
             "report a shorter range"
         )
+    markdown = render(report)
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    if synthesis is not None:
+        synthesis.write()
     markdown_path = json_path.with_suffix(".md")
     atomic_write_text(json_path, content)
-    atomic_write_text(markdown_path, render(report))
+    atomic_write_text(markdown_path, markdown)
     return markdown_path
 
 
@@ -811,9 +825,8 @@ def create_report(
                 for path, record in records
             ],
         }
-        json_path.parent.mkdir(parents=True, exist_ok=True)
         guidance = review_guidance.read_guidance(
-            report["repositories"], pairs.validated, checkouts or {}, services.read_pinned
+            report["repositories"], pairs.validated, checkouts or {}, services.guidance_reader
         )
         if notices is not None:
             notices += guidance.unreadable
@@ -834,7 +847,7 @@ def create_report(
             }
         )
         analyzed.signal_lines = review_signals.input_lines(report["signals"])
-        fresh = synthesis_stage.prepare(
+        staged = synthesis_stage.prepare(
             json_path.parent,
             analyzed,
             flags=flags or [],
@@ -842,8 +855,8 @@ def create_report(
             previous=synthesis_stage.previous_period(set_root, start, load_report),
             script=SCRIPT,
         )
-        _carry_synthesis(report, fresh, earlier)
-        return json_path, write_report(json_path, report), report
+        _carry_synthesis(report, staged.synthesis, earlier)
+        return json_path, write_report(json_path, report, staged), report
 
 
 def _carry_synthesis(report: dict[str, Any], fresh: dict[str, Any], earlier: dict[str, Any] | None) -> None:
@@ -1242,6 +1255,31 @@ def _run_synthesize(args: argparse.Namespace, services: Services | None) -> int:
     return 0
 
 
+def bound_values(arguments: list[str]) -> list[str]:
+    """`arguments` with each BOUND_OPTIONS option and the values after it made one `--option=value` argument, so
+    argparse reads a value that begins with `-` as the value it is."""
+    bound: list[str] = []
+    position = 0
+    while position < len(arguments):
+        count = BOUND_OPTIONS.get(arguments[position], 0)
+        values = arguments[position + 1 : position + 1 + count]
+        if count and len(values) == count:
+            bound.append(f"{arguments[position]}={BOUND_SEPARATOR.join(values)}")
+        else:
+            bound.append(arguments[position])
+            values = []
+        position += 1 + len(values)
+    return bound
+
+
+def _analyzer_subject(value: str) -> tuple[str, ...]:
+    """An argparse type: the coverage, tool, and rule `--analyzer` was given, bound as one value."""
+    parts = tuple(value.split(BOUND_SEPARATOR))
+    if len(parts) != 3:
+        raise argparse.ArgumentTypeError("expected the coverage, tool, and rule an ANALYZER line named")
+    return parts
+
+
 def main(arguments: list[str] | None = None, services: Services | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", type=Path, help="defaults to CODE_REVIEW_CONFIG or the standard config path")
@@ -1260,8 +1298,8 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
     subject.add_argument("--category", help="the category a RECOMMENDATION line named")
     subject.add_argument(
         "--analyzer",
-        nargs=3,
-        metavar=("COVERAGE", "TOOL", "RULE"),
+        type=_analyzer_subject,
+        metavar="COVERAGE TOOL RULE",
         help="the coverage, tool, and rule an ANALYZER line named",
     )
     subject.add_argument("--synthesized", metavar="TITLE", help="the title a TITLE line named")
@@ -1279,7 +1317,7 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
     )
     decide_parser.add_argument("decision", choices=DECISIONS)
     decide_parser.add_argument("--note")
-    args = parser.parse_args(arguments)
+    args = parser.parse_args(bound_values(sys.argv[1:] if arguments is None else arguments))
     try:
         if args.command == "report":
             notices: list[str] = []
