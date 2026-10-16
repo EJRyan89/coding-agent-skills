@@ -107,7 +107,16 @@ if code == 0:
 raise SystemExit(code)
 EOF
 printf '__pycache__/\n.fake-deployed\n' >"$SEED/.gitignore"
-git_quiet -C "$SEED" add deploy.py .gitignore
+# update.sh asks the clone's skill-core release_tags.py for each release it compares, so the upstream carries
+# skill-core's scripts where the repository keeps them.
+mkdir -p "$SEED/skills/skill-core/scripts"
+for MODULE in "$SCRIPT_DIR/../../skill-core/scripts/"*.py; do
+  case "${MODULE##*/}" in
+    test_*) ;;
+    *) cp -- "$MODULE" "$SEED/skills/skill-core/scripts/" ;;
+  esac
+done
+git_quiet -C "$SEED" add deploy.py .gitignore skills
 git_quiet -C "$SEED" commit -m initial
 git_quiet -C "$SEED" remote add origin "$UPSTREAM"
 git_quiet -C "$SEED" push origin main
@@ -574,24 +583,28 @@ expect_first_line "MAJOR_UPDATE v1.5.0..v2.0.0" "stable major"
 [ "$(head_of "$CLONE" HEAD)" = "$BEFORE" ] || fail "stable major: main moved"
 expect_not_deployed "stable major"
 
-# A pre-release counts as its version: one of the next major stops, and its final release then passes.
+# A pre-release is not a release, as skill-core's release_tags.py defines one: one of the next major does not stop the
+# update, and its final release then stops it at the release before the pre-release.
 run_subject "$CLONE" --cross-major
 expect_status 0 "stable major accepted"
 new_clone
 publish "third major candidate"
 tag_upstream v3.0.0-rc.1
 run_subject "$CLONE"
-expect_status 1 "pre-release"
-expect_first_line "MAJOR_UPDATE v2.0.0..v3.0.0-rc.1" "pre-release"
-expect_not_deployed "pre-release"
-run_subject "$CLONE" --cross-major
-expect_status 0 "pre-release accepted"
+expect_status 0 "pre-release"
+if printf '%s\n' "$OUTPUT" | grep -q "CROSSED"; then fail "pre-release: crossing reported"; fi
+expect_no_stderr "pre-release"
+expect_deployed "pre-release"
 publish "third major"
 tag_upstream v3.0.0
 run_subject "$CLONE"
-expect_status 0 "pre-release to release"
-if printf '%s\n' "$OUTPUT" | grep -q "CROSSED"; then fail "pre-release to release: crossing reported"; fi
-expect_deployed "pre-release to release"
+expect_status 1 "pre-release to release"
+expect_first_line "MAJOR_UPDATE v2.0.0..v3.0.0" "pre-release to release"
+expect_not_deployed "pre-release to release"
+run_subject "$CLONE" --cross-major
+expect_status 0 "pre-release to release accepted"
+printf '%s\n' "$OUTPUT" | grep -qx "CROSSED v2.0.0..v3.0.0" || fail "pre-release to release accepted: crossing not named"
+expect_deployed "pre-release to release accepted"
 
 # A deployment made with deploy.py --at stops the update before the fetch, naming the ref and the commit check reports.
 PINNED_COMMIT=$(git -C "$SEED" rev-parse "v1.0.0^{commit}")
