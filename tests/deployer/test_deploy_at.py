@@ -248,8 +248,7 @@ class DeployAtTests(DeployerTestCase):
     def test_a_ref_that_reads_as_an_option_is_refused_before_git_runs(self) -> None:
         with mock.patch.object(platform_support, "run_tool") as run_tool:
             for ref in ("-x", "--upload-pack=evil"):
-                result = self.deploy_fails("--all", f"--at={ref}", pattern=r"--at must name a branch, tag, or commit")
-                self.assertEqual(2, result.code)
+                self.deploy_fails("--all", f"--at={ref}", code=2, pattern=r"--at must name a branch, tag, or commit")
         run_tool.assert_not_called()
         self.assert_exports_removed(0)
 
@@ -419,16 +418,19 @@ class DeployAtTests(DeployerTestCase):
                 self.deploy_fails("--all", "--dry-run", pattern=f"Manifest source '{SOURCE_ID}' source_.* is malformed")
 
     def test_at_cannot_be_combined_with_migrate_from(self) -> None:
-        result = self.deploy_fails(
-            "--at", "v1.0.0", "--migrate-from", "old/skills", pattern=r"--at cannot be combined with --migrate-from"
+        self.deploy_fails(
+            "--at",
+            "v1.0.0",
+            "--migrate-from",
+            "old/skills",
+            code=2,
+            pattern=r"--at cannot be combined with --migrate-from",
         )
-        self.assertEqual(2, result.code)
 
     def test_unpin_cannot_be_combined_with_at_or_migrate_from(self) -> None:
         for other in (("--at", "v1.0.0"), ("--migrate-from", "old/skills")):
             with self.subTest(other=other):
-                result = self.deploy_fails("--unpin", *other, pattern=f"--unpin cannot be combined with {other[0]}")
-                self.assertEqual(2, result.code)
+                self.deploy_fails("--unpin", *other, code=2, pattern=f"--unpin cannot be combined with {other[0]}")
 
 
 if __name__ == "__main__":

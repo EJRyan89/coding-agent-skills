@@ -455,7 +455,7 @@ class SelectionTests(DeployerTestCase):
         self.make_skill("alpha", "Alpha")
         self.make_config()
         result = self.deploy_fails(
-            "--all", "--include", "nothing", "--include", "nothing", pattern="no bundle or skill in this source"
+            "--all", "--include", "nothing", "--include", "nothing", code=2, pattern="no bundle or skill in this source"
         )
         self.assertIn("--include names no bundle or skill in this source: nothing\n", result.output)
 
@@ -463,8 +463,8 @@ class SelectionTests(DeployerTestCase):
         self.make_source_json()
         self.make_skill("alpha", "Alpha")
         self.make_config()
-        self.deploy_fails("--bogus", pattern="unrecognized arguments: --bogus")
-        self.deploy_fails("--force-item", pattern="argument --force-item: expected one argument")
+        self.deploy_fails("--bogus", code=2, pattern="unrecognized arguments: --bogus")
+        self.deploy_fails("--force-item", code=2, pattern="argument --force-item: expected one argument")
 
 
 class OptInTests(DeployerTestCase):
@@ -507,7 +507,7 @@ class OptInTests(DeployerTestCase):
         self.make_skill("lint", "Lint")
         self.make_skill("fmt", "Format")
         self.deploy_fails(
-            "--all", "--include", "lint", pattern="--include names no bundle or skill in this source: lint"
+            "--all", "--include", "lint", code=2, pattern="--include names no bundle or skill in this source: lint"
         )
         menu = self.deploy("--dry-run", stdin="\n").output
         self.assertRegex(menu, r"(?m)^  \[\*\] [0-9]+\. pack \(bundle, opt-in\)$")
@@ -1107,8 +1107,7 @@ class OptInTests(DeployerTestCase):
             (("--all", "--include", "fmt", "--dry-run"), "--include names no bundle or skill in this source: fmt"),
         ):
             with self.subTest(arguments=arguments):
-                result = self.deploy_fails(*arguments, pattern=message)
-                self.assertEqual(2, result.code, result.output)
+                result = self.deploy_fails(*arguments, code=2, pattern=message)
                 self.assertEqual(
                     f"\nERROR: {message}\nRun '{DEPLOY_COMMAND} --help' for usage.\n\n",
                     result.output,
@@ -1121,7 +1120,12 @@ class RepositoryBundleTests(DeployerTestCase):
         self.make_config(source_id)
         repository = self.repository_source()
         self.deploy_fails(
-            "--all", "--include", "dotnet-format", source=repository, pattern="--include names no bundle or skill"
+            "--all",
+            "--include",
+            "dotnet-format",
+            source=repository,
+            code=2,
+            pattern="--include names no bundle or skill",
         )
         menu = self.deploy("--dry-run", stdin="\n", source=repository).output
         self.assertRegex(menu, r"(?m)^  \[ \] [0-9]+\. dotnet \(bundle, opt-in\)$")
