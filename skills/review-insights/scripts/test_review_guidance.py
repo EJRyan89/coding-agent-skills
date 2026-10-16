@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import sys
 import tempfile
 import unittest
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -282,6 +283,81 @@ class ReadTests(GitTestCase):
             guidance.unreadable,
         )
 
+    def test_any_os_error_while_checking_the_working_copy_is_named_not_raised(self) -> None:
+        cases = {
+            "is_file": (
+                {"is_file": OSError(errno.EIO, "Input/output error")},
+                "OSError: Input/output error",
+            ),
+            "stat": (
+                {"is_file": True, "stat": FileNotFoundError(errno.ENOENT, "No such file or directory")},
+                "FileNotFoundError: No such file or directory",
+            ),
+        }
+        for name, (failures, reason) in cases.items():
+            with self.subTest(name), failing("checklist.md", failures):
+                self.assertEqual(
+                    rg.WorkingCopy(None, None, reason), rg.read_working_copy(self.checkout, "docs/checklist.md")
+                )
+                self.assertEqual(
+                    [f"GUIDANCE_UNREADABLE owner/repo docs/checklist.md fallback=none {reason}"],
+                    self.read().unreadable,
+                )
+
+    def test_a_version_is_read_at_an_older_pinning_commit_when_the_newest_lacks_its_bytes(self) -> None:
+        git = GitClient()
+        git.output(["init", "--quiet"], directory=self.checkout)
+        git.output(["add", "."], directory=self.checkout)
+        git.output(["commit", "--quiet", "-m", "Guidance"], directory=self.checkout)
+        older = git.output(["rev-parse", "HEAD"], directory=self.checkout).strip()
+        (self.checkout / "docs" / "checklist.md").write_text("Rewritten since.\n", encoding="utf-8")
+        git.output(["commit", "--quiet", "-am", "Rewrite"], directory=self.checkout)
+        newer = git.output(["rev-parse", "HEAD"], directory=self.checkout).strip()
+        self.records = {
+            Path("a.json"): reviewed("security", "2026-01-02T00:00:00+00:00", {"docs/checklist.md": CHECKLIST}, older),
+            Path("b.json"): reviewed("style", "2026-01-03T00:00:00+00:00", {"docs/checklist.md": CHECKLIST}, newer),
+        }
+        guidance = self.read()
+        self.assertEqual(
+            [(["security", "style"], "included", CHECKLIST)],
+            [(line["reviewers"], line["status"], line["content"]) for line in guidance.lines],
+        )
+
+    def test_a_reference_in_one_version_only_is_unsupplied_to_the_reviewer_given_that_version(self) -> None:
+        linked = CONVENTIONS + "\nRead [the glossary](glossary.md) before the rules.\n"
+        self.records = {
+            Path("a.json"): reviewed(
+                "security",
+                "2026-01-02T00:00:00+00:00",
+                {"docs/conventions.md": linked, "docs/checklist.md": CHECKLIST},
+            ),
+            Path("b.json"): reviewed(
+                "style",
+                "2026-01-03T00:00:00+00:00",
+                {"docs/conventions.md": CONVENTIONS, "docs/checklist.md": CHECKLIST},
+            ),
+        }
+        texts = {digest(text): text.encode("utf-8") for text in (linked, CONVENTIONS, CHECKLIST)}
+        guidance = rg.read_guidance(
+            ["owner/repo"],
+            self.records,
+            {"owner/repo": self.checkout},
+            rg.Reader(
+                working=lambda _checkout, _path: rg.WorkingCopy(None),
+                committed=lambda _checkout, _commit, _path, pinned: texts.get(pinned),
+            ),
+        )
+        self.assertEqual(
+            [
+                ("security", "docs/checklist.md", 11, "docs/severity.md"),
+                ("security", "docs/conventions.md", 7, "style/guide.md"),
+                ("security", "docs/conventions.md", 13, "docs/glossary.md"),
+                ("style", "docs/checklist.md", 11, "docs/severity.md"),
+                ("style", "docs/conventions.md", 7, "style/guide.md"),
+            ],
+            [(item["reviewer"], item["path"], item["line"], item["reference"]) for item in guidance.unsupplied],
+        )
+
     def test_a_report_names_an_unreadable_file_and_reads_the_rest(self) -> None:
         with unreadable("checklist.md"):
             guidance = self.read()
@@ -430,6 +506,24 @@ def unreadable(name: str) -> Iterator[None]:
         yield
 
 
+@contextmanager
+def failing(name: str, failures: dict[str, OSError | bool]) -> Iterator[None]:
+    """Each `Path` method named in `failures`, called on a file named `name`, raises its error or returns its value."""
+    with ExitStack() as stack:
+        for method, outcome in failures.items():
+            real = getattr(Path, method)
+
+            def replaced(path: Path, *args: Any, _real: Any = real, _outcome: Any = outcome, **kwargs: Any) -> Any:
+                if path.name != name:
+                    return _real(path, *args, **kwargs)
+                if isinstance(_outcome, OSError):
+                    raise _outcome
+                return _outcome
+
+            stack.enter_context(mock.patch.object(Path, method, replaced))
+        yield
+
+
 class ReportTests(InsightFixture):
     """The report reads each repository's configured checkout and gives the synthesis its guidance."""
 
@@ -437,23 +531,27 @@ class ReportTests(InsightFixture):
         super().setUp()
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        checkout = Path(temporary.name) / "checkout"
-        files = {"docs/conventions.md": CONVENTIONS, "docs/checklist.md": CHECKLIST}
-        for path, text in files.items():
-            (checkout / path).parent.mkdir(parents=True, exist_ok=True)
-            (checkout / path).write_text(text, encoding="utf-8", newline="\n")
+        self.checkout = Path(temporary.name) / "checkout"
+        self.files = {"docs/conventions.md": CONVENTIONS, "docs/checklist.md": CHECKLIST}
+        for path, text in self.files.items():
+            (self.checkout / path).parent.mkdir(parents=True, exist_ok=True)
+            (self.checkout / path).write_text(text, encoding="utf-8", newline="\n")
         config = load_config(self.config_path)
-        config["repositories"]["owner/repo"]["checkout_path"] = str(checkout)
+        config["repositories"]["owner/repo"]["checkout_path"] = str(self.checkout)
         write_config(config, self.config_path)
+
+    def reviewed_at(self, commit: str | None) -> None:
+        """Commit a review by a repository-scoped reviewer built from the guidance files at `commit`."""
         adapter = {
             "name": "repository-reviewer",
             "scope": "repository",
-            "source_commit": None,
-            "source_hashes": {path: digest(text) for path, text in files.items()},
+            "source_commit": commit,
+            "source_hashes": {path: digest(text) for path, text in self.files.items()},
         }
         self.commit("owner/repo", 7, ["Correctness"], adapter=adapter)
 
     def test_the_input_carries_the_text_and_the_candidates_and_the_report_prints_them(self) -> None:
+        self.reviewed_at(None)
         code, out, err = self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31")
         self.assertEqual(0, code, err)
         lines = out.splitlines()
@@ -479,6 +577,7 @@ class ReportTests(InsightFixture):
         )
 
     def test_an_unreadable_guidance_file_is_named_and_the_report_still_written(self) -> None:
+        self.reviewed_at(None)
         with unreadable("checklist.md"):
             code, out, err = self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31")
         self.assertEqual(0, code, err)
@@ -492,6 +591,31 @@ class ReportTests(InsightFixture):
         self.assertEqual(
             [("unavailable", None), ("included", CONVENTIONS)],
             [(files[path]["status"], files[path]["content"]) for path in ("docs/checklist.md", "docs/conventions.md")],
+        )
+
+    def test_an_unreadable_file_found_at_its_commit_is_included_and_named_before_the_signals(self) -> None:
+        git = GitClient()
+        git.output(["init", "--quiet"], directory=self.checkout)
+        git.output(["add", "."], directory=self.checkout)
+        git.output(["commit", "--quiet", "-m", "Guidance"], directory=self.checkout)
+        self.reviewed_at(git.output(["rev-parse", "HEAD"], directory=self.checkout).strip())
+        with unreadable("checklist.md"):
+            code, out, err = self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31")
+        self.assertEqual(0, code, err)
+        lines = out.splitlines()
+        self.assertEqual(
+            [
+                "MARKDOWN",
+                "GUIDANCE_UNREADABLE owner/repo docs/checklist.md fallback=commit PermissionError: Permission denied",
+                "GUIDANCE_OVERLAP",
+            ],
+            [lines[1].split()[0], lines[2], lines[3].split()[0]],
+        )
+        directory = Path(lines[0].removeprefix("REPORT ")).parent
+        items = [json.loads(line) for line in (directory / rs.INPUT_NAME).read_text(encoding="utf-8").splitlines()]
+        files = {item["path"]: item for item in items if item["kind"] == "guidance-file"}
+        self.assertEqual(
+            ("included", CHECKLIST), (files["docs/checklist.md"]["status"], files["docs/checklist.md"]["content"])
         )
 
 

@@ -1395,6 +1395,18 @@ class SweepTests(Fixture):
         self.assertIn("Worktrees removed:       1 — ", summary)
         self.assertFalse(tree.exists(), "the worktree removal Git accepted still happens")
 
+    def test_a_sweep_whose_only_refused_deletion_is_a_removed_worktrees_branch_exits_1(self) -> None:
+        self.finished_branch("done-tree")
+        tree = self.area / "done-tree wt"
+        git(self.clone, "worktree", "add", "--quiet", str(tree), "done-tree")
+        services = rc.Services(git=refusing_branch_deletion("done-tree"), gh=self.github)
+        code, lines = self.sweep(services)
+        self.assertEqual(1, code, lines)
+        self.assertEqual([[f"{self.repos.as_posix()}/my repo", "cleaned"]], facts(lines, "REPO"))
+        self.assertIn("done-tree: error: cannot lock ref 'refs/heads/done-tree'", self.summary(lines))
+        self.assertIsNotNone(self.tip("done-tree"))
+        self.assertFalse(tree.exists(), "the worktree removal Git accepted still happens")
+
     def test_a_failure_partway_through_apply_reports_what_was_done_before_it(self) -> None:
         self.finished_branch("done")
         self.push_branch("behind")
