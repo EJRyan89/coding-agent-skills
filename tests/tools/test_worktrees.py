@@ -1658,7 +1658,7 @@ class GitProgramTests(GitTestCase):
         )
 
 
-class ToolsGitTests(unittest.TestCase):
+class ToolsGitTests(GitTestCase):
     def test_every_tool_runs_git_and_gh_only_through_skill_cores_clients(self) -> None:
         # The policy validation applies to skill scripts, applied to tools/: a command a tool starts itself has no
         # time limit, no prompt turned off, and its own copy of the environment rule.
