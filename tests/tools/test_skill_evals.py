@@ -2074,8 +2074,7 @@ class RunPieceTests(GitTestCase):
                 profile_guard, "'~/elsewhere.py'"
             ),
             "its hooks are not one PreToolUse command hook": source.replace("  PreToolUse:", "  PostToolUse:"),
-            "its hooks name onFailure 0 times, not once": source.replace("          onFailure: block
-", ""),
+            "its hooks name onFailure 0 times, not once": source.replace("          onFailure: block\n", ""),
             "its hook's onFailure is continue, not block": source.replace("onFailure: block", "onFailure: continue"),
             "its hooks name type 2 times, not once": source.replace(
                 "          timeout: 30", "          timeout: 30\n        - type: command\n          command: echo"

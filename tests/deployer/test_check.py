@@ -629,16 +629,13 @@ class CheckCommandTests(DeployerTestCase):
     ) -> None:
         # Claude Code 2.1.295 is the first that honors a hook's onFailure: block, which the code-review reviewer's
         # guard declares; an older one lets a call through when the guard cannot start or times out.
-        result = self.check(Machine(versions={"claude": "2.1.294 (Claude Code)
-"}))
+        result = self.check(Machine(versions={"claude": "2.1.294 (Claude Code)\n"}))
         self.assertEqual(0, result.code, result.output)
         groups = self.report_groups(result.output, "CHECK")
         self.assertEqual(["Claude Code 2.1.294 (needs 2.1.295 or newer)"], groups["OUTDATED"])
         self.assertNotIn("Claude Code 2.1.294 (used by every skill run in Claude Code)", groups["OPTIONAL"])
-        self.assertIn("Ready to deploy. Skills cannot use a missing, outdated, or unusable tool
-", result.output)
-        groups = self.report_groups(self.check(Machine(versions={"claude": "2.1.295 (Claude Code)
-"})).output, "CHECK")
+        self.assertIn("Ready to deploy. Skills cannot use a missing, outdated, or unusable tool\n", result.output)
+        groups = self.report_groups(self.check(Machine(versions={"claude": "2.1.295 (Claude Code)\n"})).output, "CHECK")
         self.assertIn("Claude Code 2.1.295 (used by every skill run in Claude Code)", groups["OPTIONAL"])
         self.assertNotIn("OUTDATED", groups)
 
