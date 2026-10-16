@@ -458,6 +458,60 @@ class FlagCliTests(unittest.TestCase):
             "FAILED example/one#12 has no review in the archive\n",
         )
 
+    def assert_one_failed_line_and_no_store(self, result: subprocess.CompletedProcess[str], pattern: str) -> None:
+        self.assertEqual((1, ""), (result.returncode, result.stderr))
+        self.assertRegex(result.stdout, rf"\AFAILED {pattern}\n\Z")
+        self.assertEqual([], [path.name for path in Path(self.store).parent.glob("flags.json*")])
+
+    def test_a_review_whose_markdown_changed_after_it_was_archived_fails_both_reads(self) -> None:
+        review_fixture.commit_fixture(self.archive)
+        markdown = pull_directory(self.archive, "example/one", 12) / "review.md"
+        markdown.write_bytes(markdown.read_bytes() + b"\nEdited after the review.\n")
+        self.assert_refusal_preserves_store_and_locks(
+            "Review Markdown hash mismatch",
+            "add",
+            "guideline",
+            "Clarify boundary",
+            "--repository",
+            "example/one",
+            "--pull",
+            "12",
+            "--review-version",
+            "1",
+            "--finding",
+            "F001",
+        )
+        self.assert_refusal_preserves_store_and_locks(
+            "Review Markdown hash mismatch", "findings", "--repository", "example/one", "--pull", "12"
+        )
+        self.assertFalse(Path(self.store).exists())
+
+    def test_a_review_whose_markdown_is_missing_fails_both_reads(self) -> None:
+        review_fixture.commit_fixture(self.archive)
+        (pull_directory(self.archive, "example/one", 12) / "review.md").unlink()
+        # The reason is the operating system's, never a failure's type name, which only an uncaught error prints.
+        missing = r"\[Errno 2\] [^\n]*review\.md'?"
+        self.assert_one_failed_line_and_no_store(self.flag_finding("1", "F001"), missing)
+        self.assert_one_failed_line_and_no_store(
+            self.store_cli("findings", "--repository", "example/one", "--pull", "12"), missing
+        )
+
+    def test_a_configuration_that_cannot_be_read_fails_both_reads(self) -> None:
+        review_fixture.commit_fixture(self.archive)
+        missing = str(Path(self.config).with_name("absent.json"))
+        pull = ("--repository", "example/one", "--pull", "12")
+        commands = (
+            ("findings", *pull),
+            ("add", "guideline", "Body", *pull, "--review-version", "1", "--finding", "F001"),
+        )
+        for config in (missing, self.config):
+            if config == self.config:
+                Path(self.config).write_text("{not json", encoding="utf-8")
+            for command in commands:
+                with self.subTest(config=config, command=command[0]):
+                    result = self.run_cli("--store", self.store, "--config", config, *command)
+                    self.assert_one_failed_line_and_no_store(result, r"Cannot read valid JSON from [^\n]+")
+
     def test_invalid_repository_fails(self) -> None:
         result = self.store_cli("add", "guideline", "Body", "--repository", "short-name")
         self.assert_result(result, 1, "FAILED Invalid repository identity: 'short-name'\n")

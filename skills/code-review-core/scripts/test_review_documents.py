@@ -204,7 +204,7 @@ LINUX_HINT = (
 )
 HINT = "" if sys.platform == "win32" else f"; {LINUX_HINT}"
 INSTALL = f"install Xpdf 4.06 or newer or Poppler 26.10.0 or newer{HINT}"
-NOT_INSTALLED = f"pdftotext, which extracts a PDF's text, is not installed{HINT}"
+NOT_INSTALLED = f"pdftotext, which extracts a PDF's text, is not installed; {INSTALL}"
 # The banner of a distribution's Poppler, which keeps its upstream version while it backports fixes.
 DISTRIBUTION_POPPLER = (
     "pdftotext version 24.02.0\nCopyright 2005-2024 The Poppler Developers - http://poppler.freedesktop.org\n"

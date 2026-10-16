@@ -2317,6 +2317,55 @@ class RepositoryReviewerTests(PipelineFixture):
         # The entrypoint result protocol has no model field, so its reviewer's model shows as unknown.
         self.assertIn("| `fixture-review` | Repository reviewer | - | 2 | 0 | 0 | 42s |", markdown)
 
+    def test_an_entrypoint_finding_on_a_file_the_pull_request_does_not_change_is_retried(self) -> None:
+        self.configure(self.repository_reviewer("review/entrypoint.json"))
+        ready = self.prepare()
+        finding = {
+            "candidate_key": "outside",
+            "severity": "SHOULD_FIX",
+            "category": "correctness",
+            "path": "never/changed.py",
+            "line": 999999,
+            "body": "Not part of this change.",
+            "evidence": "never/changed.py:999999",
+            "source": "fixture-review",
+        }
+        result = {
+            "protocol_version": 1,
+            "repository": REPOSITORY,
+            "pull_number": 12,
+            "head_sha": self.head,
+            "summary": "One finding.",
+            "reviewer": "fixture-review",
+            "status": "complete",
+            "findings": [finding],
+            "prior_dispositions": [],
+            "usage": None,
+        }
+        Path(ready["result_path"]).write_text(json.dumps(result), encoding="utf-8")
+        reason = (
+            "Finding outside at never/changed.py:999999 is not on a file the pull request changes; "
+            "take the path from a `diff --git` header in DIFF_FILE"
+        )
+        role = ready["roles"][0]
+        self.assertEqual(reason, rp.validate_result(Path(ready["run"]), "fixture-review"))
+        self.assertEqual(
+            (1, f"RETRY {SELECTOR} fixture-review {role['prompt_file']} {reason}\n", ""),
+            self.run_main("check", "--run", str(ready["run"])),
+        )
+        # check set the result aside for the retry; a reviewer that writes it again cannot have it recorded.
+        Path(ready["result_path"]).write_text(json.dumps(result), encoding="utf-8")
+        with self.assertRaisesRegex(rp.PipelineError, "is not on a file the pull request changes"):
+            rp.finalize(ready["run"])
+        self.assertFalse(pull_directory(self.archive, REPOSITORY, 12).exists())
+        # The same finding on a changed file is accepted and recorded.
+        Path(ready["result_path"]).write_text(
+            json.dumps({**result, "findings": [{**finding, "path": "app/service.py", "line": 2}]}), encoding="utf-8"
+        )
+        self.assertEqual(f"ALL_VALID {SELECTOR}\n", self.run_main("check", "--run", str(ready["run"]))[1])
+        rp.finalize(ready["run"])
+        self.assertEqual(["app/service.py"], [item["path"] for item in archived_record(self.archive, 12)["findings"]])
+
     def test_entrypoint_reviewer_may_omit_comment_dispositions_but_not_give_some(self) -> None:
         self.configure(self.repository_reviewer("review/entrypoint.json"))
         self.github.threads = [thread("dev", "Why zero?", line=2)]

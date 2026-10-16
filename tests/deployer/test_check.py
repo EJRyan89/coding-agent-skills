@@ -372,7 +372,7 @@ class CheckCommandTests(DeployerTestCase):
         groups = self.report_groups(self.check(Machine()).output, "CHECK")
         self.assertIn("pdftotext Xpdf 4.06 (used by operations)", groups["OPTIONAL"])
         groups = self.report_groups(self.check(Machine(missing=("pdftotext",))).output, "CHECK")
-        self.assertIn(f"pdftotext (not installed; used by operations{HINT})", groups["OPTIONAL"])
+        self.assertIn(f"pdftotext (not installed; used by operations; {INSTALL})", groups["OPTIONAL"])
         self.assertNotIn("MISSING", groups)
         for banner, provider, version, floor in (
             (XPDF_4_00, "Xpdf", "4.00", "4.06"),
@@ -850,8 +850,8 @@ class VersionTests(GitTestCase):
 
     def test_the_pdftotext_entry_sets_nothing_the_probe_does_not_read(self) -> None:
         # pdf_tool owns the probe's arguments and each provider's exit statuses, so the entry names only where to
-        # find the tool, its floors, and, off Windows, the install hint pdf_tool's refusals give; every other field is
-        # the default.
+        # find the tool, its floors, and what pdf_tool's refusals tell the user to install; every other field is the
+        # default.
         entry = tools.SKILL_TOOLS["pdftotext"]
         default = tools.Tool("pdftotext", "pdftotext", entry.locate)
         changed = {
@@ -859,8 +859,8 @@ class VersionTests(GitTestCase):
             for field in dataclasses.fields(tools.Tool)
             if getattr(entry, field.name) != getattr(default, field.name)
         }
-        self.assertEqual({"provider_minimum"} | ({"install_hint"} if HINT else set()), changed)
-        self.assertEqual(None if sys.platform == "win32" else LINUX_HINT, entry.install_hint)
+        self.assertEqual({"provider_minimum", "install_hint"}, changed)
+        self.assertEqual(INSTALL, entry.install_hint)
         self.assertNotIn("version_statuses", {field.name for field in dataclasses.fields(tools.Tool)})
         with (
             mock.patch("deployer.platform_support.find_executables", return_value=["C:/tools/pdftotext.exe"]),
@@ -1051,10 +1051,10 @@ class SharedLocatorTests(LocatorFixture):
         self.assertEqual(unsupported, refusal)
         self.assertEqual([], self.started)
 
-    def test_with_no_pdftotext_in_either_both_say_it_is_not_installed(self) -> None:
+    def test_with_no_pdftotext_in_either_both_say_it_is_not_installed_and_name_the_floors(self) -> None:
         line, refusal = self.check_and_extract()
-        self.assertEqual(("pdftotext", "OPTIONAL", f"not installed; used by operations{HINT}"), line)
-        self.assertEqual(f"pdftotext, which extracts a PDF's text, is not installed{HINT}", refusal)
+        self.assertEqual(("pdftotext", "OPTIONAL", f"not installed; used by operations; {INSTALL}"), line)
+        self.assertEqual(f"pdftotext, which extracts a PDF's text, is not installed; {INSTALL}", refusal)
         self.assertEqual(([], []), (self.probed, self.started))
 
 

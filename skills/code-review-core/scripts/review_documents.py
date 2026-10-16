@@ -43,7 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 from bounded_process import streaming
 from executable_locator import find_executables
 from flat_text import flat_text
-from pdf_tool import INSTALL_HINT, PdfToolRefused, probe_pdftotext, select_pdftotext
+from pdf_tool import PdfToolRefused, install_text, probe_pdftotext, select_pdftotext
 
 DOCUMENT_FORMATS = {".docx": "docx", ".pdf": "pdf"}
 # A PDF is extracted whether or not the snapshot's NUL test finds it binary: one written without compressed streams
@@ -200,8 +200,7 @@ def _pdftotext(content: bytes) -> bytes:
     """
     found = find_executables(PDFTOTEXT)
     if not found:
-        hint = "" if INSTALL_HINT is None else f"; {INSTALL_HINT}"
-        raise ExtractionRefused(f"{PDFTOTEXT}, which extracts a PDF's text, is not installed{hint}")
+        raise ExtractionRefused(f"{PDFTOTEXT}, which extracts a PDF's text, is not installed; {install_text()}")
     try:
         executable = select_pdftotext(found, probe_pdftotext).path
     except PdfToolRefused as exc:
