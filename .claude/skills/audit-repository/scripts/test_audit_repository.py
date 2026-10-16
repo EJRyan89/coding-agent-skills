@@ -10,16 +10,17 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import date
 from pathlib import Path
 from types import MappingProxyType
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-core" / "scripts"))
 
 import audit_repository as audit
-from git_client import GitClient, GitError, GitResult
+from git_client import GitClient, GitError, GitResult, subprocess_runner
 from git_test_base import GitTestCase
 
 SCRIPT = Path(__file__).resolve().parent / "audit_repository.py"
@@ -402,6 +403,28 @@ class ReleaseTests(Fixture):
             "FAILED git rev-parse: Git executable 'git' was not found; install Git first\n", output.getvalue()
         )
 
+    def test_a_git_failure_that_is_not_a_missing_ref_or_tag_is_reported_with_git_s_reason(self) -> None:
+        refusal = "fatal: detected dubious ownership in repository at 'x'"
+        not_repository = "fatal: not a git repository (or any of the parent directories): .git"
+        cases = (
+            ("rev-parse", refusal, f"FAILED git rev-parse: {refusal}"),
+            ("rev-parse", not_repository, f"FAILED {self.root.as_posix()} is not a Git repository"),
+            ("tag", refusal, f"FAILED git tag: {refusal}"),
+            ("describe", refusal, f"FAILED git describe: {refusal}"),
+        )
+        for subcommand, stderr, expected in cases:
+            with self.subTest(subcommand=subcommand, stderr=stderr):
+
+                def runner(command: Sequence[str], timeout: float, failing: str = subcommand, said: str = stderr):
+                    if failing in command:
+                        return GitResult(128, "", said + "\n")
+                    return subprocess_runner(command, timeout)
+
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    code = audit.main(["release", "--repository", str(self.root)], git=GitClient(runner))
+                self.assertEqual((1, f"{expected}\n"), (code, output.getvalue()))
+
 
 class RotationTests(Fixture):
     def test_names_the_next_area_and_briefs_it_whole(self) -> None:
@@ -464,6 +487,48 @@ class RotationTests(Fixture):
                 self.assertEqual(1, code)
                 self.assertTrue(lines[-1].startswith("FAILED ") and reason in lines[-1], lines)
                 self.assertEqual(before, (self.root / RECORD).read_bytes())
+
+    def test_a_failed_record_write_leaves_the_record_unchanged_and_no_copy_beside_it(self) -> None:
+        record = self.root / RECORD
+        before, beside = record.read_bytes(), sorted(path.name for path in record.parent.iterdir())
+        fdopen = os.fdopen
+
+        def half_written(descriptor: int, *arguments: object, **options: object) -> io.TextIOWrapper:
+            stream = fdopen(descriptor, *arguments, **options)  # type: ignore[call-overload]  # fdopen's own overloads
+            write = stream.write
+
+            def fail(text: str) -> int:
+                write(text[: len(text) // 2])
+                stream.flush()
+                raise OSError("disk full")
+
+            stream.write = fail  # type: ignore[method-assign]  # the failure injected mid-write
+            return stream
+
+        for name, failure in (
+            ("a write cut off midway", mock.patch("os.fdopen", half_written)),
+            ("a replace refused", mock.patch("pathlib.Path.replace", side_effect=OSError("disk full"))),
+        ):
+            with self.subTest(name=name):
+                with failure:
+                    code, lines = self.run_main("rotation", "--record", "v0.2.0")
+                self.assertEqual(1, code)
+                self.assertTrue(lines[-1].startswith("FAILED cannot write the rotation record "), lines)
+                self.assertTrue(lines[-1].endswith("rotation.json, which is unchanged: disk full"), lines)
+                self.assertEqual(before, record.read_bytes())
+                self.assertEqual(beside, sorted(path.name for path in record.parent.iterdir()))
+        with (
+            mock.patch("pathlib.Path.replace", side_effect=OSError("disk full")),
+            mock.patch("pathlib.Path.unlink", side_effect=OSError("removal denied")),
+        ):
+            code, lines = self.run_main("rotation", "--record", "v0.2.0")
+        self.assertEqual(1, code)
+        left = [path for path in record.parent.iterdir() if path.name not in beside]
+        self.assertEqual(1, len(left), lines)
+        self.assertTrue(
+            lines[-1].endswith(f"disk full; the unfinished copy {left[0].as_posix()} remains: removal denied"), lines
+        )
+        self.assertEqual(before, record.read_bytes())
 
     def test_a_missing_record_fails(self) -> None:
         (self.root / RECORD).unlink()
