@@ -198,13 +198,6 @@ jobs:
           python tools/deployable_report.py layout --label 'first deploy' --results $env:RESULTS
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      # Every path the manifest owns and every entry the deployment made where items deploy, files included, for the
-      # check after the uninstall.
-      - name: Record what the deployment owns
-        run: |
-          python tools/deployable_report.py owned --owned (Join-Path $env:LOGS 'owned.json')
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
       # The README's uninstall, which selects nothing and shows no prompt.
       - name: Uninstall
         run: |
@@ -213,11 +206,11 @@ jobs:
           python deploy.py --uninstall 2>&1 | Tee-Object -FilePath (Join-Path $env:LOGS 'uninstall.log')
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      # Names each recorded path still there, each entry added where items deploy, and each item the manifest still
-      # records, beside the manifest and retained backups the uninstall keeps; the step summary lists them.
+      # Names each entry left where items deploy, files included, and each item the manifest still records, beside the
+      # manifest and retained backups the uninstall keeps; the step summary lists them.
       - name: Confirm the profile holds nothing from the suite
         run: |
-          python tools/deployable_report.py leftovers --owned (Join-Path $env:LOGS 'owned.json') --results $env:RESULTS
+          python tools/deployable_report.py leftovers --results $env:RESULTS
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Deploy again
@@ -380,23 +373,17 @@ jobs:
         run: |
           python3 tools/deployable_report.py layout --label 'first deploy' --results "$RESULTS"
 
-      # Every path the manifest owns and every entry the deployment made where items deploy, files included, for the
-      # check after the uninstall.
-      - name: Record what the deployment owns
-        run: |
-          python3 tools/deployable_report.py owned --owned "$LOGS/owned.json"
-
       # The README's uninstall, which selects nothing and shows no prompt.
       - name: Uninstall
         run: |
           python3 deploy.py --uninstall --dry-run 2>&1 | tee "$LOGS/uninstall-dry-run.log"
           python3 deploy.py --uninstall 2>&1 | tee "$LOGS/uninstall.log"
 
-      # Names each recorded path still there, each entry added where items deploy, and each item the manifest still
-      # records, beside the manifest and retained backups the uninstall keeps; the step summary lists them.
+      # Names each entry left where items deploy, files included, and each item the manifest still records, beside the
+      # manifest and retained backups the uninstall keeps; the step summary lists them.
       - name: Confirm the profile holds nothing from the suite
         run: |
-          python3 tools/deployable_report.py leftovers --owned "$LOGS/owned.json" --results "$RESULTS"
+          python3 tools/deployable_report.py leftovers --results "$RESULTS"
 
       - name: Deploy again
         run: |

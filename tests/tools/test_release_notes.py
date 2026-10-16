@@ -15,6 +15,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
+import git_client
 from git_test_base import GitTestCase
 
 from tools import release_notes
@@ -329,6 +330,91 @@ class MainTests(FixtureRepository):
         self.assertEqual(2, raised.exception.code)
 
 
+LATE_ENTRY = "### Merged late\n\n- Level: patch. A fix.\n- Contract: none\n- User action: none\n"
+
+
+class CheckTests(FixtureRepository):
+    """--check, run at the tag: the section origin/main holds against the entries origin/main's commits carry."""
+
+    def released_section(self) -> None:
+        """The release pull request: a branch writes the section at its head, and main takes it as one squash
+        commit, so the commit the section was written at never reaches main."""
+        self.history()
+        self.git("checkout", "-q", "-b", "release")
+        (self.root / NOTES).write_bytes(f"{INTRO}\n{RELEASED}".encode())
+        self.assertEqual(0, self.run_main("v0.2.0", "--write")[0])
+        self.commit("Write the section")
+        written = (self.root / NOTES).read_bytes()
+        self.git("checkout", "-q", "main")
+        (self.root / NOTES).write_bytes(written)
+        self.commit("Release v0.2.0 (#7)", body="## Upgrade note\n\nNone\n")
+        self.git("update-ref", "refs/remotes/origin/main", "main")
+
+    def test_a_section_that_holds_every_entry_on_origin_main_is_current(self) -> None:
+        self.released_section()
+        self.assertEqual(
+            (
+                0,
+                f"CURRENT ## v0.2.0 in {NOTES} at origin/main holds every upgrade-note entry from v0.1.0 to "
+                "origin/main.\n",
+                "",
+            ),
+            self.run_main("v0.2.0", "--check"),
+        )
+
+    def test_a_pull_request_merged_after_the_section_was_written_is_behind_and_names_its_entry(self) -> None:
+        self.released_section()
+        self.commit("Fix late (#8)", body=f"## Upgrade note\n\n{LATE_ENTRY}", change="late")
+        self.git("update-ref", "refs/remotes/origin/main", "main")
+        code, printed, error = self.run_main("v0.2.0", "--check")
+        self.assertEqual((1, ""), (code, error))
+        self.assertTrue(printed.startswith("BEHIND 1 entry: the commits from v0.1.0 to origin/main carry "), printed)
+        self.assertTrue(printed.endswith(f"\n\n{LATE_ENTRY}- Pull request: #8\n"), printed)
+        # Carrying the entry into the section through a pull request makes it current, and an entry the section holds
+        # beyond the range's, as the releaser adds from the preparation issue, is left alone.
+        notes = (self.root / NOTES).read_text(encoding="utf-8")
+        carried = notes.replace(
+            "## v0.1.0", f"{LATE_ENTRY}- Pull request: #8\n\n### An obligation\n\n- Level: patch.\n\n## v0.1.0"
+        )
+        (self.root / NOTES).write_bytes(carried.encode())
+        self.commit("Carry the late entry (#9)")
+        self.git("update-ref", "refs/remotes/origin/main", "main")
+        self.assertEqual(0, self.run_main("v0.2.0", "--check")[0])
+
+    def test_a_pull_request_merged_before_the_squash_is_behind_too(self) -> None:
+        self.history()
+        self.git("checkout", "-q", "-b", "release")
+        (self.root / NOTES).write_bytes(f"{INTRO}\n{RELEASED}".encode())
+        self.run_main("v0.2.0", "--write")
+        self.commit("Write the section")
+        written = (self.root / NOTES).read_bytes()
+        self.git("checkout", "-q", "main")
+        self.commit("Fix late (#8)", body=f"## Upgrade note\n\n{LATE_ENTRY}", change="late")
+        (self.root / NOTES).write_bytes(written)
+        self.commit("Release v0.2.0 (#7)")
+        self.git("update-ref", "refs/remotes/origin/main", "main")
+        code, printed, _ = self.run_main("v0.2.0", "--check")
+        self.assertEqual(1, code)
+        self.assertIn("### Merged late", printed)
+
+    def test_it_reads_origin_main_not_the_checkout_and_to_chooses_another_ref(self) -> None:
+        self.released_section()
+        self.commit("Fix late (#8)", body=f"## Upgrade note\n\n{LATE_ENTRY}", change="late")
+        self.assertEqual(0, self.run_main("v0.2.0", "--check")[0])
+        self.assertEqual(1, self.run_main("v0.2.0", "--check", "--to", "HEAD")[0])
+
+    def test_a_ref_without_the_section_exits_2_and_check_and_write_are_one_or_the_other(self) -> None:
+        self.history()
+        self.git("update-ref", "refs/remotes/origin/main", "main")
+        self.assertEqual(
+            (2, "", f"ERROR: {NOTES} at origin/main has no ## v0.2.0 section; write it with --write first\n"),
+            self.run_main("v0.2.0", "--check"),
+        )
+        with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(io.StringIO()):
+            release_notes.main(["v0.2.0", "--check", "--write"], root=self.root)
+        self.assertEqual(2, raised.exception.code)
+
+
 class InsertSectionTests(GitTestCase):
     def test_a_file_with_no_version_gets_the_section_at_its_end(self) -> None:
         self.assertEqual(f"{INTRO}\n## v0.1.0\n", release_notes.insert_section(INTRO, "v0.1.0", "## v0.1.0\n"))
@@ -340,6 +426,9 @@ class ReleaseProcedureTests(GitTestCase):
         text = (root / "docs" / "releasing.md").read_text(encoding="utf-8")
         before_tagging = text.split("## Before tagging", 1)[1].split("\n## ", 1)[0]
         self.assertIn("python tools/release_notes.py vX.Y.Z --write", before_tagging)
+        # The tag waits for the check that the committed section holds every entry main carries.
+        tagging = text.split("\n## Tagging", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("python tools/release_notes.py vX.Y.Z --check", tagging)
         # The template carries the heading the script reads, with its example in a comment no reader takes for one.
         template = (root / ".github" / "pull_request_template.md").read_text(encoding="utf-8")
         self.assertIn("\n## Upgrade note\n", template)
@@ -347,16 +436,35 @@ class ReleaseProcedureTests(GitTestCase):
 
 
 class GitProgramTests(GitTestCase):
-    def test_git_is_started_at_the_path_the_locator_finds_never_by_name(self) -> None:
-        # Windows looks a bare name up in the working directory before PATH.
-        completed = subprocess.CompletedProcess([], 0, "", "")
-        with mock.patch.object(release_notes.subprocess, "run", return_value=completed) as run:
-            release_notes._git(Path("a checkout"), "log")
-        command = run.call_args.args[0]
-        self.assertEqual(
-            (release_notes.located_command(["git"])[0], ["-C", "a checkout", "log"]), (command[0], command[1:])
-        )
-        self.assertTrue(Path(command[0]).is_absolute())
+    def test_git_runs_through_skill_cores_client_on_the_checkout_never_by_name(self) -> None:
+        # The client's runner starts git at the path the locator finds and without the repository-selecting
+        # variables; skill-core's suites hold both.
+        self.assertIs(git_client.subprocess_runner, release_notes.CLIENT.runner)
+        commands: list[list[str]] = []
+
+        def runner(command: list[str], timeout: float) -> git_client.GitResult:
+            commands.append(list(command))
+            return git_client.GitResult(0, "out", "")
+
+        with mock.patch.object(release_notes.CLIENT, "runner", runner):
+            result = release_notes.git(Path("a checkout"), "log")
+        self.assertEqual([["git", "-C", "a checkout", "log"]], commands)
+        self.assertEqual("out", result.stdout)
+
+    def test_git_that_cannot_run_or_prints_other_than_utf8_is_a_value_error(self) -> None:
+        def missing(command: list[str], timeout: float) -> git_client.GitResult:
+            raise git_client.GitError(git_client.MISSING_GIT, kind="prerequisite")
+
+        def latin(command: list[str], timeout: float) -> git_client.GitResult:
+            return git_client.GitResult(0, b"caf\xe9".decode("utf-8", "surrogateescape"), "")
+
+        for runner, message in ((missing, git_client.MISSING_GIT), (latin, "not UTF-8")):
+            with (
+                self.subTest(message=message),
+                mock.patch.object(release_notes.CLIENT, "runner", runner),
+                self.assertRaisesRegex(ValueError, message),
+            ):
+                release_notes.git(Path("a checkout"), "log")
 
 
 if __name__ == "__main__":
