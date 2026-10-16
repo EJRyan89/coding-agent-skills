@@ -58,11 +58,13 @@ def pull(
     files: Sequence[str] = ("docs/a.md",),
     head: str = HEAD,
     run: int = RUN,
+    cross: bool = False,
 ) -> dict[str, Any]:
     return {
         "number": number,
         "headRefName": f"fix/topic-{number}",
         "headRefOid": head,
+        "isCrossRepository": cross,
         "isDraft": draft,
         "mergeStateStatus": merge,
         "autoMergeRequest": {"mergeMethod": "SQUASH"} if armed else None,
@@ -131,7 +133,8 @@ GALLERY_BLOCK = (
 
 
 class StubGh:
-    """gh as the tick calls it: the open and merged listings, each run, each job's failed log, and the writes."""
+    """gh as the tick calls it: the open and merged listings, each run, the runs on a head, each job's failed log,
+    and the writes."""
 
     def __init__(
         self,
@@ -158,6 +161,11 @@ class StubGh:
         if verb == "pr list":
             state = arguments[arguments.index("--state") + 1]
             return CommandResult(0, json.dumps(self.pulls if state == "open" else self.merged), "")
+        if verb == "run list":
+            self.check_run_list(arguments)
+            commit = arguments[arguments.index("--commit") + 1]
+            listed = [{"databaseId": number} for number, run in self.runs.items() if run["headSha"] == commit]
+            return CommandResult(0, json.dumps(listed), "")
         if verb == "run view" and "--log-failed" in arguments:
             return CommandResult(0, self.logs[int(arguments[arguments.index("--job") + 1])], "")
         if verb == "run view":
@@ -165,6 +173,13 @@ class StubGh:
         if verb in ("pr merge", "pr update-branch", "run rerun"):
             return CommandResult(0, "", "")
         raise AssertionError(f"unexpected gh call: {command}")
+
+    @staticmethod
+    def check_run_list(arguments: Sequence[str]) -> None:
+        """The runs on a head are the required check's workflow's pull request runs, as gh filters them."""
+        for option, value in (("--workflow", "Validation"), ("--event", "pull_request"), ("--repo", REPOSITORY)):
+            if arguments[arguments.index(option) + 1] != value:
+                raise AssertionError(f"gh run list without {option} {value}: {arguments}")
 
     def writes(self) -> list[list[str]]:
         return [call[1:] for call in self.calls if " ".join(call[1:3]) in ("pr merge", "pr update-branch", "run rerun")]
@@ -207,6 +222,16 @@ class FixtureTestCase(GitTestCase):
         git("commit", "-q", "-m", "next", directory=clone)
         git("push", "-q", "origin", "main", directory=clone)
         return git("rev-parse", "HEAD", directory=clone)
+
+    def branches_behind_and_current(self) -> tuple[str, str]:
+        """Advance origin's main past the hub's first commit, fetch it, and return the first commit and the new main."""
+        first = git("rev-parse", "HEAD", directory=self.hub)
+        after = self.advance_origin()
+        git("fetch", "-q", "origin", directory=self.hub)
+        return first, after
+
+    def push_branch(self, commit: str, branch: str) -> None:
+        git("push", "-q", "origin", f"{commit}:refs/heads/{branch}", directory=self.hub)
 
     def tick(self, gh: StubGh, *, directory: Path | None = None, dry_run: bool = False) -> tuple[int, list[str]]:
         lines: list[str] = []
@@ -394,9 +419,72 @@ class UpdateTest(FixtureTestCase):
         self.assertEqual([], gh.writes())
         self.assertTrue(self.line(lines, "PR #10 ").endswith(" held"))
 
+    def test_a_pull_request_whose_merge_state_is_unknown_is_updated_when_git_shows_it_behind(self) -> None:
+        first, after = self.branches_behind_and_current()
+        self.push_branch(first, "fix/topic-41")
+        self.push_branch(after, "fix/topic-42")
+        gh = StubGh(
+            [
+                pull(41, merge="UNKNOWN", head=first),
+                pull(42, merge="UNKNOWN", head=after),
+                pull(43, merge="UNKNOWN", head="c" * 40),
+            ]
+        )
+        status, lines = self.tick(gh)
+        self.assertEqual(0, status)
+        self.assertEqual([["pr", "update-branch", "41", "--repo", REPOSITORY]], gh.writes())
+        self.assertEqual(
+            f"PR #41 fix/topic-41 UNKNOWN auto-merge on head {first[:7]} Validation SUCCESS updated",
+            self.line(lines, "PR #41 "),
+        )
+        self.assertTrue(self.line(lines, "PR #42 ").endswith(" none"))
+        self.assertTrue(self.line(lines, "PR #43 ").endswith(" none"))
+
+    def test_a_dry_run_reads_an_unknown_merge_state_from_the_fetched_heads(self) -> None:
+        first, _ = self.branches_behind_and_current()
+        gh = StubGh([pull(41, merge="UNKNOWN", head=first)])
+        _, lines = self.tick(gh, dry_run=True)
+        self.assertEqual([], gh.writes())
+        self.assertTrue(self.line(lines, "PR #41 ").endswith(" would-update"))
+
     def test_other_test_paths_hold_nothing(self) -> None:
         self.assertIsNone(shepherd.holding_path(["tests/validation_notes.md", "tests/run_validation.pyc", "x.py"]))
         self.assertEqual("tests/validation/x.py", shepherd.holding_path(["a", "tests/validation/x.py"]))
+
+
+class OutOfStepTest(FixtureTestCase):
+    def test_a_recorded_head_behind_its_branch_is_named_and_neither_judged_nor_updated(self) -> None:
+        first, after = self.branches_behind_and_current()
+        self.push_branch(after, "fix/topic-44")
+        self.push_branch(first, "fix/topic-45")
+        gh = StubGh(
+            [pull(44, merge="BEHIND", state="FAILURE", head=first), pull(45, merge="BEHIND", head=first)],
+            runs={RUN: run_view([job("Windows shard 2/4", "cancelled", None)], head=first)},
+        )
+        status, lines = self.tick(gh)
+        self.assertEqual(1, status)
+        self.assertEqual(
+            f"OUT_OF_STEP #44 fix/topic-44 head {first[:7]} branch {after[:7]}", self.line(lines, "OUT_OF_STEP ")
+        )
+        self.assertEqual([["pr", "update-branch", "45", "--repo", REPOSITORY]], gh.writes())
+        self.assertTrue(self.line(lines, "PR #44 ").endswith(" none"))
+        self.assertFalse(any(line.startswith(("JUDGED", "RERUN", "WOULD_RERUN", "DEFECT")) for line in lines))
+        self.assertFalse(any(call[1:3] == ["run", "view"] for call in gh.calls))
+
+    def test_a_branch_from_another_repository_is_not_compared_with_origin_s(self) -> None:
+        first, after = self.branches_behind_and_current()
+        self.push_branch(after, "fix/topic-46")
+        status, lines = self.tick(StubGh([pull(46, head=first, cross=True)]), dry_run=True)
+        self.assertEqual(0, status)
+        self.assertFalse(any(line.startswith("OUT_OF_STEP") for line in lines))
+
+    def test_origin_s_branches_that_cannot_be_read_end_the_tick(self) -> None:
+        missing = "https://github.com/owner/missing"
+        git("remote", "set-url", "origin", missing, directory=self.hub)
+        git("config", f"url.{(self.root / 'missing.git').as_posix()}.insteadOf", missing, directory=self.hub)
+        status, lines = self.tick(StubGh([pull(47)]), dry_run=True)
+        self.assertEqual(1, status)
+        self.assertTrue(lines[-1].startswith("FAILED cannot read origin's branches: "), lines)
 
 
 class JudgementTest(FixtureTestCase):
@@ -434,6 +522,39 @@ class JudgementTest(FixtureTestCase):
         self.assertEqual([], gh.writes())
         self.assertFalse(any(line.startswith(("RERUN", "DEFECT")) for line in lines))
         self.assertFalse(any("--log-failed" in call for call in gh.calls))
+
+    def test_a_cancelled_run_a_newer_run_on_the_same_head_replaced_is_superseded(self) -> None:
+        for attempt in (1, 2):
+            with self.subTest(attempt=attempt):
+                cancelled = run_view([job("Windows shard 1/4", "cancelled", None)], conclusion="cancelled")
+                gh = StubGh(
+                    [pull(20, state="CANCELLED")],
+                    runs={
+                        RUN: {**cancelled, "attempt": attempt},
+                        RUN + 1: run_view([job("Windows shard 1/4", "success", None)], conclusion="success"),
+                    },
+                )
+                status, lines = self.tick(gh)
+                self.assertEqual(0, status)
+                self.assertEqual(
+                    f"JUDGED #20 run {RUN} attempt {attempt} head aaaaaaa superseded by run {RUN + 1}",
+                    self.line(lines, "JUDGED "),
+                )
+                self.assertEqual([], gh.writes())
+                self.assertFalse(any(line.startswith(("RERUN", "DEFECT")) for line in lines))
+
+    def test_the_newest_run_on_a_head_decides_its_check(self) -> None:
+        newer_pending = [*rollup("CANCELLED"), *rollup("PENDING", RUN + 1)]
+        self.assertEqual(shepherd.Check("PENDING", RUN + 1), shepherd.required_check(newer_pending))
+        # A rerun of the older run starts its required check after the newer run's.
+        older = [{**entry, "startedAt": "2026-10-17"} for entry in rollup("CANCELLED")]
+        self.assertEqual(shepherd.Check("SUCCESS", RUN + 1), shepherd.required_check([*older, *rollup(run=RUN + 1)]))
+        entry = {**pull(20), "statusCheckRollup": newer_pending}
+        gh = StubGh([entry])
+        status, lines = self.tick(gh)
+        self.assertEqual(0, status)
+        self.assertTrue(self.line(lines, "PR #20 ").endswith(" Validation PENDING none"))
+        self.assertFalse(any(call[1:3] == ["run", "view"] for call in gh.calls))
 
     def test_a_termination_is_rerun(self) -> None:
         status, lines, gh = self.red([job("Windows shard 2/4", "failure")], {1: failed_log(TERMINATED_BLOCK)})
