@@ -28,7 +28,12 @@ there, at its path in both trees, each of the reviewer's files from this checkou
 but its regression suites, and every file its manifest declares. A condition's `reads` add none, since they name what
 its script reads of the reviewed tree. The copy is removed when the run ends, however it ends, and the fixture itself is
 never written. The run starts review-prs on the copy, and its rows are the reviewer's. A reviewer the checkout lacks, a
-file it declares that the checkout lacks, or a fixture already holding a file the run places, fails the load.
+file it declares that the checkout lacks, or a fixture already holding a file the run places, fails the load. Such a
+fixture may hold a file of its trees under its name with `.fixture` appended, which the copy drops: this repository's
+reviewers review its Python, which validation would otherwise lint and type-check as this repository's own, each
+module under its bare name, shadowing the real one of that name. A held file named `.fixture` alone, one beside the
+file it is restored to, or one restored to a file the run places fails the load, and so does one in any other
+scenario's fixture, which is reviewed in place.
 The scenario.json:
 
   {"skill": "<skill>", "mode": "initial" | "re-review",
@@ -243,6 +248,8 @@ DOCUMENT_FOLDER = "document"
 REVIEWER_SKILL = "review-prs"
 REPOSITORY_SKILLS = PurePosixPath(".claude", "skills")
 REVIEWER_FOLDERS = ("references", "scripts")
+# The ending a repository reviewer's fixture holds a file under, which the run's copy drops.
+HELD = ".fixture"
 # The identity the throwaway checkout's one commit is made under, so no identity of the user's is needed or recorded,
 # and signing is disabled.
 COMMIT = ["-c", "user.name=skill-evals", "-c", "user.email=skill-evals@example.invalid", "-c", "commit.gpgsign=false"]
@@ -283,6 +290,8 @@ class Scenario:
     placed: tuple[str, ...] = ()
     # The document stage a document scenario starts the skill at, or None for the skill's default.
     stage: str | None = None
+    # A repository reviewer's fixture's held files, each by its path in the fixture, which the copy restores.
+    held: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -554,6 +563,13 @@ def _fixture(directory: Path) -> None:
         raise ScenarioError("has no pull.json")
 
 
+def _fixture_in_place(directory: Path) -> None:
+    """Check a fixture reviewed in place, which holds no held file, since only a reviewer's copy restores one."""
+    _fixture(directory)
+    for tree, relative in held_files(directory):
+        raise ScenarioError(f"its {tree}/ tree holds {relative}, which only a repository reviewer's copy restores")
+
+
 def _regression_suite(name: str) -> bool:
     """Whether a file is named as validation names a regression suite: test_*, test-*, *_test, *-test, or *.test.*."""
     stem = PurePosixPath(name).stem
@@ -641,9 +657,37 @@ def reviewer_files(reviewer: str, directory: Path, checkout: Path) -> tuple[str,
     return files
 
 
-def _reviewer(spec: Mapping[str, Any], skill: str, directory: Path, checkout: Path) -> tuple[str, tuple[str, ...]]:
-    """A repository reviewer's scenario's reviewer and the files a run places: the scenario sits under the
-    reviewer's name, and the skill it names is the one that runs the reviewer on a fixture."""
+def held_files(directory: Path) -> list[tuple[str, str]]:
+    """Each file of a fixture's trees held under its name with HELD appended, as its tree and its path there."""
+    return [
+        (tree, path.relative_to(directory / tree).as_posix())
+        for tree in ("base", "head")
+        for path in sorted((directory / tree).rglob(f"*{HELD}"))
+        if path.is_file()
+    ]
+
+
+def _held(directory: Path, placed: Sequence[str]) -> tuple[str, ...]:
+    """A repository reviewer's fixture's held files, each by its path in the fixture. Raise ScenarioError when one is
+    named HELD alone, sits beside the file it is restored to, or is restored to a file the run places."""
+    found = []
+    for tree, relative in held_files(directory):
+        restored = relative.removesuffix(HELD)
+        if PurePosixPath(relative).name == HELD:
+            raise ScenarioError(f"its {tree}/ tree holds {relative}, which names no file to restore")
+        if (directory / tree / restored).exists():
+            raise ScenarioError(f"its {tree}/ tree holds both {restored} and {relative}")
+        if restored in placed:
+            raise ScenarioError(f"its {tree}/ tree holds {relative}, which the run places from the checkout")
+        found.append(f"{tree}/{relative}")
+    return tuple(found)
+
+
+def _reviewer(
+    spec: Mapping[str, Any], skill: str, directory: Path, checkout: Path
+) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+    """A repository reviewer's scenario's reviewer, the files a run places, and the fixture's held files: the scenario
+    sits under the reviewer's name, and the skill it names is the one that runs the reviewer on a fixture."""
     if spec["reviewer"] != skill:
         raise ScenarioError(f"scenario.json names reviewer {quote(str(spec['reviewer']))}, not {skill}")
     if spec["skill"] != REVIEWER_SKILL:
@@ -651,7 +695,8 @@ def _reviewer(spec: Mapping[str, Any], skill: str, directory: Path, checkout: Pa
     if "document" in spec:
         raise ScenarioError("a reviewer's scenario is a fixture scenario, with no document")
     _fixture(directory)
-    return skill, reviewer_files(skill, directory, checkout)
+    placed = reviewer_files(skill, directory, checkout)
+    return skill, placed, _held(directory, placed)
 
 
 def load_scenario(skill: str, directory: Path, checkout: Path = REPOSITORY_ROOT) -> Scenario:
@@ -674,8 +719,9 @@ def load_scenario(skill: str, directory: Path, checkout: Path = REPOSITORY_ROOT)
             raise ScenarioError(f"scenario.json must have exactly {', '.join(sorted(allowed))}")
         reviewer: str | None = None
         placed: tuple[str, ...] = ()
+        held: tuple[str, ...] = ()
         if "reviewer" in spec:
-            reviewer, placed = _reviewer(spec, skill, directory, checkout)
+            reviewer, placed, held = _reviewer(spec, skill, directory, checkout)
         elif spec["skill"] != skill:
             raise ScenarioError(f"scenario.json names skill {quote(str(spec['skill']))}, not {skill}")
         document: Path | None = None
@@ -688,7 +734,7 @@ def load_scenario(skill: str, directory: Path, checkout: Path = REPOSITORY_ROOT)
             base = _document(directory, spec["base"], "base") if "base" in spec else None
             stage = _choice(spec["stage"], tuple(DOCUMENT_STAGES), "stage") if "stage" in spec else None
         elif reviewer is None:
-            _fixture(directory)  # a reviewer's scenario had its fixture checked in _reviewer
+            _fixture_in_place(directory)  # a reviewer's scenario had its fixture checked in _reviewer
         prior = None
         if mode == "re-review":
             prior = directory / _path(spec["prior"])
@@ -713,6 +759,7 @@ def load_scenario(skill: str, directory: Path, checkout: Path = REPOSITORY_ROOT)
         checkout if reviewer else None,
         placed,
         stage,
+        held,
     )
 
 
@@ -750,9 +797,9 @@ def stage_document(scenario: Scenario, folder: Path, git: GitClient) -> Path:
 @contextlib.contextmanager
 def reviewed_fixture(scenario: Scenario) -> Iterator[Path]:
     """The fixture a run reviews. A repository reviewer's scenario's is a throwaway copy of it, outside the run's home
-    so the session never finds the copied skill as one of its own, with each placed file written from the checkout at
-    its path in both trees; the copy is removed when the block ends, however it ends. Any other scenario's is its own
-    folder, untouched."""
+    so the session never finds the copied skill as one of its own, with each held file renamed without HELD and each
+    placed file written from the checkout at its path in both trees; the copy is removed when the block ends, however
+    it ends. Any other scenario's is its own folder, untouched."""
     if scenario.reviewer is None or scenario.checkout is None:
         yield scenario.directory
         return
@@ -760,6 +807,9 @@ def reviewed_fixture(scenario: Scenario) -> Iterator[Path]:
     try:
         fixture = copy / scenario.name
         shutil.copytree(scenario.directory, fixture)
+        for relative in scenario.held:
+            held = fixture / relative
+            held.rename(held.with_name(held.name.removesuffix(HELD)))
         for relative in scenario.placed:
             content = (scenario.checkout / relative).read_bytes()
             for tree in ("base", "head"):

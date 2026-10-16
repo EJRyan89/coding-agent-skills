@@ -1,0 +1,8 @@
+{
+  "skill": "review-prs",
+  "reviewer": "review-repository",
+  "mode": "initial",
+  "expectations": [
+    {"kind": "finding", "path": "skills/report-preview/SKILL.md", "lines": [6], "severity": "MUST_FIX", "category": "Grant mismatch"}
+  ]
+}

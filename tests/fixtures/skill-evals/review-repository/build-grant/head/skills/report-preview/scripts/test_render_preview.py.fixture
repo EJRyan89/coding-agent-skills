@@ -1,0 +1,29 @@
+from __future__ import annotations
+
+import contextlib
+import io
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+import render_preview
+
+
+class BuildCommandTests(unittest.TestCase):
+    def test_the_build_script_the_package_names_runs_through_npm(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            package = {"scripts": {"build": "site build"}}
+            (Path(temporary) / "package.json").write_text(json.dumps(package), encoding="utf-8")
+            self.assertEqual(["npm", "run", "build"], render_preview.build_command(Path(temporary)))
+
+    def test_a_package_with_no_build_script_builds_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            (Path(temporary) / "package.json").write_text("{}", encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(1, render_preview.main([temporary]))
+        self.assertEqual("NO_BUILD\n", output.getvalue())
+
+
+if __name__ == "__main__":
+    unittest.main()

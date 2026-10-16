@@ -1,0 +1,8 @@
+{
+  "skill": "review-prs",
+  "reviewer": "review-repository",
+  "mode": "initial",
+  "expectations": [
+    {"kind": "finding", "path": "tests/validation/console_output.py", "lines": [10, 16, 17, 18], "severity": "SHOULD_FIX", "category": "Unheld invariant"}
+  ]
+}

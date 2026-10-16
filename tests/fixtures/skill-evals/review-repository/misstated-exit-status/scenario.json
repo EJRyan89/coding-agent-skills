@@ -1,0 +1,8 @@
+{
+  "skill": "review-prs",
+  "reviewer": "review-repository",
+  "mode": "initial",
+  "expectations": [
+    {"kind": "finding", "path": "docs/exports.md", "lines": [9, 10], "severity": "SHOULD_FIX", "category": "Code-document drift"}
+  ]
+}

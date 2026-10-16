@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "repository": "example/skill-home",
+  "number": 12,
+  "title": "Refuse a folder its own marker gives to another source",
+  "head_ref": "marker-owner",
+  "body": "A skill folder no source recorded is owned by the source its `.source` marker names, so a home whose manifest was lost still refuses to replace another source's skill.\n\n## Upgrade note\n\nNone.\n",
+  "base_ref": "main",
+  "threads": [],
+  "manifest_path": ".claude/skills/review-repository/references/specialists.json"
+}

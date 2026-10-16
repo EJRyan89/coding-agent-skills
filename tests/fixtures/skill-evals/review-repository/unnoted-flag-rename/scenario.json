@@ -1,0 +1,8 @@
+{
+  "skill": "review-prs",
+  "reviewer": "review-repository",
+  "mode": "initial",
+  "expectations": [
+    {"kind": "finding", "path": "deployer/arguments.py", "lines": [11, 12, 13], "severity": "SHOULD_FIX", "category": "Missing upgrade note"}
+  ]
+}

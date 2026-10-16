@@ -35,6 +35,21 @@ UNTESTED = f"{SKILL}/scripts/untested_functions.py"
 SKILL_CORE = "skills/skill-core/scripts"
 SCENARIOS = REPOSITORY / "tests" / "fixtures" / "skill-evals" / "review-repository"
 MANIFEST = validate_adapter_manifest(json.loads((REPOSITORY / MANIFEST_PATH).read_text(encoding="utf-8")))
+# The ending an evaluation scenario holds a Python file under, which the evaluation's copy of the fixture drops.
+HELD = ".fixture"
+# Each evaluation scenario and the specialists its change starts: none but the generic reviewer for a clean change.
+SCENARIO_ROUTES = {
+    "branch-name-command": {"skill-scripts", "trust-boundary"},
+    "build-grant": {"documentation-drift", "skill-contract", "skill-scripts", "upgrade-notes"},
+    "drifted-guide": {"documentation-drift"},
+    "misstated-exit-status": {"documentation"},
+    "tested-change": set(),
+    "text-read-policy": {"validation-policy"},
+    "undocumented-change": set(),
+    "unnoted-flag-rename": {"deployer", "upgrade-notes"},
+    "untested-change": {"untested-changes"},
+    "write-before-refusal": {"deployer"},
+}
 PIPELINE_SCRIPTS = "skills/code-review-core/scripts"
 # The trust-boundary route's modules by folder, as the route names them.
 TRUST_BOUNDARY_PIPELINE = (
@@ -83,6 +98,42 @@ OUTSIDE_THE_BOUNDARY = {
     f"{SKILL_CORE}/console.py": "sets each entry point's output encoding; its FAILED line flattens through flat_text",
     f"{SKILL_CORE}/frontmatter.py": "reads the frontmatter of a reviewer skill from the trusted commit",
     f"{SKILL_CORE}/skill_roots.py": "finds a sibling skill's scripts folder in the checkout or the deployed home",
+}
+# Each profile, by its file's stem, with every trusted file it names as TRUSTED_ROOT/<path> and the sections of that
+# file it tells its reviewer to read, each as the profile writes it: a heading's text, or the heading line itself.
+PROFILE_SECTIONS = {
+    "deployer": {
+        "docs/design.md": [
+            "One write point",
+            "One platform seam",
+            "Refusals before mutation, and journaled rollback",
+            "Trust model",
+        ],
+    },
+    "documentation": {"docs/design.md": [], "docs/implementing-changes.md": ["## Documentation"]},
+    "documentation-drift": {"docs/design.md": [], "docs/implementing-changes.md": ["## Documentation"]},
+    "skill-contract": {
+        "docs/adding-a-skill.md": [
+            "Granting tools",
+            "Commands skills may run",
+            "Script results",
+            "Metadata",
+            "Files",
+            "Description",
+        ],
+        "docs/design.md": ["Tested scripts over prose", "Trust model"],
+    },
+    "trust-boundary": {
+        "docs/code-review-operations-contract.md": ["## Threat model", "Formats"],
+        "docs/design.md": ["Trust model"],
+    },
+    "untested-changes": {"docs/design.md": ["Tested scripts over prose"]},
+    "upgrade-notes": {"docs/design.md": ["The structured record is the contract"], "docs/releasing.md": ["Versioning"]},
+    "validation-policy": {
+        "CLAUDE.md": ["Required validation", "Architecture"],
+        "docs/adding-a-skill.md": ["Validation"],
+        "docs/design.md": [],
+    },
 }
 # The scripts the threat model names that another route holds, each with its reason.
 NAMED_ELSEWHERE = {
@@ -322,23 +373,27 @@ class ManifestTests(GitTestCase):
         self.assertEqual(named - set(NAMED_ELSEWHERE), {path.rsplit("/", 1)[-1] for path in paths})
         self.assertEqual([], [path for path in paths if "trust-boundary" not in reached([path])[path]])
 
-    def test_each_profile_names_design_sections_that_exist(self) -> None:
-        design = (REPOSITORY / "docs" / "design.md").read_text(encoding="utf-8")
-        headings = set(re.findall(r"^#{2,3} (.+)$", design, re.MULTILINE))
-        named = {
-            "deployer": ["One write point", "One platform seam", "Refusals before mutation, and journaled rollback"],
-            "skill-contract": ["Tested scripts over prose", "Trust model"],
-            "trust-boundary": ["Trust model"],
-            "untested-changes": ["Tested scripts over prose"],
-            "upgrade-notes": ["The structured record is the contract"],
-        }
-        for specialist in MANIFEST["specialists"]:
-            profile = (REPOSITORY / specialist["profile"]).read_text(encoding="utf-8")
-            self.assertIn("docs/design.md", profile, specialist["id"])
-            for heading in named.get(specialist["id"], []):
-                with self.subTest(specialist=specialist["id"], heading=heading):
-                    self.assertIn(heading, headings)
-                    self.assertIn(f'"{heading}"', profile)
+    def test_each_profile_names_trusted_files_the_manifest_declares_and_sections_they_hold(self) -> None:
+        # A reviewer reads its briefing from the trusted files its profile names, so a file no specialist declares,
+        # which a review never materializes, or a section renamed in its file, leaves it reviewing without one.
+        declared = declared_reviewer_files(MANIFEST)
+        self.assertEqual(
+            sorted(PROFILE_SECTIONS), sorted({Path(item["profile"]).stem for item in MANIFEST["specialists"]})
+        )
+        for name, files in PROFILE_SECTIONS.items():
+            profile = (REPOSITORY / SKILL / "references" / f"{name}.md").read_text(encoding="utf-8")
+            named = {path.rstrip(".,:;") for path in re.findall(r"TRUSTED_ROOT/(\S+)", profile)}
+            with self.subTest(profile=name):
+                self.assertEqual(sorted(files), sorted(named))
+            for path, sections in files.items():
+                text = (REPOSITORY / path).read_text(encoding="utf-8")
+                with self.subTest(profile=name, path=path):
+                    self.assertIn(path, declared)
+                for section in sections:
+                    heading = section if section.startswith("#") else f"#+ {re.escape(section)}"
+                    with self.subTest(profile=name, path=path, section=section):
+                        self.assertTrue(section in profile, f"the profile does not name {section}")
+                        self.assertRegex(text, re.compile(f"^{heading}$", re.MULTILINE))
 
     def test_each_profile_names_only_categories_the_manifest_lists(self) -> None:
         listed = set(MANIFEST["finding_categories"])
@@ -523,10 +578,7 @@ class DocumentationDriftScenarioTests(GitTestCase):
         )
 
     def test_the_scenarios(self) -> None:
-        self.assertEqual(
-            ["drifted-guide", "tested-change", "undocumented-change", "untested-change"],
-            sorted(p.name for p in SCENARIOS.iterdir()),
-        )
+        self.assertEqual(sorted(SCENARIO_ROUTES), sorted(p.name for p in SCENARIOS.iterdir()))
 
     def test_each_route_s_scenarios_leave_the_other_condition_closed(self) -> None:
         # So each scenario's expectations are its own route's: the drift scenarios change no function, and the
@@ -628,6 +680,74 @@ class DocumentationDriftScenarioTests(GitTestCase):
                 run_condition(REPOSITORY / UNTESTED, directory / "head", diff, Path(temporary)),
             )
         self.assertEqual([{"kind": "no_finding_above", "severity": "SUGGESTION"}], spec["expectations"])
+
+
+def restored(name: str, into: Path) -> Path:
+    """A copy of the scenario in `into`, each file held under HELD renamed without it, as an evaluation run's copy."""
+    copy = into / name
+    shutil.copytree(SCENARIOS / name, copy)
+    for held in sorted(copy.rglob(f"*{HELD}")):
+        held.rename(held.with_name(held.name.removesuffix(HELD)))
+    return copy
+
+
+def changed_paths(diff: str) -> list[str]:
+    return re.findall(r"^diff --git a/(\S+) b/", diff, re.MULTILINE)
+
+
+class RouteScenarioTests(GitTestCase):
+    """Every specialist is started by an evaluation scenario, so a change to its brief cites a run that reviews with
+    it. Each scenario is routed as a review routes it: its changed files through the manifest, and each condition run
+    on its head, restored as the evaluation's copy restores it."""
+
+    copies: Path
+    # Each scenario's changed files, and the specialists they start.
+    paths: dict[str, list[str]]
+    reached: dict[str, list[str]]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        temporary = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(temporary.cleanup)
+        cls.copies, cls.reached, cls.paths = Path(temporary.name), {}, {}
+        for name in sorted(SCENARIO_ROUTES):
+            copy = restored(name, cls.copies)
+            diff = tree_diff(copy / "base", copy / "head")
+            opened: dict[str, bool] = {}
+            for condition, entry in MANIFEST["conditions"].items():
+                code, _, _ = run_condition(REPOSITORY / entry["script"], copy / "head", diff, cls.copies)
+                opened[condition] = code == 0
+            cls.paths[name] = changed_paths(diff)
+            cls.reached[name] = sorted(route(MANIFEST, cls.paths[name], opened.__getitem__))
+
+    def test_each_scenario_starts_the_routes_its_change_reaches(self) -> None:
+        self.assertEqual({name: sorted(routes) for name, routes in SCENARIO_ROUTES.items()}, self.reached)
+
+    def test_every_specialist_is_started_by_a_scenario(self) -> None:
+        started = {specialist for routes in self.reached.values() for specialist in routes}
+        self.assertEqual([], [item["id"] for item in MANIFEST["specialists"] if item["id"] not in started])
+
+    def test_each_expected_finding_sits_on_a_line_of_a_file_the_change_reaches(self) -> None:
+        for name in SCENARIO_ROUTES:
+            spec = json.loads((SCENARIOS / name / "scenario.json").read_text(encoding="utf-8"))
+            head = self.copies / name / "head"
+            for item in spec["expectations"]:
+                if item["kind"] != "finding":
+                    continue
+                with self.subTest(scenario=name, path=item["path"]):
+                    self.assertIn(item["path"], self.paths[name])
+                    length = len((head / item["path"]).read_text(encoding="utf-8").splitlines())
+                    self.assertEqual([], [line for line in item["lines"] if not 1 <= line <= length])
+
+    def test_only_python_is_held_and_every_python_file_is(self) -> None:
+        # Validation lints and type-checks the Python under tests/, each module by its bare name, so a fixture's
+        # Python would shadow this repository's module of the same name; held, it is restored only in a copy.
+        files = [path for path in SCENARIOS.rglob("*") if path.is_file()]
+        self.assertEqual([], [path for path in files if path.suffix == ".py"])
+        held = [path for path in files if path.name.endswith(HELD)]
+        self.assertIn(SCENARIOS / "write-before-refusal" / "head" / "deployer" / f"install.py{HELD}", held)
+        self.assertEqual([], [path for path in held if not path.name.endswith(f".py{HELD}")])
 
 
 def untested_route() -> dict[str, Any]:
