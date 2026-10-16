@@ -20,10 +20,11 @@ pull request deletes names nothing. A test names a Python definition only throug
 `module.name`, or `from module import name`; a method as an attribute in a test that names its class, and a dunder
 method by naming its class.
 A string or a comment never counts, so neither a patch target nor a note does, and neither does `run` in
-`subprocess.run`, nor a common name in a test of another module. A script's `main` also counts as named when a test
-names the script's file name outside a comment, since that test runs it. A test names a PowerShell or Bash function
-when it names the script's file name and, outside a comment, the function as a whole word (a PowerShell one ignoring
-case), since a test calls a shell function from a string.
+`subprocess.run`, nor a common name in a test of another module. A Python test `ast` or `tokenize` cannot read names
+nothing, its comments included, and gets an `UNREADABLE <test>: <reason>` line on stdout. A script's `main` also
+counts as named when a test names the script's file name outside a comment, since that test runs it. A test names a
+PowerShell or Bash function when it names the script's file name and, outside a comment, the function as a whole word
+(a PowerShell one ignoring case), since a test calls a shell function from a string.
 
 It writes each unnamed definition as `UNTESTED <file>:<line> <kind> <name>, added lines <lines>, hunk <header>, tests
 of its file <tests>`, the tests that import its module or name its file, where a reviewer looks for one that reaches
@@ -43,6 +44,7 @@ from __future__ import annotations
 import argparse
 import ast
 import io
+import json
 import os
 import re
 import sys
@@ -320,12 +322,9 @@ def _dotted(node: ast.expr) -> str | None:
 
 
 def read_python_test(text: str) -> PythonTest:
-    """The names a Python test uses in code, or none when `ast` cannot read it."""
+    """The names a Python test uses in code. Raises SyntaxError or ValueError when `ast` cannot read it."""
     test = PythonTest()
-    try:
-        tree = ast.parse(text)
-    except (SyntaxError, ValueError):
-        return test
+    tree = ast.parse(text)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -347,13 +346,10 @@ def read_python_test(text: str) -> PythonTest:
 
 def _code_text(path: str, text: str) -> str:
     """A test's text without its comments: a Python test's strings stay, since a test calls a shell function from
-    one."""
+    one. Raises tokenize.TokenError or SyntaxError when `tokenize` cannot read a Python test."""
     if path.endswith(".py"):
-        try:
-            tokens = tokenize.generate_tokens(io.StringIO(text).readline)
-            return " ".join(token.string for token in tokens if token.type != tokenize.COMMENT)
-        except (tokenize.TokenError, SyntaxError):
-            return text
+        tokens = tokenize.generate_tokens(io.StringIO(text).readline)
+        return " ".join(token.string for token in tokens if token.type != tokenize.COMMENT)
     if path.endswith(".ps1"):
         text = POWERSHELL_BLOCK_COMMENT.sub(" ", text)
     return "\n".join(line for line in text.split("\n") if not COMMENT_LINE.match(line))
@@ -367,21 +363,34 @@ def file_name(script: str) -> re.Pattern[str]:
 
 @dataclass
 class Tests:
-    """The suites the snapshot holds, read when a definition first needs them."""
+    """The suites the snapshot holds, read when a definition first needs them. A Python test `ast` or `tokenize`
+    cannot read names nothing, and `unreadable` holds why, by its path."""
 
     files: dict[str, str]  # path -> text
+    unreadable: dict[str, str] = field(default_factory=dict)  # path -> the reason it could not be read
     _python: dict[str, PythonTest] = field(default_factory=dict)
     _code: dict[str, str] = field(default_factory=dict)
 
     def python(self, path: str) -> PythonTest:
         if path not in self._python:
-            self._python[path] = read_python_test(self.files[path])
+            try:
+                self._python[path] = read_python_test(self.files[path])
+            except (SyntaxError, ValueError) as error:
+                self._unreadable(path, error)
+                self._python[path] = PythonTest()
         return self._python[path]
 
     def code(self, path: str) -> str:
         if path not in self._code:
-            self._code[path] = _code_text(path, self.files[path])
+            try:
+                self._code[path] = _code_text(path, self.files[path])
+            except (tokenize.TokenError, SyntaxError, ValueError) as error:
+                self._unreadable(path, error)
+                self._code[path] = ""
         return self._code[path]
+
+    def _unreadable(self, path: str, error: Exception) -> None:
+        self.unreadable.setdefault(path, failed_line(error).removeprefix("FAILED "))
 
     def names(self, definition: Definition) -> bool:
         if definition.path.endswith(".py"):
@@ -468,8 +477,9 @@ def _excerpt(text: str) -> str:
     return text if len(text) <= MAX_HUNK_CHARACTERS else text[:MAX_HUNK_CHARACTERS] + "…"
 
 
-def entries(root: Path, files: list[FileChange]) -> list[str]:
-    """One block for each changed definition no test names, and for each changed Python file `ast` cannot read."""
+def entries(root: Path, files: list[FileChange], unreadable: dict[str, str] | None = None) -> list[str]:
+    """One block for each changed definition no test names, and for each changed Python file `ast` cannot read;
+    `unreadable` gains each test it consulted and could not read, with the reason."""
     changes = [
         change
         for change in files
@@ -480,7 +490,7 @@ def entries(root: Path, files: list[FileChange]) -> list[str]:
     ]
     if not changes:
         return []
-    tests = Tests(suites(root))
+    tests = Tests(suites(root), {} if unreadable is None else unreadable)
     blocks: list[str] = []
     for change in changes:
         text = change.head.read_bytes().decode("utf-8", errors="replace").replace("\r\n", "\n")
@@ -523,7 +533,10 @@ def _run() -> int:
     changes, refused = read_diff(diff, arguments.source_root)
     for path in refused:
         print(refusal_line(path))
-    found = entries(arguments.source_root, changes)
+    unreadable: dict[str, str] = {}
+    found = entries(arguments.source_root, changes, unreadable)
+    for path, reason in sorted(unreadable.items()):
+        print(f"UNREADABLE {json.dumps(path)}: {reason}")
     print(f"UNTESTED {len(found)} given={min(len(found), MAX_ENTRIES)}")
     if not found:
         return 1

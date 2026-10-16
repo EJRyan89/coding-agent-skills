@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 from git_test_base import GitTestCase
 from skill_layout import (
     MAXIMUM_INLINE_EXECUTABLE_LINES,
+    REPOSITORY_SKILL_SHIMS,
     WORKING_FILES_DOC,
     ExecutableFence,
     deploy_variable_problems,
@@ -25,6 +26,7 @@ from skill_layout import (
     fixture_source_problems,
     metadata_format_problems,
     output_placeholder_problems,
+    repository_skill_name_problems,
     runtime_support_problems,
     script_dependency_problems,
     script_language_problems,
@@ -113,6 +115,44 @@ class SkillTreeFixtures(GitTestCase):
                 root, {"skills/alpha/SKILL.md": "", "skills/beta/scripts/run.py": "", "skills/beta/SKILL.md": ""}
             )
             self.assertEqual([], skill_tree_problems(root))
+
+    def test_a_repository_skill_or_shim_must_be_named_as_a_skill_and_as_its_folder(self) -> None:
+        def skill(name: str) -> str:
+            return f"---\nname: {name}\ndescription: Does a thing. Use it when asked.\n---\n"
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    f"{REPOSITORY_SKILLS}/good-skill/SKILL.md": skill("good-skill"),
+                    f"{REPOSITORY_SKILL_SHIMS}/good-skill/SKILL.md": skill("good-skill"),
+                    f"{REPOSITORY_SKILLS}/Claude_Tool/SKILL.md": skill("some-other-name"),
+                    f"{REPOSITORY_SKILL_SHIMS}/Claude_Tool/SKILL.md": skill("some-other-name"),
+                    f"{REPOSITORY_SKILLS}/claude-helper/SKILL.md": skill("claude-helper"),
+                    f"{REPOSITORY_SKILLS}/-dash/SKILL.md": skill("-dash"),
+                    f"{REPOSITORY_SKILLS}/renamed/SKILL.md": skill("old-name"),
+                    f"{REPOSITORY_SKILL_SHIMS}/nameless/SKILL.md": "---\ndescription: Does a thing.\n---\n",
+                    f"{REPOSITORY_SKILLS}/unreadable/SKILL.md": "---\nname: [unreadable, list]\n---\n",
+                },
+            )
+            problems = repository_skill_name_problems(root)
+            invalid = "is not a skill name: at most 64 lowercase letters, digits, and hyphens"
+            expected = [
+                f"{REPOSITORY_SKILLS}/-dash/SKILL.md: '-dash' {invalid}",
+                (f"{REPOSITORY_SKILLS}/Claude_Tool/SKILL.md: 'Claude_Tool' {invalid}"),
+                (f"{REPOSITORY_SKILLS}/Claude_Tool/SKILL.md declares name 'some-other-name', not its folder's name"),
+                f"{REPOSITORY_SKILLS}/claude-helper/SKILL.md: 'claude-helper' contains the reserved word 'claude'",
+                f"{REPOSITORY_SKILLS}/renamed/SKILL.md declares name 'old-name', not its folder's name 'renamed'",
+                f"{REPOSITORY_SKILLS}/unreadable/SKILL.md: its frontmatter cannot be read: ",
+                f"{REPOSITORY_SKILL_SHIMS}/Claude_Tool/SKILL.md: 'Claude_Tool' {invalid}",
+                f"{REPOSITORY_SKILL_SHIMS}/Claude_Tool/SKILL.md declares name 'some-other-name', not its folder's name",
+                f"{REPOSITORY_SKILL_SHIMS}/nameless/SKILL.md declares no name, not its folder's name 'nameless'",
+            ]
+            self.assertEqual(len(expected), len(problems), problems)
+            for want, found in zip(expected, problems, strict=True):
+                self.assertTrue(found.startswith(want), (want, found))
+            self.assertFalse([problem for problem in problems if "good-skill" in problem], problems)
 
 
 class SkillLayoutFixtures(GitTestCase):
