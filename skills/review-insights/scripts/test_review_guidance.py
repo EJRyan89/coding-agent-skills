@@ -284,7 +284,7 @@ class ReadTests(GitTestCase):
         )
 
     def test_any_os_error_while_checking_the_working_copy_is_named_not_raised(self) -> None:
-        cases = {
+        cases: dict[str, tuple[dict[str, OSError | bool], str]] = {
             "is_file": (
                 {"is_file": OSError(errno.EIO, "Input/output error")},
                 "OSError: Input/output error",
