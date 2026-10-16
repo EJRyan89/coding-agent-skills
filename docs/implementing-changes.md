@@ -18,9 +18,21 @@ Anything else is planned first.
 
 ## Worktree
 
-From the hub, run `python tools/worktrees.py new <kind> <name>` with the change's title type as the kind, such as
-`feat` or `fix` (see [Pull requests](#pull-requests)), then enter the printed path (in Claude Code, `EnterWorktree`
-with `path:`). [Parallel sessions](parallel-sessions.md) explains why and how a worktree is retired.
+A session starts in one of two places.
+
+- **In the hub.** Pull `main` there first (`git pull --ff-only`), since a new worktree branches from the hub's local
+  `main`. Then run `python tools/worktrees.py new <kind> <name>` with the change's title type as the kind, such as
+  `feat` or `fix` (see [Pull requests](#pull-requests)), and enter the printed path (in Claude Code, `EnterWorktree`
+  with `path:`).
+- **In a worktree a runtime already made**, such as the `.claude/worktrees/<name>` on a `claude/<name>` branch that
+  the Claude desktop app creates before the session starts. Stay in it and create no second tree: the unused one and
+  its branch would have no pull request, so `repo-cleanup` keeps them and reports them. Before reading or editing,
+  run `git fetch origin main` and `git merge --ff-only origin/main`, which moves a branch with no commits of its own
+  to the current base.
+
+If intake or the bug class changes the type after `new` named the branch, rename it with
+`git branch -m '<type>/<name>'` before its first push. [Parallel sessions](parallel-sessions.md) explains why and how
+a worktree is retired.
 
 ## Validation
 
@@ -89,13 +101,26 @@ with a type, an optional scope in parentheses, a colon, and a space, as in `fix(
 - `ci` changes a workflow;
 - `build` changes the development dependencies or the deployment prerequisites.
 
-The type agrees with the worktree's branch kind when the kind is one of them. A title carries no `!` and the body no
+The type agrees with the worktree's branch kind when the kind is one of them, so the title check holds the type only
+on a `<type>/<name>` branch; on a branch a runtime named, such as `claude/<name>`, the author alone holds it. A title carries no `!` and the body no
 breaking-change footer: the Level under `## Upgrade note` is the one statement of a release level. Validation's title
 check, in `tests/validation/pull_request_title.py`, reads the title from `--pr-title <file>` locally and from the pull
 request in continuous integration.
 
 The body names every issue the change resolves, each in its own `Closes #<number>` line. The project board moves an
 issue by that line, and an issue a change resolved without one stays open.
+
+A change a user who updates meets, every [contract change](#contract-files) included, states it under
+`## Upgrade note` in the body, in the shape [upgrade-notes.md](upgrade-notes.md) gives, and never in that file: the
+squash merge carries the body into `main`, and the release's notes are written from it. A skill's arguments and status
+lines are the contract items no check compares, so a change to them owes the note with nothing to catch its absence.
+
+Before `gh pr create`, run `git fetch origin main` and `git rebase origin/main`: onto `origin/main`, not the local
+`main`, which is only as fresh as the hub's last pull. The branch is unpublished, so the rebase rewrites nothing anyone
+has. Then push it under its own name with `git push -u origin HEAD`. While the pull request is open, merge
+`origin/main` into it before pushing more commits, and never rebase or force-push it. `gh pr update-branch` is one way
+to make that merge; it moves the remote branch, so pull before the next push. If a push is rejected, fetch and inspect
+the remote branch before anything else: the maintainer may have updated it.
 
 ## Documentation
 
@@ -111,6 +136,7 @@ Each fact has one owner; update the owner in the same change.
 | `docs/parallel-sessions.md` | Worktrees and the hub guard. |
 | `docs/releasing.md` | Versioning, contracts, and the release procedure. |
 | `docs/code-review-operations.md` | Code-review configuration and records. |
+| `docs/dotnet.md` | What the `dotnet` bundle's skills share: its selection, the projects they see, and their requirements. |
 | `docs/installation.md`, `docs/recovery.md` | Install, update, and recovery. |
 | `docs/codex-support.md`, `docs/copilot-support.md` | Per-runtime support. |
 | `CONTRIBUTING.md` | The contributor path from a clone to a merged pull request, and the full account of the Python format, lint, and type checks (`CLAUDE.md` keeps the rules a session acts on). |
