@@ -9,6 +9,9 @@
              before it is written; a set must name a pull request that record holds, and the listing marks each
              override it does not, but it reads nothing from GitHub, so a closed pull request's override clears like
              any other
+    review-arguments
+             print the `review-prs` arguments for the candidates the user confirmed, read from that record and the
+             configuration's overrides, or name the confirmed stale ones when the re-review scope is still to be asked
 
 Every command prints machine-readable lines and exits 0 on success. Expected failures, including a collection in
 which any repository failed and an update in which any pull request's comparison failed, print `FAILED <reason>` as the
@@ -36,6 +39,7 @@ from flat_text import flat_text
 from pr_change import FATAL_ERROR_KINDS, ChangeDetector, at_or_before
 from review_archive import ArchiveError, pull_records
 from review_config import (
+    DASHBOARD_AI_REVIEW_MISSING,
     ConfigurationError,
     default_config_path,
     load_config,
@@ -46,9 +50,10 @@ from review_flags import FlagError, default_flags_path, load_store
 from review_github import READ, GitHubClient, GitHubError
 from review_io import PersistenceError, atomic_write_json, map_in_order, read_json, working_path
 from review_operation import reviewed_head
-from review_records import RecordError, flagged_entries, ledger_history, ledger_id
+from review_records import RE_REVIEW_SCOPES, RecordError, flagged_entries, ledger_history, ledger_id
 from typed_fields import FieldError
 from update_pr_dashboard import (
+    CANDIDATE_STATES,
     ComparisonFailures,
     Row,
     TrackerError,
@@ -472,6 +477,53 @@ def _refuse_untracked(keys: list[str], config_path: Path) -> None:
             raise TrackerError(f"Status override {key} names no pull request the tracker holds in {record}")
 
 
+def recorded_candidates(config_path: Path) -> dict[str, str] | None:
+    """Each pull request the last update offered for review, with its AI review state: a row it showed whose review is
+    missing or stale and that no status override in the configuration pins. None before any update has recorded its
+    rows."""
+    record = read_tracker_record(tracker_record_path(config_path))
+    if record is None:
+        return None
+    pinned = normalize_overrides(load_config(config_path)["dashboard"]["status_overrides"])
+    return {
+        key: review["state"]
+        for key, review in record["reviews"].items()
+        if review["state"] in CANDIDATE_STATES and key not in pinned
+    }
+
+
+def review_arguments(
+    confirmed: list[str], scope: str | None, *, config_path: Path | None = None
+) -> tuple[list[str], list[str]]:
+    """The `review-prs` arguments for the confirmed candidates, in key order: `--pull` for each missing review,
+    `--re-review` for each stale one, and `--scope` once when any is stale. Without a scope, a confirmed stale one
+    needs the user's choice first, so the arguments are empty and the stale ones are returned instead. A key the last
+    update did not offer for review, and a scope no confirmed pull request needs, are refused."""
+    path = config_path or default_config_path()
+    keys = sorted(normalize_pull_keys(confirmed, "confirmed"))
+    if not keys:
+        raise TrackerError("Name at least one confirmed pull request")
+    candidates = recorded_candidates(path)
+    record = tracker_record_path(path)
+    if candidates is None:
+        raise TrackerError(f"Confirmed pull request {keys[0]} names no candidate: no update has written {record}")
+    for key in keys:
+        if key not in candidates:
+            raise TrackerError(
+                f"Confirmed pull request {key} names no pull request the last update offered for review, one whose AI "
+                f"review is missing or stale and that no status override pins, in {record}"
+            )
+    missing = [key for key in keys if candidates[key] == DASHBOARD_AI_REVIEW_MISSING]
+    stale = [key for key in keys if candidates[key] != DASHBOARD_AI_REVIEW_MISSING]
+    if stale and scope is None:
+        return [], stale
+    if scope is not None and not stale:
+        raise TrackerError("--scope is taken only when a confirmed pull request is stale; leave it out")
+    arguments = [argument for key in missing for argument in ("--pull", key)]
+    arguments += [argument for key in stale for argument in ("--re-review", key)]
+    return arguments + (["--scope", scope] if scope is not None else []), []
+
+
 def main(arguments: list[str] | None = None, services: Services | None = None) -> int:
     services = services or Services()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -493,10 +545,24 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
     override_parser.add_argument(
         "--clear", action="append", default=[], dest="clears", metavar="OWNER/REPO#N", help="repeatable"
     )
+    arguments_parser = commands.add_parser("review-arguments")
+    arguments_parser.add_argument(
+        "--confirm",
+        action="append",
+        required=True,
+        dest="confirmed",
+        metavar="OWNER/REPO#N",
+        help="a candidate the user confirmed; repeatable",
+    )
+    arguments_parser.add_argument(
+        "--scope", choices=RE_REVIEW_SCOPES, help="how review-prs re-reviews the stale ones; taken only when one is"
+    )
     args = parser.parse_args(arguments)
     try:
         if args.command == "override":
             return _override(args.sets, args.clears, args.config)
+        if args.command == "review-arguments":
+            return _review_arguments(args.confirmed, args.scope, args.config)
         if args.command == "collect":
             output = working_path(args.output, "update-pr-dashboard-input-", "input.json")
             results = collect(
@@ -539,6 +605,15 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
     except EXPECTED_ERRORS as exc:
         print(f"FAILED {flat_text(str(exc))}")
         return 1
+
+
+def _review_arguments(confirmed: list[str], scope: str | None, config_path: Path | None) -> int:
+    review_prs, needs_scope = review_arguments(confirmed, scope, config_path=config_path)
+    for key in needs_scope:
+        print(f"SCOPE_NEEDED {key}")
+    if review_prs:
+        print(f"REVIEW_ARGUMENTS {' '.join(review_prs)}")
+    return 0
 
 
 def _override(sets: list[str], clears: list[str], config_path: Path | None) -> int:

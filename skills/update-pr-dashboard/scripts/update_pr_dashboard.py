@@ -85,6 +85,8 @@ FINDINGS_LEGEND = (
 # The tracker record's version: 2 adds each shown row's AI review, which a version 1 record, still read, lacks.
 TRACKER_SCHEMA_VERSION = 2
 TRACKER_SCHEMA_VERSIONS = (1, TRACKER_SCHEMA_VERSION)
+# The AI review states a row is offered for review in, unless a status override pins it.
+CANDIDATE_STATES = frozenset({DASHBOARD_AI_REVIEW_MISSING, DASHBOARD_AI_REVIEW_STALE})
 # A new file the tracker writes is readable by its owner alone; a file it replaces keeps the mode it had.
 NEW_FILE_MODE = 0o600
 PULL_KEY_PATTERN = re.compile(r"([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*)#([1-9][0-9]*)")
@@ -501,7 +503,7 @@ def review_candidates(rows: list[Row]) -> list[dict[str, Any]]:
             "status": row.ai_review,
         }
         for row in rows
-        if row.ai_review in {DASHBOARD_AI_REVIEW_MISSING, DASHBOARD_AI_REVIEW_STALE} and not row.overridden
+        if row.ai_review in CANDIDATE_STATES and not row.overridden
     ]
 
 

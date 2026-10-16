@@ -144,7 +144,7 @@ def unreleased_entries(notes: str | None) -> list[NotesEntry]:
     return notes_entries(markdown_section((notes or "").replace("\r\n", "\n"), UNRELEASED_HEADING))
 
 
-# The one git these notes and the upgrade-notes check in tests/validation run.
+# The one git these notes and the validation runner in tests/validation run.
 CLIENT = GitClient()
 
 
