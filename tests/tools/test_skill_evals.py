@@ -53,7 +53,20 @@ from tools.skill_evals import Outcome, RecordError, Scenario, ScenarioError
 REVIEW_PRS = skill_evals.SCENARIO_ROOT / "review-prs"
 REVIEW_DOCUMENT = skill_evals.SCENARIO_ROOT / "review-document"
 REVIEW_REPOSITORY = skill_evals.SCENARIO_ROOT / "review-repository"
-REVIEW_REPOSITORY_SCENARIOS = ("drifted-guide", "tested-change", "undocumented-change", "untested-change")
+REVIEW_REPOSITORY_SCENARIOS = (
+    "branch-name-command",
+    "build-grant",
+    "drifted-guide",
+    "misstated-exit-status",
+    "tested-change",
+    "text-read-policy",
+    "undocumented-change",
+    "unnoted-flag-rename",
+    "untested-change",
+    "write-before-refusal",
+)
+# The Python files the write-before-refusal scenario holds in both trees, each by its path once restored.
+WRITE_BEFORE_REFUSAL_HELD = ("deployer/fsops.py", "deployer/install.py", "tests/deployer/test_install.py")
 REVIEWER_FOLDER = ".claude/skills/review-repository"
 MANIFEST_PATH = ".claude/skills/review-repository/references/specialists.json"
 # Files a run of a review-repository scenario places from the checkout: the reviewer's own, its condition scripts,
@@ -274,6 +287,17 @@ class LoaderTests(GitTestCase):
         selected = ["two", "one", "two", "three", "one"]
         names = [scenario.name for scenario in skill_evals.load_scenarios("demo", selected, root=self.root)]
         self.assertEqual(["two", "one", "three"], names)
+
+    def test_a_held_file_in_a_fixture_reviewed_in_place_is_refused(self) -> None:
+        # Only a repository reviewer's run copies its fixture, so any other would be reviewed under the held name.
+        directory = write_scenario(self.root, "case", scenario_spec())
+        (directory / "base" / "store.py.fixture").write_text("", encoding="utf-8")
+        with self.assertRaises(ScenarioError) as raised:
+            skill_evals.load_scenarios("demo", root=self.root)
+        self.assertEqual(
+            "case: its base/ tree holds store.py.fixture, which only a repository reviewer's copy restores",
+            str(raised.exception),
+        )
 
     def test_unknown_scenario_and_skill_fail(self) -> None:
         write_scenario(self.root, "one", scenario_spec())
@@ -1552,6 +1576,41 @@ class ReviewerScenarioTests(GitTestCase):
         write_reviewer_scenario(self.root, spec)
         self.assertIn('case: category "Tset coverage" is not one of the manifest\'s finding_categories', self.refusal())
 
+    def test_a_held_file_is_restored_in_the_copy_and_kept_in_the_fixture(self) -> None:
+        (scenario,) = skill_evals.load_scenarios("review-repository", ["write-before-refusal"])
+        held = [f"{tree}/{path}{skill_evals.HELD}" for tree in ("base", "head") for path in WRITE_BEFORE_REFUSAL_HELD]
+        self.assertEqual(sorted(held), sorted(scenario.held))
+        before = tree_bytes(scenario.directory)
+        with skill_evals.reviewed_fixture(scenario) as fixture:
+            copied = tree_bytes(fixture)
+            for path in held:
+                with self.subTest(path=path):
+                    self.assertEqual(before[path], copied[path.removesuffix(skill_evals.HELD)])
+            self.assertEqual([], [path for path in copied if path.endswith(skill_evals.HELD)])
+        self.assertEqual(before, tree_bytes(scenario.directory))
+        self.assertEqual([], list(self.copies.iterdir()))
+
+    def test_a_held_file_the_copy_cannot_restore_is_refused(self) -> None:
+        cases = [
+            ({"head/.fixture": ""}, "case: its head/ tree holds .fixture, which names no file to restore"),
+            (
+                {"base/tools/a.py": "", "base/tools/a.py.fixture": ""},
+                "case: its base/ tree holds both tools/a.py and tools/a.py.fixture",
+            ),
+            (
+                {"head/CLAUDE.md.fixture": ""},
+                "case: its head/ tree holds CLAUDE.md.fixture, which the run places from the checkout",
+            ),
+        ]
+        for files, message in cases:
+            with self.subTest(message=message):
+                directory = write_reviewer_scenario(self.root, reviewer_spec())
+                for path, text in files.items():
+                    (directory / path).parent.mkdir(parents=True, exist_ok=True)
+                    (directory / path).write_text(text, encoding="utf-8")
+                self.assertEqual(message, self.refusal())
+                shutil.rmtree(directory)
+
     def test_a_fixture_that_holds_a_file_the_run_places_is_refused(self) -> None:
         directory = write_reviewer_scenario(self.root, reviewer_spec())
         (directory / "head" / "CLAUDE.md").write_text("# A stale copy\n", encoding="utf-8")
@@ -1630,17 +1689,23 @@ class Pipeline:
         return lines
 
     def review(self, prepare: Sequence[str], spec: dict[str, Any], guarded: bool = False) -> Path:
-        """Prepare, review, check, and finalize one fixture, each reviewer doing what the scenario `spec` expects;
-        return the record JSON finalize wrote. With `guarded`, each role's read log is started as the reviewer guard's
-        claim starts it."""
+        """Prepare, review, check, and finalize one fixture, each reviewer doing what the scenario `spec` expects, a
+        specialist raising only the expected findings in its own files, as check holds it to; return the record JSON
+        finalize wrote. With `guarded`, each role's read log is started as the reviewer guard's claim starts it."""
         prepared = self("prepare", "--host", "claude-code", *prepare)
         run = Path(next(line for line in prepared if line.startswith("RUN ")).split(" ", 2)[2])
         fixture = Path(prepare[list(prepare).index("--fixture") + 1])
         pull = json.loads((fixture / "pull.json").read_text(encoding="utf-8"))
+        plan = run / "work" / "plan.json"
+        planned = json.loads(plan.read_text(encoding="utf-8"))["roles"] if plan.is_file() else []
+        files = {role["id"]: set(role["files"]) for role in planned}
         for role in review_pipeline.load_run(run)["roles"]:
             if guarded:
                 review_guard.read_log(run, role["id"]).touch()
-            Path(role["result_file"]).write_text(json.dumps(stub_result(spec)), encoding="utf-8")
+            result = stub_result(spec)
+            if role["id"] in files:
+                result["findings"] = [item for item in result["findings"] if item["path"] in files[role["id"]]]
+            Path(role["result_file"]).write_text(json.dumps(result), encoding="utf-8")
         checked = self("check", "--run", str(run))
         self.test.assertEqual([f"ALL_VALID {pull['repository']}#{pull['number']}"], checked)
         finalized = self("finalize", "--run", str(run))
@@ -2716,16 +2781,28 @@ class EvaluateTests(GitTestCase):
                 for path in REVIEW_REPOSITORY_PLACED:
                     with self.subTest(run=key, tree=tree, path=path):
                         self.assertEqual((skill_evals.REPOSITORY_ROOT / path).read_bytes(), files[f"{tree}/{path}"])
-            own = {path[len(scenario) + 1 :]: content for path, content in before.items() if path.startswith(scenario)}
+            own = {
+                path[len(scenario) + 1 :].removesuffix(skill_evals.HELD): content
+                for path, content in before.items()
+                if path.startswith(f"{scenario}/")
+            }
             self.assertEqual(own, {path: files[path] for path in own})
+            self.assertEqual([], [path for path in files if path.endswith(skill_evals.HELD)])
         self.assertEqual([], list(copies.iterdir()), "every copy is removed")
         self.assertEqual(before, tree_bytes(REVIEW_REPOSITORY), "the fixtures are untouched")
-        # Each route's condition opens on the copy as on the fixture, with the reviewer's files beside it.
+        # Each route's condition opens on the copy as on the fixture, with the reviewer's files beside it, and each
+        # route's scenario starts its specialist on the held files the copy restores.
         roles = {
+            "branch-name-command": "skill-scripts,trust-boundary",
+            "build-grant": "documentation-drift,generic-review,skill-contract,skill-scripts,upgrade-notes",
             "drifted-guide": "documentation-drift,generic-review",
+            "misstated-exit-status": "documentation",
             "tested-change": "generic-review",
+            "text-read-policy": "validation-policy",
             "undocumented-change": "generic-review",
+            "unnoted-flag-rename": "deployer,upgrade-notes",
             "untested-change": "generic-review,untested-changes",
+            "write-before-refusal": "deployer",
         }
         guarded: dict[str, set[str]] = {}
         for line in lines:
@@ -2742,11 +2819,18 @@ class EvaluateTests(GitTestCase):
             "SHOULD_FIX Test coverage",
             lines,
         )
+        self.assertIn(
+            "PASS review-repository write-before-refusal haiku finding deployer/install.py:27,28,29,30,31 "
+            "MUST_FIX Unheld invariant",
+            lines,
+        )
         written = self.results.read_text(encoding="utf-8")
         for model, identifier in skill_evals.MODELS.items():
             self.assertIn(
-                f"| review-repository | {model} | {identifier} | 5/5 | drifted-guide 2/2, tested-change 1/1, "
-                "undocumented-change 1/1, untested-change 1/1 | claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
+                f"| review-repository | {model} | {identifier} | 11/11 | branch-name-command 1/1, build-grant 1/1, "
+                "drifted-guide 2/2, misstated-exit-status 1/1, tested-change 1/1, text-read-policy 1/1, "
+                "undocumented-change 1/1, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 "
+                "| claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
                 written,
             )
         self.assertIn("| review-prs | opus | old |", written)

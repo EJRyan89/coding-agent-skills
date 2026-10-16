@@ -1,0 +1,33 @@
+"""Build a repository's site with the build script its package.json names, and print where the site was built.
+
+    python -B render_preview.py <repository>
+
+Prints `PREVIEW <folder>`, or `NO_BUILD` and exits 1 when the package names no build script.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+
+def build_command(repository: Path) -> list[str] | None:
+    scripts = json.loads((repository / "package.json").read_text(encoding="utf-8")).get("scripts", {})
+    return ["npm", "run", "build"] if "build" in scripts else None
+
+
+def main(argv: list[str]) -> int:
+    repository = Path(argv[0]).resolve()
+    command = build_command(repository)
+    if command is None:
+        print("NO_BUILD")
+        return 1
+    subprocess.run(command, cwd=repository, check=True)
+    print(f"PREVIEW {repository / 'build'}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

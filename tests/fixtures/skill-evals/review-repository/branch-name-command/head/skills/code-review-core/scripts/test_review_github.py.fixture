@@ -1,0 +1,20 @@
+from __future__ import annotations
+
+import unittest
+from pathlib import Path
+from unittest import mock
+
+import review_github
+
+
+class FetchHeadTests(unittest.TestCase):
+    def test_the_commit_fetched_is_returned(self) -> None:
+        done = mock.Mock(stdout="abc123\n")
+        with mock.patch.object(review_github.subprocess, "run", return_value=done) as run:
+            commit = review_github.fetch_head(Path("checkout"), {"number": 7, "head_ref": "fix-labels"})
+        self.assertEqual("abc123", commit)
+        self.assertEqual(2, run.call_count)
+
+
+if __name__ == "__main__":
+    unittest.main()
