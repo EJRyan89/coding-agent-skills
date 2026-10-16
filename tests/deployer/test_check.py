@@ -60,7 +60,7 @@ INSTALLED = {
     "copilot": ("C:/tools/copilot.exe", "GitHub Copilot CLI 1.0.89.\n"),
     "codex": ("C:/tools/codex.exe", "codex-cli 0.160.0\n"),
     "dotnet-format": ("C:/tools/dotnet-format.exe", "5.1.250801+4a851ea9\n"),
-    "claude": ("C:/tools/claude.exe", "2.1.291 (Claude Code)\n"),
+    "claude": ("C:/tools/claude.exe", "2.1.300 (Claude Code)\n"),
     "dotnet": ("C:/tools/dotnet.exe", "10.0.301\n"),
     "pdftotext": ("C:/tools/pdftotext.exe", XPDF_4_06),
 }
@@ -222,7 +222,7 @@ class CheckCommandTests(DeployerTestCase):
             "  gh 2.97.0 (used by operations, reporter)\n"
             "\n"
             "OPTIONAL (3):\n"
-            "  Claude Code 2.1.291 (used by every skill run in Claude Code)\n"
+            "  Claude Code 2.1.300 (used by every skill run in Claude Code)\n"
             "  codex 0.160.0 (used by Codex verification)\n"
             "  copilot 1.0.89 (used by operations, Copilot verification)\n"
             "\n"
@@ -334,7 +334,7 @@ class CheckCommandTests(DeployerTestCase):
         groups = self.report_groups(self.check(Machine(missing=("copilot",))).output, "CHECK")
         self.assertEqual(
             [
-                "Claude Code 2.1.291 (used by every skill run in Claude Code)",
+                "Claude Code 2.1.300 (used by every skill run in Claude Code)",
                 "codex 0.160.0 (used by Codex verification)",
                 "copilot (not installed; used by operations, Copilot verification)",
             ],
@@ -616,13 +616,31 @@ class CheckCommandTests(DeployerTestCase):
         # deploying needs neither. Without Git the skills fail, but deploying still works.
         groups = self.report_groups(self.check(Machine()).output, "CHECK")
         self.assertIn("Git 2.54.0 (used by every skill)", groups["FOUND"])
-        self.assertIn("Claude Code 2.1.291 (used by every skill run in Claude Code)", groups["OPTIONAL"])
+        self.assertIn("Claude Code 2.1.300 (used by every skill run in Claude Code)", groups["OPTIONAL"])
         result = self.check(Machine(missing=("git", "claude")))
         self.assertEqual(0, result.code, result.output)
         groups = self.report_groups(result.output, "CHECK")
         self.assertEqual(["Git (used by every skill)"], groups["MISSING"])
         self.assertIn("Claude Code (not installed; used by every skill run in Claude Code)", groups["OPTIONAL"])
         self.assertIn("Ready to deploy. Skills cannot use a missing, outdated, or unusable tool\n", result.output)
+
+    def test_claude_code_before_2_1_295_is_outdated_because_the_reviewer_guard_must_block_when_it_cannot_run(
+        self,
+    ) -> None:
+        # Claude Code 2.1.295 is the first that honors a hook's onFailure: block, which the code-review reviewer's
+        # guard declares; an older one lets a call through when the guard cannot start or times out.
+        result = self.check(Machine(versions={"claude": "2.1.294 (Claude Code)
+"}))
+        self.assertEqual(0, result.code, result.output)
+        groups = self.report_groups(result.output, "CHECK")
+        self.assertEqual(["Claude Code 2.1.294 (needs 2.1.295 or newer)"], groups["OUTDATED"])
+        self.assertNotIn("Claude Code 2.1.294 (used by every skill run in Claude Code)", groups["OPTIONAL"])
+        self.assertIn("Ready to deploy. Skills cannot use a missing, outdated, or unusable tool
+", result.output)
+        groups = self.report_groups(self.check(Machine(versions={"claude": "2.1.295 (Claude Code)
+"})).output, "CHECK")
+        self.assertIn("Claude Code 2.1.295 (used by every skill run in Claude Code)", groups["OPTIONAL"])
+        self.assertNotIn("OUTDATED", groups)
 
     def test_tools_no_skill_declares_are_not_listed(self) -> None:
         set_tools(self, "formatter", [])
@@ -832,10 +850,11 @@ class VersionTests(GitTestCase):
 
     def test_the_runtime_tool_floors_table_lists_every_floor_the_catalogue_checks(self) -> None:
         # docs/dependency-updates.md owns every floor, so its table and the catalogue both name these.
-        floors = {"gh": "2.48.0", "codex": "0.88.0", "copilot": "1.0.88", "dotnet": "9.0.200"}
+        floors = {"gh": "2.48.0", "codex": "0.88.0", "copilot": "1.0.88", "dotnet": "9.0.200", "claude": "2.1.295"}
+        reported = {tool.name: tool for tool in tools.REPORTED_TOOLS}
         catalogued = {
             name: ".".join(map(str, tool.minimum))
-            for name, tool in {**tools.SKILL_TOOLS, **tools.VERIFY_TOOLS}.items()
+            for name, tool in {**tools.SKILL_TOOLS, **tools.VERIFY_TOOLS, **reported}.items()
             if tool.minimum
         }
         self.assertEqual(floors, catalogued)

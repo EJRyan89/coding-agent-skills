@@ -1111,8 +1111,13 @@ def _guard_hook(lines: Sequence[str], home: Path) -> dict[str, Any]:
     timeout = _nested(lines, "timeout")
     if not timeout.isdigit():
         raise AgentError(f"its hook's timeout {timeout} is not a whole number of seconds")
+    # A guard that cannot start or times out lets the call through unless its hook blocks on failure, so a session
+    # never runs a reviewer whose hook does not.
+    on_failure = _nested(lines, "onFailure")
+    if on_failure != "block":
+        raise AgentError(f"its hook's onFailure is {on_failure}, not block")
     hook = {"type": "command", "command": command.replace(PROFILE_GUARD, runtime_canary.forward(guard))}
-    return {"matcher": _nested(lines, "matcher"), "hooks": [{**hook, "timeout": int(timeout)}]}
+    return {"matcher": _nested(lines, "matcher"), "hooks": [{**hook, "timeout": int(timeout), "onFailure": on_failure}]}
 
 
 def reviewer_agents(home: Path) -> dict[str, Any]:

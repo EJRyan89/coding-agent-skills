@@ -371,6 +371,9 @@ class CrossSkillContractTests(GitTestCase):
                 "'~/.claude/skills/code-review-core/scripts/review_guard.py'),",
                 "            run_name='__main__')\"",
                 "          timeout: 30",
+                # A hook that cannot start, times out, or exits with another status than 0 or 2 lets the call
+                # through unless it blocks on failure, which Claude Code honors from 2.1.295.
+                "          onFailure: block",
             ],
             frontmatter_and_body(agent)[0].splitlines(),
         )

@@ -18,6 +18,7 @@ hooks:
             runpy.run_path(os.path.expanduser('~/.claude/skills/code-review-core/scripts/review_guard.py'),
             run_name='__main__')"
           timeout: 30
+          onFailure: block
 ---
 
 You run one reviewer role of a code review that the code-review-core pipeline prepared. Your task names a prompt file. Read it first and follow it exactly: it is your complete task.
