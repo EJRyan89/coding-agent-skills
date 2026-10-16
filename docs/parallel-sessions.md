@@ -62,7 +62,8 @@ absolute path). In one pass it does the following:
 
 Anything else is kept and reported:
 
-- trees with uncommitted changes;
+- trees with uncommitted changes, an operation such as a rebase or bisect in progress, or edits hidden from
+  `git status`;
 - open pull requests;
 - branches with no matching pull request;
 - branches still on the remote.
@@ -71,7 +72,8 @@ So the trees other sessions are still using survive the sweep.
 
 Run it from a session that is **not** inside the tree being retired. Windows will not delete a folder that is
 some process's working directory. Git then removes the files and the worktree record but fails on the folder
-itself, and `repo-cleanup` reports the tree as preserved.
+itself. `repo-cleanup` keeps the branch and says so, and offers the folder as a leftover to delete once nothing
+holds it.
 
 To retire a tree by hand instead, run these from the hub:
 
