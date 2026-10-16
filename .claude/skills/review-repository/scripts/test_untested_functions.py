@@ -237,6 +237,30 @@ class ConditionTests(unittest.TestCase):
         self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
         self.assertTrue(written.startswith("UNPARSED app/broken.py: SyntaxError: "), written)
 
+    def test_a_test_ast_or_tokenize_cannot_read_names_nothing_and_is_reported_by_name(self) -> None:
+        tool, report = "def main():\n    return 0\n", "#!/usr/bin/env bash\ndays_old() {\n  echo 1\n}\n"
+        before = {"tools/tool.py": tool, "tools/report.sh": report}
+        after = {"tools/tool.py": tool.replace("0", "1"), "tools/report.sh": report.replace("echo 1", "echo 2")}
+        # tokenize cannot finish an unterminated string, so the comment is all that names the script and the function.
+        tests = {"tests/test_tool.py": '# runs tools/tool.py and tools/report.sh: days_old\nx = """\n'}
+        code, out, written = self.run_condition({**before, **tests}, {**after, **tests})
+        self.assertEqual(0, code)
+        lines = out.splitlines()
+        self.assertEqual(2, len(lines), out)
+        self.assertTrue(lines[0].startswith('UNREADABLE "tests/test_tool.py": TokenError: '), out)
+        self.assertEqual("UNTESTED 2 given=2", lines[1])
+        self.assertIn("UNTESTED tools/tool.py:1 function main, ", written)
+        self.assertIn("UNTESTED tools/report.sh:2 function days_old, ", written)
+        # A test ast cannot read names nothing through its imports either, and says so.
+        service = {"app/service.py": SERVICE}
+        changed = {"app/service.py": SERVICE.replace("sum(values)", "sum(values) or 0")}
+        broken = {"tests/test_service.py": "import service\n\nassert service.total([]) == 0\ndef x(:\n"}
+        code, out, written = self.run_condition({**service, **broken}, {**changed, **broken})
+        self.assertEqual(0, code)
+        self.assertTrue(out.startswith('UNREADABLE "tests/test_service.py": SyntaxError: '), out)
+        self.assertTrue(out.endswith("\nUNTESTED 1 given=1\n"), out)
+        self.assertTrue(written.startswith("UNTESTED app/service.py:4 function total, "), written)
+
     def test_the_entries_are_bounded_and_the_rest_named(self) -> None:
         # Twenty entries at most, each hunk cut to 900 characters, so the file stays under the 32 KiB a review gives a
         # specialist even when every entry's header and hunk are long.
