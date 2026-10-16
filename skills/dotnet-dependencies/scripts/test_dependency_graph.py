@@ -2284,6 +2284,21 @@ class ProjectSearchTests(Fixture):
         self.assertEqual([["App/App.csproj", "-", "Lib.Pkg", "graph", "Lib.Pkg (v1.0.0)"]], self.lines(rows, "PATH"))
         self.assertEqual([["Other.Pkg"]], self.lines(rows, "MISSING"))
 
+    def test_dependency_and_build_folders_are_skipped_and_a_nested_checkout_is_reported(self) -> None:
+        # A restore's packages folder, Visual Studio's .vs, and build output hold no project of the directory's; a
+        # nested clone or worktree is another repository's, so it is reported, as a folder whose facts are missing.
+        self.write("search/App/App.csproj", LIB_PROJECT)
+        for folder in ("packages/Some.Pkg/1.0.0/sample", ".vs/App", "App/bin/Debug", "node_modules/pkg"):
+            self.write(f"search/{folder}/Sample.csproj", LIB_PROJECT.replace("Lib.Pkg", "Other.Pkg"))
+        self.write("search/worktrees/task/Copy/Copy.csproj", LIB_PROJECT)
+        self.write("search/worktrees/task/.git", "gitdir: ../../../.git/worktrees/task\n")
+        code, rows = self.run_main("why", "Lib.Pkg", "Other.Pkg", "--root", str(self.root / "search"))
+        self.assertEqual(1, code)
+        reason = "the folder holds another checkout, a clone, submodule, or worktree, which the search skips"
+        self.assertEqual([["worktrees/task", reason]], self.lines(rows, "UNREADABLE"))
+        self.assertEqual([["App/App.csproj", "sdk", "direct", "listed"]], self.lines(rows, "PROJECT"))
+        self.assertEqual([["Other.Pkg"]], self.lines(rows, "MISSING"))
+
     def test_a_folder_that_cannot_be_listed_is_reported_and_a_search_finding_nothing_names_it(self) -> None:
         self.write("search/App/App.csproj", LIB_PROJECT)
         self.write("search/Locked/Hidden/Hidden.csproj", LIB_PROJECT)

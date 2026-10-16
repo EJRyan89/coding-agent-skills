@@ -55,6 +55,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 from console import run_main
 from dotnet_solution import (
+    SEARCH_SKIPPED_FOLDERS,
     is_solution,
     lexical_absolute,
     project_path,
@@ -66,6 +67,7 @@ from dotnet_solution import (
 )
 from executable_locator import find_executable
 from flat_text import flat_text
+from folder_walk import LINKED, LOOP, NESTED_CHECKOUT, walk_files
 from git_client import GitClient, GitError, GitResult, classify_failure
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_client import Runner as GhRunner
@@ -83,7 +85,6 @@ WEB_PROJECT = re.compile(
 FORMATTED_PROJECT_SUFFIXES = (".csproj", ".vbproj")
 SDK_FORMATTER = "dotnet format"
 TOOL_FORMATTER = "dotnet-format"
-IGNORED_DIRECTORIES = frozenset({".git", "bin", "obj", "node_modules"})
 REMOTE_REFS = "refs/remotes/origin/"
 # Why a solution needs the .NET SDK's dotnet, after its name.
 SDK_SOLUTION = "is a .slnx solution, or a .sln of SDK-style projects, which the .NET SDK's dotnet format formats"
@@ -312,20 +313,18 @@ def nearest_solutions(root: Path, cwd: Path) -> list[Path]:
         directory = directory.parent
 
 
-def raise_error(error: OSError) -> None:
-    raise error
-
-
 def find_solutions(root: Path) -> list[Path]:
-    """Every solution in the repository, skipping build and dependency directories.
+    """Every solution in the repository, in skill-core's folder walk's order, outside the folders the .NET search
+    skips (`dotnet_solution.SEARCH_SKIPPED_FOLDERS`) and nested checkouts, never through a junction or symbolic link.
 
-    A directory it cannot read is an error, not an empty one: skipping it could hide the solution to choose.
+    A folder it cannot list, or an entry it cannot examine, is an error, not an empty one: skipping it could hide the
+    solution to choose. A linked folder is not one, since the link may lead out of the repository or back into it.
     """
-    found = []
-    for current, directories, files in os.walk(root, onerror=raise_error):
-        directories[:] = sorted(name for name in directories if name.casefold() not in IGNORED_DIRECTORIES)
-        found += [Path(current) / name for name in sorted(files) if is_solution(Path(name))]
-    return found
+    walk = walk_files(root, lambda name: is_solution(Path(name)), skipped=SEARCH_SKIPPED_FOLDERS)
+    for entry in walk.not_entered:
+        if entry.kind not in (LINKED, LOOP, NESTED_CHECKOUT):
+            raise Failed(f"{entry.path}: {entry.reason}")
+    return walk.files
 
 
 def owns(solution: Path, owned: list[Path]) -> bool:
