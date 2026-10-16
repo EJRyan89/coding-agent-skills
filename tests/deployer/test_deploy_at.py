@@ -222,6 +222,22 @@ class DeployAtTests(DeployerTestCase):
         self.deploy_ok("--all", "--at", "v1.0.0")
         self.assertIn(f"\nDeployed commit: v1.0.0 ({self.release}), pinned with --at v1.0.0\n", self.check().output)
 
+    def test_the_update_skill_reads_the_pin_from_the_deployers_refusal(self) -> None:
+        # When check names no pin, update-coding-agent-skills reads the ref and the commit from this refusal, between
+        # these two fixed parts, and ends with DEPLOY_PINNED <ref> <commit>.
+        script = REPOSITORY_ROOT / "skills" / "update-coding-agent-skills" / "scripts" / "update.sh"
+        text = script.read_text(encoding="utf-8")
+        self.assertIn('PIN_REFUSAL="ERROR: Refusing to replace the deployment pinned with --at "', text)
+        self.assertIn('PIN_REFUSAL_END=" without --unpin."', text)
+        self.deploy_ok("--all", "--at", "v1.0.0")
+        result = self.deploy_fails("--all", pattern=r"ERROR: Refusing to replace the deployment pinned")
+        self.assertEqual(1, result.code)
+        self.assertIn(
+            f"\nERROR: Refusing to replace the deployment pinned with --at v1.0.0 to v1.0.0 ({self.release}) without "
+            "--unpin.\n",
+            result.output,
+        )
+
     def test_deploying_the_pinned_commit_again_keeps_the_pin_without_a_notice(self) -> None:
         self.deploy_ok("--all", "--at", "v1.0.0")
         output = self.deploy_ok("--all", "--at", self.release).output

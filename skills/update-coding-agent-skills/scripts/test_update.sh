@@ -72,8 +72,8 @@ cat >"$GIT_CONFIG_GLOBAL" <<'EOF'
   autoDetach = false
 EOF
 
-# The upstream carries a stand-in deploy.py that records its arguments and exits with $FAKE_DEPLOY_EXIT. A deployment
-# that succeeds records the commit it ran from, as the real one does, and check names that commit, or prints
+# The upstream carries a stand-in deploy.py that records its arguments, prints $FAKE_DEPLOY_STDERR to stderr when it is
+# set, and exits with $FAKE_DEPLOY_EXIT. A deployment that succeeds records the commit it ran from, as the real one does, and check names that commit, or prints
 # $FAKE_CHECK_OUTPUT when it is set, and exits with $FAKE_CHECK_EXIT.
 UPSTREAM="$FIXTURE/upstream.git"
 SEED="$FIXTURE/seed"
@@ -97,6 +97,8 @@ if sys.argv[1:] == ["check"]:
 if os.environ.get("FAKE_DEPLOY_MOVE"):
     os.rename(os.environ["FAKE_DEPLOY_MOVE"], os.environ["FAKE_DEPLOY_MOVE"] + ".bak")
 print("fake deploy ran")
+if "FAKE_DEPLOY_STDERR" in os.environ:
+    print(os.environ["FAKE_DEPLOY_STDERR"], file=sys.stderr)
 code = int(os.environ.get("FAKE_DEPLOY_EXIT", "0"))
 if code == 0:
     head = subprocess.run(["git", "-C", here, "rev-parse", "HEAD"], capture_output=True, text=True, check=True)
@@ -433,6 +435,27 @@ set -e
 expect_failed "FAILED cannot create a temporary copy of update.sh: " "no temporary copy"
 expect_not_deployed "no temporary copy"
 
+# A script that cannot make the file the deployer's errors are kept in stops before any Git command too, and removes
+# its temporary copy. A mktemp wrapper makes the copy and refuses every later call.
+MKTEMP_WRAPPER="$FIXTURE/mktemp wrapper"
+mkdir -p "$MKTEMP_WRAPPER" "$FIXTURE/tmp for the errors"
+cat >"$MKTEMP_WRAPPER/mktemp" <<EOF
+#!/usr/bin/env bash
+if [ -e "$MKTEMP_WRAPPER/made" ]; then
+  echo "mktemp: refused by the test" >&2
+  exit 1
+fi
+: >"$MKTEMP_WRAPPER/made"
+exec "$(command -v mktemp)" "\$@"
+EOF
+chmod +x "$MKTEMP_WRAPPER/mktemp"
+TMPDIR="$FIXTURE/tmp for the errors" PATH="$MKTEMP_WRAPPER:$PATH" run_subject "$CLONE"
+expect_failed "FAILED cannot create a temporary file for the deployer's errors: mktemp: refused by the test" \
+  "no file for the errors"
+expect_nothing_run "no file for the errors"
+[ -z "$(ls -A "$FIXTURE/tmp for the errors")" ] ||
+  fail "no file for the errors: temporary copy left behind: $(ls -A "$FIXTURE/tmp for the errors")"
+
 # A failing deploy is reported with its exit code.
 new_clone
 export FAKE_DEPLOY_EXIT=7
@@ -621,6 +644,40 @@ FAKE_CHECK_OUTPUT="Deployed commit: v3.0.0-4-g0000000 ($(git -C "$CLONE" rev-par
 expect_status 0 "not pinned"
 printf '%s\n' "$OUTPUT" | grep -q "^UPDATED " || fail "not pinned: expected UPDATED: $OUTPUT"
 expect_deployed "not pinned"
+
+# A pin check does not name, here a check that names the commit alone, still stops at the deployer, which refuses to
+# replace it without --unpin. The clone was fetched and fast-forwarded, the deployer's refusal is shown, and the last
+# line names the ref and the commit from it, whether a tag describes the commit or not.
+for DESCRIBED in "v1.0.0 ($PINNED_COMMIT)" "$PINNED_COMMIT"; do
+  publish "change over a pin check does not name: $DESCRIBED"
+  BEFORE=$(head_of "$CLONE" HEAD)
+  REFUSAL="ERROR: Refusing to replace the deployment pinned with --at v1.0.0 to $DESCRIBED without --unpin."
+  FAKE_CHECK_OUTPUT="Deployed commit: $(git -C "$CLONE" rev-parse HEAD)" FAKE_DEPLOY_EXIT=1 \
+    FAKE_DEPLOY_STDERR=$'\n'"$REFUSAL"$'\nTo move it to this checkout\'s HEAD, rerun with --unpin.\n' \
+    run_subject "$CLONE"
+  expect_status 1 "pin refused '$DESCRIBED'"
+  expect_first_line "UPDATED $BEFORE..$(head_of "$SEED" HEAD)" "pin refused '$DESCRIBED'"
+  [ "$(head_of "$CLONE" HEAD)" = "$(head_of "$SEED" HEAD)" ] || fail "pin refused '$DESCRIBED': main not fast-forwarded"
+  [ "$(printf '%s\n' "$OUTPUT" | tail -n 1)" = "DEPLOY_PINNED v1.0.0 $PINNED_COMMIT" ] ||
+    fail "pin refused '$DESCRIBED': expected DEPLOY_PINNED v1.0.0 $PINNED_COMMIT last, got: $OUTPUT"
+  if printf '%s\n' "$OUTPUT" | grep -q "DEPLOY_FAILED"; then fail "pin refused '$DESCRIBED': DEPLOY_FAILED printed"; fi
+  tr -d '\r' <"$FIXTURE/stderr" | grep -qxF -e "$REFUSAL" ||
+    fail "pin refused '$DESCRIBED': the deployer's refusal not shown: $(cat "$FIXTURE/stderr")"
+  expect_deployed "pin refused '$DESCRIBED'"
+done
+
+# Any other failure is DEPLOY_FAILED with the deployer's error shown: another error, or the refusal's line with an exit
+# the refusal never has.
+for FAILURE in "1 ERROR: Could not write the manifest." \
+  "2 ERROR: Refusing to replace the deployment pinned with --at v1.0.0 to $PINNED_COMMIT without --unpin."; do
+  FAKE_CHECK_OUTPUT="Deployed commit: $(git -C "$CLONE" rev-parse HEAD)" FAKE_DEPLOY_EXIT=${FAILURE%% *} \
+    FAKE_DEPLOY_STDERR=${FAILURE#* } run_subject "$CLONE"
+  expect_status 1 "deploy failed '$FAILURE'"
+  [ "$(printf '%s\n' "$OUTPUT" | tail -n 1)" = "DEPLOY_FAILED ${FAILURE%% *}" ] ||
+    fail "deploy failed '$FAILURE': expected DEPLOY_FAILED ${FAILURE%% *} last, got: $OUTPUT"
+  tr -d '\r' <"$FIXTURE/stderr" | grep -qxF -e "${FAILURE#* }" ||
+    fail "deploy failed '$FAILURE': the deployer's error not shown: $(cat "$FIXTURE/stderr")"
+done
 
 # A check that fails still names the deployed commit when it prints the line, and the update reads it.
 FAKE_CHECK_OUTPUT="Deployed commit: $(git -C "$CLONE" rev-parse HEAD)" FAKE_CHECK_EXIT=1 run_subject "$CLONE"

@@ -21,7 +21,9 @@
 #                    switched back to the branch it was found on, or a "still on main:" line says why not
 #   UP_TO_DATE <sha> or UPDATED <old>..<new> followed by the pulled commits, and by
 #                    CROSSED <current>..<target> when --cross-major accepted a release boundary,
-#                    then the deploy output and DEPLOYED or DEPLOY_FAILED <code>
+#                    then the deploy output and DEPLOYED, DEPLOY_FAILED <code>, or DEPLOY_PINNED <ref> <commit> when
+#                    the deployer refused to replace a deployment made with `deploy.py --at <ref>`, which deployed
+#                    <commit>, that check did not name: the clone was updated, and nothing was deployed
 #   FAILED <reason>  alone: the clone is not a repository with deploy.py, a step failed outright, or a release tag
 #                    the stop compares has a version component too long to compare
 # A stop leaves the clone on the branch it was found on unless a "still on main:" line says otherwise; an update
@@ -71,8 +73,16 @@ if [ "${UPDATE_SKILLS_COPY:-}" != "$0" ]; then
   fi
   UPDATE_SKILLS_COPY=$COPY exec bash "$COPY" "$@"
 fi
-trap 'rm -f -- "$0"' EXIT
+DEPLOY_ERRORS=
+trap 'rm -f -- "$0" ${DEPLOY_ERRORS:+"$DEPLOY_ERRORS"}' EXIT
 unset UPDATE_SKILLS_COPY
+
+# The deployer's stderr is kept in a file before it is shown, so its refusal to replace a pin can be read below.
+if ! DEPLOY_ERRORS=$(mktemp 2>&1); then
+  echo "FAILED cannot create a temporary file for the deployer's errors: $(one_line "$DEPLOY_ERRORS")"
+  DEPLOY_ERRORS=
+  exit 1
+fi
 
 # git's repository-selecting variables, which a git hook exports and a shell may pass on, would point every
 # `git -C "$CLONE"` below at another repository, index, or object store: those git clears itself before it works in
@@ -122,16 +132,23 @@ PIN_REF=
 case "$DEPLOYED" in
   *"$PIN_MARK"*) PIN_REF=${DEPLOYED##*"$PIN_MARK"} && DEPLOYED=${DEPLOYED%"$PIN_MARK"*} ;;
 esac
-case "$DEPLOYED" in
-  *")") DEPLOYED=${DEPLOYED##*"("} && DEPLOYED=${DEPLOYED%")"} ;;
-esac
+# A commit check or the deployer names as "<name> (<commit>)" is the commit inside the parentheses.
+commit_named() {
+  local named=$1
+  case "$named" in
+    *")") named=${named##*"("} && named=${named%")"} ;;
+  esac
+  printf '%s' "$named"
+}
+DEPLOYED=$(commit_named "$DEPLOYED")
 DEPLOYED_COMMIT=
 if [[ "$DEPLOYED" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
   DEPLOYED_COMMIT=$DEPLOYED
 fi
 
 # A pinned deployment would be replaced by main, so the update stops until --unpin. A check that fails or names no
-# pin does not stop the update here; the deployer itself refuses to replace a pin without --unpin.
+# pin does not stop the update here; the deployer itself refuses to replace a pin without --unpin, which ends the
+# update with DEPLOY_PINNED below.
 if [ -n "$PIN_REF" ] && [ -z "$UNPIN" ]; then
   echo "PINNED $PIN_REF $DEPLOYED"
   exit 1
@@ -284,13 +301,28 @@ if [ -n "$CROSSED" ]; then
 fi
 
 # A fresh process runs the deployer exactly as it now is on main. It refuses to replace a pin without --unpin, so a
-# pin check could not read stops there too.
+# pin check could not read stops there too: it exits 1 with the line below, which names the ref the deployment was
+# pinned with and its commit as check does, and which the deployer's tests hold.
 DEPLOY_OPTIONS=(--all)
 if [ -n "$UNPIN" ]; then
   DEPLOY_OPTIONS+=(--unpin)
 fi
-"$PYTHON" "$CLONE/deploy.py" "${DEPLOY_OPTIONS[@]}" </dev/null
+"$PYTHON" "$CLONE/deploy.py" "${DEPLOY_OPTIONS[@]}" </dev/null 2>"$DEPLOY_ERRORS"
 CODE=$?
+cat -- "$DEPLOY_ERRORS" >&2
+PIN_REFUSAL="ERROR: Refusing to replace the deployment pinned with --at "
+PIN_REFUSAL_END=" without --unpin."
+if [ "$CODE" -eq 1 ]; then
+  REFUSED=$(tr -d '\r' <"$DEPLOY_ERRORS" | grep -m 1 -F -e "$PIN_REFUSAL")
+  case "$REFUSED" in
+    "$PIN_REFUSAL"*" to "*"$PIN_REFUSAL_END")
+      # A ref holds no space, so the first " to " ends it.
+      REFUSED=${REFUSED#"$PIN_REFUSAL"} && REFUSED=${REFUSED%"$PIN_REFUSAL_END"}
+      echo "DEPLOY_PINNED ${REFUSED%% to *} $(commit_named "${REFUSED#* to }")"
+      exit 1
+      ;;
+  esac
+fi
 if [ "$CODE" -ne 0 ]; then
   echo "DEPLOY_FAILED $CODE"
   exit 1
