@@ -48,15 +48,16 @@ and --remove-home deletes it later. A home that cannot be removed is FAILED "<re
 
 With --remove-home DIR it prints REMOVED "<dir>", or FAILED "<reason>" and exits 1.
 
-With --changed-since REF it starts nothing and makes no home: it reads, through git, every file changed since the
-commit REF and HEAD share, committed or not, untracked included, and prints SINCE <ref> <commit>, then CHANGED
-<skill> "<why>" for each shipped skill the change reaches, or NOTHING_CHANGED "<reason>". REF defaults to the latest
-tag, the range a release checks. A skill is reached by a changed file under skills/<skill>/, its
-deploy-meta/<skill>.json, a shared asset under skills/ that it declares in shared_deps, or an agents/<agent>.md that it
-declares in agent_deps. A hidden dependency, which has no adapter and no run of its own, reaches instead the skills that
-declare it in skill_deps, directly or through another hidden one. A change to deployer/render.py, which writes every
-adapter, reaches one skill the model may start and one only the user may start, a changed one where it can. A git
-failure is FAILED "<reason>" and exit 1.
+With --changed-since REF it starts nothing and makes no home: it reads, through git, every file changed since the commit
+REF and HEAD share, committed or not, untracked included, and prints SINCE <ref> <commit>, then CHANGED <skill> "<why>"
+for each shipped skill the change reaches, or NOTHING_CHANGED "<reason>". REF defaults to the last release HEAD holds,
+as skill-core's release_tags.py defines it, the range a release checks; a nearer tag of another name, such as a
+pre-release, does not move it, and with no release tag reaching HEAD it prints FAILED. A skill is reached by a changed
+file under skills/<skill>/, its deploy-meta/<skill>.json, a shared asset under skills/ that it declares in shared_deps,
+or an agents/<agent>.md that it declares in agent_deps. A hidden dependency, which has no adapter and no run of its own,
+reaches instead the skills that declare it in skill_deps, directly or through another hidden one. A change to
+deployer/render.py, which writes every adapter, reaches one skill the model may start and one only the user may start, a
+changed one where it can. A git failure is FAILED "<reason>" and exit 1.
 
 The isolation is of configuration, not of credentials: each runtime keeps its real configuration folder and so
 its sign-in, and the canary switches off what each runtime lets it: Claude Code's user settings, skills, and MCP
@@ -126,6 +127,7 @@ import frontmatter
 from bounded_process import run_bounded, without_repository_variables
 from console import run_main
 from git_client import GitClient, GitError
+from release_tags import last_release
 
 from deployer import discovery, manifest, pipeline, platform_support, runtime_support, verify
 from deployer import source as deploy_source
@@ -1109,9 +1111,13 @@ def changed_paths(root: Path, ref: str, client: GitClient = GIT) -> tuple[str, l
 
 
 def changed_since(ref: str | None, root: Path = REPOSITORY_ROOT, client: GitClient = GIT) -> int:
-    """Print the shipped skills the change since `ref`, the latest tag when None, reaches; start nothing."""
+    """Print the shipped skills the change since `ref`, the last release HEAD holds when None, reaches; start
+    nothing."""
     try:
-        since = ref or client.output(["describe", "--tags", "--abbrev=0", "HEAD"], directory=root).strip()
+        since = ref or last_release(client, root, "HEAD")
+        if since is None:
+            print(f"FAILED {quote('no release tag reaches HEAD; pass --changed-since REF')}")
+            return 1
         base, paths = changed_paths(root, since, client)
         source_paths = Paths(root, root)
         src = deploy_source.discover(source_paths, deploy_source.load_source_id(source_paths))
@@ -1204,7 +1210,7 @@ def main(arguments: list[str]) -> int:
         nargs="?",
         const="",
         metavar="REF",
-        help="name the shipped skills changed since REF (default: the latest tag), start nothing, and exit",
+        help="name the shipped skills changed since REF (default: the last release), start nothing, and exit",
     )
     parser.add_argument(
         "--timeout",

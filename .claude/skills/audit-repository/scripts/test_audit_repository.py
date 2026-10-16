@@ -123,7 +123,7 @@ def remove_briefs_left(path: Path) -> None:
 
 
 def git(directory: Path, *arguments: str) -> str:
-    result = subprocess.run(["git", "-C", str(directory), *arguments], capture_output=True, text=True, encoding="utf-8")
+    result = GitClient().run(arguments, directory=directory)
     if result.returncode != 0:
         raise AssertionError(f"git {' '.join(arguments)} failed: {result.stderr}")
     return result.stdout.strip()
@@ -435,11 +435,30 @@ class ReleaseTests(Fixture):
         listed = listed_paths(self.briefs(lines)["infrastructure"], "## Changed files")
         self.assertEqual(sorted(HOSTILE_PATHS), sorted(listed))
 
-    def test_a_repository_without_a_tag_fails_with_the_way_out(self) -> None:
-        git(self.root, "tag", "-d", "v0.1.0", "v0.2.0")
+    def test_without_since_the_base_is_the_last_release_not_a_nearer_tag_of_another_name(self) -> None:
+        git(self.root, "tag", "v0.3.0-rc.1")
+        write(self.root, {"deployer/plan.py": "plan, changed again\n"})
+        self.commit("after the pre-release")
+        git(self.root, "tag", "-a", "latest", "-m", "latest")
+        # git describe names the annotated tag on HEAD; the release audit still starts at the last release.
+        self.assertEqual("latest", git(self.root, "describe", "--tags", "--abbrev=0", "HEAD"))
         code, lines = self.run_main("release")
-        self.assertEqual(1, code)
-        self.assertEqual(["FAILED no tag is reachable from HEAD; pass --since <ref>"], lines)
+        self.assertEqual(0, code)
+        self.assertEqual(f"BASE v0.2.0 {git(self.root, 'rev-parse', 'v0.2.0^{commit}')}", lines[0])
+        self.assertIn("CHANGED 2", lines)
+        self.assertEqual(["deployer", "other-skills"], list(self.briefs(lines)))
+        provenance = next(line for line in lines if line.startswith("PROVENANCE "))
+        self.assertIn("the release audit of the changes since v0.2.0,", provenance)
+
+    def test_a_repository_without_a_release_tag_fails_with_the_way_out(self) -> None:
+        git(self.root, "tag", "-d", "v0.1.0", "v0.2.0")
+        for tag in ((), ("v0.3.0-rc.1",)):
+            with self.subTest(tag=tag):
+                if tag:
+                    git(self.root, "tag", *tag)
+                code, lines = self.run_main("release")
+                self.assertEqual(1, code)
+                self.assertEqual(["FAILED no release tag is reachable from HEAD; pass --since <ref>"], lines)
 
     def test_an_unknown_or_option_like_since_fails(self) -> None:
         for ref in ("v9.9.9", "--output=x"):
@@ -478,8 +497,8 @@ class ReleaseTests(Fixture):
         cases = (
             ("rev-parse", refusal, f"FAILED git rev-parse: {refusal}"),
             ("rev-parse", not_repository, f"FAILED {self.root.as_posix()} is not a Git repository"),
-            ("tag", refusal, f"FAILED git tag: {refusal}"),
-            ("describe", refusal, f"FAILED git describe: {refusal}"),
+            ("for-each-ref", refusal, f"FAILED git for-each-ref: {refusal}"),
+            ("for-each-ref", not_repository, f"FAILED {self.root.as_posix()} is not a Git repository"),
         )
         for subcommand, stderr, expected in cases:
             with self.subTest(subcommand=subcommand, stderr=stderr):

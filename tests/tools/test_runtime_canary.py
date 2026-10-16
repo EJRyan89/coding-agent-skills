@@ -2089,14 +2089,15 @@ class ChangedSkillsTests(RuntimeCanaryTestCase):
         self.assertRegex(lines[0], r'^FAILED ".+"$')
         git("add", "-A")
         git("commit", "-q", "-m", "base")
-        git("tag", "v1")
+        git("tag", "v1.0.0")
         base = git("rev-parse", "HEAD").strip()
         (source / "docs").mkdir()
         (source / "docs" / "notes.md").write_text("Notes.\n", encoding="utf-8")
         git("add", "-A")
         git("commit", "-q", "-m", "documents")
         self.assertEqual(
-            (0, [f"SINCE v1 {base}", 'NOTHING_CHANGED "no change since v1 reaches a shipped skill"']), listed(None)
+            (0, [f"SINCE v1.0.0 {base}", 'NOTHING_CHANGED "no change since v1.0.0 reaches a shipped skill"']),
+            listed(None),
         )
         tool = source / "skills" / "alpha" / "scripts" / "tool.py"
         tool.write_text("print('changed')\n", encoding="utf-8")
@@ -2111,7 +2112,7 @@ class ChangedSkillsTests(RuntimeCanaryTestCase):
             (
                 0,
                 [
-                    f"SINCE v1 {base}",
+                    f"SINCE v1.0.0 {base}",
                     'CHANGED alpha "deploy-meta/core.json, through the hidden dependency core"',
                     'CHANGED beta "skills/beta/scripts/tool.py"',
                     'CHANGED gamma "skills/gamma/scripts/tool.py"',
@@ -2123,6 +2124,48 @@ class ChangedSkillsTests(RuntimeCanaryTestCase):
         code, lines = listed("no-such-ref")
         self.assertEqual(1, code)
         self.assertRegex(lines[0], r'^FAILED ".+"$')
+
+    def test_changed_since_defaults_to_the_last_release_not_a_nearer_tag_of_another_name(self) -> None:
+        source = self.make_changing_source()
+
+        def git(*arguments: str) -> str:
+            return runtime_canary.GIT.output(list(arguments), directory=source)
+
+        def listed() -> tuple[int, list[str]]:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = runtime_canary.changed_since(None, root=source)
+            return code, output.getvalue().splitlines()
+
+        git("init", "-q")
+        git("add", "-A")
+        git("commit", "-q", "-m", "base")
+        git("tag", "nightly")
+        # A tag reaches HEAD, but no release tag does.
+        self.assertEqual((1, ['FAILED "no release tag reaches HEAD; pass --changed-since REF"']), listed())
+        git("tag", "v0.9.0")
+        release = git("rev-parse", "HEAD").strip()
+        tool = source / "skills" / "alpha" / "scripts" / "tool.py"
+        tool.write_text("print('changed')\n", encoding="utf-8")
+        git("commit", "-q", "-am", "alpha")
+        git("tag", "v0.10.0-rc.1")
+        meta = source / "deploy-meta" / "beta.json"
+        meta.write_text(meta.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+        git("commit", "-q", "-am", "beta")
+        git("tag", "-a", "latest", "-m", "latest")
+        # git describe names the annotated tag on HEAD; the change since the release reaches alpha and beta both.
+        self.assertEqual("latest", git("describe", "--tags", "--abbrev=0", "HEAD").strip())
+        self.assertEqual(
+            (
+                0,
+                [
+                    f"SINCE v0.9.0 {release}",
+                    'CHANGED alpha "skills/alpha/scripts/tool.py"',
+                    'CHANGED beta "deploy-meta/beta.json"',
+                ],
+            ),
+            listed(),
+        )
 
 
 if __name__ == "__main__":

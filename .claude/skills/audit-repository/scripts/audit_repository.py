@@ -1,8 +1,9 @@
 """The deterministic parts of this repository's two audits per release, so the agent only starts the readers,
 confirms what they find, and files it.
 
-    release        group the files changed since the latest tag reachable from HEAD (or --since REF) into the four
-                   areas and write the briefs for each area that changed, for the release audit before tagging
+    release        group the files changed since the last release HEAD holds, the highest release tag reachable
+                   from it as skill-core's release_tags.py defines one (or --since REF), into the four areas and write
+                   the briefs for each area that changed, for the release audit before tagging
     rotation       name the area the rotation record shows read whole least recently and write its whole-area briefs,
                    naming in each the open issues the next milestone carries, for the rotation audit after tagging;
                    with --record TAG, append that area to the record for TAG instead, which is the only write to the
@@ -44,8 +45,8 @@ Every line is one fact:
     REMOVED "<directory>"              remove-briefs: the briefs directory deleted
 
 A title is printed as a JSON string, flattened to one line. A git or gh command that fails is reported with its own
-reason; a ref is reported as naming no commit only when git finds none, and a repository with no tag reachable from
-HEAD only when git lists none.
+reason; a ref is reported as naming no commit only when git finds none, and a repository with no release reachable
+from HEAD only when git lists no release tag reaching it.
 
 Exit status 0 means the briefs were written, the entry recorded, the search run, or the directory deleted; 1 a last
 line FAILED <reason>; 2 a usage error.
@@ -72,6 +73,7 @@ from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError, classify_failure
 from github_client import GitHubClient, GitHubError, subprocess_runner
+from release_tags import last_release
 
 # The rotation record, relative to the top of the repository it describes.
 RECORD_PATH = ".claude/skills/audit-repository/references/rotation.json"
@@ -219,13 +221,17 @@ def area_of(path: str) -> Area:
 # --- git ------------------------------------------------------------------------------------------
 
 
+def git_failure(repository: Path, subcommand: str, exc: GitError) -> AuditError:
+    if exc.kind == "not_repository":
+        return AuditError(f"{repository.as_posix()} is not a Git repository")
+    return AuditError(f"git {subcommand}: {exc}")
+
+
 def git_output(git: GitClient, repository: Path, arguments: Sequence[str]) -> str:
     try:
         return git.output(arguments, directory=repository)
     except GitError as exc:
-        if exc.kind == "not_repository":
-            raise AuditError(f"{repository.as_posix()} is not a Git repository") from exc
-        raise AuditError(f"git {arguments[0]}: {exc}") from exc
+        raise git_failure(repository, arguments[0], exc) from exc
 
 
 def commit_of(git: GitClient, repository: Path, ref: str) -> str:
@@ -247,11 +253,13 @@ def commit_of(git: GitClient, repository: Path, ref: str) -> str:
     raise AuditError(f"git rev-parse: {reason}")
 
 
-def reachable_tag(git: GitClient, repository: Path, head: str) -> str | None:
-    """The latest tag reachable from `head`, or None only when git lists none."""
-    if not git_output(git, repository, ["tag", "--merged", head]).strip():
-        return None
-    return git_output(git, repository, ["describe", "--tags", "--abbrev=0", head]).strip()
+def released_tag(git: GitClient, repository: Path, head: str) -> str | None:
+    """The last release `head` holds, as skill-core's release_tags defines it, or None only when no release tag
+    reaches it: a nearer tag of another name, such as a pre-release, is not the last release."""
+    try:
+        return last_release(git, repository, head)
+    except GitError as exc:
+        raise git_failure(repository, "for-each-ref", exc) from exc
 
 
 def checkout_top(git: GitClient, repository: Path) -> tuple[Path, bool]:
@@ -594,13 +602,13 @@ def release(
     git: GitClient, github: GitHubClient, repository: Path, since: str | None, today: Callable[[], date]
 ) -> list[str]:
     head = commit_of(git, repository, "HEAD")
-    released = reachable_tag(git, repository, head)
+    released = released_tag(git, repository, head)
     if since is not None:
         base = since
     elif released is not None:
         base = released
     else:
-        raise AuditError("no tag is reachable from HEAD; pass --since <ref>")
+        raise AuditError("no release tag is reachable from HEAD; pass --since <ref>")
     base_commit = commit_of(git, repository, base)
     found = changes(git, repository, base_commit, head)
     by_area = {area.name: [change for change in found if area_of(change.path) is area] for area in AREAS}
@@ -648,7 +656,7 @@ def rotation(
             )
         return [*lines, append_entry(git, repository, path, entries, Entry(today().isoformat(), record, area.name))]
     files = [file for file in tracked_files(git, repository, head) if area_of(file) is area]
-    released = reachable_tag(git, repository, head)
+    released = released_tag(git, repository, head)
     milestones = open_milestones_after(github, released)
     following = milestones[0] if milestones else None
     carried = carried_issues(github, following) if following is not None else []
@@ -723,7 +731,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Print the briefs for this repository's release and rotation audits.")
     commands = parser.add_subparsers(dest="command", required=True)
     release_parser = commands.add_parser("release", parents=[common], help="brief each area changed since a tag")
-    release_parser.add_argument("--since", metavar="REF", help="the base (default: the latest tag reachable from HEAD)")
+    release_parser.add_argument("--since", metavar="REF", help="the base (default: the last release HEAD holds)")
     rotation_parser = commands.add_parser("rotation", parents=[common], help="brief the next area to read whole")
     rotation_parser.add_argument("--record", metavar="TAG", help="append the next area to the record for TAG")
     duplicates_parser = commands.add_parser("duplicates", parents=[common], help="search the open issues")
