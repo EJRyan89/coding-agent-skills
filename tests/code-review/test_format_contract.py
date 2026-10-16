@@ -44,7 +44,7 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("code-review-core")))
 sys.path.insert(0, str(sibling_scripts("review-insights")))
-sys.path.insert(0, str(sibling_scripts("update-pr-tracker")))
+sys.path.insert(0, str(sibling_scripts("update-pr-dashboard")))
 
 import review_guidance
 import review_insights
@@ -60,7 +60,7 @@ from review_records import build_record, carried_findings, validate_adapter_resu
 from review_runtime import build_adapter_request, validate_adapter_manifest
 from review_specialists import load_role_result
 from review_state import validate_state
-from update_pr_tracker import validate_tracker_record
+from update_pr_dashboard import validate_tracker_record
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 CONTRACT = REPOSITORY_ROOT / "docs" / "code-review-operations-contract.md"
@@ -711,7 +711,7 @@ def config_fixtures() -> list[dict[str, Any]]:
         "github_login": "octocat",
         "runtime": "auto",
         "verdict_policy": {"request_changes_for": ["MUST_FIX", "SHOULD_FIX"], "should_fix_threshold": 3},
-        "operation_repository_sets": {"update-pr-tracker": "tracked"},
+        "operation_repository_sets": {"update-pr-dashboard": "tracked"},
         "reviewer_effort": "high",
         "re_review_scope": {"full_share": 0.5, "full_lines": 1000},
         "model_names": {"arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/abc": "Opus 5.5"},

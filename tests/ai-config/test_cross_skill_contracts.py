@@ -622,7 +622,7 @@ class CrossSkillContractTests(GitTestCase):
     def test_the_tracker_and_the_contract_name_the_computed_states_the_configuration_refuses(self) -> None:
         # An override set to a computed state is refused, so the states a user is told to avoid must be those.
         for path in (
-            "skills/update-pr-tracker/SKILL.md",
+            "skills/update-pr-dashboard/SKILL.md",
             "docs/code-review-operations-contract.md",
             "docs/skills.md",
         ):
@@ -643,7 +643,7 @@ class CrossSkillContractTests(GitTestCase):
         def read(name: str) -> str:
             return (REPOSITORY_ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8-sig")
 
-        tracker = read("update-pr-tracker")
+        tracker = read("update-pr-dashboard")
         self.assertIn(
             "invoke `review-prs` once for every confirmed pull request, with `--pull <owner/repo#number>` for each "
             "`missing` and `--re-review <owner/repo#number>` for each `stale`",
@@ -903,7 +903,7 @@ class CrossSkillContractTests(GitTestCase):
             text = (REPOSITORY_ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8-sig")
             return allowed_tools(text), text
 
-        for name in ("review-prs", "update-pr-tracker"):
+        for name in ("review-prs", "update-pr-dashboard"):
             with self.subTest(asks=name):
                 self.assertIn("AskUserQuestion", read(name)[0])
         self.assertIn(
@@ -911,7 +911,7 @@ class CrossSkillContractTests(GitTestCase):
             "`auto`, `full`, and `incremental` in that order; never choose one yourself.",
             read("review-prs")[1],
         )
-        tracker = read("update-pr-tracker")[1]
+        tracker = read("update-pr-dashboard")[1]
         self.assertIn("Ask once for the run, never per pull request.", tracker)
         self.assertIn("plus `--scope <scope>` with the chosen scope when any is `stale`", tracker)
         pipeline = (REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py").read_text(encoding="utf-8")
@@ -942,7 +942,7 @@ class CrossSkillContractTests(GitTestCase):
         self.assertFalse((REPOSITORY_ROOT / "deploy-meta/re-review.json").exists())
         source = json.loads((REPOSITORY_ROOT / "source.json").read_text(encoding="utf-8"))
         self.assertEqual(
-            ["review-prs", "update-pr-tracker", "review-insights", "flag-review-finding", "review-document"],
+            ["review-prs", "update-pr-dashboard", "review-insights", "flag-review-finding", "review-document"],
             source["bundles"]["code-review-operations"]["members"],
         )
         review_prs = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")

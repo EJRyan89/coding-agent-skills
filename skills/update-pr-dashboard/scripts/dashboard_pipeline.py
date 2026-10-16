@@ -1,4 +1,4 @@
-"""Deterministic update-pr-tracker steps, so the orchestrating agent only asks the user about reviews.
+"""Deterministic update-pr-dashboard steps, so the orchestrating agent only asks the user about reviews.
 
     collect  read every open pull request and its reviewed head for the selected repositories into a tracker input file
              (by default in a new temporary directory)
@@ -48,7 +48,7 @@ from review_io import PersistenceError, atomic_write_json, map_in_order, read_js
 from review_operation import reviewed_head
 from review_records import RecordError, flagged_entries, ledger_history, ledger_id
 from typed_fields import FieldError
-from update_pr_tracker import (
+from update_pr_dashboard import (
     ComparisonFailures,
     Row,
     TrackerError,
@@ -293,7 +293,7 @@ def collect(
     services = services or Services()
     config = load_config(config_path)
     selected = resolve_repositories(
-        config, explicit=repositories, repository_set=repository_set, operation="update-pr-tracker"
+        config, explicit=repositories, repository_set=repository_set, operation="update-pr-dashboard"
     )
     login = configured_login(config, services.github)
     archive_root = Path(config["archive_root"])
@@ -498,7 +498,7 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
         if args.command == "override":
             return _override(args.sets, args.clears, args.config)
         if args.command == "collect":
-            output = working_path(args.output, "update-pr-tracker-input-", "input.json")
+            output = working_path(args.output, "update-pr-dashboard-input-", "input.json")
             results = collect(
                 output,
                 repositories=args.repositories,

@@ -5,7 +5,7 @@
         "code-review-operations": {
             "members": [
                 "review-prs",
-                "update-pr-tracker",
+                "update-pr-dashboard",
                 "review-insights",
                 "flag-review-finding",
                 "review-document"

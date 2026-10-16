@@ -20,9 +20,9 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("code-review-core")))
 
+import dashboard_pipeline as tp
 import review_archive
 import review_fixture
-import tracker_pipeline as tp
 from github_client import CommandResult
 from review_archive import commit_record
 from review_config import load_config, write_config
@@ -225,7 +225,7 @@ class TrackerPipelineFixture(unittest.TestCase):
                 "default_repository_set": "primary",
                 "repository_sets": {"primary": ["example/one"], "tracked": ["example/one", "example/two"]},
                 "repositories": {"example/one": generic, "example/two": generic},
-                "operation_repository_sets": {"update-pr-tracker": "tracked"},
+                "operation_repository_sets": {"update-pr-dashboard": "tracked"},
                 "archive_root": str(self.archive),
                 "local_mirror_root": None,
                 "summary_root": str(self.root / "summaries"),
@@ -341,7 +341,7 @@ class CollectTests(TrackerPipelineFixture):
         self.assertTrue(last.startswith("INPUT "), out)
         input_path = Path(last.removeprefix("INPUT "))
         self.assertEqual(temporary, input_path.parent.parent)
-        self.assertTrue(input_path.parent.name.startswith("update-pr-tracker-input-"), input_path)
+        self.assertTrue(input_path.parent.name.startswith("update-pr-dashboard-input-"), input_path)
         self.assertEqual(4, len(json.loads(input_path.read_text(encoding="utf-8"))))
         code, out, err = self.run_main("update", "--input", str(input_path))
         self.assertEqual(0, code, err)
@@ -351,10 +351,10 @@ class CollectTests(TrackerPipelineFixture):
         skills_root = Path(tp.__file__).resolve().parents[2]
         home = self.root / "home"
         targets = [
-            skills_root / "update-pr-tracker" / "input.json",  # beside SKILL.md, as the issue found it
+            skills_root / "update-pr-dashboard" / "input.json",  # beside SKILL.md, as the issue found it
             skills_root / "review-prs" / "input.json",
-            home / ".claude" / "skills" / "update-pr-tracker" / "input.json",
-            home / ".agents" / "skills" / "update-pr-tracker" / "input.json",
+            home / ".claude" / "skills" / "update-pr-dashboard" / "input.json",
+            home / ".agents" / "skills" / "update-pr-dashboard" / "input.json",
         ]
         with mock.patch.dict(os.environ, {"USERPROFILE": str(home), "HOME": str(home)}):
             for target in targets:
@@ -514,7 +514,7 @@ class ExitContractTests(TrackerPipelineFixture):
             [
                 sys.executable,
                 "-B",
-                str(SCRIPT_DIRECTORY / "tracker_pipeline.py"),
+                str(SCRIPT_DIRECTORY / "dashboard_pipeline.py"),
                 "--config",
                 str(self.config_path),
                 *arguments,
@@ -926,7 +926,8 @@ class UpdateTests(TrackerPipelineFixture):
         self.assertNotIn("example/one/pull/1)", self.dashboard.read_text(encoding="utf-8"))
 
     def test_update_names_each_review_that_went_stale_since_the_last_update(self) -> None:
-        # The last update showed #1 with no review, #2 reviewed at its head, and #3 already stale.
+        # The last update showed example/one#1 with no review, example/one#2 reviewed at its head, and example/one#3
+        # already stale.
         reviewed = pull_node(
             2,
             reviewRequests={"pageInfo": {"hasNextPage": False}, "nodes": []},
@@ -947,7 +948,8 @@ class UpdateTests(TrackerPipelineFixture):
         code, out, err = self.run_main("update", "--input", str(self.input))
         self.assertEqual(0, code, err)
         self.assertNotIn("STALE_SINCE_LAST_UPDATE", out)
-        # During the run #1 was reviewed at its head, which then moved, as did #2's; #3 stays stale as it was.
+        # During the run example/one#1 was reviewed at its head, which then moved, as did example/one#2's head;
+        # example/one#3 stays stale as it was.
         commit_record(self.archive, "example/one", 1, archived_record(OLD_HEAD, 1), expected_latest_version=None)
         moved = "e" * 40
         self.github.pages["example/one"] = [
@@ -1054,7 +1056,7 @@ class UpdateTests(TrackerPipelineFixture):
             [
                 sys.executable,
                 "-B",
-                str(SCRIPT_DIRECTORY / "tracker_pipeline.py"),
+                str(SCRIPT_DIRECTORY / "dashboard_pipeline.py"),
                 "--config",
                 str(self.config_path),
                 "update",

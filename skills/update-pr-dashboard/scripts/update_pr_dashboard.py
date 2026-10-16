@@ -620,8 +620,8 @@ def render(
         if not members:
             continue
         summary = (
-            f"Pinned by a status override in {config_link}. Set or clear one through update-pr-tracker, which runs "
-            "<code>tracker_pipeline.py override</code>; do not edit the file by hand."
+            f"Pinned by a status override in {config_link}. Set or clear one through update-pr-dashboard, which runs "
+            "<code>dashboard_pipeline.py override</code>; do not edit the file by hand."
             if pinned
             else SECTION_SUMMARIES[section]
         )
