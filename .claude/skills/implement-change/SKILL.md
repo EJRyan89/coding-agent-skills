@@ -4,7 +4,7 @@ description: >-
   Procedure for making a change in a repository that publishes an implementation profile
   (docs/implementing-changes.md), from the worktree and the plan to the pull request. Use it when asked to implement
   an issue or make a change in such a repository.
-allowed-tools: ["Bash(gh pr create *)", "PowerShell(gh pr create *)"]
+allowed-tools: ["Bash(python -B .claude/skills/implement-change/scripts/pull_request.py *)", "PowerShell(python -B .claude/skills/implement-change/scripts/pull_request.py *)"]
 ---
 
 # Implementing a change
@@ -62,19 +62,28 @@ Work test first: write the failing test, then make it pass. Update *Documentatio
 
 ## 8. Pull request
 
-Take these in order:
+`.claude/skills/implement-change/scripts/pull_request.py` does the deterministic part: it drafts the body from the repository's pull request template, checks the title, the body, and the branch, and opens the pull request with the title read from its file, so no title is pasted into a command. Its docstring lists every line it prints. Take these in order:
 
-1. Write the title, as *Pull requests* says, and the body, from the repository's pull request template, each to a file. Name each issue the change resolves in the body in its own `Closes #<number>` line, and state the upgrade note when the change owes one.
-2. Run *Validation*'s title and body checks on those two files.
-3. Bring the branch up to date with its base as *Pull requests* says; continuous integration validates the result, so it needs no local rerun.
-4. Push the branch under its own name, as *Pull requests* says, so opening the pull request does not stop to ask where to push it.
-5. Open the pull request:
+1. Draft the body, with one `--closes` for each issue the change resolves and none when it resolves none:
 
-```bash
-gh pr create --title '<title>' --body-file '<file>'
-```
+   ```bash
+   python -B .claude/skills/implement-change/scripts/pull_request.py draft --closes '<number>'
+   ```
 
-Single quotes keep the title as written, since neither shell expands anything between them, but a quote in the title would end them. In Bash, write each `'` in the title as `'\''`. In PowerShell, write it as `''`, and double each `‘`, `’`, `‚`, and `‛` too, since PowerShell ends a single-quoted string at any of them.
+   Write the title, as *Pull requests* says, on one line in the `TITLE` file it names, and fill the `BODY` file: replace each template comment and empty item with what it asks for, and state the upgrade note when the change owes one.
+2. Bring the branch up to date with its base as *Pull requests* says; continuous integration validates the result, so it needs no local rerun.
+3. Check both files and the branch against the base *Pull requests* names, such as `origin/main`, then run *Validation*'s title and body checks on the same files. Fix what each line names and rerun until it prints `READY`:
+
+   ```bash
+   python -B .claude/skills/implement-change/scripts/pull_request.py check --title-file "<title file>" --body-file "<body file>" --base "<base>"
+   ```
+
+4. Push the branch under its own name, as *Pull requests* says, so the pull request has a branch to open from.
+5. Open the pull request. `open` repeats the check, refuses a branch whose upstream does not hold `HEAD`, and prints `PULL_REQUEST <url>`:
+
+   ```bash
+   python -B .claude/skills/implement-change/scripts/pull_request.py open --title-file "<title file>" --body-file "<body file>" --base "<base>"
+   ```
 
 When a continuous integration leg fails, reproduce that leg as *Validation* says, fix it, and push. While the pull request is open, bring it current by merging its base, never by rebasing; the merge may be made on the remote, so pull the branch before the next push. If a push is rejected, fetch and inspect the remote branch before anything else. Do not merge.
 
