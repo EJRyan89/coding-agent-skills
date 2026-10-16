@@ -226,9 +226,10 @@ class InsightFixture(GitTestCase):
             env={**os.environ, "CODE_REVIEW_FLAGS": str(self.flags)},
         )
 
-    def report(self, *arguments: str, reviewers: bool = False) -> tuple[Path, list[str]]:
-        """The report's path and its RECOMMENDATION lines, with their REVIEWER lines when `reviewers` is set. The
-        synthesis lines are left out; the synthesis tests read them."""
+    def report(self, *arguments: str, reviewers: bool = False, decide: bool = False) -> tuple[Path, list[str]]:
+        """The report's path and its RECOMMENDATION lines, with their REVIEWER lines when `reviewers` is set and their
+        DECIDE and DECIDE_CUSTOM lines when `decide` is. The synthesis lines are left out; the synthesis tests read
+        them."""
         code, out, err = self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31", *arguments)
         self.assertEqual(0, code, err)
         lines = out.splitlines()
@@ -237,7 +238,9 @@ class InsightFixture(GitTestCase):
         return json_path, [
             line
             for line in lines[2:]
-            if not line.startswith("SYNTHESIS") and (reviewers or not line.startswith("REVIEWER "))
+            if not line.startswith("SYNTHESIS")
+            and (reviewers or not line.startswith("REVIEWER "))
+            and (decide or not line.startswith("DECIDE"))
         ]
 
 
@@ -627,8 +630,9 @@ class ReportTests(InsightFixture):
             [
                 "RECOMMENDATION REC-001 Naming → clarity ✓ findings=1 decision=deferred flags=none",
                 "REVIEWER REC-001 fixture model=unknown findings=1 flagged=0 addressed=0 still_present=0",
+                'DECIDE REC-001 --category "Naming → clarity ✓" --flags "none"',
             ],
-            result.stdout.decode("utf-8").splitlines()[-2:],
+            result.stdout.decode("utf-8").splitlines()[-3:],
         )
 
     def test_a_flag_follows_the_review_it_names_after_a_re_review_renumbers_findings(self) -> None:
@@ -1073,18 +1077,22 @@ class AnalyzerTests(InsightFixture):
         stored = {item["id"]: item for item in json.loads(json_path.read_text(encoding="utf-8"))["recommendations"]}
         self.assertEqual(category, stored[shown_category[1]]["category"], "the record's value is kept as it was")
 
-        # Each subject passed back as SKILL.md writes it, double-quoted, parses to the value printed.
-        subjects = [
-            (shown_category[1], f'--category "{shown_category[2]}"'),
-            (shown_analyzer[1], '--analyzer "{}" "{}" "{}"'.format(*shown_analyzer.groups()[1:])),
-        ]
-        for identifier, subject in subjects:
-            arguments = shlex.split(subject)
+        # Each block's DECIDE line names its subject as the block printed it, double-quoted, and its arguments, split
+        # as a shell splits them, record the decision.
+        _, printed = self.report(decide=True)
+        decide_lines = [line.removeprefix("DECIDE ") for line in printed if line.startswith("DECIDE ")]
+        self.assertEqual(
+            [
+                f'{shown_category[1]} --category "{shown_category[2]}" --flags "none"',
+                '{} --analyzer "{}" "{}" "{}" --flags "none"'.format(shown_analyzer[1], *shown_analyzer.groups()[1:]),
+            ],
+            decide_lines[1:],
+        )
+        for line in decide_lines[1:]:
+            arguments = shlex.split(line)
             self.assertFalse(any(review_synthesis.UNSAFE_ARGUMENT.search(value) for value in arguments), arguments)
-            code, out, err = self.run_main(
-                "decide", "--report", str(json_path), identifier, *arguments, "--flags", "none", "accepted"
-            )
-            self.assertEqual((0, [f"DECIDED {identifier} accepted"]), (code, out.splitlines()), err)
+            code, out, err = self.run_main("decide", "--report", str(json_path), *arguments, "accepted")
+            self.assertEqual((0, [f"DECIDED {arguments[0]} accepted"]), (code, out.splitlines()), err)
         # The record's value names the subject too, as it did before.
         code, out, err = self.run_main(
             "decide",
@@ -1098,6 +1106,31 @@ class AnalyzerTests(InsightFixture):
             "rejected",
         )
         self.assertEqual(0, code, err)
+
+    def test_each_decide_line_records_the_decision_for_a_subject_that_begins_with_a_dash(self) -> None:
+        # A category and an analyzer's tool and rule that begin with `-` would read as options; the command binds them.
+        self.commit("owner/repo", 7, [covered("available", "-Tool", "--rule"), "-Werror"])
+        flag = self.flag("-Werror", finding="F002")
+        json_path, lines = self.report(decide=True)
+        decide_lines = [line.removeprefix("DECIDE ") for line in lines if line.startswith("DECIDE ")]
+        self.assertEqual(
+            [
+                f'REC-001 --category "-Werror" --flags "{flag}"',
+                'REC-002 --category "Correctness" --flags "none"',
+                'REC-003 --analyzer "available" "-Tool" "--rule" --flags "none"',
+            ],
+            decide_lines,
+        )
+        decisions = ("accepted", "rejected", "deferred")
+        for line, decision in zip(decide_lines, decisions, strict=True):
+            identifier = line.split(" ", 1)[0]
+            result = self.execute("decide", "--report", str(json_path), *shlex.split(line), decision)
+            self.assertEqual(
+                (0, f"DECIDED {identifier} {decision}"), (result.returncode, result.stdout.splitlines()[-1])
+            )
+        report = json.loads(json_path.read_text(encoding="utf-8"))
+        self.assertEqual(list(decisions), [item["decision"] for item in report["recommendations"]])
+        self.assertEqual("resolved", {item["id"]: item["status"] for item in load_store(self.flags)["flags"]}[flag])
 
     def test_record_text_holding_a_line_break_prints_one_fact_per_line_and_one_markdown_line(self) -> None:
         # A reviewer ID, a finding's source in a record without reviewers, a category, and the path of a
@@ -1210,14 +1243,16 @@ class AnalyzerTests(InsightFixture):
         self.commit("owner/repo", 9, [covered("custom-candidate", "Roslyn", "missing-cancellation")])
         first = self.flag("rule", finding="F001")
         second = self.flag("rule", pull=9, finding="F001")
-        json_path, lines = self.report()
+        json_path, lines = self.report(decide=True)
         self.assertIn(f"CUSTOM_CANDIDATES rules=2 findings=3 decision=deferred flags={first},{second}", lines)
+        self.assertEqual(f'DECIDE_CUSTOM --flags "{first},{second}"', lines[-1])
         self.assertFailed(
             self.run_main("decide-custom", "--report", str(json_path), "--flags", first, "accepted"),
             f"now link flags {first},{second}, not {first}",
         )
+        printed = shlex.split(lines[-1].removeprefix("DECIDE_CUSTOM "))
         code, out, err = self.run_main(
-            "decide-custom", "--report", str(json_path), "--flags", f"{first},{second}", "accepted", "--note", "Batch"
+            "decide-custom", "--report", str(json_path), *printed, "accepted", "--note", "Batch"
         )
         self.assertEqual(
             (
@@ -1695,13 +1730,38 @@ class ScopeTests(InsightFixture):
 
     def test_a_directory_inside_a_checkout_names_its_repository_and_the_set_of_just_it(self) -> None:
         self.assertEqual(
-            ["CURRENT_REPOSITORY owner/repo set=primary", "DEFAULT_SET both owner/repo,owner/other"],
+            [
+                "CURRENT_REPOSITORY owner/repo set=primary",
+                'SCOPE_ARGUMENTS current --repository-set "primary"',
+                "DEFAULT_SET both owner/repo,owner/other",
+                'SCOPE_ARGUMENTS default --repository-set "both"',
+            ],
             self.scope(self.checkouts / "repo" / "src"),
         )
 
+    def test_each_choice_reports_with_the_reports_of_its_scope(self) -> None:
+        # A repository a set holds alone reports with that set, one no set holds alone apart from every set, and the
+        # default set where a report naming no scope does.
+        cases = {
+            "the set of just the repository": (self.checkouts / "repo", "current", ["--repository-set", "primary"]),
+            "a repository no set holds alone": (
+                self.checkouts / "repo" / "vendor" / "other",
+                "current",
+                ["--repository", "owner/other"],
+            ),
+            "the default set": (self.root / "elsewhere", "default", []),
+        }
+        for name, (cwd, choice, expected) in cases.items():
+            with self.subTest(name):
+                printed = [line for line in self.scope(cwd) if line.startswith(f"SCOPE_ARGUMENTS {choice} ")]
+                self.assertEqual(1, len(printed), printed)
+                arguments = shlex.split(printed[0].removeprefix(f"SCOPE_ARGUMENTS {choice} "))
+                self.assertEqual(self.report(*expected)[0], self.report(*arguments)[0])
+
     def test_the_innermost_of_nested_checkouts_wins_and_names_no_set_when_none_holds_it_alone(self) -> None:
         self.assertEqual(
-            "CURRENT_REPOSITORY owner/other set=none", self.scope(self.checkouts / "repo" / "vendor" / "other")[0]
+            ["CURRENT_REPOSITORY owner/other set=none", 'SCOPE_ARGUMENTS current --repository "owner/other"'],
+            self.scope(self.checkouts / "repo" / "vendor" / "other")[:2],
         )
 
     def test_a_worktree_names_the_repository_of_its_main_checkout(self) -> None:
@@ -1717,7 +1777,14 @@ class ScopeTests(InsightFixture):
             ("a sibling whose name starts the same", self.checkouts / "repository"),
         ):
             with self.subTest(name):
-                self.assertEqual("NO_CURRENT_REPOSITORY", self.scope(cwd)[0])
+                self.assertEqual(
+                    [
+                        "NO_CURRENT_REPOSITORY",
+                        "DEFAULT_SET both owner/repo,owner/other",
+                        'SCOPE_ARGUMENTS default --repository-set "both"',
+                    ],
+                    self.scope(cwd),
+                )
         self.assertEqual("NO_CURRENT_REPOSITORY", self.scope(self.root, common=self.root / "bare.git")[0])
 
 
