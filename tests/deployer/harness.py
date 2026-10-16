@@ -379,19 +379,22 @@ class DeployerTestCase(GitTestCase):
         self,
         *arguments: str,
         pattern: str,
+        code: int = 1,
         stdin: str = "",
         home: Path | None = None,
         changes_home: str = "",
         **options: Any,
     ) -> Result:
-        """Deploy, expecting a failure whose output matches pattern and, unless changes_home says why, no change.
+        """Deploy, expecting exit code, output matching pattern, and, unless changes_home says why, no change.
 
+        code is the exit the documentation states for the failure: 1 for a refusal or a failed run, the default, and 2
+        for a command line the deployer rejects, which a test passes, so a usage error is never held as merely nonzero.
         The deployer finds every reason to stop before it changes a file, so the home is compared, file by file and
         byte for byte, before and after a refusal. changes_home states why a failure is expected to change it: one that
         comes after the deployment began, such as a recovery, a lock reclaim, or a run that fails partway.
         """
         result = self.deploy(*arguments, stdin=stdin, home=home, changes_home=changes_home, **options)
-        self.assertNotEqual(0, result.code, result.output)
+        self.assertEqual(code, result.code, result.output)
         self.assertRegex(result.output, pattern)
         return result
 

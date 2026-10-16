@@ -80,7 +80,7 @@ This changes nothing on disk. It moves ownership in the manifest of every item b
 
 When both sources are still in use, do not migrate: the other source's next deployment would refuse in turn. Deploy the item from only one of them, by deselecting it in the other and redeploying that one.
 
-A name one source deploys as a skill and another as a shared asset cannot be migrated, because it would have to be both. Rename it in one source, or stop deploying it from the other.
+A name one source deploys as a skill and another as a shared asset cannot be migrated, because it would have to be both. `--migrate-from` moves the other items both sources deploy and leaves that name with the source that deployed it, and the next deployment refuses it as a collision, naming that source. Rename it in one source, or stop deploying it from the other.
 
 On Windows two names that differ only in case, such as `Guide.md` and `guide.md`, are one file, so they are one item. A deployment that would install a case variant of an item any source owns refuses as a collision, naming both. Rename it in one source, or stop deploying it from the other. A manifest written before this refusal can record both names, one under each source; the source that stops deploying its name then reports it under `DROP OWNERSHIP` and leaves the file to the other.
 
