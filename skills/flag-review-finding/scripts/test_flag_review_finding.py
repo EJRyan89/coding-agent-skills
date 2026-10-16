@@ -133,8 +133,9 @@ class FlagCliTests(unittest.TestCase):
     def store_cli(self, *arguments: str) -> subprocess.CompletedProcess[str]:
         return self.run_cli("--store", self.store, "--config", self.config, *arguments)
 
-    def flag_finding(self, version: str, finding: str) -> subprocess.CompletedProcess[str]:
-        """Add a flag on a finding of example/one#12."""
+    def flag_finding(self, version: str | None, finding: str) -> subprocess.CompletedProcess[str]:
+        """Add a flag on a finding of example/one#12, naming the review version unless it is None."""
+        named_version = () if version is None else ("--review-version", version)
         return self.store_cli(
             "add",
             "guideline",
@@ -143,11 +144,16 @@ class FlagCliTests(unittest.TestCase):
             "example/one",
             "--pull",
             "12",
-            "--review-version",
-            version,
+            *named_version,
             "--finding",
             finding,
         )
+
+    def stored_targets(self) -> list[tuple[Any, ...]]:
+        """The repository, pull request, review version, and finding of each stored flag."""
+        flags = json.loads(Path(self.store).read_text(encoding="utf-8"))["flags"]
+        fields = ("repository", "pull_number", "review_version", "finding_id")
+        return [tuple(flag[field] for field in fields) for flag in flags]
 
     def assert_result(self, result: subprocess.CompletedProcess[str], code: int, stdout: str) -> None:
         self.assertEqual((code, stdout, ""), (result.returncode, result.stdout, result.stderr))
@@ -414,10 +420,21 @@ class FlagCliTests(unittest.TestCase):
 
     def test_a_finding_that_is_not_a_finding_id_fails_before_the_archive_is_read(self) -> None:
         # No review is archived, so a refusal that names the form was decided before the archive was read.
-        for finding in ("v2 F002", "f2", "garbage", "F01", ""):
+        for version, finding in (
+            ("2", "f2"),
+            ("2", "garbage"),
+            ("2", "F01"),
+            ("2", ""),
+            (None, "v2F002"),
+            (None, "v2:F002"),
+            (None, "v0 F002"),
+            (None, "v2 F02"),
+            (None, " v2 F002"),
+            (None, "v2 F002 F003"),
+        ):
             with self.subTest(finding=finding):
                 self.assert_result(
-                    self.flag_finding("2", finding),
+                    self.flag_finding(version, finding),
                     1,
                     f"FAILED Finding ID {finding!r} is not a finding ID such as F001; a report label such as "
                     "v2 F003 names review version 2 and finding F003\n",
@@ -435,6 +452,30 @@ class FlagCliTests(unittest.TestCase):
                 self.assert_result(self.flag_finding(version, finding), 1, f"FAILED {reason}\n")
         self.assertFalse(Path(self.store).exists())
 
+    def test_a_report_label_the_archive_lacks_fails_as_its_parts_do(self) -> None:
+        review_fixture.commit_fixture(self.archive)
+        for label, reason in (
+            ("v2 F001", "Review v2 of example/one#12 has no finding F001"),
+            ("v3 F009", "Review v3 of example/one#12 has no finding F009"),
+            ("v4 F001", "example/one#12 has no review v4 in the archive"),
+        ):
+            with self.subTest(label=label):
+                self.assert_result(self.flag_finding(None, label), 1, f"FAILED {reason}\n")
+        self.assertFalse(Path(self.store).exists())
+
+    def test_a_report_label_beside_a_review_version_it_does_not_name_fails_before_the_archive_is_read(self) -> None:
+        self.assert_result(
+            self.flag_finding("2", "v3 F002"), 1, "FAILED Report label 'v3 F002' names review version 3, not 2\n"
+        )
+        self.assertFalse(Path(self.store).exists())
+
+    def test_a_report_label_names_what_its_split_form_names(self) -> None:
+        review_fixture.commit_fixture(self.archive)
+        self.assert_result(self.flag_finding(None, "v3 F002"), 0, "ADDED RF-000001\n")
+        self.assert_result(self.flag_finding("3", "v3 F002"), 0, "ADDED RF-000002\n")
+        self.assert_result(self.flag_finding("3", "F002"), 0, "ADDED RF-000003\n")
+        self.assertEqual([("example/one", 12, 3, "F002")] * 3, self.stored_targets())
+
     def test_a_flag_on_a_finding_of_an_unreviewed_pull_request_fails(self) -> None:
         self.assert_result(self.flag_finding("1", "F001"), 1, "FAILED example/one#12 has no review v1 in the archive\n")
 
@@ -450,6 +491,15 @@ class FlagCliTests(unittest.TestCase):
             "COUNT 2\n",
         )
         self.assert_result(self.flag_finding("1", "F001"), 0, "ADDED RF-000001\n")
+
+    def test_add_takes_each_finding_under_the_label_findings_prints(self) -> None:
+        review_fixture.commit_fixture(self.archive)
+        printed = self.store_cli("findings", "--repository", "example/one", "--pull", "12").stdout.splitlines()
+        labels = [" ".join(line.split()[1:3]) for line in printed if line.startswith("FINDING ")]
+        self.assertEqual(["v1 F001", "v3 F002"], labels)
+        for number, label in enumerate(labels, 1):
+            self.assert_result(self.flag_finding(None, label), 0, f"ADDED RF-{number:06d}\n")
+        self.assertEqual([("example/one", 12, 1, "F001"), ("example/one", 12, 3, "F002")], self.stored_targets())
 
     def test_findings_of_an_unreviewed_pull_request_fail(self) -> None:
         self.assert_result(
@@ -654,7 +704,7 @@ class FlagCliTests(unittest.TestCase):
 
     def test_values_that_begin_with_a_dash_are_taken_in_the_skill_command_forms(self) -> None:
         review_fixture.commit_fixture(self.archive)
-        target = {"<owner/repo>": "example/one", "<number>": "12", "<version>": "3", "<finding id>": "F002"}
+        target = {"<owner/repo>": "example/one", "<number>": "12", "<label>": "v3 F002"}
         add = self.skill_command("add", {**target, "<category>": "-noise", "<rationale>": "--verbose"})
         self.assert_result(self.store_cli(*add), 0, "ADDED RF-000001\n")
         # Without a finding, the options before -- are left out.

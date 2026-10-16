@@ -1,7 +1,7 @@
 ---
 name: flag-review-finding
 description: "Add, list, edit, or resolve a structured code-review improvement flag. Use it when the user says a review finding was wrong, noisy, or missed something and wants that recorded."
-argument-hint: "add CATEGORY BODY [--repository owner/repo --pull N [--review-version V --finding ID]] | list | findings --repository owner/repo --pull N | edit ID [--category CATEGORY] [--body BODY] | resolve ID RESOLUTION"
+argument-hint: "add CATEGORY BODY [--repository owner/repo --pull N [--finding LABEL]] | list | findings --repository owner/repo --pull N | edit ID [--category CATEGORY] [--body BODY] | resolve ID RESOLUTION"
 allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/flag_review_finding.py\" *)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/flag_review_finding.py\" *)"]
 ---
 
@@ -9,16 +9,16 @@ allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/flag_review_fi
 
 Use the configured code-review flag store through the commands below; do not edit the store, a Markdown ledger, or a review report. Each command prints one fact per line. A failure prints `FAILED <reason>` and changes nothing; show the reason. Keep each command's form: `--` before the free-text values and `=` joining `--category` and `--body` to theirs let a value begin with `-`.
 
-Add a flag with a category and rationale. Associate it with a pull request and finding when it concerns one, using the full `owner/repo` identity and the finding's label in the review report, such as `v2 F002`: review version `2` and finding `F002`. When neither the user nor the conversation gives the label, list the pull request's open findings and ask the user which one they mean:
+Add a flag with a category and rationale. Associate it with a pull request and finding when it concerns one, using the full `owner/repo` identity and the finding's label, such as `v2 F002`, as the review report shows it. When neither the user nor the conversation gives the label, list the pull request's open findings and ask the user which one they mean:
 
 ```bash
 {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/flag_review_finding.py" findings --repository "<owner/repo>" --pull "<number>"
 ```
 
-It prints `FINDING v<version> <finding> <severity> <path>:<line> <headline>` per open or unverified finding, under the label its report shows, then `COUNT <n>`. Then add the flag; it refuses a finding that review does not have:
+It prints `FINDING v<version> <finding> <severity> <path>:<line> <headline>` per open or unverified finding, under the label its report shows, then `COUNT <n>`. Then add the flag with the label as written; it refuses a finding that review does not have:
 
 ```bash
-{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/flag_review_finding.py" add --repository "<owner/repo>" --pull "<number>" --review-version "<version>" --finding "<finding id>" -- "<category>" "<rationale>"
+{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/flag_review_finding.py" add --repository "<owner/repo>" --pull "<number>" --finding "<label>" -- "<category>" "<rationale>"
 ```
 
 Without a finding, leave out the options before `--`. It prints `ADDED <flag id>`. `review-insights` links a flag that names a finding to the recommendations covering it, and its synthesis can name any open flag, one that names no finding included; accepting a recommendation resolves the flags it links.
