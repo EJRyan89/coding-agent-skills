@@ -269,6 +269,23 @@ class CrossSkillContractTests(GitTestCase):
             with self.subTest(path=path.name):
                 self.assertNotIn("runtime_canary", path.read_text(encoding="utf-8"))
 
+    def test_the_skill_evaluation_is_a_manual_gate_change_skill_names_and_validation_never_runs(self) -> None:
+        change_skill = (REPOSITORY_ROOT / ".claude/skills/change-skill/SKILL.md").read_text(encoding="utf-8-sig")
+        self.assertIn("also run the `evaluate-skill` repository skill", change_skill)
+        self.assertIn("`docs/skill-evaluations.md`", change_skill)
+        self.assertIn("python tools/runtime_prompts.py --write", change_skill)
+        self.assertIn("`runtime_support`", change_skill)
+        self.assertIn("arguments or status lines", change_skill)
+        self.assertTrue((REPOSITORY_ROOT / "tools/skill_evals.py").is_file())
+        # Each run calls a model, so neither the runner nor a policy check may start it.
+        runner = [
+            REPOSITORY_ROOT / "tests/run_validation.py",
+            *sorted((REPOSITORY_ROOT / "tests/validation").glob("*.py")),
+        ]
+        for path in runner:
+            with self.subTest(path=path.name):
+                self.assertNotIn("skill_evals", path.read_text(encoding="utf-8"))
+
     def test_the_runtime_support_matrix_agrees_with_the_review_pipeline_on_agent_delegation(self) -> None:
         # The matrix says which runtimes start subagents; the review pipeline decides how reviewers run from its own
         # table. When one changes, review-prs's declared support has to change with it.
