@@ -15,7 +15,13 @@ It is a manual gate, never part of `tests/run_validation.py`: each run calls a m
 
 ## 1. Choose the skills
 
-Name the shipped skills the change touched: a changed `SKILL.md`, script, frontmatter, `deploy-meta` entry, or `agent_deps`. For a change to how adapters are rendered (`deployer/render.py`), name one model-invocable skill and one user-only skill, such as `repo-cleanup`; Copilot reports the user-only one as `UNSUPPORTED` without a run. The fixture always runs first. Never name every skill: the cost is one model run per runtime per skill. For a pull request, if you would name more than three, ask the user which to keep. For a release, name every shipped skill changed since the last tag ("Before tagging" in `docs/releasing.md`) without asking, at most three to a run. A hidden dependency, such as `code-review-core`, has no adapter and no run of its own: the release covers it through the skills that declare it in `skill_deps`, whose runs may start its scripts, so name those. Naming it costs no model run and prints only its discovery lines and, per runtime, its `NOT_ATTEMPTED` and `MATRIX` lines.
+The script names the shipped skills a change reaches and starts nothing. For a pull request:
+
+```bash
+python -B tools/runtime_canary.py --changed-since origin/main
+```
+
+For a release, give `--changed-since` no commit, so it reads from the latest tag ("Before tagging" in `docs/releasing.md`). Each `CHANGED <skill> "<why>"` line names a skill and the first changed path that reaches it, through a hidden dependency, a shared asset, an agent, or the adapter renderer where it says so; its docstring states the rules. `NOTHING_CHANGED` means the change needs no canary. The fixture always runs first. For a pull request, if more than three skills are named, ask the user which to keep: the cost is one model run per runtime per skill. For a release, run every named skill without asking, at most three to a run. Naming a hidden dependency, such as `code-review-core`, itself costs no model run and prints only its discovery lines and, per runtime, its `NOT_ATTEMPTED` and `MATRIX` lines.
 
 ## 2. Run it
 
@@ -25,7 +31,7 @@ From the worktree, with the chosen skills:
 python -B tools/runtime_canary.py "<skill>" "<skill>"
 ```
 
-Add `--runtime <name>` (repeatable) to check fewer runtimes, `--discovery-only` to list skills without running any model, or `--codex-sandbox unelevated` to rerun Codex in the other Windows sandbox mode after an elevated run was `BLOCKED`. The first line is `HOME "<dir>"`.
+Add `--runtime <name>` (repeatable) to check fewer runtimes, `--discovery-only` to list skills without running any model, `--codex-sandbox unelevated` to rerun Codex in the other Windows sandbox mode after an elevated run was `BLOCKED`, or `--keep-home` to keep the home's transcripts after a run that passed. The first line is `HOME "<dir>"`.
 
 ## 3. Say what each line means
 
@@ -56,7 +62,9 @@ One success is evidence; one failure is a question. Explain each failure from it
 
 ## 4. Record the result
 
-Copy the `RUNTIME`, `MATRIX`, `DISCOVERED`, `UNDISCOVERED`, `DISCOVERY_FAILED`, `DISCOVERY_NOT_ATTEMPTED`, `SHADOWED`, `PROJECT_COPY`, `DISABLED`, `SUPPLIED`, `SKIPPED`, and `NOTHING_CHECKED` lines into the pull request's Validation section, with each runtime's version and your reading of any failure. Then delete the `HOME` directory, unless the user wants its transcripts. The script deletes only a home it made, one holding the `.runtime-canary/home.json` marker each run writes naming it, and prints `REMOVED`, or `FAILED "<dir> holds no .runtime-canary/home.json naming it, ..."` for any other folder, which it keeps:
+The run ends with a record block, `RECORD_BEGIN` to `RECORD_END`: each runtime's `VERSION`, then the lines a reader of the pull request needs, with the throwaway home written as `<temp>`, this checkout as `<source>`, and the profile folder as `<home>`. Paste it into the pull request's Validation section as printed, and add your reading of each failure below it.
+
+After a run that passed, the script removes the home and prints `REMOVED`. After one that failed, or with `--keep-home`, it prints `HOME_KEPT` and leaves the home and its transcripts. Once they are read, delete it, unless the user wants them. The script deletes only a home it made, one holding the `.runtime-canary/home.json` marker each run writes naming it, and prints `REMOVED`, or `FAILED "<dir> holds no .runtime-canary/home.json naming it, ..."` for any other folder, which it keeps:
 
 ```bash
 python -B tools/runtime_canary.py --remove-home "<dir>"
