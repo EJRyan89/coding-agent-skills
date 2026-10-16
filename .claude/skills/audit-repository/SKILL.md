@@ -50,7 +50,7 @@ A reader's finding is a lead, not a verdict. Open both sides it quotes and keep 
 
 ## 6. Record
 
-The filed issues are the audit's record, so no milestone gets a line. After a rotation audit, record its area from a worktree, never the hub, with the tag just released, and merge the change through a pull request:
+The filed issues are the audit's record, so no milestone gets a line. After a rotation audit, record its area from a worktree, never the hub, with the tag just released, and merge the change through a pull request whose body names the areas both audits read, as `docs/releasing.md` requires: the release audit's areas, its `BRIEF` lines from the earlier run, and the rotation area, the `NEXT` line of this one. The milestone does not record them, so the body is their only record:
 
 ```bash
 python -B .claude/skills/audit-repository/scripts/audit_repository.py rotation --record '<tag>'
