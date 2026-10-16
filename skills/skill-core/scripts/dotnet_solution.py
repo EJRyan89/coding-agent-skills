@@ -20,10 +20,15 @@ import re
 import stat
 from pathlib import Path
 
+from folder_walk import SKIPPED_FOLDERS
 from xml_reader import read_xml
 
 SOLUTION_PROJECT = re.compile(r'^\s*Project\("[^"]*"\)\s*=\s*"[^"]*"\s*,\s*"([^"]+)"')
 SOLUTION_SUFFIXES = (".sln", ".slnx")
+# The folders a .NET skill's search of a repository skips: the folder walk's own, and the `packages` folder a
+# packages.config restore fills beside the solution with each package's files, sample solutions and projects included.
+# Only the .NET skills skip it, since a JavaScript workspace keeps its own packages, instruction files and all, there.
+SEARCH_SKIPPED_FOLDERS = SKIPPED_FOLDERS | {"packages"}
 # The forms of a path that name a device rather than a file, as a path written with `/` for `\` starts.
 DEVICE_PREFIXES = ("//?/", "//./")
 # The most bytes a reader reads of one file; a larger file is refused unread, so no file can exhaust the memory a run

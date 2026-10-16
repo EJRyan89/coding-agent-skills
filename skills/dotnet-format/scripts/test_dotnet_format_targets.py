@@ -68,6 +68,24 @@ def slnx(*projects: str, folder: str | None = None) -> str:
     return f"<Solution>\n{entries}</Solution>\n"
 
 
+def link_folder(target: Path, link: Path) -> None:
+    """A real link to a folder: a junction on Windows, which needs no privilege, else a symbolic link."""
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+def remove_link(link: Path) -> None:
+    """Remove a link `link_folder` made, never what it points at."""
+    if sys.platform == "win32":
+        link.rmdir()
+    else:
+        link.unlink()
+
+
 class Repository:
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -665,7 +683,41 @@ class ResolveTests(GitTestCase):
             return real(path)
 
         with mock.patch.object(os, "scandir", side_effect=scandir):
-            self.assertEqual("[Errno 13] Permission denied: 'Locked'", self.failed())
+            self.assertEqual(f"{locked}: the folder cannot be listed: Permission denied", self.failed())
+
+    def test_dependency_build_and_other_checkouts_folders_are_not_searched(self) -> None:
+        # A package restored into packages/ can ship a sample solution, and Visual Studio's .vs/, build output, and
+        # a nested clone or worktree are not the repository's; a malformed solution in any of them is never read.
+        repo = self.repository
+        repo.write("src/App/App.csproj", SDK_PROJECT)
+        repo.write("src/App/A.cs")
+        repo.write("src/App.slnx", slnx("App/App.csproj"))
+        repo.commit("code")
+        for folder in ("packages/Some.Pkg/1.0.0/sample", ".vs/App", "src/App/bin/Debug", ".claude/worktrees/task"):
+            repo.write(f"{folder}/Broken.slnx", "<Solution")
+        repo.write(".claude/worktrees/task/.git", "gitdir: ../../../.git/worktrees/task\n")
+        self.assertEqual([["src/App.slnx", "1"]], self.values(self.resolve(), "SOLUTION"))
+        self.assertEqual([repo.root / "src/App.slnx"], targets.find_solutions(repo.root))
+
+    def test_a_linked_folder_is_not_entered_even_when_its_target_is_gone_or_holds_the_repository(self) -> None:
+        repo = self.repository
+        repo.write("Lib/Lib.csproj", SDK_PROJECT)
+        repo.write("Lib/Code.cs")
+        repo.write("Lib.sln", solution("Lib\\Lib.csproj"))
+        repo.commit("code")
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        elsewhere = Path(outside.name, "elsewhere")
+        elsewhere.mkdir()
+        (elsewhere / "Other.sln").write_bytes(b"not a solution")
+        gone = Path(outside.name, "gone")
+        gone.mkdir()
+        for name, target in {"Loop": repo.root, "Elsewhere": elsewhere, "Stale": gone}.items():
+            link_folder(target, repo.root / name)
+            self.addCleanup(remove_link, repo.root / name)
+        gone.rmdir()
+        self.assertEqual([["Lib.sln", "1"]], self.values(self.resolve(), "SOLUTION"))
+        self.assertEqual([repo.root / "Lib.sln"], targets.find_solutions(repo.root))
 
     def test_an_unwritable_temporary_directory_fails(self) -> None:
         self.repository.write("Lib/Lib.csproj", SDK_PROJECT)

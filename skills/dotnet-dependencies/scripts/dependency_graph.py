@@ -19,7 +19,8 @@ forward slashes:
     UNREADABLE    <file> <reason>                            a file the readers refused, a path a file names
                   outside the examined tree, a condition, name, metadata value, or AssemblyName they cannot
                   settle, an Import not read, an item inside a Target, or a folder the search for projects does
-                  not enter, a junction, a symbolic link, or one it cannot list; its facts are missing
+                  not enter, a junction, a symbolic link, a nested checkout, or one it cannot list; its facts are
+                  missing
     SDK_FAILED    <project> <name> <reason>                  `dotnet nuget why` failed; the graph walk answered
     PATH          <project> <frameworks> <name> <sdk|graph> <hop> > <hop> ...    one chain, each hop
                   `name (vversion)`, `name (project)`, `name (vversion, assembly)`, `name (assembly)` for an
@@ -74,7 +75,6 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
-import stat
 import sys
 import tempfile
 from collections import deque
@@ -87,8 +87,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from console import run_main
-from dotnet_solution import is_solution, lexical_absolute, project_path, refusal, same_path
+from dotnet_solution import SEARCH_SKIPPED_FOLDERS, is_solution, lexical_absolute, project_path, refusal, same_path
 from flat_text import flat_text
+from folder_walk import walk_files
 from msbuild_evaluation import Build, ProjectFile, Sources, Unsettled, read_project
 from msbuild_reader import (
     ASSETS_FILE,
@@ -112,7 +113,6 @@ from sdk_why import DEFAULT_TIMEOUT_SECONDS, SdkPath, Services, run_why
 from skill_roots import skills_directory_holding
 
 PROJECT_SUFFIX = ".csproj"
-IGNORED_DIRECTORIES = frozenset({".git", "bin", "obj", "node_modules", "packages", ".vs"})
 PATH_LIMIT = 200
 FINDING_KEYS = ("CONFLICT", "REDIRECT_STALE", "UNREADABLE")
 NO_FRAMEWORK = "-"
@@ -229,46 +229,14 @@ class Emitter:
         self.emit("\t".join([key, *(flat_text(str(value)) for value in fields)]))
 
 
-def is_folder_link(entry: os.DirEntry[str]) -> bool:
-    """Whether a listed entry is a Windows junction or a symbolic link to a folder, judged from the entry's own
-    metadata, so a junction whose target is gone counts too. Only Windows has the tag and the field, so elsewhere no
-    entry is a junction."""
-    tag = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", None)
-    junction = tag is not None and getattr(entry.stat(follow_symlinks=False), "st_reparse_tag", None) == tag
-    return junction or (entry.is_symlink() and entry.is_dir())
-
-
 def find_projects(directory: Path, unreadable: list[tuple[Path, str]]) -> list[Path]:
-    """Every .csproj under the directory, skipping build, dependency, and version-control directories, each folder's
-    projects before its subfolders'. A folder that is a junction or a symbolic link is reported and never entered,
-    since it may lead outside the directory or back into it, and so is a folder that cannot be listed; each costs only
-    the projects it holds."""
-    try:
-        with os.scandir(directory) as listing:
-            entries = sorted(listing, key=lambda entry: entry.name)
-    except OSError as error:
-        unreadable.append((directory, f"the folder cannot be listed: {error.strerror or error}"))
-        return []
-    found: list[Path] = []
-    folders: list[Path] = []
-    for entry in entries:
-        path = Path(entry.path)
-        try:
-            if entry.name.casefold() in IGNORED_DIRECTORIES:
-                continue
-            if is_folder_link(entry):
-                unreadable.append(
-                    (path, "the folder is a junction or a symbolic link, which the search does not follow")
-                )
-            elif entry.is_dir(follow_symlinks=False):
-                folders.append(path)
-            elif entry.name.casefold().endswith(PROJECT_SUFFIX):
-                found.append(path)
-        except OSError as error:
-            unreadable.append((path, f"the entry cannot be examined: {error.strerror or error}"))
-    for folder in folders:
-        found += find_projects(folder, unreadable)
-    return found
+    """Every .csproj under the directory, in skill-core's folder walk's order, each folder's projects before its
+    subfolders', outside the folders the .NET search skips (`dotnet_solution.SEARCH_SKIPPED_FOLDERS`). A folder the
+    walk does not enter, a junction or a symbolic link, which may lead outside the directory or back into it, a nested
+    checkout, or one that cannot be listed, is reported, and costs only the projects it holds."""
+    walk = walk_files(directory, lambda name: name.casefold().endswith(PROJECT_SUFFIX), skipped=SEARCH_SKIPPED_FOLDERS)
+    unreadable += [(entry.path, entry.reason) for entry in walk.not_entered]
+    return walk.files
 
 
 def resolve_root(path: Path, graph_unreadable: list[tuple[Path, str]]) -> tuple[Path, Path, list[Path]]:
