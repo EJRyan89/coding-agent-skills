@@ -99,6 +99,20 @@ git worktree remove '.claude/worktrees/<kind>-<name>'
 git branch -D '<kind>/<name>'
 ```
 
+## An orchestrator and a shepherd
+
+When many tasks run at once, one session orchestrates: it plans the work, starts a session per task in a worktree of
+its own, and starts the next task as each pull request merges. A second session, in the hub, shepherds the pull
+requests on a repeating prompt that runs the
+[`shepherd-pull-requests`](../.claude/skills/shepherd-pull-requests/SKILL.md) repository skill. Its tested script does
+one tick: it fast-forwards the hub, arms squash auto-merge, and merges `main` into the oldest behind branches whose
+check is green or pending, a few per tick and never by a rebase, holding those updates while a pull request that
+changes the validation policies or the runner's selection is open. It checks that a red run tested the pull request's
+current head before judging it, reruns a failure of the runner or a service once per head, and names every other
+failure for the session that owns the branch. Each worktree whose pull request merged is named for `repo-cleanup`,
+run from outside it. A script rather than a prompt repeats these steps, so neither session spends its context on
+them, and the orchestrator keeps its own for the decisions.
+
 ## What is shared even across worktrees
 
 Worktrees isolate files. These are still shared:
