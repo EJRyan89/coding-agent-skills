@@ -40,16 +40,23 @@ Validation is continuous integration's job: the `Validation` check runs `python 
 across its Windows legs and whole on Linux, in full on every push and on every pull request that is not
 documentation-only. A documentation-only pull request runs the subset the runner selects (the policy checks, the suites
 that name a changed file, and, when a changed file is Markdown, the Markdown fence checks), and a pull request merges
-only when the check passes on both platforms. Locally, run what the change touches:
+only when the check passes on both platforms. Locally, run what the change reaches:
 
-- `python -m ruff format --check` and `python -m ruff check` on the changed Python paths;
-- `python -B tests/run_validation.py -k <pattern>` for the policies and suites that name the touched files, with
-  `--pr-body <file>` and `--pr-title <file>` once the body and the title are written;
-- for a change to a shipped skill's scripts, also the deployer's rendering tests, `-k rendering_locking`;
-- for a change to a tool floor, also the suites that read the floors, `-k toolchain -k upgrade_notes -k test_check`.
+```powershell
+python -B tests/run_validation.py --changed
+```
 
-Run the suite in full locally only when the change's reach warrants it, such as a validation policy, the runner, or a
-shared module whose callers `-k` does not capture. When a leg fails in continuous integration, reproduce that leg with
+From the files changed since `origin/main`, committed, uncommitted, or untracked, it selects the policy checks, the
+static checks that read the kinds of file changed (for Python, the format, lint, and type checks), and the suites the
+change reaches: a changed suite, a suite that imports a changed module directly or through others, one that names a
+changed file or such an importer, one in the `scripts/` of the skill a changed file sits in, and the suites
+`CHANGE_REACHES` in `tests/validation/job_selection.py` adds, such as the deployer's rendering suite for a change under
+`skills/` and the suites that read the floors for a change to a tool floor. Add `--pr-body <file>` and
+`--pr-title <file>` once the body and the title are written. `-k <pattern>` instead runs only the policies and suites
+whose name or path matches, as when rerunning one suite, and a pattern that matches nothing is refused.
+
+Run the suite in full locally only when the change's reach warrants it, such as a validation policy or the runner.
+When a leg fails in continuous integration, reproduce that leg with
 `python -B tests/run_validation.py --shard <index>/<count>`, adding `--full` for a push, schedule, or dispatch leg,
 which the workflow runs with it: the runner deals the legs after it selects, so without `--full` a branch whose changes
 are all documentation deals a different leg. A pull-request leg needs no `--full`. Bringing an open pull request current

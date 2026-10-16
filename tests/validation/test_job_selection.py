@@ -17,10 +17,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 from git_test_base import GitTestCase
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job
 from job_selection import (
+    FORMAT_JOB,
     JOB_SECONDS,
+    LINT_JOB,
     MARKDOWN_SHELL_JOB,
     POWERSHELL_JOB,
+    SHELL_JOB,
+    change_reach_problems,
+    changed_jobs,
     changed_paths,
+    changed_static_jobs,
+    changed_suites,
     documentation_jobs,
     job_seconds,
     leg_jobs,
@@ -280,6 +287,137 @@ class JobSelectionFixtures(GitTestCase):
             labels(["docs/releasing.md", ".github/ISSUE_TEMPLATE/config.yml"], [naming]),
         )
         self.assertEqual([POWERSHELL_JOB, MARKDOWN_SHELL_JOB], labels(["docs/GUIDE.MD"], [naming]))
+
+
+# A repository tree for ChangedSelectionFixtures, by path.
+CHANGED_TREE = {
+    "skills/a/SKILL.md": "# a\n",
+    "skills/a/scripts/tool.py": "import helper\n",
+    "skills/a/scripts/helper.py": "VALUE = 1\n",
+    "skills/a/scripts/test_tool.sh": "bash tool.sh\n",
+    "skills/b/SKILL.md": "# b\n",
+    "skills/b/scripts/test_b.py": "from importlib import import_module\nimport_module('tool')\n",
+    "tests/deployer/test_rendering_locking.py": "pass\n",
+    "tests/deployer/test_plan.py": "pass\n",
+    "tests/validation/test_toolchain.py": "pass\n",
+    "tests/validation/test_upgrade_notes.py": "pass\n",
+    "tests/deployer/test_check.py": "pass\n",
+    "tests/tools/test_names_the_skill_file.py": "open('skills/a/SKILL.md')\n",
+    "tests/tools/test_names_any_skill_file.py": "open('SKILL.md')\n",
+    "tests/tools/test_unrelated.py": "import os\n",
+    "tests/fixtures/repo/test_fixture.py": "import helper\n",
+}
+
+
+class ChangedSelectionFixtures(GitTestCase):
+    """What --changed selects: the static checks a changed file's kind reaches, and the suites that name, import, or
+    share a skill with a changed file, with those CHANGE_REACHES adds."""
+
+    def selected(self, paths: list[str]) -> list[str]:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repository with spaces"
+            for name, text in CHANGED_TREE.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(text, encoding="utf-8")
+            suites = [
+                root / name
+                for name in sorted(CHANGED_TREE)
+                if "/test_" in name and not name.startswith("tests/fixtures/")
+            ]
+            return [
+                suite.relative_to(root).as_posix() for suite in changed_suites(root, paths, suites, list(CHANGED_TREE))
+            ]
+
+    def test_a_skill_script_reaches_its_importers_its_skill_and_the_rendering_suite(self) -> None:
+        # helper.py is imported by tool.py, which test_b.py imports by import_module; test_tool.sh shares their skill.
+        # The fixture tree's suite is a review input, never run.
+        self.assertEqual(
+            [
+                "skills/a/scripts/test_tool.sh",
+                "skills/b/scripts/test_b.py",
+                "tests/deployer/test_rendering_locking.py",
+            ],
+            self.selected(["skills/a/scripts/helper.py"]),
+        )
+
+    def test_a_shared_file_name_matches_by_path_alone(self) -> None:
+        # Two files are named SKILL.md, so a suite that names only the bare name does not run for either.
+        self.assertEqual(
+            [
+                "skills/a/scripts/test_tool.sh",
+                "tests/deployer/test_rendering_locking.py",
+                "tests/tools/test_names_the_skill_file.py",
+            ],
+            self.selected(["skills/a/SKILL.md"]),
+        )
+
+    def test_a_changed_suite_runs_and_a_floor_reaches_the_floor_suites(self) -> None:
+        self.assertEqual(["tests/tools/test_unrelated.py"], self.selected(["tests/tools/test_unrelated.py"]))
+        self.assertEqual(
+            [
+                "tests/deployer/test_check.py",
+                "tests/validation/test_toolchain.py",
+                "tests/validation/test_upgrade_notes.py",
+            ],
+            self.selected(["requirements-dev.txt"]),
+        )
+        self.assertEqual(
+            ["tests/deployer/test_check.py", "tests/deployer/test_plan.py", "tests/deployer/test_rendering_locking.py"],
+            self.selected(["deploy.py"]),
+        )
+        self.assertEqual([], self.selected(["LICENSE"]))
+
+    def test_the_static_checks_follow_the_kind_of_file_changed(self) -> None:
+        jobs = [
+            fixture_job(label, UNSPLIT_SUITE_WEIGHT)
+            for label in (SHELL_JOB, POWERSHELL_JOB, MARKDOWN_SHELL_JOB, FORMAT_JOB, LINT_JOB, "type a", "type b")
+        ]
+
+        def labels(paths: list[str]) -> list[str]:
+            return [job.label for job in changed_static_jobs(paths, jobs, {"type a", "type b"})]
+
+        self.assertEqual([], labels(["LICENSE", "source.json"]))
+        self.assertEqual([POWERSHELL_JOB, MARKDOWN_SHELL_JOB], labels(["docs/GUIDE.MD"]))
+        self.assertEqual([SHELL_JOB, POWERSHELL_JOB], labels(["skills/a/scripts/run.sh", "tools/x.ps1"]))
+        self.assertEqual([FORMAT_JOB, LINT_JOB, "type a", "type b"], labels(["skills/a/scripts/tool.py"]))
+        self.assertEqual([FORMAT_JOB, LINT_JOB, "type a", "type b"], labels(["pyproject.toml"]))
+
+    def test_a_reach_that_matches_nothing_is_reported(self) -> None:
+        files = [
+            "skills/a/scripts/tool.py",
+            "deployer/tools.py",
+            "deploy.py",
+            "skills/skill-core/scripts/pdf_tool.py",
+            "tests/validation/toolchain.py",
+            "requirements-dev.txt",
+        ]
+        suites = [
+            "tests/deployer/test_rendering_locking.py",
+            "tests/deployer/test_check.py",
+            "tests/validation/test_toolchain.py",
+            "tests/validation/test_upgrade_notes.py",
+        ]
+        self.assertEqual([], change_reach_problems(files, suites))
+        self.assertEqual(
+            [
+                "CHANGE_REACHES names requirements-dev.txt, which matches no repository file",
+                "CHANGE_REACHES adds tests/validation/test_toolchain.py, which matches no regression suite",
+            ],
+            change_reach_problems(files[:-1], [suite for suite in suites if "toolchain" not in suite]),
+        )
+
+    def test_a_change_to_a_shipped_skill_script_selects_the_rendering_suite_in_this_repository(self) -> None:
+        names = {job.name for job in changed_jobs(REPOSITORY_ROOT, ["skills/repo-cleanup/scripts/repo_cleanup.py"])}
+        self.assertLessEqual(
+            {
+                "tests/deployer/test_rendering_locking.py",
+                "skills/repo-cleanup/scripts/test_repo_cleanup.py",
+                FORMAT_JOB,
+                LINT_JOB,
+            },
+            names,
+        )
+        self.assertNotIn("tests/deployer/test_plan.py", names)
 
 
 if __name__ == "__main__":
