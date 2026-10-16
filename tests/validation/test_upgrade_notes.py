@@ -504,6 +504,22 @@ class UpgradeNotesPolicy(GitTestCase):
             self.problems({"docs/releasing.md": changed}, self.body(self.entry("none"))),
         )
 
+    def test_the_tag_and_its_tree_are_the_checkouts_whatever_repository_git_dir_names(self) -> None:
+        # The commits since the tag are read through tools/release_notes.py, so the tag must be read through the same
+        # git, or the two halves of one check read different repositories.
+        self.assertIs(release_notes.git, upgrade_notes.git)
+        self.release()
+        other = self.home / "another repository"
+        self.git("init", "-q", "-b", "main", str(other))
+        self.git("commit", "-q", "--allow-empty", "-m", "another", cwd=other)
+        self.git("tag", "v9.9.9", cwd=other)
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD", cwd=other)
+        with mock.patch.dict(os.environ, {"GIT_DIR": str(other / ".git")}):
+            tag, problem = upgrade_notes.last_release_tag(self.root)
+            names = upgrade_notes.tag_snapshot(self.root, "v0.1.0").names
+        self.assertEqual(("v0.1.0", None), (tag, problem))
+        self.assertEqual(frozenset(self.RELEASED), names)
+
     def test_no_tag_reachable_from_origin_main_passes(self) -> None:
         self.release(tag=None)
         self.assertEqual([], self.problems(self.MANIFEST_CHANGE))

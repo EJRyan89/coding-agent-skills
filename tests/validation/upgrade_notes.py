@@ -6,7 +6,6 @@ import ast
 import functools
 import json
 import re
-import subprocess
 import sys
 import unittest
 from collections.abc import Callable
@@ -25,15 +24,23 @@ from validation_support import (
     repository_files,
 )
 
-from tools.release_notes import BODY_HEADING, UPGRADE_NOTES, SourcedEntry, body_entries, range_entries
+from tools.release_notes import (
+    BODY_HEADING,
+    RELEASE_BRANCH,
+    UPGRADE_NOTES,
+    SourcedEntry,
+    body_entries,
+    git,
+    range_entries,
+)
 
 # The upgrade-notes guard: the contract files the Versioning section of docs/releasing.md judges a release by, read at
 # the last tag and in the working tree. Each is compared by its contract value, so an edit that leaves the value alone
 # needs no entry. The entries are the upgrade notes tools/release_notes.py reads from the commits since the tag, and
-# the pull request body the runner was given with --pr-body.
+# the pull request body the runner was given with --pr-body. Every git call runs through tools/release_notes.py's
+# git, so the tag lookup and the commit range read the same repository whatever GIT_DIR the shell exported.
 PROFILE_DOC = "docs/implementing-changes.md"
 CONTRACT_FILES_HEADING = "## Contract files"
-RELEASE_BRANCH = "origin/main"
 MANIFEST_MODULE = "deployer/manifest.py"
 MANIFEST_CONTRACT_NAMES = ("MANIFEST_VERSION", "OLDEST_READABLE_VERSION")
 TOOLS_MODULE = "deployer/tools.py"
@@ -62,26 +69,22 @@ class Snapshot:
         return self.read(name).replace("\r\n", "\n") if name in self.names else None
 
 
-def _git(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", "-C", str(root), *arguments], capture_output=True, text=True, encoding="utf-8")
-
-
 def last_release_tag(root: Path) -> tuple[str | None, str | None]:
     """The last tag reachable from origin/main and a problem; no tag at all means nothing has been released yet."""
-    if _git(root, "rev-parse", "--verify", "--quiet", f"{RELEASE_BRANCH}^{{commit}}").returncode != 0:
+    if git(root, "rev-parse", "--verify", "--quiet", f"{RELEASE_BRANCH}^{{commit}}").returncode != 0:
         return None, (
             f"{RELEASE_BRANCH} is missing, so the upgrade-notes check cannot find the last tag; "
             "fetch it with `git fetch origin main --tags`"
         )
-    if _git(root, "rev-parse", "--is-shallow-repository").stdout.strip() == "true":
+    if git(root, "rev-parse", "--is-shallow-repository").stdout.strip() == "true":
         return None, (
             "this clone is shallow, so the upgrade-notes check cannot see the last tag; "
             "fetch the history with `git fetch --unshallow --tags`"
         )
-    described = _git(root, "describe", "--tags", "--abbrev=0", RELEASE_BRANCH)
+    described = git(root, "describe", "--tags", "--abbrev=0", RELEASE_BRANCH)
     if described.returncode == 0:
         return described.stdout.strip(), None
-    if _git(root, "tag", "--merged", RELEASE_BRANCH).stdout.strip():
+    if git(root, "tag", "--merged", RELEASE_BRANCH).stdout.strip():
         return None, f"git describe could not name the last tag on {RELEASE_BRANCH}: {described.stderr.strip()}"
     return None, None
 
@@ -92,9 +95,9 @@ def working_snapshot(root: Path) -> Snapshot:
 
 
 def tag_snapshot(root: Path, tag: str) -> Snapshot:
-    listed = _git(root, "ls-tree", "-r", "--name-only", "-z", tag).stdout
+    listed = git(root, "ls-tree", "-r", "--name-only", "-z", tag).stdout
     return Snapshot(
-        frozenset(name for name in listed.split("\0") if name), lambda name: _git(root, "show", f"{tag}:{name}").stdout
+        frozenset(name for name in listed.split("\0") if name), lambda name: git(root, "show", f"{tag}:{name}").stdout
     )
 
 

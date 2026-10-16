@@ -498,8 +498,8 @@ class LinuxVerifyLogFixtures(GitTestCase):
 
 UNINSTALL_CHECK = (
     "jobs:\n  deployable:\n    steps:\n"
-    "      - name: Record what the deployment owns\n        run: |\n"
-    "          python tools/deployable_report.py owned --owned (Join-Path $env:LOGS 'owned.json')\n"
+    "      - name: Check the Claude Code file layout after the first deployment\n        run: |\n"
+    "          python tools/deployable_report.py layout --label 'first deploy' --results $env:RESULTS\n"
     "          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n"
     "      # The README's selection.\n"
     "      - name: Uninstall\n        run: |\n"
@@ -510,22 +510,21 @@ UNINSTALL_CHECK = (
     "          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n"
     "      - name: Confirm the profile holds nothing from the suite\n        run: |\n"
     "          # Names what is left.\n"
-    "          python tools/deployable_report.py leftovers --owned (Join-Path $env:LOGS 'owned.json') "
-    "--results $env:RESULTS\n"
+    "          python tools/deployable_report.py leftovers --results $env:RESULTS\n"
     "          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n"
     "  deployable-linux:\n    steps:\n"
-    "      - name: Record what the deployment owns\n        run: |\n"
-    '          python3 tools/deployable_report.py owned --owned "$LOGS/owned.json"\n'
+    "      - name: Check the Claude Code file layout after the first deployment\n        run: |\n"
+    "          python3 tools/deployable_report.py layout --label 'first deploy' --results \"$RESULTS\"\n"
     "      - name: Uninstall\n        run: |\n"
     '          python3 deploy.py --uninstall --dry-run 2>&1 | tee "$LOGS/uninstall-dry-run.log"\n'
     '          python3 deploy.py --uninstall 2>&1 | tee "$LOGS/uninstall.log"\n'
     "      - name: Confirm the profile holds nothing from the suite\n        run: |\n"
-    '          python3 tools/deployable_report.py leftovers --owned "$LOGS/owned.json" --results "$RESULTS"\n'
+    '          python3 tools/deployable_report.py leftovers --results "$RESULTS"\n'
 )
 
 
 class UninstallCheckFixtures(GitTestCase):
-    def test_both_jobs_save_what_is_owned_before_the_uninstall_and_report_what_is_left_after(self) -> None:
+    def test_both_jobs_check_the_layout_before_the_uninstall_and_report_what_is_left_after(self) -> None:
         self.assertEqual([], uninstall_check_problems(UNINSTALL_CHECK))
 
     def test_a_check_in_the_steps_own_shell_or_out_of_place_fails(self) -> None:
@@ -537,8 +536,7 @@ class UninstallCheckFixtures(GitTestCase):
                 "a shell listing of directories",
                 windows_part
                 + linux_part.replace(
-                    '          python3 tools/deployable_report.py leftovers --owned "$LOGS/owned.json" '
-                    '--results "$RESULTS"\n',
+                    '          python3 tools/deployable_report.py leftovers --results "$RESULTS"\n',
                     directories_only,
                 ),
                 "deployable-linux: 'Confirm the profile holds nothing from the suite' must run exactly",
@@ -546,18 +544,24 @@ class UninstallCheckFixtures(GitTestCase):
             (
                 "no exit status check",
                 UNINSTALL_CHECK.replace("          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n", "", 1),
-                "deployable: 'Record what the deployment owns' must run exactly",
+                "deployable: 'Check the Claude Code file layout after the first deployment' must run exactly",
             ),
             (
-                "another saved file",
+                "a saved list read again",
                 windows_part
-                + linux_part.replace('--owned "$LOGS/owned.json" --results', '--owned "$LOGS/x.json" --results'),
+                + linux_part.replace("leftovers --results", 'leftovers --owned "$LOGS/owned.json" --results'),
                 "deployable-linux: 'Confirm the profile holds nothing from the suite' must run exactly",
             ),
             (
-                "the record after the uninstall",
-                UNINSTALL_CHECK.replace("Record what the deployment owns", "Record", 1),
-                "deployable: the step before 'Uninstall' is not 'Record what the deployment owns'",
+                "a step between the layout check and the uninstall",
+                UNINSTALL_CHECK.replace(
+                    "      # The README's selection.\n",
+                    "      - name: Record what the deployment owns\n        run: |\n"
+                    "          python tools/deployable_report.py owned\n",
+                    1,
+                ),
+                "deployable: the step before 'Uninstall' is not 'Check the Claude Code file layout after the first "
+                "deployment'",
             ),
             (
                 "the check missing",
