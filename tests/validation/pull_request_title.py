@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 import unittest
 from pathlib import Path
 
-from validation_support import REPOSITORY_ROOT, markdown_section
+from validation_support import REPOSITORY_ROOT, git, markdown_section
 
 # The squash commit takes the pull request's title, so main's history reads by these types, which tools/worktrees.py
 # also takes as a worktree's kind. A breaking-change `!` is refused: the Level in the body's `## Upgrade note` is the
@@ -73,13 +72,10 @@ def head_branch() -> str | None:
     """The pull request's branch in CI, otherwise the checkout's current branch, or None when neither is known."""
     if os.environ.get("GITHUB_HEAD_REF"):
         return os.environ["GITHUB_HEAD_REF"]
-    completed = subprocess.run(
-        ["git", "-C", str(REPOSITORY_ROOT), "branch", "--show-current"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-    )
+    try:
+        completed = git(REPOSITORY_ROOT, "branch", "--show-current")
+    except ValueError:
+        return None
     if completed.returncode != 0:
         return None
     return completed.stdout.strip() or None

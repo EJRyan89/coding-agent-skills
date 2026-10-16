@@ -1395,5 +1395,129 @@ class OverrideTests(TrackerPipelineFixture):
         self.assertEqual({"schema_version": 1}, self.written())
 
 
+class ReviewArgumentsTests(TrackerPipelineFixture):
+    """`review-arguments` turns the candidates the user confirmed into the `review-prs` arguments, without GitHub."""
+
+    def recorded(self, reviews: dict[str, str]) -> None:
+        """Record each key's AI review state as the last update would have shown its row."""
+        states = {
+            key: {"state": state, "reviewed_head_sha": None if state == "missing" else HEAD}
+            for key, state in reviews.items()
+        }
+        record = {"schema_version": 2, "pulls": sorted(reviews), "reviews": states}
+        self.record.write_text(json.dumps(record), encoding="utf-8")
+
+    def confirm(self, *keys: str, scope: str | None = None) -> tuple[int, list[str], str]:
+        arguments = [argument for key in keys for argument in ("--confirm", key)]
+        code, out, err = self.run_main("review-arguments", *arguments, *(["--scope", scope] if scope else []))
+        return code, out.splitlines(), err
+
+    def test_the_candidates_an_update_prints_become_one_review_prs_argument_line(self) -> None:
+        stale = pull_node(3, headRefOid=HEAD)
+        commit_record(self.archive, "example/one", 3, archived_record(OLD_HEAD, 3), expected_latest_version=None)
+        self.github.pages = {"example/one": [page([pull_node(1), stale])], "example/two": [page([])]}
+        code, _, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual(0, code, err)
+        code, out, err = self.run_main("update", "--input", str(self.input), "--candidates")
+        self.assertEqual(0, code, err)
+        self.assertEqual(["CANDIDATE missing example/one#1", "CANDIDATE stale example/one#3"], out.splitlines()[2:])
+        calls = len(self.github.calls)
+        # A missing review is asked for with --pull, and needs no scope.
+        self.assertEqual((0, ["REVIEW_ARGUMENTS --pull example/one#1"], ""), self.confirm("example/one#1"))
+        # A stale one needs the scope the user chooses, so without it the command names the stale ones instead.
+        self.assertEqual((0, ["SCOPE_NEEDED example/one#3"], ""), self.confirm("Example/One#3", "example/one#1"))
+        for scope in ("auto", "full", "incremental"):
+            with self.subTest(scope=scope):
+                self.assertEqual(
+                    (0, [f"REVIEW_ARGUMENTS --pull example/one#1 --re-review example/one#3 --scope {scope}"], ""),
+                    self.confirm("example/one#3", "example/one#1", scope=scope),
+                )
+        self.assertEqual(
+            (0, ["REVIEW_ARGUMENTS --re-review example/one#3 --scope full"], ""),
+            self.confirm("example/one#3", scope="full"),
+        )
+        self.assertEqual(calls, len(self.github.calls), "review-arguments reads nothing from GitHub")
+
+    def test_every_missing_and_stale_key_is_passed_once_in_key_order_with_one_scope(self) -> None:
+        self.recorded(
+            {
+                "example/two#5": "stale",
+                "example/one#2": "missing",
+                "example/one#10": "stale",
+                "example/one#1": "missing",
+            }
+        )
+        code, lines, err = self.confirm("example/two#5", "example/one#2", "example/one#10", "example/one#1")
+        self.assertEqual((0, ["SCOPE_NEEDED example/one#10", "SCOPE_NEEDED example/two#5"], ""), (code, lines, err))
+        code, lines, err = self.confirm(
+            "example/two#5", "example/one#2", "example/one#10", "example/one#1", scope="auto"
+        )
+        expected = (
+            "REVIEW_ARGUMENTS --pull example/one#1 --pull example/one#2 --re-review example/one#10 "
+            "--re-review example/two#5 --scope auto"
+        )
+        self.assertEqual((0, [expected], ""), (code, lines, err))
+
+    def test_a_key_the_last_update_did_not_offer_for_review_is_refused(self) -> None:
+        self.configure(overrides={"example/one#4": "on hold"})
+        self.recorded(
+            {
+                "example/one#1": "missing",
+                "example/one#2": "current",
+                "example/one#3": "incomplete",
+                "example/one#4": "stale",
+            }
+        )
+        reason = (
+            "names no pull request the last update offered for review, one whose AI review is missing or stale and "
+            f"that no status override pins, in {self.record}"
+        )
+        # A current or incomplete review, one an override pins, and one the last update did not show.
+        for key in ("example/one#2", "example/one#3", "Example/One#4", "example/one#9", "other/one#1"):
+            with self.subTest(key=key):
+                expected = f"FAILED Confirmed pull request {key.lower()} {reason}"
+                self.assertEqual((1, [expected], ""), self.confirm("example/one#1", key))
+        self.assertEqual(
+            (1, ["FAILED Duplicate confirmed pull-request identity: example/one#1"], ""),
+            self.confirm("example/one#1", "Example/One#1"),
+        )
+        self.record.unlink()
+        unwritten = (
+            f"FAILED Confirmed pull request example/one#1 names no candidate: no update has written {self.record}"
+        )
+        self.assertEqual((1, [unwritten], ""), self.confirm("example/one#1"))
+
+    def test_a_scope_is_refused_unless_a_confirmed_pull_request_is_stale(self) -> None:
+        self.recorded({"example/one#1": "missing", "example/one#2": "stale"})
+        self.assertEqual(
+            (1, ["FAILED --scope is taken only when a confirmed pull request is stale; leave it out"], ""),
+            self.confirm("example/one#1", scope="full"),
+        )
+        # A scope that is not one review-prs takes, and no confirmed pull request, are usage errors.
+        for arguments in (["--confirm", "example/one#2", "--scope", "partial"], []):
+            with (
+                self.subTest(arguments=arguments),
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                tp.main(["--config", str(self.config_path), "review-arguments", *arguments])
+            self.assertEqual(2, raised.exception.code)
+
+    def test_the_skill_names_every_line_the_command_prints(self) -> None:
+        # The agent reads only SKILL.md, so a line it does not name is output the agent has to guess at.
+        self.recorded({"example/one#1": "missing", "example/one#2": "stale"})
+        printed: set[str] = set()
+        for scope in (None, "auto"):
+            code, lines, err = self.confirm("example/one#1", "example/one#2", scope=scope)
+            self.assertEqual((0, ""), (code, err))
+            printed |= {line.split()[0] for line in lines}
+        self.assertEqual({"REVIEW_ARGUMENTS", "SCOPE_NEEDED"}, printed)
+        skill = (SCRIPT_DIRECTORY.parent / "SKILL.md").read_text(encoding="utf-8")
+        for word in sorted(printed):
+            with self.subTest(line=word):
+                self.assertTrue(f"`{word} <" in skill, word)
+
+
 if __name__ == "__main__":
     unittest.main()
