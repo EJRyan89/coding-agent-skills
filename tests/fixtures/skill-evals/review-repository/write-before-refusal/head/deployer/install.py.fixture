@@ -1,0 +1,33 @@
+"""Install one skill from a source folder into a home."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from deployer import fsops
+
+MANIFEST = ".owners.json"
+
+
+class Refusal(Exception):
+    """A reason to stop before anything in the home changes."""
+
+
+def owners(home: Path) -> dict[str, str]:
+    path = home / MANIFEST
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+
+
+def install(source: Path, home: Path, name: str, source_id: str) -> Path:
+    """Copy the skill `name` from `source` into `home` and record `source_id` as its owner. A folder no source
+    recorded is owned by the source its own `.source` marker names, so a home whose manifest was lost still refuses."""
+    target = home / name
+    fsops.copy_tree(source / name, target)
+    recorded = owners(home)
+    marker = target / ".source"
+    owner = recorded.get(name) or (marker.read_text(encoding="utf-8").strip() if marker.is_file() else None)
+    if owner not in (None, source_id):
+        raise Refusal(f"{name} belongs to {owner}")
+    fsops.write_text(home / MANIFEST, json.dumps({**recorded, name: source_id}, indent=2) + "\n")
+    return target

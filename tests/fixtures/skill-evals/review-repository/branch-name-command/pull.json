@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "repository": "example/review-bot",
+  "number": 33,
+  "title": "Fetch a pull request's branch at its tip",
+  "head_ref": "fetch-branch",
+  "body": "Fetches the pull request's head branch by name instead of its pull request ref, which can lag a push.\n\n## Upgrade note\n\nNone.\n",
+  "base_ref": "main",
+  "threads": [],
+  "manifest_path": ".claude/skills/review-repository/references/specialists.json"
+}

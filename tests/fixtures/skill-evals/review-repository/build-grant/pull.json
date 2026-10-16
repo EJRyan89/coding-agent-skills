@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "repository": "example/report-site",
+  "number": 4,
+  "title": "Build the site to preview a report",
+  "head_ref": "preview-build",
+  "body": "report-preview can now build the site and show where a report's page was built.\n\n## Upgrade note\n\n### report-preview builds a preview of the site\n\n- Level: minor, a new step and its status lines.\n- Contract: `PREVIEW <folder>`, `NO_BUILD`\n- User action: none\n",
+  "base_ref": "main",
+  "threads": [],
+  "manifest_path": ".claude/skills/review-repository/references/specialists.json"
+}
