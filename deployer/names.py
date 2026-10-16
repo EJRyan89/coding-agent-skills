@@ -5,7 +5,6 @@ import re
 from . import platform_support
 from .errors import DeployError
 
-RESERVED_WITH_EXTENSION = re.compile(r"^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(\.|$)")
 SAFE_NAME = re.compile(r"^[A-Za-z0-9._ -]+$")
 # The deployer's own files beside an item: <item>.deploying-bak is its transient backup during a deployment (plan.py,
 # journal.py), and .<file>.tmp.<suffix> is an atomic write in progress (fsops.py). No item may take either form.
@@ -23,7 +22,7 @@ def safe_name_problem(name: str, context: str) -> str | None:
         return f"ERROR: {context} '{name}' is a dot segment"
     if name.startswith("."):
         return f"ERROR: {context} '{name}' starts with dot"
-    if RESERVED_WITH_EXTENSION.match(name.upper()):
+    if platform_support.is_reserved_device_name(name):
         return f"ERROR: {context} '{name}' is a Windows reserved name"
     if not SAFE_NAME.fullmatch(name):
         return f"ERROR: {context} '{name}' contains disallowed character"

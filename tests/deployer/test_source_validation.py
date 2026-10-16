@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import re
 import shutil
-import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -12,7 +11,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 from git_test_base import GitTestCase
-from harness import DEPLOY_COMMAND, DeployerTestCase, Result, forward, make_directory_link, tree_state
+from harness import DEPLOY_COMMAND, DeployerTestCase, Result, forward, git, make_directory_link, tree_state
 
 from deployer import config, names, platform_support, source
 from deployer.errors import DeployError
@@ -218,7 +217,7 @@ class MetadataValidationTests(DeployerTestCase):
         self.make_source_json()
         self.make_skill("con", "Test")
         self.make_config()
-        self.deploy_fails("--all", pattern="reserved name")
+        self.deploy_fails("--all", pattern=r"ERROR: Skill name 'con' is a Windows reserved name\r?\n")
 
     def test_frontmatter_name_must_match_directory(self) -> None:
         self.make_source_json()
@@ -488,6 +487,20 @@ class SharedAssetValidationTests(DeployerTestCase):
             with self.subTest(name=name):
                 self.assertIsNone(names.safe_name_problem(name, "item"))
 
+    def test_item_and_skill_names_refuse_the_same_windows_device_names(self) -> None:
+        for name in ("con", "PRN", "Aux", "nul", "com1", "COM9", "lpt1", "LPT9"):
+            with self.subTest(name=name):
+                for item in (name, f"{name}.md", f"{name}.tar.gz"):
+                    self.assertEqual(
+                        f"ERROR: item '{item}' is a Windows reserved name", names.safe_name_problem(item, "item")
+                    )
+                self.assertFalse(source.is_valid_name(name.lower()))
+        for name in ("console", "con-alpha", "nul-check", "com", "lpt10", "aux2"):
+            with self.subTest(name=name):
+                self.assertIsNone(names.safe_name_problem(name, "item"))
+                self.assertIsNone(names.safe_name_problem(f"{name}.md", "item"))
+                self.assertTrue(source.is_valid_name(name))
+
     def write_shared_assets(self, value: object) -> None:
         self.make_source_json()
         document = json.loads((self.source / "source.json").read_text(encoding="utf-8"))
@@ -525,18 +538,15 @@ class SharedAssetValidationTests(DeployerTestCase):
 class LinkedWorktreeTestCase(DeployerTestCase):
     """A source checkout made a git repository with a linked worktree, for the classes below."""
 
-    def git(self, *arguments: str) -> None:
-        subprocess.run(["git", "-C", str(self.source), *arguments], check=True, capture_output=True)
-
     def make_linked_worktree(self) -> Path:
         self.make_source_json()
         self.make_skill("alpha", "Worktree fixture")
         self.make_config()
-        self.git("init", "-q", "-b", "main")
-        self.git("add", ".")
-        self.git("commit", "-q", "-m", "fixture")
+        git(self.source, "init", "-q", "-b", "main")
+        git(self.source, "add", ".")
+        git(self.source, "commit", "-q", "-m", "fixture")
         linked = self.root / "Linked Tree (task)"
-        self.git("worktree", "add", "-q", "-b", "task", str(linked))
+        git(self.source, "worktree", "add", "-q", "-b", "task", str(linked))
         return linked
 
     def deploy_fails_from(self, directory: Path, *arguments: str) -> Result:

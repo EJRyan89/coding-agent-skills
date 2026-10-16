@@ -17,9 +17,14 @@ from harness import (
     FAILS_PARTWAY,
     RECOVERS,
     REPOSITORY_ROOT,
+    SEE_RECOVERY_FAILED,
+    ZERO_HASH,
     DeployerTestCase,
     Result,
+    backup_entry,
     forward,
+    install_entry,
+    journal_line,
     make_directory_link,
     tree_state,
 )
@@ -27,42 +32,6 @@ from harness import (
 from deployer import fsops, hashing, journal, platform_support, render
 from deployer.kinds import KINDS
 from deployer.paths import CANARY_MARKER, CANARY_MARKER_TEXT
-
-ZERO_HASH = "sha256:" + "0" * 64
-
-
-def journal_line(entry: dict) -> str:
-    return json.dumps(entry, separators=(",", ":")) + "\n"
-
-
-SEE_RECOVERY_FAILED = 'See "When recovery fails" in docs/recovery.md.'
-
-
-def backup_entry(item: str, backup_hash: str, retain: bool = False, run_id: str = "", root: str = "") -> dict:
-    prefix = {"": "skills", "agents": "agents", "claude-agents": "claude-agents"}[root]
-    entry: dict = {"op": "backup", **({"root": root} if root else {})}
-    entry.update(
-        {
-            "item": item,
-            "from": f"{prefix}/{item}",
-            "to": f"{prefix}/{item}.deploying-bak",
-            "retain": retain,
-            "backup_hash": backup_hash,
-        }
-    )
-    if retain:
-        entry["backup_dest"] = f".backups/{run_id}/{item}"
-    return entry
-
-
-def install_entry(item: str, staged_hash: str) -> dict:
-    return {
-        "op": "install",
-        "item": item,
-        "from": f"staging/{item}",
-        "to": f"skills/{item}",
-        "staged_hash": staged_hash,
-    }
 
 
 class RecoveryTestCase(DeployerTestCase):
@@ -72,11 +41,6 @@ class RecoveryTestCase(DeployerTestCase):
             self.make_skill(name, content)
         self.make_config()
         self.deploy_ok("--all")
-
-    def staging_run(self, run_id: str) -> Path:
-        directory = self.home / ".claude" / "deployer" / "staging" / run_id
-        directory.mkdir(parents=True, exist_ok=True)
-        return directory
 
     def write_journal(self, run_id: str, *entries: dict) -> Path:
         path = self.staging_run(run_id) / "journal.jsonl"
@@ -92,15 +56,6 @@ class RecoveryTestCase(DeployerTestCase):
         path = self.home / ".claude" / "sentinel" / "data.txt"
         self.write(path, "precious data\n")
         return path
-
-    @property
-    def lock_dir(self) -> Path:
-        return self.home / ".claude" / "deployer" / ".deploy.lock.d"
-
-    def assert_lines(self, output: str, *lines: str) -> None:
-        printed = output.splitlines()
-        for line in lines:
-            self.assertIn(line, printed, output)
 
 
 class RecoveryTests(RecoveryTestCase):

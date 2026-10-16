@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import contextlib
 import sys
-import tempfile
 import textwrap
 import unittest
 from pathlib import Path
@@ -15,7 +14,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 import job_tree
-from harness import DeployerTestCase, Result, forward
+from harness import DeployerTestCase, Result, forward, recorded_temporary_directories
 from test_job_tree import QUICK_LAUNCHER, PausedTree, SignalledTree, ended
 
 from deployer import errors, plan, platform_support, source_ref
@@ -93,18 +92,6 @@ def found(name: str, path: str) -> Any:
     return mock.patch.object(
         platform_support, "find_executable", side_effect=lambda wanted: path if wanted == name else real(wanted)
     )
-
-
-def recorded_temporary_directories() -> tuple[Any, list[Path]]:
-    """A patch of --at's mkdtemp that records each directory the export makes, and the list it records them in."""
-    made: list[Path] = []
-    real = tempfile.mkdtemp
-
-    def mkdtemp(*positional: Any, **keywords: Any) -> str:
-        made.append(Path(real(*positional, **keywords)))
-        return str(made[-1])
-
-    return mock.patch.object(source_ref.tempfile, "mkdtemp", mkdtemp), made
 
 
 class DeadlineCase(DeployerTestCase):
