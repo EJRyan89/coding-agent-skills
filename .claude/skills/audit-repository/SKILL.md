@@ -15,7 +15,7 @@ Each release is audited twice, as "Before tagging" and "After tagging" in `docs/
 
 ## 1. Choose the audit
 
-- **release**, before tagging: every file changed since the latest tag. It holds the release.
+- **release**, before tagging: every file changed since the last release, the highest `vX.Y.Z` tag `HEAD` holds; a nearer pre-release or other tag does not move it. It holds the release.
 - **rotation**, after tagging: the one area the rotation record shows read whole least recently, with the issues the next milestone carries. It holds nothing and feeds the next milestone.
 
 ## 2. Run the script
@@ -34,7 +34,7 @@ Add `--since '<ref>'` to `release` to start from another base. Keep these lines 
 - `CARRIED <number> "<title>"`: an open issue the next milestone carries; every rotation brief names them too.
 - `BRIEFS "<directory>"`, then one `BRIEF <name> "<file>"` per reader, each its whole prompt; `READERS` counts an area's.
 
-A `FAILED` line is the last line and names what stopped the run, such as no tag reachable from `HEAD` or gh's own reason. A run that fails while writing the briefs leaves the directory it named in place; remove it as step 6 says once you have diagnosed the failure.
+A `FAILED` line is the last line and names what stopped the run, such as no release tag reachable from `HEAD` or gh's own reason. A run that fails while writing the briefs leaves the directory it named in place; remove it as step 6 says once you have diagnosed the failure.
 
 ## 3. Start one reader per brief
 
