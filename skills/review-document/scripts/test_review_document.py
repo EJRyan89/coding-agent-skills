@@ -9,6 +9,7 @@ import hashlib
 import io
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -104,9 +105,14 @@ class StubGitHub:
     the files of each commit. It records every command and fails on any command it does not expect."""
 
     def __init__(
-        self, pages: list[list[dict[str, Any]]], trees: dict[str, dict[str, bytes]], sizes: dict[str, int] | None = None
+        self,
+        pages: list[list[dict[str, Any]]],
+        trees: dict[str, dict[str, bytes]],
+        sizes: dict[str, int] | None = None,
+        entries: dict[tuple[str, str], dict[str, Any]] | None = None,
     ) -> None:
-        self.pages, self.trees, self.sizes = pages, trees, sizes or {}
+        """`entries` answers the contents of a (commit, path) with an object of its own, such as a symbolic link's."""
+        self.pages, self.trees, self.sizes, self.entries = pages, trees, sizes or {}, entries or {}
         self.commands: list[list[str]] = []
         self.blobs = {blob_id(content): content for tree in trees.values() for content in tree.values()}
 
@@ -144,6 +150,8 @@ class StubGitHub:
         if endpoint.startswith("contents/") and not options:
             quoted, commit = endpoint.removeprefix("contents/").split("?ref=")
             path = unquote(quoted)
+            if (commit, path) in self.entries:
+                return self.entries[commit, path]
             content = self.trees[commit].get(path)
             if content is None:
                 return None
@@ -267,6 +275,69 @@ class CheckoutTests(DocumentTestCase):
                 self.assertEqual((1, [f"FAILED {relative} {reason}"]), (code, lines))
                 self.assertFalse(self.output.exists())
 
+    def test_a_committed_file_renamed_on_disk_only_by_case_is_reviewed_as_git_tracks_it(self) -> None:
+        checkout = self.checkout()
+        commit = git(checkout, "rev-parse", "HEAD")
+        folder = checkout / "docs" / "design"
+        # Renamed through a second name, as a file system that ignores case needs, then edited.
+        (folder / "retention.md").rename(folder / "moving.md")
+        (folder / "moving.md").rename(folder / "Retention.md")
+        (folder / "Retention.md").write_bytes(EDITED)
+        ignores_case = (folder / "retention.md").exists()
+        for index, typed in enumerate(("Retention.md", "retention.md") if ignores_case else ("Retention.md",)):
+            with self.subTest(typed=typed):
+                self.output = self.root / f"out {index}"
+                result = self.build(folder / typed)
+                if ignores_case:
+                    # git still tracks the file as docs/design/retention.md, and reports it modified.
+                    self.assertEqual("M docs/design/retention.md", git(checkout, "status", "--porcelain"))
+                    self.assertEqual(
+                        ("docs/design/retention.md", f"committed {commit}"), (result["DOCUMENT"], result["BASE"])
+                    )
+                    diff = self.fixture_diff(self.output / "fixture")
+                    self.assertIn("-Exports are kept 30 days.\n+Exports are kept 90 days.\n", diff)
+                    self.assertEqual(1, diff.count("\n+") - diff.count("\n+++"), diff)
+                else:
+                    # A file system that keeps case holds two files: the committed one is gone, and this one is new.
+                    self.assertEqual(
+                        ("docs/design/Retention.md", "none the file is not committed"),
+                        (result["DOCUMENT"], result["BASE"]),
+                    )
+
+    def test_a_committed_file_git_cannot_read_fails_with_gits_reason(self) -> None:
+        checkout = self.checkout()
+        commit = git(checkout, "rev-parse", "HEAD")
+        blob = git(checkout, "rev-parse", "HEAD:docs/design/retention.md")
+        loose = checkout / ".git" / "objects" / blob[:2] / blob[2:]
+        loose.chmod(stat.S_IWRITE | stat.S_IREAD)  # git writes its objects read-only
+        loose.unlink()
+        document = checkout / "docs" / "design" / "retention.md"
+        document.write_bytes(EDITED)
+        for options in ((), ("--base", "committed")):
+            with self.subTest(options=options):
+                code, lines = run_main("build", str(document), "--output", str(self.output), *options)
+                self.assertEqual((1, 1), (code, len(lines)), lines)
+                reason = f"FAILED git could not read docs/design/retention.md as committed at {commit}: "
+                self.assertTrue(lines[0].startswith(reason), lines)
+                self.assertIn(blob, lines[0])
+                self.assertFalse(self.output.exists())
+
+    def test_a_checkout_with_no_commit_yet_reviews_the_document_whole_and_an_unreadable_head_fails(self) -> None:
+        checkout = self.root / "new notes"
+        checkout.mkdir()
+        git(checkout, "init", "--quiet")
+        document = checkout / "plan.md"
+        document.write_bytes(QUEUE_PLAN)
+        result = self.build(document)
+        self.assertEqual(("plan.md", "none the checkout has no commit yet"), (result["DOCUMENT"], result["BASE"]))
+        # HEAD detached at an object the repository does not hold.
+        (checkout / ".git" / "HEAD").write_text("1" * 40 + "\n", encoding="ascii")
+        self.output = self.root / "broken"
+        code, lines = run_main("build", str(document), "--output", str(self.output))
+        self.assertEqual((1, 1), (code, len(lines)), lines)
+        self.assertTrue(lines[0].startswith("FAILED git could not read the checkout's HEAD commit: "), lines)
+        self.assertFalse(self.output.exists())
+
     def test_an_unchanged_document_is_refused_with_the_way_to_review_it_whole(self) -> None:
         checkout = self.checkout()
         code, lines = run_main("build", str(checkout / "docs" / "design" / "retention.md"))
@@ -337,6 +408,19 @@ class LooseFileTests(DocumentTestCase):
                 self.assertEqual(1, len(lines), lines)
                 self.assertTrue(lines[0].startswith(f"FAILED {path} {reason}"), lines)
         self.assertFalse(self.output.exists())
+
+    def test_a_document_over_the_changed_file_size_limit_is_refused_before_any_fixture(self) -> None:
+        # The snapshot leaves a changed file over 16 MiB out, written here rather than read from code-review-core.
+        limit = 16 * 1024 * 1024
+        over = self.root / "over.md"
+        over.write_bytes(b"a\n" * (limit // 2) + b"a")
+        code, lines = run_main("build", str(over), "--output", str(self.output))
+        self.assertEqual((1, [f"FAILED {over} is over the 16 MiB a review reads"]), (code, lines))
+        self.assertFalse(self.output.exists())
+        at = self.root / "at.md"
+        at.write_bytes(b"a\n" * (limit // 2))
+        self.assertEqual("at.md", self.build(at)["DOCUMENT"])
+        self.assertEqual(limit, (self.output / "fixture" / "head" / "at.md").stat().st_size)
 
     def test_a_file_name_holding_a_line_break_is_refused_on_one_line_before_any_fixture(self) -> None:
         # A file system may allow any of them in a name; the pipeline's rule refuses the path, which printed raw
@@ -477,7 +561,8 @@ class PipelineTestCase(DocumentTestCase):
         result = {"model": "fixture-model", "summary": "One gap.", "findings": [finding], "prior_dispositions": []}
         Path(roles[0]["result_file"]).write_text(json.dumps(result), encoding="utf-8")
         recorded = next(fact for fact in self.pipeline("finalize", "--run", str(run)) if fact.startswith("RECORDED "))
-        code, lines = run_main("report", "--fixture", str(fixture), "--report", recorded.split(" ", 4)[4])
+        self.recorded = Path(recorded.split(" ", 4)[4])
+        code, lines = run_main("report", "--fixture", str(fixture), "--report", str(self.recorded))
         self.assertEqual(0, code, lines)
         record = json.loads(Path(facts(lines)["RECORD"]).read_text(encoding="utf-8"))
         return diff, record
@@ -986,6 +1071,63 @@ class PullRequestTests(PipelineTestCase):
                 self.assert_reads_only(stub)
         self.assertFalse(self.output.exists())
 
+    def test_a_document_github_answers_as_a_symbolic_link_or_a_submodule_is_skipped_and_the_rest_reviewed(self) -> None:
+        # GitHub's contents API answers a link whose target is not a file in the repository, and a submodule, with
+        # their own type rather than a file.
+        link: dict[str, Any] = {"type": "symlink", "target": "../../outside.md", "sha": "4" * 40, "size": 16}
+        module: dict[str, Any] = {
+            "type": "submodule",
+            "submodule_git_url": "https://example.invalid/x.git",
+            "sha": "5" * 40,
+        }
+        entries = {
+            (HEAD, "docs/link.md"): link,
+            (HEAD, "docs/vendored.md"): module,
+            (MERGE_BASE, "docs/was-link.md"): link,
+        }
+
+        def stub() -> StubGitHub:
+            return StubGitHub(
+                [
+                    [
+                        changed("docs/link.md", "added"),
+                        changed("docs/design/queue plan.md", "added"),
+                        changed("docs/vendored.md", "added"),
+                        changed("docs/was-link.md", "modified"),
+                    ]
+                ],
+                {MERGE_BASE: {}, HEAD: {"docs/design/queue plan.md": QUEUE_PLAN, "docs/was-link.md": LIMITS}},
+                entries=entries,
+            )
+
+        reason = "not a file a review reads"
+        self.assertEqual(
+            [
+                f"PULL octo-org/widgets#7 base {MERGE_BASE} head {HEAD}",
+                *self.block(1, "docs/design/queue plan.md", "none the document is added in the pull request"),
+                f"SKIPPED docs/link.md is a symbolic link at the pull request's head, {reason}",
+                f"SKIPPED docs/vendored.md is a submodule at the pull request's head, {reason}",
+                f"SKIPPED docs/was-link.md is a symbolic link at the merge base, {reason}",
+            ],
+            self.build_pull(stub()),
+        )
+        self.assertEqual(["1"], [path.name for path in self.output.iterdir()])
+        # Named with --document, it fails the build.
+        self.output = self.root / "narrowed"
+        code, lines = run_main(
+            "build",
+            "octo-org/widgets#7",
+            "--document",
+            "docs/link.md",
+            "--output",
+            str(self.output),
+            github=stub().client(),
+        )
+        self.assertEqual(
+            (1, [f"FAILED docs/link.md is a symbolic link at the pull request's head, {reason}"]), (code, lines)
+        )
+        self.assertFalse(self.output.exists())
+
     def test_a_document_path_the_snapshot_path_rules_refuse_is_skipped_before_it_is_read(self) -> None:
         refused = {
             "docs/C:/x.md": RESERVED_CHARACTER,
@@ -1267,6 +1409,21 @@ class PullRequestTests(PipelineTestCase):
         self.assertIn(f"`head {HEAD}` → `committed {MERGE_BASE}`", report)
         self.assert_no_authored_text()
 
+    def test_report_refuses_the_recorded_review_of_another_document_of_the_pull_request(self) -> None:
+        # Both records name the same pull request; only the title and refs tell the documents apart.
+        self.build_pull(self.stub())
+        first, second = (self.output / str(index) / "fixture" for index in (1, 2))
+        self.review("docs/design/retention.md", 3, first)
+        code, lines = run_main("report", "--fixture", str(second), "--report", str(self.recorded))
+        reason = (
+            f"{self.recorded} is not the review of the fixture {second}: its record's title is "
+            "'Review of docs/design/retention.md in octo-org/widgets#7: its change', the fixture's "
+            "'Review of docs/design/queue plan.md in octo-org/widgets#7: the whole document'"
+        )
+        self.assertEqual((1, [f"FAILED {reason}"]), (code, lines))
+        self.assertFalse((self.output / "2" / "report.md").exists())
+        self.assertTrue((self.output / "1" / "report.md").is_file())
+
 
 # The opening words of the sentence prepare gives the design reviewer for each stage, written here rather than read
 # from code-review-core, whose own suite pins the whole sentences.
@@ -1407,7 +1564,25 @@ class OutputTests(DocumentTestCase):
         canary = self.root / "canary" / "review-document.local" / "document" / "pulls" / "1"
         canary.mkdir(parents=True)
         (canary / "review.md").write_text("# Code Review\n", encoding="utf-8")
-        (canary / "review.json").write_text("{}", encoding="utf-8")
+        pull = json.loads((self.output / "fixture" / "pull.json").read_text(encoding="utf-8"))
+        named = {field: pull[field] for field in ("number", "title", "base_ref", "head_ref")}
+        record = {"repository": pull["repository"], "pull_request": {**named, "url": "https://example.invalid/1"}}
+        others: tuple[Any, ...] = (
+            {},
+            [],
+            {**record, "pull_request": None},
+            {**record, "repository": "review-document.local/x"},
+        )
+        for other in others:
+            with self.subTest(record=other):
+                (canary / "review.json").write_text(json.dumps(other), encoding="utf-8")
+                code, lines = run_main(
+                    "report", "--fixture", str(self.output / "fixture"), "--report", str(canary / "review.md")
+                )
+                self.assertEqual(1, code)
+                self.assertTrue(lines[0].startswith(f"FAILED {canary / 'review.md'} is not "), lines)
+                self.assertFalse((self.output / "report.md").exists())
+        (canary / "review.json").write_text(json.dumps(record), encoding="utf-8")
         code, lines = run_main(
             "report", "--fixture", str(self.output / "fixture"), "--report", str(canary / "review.md")
         )
