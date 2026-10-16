@@ -1475,7 +1475,7 @@ class SweepTests(Fixture):
         )
 
     def report(self, *aborted: str, plans: Path | None = None) -> tuple[int, list[str]]:
-        arguments = ["report", "--plans", str(plans or self.root / "plans")]
+        arguments = ["report", "--record", str(plans or self.root / "plans")]
         for repository in aborted:
             arguments += ["--aborted", repository]
         return self.invoke(*arguments)
@@ -1509,13 +1509,21 @@ class SweepTests(Fixture):
             [
                 [
                     f"still dirty: {root}/aborted repo, {root}/continued repo; sweep each again with --skip-checkout "
-                    "and the same --plans, or name it with --aborted"
+                    "and the same --record, or name it with --aborted"
                 ]
             ],
             facts(lines, "FAILED"),
         )
 
-        code, lines = self.sweep(None, "--skip-checkout", "continued repo")
+        code, lines = self.invoke(
+            "sweep",
+            "--repos-root",
+            str(self.repos),
+            "--record",
+            str(self.root / "plans"),
+            "--skip-checkout",
+            "continued repo",
+        )
         self.assertEqual(0, code, lines)
         self.assertEqual([[f"{root}/continued repo", "cleaned"]], facts(lines, "REPO"))
         self.assertEqual([[(self.root / "plans").as_posix()]], facts(lines, "PLANS"), "one directory holds every plan")
@@ -1583,6 +1591,21 @@ class SweepTests(Fixture):
             ],
             lines,
         )
+
+    def test_a_sweep_adds_only_to_a_directory_an_earlier_sweep_recorded_its_repositories_in(self) -> None:
+        before = sorted(path.name for path in self.root.iterdir())
+        for plans in (self.root / "missing", self.root):
+            with self.subTest(plans=plans):
+                code, lines = self.invoke("sweep", "--repos-root", str(self.repos), "--record", str(plans), "my repo")
+                self.assertEqual(
+                    (1, [f"FAILED\t{plans} holds no sweep record; name the directory a sweep printed as PLANS"]),
+                    (code, lines),
+                )
+        self.assertEqual([], self.github.calls, "refused before anything ran")
+        self.assertEqual(before, sorted(path.name for path in self.root.iterdir()), "nothing was created")
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+            rc.main(["sweep", "--repos-root", str(self.repos), "--plans", "a", "--record", "b"])
+        self.assertEqual(2, raised.exception.code, "a sweep writes to a new directory or adds to a recorded one")
 
     def test_the_report_refuses_a_directory_no_sweep_wrote(self) -> None:
         for plans in (self.root / "missing", self.root):

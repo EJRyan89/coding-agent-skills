@@ -2,7 +2,8 @@
 
     sweep         find the repositories to clean, then sync, plan, and apply every one at once, printing only what
                   needs the agent: decisions, failures, and summaries; plans go to a new temporary directory by
-                  default
+                  default, or with --record to the directory an earlier sweep printed and recorded its repositories
+                  in
     delete-local  delete local-only branches the user chose to delete (git branch -d), with the clean worktree a
                   branch offered with its path is checked out in
     force-delete  force-delete branches reported UNMERGED, after the user confirmed
@@ -10,8 +11,9 @@
                   remove detached worktrees reported CONFIRM_DETACHED and delete directories reported ORPHAN, after
                   the user confirmed
     summary       print the repository's summary from the plan file
-    report        print, from a sweep's plans directory, each repository's current summary and the closing count of
-                  the repositories processed and skipped, naming the dirty repositories the user aborted
+    report        print, from the directory a sweep printed and recorded its repositories in, each repository's
+                  current summary and the closing count of the repositories processed and skipped, naming the dirty
+                  repositories the user aborted
 
 Every command prints one tab-separated fact per line. Exit status 0 means every repository was cleaned, or every
 confirmed deletion ran or was preserved because what it named changed since the plan: it moved, or its commit left
@@ -1654,6 +1656,16 @@ def plans_location(explicit: str | None) -> Path | None:
     return Path(explicit)
 
 
+def recorded_location(directory: str) -> Path:
+    """The directory an earlier sweep printed and recorded its repositories in, for a sweep that adds to its record.
+
+    Only a directory holding a sweep's record is accepted, so the agent can name no other place for a sweep to write.
+    """
+    located = Path(directory)
+    read_record(located)
+    return located
+
+
 def applied_plan(path: Path | None) -> str | None:
     """The plan file of a repository whose apply started, so its summary and confirmations stay usable."""
     if path is None:
@@ -1823,7 +1835,7 @@ def aborted_entries(entries: list[dict[str, Any]], aborted: list[str]) -> list[d
     waiting = [entry["root"] for entry in entries if entry["state"] == "dirty" and entry not in dropped]
     if waiting:
         raise CleanupError(
-            f"still dirty: {', '.join(waiting)}; sweep each again with --skip-checkout and the same --plans, or name "
+            f"still dirty: {', '.join(waiting)}; sweep each again with --skip-checkout and the same --record, or name "
             "it with --aborted"
         )
     return dropped
@@ -1872,8 +1884,12 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     sweep_parser = commands.add_parser("sweep")
     sweep_parser.add_argument("--repos-root", required=True)
-    sweep_parser.add_argument(
+    location = sweep_parser.add_mutually_exclusive_group()
+    location.add_argument(
         "--plans", help="directory for each repository's plan file; defaults to a new temporary directory"
+    )
+    location.add_argument(
+        "--record", help="the directory an earlier sweep printed as PLANS, to keep this sweep's plans and record there"
     )
     sweep_parser.add_argument(
         "--skip-checkout", action="store_true", help="clean a dirty main worktree without switching branches"
@@ -1881,7 +1897,7 @@ def build_parser() -> argparse.ArgumentParser:
     sweep_parser.add_argument("target", nargs="?")
     commands.add_parser("summary").add_argument("--plan", required=True)
     report_parser = commands.add_parser("report")
-    report_parser.add_argument("--plans", required=True, help="the directory a sweep printed as PLANS")
+    report_parser.add_argument("--record", required=True, help="the directory a sweep printed as PLANS")
     report_parser.add_argument(
         "--aborted", action="append", default=[], help="a dirty repository the user aborted, by the path REPO gave"
     )
@@ -1900,10 +1916,10 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
     services = services or Services()
     try:
         if options.command == "sweep":
-            plans = plans_location(options.plans)
+            plans = recorded_location(options.record) if options.record else plans_location(options.plans)
             return sweep(options.target, options.repos_root, plans, services, options.skip_checkout)
         if options.command == "report":
-            return report(Path(options.plans), options.aborted)
+            return report(Path(options.record), options.aborted)
         if options.command == "summary":
             print_summary(load_plan(options.plan))
         elif options.command == "remove-directory":
