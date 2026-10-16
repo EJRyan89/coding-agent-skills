@@ -3339,7 +3339,8 @@ INVENTORY_SCENARIOS: dict[str, dict[str, str | bytes]] = {
         "sub/deeper/AGENTS.md": "x",
         "AGENTS.override.md": "x",
         ".git/AGENTS.md": "x",
-        "sub/.git/hooks/AGENTS.override.md": "x",
+        "vendor/.git/hooks/AGENTS.override.md": "x",
+        "vendor/AGENTS.md": "x",
     },
     "skill_directories": {
         ".claude/skills/Beta/SKILL.md": "x",
@@ -3761,21 +3762,36 @@ class RepositoryWalkTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_nested_files_below_skipped_directories_are_not_reported(self) -> None:
-        for directory in ("src", *sorted(audit.SKIPPED_DIRECTORIES), "src/node_modules/pkg", "lib/.venv"):
+        for directory in ("src", *sorted(audit.SKIPPED_FOLDERS), "src/node_modules/pkg", "lib/.venv", "vendor/clone"):
             for name in ("AGENTS.md", "AGENTS.override.md", ".mcp.json"):
                 path = self.root / directory / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("{}\n" if name == ".mcp.json" else "# Nested\n", encoding="utf-8")
+        # A clone, submodule, or worktree inside the repository is another repository's, marked by its .git.
+        (self.root / "vendor/clone/.git").write_text("gitdir: ../../.git/modules/clone\n", encoding="utf-8")
         reported = {f.path for f in audit.audit(self.root).findings if f.path and "/" in f.path}
         self.assertEqual(
             {"src/AGENTS.md", "src/AGENTS.override.md", "src/.mcp.json"},
             {path for path in reported if path.rsplit("/", 1)[-1] in ("AGENTS.md", "AGENTS.override.md", ".mcp.json")},
         )
 
-    def test_the_skipped_directories_are_version_control_and_dependency_directories(self) -> None:
+    def test_the_skipped_directories_are_version_control_dependency_and_build_directories(self) -> None:
         self.assertEqual(
-            {".git", ".hg", ".svn", "node_modules", ".venv", "venv", "__pycache__", ".tox", ".nox"},
-            audit.SKIPPED_DIRECTORIES,
+            {
+                ".git",
+                ".hg",
+                ".svn",
+                "node_modules",
+                ".venv",
+                "venv",
+                "__pycache__",
+                ".tox",
+                ".nox",
+                "bin",
+                "obj",
+                ".vs",
+            },
+            audit.SKIPPED_FOLDERS,
         )
 
 
@@ -4064,6 +4080,19 @@ class OutsideLinkTests(unittest.TestCase):
             ("INFO", "Custom agent files found: reviewer.md"),
             [(f.severity, f.message) for f in result.findings if f.path == ".github/agents"],
         )
+
+    def test_a_link_back_into_the_repository_is_not_walked_again(self) -> None:
+        # A link inside the root is followed, so one back to the root, or to a folder holding it, would walk it again
+        # without end; each nested file is found once through its own folder, and once through the link to it.
+        _write_fixture(self.root, {"target/AGENTS.md": "# Nested\n"})
+        _link_directory(self.root / "target", self.root / "linked")
+        _link_directory(self.root, self.root / "loop")
+        _link_directory(self.root / "target", self.root / "target/self")
+        self.assertEqual(
+            [self.root / "linked/AGENTS.md", self.root / "target/AGENTS.md"],
+            [path for path in audit.named_files(self.root, "AGENTS.md") if path != self.root / "AGENTS.md"],
+        )
+        self.assertEqual([], self._outside_links(audit.audit(self.root)))
 
     def test_the_link_finding_is_the_one_the_audit_policy_names(self) -> None:
         message = "Link leads out of the repository; the audit does not follow it"
