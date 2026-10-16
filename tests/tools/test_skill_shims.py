@@ -106,6 +106,63 @@ class SkillShimsTestCase(unittest.TestCase):
         )
         self.assertFalse((self.root / SHIM_PATH).exists())
 
+    def test_a_user_only_skill_gets_the_codex_policy_file_beside_its_shim(self) -> None:
+        self.write(
+            ".claude/skills/widget-check/SKILL.md",
+            SKILL.replace("---\n\n#", "disable-model-invocation: true\n---\n\n#"),
+        )
+        policy = Path(".agents/skills/widget-check/agents/openai.yaml")
+        self.assertEqual((0, f"WROTE {SHIM_PATH.as_posix()}\nWROTE {policy.as_posix()}\n"), self.run_main("--write"))
+        # The policy Codex reads instead of the frontmatter, written out independently of the deployer's constant.
+        self.assertEqual(b"policy:\n  allow_implicit_invocation: false\n", (self.root / policy).read_bytes())
+        self.assertEqual((0, ""), self.run_main())
+        (self.root / policy).write_text("policy:\n  allow_implicit_invocation: true\n", encoding="utf-8")
+        self.assertEqual(
+            (1, f"{policy.as_posix()} differs from what python tools/skill_shims.py --write writes; run it\n"),
+            self.run_main(),
+        )
+        (self.root / policy).unlink()
+        self.assertEqual(
+            (1, f"{policy.as_posix()} is missing from the shim; run python tools/skill_shims.py --write\n"),
+            self.run_main(),
+        )
+        self.assertEqual((0, f"WROTE {policy.as_posix()}\n"), self.run_main("--write"))
+
+    def test_a_file_the_writer_does_not_write_is_reported_and_kept(self) -> None:
+        # A model-invocable skill's shim holds SKILL.md alone, so a policy file there changes how Codex starts it.
+        self.write(SHIM_PATH.as_posix(), SHIM)
+        self.write(".agents/skills/widget-check/agents/openai.yaml", "policy:\n  allow_implicit_invocation: true\n")
+        self.write(".agents/skills/widget-check/scripts/tool.py", "print('unread')\n")
+        self.assertEqual(
+            (
+                1,
+                ".agents/skills/widget-check/agents/openai.yaml is no file python tools/skill_shims.py --write writes; "
+                "delete it\n"
+                ".agents/skills/widget-check/scripts/tool.py is no file python tools/skill_shims.py --write writes; "
+                "delete it\n",
+            ),
+            self.run_main("--write"),
+        )
+        self.assertTrue((self.root / ".agents/skills/widget-check/scripts/tool.py").is_file())
+
+    def test_a_folder_without_a_skill_md_and_a_stray_file_are_reported(self) -> None:
+        self.write(SHIM_PATH.as_posix(), SHIM)
+        self.write(".agents/skills/orphan-folder/README.md", "An orphan.\n")
+        self.write(".agents/skills/notes.md", "Not a shim.\n")
+        self.assertEqual(
+            (
+                1,
+                ".agents/skills/notes.md is not a shim folder; delete it\n"
+                ".agents/skills/orphan-folder has no .claude/skills/orphan-folder/SKILL.md; delete it\n",
+            ),
+            self.run_main(),
+        )
+        # A skill's own folder that lost its SKILL.md is a missing shim, which --write restores.
+        (self.root / SHIM_PATH).unlink()
+        self.assertIn(
+            ".claude/skills/widget-check/SKILL.md has no .agents/skills/widget-check/SKILL.md shim", self.run_main()[1]
+        )
+
     def test_write_can_be_limited_to_named_skills(self) -> None:
         self.write(".claude/skills/other/SKILL.md", "---\nname: other\n---\n")
         self.assertEqual([SHIM_PATH], skill_shims.write(self.root, ["widget-check"]))

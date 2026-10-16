@@ -299,10 +299,11 @@ def repository_code_declaration_problems(root: Path) -> list[str]:
 
 def repository_skill_problems(root: Path) -> list[str]:
     """Report each repository skill under .claude/skills whose .agents/skills shim is missing or differs from what
-    tools/skill_shims.py writes, and each stray shim.
+    tools/skill_shims.py writes, each file in a shim folder the tool does not write, and each stray shim.
 
-    Codex and Copilot CLI read .agents/skills, so a shim must carry the skill's own frontmatter, which is all they
-    see before choosing it, and point to the skill as the authoritative workflow; the tool is the one writer of both.
+    Codex and Copilot CLI read .agents/skills, so a shim must carry the skill's own frontmatter, which they read before
+    choosing it, point to the skill as the authoritative workflow, and, for a skill only the user starts, hold the
+    agents/openai.yaml policy Codex reads instead of the frontmatter; the tool is the one writer of all three.
     """
     from tools import skill_shims
 
