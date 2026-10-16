@@ -8,6 +8,7 @@ environment the canary gave them, so the deployment, the recorder, and the fixtu
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import inspect
 import io
 import json
@@ -29,6 +30,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 from git_test_base import GitTestCase
 
 from deployer import discovery, platform_support, runtime_support
+from deployer import source as deploy_source
+from deployer.paths import Paths
 from tools import runtime_canary
 from tools.runtime_canary import Completed
 
@@ -56,6 +59,33 @@ def forward(path: Path | str) -> str:
     return str(path).replace("\\", "/")
 
 
+# What each fake runtime prints for --version, as each real one words it.
+VERSIONS = {
+    "claude": "2.1.291 (Claude Code)",
+    "codex": "codex-cli 0.160.0",
+    "copilot": "GitHub Copilot CLI 1.0.98.\nRun 'copilot update' to check for updates.",
+}
+
+
+def split(output: str) -> tuple[list[str], list[str]]:
+    """The run's lines, and the record block it printed after them, RECORD_BEGIN to RECORD_END, or none."""
+    lines = output.splitlines()
+    if "RECORD_BEGIN" not in lines:
+        return lines, []
+    start = lines.index("RECORD_BEGIN")
+    return lines[:start], lines[start:]
+
+
+def answering(completed: Completed, calls: list[list[str]]) -> runtime_canary.Runner:
+    """A runner that notes each command it is given and answers every one with `completed`."""
+
+    def runner(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Completed:
+        calls.append(arguments)
+        return completed
+
+    return runner
+
+
 class FakeRuntimes:
     """Answers each runtime's skill listing, through talk, and stands in for its model run, when called."""
 
@@ -64,6 +94,8 @@ class FakeRuntimes:
         self.listings: dict[str, list[tuple[str, str, bool]]] = {}
         self.actions: dict[str, Callable[[list[str], Path, dict[str, str]], Completed]] = {}
         self.calls: list[tuple[str, list[str], Path, Mapping[str, str]]] = []
+        # Each runtime asked for its version, which the fake answers apart from its runs.
+        self.versions: list[str] = []
 
     def talk(
         self,
@@ -85,6 +117,9 @@ class FakeRuntimes:
 
     def __call__(self, arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Completed:
         runtime = Path(arguments[0]).name
+        if arguments[1:] == ["--version"]:
+            self.versions.append(runtime)
+            return Completed(0, f"{VERSIONS[Path(runtime).stem]}\n", "")
         self.calls.append(("run", arguments, cwd, environment))
         action = self.actions.get(runtime)
         return action(arguments, cwd, environment) if action else Completed(0, "", "")
@@ -162,6 +197,8 @@ class RuntimeCanaryTestCase(GitTestCase):
         self.root = Path(self._temporary.name).resolve()
         self.home = self.root / "Canary Home (1)"
         self.home.mkdir()
+        # The record block the last run printed, which outcome splits from its lines.
+        self.recorded: list[str] = []
 
         def refuse(*_: object, **__: object) -> Completed:
             raise AssertionError("a test started a real runtime")
@@ -283,7 +320,10 @@ class RuntimeCanaryTestCase(GitTestCase):
                 timeout=60,
                 **options,
             )
-        return code, output.getvalue().splitlines()
+        lines, self.recorded = split(output.getvalue())
+        # Every run that ends prints its record last.
+        self.assertEqual(["RECORD_BEGIN", "RECORD_END"], [self.recorded[0], self.recorded[-1]], output.getvalue())
+        return code, lines
 
     def skill_dir(self, name: str = FIXTURE) -> str:
         return forward(self.home / ".claude" / "skills" / name)
@@ -1112,8 +1152,9 @@ class RunTests(RuntimeCanaryTestCase):
                 self.subTest(arguments=arguments),
                 mock.patch.object(runtime_canary, "create_home", return_value=self.home),
                 mock.patch.object(runtime_canary, "canary", return_value=0) as canary,
+                contextlib.redirect_stdout(io.StringIO()),
             ):
-                self.assertEqual(0, runtime_canary.main(["--discovery-only", *arguments]))
+                self.assertEqual(0, runtime_canary.main(["--discovery-only", "--keep-home", *arguments]))
                 self.assertEqual(expected, canary.call_args.kwargs["codex_sandbox"])
         output = io.StringIO()
         with contextlib.redirect_stderr(output), self.assertRaises(SystemExit) as raised:
@@ -1801,6 +1842,287 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
             runtime_canary.main(["alpha", "no-such-skill"])
         self.assertEqual(2, raised.exception.code)
         self.assertIn("unknown skill: no-such-skill", stderr.getvalue())
+
+
+class RecordTests(RuntimeCanaryTestCase):
+    @mock.patch.object(runtime_canary, "CODEX_HAS_WINDOWS_SANDBOX", False)
+    def test_the_record_holds_each_version_and_the_recorded_kinds_naming_no_path_of_this_machine(self) -> None:
+        profile = self.root / "Profile Folder"
+        adapters = forward(self.home / ".agents" / "skills")
+        runner = FakeRuntimes()
+        runner.listings["codex"] = [
+            (FIXTURE, f"{adapters}/{FIXTURE}", True),
+            (FIXTURE, f"{forward(profile)}/.agents/skills/{FIXTURE}", True),
+        ]
+        runner.actions["codex"] = run_python(f"{self.skill_dir()}/scripts/canary_probe.py", "--help")
+        with mock.patch.object(platform_support, "home_directory", return_value=profile):
+            lines = self.canary(runner, runtimes=("codex", "copilot"), installed=("codex",))
+        script = f"<temp>/.claude/skills/{FIXTURE}/scripts/canary_probe.py"
+        self.assertEqual(
+            [
+                "RECORD_BEGIN",
+                "VERSION codex 0.160.0",
+                f'DISCOVERED codex {FIXTURE} "<temp>/.agents/skills/{FIXTURE}"',
+                f'SHADOWED codex {FIXTURE} "<home>/.agents/skills/{FIXTURE}"',
+                f'RUNTIME codex {FIXTURE} RAN "{script}" "<temp>"{PYTHON_EXIT} {self.kept("codex")}',
+                'SKIPPED copilot "copilot is not installed"',
+                f"MATRIX codex {FIXTURE} AGREES full",
+                "RECORD_END",
+            ],
+            self.recorded,
+        )
+        # The lines that name only this machine's throwaway files print above the record and stay out of it.
+        for kind in ("HOME ", "DEPLOYED ", "TRANSCRIPT "):
+            self.assertTrue([line for line in lines if line.startswith(kind)], kind)
+        self.assertEqual(["codex"], runner.versions)
+
+    def test_a_runtime_whose_version_cannot_be_read_is_recorded_as_unknown(self) -> None:
+        cases = {
+            "it exits otherwise than 0": Completed(1, "2.0.0\n", ""),
+            "it prints no version": Completed(0, "Claude Code\n", ""),
+            "it cannot start": Completed(-1, "", "", error="cannot run claude"),
+        }
+        for name, completed in cases.items():
+            with self.subTest(case=name):
+                calls: list[list[str]] = []
+                runner = answering(completed, calls)
+                version = runtime_canary.runtime_version("claude", runner, dict(os.environ), self.home)
+                self.assertEqual(("unknown", [["claude", "--version"]]), (version, calls))
+
+    def test_each_path_is_named_by_its_placeholder_as_far_as_the_end_of_its_name(self) -> None:
+        profile = self.root / "Profile"
+        home = profile / "Temp" / "runtime-canary-x"
+        source = profile / "GitHub" / "repo"
+        paths = {home: "<temp>", source: "<source>", profile: "<home>"}
+        escaped = json.dumps(str(home))[1:-1]
+        cases = {
+            f'DISCOVERED codex a "{forward(home)}/.agents/skills/a"': 'DISCOVERED codex a "<temp>/.agents/skills/a"',
+            f'SHADOWED codex a "{forward(profile)}/.agents/skills/a"': 'SHADOWED codex a "<home>/.agents/skills/a"',
+            f'RUNTIME codex a FAILED "ran {forward(source)}/x.py"': 'RUNTIME codex a FAILED "ran <source>/x.py"',
+            f'MATRIX "{forward(home).upper()}"': 'MATRIX "<temp>"',
+            f'SKIPPED "{escaped}"': 'SKIPPED "<temp>"',
+            f'SKIPPED "{forward(profile)}2/notes" {forward(home)}': f'SKIPPED "{forward(profile)}2/notes" <temp>',
+        }
+        for line, expected in cases.items():
+            with self.subTest(line=line):
+                self.assertEqual(expected, runtime_canary.placeholders(line, paths))
+
+
+class FinishTests(GitTestCase):
+    def finish(self, code: int, *arguments: str) -> tuple[Path, int, str]:
+        """main's run with the canary itself replaced by one that exits with `code`, in a home the canary made."""
+        home = runtime_canary.create_home()
+        runtime_canary.claim_home(home)
+        # Looked up when the cleanup runs, after any case that replaced it has put it back.
+        self.addCleanup(lambda: shutil.rmtree(home, ignore_errors=True))
+        output = io.StringIO()
+        with (
+            mock.patch.object(runtime_canary, "create_home", return_value=home),
+            mock.patch.object(runtime_canary, "canary", return_value=code),
+            contextlib.redirect_stdout(output),
+        ):
+            result = runtime_canary.main(["--runtime", "codex", *arguments])
+        return home, result, output.getvalue()
+
+    def test_the_home_is_removed_after_a_run_that_passed(self) -> None:
+        home, code, output = self.finish(0)
+        self.assertEqual((0, f'REMOVED "{home.as_posix()}"\n'), (code, output))
+        self.assertFalse(home.exists())
+
+    def test_the_home_is_kept_after_a_run_that_failed_or_with_keep_home(self) -> None:
+        for code, arguments, why in (
+            (1, (), "the run failed, so its transcripts stay for reading"),
+            (0, ("--keep-home",), "--keep-home was given"),
+            (1, ("--keep-home",), "--keep-home was given"),
+        ):
+            with self.subTest(code=code, arguments=arguments):
+                home, result, output = self.finish(code, *arguments)
+                self.assertEqual(
+                    (code, f'HOME_KEPT "{home.as_posix()}" "{why}; remove it with --remove-home"\n'), (result, output)
+                )
+                self.assertTrue(runtime_canary.claimed(home))
+
+    def test_a_home_that_cannot_be_removed_fails_a_run_that_passed(self) -> None:
+        with mock.patch.object(runtime_canary.shutil, "rmtree", side_effect=OSError("held open")):
+            home, code, output = self.finish(0)
+        self.assertEqual((1, f'FAILED "cannot remove {home.as_posix()}: held open"\n'), (code, output))
+
+    def test_the_commands_that_make_no_home_take_no_skill_and_no_home_option(self) -> None:
+        for arguments, message in (
+            (["--changed-since", "v1", "review-prs"], "--changed-since takes no SKILL"),
+            (["--changed-since", "--keep-home"], "--changed-since makes no home, so it takes no other home option"),
+            (["--remove-home", "x", "--keep-home"], "--remove-home makes no home, so it takes no other home option"),
+            (
+                ["--remove-home", "x", "--changed-since"],
+                "--remove-home makes no home, so it takes no other home option",
+            ),
+            (["--changed-since=--all"], "--changed-since takes a commit, not an option: --all"),
+        ):
+            with self.subTest(arguments=arguments):
+                output = io.StringIO()
+                with (
+                    mock.patch("tempfile.mkdtemp", side_effect=AssertionError("made a home")),
+                    contextlib.redirect_stderr(output),
+                    self.assertRaises(SystemExit) as raised,
+                ):
+                    runtime_canary.main(arguments)
+                self.assertEqual(2, raised.exception.code)
+                self.assertIn(message, output.getvalue())
+
+
+class ChangedSkillsTests(RuntimeCanaryTestCase):
+    def make_changing_source(self) -> Path:
+        """make_source's skills, with core hidden behind alpha, an agent core declares, and a shared asset gamma
+        declares."""
+        source = self.make_source(hidden=True)
+        (source / "agents").mkdir()
+        (source / "agents" / "reviewer.md").write_text(
+            "---\nname: reviewer\ndescription: Reviews.\n---\n\nReview.\n", encoding="utf-8"
+        )
+        (source / "skills" / "notes.md").write_text("Shared notes.\n", encoding="utf-8")
+        (source / "source.json").write_text(
+            json.dumps({"id": "test/shipped", "shared_assets": {"notes.md": "owner"}}), encoding="utf-8"
+        )
+        for name, field, value in (("core", "agent_deps", ["reviewer"]), ("gamma", "shared_deps", ["notes.md"])):
+            meta = source / "deploy-meta" / f"{name}.json"
+            meta.write_text(
+                json.dumps({**json.loads(meta.read_text(encoding="utf-8")), field: value}), encoding="utf-8"
+            )
+        return source
+
+    def discovered(self, source: Path) -> deploy_source.Source:
+        paths = Paths(source, source)
+        return deploy_source.discover(paths, deploy_source.load_source_id(paths))
+
+    def test_each_kind_of_changed_path_names_the_shipped_skills_it_reaches(self) -> None:
+        src = self.discovered(self.make_changing_source())
+        cases: dict[str, dict[str, str]] = {
+            "skills/alpha/SKILL.md": {"alpha": "skills/alpha/SKILL.md"},
+            "skills/beta/scripts/tool.py": {"beta": "skills/beta/scripts/tool.py"},
+            "deploy-meta/gamma.json": {"gamma": "deploy-meta/gamma.json"},
+            "skills/notes.md": {"gamma": "skills/notes.md, through the shared asset notes.md"},
+            "skills/core/SKILL.md": {"alpha": "skills/core/SKILL.md, through the hidden dependency core"},
+            "deploy-meta/core.json": {"alpha": "deploy-meta/core.json, through the hidden dependency core"},
+            "agents/reviewer.md": {
+                "alpha": "agents/reviewer.md, through the agent reviewer and the hidden dependency core"
+            },
+            "docs/skills.md": {},
+            "skills/removed/SKILL.md": {},
+            "deploy-meta/alpha.txt": {},
+            "agents/nobody.md": {},
+            "tests/fixtures/runtime-canary/skills/runtime-canary-probe/SKILL.md": {},
+        }
+        for path, expected in cases.items():
+            with self.subTest(path=path):
+                self.assertEqual(expected, runtime_canary.changed_skills([path], src, lambda name: False))
+        # Each skill is named once, by the first path in order that reaches it.
+        self.assertEqual(
+            {"alpha": "skills/alpha/SKILL.md", "beta": "deploy-meta/beta.json"},
+            runtime_canary.changed_skills(
+                ["skills/core/SKILL.md", "skills/alpha/SKILL.md", "deploy-meta/beta.json"], src, lambda name: False
+            ),
+        )
+
+    def test_a_hidden_dependency_reaches_its_declarers_through_another_hidden_one(self) -> None:
+        src = self.discovered(self.make_changing_source())
+        inner = dataclasses.replace(src.skills["core"], name="inner", skill_deps=[])
+        src.skills["inner"] = inner
+        src.skills["core"] = dataclasses.replace(src.skills["core"], skill_deps=["inner"])
+        self.assertEqual(
+            {"alpha": "skills/inner/x.py, through the hidden dependency inner"},
+            runtime_canary.changed_skills(["skills/inner/x.py"], src, lambda name: False),
+        )
+
+    def test_a_renderer_change_names_one_skill_of_each_kind_of_start_preferring_a_changed_one(self) -> None:
+        src = self.discovered(self.make_changing_source())
+        renderer = "deployer/render.py writes every adapter, so one skill"
+        cases: tuple[tuple[list[str], dict[str, str]], ...] = (
+            (
+                ["deployer/render.py"],
+                {"alpha": f"{renderer} the model may start", "gamma": f"{renderer} only the user may start"},
+            ),
+            (
+                ["deployer/render.py", "skills/beta/SKILL.md"],
+                {"beta": "skills/beta/SKILL.md", "gamma": f"{renderer} only the user may start"},
+            ),
+        )
+        for paths, expected in cases:
+            with self.subTest(paths=paths):
+                self.assertEqual(expected, runtime_canary.changed_skills(paths, src, lambda name: name == "gamma"))
+
+    def test_changed_since_reads_whether_a_skill_starts_only_by_the_user_from_its_source(self) -> None:
+        source = self.make_changing_source()
+        skill = source / "skills" / "gamma" / "SKILL.md"
+        skill.write_bytes(skill.read_bytes().replace(b"---\n\n", b"disable-model-invocation: true\n---\n\n", 1))
+        output = io.StringIO()
+        with (
+            mock.patch.object(runtime_canary, "changed_paths", return_value=("abc123", ["deployer/render.py"])),
+            contextlib.redirect_stdout(output),
+        ):
+            self.assertEqual(0, runtime_canary.changed_since("v1", root=source))
+        renderer = "deployer/render.py writes every adapter, so one skill"
+        self.assertEqual(
+            [
+                "SINCE v1 abc123",
+                f'CHANGED alpha "{renderer} the model may start"',
+                f'CHANGED gamma "{renderer} only the user may start"',
+            ],
+            output.getvalue().splitlines(),
+        )
+
+    def test_changed_since_reads_every_change_since_the_shared_commit_through_git(self) -> None:
+        source = self.make_changing_source()
+
+        def git(*arguments: str) -> str:
+            return runtime_canary.GIT.output(list(arguments), directory=source)
+
+        def listed(ref: str | None) -> tuple[int, list[str]]:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = runtime_canary.changed_since(ref, root=source)
+            return code, output.getvalue().splitlines()
+
+        git("init", "-q")
+        # With no tag to default to, git's refusal is the reason.
+        code, lines = listed(None)
+        self.assertEqual(1, code)
+        self.assertRegex(lines[0], r'^FAILED ".+"$')
+        git("add", "-A")
+        git("commit", "-q", "-m", "base")
+        git("tag", "v1")
+        base = git("rev-parse", "HEAD").strip()
+        (source / "docs").mkdir()
+        (source / "docs" / "notes.md").write_text("Notes.\n", encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", "documents")
+        self.assertEqual(
+            (0, [f"SINCE v1 {base}", 'NOTHING_CHANGED "no change since v1 reaches a shipped skill"']), listed(None)
+        )
+        tool = source / "skills" / "alpha" / "scripts" / "tool.py"
+        tool.write_text("print('changed')\n", encoding="utf-8")
+        git("commit", "-q", "-am", "alpha")
+        # A rename names both sides: the file beta loses and the one gamma gains.
+        git("mv", "skills/beta/scripts/tool.py", "skills/gamma/scripts/tool.py")
+        # Unstaged, after the shared commit's tree.
+        meta = source / "deploy-meta" / "core.json"
+        meta.write_text(meta.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+        (source / "agents" / "untracked.md").write_text("---\nname: untracked\n---\n", encoding="utf-8")
+        self.assertEqual(
+            (
+                0,
+                [
+                    f"SINCE v1 {base}",
+                    'CHANGED alpha "deploy-meta/core.json, through the hidden dependency core"',
+                    'CHANGED beta "skills/beta/scripts/tool.py"',
+                    'CHANGED gamma "skills/gamma/scripts/tool.py"',
+                ],
+            ),
+            listed(None),
+        )
+        self.assertEqual((0, [f"SINCE HEAD {git('rev-parse', 'HEAD').strip()}", *listed(None)[1][1:]]), listed("HEAD"))
+        code, lines = listed("no-such-ref")
+        self.assertEqual(1, code)
+        self.assertRegex(lines[0], r'^FAILED ".+"$')
 
 
 if __name__ == "__main__":
