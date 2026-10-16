@@ -36,6 +36,8 @@ GIT_CONFIG: Mapping[str, str] = MappingProxyType({"init.defaultBranch": "main", 
 TEMPLATE: Path | None = None
 # What a sweep step returns.
 T = TypeVar("T")
+# The reason an offer whose name does not survive one line is preserved instead, given the flattened name.
+UNNAMEABLE = "not offered: the name {} holds a character a fact line cannot carry, so no confirmation could name it"
 
 
 def setUpModule() -> None:
@@ -820,7 +822,7 @@ class PlanApplyTests(Fixture):
             {Path(fields[0]).name: fields[1] for fields in facts(applied, "REMOVED")},
         )
         self.assertEqual(
-            [["deleted 2 regenerable caches: .pytest_cache/, __pycache__/"]],
+            [["deleted 2 regenerable paths: .pytest_cache/, __pycache__/"]],
             [fields[2:] for fields in facts(applied, "REMOVED")],
         )
         [(preserved_branch, preserved_reason)] = facts(applied, "PRESERVED")
@@ -829,7 +831,7 @@ class PlanApplyTests(Fixture):
         self.assertEqual("secret wt", Path(removed_path.replace("cached", "secret")).name)
         self.assertEqual(
             f"worktree {removed_path.replace('cached', 'secret')} holds 1 ignored path git worktree remove would "
-            "delete: .env; also 2 regenerable caches: .pytest_cache/, __pycache__/",
+            "delete: .env; also 2 regenerable paths: .pytest_cache/, __pycache__/",
             preserved_reason,
         )
         self.assertFalse(cached_tree.exists())
@@ -838,7 +840,7 @@ class PlanApplyTests(Fixture):
         self.assertIsNotNone(self.tip("secret-gone"))
         summary = "\n".join(fields[0] for fields in facts(applied, "SUMMARY"))
         self.assertIn(
-            f"  Worktrees removed:       1 — {removed_path} (cached-gone; deleted 2 regenerable caches: "
+            f"  Worktrees removed:       1 — {removed_path} (cached-gone; deleted 2 regenerable paths: "
             ".pytest_cache/, __pycache__/)",
             summary,
         )
@@ -884,10 +886,32 @@ class PlanApplyTests(Fixture):
         self.sync()
         self.plan()
         code, lines = self.confirm("delete-local", "anything")
-        self.assertEqual((1, ["FAILED\trun apply with this plan first"]), (code, lines))
+        self.assertEqual(
+            (1, ["FAILED\tthis plan was not applied by a sweep; run the sweep again for a new plan"]), (code, lines)
+        )
+        code, lines = self.invoke("remove-directory", "--plan", str(self.plan_file), "--path", str(self.area))
+        self.assertEqual(
+            (1, ["FAILED\tthis plan was not applied by a sweep; run the sweep again for a new plan"]), (code, lines)
+        )
         self.apply()
-        with self.assertRaisesRegex(rc.CleanupError, "^this plan was already applied; run plan again$"):
+        with self.assertRaisesRegex(
+            rc.CleanupError, "^this plan was already applied; run the sweep again for a new plan$"
+        ):
             self.apply()
+
+    def test_a_refusal_of_a_plan_names_only_a_command_the_parser_has(self) -> None:
+        for message in (f"this plan was not applied by a sweep; {rc.SWEEP_AGAIN}", rc.SWEEP_AGAIN):
+            commands = re.findall(r"\brun (?:the )?([a-z-]+)", message)
+            self.assertEqual(["sweep"], commands, message)
+        for command, code in (("sweep", 0), ("apply", 2), ("plan", 2)):
+            with (
+                self.subTest(command=command),
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                rc.build_parser().parse_args([command, "--help"])
+            self.assertEqual(code, raised.exception.code, command)
 
     def test_a_deletion_git_refuses_exits_1_after_reporting_every_branch(self) -> None:
         git(self.clone, "branch", "first", "main")
@@ -1499,10 +1523,9 @@ class SweepTests(Fixture):
             self.assertIn("  PR status unverified:    1 — caf� (", self.summary(lines))
         else:
             # Elsewhere an argument carries the decoded name back as Git's own bytes, so git finds the ref, a
-            # branch that was never pushed.
-            self.assertIn("  Local-only (kept):       1 — caf�", self.summary(lines))
-        # Only a branch git found can be confirmed as local to delete.
-        self.assertEqual([] if sys.platform == "win32" else [["caf�"]], facts(lines, "CONFIRM_LOCAL"))
+            # branch that was never pushed, but a confirmation could only name it by the replacement character.
+            self.assertIn(f"  Preserved:               1 — caf�: {UNNAMEABLE.format('caf�')}", self.summary(lines))
+        self.assertEqual([], facts(lines, "CONFIRM_LOCAL"), "a name that does not survive the line is never offered")
         plan = json.loads((self.root / "plans" / "my repo.json").read_text(encoding="utf-8"))
         self.assertEqual(["caf\udce9"], [branch["name"] for branch in plan["branches"]], "the plan keeps Git's bytes")
 
@@ -1575,7 +1598,9 @@ class SweepTests(Fixture):
         self.assertEqual(0, code, lines)
         root = self.repos.as_posix()
         self.assertEqual([[f"{root}/my repo", "cleaned"], [f"{root}/other repo", "quiet"]], facts(lines, "REPO"))
-        self.assertEqual([["odd name"]], facts(self.blocks(lines)["my repo"], "CONFIRM_LOCAL"))
+        block = self.blocks(lines)["my repo"]
+        self.assertEqual([], facts(block, "CONFIRM_LOCAL"), "a confirmation could not name it")
+        self.assertIn(f"  Preserved:               1 — odd name: {UNNAMEABLE.format('odd name')}", self.summary(block))
         self.assertTrue(all("\u2028" not in line for line in lines), "every fact stays on one line")
         plan = json.loads((self.root / "plans" / "my repo.json").read_text(encoding="utf-8"))
         self.assertEqual([name], [branch["name"] for branch in plan["branches"]])
@@ -1862,7 +1887,7 @@ class RemoveWorktreeTests(CleanupTestCase):
                     "REMOVED",
                     str(path),
                     "cached",
-                    "deleted 6 regenerable caches: .mypy_cache/, .pytest_cache/, .ruff_cache/, __pycache__/, "
+                    "deleted 6 regenerable paths: .mypy_cache/, .pytest_cache/, .ruff_cache/, __pycache__/, "
                     "node_modules/.cache/, and 1 more",
                 ],
                 ["DELETED", "cached"],
@@ -1885,7 +1910,7 @@ class RemoveWorktreeTests(CleanupTestCase):
                     "PRESERVED",
                     "mixed",
                     f"worktree {path} holds 1 ignored path git worktree remove would delete: node_modules/; "
-                    "also 2 regenerable caches: .pytest_cache/, __pycache__/",
+                    "also 2 regenerable paths: .pytest_cache/, __pycache__/",
                 ]
             ],
             events,
@@ -1899,7 +1924,7 @@ class RemoveWorktreeTests(CleanupTestCase):
         self.assertEqual(rc.Removal(removed=False, refused=False), removed)
         self.assertEqual(
             f"worktree {path} holds 2 ignored paths git worktree remove would delete: .env, pkg/stray.pyc; "
-            "also 3 regenerable caches: .pytest_cache/, __pycache__/, pkg/__pycache__/",
+            "also 3 regenerable paths: .pytest_cache/, __pycache__/, pkg/__pycache__/",
             events[0][2],
         )
         self.assertIsNotNone(self.tip("mixed"))
@@ -1917,27 +1942,177 @@ class RemoveWorktreeTests(CleanupTestCase):
         )
         self.assertEqual(rc.NAMED_PATHS, 5)
 
-    def test_the_disposable_caches_are_exactly_the_documented_set(self) -> None:
+    def test_the_regenerable_paths_are_exactly_the_documented_set(self) -> None:
         self.assertEqual(
-            {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "node_modules/.cache"},
-            set(rc.DISPOSABLE_CACHES),
+            {
+                "__pycache__": (),
+                ".pytest_cache": (),
+                ".mypy_cache": (),
+                ".ruff_cache": (),
+                "node_modules/.cache": (),
+                ".vs": (),
+                "node_modules": ("package.json",),
+                "bin": ("*.csproj", "*.vbproj", "*.fsproj"),
+                "obj": ("*.csproj", "*.vbproj", "*.fsproj"),
+            },
+            dict(rc.REGENERABLE),
         )
-        for path, disposable in (
+        tree = self.root / "layout"
+        for name in ("App/App.csproj", "Lib/Lib.fsproj", "web/package.json"):
+            (tree / name).parent.mkdir(parents=True, exist_ok=True)
+            (tree / name).write_text("x", encoding="utf-8")
+        for name in (
+            "__pycache__",
+            "pkg/__pycache__",
+            "node_modules/.cache",
+            "node_modules/left-pad",
+            "web/node_modules/left-pad",
+            ".vs/App",
+            "App/bin/Debug",
+            "App/obj",
+            "Lib/obj",
+            "tools/bin",
+            "Lib/sub/bin",
+            ".cache",
+            "my__pycache__",
+            "__pycache__.bak",
+            "pytest_cache",
+        ):
+            (tree / name).mkdir(parents=True, exist_ok=True)
+        for entry, regenerable in (
             ("__pycache__/", True),
             ("pkg/__pycache__/", True),
             ("pkg/__pycache__/a.pyc", True),
             ("node_modules/.cache/", True),
             ("web/node_modules/.cache/babel/", True),
+            ("web/node_modules/", True),
+            ("web/node_modules/left-pad/", True),
+            (".vs/", True),
+            (".vs/App/v17/.suo", True),
+            ("App/bin/", True),
+            ("App/bin/Debug/App.dll", True),
+            ("App/obj/", True),
+            ("Lib/obj/", True),
             ("node_modules/", False),
             ("node_modules/left-pad/", False),
+            ("tools/bin/", False),
+            ("Lib/sub/bin/", False),
+            ("bin/", False),
             (".cache/", False),
             ("my__pycache__/", False),
             ("__pycache__.bak/", False),
             (".env", False),
             ("pytest_cache/", False),
         ):
-            with self.subTest(path=path):
-                self.assertEqual(disposable, rc.is_disposable(path))
+            with self.subTest(entry=entry):
+                self.assertEqual(regenerable, rc.is_regenerable(entry, str(tree)))
+
+    def test_a_projects_build_and_ide_output_is_removed_with_its_worktree_and_a_bin_without_one_keeps_it(self) -> None:
+        for name in ("App/App.csproj", "web/package.json"):
+            (self.repo / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.repo / name).write_text("<Project />\n", encoding="utf-8")
+        git(self.repo, "add", "App/App.csproj", "web/package.json")
+        self.ignore("bin/", "obj/", ".vs/", "node_modules/")
+        built = self.add("built")
+        self.fill(
+            built,
+            "App/bin/Debug/App.dll",
+            "App/obj/project.assets.json",
+            ".vs/App/v17/.suo",
+            "web/node_modules/left-pad/index.js",
+        )
+        removed, events, _ = self.remove("built", "MERGED")
+        self.assertEqual(rc.Removal(removed=True, refused=False), removed)
+        self.assertEqual(
+            [
+                [
+                    "REMOVED",
+                    str(built),
+                    "built",
+                    "deleted 4 regenerable paths: .vs/, App/bin/, App/obj/, web/node_modules/",
+                ],
+                ["DELETED", "built"],
+            ],
+            events,
+        )
+        self.assertFalse(built.exists())
+        tools = self.add("tools")
+        self.fill(tools, "tools/bin/run.sh", "App/bin/Debug/App.dll")
+        self.plan["events"].clear()
+        removed, events, _ = self.remove("tools", "MERGED")
+        self.assertEqual(rc.Removal(removed=False, refused=False), removed, "a bin with no project beside it")
+        self.assertEqual(
+            [
+                [
+                    "PRESERVED",
+                    "tools",
+                    f"worktree {tools} holds 1 ignored path git worktree remove would delete: tools/bin/; also 1 "
+                    "regenerable path: App/bin/",
+                ]
+            ],
+            events,
+        )
+        self.assertTrue((tools / "tools" / "bin" / "run.sh").is_file())
+
+    def test_a_worktree_whose_folder_git_could_not_delete_says_its_record_and_files_are_gone(self) -> None:
+        path = self.add("held")
+
+        def held_folder(command: Sequence[str], timeout: float) -> GitResult:
+            result = git_client.subprocess_runner(command, timeout)
+            if "worktree" in command and "remove" in command:
+                # As Windows leaves it when a process works in the folder: Git deleted the files and the record,
+                # then failed on the folder itself.
+                Path(command[-1]).mkdir()
+                return GitResult(255, "", f"error: failed to delete '{command[-1]}': Permission denied")
+            return result
+
+        tip = self.tip("held") or ""
+        with contextlib.redirect_stdout(io.StringIO()):
+            outcome = rc.remove_worktree(
+                rc.Services(git=GitClient(held_folder)), self.plan, {"path": str(path), "branch": "held"}, tip, "MERGED"
+            )
+        self.assertEqual(rc.Removal(removed=False, refused=True), outcome)
+        self.assertEqual(
+            [
+                [
+                    "PRESERVED",
+                    "held",
+                    f"Git deleted worktree {path}'s record and files but not its folder: error: failed to delete "
+                    f"'{path}': Permission denied; a sweep offers what is left there as a directory Git no longer "
+                    "tracks",
+                ]
+            ],
+            self.plan["events"],
+        )
+        self.assertNotIn(str(path), git(self.repo, "worktree", "list", "--porcelain"))
+        self.assertEqual(tip, self.tip("held"))
+
+    def test_edits_hidden_from_status_keep_a_worktree_asked_just_before_its_removal(self) -> None:
+        (self.repo / "settings.json").write_text('{"local": false}\n', encoding="utf-8")
+        git(self.repo, "add", "settings.json")
+        git(self.repo, "commit", "--quiet", "-m", "settings")
+        for name, bit in (("skipped", "--skip-worktree"), ("assumed", "--assume-unchanged")):
+            with self.subTest(bit=bit):
+                path = self.add(name)
+                (path / "settings.json").write_text('{"local": true}\n', encoding="utf-8")
+                git(path, "update-index", bit, "settings.json")
+                self.assertEqual("", git(path, "status", "--porcelain"), "the bit hides the edit from status")
+                self.plan["events"].clear()
+                removed, events, _ = self.remove(name, "MERGED")
+                self.assertEqual(rc.Removal(removed=False, refused=False), removed)
+                self.assertEqual(
+                    [
+                        [
+                            "PRESERVED",
+                            name,
+                            f"worktree {path} holds edits status does not show, to 1 file marked skip-worktree or "
+                            "assume-unchanged: settings.json",
+                        ]
+                    ],
+                    events,
+                )
+                self.assertEqual('{"local": true}\n', (path / "settings.json").read_text(encoding="utf-8"))
+                self.assertIsNotNone(self.tip(name))
 
     def test_an_unmerged_branch_outlives_its_removed_worktree(self) -> None:
         path = self.add("unmerged")
