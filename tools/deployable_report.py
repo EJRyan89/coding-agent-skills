@@ -4,8 +4,7 @@ Usage:
   python tools/deployable_report.py verify --label NAME --deploy-verify-exit CODE --deploy-verify-log FILE
                                             --results FILE
   python tools/deployable_report.py layout --label NAME --results FILE
-  python tools/deployable_report.py owned --owned FILE
-  python tools/deployable_report.py leftovers --owned FILE --results FILE
+  python tools/deployable_report.py leftovers --results FILE
   python tools/deployable_report.py summary --results FILE [--note TEXT ...] [--summary FILE]
 
 `verify` asks Codex CLI and Copilot CLI which skills they find, the way `python deploy.py verify` does, and judges
@@ -21,15 +20,16 @@ that lists skills without a session, so this checks the files instead: Claude Co
 manifest owns has a non-empty SKILL.md, and every agent it owns is in place. That is a file-layout check, not a
 discovery check, and the result says so. It joins the pass with the same label in the results file.
 
-`owned` and `leftovers` are the uninstall check. Before the uninstall, `owned` saves every path the manifest owns and
-every entry in the directories items deploy to, files and directories alike. After it, `leftovers` names each saved
-path that is still there, each entry those directories gained, and each item the manifest still records, and records
-them for the summary; it exits 1 when it names any. It allows what the uninstall leaves by design: the manifest, which
-keeps the source's entry with no items, and each directory's retained backups.
+`leftovers` is the uninstall check. After the uninstall, it names every entry, files and directories alike, in the
+directories items deploy to, and each item the manifest still records, and records them for the summary; it exits 1
+when it names any. It allows what the uninstall leaves by design: the manifest, which keeps the source's entry with no
+items, and each directory's retained backups. Every path the deployment owns is an entry of one of those directories,
+so the listing after the uninstall is the whole check and nothing is saved before it; the workflow's step before the
+uninstall is the layout check, which refuses a profile with nothing deployed.
 
 An absent results file starts an empty record. A results file that cannot be read, is not JSON, or does not hold a
-JSON array, a saved-paths file that cannot be read as a non-empty JSON array of paths, and a results file that cannot
-be written are each an `ERROR:` line naming the file, and the command exits 2, leaving the file as it was.
+JSON array, and a results file that cannot be written are each an `ERROR:` line naming the file, and the command exits
+2, leaving the file as it was.
 
 Nothing here starts a model.
 """
@@ -63,8 +63,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 PASSED = "PASSED"
 SKIPPED = "SKIPPED"
 FAILED = "FAILED"
-# The exit code of a results or saved-paths file the tool cannot read or write, apart from the 1 a check's failure
-# returns.
+# The exit code of a results file the tool cannot read or write, apart from the 1 a check's failure returns.
 INPUT_ERROR = 2
 CLAUDE = "claude"
 # What a runtime says when it will not list skills for want of a sign-in. Anything else is a failure.
@@ -170,10 +169,6 @@ def _item_roots(paths: Paths) -> list[Path]:
     return list(dict.fromkeys(journal.root_directory(paths, kind.root) for kind in KINDS))
 
 
-def _present(path: Path) -> bool:
-    return path.exists() or path.is_symlink()
-
-
 def _root_entries(paths: Paths) -> set[Path]:
     """Every entry in the directories items deploy to, files included, but the manifest and the retained backups."""
     found: set[Path] = set()
@@ -194,20 +189,11 @@ def _manifest_items(paths: Paths) -> list[tuple[str, str, Path]]:
     ]
 
 
-def owned_paths(paths: Paths) -> list[str]:
-    """Before the uninstall: every path the manifest owns and every entry the deployment left where items deploy."""
-    items = _manifest_items(paths)
-    if not items:
-        where = platform_support.normalize(paths.dest_dir)
-        raise DeployError(f"ERROR: Nothing is deployed in {where}.", f"Deploy first with '{PROG}'.")
-    return sorted({str(path) for _, _, path in items} | {str(path) for path in _root_entries(paths)})
-
-
-def leftovers(paths: Paths, recorded: list[str]) -> list[str]:
-    """After the uninstall: each recorded path still there, each entry added where items deploy, and each item the
-    manifest still records, named by its path or by the source that still owns it."""
-    surviving = {Path(path) for path in recorded if _present(Path(path))} | _root_entries(paths)
-    left = sorted(platform_support.normalize(path) for path in surviving)
+def leftovers(paths: Paths) -> list[str]:
+    """After the uninstall: each entry where items deploy and each item the manifest still records, named by its path
+    or by the source that still owns it. Each item deploys to a direct child of its kind's directory, so the listing
+    names every path the deployment owned that is still there."""
+    left = sorted(platform_support.normalize(path) for path in _root_entries(paths))
     left += [
         f"manifest source '{source_id}' still owns {noun} {platform_support.normalize(path)}"
         for source_id, noun, path in _manifest_items(paths)
@@ -330,21 +316,6 @@ def _record_leftovers(results_file: Path, left: list[str]) -> None:
     _write_results(results_file, passes)
 
 
-def _read_owned(path: Path) -> list[str]:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise DeployError(
-            f"ERROR: Cannot read the paths saved before the uninstall: {path}: {exc}", exit_code=INPUT_ERROR
-        ) from exc
-    if not isinstance(data, list) or not data or not all(isinstance(item, str) for item in data):
-        raise DeployError(
-            f"ERROR: The paths saved before the uninstall are not a non-empty JSON array: {path}",
-            exit_code=INPUT_ERROR,
-        )
-    return data
-
-
 def _verify(arguments: argparse.Namespace) -> int:
     paths = Paths(Path(arguments.source), Path(arguments.home))
     try:
@@ -378,28 +349,10 @@ def _layout(arguments: argparse.Namespace) -> int:
     return 0 if result.status == PASSED else 1
 
 
-def _owned(arguments: argparse.Namespace) -> int:
-    paths = Paths(Path(arguments.source), Path(arguments.home))
-    target = Path(arguments.owned)
-    try:
-        found = owned_paths(paths)
-        try:
-            target.write_text(json.dumps(found, indent=2) + "\n", encoding="utf-8")
-        except OSError as exc:
-            raise DeployError(
-                f"ERROR: Cannot save the paths the deployment owns: {target}: {exc}", exit_code=INPUT_ERROR
-            ) from exc
-    except DeployError as exc:
-        print_error(exc)
-        return exc.exit_code
-    print(f"Saved {len(found)} paths the deployment owns or created.")
-    return 0
-
-
 def _leftovers(arguments: argparse.Namespace) -> int:
     paths = Paths(Path(arguments.source), Path(arguments.home))
     try:
-        left = leftovers(paths, _read_owned(Path(arguments.owned)))
+        left = leftovers(paths)
         _record_leftovers(Path(arguments.results), left)
     except DeployError as exc:
         print_error(exc)
@@ -431,16 +384,13 @@ def _summary(arguments: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("verify", "layout", "owned", "leftovers", "summary"):
+    for name in ("verify", "layout", "leftovers", "summary"):
         command = commands.add_parser(name)
-        if name != "owned":
-            command.add_argument("--results", required=True, help="the JSON file that collects each pass")
+        command.add_argument("--results", required=True, help="the JSON file that collects each pass")
         command.add_argument("--home", default=str(platform_support.home_directory()), help=argparse.SUPPRESS)
         command.add_argument("--source", default=str(REPOSITORY_ROOT), help=argparse.SUPPRESS)
     for name in ("verify", "layout"):
         commands.choices[name].add_argument("--label", required=True)
-    for name in ("owned", "leftovers"):
-        commands.choices[name].add_argument("--owned", required=True, help="the paths saved before the uninstall")
     commands.choices["verify"].add_argument("--deploy-verify-exit", type=int, required=True)
     commands.choices["verify"].add_argument(
         "--deploy-verify-log", required=True, help=f"the saved output of {VERIFY_COMMAND_LINE}"
@@ -449,7 +399,7 @@ def main(argv: list[str] | None = None) -> int:
     commands.choices["summary"].add_argument("--summary", default="")
     commands.choices["summary"].add_argument("--no-probe", action="store_true", help=argparse.SUPPRESS)
     arguments = parser.parse_args(argv)
-    handlers = {"verify": _verify, "layout": _layout, "owned": _owned, "leftovers": _leftovers, "summary": _summary}
+    handlers = {"verify": _verify, "layout": _layout, "leftovers": _leftovers, "summary": _summary}
     return handlers[arguments.command](arguments)
 
 
