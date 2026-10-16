@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 import pull_request_title
+from git_client import GitResult
 from git_test_base import GitTestCase
 from pull_request_title import head_branch, title_problems, title_types_problems
 
@@ -113,6 +114,14 @@ class HeadBranch(GitTestCase):
         os.environ["GITHUB_HEAD_REF"] = ""
         self.assertEqual("feat/local-branch", head_branch())
 
+    def test_the_branch_is_the_checkouts_whatever_repository_git_dir_names(self) -> None:
+        other = self.repository.parent / "another repository"
+        other.mkdir()
+        git(other, "init", "--initial-branch", "fix/another-branch")
+        git(other, "commit", "--allow-empty", "--message", "Initial")
+        os.environ["GIT_DIR"] = str(other / ".git")
+        self.assertEqual("feat/local-branch", head_branch())
+
     def test_a_detached_head_names_no_branch(self) -> None:
         git(self.repository, "checkout", "--detach")
         self.assertIsNone(head_branch())
@@ -121,10 +130,13 @@ class HeadBranch(GitTestCase):
         # Outside any repository git fails; so does any git command the patched runner says failed.
         self.enterContext(mock.patch.object(pull_request_title, "REPOSITORY_ROOT", self.repository / "missing"))
         self.assertIsNone(head_branch())
-        failed = subprocess.CompletedProcess(["git"], 128, stdout="feat/local-branch\n", stderr="fatal: failed\n")
-        with mock.patch.object(pull_request_title.subprocess, "run", return_value=failed) as run:
+        failed = GitResult(128, "feat/local-branch\n", "fatal: failed\n")
+        with mock.patch.object(pull_request_title, "git", return_value=failed) as run:
             self.assertIsNone(head_branch())
         self.assertEqual(1, run.call_count)
+        # Nor does a git that cannot run at all.
+        with mock.patch.object(pull_request_title, "git", side_effect=ValueError("git was not found")):
+            self.assertIsNone(head_branch())
 
 
 if __name__ == "__main__":
