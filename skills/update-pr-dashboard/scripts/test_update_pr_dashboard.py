@@ -20,7 +20,7 @@ from github_client import CommandResult
 from pr_change import CHANGED, UNCHANGED, UNKNOWN, ChangeDetector, ComparisonError
 from review_github import GitHubClient, GitHubError
 from typed_fields import FieldError
-from update_pr_tracker import (
+from update_pr_dashboard import (
     END_MARKER,
     SECTION_SUMMARIES,
     SECTION_TO_REVIEW,
@@ -195,7 +195,7 @@ class LayoutTests(unittest.TestCase):
         self.assertIn(
             "### On Hold (1)\n\n<details>\n<summary>Pinned by a status override in "
             '<a href="vscode://file/D:/AgentData/config.json">the code-review configuration</a>. Set or clear one '
-            "through update-pr-tracker, which runs <code>tracker_pipeline.py override</code>; do not edit the file "
+            "through update-pr-dashboard, which runs <code>dashboard_pipeline.py override</code>; do not edit the file "
             "by hand.</summary>\n",
             content,
         )
@@ -217,7 +217,7 @@ class LayoutTests(unittest.TestCase):
         content, _ = run([item(number=4)], overrides={"owner/repo#4": "on hold"})
         self.assertIn(
             "<summary>Pinned by a status override in the code-review configuration. Set or clear one through "
-            "update-pr-tracker, which runs <code>tracker_pipeline.py override</code>; do not edit the file by "
+            "update-pr-dashboard, which runs <code>dashboard_pipeline.py override</code>; do not edit the file by "
             "hand.</summary>",
             content,
         )

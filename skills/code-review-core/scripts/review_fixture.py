@@ -1,4 +1,4 @@
-"""A three-version review archive for the finding-ledger rendering tests of code-review-core and update-pr-tracker.
+"""A three-version review archive for the finding-ledger rendering tests of code-review-core and update-pr-dashboard.
 
 Version 1 raises a must-fix that stays open and a should-fix that version 2 addresses. Version 2 reports nothing new.
 Version 3 reports a new suggestion and repeats the open must-fix. Each version's head is its digit repeated.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 import sys
 import unittest
 from pathlib import Path
@@ -51,6 +52,41 @@ class BundleAndDependencyTests(DeployerTestCase):
         self.assertEqual(["alpha", "beta"], sorted(entry["wrappers"]))
         rerun = self.deploy("--dry-run", stdin="\n").output
         self.assertRegex(rerun, r"(?m)^  \[\*\] [0-9]+\. operations \(bundle\)$")
+
+    def renamed_member(self) -> None:
+        """Deploy the bundle, then rename its member beta to gamma in the source, as a skill rename does."""
+        self.bundle_fixture()
+        self.deploy_ok("--all")
+        self.remove_skill("beta")
+        self.make_skill("gamma", "Beta", skill_deps=["core"])
+        self.make_source_json(bundles={"operations": {"members": ["alpha", "gamma"]}})
+
+    def test_a_bundle_member_the_source_renames_is_removed_and_installed_under_its_new_name(self) -> None:
+        self.renamed_member()
+        report = self.report_groups(self.deploy_ok("--all").output, "DEPLOYED")
+        self.assertEqual(["beta (deselected or absent from source)"], report["REMOVED"])
+        self.assertEqual(["gamma"], report["INSTALLED"])
+        self.assertEqual(["alpha", "core", "gamma"], sorted(self.owned("skills")))
+        for directory in (self.skills_dir, self.agents_dir):
+            self.assertFalse((directory / "beta").exists())
+            self.assertTrue((directory / "gamma" / "SKILL.md").is_file())
+        entry = self.manifest()["sources"]["test/skills"]
+        self.assertEqual(["operations"], entry["requested_bundles"])
+        self.assertEqual({"operations": ["alpha", "gamma"]}, entry["requested_bundle_members"])
+
+    def test_a_modified_bundle_member_the_source_renames_is_preserved_until_its_folder_is_deleted(self) -> None:
+        self.renamed_member()
+        self.append(self.skills_dir / "beta" / "SKILL.md", "# local note\n")
+        report = self.report_groups(self.deploy_ok("--all").output, "DEPLOYED")
+        self.assertEqual(["beta (modified since last deploy)"], report["PRESERVED"])
+        self.assertEqual(["gamma"], report["INSTALLED"])
+        self.assertTrue((self.agents_dir / "beta" / "SKILL.md").is_file(), "its adapter stays with it")
+        shutil.rmtree(self.skills_dir / "beta")
+        report = self.report_groups(self.deploy_ok("--all").output, "DEPLOYED")
+        self.assertEqual(["beta (already absent)"], report["DROPPED OWNERSHIP"])
+        self.assertEqual(["beta (runtime adapter, obsolete)"], report["REMOVED"])
+        self.assertFalse((self.agents_dir / "beta").exists())
+        self.assertEqual(["alpha", "core", "gamma"], sorted(self.owned("skills")))
 
     def test_run_header_names_the_source_and_shows_the_selection_as_a_tree(self) -> None:
         self.bundle_fixture()

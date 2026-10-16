@@ -48,7 +48,10 @@ REVIEWER_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 # When an `auto` re-review reviews the whole pull request instead of only what changed since the last review:
 # at least this share of its changed lines changed again, or at least this many lines did.
 RE_REVIEW_SCOPE_DEFAULTS = {"full_share": 0.5, "full_lines": 1000}
-OPERATIONS = {"review-prs", "update-pr-tracker", "review-insights"}
+OPERATIONS = {"review-prs", "update-pr-dashboard", "review-insights"}
+# An operation a skill rename retired, with the name it has now: a configuration still naming it is refused with both
+# names, as any unknown operation is refused, so the user renames the key rather than losing its set silently.
+RENAMED_OPERATIONS = {"update-pr-tracker": "update-pr-dashboard"}
 REPOSITORY_KEYS = {"reviewer", "checkout_path", "snapshot_exclude"}
 # A repository's snapshot_exclude: glob patterns over snapshot-relative paths, matched as review_runtime's
 # configured_exclusion matches them.
@@ -57,7 +60,7 @@ MAX_SNAPSHOT_EXCLUDE_PATTERN_LENGTH = 200
 REVIEWER_KEYS = {"id", "protocol_version", "trusted_ref", "scope", "manifest_path", "skill", "manifest"}
 DASHBOARD_KEYS = {"start_marker", "end_marker", "status_overrides", "author_names"}
 GITHUB_LOGIN_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}")
-# The sections the pull-request tracker computes. update-pr-tracker renders these names, and they live here, beside
+# The sections the pull-request tracker computes. update-pr-dashboard renders these names, and they live here, beside
 # the validation that refuses a status override naming one, so the names refused and the names rendered cannot drift:
 # an override named like a computed section rendered that section twice and dropped the rows placed in it.
 DASHBOARD_SECTION_TO_REVIEW = "To Review"
@@ -72,7 +75,7 @@ DASHBOARD_SECTIONS = (
 )
 # The AI review states the tracker computes for each row, independently of its section: no review, a review of the
 # current head, a review of an earlier head that has changed since, and a review of the current head that could not
-# read every changed file in full. update-pr-tracker returns only these, so a state it computes is refused as an
+# read every changed file in full. update-pr-dashboard returns only these, so a state it computes is refused as an
 # override without a second list to keep in step.
 DASHBOARD_AI_REVIEW_MISSING = "missing"
 DASHBOARD_AI_REVIEW_CURRENT = "current"
@@ -385,6 +388,11 @@ def _validate_verdict_policy(value: Any) -> dict[str, Any]:
 
 
 def _validate_operation_sets(value: Any, normalized_sets: dict[str, list[str]]) -> dict[str, Any]:
+    for retired, current in RENAMED_OPERATIONS.items():
+        if isinstance(value, dict) and retired in value:
+            raise ConfigurationError(
+                f"operation_repository_sets.{retired} names an operation renamed {current}; rename the key to {current}"
+            )
     operation_sets = READ.json_object(value, "config.operation_repository_sets", optional=OPERATIONS)
     for operation, set_name in operation_sets.items():
         if READ.string(set_name, f"config.operation_repository_sets.{operation}") not in normalized_sets:
