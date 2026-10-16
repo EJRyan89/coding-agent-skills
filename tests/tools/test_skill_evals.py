@@ -833,18 +833,22 @@ class JudgeTests(GitTestCase):
         status, lines = run_main(["demo", "--records", str(self.records)], self.scenarios)
         self.assertEqual(1, status)
         self.assertIn(
-            'FAIL demo defects haiku verdict CHANGES_REQUESTED "verdict is APPROVED"',
+            'FAIL demo defects haiku verdict CHANGES_REQUESTED judgment "verdict is APPROVED"',
             lines,
         )
-        missing = self.records / "defects" / "sonnet.json"
-        self.assertIn(
-            f"FAIL demo defects sonnet verdict CHANGES_REQUESTED {json.dumps(f'no record at {missing}')}", lines
-        )
+        missing = json.dumps(f"no record at {self.records / 'defects' / 'sonnet.json'}")
+        self.assertIn(f"FAIL demo defects sonnet verdict CHANGES_REQUESTED run {missing}", lines)
         self.assertTrue(
             any(
-                line.startswith("FAIL demo defects opus finding") and "is not a review record" in line for line in lines
+                line.startswith("FAIL demo defects opus finding a.go:3 MUST_FIX record ")
+                and "is not a review record" in line
+                for line in lines
             )
         )
+        # Each record that counts for nothing is told once, before every outcome.
+        self.assertEqual(f"NOT_COUNTED defects sonnet run {missing}", lines[0])
+        self.assertTrue(lines[1].startswith('NOT_COUNTED defects opus record "'), lines[1])
+        self.assertTrue(lines[2].startswith(("PASS ", "FAIL ")), lines[2])
         self.assertEqual("| defects | 0/2 | 0/2 | 0/2 |", lines[-1])
 
     def test_unreadable_record_fails(self) -> None:
@@ -885,9 +889,10 @@ class JudgeTests(GitTestCase):
         missing = json.dumps(f"no record at {self.records / 'defects' / 'haiku.json'}")
         self.assertEqual(
             [
+                f"NOT_COUNTED defects haiku run {missing}",
                 "PASS demo clean haiku verdict APPROVED",
-                f"FAIL demo defects haiku finding a.go:3 MUST_FIX {missing}",
-                f"FAIL demo defects haiku verdict CHANGES_REQUESTED {missing}",
+                f"FAIL demo defects haiku finding a.go:3 MUST_FIX run {missing}",
+                f"FAIL demo defects haiku verdict CHANGES_REQUESTED run {missing}",
                 "| Scenario | haiku |",
                 "| --- | --- |",
                 "| clean | 1/1 |",
@@ -902,7 +907,7 @@ class JudgeTests(GitTestCase):
         status, lines = run_main(["demo", "--records", str(self.records), "--model", "opus"], self.scenarios)
         self.assertEqual(1, status)
         reason = f"{path} is not a review record: record.schema_version must be an integer, found null"
-        self.assertIn(f"FAIL demo defects opus verdict CHANGES_REQUESTED {json.dumps(reason)}", lines)
+        self.assertIn(f"FAIL demo defects opus verdict CHANGES_REQUESTED record {json.dumps(reason)}", lines)
         self.assertEqual("| defects | 0/2 |", lines[-1])
 
     def test_a_record_a_run_would_not_count_counts_for_nothing(self) -> None:
@@ -927,13 +932,10 @@ class JudgeTests(GitTestCase):
                 argv = ["demo", "--records", str(self.records), "--model", "haiku", "--scenario", scenario]
                 status, lines = run_main(argv, self.scenarios)
                 self.assertEqual(1, status)
-                self.assertIn(
-                    f"FAIL demo {scenario} haiku verdict APPROVED {json.dumps(f'{path} counts for nothing: {reason}')}"
-                    if scenario == "again"
-                    else f"FAIL demo {scenario} haiku verdict CHANGES_REQUESTED "
-                    f"{json.dumps(f'{path} counts for nothing: {reason}')}",
-                    lines,
-                )
+                told = json.dumps(f"{path} counts for nothing: {reason}")
+                verdict = "APPROVED" if scenario == "again" else "CHANGES_REQUESTED"
+                self.assertIn(f"NOT_COUNTED {scenario} haiku record {told}", lines)
+                self.assertIn(f"FAIL demo {scenario} haiku verdict {verdict} record {told}", lines)
         # A reviewer that reports the model's ID with a dated suffix ran on it.
         self.write_record("haiku", contract_record(defect, "claude-haiku-5-5-20261001"))
         argv = ["demo", "--records", str(self.records), "--model", "haiku", "--scenario", "defects"]
@@ -966,10 +968,12 @@ class JudgeTests(GitTestCase):
         def source(scenario: Scenario, model: str) -> dict[str, Any]:
             if model == "sonnet":
                 raise RecordError("the run failed")
+            if model == "opus":
+                raise RecordError("the record is another model's", skill_evals.RECORD)
             return record(verdict="CHANGES_REQUESTED")
 
         scenarios = skill_evals.load_scenarios("demo", root=self.scenarios)
-        outcomes = skill_evals.judge(scenarios, ["haiku", "sonnet"], source)
+        outcomes = skill_evals.judge(scenarios, ["haiku", "sonnet", "opus"], source)
         self.assertEqual(
             [
                 Outcome(
@@ -977,17 +981,46 @@ class JudgeTests(GitTestCase):
                     "haiku",
                     "finding a.go:3 MUST_FIX",
                     "no finding at least MUST_FIX on those lines; findings on a.go: none",
+                    "judgment",
                 ),
                 Outcome("defects", "haiku", "verdict CHANGES_REQUESTED", None),
-                Outcome("defects", "sonnet", "finding a.go:3 MUST_FIX", "the run failed"),
-                Outcome("defects", "sonnet", "verdict CHANGES_REQUESTED", "the run failed"),
+                Outcome("defects", "sonnet", "finding a.go:3 MUST_FIX", "the run failed", "run"),
+                Outcome("defects", "sonnet", "verdict CHANGES_REQUESTED", "the run failed", "run"),
+                Outcome("defects", "opus", "finding a.go:3 MUST_FIX", "the record is another model's", "record"),
+                Outcome("defects", "opus", "verdict CHANGES_REQUESTED", "the record is another model's", "record"),
             ],
             outcomes,
         )
         self.assertEqual(
-            ["| Scenario | haiku | sonnet |", "| --- | --- | --- |", "| defects | 1/2 | 0/2 |"],
-            skill_evals.table(scenarios, ["haiku", "sonnet"], outcomes),
+            [
+                "| Scenario | haiku | sonnet | opus |",
+                "| --- | --- | --- | --- |",
+                "| defects | 1/2 | 0/2 | 0/2 |",
+            ],
+            skill_evals.table(scenarios, ["haiku", "sonnet", "opus"], outcomes),
         )
+        self.assertEqual(
+            [
+                'NOT_COUNTED defects sonnet run "the run failed"',
+                'NOT_COUNTED defects opus record "the record is another model\'s"',
+            ],
+            skill_evals.not_counted(outcomes),
+        )
+
+    def test_a_record_lacking_what_an_expectation_reads_is_a_judgment(self) -> None:
+        again = write_scenario(
+            self.scenarios,
+            "again",
+            scenario_spec({"kind": "ledger", "addressed": 1, "still_present": 0}, mode="re-review", prior="prior.json"),
+        )
+        (again / "prior.json").write_text("{}", encoding="utf-8")
+        scenarios = skill_evals.load_scenarios("demo", ["again"], self.scenarios)
+        outcomes = skill_evals.judge(scenarios, ["haiku"], lambda _scenario, _model: record())
+        self.assertEqual(
+            [Outcome("again", "haiku", "ledger addressed=1 still_present=0", "the record has no ledger", "judgment")],
+            outcomes,
+        )
+        self.assertEqual([], skill_evals.not_counted(outcomes))
 
 
 def lines_of(path: Path) -> list[str]:
@@ -2199,6 +2232,60 @@ RESULTS_TEXT = "\n".join(
 )
 
 
+class CitationTests(GitTestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        write_scenario(root, "clean", scenario_spec())
+        write_scenario(root, "defects", scenario_spec({"kind": "verdict", "verdict": "CHANGES_REQUESTED"}))
+        self.scenarios = skill_evals.load_scenarios("demo", root=root)
+
+    def test_the_block_cites_the_run_and_each_judgment_and_no_path_of_the_machine(self) -> None:
+        held = contract_record(model="claude-sonnet-5-5")
+        runs = {
+            ("clean", "sonnet"): skill_evals.Run(held, None, frozenset({"claude-sonnet-5-5"}), frozenset()),
+            ("defects", "sonnet"): skill_evals.Run(held, None, frozenset({"claude-sonnet-5-5"}), frozenset()),
+            ("clean", "haiku"): skill_evals.Run(
+                None, "C:/home/x: timed out", frozenset(), frozenset(), "the run recorded no review", "run"
+            ),
+            ("defects", "haiku"): skill_evals.Run(
+                None, "reviewers ran on claude-opus-5-5", frozenset({"claude-opus-5-5"}), frozenset(), "same", "record"
+            ),
+        }
+        outcomes = [
+            Outcome("clean", "sonnet", "verdict APPROVED", None),
+            Outcome("clean", "haiku", "verdict APPROVED", "C:/home/x: timed out", "run"),
+            Outcome("defects", "sonnet", "verdict CHANGES_REQUESTED", "verdict is ```APPROVED```", "judgment"),
+            Outcome("defects", "haiku", "verdict CHANGES_REQUESTED", "reviewers ran on claude-opus-5-5", "record"),
+        ]
+        options = skill_evals.parser().parse_args(
+            ["demo", "--model", "sonnet", "--model", "haiku", "--model", "sonnet", "--timeout", "90", "--jobs", "5"]
+        )
+        self.assertEqual(
+            [
+                "`python -B tools/skill_evals.py demo --model sonnet --model haiku --timeout 90`",
+                "",
+                "| Scenario | sonnet | haiku |",
+                "| --- | --- | --- |",
+                "| clean | 1/1 | 0/1 |",
+                "| defects | 0/1 | 0/1 |",
+                "",
+                "````text",
+                "RUNTIME claude 2.1.291",
+                "REVIEWER sonnet claude-sonnet-5-5",
+                "REVIEWER haiku claude-opus-5-5",
+                "GUARDED clean sonnet generic files_read=0",
+                "GUARDED defects sonnet generic files_read=0",
+                'NOT_COUNTED clean haiku run "the run recorded no review"',
+                'NOT_COUNTED defects haiku record "same"',
+                'FAIL demo defects sonnet verdict CHANGES_REQUESTED judgment "verdict is ```APPROVED```"',
+                "````",
+            ],
+            skill_evals.citation("demo", options, "2.1.291", self.scenarios, ["sonnet", "haiku"], runs, outcomes),
+        )
+
+
 class ResultsTests(GitTestCase):
     def test_rows_name_the_models_and_a_model_that_never_ran(self) -> None:
         scenarios = [Scenario("review-prs", name, Path(name), "initial", None, ()) for name in ("a", "b")]
@@ -2332,7 +2419,8 @@ class StubClaude:
     the session's model and the reviewer model the --agents definition sets, and, unless `guarded` is false, each
     role's read log started as the reviewer guard's claim starts it. Each reviewer does what the scenario the run's
     folder is named for expects. `after`, if given, is called with the record JSON finalize wrote, as what happened to
-    the run's canary root after it."""
+    the run's canary root after it. `session` names the model the session's own messages report, and without
+    `subagent` no subagent message is forwarded, as when the session works the roles itself."""
 
     def __init__(
         self,
@@ -2342,8 +2430,11 @@ class StubClaude:
         reviewer: str | None = None,
         guarded: bool = True,
         after: Callable[[Path], None] | None = None,
+        session: str = "claude-opus-5-5",
+        subagent: bool = True,
     ) -> None:
         self.test, self.review, self.reviewer, self.guarded, self.after = test, review, reviewer, guarded, after
+        self.session, self.subagent = session, subagent
         self.calls: list[tuple[list[str], Path, dict[str, str]]] = []
         self.built: dict[str, list[str]] = {}
         # Each fixture run's fixture, by its scenario and model, and its files as the session found them.
@@ -2378,7 +2469,8 @@ class StubClaude:
             if self.after is not None:
                 self.after(written)
         reviewer = self.reviewer or model
-        return skill_evals.Completed(0, f"{assistant('claude-opus-5-5')}\n{assistant(reviewer, subagent=True)}", "")
+        forwarded = [assistant(reviewer, subagent=True)] if self.subagent else []
+        return skill_evals.Completed(0, "\n".join([assistant(self.session), *forwarded]), "")
 
 
 def forward(path: Path) -> str:
@@ -2414,10 +2506,18 @@ class EvaluateTests(GitTestCase):
     def evaluate(
         self, argv: Sequence[str], seams: skill_evals.Seams, skill: str = "review-prs"
     ) -> tuple[int, list[str]]:
+        """The run's status and its output lines but the citation block, which `self.output` keeps with the rest and
+        `self.cited` alone, between its BEGIN and END lines."""
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             status = skill_evals.main([skill, *argv], seams=seams)
-        return status, output.getvalue().splitlines()
+        self.output = output.getvalue().splitlines()
+        self.cited: list[str] = []
+        if "CITATION BEGIN" not in self.output:
+            return status, self.output
+        begin, end = self.output.index("CITATION BEGIN"), self.output.index("CITATION END")
+        self.cited = self.output[begin + 1 : end]
+        return status, self.output[:begin] + self.output[end + 1 :]
 
     def test_every_scenario_runs_on_every_model_and_the_result_is_recorded(self) -> None:
         claude = StubClaude(self)
@@ -2442,9 +2542,33 @@ class EvaluateTests(GitTestCase):
             ],
             guarded,
         )
-        self.assertEqual([], [line for line in lines if line.startswith("FAIL")])
+        self.assertEqual([], [line for line in lines if line.startswith(("FAIL", "NOT_COUNTED"))])
         self.assertIn("PASS review-prs re-review haiku ledger addressed=1 still_present=2", lines)
         self.assertEqual(f"REMOVED {forward(self.homes)}", lines[-1])
+        # The citation: the command, the table, and the runtime, reviewer, and guard lines in a text fence.
+        reviewers = [line for line in lines if line.startswith("REVIEWER ")]
+        self.assertEqual(
+            [
+                "`python -B tools/skill_evals.py review-prs --write`",
+                "",
+                "| Scenario | haiku | sonnet | opus |",
+                "| --- | --- | --- | --- |",
+                "| clean-change | 2/2 | 2/2 | 2/2 |",
+                "| design-clean | 2/2 | 2/2 | 2/2 |",
+                "| design-gaps | 5/5 | 5/5 | 5/5 |",
+                "| planted-defects | 5/5 | 5/5 | 5/5 |",
+                "| re-review | 7/7 | 7/7 | 7/7 |",
+                "",
+                "```text",
+                "RUNTIME claude 2.1.291",
+                *reviewers,
+                *guarded,
+                "```",
+            ],
+            self.cited,
+        )
+        self.assertEqual(3, len(reviewers))
+        self.assertTrue(self.output[self.output.index("CITATION END") + 1].startswith("WROTE "))
         self.assertFalse(self.homes.exists())
         written = self.results.read_text(encoding="utf-8")
         self.assertIn(
@@ -2574,7 +2698,12 @@ class EvaluateTests(GitTestCase):
                 "| planted-defects | 5/5 | 5/5 |",
                 "| clean-change | 2/2 | 2/2 |",
             ],
-            [line for line in lines if line.startswith("|")],
+            [line for line in self.cited if line.startswith("|")],
+        )
+        self.assertEqual(
+            "`python -B tools/skill_evals.py review-prs --scenario planted-defects --scenario clean-change "
+            "--model sonnet --model haiku`",
+            self.cited[0],
         )
         self.assertFalse(self.homes.exists())
         self.assertEqual(RESULTS_TEXT, self.results.read_text(encoding="utf-8"))
@@ -2588,7 +2717,10 @@ class EvaluateTests(GitTestCase):
         status, lines = self.evaluate(argv, self.seams(claude, git=GitClient(runner=broken)), "review-document")
         self.assertEqual(1, status)
         reason = "the document could not be staged: fatal: cannot create a repository here"
-        self.assertIn(f'FAIL review-document committed-edit haiku verdict CHANGES_REQUESTED "{reason}"', lines)
+        self.assertIn(f'NOT_COUNTED committed-edit haiku run "{reason}"', lines)
+        self.assertIn(f'FAIL review-document committed-edit haiku verdict CHANGES_REQUESTED run "{reason}"', lines)
+        # The citation names the run problem by its fixed phrase, without git's message.
+        self.assertIn('NOT_COUNTED committed-edit haiku run "the document could not be staged"', self.cited)
         self.assertIn("REVIEWER haiku none", lines)
         self.assertEqual([["claude.exe", "--version"]], [arguments for arguments, _, _ in claude.calls])
 
@@ -2635,7 +2767,7 @@ class EvaluateTests(GitTestCase):
         status, lines = self.evaluate(["--model", "haiku", "--scenario", "clean-change"], self.seams(claude))
         self.assertEqual(1, status)
         reason = "no reviewer guard held generic-review: its files_read is null"
-        self.assertIn(f'FAIL review-prs clean-change haiku verdict APPROVED "{reason}"', lines)
+        self.assertIn(f'FAIL review-prs clean-change haiku verdict APPROVED record "{reason}"', lines)
         self.assertFalse(any(line.startswith(("PASS", "GUARDED")) for line in lines))
 
     def test_an_agent_that_cannot_be_passed_stops_the_run(self) -> None:
@@ -2654,8 +2786,17 @@ class EvaluateTests(GitTestCase):
     def test_a_run_without_a_record_fails_its_expectations_keeps_the_home_and_records_not_run(self) -> None:
         status, lines = self.evaluate(["--write", "--jobs", "2"], self.seams(StubClaude(self, review=False)))
         self.assertEqual(1, status)
-        self.assertIn('FAIL review-prs clean-change haiku verdict APPROVED "the run recorded no review"', lines)
+        self.assertIn('FAIL review-prs clean-change haiku verdict APPROVED run "the run recorded no review"', lines)
         self.assertFalse(any(line.startswith(("PASS", "REMOVED")) for line in lines))
+        # Each run that counts for nothing is told once before the outcomes, and the citation follows them.
+        told = [line for line in lines if line.startswith("NOT_COUNTED ")]
+        self.assertEqual(15, len(told))
+        first = lines.index(told[0])
+        self.assertEqual(told, lines[first : first + 15])
+        self.assertTrue(lines[first + 15].startswith("FAIL "), lines[first + 15])
+        self.assertEqual(told, [line for line in self.cited if line.startswith("NOT_COUNTED ")])
+        self.assertTrue(self.output[self.output.index("CITATION BEGIN") - 1].startswith("FAIL "))
+        self.assertTrue(self.output[self.output.index("CITATION END") + 1].startswith("WROTE "))
         self.assertTrue(self.homes.is_dir())
         self.assertIn("| review-prs | sonnet | claude-sonnet-5-5 | 0/21 |", self.results.read_text(encoding="utf-8"))
 
@@ -2699,6 +2840,15 @@ class EvaluateTests(GitTestCase):
         )
         self.assertNotIn(str(self.root), results)
         self.assertNotIn(self.root.as_posix(), results)
+        # The citation names the run problem by the phrases the results file records, and no path of the machine.
+        self.assertIn(
+            'NOT_COUNTED clean-change haiku run "the run recorded no review; Claude Code exited with code 1; '
+            'denied 1 command"',
+            self.cited,
+        )
+        cited = "\n".join(self.cited)
+        for path in (str(self.root), self.root.as_posix(), json.dumps(str(self.root))[1:-1]):
+            self.assertNotIn(path, cited)
 
     def test_a_session_ends_at_its_limit_with_everything_it_started(self) -> None:
         # Claude Code started through a launcher, as npm's claude.cmd starts node, whose child holds its output.
@@ -2725,7 +2875,25 @@ class EvaluateTests(GitTestCase):
         status, lines = self.evaluate(["--model", "haiku", "--scenario", "clean-change"], self.seams(claude))
         self.assertEqual(1, status)
         reason = "reviewers ran on claude-opus-5-5, not claude-haiku-5-5"
-        self.assertIn(f'FAIL review-prs clean-change haiku verdict APPROVED "{reason}"', lines)
+        self.assertIn(f'FAIL review-prs clean-change haiku verdict APPROVED record "{reason}"', lines)
+
+    def test_a_record_that_does_not_show_the_model_judged_is_told_as_a_record(self) -> None:
+        cases = {
+            "no reviewer subagent ran, so the record is not the model's": StubClaude(self, subagent=False),
+            "reviewers ran on claude-opus-5-5, not claude-haiku-5-5": StubClaude(self, reviewer="claude-opus-5-5"),
+            "the session ran on claude-sonnet-5-5, not claude-opus-5-5": StubClaude(self, session="claude-sonnet-5-5"),
+            "no reviewer guard held generic-review: its files_read is null": StubClaude(self, guarded=False),
+        }
+        for index, (reason, claude) in enumerate(cases.items()):
+            with self.subTest(reason=reason):
+                self.homes = self.root / f"homes-{index}"
+                status, lines = self.evaluate(["--model", "haiku", "--scenario", "clean-change"], self.seams(claude))
+                self.assertEqual(1, status)
+                told = f'NOT_COUNTED clean-change haiku record "{reason}"'
+                self.assertEqual([told], [line for line in lines if line.startswith("NOT_COUNTED ")])
+                self.assertIn(f'FAIL review-prs clean-change haiku verdict APPROVED record "{reason}"', lines)
+                self.assertIn(told, self.cited)
+                self.assertFalse(any(line.startswith("FAIL ") for line in self.cited), self.cited)
 
     def test_claude_code_is_looked_up_where_check_looks_for_it(self) -> None:
         # skill-core's locator through the deployer, so a Claude Code only in WinGet's Links folder runs too.
@@ -2851,7 +3019,7 @@ class EvaluateTests(GitTestCase):
             self.assertEqual(1, status)
             self.assertIn(
                 "FAIL review-repository untested-change haiku finding tools/report_age.sh:7,8,9,10 SHOULD_FIX "
-                'Test coverage "the run recorded no review"',
+                'Test coverage run "the run recorded no review"',
                 lines,
             )
             self.assertEqual([], list(copies.iterdir()))
