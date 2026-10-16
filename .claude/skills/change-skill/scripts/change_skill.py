@@ -56,6 +56,23 @@ from flat_text import flat_text
 from git_client import GitClient, GitError
 from markdown_sections import find_fences
 
+# The paths and commands validation and the tools also name: this script runs from the checkout without the
+# deployer, which tests/validation and tools/skill_shims.py import.
+DUPLICATION_ALLOWED = {
+    "CONTRACT": (
+        "tests/validation/validation_support.py cites the skill contract in its problems, and this script "
+        "cannot import it, which needs the deployer"
+    ),
+    "REPOSITORY": (
+        "tests/validation/validation_support.py names the repository skills' folder, and this script "
+        "cannot import it, which needs the deployer"
+    ),
+    "SKILL_SHIMS": (
+        "tools/skill_shims.py names the command that writes the shims, and this script "
+        "cannot import it, which needs the deployer"
+    ),
+}
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
 CONTRACT = "docs/adding-a-skill.md"
 ATX_HEADING = re.compile(r" {0,3}(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*")

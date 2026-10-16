@@ -36,7 +36,7 @@ from suite_discovery import (
     unsuited_script_problems,
     untested_module_problems,
 )
-from validation_support import TEST_NAME_PATTERNS, is_test_script, write_fixture_tree
+from validation_support import SUITE_NAME_PATTERNS, is_test_script, write_fixture_tree
 
 
 class SuiteDiscoveryFixtures(GitTestCase):
@@ -47,6 +47,8 @@ class SuiteDiscoveryFixtures(GitTestCase):
             root = Path(temporary)
             files = {
                 "tests/test_good.py": f"{case}{main}    unittest.main()\n",
+                # The guard written the other way round runs the suite as well.
+                "tests/test_reversed.py": f"{case}if '__main__' == __name__:\n    unittest.main()\n",
                 "tests/test_exits.py": f"import sys\n{case}{main}    sys.exit(unittest.main())\n",
                 "tests/test_imported.py": f"from unittest import main as run\n{case}{main}    run(verbosity=2)\n",
                 "tests/test_none.py": case,
@@ -282,7 +284,7 @@ class SuiteDiscoveryFixtures(GitTestCase):
             )
 
     def test_suite_names_follow_the_documented_patterns(self) -> None:
-        self.assertEqual(("test_*", "test-*", "*_test", "*-test", "*.test.*"), TEST_NAME_PATTERNS)
+        self.assertEqual(("test_*", "test-*", "*_test", "*-test", "*.test.*"), SUITE_NAME_PATTERNS)
         for name in (
             "test_a.py",
             "test-a.sh",

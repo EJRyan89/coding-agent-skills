@@ -42,14 +42,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-c
 
 from conditions import (
     DIFF_VARIABLE,
+    FAILURE_STATUS,
     OUTPUT_VARIABLE,
     SCRIPT_SUFFIXES,
     FileDiff,
     is_suite,
     read_files,
     refusal_line,
+    run_condition,
+    unset_variables_line,
 )
-from console import failed_line, run_main
+from console import run_main
+from markdown_sections import COMMONMARK_CODE_SPAN
+
+DUPLICATION_ALLOWED = {
+    "EXIT_CONTRACT_EXEMPT": (
+        ".claude/skills/review-repository/scripts/untested_functions.py speaks the same condition protocol and states "
+        "the same exemption; validation reads an exemption from the script it excuses, so neither imports it"
+    ),
+}
 
 EXIT_CONTRACT_EXEMPT = (
     "a code-review condition: exit 0 opens its route and 1 closes it, so a failure exits 2, which fails the review "
@@ -80,7 +91,6 @@ MAX_PASSAGE_CHARACTERS = 1200
 
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@ ?(.*)$")
 DEFINITION = re.compile(r"^(async\s+def|def|class)\s+([A-Za-z_]\w*)")
-CODE_SPAN = re.compile(r"(`+)(.+?)\1")
 FENCE = re.compile(r"^\s*(```|~~~)")
 LIST_ITEM = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s")
 TABLE_SEPARATOR = re.compile(r"^\s*\|[\s:|-]+\|\s*$")
@@ -122,7 +132,7 @@ class Unit:
         """Each piece of code in the unit and where it starts in the text."""
         if self.code:
             return [(0, self.text)]
-        return [(match.start(2), match.group(2).strip()) for match in CODE_SPAN.finditer(self.text)]
+        return [(match.start(2), match.group(2).strip()) for match in COMMONMARK_CODE_SPAN.finditer(self.text)]
 
 
 @dataclass(frozen=True)
@@ -289,10 +299,10 @@ def _run() -> int:
     parser = argparse.ArgumentParser(description="Find the document passages that name what a pull request changes.")
     parser.add_argument("--source-root", required=True, type=Path)
     arguments = parser.parse_args()
-    missing = [variable for variable in (DIFF_VARIABLE, OUTPUT_VARIABLE) if not os.environ.get(variable)]
-    if missing:
-        print(f"FAILED {' and '.join(missing)} not set; a review sets them for a condition")
-        return 2
+    unset = unset_variables_line()
+    if unset:
+        print(unset)
+        return FAILURE_STATUS
     diff = Path(os.environ[DIFF_VARIABLE]).read_bytes().decode("utf-8", errors="replace")
     files, refused = read_files(diff, arguments.source_root)
     for path in refused:
@@ -306,12 +316,7 @@ def _run() -> int:
 
 
 def main() -> int:
-    try:
-        return _run()
-    except Exception as error:
-        # Exit 1 would close the route, so a failure run_main would report that way exits 2 and fails the review.
-        print(failed_line(error))
-        return 2
+    return run_condition(_run)
 
 
 if __name__ == "__main__":

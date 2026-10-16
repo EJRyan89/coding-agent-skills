@@ -21,6 +21,7 @@ sys.path.insert(0, str(sibling_scripts("code-review-core")))
 
 import conditions
 import doc_passages
+import review_specialists
 import untested_functions
 from git_client import GitClient
 from git_test_base import GitTestCase
@@ -537,6 +538,8 @@ class DocumentationDriftTests(GitTestCase):
                 f"{SKILL_CORE}/console.py",
                 f"{SKILL_CORE}/diff_paths.py",
                 f"{SKILL_CORE}/flat_text.py",
+                f"{SKILL_CORE}/markdown_sections.py",
+                f"{SKILL_CORE}/suite_names.py",
             },
             needed,
         )
@@ -787,18 +790,27 @@ class UntestedChangesTests(GitTestCase):
         self.assertEqual(["tools/worktrees.py"], uncovered(MANIFEST, ["tools/worktrees.py"]))
 
     def test_the_condition_s_suites_are_validation_s(self) -> None:
+        # Both read skill-core's rule, so neither keeps a copy of it.
+        import suite_names
+
         support = ast.parse((REPOSITORY / "tests" / "validation" / "validation_support.py").read_text("utf-8"))
-        constants = {
-            target.id: ast.literal_eval(node.value)
-            for node in support.body
-            if isinstance(node, ast.Assign)
-            for target in node.targets
-            if isinstance(target, ast.Name) and target.id in {"TEST_NAME_PATTERNS", "TEST_SCRIPT_EXTENSIONS"}
+        imported = {
+            alias.name
+            for node in ast.walk(support)
+            if isinstance(node, ast.ImportFrom) and node.module == "suite_names"
+            for alias in node.names
         }
-        self.assertEqual(("test_*", "test-*", "*_test", "*-test", "*.test.*"), conditions.SUITE_NAMES)
-        self.assertEqual(constants["TEST_NAME_PATTERNS"], conditions.SUITE_NAMES)
-        self.assertEqual((".py", ".ps1", ".sh"), conditions.SCRIPT_SUFFIXES)
-        self.assertEqual(constants["TEST_SCRIPT_EXTENSIONS"], set(conditions.SCRIPT_SUFFIXES))
+        self.assertIn("is_suite_name", imported)
+        self.assertIs(suite_names.is_suite_name, conditions.is_suite_name)
+        self.assertEqual({".py", ".ps1", ".sh"}, set(conditions.SCRIPT_SUFFIXES))
+        self.assertEqual(suite_names.SUITE_EXTENSIONS, set(conditions.SCRIPT_SUFFIXES))
+
+    def test_the_condition_reads_the_variables_code_review_core_sets(self) -> None:
+        # Each side of the condition protocol names them, so a rename on one side fails here.
+        self.assertEqual("CODE_REVIEW_DIFF_FILE", conditions.DIFF_VARIABLE)
+        self.assertEqual("CODE_REVIEW_CONDITION_OUTPUT", conditions.OUTPUT_VARIABLE)
+        self.assertEqual(review_specialists.CONDITION_DIFF_VARIABLE, conditions.DIFF_VARIABLE)
+        self.assertEqual(review_specialists.CONDITION_OUTPUT_VARIABLE, conditions.OUTPUT_VARIABLE)
         # Every suite this repository holds is a path the route reads, so a lazy snapshot gives the condition it.
         matchers = [glob_matcher(pattern) for pattern in MANIFEST["conditions"]["untested-functions"]["reads"]]
         suites = [

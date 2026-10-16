@@ -901,6 +901,7 @@ class FsopsPlatformFixtures(GitTestCase):
             '    options.setdefault("preexec_fn", None)\n'  # 18
             '    getattr(sp, "CREATE_NO_WINDOW", 0), hasattr(os, "fork"), getattr(os, "getuid")()\n'  # 19
             '    importlib.import_module("ntpath"), __import__("winreg")\n'  # 20
+            '    importlib.import_module(name="msvcrt")\n'  # 21
         )
         # Portable subprocess names, other strings, and a keyword dict platform_support builds assume no platform.
         innocent = (
@@ -969,6 +970,7 @@ class FsopsPlatformFixtures(GitTestCase):
                 (19, "subprocess.CREATE_NO_WINDOW"),
                 (20, "ntpath"),
                 (20, "winreg"),
+                (21, "msvcrt"),
             ]
             self.assertEqual(
                 [f"tools/strayed.py:{line} names {token}{move}" for line, token in expected],

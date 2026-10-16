@@ -49,7 +49,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-c
 
 from console import run_main
 from git_client import GitClient, GitError, GitResult
-from markdown_sections import markdown_section
+from markdown_sections import HTML_COMMENT, markdown_section
 from release_levels import RELEASING_DOC, VERSION, largest_level, versioning_levels
 from release_tags import is_release_tag, last_release
 
@@ -61,7 +61,6 @@ RELEASE_BRANCH = "origin/main"
 VERSION_HEADING = re.compile(rf"^## {VERSION.pattern}[ \t]*$", re.MULTILINE)
 NOTES_FIELD = re.compile(r"^- (Level|Contract|User action|Pull request):[ \t]*(.*?)[ \t]*$", re.MULTILINE)
 NOTES_ENTRY_START = re.compile(r"^(?=#{1,3} )", re.MULTILINE)
-HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 # A line that starts a Markdown block of its own, which no wrapped line continues: a heading, a list item, a quote, a
 # table row, or a fence.
 BLOCK_START = re.compile(r"^\s*(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|>|\|)")

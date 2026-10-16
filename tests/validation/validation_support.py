@@ -10,26 +10,42 @@ from __future__ import annotations
 import ast
 import builtins
 import codecs
-import fnmatch
 import re
 import sys
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 from markdown_sections import CODE_SPAN as CODE_SPAN
+from markdown_sections import COMMONMARK_CODE_SPAN as COMMONMARK_CODE_SPAN
 from markdown_sections import Fence as Fence
 from markdown_sections import find_fences as find_fences
 from markdown_sections import markdown_section as markdown_section
 from markdown_sections import prose_code_spans as prose_code_spans
+from suite_names import SUITE_EXTENSIONS as SUITE_EXTENSIONS
+from suite_names import SUITE_NAME_PATTERNS as SUITE_NAME_PATTERNS
+from suite_names import is_suite_name
 
 from deployer import platform_support
 
 # Every git call the policies and the runner make goes through `git`, tools/release_notes.py's run through skill-core's
 # GitClient, so each reads the checkout it names whatever GIT_DIR or GIT_INDEX_FILE the shell or a git hook exported.
 from tools.release_notes import git as git
+
+# The paths a repository skill's script also names: it runs from the checkout without the deployer, which every module
+# here imports, and validation imports no repository skill.
+DUPLICATION_ALLOWED = {
+    "REPOSITORY_SKILLS": (
+        ".claude/skills/change-skill/scripts/change_skill.py names the repository skills' folder to find what a change "
+        "touches, and cannot import this module, which needs the deployer"
+    ),
+    "SKILL_GUIDE": (
+        ".claude/skills/change-skill/scripts/change_skill.py prints sections of the skill contract, and cannot import "
+        "this module, which needs the deployer"
+    ),
+}
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
@@ -41,12 +57,17 @@ EXECUTABLE_SCRIPT_EXTENSIONS = set(SCRIPT_INTERPRETERS)
 # No runtime JavaScript or TypeScript needs is a deployment prerequisite and the renderer cannot validate them, and no
 # analyzer or command policy here reads a PowerShell module or a Windows batch file, so a skill holds none of these.
 UNSUPPORTED_SCRIPT_EXTENSIONS = {".bat", ".cjs", ".cmd", ".js", ".mjs", ".psm1", ".ts"}
-TEST_SCRIPT_EXTENSIONS = {".py", ".sh", ".ps1"}
-# A regression suite is found by its name alone, matched against the file's stem or its whole name, ignoring case.
-TEST_NAME_PATTERNS = ("test_*", "test-*", "*_test", "*-test", "*.test.*")
 # Every suite runs as `python <file>`, so a Python suite without this entry point runs no tests and still exits 0.
 PYTHON_ENTRY_POINT = 'if __name__ == "__main__":'
 SKILL_GUIDE = "docs/adding-a-skill.md"
+# Where the skill contract states the rules of validation, which a problem cites for its fix.
+VALIDATION_DOC = f'"Validation" in {SKILL_GUIDE}'
+# The code-review bundle's operations contract, whose threat model and format tables the policies read.
+OPERATIONS_CONTRACT = "docs/code-review-operations-contract.md"
+# The calls that import a module by its name, as the module's imports resolve them.
+MODULE_LOADERS = frozenset({"importlib.import_module", "__import__", "builtins.__import__"})
+# The scope a node outside every function, class, and named module-level assignment is in.
+MODULE_SCOPE = "<module>"
 TEMPLATE_TOKEN = re.compile(r"\{\{([A-Z][A-Z0-9_]*)\}\}")
 SHELL_FENCES = {"bash", "sh", "shell"}
 
@@ -138,11 +159,49 @@ def qualified_name(node: ast.AST, aliases: dict[str, str]) -> str:
     return ""
 
 
-def call_argument(call: ast.Call, position: int, keyword: str) -> ast.expr | None:
-    """A call's argument at a position, or the one passed by keyword when fewer are passed by position."""
-    if len(call.args) > position:
+def _unpacked(keyword: ast.keyword) -> ast.Starred:
+    """A `**` unpacking as an ast.Starred around the mapping it unpacks, so it reads as a `*` unpacking does."""
+    return ast.copy_location(ast.Starred(value=keyword.value, ctx=ast.Load()), keyword.value)
+
+
+def call_arguments(call: ast.Call, position: int | None, keywords: Iterable[str]) -> list[ast.expr]:
+    """Every argument that may give a call the parameter at a position, or one named by any of keywords, in the order
+    the call writes them: the positional argument there, each keyword argument by one of those names, and each
+    unpacking that may hold one: a `*` at or before the position, or any `**`. An unpacking comes back as an
+    ast.Starred around what it unpacks, `**` included, so every policy reads both alike, as a value it cannot read. A
+    position of None reads the keywords alone, for a parameter that only a keyword gives.
+
+    Every policy that reads a call's arguments by position or keyword reads them here or through call_argument."""
+    names = set(keywords)
+    found: list[ast.expr] = []
+    if position is not None:
+        found += [
+            argument
+            for index, argument in enumerate(call.args[: position + 1])
+            if index == position or isinstance(argument, ast.Starred)
+        ]
+    for keyword in call.keywords:
+        if keyword.arg is None:
+            found.append(_unpacked(keyword))
+        elif keyword.arg in names:
+            found.append(keyword.value)
+    return found
+
+
+def call_argument(call: ast.Call, position: int | None, *keywords: str) -> ast.expr | None:
+    """The argument that gives a call one parameter, by its position or any of its keyword names, or None when the
+    call gives it none.
+
+    A positional argument at the position with no `*` unpacking at or before it, or a keyword argument by one of the
+    names, is the value, since Python refuses a call that gives one parameter twice. Otherwise an unpacking that may
+    hold it is returned as call_arguments returns one, an ast.Starred, which no policy takes for a literal."""
+    leading = call.args[: position + 1] if position is not None else []
+    if position is not None and len(call.args) > position and not any(isinstance(a, ast.Starred) for a in leading):
         return call.args[position]
-    return next((found.value for found in call.keywords if found.arg == keyword), None)
+    named = next((keyword.value for keyword in call.keywords if keyword.arg in keywords), None)
+    if named is not None:
+        return named
+    return next((found for found in call_arguments(call, position, ()) if isinstance(found, ast.Starred)), None)
 
 
 def _blocks(node: ast.stmt) -> list[list[ast.stmt]]:
@@ -163,6 +222,56 @@ def module_statements(body: list[ast.stmt]) -> Iterator[ast.stmt]:
         yield node
         for block in _blocks(node):
             yield from module_statements(block)
+
+
+def is_main_guard(test: ast.expr) -> bool:
+    """Whether an if's test compares __name__ with "__main__", written either way round: the one reading of the guard
+    every policy that looks for a script's or a suite's entry point shares."""
+    if not (isinstance(test, ast.Compare) and len(test.ops) == 1 and isinstance(test.ops[0], ast.Eq)):
+        return False
+    sides = [test.left, test.comparators[0]]
+    return any(isinstance(side, ast.Name) and side.id == "__name__" for side in sides) and any(
+        isinstance(side, ast.Constant) and side.value == "__main__" for side in sides
+    )
+
+
+DEFINITIONS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+
+def statement_scope(node: ast.stmt) -> str:
+    """The scope a module-level statement other than a definition is: the one name it assigns, or MODULE_SCOPE."""
+    targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
+    if len(targets) == 1 and isinstance(targets[0], ast.Name):
+        return targets[0].id
+    return MODULE_SCOPE
+
+
+def scoped_nodes(statements: Iterable[ast.stmt]) -> Iterator[tuple[ast.AST, str]]:
+    """Each node of module-level statements, in the order a depth-first walk meets it, with the scope that holds it: the
+    innermost function or class, by qualified name, or else the module-level assignment, by statement_scope. A function
+    or class in a module-level block is named as one at the top is, and a definition's decorators and arguments are in
+    its own scope.
+
+    Every policy that keys an allowance by a function's qualified name or an assignment's target reads scopes here."""
+
+    def walk(node: ast.AST, scope: str) -> Iterator[tuple[ast.AST, str]]:
+        yield node, scope
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, DEFINITIONS):
+                yield from walk(child, child.name if scope == MODULE_SCOPE else f"{scope}.{child.name}")
+            else:
+                yield from walk(child, scope)
+
+    for statement in statements:
+        yield from walk(statement, statement.name if isinstance(statement, DEFINITIONS) else statement_scope(statement))
+
+
+def listed(words: Sequence[str], conjunction: str = "or") -> str:
+    """Words as a sentence lists them: one alone, two joined by the conjunction, and more with a comma after each but
+    the last, the conjunction before it."""
+    if len(words) < 3:
+        return f" {conjunction} ".join(words)
+    return f"{', '.join(words[:-1])}, {conjunction} {words[-1]}"
 
 
 @dataclass
@@ -701,11 +810,9 @@ def is_shell_script(path: Path) -> bool:
     return path.suffix.casefold() in {".sh", ".bash"}
 
 
-def is_test_script(path: Path) -> bool:
-    if path.suffix.casefold() not in TEST_SCRIPT_EXTENSIONS:
-        return False
-    names = (path.stem.casefold(), path.name.casefold())
-    return any(fnmatch.fnmatchcase(name, pattern) for pattern in TEST_NAME_PATTERNS for name in names)
+def is_test_script(path: PurePath) -> bool:
+    """Whether a file is a regression suite, by skill-core's rule for one, which the review conditions also read."""
+    return is_suite_name(path.name)
 
 
 def path_order(path: PurePath) -> tuple[str, ...]:

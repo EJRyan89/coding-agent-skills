@@ -201,6 +201,7 @@ from review_io import PersistenceError
 from review_records import DISPOSITIONS as RECORD_DISPOSITIONS
 from review_records import LEDGER_ID, SEVERITY_RANK, validate_record
 from review_runtime import DOCUMENT_STAGES, RuntimeContractError, declared_reviewer_files, validate_adapter_manifest
+from suite_names import is_suite_name
 
 from deployer import fsops, platform_support, tools
 from deployer.platform_support import PYTHON
@@ -597,12 +598,6 @@ def _fixture_in_place(directory: Path) -> None:
         raise ScenarioError(f"its {tree}/ tree holds {relative}, which only a repository reviewer's copy restores")
 
 
-def _regression_suite(name: str) -> bool:
-    """Whether a file is named as validation names a regression suite: test_*, test-*, *_test, *-test, or *.test.*."""
-    stem = PurePosixPath(name).stem
-    return stem.startswith(("test_", "test-")) or stem.endswith(("_test", "-test")) or ".test." in name
-
-
 def _reviewer_folder(checkout: Path, folder: PurePosixPath) -> list[str]:
     """Every file a run places from the reviewer's folders, by its path in the checkout: all of references/, and all
     of scripts/ but its regression suites and Python's caches. The suites test the reviewer, which no review runs,
@@ -612,7 +607,7 @@ def _reviewer_folder(checkout: Path, folder: PurePosixPath) -> list[str]:
     for name in REVIEWER_FOLDERS:
         for path in sorted((checkout / folder / name).rglob("*")):
             relative = PurePosixPath(path.relative_to(checkout).as_posix())
-            if path.is_file() and "__pycache__" not in relative.parts and not _regression_suite(relative.name):
+            if path.is_file() and "__pycache__" not in relative.parts and not is_suite_name(relative.name):
                 files.append(str(relative))
     return files
 

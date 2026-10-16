@@ -11,10 +11,13 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from validation_support import (
+    MODULE_LOADERS,
     REPOSITORY_ROOT,
+    VALIDATION_DOC,
     CallableResolver,
     call_argument,
     is_test_script,
+    listed,
     module_allowance,
     module_imports,
     module_statements,
@@ -26,7 +29,10 @@ from validation_support import (
 # every module holding the copy states it under its own name for the copy. Nothing sanctions a whole module: shared
 # code lives in skill-core. An allowance the module no longer needs is reported.
 DUPLICATION_ALLOWANCE = "DUPLICATION_ALLOWED"
-DUPLICATION_ROOTS = ("skills", "deployer", "tools")
+# Every tree of the repository's own Python but its suites and fixtures: the shipped skills, the deployer, the tools,
+# the repository skills, which meet the shipped-skill standard, and the policies, which share what they repeat through
+# validation_support.
+DUPLICATION_ROOTS = ("skills", "deployer", "tools", ".claude/skills", "tests/validation")
 MINIMUM_DUPLICATED_LINES = 4
 # A string literal shorter than this is a common word or file name, such as "unknown" or "run.json", that two modules
 # may hold for separate decisions; a collection of literals is held to it by the characters its items hold together.
@@ -124,17 +130,13 @@ def _module_copies(name: str, tree: ast.Module) -> Iterator[tuple[str, Copy]]:
                 yield from ((key, (name, node.lineno, target)) for target in targets)
 
 
-def _joined(items: list[str]) -> str:
-    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
-
-
 def _copy_report(key: str, group: list[Copy]) -> str:
     fix = f"import one copy, or sanction it in each copy's module with {DUPLICATION_ALLOWANCE}"
     if key.startswith(CONSTANT_KEY):
-        return f"{_joined([f'{copy} at {module}:{line}' for module, line, copy in group])} hold the same value; {fix}"
-    return (
-        f"{group[0][2]} is defined identically in {_joined([f'{module}:{line}' for module, line, _ in group])}; {fix}"
-    )
+        held = listed([f"{copy} at {module}:{line}" for module, line, copy in group], "and")
+        return f"{held} hold the same value; {fix}"
+    places = listed([f"{module}:{line}" for module, line, _ in group], "and")
+    return f"{group[0][2]} is defined identically in {places}; {fix}"
 
 
 def duplicated_definition_problems(root: Path) -> list[str]:
@@ -171,7 +173,7 @@ def duplicated_definition_problems(root: Path) -> list[str]:
             # Each reason names the other copies, so a reader of one copy finds every place a change must reach.
             problems += [
                 f"{module}: {DUPLICATION_ALLOWANCE} gives a reason for {copy} that does not name "
-                f"every other copy: {_joined(missing)}"
+                f"every other copy: {listed(missing, 'and')}"
                 for module, copy in held
                 if (
                     missing := [other for other in modules if other != module and other not in allowances[module][copy]]
@@ -194,7 +196,7 @@ def duplicated_definition_problems(root: Path) -> list[str]:
 # its imports, because ruff sorts a skill-core import above the deployer's.
 SKILL_CORE = "skill-core"
 SKILL_CORE_SCRIPTS = f"skills/{SKILL_CORE}/scripts"
-SKILL_CORE_DOC = '"Validation" in docs/adding-a-skill.md'
+SKILL_CORE_DOC = VALIDATION_DOC
 DEPLOYER_PACKAGE = "deployer/__init__.py"
 
 
@@ -238,10 +240,6 @@ def _skill_core_statement_lines(tree: ast.Module) -> list[int]:
         ):
             lines.append(node.lineno)
     return lines
-
-
-# The calls that import a module by its name, as the module's imports resolve them.
-MODULE_LOADERS = frozenset({"importlib.import_module", "__import__", "builtins.__import__"})
 
 
 def _imported_modules(tree: ast.Module) -> list[tuple[int, str]]:

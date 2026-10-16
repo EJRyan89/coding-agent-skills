@@ -10,7 +10,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from diff_paths import DiffPathError, header_path, snapshot_path, unquote
+from diff_paths import HUNK_HEADER, DiffPathError, header_path, snapshot_path, unquote
 from git_client import GitClient
 from git_test_base import GitTestCase
 
@@ -85,6 +85,20 @@ class RealDiffTests(GitTestCase):
         headers = self.headers(("rename from ", "rename to "))
         self.assertEqual(["rename from tools/report age.py", 'rename to "tools/r\\303\\251sum\\303\\251.py"'], headers)
         self.assertEqual([SPACED, ACCENTED], [unquote(line.split(" ", 2)[2]) for line in headers])
+
+
+class HunkHeaderTests(GitTestCase):
+    def test_a_hunk_header_gives_its_new_side_s_first_line_with_or_without_a_count(self) -> None:
+        for line, first in (("@@ -1,3 +4,5 @@ def f():", "4"), ("@@ -7 +9 @@", "9"), ("@@ -0,0 +1 @@", "1")):
+            with self.subTest(line=line):
+                match = HUNK_HEADER.match(line)
+                self.assertIsNotNone(match)
+                self.assertEqual(first, match.group(1) if match else None)
+
+    def test_a_line_that_is_not_a_hunk_header_does_not_match(self) -> None:
+        for line in ("+@@ -1 +1 @@", "@@ +1 -1 @@", "@@@ -1 -1 +1 @@@", "@@ -a +1 @@"):
+            with self.subTest(line=line):
+                self.assertIsNone(HUNK_HEADER.match(line))
 
 
 class DecoderTests(GitTestCase):
