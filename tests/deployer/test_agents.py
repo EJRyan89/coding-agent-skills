@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from harness import DeployerTestCase
+from harness import DeployerTestCase, backup_entry, install_entry, journal_line
 
 from deployer import fsops, platform_support
 
@@ -275,25 +275,10 @@ class AgentDeploymentTests(DeployerTestCase):
         self.write(self.agent, "half-installed\n")
         run = self.home / ".claude" / "deployer" / "staging" / "20260101-000000-agent"
         lines = [
-            {
-                "op": "backup",
-                "root": "claude-agents",
-                "item": "reviewer.md",
-                "from": "claude-agents/reviewer.md",
-                "to": "claude-agents/reviewer.md.deploying-bak",
-                "retain": False,
-                "backup_hash": sha256(self.content),
-            },
-            {
-                "op": "install",
-                "root": "claude-agents",
-                "item": "reviewer.md",
-                "from": "staging/.claude-agents/reviewer.md",
-                "to": "claude-agents/reviewer.md",
-                "staged_hash": sha256(b"half-installed\n"),
-            },
+            backup_entry("reviewer.md", sha256(self.content), root="claude-agents"),
+            install_entry("reviewer.md", sha256(b"half-installed\n"), root="claude-agents"),
         ]
-        self.write(run / "journal.jsonl", "".join(json.dumps(line, separators=(",", ":")) + "\n" for line in lines))
+        self.write(run / "journal.jsonl", "".join(journal_line(line) for line in lines))
         result = self.deploy_ok("--all")
         self.assertIn("Recovering uncommitted run 20260101-000000-agent (rolling back)...", result.output)
         self.assertEqual(self.content, self.agent.read_bytes())

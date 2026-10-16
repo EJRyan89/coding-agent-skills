@@ -19,7 +19,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 from git_test_base import GitTestCase
-from harness import DEPLOY_COMMAND, DeployerTestCase
+from harness import DEPLOY_COMMAND, ZERO_HASH, DeployerTestCase
 
 from deployer import hashing, manifest, migrate, plan, report, selection
 from deployer.context import Context, Options, Selection
@@ -500,7 +500,7 @@ class ValidateSharedAssetsTests(GitTestCase):
                 f"ERROR: Dependency 'd.md' owner '{OTHER_SOURCE}' does not have role 'owner' (has '')",
             ),
             (
-                self.owned_by_other("sha256:" + "0" * 64),
+                self.owned_by_other(ZERO_HASH),
                 f"ERROR: Dependency 'd.md' owner '{OTHER_SOURCE}' does not have role 'owner' (has '')",
             ),
             (
@@ -519,7 +519,7 @@ class ValidateSharedAssetsTests(GitTestCase):
                 for hashed in ({}, {"hash": 7}, {"hash": "0" * 64}, {"hash": "sha256:" + "A" * 64})
             ),
             (
-                self.owned_by_other({"role": "owner", "hash": "sha256:" + "0" * 64}),
+                self.owned_by_other({"role": "owner", "hash": ZERO_HASH}),
                 "ERROR: Dependency 'd.md' at destination does not match owner's manifest hash",
             ),
         ]

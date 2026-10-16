@@ -14,7 +14,15 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 from git_test_base import GitTestCase
-from harness import DEPLOY_COMMAND, REPOSITORY_ROOT, SOURCE_ID, DeployerTestCase, Result, git
+from harness import (
+    DEPLOY_COMMAND,
+    REPOSITORY_ROOT,
+    SOURCE_ID,
+    DeployerTestCase,
+    Result,
+    git,
+    recorded_temporary_directories,
+)
 
 from deployer import fsops, platform_support, source_ref, tools
 from deployer.errors import DeployError
@@ -290,7 +298,7 @@ class DeployAtTests(DeployerTestCase):
         self.deploy_fails("--all", "--at", "main", source=plain, pattern=r"--at needs a Git checkout")
 
     def test_an_export_git_refuses_leaves_no_directory_behind(self) -> None:
-        patch, made = self.record_temporary_directories()
+        patch, made = recorded_temporary_directories()
         with patch, self.assertRaisesRegex(DeployError, "git archive could not export 0{40}"):
             source_ref.export(self.source, "0" * 40)
         self.assertEqual(1, len(made))
@@ -307,19 +315,8 @@ class DeployAtTests(DeployerTestCase):
         git(self.source, "commit", "-q", "-m", "A link")
         git(self.source, "switch", "-q", "--discard-changes", "main")
 
-    def record_temporary_directories(self) -> tuple[Any, list[Path]]:
-        """A patch of the export's mkdtemp that records each directory it makes, and the list it records them in."""
-        made: list[Path] = []
-        real = tempfile.mkdtemp
-
-        def mkdtemp(*positional: Any, **keywords: Any) -> str:
-            made.append(Path(real(*positional, **keywords)))
-            return str(made[-1])
-
-        return mock.patch.object(source_ref.tempfile, "mkdtemp", mkdtemp), made
-
     def test_a_link_in_the_tree_is_refused_by_name_before_anything_is_extracted_or_deployed(self) -> None:
-        patch, made = self.record_temporary_directories()
+        patch, made = recorded_temporary_directories()
         for index, target in enumerate(("../../outside", "/etc/passwd", "C:/Windows")):
             with self.subTest(target=target):
                 branch = f"link-{index}"
@@ -345,7 +342,7 @@ class DeployAtTests(DeployerTestCase):
     def export_archive(self, members: list[tuple[tarfile.TarInfo, bytes]]) -> tuple[DeployError, list[Path]]:
         """Export a commit whose git archive holds exactly these members, returning the refusal and each directory the
         export made."""
-        patch, made = self.record_temporary_directories()
+        patch, made = recorded_temporary_directories()
 
         def archive(source_dir: Path, *arguments: str) -> platform_support.ToolResult:
             output = next(argument for argument in arguments if argument.startswith("--output="))
