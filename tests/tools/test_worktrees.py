@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "validation"))
 
 import git_client
+import git_worktrees
 import skill_scripts
 from git_test_base import GitTestCase
 
@@ -1591,6 +1592,21 @@ class ListTests(WorktreesTestCase):
         self.assertEqual(["main", "hub", "0", "0", "0"], rows["main"][:5])
         self.assertEqual(["feat/demo", "no commits", "0", "0", "0"], rows["feat/demo"][:5])
 
+    def test_list_never_writes_a_checkouts_index(self) -> None:
+        # A file whose timestamp moved and whose content did not: a status with optional locks refreshes the index
+        # and writes it back under its lock, which a session committing in that worktree then finds held.
+        readme = self.tree / "README.md"
+        moved = readme.stat().st_mtime + 5
+        os.utime(readme, (moved, moved))
+        index = Path(self.git(self.tree, "rev-parse", "--path-format=absolute", "--git-path", "index").strip())
+        before = index.read_bytes()
+        self.assertEqual(["feat/demo", "no commits", "0", "0", "0"], self.rows()["feat/demo"][:5])
+        self.assertEqual(before, index.read_bytes())
+
+    def test_list_marks_a_checkout_git_cannot_read_rather_than_counting_it_clean(self) -> None:
+        (self.tree / ".git").write_text(f"gitdir: {self.root / 'gone'}\n", encoding="utf-8")
+        self.assertEqual(["feat/demo", "unreadable", "0", "0", "-"], self.rows()["feat/demo"][:5])
+
 
 class GitProgramTests(GitTestCase):
     def runner(self, output: str = "") -> tuple[list[tuple[list[str], float]], Any]:
@@ -1620,8 +1636,8 @@ class GitProgramTests(GitTestCase):
         calls, run = self.runner()
         with mock.patch.object(worktrees.CLIENT, "runner", run):
             worktrees.guard_enabled(Path("a hub"))
-            worktrees.worktrees(Path("a hub"))
-            worktrees.changed_paths(Path("a checkout"))
+            git_worktrees.list_worktrees(worktrees.CLIENT, Path("a hub"))
+            git_worktrees.changed_paths(worktrees.CLIENT, Path("a checkout"))
         self.assertEqual(
             [
                 worktrees.GUARD_GIT_TIMEOUT_SECONDS,
@@ -1640,22 +1656,6 @@ class GitProgramTests(GitTestCase):
             self.assertRaisesRegex(git_client.GitError, "Git executable 'git' was not found"),
         ):
             worktrees.git(Path("a checkout"), "status")
-
-    def test_the_worktree_listing_reads_a_path_that_holds_a_line_break_whole(self) -> None:
-        listing = (
-            "worktree /hub\0HEAD 1111\0branch refs/heads/main\0\0"
-            "worktree /hub/.claude/worktrees/feat-a\nb\0HEAD 2222\0detached\0\0"
-        )
-        _, run = self.runner(listing)
-        with mock.patch.object(worktrees.CLIENT, "runner", run):
-            entries = worktrees.worktrees(Path("/hub"))
-        self.assertEqual(
-            [
-                {"worktree": "/hub", "HEAD": "1111", "branch": "refs/heads/main"},
-                {"worktree": "/hub/.claude/worktrees/feat-a\nb", "HEAD": "2222", "detached": ""},
-            ],
-            entries,
-        )
 
 
 class ToolsGitTests(GitTestCase):

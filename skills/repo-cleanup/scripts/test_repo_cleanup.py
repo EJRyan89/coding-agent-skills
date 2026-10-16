@@ -2419,6 +2419,18 @@ class UnitTests(CleanupTestCase):
         (root / "untracked.txt").write_text("x\n", encoding="utf-8")
         self.assertEqual(2, rc.dirty_count(rc.Services(), root))
 
+    def test_the_path_a_rename_came_from_is_never_read_as_an_ignored_path(self) -> None:
+        root = Path(tempfile.mkdtemp(prefix="repo cleanup ignored ")).resolve()
+        self.addCleanup(remove_tree, root)
+        git(root, "init", "--quiet")
+        (root / "!! notes.txt").write_text("content\n", encoding="utf-8")
+        git(root, "add", ".")
+        git(root, "commit", "--quiet", "-m", "initial")
+        git(root, "mv", "!! notes.txt", "notes.txt")
+        (root / ".gitignore").write_text("*.log\n", encoding="utf-8")
+        (root / "build.log").write_text("log\n", encoding="utf-8")
+        self.assertEqual(["build.log"], rc.ignored_entries(rc.Services(), root))
+
 
 class ConsoleTests(CleanupTestCase):
     def test_output_a_cp1252_console_cannot_encode_is_written_as_utf_8(self) -> None:
