@@ -204,6 +204,7 @@ def atomic_write_json(
     value: Any,
     *,
     validator: Callable[[Any], object] | None = None,
+    mode: int = 0o600,
 ) -> None:
     if validator is not None:
         validator(value)
@@ -212,7 +213,7 @@ def atomic_write_json(
     parsed = json.loads(content)
     if validator is not None:
         validator(parsed)
-    atomic_write_text(path, content)
+    atomic_write_text(path, content, mode=mode)
 
 
 # How long a lock directory may stay without a valid owner file before it is taken for one its creator never

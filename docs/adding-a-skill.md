@@ -94,7 +94,7 @@ Claude Code replaces `${CLAUDE_SKILL_DIR}` with the absolute directory of the sk
 - Never write a bare `scripts/...` or `../<skill>/...` path in a shell fence; it resolves against whatever directory the session is in.
 - In `SKILL.md` prose, name the skill's own files in a code span as `${CLAUDE_SKILL_DIR}/scripts/...` or `${CLAUDE_SKILL_DIR}/references/...`, never bare. Claude Code resolves a bare path against the working directory, costing a failed read and a search, and Codex and Copilot resolve it against the adapter, which has neither folder. Files under `references/` are exempt, because Claude Code fills in the variable only in `SKILL.md`. Validation fails on a bare path in a `SKILL.md` code span outside a fence.
 - Claude Code replaces the variable everywhere in the skill, prose included, so do not use it as literal text, for example to explain it.
-- Claude Code replaces it only in a skill it loads, so a skill that needs another skill's procedure invokes that skill by name, as `update-pr-tracker` invokes `review-prs`; it never reads the other skill's `SKILL.md` or cites its step numbers or section titles, which break silently when that skill is renumbered or retitled.
+- Claude Code replaces it only in a skill it loads, so a skill that needs another skill's procedure invokes that skill by name, as `update-pr-dashboard` invokes `review-prs`; it never reads the other skill's `SKILL.md` or cites its step numbers or section titles, which break silently when that skill is renumbered or retitled.
 - A script that needs the user's Claude directory derives it, as `curate-agent-memory` does from `CLAUDE_CONFIG_DIR` or `~/.claude`, rather than taking a rendered `{{HOME}}`. Keep `{{HOME}}` for documentation that names another location, such as the user's skills root.
 
 Repository validation fails when a skill or agent names any skill through `{{HOME}}/.claude/skills/<skill>`, when a shell fence runs a script or a `SKILL.md` code span names its own file by a bare relative path, when a skill reaches `../<skill>` without declaring it in `skill_deps`, when a script puts another skill's `scripts` directory on `sys.path` without declaring that skill in `skill_deps`, or when a skill reads another skill's `SKILL.md` or names it beside a step number or section title.
@@ -229,7 +229,7 @@ Declare an atomic selection bundle in `source.json`:
 {
   "bundles": {
     "code-review-operations": {
-      "members": ["review-prs", "update-pr-tracker"]
+      "members": ["review-prs", "update-pr-dashboard"]
     }
   }
 }

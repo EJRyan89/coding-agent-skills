@@ -181,7 +181,7 @@ def _full_config() -> dict[str, Any]:
             "end_marker": "<!-- b -->",
             "start_marker": "<!-- a -->",
         },
-        "operation_repository_sets": {"review-prs": "work", "update-pr-tracker": "solo"},
+        "operation_repository_sets": {"review-prs": "work", "update-pr-dashboard": "solo"},
         "reviewer_effort": "high",
         "re_review_scope": {"full_lines": 200},
         "model_names": {"arn:aws:bedrock:model/x": " Model X "},
@@ -260,7 +260,7 @@ def _full_expected() -> dict[str, Any]:
             "status_overrides": {"owner/repo#12": " Waiting on design "},
             "author_names": {"octo-cat": "Octo Cat"},
         },
-        "operation_repository_sets": {"review-prs": "work", "update-pr-tracker": "solo"},
+        "operation_repository_sets": {"review-prs": "work", "update-pr-dashboard": "solo"},
         "reviewer_effort": "high",
         "re_review_scope": {"full_share": 0.5, "full_lines": 200},
         "model_names": {"arn:aws:bedrock:model/x": "Model X"},
@@ -283,7 +283,7 @@ def _rich_config() -> dict[str, Any]:
     config["reviewer_effort"] = "high"
     config["re_review_scope"] = {"full_share": 0.25, "full_lines": 200}
     config["verdict_policy"] = {"request_changes_for": ["MUST_FIX", "SHOULD_FIX"], "should_fix_threshold": 2}
-    config["operation_repository_sets"] = {"update-pr-tracker": "main"}
+    config["operation_repository_sets"] = {"update-pr-dashboard": "main"}
     config["model_names"] = {"model-x": "Model X"}
     config["local_mirror_root"] = native("C:\\mirror")
     config["github_login"] = "octo-cat"
@@ -554,11 +554,11 @@ ACCEPTED: list[tuple[str, Mutation, Mutation]] = [
         "every operation with a set",
         _set(
             ("operation_repository_sets",),
-            {"review-prs": "main", "update-pr-tracker": "main", "review-insights": "main"},
+            {"review-prs": "main", "update-pr-dashboard": "main", "review-insights": "main"},
         ),
         _set(
             ("operation_repository_sets",),
-            {"review-prs": "main", "update-pr-tracker": "main", "review-insights": "main"},
+            {"review-prs": "main", "update-pr-dashboard": "main", "review-insights": "main"},
         ),
     ),
     (
@@ -1312,6 +1312,13 @@ REJECTED: list[Case] = [
         _unknown("operation_repository_sets", "1"),
     ),
     (
+        "operation a skill rename retired",
+        _set(("operation_repository_sets", "update-pr-tracker"), "main"),
+        C,
+        "operation_repository_sets.update-pr-tracker names an operation renamed update-pr-dashboard; rename the key "
+        "to update-pr-dashboard",
+    ),
+    (
         "unknown operation with an unknown set",
         _set(("operation_repository_sets", "deploy"), "other"),
         F,
@@ -1755,6 +1762,13 @@ STAGES: list[Case] = [
         _set(("operation_repository_sets",), []),
         F,
         "config.operation_repository_sets must be an object, found an array",
+    ),
+    (
+        "retired operation",
+        _set(("operation_repository_sets", "update-pr-tracker"), "main"),
+        C,
+        "operation_repository_sets.update-pr-tracker names an operation renamed update-pr-dashboard; rename the key "
+        "to update-pr-dashboard",
     ),
     (
         "operation",
