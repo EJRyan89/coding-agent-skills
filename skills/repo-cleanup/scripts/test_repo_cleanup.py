@@ -1320,7 +1320,7 @@ class SweepTests(Fixture):
         for line in lines:
             if line.startswith("REPO\t"):
                 current = blocks.setdefault(Path(line.split("\t")[1]).name, [])
-            elif not line.startswith("SWEPT\t"):
+            elif line.split("\t")[0] not in ("SWEPT", "QUIET", "PROCESSED"):
                 current.append(line)
         return blocks
 
@@ -1449,6 +1449,15 @@ class SweepTests(Fixture):
         stopped = "my repo cleanup stopped partway (could not run git: git vanished); done before it:"
         _, lines = self.invoke("summary", "--plan", plan)
         self.assertEqual(stopped, self.summary(lines).splitlines()[0], "summary repeats the last run's summary")
+        code, lines = self.report()
+        self.assertEqual(0, code, lines)
+        self.assertEqual([[f"{self.repos.as_posix()}/my repo", "git-failed"]], facts(lines, "REPO"))
+        self.assertEqual(stopped, self.summary(lines).splitlines()[0])
+        self.assertEqual([], facts(lines, "ERROR"), "the summary's heading names the failure")
+        self.assertEqual(
+            [["Processed 1 repository; skipped: 0 fetch failed, 0 aborted, 1 with an error."]],
+            facts(lines, "PROCESSED"),
+        )
 
         code, lines = self.invoke("delete-local", "--plan", plan, "--branch", "scratch")
         self.assertEqual((0, [["scratch"]]), (code, facts(lines, "DELETED")), lines)
@@ -1456,6 +1465,162 @@ class SweepTests(Fixture):
         _, lines = self.invoke("summary", "--plan", plan)
         self.assertEqual("my repo cleanup complete:", self.summary(lines).splitlines()[0])
         self.assertNotIn("stopped", json.loads(Path(plan).read_text(encoding="utf-8")))
+        code, reported = self.report()
+        self.assertEqual(0, code, reported)
+        self.assertEqual(lines, reported[1:-1], "the report shows the last summary printed")
+        self.assertEqual(
+            [["Processed 1 repository; skipped: 0 fetch failed, 0 aborted, 0 with an error."]],
+            facts(reported, "PROCESSED"),
+            "a stop a later command completed is not outstanding",
+        )
+
+    def report(self, *aborted: str, plans: Path | None = None) -> tuple[int, list[str]]:
+        arguments = ["report", "--record", str(plans or self.root / "plans")]
+        for repository in aborted:
+            arguments += ["--aborted", repository]
+        return self.invoke(*arguments)
+
+    def test_the_report_gives_each_repositorys_last_summary_and_counts_an_aborted_and_a_continued_dirty_one(
+        self,
+    ) -> None:
+        self.finished_branch("done")
+        git(self.clone, "branch", "scratch", "main")
+        aborted = self.make_clone("aborted repo")
+        (aborted / "draft.txt").write_text("draft\n", encoding="utf-8")
+        broken = self.make_clone("broken repo")
+        git(broken, "config", f"url.{(self.root / 'missing remote').as_posix()}.insteadOf", REMOTE_URL)
+        git(broken, "config", "--unset", f"url.{self.remote.as_posix()}.insteadOf")
+        continued = self.make_clone("continued repo")
+        git(continued, "branch", "kept", "main")
+        (continued / "draft.txt").write_text("draft\n", encoding="utf-8")
+        self.make_clone("quiet repo")
+        self.make_clone("second quiet repo")
+
+        code, lines = self.sweep()
+        self.assertEqual(1, code, lines)
+        root = self.repos.as_posix()
+        self.assertEqual(
+            [["6", "cleaned=1", "quiet=2", "dirty=2", "fetch-failed=1", "error=0", "git-failed=0"]],
+            facts(lines, "SWEPT"),
+        )
+        code, lines = self.report()
+        self.assertEqual(1, code, lines)
+        self.assertEqual(
+            [
+                [
+                    f"still dirty: {root}/aborted repo, {root}/continued repo; sweep each again with --skip-checkout "
+                    "and the same --record, or name it with --aborted"
+                ]
+            ],
+            facts(lines, "FAILED"),
+        )
+
+        code, lines = self.invoke(
+            "sweep",
+            "--repos-root",
+            str(self.repos),
+            "--record",
+            str(self.root / "plans"),
+            "--skip-checkout",
+            "continued repo",
+        )
+        self.assertEqual(0, code, lines)
+        self.assertEqual([[f"{root}/continued repo", "cleaned"]], facts(lines, "REPO"))
+        self.assertEqual([[(self.root / "plans").as_posix()]], facts(lines, "PLANS"), "one directory holds every plan")
+        _, confirmed = self.invoke(
+            "delete-local", "--plan", (self.root / "plans" / "my repo.json").as_posix(), "--branch", "scratch"
+        )
+        self.assertEqual([["scratch"]], facts(confirmed, "DELETED"), confirmed)
+
+        code, lines = self.report(f"{root}/aborted repo")
+        self.assertEqual(0, code, lines)
+        self.assertEqual(
+            [
+                [f"{root}/aborted repo", "aborted"],
+                [f"{root}/broken repo", "fetch-failed"],
+                [f"{root}/continued repo", "cleaned"],
+                [f"{root}/my repo", "cleaned"],
+            ],
+            facts(lines, "REPO"),
+        )
+        self.assertEqual([[f"{root}/quiet repo", f"{root}/second quiet repo"]], facts(lines, "QUIET"))
+        self.assertEqual(
+            [["Processed 6 repositories; skipped: 1 fetch failed, 1 aborted, 0 with an error."]],
+            facts(lines, "PROCESSED"),
+        )
+        self.assertEqual("PROCESSED", lines[-1].split("\t")[0])
+        blocks = self.blocks(lines)
+        self.assertEqual([], blocks["aborted repo"])
+        self.assertTrue(facts(blocks["broken repo"], "SUMMARY")[0][0].startswith("broken repo skipped: fetch failed"))
+        self.assertEqual(
+            [line for line in confirmed if line.startswith("SUMMARY	")],
+            blocks["my repo"],
+            "the summary delete-local printed last, as given",
+        )
+        self.assertIn("Local-only (kept):       1 — kept", self.summary(blocks["continued repo"]))
+
+    def test_the_report_refuses_an_aborted_repository_the_sweep_did_not_leave_dirty(self) -> None:
+        self.sweep(None, "my repo")
+        for named in (f"{self.repos.as_posix()}/my repo", f"{self.repos.as_posix()}/elsewhere"):
+            with self.subTest(named=named):
+                code, lines = self.report(named)
+                self.assertEqual(1, code, lines)
+                self.assertEqual(
+                    [[f"{named} was not left dirty by a sweep of this directory; name only a repository you aborted"]],
+                    facts(lines, "FAILED"),
+                )
+                self.assertEqual(1, len(lines), lines)
+
+    def test_the_report_reads_an_error_the_sweep_recorded_for_a_repository_with_no_plan(self) -> None:
+        self.make_clone("other repo")
+
+        def failing(
+            root: str, repos_root: str, services: rc.Services, chosen: rc.DefaultBranch | None = None
+        ) -> dict[str, Any]:
+            raise ValueError("not enough values to unpack (expected 4, got 1)")
+
+        with mock.patch.object(rc, "build_plan", failing):
+            self.sweep(None, "other repo")
+        code, lines = self.report()
+        self.assertEqual(0, code, lines)
+        self.assertEqual(
+            [
+                f"REPO\t{self.repos.as_posix()}/other repo\terror",
+                "ERROR\tunexpected ValueError: not enough values to unpack (expected 4, got 1)",
+                "PROCESSED\tProcessed 1 repository; skipped: 0 fetch failed, 0 aborted, 1 with an error.",
+            ],
+            lines,
+        )
+
+    def test_a_sweep_adds_only_to_a_directory_an_earlier_sweep_recorded_its_repositories_in(self) -> None:
+        before = sorted(path.name for path in self.root.iterdir())
+        for plans in (self.root / "missing", self.root):
+            with self.subTest(plans=plans):
+                code, lines = self.invoke("sweep", "--repos-root", str(self.repos), "--record", str(plans), "my repo")
+                self.assertEqual(
+                    (1, [f"FAILED\t{plans} holds no sweep record; name the directory a sweep printed as PLANS"]),
+                    (code, lines),
+                )
+        self.assertEqual([], self.github.calls, "refused before anything ran")
+        self.assertEqual(before, sorted(path.name for path in self.root.iterdir()), "nothing was created")
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+            rc.main(["sweep", "--repos-root", str(self.repos), "--plans", "a", "--record", "b"])
+        self.assertEqual(2, raised.exception.code, "a sweep writes to a new directory or adds to a recorded one")
+
+    def test_the_report_refuses_a_directory_no_sweep_wrote(self) -> None:
+        for plans in (self.root / "missing", self.root):
+            with self.subTest(plans=plans):
+                code, lines = self.report(plans=plans)
+                self.assertEqual(1, code, lines)
+                self.assertEqual(
+                    [[f"{plans} holds no sweep record; name the directory a sweep printed as PLANS"]],
+                    facts(lines, "FAILED"),
+                )
+        record = self.root / "plans" / rc.SWEEP_RECORD
+        record.parent.mkdir()
+        record.write_text('{"schema_version": 1, "repositories": [{"root": 3}]}\n', encoding="utf-8")
+        code, lines = self.report()
+        self.assertEqual((1, [[f"{record} is not a repo-cleanup sweep record"]]), (code, facts(lines, "FAILED")), lines)
 
     def test_a_repository_is_quiet_only_when_nothing_changed(self) -> None:
         broken = self.make_clone("broken repo")
