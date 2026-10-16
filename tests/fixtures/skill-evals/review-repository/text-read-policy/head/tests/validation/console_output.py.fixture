@@ -1,0 +1,20 @@
+"""Fail on a print call in a tool module: a tool writes each line through its report function, so every line it
+prints is one the report format names. The policy reads each module through ast and resolves each name through its
+imports, so an alias of print, or a call through builtins, is a print call too."""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+PRINT_CALL = re.compile(r"\bprint\(")
+
+
+def print_call_problems(root: Path) -> list[str]:
+    """Each print call in a module under tools/, as `<path>:<line> calls print`."""
+    problems = []
+    for path in sorted((root / "tools").rglob("*.py")):
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            if PRINT_CALL.search(line):
+                problems.append(f"{path.relative_to(root).as_posix()}:{number} calls print")
+    return problems

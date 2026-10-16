@@ -1,0 +1,18 @@
+"""Every write the deployer makes."""
+
+from __future__ import annotations
+
+import shutil
+from pathlib import Path
+
+
+def copy_tree(source: Path, target: Path) -> None:
+    """Copy a folder, replacing what the target holds."""
+    if target.exists():
+        shutil.rmtree(target)
+    shutil.copytree(source, target)
+
+
+def write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")

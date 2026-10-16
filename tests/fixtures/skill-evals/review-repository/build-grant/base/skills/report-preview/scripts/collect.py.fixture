@@ -1,0 +1,25 @@
+"""Print each report under a repository's reports folder.
+
+    python -B collect.py <repository>
+
+Prints one `REPORT <path>` line per report, by its path from the repository.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+
+def reports(repository: Path) -> list[str]:
+    return sorted(path.relative_to(repository).as_posix() for path in (repository / "reports").glob("*.csv"))
+
+
+def main(argv: list[str]) -> int:
+    for path in reports(Path(argv[0])):
+        print(f"REPORT {path}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

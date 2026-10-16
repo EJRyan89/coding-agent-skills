@@ -1,0 +1,22 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+import collect
+
+
+class ReportsTests(unittest.TestCase):
+    def test_each_csv_under_reports_is_listed_by_its_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+            (repository / "reports").mkdir()
+            for name in ("b.csv", "a.csv", "notes.txt"):
+                (repository / "reports" / name).write_text("", encoding="utf-8")
+            self.assertEqual(["reports/a.csv", "reports/b.csv"], collect.reports(repository))
+            self.assertEqual(0, collect.main([temporary]))
+
+
+if __name__ == "__main__":
+    unittest.main()

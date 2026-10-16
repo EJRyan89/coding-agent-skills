@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "repository": "example/skill-home",
+  "number": 14,
+  "title": "Name the preview option for what it does",
+  "head_ref": "preview-option",
+  "body": "Renames the option that changes nothing to `--preview`, which says what it does.\n\n## Upgrade note\n\nNone.\n",
+  "base_ref": "main",
+  "threads": [],
+  "manifest_path": ".claude/skills/review-repository/references/specialists.json"
+}

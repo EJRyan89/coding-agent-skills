@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "repository": "example/report-tools",
+  "number": 21,
+  "title": "Refuse a print call in a tool module",
+  "head_ref": "no-print",
+  "body": "Adds a validation policy that fails on a print call in a tool module, with its fixture suite.\n\n## Upgrade note\n\nNone.\n",
+  "base_ref": "main",
+  "threads": [],
+  "manifest_path": ".claude/skills/review-repository/references/specialists.json"
+}
