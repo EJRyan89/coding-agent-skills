@@ -64,6 +64,8 @@ SKILL_GUIDE = "docs/adding-a-skill.md"
 VALIDATION_DOC = f'"Validation" in {SKILL_GUIDE}'
 # The code-review bundle's operations contract, whose threat model and format tables the policies read.
 OPERATIONS_CONTRACT = "docs/code-review-operations-contract.md"
+# The calls that look an attribute up by its name, as getattr(os, "environ") looks up os.environ.
+ATTRIBUTE_LOOKUPS = frozenset({"getattr", "builtins.getattr"})
 # The calls that import a module by its name, as the module's imports resolve them.
 MODULE_LOADERS = frozenset({"importlib.import_module", "__import__", "builtins.__import__"})
 # What stands for a part of a dotted name a module looks up by a name it computes, such as the module in

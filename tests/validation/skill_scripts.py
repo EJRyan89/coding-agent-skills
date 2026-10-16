@@ -45,6 +45,9 @@ from validation_support import (
 
 from deployer import platform_support, render
 
+PLATFORM_ALLOWED = {
+    "pathlib.PureWindowsPath": "reads a command's program after either path separator on every platform"
+}
 SHELL_OPERATORS = ("&&", "||", ";;", "|&", "()", "(", ")", ";", "&", "|", "<", ">", "\n")
 COMMAND_SEPARATORS = {";", "&", "&&", "|", "||", "|&", "(", "\n", "{"}
 LEADING_KEYWORDS = {"if", "then", "else", "elif", "while", "until", "do", "time", "!", "}", ")", "fi", "done"}

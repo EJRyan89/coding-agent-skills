@@ -20,6 +20,7 @@ from shell_targets import run_git_bash, shell_quote
 from skill_scripts import STANDARD_STREAMS, command_reader
 from toolchain import find_powershell
 from validation_support import (
+    ATTRIBUTE_LOOKUPS,
     COMPUTED_NAME,
     PYTHON_ENTRY_POINT,
     REPOSITORY_ROOT,
@@ -661,8 +662,6 @@ ENVIRONMENT_METHODS = frozenset(
     f"{environment}.{method}" for environment in ENVIRONMENTS for method in ENVIRONMENT_CHANGES
 )
 PATCHED_TARGETS = frozenset({*STANDARD_STREAMS, *ENVIRONMENTS})
-# The calls that look an attribute up by its name, as getattr(os, "environ") looks up os.environ.
-ATTRIBUTE_LOOKUPS = frozenset({"getattr", "builtins.getattr"})
 MOCK_PATCHES = ("unittest.mock.patch", "mock.patch")
 PATCH_CALLS = frozenset(MOCK_PATCHES)
 PATCH_DICT_CALLS = frozenset(f"{patch}.dict" for patch in MOCK_PATCHES)
