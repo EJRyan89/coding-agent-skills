@@ -173,9 +173,15 @@ class DeployUsageErrorTests(DeployerTestCase):
         canary = self.root / "canary"
         canary.mkdir()
         result = self.deploy_fails(
-            "--all", "--canary-home", str(canary), "--force-item", "gamma", home=canary, pattern="--force-item names"
+            "--all",
+            "--canary-home",
+            str(canary),
+            "--force-item",
+            "gamma",
+            home=canary,
+            code=2,
+            pattern="--force-item names",
         )
-        self.assertEqual(2, result.code, result.output)
         self.assertEqual(
             "\nERROR: --force-item names 'gamma', which this run does not install.\n"
             f"Name one of: alpha.\n{self.HELP}\n\n",
@@ -194,9 +200,9 @@ class DeployUsageErrorTests(DeployerTestCase):
                     "missing",
                     "--include",
                     "other",
+                    code=2,
                     pattern="--include names no bundle or skill",
                 )
-                self.assertEqual(2, result.code, result.output)
                 self.assertEqual(
                     f"\nERROR: --include names no bundle or skill in this source: missing, other\n{self.HELP}\n\n",
                     result.output,
@@ -213,9 +219,9 @@ class DeployUsageErrorTests(DeployerTestCase):
             "--include",
             "missing",
             home=canary,
+            code=2,
             pattern="--include names no bundle or skill",
         )
-        self.assertEqual(2, result.code, result.output)
         self.assertEqual(
             f"\nERROR: --include names no bundle or skill in this source: missing\n{self.HELP}\n\n",
             result.output,
@@ -234,8 +240,9 @@ class DeployUsageErrorTests(DeployerTestCase):
         for name in ("beta", "support", "shared.md", "reviewer", "reviewer.md"):
             for arguments in (("--dry-run",), ()):
                 with self.subTest(name=name, arguments=arguments):
-                    result = self.deploy_fails("--all", *arguments, "--force-item", name, pattern="--force-item names")
-                    self.assertEqual(2, result.code, result.output)
+                    result = self.deploy_fails(
+                        "--all", *arguments, "--force-item", name, code=2, pattern="--force-item names"
+                    )
                     self.assertIn(
                         f"\nERROR: --force-item names '{name}', which this run does not install.\n", result.output
                     )
@@ -252,8 +259,7 @@ class DeployUsageErrorTests(DeployerTestCase):
         self.make_shared_asset("unused.md")
         for name in ("orphan", "unused", "unused.md", "external.md"):
             with self.subTest(name=name):
-                result = self.deploy_fails("--force-item", name, pattern="--force-item names")
-                self.assertEqual(2, result.code, result.output)
+                result = self.deploy_fails("--force-item", name, code=2, pattern="--force-item names")
                 self.assertEqual(
                     f"\nERROR: --force-item names '{name}', which this run does not install.\n"
                     f"Name one of: alpha.\n{self.HELP}\n\n",

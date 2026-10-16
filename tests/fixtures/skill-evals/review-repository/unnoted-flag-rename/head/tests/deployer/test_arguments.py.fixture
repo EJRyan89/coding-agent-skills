@@ -1,0 +1,21 @@
+from __future__ import annotations
+
+import contextlib
+import io
+import unittest
+
+from deployer.arguments import build_parser
+
+
+class ArgumentTests(unittest.TestCase):
+    def test_the_home_is_required(self) -> None:
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+            build_parser().parse_args(["--all"])
+        self.assertEqual(2, raised.exception.code)
+
+    def test_all_installs_every_skill(self) -> None:
+        self.assertTrue(build_parser().parse_args(["--home", "home", "--all"]).all)
+
+
+if __name__ == "__main__":
+    unittest.main()

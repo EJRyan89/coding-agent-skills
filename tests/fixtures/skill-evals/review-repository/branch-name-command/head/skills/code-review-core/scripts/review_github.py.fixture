@@ -1,0 +1,21 @@
+"""Read a pull request's commits into a local checkout for review."""
+
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+from typing import Any
+
+
+def fetch_head(checkout: Path, pull: dict[str, Any]) -> str:
+    """Fetch the pull request's head branch into the checkout and return the commit fetched, so a branch pushed
+    after the pull request's ref was last updated is reviewed at its tip."""
+    branch = pull["head_ref"]
+    subprocess.run(
+        ["git", "-C", str(checkout), "fetch", "--quiet", "origin", branch],
+        check=True,
+        capture_output=True,
+    )
+    return subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "FETCH_HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()

@@ -1,0 +1,8 @@
+{
+  "skill": "review-prs",
+  "reviewer": "review-repository",
+  "mode": "initial",
+  "expectations": [
+    {"kind": "finding", "path": "skills/code-review-core/scripts/review_github.py", "lines": [13, 15], "severity": "MUST_FIX", "category": "Unstated trust boundary"}
+  ]
+}

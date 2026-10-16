@@ -732,7 +732,11 @@ class OtherCheckoutTests(LinkedWorktreeTestCase):
     def test_take_over_source_cannot_be_combined_with_a_dry_run(self) -> None:
         self.deployed_clone()
         self.deploy_fails(
-            "--all", "--take-over-source", "--dry-run", pattern="--take-over-source cannot be combined with --dry-run"
+            "--all",
+            "--take-over-source",
+            "--dry-run",
+            code=2,
+            pattern="--take-over-source cannot be combined with --dry-run",
         )
 
 
@@ -762,8 +766,8 @@ class CanaryHomeTests(LinkedWorktreeTestCase):
         ):
             self.run_from(linked, "--canary-home", str(self.canary), "--all")
 
-    def assert_untouched(self, result: Result, pattern: str) -> None:
-        self.assertNotEqual(0, result.code, result.output)
+    def assert_untouched(self, result: Result, pattern: str, code: int) -> None:
+        self.assertEqual(code, result.code, result.output)
         self.assertRegex(result.output, pattern)
         self.assertEqual([], list(self.canary.iterdir()))
         self.assertFalse(self.manifest_file.exists())
@@ -878,7 +882,7 @@ class CanaryHomeTests(LinkedWorktreeTestCase):
             (("--take-over-source",), "--canary-home cannot be combined with --take-over-source"),
         ):
             with self.subTest(extra=extra):
-                self.assert_untouched(self.run_from(linked, "--canary-home", str(self.canary), *extra), pattern)
+                self.assert_untouched(self.run_from(linked, "--canary-home", str(self.canary), *extra), pattern, 2)
 
     def test_every_configured_variable_has_a_canary_folder(self) -> None:
         self.assertEqual({"REPOS_ROOT": "repos"}, config.CANARY_DIRECTORIES)
@@ -887,7 +891,7 @@ class CanaryHomeTests(LinkedWorktreeTestCase):
     def test_without_the_flag_a_linked_worktree_is_still_refused(self) -> None:
         linked = self.make_linked_worktree()
         result = self.run_from(linked, "--all")
-        self.assert_untouched(result, "is a linked git worktree")
+        self.assert_untouched(result, "is a linked git worktree", 1)
 
 
 class DerivedAllowlistTests(GitTestCase):
