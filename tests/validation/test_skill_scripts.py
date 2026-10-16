@@ -23,6 +23,7 @@ from git_test_base import GitTestCase
 from skill_scripts import (
     CLIENT_CLASSES,
     COMMAND_RUNNERS,
+    EVENT_LOOP,
     UNREAD_PROGRAM,
     CommandReader,
     client_command_problems,
@@ -62,21 +63,33 @@ class SkillScriptsFixtures(GitTestCase):
     def test_process_detection_uses_every_command_runner_and_client_with_dynamic_arguments(self) -> None:
         for callable_name in (*COMMAND_RUNNERS, *CLIENT_CLASSES):
             with self.subTest(callable_name=callable_name):
-                module, function = callable_name.split(".")
-                # The command goes where the runner takes it: os's spawn calls take a mode first.
+                module, _, function = callable_name.rpartition(".")
+                # An event loop's runner is a method of the loop a call returns.
+                loop = module == EVENT_LOOP
+                header = (
+                    "import asyncio\nprocess = asyncio.new_event_loop()\n" if loop else f"import {module} as process\n"
+                )
+                # The command goes where the runner takes it: os's spawn calls take a mode first, and an event loop's
+                # runners a protocol factory.
                 position = COMMAND_RUNNERS[callable_name][0] if callable_name in COMMAND_RUNNERS else 0
                 arguments = ", ".join([*(["mode"] * position), "command"])
-                tree = ast.parse(f"import {module} as process\nstart = process.{function}\nstart({arguments})\n")
+                tree = ast.parse(f"{header}start = process.{function}\nstart({arguments})\n")
                 reader = CommandReader(tree)
                 self.assertTrue(reader.starts_process())
                 # A runner given a command the module never binds reports it; a client's argument is not a command.
+                line = header.count("\n") + 2
                 expected = (
-                    [unreadable("start.py", 3, "the program in `command`, which the module binds to nothing it reads")]
+                    [
+                        unreadable(
+                            "start.py", line, "the program in `command`, which the module binds to nothing it reads"
+                        )
+                    ]
                     if callable_name in COMMAND_RUNNERS
                     else []
                 )
                 self.assertEqual(expected, reader.problems("start.py"))
-                self.assertFalse(CommandReader(ast.parse(f"from {module} import {function}\n")).starts_process())
+                if not loop:
+                    self.assertFalse(CommandReader(ast.parse(f"from {module} import {function}\n")).starts_process())
 
     def test_command_reader_keeps_only_the_f_strings_initial_literal_arguments(self) -> None:
         for expression, prefix in (
@@ -625,6 +638,111 @@ class SkillScriptsFixtures(GitTestCase):
         self.assertFalse(
             CommandReader(ast.parse("import subprocess\ndef f(p: subprocess.Popen[str]): ...\n")).starts_process()
         )
+
+    def test_command_policies_report_a_runner_in_a_collection_indexed_where_it_is_written(self) -> None:
+        script = (
+            "import os\n"
+            "import subprocess\n"
+            "def mapping():\n"
+            '    return {"run": subprocess.run}["run"](["ruby"])\n'  # 4
+            "def pair():\n"
+            '    return (subprocess.run, os.system)[0](["ruby"])\n'  # 6
+            # A subscripted generic outside an annotation, an annotation, and an isinstance check start nothing.
+            "GENERIC = subprocess.Popen[bytes]\n"
+            "def typed(process: subprocess.Popen[bytes]) -> bool:\n"
+            "    return isinstance(process, subprocess.Popen)\n"
+        )
+        path = "skills/alpha/scripts/tool.py"
+        handed = "which the module hands on as a value"
+        reader = CommandReader(ast.parse(script))
+        self.assertEqual(
+            [
+                unreadable(path, 4, f"the program `subprocess.run` runs, {handed}"),
+                unreadable(path, 6, f"the program `os.system` runs, {handed}"),
+                unreadable(path, 6, f"the program `subprocess.run` runs, {handed}"),
+            ],
+            reader.problems(path),
+        )
+        types_only = "GENERIC = subprocess.Popen[bytes]\ndef typed(process: subprocess.Popen[bytes]) -> bool:\n"
+        typed = f"import subprocess\n{types_only}    return isinstance(process, subprocess.Popen)\n"
+        self.assertFalse(CommandReader(ast.parse(typed)).starts_process())
+        self.assertEqual([], CommandReader(ast.parse(typed)).problems(path))
+
+    def test_command_policies_read_pty_startfile_an_event_loop_and_asyncio_subprocess_runners(self) -> None:
+        sources = {
+            "pty": "import pty\npty.spawn(['ruby', '-e'])\n",
+            "startfile": "import os\nos.startfile('ruby')\n",
+            "loop": (
+                "import asyncio\n"
+                "async def start():\n"
+                "    loop = asyncio.get_running_loop()\n"
+                "    await loop.subprocess_exec(asyncio.SubprocessProtocol, 'ruby', '-e')\n"
+                "    run = loop.subprocess_shell\n"
+                "    await run(asyncio.SubprocessProtocol, 'jq . | ruby -e 1')\n"
+            ),
+            "asyncio.subprocess": (
+                "import asyncio.subprocess\n"
+                "asyncio.subprocess.create_subprocess_exec('ruby', '-e')\n"
+                "asyncio.subprocess.create_subprocess_shell('ruby -e 1')\n"
+            ),
+        }
+        for label, source in sources.items():
+            with self.subTest(runner=label):
+                reader = CommandReader(ast.parse(source))
+                self.assertTrue(reader.starts_process())
+                self.assertEqual({"ruby", "jq"} if label == "loop" else {"ruby"}, reader.commands(set()))
+                self.assertEqual([], reader.problems("tool.py"))
+
+    def test_command_policies_read_a_runner_from_a_module_looked_up_by_name(self) -> None:
+        sources = {
+            "import_module": "import importlib\nimportlib.import_module('subprocess').run(['ruby', '.'])\n",
+            "__import__": "__import__('subprocess').run('ruby .', shell=True)\n",
+            "sys.modules": "import sys\nsys.modules['subprocess'].run(['ruby', '.'])\n",
+            "bound module": "import importlib\nmodule = importlib.import_module('subprocess')\nmodule.run(['ruby'])\n",
+            "bound runner": "import importlib\nrun = importlib.import_module('subprocess').run\nrun(['ruby'])\n",
+            "dotted": (
+                "import importlib\nimportlib.import_module('asyncio.subprocess').create_subprocess_exec('ruby')\n"
+            ),
+        }
+        for label, source in sources.items():
+            with self.subTest(lookup=label):
+                reader = CommandReader(ast.parse(source))
+                self.assertTrue(reader.starts_process())
+                self.assertEqual({"ruby"}, reader.commands(set()))
+                self.assertEqual([], reader.problems("tool.py"))
+        computed = (
+            "import importlib\n"
+            "import sys\n"
+            "def by_name(name):\n"
+            "    importlib.import_module(name).run(['ruby'])\n"  # 4
+            "    getattr(sys.modules[name], 'run')(['ruby'])\n"  # 5
+            "    getattr(__import__(name), name)\n"  # 6
+        )
+        reader = CommandReader(ast.parse(computed))
+        self.assertTrue(reader.starts_process())
+        self.assertEqual(
+            [
+                unreadable(
+                    "tool.py",
+                    4,
+                    "the program `importlib.import_module(name).run` runs, from a module looked up by a computed name",
+                ),
+                unreadable("tool.py", 5, "the program `getattr(sys.modules[name], 'run')` runs, which getattr takes"),
+                unreadable("tool.py", 6, "the program `getattr(__import__(name), name)` runs, which getattr takes"),
+            ],
+            reader.problems("tool.py"),
+        )
+        # A module looked up by name whose attribute starts nothing, or one that is no runner's module, is read alike.
+        quiet = (
+            "import importlib\n"
+            "import sys\n"
+            "def f(name):\n"
+            "    importlib.import_module('subprocess').DEVNULL\n"
+            "    sys.modules['json'].run\n"
+            "    importlib.import_module(name).loads('{}')\n"
+        )
+        self.assertFalse(CommandReader(ast.parse(quiet)).starts_process())
+        self.assertEqual([], CommandReader(ast.parse(quiet)).problems("tool.py"))
 
     def test_command_reader_is_built_once_per_content_and_again_when_a_file_changes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
