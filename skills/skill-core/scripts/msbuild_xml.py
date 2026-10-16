@@ -10,10 +10,11 @@ compared with case. The document is parsed by skill-core's `xml_reader` and its 
 
 from __future__ import annotations
 
+from typing import Any
 from xml.etree.ElementTree import Element
 
 
-def local_name(element: Element) -> str:
+def local_name(element: Element[Any]) -> str:
     """An element's tag without its namespace, or an empty name for a node without a tag, such as a comment."""
     tag = element.tag
     return tag.rsplit("}", 1)[-1] if isinstance(tag, str) else ""
