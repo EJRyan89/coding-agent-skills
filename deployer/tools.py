@@ -118,6 +118,23 @@ CODEX = Tool(
     other_uses=("Codex verification",),
 )
 
+# The documented probe of the sandbox Codex CLI would run a skill's scripts in, which starts no model: the
+# instructions it would send name the sandbox_mode in effect, workspace-write once the Windows sandbox setting is read.
+CODEX_SANDBOX_PROBE = ("debug", "prompt-input", "-c", "sandbox_mode=workspace-write")
+CODEX_SANDBOX_MODE = re.compile(r"sandbox_mode` is `([a-z-]+)`")
+CODEX_WRITABLE_SANDBOX = "workspace-write"
+
+
+def codex_sandbox_mode(codex: str) -> str | None:
+    """The sandbox mode the Codex CLI at this path would run a skill's scripts in, or None when it names none."""
+    try:
+        result = platform_support.run_tool([codex, *CODEX_SANDBOX_PROBE])
+    except platform_support.ToolTimedOut:
+        return None
+    found = CODEX_SANDBOX_MODE.search(result.output) if result.returncode == 0 else None
+    return None if found is None else found.group(1)
+
+
 # Tools a skill may declare in its deploy-meta "tools" list. Python is a deployment requirement already, and Git,
 # which every skill runs, is reported apart in REPORTED_TOOLS below.
 SKILL_TOOLS = {

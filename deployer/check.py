@@ -14,6 +14,8 @@ from .report import ReportLine, currently_chosen, print_report, warn_ignored_hom
 
 CHECK_ACTIONS = ("MISSING", "OUTDATED", "UNUSABLE", "FOUND", "OPTIONAL")
 NEEDED_TO_DEPLOY = "needed to deploy"
+CODEX_SANDBOX_SECTION = '"Windows sandbox mode" in docs/codex-support.md'
+PYTHON_ALIAS_SECTION = '"Python app execution aliases" in docs/codex-support.md'
 # What check asks for when a tool needed to deploy is missing, outdated, or both, keyed by (missing, outdated).
 BLOCKED_LEADS = {
     (True, False): "Install the missing tools",
@@ -78,6 +80,49 @@ def _skill_lines(src: source.Source, owned: manifest.Ownership) -> list[ReportLi
     return lines
 
 
+def _setting_lines() -> list[ReportLine]:
+    """The machine settings a runtime needs before it can run a skill's scripts, where this platform has them: what
+    the skills' Python command runs, and, when Codex CLI is installed and meets its floor, the sandbox it would use."""
+    lines: list[ReportLine] = []
+    if platform_support.HAS_APP_EXECUTION_ALIASES:
+        lines.append(_python_command_line())
+    if platform_support.CODEX_NEEDS_SANDBOX_SETTING:
+        codex = tools.probe(tools.CODEX)
+        if codex.path is not None and not codex.outdated:
+            lines.append(_codex_sandbox_line(codex.path))
+    return lines
+
+
+def _python_command_line() -> ReportLine:
+    label = f"{platform_support.PYTHON} command"
+    program = platform_support.find_executable(platform_support.PYTHON)
+    if program is None:
+        return ReportLine(label, "MISSING", f"every skill's scripts run {platform_support.PYTHON}; put Python on PATH")
+    if platform_support.is_app_execution_alias(program):
+        return ReportLine(
+            label,
+            "UNUSABLE",
+            f"runs the app execution alias {platform_support.normalize(program)}, which Codex CLI cannot start; "
+            f"{platform_support.APP_EXECUTION_ALIAS_REMEDY}; see {PYTHON_ALIAS_SECTION}",
+        )
+    return ReportLine(label, "FOUND", f"runs {platform_support.normalize(program)}, not an app execution alias")
+
+
+def _codex_sandbox_line(codex: str) -> ReportLine:
+    label = "codex sandbox"
+    mode = tools.codex_sandbox_mode(codex)
+    if mode == tools.CODEX_WRITABLE_SANDBOX:
+        return ReportLine(label, "FOUND", f"{mode}, so Codex CLI can run skill scripts")
+    found = (
+        f"{mode}, so Codex CLI blocks every skill script"
+        if mode is not None
+        else "codex debug prompt-input named no sandbox mode"
+    )
+    return ReportLine(
+        label, "UNUSABLE", f"{found}; set [windows] sandbox in ~/.codex/config.toml; see {CODEX_SANDBOX_SECTION}"
+    )
+
+
 def _tool_line(tool: tools.Tool, optional: bool, roots: list[str]) -> ReportLine:
     used_by = f"used by {', '.join([*roots, *tool.other_uses])}"
     probe = tools.probe(tool)
@@ -114,7 +159,7 @@ def execute(namespace: argparse.Namespace, paths: Paths) -> int:
         deployed = source_commit.describe(paths.source_dir, recorded.source_commit(source_id))
         pinned = recorded.source_ref(source_id)
         deploy_lines = _deploy_lines()
-        skill_lines = _skill_lines(src, owned)
+        skill_lines = [*_skill_lines(src, owned), *_setting_lines()]
     except (DeployError, OSError, KeyboardInterrupt) as exc:
         return fail(exc, debug, "finish the check")
     print("")
@@ -132,7 +177,7 @@ def execute(namespace: argparse.Namespace, paths: Paths) -> int:
         return 1
     if any(line.action in ("MISSING", "OUTDATED", "UNUSABLE") for line in skill_lines):
         print("Ready to deploy. Skills cannot use a missing, outdated, or unusable tool")
-        print("until it is installed or updated.")
+        print("until it is installed, updated, or set up as its line says.")
     else:
         print("Ready to deploy.")
     print("")

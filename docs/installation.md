@@ -81,6 +81,8 @@ Codex CLI on Windows needs two machine settings before it can run a skill's scri
 - add a `[windows]` sandbox setting to `~/.codex/config.toml`, as [Windows sandbox mode](codex-support.md#windows-sandbox-mode) shows; and
 - turn off the `python.exe` and `python3.exe` app execution aliases.
 
+`python deploy.py check` reports both on Windows: a `python command` line, `UNUSABLE` while `python` runs an app execution alias, and, when Codex CLI is installed, a `codex sandbox` line, `UNUSABLE` while Codex would run skill scripts in a read-only sandbox. Each names the section to read, and both are `FOUND` once the settings are in place.
+
 Windows registers `python.exe` and `python3.exe` as app execution aliases in `%LOCALAPPDATA%\Microsoft\WindowsApps`: every Windows install has them as Microsoft Store stubs, and the Python install manager registers its own. Codex CLI's sandbox cannot start those aliases, so turn them off under **Settings > Apps > Advanced app settings > App execution aliases** whichever Python installer you used, and keep `py` and `pymanager` on if they are listed. Reordering your user `PATH` is not always enough, because `WindowsApps` can also be on the system `PATH`, which Windows searches first. See [Python app execution aliases](codex-support.md#python-app-execution-aliases).
 
 ## Deploying

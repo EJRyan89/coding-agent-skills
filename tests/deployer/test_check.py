@@ -67,6 +67,18 @@ INSTALLED = {
 # Xpdf's pdftotext exits 99 after printing its version.
 STATUSES = {"C:/tools/pdftotext.exe": 99}
 GIT = "C:/tools/git.exe"
+PYTHON_COMMAND = "C:/Python/python.exe"
+STORE_ALIAS = "C:/Users/me/AppData/Local/Microsoft/WindowsApps/python.exe"
+
+
+def prompt_input(mode: str) -> str:
+    """What `codex debug prompt-input` prints around the sandbox mode it would use, as Codex CLI words it."""
+    return (
+        '[{"type": "message", "content": [{"text": "<permissions instructions>\\nFilesystem sandboxing defines which '
+        f'files can be read or written. `sandbox_mode` is `{mode}`: The sandbox permits reading files."}}]}}]\n'
+    )
+
+
 GIT_VERSION = "git version 2.54.0.windows.1\n"
 COMMIT = "71ad8150c0ffee5eed0123456789abcdef012345"
 
@@ -88,8 +100,16 @@ class Machine:
         powershell: str = "7.6.6",
         describe: str | None = None,
         python: tuple[int, ...] = (3, 12, 1),
+        settings: bool = False,
+        python_command: str | None = PYTHON_COMMAND,
+        codex_probe: tuple[int, str] = (0, prompt_input("workspace-write")),
     ) -> None:
         # describe is what git describe prints for the deployed commit; None makes it fail, as for an unknown commit.
+        # settings says whether this machine's platform has the machine settings check reports, as Windows does: then
+        # python_command is what the skills' Python command runs, and codex_probe what Codex's sandbox probe prints.
+        self.settings = settings
+        self.python_command = python_command
+        self.codex_probe = codex_probe
         self.git = None if "git" in missing else GIT
         self.describe = describe
         self.python = python
@@ -107,7 +127,14 @@ class Machine:
         stack.enter_context(
             mock.patch(
                 "deployer.platform_support.find_executable",
-                side_effect=lambda name: self.git if name == "git" else self.installed.get(name, (None,))[0],
+                side_effect=self.find_executable,
+            )
+        )
+        for flag in ("HAS_APP_EXECUTION_ALIASES", "CODEX_NEEDS_SANDBOX_SETTING"):
+            stack.enter_context(mock.patch.object(platform_support, flag, self.settings))
+        stack.enter_context(
+            mock.patch.object(
+                platform_support, "is_app_execution_alias", side_effect=lambda program: program == STORE_ALIAS
             )
         )
         stack.enter_context(
@@ -128,12 +155,21 @@ class Machine:
         stack.enter_context(mock.patch("deployer.tools.probe_pdftotext", side_effect=self.probe_pdftotext))
         return stack
 
+    def find_executable(self, name: str) -> str | None:
+        if name == "git":
+            return self.git
+        if name == platform_support.PYTHON:
+            return self.python_command
+        return self.installed.get(name, (None,))[0]
+
     def probe_pdftotext(self, path: str) -> PdfIdentity:
         """The banner of the program at this resolved path, with the status its provider exits with."""
         [banner] = [output for found, output in self.versions.items() if Path(found).resolve() == Path(path)]
         return parse_banner(banner, 0 if "The Poppler Developers" in banner else 99)
 
     def run_tool(self, arguments: list[str]) -> platform_support.ToolResult:
+        if arguments[1:] == list(tools.CODEX_SANDBOX_PROBE):
+            return platform_support.ToolResult(*self.codex_probe)
         if arguments[0] != GIT:
             return platform_support.ToolResult(STATUSES.get(arguments[0], 0), self.versions[arguments[0]])
         if arguments[1:] == ["--version"]:
@@ -194,6 +230,67 @@ class CheckCommandTests(DeployerTestCase):
             "\n",
             result.output,
         )
+
+    def test_with_both_machine_settings_in_place_it_reports_them_found(self) -> None:
+        result = self.check(Machine(settings=True))
+        self.assertEqual(0, result.code, result.output)
+        found = self.report_groups(result.output, "CHECK")["FOUND"]
+        self.assertIn("codex sandbox (workspace-write, so Codex CLI can run skill scripts)", found)
+        self.assertIn(
+            f"{platform_support.PYTHON} command (runs {PYTHON_COMMAND}, not an app execution alias)",
+            [" ".join(line.split()) for line in found],
+        )
+        self.assertNotIn("UNUSABLE", self.report_groups(result.output, "CHECK"))
+
+    def test_a_missing_sandbox_setting_and_a_python_alias_are_named_with_the_section_to_read(self) -> None:
+        result = self.check(
+            Machine(settings=True, python_command=STORE_ALIAS, codex_probe=(0, prompt_input("read-only")))
+        )
+        self.assertEqual(0, result.code, result.output)
+        unusable = [" ".join(line.split()) for line in self.report_groups(result.output, "CHECK")["UNUSABLE"]]
+        self.assertEqual(
+            [
+                "codex sandbox (read-only, so Codex CLI blocks every skill script; set [windows] sandbox in "
+                '~/.codex/config.toml; see "Windows sandbox mode" in docs/codex-support.md)',
+                f"{platform_support.PYTHON} command (runs the app execution alias {STORE_ALIAS}, which Codex CLI "
+                "cannot start; turn off the python.exe and python3.exe aliases under Settings > Apps > Advanced app "
+                'settings > App execution aliases; see "Python app execution aliases" in docs/codex-support.md)',
+            ],
+            unusable,
+        )
+        self.assertIn("Ready to deploy. Skills cannot use a missing, outdated, or unusable tool\n", result.output)
+
+    def test_a_sandbox_mode_codex_does_not_name_is_unusable_and_no_python_command_is_missing(self) -> None:
+        for status, output in ((0, "no permissions here\n"), (1, prompt_input("workspace-write"))):
+            with self.subTest(status=status):
+                groups = self.report_groups(
+                    self.check(Machine(settings=True, python_command=None, codex_probe=(status, output))).output,
+                    "CHECK",
+                )
+                self.assertIn(
+                    "codex sandbox (codex debug prompt-input named no sandbox mode; set [windows] sandbox in "
+                    '~/.codex/config.toml; see "Windows sandbox mode" in docs/codex-support.md)',
+                    [" ".join(line.split()) for line in groups["UNUSABLE"]],
+                )
+                self.assertIn(
+                    f"{platform_support.PYTHON} command (every skill's scripts run {platform_support.PYTHON}; put "
+                    "Python on PATH)",
+                    [" ".join(line.split()) for line in groups["MISSING"]],
+                )
+
+    def test_the_sandbox_is_not_probed_without_a_codex_that_meets_its_floor_nor_off_windows(self) -> None:
+        for machine in (
+            Machine(settings=True, missing=("codex",)),
+            Machine(settings=True, versions={"codex": "codex-cli 0.87.0\n"}),
+            Machine(settings=False, codex_probe=(0, prompt_input("read-only"))),
+        ):
+            with self.subTest(settings=machine.settings, installed=sorted(machine.installed)):
+                with machine.patches() as _, mock.patch.object(tools, "codex_sandbox_mode") as probed:
+                    result = self.run_cli("check")
+                self.assertEqual(0, result.code, result.output)
+                probed.assert_not_called()
+                self.assertNotIn("codex sandbox", result.output)
+        self.assertNotIn("python command", self.check(Machine(settings=False)).output)
 
     def test_missing_deploy_tool_fails_with_its_install_command(self) -> None:
         result = self.check(Machine(missing=("shellcheck",)))
@@ -619,6 +716,13 @@ class InstallationGuideTests(GitTestCase):
         guide = (REPOSITORY_ROOT / "docs" / "installation.md").read_text(encoding="utf-8")
         self.assertIn("Installing the tools", re.findall(r"^## (.+)$", guide, re.MULTILINE))
 
+    def test_the_sections_the_setting_lines_name_exist(self) -> None:
+        guide = (REPOSITORY_ROOT / "docs" / "codex-support.md").read_text(encoding="utf-8")
+        headings = re.findall(r"^## (.+)$", guide, re.MULTILINE)
+        for section in ("Windows sandbox mode", "Python app execution aliases"):
+            with self.subTest(section=section):
+                self.assertIn(section, headings)
+
 
 class StandardCommandTests(GitTestCase):
     def test_standard_commands_are_the_documented_set(self) -> None:
@@ -677,6 +781,40 @@ class StandardCommandTests(GitTestCase):
             ),
             tools.STANDARD_COMMANDS,
         )
+
+
+class CodexSandboxProbeTests(GitTestCase):
+    """The sandbox mode Codex CLI would use, read from the documented probe that starts no model."""
+
+    def mode(self, result: platform_support.ToolResult | Exception) -> tuple[str | None, list[list[str]]]:
+        calls: list[list[str]] = []
+
+        def run(arguments: list[str], environment: dict[str, str] | None = None) -> platform_support.ToolResult:
+            calls.append(arguments)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        with mock.patch.object(platform_support, "run_tool", side_effect=run):
+            return tools.codex_sandbox_mode("C:/tools/codex.exe"), calls
+
+    def test_the_probe_runs_the_documented_command_and_reads_the_mode(self) -> None:
+        for mode in ("workspace-write", "read-only", "danger-full-access"):
+            with self.subTest(mode=mode):
+                found, calls = self.mode(platform_support.ToolResult(0, prompt_input(mode)))
+                self.assertEqual(mode, found)
+                self.assertEqual(
+                    [["C:/tools/codex.exe", "debug", "prompt-input", "-c", "sandbox_mode=workspace-write"]], calls
+                )
+
+    def test_a_failed_silent_or_unfinished_probe_names_no_mode(self) -> None:
+        for result in (
+            platform_support.ToolResult(1, prompt_input("workspace-write")),
+            platform_support.ToolResult(0, "error: unknown subcommand 'debug'\n"),
+            platform_support.ToolTimedOut("C:/tools/codex.exe", 600),
+        ):
+            with self.subTest(result=result):
+                self.assertIsNone(self.mode(result)[0])
 
 
 class VersionTests(GitTestCase):
