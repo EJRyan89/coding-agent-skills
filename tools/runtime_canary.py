@@ -2,7 +2,8 @@
 
 Usage:
   python tools/runtime_canary.py [SKILL ...] [--runtime NAME ...] [--discovery-only] [--timeout SECONDS]
-                                 [--codex-sandbox elevated|unelevated]
+                                 [--codex-sandbox elevated|unelevated] [--keep-home]
+  python tools/runtime_canary.py --changed-since [REF]
   python tools/runtime_canary.py --remove-home DIR
 
 It makes a fresh home under the temporary directory and deploys this checkout into it with `deploy.py
@@ -11,7 +12,7 @@ That home is the only place anything is deployed. Each installed runtime then st
 directory, so it finds the deployed skills as project skills, and with a fixed prompt naming one skill: the fixture
 runtime-canary-probe, then each SKILL given. It prints one fact per line:
 
-  HOME "<dir>"                                  the throwaway home; delete it with --remove-home when done
+  HOME "<dir>"                                  the throwaway home, removed at the end unless the run failed
   DEPLOYED <source id>                          or DEPLOY_FAILED <source id> "<log>", which stops the run
   SKIPPED <runtime> "<reason>"                  the runtime is not installed where `deploy.py check` looks
   DISCOVERED <runtime> <skill> ["<path>"]       the runtime lists the canary's copy, enabled
@@ -31,11 +32,31 @@ runtime-canary-probe, then each SKILL given. It prints one fact per line:
   MATRIX <runtime> <skill> AGREES <level>       what ran is what the skill's declared runtime support expects
   MATRIX <runtime> <skill> DISAGREES <level> "<what ran instead>"
   NOTHING_CHECKED "<reason>"                    no runtime was listed or run, with why for each; the canary exits 1
+  RECORD_BEGIN ... RECORD_END                   the lines a pull request records, below
+  REMOVED "<dir>"                               the home, removed after a run that passed
+  HOME_KEPT "<dir>" "<reason>"                  or kept, after a run that failed or with --keep-home
 
 A SKILL that no source names is a usage error, exit 2, before a home is made, while every source can be read; when
 one cannot, a SKILL is not judged by it, and the run's deployment reports the deployer's reason as DEPLOY_FAILED.
 
+The record between RECORD_BEGIN and RECORD_END is what a pull request's Validation section holds: a VERSION
+<runtime> <version> line for each runtime found, the version its --version prints or unknown, then each DEPLOY_FAILED,
+SKIPPED, discovery, SUPPLIED, RUNTIME, MATRIX, and NOTHING_CHECKED line, with every path rewritten so it names no
+machine: the throwaway home as <temp>, this checkout as <source>, and the profile folder the runtimes read as <home>.
+The home is removed after a run that exits 0; after one that fails, or with --keep-home, it stays with its transcripts,
+and --remove-home deletes it later. A home that cannot be removed is FAILED "<reason>" and exit 1.
+
 With --remove-home DIR it prints REMOVED "<dir>", or FAILED "<reason>" and exits 1.
+
+With --changed-since REF it starts nothing and makes no home: it reads, through git, every file changed since the
+commit REF and HEAD share, committed or not, untracked included, and prints SINCE <ref> <commit>, then CHANGED
+<skill> "<why>" for each shipped skill the change reaches, or NOTHING_CHANGED "<reason>". REF defaults to the latest
+tag, the range a release checks. A skill is reached by a changed file under skills/<skill>/, its
+deploy-meta/<skill>.json, a shared asset under skills/ that it declares in shared_deps, or an agents/<agent>.md that it
+declares in agent_deps. A hidden dependency, which has no adapter and no run of its own, reaches instead the skills that
+declare it in skill_deps, directly or through another hidden one. A change to deployer/render.py, which writes every
+adapter, reaches one skill the model may start and one only the user may start, a changed one where it can. A git
+failure is FAILED "<reason>" and exit 1.
 
 The isolation is of configuration, not of credentials: each runtime keeps its real configuration folder and so
 its sign-in, and the canary switches off what each runtime lets it: Claude Code's user settings, skills, and MCP
@@ -94,7 +115,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -104,11 +125,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-c
 import frontmatter
 from bounded_process import run_bounded, without_repository_variables
 from console import run_main
+from git_client import GitClient, GitError
 
 from deployer import discovery, manifest, pipeline, platform_support, runtime_support, verify
 from deployer import source as deploy_source
 from deployer.errors import DeployError
 from deployer.paths import Paths
+from deployer.tools import format_version, parse_version
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
@@ -130,6 +153,28 @@ HOME_MARKER = "home.json"
 # The file in STATE holding the run's identifier, new for each run, which the fixture's probe copies into its marker.
 RUN_ID = "run-id"
 DEFAULT_TIMEOUT = 600
+# The limit on the `--version` call that reads each runtime's version for the record.
+VERSION_TIMEOUT = 60
+# The line kinds the record holds, besides each runtime's VERSION: what a pull request's Validation section needs to
+# show what each runtime found and ran. HOME, DEPLOYED, and TRANSCRIPT name only this machine's throwaway files.
+RECORDED = (
+    "DEPLOY_FAILED",
+    "SKIPPED",
+    "DISCOVERED",
+    "UNDISCOVERED",
+    "DISCOVERY_FAILED",
+    "DISCOVERY_NOT_ATTEMPTED",
+    "SHADOWED",
+    "PROJECT_COPY",
+    "DISABLED",
+    "SUPPLIED",
+    "RUNTIME",
+    "MATRIX",
+    "NOTHING_CHECKED",
+)
+# The deployer module that writes every runtime adapter, so a change to it reaches one skill of each kind of start.
+ADAPTER_RENDERER = "deployer/render.py"
+GIT = GitClient()
 RUNTIME_CANARY_MARKER = "RUNTIME-CANARY-RUN"
 # What each runtime still loads from the user's real configuration once the canary's flags have switched off all
 # they can. Claude Code: checked with /context under --setting-sources project,local. Codex and Copilot: their
@@ -477,13 +522,18 @@ def environment(base: Mapping[str, str], script_log: Path, home: Path) -> dict[s
     }
 
 
-def user_only(home: Path, skill: str) -> bool:
-    """Whether the skill's runtime adapter in the canary home lets only the user start it."""
+def starts_only_by_user(skill_file: Path) -> bool:
+    """Whether the SKILL.md, a skill's or its runtime adapter's, lets only the user start the skill."""
     try:
-        document = frontmatter.read(home / ".agents" / "skills" / skill / "SKILL.md")
+        document = frontmatter.read(skill_file)
         return (document.string("disable-model-invocation") or "").casefold() == "true"
     except (OSError, UnicodeError, frontmatter.FrontmatterError):
         return False
+
+
+def user_only(home: Path, skill: str) -> bool:
+    """Whether the skill's runtime adapter in the canary home lets only the user start it."""
+    return starts_only_by_user(home / ".agents" / "skills" / skill / "SKILL.md")
 
 
 def unsupported(runtime: str, skill: str, home: Path) -> str:
@@ -843,11 +893,54 @@ def canary(
     codex_sandbox: str = DEFAULT_CODEX_SANDBOX,
     talk: discovery.Converse | None = None,
 ) -> int:
-    """Deploy the sources into home, then check each runtime; print the facts and return the exit code."""
-    runner = runner or run_process
-    base = dict(os.environ if base_environment is None else base_environment)
+    """Deploy the sources into home, then check each runtime; print the facts, then the record, and return the exit
+    code."""
+    said: list[str] = []
+    versions: dict[str, str] = {}
+
+    def say(line: str) -> None:
+        print(line, flush=True)
+        said.append(line)
+
+    code = checked(
+        skills,
+        runtimes,
+        home,
+        sources=sources,
+        runner=runner or run_process,
+        which=which,
+        base=dict(os.environ if base_environment is None else base_environment),
+        discovery_only=discovery_only,
+        timeout=timeout,
+        codex_sandbox=codex_sandbox,
+        talk=talk,
+        say=say,
+        versions=versions,
+    )
+    for line in record(said, versions, places(home)):
+        print(line, flush=True)
+    return code
+
+
+def checked(
+    skills: list[str],
+    runtimes: list[str],
+    home: Path,
+    *,
+    sources: list[Path],
+    runner: Runner,
+    which: Callable[[str], str | None],
+    base: dict[str, str],
+    discovery_only: bool,
+    timeout: float,
+    codex_sandbox: str,
+    talk: discovery.Converse | None,
+    say: Callable[[str], None],
+    versions: dict[str, str],
+) -> int:
+    """The canary's run: each line goes to `say` as it is made, and each runtime found to `versions`."""
     state = home / STATE
-    print(f"HOME {quote(forward(home))}", flush=True)
+    say(f"HOME {quote(forward(home))}")
     try:
         for source_dir in sources:
             identifier = source_id(source_dir)
@@ -856,9 +949,9 @@ def canary(
                 state.mkdir(exist_ok=True)
                 log_file = state / f"deploy-{identifier.replace('/', '-')}.log"
                 log_file.write_text(log, encoding="utf-8")
-                print(f"DEPLOY_FAILED {identifier} {quote(forward(log_file))}")
+                say(f"DEPLOY_FAILED {identifier} {quote(forward(log_file))}")
                 return 1
-            print(f"DEPLOYED {identifier}", flush=True)
+            say(f"DEPLOYED {identifier}")
     finally:
         claim_home(home)
     for folder in ("recorder", "scripts", "transcripts"):
@@ -875,9 +968,10 @@ def canary(
     for runtime in runtimes:
         executable = which(runtime)
         if executable is None:
-            print(f"SKIPPED {runtime} {quote(f'{runtime} is not installed')}")
+            say(f"SKIPPED {runtime} {quote(f'{runtime} is not installed')}")
             reasons.append(f"{runtime} is not installed")
             continue
+        versions[runtime] = runtime_version(executable, runner, base, home)
         lines = []
         for line in check_runtime(
             runtime,
@@ -894,22 +988,146 @@ def canary(
             declared,
             unadapted,
         ):
-            print(line, flush=True)
+            say(line)
             lines.append(line)
         printed += lines
         if not any(checks(line) for line in lines):
             reasons.append(unchecked(runtime, lines, discovery_only))
     matrix = compare(printed, declared)
     for line in matrix:
-        print(line, flush=True)
+        say(line)
     # A runtime whose skill list could not be read proves nothing about it, so it fails the run as a miss does, and
     # so does a run that checked no runtime, as `deploy.py verify` fails when it finds none to verify.
     nothing = not any(checks(line) for line in printed)
     if nothing:
         what = "discovery" if discovery_only else "discovery or run"
-        print(f"NOTHING_CHECKED {quote(f'no runtime was checked for {what}: ' + '; '.join(reasons))}", flush=True)
+        say(f"NOTHING_CHECKED {quote(f'no runtime was checked for {what}: ' + '; '.join(reasons))}")
     unestablished = nothing or any(line.startswith(("UNDISCOVERED ", "DISCOVERY_FAILED ")) for line in printed)
     return 1 if unestablished or any(" DISAGREES " in line for line in matrix) else 0
+
+
+def runtime_version(executable: str, runner: Runner, base: Mapping[str, str], home: Path) -> str:
+    """The version the runtime's `--version` prints, read as `deploy.py check` reads it, or `unknown`."""
+    completed = runner([executable, "--version"], home, without_repository_variables(base), VERSION_TIMEOUT)
+    version = parse_version(completed.stdout) if completed.returncode == 0 and not completed.error else None
+    return format_version(version) if version else "unknown"
+
+
+def places(home: Path) -> dict[Path, str]:
+    """The paths a record must not name, each with the placeholder it names instead: the throwaway home, this
+    checkout, and the profile folder the runtimes read skills from."""
+    return {home: "<temp>", REPOSITORY_ROOT: "<source>", platform_support.home_directory(): "<home>"}
+
+
+def placeholders(line: str, paths: Mapping[Path, str]) -> str:
+    """The line with each of the paths, and anything under it, named by its placeholder instead, the longest path first
+    so one inside another, as the home under the temporary directory in the profile, keeps its own. A path is matched
+    as the line writes it, with forward slashes, as given, or escaped in a quoted string, and without regard to case,
+    since a runtime may name a path in another case where the file system folds it and naming too much costs a record
+    nothing, but only up to the end of a name, so a sibling whose name it starts is kept."""
+    for path, placeholder in sorted(paths.items(), key=lambda item: len(str(item[0])), reverse=True):
+        forms = sorted({forward(path), str(path), quote(str(path))[1:-1]}, key=len, reverse=True)
+        alternatives = "|".join(re.escape(form) for form in forms)
+        pattern = re.compile(f"(?:{alternatives})" + r"(?![^\\/\s\"'])", re.IGNORECASE)
+        # A replacement string reads a backslash as an escape, so one in a placeholder is doubled.
+        line = pattern.sub(placeholder.replace("\\", "\\\\"), line)
+    return line
+
+
+def record(lines: Sequence[str], versions: Mapping[str, str], paths: Mapping[Path, str]) -> list[str]:
+    """The block a pull request's Validation section holds: each runtime's version, then the lines of the kinds
+    RECORDED names, in the order the run printed them, with every one of the paths named by its placeholder."""
+    body = [f"VERSION {runtime} {version}" for runtime, version in versions.items()]
+    body += [placeholders(line, paths) for line in lines if line.split(" ", 1)[0] in RECORDED]
+    return ["RECORD_BEGIN", *body, "RECORD_END"]
+
+
+def shipped_through(src: deploy_source.Source, skill: str) -> list[tuple[str, str]]:
+    """The shipped skills a change to `skill` reaches, each with the hidden dependency it went through, if any: the
+    skill itself when it is selectable, and otherwise each skill that declares it in skill_deps, directly or through
+    another hidden one."""
+    reached: list[tuple[str, str]] = []
+    pending, seen = [skill], {skill}
+    while pending:
+        name = pending.pop(0)
+        if src.skills[name].selectable:
+            reached.append((name, "" if name == skill else skill))
+            continue
+        for declarer in sorted(other for other, item in src.skills.items() if name in item.skill_deps):
+            if declarer not in seen:
+                seen.add(declarer)
+                pending.append(declarer)
+    return reached
+
+
+def reached_by(path: str, src: deploy_source.Source) -> list[tuple[str, str]]:
+    """The skills a changed repository path reaches directly, each with how, before hidden ones are followed."""
+    parts = path.split("/")
+    if parts[0] == "skills" and len(parts) > 2 and parts[1] in src.skills:
+        return [(parts[1], "")]
+    if parts[0] == "skills" and len(parts) > 1 and parts[1] in src.shared_assets:
+        asset = parts[1]
+        return [(name, f"the shared asset {asset}") for name, item in src.skills.items() if asset in item.shared_deps]
+    if len(parts) == 2 and parts[0] == "deploy-meta" and parts[1].endswith(".json") and parts[1][:-5] in src.skills:
+        return [(parts[1][:-5], "")]
+    if len(parts) == 2 and parts[0] == "agents" and parts[1].endswith(".md"):
+        agent = parts[1][:-3]
+        return [(name, f"the agent {agent}") for name, item in src.skills.items() if agent in item.agent_deps]
+    return []
+
+
+def changed_skills(
+    paths: Iterable[str], src: deploy_source.Source, user_only_skill: Callable[[str], bool]
+) -> dict[str, str]:
+    """Each shipped skill the changed paths reach, by name, with the first path that reaches it and how."""
+    named: dict[str, str] = {}
+    renderer = False
+    for path in sorted(paths):
+        renderer = renderer or path == ADAPTER_RENDERER
+        for skill, via in reached_by(path, src):
+            for shipped, hidden in shipped_through(src, skill):
+                how = [part for part in (via, f"the hidden dependency {hidden}" if hidden else "") if part]
+                named.setdefault(shipped, f"{path}, through {' and '.join(how)}" if how else path)
+    if renderer:
+        selectable = sorted(name for name, item in src.skills.items() if item.selectable)
+        for only_user, kind in ((False, "the model may start"), (True, "only the user may start")):
+            if any(user_only_skill(name) == only_user for name in named):
+                continue
+            chosen = next((name for name in selectable if user_only_skill(name) == only_user), None)
+            if chosen is not None:
+                named[chosen] = f"{ADAPTER_RENDERER} writes every adapter, so one skill {kind}"
+    return dict(sorted(named.items()))
+
+
+def changed_paths(root: Path, ref: str, client: GitClient = GIT) -> tuple[str, list[str]]:
+    """The commit `ref` and HEAD share, and every path changed since it: committed, staged, unstaged, or untracked,
+    both sides of a rename."""
+    base = client.output(["merge-base", ref, "HEAD"], directory=root).strip()
+    tracked = client.output(["diff", "--name-only", "--no-renames", "-z", base, "--"], directory=root)
+    untracked = client.output(["ls-files", "--others", "--exclude-standard", "-z"], directory=root)
+    return base, sorted({path for path in (tracked + untracked).split("\0") if path})
+
+
+def changed_since(ref: str | None, root: Path = REPOSITORY_ROOT, client: GitClient = GIT) -> int:
+    """Print the shipped skills the change since `ref`, the latest tag when None, reaches; start nothing."""
+    try:
+        since = ref or client.output(["describe", "--tags", "--abbrev=0", "HEAD"], directory=root).strip()
+        base, paths = changed_paths(root, since, client)
+        source_paths = Paths(root, root)
+        src = deploy_source.discover(source_paths, deploy_source.load_source_id(source_paths))
+    except GitError as exc:
+        print(f"FAILED {quote(str(exc))}")
+        return 1
+    except DeployError as exc:
+        print(f"FAILED {quote(' '.join(exc.lines))}")
+        return 1
+    print(f"SINCE {since} {base}")
+    named = changed_skills(paths, src, lambda name: starts_only_by_user(src.skills[name].directory / "SKILL.md"))
+    for skill, why in named.items():
+        print(f"CHANGED {skill} {quote(why)}")
+    if not named:
+        print(f"NOTHING_CHANGED {quote(f'no change since {since} reaches a shipped skill')}")
+    return 0
 
 
 def create_home() -> Path:
@@ -980,6 +1198,14 @@ def main(arguments: list[str]) -> int:
     )
     parser.add_argument("--discovery-only", action="store_true", help="list skills; run no model")
     parser.add_argument("--remove-home", metavar="DIR", help="delete a home an earlier run printed as HOME, and exit")
+    parser.add_argument("--keep-home", action="store_true", help="keep the home after a run that passed")
+    parser.add_argument(
+        "--changed-since",
+        nargs="?",
+        const="",
+        metavar="REF",
+        help="name the shipped skills changed since REF (default: the latest tag), start nothing, and exit",
+    )
     parser.add_argument(
         "--timeout",
         type=float,
@@ -994,25 +1220,44 @@ def main(arguments: list[str]) -> int:
         help=f"Windows sandbox mode Codex runs with (default: {DEFAULT_CODEX_SANDBOX})",
     )
     options = parser.parse_args(arguments)
-    if options.remove_home is not None:
+    if options.remove_home is not None or options.changed_since is not None:
+        option = "--remove-home" if options.remove_home is not None else "--changed-since"
         if options.skills:
-            parser.error("--remove-home takes no SKILL")
-        return remove_home(options.remove_home)
+            parser.error(f"{option} takes no SKILL")
+        if options.keep_home or (options.remove_home is not None and options.changed_since is not None):
+            parser.error(f"{option} makes no home, so it takes no other home option")
+        if options.remove_home is not None:
+            return remove_home(options.remove_home)
+        if options.changed_since.startswith("-"):
+            parser.error(f"--changed-since takes a commit, not an option: {options.changed_since}")
+        return changed_since(options.changed_since or None)
     sources = [REPOSITORY_ROOT, FIXTURE_SOURCE]
     # A source the deployer cannot read names no skills, so a SKILL is judged only when every source can be read;
     # otherwise the deployment stops the run with the deployer's own reason.
     unknown = [skill for skill in options.skills if skill not in dependencies(sources)]
     if unknown and all(discoverable(source) for source in sources):
         parser.error(f"unknown skill: {', '.join(unknown)}")
-    return canary(
+    home = create_home()
+    code = canary(
         options.skills,
         options.runtimes or list(RUNTIMES),
-        create_home(),
+        home,
         sources=sources,
         discovery_only=options.discovery_only,
         timeout=options.timeout,
         codex_sandbox=options.codex_sandbox,
     )
+    return finish(home, code, options.keep_home)
+
+
+def finish(home: Path, code: int, keep: bool) -> int:
+    """Remove the home after a run that passed, unless asked to keep it, and keep it after one that failed, for its
+    transcripts; the run's exit code, or 1 when the home could not be removed."""
+    if keep or code != 0:
+        why = "--keep-home was given" if keep else "the run failed, so its transcripts stay for reading"
+        print(f"HOME_KEPT {quote(forward(home))} {quote(f'{why}; remove it with --remove-home')}")
+        return code
+    return remove_home(str(home))
 
 
 if __name__ == "__main__":
