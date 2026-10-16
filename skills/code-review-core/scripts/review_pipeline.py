@@ -3,7 +3,7 @@
     enumerate  list the pull requests a batch run should review, to a batch file (by default in a new
                temporary directory)
     prepare    fetch pull requests, snapshot each head, load its reviewer, write the request and prompts; or, as a
-               fixture canary, read one pull request from a local fixture directory and nothing from GitHub
+               fixture canary, read each pull request from a local fixture directory and nothing from GitHub
     dispatch   start the Copilot CLI host for a prepared run, detached, and return (copilot-cli runtime only)
     next-role  hand the orchestrating session the next role of an inline run to work itself, once the run's
                sealed files are unchanged
@@ -22,8 +22,11 @@
 Every command prints machine-readable lines on stdout. It exits 0 with its result, including a state to poll
 again (`RUNNING`), and 1 with findings to act on (`RETRY`, `INVALID`, `UNFINALIZED`) or an expected failure,
 printed as a `FAILED <reason>` line on stdout. Exit 2 is only argparse's usage error, before any work.
-`prepare`, `check`, and `finalize` accept several pull requests or runs, so one call covers a group; each
-succeeds or fails on its own, and every line names its pull request.
+`prepare` takes any number of pull requests, or a batch file, prepares them four at a time, and keeps the runs it
+publishes in a run list it names in a `RUNS <file> pending=<n>` line; `prepare --runs <file>` prepares the next four.
+`workflow`, `wait-reviewers`, `check`, `finalize`, and `unfinalized` take that list as `--runs <file>` in place of
+one `--run` per run directory, so the orchestrator never carries run directories from one command to the next. Each
+pull request or run succeeds or fails on its own, and every line names its pull request.
 """
 
 from __future__ import annotations
@@ -188,11 +191,22 @@ from review_specialists import (
     unreviewed,
 )
 from review_state import StateError, default_state_path, load_state, update_state, utc_today
+from skill_roots import skills_directory_holding
 from typed_fields import FieldError, FieldReader
 
 RUN_SCHEMA_VERSION = 1
 BATCH_SCHEMA_VERSION = 1
+RUN_LIST_SCHEMA_VERSION = 1
 RUN_FILE = "run.json"
+# The run list prepare writes in a new temporary directory: the pull requests or fixtures it has still to prepare,
+# and every run it published, which every later command takes as --runs.
+RUN_LIST_FILE = "runs.json"
+RUN_LIST_PREFIX = "review-prs-runs-"
+# A listed run is published by prepare, valid once check accepts it, failed once check or finalize fails it, and
+# recorded once finalize records it.
+RUN_STATUSES = ("published", "valid", "failed", "recorded")
+# What a run list has still to prepare: a pull request to review or re-review, or a fixture directory.
+PENDING_KINDS = ("pull", "re-review", "fixture")
 # A fixture's throwaway repository, moved into its run, which a lazy snapshot's reviewers fetch from.
 SOURCE_REPOSITORY = "repository"
 # Written in a run once finalize records it, so a run folder that survives its removal is not reported unfinalized.
@@ -200,7 +214,8 @@ RECORDED_FILE = "recorded.json"
 # Seconds between finalize's attempts to remove a recorded run whose files another process, such as antivirus or the
 # exiting Copilot CLI host, still holds open.
 RUN_REMOVAL_DELAYS = (0.25, 0.5, 1.0, 2.0)
-# Pull requests one prepare call takes: it bounds the call's duration and the reviewers started together.
+# Pull requests or fixtures one prepare call prepares, the rest staying in its run list: it bounds the call's duration
+# and the reviewers started together.
 MAX_PREPARE_PULLS = 4
 MAX_RETRIES = 1
 # A reviewer runs this on its own result before replying; check stays authoritative. Python is named as
@@ -2589,9 +2604,7 @@ def advance_watermarks(
     the pipeline's own today, or one that would move a watermark past it, is refused with the state unchanged: such a
     watermark is one no merged pull request ever passes again.
     """
-    batch = READ.json_object(read_json(batch_path), "batch")
-    if READ.integer(batch.get("schema_version"), "batch.schema_version") != BATCH_SCHEMA_VERSION:
-        raise PipelineError(f"{batch_path} is not a review batch file")
+    batch = _load_batch(batch_path)
     config = load_config(config_path)
     archive_root = Path(config["archive_root"])
     today = date.fromisoformat(batch["today"])
@@ -2638,6 +2651,94 @@ def advance_watermarks(
     return changes
 
 
+def _load_batch(batch_path: Path) -> dict[str, Any]:
+    batch = READ.json_object(read_json(batch_path), "batch")
+    if READ.integer(batch.get("schema_version"), "batch.schema_version") != BATCH_SCHEMA_VERSION:
+        raise PipelineError(f"{batch_path} is not a review batch file")
+    return batch
+
+
+def batch_selectors(batch_path: Path) -> list[str]:
+    """Each pull request a batch file lists for review, in the order enumerate printed its PULL lines."""
+    batch = _load_batch(batch_path)
+    selectors = []
+    for repository, entry in READ.json_object(batch.get("repositories"), "batch.repositories").items():
+        path = f"batch.repositories.{repository}"
+        pulls = READ.array(READ.json_object(entry, path).get("eligible"), f"{path}.eligible")
+        for index, pull in enumerate(pulls):
+            pull = READ.json_object(pull, f"{path}.eligible[{index}]")
+            selectors.append(f"{repository}#{READ.integer(pull.get('number'), f'{path}.eligible[{index}].number')}")
+    return selectors
+
+
+def new_run_list(pending: list[dict[str, str]], options: dict[str, Any]) -> dict[str, Any]:
+    """A run list with nothing prepared yet. `pending` holds each pull request or fixture in the order given, as its
+    kind and its selector or directory; `options` holds the rest of prepare's arguments, which every group takes."""
+    return {"schema_version": RUN_LIST_SCHEMA_VERSION, "options": options, "pending": pending, "runs": []}
+
+
+RUN_LIST_OPTIONS = ("config", "host", "inline", "force", "canary", "scope", "prior")
+
+
+def _read_run_list_options(value: Any, path: str) -> dict[str, Any]:
+    options = READ.json_object(value, path, required=RUN_LIST_OPTIONS)
+    for name in ("config", "prior"):
+        READ.optional(READ.string, options[name], f"{path}.{name}")
+    READ.optional(READ.one_of, options["host"], f"{path}.host", sorted(RUNTIME_CAPABILITIES))
+    READ.optional(READ.one_of, options["scope"], f"{path}.scope", RE_REVIEW_SCOPES)
+    for name in ("inline", "force", "canary"):
+        READ.boolean(options[name], f"{path}.{name}")
+    return options
+
+
+def _read_pending(value: Any, path: str) -> dict[str, str]:
+    item = READ.json_object(value, path, required=("kind", "target"))
+    READ.one_of(item["kind"], f"{path}.kind", PENDING_KINDS)
+    READ.string(item["target"], f"{path}.target", single_line=True)
+    return item
+
+
+def _read_listed_run(value: Any, path: str) -> dict[str, str]:
+    item = READ.json_object(value, path, required=("run", "selector", "status"))
+    READ.string(item["run"], f"{path}.run", single_line=True)
+    READ.string(item["selector"], f"{path}.selector", single_line=True)
+    READ.one_of(item["status"], f"{path}.status", RUN_STATUSES)
+    return item
+
+
+def load_run_list(path: Path) -> dict[str, Any]:
+    """The run list at `path`, read whole and checked, since it is input like any other path a command is given.
+
+    Each listed run is still read as a prepared run by the command that uses it, so a list naming a directory that is
+    not one fails that run alone. A list inside a skills directory is refused, because commands write it back."""
+    root = skills_directory_holding(path)
+    if root is not None:
+        raise PipelineError(f"{path} is inside the skills directory {root}; pass the run list prepare printed")
+    value = READ.json_object(read_json(path), "run list")
+    if READ.integer(value.get("schema_version"), "run list.schema_version") != RUN_LIST_SCHEMA_VERSION:
+        raise PipelineError(f"{path} is not a review run list")
+    READ.json_object(value, "run list", required=("schema_version", "options", "pending", "runs"))
+    _read_run_list_options(value["options"], "run list.options")
+    READ.array(value["pending"], "run list.pending", _read_pending)
+    READ.array(value["runs"], "run list.runs", _read_listed_run)
+    return value
+
+
+def listed_runs(runs: dict[str, Any], *statuses: str) -> list[dict[str, str]]:
+    """The listed runs in any of `statuses`, in the order prepare published them."""
+    return [entry for entry in runs["runs"] if entry["status"] in statuses]
+
+
+def worked_by_subagents(run: Path) -> bool:
+    """Whether a run's roles start as subagents, as workflow and wait-reviewers serve them, rather than on the Copilot
+    CLI host or inline. A run that cannot be read counts, so the command it was listed for reports it."""
+    try:
+        state = load_run(run.resolve())
+    except EXPECTED_ERRORS:
+        return True
+    return run_dispatch(state) not in {"inline", "copilot-host"}
+
+
 def _print_ready(result: dict[str, Any]) -> None:
     print(f"RUN {result['selector']} {result['run']}")
     for note in result["notes"]:
@@ -2673,6 +2774,13 @@ def _print_model(selector: str, role: dict[str, Any]) -> None:
         print(f"MODEL {selector} {role['id']} {role['model']}")
 
 
+def _add_runs(parser: argparse.ArgumentParser) -> None:
+    """The runs a command works on: run directories, or the run list prepare printed, never both."""
+    runs = parser.add_mutually_exclusive_group(required=True)
+    runs.add_argument("--run", action="append", type=Path, dest="runs", help="prepared run directory; repeatable")
+    runs.add_argument("--runs", type=Path, dest="run_list", help="the run list prepare printed")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", type=Path, help="defaults to CODE_REVIEW_CONFIG or the standard config path")
@@ -2700,12 +2808,31 @@ def _build_parser() -> argparse.ArgumentParser:
         "--scope", choices=RE_REVIEW_SCOPES, help="how much each --re-review covers; required with --re-review"
     )
     prepare_parser.add_argument("--force", action="store_true")
-    prepare_parser.add_argument("--canary", action="store_true")
     prepare_parser.add_argument(
-        "--fixture", type=Path, help="with --canary: a fixture directory to review in place of a pull request"
+        "--canary",
+        action="append",
+        nargs="?",
+        const="",
+        default=[],
+        dest="canaries",
+        help="owner/repo#number to review in isolation; repeatable. Bare: each --pull or --fixture is a canary",
+    )
+    prepare_parser.add_argument(
+        "--fixture",
+        action="append",
+        type=Path,
+        default=[],
+        dest="fixtures",
+        help="with --canary: a fixture directory to review in place of a pull request; repeatable",
     )
     prepare_parser.add_argument(
         "--prior", type=Path, help="with --fixture and --re-review: the review record the re-review starts from"
+    )
+    prepare_parser.add_argument(
+        "--batch", type=Path, help="review every pull request of the batch file enumerate wrote"
+    )
+    prepare_parser.add_argument(
+        "--runs", type=Path, dest="run_list", help="prepare the next group of the run list an earlier prepare printed"
     )
     prepare_parser.add_argument(
         "--host",
@@ -2726,18 +2853,9 @@ def _build_parser() -> argparse.ArgumentParser:
     host_parser = commands.add_parser("host", help=argparse.SUPPRESS)
     host_parser.add_argument("--run", required=True, type=Path)
     host_parser.add_argument("--token", required=True)
-    commands.add_parser("workflow").add_argument(
-        "--run", action="append", required=True, type=Path, dest="runs", help="prepared run directory; repeatable"
-    )
+    _add_runs(commands.add_parser("workflow"))
     wait_reviewers_parser = commands.add_parser("wait-reviewers")
-    wait_reviewers_parser.add_argument(
-        "--run",
-        action="append",
-        required=True,
-        type=Path,
-        dest="runs",
-        help="prepared run directory whose roles a Workflow runs; repeatable",
-    )
+    _add_runs(wait_reviewers_parser)
     wait_reviewers_parser.add_argument(
         "--timeout", required=True, type=wait_seconds, help=f"seconds to wait at most, from 1 to {MAX_WAIT_SECONDS}"
     )
@@ -2745,9 +2863,7 @@ def _build_parser() -> argparse.ArgumentParser:
     validate_result_parser.add_argument("--run", required=True, type=Path)
     validate_result_parser.add_argument("--role", required=True)
     for name in ("check", "finalize", "unfinalized"):
-        commands.add_parser(name).add_argument(
-            "--run", action="append", required=True, type=Path, dest="runs", help="prepared run directory; repeatable"
-        )
+        _add_runs(commands.add_parser(name))
     commands.add_parser("advance").add_argument("--batch", required=True, type=Path)
     inspect_parser = commands.add_parser("inspect-reviewer")
     inspect_parser.add_argument("--repository", required=True)
@@ -2770,22 +2886,38 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _check_prepare(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Refuse a prepare call argparse cannot judge alone, as a usage error that exits 2 before any work."""
-    if args.fixture is not None:
-        # A fixture is one canary, an initial review or, with its prior record, a full re-review.
-        if not args.canary or args.pulls or args.scope or args.force or any(args.re_reviews):
-            parser.error("--fixture takes --canary, and a bare --re-review with --prior, and no other selector")
-        if args.re_reviews not in ([], [""]) or bool(args.re_reviews) != (args.prior is not None):
-            parser.error("--prior takes one bare --re-review, and a bare --re-review takes --prior")
+    given = {
+        "--pull": bool(args.pulls),
+        "--re-review": bool(args.re_reviews),
+        "--scope": args.scope is not None,
+        "--force": args.force,
+        "--canary": bool(args.canaries),
+        "--fixture": bool(args.fixtures),
+        "--prior": args.prior is not None,
+        "--batch": args.batch is not None,
+        "--host": args.host is not None,
+        "--inline": args.inline,
+    }
+    if args.run_list is not None:
+        # The run list holds the arguments the first call was given; every group takes the same.
+        if any(given.values()):
+            parser.error("--runs takes no other option; the run list holds them")
+        return
+    if args.fixtures:
+        _check_prepare_fixtures(parser, args)
         return
     if args.prior is not None or "" in args.re_reviews:
         parser.error("--prior and a bare --re-review are taken only with --fixture")
-    selectors = [*args.pulls, *args.re_reviews]
+    canary_selectors = [selector for selector in args.canaries if selector]
+    if args.batch is not None:
+        if args.pulls or args.re_reviews or args.scope or args.canaries:
+            parser.error("--batch takes no other selector, no --scope, and no --canary")
+        return
+    selectors = [*args.pulls, *args.re_reviews, *canary_selectors]
     if not selectors:
-        parser.error("prepare takes at least one --pull or --re-review")
-    if len(selectors) > MAX_PREPARE_PULLS:
-        parser.error(f"prepare takes at most {MAX_PREPARE_PULLS} pull requests")
+        parser.error("prepare takes at least one --pull, --re-review, --canary selector, --batch, or --runs")
     # A canary is an initial review of each pull request, written under its own temporary root.
-    if args.canary and (args.re_reviews or args.force):
+    if args.canaries and (args.re_reviews or args.force):
         parser.error("--canary takes only --pull selectors and no --force")
     # The person running the review chooses the scope; nothing picks one for them.
     if bool(args.re_reviews) != (args.scope is not None):
@@ -2794,6 +2926,18 @@ def _check_prepare(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
     duplicate = _first_duplicate(selectors)
     if duplicate is not None:
         parser.error(f"{duplicate} is named more than once")
+
+
+def _check_prepare_fixtures(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """A fixture is one canary, an initial review or, with its prior record, a full re-review; several fixtures are
+    initial reviews."""
+    selectors = [selector for selector in args.canaries if selector]
+    if not args.canaries or selectors or args.pulls or args.scope or args.force or args.batch or any(args.re_reviews):
+        parser.error("--fixture takes --canary, and a bare --re-review with --prior, and no other selector")
+    if args.re_reviews not in ([], [""]) or bool(args.re_reviews) != (args.prior is not None):
+        parser.error("--prior takes one bare --re-review, and a bare --re-review takes --prior")
+    if args.prior is not None and len(args.fixtures) > 1:
+        parser.error("--prior takes one --fixture")
 
 
 def _run_inspect_reviewer(args: argparse.Namespace, services: Services | None) -> int:
@@ -2857,52 +3001,81 @@ def _publish_prepared(result: dict[str, Any], failure_label: str | Path) -> bool
     return True
 
 
-def _run_prepare(args: argparse.Namespace, services: Services | None) -> int:
-    if args.fixture is not None:
-        return _run_prepare_fixture(args, services)
-    failed = False
-    items = [(selector, False) for selector in args.pulls] + [(selector, True) for selector in args.re_reviews]
-    outcomes = map_in_order(
-        lambda item: prepare(
-            item[0],
-            re_review=item[1],
-            scope=args.scope if item[1] else None,
-            force=args.force,
-            canary=args.canary,
-            host=args.host,
-            inline=args.inline,
-            config_path=args.config,
-            services=services,
-        ),
-        items,
-        catch=EXPECTED_ERRORS,
-    )
-    for (selector, _), (result, error) in zip(items, outcomes, strict=True):
-        if error is not None or result is None:  # prepare returns a result whenever it raises nothing
-            print(f"FAILED {selector} {error}")
-            failed = True
-            continue
-        if result["status"] == "skip":
-            print(f"SKIP {result['selector']} {result['reason']}")
-        elif not _publish_prepared(result, selector):
-            failed = True
-    return 1 if failed else 0
+def _first_run_list(args: argparse.Namespace) -> dict[str, Any]:
+    """The run list of a first prepare call: every pull request or fixture it names, in order, and its options."""
+    if args.fixtures:
+        pending = [{"kind": "fixture", "target": str(directory)} for directory in args.fixtures]
+    elif args.batch is not None:
+        pending = [{"kind": "pull", "target": selector} for selector in batch_selectors(args.batch)]
+    else:
+        pending = [
+            *({"kind": "pull", "target": selector} for selector in args.pulls),
+            *({"kind": "pull", "target": selector} for selector in args.canaries if selector),
+            *({"kind": "re-review", "target": selector} for selector in args.re_reviews),
+        ]
+    options = {
+        "config": None if args.config is None else str(args.config),
+        "host": args.host,
+        "inline": args.inline,
+        "force": args.force,
+        "canary": bool(args.canaries),
+        "scope": args.scope,
+        "prior": None if args.prior is None else str(args.prior),
+    }
+    return new_run_list(pending, options)
 
 
-def _run_prepare_fixture(args: argparse.Namespace, services: Services | None) -> int:
-    try:
-        result = prepare_fixture(
-            args.fixture,
-            prior=args.prior,
-            host=args.host,
-            inline=args.inline,
-            config_path=args.config,
+def _prepare_item(item: dict[str, str], options: dict[str, Any], services: Services | None) -> dict[str, Any]:
+    config_path = None if options["config"] is None else Path(options["config"])
+    if item["kind"] == "fixture":
+        return prepare_fixture(
+            Path(item["target"]),
+            prior=None if options["prior"] is None else Path(options["prior"]),
+            host=options["host"],
+            inline=options["inline"],
+            config_path=config_path,
             services=services,
         )
-    except EXPECTED_ERRORS as exc:
-        print(f"FAILED {args.fixture} {exc}")
-        return 1
-    return 0 if _publish_prepared(result, args.fixture) else 1
+    re_review = item["kind"] == "re-review"
+    return prepare(
+        item["target"],
+        re_review=re_review,
+        scope=options["scope"] if re_review else None,
+        force=options["force"],
+        canary=options["canary"],
+        host=options["host"],
+        inline=options["inline"],
+        config_path=config_path,
+        services=services,
+    )
+
+
+def _run_prepare(args: argparse.Namespace, services: Services | None) -> int:
+    """Prepare the next group of a run list, a new one from the arguments or the one --runs names, and record every
+    run it publishes there. The list is written before the group is prepared, so it never names a group twice."""
+    if args.run_list is None:
+        runs = _first_run_list(args)
+        path = working_path(None, RUN_LIST_PREFIX, RUN_LIST_FILE)
+    else:
+        path = args.run_list
+        runs = load_run_list(path)
+    group, runs["pending"] = runs["pending"][:MAX_PREPARE_PULLS], runs["pending"][MAX_PREPARE_PULLS:]
+    atomic_write_json(path, runs)
+    failed = False
+    outcomes = map_in_order(lambda item: _prepare_item(item, runs["options"], services), group, catch=EXPECTED_ERRORS)
+    for item, (result, error) in zip(group, outcomes, strict=True):
+        if error is not None or result is None:  # prepare returns a result whenever it raises nothing
+            print(f"FAILED {item['target']} {error}")
+            failed = True
+        elif result["status"] == "skip":
+            print(f"SKIP {result['selector']} {result['reason']}")
+        elif _publish_prepared(result, item["target"]):
+            runs["runs"].append({"run": str(result["run"]), "selector": result["selector"], "status": "published"})
+        else:
+            failed = True
+    atomic_write_json(path, runs)
+    print(f"RUNS {path} pending={len(runs['pending'])}")
+    return 1 if failed else 0
 
 
 def _run_next_role(args: argparse.Namespace, services: Services | None) -> int:
@@ -2917,8 +3090,37 @@ def _run_validate_result(args: argparse.Namespace, services: Services | None) ->
     return 1 if invalid else 0
 
 
+def _run_entries(
+    args: argparse.Namespace, *statuses: str
+) -> tuple[dict[str, Any] | None, list[tuple[Path, dict[str, str]]]]:
+    """The runs a command works on, each with its run list entry: every --run, or the listed runs in `statuses`. A
+    --run has an entry of its own that nothing keeps, so a command sets a status the same way for both."""
+    if args.run_list is None:
+        return None, [(run, {"status": "published"}) for run in args.runs]
+    runs = load_run_list(args.run_list)
+    return runs, [(Path(entry["run"]), entry) for entry in listed_runs(runs, *statuses)]
+
+
+def _subagent_runs(args: argparse.Namespace) -> list[Path]:
+    """The --run directories, or the published listed runs whose roles start as subagents."""
+    _, entries = _run_entries(args, "published")
+    if args.run_list is None:
+        return [run for run, _ in entries]
+    return [run for run, _ in entries if worked_by_subagents(run)]
+
+
+def _save_run_list(args: argparse.Namespace, runs: dict[str, Any] | None) -> None:
+    if runs is not None:
+        atomic_write_json(args.run_list, runs)
+
+
 def _run_workflow(args: argparse.Namespace, services: Services | None) -> int:
-    script, text, count = workflow_script(args.runs)
+    runs = _subagent_runs(args)
+    if not runs:
+        # Every listed run is on the Copilot CLI host, inline, or already checked: no Workflow to start.
+        print("WORKFLOW none")
+        return 0
+    script, text, count = workflow_script(runs)
     print(f"WORKFLOW {script} roles={count}")
     print(SCRIPT_BEGIN)
     print(text, end="")
@@ -2927,7 +3129,7 @@ def _run_workflow(args: argparse.Namespace, services: Services | None) -> int:
 
 
 def _run_wait_reviewers(args: argparse.Namespace, services: Services | None) -> int:
-    progress, failures = wait_for_reviewers(args.runs, args.timeout, services or Services())
+    progress, failures = wait_for_reviewers(_subagent_runs(args), args.timeout, services or Services())
     for run, reason in failures.items():
         print(f"FAILED {run} {reason}")
     for selector, roles in progress:
@@ -2942,7 +3144,8 @@ def _run_wait_reviewers(args: argparse.Namespace, services: Services | None) -> 
 
 def _run_unfinalized(args: argparse.Namespace, services: Services | None) -> int:
     pending = failed = False
-    for run in args.runs:
+    runs, entries = _run_entries(args, *RUN_STATUSES)
+    for run, _ in entries:
         try:
             selector = unfinalized_selector(run)
         except EXPECTED_ERRORS as exc:
@@ -2952,6 +3155,10 @@ def _run_unfinalized(args: argparse.Namespace, services: Services | None) -> int
         if selector is not None:
             print(f"UNFINALIZED {selector} {run.resolve()}")
             pending = True
+    # A pull request or fixture no prepare reached was never reviewed: its failure as much as an unfinalized run.
+    for item in [] if runs is None else runs["pending"]:
+        print(f"UNPREPARED {item['target']}")
+        pending = True
     if not pending and not failed:
         print("ALL_FINALIZED")
     return 1 if pending or failed else 0
@@ -2978,11 +3185,14 @@ def _run_wait(args: argparse.Namespace, services: Services | None) -> int:
 
 def _run_check(args: argparse.Namespace, services: Services | None) -> int:
     retry = failed = False
-    for run in args.runs:
+    # A listed run check accepted or failed is not checked again; one with a RETRY or RUNNING line is.
+    runs, entries = _run_entries(args, "published")
+    for run, entry in entries:
         try:
             outcome = check_run(run, services)
         except EXPECTED_ERRORS as exc:
             print(f"FAILED {run} {exc}")
+            entry["status"] = "failed"
             failed = True
             continue
         selector = outcome["selector"]
@@ -2993,23 +3203,31 @@ def _run_check(args: argparse.Namespace, services: Services | None) -> int:
             print(f"FAILED {selector} {identity} {error}")
         for identity, elapsed in outcome["running"].items():
             print(f"RUNNING {selector} {identity} {elapsed}s")
-        if not outcome["errors"] and not outcome["running"]:
+        if outcome["failed"]:
+            entry["status"] = "failed"
+        elif not outcome["errors"] and not outcome["running"]:
             print(f"ALL_VALID {selector}")
+            entry["status"] = "valid"
         retry = retry or bool(outcome["retry"])
         failed = failed or bool(outcome["failed"])
+    _save_run_list(args, runs)
     # A RETRY or FAILED line is for the skill to act on; RUNNING alone is a state it polls again.
     return 1 if failed or retry else 0
 
 
 def _run_finalize(args: argparse.Namespace, services: Services | None) -> int:
     failed = False
-    for run in args.runs:
+    # From a run list, only the runs check accepted.
+    runs, entries = _run_entries(args, "valid")
+    for run, entry in entries:
         try:
             result = finalize(run, services)
         except EXPECTED_ERRORS as exc:
             print(f"FAILED {run} {exc}")
+            entry["status"] = "failed"
             failed = True
             continue
+        entry["status"] = "recorded"
         for note in result["notes"]:
             print(f"NOTE {result['selector']} {note}")
         if result["canary_root"]:
@@ -3022,6 +3240,7 @@ def _run_finalize(args: argparse.Namespace, services: Services | None) -> int:
             f"RECORDED {result['selector']} verdict={result['verdict']} findings={result['findings']} "
             f"{result['markdown']}"
         )
+    _save_run_list(args, runs)
     return 1 if failed else 0
 
 

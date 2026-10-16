@@ -9,6 +9,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -678,7 +679,9 @@ class CrossSkillContractTests(GitTestCase):
             "--pull owner/repo#number ... --re-review owner/repo#number ...",
             skill_frontmatter.parse(review_prs).string("argument-hint") or "",
         )
-        self.assertIn("(or `--re-review` for one given with `--re-review`)", review_prs)
+        self.assertIn(
+            "the skill's own `--pull`, `--re-review`, `--scope`, and `--canary` arguments as given", review_prs
+        )
         pipeline = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py"
         options = declared_options(pipeline, "prepare_parser")
         for option in ("--pull", "--re-review"):
@@ -722,14 +725,13 @@ class CrossSkillContractTests(GitTestCase):
             "Wait for it to finish", workflow, "the Workflow tool returns at once; there is nothing to wait on"
         )
         minutes = re.findall(
-            r"Never end the turn to wait for it: run `wait-reviewers` with one `--run` per run and a "
+            r"Never end the turn to wait for it: run `wait-reviewers` with the run list and a "
             r"command timeout of at least (\d+) minutes, again each time it prints a "
             r"`RUNNING <selector> <id> <seconds>s` line",
             workflow,
         )
         timeouts = re.findall(
-            r'review_pipeline\.py" wait-reviewers --run "<run directory>" --run "<run directory>" '
-            r"--timeout (\d+)\n",
+            r'review_pipeline\.py" wait-reviewers --runs "<run list>" --timeout (\d+)\n',
             workflow,
         )
         self.assertEqual((1, 1), (len(minutes), len(timeouts)), "the Workflow path waits in repeated bounded calls")
@@ -740,8 +742,8 @@ class CrossSkillContractTests(GitTestCase):
         self.assertIn("Its `READY` and `OVERDUE` lines mean what they mean in step 3.", workflow)
         # Every mode ends by listing the runs that never reached finalize, and a denied command is a failure.
         self.assertIn(
-            "run the pipeline's `unfinalized` command with one `--run` per `RUN` directory `prepare` printed. "
-            "Report each `UNFINALIZED <selector> <run directory>` as that pull request's failure",
+            'run the pipeline\'s `unfinalized --runs "<run list>"` command. Report each '
+            "`UNFINALIZED <selector> <run directory>` and each `UNPREPARED <selector>` as that pull request's failure",
             body,
         )
         self.assertIn(
@@ -762,8 +764,8 @@ class CrossSkillContractTests(GitTestCase):
         check = grouped.split("4. **Check**", 1)[1].split("5. **Finalize**", 1)[0]
         waits = re.findall(
             r"Once the subagents are started, wait for them in this turn, never by ending it: run "
-            r"`wait-reviewers --run <run directory> --timeout (\d+)`, one `--run` per run that printed `ROLE` lines, "
-            r"with a command timeout of at least (\d+) minutes, again each time it prints a "
+            r'`wait-reviewers --runs "<run list>" --timeout (\d+)`, which waits for every run that printed '
+            r"`ROLE` lines, with a command timeout of at least (\d+) minutes, again each time it prints a "
             r"`RUNNING <selector> <id> <seconds>s` line\.",
             review,
         )
@@ -782,34 +784,42 @@ class CrossSkillContractTests(GitTestCase):
         self.assertIn(
             "wait for the new subagents with `wait-reviewers` as in step 3, then check those runs again", check
         )
-        # Only runs that printed ROLE lines go to wait-reviewers: it refuses a host run and an inline run.
+        # Only runs that printed ROLE lines go to wait-reviewers: it refuses a host run and an inline run, and from a
+        # run list it takes only the runs started as subagents.
         source = pipeline.read_text(encoding="utf-8")
         self.assertIn("runs on the Copilot CLI host; wait for it with wait", source)
         self.assertIn("raise _inline_only(state)", source.split("def wait_for_reviewers(", 1)[1].split("\ndef ", 1)[0])
+        self.assertIn(
+            "wait_for_reviewers(_subagent_runs(args)", source.split("def _run_wait_reviewers(", 1)[1].split("\ndef ")[0]
+        )
         # review-document starts native subagents the same way, so it waits the same way.
         _, document = frontmatter_and_body(
             (REPOSITORY_ROOT / "skills/review-document/SKILL.md").read_text(encoding="utf-8-sig")
         )
         self.assertIn(
-            f'Then run `wait-reviewers --run "<run directory>" --timeout {timeout}` with a command timeout of at least '
+            f'Then run `wait-reviewers --runs "<run list>" --timeout {timeout}` with a command timeout of at least '
             f"{command_minutes} minutes, again while it prints `RUNNING`.",
             document,
         )
 
-    def test_review_prs_reports_a_run_that_prepared_nothing_without_unfinalized(self) -> None:
-        # unfinalized needs a --run, so with no RUN line step 7 named a usage error, which the next sentence then
-        # made a failure of an empty batch or an all-skipped run.
+    def test_review_prs_runs_unfinalized_over_the_run_list_even_when_nothing_was_prepared(self) -> None:
+        # unfinalized once needed a --run, so with no RUN line step 7 named a usage error, which the next sentence
+        # then made a failure of an empty batch or an all-skipped run. The run list prepare writes is there even then.
         _, body = frontmatter_and_body((REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig"))
         self.assertIn(
-            "If `prepare` printed no `RUN` line, as when `enumerate` printed no `PULL` line or every pull request "
-            "printed `SKIP` or `FAILED` at `prepare`, nothing was prepared: run no `unfinalized`, and report the "
-            "`LISTED`, `SKIP`, `FAILED`, and `WATERMARK` lines as they are.",
+            "`ALL_FINALIZED` means every run was recorded, including when nothing needed one. If `prepare` printed no "
+            "`RUNS` line, nothing was prepared: run no `unfinalized`, and report its `FAILED` line.",
             body,
         )
-        with contextlib.redirect_stderr(io.StringIO()) as stderr, self.assertRaises(SystemExit) as caught:
-            review_pipeline.main(["unfinalized"])
-        self.assertEqual(2, caught.exception.code)
-        self.assertIn("the following arguments are required: --run", stderr.getvalue())
+        directory = Path(tempfile.mkdtemp(prefix="review-prs-contract-"))
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        runs = directory / "runs.json"
+        options = dict.fromkeys(review_pipeline.RUN_LIST_OPTIONS)
+        options.update(inline=False, force=False, canary=False)
+        runs.write_text(json.dumps(review_pipeline.new_run_list([], options)), encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            code = review_pipeline.main(["unfinalized", "--runs", str(runs)])
+        self.assertEqual((0, "ALL_FINALIZED\n"), (code, stdout.getvalue()))
 
     def test_review_prs_works_an_inline_run_through_next_role_and_states_its_boundary(self) -> None:
         # Copilot CLI cannot start subagents, so the orchestrating session works each role itself.
@@ -824,7 +834,10 @@ class CrossSkillContractTests(GitTestCase):
         )
         self.assertIn("until it prints `INLINE_DONE <selector>`", body)
         self.assertIn("you are its reviewer without the reviewer agent's guard", body)
-        self.assertIn("If any run printed `HOST copilot-cli` or `INLINE`, use the groups instead.", body)
+        self.assertIn(
+            "Work each `HOST copilot-cli` and `INLINE` run as step 3 says once the Workflow has started.", body
+        )
+        self.assertIn("or `WORKFLOW none` when no run printed `ROLE` lines.", body)
         pipeline = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py"
         self.assertIn("--inline", declared_options(pipeline, "prepare_parser"))
         source = pipeline.read_text(encoding="utf-8")
@@ -902,29 +915,26 @@ class CrossSkillContractTests(GitTestCase):
         )
 
     def test_review_prs_prepares_canaries_in_the_shape_the_pipeline_accepts(self) -> None:
-        # The skill takes `--canary owner/repo#number`, but the pipeline's --canary is a bare flag before --pull
-        # selectors; with only the --pull fence to copy, a canary run first tried `--canary <selector>`.
+        # The skill takes `--canary owner/repo#number`, and the pipeline's --canary once was only a bare flag before
+        # --pull selectors; a canary run tried `--canary <selector>` first. The pipeline now takes the skill's form, so
+        # the skill passes its arguments through and translates nothing.
         skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")
         _, body = frontmatter_and_body(skill)
-        self.assertIn('review_pipeline.py" prepare --host "<runtime>" --canary --pull "<owner/repo#number>"', body)
+        self.assertIn("the skill's own `--pull`, `--re-review`, `--scope`, and `--canary` arguments as given", body)
+        self.assertNotIn("bare `--canary`", body)
         # A fixture canary passes the skill's own arguments through, the fixture directory after --fixture.
         self.assertIn('review_pipeline.py" prepare --host "<runtime>" --canary --fixture "<directory>"', body)
         self.assertIn('adding `--re-review --prior "<record>"` when given', body)
-        pipeline_lines = [line for line in body.splitlines() if "review_pipeline.py" in line and "--canary" in line]
-        self.assertEqual(2, len(pipeline_lines))
-        for line in pipeline_lines:
-            with self.subTest(line=line):
-                self.assertRegex(line, r"--canary --(pull|fixture) ")
-        self.assertIsNone(
-            re.search(r"`[^`\n]*--canary \"?<?owner[^`\n]*`", body.replace("`--canary owner/repo#number`", ""))
-        )
+        parser = review_pipeline._build_parser()
+        given = parser.parse_args(["prepare", "--canary", "example/app#1", "--canary", "example/app#2"])
+        self.assertEqual(["example/app#1", "example/app#2"], given.canaries)
+        fixture = parser.parse_args(["prepare", "--canary", "--fixture", "fixture"])
+        self.assertEqual(([""], [Path("fixture")]), (fixture.canaries, fixture.fixtures))
         script = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py"
-        self.assertIn(
-            'prepare_parser.add_argument("--canary", action="store_true")', script.read_text(encoding="utf-8")
-        )
         options = declared_options(script, "prepare_parser")
-        self.assertLessEqual({"--fixture", "--prior", "--re-review"}, set(options))
+        self.assertLessEqual({"--fixture", "--prior", "--re-review", "--canary", "--batch", "--runs"}, set(options))
         self.assertEqual(("'?'", "''"), (options["--re-review"].get("nargs"), options["--re-review"].get("const")))
+        self.assertEqual(("'?'", "''"), (options["--canary"].get("nargs"), options["--canary"].get("const")))
 
     def test_a_re_review_scope_is_asked_for_and_never_assumed(self) -> None:
         # A full or incremental pass is the user's call: the tracker asks once per run, a direct call asks itself.

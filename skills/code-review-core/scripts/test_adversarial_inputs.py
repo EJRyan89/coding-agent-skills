@@ -51,6 +51,7 @@ from review_config import ConfigurationError, write_config
 from review_github import GitHubClient
 from review_runtime import materialize_source_snapshot, verify_github_tarball
 from test_review_documents import StubPdftotext, body_xml, paragraph, pdf_document, word_document
+from test_review_pipeline import checked_run_list
 
 REPOSITORY = "example/one"
 NUMBER = 12
@@ -242,7 +243,7 @@ class AdversarialFixture(GitTestCase):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = rp.main(["--config", str(self.config_path), *arguments], services=self.services)
-        return code, out.getvalue(), err.getvalue()
+        return code, checked_run_list(self, arguments, out.getvalue()), err.getvalue()
 
     def prepare(self) -> dict[str, Any]:
         return rp.prepare(SELECTOR, host="claude-code", config_path=self.config_path, services=self.services)

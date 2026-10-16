@@ -207,12 +207,15 @@ class VersionBoundaryTests(GitTestCase):
     def test_fixture_cli_refuses_non_integer_versions_before_git_or_run_writes(self) -> None:
         fixture = write_fixture(self.root / "fixture", {"a.py": b"before\n"}, {"a.py": b"after\n"})
         pull_path = fixture / "pull.json"
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
         for version, found in ((True, "boolean true"), (1.0, "number 1.0")):
             pull_path.write_text(json.dumps({**PULL, "schema_version": version}), encoding="utf-8")
             stdout, stderr = io.StringIO(), io.StringIO()
             git = mock.Mock(side_effect=AssertionError("An invalid fixture must not run git"))
             with (
                 mock.patch.object(review_pipeline, "load_config", return_value={}),
+                mock.patch.object(tempfile, "tempdir", temporary.name),
                 contextlib.redirect_stdout(stdout),
                 contextlib.redirect_stderr(stderr),
             ):
@@ -222,13 +225,24 @@ class VersionBoundaryTests(GitTestCase):
                 )
             with self.subTest(version=version):
                 self.assertEqual(1, result)
+                failed, listed = stdout.getvalue().splitlines(keepends=True)
                 self.assertEqual(
-                    f"FAILED {fixture} fixture-pull.schema_version must be an integer, found {found}\n",
-                    stdout.getvalue(),
+                    f"FAILED {fixture} fixture-pull.schema_version must be an integer, found {found}\n", failed
                 )
+                # The run list prepare closes with records no run, and nothing left to prepare.
+                runs = review_pipeline.load_run_list(Path(listed.removeprefix("RUNS ").removesuffix(" pending=0\n")))
+                self.assertEqual(([], []), (runs["runs"], runs["pending"]))
                 self.assertEqual("", stderr.getvalue())
                 git.assert_not_called()
                 self.assertEqual(["fixture"], [path.name for path in self.root.iterdir()])
+                self.assertEqual(
+                    [],
+                    [
+                        path
+                        for path in Path(temporary.name).iterdir()
+                        if not path.name.startswith(review_pipeline.RUN_LIST_PREFIX)
+                    ],
+                )
 
     def test_repository_paths_keep_posix_names_without_accepting_drives(self) -> None:
         for path in (

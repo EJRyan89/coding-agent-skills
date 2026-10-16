@@ -373,7 +373,7 @@ Each reviewer role runs as a subagent. Where the session cannot start one (Copil
 
 It runs fully only in Claude Code. In Codex, reviewers start as native subagents rather than through the Workflow tool, so a reviewer `effort` setting, in the configuration or a specialists manifest, has no effect. In Copilot CLI, the generic reviewer and the specialists of a manifest that leaves `agent-delegation` out of `required_capabilities` run inline, and a repository entrypoint reviewer runs on the bounded Copilot host; a specialists manifest that lists `agent-delegation` fails there.
 
-`--force` reviews heads that already have a review. The skill never posts to GitHub, and keeps its working files, such as a batch's list of pull requests, in new temporary directories, never in a skill directory. [Code-review operations](code-review-operations.md) covers the configuration and the records it writes.
+`--force` reviews heads that already have a review. The skill never posts to GitHub, and keeps its working files, such as a batch's list of pull requests and the list of its runs, in new temporary directories, never in a skill directory. [Code-review operations](code-review-operations.md) covers the configuration and the records it writes.
 
 ```text
 /review-prs --repository-set team
