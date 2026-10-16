@@ -50,7 +50,7 @@ Check the reviewer against each pull request given, or a recent merged one of ea
 python -B skills/code-review-core/scripts/review_pipeline.py validate-reviewer --repository EJRyan89/coding-agent-skills --pull '<number>'
 ```
 
-Expect `FILES`, `BODY` with how much of the body reviewers would be given, a `ROUTE` line per route that matches, `GENERIC files=<n>` for the rest, `SNAPSHOT ... source=checkout-lazy`, and `VALID`. A base that predates the manifest fails: set `trusted_ref` to a commit that has it, for that check only.
+Expect, in order: `REVIEWER` and `FILES`, with an `UNMATCHED` line for any include pattern that matches no file; then for each pull request `PULL <owner/repo#number> base=... head=... files=<n> reviewer=<source>`, `BODY` with how much of the body reviewers would be given, `SNAPSHOT ... source=checkout-lazy`, a `CONDITION <name> open|closed` line for each condition a matching specialist names (whether the drift and untested-changes routes would open), a `ROUTE` line per route that starts, an `UNCOVERED <path>` line for each changed file no specialist that does not share its files matches, and `GENERIC files=<n>` for the files the generic reviewer reviews; and last `VALID`. "Choosing and checking a repository reviewer" in `docs/code-review-operations.md` gives every line `validate-reviewer` prints. A base that predates the manifest fails: set `trusted_ref` to a commit that has it, for that check only.
 
 ## 3. Tune
 
