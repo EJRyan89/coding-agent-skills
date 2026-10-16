@@ -68,7 +68,7 @@ INSTALLED = {
 STATUSES = {"C:/tools/pdftotext.exe": 99}
 GIT = "C:/tools/git.exe"
 PYTHON_COMMAND = "C:/Python/python.exe"
-STORE_ALIAS = "C:/Users/me/AppData/Local/Microsoft/WindowsApps/python.exe"
+STORE_ALIAS = "C:/Profile/Local/Microsoft/WindowsApps/python.exe"
 
 
 def prompt_input(mode: str) -> str:
