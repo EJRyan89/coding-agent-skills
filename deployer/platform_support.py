@@ -286,6 +286,31 @@ def is_reparse_point(path: Path) -> bool:
     return bool(attributes & FILE_ATTRIBUTE_REPARSE_POINT)
 
 
+# The machine settings a runtime needs here before it can run a skill's scripts, which `deploy.py check` reports: on
+# Windows, Codex CLI uses a read-only sandbox until ~/.codex/config.toml sets [windows] sandbox, and no sandbox of
+# Codex CLI can start a program that is an app execution alias. Linux has neither.
+CODEX_NEEDS_SANDBOX_SETTING = WINDOWS
+HAS_APP_EXECUTION_ALIASES = WINDOWS
+APP_EXECUTION_ALIAS_REMEDY = (
+    "turn off the python.exe and python3.exe aliases under Settings > Apps > Advanced app settings > "
+    "App execution aliases"
+)
+
+
+def is_app_execution_alias(program: str | os.PathLike[str]) -> bool:
+    """Whether a program is an app execution alias: a reparse point in the local application data's WindowsApps
+    folder, as the python.exe stub every Windows install registers is. Never on another platform, and never when that
+    folder is unset or relative, so nothing is judged relative to the working directory."""
+    if not HAS_APP_EXECUTION_ALIASES:
+        return False
+    local = Path(os.environ.get("LOCALAPPDATA", ""))
+    if not local.is_absolute():
+        return False
+    path = Path(program)
+    aliases = local / "Microsoft" / "WindowsApps"
+    return os.path.normcase(path.parent) == os.path.normcase(aliases) and is_reparse_point(path)
+
+
 def find_executable(name: str) -> str | None:
     """The program `name` runs, by skill-core's locator, so a tool `check` finds is the one a skill's script finds."""
     return executable_locator.find_executable(name)

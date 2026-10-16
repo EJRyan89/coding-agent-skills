@@ -85,6 +85,52 @@ class RemovalTests(DeployerTestCase):
         self.assertFalse((self.skills_dir / "alpha").exists())
         self.assertFalse((self.skills_dir / "beta").exists())
 
+    def test_the_uninstall_option_previews_and_removes_what_the_answer_none_does_and_prompts_for_nothing(self) -> None:
+        self.make_source_json(shared_assets={"guide.md": "owner"})
+        self.make_shared_asset("guide.md")
+        self.make_agent("reviewer")
+        self.make_skill("alpha", "Alpha", shared_deps=["guide.md"], agent_deps=["reviewer"])
+        self.make_skill("beta", "Beta")
+        self.make_config()
+        self.deploy_ok("--all")
+        self.append(self.skills_dir / "beta" / "SKILL.md", "local edit\n")
+        answered = self.deploy_ok("--dry-run", stdin="none\n")
+        given = self.deploy_ok("--uninstall", "--dry-run")
+        self.assertEqual(answered.stdout, given.stdout)
+        self.assertIn("Select what to deploy:", answered.stderr)
+        self.assertNotIn("Select what to deploy:", given.output)
+        self.assertEqual(
+            {
+                "PRESERVE": ["beta (modified since last deploy)"],
+                "REMOVE": [
+                    "alpha (deselected or absent from source)",
+                    "guide.md (shared asset, obsolete)",
+                    "reviewer.md (agent, no selected skill needs it)",
+                ],
+            },
+            self.report_groups(given.output, "DRY RUN"),
+        )
+        # An answer on stdin is never read: the option is the selection.
+        result = self.deploy_ok("--uninstall", stdin="1\n")
+        self.assertNotIn("Select what to deploy:", result.output)
+        self.assertIn("Selected nothing; unmodified items this source deployed will be removed.", result.output)
+        self.assertEqual(
+            {
+                "PRESERVED": ["beta (modified since last deploy)"],
+                "REMOVED": [
+                    "alpha (deselected or absent from source)",
+                    "guide.md (shared asset, obsolete)",
+                    "reviewer.md (agent, no selected skill needs it)",
+                ],
+            },
+            self.report_groups(result.output, "DEPLOYED"),
+        )
+        self.assertEqual(["beta"], list(self.owned("skills")))
+        self.assertFalse((self.skills_dir / "alpha").exists())
+        self.assertFalse((self.skills_dir / "guide.md").exists())
+        self.assertFalse((self.claude_agents_dir / "reviewer.md").exists())
+        self.assertIn("source_dir", self.manifest()["sources"][SOURCE_ID], "the entry keeps its checkout")
+
     def test_deleting_every_source_skill_removes_prior_installations(self) -> None:
         self.make_source_json()
         self.make_skill("alpha", "Alpha")

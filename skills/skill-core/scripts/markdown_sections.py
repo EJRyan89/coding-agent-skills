@@ -1,5 +1,6 @@
 """The Markdown readers shared by skills, repository tools, the deployer, and validation: the second-level section
-reader, the fenced code block reader, and the inline code span pattern."""
+reader, the fenced code block reader, the labels of a fence in an executable language, and the inline code span
+pattern."""
 
 from __future__ import annotations
 
@@ -15,6 +16,24 @@ FENCE_OPENER = re.compile(
     r"(?P<container>[ \t]*(?:(?:>|(?:[-+*]|\d{1,9}[.)])[ \t])[ \t]*)*)(?P<marker>`{3,}|~{3,})(?P<info>.*)"
 )
 QUOTE_MARKER = re.compile(r"[ \t]*>[ \t]?")
+# Every label a fence of commands or a program may carry, by the language it names: the POSIX shells, fish, and cmd,
+# whose lines the model runs through its Bash or PowerShell tool, PowerShell, and Python, JavaScript, and TypeScript,
+# each under every name Markdown gives it. The renderer substitutes a token by these languages, validation holds every
+# such fence to the five-line and output-placeholder rules, and the analyze-skill-cost audit reads the shells' fences
+# as commands.
+FENCE_LANGUAGES: dict[str, frozenset[str]] = {
+    "shell": frozenset({"bash", "sh", "shell", "console", "zsh", "ksh", "dash"}),
+    "fish": frozenset({"fish"}),
+    "cmd": frozenset({"cmd", "bat", "batch"}),
+    "powershell": frozenset({"powershell", "pwsh", "ps1"}),
+    "python": frozenset({"python", "python3", "py"}),
+    "javascript": frozenset({"javascript", "js", "node", "mjs", "cjs"}),
+    "typescript": frozenset({"typescript", "ts"}),
+}
+# The labels of a fence whose lines are commands for a command shell, and for PowerShell.
+SHELL_FENCES = FENCE_LANGUAGES["shell"] | FENCE_LANGUAGES["fish"] | FENCE_LANGUAGES["cmd"]
+POWERSHELL_FENCES = FENCE_LANGUAGES["powershell"]
+EXECUTABLE_FENCES = frozenset(label for labels in FENCE_LANGUAGES.values() for label in labels)
 
 
 @dataclass(frozen=True)

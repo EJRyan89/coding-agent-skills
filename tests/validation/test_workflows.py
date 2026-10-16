@@ -503,7 +503,11 @@ UNINSTALL_CHECK = (
     "          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n"
     "      # The README's selection.\n"
     "      - name: Uninstall\n        run: |\n"
-    "          'none' | python deploy.py\n"
+    "          python deploy.py --uninstall --dry-run 2>&1 | Tee-Object -FilePath "
+    "(Join-Path $env:LOGS 'uninstall-dry-run.log')\n"
+    "          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n"
+    "          python deploy.py --uninstall 2>&1 | Tee-Object -FilePath (Join-Path $env:LOGS 'uninstall.log')\n"
+    "          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n"
     "      - name: Confirm the profile holds nothing from the suite\n        run: |\n"
     "          # Names what is left.\n"
     "          python tools/deployable_report.py leftovers --owned (Join-Path $env:LOGS 'owned.json') "
@@ -513,7 +517,8 @@ UNINSTALL_CHECK = (
     "      - name: Record what the deployment owns\n        run: |\n"
     '          python3 tools/deployable_report.py owned --owned "$LOGS/owned.json"\n'
     "      - name: Uninstall\n        run: |\n"
-    "          printf 'none\\n' | python3 deploy.py\n"
+    '          python3 deploy.py --uninstall --dry-run 2>&1 | tee "$LOGS/uninstall-dry-run.log"\n'
+    '          python3 deploy.py --uninstall 2>&1 | tee "$LOGS/uninstall.log"\n'
     "      - name: Confirm the profile holds nothing from the suite\n        run: |\n"
     '          python3 tools/deployable_report.py leftovers --owned "$LOGS/owned.json" --results "$RESULTS"\n'
 )
@@ -567,6 +572,22 @@ class UninstallCheckFixtures(GitTestCase):
                     1,
                 ),
                 "must set only its name and run",
+            ),
+            (
+                "the answer piped into the prompt",
+                windows_part
+                + linux_part.replace("python3 deploy.py --uninstall 2>&1", "printf 'none\\n' | python3 deploy.py 2>&1"),
+                "deployable-linux: 'Uninstall' must run exactly",
+            ),
+            (
+                "the preview left out",
+                UNINSTALL_CHECK.replace(
+                    "          python deploy.py --uninstall --dry-run 2>&1 | Tee-Object -FilePath "
+                    "(Join-Path $env:LOGS 'uninstall-dry-run.log')\n",
+                    "",
+                    1,
+                ),
+                "deployable: 'Uninstall' must run exactly",
             ),
             ("no uninstall", windows_part.replace("name: Uninstall", "name: Remove") + linux_part, "expected one"),
             ("no linux job", windows_part, "deployable-linux: expected one 'Uninstall' step, found 0"),

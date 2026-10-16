@@ -100,7 +100,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 import frontmatter
 from console import run_main
 from git_client import GitClient
-from markdown_sections import CODE_SPAN, find_fences, prose_code_spans
+from markdown_sections import CODE_SPAN, POWERSHELL_FENCES, SHELL_FENCES, find_fences, prose_code_spans
 
 MAIN_NAME = "skill.md"
 HELPER_SUFFIXES = frozenset({".sh", ".bash", ".ps1", ".py", ".js", ".mjs", ".cjs", ".ts"})
@@ -115,10 +115,6 @@ SKIPPED_DIRECTORIES = frozenset({".git", "__pycache__", "node_modules"})
 # Why a file the skill loads cannot be measured.
 NOT_UTF8 = "not UTF-8 text"
 SKILL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-# The labels of a fence whose lines are commands the model may run through its Bash or PowerShell tool: a command
-# shell's, and PowerShell's.
-SHELL_FENCES = frozenset({"bash", "sh", "shell", "console", "zsh", "ksh", "dash", "fish", "cmd", "bat", "batch"})
-POWERSHELL_FENCES = frozenset({"powershell", "pwsh", "ps1"})
 KNOWN_TOOLS = (
     "Agent",
     "AskUserQuestion",

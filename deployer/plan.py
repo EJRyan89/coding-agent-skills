@@ -39,8 +39,12 @@ KINDS_ALLOWED = {
     "since two sources never own one agent; skill dependencies follow the recorded transitive graph",
 }
 
-# Actions that move the rendered copy into place, and actions that end this source's ownership of an item.
+# Actions that record the rendered copy as this source's, and actions that end this source's ownership of an item.
 INSTALLING = frozenset({"INSTALL", "UPDATE", "UNCHANGED", "ADOPT", "REPLACE"})
+# The installing actions that move the rendered copy into place. An unchanged item already holds it, so it is left as
+# it is: never renamed, so a directory a terminal or an editor holds open cannot fail the run, and never journaled,
+# since nothing of it needs rolling back, and the bytecode caches its scripts made stay.
+MOVING = INSTALLING - {"UNCHANGED"}
 RELEASING = frozenset({"REMOVE", "DROP"})
 DIFF_LINES_REPORTED = 40
 
@@ -516,13 +520,14 @@ def _replace(
 
 
 def carry_out(record: journal.Journal, paths: Paths, staging_dir: Path, entry: PlanEntry) -> None:
-    """Make the one filesystem change the plan entry names; skipped, preserved, kept, and dropped items need none."""
+    """Make the one filesystem change the plan entry names; unchanged, skipped, preserved, kept, and dropped items
+    need none."""
     kind = BY_LABEL[entry.kind]
     base = journal.root_directory(paths, kind.root)
     if entry.action == "REMOVE":
         record.backup(kind.root, entry.name, entry.existing, retain=False)
         fsops.move(base / entry.name, base / f"{entry.name}.deploying-bak")
-    elif entry.action in INSTALLING:
+    elif entry.action in MOVING:
         _replace(
             record,
             kind.root,

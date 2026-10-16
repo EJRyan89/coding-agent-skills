@@ -17,6 +17,7 @@ class Options:
     force: bool = False
     force_items: list[str] = field(default_factory=list)
     include: list[str] = field(default_factory=list)
+    uninstall: bool = False
     dry_run: bool = False
     migrate_from: str = ""
     take_over_source: bool = False

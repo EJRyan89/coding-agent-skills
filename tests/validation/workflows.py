@@ -653,9 +653,10 @@ def linux_verify_log_problems(workflow: str) -> list[str]:
 
 
 # The uninstall check in each deployable job, in its own shell: the step before the uninstall saves what the
-# deployment owns, and the step after it names what is left, files included, through tools/deployable_report.py, which
+# deployment owns, the uninstall previews and then makes the removal with deploy.py's --uninstall, saving each log, and
+# the step after it names what is left, files included, through tools/deployable_report.py, which
 # tests/tools/test_deployable_report.py covers. A listing the step wrote for itself looked only at directories, so a
-# shared file left behind passed.
+# shared file left behind passed, and an answer piped into the selection prompt relied on its wording.
 RECORD_OWNED_STEP = "Record what the deployment owns"
 UNINSTALL_STEP = "Uninstall"
 CONFIRM_UNINSTALL_STEP = "Confirm the profile holds nothing from the suite"
@@ -666,6 +667,13 @@ UNINSTALL_CHECKS = {
             "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }",
         ],
         [
+            "python deploy.py --uninstall --dry-run 2>&1 | Tee-Object -FilePath "
+            "(Join-Path $env:LOGS 'uninstall-dry-run.log')",
+            "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }",
+            "python deploy.py --uninstall 2>&1 | Tee-Object -FilePath (Join-Path $env:LOGS 'uninstall.log')",
+            "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }",
+        ],
+        [
             "python tools/deployable_report.py leftovers --owned (Join-Path $env:LOGS 'owned.json') "
             "--results $env:RESULTS",
             "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }",
@@ -673,6 +681,10 @@ UNINSTALL_CHECKS = {
     ),
     "deployable-linux": (
         ['python3 tools/deployable_report.py owned --owned "$LOGS/owned.json"'],
+        [
+            'python3 deploy.py --uninstall --dry-run 2>&1 | tee "$LOGS/uninstall-dry-run.log"',
+            'python3 deploy.py --uninstall 2>&1 | tee "$LOGS/uninstall.log"',
+        ],
         ['python3 tools/deployable_report.py leftovers --owned "$LOGS/owned.json" --results "$RESULTS"'],
     ),
 }
@@ -685,11 +697,11 @@ def _script_lines(step: dict[str, Node]) -> list[str]:
 
 
 def uninstall_check_problems(workflow: str) -> list[str]:
-    """Hold each deployable job's uninstall between the step that saves what the deployment owns and the step that
-    names what the uninstall left, each running exactly its deployable_report.py command and nothing else."""
+    """Hold each deployable job's uninstall, run by --uninstall, between the step that saves what the deployment owns
+    and the step that names what the uninstall left, each running exactly its commands and nothing else."""
     tree = read_workflow(workflow)
     problems: list[str] = []
-    for job, (record, confirm) in UNINSTALL_CHECKS.items():
+    for job, (record, uninstall, confirm) in UNINSTALL_CHECKS.items():
         steps = _steps(_mapping(tree, "jobs", job))
         names = [step.get("name") for step in steps]
         if names.count(UNINSTALL_STEP) != 1:
@@ -698,6 +710,7 @@ def uninstall_check_problems(workflow: str) -> list[str]:
         index = names.index(UNINSTALL_STEP)
         for position, where, name, lines in (
             (index - 1, "before", RECORD_OWNED_STEP, record),
+            (index, "as", UNINSTALL_STEP, uninstall),
             (index + 1, "after", CONFIRM_UNINSTALL_STEP, confirm),
         ):
             step = steps[position] if 0 <= position < len(steps) else {}

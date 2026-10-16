@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import frontmatter
-from markdown_sections import Fence, find_fences
+from markdown_sections import FENCE_LANGUAGES, Fence, find_fences
 
 from . import fsops, hashing, platform_support
 from .config import DERIVED_VARIABLES, INTERPRETER_VARIABLES
@@ -32,19 +32,19 @@ SUFFIX_CONTEXT = {
     ".md": "markdown",
     ".txt": "text",
 }
+# A fence's substitution context, by its label: the executable language skill-core's table names it by, which is the
+# table validation reads executable fences by, or a data format.
 FENCE_CONTEXT = {
-    "bash": "shell",
-    "sh": "shell",
-    "shell": "shell",
-    "powershell": "powershell",
-    "ps1": "powershell",
-    "pwsh": "powershell",
-    "python": "python",
+    **{label: language for language, labels in FENCE_LANGUAGES.items() for label in labels},
     "yaml": "yaml",
     "yml": "yaml",
     "json": "json",
     "toml": "toml",
 }
+# The executable languages whose quoting the renderer knows. A token in a fence of any other is refused whatever its
+# value, since no escaping is known to keep the value literal there.
+ESCAPED_LANGUAGES = frozenset({"shell", "powershell", "python"})
+UNESCAPED_CONTEXTS = frozenset(FENCE_LANGUAGES) - ESCAPED_LANGUAGES
 UNSAFE_CHARACTERS = {
     "shell": "\"'$`\\\n\r",
     "powershell": "\"'$`\n\r",
@@ -113,6 +113,11 @@ def _escape(key: str, value: str, context: str, logical: str) -> str:
             f"ERROR: Variable {key} cannot be substituted into {logical}: {value!r} is not one of "
             f"{', '.join(sorted(INTERPRETER_VARIABLES[key]))}"
         )
+    if context in UNESCAPED_CONTEXTS:
+        raise DeployError(
+            f"ERROR: Variable {key} cannot be substituted into {logical}: the deployer knows no escaping for a "
+            f"{context} fence; write the example in a Bash, PowerShell, or Python fence"
+        )
     if context in ("json", "toml"):
         return json.dumps(value, ensure_ascii=False)[1:-1]
     unsafe = UNSAFE_CHARACTERS.get(context, "")
@@ -138,7 +143,8 @@ def _substitute(text: str, values: dict[str, str], context: str, logical: str) -
 
 
 def fence_context(fence: Fence) -> str:
-    """A fence's substitution context, such as shell for ```bash, ~~~sh, or ````shell."""
+    """A fence's substitution context, such as shell for ```bash, ~~~zsh, or ````console, and text for an unknown
+    label."""
     return FENCE_CONTEXT.get(fence.language.casefold(), "text")
 
 

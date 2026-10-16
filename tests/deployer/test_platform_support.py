@@ -226,6 +226,52 @@ class LocatorTests(GitTestCase):
         located.assert_called_once_with("tool")
 
 
+class AppExecutionAliasTests(GitTestCase):
+    """An app execution alias is a reparse point in the local application data's WindowsApps folder, on Windows."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.local = Path(temporary.name) / "Local"
+        self.aliases = self.local / "Microsoft" / "WindowsApps"
+        self.aliases.mkdir(parents=True)
+        for name in ("python.exe", "py.exe"):
+            (self.aliases / name).write_bytes(b"")
+        (self.local / "Python").mkdir()
+        (self.local / "Python" / "python.exe").write_bytes(b"")
+
+    def alias(self, program: Path, local: str, reparse: bool = True, platform: bool = True) -> bool:
+        with (
+            mock.patch.dict(os.environ, {"LOCALAPPDATA": local}),
+            mock.patch.object(platform_support, "HAS_APP_EXECUTION_ALIASES", platform),
+            mock.patch.object(platform_support, "is_reparse_point", return_value=reparse) as reparse_point,
+        ):
+            found = platform_support.is_app_execution_alias(program)
+        if found:
+            reparse_point.assert_called_once_with(program)
+        return found
+
+    def test_a_reparse_point_in_the_windowsapps_folder_is_an_alias(self) -> None:
+        self.assertTrue(self.alias(self.aliases / "python.exe", str(self.local)))
+        self.assertTrue(self.alias(Path(str(self.aliases / "py.exe")), str(self.local)))
+
+    def test_a_program_elsewhere_or_not_a_reparse_point_or_off_windows_is_not(self) -> None:
+        self.assertFalse(self.alias(self.local / "Python" / "python.exe", str(self.local)))
+        self.assertFalse(self.alias(self.aliases / "python.exe", str(self.local), reparse=False))
+        self.assertFalse(self.alias(self.aliases / "python.exe", str(self.local), platform=False))
+
+    def test_an_unset_or_relative_local_application_data_folder_judges_nothing_an_alias(self) -> None:
+        for local in ("", "Local"):
+            with self.subTest(local=local):
+                self.assertFalse(self.alias(Path(local) / "Microsoft" / "WindowsApps" / "python.exe", local))
+
+    def test_only_windows_has_the_settings_check_reports(self) -> None:
+        expected = sys.platform == "win32"
+        self.assertEqual(expected, platform_support.HAS_APP_EXECUTION_ALIASES)
+        self.assertEqual(expected, platform_support.CODEX_NEEDS_SANDBOX_SETTING)
+
+
 class SupportedPlatformTests(GitTestCase):
     def test_windows_and_linux_are_supported_and_macos_is_refused_by_name(self) -> None:
         for platform in ("win32", "linux"):
