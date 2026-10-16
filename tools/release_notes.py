@@ -1,7 +1,7 @@
 """Write a release's section of docs/upgrade-notes.md from the upgrade notes its merged commits carry.
 
 Usage:
-  python tools/release_notes.py VERSION [--from REF] [--to REF] [--write]
+  python tools/release_notes.py VERSION [--from REF] [--to REF] [--write | --check]
 
 Each pull request states what it asks of a user who updates under a `## Upgrade note` heading in its body, and the
 repository squash-merges with the body as the commit message, so every merged change carries its entry into the
@@ -12,22 +12,31 @@ already gave is the older text of that entry and is left out. An entry is read w
 item, or paragraph joined into one line, since a squash commit's message may be wrapped. Each entry keeps that text
 and gains `- Pull request: #N` from the commit's squash title when it names none.
 
---from defaults to the last tag before --to, and --to to HEAD. It prints the `## VERSION` section, or with --write
-inserts it into docs/upgrade-notes.md above the newest version's section, refusing a version the file already has.
-The section opens with the largest leading Level word of its entries, ordered by docs/releasing.md, or states that
-there are no upgrade-note entries. It exits 0 on success, 1 when --write is refused because the file already has the
-version, and 2, with an `ERROR:` line naming what it could not read or write, when git cannot read the range, when
-docs/releasing.md or its documented levels or an entry's Level cannot be read, or, with --write, when
-docs/upgrade-notes.md cannot be read as UTF-8 text or written. The release procedure in docs/releasing.md runs
-it before tagging, and the upgrade-notes check in tests/validation reads the same entries.
+--from defaults to the last tag before --to, and --to to HEAD, or to origin/main with --check. It prints the
+`## VERSION` section, or with --write inserts it into docs/upgrade-notes.md above the newest version's section,
+refusing a version the file already has. The section opens with the largest leading Level word of its entries, ordered
+by docs/releasing.md, or states that there are no upgrade-note entries.
+
+--check compares the `## VERSION` section of docs/upgrade-notes.md as --to holds it with the entries the commits in
+the range carry, by heading, and fetches nothing. The release pull request is squash-merged, so the commit the
+section was written at never reaches main, and a pull request merged into main or into the release branch after the
+section was written is in the tag and in no section. It prints `CURRENT` when the section holds every entry, and
+otherwise `BEHIND <n> entries` and each entry the section lacks, ready to carry into it. An entry the section holds
+beyond the range's, such as an obligation the release's preparation issue records, is the releaser's own.
+
+It exits 0 on success, 1 when --write is refused because the file already has the version or --check finds entries
+the section lacks, and 2, with an `ERROR:` line naming what it could not read or write, when git cannot read the
+range, when docs/releasing.md or its documented levels or an entry's Level cannot be read, with --write when
+docs/upgrade-notes.md cannot be read as UTF-8 text or written, or with --check when --to holds no `## VERSION`
+section. Git runs through skill-core's GitClient, which starts it without the repository-selecting variables that
+would read another repository. The release procedure in docs/releasing.md runs it before tagging and again at the
+tag, and the upgrade-notes check in tests/validation reads the same entries through the same git.
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 import re
-import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,9 +44,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
 
-from bounded_process import without_repository_variables
 from console import run_main
-from executable_locator import located_command
+from git_client import GitClient, GitError, GitResult
 from markdown_sections import markdown_section
 from release_levels import RELEASING_DOC, VERSION, largest_level, versioning_levels
 
@@ -45,6 +53,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 UPGRADE_NOTES = "docs/upgrade-notes.md"
 BODY_HEADING = "## Upgrade note"
 UNRELEASED_HEADING = "## Unreleased"
+RELEASE_BRANCH = "origin/main"
 VERSION_HEADING = re.compile(rf"^## {VERSION.pattern}[ \t]*$", re.MULTILINE)
 NOTES_FIELD = re.compile(r"^- (Level|Contract|User action|Pull request):[ \t]*(.*?)[ \t]*$", re.MULTILINE)
 NOTES_ENTRY_START = re.compile(r"^(?=#{1,3} )", re.MULTILINE)
@@ -135,22 +144,27 @@ def unreleased_entries(notes: str | None) -> list[NotesEntry]:
     return notes_entries(markdown_section((notes or "").replace("\r\n", "\n"), UNRELEASED_HEADING))
 
 
-def _git(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
-    """git run on the checkout at root, without the repository-selecting variables that would read another one, and
-    started at the path skill-core's locator finds rather than by name, which Windows looks up in the working directory
-    first."""
-    return subprocess.run(
-        located_command(["git", "-C", str(root), *arguments]),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        env=without_repository_variables(os.environ),
-        check=False,
-    )
+# The one git these notes and the upgrade-notes check in tests/validation run.
+CLIENT = GitClient()
+
+
+def git(root: Path, *arguments: str) -> GitResult:
+    """git run on the checkout at root through skill-core's GitClient, so without the repository-selecting variables
+    that would read another one and at the path the locator finds, with its output read as UTF-8.
+
+    Raises ValueError when git cannot run or finish, or prints output that is not UTF-8.
+    """
+    try:
+        result = CLIENT.run(arguments, directory=root)
+        return GitResult(result.returncode, result.output_bytes().decode("utf-8"), result.stderr)
+    except GitError as error:
+        raise ValueError(str(error)) from error
+    except UnicodeDecodeError as error:
+        raise ValueError(f"git {' '.join(arguments)} printed output that is not UTF-8: {error}") from error
 
 
 def _git_output(root: Path, *arguments: str) -> str:
-    completed = _git(root, *arguments)
+    completed = git(root, *arguments)
     if completed.returncode != 0:
         raise ValueError(f"git {' '.join(arguments)} failed: {completed.stderr.strip()}")
     return completed.stdout
@@ -170,7 +184,7 @@ def commits(root: Path, start: str, end: str) -> list[Commit]:
 
 
 def _notes_at(root: Path, revision: str) -> str | None:
-    shown = _git(root, "show", f"{revision}:{UPGRADE_NOTES}")
+    shown = git(root, "show", f"{revision}:{UPGRADE_NOTES}")
     return shown.stdout if shown.returncode == 0 else None
 
 
@@ -225,6 +239,35 @@ def insert_section(notes: str, version: str, section: str) -> str:
     return notes[: newest.start()] + section + "\n" + notes[newest.start() :]
 
 
+def missing_entries(root: Path, version: str, start: str, end: str) -> list[SourcedEntry]:
+    """The entries the commits between two refs carry that the version's section of the notes file at end lacks, by
+    heading, newest first."""
+    section = markdown_section(_notes_at(root, end) or "", f"## {version}")
+    if section is None:
+        raise ValueError(f"{UPGRADE_NOTES} at {end} has no ## {version} section; write it with --write first")
+    held = {entry.heading for entry in notes_entries(section)}
+    return [item for item in range_entries(root, start, end) if item.entry.heading not in held]
+
+
+def _check(root: Path, version: str, start: str, end: str) -> int:
+    try:
+        missing = missing_entries(root, version, start, end)
+    except ValueError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 2
+    if not missing:
+        print(f"CURRENT ## {version} in {UPGRADE_NOTES} at {end} holds every upgrade-note entry from {start} to {end}.")
+        return 0
+    print(
+        f"BEHIND {len(missing)} {'entry' if len(missing) == 1 else 'entries'}: the commits from {start} to {end} carry "
+        f"upgrade-note entries the ## {version} section of {UPGRADE_NOTES} at {end} lacks; carry them into it through "
+        "a pull request before tagging."
+    )
+    for item in missing:
+        print(f"\n{item.rendered()}")
+    return 1
+
+
 def _read_releasing(root: Path) -> str:
     try:
         return (root / RELEASING_DOC).read_text(encoding="utf-8")
@@ -236,13 +279,28 @@ def main(argv: list[str] | None = None, root: Path = REPOSITORY_ROOT) -> int:
     parser = argparse.ArgumentParser(description="Write a release's upgrade-notes section from its merged commits.")
     parser.add_argument("version", help="the version being released, such as v0.5.0")
     parser.add_argument("--from", dest="start", help="the previous release's ref; defaults to the last tag before --to")
-    parser.add_argument("--to", dest="end", default="HEAD", help="the release's ref; defaults to HEAD")
-    parser.add_argument("--write", action="store_true", help=f"insert the section into {UPGRADE_NOTES}")
+    parser.add_argument(
+        "--to", dest="end", help=f"the release's ref; defaults to HEAD, or to {RELEASE_BRANCH} with --check"
+    )
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--write", action="store_true", help=f"insert the section into {UPGRADE_NOTES}")
+    action.add_argument(
+        "--check",
+        action="store_true",
+        help=f"compare the section {UPGRADE_NOTES} holds at --to with the entries the range carries",
+    )
     options = parser.parse_args(argv)
     if not VERSION.fullmatch(options.version):
         parser.error(f"the version must look like v1.2.3, not {options.version!r}")
+    options.end = options.end or (RELEASE_BRANCH if options.check else "HEAD")
     try:
         start = options.start or last_tag_before(root, options.end)
+    except ValueError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 2
+    if options.check:
+        return _check(root, options.version, start, options.end)
+    try:
         levels = versioning_levels(_read_releasing(root))
         section = version_section(options.version, range_entries(root, start, options.end), levels)
     except (OSError, ValueError) as error:

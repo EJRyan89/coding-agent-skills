@@ -416,19 +416,9 @@ class DeployableReportTests(GitTestCase):
             encoding="utf-8",
         )
 
-    def record_owned(self) -> Path:
-        owned = self.results_file.parent / "owned.json"
-        code, output = self.run_main(
-            "owned", "--owned", str(owned), "--home", str(self.home), "--source", str(self.paths.source_dir)
-        )
-        self.assertEqual(0, code, output)
-        return owned
-
-    def check_leftovers(self, owned: Path) -> tuple[int, str, list[str]]:
+    def check_leftovers(self) -> tuple[int, str, list[str]]:
         code, output = self.run_main(
             "leftovers",
-            "--owned",
-            str(owned),
             "--results",
             str(self.results_file),
             "--home",
@@ -442,48 +432,39 @@ class DeployableReportTests(GitTestCase):
     def summary_of_record(self) -> str:
         return report.render_summary(json.loads(self.results_file.read_text(encoding="utf-8")), [], [])
 
-    def test_owned_saves_every_owned_path_and_every_entry_where_items_deploy(self) -> None:
+    def test_every_item_deploys_to_a_direct_child_of_a_directory_the_listing_reads(self) -> None:
+        # The check lists those directories after the uninstall and saves nothing before it, which holds only while
+        # every path the deployment owns is one of their entries.
         self.deploy_everything()
-        (self.paths.dest_dir / "unowned.txt").write_text("made by the run\n", encoding="utf-8")
-        saved = json.loads(self.record_owned().read_text(encoding="utf-8"))
-        expected = {
-            self.paths.dest_dir / "alpha",
-            self.paths.dest_dir / "beta",
-            self.paths.dest_dir / SHARED_FILE,
-            self.paths.dest_dir / "unowned.txt",
-            self.paths.adapter_dest_dir / "alpha",
-            self.paths.adapter_dest_dir / "beta",
-            self.paths.agent_dest_dir / AGENT,
-        }
-        self.assertEqual(sorted(str(path) for path in expected), saved)
+        roots = report._item_roots(self.paths)
+        items = report._manifest_items(self.paths)
+        self.assertEqual(6, len(items))
+        self.assertEqual([], [str(path) for _, _, path in items if path.parent not in roots])
+        self.assertEqual({path for _, _, path in items}, report._root_entries(self.paths))
 
-    def test_owned_with_nothing_deployed_is_an_error(self) -> None:
-        self.deploy_everything()
-        self.uninstall()
-        owned = self.results_file.parent / "owned.json"
-        code, output = self.run_main(
-            "owned", "--owned", str(owned), "--home", str(self.home), "--source", str(self.paths.source_dir)
-        )
-        self.assertEqual(1, code)
-        self.assertIn("Nothing is deployed in", output)
-        self.assertIn(DEPLOY_FIRST, output)
-        self.assertFalse(owned.exists())
+    def test_owned_is_no_command_and_leftovers_takes_no_saved_paths(self) -> None:
+        for arguments in (
+            ["owned", "--owned", "x.json"],
+            ["leftovers", "--results", str(self.results_file), "--owned", "x.json"],
+        ):
+            with self.subTest(arguments=arguments), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as raised:
+                    report.main(arguments)
+                self.assertEqual(2, raised.exception.code)
 
     def test_a_clean_uninstall_leaves_nothing_but_the_manifest_and_retained_backups(self) -> None:
         self.deploy_everything()
-        owned = self.record_owned()
         self.uninstall()
-        code, output, left = self.check_leftovers(owned)
+        code, output, left = self.check_leftovers()
         self.assertEqual((0, []), (code, left), output)
         self.assertIn("Nothing deployed is left", output)
         self.assertIn("### After the uninstall\n\nNothing deployed is left.", self.summary_of_record())
 
     def test_a_shared_file_left_after_the_uninstall_fails_and_is_named(self) -> None:
         self.deploy_everything()
-        owned = self.record_owned()
         shared = self.paths.dest_dir / SHARED_FILE
         self.uninstall(keep=(shared,))
-        code, output, left = self.check_leftovers(owned)
+        code, output, left = self.check_leftovers()
         self.assertEqual(1, code)
         self.assertEqual([platform_support.normalize(shared)], left)
         self.assertIn(f"::error::left after uninstall: {platform_support.normalize(shared)}", output)
@@ -491,80 +472,44 @@ class DeployableReportTests(GitTestCase):
 
     def test_a_directory_left_after_the_uninstall_fails_and_is_named(self) -> None:
         self.deploy_everything()
-        owned = self.record_owned()
         adapter = self.paths.adapter_dest_dir / "beta"
         self.uninstall(keep=(adapter,))
-        code, output, left = self.check_leftovers(owned)
+        code, output, left = self.check_leftovers()
         self.assertEqual((1, [platform_support.normalize(adapter)]), (code, left), output)
         self.assertIn(f"- Left: `{platform_support.normalize(adapter)}`", self.summary_of_record())
 
     def test_an_entry_the_uninstall_added_where_items_deploy_fails(self) -> None:
         self.deploy_everything()
-        owned = self.record_owned()
         self.uninstall()
         stray = self.paths.dest_dir / "alpha.deploying-bak"
         stray.write_text("stale\n", encoding="utf-8")
         hidden = self.paths.agent_dest_dir / ".stray.md"
         hidden.write_text("stale\n", encoding="utf-8")
-        code, output, left = self.check_leftovers(owned)
+        code, output, left = self.check_leftovers()
         self.assertEqual(1, code, output)
         self.assertEqual(sorted(platform_support.normalize(path) for path in (stray, hidden)), left)
 
     def test_an_item_the_manifest_still_owns_fails_even_when_its_file_is_gone(self) -> None:
         self.deploy_everything()
-        owned = self.record_owned()
         self.uninstall()
         data = json.loads(self.paths.manifest_file.read_text(encoding="utf-8"))
         data["sources"][SOURCE_ID]["shared"] = {SHARED_FILE: {"hash": HASH, "role": "owner"}}
         self.paths.manifest_file.write_text(json.dumps(data), encoding="utf-8")
-        code, output, left = self.check_leftovers(owned)
+        code, output, left = self.check_leftovers()
         self.assertEqual(1, code, output)
         shared = platform_support.normalize(self.paths.dest_dir / SHARED_FILE)
         self.assertEqual([f"manifest source '{SOURCE_ID}' still owns shared asset {shared}"], left)
 
     def test_a_second_leftovers_check_replaces_the_first_record(self) -> None:
         self.deploy_everything()
-        owned = self.record_owned()
         shared = self.paths.dest_dir / SHARED_FILE
         self.uninstall(keep=(shared,))
-        self.check_leftovers(owned)
+        self.check_leftovers()
         shared.unlink()
-        code, _, left = self.check_leftovers(owned)
+        code, _, left = self.check_leftovers()
         self.assertEqual((0, []), (code, left))
         recorded = json.loads(self.results_file.read_text(encoding="utf-8"))
         self.assertEqual(1, sum(item["label"] == "uninstall" for item in recorded))
-
-    def test_leftovers_without_the_saved_paths_is_an_error(self) -> None:
-        missing = self.results_file.parent / "missing.json"
-        empty = self.results_file.parent / "empty.json"
-        empty.write_text("[]", encoding="utf-8")
-        for saved in (missing, empty):
-            with self.subTest(saved=saved.name):
-                code, output = self.run_main(
-                    "leftovers",
-                    "--owned",
-                    str(saved),
-                    "--results",
-                    str(self.results_file),
-                    "--home",
-                    str(self.home),
-                    "--source",
-                    str(self.paths.source_dir),
-                )
-                # An input the check cannot read, apart from the 1 of a check that found something left.
-                self.assertEqual(2, code)
-                self.assertIn("saved before the uninstall", output)
-                self.assertIn(str(saved), output)
-
-    def test_owned_that_cannot_save_its_paths_exits_2_naming_the_file(self) -> None:
-        target = self.results_file.parent / "owned folder"
-        target.mkdir()
-        code, output = self.run_main(
-            "owned", "--owned", str(target), "--home", str(self.home), "--source", str(self.paths.source_dir)
-        )
-        self.assertEqual(2, code, output)
-        self.assertIn(f"ERROR: Cannot save the paths the deployment owns: {target}: ", output)
-        self.assertNotIn("FAILED", output)
 
     # -- an unreadable results file ------------------------------------------------------------------------
 
@@ -578,15 +523,12 @@ class DeployableReportTests(GitTestCase):
             log = self.results_file.parent / "verify.log"
             log.write_text("", encoding="utf-8")
             arguments += ["--deploy-verify-exit", "0", "--deploy-verify-log", str(log)]
-        elif command == "leftovers":
-            arguments += ["--owned", str(self.saved_paths)]
         elif command == "summary":
             arguments += ["--no-probe", "--summary", str(self.summary_file)]
         return self.run_main(*arguments)
 
     def test_a_results_file_that_is_not_a_json_array_exits_2_naming_it_and_is_kept(self) -> None:
         self.use_fake_runtimes()
-        self.saved_paths = self.record_owned()
         for content in (b"{not json", b"", b"\xff\xfe", b"{}"):
             for command in ("verify", "layout", "leftovers", "summary"):
                 with self.subTest(content=content, command=command):
@@ -602,7 +544,6 @@ class DeployableReportTests(GitTestCase):
 
     def test_a_results_file_that_cannot_be_read_or_written_exits_2_naming_it(self) -> None:
         self.use_fake_runtimes()
-        self.saved_paths = self.record_owned()
         self.results_file.mkdir()
         for command in ("verify", "layout", "leftovers", "summary"):
             with self.subTest(command=command):
