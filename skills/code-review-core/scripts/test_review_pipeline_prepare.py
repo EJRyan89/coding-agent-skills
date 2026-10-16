@@ -44,6 +44,7 @@ from review_records import build_record, validate_adapter_result
 from review_reviewers import MissingSkillError
 from review_runtime import RuntimeContractError
 from review_specialists import parse_unified_diff, patch_fingerprints
+from test_review_pipeline import checked_run_list
 
 # The command name the skills' scripts write for Python into the commands they hand an agent.
 PYTHON = "python" if sys.platform == "win32" else "python3"
@@ -2035,7 +2036,7 @@ class HistoryTests(PrepareFixture):
         self.assertEqual((1, ""), (code, err.getvalue()))
         self.assertEqual(
             "FAILED example/one#12 example/one#12 has no review yet; run review-prs --pull example/one#12\n",
-            out.getvalue(),
+            checked_run_list(self, ["prepare"], out.getvalue()),
         )
         self.assertFalse(self.run_dir.exists())
         result, printed = self.prepare()

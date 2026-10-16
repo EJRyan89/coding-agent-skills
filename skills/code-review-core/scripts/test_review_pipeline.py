@@ -222,6 +222,25 @@ def thread(
     }
 
 
+def checked_run_list(case: unittest.TestCase, arguments: Sequence[str], out: str) -> str:
+    """A prepare call's output without its closing RUNS line, once that line names a run list recording exactly the
+    runs the output published, in order and each as published, after any an earlier call published, and as many pull
+    requests still to prepare as it says. Any other command's output, and a prepare that wrote no list, is returned as
+    it is."""
+    lines = out.splitlines(keepends=True)
+    if "prepare" not in arguments or not lines or not lines[-1].startswith("RUNS "):
+        return out
+    path, pending = lines[-1].removeprefix("RUNS ").rstrip("\n").rsplit(" pending=", 1)
+    listed = rp.load_run_list(Path(path))
+    published = [line.rstrip("\n").split(" ", 2)[2] for line in lines if line.startswith("RUN ")]
+    # A call continuing a run list adds its runs after the ones earlier calls published.
+    added = listed["runs"][len(listed["runs"]) - len(published) :] if "--runs" in arguments else listed["runs"]
+    case.assertEqual(published, [entry["run"] for entry in added])
+    case.assertEqual(["published"] * len(published), [entry["status"] for entry in added])
+    case.assertEqual(int(pending), len(listed["pending"]))
+    return "".join(lines[:-1])
+
+
 class FakeGitHub:
     """Serves the gh api calls the pipeline makes, from the fixture checkout's real commits."""
 
@@ -419,6 +438,11 @@ class PipelineFixture(GitTestCase):
         self.addCleanup(temporary_patch.stop)
         self.configure()
 
+    def leftovers(self) -> list[Path]:
+        """What the temporary directory holds besides the run lists prepare writes, which outlive a failed prepare
+        because the skill still reads them with unfinalized."""
+        return sorted(path for path in self.temporary.iterdir() if not path.name.startswith(rp.RUN_LIST_PREFIX))
+
     def write(self, files: dict[str, str]) -> None:
         for relative, content in files.items():
             target = self.checkout / relative
@@ -577,7 +601,7 @@ class PipelineFixture(GitTestCase):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = rp.main(["--config", str(self.config_path), *arguments], services=self.services)
-        return code, out.getvalue(), err.getvalue()
+        return code, checked_run_list(self, arguments, out.getvalue()), err.getvalue()
 
 
 class PreparePublicationTests(PipelineFixture):
@@ -692,7 +716,7 @@ class PreparePublicationTests(PipelineFixture):
         prepared = {SELECTOR: self.prepare(canary=True)}
         self.assertEqual((1, "FAILED fixture dir disk full\n", ""), self.publish(prepared, SELECTOR, fixture=True))
         self.assertFalse(prepared[SELECTOR]["run"].exists())
-        self.assertEqual([], list(self.temporary.iterdir()))
+        self.assertEqual([], self.leftovers())
         self.assertFalse(self.archive.exists())
 
 
@@ -993,14 +1017,14 @@ class GenericReviewTests(PipelineFixture):
         self.github.pulls[12] = rest_pull(12, self.base, self.base)
         with self.assertRaisesRegex(rp.PipelineError, "changes no files"):
             self.prepare()
-        self.assertEqual([], list(self.temporary.iterdir()))
+        self.assertEqual([], self.leftovers())
 
     def test_a_push_during_prepare_fails_instead_of_mislabeling_the_diff(self) -> None:
         pushed = self.commit({"app/service.py": "def total(items):\n    return 0\n"})
         self.github.after_diff = rest_pull(12, pushed, self.base)
         with self.assertRaisesRegex(rp.PipelineError, r"changed while it was being prepared .*run prepare again"):
             self.prepare()
-        self.assertEqual([], list(self.temporary.iterdir()))
+        self.assertEqual([], self.leftovers())
         self.github.after_diff = None
         ready = self.prepare()
         request = json.loads(Path(ready["request_path"]).read_text(encoding="utf-8"))
@@ -1086,7 +1110,7 @@ class UndecodableDiffTests(PipelineFixture):
         self.assertEqual(
             f"FAILED {SELECTOR} 'utf-8' codec can't decode byte 0xe9 in position 3: invalid continuation byte\n", out
         )
-        self.assertEqual([], list(self.temporary.iterdir()))
+        self.assertEqual([], self.leftovers())
 
 
 class SymbolicLinkTests(PipelineFixture):
@@ -2186,7 +2210,7 @@ class MalformedManifestTests(PipelineFixture):
                     (1, f"FAILED {SELECTOR} {reason}\n", ""),
                     self.run_main("prepare", "--pull", SELECTOR),
                 )
-                self.assertEqual([], list(self.temporary.iterdir()))
+                self.assertEqual([], self.leftovers())
 
     def test_malformed_committed_manifests_print_field_errors_without_leaving_runs(self) -> None:
         self.configure(self.repository_reviewer("review/specialists.json"))
@@ -2197,7 +2221,7 @@ class MalformedManifestTests(PipelineFixture):
                     (1, f"FAILED {SELECTOR} {reason}\n", ""),
                     self.run_main("prepare", "--pull", SELECTOR),
                 )
-                self.assertEqual([], list(self.temporary.iterdir()))
+                self.assertEqual([], self.leftovers())
 
     def commit_manifest(self, manifest: dict[str, Any]) -> None:
         git(self.checkout, "switch", "main")
@@ -2226,7 +2250,7 @@ class MalformedManifestTests(PipelineFixture):
         runs = [line.split(" ", 2) for line in out.splitlines() if line.startswith("RUN ")]
         self.assertEqual([SELECTOR, "example/one#14"], [selector for _key, selector, _path in runs])
         paths = {Path(path) for _key, _selector, path in runs}
-        self.assertEqual(paths, set(self.temporary.iterdir()))
+        self.assertEqual(paths, set(self.leftovers()))
         for path in paths:
             self.assertTrue((path / "run.json").is_file())
 
@@ -2460,7 +2484,7 @@ class RepositoryReviewerTests(PipelineFixture):
                 self.commit_base_bytes({relative: content})
                 code, out, err = self.run_main("prepare", "--pull", SELECTOR)
                 self.assertEqual((1, f"FAILED {SELECTOR} {reason}\n", ""), (code, out, err))
-                self.assertEqual([], list(self.temporary.iterdir()))
+                self.assertEqual([], self.leftovers())
                 self.commit_base_bytes({relative: original + b"\n"})
 
     def test_a_reviewer_file_whose_frontmatter_cannot_be_read_ends_as_failed(self) -> None:
@@ -2487,7 +2511,7 @@ class RepositoryReviewerTests(PipelineFixture):
                 self.commit_base_bytes({relative: content})
                 code, out, err = self.run_main("prepare", "--pull", SELECTOR)
                 self.assertEqual((1, f"FAILED {SELECTOR} {reason}\n", ""), (code, out, err))
-                self.assertEqual([], list(self.temporary.iterdir()))
+                self.assertEqual([], self.leftovers())
                 self.commit_base_bytes({relative: original + b"\n"})
 
     def test_an_entrypoint_that_starts_agents_cannot_be_forced_inline(self) -> None:
@@ -2500,7 +2524,7 @@ class RepositoryReviewerTests(PipelineFixture):
                 self.configure(self.repository_reviewer(manifest))
                 code, out, err = self.run_main("prepare", "--inline", "--pull", SELECTOR)
                 self.assertEqual((1, f"FAILED {SELECTOR} {reason}\n", ""), (code, out, err))
-                self.assertEqual([], list(self.temporary.iterdir()))
+                self.assertEqual([], self.leftovers())
 
 
 def record_shape(record: dict[str, Any]) -> dict[str, Any]:
@@ -2710,7 +2734,7 @@ class InlineReviewTests(PipelineFixture):
                 code, lines = self.prepare_lines("--host", host, *options)
                 if expected.startswith("FAILED "):
                     self.assertEqual((1, [f"FAILED {SELECTOR} {expected.removeprefix('FAILED ')}"]), (code, lines))
-                    self.assertEqual([], list(self.temporary.iterdir()))
+                    self.assertEqual([], self.leftovers())
                     continue
                 self.assertEqual(0, code, lines)
                 run = Path(lines[0].removeprefix(f"RUN {SELECTOR} "))
@@ -3527,7 +3551,7 @@ class ReviewerSourceTests(PipelineFixture):
         self.assertIn("ROUTE python-reviewer files=1", lines)
         self.assertEqual("VALID", lines[-1])
         self.assertIsNone(latest_record(self.archive, REPOSITORY, 12), "validation writes nothing")
-        self.assertEqual([], list(self.temporary.iterdir()), "validation leaves no files behind")
+        self.assertEqual([], self.leftovers(), "validation leaves no files behind")
 
         code, out, _ = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--ref", "main")
         self.assertEqual((0, "VALID"), (code, out.splitlines()[-1]))
@@ -3554,7 +3578,7 @@ class ReviewerSourceTests(PipelineFixture):
         code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
         self.assertEqual(0, code, err)
         self.assertIn("CONDITION window open", out.splitlines())
-        self.assertEqual([], list(self.temporary.iterdir()), "validation leaves no files behind")
+        self.assertEqual([], self.leftovers(), "validation leaves no files behind")
         ready = self.prepare()
         role = next(role for role in ready["roles"] if role["id"] == "python-reviewer")
         given = ready["run"] / "work" / "python-reviewer.condition.txt"
@@ -3700,7 +3724,7 @@ class ReviewerSourceTests(PipelineFixture):
         self.assertEqual("work", work.name)
         self.assertTrue(run.is_relative_to(self.temporary), "the real condition ran only inside the fixture")
         self.assertFalse(run.exists(), "prepare removes its refused run, including the request and plan")
-        self.assertEqual([], list(self.temporary.iterdir()), "no reviewer run is published")
+        self.assertEqual([], self.leftovers(), "no reviewer run is published")
         self.assertIsNone(latest_record(self.archive, REPOSITORY, 12))
         self.assertFalse(self.state_path.exists(), "a refused prepare records no review state")
 
@@ -4420,7 +4444,7 @@ class FixtureCanaryTests(PipelineFixture):
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = rp.main(["--config", str(self.config_path), *arguments], services=self.fixture_services)
         self.assertEqual("", err.getvalue())
-        return code, out.getvalue().splitlines()
+        return code, checked_run_list(self, arguments, out.getvalue()).splitlines()
 
     def canary_record(self, lines: list[str]) -> tuple[Path, dict[str, Any]]:
         """The canary root finalize printed, and the record whose JSON it hashed."""
@@ -5408,7 +5432,7 @@ class BatchTests(PipelineFixture):
                     self.assertEqual(1, len(out.splitlines()), out)
                     self.assertFalse(target.exists())
         self.assertEqual([], self.github.calls)
-        self.assertEqual([], list(self.temporary.iterdir()))
+        self.assertEqual([], self.leftovers())
 
     def test_failed_enumeration_keeps_the_watermark(self) -> None:
         batch_path = self.root / "batch.json"
@@ -5493,20 +5517,28 @@ class BatchTests(PipelineFixture):
         self.assertFalse(Path(first).exists())
         self.assertTrue(Path(second).exists(), "a failed run is kept for inspection")
 
-    def test_prepare_takes_at_most_four_pulls_and_a_canary_takes_only_pulls(self) -> None:
-        for number in (13, 14, 15):
+    def test_prepare_prepares_four_pulls_a_call_and_a_canary_takes_only_pulls(self) -> None:
+        for number in (13, 14, 15, 16):
             self.github.pulls[number] = rest_pull(number, self.head, self.base)
-        four = [argument for number in (12, 13, 14, 15) for argument in ("--pull", f"{REPOSITORY}#{number}")]
-        code, out, err = self.run_main("prepare", *four)
-        self.assertEqual(0, code, err)
-        self.assertEqual(4, sum(line.startswith("RUN ") for line in out.splitlines()))
-        code, out, err = self.run_main("prepare", "--canary", *four)
-        self.assertEqual(0, code, err)
-        self.assertEqual(4, sum(line.startswith("RUN ") for line in out.splitlines()))
+        five = [argument for number in (12, 13, 14, 15, 16) for argument in ("--pull", f"{REPOSITORY}#{number}")]
+        for canary in ([], ["--canary"]):
+            with self.subTest(canary=canary):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                    code = rp.main(
+                        ["--config", str(self.config_path), "prepare", *canary, *five], services=self.services
+                    )
+                self.assertEqual(0, code)
+                lines = out.getvalue().splitlines()
+                self.assertEqual(4, sum(line.startswith("RUN ") for line in lines))
+                runs = lines[-1].removeprefix("RUNS ").removesuffix(" pending=1")
+                self.assertNotEqual(lines[-1], runs)
+                code, rest, _ = self.run_main("prepare", "--runs", runs)
+                published = [line.split(" ", 2)[1] for line in rest.splitlines() if line.startswith("RUN ")]
+                self.assertEqual((0, [f"{REPOSITORY}#16"]), (code, published))
+                self.assertEqual(5, len(rp.load_run_list(Path(runs))["runs"]))
+        four = five[:8]
         for arguments in (
-            [*four, "--pull", f"{REPOSITORY}#16"],
-            [*four, "--re-review", f"{REPOSITORY}#16"],
-            ["--canary", *four, "--pull", f"{REPOSITORY}#16"],
             ["--canary", *four[:2], "--re-review", f"{REPOSITORY}#13"],
             ["--canary", "--re-review", f"{REPOSITORY}#13", "--scope", "full"],
             ["--canary", *four[:4], "--force"],
