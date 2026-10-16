@@ -10,6 +10,8 @@
                   remove detached worktrees reported CONFIRM_DETACHED and delete directories reported ORPHAN, after
                   the user confirmed
     summary       print the repository's summary from the plan file
+    report        print, from a sweep's plans directory, each repository's current summary and the closing count of
+                  the repositories processed and skipped, naming the dirty repositories the user aborted
 
 Every command prints one tab-separated fact per line. Exit status 0 means every repository was cleaned, or every
 confirmed deletion ran or was preserved because what it named changed since the plan: it moved, or its commit left
@@ -17,7 +19,7 @@ the default and remote branches. 1 means something needs the agent: a repository
 FETCH_FAILED) or was skipped with an ERROR line, a deletion or removal Git refused, a confirmed worktree removal that
 did not happen because what the worktree holds kept it, a directory whose deletion failed, that no longer resolves
 inside its area, or in which Git now tracks a file, or a last line FAILED <reason> when the command could not run at
-all. 2 is a usage error.
+all. report exits 0, or 1 with its FAILED line. 2 is a usage error.
 """
 
 from __future__ import annotations
@@ -114,6 +116,15 @@ WORKTREE_ACTIONS = {"remove-worktree": "remove", "remove-worktree-ask": "remove"
 # Control characters and the line separators str.splitlines also breaks on, so every fact stays on one line.
 CONTROL = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]+")
 SUMMARY_WIDTH = 25
+# The file in a sweep's plans directory naming each repository a sweep there reported, its state, and its plan file,
+# so the report covers every repository, those no plan was made for included. No plan file is named like it: plan
+# files end in .json.
+SWEEP_RECORD = "sweep.record"
+RECORD_SCHEMA_VERSION = 1
+# A repository's lines the record keeps when no plan holds its summary: what the report repeats for it.
+RECORDED_KINDS = ("SUMMARY", "ERROR", "CHECKOUT", "FF_DEFAULT")
+SWEEP_STATES = ("cleaned", "quiet", "dirty", "fetch-failed", "error", "git-failed")
+FAILED_STATES = ("error", "git-failed")
 # Repositories a sweep cleans at once: fetches and gh queries are network-bound, and four stays clear of GitHub's
 # secondary rate limits.
 SWEEP_WORKERS = 4
@@ -733,6 +744,8 @@ def default_status(services: Services, root: str, default: str) -> str:
 
 
 def save_plan(path: str | Path, plan: dict[str, Any]) -> None:
+    """Write the plan, or another JSON document such as a sweep record, in one step: a reader sees the old or the
+    new one, never part of either."""
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(dir=target.parent, prefix=".repo-cleanup-", suffix=".tmp")
@@ -1714,6 +1727,7 @@ def sweep(
     """
     repositories = discover(target, repos_root, services)
     directory = plans or Path(tempfile.mkdtemp(prefix="repo-cleanup-plans-"))
+    entries = read_record(directory) if (directory / SWEEP_RECORD).exists() else []
     emit("PLANS", directory.as_posix())
     with ThreadPoolExecutor(max_workers=max(1, min(SWEEP_WORKERS, len(repositories)))) as pool:
         results = list(
@@ -1733,12 +1747,121 @@ def sweep(
     emit(
         "SWEPT",
         len(results),
-        *(
-            f"{state}={states.get(state, 0)}"
-            for state in ("cleaned", "quiet", "dirty", "fetch-failed", "error", "git-failed")
-        ),
+        *(f"{state}={states.get(state, 0)}" for state in SWEEP_STATES),
     )
+    write_record(directory, entries, results)
     return 0 if set(states) <= {"cleaned", "quiet"} and not any(result["refused"] for result in results) else 1
+
+
+# report ---------------------------------------------------------------------------------------------------------
+
+
+def recorded_lines(result: dict[str, Any]) -> list[str]:
+    """The lines the report repeats for a repository no plan holds the summary of."""
+    if result["plan"]:
+        return []
+    return [line for line in result["lines"] if line.split("\t")[0] in RECORDED_KINDS and passed_on(line, result)]
+
+
+def write_record(directory: Path, entries: list[dict[str, Any]], results: list[dict[str, Any]]) -> None:
+    """Record each swept repository's state and plan in the plans directory, replacing what an earlier sweep there
+    recorded for it, as sweeping a dirty repository again does, and keeping every other repository in its place."""
+    for result in results:
+        entry = {
+            "root": result["root"],
+            "state": result["state"],
+            "plan": result["plan"],
+            "lines": recorded_lines(result),
+        }
+        index = next((i for i, known in enumerate(entries) if same_path(known["root"], entry["root"])), None)
+        if index is None:
+            entries.append(entry)
+        else:
+            entries[index] = entry
+    save_plan(directory / SWEEP_RECORD, {"schema_version": RECORD_SCHEMA_VERSION, "repositories": entries})
+
+
+def is_entry(entry: Any) -> bool:
+    return (
+        isinstance(entry, dict)
+        and isinstance(entry.get("root"), str)
+        and entry.get("state") in SWEEP_STATES
+        and (entry.get("plan") is None or isinstance(entry.get("plan"), str))
+        and isinstance(entry.get("lines"), list)
+        and all(isinstance(line, str) for line in entry["lines"])
+    )
+
+
+def read_record(directory: Path) -> list[dict[str, Any]]:
+    path = directory / SWEEP_RECORD
+    if not path.is_file():
+        raise CleanupError(f"{directory} holds no sweep record; name the directory a sweep printed as PLANS")
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise CleanupError(f"cannot read the sweep record {path}: {exc}") from exc
+    if (
+        not isinstance(record, dict)
+        or type(record.get("schema_version")) is not int
+        or record["schema_version"] != RECORD_SCHEMA_VERSION
+        or not isinstance(record.get("repositories"), list)
+        or not all(is_entry(entry) for entry in record["repositories"])
+    ):
+        raise CleanupError(f"{path} is not a repo-cleanup sweep record")
+    return record["repositories"]
+
+
+def aborted_entries(entries: list[dict[str, Any]], aborted: list[str]) -> list[dict[str, Any]]:
+    """The recorded repositories the user aborted; refused unless each named one was left dirty and every other
+    dirty one was swept again."""
+    for name in aborted:
+        if not any(same_path(entry["root"], name) and entry["state"] == "dirty" for entry in entries):
+            raise CleanupError(
+                f"{name} was not left dirty by a sweep of this directory; name only a repository you aborted"
+            )
+    dropped = [entry for entry in entries if any(same_path(entry["root"], name) for name in aborted)]
+    waiting = [entry["root"] for entry in entries if entry["state"] == "dirty" and entry not in dropped]
+    if waiting:
+        raise CleanupError(
+            f"still dirty: {', '.join(waiting)}; sweep each again with --skip-checkout and the same --plans, or name "
+            "it with --aborted"
+        )
+    return dropped
+
+
+def report(directory: Path, aborted: list[str]) -> int:
+    """Print each repository's current summary, then the closing count, from what the sweeps there recorded.
+
+    A plan's summary is its latest: every command saves it, and one that completes clears an earlier stop, which then
+    no longer counts as an error. Quiet repositories share one line.
+    """
+    entries = read_record(directory)
+    dropped = aborted_entries(entries, aborted)
+    plans = {entry["root"]: load_plan(entry["plan"]) for entry in entries if entry["plan"]}
+    quiet: list[str] = []
+    failed = 0
+    for entry in entries:
+        plan = plans.get(entry["root"])
+        if entry["state"] == "quiet":
+            quiet.append(entry["root"])
+            continue
+        if entry["state"] in FAILED_STATES and (plan is None or "stopped" in plan):
+            failed += 1
+        emit("REPO", entry["root"], "aborted" if entry in dropped else entry["state"])
+        if plan is not None:
+            print_summary(plan)
+        for line in entry["lines"]:
+            print(line)
+    if quiet:
+        emit("QUIET", *quiet)
+    fetch_failed = sum(entry["state"] == "fetch-failed" for entry in entries)
+    noun = "repository" if len(entries) == 1 else "repositories"
+    emit(
+        "PROCESSED",
+        f"Processed {len(entries)} {noun}; skipped: {fetch_failed} fetch failed, {len(dropped)} aborted, {failed} "
+        "with an error.",
+    )
+    return 0
 
 
 # CLI ------------------------------------------------------------------------------------------------------------
@@ -1757,6 +1880,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sweep_parser.add_argument("target", nargs="?")
     commands.add_parser("summary").add_argument("--plan", required=True)
+    report_parser = commands.add_parser("report")
+    report_parser.add_argument("--plans", required=True, help="the directory a sweep printed as PLANS")
+    report_parser.add_argument(
+        "--aborted", action="append", default=[], help="a dirty repository the user aborted, by the path REPO gave"
+    )
     for name in ("delete-local", "force-delete"):
         confirm_parser = commands.add_parser(name)
         confirm_parser.add_argument("--plan", required=True)
@@ -1774,6 +1902,8 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
         if options.command == "sweep":
             plans = plans_location(options.plans)
             return sweep(options.target, options.repos_root, plans, services, options.skip_checkout)
+        if options.command == "report":
+            return report(Path(options.plans), options.aborted)
         if options.command == "summary":
             print_summary(load_plan(options.plan))
         elif options.command == "remove-directory":
