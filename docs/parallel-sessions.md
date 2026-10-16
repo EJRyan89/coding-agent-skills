@@ -40,12 +40,14 @@ The kind is a pull request title type, which the title check then holds the bran
 
 | Column | Meaning |
 |---|---|
-| state | `hub`, `in progress`, `no commits`, or `missing` |
+| state | `hub`, `in progress`, `no commits`, `missing`, or `unreadable` when git cannot read the checkout |
 | ahead/behind | Relative to `main`. |
 | dirty | Number of paths with uncommitted changes, untracked files included and a rename counted once. |
 
-The hub row reads `off main` or `dirty` when the hub has drifted. Merged state is not reported: squash merges
-leave every branch looking unmerged, so a branch's pull request is the only reliable record.
+The survey reads each checkout as `repo-cleanup` does, through skill-core's `git_worktrees`, and never writes a
+checkout's index, so it takes no lock a session committing there could meet. The hub row reads `off main` or `dirty`
+when the hub has drifted. Merged state is not reported: squash merges leave every branch looking unmerged, so a
+branch's pull request is the only reliable record.
 
 ## Retiring a worktree
 

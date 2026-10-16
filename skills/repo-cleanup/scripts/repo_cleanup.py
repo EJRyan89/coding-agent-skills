@@ -45,10 +45,12 @@ from typing import Any, TypeVar
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import git_client
+import git_worktrees
 import pr_status
 from console import run_main
 from flat_text import single_line
 from git_client import GitClient, GitResult
+from git_worktrees import Worktree
 from github_client import GitHubClient, GitHubError, replace_undecodable, subprocess_runner
 from github_client import Runner as GhRunner
 from github_remote import github_repository
@@ -102,10 +104,8 @@ REGULAR_MODES = ("100644", "100755")
 HASHED_PER_CALL = 100
 # How many paths a report line names before it counts the rest, so a worktree full of them does not flood the line.
 NAMED_PATHS = 5
-# The status listing every check of a worktree reads. status.showUntrackedFiles=no would hide untracked files from it,
-# and fail it with --ignored, so the untracked-files mode is named rather than taken from the user's configuration.
-STATUS_ARGUMENTS = ("status", "--porcelain", "-z", "--untracked-files=normal")
-# git worktree remove checks for changes with a status of its own, which reads the same setting.
+# git worktree remove checks for changes with a status of its own, which reads status.showUntrackedFiles, so it is
+# named as git_worktrees.STATUS_ARGUMENTS names the untracked-files mode of every reading of a worktree's changes.
 SHOW_UNTRACKED = ("-c", "status.showUntrackedFiles=normal")
 KEPT_STATES = {"OPEN": "pr-open", "UNMATCHED": "pr-unmatched", "UNKNOWN": "pr-unknown"}
 WORKTREE_AREA = "Worktrees"
@@ -235,27 +235,22 @@ def ahead_behind(services: Services, root: str | Path, local: str, upstream: str
     return int(ahead), int(behind)
 
 
-@dataclass
-class Worktree:
-    path: str
-    branch: str | None
-    main: bool
-    head: str = ""
+def read_worktree(
+    services: Services, directory: str | Path, subcommand: str, reader: Callable[..., T], *options: str
+) -> T:
+    """What skill-core's `reader` reads of the checkout at `directory` through `git <subcommand>`, a git that could not
+    run raised as GitUnavailable and one that failed as CleanupError, as every other git call here raises them."""
+    try:
+        return reader(services.git, directory, *options)
+    except git_client.GitError as exc:
+        if exc.returncode is None:
+            raise GitUnavailable(f"could not run git: {exc}") from exc
+        raise CleanupError(f"git {subcommand} failed in {directory}: {one_line(exc).strip()}") from exc
 
 
 def list_worktrees(services: Services, root: str | Path) -> list[Worktree]:
-    """Every worktree from Git's NUL-separated porcelain listing; the first is the main worktree."""
-    records: list[dict[str, Any]] = []
-    for field in git_output(services, root, "worktree", "list", "--porcelain", "-z").split("\0"):
-        if field.startswith("worktree "):
-            records.append({"path": field[len("worktree ") :], "branch": None, "head": ""})
-        elif records and field.startswith("branch refs/heads/"):
-            records[-1]["branch"] = field[len("branch refs/heads/") :]
-        elif records and field.startswith("HEAD "):
-            records[-1]["head"] = field[len("HEAD ") :]
-    return [
-        Worktree(record["path"], record["branch"], index == 0, record["head"]) for index, record in enumerate(records)
-    ]
+    """Every worktree of the repository; the first is the main worktree."""
+    return read_worktree(services, root, "worktree", git_worktrees.list_worktrees)
 
 
 def checkouts(services: Services, root: str | Path) -> dict[str, Worktree]:
@@ -267,22 +262,9 @@ def same_path(first: str, second: str) -> bool:
     return os.path.normcase(os.path.abspath(first)) == os.path.normcase(os.path.abspath(second))  # noqa: PTH100 - lexical
 
 
-def status_codes(services: Services, directory: str | Path, *options: str) -> list[str]:
-    """The two-letter code of each path `git status --porcelain -z` lists, a rename or copy counted once."""
-    codes: list[str] = []
-    fields = iter(git_output(services, directory, *STATUS_ARGUMENTS, *options).split("\0"))
-    for entry in fields:
-        if not entry:
-            continue
-        codes.append(entry[:2])
-        if "R" in entry[:2] or "C" in entry[:2]:
-            next(fields, None)  # a rename or copy is followed by its original path
-    return codes
-
-
 def dirty_count(services: Services, directory: str | Path) -> int:
-    """Number of changed or untracked paths, from `git status --porcelain -z`."""
-    return len(status_codes(services, directory))
+    """Number of changed or untracked paths, a rename or copy counted once."""
+    return read_worktree(services, directory, "status", git_worktrees.changed_paths)
 
 
 def uncommitted(services: Services, path: str) -> str:
@@ -919,8 +901,8 @@ def ignored_entries(services: Services, directory: str | Path) -> list[str]:
     The matching mode lists each ignored path itself; the default mode folds a directory whose every file is ignored
     into one entry for the directory, which would hide a cache under an untracked package.
     """
-    listing = git_output(services, directory, *STATUS_ARGUMENTS, "--ignored=matching")
-    return [entry[3:] for entry in listing.split("\0") if entry.startswith("!! ")]
+    listed = read_worktree(services, directory, "status", git_worktrees.changes, "--ignored=matching")
+    return [change.path for change in listed if change.code == "!!"]
 
 
 def is_regenerable(path: str, worktree: str) -> bool:
