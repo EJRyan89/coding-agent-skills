@@ -19,6 +19,7 @@ from duplication import SKILL_CORE, SKILL_CORE_SCRIPTS
 from markdown_sections import SHELL_FENCES
 from toolchain import powershell_json
 from validation_support import (
+    COMPUTED_NAME,
     MODULE_SCOPE,
     REPOSITORY_ROOT,
     CallableResolver,
@@ -30,6 +31,7 @@ from validation_support import (
     is_test_script,
     module_allowance,
     module_imports,
+    module_lookup,
     module_statements,
     parse_python,
     parse_source,
@@ -43,6 +45,9 @@ from validation_support import (
 
 from deployer import platform_support, render
 
+PLATFORM_ALLOWED = {
+    "pathlib.PureWindowsPath": "reads a command's program after either path separator on every platform"
+}
 SHELL_OPERATORS = ("&&", "||", ";;", "|&", "()", "(", ")", ";", "&", "|", "<", ">", "\n")
 COMMAND_SEPARATORS = {";", "&", "&&", "|", "||", "|&", "(", "\n", "{"}
 LEADING_KEYWORDS = {"if", "then", "else", "elif", "while", "until", "do", "time", "!", "}", ")", "fi", "done"}
@@ -260,7 +265,9 @@ def _fences(markdown: str, *contexts: str) -> list[str]:
 
 # The calls that start a command, as the module's imports resolve them, and the position and keyword of the argument
 # that names it: a list or tuple whose first item is the program, or a string whose first word is. The exec and spawn
-# calls of os take the program itself, by path or by name, ahead of its arguments.
+# calls of os take the program itself, by path or by name, ahead of its arguments. An event loop's runner methods are
+# named under EVENT_LOOP and count on any receiver, since the reader cannot tell which object is an event loop.
+EVENT_LOOP = "<event loop>"
 COMMAND_RUNNERS: dict[str, tuple[int, str]] = {
     **{f"subprocess.{name}": (0, "args") for name in ("run", "Popen", "call", "check_call", "check_output")},
     "subprocess.getoutput": (0, "cmd"),
@@ -276,12 +283,18 @@ COMMAND_RUNNERS: dict[str, tuple[int, str]] = {
     },
     "os.posix_spawn": (0, "path"),
     "os.posix_spawnp": (0, "path"),
-    "asyncio.create_subprocess_exec": (0, "program"),
-    "asyncio.create_subprocess_shell": (0, "cmd"),
+    "os.startfile": (0, "path"),
+    "pty.spawn": (0, "argv"),
+    **{f"{module}.create_subprocess_exec": (0, "program") for module in ("asyncio", "asyncio.subprocess")},
+    **{f"{module}.create_subprocess_shell": (0, "cmd") for module in ("asyncio", "asyncio.subprocess")},
+    f"{EVENT_LOOP}.subprocess_exec": (1, "program"),
+    f"{EVENT_LOOP}.subprocess_shell": (1, "cmd"),
     # skill-core's runner, which bounds a command with a time limit and gives it no stdin.
     "bounded_process.run_bounded": (0, "command"),
     "bounded_process.streaming": (0, "command"),
 }
+# The name each runner has in its module, which a runner taken from a module looked up by a computed name may have.
+RUNNER_ATTRIBUTES = frozenset(runner.rpartition(".")[2] for runner in COMMAND_RUNNERS)
 # The runners that run their command through a shell, whose every program the Bash reader reads; a runner that hands its
 # keywords to subprocess.Popen does too when given shell= anything but False.
 SHELL_RUNNERS = frozenset(
@@ -291,14 +304,21 @@ SHELL_RUNNERS = frozenset(
         "subprocess.getoutput",
         "subprocess.getstatusoutput",
         "asyncio.create_subprocess_shell",
+        "asyncio.subprocess.create_subprocess_shell",
+        f"{EVENT_LOOP}.subprocess_shell",
     }
 )
 # The runners that hand their keywords to subprocess.Popen, whose executable= replaces the program the command names.
 EXECUTABLE_RUNNERS = frozenset(
     {
         *(f"subprocess.{name}" for name in ("run", "Popen", "call", "check_call", "check_output")),
-        "asyncio.create_subprocess_exec",
-        "asyncio.create_subprocess_shell",
+        *(
+            f"{module}.create_subprocess_{kind}"
+            for module in ("asyncio", "asyncio.subprocess")
+            for kind in ("exec", "shell")
+        ),
+        f"{EVENT_LOOP}.subprocess_exec",
+        f"{EVENT_LOOP}.subprocess_shell",
     }
 )
 # skill-core's clients: each runs its one command for every call a script makes through it.
@@ -424,16 +444,28 @@ def _read_literals(sources: list[Source]) -> list[Source]:
     return [_read_literal(source) if isinstance(source, ast.Constant) else source for source in sources]
 
 
+def _reached_name(node: ast.expr, resolver: CallableResolver) -> str:
+    """The dotted name an expression stands for through the module's imports, the names it binds to one, and a module
+    it reaches by its name, as module_lookup reads it: subprocess.run for importlib.import_module("subprocess").run,
+    and ?.run, COMPUTED_NAME standing for the module, for importlib.import_module(name).run; "" for none."""
+    if isinstance(node, ast.Attribute):
+        base = _reached_name(node.value, resolver)
+        return f"{base}.{node.attr}" if base else ""
+    return module_lookup(node, resolver) or (resolver.name(node) if isinstance(node, ast.Name) else "")
+
+
 def _type_uses(tree: ast.Module, resolver: CallableResolver) -> set[int]:
     """The nodes that use a class as a type, which starts nothing: an annotation, a subscripted generic such as
-    subprocess.Popen[bytes], and the class isinstance or issubclass checks against."""
+    subprocess.Popen[bytes], and the class isinstance or issubclass checks against. A subscripted generic is a name
+    or an attribute; a collection indexed where it is written, as {"run": subprocess.run}["run"], hands on each runner
+    it holds."""
     roots: list[ast.expr] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.arg | ast.AnnAssign) and node.annotation is not None:
             roots.append(node.annotation)
         elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.returns is not None:
             roots.append(node.returns)
-        elif isinstance(node, ast.Subscript):
+        elif isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name | ast.Attribute):
             roots.append(node.value)
         elif isinstance(node, ast.Call) and resolver.name(node.func) in {"isinstance", "issubclass"}:
             roots += node.args[1:2]
@@ -793,11 +825,22 @@ class CommandReader:
             found += [argument] if isinstance(argument, Unreadable) else self.program_literals(argument, inner)
         return found
 
+    def _runner(self, function: ast.expr) -> str:
+        """The COMMAND_RUNNERS entry a callable expression names, or "" for none: through the module's imports, the
+        names it binds to one, and a module it reaches by its name, as importlib.import_module("subprocess").run names
+        subprocess.run, or an event loop's runner method called on any receiver."""
+        original = self.resolver.original(function)
+        for name in (self.resolver.name(function), _reached_name(original, self.resolver)):
+            if name in COMMAND_RUNNERS:
+                return name
+        method = f"{EVENT_LOOP}.{original.attr}" if isinstance(original, ast.Attribute) else ""
+        return method if method in COMMAND_RUNNERS else ""
+
     def _command_arguments(self, call: ast.Call) -> list[ast.expr | Unreadable]:
         """The argument of a COMMAND_RUNNERS call that names the program it starts, its executable= when it gives one,
         since that replaces the program and leaves the command's first item only the name the program is told, and
         nothing for another call."""
-        name = self.resolver.name(call.func)
+        name = self._runner(call.func)
         runner = COMMAND_RUNNERS.get(name)
         if runner is None:
             return []
@@ -821,7 +864,7 @@ class CommandReader:
     def _names_a_runner(self, node: ast.expr, seen: frozenset[int] = frozenset()) -> bool:
         """Whether an expression names a COMMAND_RUNNERS call, through the module's imports or any value the module
         binds the name to, even where a name bound more than once does not resolve."""
-        if self.resolver.name(node) in COMMAND_RUNNERS:
+        if self._runner(node):
             return True
         scope = self.resolver.scopes.get(id(node))
         if not isinstance(node, ast.Name) or scope is None or id(node) in seen:
@@ -835,23 +878,37 @@ class CommandReader:
 
     def _runners_handed_on(self) -> list[Unreadable]:
         """Each runner the module uses other than by calling it or binding a name to it, whose commands the reader
-        cannot follow: one handed to functools.partial, map, a Thread's target, or a collection, or taken by getattr."""
+        cannot follow: one handed to functools.partial, map, a Thread's target, or a collection, or taken by getattr,
+        and each runner's name taken from a module the module looks up by a computed name, which may be the runner's."""
         found: list[Unreadable] = []
         types = _type_uses(self.tree, self.resolver)
         for node in ast.walk(self.tree):
             if isinstance(node, ast.Call) and self.resolver.name(node.func) == "getattr" and len(node.args) > 1:
-                module = self.resolver.name(node.args[0])
+                module = _reached_name(node.args[0], self.resolver)
                 attribute = node.args[1]
                 named = (
                     isinstance(attribute, ast.Constant)
                     and isinstance(attribute.value, str)
-                    and f"{module}.{attribute.value}" in COMMAND_RUNNERS
+                    and (
+                        f"{module}.{attribute.value}" in COMMAND_RUNNERS
+                        or (module == COMPUTED_NAME and attribute.value in RUNNER_ATTRIBUTES)
+                    )
                 )
                 dynamic = not isinstance(attribute, ast.Constant) and any(
-                    runner.startswith(f"{module}.") for runner in COMMAND_RUNNERS
+                    module == COMPUTED_NAME or runner.startswith(f"{module}.") for runner in COMMAND_RUNNERS
                 )
                 if module and (named or dynamic):
                     found.append(Unreadable(node, f"the program `{ast.unparse(node)}` runs, which getattr takes"))
+            elif (
+                isinstance(node, ast.Attribute)
+                and node.attr in RUNNER_ATTRIBUTES
+                and _reached_name(node.value, self.resolver) == COMPUTED_NAME
+            ):
+                found.append(
+                    Unreadable(
+                        node, f"the program `{ast.unparse(node)}` runs, from a module looked up by a computed name"
+                    )
+                )
             elif (
                 isinstance(node, (ast.Name, ast.Attribute))
                 and isinstance(node.ctx, ast.Load)
@@ -878,7 +935,7 @@ class CommandReader:
     def _runs_a_shell(self, call: ast.Call) -> bool:
         """Whether a runner call runs its command through a shell: one of SHELL_RUNNERS, or shell= anything but
         False given to a runner that hands it to subprocess.Popen."""
-        name = self.resolver.name(call.func)
+        name = self._runner(call.func)
         shell = next((item.value for item in call.keywords if item.arg == "shell"), None)
         given = shell is not None and not (isinstance(shell, ast.Constant) and not shell.value)
         return name in SHELL_RUNNERS or (name in EXECUTABLE_RUNNERS and given)
@@ -918,8 +975,7 @@ class CommandReader:
         runs code from the target repository; that is the script's RUNS_REPOSITORY_CODE declaration.
         """
         return bool(self._runners_handed_on()) or any(
-            self.resolver.name(node.func) in COMMAND_RUNNERS or self.resolver.name(node.func) in self.clients
-            for node in self.calls
+            self._runner(node.func) or self.resolver.name(node.func) in self.clients for node in self.calls
         )
 
     def scope(self, source: Unreadable) -> str:

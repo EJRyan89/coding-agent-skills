@@ -209,6 +209,10 @@ from deployer.source import SKILL_NAME_PATTERN
 from tools import runtime_canary
 from tools.runtime_canary import Completed, Runner
 
+PLATFORM_ALLOWED = {
+    "pathlib.PureWindowsPath": "refuses a path a scenario names that Windows reads as absolute, a drive's included, "
+    "on every platform, since a scenario runs on each"
+}
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SCENARIO_ROOT = REPOSITORY_ROOT / "tests" / "fixtures" / "skill-evals"
 RESULTS = REPOSITORY_ROOT / "docs" / "skill-evaluations.md"
