@@ -551,8 +551,75 @@ class DeployableReportTests(GitTestCase):
                     "--source",
                     str(self.paths.source_dir),
                 )
-                self.assertEqual(1, code)
+                # An input the check cannot read, apart from the 1 of a check that found something left.
+                self.assertEqual(2, code)
                 self.assertIn("saved before the uninstall", output)
+                self.assertIn(str(saved), output)
+
+    def test_owned_that_cannot_save_its_paths_exits_2_naming_the_file(self) -> None:
+        target = self.results_file.parent / "owned folder"
+        target.mkdir()
+        code, output = self.run_main(
+            "owned", "--owned", str(target), "--home", str(self.home), "--source", str(self.paths.source_dir)
+        )
+        self.assertEqual(2, code, output)
+        self.assertIn(f"ERROR: Cannot save the paths the deployment owns: {target}: ", output)
+        self.assertNotIn("FAILED", output)
+
+    # -- an unreadable results file ------------------------------------------------------------------------
+
+    def results_command(self, command: str) -> tuple[int, str]:
+        """Run a command that reads the results file, with what else it needs."""
+        arguments = [command, "--results", str(self.results_file), "--home", str(self.home)]
+        arguments += ["--source", str(self.paths.source_dir)]
+        if command in ("verify", "layout"):
+            arguments += ["--label", "first deploy"]
+        if command == "verify":
+            log = self.results_file.parent / "verify.log"
+            log.write_text("", encoding="utf-8")
+            arguments += ["--deploy-verify-exit", "0", "--deploy-verify-log", str(log)]
+        elif command == "leftovers":
+            arguments += ["--owned", str(self.saved_paths)]
+        elif command == "summary":
+            arguments += ["--no-probe", "--summary", str(self.summary_file)]
+        return self.run_main(*arguments)
+
+    def test_a_results_file_that_is_not_a_json_array_exits_2_naming_it_and_is_kept(self) -> None:
+        self.use_fake_runtimes()
+        self.saved_paths = self.record_owned()
+        for content in (b"{not json", b"", b"\xff\xfe", b"{}"):
+            for command in ("verify", "layout", "leftovers", "summary"):
+                with self.subTest(content=content, command=command):
+                    self.results_file.write_bytes(content)
+                    code, output = self.results_command(command)
+                    self.assertEqual(2, code, output)
+                    self.assertIn(f"{self.results_file}", output)
+                    self.assertIn("ERROR: ", output)
+                    # The tool's own error, never run_main's line for an exception that escaped it.
+                    self.assertNotRegex(output, r"FAILED \w+(Error|Exception)")
+                    self.assertEqual(content, self.results_file.read_bytes())
+                    self.assertFalse(self.summary_file.exists())
+
+    def test_a_results_file_that_cannot_be_read_or_written_exits_2_naming_it(self) -> None:
+        self.use_fake_runtimes()
+        self.saved_paths = self.record_owned()
+        self.results_file.mkdir()
+        for command in ("verify", "layout", "leftovers", "summary"):
+            with self.subTest(command=command):
+                code, output = self.results_command(command)
+                self.assertEqual(2, code, output)
+                self.assertIn(f"ERROR: Cannot read the results file: {self.results_file}: ", output)
+        self.results_file.rmdir()
+        with mock.patch.object(Path, "write_text", side_effect=PermissionError("denied")):
+            code, output = self.results_command("layout")
+        self.assertEqual(2, code, output)
+        self.assertIn(f"ERROR: Cannot write the results file: {self.results_file}: denied", output)
+
+    def test_an_absent_results_file_starts_an_empty_record(self) -> None:
+        self.assertFalse(self.results_file.exists())
+        code, output = self.run_main("summary", "--results", str(self.results_file), "--no-probe")
+        self.assertEqual(0, code, output)
+        self.assertIn("Deployability", output)
 
     # -- summary --------------------------------------------------------------------------------------------
 
