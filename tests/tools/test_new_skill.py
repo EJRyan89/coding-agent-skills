@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
@@ -19,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "validation"))
 
 import frontmatter as fm
 from git_test_base import GitTestCase
+from skill_grants import skill_grant_problems
 from skill_layout import script_dependency_problems, sibling_path_problems
 
 from tools import new_skill, skill_reference, skill_shims
@@ -34,6 +36,20 @@ REFERENCE = (
 )
 FULL = {"claude-code": "full", "codex": "full", "copilot-cli": "full"}
 DESCRIPTION = 'Report "widgets" in a repository with spaces — use it when asked about them.'
+# The grants a fresh scaffold of widget-report writes, which no step uses yet and validation's grant check refuses.
+OWN_SCRIPT = '{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/widget_report.py" *'
+GRANTS_REMAINING = [
+    *(
+        f"skills/widget-report/SKILL.md grants {tool}, which no step uses yet; use it in a step or remove it from "
+        "allowed-tools"
+        for tool in ("Bash", "PowerShell", "Read")
+    ),
+    *(
+        f"skills/widget-report/SKILL.md grants {tool}({OWN_SCRIPT}), which matches no command in its fences or code "
+        "spans yet; show the command it covers or remove the grant"
+        for tool in ("Bash", "PowerShell")
+    ),
+]
 
 
 class FixtureRepositoryTestCase(GitTestCase):
@@ -110,9 +126,34 @@ class NewSkillTestCase(FixtureRepositoryTestCase):
             [
                 "docs/skills.md: section `widget-report` has no hand-written explanation after its generated block",
                 "README.md: 'Included skills' has no row for `widget-report`",
+                *GRANTS_REMAINING,
             ],
             remaining,
         )
+
+    def test_remaining_names_every_grant_and_tool_validation_still_refuses(self) -> None:
+        remaining = new_skill.scaffold(self.root, "widget-report", DESCRIPTION, tools=["gh"])
+        skill_md = self.root / "skills" / "widget-report" / "SKILL.md"
+        refused = skill_grant_problems(self.root, [skill_md])
+        self.assertEqual(5, len(refused), refused)
+        # Each grant validation refuses is named by a REMAINING line, by the grant the check names.
+        for problem in refused:
+            granted = problem.split(" grants ", 1)[1].split(", which ", 1)[0]
+            with self.subTest(grant=granted):
+                self.assertTrue([line for line in remaining if f" grants {granted}, which " in line], remaining)
+        self.assertIn(
+            "deploy-meta/widget-report.json declares the tool gh, which nothing the skill runs yet runs; run it from "
+            "a script or a step, or remove it from tools",
+            remaining,
+        )
+        # Once a step runs the script through both grants and reads a file, no grant remains.
+        skill_md.write_text(
+            skill_md.read_text(encoding="utf-8")
+            + '\nRead the input, then run `{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/widget_report.py" --all`.\n',
+            encoding="utf-8",
+        )
+        self.assertEqual([], new_skill.grant_remaining(self.root, Path("skills/widget-report/SKILL.md")))
+        self.assertEqual([], skill_grant_problems(self.root, [skill_md]))
 
     def test_finishing_the_remaining_items_leaves_the_reference_current(self) -> None:
         new_skill.scaffold(self.root, "widget-report", DESCRIPTION)
@@ -244,6 +285,55 @@ class NewSkillTestCase(FixtureRepositoryTestCase):
             new_skill.scaffold(self.root, "fresh", "Fresh. Use it when testing.")
         self.assertFalse((self.root / "skills" / "fresh").exists())
 
+    def test_a_reference_without_a_generated_block_is_refused_before_anything_is_written(self) -> None:
+        reference = self.root / "docs" / "skills.md"
+        for block in ("summary", "runtime-support"):
+            with self.subTest(block=block):
+                reference.write_text(
+                    REFERENCE.replace(f"<!-- generated:{block} -->\n<!-- /generated:{block} -->\n", ""),
+                    encoding="utf-8",
+                )
+                before = self.snapshot()
+                with self.assertRaisesRegex(skill_reference.ReferenceError, f"no {block} block"):
+                    new_skill.scaffold(self.root, "fresh", "Fresh. Use it when testing.")
+                self.assertEqual(before, self.snapshot())
+        reference.write_bytes(b"\xff\xfe not UTF-8\n")
+        before = self.snapshot()
+        with self.assertRaisesRegex(new_skill.ScaffoldError, "not UTF-8"):
+            new_skill.scaffold(self.root, "fresh", "Fresh. Use it when testing.")
+        self.assertEqual(before, self.snapshot())
+
+    def test_a_write_that_fails_partway_removes_what_it_wrote(self) -> None:
+        before = self.snapshot()
+        with (
+            mock.patch.object(skill_reference, "write", side_effect=OSError("disk full")),
+            self.assertRaisesRegex(OSError, "disk full"),
+        ):
+            new_skill.scaffold(self.root, "fresh", "Fresh. Use it when testing.")
+        self.assertEqual(before, self.snapshot())
+        self.assertFalse((self.root / "skills" / "fresh").exists())
+
+    def test_the_description_limit_and_repository_skill_names_are_refused(self) -> None:
+        (self.root / ".claude" / "skills" / "implement-change").mkdir()
+        before = self.snapshot()
+        # The limit pinned as a literal: the Agent Skills limit, which Copilot CLI enforces when it loads a skill.
+        clause = " Use it when testing."
+        longest = "x" * (1024 - len(clause)) + clause
+        for name, description, message in (
+            ("fresh", longest + "x", "--description is 1025 characters; runtime adapters allow at most 1024"),
+            ("implement-change", "Fresh. Use it when testing.", "already a repository skill under .claude/skills"),
+        ):
+            for scaffold in (new_skill.scaffold, new_skill.scaffold_repository):
+                if scaffold is new_skill.scaffold_repository and name == "implement-change":
+                    continue
+                with self.subTest(name=name, scaffold=scaffold.__name__):
+                    with self.assertRaisesRegex(new_skill.ScaffoldError, message):
+                        scaffold(self.root, name, description)
+                    self.assertEqual(before, self.snapshot())
+        self.assertEqual(1024, len(longest))
+        new_skill.scaffold(self.root, "fresh", longest)
+        new_skill.scaffold_repository(self.root, "fresher", longest)
+
     def test_the_command_reports_what_it_wrote_and_what_remains(self) -> None:
         def run(*arguments: str) -> tuple[int, str, str]:
             stdout, stderr = io.StringIO(), io.StringIO()
@@ -261,6 +351,9 @@ class NewSkillTestCase(FixtureRepositoryTestCase):
                 "REMAINING docs/skills.md: section `widget-report` has "
                 "no hand-written explanation after its generated block",
                 "REMAINING README.md: 'Included skills' has no row for `widget-report`",
+                *(f"REMAINING {line}" for line in GRANTS_REMAINING),
+                "REMAINING deploy-meta/widget-report.json declares the tool gh, which nothing the skill runs yet "
+                "runs; run it from a script or a step, or remove it from tools",
             ],
             stdout.splitlines(),
         )
@@ -400,6 +493,11 @@ class NewRepositorySkillTestCase(FixtureRepositoryTestCase):
         for path in (".claude/skills/widget-check/SKILL.md", ".agents/skills/widget-check/SKILL.md"):
             with self.subTest(path=path):
                 self.assertIn(expected, (self.root / path).read_text(encoding="utf-8"))
+        # Codex reads a user-only skill's policy from beside the shim's SKILL.md, not from its frontmatter.
+        self.assertEqual(
+            b"policy:\n  allow_implicit_invocation: false\n",
+            (self.root / ".agents/skills/widget-check/agents/openai.yaml").read_bytes(),
+        )
 
     def test_refusals_change_nothing(self) -> None:
         (self.root / ".claude/skills/taken").mkdir(parents=True)
@@ -437,6 +535,34 @@ class NewRepositorySkillTestCase(FixtureRepositoryTestCase):
         self.assertEqual(
             (0, "CREATED .claude/skills/widget-check/SKILL.md\nCREATED .agents/skills/widget-check/SKILL.md\n", ""),
             self.run_main("widget-check", "--description", DESCRIPTION),
+        )
+
+    def test_the_command_names_each_grant_no_step_uses_yet(self) -> None:
+        code, stdout, _ = self.run_main(
+            "widget-check",
+            "--description",
+            DESCRIPTION,
+            "--allowed-tools",
+            "Bash(python -B tools/widgets.py *),PowerShell(python -B tools/widgets.py *)",
+        )
+        self.assertEqual(0, code)
+        self.assertEqual(
+            [
+                "CREATED .claude/skills/widget-check/SKILL.md",
+                "CREATED .agents/skills/widget-check/SKILL.md",
+                *(
+                    f"REMAINING .claude/skills/widget-check/SKILL.md grants {tool}, which no step uses yet; use it "
+                    "in a step or remove it from allowed-tools"
+                    for tool in ("Bash", "PowerShell")
+                ),
+                *(
+                    f"REMAINING .claude/skills/widget-check/SKILL.md grants {tool}(python -B tools/widgets.py *), "
+                    "which matches no command in its fences or code spans yet; show the command it covers or remove "
+                    "the grant"
+                    for tool in ("Bash", "PowerShell")
+                ),
+            ],
+            stdout.splitlines(),
         )
 
 
