@@ -90,6 +90,7 @@ from console import run_main
 from dotnet_solution import SEARCH_SKIPPED_FOLDERS, is_solution, lexical_absolute, project_path, refusal, same_path
 from flat_text import flat_text
 from folder_walk import walk_files
+from folders_up import folders_up
 from msbuild_evaluation import Build, ProjectFile, Sources, Unsettled, read_project
 from msbuild_reader import (
     ASSETS_FILE,
@@ -329,14 +330,10 @@ def nuget_cache() -> list[Path]:
 
 def packages_folder(project_dir: Path, stop: Path) -> Path | None:
     """The nearest `packages` folder from the project's directory up to the solution's, or None."""
-    directory = project_dir
-    while True:
-        candidate = directory / "packages"
-        if candidate.is_dir():
+    for folder in folders_up(project_dir, stop):
+        if (candidate := folder / "packages").is_dir():
             return candidate
-        if same_path(directory) == same_path(stop) or directory.parent == directory:
-            return None
-        directory = directory.parent
+    return None
 
 
 def package_directory(folders: Sequence[Path], package: str, version: str) -> Path | None:
