@@ -1362,6 +1362,339 @@ class FsopsPlatformFixtures(GitTestCase):
                 filesystem_write_problems(root),
             )
 
+    def test_an_allowed_tempfile_call_must_name_its_prefix_and_suffix_by_literals_free_of_separators(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            allowance = (
+                "FSOPS_ALLOWED = {\n"
+                '    "tempfile.mkdtemp": "a working directory under the system temporary directory",\n'
+                '    "tempfile.NamedTemporaryFile": "captured output under the system temporary directory",\n'
+                "}\n"
+                "import tempfile\n"
+                "\n"
+                "\n"
+            )
+            files = {
+                "deployer/kept.py": allowance + "def run():\n"
+                '    tempfile.mkdtemp(prefix="run-", suffix=None)\n'
+                '    tempfile.mkdtemp(prefix=b"run-", suffix="..tmp")\n'
+                '    tempfile.NamedTemporaryFile(suffix=".log")\n',
+                "deployer/strayed.py": allowance + "def run(name):\n"
+                '    tempfile.mkdtemp(prefix="../escape-")\n'  # 9: a separator leaves the temporary directory
+                '    tempfile.mkdtemp(suffix="\\\\..\\\\escape")\n'  # 10: so does a Windows separator
+                '    tempfile.mkdtemp(prefix=b"../escape-")\n'  # 11
+                "    tempfile.mkdtemp(prefix=name)\n"  # 12: a prefix the policy cannot read
+                '    tempfile.NamedTemporaryFile(suffix="/escape.log")\n',  # 13
+            }
+            write_fixture_tree(root, files)
+            message = (
+                "FSOPS_ALLOWED allows {} only under the system temporary directory, and this call may write elsewhere"
+            )
+            self.assertEqual(
+                [
+                    "deployer/strayed.py:9 " + message.format("tempfile.mkdtemp"),
+                    "deployer/strayed.py:10 " + message.format("tempfile.mkdtemp"),
+                    "deployer/strayed.py:11 " + message.format("tempfile.mkdtemp"),
+                    "deployer/strayed.py:12 " + message.format("tempfile.mkdtemp"),
+                    "deployer/strayed.py:13 " + message.format("tempfile.NamedTemporaryFile"),
+                ],
+                filesystem_write_problems(root),
+            )
+
+    def test_a_temporary_directory_name_rebound_by_any_binding_is_not_kept(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            allowance = (
+                "FSOPS_ALLOWED = {\n"
+                '    "tempfile.mkdtemp": "a working directory under the system temporary directory",\n'
+                '    "shutil.rmtree": "removes only the directory mkdtemp made",\n'
+                "}\n"
+                "import shutil\n"
+                "import tempfile\n"
+                "\n"
+                "\n"
+                "def run(subject):\n"
+                "    work = tempfile.mkdtemp()\n"
+            )
+            removal = "    shutil.rmtree(work)\n"  # 11 in every module
+            rebindings = {
+                "caught": "try:\n    pass\nexcept OSError as work:\n    pass\n",
+                "imported": "import os.path as work\n",
+                "defined": "def work():\n    pass\n",
+                "classed": "class work:\n    pass\n",
+                "captured": "def capture(subject):\n    match subject:\n        case [work]:\n            pass\n",
+                "starred": "def capture(subject):\n    match subject:\n        case [*work]:\n            pass\n",
+                "rest": "def capture(subject):\n    match subject:\n        case {**work}:\n            pass\n",
+            }
+            files = {"deployer/kept.py": allowance + removal}
+            files |= {f"deployer/{name}.py": allowance + removal + rebound for name, rebound in rebindings.items()}
+            write_fixture_tree(root, files)
+            message = (
+                "FSOPS_ALLOWED allows shutil.rmtree only under the system temporary directory, and this call may write "
+                "elsewhere"
+            )
+            self.assertEqual(
+                [f"deployer/{name}.py:11 {message}" for name in sorted(rebindings)],
+                filesystem_write_problems(root),
+            )
+
+    def test_filesystem_write_policy_reads_a_callable_named_by_a_literal_and_a_module_passed_as_a_value(self) -> None:
+        dynamic = (
+            "import importlib\n"  # 1
+            "import operator\n"  # 2
+            "import shutil\n"  # 3
+            "from operator import methodcaller\n"  # 4
+            "from pathlib import Path\n"  # 5
+            "\n"  # 6
+            "\n"  # 7
+            "class Holder:\n"  # 8
+            "    def __init__(self, fs=shutil):\n"  # 9
+            "        self.fs = fs\n"  # 10: the module is called later through an attribute
+            "        self.other = shutil\n"  # 11
+            "\n"  # 12
+            "    def go(self, path, text, name, factory, paths):\n"  # 13
+            "        self.fs.rmtree(path)\n"  # 14
+            '        getattr(shutil, "rmtree")(path)\n'  # 15
+            '        importlib.import_module("shutil").rmtree(path)\n'  # 16
+            '        __import__("os").remove(path)\n'  # 17
+            '        operator.methodcaller("write_text", text)(path)\n'  # 18: counted, and its call unresolved
+            "        list(map(methodcaller(name), paths))\n"  # 19: a method name the policy cannot read
+            '        list(map(operator.attrgetter("unlink"), paths))\n'  # 20
+            "        factory()(path)\n"  # 21: unresolved
+            '        remove = getattr(shutil, "rmtree")\n'  # 22
+            '        module = importlib.import_module("shutil")\n'  # 23
+            '        getattr(path, "write_text")(text)\n'  # 24
+            '        list(map(getattr(shutil, "rmtree"), paths))\n'  # 25
+            "        return remove, module, Path\n"  # 26
+        )
+        # Reads named by literals, a copy that is not a Path's, and a module's own move function write nothing.
+        reads = (
+            "import copy\n"
+            "import importlib\n"
+            "import operator\n"
+            "import os\n"
+            "import shutil\n"
+            "from . import fsops\n"
+            "\n"
+            "\n"
+            "class Holder:\n"
+            "    def __init__(self, root):\n"
+            "        self.root = root\n"
+            "\n"
+            "    def go(self, path, values, paths):\n"
+            '        getattr(path, "read_text")()\n'
+            '        importlib.import_module("json").dumps(values)\n'
+            '        list(map(operator.methodcaller("read_text"), paths))\n'
+            '        list(map(operator.attrgetter("name"), paths))\n'
+            '        list(map(operator.methodcaller("copy"), paths))\n'
+            '        hasattr(os, "remove"), getattr(shutil, "which")("git")\n'
+            "        values.copy(), copy.copy(values), fsops.move(path, path)\n"
+            "        return self.root\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(root, {"deployer/dynamic.py": dynamic, "deployer/reads.py": reads})
+            route = "; route it through deployer/fsops.py"
+            written = [
+                (10, "shutil"),
+                (11, "shutil"),
+                (15, "shutil.rmtree"),
+                (16, "shutil.rmtree"),
+                (17, "os.remove"),
+                (18, "write_text"),
+                (19, "operator.methodcaller"),
+                (20, "unlink"),
+                (22, "shutil.rmtree"),
+                (23, "shutil"),
+                (24, "write_text"),
+                (25, "shutil.rmtree"),
+            ]
+            self.assertEqual(
+                [f"deployer/dynamic.py:{line} writes with {token}{route}" for line, token in written]
+                + [
+                    "deployer/dynamic.py:18 cannot resolve the callable operator.methodcaller('write_text', text) "
+                    "returns; call a known callable instead",
+                    "deployer/dynamic.py:21 cannot resolve the callable factory() returns; "
+                    "call a known callable instead",
+                ],
+                filesystem_write_problems(root),
+            )
+
+    def test_an_allowed_write_named_by_a_literal_must_land_in_the_temporary_directory(self) -> None:
+        allowance = (
+            "FSOPS_ALLOWED = {\n"
+            '    "tempfile.mkdtemp": "a working directory under the system temporary directory",\n'
+            '    "shutil.rmtree": "removes only the directory mkdtemp made",\n'
+            "}\n"
+            "import importlib\n"
+            "import shutil\n"
+            "import tempfile\n"
+            "\n"
+            "\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deployer/kept.py": allowance + "def run():\n"
+                    "    work = tempfile.mkdtemp()\n"
+                    '    getattr(shutil, "rmtree")(work)\n'
+                    '    importlib.import_module("shutil").rmtree(work)\n',
+                    "deployer/strayed.py": allowance + "def run(elsewhere):\n"
+                    "    tempfile.mkdtemp()\n"
+                    '    getattr(shutil, "rmtree")(elsewhere)\n'  # 12
+                    '    importlib.import_module("shutil").rmtree(elsewhere)\n',  # 13
+                },
+            )
+            message = (
+                "FSOPS_ALLOWED allows shutil.rmtree only under the system temporary directory, and this call may write "
+                "elsewhere"
+            )
+            self.assertEqual(
+                [f"deployer/strayed.py:12 {message}", f"deployer/strayed.py:13 {message}"],
+                filesystem_write_problems(root),
+            )
+
+    def test_filesystem_write_policy_counts_logging_configurations_app_archives_environments_and_path_copies(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deployer/writes.py": "import logging.config\n"  # 1
+                    "import venv\n"  # 2
+                    "import zipapp\n"  # 3
+                    "from logging.config import dictConfig\n"  # 4
+                    "from pathlib import Path\n"  # 5
+                    "\n"  # 6
+                    "\n"  # 7
+                    "def write(config, path, target, paths):\n"  # 8
+                    "    logging.config.dictConfig(config)\n"  # 9
+                    "    logging.config.fileConfig(path)\n"  # 10
+                    "    zipapp.create_archive(path)\n"  # 11
+                    "    venv.create(path)\n"  # 12
+                    "    venv.EnvBuilder(with_pip=False)\n"  # 13
+                    "    Path(path).copy(target)\n"  # 14
+                    "    path.move(target=target)\n"  # 15
+                    "    list(map(Path.copy, paths))\n"  # 16
+                    "    return dictConfig\n",
+                    "deployer/reads.py": "import copy\n"
+                    "import logging\n"
+                    "from . import fsops\n"
+                    "\n"
+                    "\n"
+                    "def read(values, path):\n"
+                    "    logging.getLogger(path)\n"
+                    "    values.copy(), copy.copy(values), fsops.move(path, path)\n",
+                },
+            )
+            route = "; route it through deployer/fsops.py"
+            written = [
+                (4, "logging.config.dictConfig"),
+                (9, "logging.config.dictConfig"),
+                (10, "logging.config.fileConfig"),
+                (11, "zipapp.create_archive"),
+                (12, "venv.create"),
+                (13, "venv.EnvBuilder"),
+                (14, "copy"),
+                (15, "move"),
+                (16, "copy"),
+                (17, "logging.config.dictConfig"),
+            ]
+            self.assertEqual(
+                [f"deployer/writes.py:{line} writes with {token}{route}" for line, token in written],
+                filesystem_write_problems(root),
+            )
+
+    def test_platform_policy_finds_posix_signals_and_process_calls_windows_only_names_tasklist_and_windows_paths(
+        self,
+    ) -> None:
+        strayed = (
+            "import os\n"  # 1
+            "import signal\n"  # 2
+            "import subprocess\n"  # 3
+            "import sys\n"  # 4
+            "import winsound\n"  # 5
+            "import syslog, _overlapped\n"  # 6
+            "from pathlib import PureWindowsPath, WindowsPath\n"  # 7
+            "import pathlib\n"  # 8
+            "\n"  # 9
+            "\n"  # 10
+            "def stop(pid, path):\n"  # 11
+            "    signal.SIGHUP, signal.SIGQUIT, signal.SIGALRM, signal.SIGUSR1, signal.SIGCHLD, signal.SIGPIPE\n"  # 12
+            "    signal.alarm(1), signal.setitimer(signal.ITIMER_REAL, 1)\n"  # 13
+            "    os.wait(), os.waitpid(pid, os.WNOHANG), os.getpgid(pid), os.setpgrp()\n"  # 14
+            "    os.open(path, os.O_RDONLY | os.O_CLOEXEC)\n"  # 15
+            "    os.add_dll_directory(path), sys.winver\n"  # 16
+            '    subprocess.run(["tasklist", "/FI", f"PID eq {pid}"], check=False)\n'  # 17
+            '    os.environ.get("WINDIR"), os.environ["ProgramFiles(x86)"], os.getenv("programdata")\n'  # 18
+            "    pathlib.PosixPath(path), pathlib.PureWindowsPath(path).anchor\n"  # 19
+        )
+        # Signals both platforms define, portable process calls, and POSIX path rules assume no platform.
+        innocent = (
+            "import os\n"
+            "import signal\n"
+            "from pathlib import PurePosixPath\n"
+            "\n"
+            "\n"
+            "def stop(pid, path):\n"
+            "    signal.SIGINT, signal.SIGTERM, signal.SIGABRT\n"
+            "    os.waitpid(pid, 0), os.kill(pid, signal.SIGTERM)\n"
+            "    os.open(path, os.O_RDONLY)\n"
+            '    PurePosixPath(path).suffix, "tasklists", os.environ.get("WINDIRS")\n'
+        )
+        sanctioned = (
+            'PLATFORM_ALLOWED = {"pathlib.PureWindowsPath": "refuses a drive on every platform"}\n'
+            "from pathlib import PureWindowsPath\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "tools/strayed.py": strayed,
+                    "deployer/platform_support.py": strayed,
+                    "tools/innocent.py": innocent,
+                    "tools/sanctioned.py": sanctioned,
+                },
+            )
+            move = "; move it behind deployer/platform_support.py"
+            expected = [
+                (5, "winsound"),
+                (6, "_overlapped"),
+                (6, "syslog"),
+                (7, "pathlib.PureWindowsPath"),
+                (7, "pathlib.WindowsPath"),
+                (12, "signal.SIGALRM"),
+                (12, "signal.SIGCHLD"),
+                (12, "signal.SIGHUP"),
+                (12, "signal.SIGPIPE"),
+                (12, "signal.SIGQUIT"),
+                (12, "signal.SIGUSR1"),
+                (13, "signal.alarm"),
+                (13, "signal.setitimer"),
+                (14, "os.WNOHANG"),
+                (14, "os.getpgid"),
+                (14, "os.setpgrp"),
+                (14, "os.wait"),
+                (15, "os.O_CLOEXEC"),
+                (16, "os.add_dll_directory"),
+                (16, "sys.winver"),
+                (17, "tasklist"),
+                (18, "ProgramFiles(x86)"),
+                (18, "WINDIR"),
+                (18, "programdata"),
+                (19, "pathlib.PosixPath"),
+                (19, "pathlib.PureWindowsPath"),
+            ]
+            self.assertEqual(
+                [f"tools/strayed.py:{line} names {token}{move}" for line, token in expected],
+                platform_code_problems(root),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -30,6 +30,8 @@ PLATFORM_TOKENS: dict[str, tuple[str, ...]] = {
     "qualified": (
         "sys.platform",
         "sys.getwindowsversion",
+        "sys.winver",
+        "sys.dllhandle",
         "os.name",
         "os.startfile",
         "os.uname",
@@ -40,15 +42,60 @@ PLATFORM_TOKENS: dict[str, tuple[str, ...]] = {
         "os.geteuid",
         "os.getgid",
         "os.getegid",
+        "os.setuid",
+        "os.setgid",
+        # The process groups, sessions, and child waits only POSIX defines; os.waitpid is portable.
+        "os.getpgid",
+        "os.setpgid",
+        "os.getpgrp",
+        "os.setpgrp",
+        "os.getsid",
+        "os.forkpty",
+        "os.wait",
+        "os.wait3",
+        "os.wait4",
+        "os.waitid",
+        "os.WNOHANG",
+        "os.WUNTRACED",
+        "os.WCONTINUED",
+        # The DLL search path only Windows has.
+        "os.add_dll_directory",
         # The open flags only Windows defines.
         "os.O_BINARY",
         "os.O_TEXT",
         "os.O_NOINHERIT",
-        # The signals one platform defines and the other lacks.
+        # The open flags only POSIX defines.
+        "os.O_CLOEXEC",
+        "os.O_NOFOLLOW",
+        "os.O_NONBLOCK",
+        # The signals one platform defines and the other lacks; SIGINT, SIGTERM, SIGABRT, SIGFPE, SIGILL, and SIGSEGV
+        # are defined on both.
         "signal.SIGKILL",
+        "signal.SIGHUP",
+        "signal.SIGQUIT",
+        "signal.SIGALRM",
+        "signal.SIGUSR1",
+        "signal.SIGUSR2",
+        "signal.SIGCHLD",
+        "signal.SIGPIPE",
+        "signal.SIGCONT",
+        "signal.SIGSTOP",
+        "signal.SIGTSTP",
+        "signal.SIGTTIN",
+        "signal.SIGTTOU",
+        "signal.SIGWINCH",
         "signal.SIGBREAK",
         "signal.CTRL_C_EVENT",
         "signal.CTRL_BREAK_EVENT",
+        # The signal functions only POSIX defines.
+        "signal.alarm",
+        "signal.setitimer",
+        "signal.getitimer",
+        "signal.pause",
+        "signal.siginterrupt",
+        "signal.sigwait",
+        "signal.pthread_kill",
+        "signal.pthread_sigmask",
         # What the platform module reports about the operating system and the machine; its python_* functions
         # describe the interpreter and are portable.
         "platform.system",
@@ -76,6 +123,12 @@ PLATFORM_TOKENS: dict[str, tuple[str, ...]] = {
         "subprocess.IDLE_PRIORITY_CLASS",
         "subprocess.NORMAL_PRIORITY_CLASS",
         "subprocess.REALTIME_PRIORITY_CLASS",
+        # The concrete paths each instantiate only on their own platform, and PureWindowsPath applies Windows path
+        # rules on every platform, as ntpath does. PurePosixPath stays portable: it is how the repository writes its
+        # own forward-slash relative paths, such as a manifest's keys.
+        "pathlib.WindowsPath",
+        "pathlib.PosixPath",
+        "pathlib.PureWindowsPath",
     ),
     # Families of qualified names, each matched by its prefix: subprocess's Windows process creation flags, startup
     # flags, and standard handles.
@@ -89,6 +142,8 @@ PLATFORM_TOKENS: dict[str, tuple[str, ...]] = {
         "winreg",
         "msvcrt",
         "_winapi",
+        "_overlapped",
+        "winsound",
         "nt",
         "posix",
         "fcntl",
@@ -98,6 +153,7 @@ PLATFORM_TOKENS: dict[str, tuple[str, ...]] = {
         "tty",
         "pty",
         "resource",
+        "syslog",
         # Windows path rules on every platform; os.path is the portable module.
         "ntpath",
     ),
@@ -111,8 +167,16 @@ PLATFORM_TOKENS: dict[str, tuple[str, ...]] = {
         "PATHEXT",
         "SystemRoot",
         "ComSpec",
+        "WINDIR",
+        "ProgramFiles(x86)",
+        "ProgramW6432",
+        "ProgramData",
+        "CommonProgramFiles",
+        "SystemDrive",
+        "HOMEDRIVE",
+        "HOMEPATH",
     ),
-    "command": ("cygpath", "taskkill"),
+    "command": ("cygpath", "taskkill", "tasklist"),
     # The filesystem paths only one platform has, matched where a path starts in a literal.
     "path": ("/proc",),
     # The extensions Windows finds a program by, matched in any case. Code that strips, appends, or compares one on a
@@ -426,12 +490,23 @@ FILESYSTEM_WRITES: dict[str, frozenset[str]] = {
             "compileall.compile_dir",
             "compileall.compile_file",
             "compileall.compile_path",
+            # The logging configurations, which create the files their handlers name, from a configuration the policy
+            # cannot follow.
+            "logging.config.dictConfig",
+            "logging.config.fileConfig",
+            # An application archive, and a virtual environment, which EnvBuilder exists to create.
+            "zipapp.create_archive",
+            "venv.create",
+            "venv.EnvBuilder",
         }
     ),
 }
 # A module sanctions a write beside the code it excuses, as a module-level FSOPS_ALLOWED = {token: reason}.
 FSOPS_ALLOWANCE = "FSOPS_ALLOWED"
 WRITE_MODE_CHARACTERS = "wax+"
+# Path.copy and Path.move, whose names a dict's or a list's copy() and a module's own move function share, so
+# _path_copies tells them apart by their target argument and their receiver instead.
+PATH_COPIES = frozenset({"copy", "move"})
 # The functions that open a file by name with its mode second; a Path's open() takes the mode first.
 OPEN_FUNCTIONS = frozenset({"open", "builtins.open", "io.open", "codecs.open"})
 
@@ -571,6 +646,26 @@ def _replaces_a_path(call: ast.Call) -> bool:
     return len(call.args) == 1 and len(positional) == 1 and not call.keywords
 
 
+def _path_copies(call: ast.Call, resolver: CallableResolver) -> bool:
+    """Whether a .copy() or .move() call may be Path.copy(target) or Path.move(target): it gives a target, which a
+    dict's or a list's copy() never takes, and it is not a function of a module the module imports, such as
+    `from . import fsops` then fsops.move(...), or copy.copy(value). A class named in CapWords, as pathlib.Path is,
+    is not a module."""
+    if not (isinstance(call.func, ast.Attribute) and call.func.attr in PATH_COPIES):
+        return False
+    if not (call.args or call.keywords):
+        return False
+    root = call.func.value
+    while isinstance(root, ast.Attribute):
+        root = root.value
+    if isinstance(root, ast.Name):
+        owner = resolver.scopes[id(root)].owner(root.id)
+        module = resolver.name(call.func.value).removeprefix("<local>.")
+        if owner is not None and root.id in owner.imports and module and module.islower():
+            return False
+    return True
+
+
 def _rewrites_in_place(call: ast.Call) -> bool:
     """Whether a fileinput reader is given an inplace argument that is not a false constant."""
     inplace = _mode_argument(call, 1, "inplace")
@@ -582,6 +677,8 @@ def _call_writes(call: ast.Call, resolver: CallableResolver, bindings: dict[str,
     target = resolver.name(call.func)
     if target in FILESYSTEM_WRITES["qualified"]:
         return target
+    if target in METHOD_NAMERS:
+        return _named_method_writes(call, target)
     if target == BASIC_CONFIG:
         return target if any(keyword.arg in {"filename", None} for keyword in call.keywords) else None
     if target in IN_PLACE_READERS:
@@ -595,7 +692,7 @@ def _call_writes(call: ast.Call, resolver: CallableResolver, bindings: dict[str,
         writes = opener.writes_by_default if mode is None else _writes_with_mode(mode, bindings, opener.writes)
         return target if writes else None
     if isinstance(call.func, ast.Attribute):
-        if call.func.attr in FILESYSTEM_WRITES["method"] or _replaces_a_path(call):
+        if call.func.attr in FILESYSTEM_WRITES["method"] or _replaces_a_path(call) or _path_copies(call, resolver):
             return call.func.attr
         if call.func.attr == "open" and _writes_with_mode(_mode_argument(call, 0), bindings):
             return "open"
@@ -605,51 +702,142 @@ def _call_writes(call: ast.Call, resolver: CallableResolver, bindings: dict[str,
 # The method names a write callable passed as a value may have besides the write methods: a Path's open() and
 # replace(), which a call tells from a read or a str.replace by its arguments, and a value reference has none.
 REFERENCED_METHODS = FILESYSTEM_WRITES["method"] | {"open", "replace"}
+# Path.copy and Path.move passed as values, which a reference names only through the class.
+REFERENCED_PATH_COPIES = frozenset({"pathlib.Path.copy", "pathlib.Path.move"})
+# The callables that make a callable of a method or an attribute named by a string: methodcaller("write_text", text)
+# calls path.write_text(text) on the path it is given, and attrgetter("unlink") returns path.unlink.
+METHOD_NAMERS = frozenset({"operator.methodcaller", "operator.attrgetter"})
+# The calls that return the attribute their literal second argument names, read as that attribute.
+LITERAL_ATTRIBUTE_GETTERS = frozenset({"getattr", "builtins.getattr"})
+WRITE_CALLABLES = FILESYSTEM_WRITES["qualified"] | MODE_OPENERS.keys() | IN_PLACE_READERS | {"os.open", BASIC_CONFIG}
+# The modules that hold a write callable, each of them with every package above it: a module passed as a value, as in
+# self.fs = shutil, is called through an attribute the policy cannot follow. A class, named in CapWords, as
+# tarfile.TarFile is, is not a module; pathlib is left out, since a Path writes only through the methods the policy
+# reads on any receiver.
+WRITING_MODULES = frozenset(
+    prefix
+    for name in WRITE_CALLABLES | OPEN_FUNCTIONS
+    for prefix in (".".join(name.split(".")[:end]) for end in range(1, name.count(".") + 1))
+    if prefix.islower()
+)
 
 
-def _reference_writes(node: ast.Name | ast.Attribute, resolver: CallableResolver) -> str | None:
+def _named_method_writes(call: ast.Call, maker: str) -> str | None:
+    """The token naming the write a methodcaller or an attrgetter makes: the write method a literal names, or the
+    maker itself when a name is not a literal. methodcaller names one method, and a copy() or move() only with the
+    target a Path's takes; attrgetter names one attribute or more, any of them dotted."""
+    names = call.args[:1] if maker == "operator.methodcaller" else call.args
+    methods = REFERENCED_METHODS | (PATH_COPIES if len(call.args) > 1 and maker == "operator.methodcaller" else set())
+    for name in names:
+        literal = _literal_name(name)
+        if literal is None:
+            return maker
+        if literal.rsplit(".", 1)[-1] in methods:
+            return literal.rsplit(".", 1)[-1]
+    return None
+
+
+def _reference_writes(node: ast.expr, resolver: CallableResolver) -> str | None:
     """The token naming the write a callable may make when it is passed as a value rather than called, such as
     map(Path.write_text, ...) or a callback=shutil.rmtree, or None when it names no write. Whoever calls it chooses
-    its arguments, so a callable that writes with some mode or flag counts."""
+    its arguments, so a callable that writes with some mode or flag counts, and so does a module that holds one."""
     target = resolver.name(node)
     if target in OPEN_FUNCTIONS:
         return "open"
-    if target in FILESYSTEM_WRITES["qualified"] | MODE_OPENERS.keys() | IN_PLACE_READERS | {"os.open", BASIC_CONFIG}:
+    if target in WRITE_CALLABLES | METHOD_NAMERS | WRITING_MODULES:
         return target
+    if target in REFERENCED_PATH_COPIES:
+        return target.rsplit(".", 1)[-1]
     if isinstance(node, ast.Attribute) and node.attr in REFERENCED_METHODS:
         return node.attr
     return None
 
 
+def _literal_name(node: ast.expr | None) -> str | None:
+    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+
+def _literal_attribute_owner(call: ast.Call, resolver: CallableResolver) -> tuple[ast.expr, str] | None:
+    """The owner a getattr or hasattr call reads an attribute of by a literal name, with that name, as in
+    getattr(shutil, "rmtree"), or None when the call is neither or names the attribute some other way."""
+    if resolver.name(call.func) not in ATTRIBUTE_BY_NAME or any(isinstance(a, ast.Starred) for a in call.args):
+        return None
+    attribute = _literal_name(call.args[1]) if len(call.args) > 1 else None
+    return (call.args[0], attribute) if attribute is not None else None
+
+
+def _literal_callee(node: ast.expr, resolver: CallableResolver) -> ast.expr | None:
+    """A callable read as the dotted name it names by a literal: getattr(owner, "name") as owner.name, and
+    importlib.import_module("name") as the module, each also as the receiver of an attribute, as in
+    importlib.import_module("shutil").rmtree; None for any other expression. Each node it builds takes the scope of
+    the expression it stands for, so the resolver reads it as it reads that expression."""
+    scope = resolver.scopes[id(node)]
+
+    def built(new: ast.expr) -> ast.expr:
+        resolver.scopes[id(new)] = scope
+        return ast.copy_location(new, node)
+
+    if isinstance(node, ast.Attribute):
+        receiver = _literal_callee(node.value, resolver)
+        return built(ast.Attribute(value=receiver, attr=node.attr, ctx=ast.Load())) if receiver is not None else None
+    if not isinstance(node, ast.Call):
+        return None
+    loader = resolver.name(node.func)
+    if loader in LITERAL_ATTRIBUTE_GETTERS and (read := _literal_attribute_owner(node, resolver)) is not None:
+        owner, attribute = read
+        receiver = _literal_callee(owner, resolver) or owner
+        return built(ast.Attribute(value=receiver, attr=attribute, ctx=ast.Load()))
+    module = _literal_name(call_argument(node, 0, "name")) if loader in MODULE_LOADERS else None
+    if not module:
+        return None
+    # __import__ returns the top package of a dotted name; import_module returns the module itself.
+    parts = module.split(".") if loader.endswith("import_module") else module.split(".")[:1]
+    name: ast.expr = built(ast.Name(id=parts[0], ctx=ast.Load()))
+    for part in parts[1:]:
+        name = built(ast.Attribute(value=name, attr=part, ctx=ast.Load()))
+    return name
+
+
 def _callable_references(tree: ast.Module, resolver: CallableResolver) -> set[int]:
-    """The ids of the names and attributes a module reads as values: neither a call's callable, which _call_writes
-    reads, nor an attribute's receiver, nor the value of an alias the resolver follows to the calls it makes."""
+    """The ids of the names, attributes, and calls a module reads as values: neither a call's callable, which
+    _call_writes reads, nor an attribute's receiver, nor a name or an attribute an alias is bound to, which the
+    resolver follows to the calls it makes, nor the owner getattr or hasattr reads by a literal name. A call bound
+    to a name is read here, as in rm = getattr(shutil, "rmtree"), since the resolver does not follow it."""
     excluded = {
         id(value)
         for scope in resolver.scopes.values()
         for values in scope.bindings.values()
         for value in values
-        if isinstance(value, ast.AST)
+        if isinstance(value, (ast.Name, ast.Attribute))
     }
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             excluded.add(id(node.func))
+            if (read := _literal_attribute_owner(node, resolver)) is not None:
+                excluded.add(id(read[0]))
         elif isinstance(node, ast.Attribute):
             excluded.add(id(node.value))
     return {
         id(node)
         for node in ast.walk(tree)
-        if isinstance(node, (ast.Name, ast.Attribute)) and isinstance(node.ctx, ast.Load) and id(node) not in excluded
+        if (
+            isinstance(node, ast.Call)
+            or (isinstance(node, (ast.Name, ast.Attribute)) and isinstance(node.ctx, ast.Load))
+        )
+        and id(node) not in excluded
     }
 
 
-def _write_nodes(tree: ast.Module) -> list[tuple[ast.stmt | ast.expr, str]]:
+def _write_nodes(tree: ast.Module, resolver: CallableResolver | None = None) -> list[tuple[ast.stmt | ast.expr, str]]:
     """The imports, calls, and callables passed as values through which a module's code writes to the filesystem,
-    with each one's token, ignoring test cases."""
-    resolver = CallableResolver(tree)
+    with each one's token, ignoring test cases. A callable the resolver cannot name is read through _literal_callee."""
+    resolver = resolver or CallableResolver(tree)
     bindings = _string_bindings(tree)
     references = _callable_references(tree, resolver)
     found: list[tuple[ast.stmt | ast.expr, str]] = []
+
+    def read(node: ast.expr) -> ast.expr:
+        return node if resolver.name(node) else (_literal_callee(node, resolver) or node)
 
     def visit(node: ast.AST) -> None:
         if _is_test_case(node):
@@ -661,22 +849,33 @@ def _write_nodes(tree: ast.Module) -> list[tuple[ast.stmt | ast.expr, str]]:
                 if f"{node.module}.{alias.name}" in FILESYSTEM_WRITES["qualified"]
             )
         elif isinstance(node, ast.Call) and not resolver.unresolved(node):
-            call = ast.copy_location(
-                ast.Call(func=resolver.function(node), args=node.args, keywords=node.keywords), node
-            )
+            function = read(resolver.function(node))
+            call = ast.copy_location(ast.Call(func=function, args=node.args, keywords=node.keywords), node)
             if token := _call_writes(call, resolver, bindings):
                 found.append((call, token))
-        elif (
-            isinstance(node, (ast.Name, ast.Attribute))
-            and id(node) in references
-            and (token := _reference_writes(node, resolver))
-        ):
-            found.append((node, token))
+        if isinstance(node, (ast.Name, ast.Attribute, ast.Call)) and id(node) in references:
+            value = read(node)
+            if token := _reference_writes(value, resolver):
+                found.append((value, token))
         for child in ast.iter_child_nodes(node):
             visit(child)
 
     visit(tree)
     return found
+
+
+def _returned_callee_problems(name: str, tree: ast.Module, resolver: CallableResolver, skipped: set[int]) -> list[str]:
+    """Report each call of a callable another call returns that _literal_callee cannot read, as in factory()(path)
+    or operator.methodcaller("unlink")(path): the policy cannot tell what it calls, so it is never guessed."""
+    return [
+        f"{name}:{node.lineno} cannot resolve the callable {ast.unparse(node.func)} returns; "
+        "call a known callable instead"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and id(node) not in skipped
+        and isinstance(node.func, ast.Call)
+        and _literal_callee(node.func, resolver) is None
+    ]
 
 
 def _filesystem_writes(tree: ast.Module) -> list[tuple[int, str]]:
@@ -689,32 +888,68 @@ TEMPORARY_DIRECTORY_CALL = "tempfile.mkdtemp"
 PATH_KEEPING_CALLS = frozenset({"pathlib.Path", "os.fspath", "str"})
 
 
+# The tempfile keywords joined to the name of what it makes, which a path separator would carry out of the system
+# temporary directory, as in prefix="../escape-".
+NAME_PARTS = frozenset({"prefix", "suffix"})
+PATH_SEPARATORS = ("/", "\\")
+
+
+def _separator_free(value: ast.expr) -> bool:
+    """Whether a prefix or suffix is None or a literal that holds no path separator."""
+    if not isinstance(value, ast.Constant):
+        return False
+    if isinstance(value.value, str):
+        return not any(separator in value.value for separator in PATH_SEPARATORS)
+    if isinstance(value.value, bytes):
+        return not any(separator.encode() in value.value for separator in PATH_SEPARATORS)
+    return value.value is None
+
+
 def _in_the_temporary_directory(call: ast.Call, aliases: dict[str, str]) -> bool:
-    """Whether a tempfile call takes keyword arguments only, none of them dir, so it writes under the system temporary
-    directory. A positional argument may be dir, so none is accepted."""
+    """Whether a tempfile call takes keyword arguments only, none of them dir, and a prefix or suffix only as a literal
+    free of path separators, so it writes under the system temporary directory. A positional argument may be dir, so
+    none is accepted."""
     return qualified_name(call.func, aliases).startswith("tempfile.") and (
-        not call.args and all(keyword.arg not in {"dir", None} for keyword in call.keywords)
+        not call.args
+        and all(keyword.arg not in {"dir", None} for keyword in call.keywords)
+        and all(_separator_free(keyword.value) for keyword in call.keywords if keyword.arg in NAME_PARTS)
     )
+
+
+def _bound_names(node: ast.AST) -> list[str]:
+    """The names node binds: a name stored to by any assignment, loop, with, or assignment expression, a parameter, a
+    caught exception, an import, a function or class, or a pattern's capture."""
+    if isinstance(node, ast.Name):
+        return [node.id] if isinstance(node.ctx, ast.Store) else []
+    if isinstance(node, ast.arg):
+        return [node.arg]
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return [alias.asname or alias.name.split(".")[0] for alias in node.names]
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return [node.name]
+    if isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
+        return [node.name] if node.name else []
+    if isinstance(node, ast.MatchMapping):
+        return [node.rest] if node.rest else []
+    return []
 
 
 def _temporary_directory_names(tree: ast.Module, resolver: CallableResolver) -> set[str]:
     """The names a module binds only to a directory tempfile.mkdtemp created under the system temporary directory,
-    directly or through calls that keep the path, such as Path(...), and never as a parameter or a loop or with
-    target. Any other call around it, such as a function of the module's own, may return another path."""
+    directly or through calls that keep the path, such as Path(...), and never by any other binding _bound_names
+    reads, such as a parameter, a loop or with target, a caught exception, an import, a definition, or a pattern's
+    capture. Any other call around it, such as a function of the module's own, may return another path."""
+    assigned = {
+        id(target): node.value
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Assign, ast.AnnAssign))
+        for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+        if isinstance(target, ast.Name)
+    }
     values: dict[str, list[ast.expr | None]] = {}
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                for name in (part for part in ast.walk(target) if isinstance(part, ast.Name)):
-                    values.setdefault(name.id, []).append(node.value if isinstance(target, ast.Name) else None)
-        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            values.setdefault(node.target.id, []).append(node.value)
-        elif isinstance(node, ast.arg):
-            values.setdefault(node.arg, []).append(None)
-        elif isinstance(node, (ast.AugAssign, ast.For, ast.AsyncFor, ast.comprehension, ast.NamedExpr, ast.withitem)):
-            rebound = node.optional_vars if isinstance(node, ast.withitem) else node.target
-            for name in (part for part in ast.walk(rebound) if isinstance(part, ast.Name)) if rebound else ():
-                values.setdefault(name.id, []).append(None)
+        for name in _bound_names(node):
+            values.setdefault(name, []).append(assigned.get(id(node)))
 
     def created(value: ast.expr | None) -> bool:
         if not isinstance(value, ast.Call):
@@ -786,7 +1021,7 @@ def _temporary_write_problems(name: str, tree: ast.Module, allowed: dict[str, st
     resolver = CallableResolver(tree)
     directories = _temporary_directory_names(tree, resolver)
     problems: list[str] = []
-    for node, token in _write_nodes(tree):
+    for node, token in _write_nodes(tree, resolver):
         if isinstance(node, ast.ImportFrom) or token not in allowed:
             continue
         if not isinstance(node, ast.Call):
@@ -830,7 +1065,8 @@ def filesystem_write_problems(root: Path) -> list[str]:
         ]
         problems += _temporary_write_problems(name, tree, allowed)
         skipped = {id(child) for node in ast.walk(tree) if _is_test_case(node) for child in ast.walk(node)}
-        problems += CallableResolver(tree).problems(name, skipped)
+        resolver = CallableResolver(tree)
+        problems += resolver.problems(name, skipped) + _returned_callee_problems(name, tree, resolver, skipped)
     return [
         f"{name}:{line} writes with {token}; route it through deployer/fsops.py" for name, line, token in sorted(found)
     ] + problems
