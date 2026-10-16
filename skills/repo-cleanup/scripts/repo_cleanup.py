@@ -12,9 +12,12 @@
     summary       print the repository's summary from the plan file
 
 Every command prints one tab-separated fact per line. Exit status 0 means every repository was cleaned, or every
-confirmed deletion ran. 1 means something needs the agent: a repository that stopped (DIRTY_MAIN, FETCH_FAILED) or
-was skipped with an ERROR line, a deletion Git refused, or a last line FAILED <reason> when the command could not run
-at all. 2 is a usage error.
+confirmed deletion ran or was preserved because what it named changed since the plan: it moved, or its commit left
+the default and remote branches. 1 means something needs the agent: a repository that stopped (DIRTY_MAIN,
+FETCH_FAILED) or was skipped with an ERROR line, a deletion or removal Git refused, a confirmed worktree removal that
+did not happen because what the worktree holds kept it, a directory whose deletion failed, that no longer resolves
+inside its area, or in which Git now tracks a file, or a last line FAILED <reason> when the command could not run at
+all. 2 is a usage error.
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, TypeVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
@@ -52,10 +56,45 @@ PLAN_SCHEMA_VERSION = 1
 # cannot hold both, so protection errs toward keeping.
 RELEASE_PREFIX = "release/"
 STALE_STATES = ("MERGED", "CLOSED")
-# Cache directories a tool rebuilds on its next run and nothing else reads: an ignored path inside one carries no
-# work of the user's, so a worktree holding only such paths is removed with them. Any other ignored path, such as a
-# `.env` or build output, preserves the worktree. Add a name here only for a cache whose loss costs nothing but time.
-DISPOSABLE_CACHES = frozenset({"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "node_modules/.cache"})
+# Directories a tool rebuilds from what the worktree holds, by name, with the file one of which must sit beside the
+# directory for it to count: the project the build or the package manager rebuilds it from. An ignored path inside
+# one carries no work of the user's, so a worktree holding only such paths is removed with them; any other ignored
+# path, such as a `.env` or a `bin` with no project beside it, preserves the worktree. Add a name here only for a
+# directory whose loss costs nothing but time.
+DOTNET_PROJECTS = ("*.csproj", "*.vbproj", "*.fsproj")
+REGENERABLE = MappingProxyType(
+    {
+        "__pycache__": (),
+        ".pytest_cache": (),
+        ".mypy_cache": (),
+        ".ruff_cache": (),
+        "node_modules/.cache": (),
+        ".vs": (),
+        "node_modules": ("package.json",),
+        "bin": DOTNET_PROJECTS,
+        "obj": DOTNET_PROJECTS,
+    }
+)
+# What a worktree's own Git directory holds while an operation is under way, with the operation's name. Removing the
+# worktree deletes that directory and the operation with it.
+OPERATION_MARKERS = (
+    ("BISECT_START", "a bisect"),
+    ("BISECT_LOG", "a bisect"),
+    ("rebase-merge", "a rebase"),
+    ("rebase-apply", "a rebase or git am"),
+    ("MERGE_HEAD", "a merge"),
+    ("CHERRY_PICK_HEAD", "a cherry-pick"),
+    ("REVERT_HEAD", "a revert"),
+    ("sequencer", "a cherry-pick or revert sequence"),
+)
+# The refs only one worktree sees, which its removal deletes with it.
+WORKTREE_REFS = ("refs/worktree/", "refs/bisect/", "refs/rewritten/")
+# The index tags `git ls-files -v` gives a file whose skip-worktree bit is set; assume-unchanged ones are lower case.
+SKIP_WORKTREE_TAG = "S"
+# File modes whose content `git hash-object` reads from the file itself.
+REGULAR_MODES = ("100644", "100755")
+# How many paths one `git hash-object` names, so its command line stays inside Windows' limit.
+HASHED_PER_CALL = 100
 # How many paths a report line names before it counts the rest, so a worktree full of them does not flood the line.
 NAMED_PATHS = 5
 # The status listing every check of a worktree reads. status.showUntrackedFiles=no would hide untracked files from it,
@@ -65,6 +104,8 @@ STATUS_ARGUMENTS = ("status", "--porcelain", "-z", "--untracked-files=normal")
 SHOW_UNTRACKED = ("-c", "status.showUntrackedFiles=normal")
 KEPT_STATES = {"OPEN": "pr-open", "UNMATCHED": "pr-unmatched", "UNKNOWN": "pr-unknown"}
 WORKTREE_AREA = "Worktrees"
+# What a refusal of a plan's state tells the agent to do: the command that makes and applies plans.
+SWEEP_AGAIN = "run the sweep again for a new plan"
 # Where Claude Code, and many repositories' own worktree tools, put a repository's worktrees. With
 # WORKTREE_AREA/<repository name>, the folders a sweep searches for directories a worktree removal left behind.
 REPOSITORY_AREA = (".claude", "worktrees")
@@ -535,18 +576,28 @@ def evaluate_worktree(services: Services, root: str, default: str, tree: Worktre
     except CleanupError as exc:
         entry["detail"] = str(exc)
         return entry
-    if tree.branch is not None:
-        entry["action"] = f"dirty:{changed}" if changed else "candidate"
+    held = "" if changed else held_state(services, tree.path)
+    if tree.branch is None:
+        entry.update(judge_detached(services, root, default, tree.head, changed, held))
+    elif changed:
+        entry["action"] = f"dirty:{changed}"
+    elif held:
+        entry.update(action="held", detail=held)
     else:
-        entry.update(judge_detached(services, root, default, tree.head, changed))
+        entry["action"] = "candidate"
     return entry
 
 
-def judge_detached(services: Services, root: str, default: str, head: str, changed: int) -> dict[str, Any]:
-    """A worktree with no branch is offered for removal only when it is clean and the default branch or a remote
-    branch holds its commit, so removing it loses nothing; otherwise it is kept, and the detail says why."""
+def judge_detached(
+    services: Services, root: str, default: str, head: str, changed: int, held: str = ""
+) -> dict[str, Any]:
+    """A worktree with no branch is offered for removal only when it is clean, holds nothing else its removal would
+    lose (`held`, from held_state), and the default branch or a remote branch holds its commit, so removing it loses
+    nothing; otherwise it is kept, and the detail says why."""
     if changed:
         return {"sha": head, "detail": counted(changed, "uncommitted change")}
+    if held:
+        return {"sha": head, "detail": held}
     if not head or not reachable(services, root, head, default_refs(default)[0], "refs/remotes"):
         return {"sha": head, "detail": f"its commit {head[:12] or '-'} is on neither {default} nor a remote branch"}
     return {"sha": head, "action": "ask", "detail": f"clean, its commit is on {default} or a remote branch"}
@@ -714,6 +765,27 @@ def record(plan: dict[str, Any], kind: str, *fields: Any) -> None:
     emit(kind, *fields)
 
 
+def offer_line(plan: dict[str, Any], kind: str, *fields: Any) -> bool:
+    """Record an offer the user answers by naming its first fields back, unless a name in it does not survive being
+    printed on one line: a confirmation could then only name it by its flattened form, which names nothing.
+
+    Such an offer is a PRESERVED fact instead, naming the first field by its flattened form with the reason. False
+    then.
+    """
+    altered = next((str(field) for field in fields if one_line(field) != str(field)), None)
+    if altered is None:
+        record(plan, kind, *fields)
+        return True
+    record(
+        plan,
+        "PRESERVED",
+        fields[0],
+        f"not offered: the name {one_line(altered)} holds a character a fact line cannot carry, so no confirmation "
+        "could name it",
+    )
+    return False
+
+
 def events(plan: dict[str, Any], kind: str) -> list[list[str]]:
     return [event[1:] for event in plan["events"] if event[0] == kind]
 
@@ -772,7 +844,7 @@ def unmerged(services: Services, plan: dict[str, Any], name: str, sha: str, pr: 
     unmerged branch waits for the user's confirmation. False when Git refused a deletion.
     """
     if pr != "MERGED":
-        record(plan, "UNMERGED", name, sha)
+        offer_line(plan, "UNMERGED", name, sha)
         return True
     return force_delete(services, plan, name)
 
@@ -845,10 +917,25 @@ def ignored_entries(services: Services, directory: str | Path) -> list[str]:
     return [entry[3:] for entry in listing.split("\0") if entry.startswith("!! ")]
 
 
-def is_disposable(path: str) -> bool:
-    """Whether the ignored path is one of the regenerable caches, or lies inside one."""
-    inside = f"/{path.replace(chr(92), '/').strip('/')}/"
-    return any(f"/{cache}/" in inside for cache in DISPOSABLE_CACHES)
+def is_regenerable(path: str, worktree: str) -> bool:
+    """Whether the ignored path is one of the REGENERABLE directories, or lies inside one.
+
+    The directory counts only when it and every directory from the worktree down to it is a plain directory, so
+    nothing outside the worktree is reached through it, and, when its entry names projects, one of them sits beside
+    it to rebuild it from.
+    """
+    parts = [part for part in path.replace(chr(92), "/").split("/") if part]
+    for start in range(len(parts)):
+        for name, projects in REGENERABLE.items():
+            components = name.split("/")
+            if parts[start : start + len(components)] != components:
+                continue
+            holder = Path(worktree, *parts[:start])
+            if not linkless_below(str(holder.joinpath(*components)), worktree):
+                continue
+            if not projects or any(entry.is_file() for pattern in projects for entry in holder.glob(pattern)):
+                return True
+    return False
 
 
 def named(paths: list[str]) -> str:
@@ -865,41 +952,133 @@ def ignored_paths(services: Services, path: str) -> tuple[str, str]:
     """Why a worktree's ignored files keep it, and what is deleted with it.
 
     git worktree remove counts a worktree holding only ignored files, such as a .env, as clean and deletes them, so
-    a worktree holding any ignored path outside DISPOSABLE_CACHES is kept, and the reason names the paths. The second
-    string names the caches, present with the reason or, when the caches are all the worktree holds, alone with an
-    empty reason, so the removal can say what it deleted. Both are empty for a worktree with no ignored path.
+    a worktree holding any ignored path that is not REGENERABLE is kept, and the reason names the paths. The second
+    string names the regenerable paths, present with the reason or, when they are all the worktree holds, alone with
+    an empty reason, so the removal can say what it deleted. Both are empty for a worktree with no ignored path.
     """
     try:
         entries = ignored_entries(services, path)
     except CleanupError as exc:
         return str(exc), ""
-    kept = [entry for entry in entries if not is_disposable(entry)]
-    caches = [entry for entry in entries if is_disposable(entry)]
-    disposed = f"deleted {counted(len(caches), 'regenerable cache')}: {named(caches)}" if caches else ""
+    regenerable = {entry for entry in entries if is_regenerable(entry, path)}
+    kept = [entry for entry in entries if entry not in regenerable]
+    rebuilt = [entry for entry in entries if entry in regenerable]
+    disposed = f"deleted {counted(len(rebuilt), 'regenerable path')}: {named(rebuilt)}" if rebuilt else ""
     if not kept:
         return "", disposed
     reason = (
         f"worktree {path} holds {counted(len(kept), 'ignored path')} git worktree remove would delete: {named(kept)}"
     )
-    if caches:
-        reason += f"; also {counted(len(caches), 'regenerable cache')}: {named(caches)}"
+    if rebuilt:
+        reason += f"; also {counted(len(rebuilt), 'regenerable path')}: {named(rebuilt)}"
     return reason, disposed
 
 
-def remove_checkout(services: Services, plan: dict[str, Any], path: str, name: str, label: str) -> str:
-    """git worktree remove, which refuses a locked worktree or one with changes: "removed", "kept" when its ignored
-    files keep it, or "refused" when Git refused.
+def operations(services: Services, path: str) -> list[str]:
+    """The operations under way in the worktree at `path`, as the markers in its own Git directory show them."""
+    arguments = [argument for marker, _ in OPERATION_MARKERS for argument in ("--git-path", marker)]
+    listing = git_output(services, path, "rev-parse", "--path-format=absolute", *arguments)
+    located = [line.rstrip("\r") for line in listing.split("\n") if line.strip()]
+    if len(located) != len(OPERATION_MARKERS):
+        raise CleanupError(f"git rev-parse did not name each operation marker of worktree {path}")
+    found = [label for (_, label), marker in zip(OPERATION_MARKERS, located, strict=True) if os.path.lexists(marker)]
+    return list(dict.fromkeys(found))
 
-    A worktree with ignored files is kept, since Git would delete them with it, unless every one is a regenerable
-    cache, which the REMOVED fact names after `label`. A PRESERVED fact names `name` with the reason it stayed.
+
+def hidden_edits(services: Services, path: str) -> list[str]:
+    """The tracked files status leaves out because their skip-worktree or assume-unchanged bit is set and whose file
+    in the worktree differs from the index: edits removing the worktree would lose.
+
+    A marked file that is absent, as a sparse checkout leaves each path outside it, holds nothing to lose. One that is
+    not a regular file, such as a link, counts as edited, since its content is not compared.
     """
-    held, disposed = ignored_paths(services, path)
+    compared: list[tuple[str, str]] = []
+    edited: list[str] = []
+    for entry in git_output(services, path, "ls-files", "-v", "-s", "-z").split("\0"):
+        tag, _, rest = entry.partition(" ")
+        if tag != SKIP_WORKTREE_TAG and not tag.islower():
+            continue
+        fields, _, name = rest.partition("\t")
+        mode, sha, *_ = fields.split(" ")
+        target = Path(path, name)
+        if not os.path.lexists(target):
+            continue
+        if mode in REGULAR_MODES and target.is_file() and not target.is_symlink():
+            compared.append((name, sha))
+        else:
+            edited.append(name)
+    for start in range(0, len(compared), HASHED_PER_CALL):
+        batch = compared[start : start + HASHED_PER_CALL]
+        hashes = git_output(services, path, "hash-object", "--", *(name for name, _ in batch)).split()
+        if len(hashes) != len(batch):
+            raise CleanupError(f"git hash-object did not hash each marked file of worktree {path}")
+        edited += [name for (name, indexed), hashed in zip(batch, hashes, strict=True) if hashed != indexed]
+    return sorted(edited)
+
+
+def held_state(services: Services, path: str) -> str:
+    """What the worktree at `path` holds that its removal would lose although status shows no change, or an empty
+    string: an operation under way, refs only it sees, and edits to files whose bits hide them from status.
+
+    git worktree remove deletes the worktree's own Git directory, and with it each of these, without asking. When Git
+    cannot say, the reason is why, so the worktree is kept.
+    """
+    try:
+        under_way = operations(services, path)
+        listing = git_output(services, path, "for-each-ref", "--format=%(refname)", *WORKTREE_REFS)
+        edits = hidden_edits(services, path)
+    except CleanupError as exc:
+        return f"cannot be read for what its removal would lose: {exc}"
+    refs = [ref for ref in listing.split("\n") if ref.strip()]
+    held = [f"has {' and '.join(under_way)} in progress"] if under_way else []
+    if refs:
+        held.append(f"holds {counted(len(refs), 'ref')} only it sees: {named(refs)}")
+    if edits:
+        held.append(
+            f"holds edits status does not show, to {counted(len(edits), 'file')} marked skip-worktree or "
+            f"assume-unchanged: {named(edits)}"
+        )
+    return "; ".join(held)
+
+
+def registered(services: Services, plan: dict[str, Any], path: str) -> bool:
+    """Whether Git still lists a worktree at `path`; True when it cannot say."""
+    try:
+        return any(same_path(tree.path, path) for tree in list_worktrees(services, plan["repo_root"]))
+    except CleanupError:
+        return True
+
+
+def remove_checkout(services: Services, plan: dict[str, Any], path: str, name: str, label: str) -> str:
+    """git worktree remove, which refuses a locked worktree or one with changes: "removed", "kept" when what it holds
+    keeps it, or "refused" when Git refused or did not finish.
+
+    A worktree is kept, asked just before the removal, when it holds what held_state names, which Git would discard
+    without asking, or ignored files, which Git would delete with it, unless every one is regenerable, which the
+    REMOVED fact names after `label`. A PRESERVED fact names `name` with the reason it stayed. Git deletes the
+    worktree's record even when it cannot delete the folder, as when a process holds it on Windows; the reason then
+    says so, and the folder is left to the ORPHAN offer.
+    """
+    held = held_state(services, path)
     if held:
-        record(plan, "PRESERVED", name, held)
+        record(plan, "PRESERVED", name, f"worktree {path} {held}")
+        return "kept"
+    kept, disposed = ignored_paths(services, path)
+    if kept:
+        record(plan, "PRESERVED", name, kept)
         return "kept"
     removed = git(services, plan["repo_root"], *SHOW_UNTRACKED, "worktree", "remove", path)
     if removed.returncode != 0:
-        record(plan, "PRESERVED", name, f"Git refused to remove worktree {path}: {reason(removed)}")
+        if registered(services, plan, path):
+            record(plan, "PRESERVED", name, f"Git refused to remove worktree {path}: {reason(removed)}")
+        else:
+            record(
+                plan,
+                "PRESERVED",
+                name,
+                f"Git deleted worktree {path}'s record and files but not its folder: {reason(removed)}; a sweep "
+                "offers what is left there as a directory Git no longer tracks",
+            )
         return "refused"
     record(plan, "REMOVED", path, label, *([disposed] if disposed else []))
     return "removed"
@@ -925,7 +1104,7 @@ def remove_worktree(
     if outcome != "removed":
         return Removal(removed=False, refused=outcome == "refused")
     if ask:
-        record(plan, "CONFIRM_LOCAL", entry["branch"])
+        offer_line(plan, "CONFIRM_LOCAL", entry["branch"])
         return Removal(removed=True, refused=False)
     return Removal(removed=True, refused=not delete_merged(services, plan, entry["branch"], sha, pr))
 
@@ -934,7 +1113,7 @@ def apply(plan_path: str, services: Services) -> bool:
     """Apply the plan; False when Git refused a deletion or removal."""
     plan = load_plan(plan_path)
     if plan["applied"]:
-        raise CleanupError("this plan was already applied; run plan again")
+        raise CleanupError(f"this plan was already applied; {SWEEP_AGAIN}")
     plan["applied"] = True
     return run_and_report(plan_path, plan, lambda: apply_plan(plan, services))
 
@@ -1004,13 +1183,13 @@ def offer(services: Services, plan: dict[str, Any], located: dict[str, Worktree]
     for branch in plan["branches"]:
         if branch["action"] == "ask-delete":
             if branch_tip(services, root, branch["name"]) == branch["sha"]:
-                record(plan, "CONFIRM_LOCAL", branch["name"])
+                offer_line(plan, "CONFIRM_LOCAL", branch["name"])
             else:
                 record(plan, "PRESERVED", branch["name"], "moved")
         elif branch["action"] == "ask-remove-worktree" and unchanged(
             services, plan, branch["name"], branch["sha"], located, branch["worktree"]
         ):
-            record(plan, "CONFIRM_LOCAL", branch["name"], branch["worktree"])
+            offer_line(plan, "CONFIRM_LOCAL", branch["name"], branch["worktree"])
     offer_detached(services, plan)
     registered = [tree.path for tree in list_worktrees(services, root)]
     # orphan_areas is absent from an earlier version's plan.
@@ -1019,7 +1198,7 @@ def offer(services: Services, plan: dict[str, Any], located: dict[str, Worktree]
         if tracked:
             record(plan, "PRESERVED", path, tracked)
         else:
-            record(plan, "ORPHAN", path)
+            offer_line(plan, "ORPHAN", path)
 
 
 def prune_parents(plan: dict[str, Any], removed: str) -> None:
@@ -1042,7 +1221,7 @@ def offer_detached(services: Services, plan: dict[str, Any]) -> None:
     for entry in plan["worktrees"]:
         if entry["branch"] is None and entry["action"] == "ask":
             if detached_at(services, plan, entry["path"], entry["sha"]):
-                record(plan, "CONFIRM_DETACHED", entry["path"], entry["sha"])
+                offer_line(plan, "CONFIRM_DETACHED", entry["path"], entry["sha"])
             else:
                 record(plan, "PRESERVED", entry["path"], "moved")
 
@@ -1182,7 +1361,11 @@ def delete_tree(path: Path) -> None:
 
 def remove_detached(services: Services, plan: dict[str, Any], path: str, sha: str) -> bool:
     """Remove an offered detached worktree that has not moved and whose commit is still on the default branch or a
-    remote branch; False when it stays for a reason other than having moved."""
+    remote branch.
+
+    True when it was removed, or stays because it moved or its commit is no longer on such a branch; False when Git
+    refused or did not finish the removal, or what the worktree holds kept it.
+    """
     if detached_at(services, plan, path, sha) is None:
         record(plan, "PRESERVED", path, "moved")
         return True
@@ -1197,22 +1380,27 @@ def remove_detached(services: Services, plan: dict[str, Any], path: str, sha: st
 
 
 def delete_orphan(services: Services, plan: dict[str, Any], path: str) -> bool:
-    """Delete an offered orphan directory that is still one; False when deleting it failed, it no longer resolves
-    inside a worktree area, or a repository holding it tracks files in it.
+    """Delete an offered orphan directory that is still one.
 
-    Just before the deletion, the directory must still be no link and, resolved through any link, lie inside an area
-    the search may enter, resolved the same way, so the deletion never reaches a directory the search did not, and
-    no repository holding it may track a file in it, as tracked_reason asks again.
+    True when it was deleted, or stays because it is gone or Git tracks it as a worktree or repository again; False
+    when deleting it failed, it no longer resolves inside a worktree area, or a repository holding it tracks files in
+    it. Just before the deletion, and before anything else is asked of it, a directory that still exists must be no
+    link and, resolved through any link, lie inside an area the search may enter, resolved the same way, so the
+    deletion never reaches a directory the search did not; then the search must still find it, and no repository
+    holding it may track a file in it, as tracked_reason asks again.
     """
-    registered = [tree.path for tree in list_worktrees(services, plan["repo_root"])]
     areas = plan.get("orphan_areas", [])
-    if not any(same_path(path, found) for found in orphan_directories(registered, areas, area_anchors(plan))):
+    if not os.path.lexists(path):
         record(plan, "PRESERVED", path, "no longer a directory Git does not track")
         return True
     searchable = searchable_areas(areas, area_anchors(plan))
     if not is_plain_directory(Path(path)) or not any(strictly_inside(path, area) for area in searchable):
         record(plan, "PRESERVED", path, "it resolves outside the worktree areas")
         return False
+    registered = [tree.path for tree in list_worktrees(services, plan["repo_root"])]
+    if not any(same_path(path, found) for found in orphan_directories(registered, areas, area_anchors(plan))):
+        record(plan, "PRESERVED", path, "no longer a directory Git does not track")
+        return True
     tracked = tracked_reason(services, plan, path)
     if tracked:
         record(plan, "PRESERVED", path, tracked)
@@ -1231,7 +1419,7 @@ def remove_directories(plan_path: str, paths: list[str], services: Services) -> 
     """Remove the confirmed detached worktrees and orphan directories the plan offered; False when any stayed."""
     plan = load_plan(plan_path)
     if not plan["applied"]:
-        raise CleanupError("run apply with this plan first")
+        raise CleanupError(f"this plan was not applied by a sweep; {SWEEP_AGAIN}")
 
     def remove() -> bool:
         done = [fields[0] for kind in ("REMOVED", "DELETED_DIR") for fields in events(plan, kind)]
@@ -1255,7 +1443,7 @@ def confirm(plan_path: str, names: list[str], services: Services, force: bool) -
     """Delete the confirmed branches the plan offered; False when Git refused any deletion."""
     plan = load_plan(plan_path)
     if not plan["applied"]:
-        raise CleanupError("run apply with this plan first")
+        raise CleanupError(f"this plan was not applied by a sweep; {SWEEP_AGAIN}")
     states = {branch["name"]: branch["pr"] for branch in plan["branches"]}
     worktrees: dict[str, str] = {}
     if force:
@@ -1329,8 +1517,10 @@ def summary_items(plan: dict[str, Any]) -> dict[str, list[str]]:
     ]
     dirty = [
         f"{entry['path']} ({entry['branch']}, {entry['action'].split(':')[1]} changed)"
-        for entry in plan["worktrees"]
         if entry["action"].startswith("dirty:")
+        else f"{entry['path']} ({entry['branch']}, {entry['detail']})"
+        for entry in plan["worktrees"]
+        if entry["action"].startswith("dirty:") or entry["action"] == "held"
     ]
     unknown = [
         f"{branch['name']} ({branch['detail'].removeprefix('pr-unknown: ')})"

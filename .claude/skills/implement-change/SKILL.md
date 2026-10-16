@@ -67,5 +67,7 @@ Bring the branch up to date with its base as the repository's instructions descr
 gh pr create --title '<title>' --body-file '<file>'
 ```
 
+Single quotes keep the title as written, since neither shell expands anything between them, but a quote in the title would end them. In Bash, write each `'` in the title as `'\''`. In PowerShell, write it as `''`, and double each `‘`, `’`, `‚`, and `‛` too, since PowerShell ends a single-quoted string at any of them.
+
 When a continuous integration leg fails, reproduce that leg as *Validation* says, fix it, and push. While the pull request is open, bring it current by merging its base, never by rebasing; the merge may be made on the remote, so pull the branch before the next push. Do not merge.
 
