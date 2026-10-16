@@ -20,7 +20,6 @@ from .tools import SKILL_TOOLS
 
 SOURCE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$")
 SKILL_NAME_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
-RESERVED_NAME_PATTERN = re.compile(r"^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])$")
 # The Agent Skills frontmatter rules ("YAML frontmatter requirements" in Anthropic's skill authoring best
 # practices): a skill name may not contain these words, and neither its name nor its description an XML tag.
 # The naming grammar already keeps angle brackets out of a name.
@@ -146,7 +145,7 @@ def is_valid_name(name: str) -> bool:
     return (
         len(name) <= 64
         and bool(SKILL_NAME_PATTERN.fullmatch(name))
-        and not RESERVED_NAME_PATTERN.fullmatch(name.upper())
+        and not platform_support.is_reserved_device_name(name)
     )
 
 
@@ -224,7 +223,7 @@ def _load_skill(paths: Paths, name: str, directories: dict[str, Path]) -> Skill:
         raise DeployError(f"ERROR: Skill name '{name}' exceeds 64 characters", NAME_RULES)
     if not SKILL_NAME_PATTERN.fullmatch(name):
         raise DeployError(f"ERROR: Skill name '{name}' does not match naming grammar", NAME_RULES)
-    if RESERVED_NAME_PATTERN.fullmatch(name.upper()):
+    if platform_support.is_reserved_device_name(name):
         raise DeployError(f"ERROR: Skill name '{name}' is a Windows reserved name", NAME_RULES)
     word = reserved_word(name)
     if word:
