@@ -705,6 +705,72 @@ class MergedTest(FixtureTestCase):
             [line for line in lines if line.startswith("MERGED")],
         )
 
+    def commit_in(self, directory: Path, name: str) -> str:
+        (directory / f"{name}.md").write_text(f"{name}\n", encoding="utf-8")
+        git("add", f"{name}.md", directory=directory)
+        git("commit", "-q", "-m", name, directory=directory)
+        return git("rev-parse", "HEAD", directory=directory)
+
+    def add_worktree(self, name: str, branch: str) -> Path:
+        path = self.root / name
+        git("worktree", "add", "-q", "-b", branch, str(path), directory=self.hub)
+        return path
+
+    def merged_lines(self, gh: StubGh) -> list[str]:
+        status, lines = self.tick(gh, dry_run=True)
+        self.assertEqual(0, status, lines)
+        return [line for line in lines if line.startswith("MERGED")]
+
+    def test_a_worktree_on_another_branch_is_matched_by_the_merged_head_commit(self) -> None:
+        carried, unrelated, fresh, reopened = (
+            self.add_worktree(name, f"claude/{name}") for name in ("carried", "unrelated", "fresh", "reopened")
+        )
+        pushed = self.commit_in(carried, "carried")
+        self.commit_in(unrelated, "unrelated")
+        again = self.commit_in(reopened, "reopened")
+        main = git("rev-parse", "main", directory=self.hub)
+        # GitHub's update-branch merge on the pushed branch, which the worktree never pulled.
+        tree = git("rev-parse", f"{pushed}^{{tree}}", directory=self.hub)
+        updated = git("commit-tree", tree, "-p", pushed, "-p", main, "-m", "Merge main", directory=self.hub)
+        merged = [
+            {"number": 9, "headRefName": "fix/pushed", "headRefOid": updated},
+            {"number": 11, "headRefName": "fix/reopened", "headRefOid": again},
+            {"number": 12, "headRefName": "fix/never-fetched", "headRefOid": "c" * 40},
+        ]
+        self.assertEqual(
+            [f'MERGED #9 worktree "{carried.as_posix()}" branch claude/carried'],
+            self.merged_lines(StubGh([pull(31, head=again)], merged=merged)),
+        )
+        self.assertNotIn(fresh.as_posix(), " ".join(self.merged_lines(StubGh(merged=merged))))
+
+    def test_a_worktree_matched_by_commit_names_the_pull_request_s_local_branch_too(self) -> None:
+        both = self.add_worktree("both", "claude/both")
+        pushed = self.commit_in(both, "both")
+        git("branch", "fix/both", pushed, directory=self.hub)
+        merged = [{"number": 10, "headRefName": "fix/both", "headRefOid": pushed}]
+        self.assertEqual(
+            [f'MERGED #10 worktree "{both.as_posix()}" branch claude/both branch fix/both'],
+            self.merged_lines(StubGh(merged=merged)),
+        )
+        # A head branch another worktree has checked out is that worktree's to name.
+        holder = self.add_worktree("holder", "fix/held")
+        git("reset", "-q", "--hard", pushed, directory=holder)
+        merged = [{"number": 13, "headRefName": "fix/held", "headRefOid": pushed}]
+        self.assertEqual(
+            [
+                f'MERGED #13 worktree "{both.as_posix()}" branch claude/both',
+                f'MERGED #13 worktree "{holder.as_posix()}" branch fix/held',
+            ],
+            self.merged_lines(StubGh(merged=merged)),
+        )
+
+    def test_no_worktree_is_matched_by_commit_while_git_holds_no_main_to_leave_out(self) -> None:
+        carried = self.add_worktree("carried", "claude/carried")
+        pushed = self.commit_in(carried, "carried")
+        git("update-ref", "-d", "refs/remotes/origin/main", directory=self.hub)
+        merged = [{"number": 9, "headRefName": "fix/pushed", "headRefOid": pushed}]
+        self.assertEqual([], self.merged_lines(StubGh(merged=merged)))
+
     def test_a_merged_listing_that_fails_is_named(self) -> None:
         gh = StubGh()
         original = gh.__call__

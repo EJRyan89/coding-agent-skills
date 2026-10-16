@@ -20,7 +20,10 @@ Run it from the hub on main. One tick:
   BEHIND, or, while GitHub has not computed it (UNKNOWN), when origin's main is not an ancestor of its head; while a
   pull request that changes the validation policies or the runner's selection is open, every other pull request's
   update waits for it;
-- names each worktree whose branch's pull request merged, for repo-cleanup to retire.
+- names each worktree a merged pull request carried, for repo-cleanup to retire: one whose checked-out branch is the
+  pull request's head branch, or whose HEAD is the pull request's head commit or a commit that head reaches and main
+  does not, as when a session pushed its branch's commits under another name; a head commit git does not hold, as
+  when it was never fetched, is matched by its branch's name alone.
 
 With --dry-run it lists and judges the same way and writes nothing: it reads origin's main instead of fetching, and
 prints what it would arm, update, and rerun. Either way it reads origin's branches with ls-remote.
@@ -54,9 +57,12 @@ Every line is one fact:
                                        failing check
     PR_FAILED #<number> <step> <reason>
                                        a step for one pull request that failed: arm, judge, update, or rerun
-    MERGED #<number> worktree "<path>" branch <branch>
-                                       a worktree whose branch's pull request merged, for repo-cleanup to retire
-    MERGED_FAILED <reason>             the merged pull requests could not be listed
+    MERGED #<number> worktree "<path>" branch <branch> [branch <branch>]
+                                       a worktree a merged pull request carried, for repo-cleanup to retire, with one
+                                       branch <branch> for each local branch to delete: the worktree's checked-out
+                                       branch first, then the pull request's head branch when a local branch of that
+                                       name exists and no other worktree has it checked out
+    MERGED_FAILED <reason>             the merged pull requests could not be listed or matched to the worktrees
     REMAINING <count>                  the open pull requests that are not drafts; 0 means none remains
 
 Exit status 0 means the tick ran with nothing left for the shepherd's judgment; 1 that it printed an OUT_OF_STEP,
@@ -135,6 +141,7 @@ class ShepherdError(RuntimeError):
 class Worktree:
     path: Path
     branch: str | None
+    head: str = ""
 
 
 @dataclass(frozen=True)
@@ -143,6 +150,13 @@ class Place:
     hub: Path
     worktrees: tuple[Worktree, ...]
     repository: str
+
+
+@dataclass(frozen=True)
+class Merged:
+    number: int
+    branch: str
+    head: str
 
 
 @dataclass(frozen=True)
@@ -202,17 +216,20 @@ def same_path(first: Path, second: Path) -> bool:
 
 
 def parse_worktrees(listing: str) -> tuple[Worktree, ...]:
-    """The worktrees `git worktree list --porcelain` names, the main one first, with each one's branch."""
+    """The worktrees `git worktree list --porcelain` names, the main one first, with each one's branch and HEAD."""
     worktrees: list[Worktree] = []
     path: Path | None = None
     branch: str | None = None
+    head = ""
     for line in [*listing.splitlines(), ""]:
         if line.startswith("worktree "):
-            path, branch = Path(line[len("worktree ") :]), None
+            path, branch, head = Path(line[len("worktree ") :]), None, ""
+        elif line.startswith("HEAD "):
+            head = line[len("HEAD ") :]
         elif line.startswith("branch refs/heads/"):
             branch = line[len("branch refs/heads/") :]
         elif not line and path is not None:
-            worktrees.append(Worktree(path, branch))
+            worktrees.append(Worktree(path, branch, head))
             path = None
     return tuple(worktrees)
 
@@ -593,22 +610,85 @@ def update(
         outcome.actions.append("updated")
 
 
-def merged_lines(client: GitHubClient, place: Place, pulls: Sequence[Pull]) -> list[str]:
-    """A MERGED line for each worktree but the hub whose branch's pull request merged and has no open one."""
-    arguments = ["pr", "list", "--repo", place.repository, "--state", "merged", "--limit", str(MERGED_LISTED)]
-    payload = client.json([*arguments, "--json", "number,headRefName"])
+def read_merged(client: GitHubClient, repository: str) -> list[Merged]:
+    """The most recently merged pull requests, with each one's head branch and head commit."""
+    arguments = ["pr", "list", "--repo", repository, "--state", "merged", "--limit", str(MERGED_LISTED)]
+    payload = client.json([*arguments, "--json", "number,headRefName,headRefOid"])
     if not isinstance(payload, list):
         raise malformed("a merged pull request listing that is not a list")
-    merged: dict[str, int] = {}
-    for item in payload:
-        if isinstance(item, dict) and isinstance(item.get("number"), int) and isinstance(item.get("headRefName"), str):
-            merged[item["headRefName"]] = max(item["number"], merged.get(item["headRefName"], 0))
-    open_branches = {pull.branch for pull in pulls}
     return [
-        f'MERGED #{merged[worktree.branch]} worktree "{worktree.path.as_posix()}" branch {worktree.branch}'
-        for worktree in place.worktrees[1:]
-        if worktree.branch in merged and worktree.branch not in open_branches
+        Merged(item["number"], item["headRefName"], str(item.get("headRefOid") or ""))
+        for item in payload
+        if isinstance(item, dict) and isinstance(item.get("number"), int) and isinstance(item.get("headRefName"), str)
     ]
+
+
+def own_history(git: GitClient, top: Path, heads: Sequence[str], base: str | None) -> dict[str, list[str]]:
+    """The parents of each commit `heads` reach that main does not, by the commit; empty when git holds no main to
+    leave out, since every commit would then count. A head git does not hold is passed over."""
+    tracking = f"refs/remotes/{REMOTE}/{BASE}"
+    if not heads or git.run(["rev-parse", "--verify", "--quiet", f"{tracking}^{{commit}}"], directory=top).returncode:
+        return {}
+    excluded = [tracking, *([base] if base else [])]
+    listing = git.output(["rev-list", "--parents", "--ignore-missing", *heads, "--not", *excluded], directory=top)
+    return {commit: parents for commit, *parents in (line.split() for line in listing.splitlines() if line)}
+
+
+def reaches(history: dict[str, list[str]], head: str, commit: str) -> bool:
+    """Whether `commit` is `head` or one of its ancestors within `history`."""
+    seen: set[str] = set()
+    pending = [head]
+    while pending:
+        current = pending.pop()
+        if current == commit:
+            return True
+        if current in seen or current not in history:
+            continue
+        seen.add(current)
+        pending.extend(history[current])
+    return False
+
+
+def local_branches(git: GitClient, top: Path) -> set[str]:
+    listing = git.output(["for-each-ref", "--format=%(refname)", "refs/heads/"], directory=top)
+    return {line[len("refs/heads/") :] for line in listing.splitlines() if line.startswith("refs/heads/")}
+
+
+def merged_lines(
+    git: GitClient, client: GitHubClient, place: Place, pulls: Sequence[Pull], base: str | None
+) -> list[str]:
+    """A MERGED line for each worktree but the hub that a merged pull request carried and no open one does."""
+    merged = read_merged(client, place.repository)
+    open_branches = {pull.branch for pull in pulls}
+    open_heads = {pull.head for pull in pulls}
+    candidates = [
+        worktree
+        for worktree in place.worktrees[1:]
+        if worktree.branch not in open_branches and worktree.head not in open_heads
+    ]
+    if not candidates or not merged:
+        return []
+    history = own_history(git, place.top, sorted({each.head for each in merged if each.head}), base)
+    local = local_branches(git, place.top)
+    lines = []
+    for worktree in candidates:
+        carried = [
+            each
+            for each in merged
+            if each.branch == worktree.branch
+            or (worktree.head in history and reaches(history, each.head, worktree.head))
+        ]
+        if not carried:
+            continue
+        others = {other.branch for other in place.worktrees if other.path != worktree.path}
+        branches = [worktree.branch] if worktree.branch else []
+        for each in sorted(carried, key=lambda item: -item.number):
+            if each.branch in local and each.branch not in others and each.branch not in branches:
+                branches.append(each.branch)
+        named = "".join(f" branch {branch}" for branch in branches)
+        number = max(each.number for each in carried)
+        lines.append(f'MERGED #{number} worktree "{worktree.path.as_posix()}"{named}')
+    return lines
 
 
 def pull_line(pull: Pull, outcome: Outcome) -> str:
@@ -665,9 +745,9 @@ def tick(git: GitClient, client: GitHubClient, directory: Path, *, dry_run: bool
             emit(line)
         flagged = flagged or outcomes[pull.number].flagged
     try:
-        for line in merged_lines(client, place, pulls):
+        for line in merged_lines(git, client, place, pulls, heads.get(BASE)):
             emit(line)
-    except GitHubError as exc:
+    except (GitError, GitHubError) as exc:
         emit(f"MERGED_FAILED {flat_text(str(exc))}")
         flagged = True
     emit(f"REMAINING {len(pulls)}")
