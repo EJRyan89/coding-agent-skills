@@ -1,18 +1,21 @@
 """Deterministic measurements for the analyze-skill-cost audit.
 
-    locate NAME [--repo DIR] [--home DIR]   find the skill's main file in the user, project, and source skill roots
+    locate [NAME] [--repo DIR] [--home DIR] find the skill's main file in the user, project, and source skill roots
     inventory DIR                           classify and size every file, estimate tokens, flag structure that
                                             departs from the published guidance, and size the Markdown files
                                             the skill reads from outside its folder
     tools FILE                              compare the tools a skill body references with its allowed-tools, and
                                             size the description every session loads
-    scan FILE...                            list lines with cost cues for the agent to judge, subagent prompts
-                                            that a script writes at runtime, and the sample of each such prompt
+    scan PATH...                            list lines with cost cues for the agent to judge, subagent prompts
+                                            that a script writes at runtime, and the sample of each such prompt;
+                                            a skill folder stands for its SKILL.md and then every other Markdown
+                                            file inventory lists, in its order
 
 Every command prints one fact per line in forward-slash paths. locate prefers a source skill to its deployed
-copy, and counts a .agents/skills shim that points to the .claude/skills skill of its name as that skill; it
-exits 1 after NOT_FOUND or AMBIGUOUS. A missing or unreadable input prints FAILED <reason> as its last line and
-exits 1; only a usage error exits 2.
+copy, and counts a .agents/skills shim that points to the .claude/skills skill of its name as that skill. It ends
+NOT_FOUND and its AVAILABLE lines, or AMBIGUOUS lines, with STOP <message>, the message the audit stops with, and
+prints only that line for an empty name; it exits 1 after STOP. A missing or unreadable input prints
+FAILED <reason> as its last line and exits 1; only a usage error exits 2.
 
 Token estimate: ceil(prose_chars / 4 + code_chars / 3), in characters of the UTF-8 text. Every
 character of a helper script or data file is code. In Markdown, lines inside fenced code blocks,
@@ -115,6 +118,7 @@ SKIPPED_DIRECTORIES = frozenset({".git", "__pycache__", "node_modules"})
 # Why a file the skill loads cannot be measured.
 NOT_UTF8 = "not UTF-8 text"
 SKILL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+USAGE = "usage: analyze-skill-cost <SkillName>"
 KNOWN_TOOLS = (
     "Agent",
     "AskUserQuestion",
@@ -680,6 +684,8 @@ def identity(path: Path) -> str:
 
 
 def locate(name: str, home: Path, repo: Path | None) -> list[str]:
+    if not name:
+        return [f"STOP {USAGE}"]
     if not SKILL_NAME.fullmatch(name):
         raise InputError(f"invalid skill name {name!r}")
     roots = skill_roots(home, repo)
@@ -706,9 +712,15 @@ def locate(name: str, home: Path, repo: Path | None) -> list[str]:
         scope, path = hits[0]
         return [*lines, f"SKILL_FILE {posix(path)}", f"SKILL_DIR {posix(path.parent)}", f"SCOPE {scope}"]
     if hits:
-        return [*lines, *(f"AMBIGUOUS {scope} {posix(path)}" for scope, path in hits)]
+        paths = ", ".join(posix(path) for _, path in hits)
+        return [
+            *lines,
+            *(f"AMBIGUOUS {scope} {posix(path)}" for scope, path in hits),
+            f"STOP ambiguous skill name '{name}' — found at: {paths}. Rename one or delete the duplicate.",
+        ]
     lines.append(f"NOT_FOUND {name}")
     listed: set[str] = set()
+    available: dict[str, list[str]] = {}
     for scope, root in roots:
         if not root.is_dir():
             continue
@@ -716,7 +728,9 @@ def locate(name: str, home: Path, repo: Path | None) -> list[str]:
             if directory.is_dir() and skill_files(scope, directory) and identity(directory) not in listed:
                 listed.add(identity(directory))
                 lines.append(f"AVAILABLE {scope} {directory.name}")
-    return lines
+                available.setdefault(scope, []).append(directory.name)
+    groups = " / ".join(f"{scope}: {', '.join(names)}" for scope, names in available.items()) or "none"
+    return [*lines, f"STOP skill '{name}' not found. Available skills: {groups}"]
 
 
 def git_toplevel(directory: Path, git: GitClient | None = None) -> Path | None:
@@ -759,10 +773,9 @@ def normalized_blocks(text: str) -> list[tuple[int, tuple[str, ...]]]:
     return result
 
 
-def inventory(directory: Path) -> list[str]:
-    if not directory.is_dir():
-        raise InputError(f"skill directory not found: {directory}")
-    files = sorted(
+def folder_files(directory: Path) -> list[Path]:
+    """Every file of a skill folder that inventory sizes, in the order it lists them."""
+    return sorted(
         (
             path
             for path in directory.rglob("*")
@@ -770,6 +783,12 @@ def inventory(directory: Path) -> list[str]:
         ),
         key=lambda path: posix(path.relative_to(directory)).casefold(),
     )
+
+
+def inventory(directory: Path) -> list[str]:
+    if not directory.is_dir():
+        raise InputError(f"skill directory not found: {directory}")
+    files = folder_files(directory)
     lines: list[str] = []
     totals = {name: [0, 0, 0] for name in CATEGORIES}
     flags: list[str] = []
@@ -1161,7 +1180,19 @@ def powershell_inline_code(words: list[str]) -> bool:
     return False
 
 
-def scan(paths: list[Path]) -> list[str]:
+def scanned_files(path: Path) -> list[Path]:
+    """A file as given, or a skill folder's main file followed by every doc file inventory lists."""
+    if not path.is_dir():
+        return [path]
+    files = folder_files(path)
+    main = [file for file in files if category(file.relative_to(path)) == "main"]
+    if not main:
+        raise InputError(f"no SKILL.md in {posix(path)}")
+    return [*main, *(file for file in files if category(file.relative_to(path)) == "doc")]
+
+
+def scan(given: list[Path]) -> list[str]:
+    paths = [file for path in given for file in scanned_files(path)]
     missing = [posix(path) for path in paths if not path.is_file()]
     if missing:
         raise InputError("file not found: " + ", ".join(missing))
@@ -1286,12 +1317,12 @@ def main(arguments: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
     find = commands.add_parser("locate", help="find a skill's main file")
-    find.add_argument("name")
+    find.add_argument("name", nargs="?", default="")
     find.add_argument("--repo", type=Path, help="project root; default: the Git root of the current directory")
     find.add_argument("--home", type=Path, default=Path.home())
     commands.add_parser("inventory", help="size every file of a skill").add_argument("directory", type=Path)
     commands.add_parser("tools", help="compare referenced tools with allowed-tools").add_argument("file", type=Path)
-    commands.add_parser("scan", help="list cost cues").add_argument("files", type=Path, nargs="+")
+    commands.add_parser("scan", help="list cost cues").add_argument("paths", type=Path, nargs="+")
     args = parser.parse_args(arguments)
     try:
         if args.command == "locate":
@@ -1302,7 +1333,7 @@ def main(arguments: list[str] | None = None) -> int:
         elif args.command == "tools":
             output = tools(args.file)
         else:
-            output = scan(args.files)
+            output = scan(args.paths)
     except InputError as exc:
         print(f"FAILED {exc}")
         return 1
@@ -1311,7 +1342,7 @@ def main(arguments: list[str] | None = None) -> int:
         print(f"FAILED cannot read{where}: {exc.strerror or exc}")
         return 1
     print("\n".join(output))
-    return 1 if any(line.startswith(("NOT_FOUND ", "AMBIGUOUS ", "UNREADABLE ")) for line in output) else 0
+    return 1 if any(line.startswith(("STOP ", "UNREADABLE ")) for line in output) else 0
 
 
 if __name__ == "__main__":
