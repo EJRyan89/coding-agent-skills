@@ -2041,8 +2041,8 @@ class RunPieceTests(GitTestCase):
         [group] = definition["hooks"]["PreToolUse"]
         self.assertEqual("Read|Grep|Glob|Write|Edit|Bash", group["matcher"])
         [hook] = group["hooks"]
-        self.assertEqual({"type", "command", "timeout"}, set(hook))
-        self.assertEqual(("command", 30), (hook["type"], hook["timeout"]))
+        self.assertEqual({"type", "command", "timeout", "onFailure"}, set(hook))
+        self.assertEqual(("command", 30, "block"), (hook["type"], hook["timeout"], hook["onFailure"]))
         guard = (self.root / ".claude/skills/code-review-core/scripts/review_guard.py").as_posix()
         self.assertIn(f"runpy.run_path(os.path.expanduser('{guard}'),", hook["command"])
         self.assertNotIn("~/", hook["command"])
@@ -2074,6 +2074,8 @@ class RunPieceTests(GitTestCase):
                 profile_guard, "'~/elsewhere.py'"
             ),
             "its hooks are not one PreToolUse command hook": source.replace("  PreToolUse:", "  PostToolUse:"),
+            "its hooks name onFailure 0 times, not once": source.replace("          onFailure: block\n", ""),
+            "its hook's onFailure is continue, not block": source.replace("onFailure: block", "onFailure: continue"),
             "its hooks name type 2 times, not once": source.replace(
                 "          timeout: 30", "          timeout: 30\n        - type: command\n          command: echo"
             ),
