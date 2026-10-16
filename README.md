@@ -12,7 +12,7 @@ Portable agent skills for Claude Code, Codex, and GitHub Copilot CLI, with a gua
 | [`github-activity-report`](docs/skills.md#github-activity-report) | Reports one user's pull requests, commits, and reviews in one GitHub organization, month by month. |
 | [`repo-cleanup`](docs/skills.md#repo-cleanup) | Performs guarded Git repository housekeeping. |
 | [`update-coding-agent-skills`](docs/skills.md#update-coding-agent-skills) | Fast-forwards the clone the skills were deployed from to `origin/main` and redeploys them. |
-| `dotnet` | An opt-in bundle installed together: [`dotnet-format`](docs/skills.md#dotnet-format), which runs formatting and analyzer checks against changed C# files, and [`dotnet-dependencies`](docs/skills.md#dotnet-dependencies), which answers why a package or assembly is in a solution, where it is used, and which versions conflict. |
+| [`dotnet`](docs/dotnet.md) | An opt-in bundle installed together: [`dotnet-format`](docs/skills.md#dotnet-format), which runs formatting and analyzer checks against changed C# files, and [`dotnet-dependencies`](docs/skills.md#dotnet-dependencies), which answers why a package or assembly is in a solution, where it is used, and which versions conflict. |
 | [`code-review-operations`](docs/code-review-operations.md) | A bundle installed together: [`review-prs`](docs/skills.md#review-prs), [`update-pr-dashboard`](docs/skills.md#update-pr-dashboard), [`review-insights`](docs/skills.md#review-insights), [`flag-review-finding`](docs/skills.md#flag-review-finding), and [`review-document`](docs/skills.md#review-document). |
 
 [Skills](docs/skills.md) explains how to start each skill, its arguments with examples, and what it needs installed. Most skills run fully on Claude Code, Codex CLI, and GitHub Copilot CLI; [Runtime support](docs/skills.md#runtime-support) lists the exceptions and what each one loses: the code reviews on Codex and Copilot, and user-only skills in a headless Copilot session.
@@ -82,6 +82,7 @@ Using the skills:
 | [Skills](docs/skills.md) | Starting each skill, its arguments, and what it needs |
 | [Installation](docs/installation.md) | Requirements, install commands, deploying, updating, and uninstalling |
 | [Code-review operations](docs/code-review-operations.md) | Configuring and running the code-review bundle |
+| [.NET skills](docs/dotnet.md) | The `dotnet` bundle: its skills, selecting it, the projects they see, and what they need |
 | [Codex support](docs/codex-support.md) | Discovery on Windows and Linux, and the Windows settings Codex CLI needs |
 | [Copilot support](docs/copilot-support.md) | Discovery precedence, headless sessions, inline reviews, and the bounded review host |
 | [Recovery](docs/recovery.md) | Interrupted deployments, backups, locks, and ownership conflicts |

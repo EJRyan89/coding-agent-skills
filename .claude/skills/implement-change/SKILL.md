@@ -15,7 +15,7 @@ Every repository-specific fact comes from the repository's implementation profil
 
 ## 1. Worktree
 
-Create the task's working tree with the command in *Worktree*, then move the session into it with the runtime's worktree transition, before planning: plans and project memory are keyed by working directory.
+Settle the change's title type from the request first; *Pull requests* lists the types. Then follow *Worktree* for the place the session started. From the main checkout, create the task's working tree with its command and move the session into it with the runtime's worktree transition. From a worktree the runtime already made for the session, stay in it, create no second tree, and start its branch from the current base as *Worktree* says. Do this before planning: plans and project memory are keyed by working directory. If intake or the bug class later changes the type, rename the branch as *Worktree* says before its first push.
 
 ## 2. Intake
 
@@ -37,7 +37,8 @@ Plan in the runtime's read-only planning mode, on the strongest model it offers.
 - the files to change;
 - the tests to write first;
 - the validation to run, from *Validation*;
-- the documentation to update, from *Documentation*.
+- the documentation to update, from *Documentation*;
+- the pull request's title, and whether the change owes an upgrade note, from *Contract files* and *Pull requests*.
 
 Choose the model by this rubric:
 
@@ -61,7 +62,13 @@ Work test first: write the failing test, then make it pass. Update *Documentatio
 
 ## 8. Pull request
 
-Bring the branch up to date with its base as the repository's instructions describe; continuous integration validates the result, so it needs no local rerun. Title the pull request as *Pull requests* says. Write the body from the repository's pull request template to a file, naming each issue the change resolves in its own `Closes #<number>` line, and open the pull request:
+Take these in order:
+
+1. Write the title, as *Pull requests* says, and the body, from the repository's pull request template, each to a file. Name each issue the change resolves in the body in its own `Closes #<number>` line, and state the upgrade note when the change owes one.
+2. Run *Validation*'s title and body checks on those two files.
+3. Bring the branch up to date with its base as *Pull requests* says; continuous integration validates the result, so it needs no local rerun.
+4. Push the branch under its own name, as *Pull requests* says, so opening the pull request does not stop to ask where to push it.
+5. Open the pull request:
 
 ```bash
 gh pr create --title '<title>' --body-file '<file>'
@@ -69,5 +76,5 @@ gh pr create --title '<title>' --body-file '<file>'
 
 Single quotes keep the title as written, since neither shell expands anything between them, but a quote in the title would end them. In Bash, write each `'` in the title as `'\''`. In PowerShell, write it as `''`, and double each `‘`, `’`, `‚`, and `‛` too, since PowerShell ends a single-quoted string at any of them.
 
-When a continuous integration leg fails, reproduce that leg as *Validation* says, fix it, and push. While the pull request is open, bring it current by merging its base, never by rebasing; the merge may be made on the remote, so pull the branch before the next push. Do not merge.
+When a continuous integration leg fails, reproduce that leg as *Validation* says, fix it, and push. While the pull request is open, bring it current by merging its base, never by rebasing; the merge may be made on the remote, so pull the branch before the next push. If a push is rejected, fetch and inspect the remote branch before anything else. Do not merge.
 
