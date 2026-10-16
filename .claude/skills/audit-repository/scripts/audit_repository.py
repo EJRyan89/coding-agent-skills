@@ -1,12 +1,20 @@
 """The deterministic parts of this repository's two audits per release, so the agent only starts the readers,
 confirms what they find, and files it.
 
-    release   group the files changed since the latest tag reachable from HEAD (or --since REF) into the four areas
-              and write one brief per area that changed, for the release audit before tagging
-    rotation  name the area the rotation record shows read whole least recently and write its whole-area brief, for
-              the rotation audit after tagging; with --record TAG, append that area to the record for TAG instead,
-              which is the only write to the repository: it writes a copy beside the record and replaces the record
-              with it, so a write that fails leaves the record as it was
+    release        group the files changed since the latest tag reachable from HEAD (or --since REF) into the four
+                   areas and write the briefs for each area that changed, for the release audit before tagging
+    rotation       name the area the rotation record shows read whole least recently and write its whole-area briefs,
+                   naming in each the open issues the next milestone carries, for the rotation audit after tagging;
+                   with --record TAG, append that area to the record for TAG instead, which is the only write to the
+                   repository and is refused in the main checkout, so it lands through a worktree's pull request: it
+                   writes a copy beside the record and replaces the record with it, so a write that fails leaves the
+                   record as it was
+    duplicates     search the open issues for each QUERY, so a finding already filed is not filed twice
+    remove-briefs  delete a briefs directory a release or rotation run printed as BRIEFS, and nothing else
+
+An area holding more than MAX_FILES_PER_READER files is split between readers by directory: one brief per part, no
+part above that size, and a directory split only when it alone holds more than a part. A release or rotation run
+reads the open milestones and, for rotation, the next milestone's open issues through gh, from the checkout audited.
 
 Every line is one fact:
 
@@ -20,16 +28,27 @@ Every line is one fact:
     NEXT <area>                        rotation: the area to read whole now
     FILES <count>                      rotation: the files in that area at HEAD
     RECORDED <tag> <area> <date>       rotation --record: the entry appended to the record
+    MILESTONE <severity> "<title>"     the milestone a finding of each severity is filed into, or none when no open
+                                       milestone is that one
+    CARRIED <number> "<title>"         rotation: an open issue of the next milestone, also named in every brief
+    PROVENANCE "<sentence>"            the sentence that opens each filed issue's body: the audit, its scope, its date
     DRIFT <kind> <what it is>          each kind of drift the briefs ask the readers to look for
     TEMPLATE <field> <what it holds>   each field of a finding the briefs ask for
     SECTION <name> <what it holds>     each section of the report, in order
+    READERS <area> <count>             the briefs, one per reader, an area's files are split into
     BRIEFS "<directory>"               the new directory holding the briefs
-    BRIEF <area> "<file>"              one brief, the whole prompt for one read-only reader
+    BRIEF <name> "<file>"              one brief, the whole prompt for one read-only reader: <area> for a whole
+                                       area, <area>-<part> for one part of it
+    MATCHES <query> <count>            duplicates: how many open issues the query numbered <query>, from 1, found
+    MATCH <query> <number> "<title>"   duplicates: one of them
+    REMOVED "<directory>"              remove-briefs: the briefs directory deleted
 
-A git command that fails is reported with git's own reason; a ref is reported as naming no commit only when git
-finds none, and a repository with no tag reachable from HEAD only when git lists none.
+A title is printed as a JSON string, flattened to one line. A git or gh command that fails is reported with its own
+reason; a ref is reported as naming no commit only when git finds none, and a repository with no tag reachable from
+HEAD only when git lists none.
 
-Exit status 0 means the briefs were written, or the entry recorded; 1 a last line FAILED <reason>; 2 a usage error.
+Exit status 0 means the briefs were written, the entry recorded, the search run, or the directory deleted; 1 a last
+line FAILED <reason>; 2 a usage error.
 """
 
 from __future__ import annotations
@@ -43,16 +62,29 @@ import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date
+from functools import partial
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-core" / "scripts"))
 
 from console import run_main
+from flat_text import flat_text
 from git_client import GitClient, GitError, classify_failure
+from github_client import GitHubClient, GitHubError, subprocess_runner
 
 # The rotation record, relative to the top of the repository it describes.
 RECORD_PATH = ".claude/skills/audit-repository/references/rotation.json"
 DATE_FORMAT = re.compile(r"\d{4}-\d{2}-\d{2}")
+# A release tag or milestone title: vMAJOR.MINOR.PATCH.
+VERSION = re.compile(r"v?(\d+)\.(\d+)\.(\d+)")
+# The most files one reader is given; a larger area is split between readers by directory.
+MAX_FILES_PER_READER = 60
+# Every briefs directory starts with this, directly in the temporary directory; remove-briefs deletes no other.
+BRIEFS_PREFIX = "audit-repository-"
+# The most open issues one duplicate search lists, and one milestone's open issues the rotation brief names.
+SEARCH_LIMIT = 30
+CARRIED_LIMIT = 1000
 
 
 @dataclass(frozen=True)
@@ -139,6 +171,8 @@ DRIFT_KINDS = (
     ("error-path", "an error path that swallows a failure or misreports it"),
     ("trust-boundary", "anything an author controls that the threat model in SECURITY.md does not cover"),
 )
+# The severities a finding may have; milestone_lines names the milestone each is filed into.
+SEVERITIES = ("defect", "drift", "polish")
 FINDING_FIELDS = (
     ("location", "path:line of each side, with forward slashes"),
     ("kind", "one kind of drift"),
@@ -213,11 +247,23 @@ def commit_of(git: GitClient, repository: Path, ref: str) -> str:
     raise AuditError(f"git rev-parse: {reason}")
 
 
-def latest_tag(git: GitClient, repository: Path, head: str) -> str:
-    """The latest tag reachable from `head`, or AuditError: none is reachable only when git lists none."""
+def reachable_tag(git: GitClient, repository: Path, head: str) -> str | None:
+    """The latest tag reachable from `head`, or None only when git lists none."""
     if not git_output(git, repository, ["tag", "--merged", head]).strip():
-        raise AuditError("no tag is reachable from HEAD; pass --since <ref>")
+        return None
     return git_output(git, repository, ["describe", "--tags", "--abbrev=0", head]).strip()
+
+
+def checkout_top(git: GitClient, repository: Path) -> tuple[Path, bool]:
+    """The top of the checkout, and whether it is the main checkout: the one whose `.git` is the common directory
+    every worktree of the repository shares, rather than a linked worktree."""
+    output = git_output(
+        git, repository, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"]
+    ).splitlines()
+    if len(output) != 2:
+        raise AuditError(f"git rev-parse printed {len(output)} lines where it prints the top and the common directory")
+    top, common = Path(output[0]), Path(output[1])
+    return top, os.path.normcase(common.resolve()) == os.path.normcase((top / ".git").resolve())
 
 
 def changes(git: GitClient, repository: Path, base: str, head: str) -> list[Change]:
@@ -230,6 +276,73 @@ def tracked_files(git: GitClient, repository: Path, head: str) -> list[str]:
     return [
         path for path in git_output(git, repository, ["ls-tree", "-r", "-z", "--name-only", head]).split("\0") if path
     ]
+
+
+# --- GitHub ---------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Issue:
+    number: int
+    title: str
+
+
+def gh_json(github: GitHubClient, arguments: Sequence[str]) -> Any:
+    try:
+        return github.json(arguments)
+    except GitHubError as exc:
+        raise AuditError(f"gh {arguments[0]} {arguments[1]}: {exc}") from exc
+
+
+def issues_of(payload: Any, what: str) -> list[Issue]:
+    """The issues a `gh issue list --json number,title` printed, or AuditError when it printed something else."""
+    if not isinstance(payload, list) or not all(
+        isinstance(item, dict) and isinstance(item.get("number"), int) and isinstance(item.get("title"), str)
+        for item in payload
+    ):
+        raise AuditError(f"gh issue list printed {what} that is not a list of issues with a number and a title")
+    return [Issue(item["number"], item["title"]) for item in payload]
+
+
+def version_of(name: str | None) -> tuple[int, int, int] | None:
+    match = VERSION.fullmatch(name or "")
+    return None if match is None else (int(match[1]), int(match[2]), int(match[3]))
+
+
+def open_milestones_after(github: GitHubClient, released: str | None) -> list[str]:
+    """The titles of the open milestones named for a version above the released tag's, lowest first; every one named
+    for a version when no released tag is a version."""
+    payload = gh_json(github, ["api", "repos/{owner}/{repo}/milestones?state=open&per_page=100"])
+    if not isinstance(payload, list) or not all(
+        isinstance(item, dict) and isinstance(item.get("title"), str) for item in payload
+    ):
+        raise AuditError("gh api printed milestones that are not a list of objects with a title")
+    floor = version_of(released)
+    named = []
+    for item in payload:
+        version = version_of(item["title"])
+        if version is not None and (floor is None or version > floor):
+            named.append((version, item["title"]))
+    return [title for _, title in sorted(named)]
+
+
+def carried_issues(github: GitHubClient, milestone: str) -> list[Issue]:
+    arguments = ["issue", "list", "--state", "open", f"--milestone={milestone}", f"--limit={CARRIED_LIMIT}"]
+    return issues_of(gh_json(github, [*arguments, "--json", "number,title"]), f"the open issues of {milestone}")
+
+
+def json_text(text: str) -> str:
+    """Text from GitHub on one line of output, flattened and written as a JSON string."""
+    return json.dumps(flat_text(text), ensure_ascii=False)
+
+
+def milestone_lines(release_milestone: str | None, next_milestone: str | None) -> list[str]:
+    """Where each severity is filed: a defect into the release's milestone, and drift and polish into the next."""
+    lines = []
+    for severity in SEVERITIES:
+        title = release_milestone if severity == "defect" else next_milestone
+        lines.append(f"MILESTONE {severity} {json_text(title) if title is not None else 'none'}")
+    return lines
 
 
 # --- the rotation record --------------------------------------------------------------------------
@@ -348,7 +461,20 @@ def common_sections(area: Area) -> list[str]:
     return lines
 
 
-def release_brief(area: Area, files: list[Change], base: str, base_commit: str, head: str) -> str:
+def part_note(part: int, parts: int) -> list[str]:
+    """What a reader of one part of a split area is told; nothing for an area one reader reads."""
+    if parts == 1:
+        return []
+    return [
+        "",
+        f"This brief is part {part} of {parts} of the area, split by directory: other readers read the other parts, "
+        "so read the files listed here.",
+    ]
+
+
+def release_brief(
+    area: Area, files: list[Change], base: str, base_commit: str, head: str, part: int = 1, parts: int = 1
+) -> str:
     lines = [
         f"# Release audit: {area.title}",
         "",
@@ -361,6 +487,7 @@ def release_brief(area: Area, files: list[Change], base: str, base_commit: str, 
         "describe it; "
         f"`git log --oneline {base_commit}..{head} -- <file>` names the pull requests that changed it. A deleted file "
         "(D) is read through its diff and whatever still refers to it.",
+        *part_note(part, parts),
         "",
         "Ask whether the release keeps what it says: each change does what its issue and its upgrade note say, no "
         "contract or document contradicts the code it describes, every changed behavior has its test, and every grant "
@@ -376,7 +503,9 @@ def release_brief(area: Area, files: list[Change], base: str, base_commit: str, 
     return "\n".join(lines) + "\n"
 
 
-def rotation_brief(area: Area, files: list[str], head: str) -> str:
+def rotation_brief(
+    area: Area, files: list[str], head: str, carried: Sequence[Issue] = (), part: int = 1, parts: int = 1
+) -> str:
     lines = [
         f"# Rotation audit: {area.title}",
         "",
@@ -385,6 +514,7 @@ def rotation_brief(area: Area, files: list[str], head: str) -> str:
         "",
         f"This area is read whole: every file below as it is at {head}, not only what changed lately. Read each one "
         "beside the contracts, documents, and tests that describe it, and any carried issues named after this brief.",
+        *part_note(part, parts),
         "",
         "Ask whether the area keeps what it says: no contract or document contradicts the code it describes, every "
         "behavior a document promises has its test, and nothing is left that no caller reaches.",
@@ -396,23 +526,54 @@ def rotation_brief(area: Area, files: list[str], head: str) -> str:
         *(f"- {code_literal(path)}" for path in files),
         *common_sections(area),
     ]
+    if carried:
+        lines += ["", "## Carried issues", "", *(f"- #{issue.number} {code_literal(issue.title)}" for issue in carried)]
     return "\n".join(lines) + "\n"
 
 
-def write_briefs(briefs: list[tuple[Area, str]]) -> list[str]:
-    """Write each brief to a new temporary directory and return the lines that name them."""
+def parent_of(path: str) -> str:
+    return path.rpartition("/")[0]
+
+
+def split_for_readers(paths: list[str]) -> list[list[str]]:
+    """An area's files in parts of at most MAX_FILES_PER_READER, as even as whole directories allow: files of one
+    directory stay in one part unless the directory alone holds more than a part does. One part when they fit."""
+    if len(paths) <= MAX_FILES_PER_READER:
+        return [paths]
+    size = -(-len(paths) // -(-len(paths) // MAX_FILES_PER_READER))
+    groups: list[list[str]] = []
+    for path in sorted(paths):
+        if groups and parent_of(groups[-1][0]) == parent_of(path) and len(groups[-1]) < size:
+            groups[-1].append(path)
+        else:
+            groups.append([path])
+    parts: list[list[str]] = []
+    for group in groups:
+        if parts and len(parts[-1]) + len(group) <= size:
+            parts[-1].extend(group)
+        else:
+            parts.append(group)
+    return parts
+
+
+def brief_names(area: Area, parts: int) -> list[str]:
+    return [area.name] if parts == 1 else [f"{area.name}-{part}" for part in range(1, parts + 1)]
+
+
+def write_briefs(briefs: list[tuple[str, str]]) -> list[str]:
+    """Write each named brief to a new temporary directory and return the lines that name them."""
     try:
-        directory = Path(tempfile.mkdtemp(prefix="audit-repository-"))
+        directory = Path(tempfile.mkdtemp(prefix=BRIEFS_PREFIX))
     except OSError as exc:
         raise AuditError(f"cannot create the briefs directory: {exc}") from exc
     lines = [f'BRIEFS "{directory.as_posix()}"']
-    for area, text in briefs:
-        path = directory / f"{area.name}.md"
+    for name, text in briefs:
+        path = directory / f"{name}.md"
         try:
             path.write_text(text, encoding="utf-8", errors="replace", newline="\n")
         except OSError as exc:
             raise AuditError(f"cannot write the brief {path.as_posix()}: {exc}") from exc
-        lines.append(f'BRIEF {area.name} "{path.as_posix()}"')
+        lines.append(f'BRIEF {name} "{path.as_posix()}"')
     return lines
 
 
@@ -422,27 +583,51 @@ def guidance_lines() -> list[str]:
     return lines + [f"SECTION {section} {what}" for section, what in REPORT_SECTIONS]
 
 
+def short(commit: str) -> str:
+    return commit[:7]
+
+
 # --- commands -------------------------------------------------------------------------------------
 
 
-def release(git: GitClient, repository: Path, since: str | None) -> list[str]:
+def release(
+    git: GitClient, github: GitHubClient, repository: Path, since: str | None, today: Callable[[], date]
+) -> list[str]:
     head = commit_of(git, repository, "HEAD")
-    base = since if since is not None else latest_tag(git, repository, head)
+    released = reachable_tag(git, repository, head)
+    if since is not None:
+        base = since
+    elif released is not None:
+        base = released
+    else:
+        raise AuditError("no tag is reachable from HEAD; pass --since <ref>")
     base_commit = commit_of(git, repository, base)
     found = changes(git, repository, base_commit, head)
     by_area = {area.name: [change for change in found if area_of(change.path) is area] for area in AREAS}
+    milestones = open_milestones_after(github, released)
     lines = [f"BASE {base} {base_commit}", f"HEAD {head}", f"CHANGED {len(found)}"]
     lines += [f"AREA {area.name} {len(by_area[area.name])}" for area in AREAS]
-    lines += guidance_lines()
-    briefs = [
-        (area, release_brief(area, by_area[area.name], base, base_commit, head)) for area in AREAS if by_area[area.name]
-    ]
+    lines += milestone_lines(milestones[0] if milestones else None, milestones[1] if len(milestones) > 1 else None)
+    sentence = f"Found by the release audit of the changes since {base}, at commit {short(head)}, on {today()}."
+    lines += [f"PROVENANCE {json_text(sentence)}", *guidance_lines()]
+    briefs: list[tuple[str, str]] = []
+    for area in AREAS:
+        if not by_area[area.name]:
+            continue
+        status = {change.path: change.status for change in by_area[area.name]}
+        parts = split_for_readers(list(status))
+        lines.append(f"READERS {area.name} {len(parts)}")
+        for number, (name, paths) in enumerate(zip(brief_names(area, len(parts)), parts, strict=True), start=1):
+            files = [Change(status[path], path) for path in paths]
+            briefs.append((name, release_brief(area, files, base, base_commit, head, number, len(parts))))
     return lines + (write_briefs(briefs) if briefs else [])
 
 
-def rotation(git: GitClient, repository: Path, record: str | None, today: Callable[[], date]) -> list[str]:
+def rotation(
+    git: GitClient, github: GitHubClient, repository: Path, record: str | None, today: Callable[[], date]
+) -> list[str]:
     head = commit_of(git, repository, "HEAD")
-    top = Path(git_output(git, repository, ["rev-parse", "--show-toplevel"]).strip())
+    top, main_checkout = checkout_top(git, repository)
     path = top / RECORD_PATH
     entries = read_record(path)
     reads = last_reads(entries)
@@ -456,10 +641,31 @@ def rotation(git: GitClient, repository: Path, record: str | None, today: Callab
     area = next_area(entries)
     lines.append(f"NEXT {area.name}")
     if record is not None:
+        if main_checkout:
+            raise AuditError(
+                f"{top.as_posix()} is the main checkout; record the rotation area from a worktree, such as one "
+                "`python tools/worktrees.py new chore <name>` creates, and merge it through a pull request"
+            )
         return [*lines, append_entry(git, repository, path, entries, Entry(today().isoformat(), record, area.name))]
     files = [file for file in tracked_files(git, repository, head) if area_of(file) is area]
-    lines += [f"FILES {len(files)}", *guidance_lines()]
-    return lines + write_briefs([(area, rotation_brief(area, files, head))])
+    released = reachable_tag(git, repository, head)
+    milestones = open_milestones_after(github, released)
+    following = milestones[0] if milestones else None
+    carried = carried_issues(github, following) if following is not None else []
+    lines += [f"FILES {len(files)}", *milestone_lines(following, following)]
+    lines += [f"CARRIED {issue.number} {json_text(issue.title)}" for issue in carried]
+    after = f" after {released}" if released is not None else ""
+    sentence = (
+        f"Found by the rotation audit{after}, the {area.name} area read whole at commit {short(head)}, on {today()}."
+    )
+    lines += [f"PROVENANCE {json_text(sentence)}", *guidance_lines()]
+    parts = split_for_readers(files)
+    lines.append(f"READERS {area.name} {len(parts)}")
+    briefs = [
+        (name, rotation_brief(area, paths, head, carried, number, len(parts)))
+        for number, (name, paths) in enumerate(zip(brief_names(area, len(parts)), parts, strict=True), start=1)
+    ]
+    return lines + write_briefs(briefs)
 
 
 def append_entry(git: GitClient, repository: Path, path: Path, entries: list[Entry], entry: Entry) -> str:
@@ -473,6 +679,44 @@ def append_entry(git: GitClient, repository: Path, path: Path, entries: list[Ent
     return f"RECORDED {entry.tag} {entry.area} {entry.date}"
 
 
+def duplicates(github: GitHubClient, queries: Sequence[str]) -> list[str]:
+    """Each query's open issues, as GitHub's issue search finds them."""
+    lines = []
+    for number, query in enumerate(queries, start=1):
+        arguments = ["issue", "list", "--state", "open", f"--search={query}", f"--limit={SEARCH_LIMIT}"]
+        found = issues_of(gh_json(github, [*arguments, "--json", "number,title"]), f"for query {number}")
+        lines.append(f"MATCHES {number} {len(found)}")
+        lines += [f"MATCH {number} {issue.number} {json_text(issue.title)}" for issue in found]
+    return lines
+
+
+def remove_briefs(directory: Path) -> list[str]:
+    """Delete a briefs directory this script made: a BRIEFS_PREFIX directory directly in the temporary directory,
+    reached through no link, that holds only Markdown files. Anything else is refused and left as it is."""
+    temporary = Path(tempfile.gettempdir()).resolve()
+    resolved = directory.resolve()
+    if (
+        directory.is_symlink()
+        or not resolved.is_dir()
+        or resolved.parent != temporary
+        or not resolved.name.startswith(BRIEFS_PREFIX)
+    ):
+        raise AuditError(f"{directory.as_posix()} is not a briefs directory this script made in {temporary.as_posix()}")
+    try:
+        entries = list(resolved.iterdir())
+        strays = [entry.name for entry in entries if entry.is_symlink() or not entry.is_file() or entry.suffix != ".md"]
+        if strays:
+            raise AuditError(
+                f"{resolved.as_posix()} holds more than briefs, such as {strays[0]}, so it is left as it is"
+            )
+        for entry in entries:
+            entry.unlink()
+        resolved.rmdir()
+    except OSError as exc:
+        raise AuditError(f"cannot remove {resolved.as_posix()}: {exc}") from exc
+    return [f'REMOVED "{resolved.as_posix()}"']
+
+
 def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--repository", type=Path, default=Path(), help="the checkout to audit (default: here)")
@@ -482,19 +726,33 @@ def build_parser() -> argparse.ArgumentParser:
     release_parser.add_argument("--since", metavar="REF", help="the base (default: the latest tag reachable from HEAD)")
     rotation_parser = commands.add_parser("rotation", parents=[common], help="brief the next area to read whole")
     rotation_parser.add_argument("--record", metavar="TAG", help="append the next area to the record for TAG")
+    duplicates_parser = commands.add_parser("duplicates", parents=[common], help="search the open issues")
+    duplicates_parser.add_argument("queries", nargs="+", metavar="QUERY", help="a GitHub issue search")
+    remove_parser = commands.add_parser("remove-briefs", help="delete a briefs directory a run printed")
+    remove_parser.add_argument("directory", type=Path, metavar="DIR", help="the directory a BRIEFS line named")
     return parser
 
 
 def main(
-    arguments: Sequence[str] | None = None, *, git: GitClient | None = None, today: Callable[[], date] = date.today
+    arguments: Sequence[str] | None = None,
+    *,
+    git: GitClient | None = None,
+    github: GitHubClient | None = None,
+    today: Callable[[], date] = date.today,
 ) -> int:
     options = build_parser().parse_args(arguments)
     client = git or GitClient()
     try:
-        if options.command == "release":
-            lines = release(client, options.repository, options.since)
+        if options.command == "remove-briefs":
+            lines = remove_briefs(options.directory)
         else:
-            lines = rotation(client, options.repository, options.record, today)
+            gh = github or GitHubClient(partial(subprocess_runner, cwd=options.repository))
+            if options.command == "release":
+                lines = release(client, gh, options.repository, options.since, today)
+            elif options.command == "rotation":
+                lines = rotation(client, gh, options.repository, options.record, today)
+            else:
+                lines = duplicates(gh, options.queries)
     except AuditError as exc:
         print(f"FAILED {exc}")
         return 1
