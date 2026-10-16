@@ -7,25 +7,31 @@ anywhere in the archive; a profile the suite ships is no file of the repository 
 records pinned different hashes of one file were given different versions of it, so each version is its own line with
 its own reviewers, and its text is checked against the rules of the files those reviewers were given. A prose file's
 text is read from the repository's configured checkout only when its SHA-256 matches the hash the records pinned: the
-file in the working tree, or else the file at a pinning record's `source_commit`; a working-tree copy that cannot be
-read is passed over for the commit's, and the report says so. A file whose text does not match, or that is too large
-or past the input's total budget, is listed by path alone with the reason. A script, manifest, or other code file is
-listed by path, so a recommendation can name it, and its text is never read.
+file in the working tree, read once however many versions and commits pinned it, or else the file at a pinning
+record's `source_commit`; a working-tree copy that cannot be read is passed over for the commit's, and the report says
+so once per file. A file whose text does not match, or that is too large or past the input's total budget, is listed
+by path alone with the reason. A script, manifest, or other code file is listed by path, so a recommendation can name
+it, and its text is never read.
 
 The overlap candidates come from the text read, every verified file, including one listed without its text for the
 budget: each rule (a list item's or paragraph's sentence) is compared with the rules of the repository's other files
 by the words they share, leaving out the words that set a rule's force (must, should, may, never, a severity name)
 and its numbers. Two rules that share most of their words and differ in those are a candidate `conflict`; two that
-share nearly all of them and agree in those are a candidate `duplicate`. A reference to a Markdown file a reviewer
-was not given is an `unsupplied` candidate. The synthesis judges each candidate; the script only finds them.
+share nearly all of them and agree in those are a candidate `duplicate`. Only rules that share one of their rarer
+words are compared, which two rules that alike always do (see _prefix), and a repository's search visits at most
+CANDIDATE_BUDGET such pairs, so files near READ_BYTES cannot stall the report; past it, the remaining pairs are not
+compared. A reference to a Markdown file a reviewer was not given is an `unsupplied` candidate. The synthesis judges
+each candidate; the script only finds them.
 """
 
 from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Callable, Mapping
+from collections import Counter
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
+from itertools import islice
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -44,6 +50,9 @@ RULE_TEXT = 300
 MIN_WORDS = 4
 CONFLICT_SIMILARITY = 0.6
 DUPLICATE_SIMILARITY = 0.75
+# The most rule pairs one repository's overlap search visits, a pair met again through another shared word included:
+# rules of near-identical words share every word, so without it two such files near READ_BYTES would stall the report.
+CANDIDATE_BUDGET = 200_000
 STOPWORDS = frozenset(
     {
         *("a", "an", "and", "are", "as", "at", "be", "been", "by", "each", "for", "from", "has", "have", "if", "in"),
@@ -84,15 +93,14 @@ CODE_REFERENCE = re.compile(r"`([A-Za-z0-9_./-]+\.md)`")
 
 
 @dataclass(frozen=True)
-class Pinned:
-    """A file's bytes as a reviewer was given them, or None, and why the working tree's copy could not be read when
-    it could not."""
+class WorkingCopy:
+    """The working tree's copy of a file and its SHA-256, or None, and why it could not be read when it could not."""
 
     content: bytes | None
+    digest: str | None = None
     unreadable: str | None = None
 
 
-PinnedReader = Callable[[Path, str | None, str, str], Pinned]
 VersionKey = tuple[str, str]
 
 
@@ -166,24 +174,22 @@ def _working_copy(root: Path, path: str) -> bytes | None:
     return None
 
 
-def read_pinned(checkout: Path, commit: str | None, path: str, digest: str) -> Pinned:
-    """The file's bytes as the reviewer was given them: the working tree's copy, or else the copy at `commit`, the
-    first whose SHA-256 is `digest`; None when neither is, or the path leaves the checkout. A working-tree copy that
-    cannot be read is passed over for the commit's, and the result says why."""
+def read_working_copy(checkout: Path, path: str) -> WorkingCopy:
+    """The working tree's copy of `path` with its SHA-256; None when it is no file inside the checkout, is too large,
+    or cannot be read, which the result says why."""
     if not safe_repository_path(path):
-        return Pinned(None)
-    unreadable = None
+        return WorkingCopy(None)
     try:
         content = _working_copy(checkout.resolve(), path)
     except OSError as exc:
-        content, unreadable = None, flat_text(f"{type(exc).__name__}: {exc.strerror or exc}")
-    if content is not None and hashlib.sha256(content).hexdigest() == digest:
-        return Pinned(content)
-    return Pinned(_committed(checkout, commit, path, digest), unreadable)
+        return WorkingCopy(None, unreadable=flat_text(f"{type(exc).__name__}: {exc.strerror or exc}"))
+    return WorkingCopy(content, None if content is None else hashlib.sha256(content).hexdigest())
 
 
-def _committed(checkout: Path, commit: str | None, path: str, digest: str) -> bytes | None:
-    if commit is None:
+def read_committed(checkout: Path, commit: str | None, path: str, digest: str) -> bytes | None:
+    """The file's bytes at `commit` when their SHA-256 is `digest`; None otherwise, or when the path leaves the
+    checkout."""
+    if commit is None or not safe_repository_path(path):
         return None
     try:
         result = GitClient().run(["show", f"{commit}:{path}"], directory=checkout)
@@ -193,6 +199,14 @@ def _committed(checkout: Path, commit: str | None, path: str, digest: str) -> by
     if result.returncode != 0 or len(content) > READ_BYTES or hashlib.sha256(content).hexdigest() != digest:
         return None
     return content
+
+
+@dataclass(frozen=True)
+class Reader:
+    """How a guidance file's bytes are read: its working tree's copy, once per file, and its copy at a commit."""
+
+    working: Callable[[Path, str], WorkingCopy] = read_working_copy
+    committed: Callable[[Path, str | None, str, str], bytes | None] = read_committed
 
 
 def _file_versions(by_name: dict[str, Source]) -> dict[VersionKey, list[tuple[str, Source]]]:
@@ -212,17 +226,21 @@ def read_guidance(
     repositories: list[str],
     records: dict[Path, dict[str, Any]],
     checkouts: Mapping[str, Path | None],
-    reader: PinnedReader = read_pinned,
+    reader: Reader | None = None,
 ) -> Guidance:
     """The guidance the synthesis reads: each repository's files, a line for each version of each with the reviewers
     given it and its text when it is prose, verified, and within the budget, and the overlap and unsupplied-reference
     candidates in the text read."""
+    reader = reader or Reader()
     sources = reviewer_sources(repositories, records)
     guidance = Guidance(guidance_files(repositories, records))
     budget = TOTAL_CHARS
     for repository in sorted(sources):
         checkout = checkouts.get(repository)
         texts: dict[VersionKey, str] = {}
+        copies: dict[str, WorkingCopy] = {}
+        # Whether each version of a file whose working-tree copy could not be read was found at a pinning commit.
+        found: dict[str, list[bool]] = {}
         for (path, digest), given in sorted(_file_versions(sources[repository]).items()):
             line: dict[str, Any] = {
                 "kind": "guidance-file",
@@ -234,14 +252,14 @@ def read_guidance(
                 "content": None,
             }
             if is_prose(path):
-                text, unreadable = _verified_text(
-                    checkout, [source.commit for _, source in given], path, digest, reader
-                )
-                if unreadable is not None:
-                    fallback = "commit" if text is not None else "none"
-                    guidance.unreadable.append(
-                        f"GUIDANCE_UNREADABLE {repository} {flat_text(path)} fallback={fallback} {unreadable}"
-                    )
+                text = None
+                if checkout is not None:
+                    if path not in copies:
+                        copies[path] = reader.working(checkout, path)
+                    commits = [source.commit for _, source in given]
+                    text = _verified_text(checkout, copies[path], commits, path, digest, reader)
+                    if copies[path].unreadable is not None:
+                        found.setdefault(path, []).append(text is not None)
                 if text is not None:
                     texts[path, digest] = text
                 line["status"] = _status(text, budget)
@@ -249,6 +267,11 @@ def read_guidance(
                     line["content"] = text
                     budget -= len(text)
             guidance.lines.append(line)
+        guidance.unreadable += [
+            f"GUIDANCE_UNREADABLE {repository} {flat_text(path)} fallback={_fallback(versions)} "
+            f"{copies[path].unreadable}"
+            for path, versions in found.items()
+        ]
         guidance.overlaps += overlaps(repository, texts, sources[repository])
         guidance.unsupplied += unsupplied(repository, texts, sources[repository])
     guidance.overlaps.sort(key=_overlap_rank)
@@ -256,22 +279,25 @@ def read_guidance(
 
 
 def _verified_text(
-    checkout: Path | None, commits: list[str | None], path: str, digest: str, reader: PinnedReader
-) -> tuple[str | None, str | None]:
-    """The version's text, read at the working tree or at each commit a record that pinned it was built at, and why
-    the working tree's copy could not be read when it could not."""
-    if checkout is None:
-        return None, None
-    unreadable = None
-    for commit in dict.fromkeys(commits):
-        pinned = reader(checkout, commit, path, digest)
-        unreadable = unreadable or pinned.unreadable
-        if pinned.content is not None:
-            try:
-                return pinned.content.decode("utf-8"), unreadable
-            except UnicodeDecodeError:
-                return None, unreadable
-    return None, unreadable
+    checkout: Path, copy: WorkingCopy, commits: list[str | None], path: str, digest: str, reader: Reader
+) -> str | None:
+    """The version's text: the working tree's copy when its SHA-256 is `digest`, or else the copy at the first commit
+    a record that pinned it was built at whose SHA-256 is."""
+    content = copy.content if copy.digest == digest else None
+    for commit in dict.fromkeys(commits) if content is None else ():
+        content = reader.committed(checkout, commit, path, digest)
+        if content is not None:
+            break
+    try:
+        return None if content is None else content.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _fallback(found: list[bool]) -> str:
+    """`commit` when every version of an unreadable working-tree copy was found at a pinning commit, `none` when no
+    version was, and `partial` when some were."""
+    return "commit" if all(found) else "partial" if any(found) else "none"
 
 
 def _status(text: str | None, budget: int) -> str:
@@ -347,24 +373,55 @@ def _cut(text: str) -> str:
     return text if len(text) <= RULE_TEXT else text[: RULE_TEXT - 3].rstrip() + "..."
 
 
-def overlaps(repository: str, texts: dict[VersionKey, str], sources: dict[str, Source]) -> list[dict[str, Any]]:
-    """Every candidate pair of rules from two of a repository's files, each file at every version read, with the
-    reviewers given both versions; a candidate two versions share is one, naming every reviewer given it."""
-    by_version = [(key, rules(key[0], texts[key])) for key in sorted(texts)]
-    found: dict[tuple[Any, ...], dict[str, Any]] = {}
+def _prefix(rule: Rule, order: Mapping[str, tuple[int, str]]) -> list[str]:
+    """The rule's rarest words in `order`, as many as leave fewer than CONFLICT_SIMILARITY of its words out. Two rules
+    that alike share at least that share of each one's words, so they share one of each one's rarest."""
+    words = sorted(rule.words, key=order.__getitem__)
+    return words[: len(words) - int(CONFLICT_SIMILARITY * len(words)) + 1]
+
+
+def _visits(
+    by_version: list[tuple[VersionKey, list[Rule]]], order: Mapping[str, tuple[int, str]]
+) -> Iterator[tuple[VersionKey, VersionKey, Rule, Rule | None]]:
+    """Each pair of rules from two files that share one of their rarest words, each time a word they share brings it
+    up, with None in place of the second rule for a pair already met."""
+    prefixes = [[_prefix(rule, order) for rule in found] for _, found in by_version]
     for index, (first_key, first_rules) in enumerate(by_version):
-        for second_key, second_rules in by_version[index + 1 :]:
+        for later in range(index + 1, len(by_version)):
+            second_key, second_rules = by_version[later]
             if first_key[0] == second_key[0]:
                 continue
-            shared = {name for name, source in sources.items() if _given(source, first_key, second_key)}
-            for first in first_rules:
-                for second in second_rules:
-                    candidate = compare(first, second)
-                    if candidate is None:
-                        continue
-                    key = (candidate["relation"], *candidate["paths"], *candidate["lines"], *candidate["texts"])
-                    known = found.setdefault(key, {"repository": repository, **candidate, "reviewers": []})
-                    known["reviewers"] = sorted({*known["reviewers"], *shared})
+            postings: dict[str, list[int]] = {}
+            for position, prefix in enumerate(prefixes[later]):
+                for word in prefix:
+                    postings.setdefault(word, []).append(position)
+            for first, prefix in zip(first_rules, prefixes[index], strict=True):
+                seen: set[int] = set()
+                for position in (item for word in prefix for item in postings.get(word, ())):
+                    yield first_key, second_key, first, None if position in seen else second_rules[position]
+                    seen.add(position)
+
+
+def overlaps(repository: str, texts: dict[VersionKey, str], sources: dict[str, Source]) -> list[dict[str, Any]]:
+    """Every candidate pair of rules from two of a repository's files, each file at every version read, with the
+    reviewers given both versions; a candidate two versions share is one, naming every reviewer given it. Only rules
+    that share one of their rarest words are compared, at most CANDIDATE_BUDGET visits in all."""
+    by_version = [(key, rules(key[0], texts[key])) for key in sorted(texts)]
+    frequency = Counter(word for _, found in by_version for rule in found for word in rule.words)
+    order = {word: (count, word) for word, count in frequency.items()}
+    found: dict[tuple[Any, ...], dict[str, Any]] = {}
+    shared: dict[tuple[VersionKey, VersionKey], set[str]] = {}
+    for first_key, second_key, first, second in islice(_visits(by_version, order), CANDIDATE_BUDGET):
+        candidate = None if second is None else compare(first, second)
+        if candidate is None:
+            continue
+        given = shared.setdefault(
+            (first_key, second_key),
+            {name for name, source in sources.items() if _given(source, first_key, second_key)},
+        )
+        key = (candidate["relation"], *candidate["paths"], *candidate["lines"], *candidate["texts"])
+        known = found.setdefault(key, {"repository": repository, **candidate, "reviewers": []})
+        known["reviewers"] = sorted({*known["reviewers"], *given})
     return list(found.values())
 
 

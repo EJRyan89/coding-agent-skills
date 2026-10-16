@@ -283,6 +283,28 @@ class DisagreementTests(SignalFixture):
         )
         self.assertEqual(3, sum(line.startswith("DISAGREEING R1 ") for line in lines))
 
+    def test_a_cluster_cut_to_its_kept_reports_keeps_the_pair_that_disagrees(self) -> None:
+        # Five findings of one severity from one reviewer and the one that disagrees with them, raised last.
+        self.review(
+            7,
+            1,
+            [
+                *(
+                    finding("SUGGESTION", "src/a.cs", line, f"Style {index}", source="style", candidate_key=f"s{index}")
+                    for index, line in enumerate((11, 12, 13, 13, 14), start=1)
+                ),
+                finding("MUST_FIX", "src/a.cs", 14, "Unvalidated path", source="security"),
+            ],
+            reviewers=self.REVIEWERS,
+        )
+        _, lines = self.signal_lines()
+        reports = [line for line in lines if line.startswith("DISAGREEING R1 ")]
+        self.assertEqual(review_signals.REPORTS_KEPT, len(reports), lines)
+        self.assertIn("DISAGREEING R1 MUST_FIX owner/repo#7 v1 F006 security", reports)
+        self.assertEqual(
+            sorted(reports, key=lambda line: line.split()[-2]), reports, "the kept reports stay in place order"
+        )
+
     def test_a_path_holding_a_line_break_prints_and_renders_on_one_line(self) -> None:
         # A path is whatever the pull request named; the fact line and the Markdown bullet each stay one line.
         for number, character in enumerate(LINE_BREAKS, start=1):
@@ -348,6 +370,61 @@ class CapTests(SignalFixture):
         signals = json.loads(json_path.read_text(encoding="utf-8"))["signals"]
         self.assertEqual((1, 2), (len(signals["severity_drift"]), signals["counts"]["severity_drift"]))
         self.assertEqual(["D1"], [item["id"] for item in _input(json_path) if item["kind"] == "severity-drift"])
+
+    def test_verdict_flips_keep_the_flip_with_the_most_differences_not_the_first_pull(self) -> None:
+        self.review(7, 1, [finding("MUST_FIX", "src/a.cs", 3, "Unchecked input")])
+        self.review(7, 2, [finding("SHOULD_FIX", "src/a.cs", 4, "Input is not checked")])
+        self.review(8, 1, [finding("MUST_FIX", "src/a.cs", 3, "Unchecked input")])
+        self.review(
+            8,
+            2,
+            [finding("SHOULD_FIX", "src/a.cs", 4, "Input is not checked"), finding("SUGGESTION", "src/b.cs", 1, "Nit")],
+        )
+        with mock.patch.object(review_signals, "SIGNALS_KEPT", 1):
+            _, lines = self.signal_lines()
+        self.assertEqual(
+            [f"VERDICT_FLIP V1 owner/repo#8 head={HEAD[:12]} v1=CHANGES_REQUESTED v2=APPROVED"],
+            [line for line in lines if line.startswith("VERDICT_FLIP")],
+        )
+        self.assertIn("SIGNALS_OMITTED verdict_flips 1", lines)
+
+    def test_a_flip_between_approval_and_requested_changes_outranks_one_from_an_incomplete_review(self) -> None:
+        flip = {
+            "verdicts": ["APPROVED", "CHANGES_REQUESTED"],
+            "repository": "owner/repo",
+            "pull_number": 9,
+            "versions": [1, 2],
+        }
+        incomplete = {**flip, "verdicts": ["INCOMPLETE", "CHANGES_REQUESTED"], "pull_number": 1}
+        self.assertLess(review_signals.flip_rank(flip, 1), review_signals.flip_rank(incomplete, 5))
+
+    def test_disagreements_keep_the_widest_spread_then_the_most_findings_not_the_first_pull(self) -> None:
+        security, style = [reviewer("security", "model-a")], [reviewer("style", "model-b")]
+        places = {
+            7: [("MUST_FIX", "security"), ("SHOULD_FIX", "style")],
+            8: [("MUST_FIX", "security"), ("SHOULD_FIX", "style"), ("SHOULD_FIX", "style")],
+            9: [("MUST_FIX", "security"), ("SUGGESTION", "style")],
+        }
+        for number, raised in places.items():
+            self.review(
+                number,
+                1,
+                [
+                    finding(severity, "src/a.cs", 10 + index, f"Finding {index}", source=source)
+                    for index, (severity, source) in enumerate(raised)
+                ],
+                reviewers=security + style,
+            )
+        with mock.patch.object(review_signals, "SIGNALS_KEPT", 2):
+            _, lines = self.signal_lines()
+        self.assertEqual(
+            [
+                f"REVIEWER_DISAGREEMENT R1 owner/repo#9 head={HEAD[:12]} src/a.cs:10",
+                f"REVIEWER_DISAGREEMENT R2 owner/repo#8 head={HEAD[:12]} src/a.cs:10",
+                "SIGNALS_OMITTED reviewer_disagreements 1",
+            ],
+            [line for line in lines if line.startswith(("REVIEWER_DISAGREEMENT", "SIGNALS_OMITTED"))],
+        )
 
 
 class UpgradeTests(SignalFixture):
