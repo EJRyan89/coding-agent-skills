@@ -39,7 +39,7 @@ The other records live elsewhere. What shipped is the milestone's closed issues 
 
 ## Before tagging
 
-1. **Validation and the canary.** `main` is green by construction, since every change arrives through a validated pull request. That rests on the branch protection [CONTRIBUTING.md](../CONTRIBUTING.md#how-main-is-protected) states; run `python tools/branch_protection.py`, which reads it through `gh api`, and expect `PROTECTED`. For a release, also run the `runtime-canary` repository skill against every shipped skill changed since the last tag, at most three to a run, a hidden dependency through the skills that declare it, so each runtime is seen finding and running them from a deployment, not only passing tests.
+1. **Validation and the canary.** `main` is green by construction, since every change arrives through a validated pull request. That rests on the branch protection [CONTRIBUTING.md](../CONTRIBUTING.md#how-main-is-protected) states; run `python tools/branch_protection.py`, which reads it through `gh api`, and expect `PROTECTED`. For a release, also run the `runtime-canary` repository skill against every shipped skill `python -B tools/runtime_canary.py --changed-since` names, which reads the changes since the last tag, at most three to a run, so each runtime is seen finding and running them from a deployment, not only passing tests.
 2. **Deployability on a fresh machine.** Dispatch the `deployable.yml` workflow against `main`:
 
    ```bash
