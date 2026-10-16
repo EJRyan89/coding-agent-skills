@@ -524,6 +524,23 @@ class UpgradeNotesPolicy(GitTestCase):
         self.release(tag=None)
         self.assertEqual([], self.problems(self.MANIFEST_CHANGE))
 
+    def test_the_last_tag_is_the_highest_release_not_a_nearer_tag_of_another_name(self) -> None:
+        # A pre-release or any other tag is not a release, so the contract files compare with the release before it.
+        self.release()
+        self.commit("change the manifest", self.MANIFEST_CHANGE)
+        self.git("tag", "v0.2.0-rc.1")
+        self.commit("later")
+        self.git("tag", "nightly")
+        self.merged()
+        self.assertEqual(("v0.1.0", None), upgrade_notes.last_release_tag(self.root))
+        problems = upgrade_notes_problems(self.root)
+        self.assertEqual(["deployer/manifest.py"], [problem.split(":", 1)[0] for problem in problems])
+
+    def test_a_tag_that_is_not_a_release_is_no_release(self) -> None:
+        self.release(tag="v0.1.0-rc.1")
+        self.assertEqual((None, None), upgrade_notes.last_release_tag(self.root))
+        self.assertEqual([], self.problems(self.MANIFEST_CHANGE))
+
     def test_a_missing_origin_main_fails_with_the_fetch_command(self) -> None:
         self.release()
         self.git("update-ref", "-d", "refs/remotes/origin/main")

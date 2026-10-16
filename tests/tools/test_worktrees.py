@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import shutil
@@ -10,13 +11,17 @@ import sys
 import tempfile
 import threading
 import unittest
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "validation"))
 
+import git_client
+import skill_scripts
 from git_test_base import GitTestCase
 
 from deployer import platform_support
@@ -1287,7 +1292,15 @@ class ContractTests(WorktreesTestCase):
     def test_the_nesting_limit_and_the_powershell_timeout_are_pinned(self) -> None:
         settings = json.loads((REPOSITORY_ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
         [hook] = settings["hooks"]["PreToolUse"][0]["hooks"]
-        self.assertEqual((4, 20, 30), (worktrees.NESTING_LIMIT, worktrees.POWERSHELL_TIMEOUT_SECONDS, hook["timeout"]))
+        self.assertEqual(
+            (4, 20, 10.0, 30),
+            (
+                worktrees.NESTING_LIMIT,
+                worktrees.POWERSHELL_TIMEOUT_SECONDS,
+                worktrees.GUARD_GIT_TIMEOUT_SECONDS,
+                hook["timeout"],
+            ),
+        )
         document = (REPOSITORY_ROOT / "docs" / "parallel-sessions.md").read_text(encoding="utf-8")
         self.assertIn("more than four deep", document)
         self.assertIn("within 20 seconds", document)
@@ -1566,6 +1579,12 @@ class ListTests(WorktreesTestCase):
         (self.hub / "README.md").write_text("edited in the hub\n", encoding="utf-8")
         self.assertEqual(["stray", "hub · off main · dirty", "0", "0", "1"], self.rows()["stray"][:5])
 
+    def test_list_counts_untracked_files_whatever_status_shows_and_a_rename_once(self) -> None:
+        self.git(self.tree, "config", "status.showUntrackedFiles", "no")
+        (self.tree / "untracked.txt").write_text("new\n", encoding="utf-8")
+        self.git(self.tree, "mv", "README.md", "MOVED.md")
+        self.assertEqual(["feat/demo", "no commits", "0", "0", "2"], self.rows()["feat/demo"][:5])
+
     def test_list_reads_each_checkouts_own_index_whatever_index_the_shell_names(self) -> None:
         empty_index = self.root / "an empty index"
         rows = self.rows({**self.environment, "GIT_INDEX_FILE": str(empty_index)})
@@ -1574,26 +1593,84 @@ class ListTests(WorktreesTestCase):
 
 
 class GitProgramTests(GitTestCase):
-    def test_git_is_started_at_the_path_the_locator_finds_never_by_name(self) -> None:
-        # Windows looks a bare name up in the working directory before PATH.
-        completed = subprocess.CompletedProcess([], 0, "", "")
-        with mock.patch.object(worktrees.subprocess, "run", return_value=completed) as run:
-            worktrees.git(Path("a checkout"), "status")
-        command = run.call_args.args[0]
-        self.assertEqual(
-            (platform_support.find_executable("git"), ["-C", "a checkout", "status"]), (command[0], command[1:])
-        )
-        self.assertTrue(Path(command[0]).is_absolute())
+    def runner(self, output: str = "") -> tuple[list[tuple[list[str], float]], Any]:
+        """A runner for worktrees.CLIENT that records each command and its time limit and answers with output."""
+        calls: list[tuple[list[str], float]] = []
 
-    def test_a_git_the_locator_cannot_find_is_never_left_to_the_bare_name(self) -> None:
+        def run(command: Sequence[str], timeout: float) -> git_client.GitResult:
+            calls.append((list(command), timeout))
+            return git_client.GitResult(0, output, "")
+
+        return calls, run
+
+    def test_git_runs_through_skill_cores_client_on_the_checkout(self) -> None:
+        # The client's runner starts git at the path the locator finds, never by name, and without the
+        # repository-selecting variables; skill-core's suites hold both.
+        self.assertIs(git_client.subprocess_runner, worktrees.CLIENT.runner)
+        calls, run = self.runner("out")
+        with mock.patch.object(worktrees.CLIENT, "runner", run):
+            result = worktrees.git(Path("a checkout"), "status")
+        self.assertEqual([(["git", "-C", "a checkout", "status"], worktrees.GUARD_GIT_TIMEOUT_SECONDS)], calls)
+        self.assertEqual((0, "out"), (result.returncode, result.stdout))
+
+    def test_the_guards_git_calls_are_bounded_inside_the_hooks_timeout_and_new_and_list_by_the_clients(self) -> None:
+        settings = json.loads((REPOSITORY_ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        [hook] = settings["hooks"]["PreToolUse"][0]["hooks"]
+        self.assertLess(worktrees.GUARD_GIT_TIMEOUT_SECONDS, hook["timeout"])
+        calls, run = self.runner()
+        with mock.patch.object(worktrees.CLIENT, "runner", run):
+            worktrees.guard_enabled(Path("a hub"))
+            worktrees.worktrees(Path("a hub"))
+            worktrees.changed_paths(Path("a checkout"))
+        self.assertEqual(
+            [
+                worktrees.GUARD_GIT_TIMEOUT_SECONDS,
+                git_client.DEFAULT_TIMEOUT_SECONDS,
+                git_client.DEFAULT_TIMEOUT_SECONDS,
+            ],
+            [timeout for _, timeout in calls],
+        )
+
+    def test_a_git_that_cannot_run_or_finish_is_a_git_error(self) -> None:
+        def missing(command: Sequence[str], timeout: float) -> git_client.GitResult:
+            raise git_client.GitError(git_client.MISSING_GIT, kind="prerequisite")
+
         with (
-            tempfile.TemporaryDirectory() as empty,
-            mock.patch.dict(os.environ, {"PATH": empty}),
-            mock.patch.object(worktrees.subprocess, "run") as run,
-            self.assertRaises(FileNotFoundError),
+            mock.patch.object(worktrees.CLIENT, "runner", missing),
+            self.assertRaisesRegex(git_client.GitError, "Git executable 'git' was not found"),
         ):
-            worktrees.git(Path(empty), "status")
-        run.assert_not_called()
+            worktrees.git(Path("a checkout"), "status")
+
+    def test_the_worktree_listing_reads_a_path_that_holds_a_line_break_whole(self) -> None:
+        listing = (
+            "worktree /hub\0HEAD 1111\0branch refs/heads/main\0\0"
+            "worktree /hub/.claude/worktrees/feat-a\nb\0HEAD 2222\0detached\0\0"
+        )
+        _, run = self.runner(listing)
+        with mock.patch.object(worktrees.CLIENT, "runner", run):
+            entries = worktrees.worktrees(Path("/hub"))
+        self.assertEqual(
+            [
+                {"worktree": "/hub", "HEAD": "1111", "branch": "refs/heads/main"},
+                {"worktree": "/hub/.claude/worktrees/feat-a\nb", "HEAD": "2222", "detached": ""},
+            ],
+            entries,
+        )
+
+
+class ToolsGitTests(GitTestCase):
+    def test_every_tool_runs_git_and_gh_only_through_skill_cores_clients(self) -> None:
+        # The policy validation applies to skill scripts, applied to tools/: a command a tool starts itself has no
+        # time limit, no prompt turned off, and its own copy of the environment rule.
+        found = [
+            f"{path.relative_to(REPOSITORY_ROOT).as_posix()}:{line} runs {command} itself"
+            for path in sorted((REPOSITORY_ROOT / "tools").glob("*.py"))
+            for reader in [skill_scripts.command_reader(path)]
+            for line, command in sorted(
+                {found for node in ast.walk(reader.tree) for found in skill_scripts._client_commands(node, reader)}
+            )
+        ]
+        self.assertEqual([], found)
 
 
 if __name__ == "__main__":

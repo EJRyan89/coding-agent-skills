@@ -263,6 +263,40 @@ class MainTests(FixtureRepository):
         self.history()
         self.assertEqual((0, EXPECTED_SECTION, ""), self.run_main("v0.2.0"))
 
+    def test_the_default_start_is_the_last_release_not_a_nearer_tag_of_another_name(self) -> None:
+        # A pre-release or any other tag is not a release, so the section still starts at the release before it.
+        self.commit("Fix a thing (#2)", notes=f"{INTRO}\n## Unreleased\n\n{HAND_ENTRY}\n{RELEASED}")
+        self.git("tag", "v0.2.0-rc.1")
+        self.commit("Add a skill (#3)", body=BODY)
+        self.git("tag", "nightly")
+        self.commit("Tidy the documents (#4)", body="## Upgrade note\n\nNone\n")
+        code, printed, error = self.run_main("v0.2.0")
+        self.assertEqual((0, ""), (code, error))
+        self.assertEqual(
+            ["## v0.2.0", "### A skill is added", "### An entry written by hand"],
+            [line for line in printed.split("\n") if line.startswith("#")],
+        )
+        # A release is ordered by its numbers, not by how near it is: the highest release reachable is the start.
+        self.git("tag", "v0.0.9", "HEAD~2")
+        self.assertEqual("v0.1.0", release_notes.last_release_before(self.root, "HEAD"))
+
+    def test_without_a_release_before_to_the_start_must_be_given(self) -> None:
+        self.git("tag", "-d", "v0.1.0")
+        self.git("tag", "v0.1.0-rc.1", "HEAD")
+        self.commit("Add a skill (#3)", body=BODY)
+        code, printed, error = self.run_main("v0.1.0")
+        self.assertEqual((2, ""), (code, printed))
+        self.assertEqual("ERROR: no release tag reaches HEAD^; name the previous release with --from\n", error)
+        self.assertEqual(0, self.run_main("v0.1.0", "--from", "v0.1.0-rc.1")[0])
+
+    def test_the_version_must_be_a_release_tag(self) -> None:
+        for version in ("v0.2.0-rc.1", f"v0.{chr(0x662)}.0", "v0.2"):
+            with self.subTest(version=version):
+                with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(io.StringIO()) as error:
+                    release_notes.main([version], root=self.root)
+                self.assertEqual(2, raised.exception.code)
+                self.assertIn("the version must be a release tag such as v1.2.3", error.getvalue())
+
     def test_from_and_to_choose_the_range(self) -> None:
         self.history()
         self.git("tag", "v0.2.0")

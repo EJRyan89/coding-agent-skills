@@ -36,13 +36,15 @@ from tools.release_notes import (
     body_entries,
     git,
     range_entries,
+    release_reaching,
 )
 
 # The upgrade-notes guard: the contract files the Versioning section of docs/releasing.md judges a release by, read at
 # the last tag and in the working tree. Each is compared by its contract value, so an edit that leaves the value alone
 # needs no entry. The entries are the upgrade notes tools/release_notes.py reads from the commits since the tag, and
 # the pull request body the runner was given with --pr-body. Every git call runs through tools/release_notes.py's
-# git, so the tag lookup and the commit range read the same repository whatever GIT_DIR the shell exported.
+# git and release_reaching, both over its one GitClient, so the tag lookup and the commit range read the same
+# repository whatever GIT_DIR the shell exported.
 PROFILE_DOC = "docs/implementing-changes.md"
 CONTRACT_FILES_HEADING = "## Contract files"
 MANIFEST_MODULE = "deployer/manifest.py"
@@ -74,7 +76,8 @@ class Snapshot:
 
 
 def last_release_tag(root: Path) -> tuple[str | None, str | None]:
-    """The last tag reachable from origin/main and a problem; no tag at all means nothing has been released yet."""
+    """The last release on origin/main, as skill-core's release_tags reads it, and a problem; no release tag reachable
+    means nothing has been released yet."""
     if git(root, "rev-parse", "--verify", "--quiet", f"{RELEASE_BRANCH}^{{commit}}").returncode != 0:
         return None, (
             f"{RELEASE_BRANCH} is missing, so the upgrade-notes check cannot find the last tag; "
@@ -85,12 +88,10 @@ def last_release_tag(root: Path) -> tuple[str | None, str | None]:
             "this clone is shallow, so the upgrade-notes check cannot see the last tag; "
             "fetch the history with `git fetch --unshallow --tags`"
         )
-    described = git(root, "describe", "--tags", "--abbrev=0", RELEASE_BRANCH)
-    if described.returncode == 0:
-        return described.stdout.strip(), None
-    if git(root, "tag", "--merged", RELEASE_BRANCH).stdout.strip():
-        return None, f"git describe could not name the last tag on {RELEASE_BRANCH}: {described.stderr.strip()}"
-    return None, None
+    try:
+        return release_reaching(root, RELEASE_BRANCH), None
+    except ValueError as error:
+        return None, f"the upgrade-notes check {error}"
 
 
 def working_snapshot(root: Path) -> Snapshot:
@@ -293,9 +294,10 @@ def notes_layout_problems(notes: str | None) -> list[str]:
 def upgrade_notes_problems(root: Path, body: str | None = None) -> list[str]:
     """Report each contract item changed since the last tag that no upgrade note since then names.
 
-    The last tag is the one `git describe --tags --abbrev=0 origin/main` names; with none reachable, nothing has been
-    released and every change is free. The notes are the entries tools/release_notes.py reads from the commits since
-    the tag and, given a pull request body, from its `## Upgrade note`. With a body, the commits are origin/main's,
+    The last tag is the highest release tag reachable from origin/main, as skill-core's release_tags defines one; with
+    none reachable, nothing has been released and every change is free. The notes are the entries
+    tools/release_notes.py reads from the commits since the tag and, given a pull request body, from its
+    `## Upgrade note`. With a body, the commits are origin/main's,
     because the body, not the branch's own commit messages, becomes the squash commit's message; without one, they
     are HEAD's, so a local run reads the branch's commits. Each entry must give its level in the Versioning section's
     own words.

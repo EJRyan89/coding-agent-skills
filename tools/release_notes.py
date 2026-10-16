@@ -12,10 +12,12 @@ already gave is the older text of that entry and is left out. An entry is read w
 item, or paragraph joined into one line, since a squash commit's message may be wrapped. Each entry keeps that text
 and gains `- Pull request: #N` from the commit's squash title when it names none.
 
---from defaults to the last tag before --to, and --to to HEAD, or to origin/main with --check. It prints the
-`## VERSION` section, or with --write inserts it into docs/upgrade-notes.md above the newest version's section,
-refusing a version the file already has. The section opens with the largest leading Level word of its entries, ordered
-by docs/releasing.md, or states that there are no upgrade-note entries.
+--from defaults to the last release before --to, the highest release tag reachable from --to's parent as skill-core's
+release_tags.py defines a release tag (vMAJOR.MINOR.PATCH and nothing after it), and --to to HEAD, or to origin/main
+with --check. A version must be a release tag too. It prints the `## VERSION` section, or with --write inserts it into
+docs/upgrade-notes.md above the newest version's section, refusing a version the file already has. The section opens
+with the largest leading Level word of its entries, ordered by docs/releasing.md, or states that there are no
+upgrade-note entries.
 
 --check compares the `## VERSION` section of docs/upgrade-notes.md as --to holds it with the entries the commits in
 the range carry, by heading, and fetches nothing. The release pull request is squash-merged, so the commit the
@@ -24,13 +26,14 @@ section was written is in the tag and in no section. It prints `CURRENT` when th
 otherwise `BEHIND <n> entries` and each entry the section lacks, ready to carry into it. An entry the section holds
 beyond the range's, such as an obligation the release's preparation issue records, is the releaser's own.
 
-It exits 0 on success, 1 when --write is refused because the file already has the version or --check finds entries
-the section lacks, and 2, with an `ERROR:` line naming what it could not read or write, when git cannot read the
-range, when docs/releasing.md or its documented levels or an entry's Level cannot be read, with --write when
-docs/upgrade-notes.md cannot be read as UTF-8 text or written, or with --check when --to holds no `## VERSION`
-section. Git runs through skill-core's GitClient, which starts it without the repository-selecting variables that
-would read another repository. The release procedure in docs/releasing.md runs it before tagging and again at the
-tag, and the upgrade-notes check in tests/validation reads the same entries through the same git.
+It exits 0 on success, 1 when --write is refused because the file already has the version or --check finds entries the
+section lacks, and 2, with an `ERROR:` line naming what it could not read or write, when git cannot read the range or,
+without --from, no release reaches --to's parent, when docs/releasing.md or its documented levels or an entry's Level
+cannot be read, with --write when docs/upgrade-notes.md cannot be read as UTF-8 text or written, or with --check when
+--to holds no `## VERSION` section. Git runs through skill-core's GitClient, which starts it without the
+repository-selecting variables that would read another repository. The release procedure in docs/releasing.md runs it
+before tagging and again at the tag, and the upgrade-notes check in tests/validation reads the same entries through the
+same git.
 """
 
 from __future__ import annotations
@@ -48,6 +51,7 @@ from console import run_main
 from git_client import GitClient, GitError, GitResult
 from markdown_sections import HTML_COMMENT, markdown_section
 from release_levels import RELEASING_DOC, VERSION, largest_level, versioning_levels
+from release_tags import is_release_tag, last_release
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 UPGRADE_NOTES = "docs/upgrade-notes.md"
@@ -224,8 +228,24 @@ def version_section(version: str, entries: list[SourcedEntry], levels: list[str]
     return "\n\n".join([f"## {version}", summary, *(item.rendered() for item in entries)]) + "\n"
 
 
-def last_tag_before(root: Path, ref: str) -> str:
-    return _git_output(root, "describe", "--tags", "--abbrev=0", f"{ref}^").strip()
+def release_reaching(root: Path, ref: str) -> str | None:
+    """The last release ref holds, as skill-core's release_tags reads it, or None when no release tag reaches it.
+
+    Raises ValueError when git cannot read the tags reaching it.
+    """
+    try:
+        return last_release(CLIENT, root, ref)
+    except GitError as error:
+        raise ValueError(f"cannot read the release tags reaching {ref}: {error}") from error
+
+
+def last_release_before(root: Path, ref: str) -> str:
+    """The last release before ref: the one its parent holds, so a ref that is itself a release starts after the one
+    before it. Raises ValueError when there is none or git cannot read the tags."""
+    found = release_reaching(root, f"{ref}^")
+    if found is None:
+        raise ValueError(f"no release tag reaches {ref}^; name the previous release with --from")
+    return found
 
 
 def insert_section(notes: str, version: str, section: str) -> str:
@@ -289,11 +309,11 @@ def main(argv: list[str] | None = None, root: Path = REPOSITORY_ROOT) -> int:
         help=f"compare the section {UPGRADE_NOTES} holds at --to with the entries the range carries",
     )
     options = parser.parse_args(argv)
-    if not VERSION.fullmatch(options.version):
-        parser.error(f"the version must look like v1.2.3, not {options.version!r}")
+    if not is_release_tag(options.version):
+        parser.error(f"the version must be a release tag such as v1.2.3, not {options.version!r}")
     options.end = options.end or (RELEASE_BRANCH if options.check else "HEAD")
     try:
-        start = options.start or last_tag_before(root, options.end)
+        start = options.start or last_release_before(root, options.end)
     except ValueError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2

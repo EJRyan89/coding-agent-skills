@@ -42,7 +42,7 @@ The kind is a pull request title type, which the title check then holds the bran
 |---|---|
 | state | `hub`, `in progress`, `no commits`, or `missing` |
 | ahead/behind | Relative to `main`. |
-| dirty | Number of uncommitted entries. |
+| dirty | Number of paths with uncommitted changes, untracked files included and a rename counted once. |
 
 The hub row reads `off main` or `dirty` when the hub has drifted. Merged state is not reported: squash merges
 leave every branch looking unmerged, so a branch's pull request is the only reliable record.
