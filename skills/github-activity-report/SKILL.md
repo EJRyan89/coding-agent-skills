@@ -35,3 +35,7 @@ The script fails closed and never prints a partial table. On failure it prints o
 - `[incomplete]`: a search kept returning fewer results than GitHub reported, usually because results changed while it was paging or the search timed out. Suggest rerunning.
 - `[api]` saying the listed users or repositories cannot be searched: `USER` or `ORG` does not exist or the token cannot see it. Suggest checking both logins' spelling (the organization's login, not its display name) and that the token can read the organization.
 - Any other kind: report the message unchanged.
+
+A `FAILED <type>: <message>` line with no `[<kind>]` is an unexpected failure the script did not classify; it also exits 1. Report it unchanged.
+
+An argument the script refuses is not a `FAILED` line: the script queries nothing, prints nothing on stdout, writes its usage and the reason (such as `argument --org: not a valid GitHub login: 'My Org'`) on stderr, and exits 2. Name the argument and ask the user for a valid login (an organization's login, not its display name) or a month count from 1 to 36.
