@@ -7,6 +7,7 @@ import contextlib
 import io
 import os
 import stat
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -17,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 import git_test_base
 import repo_cleanup as rc
-from test_repo_cleanup import GIT_CONFIG, Fixture, build_template, facts, git, refusing_branch_deletion
+from test_repo_cleanup import GIT_CONFIG, UNNAMEABLE, Fixture, build_template, facts, git, refusing_branch_deletion
 
 
 def setUpModule() -> None:
@@ -506,6 +507,154 @@ class LeftoverTests(Fixture):
         self.preserved(lines, (stale, "could not delete it: [Errno 13] Permission denied"))
         self.assertTrue((stale / "locked.txt").exists())
         self.assertIn("  Orphans (kept):          1 — ", self.summary(lines))
+
+    def worktree_facts(self, planned: list[str]) -> dict[str, tuple[str, str]]:
+        """Each worktree the plan judged, by folder name: its action and detail."""
+        return {Path(fields[0]).name: (fields[2], fields[3]) for fields in facts(planned, "WORKTREE")}
+
+    def test_a_worktree_with_an_operation_in_progress_or_refs_of_its_own_is_kept_with_the_reason(self) -> None:
+        for step in range(3):
+            self.commit(self.clone, f"step {step}")
+        git(self.clone, "push", "--quiet", "origin", "main")
+        main = git(self.clone, "rev-parse", "main")
+        trees = {name: self.area / f"{name} wt" for name in ("bisecting", "rebasing", "ref-holding", "plain")}
+        for name in ("bisecting", "ref-holding", "plain"):
+            git(self.clone, "worktree", "add", "--quiet", "--detach", str(trees[name]), main)
+        git(trees["bisecting"], "bisect", "start", "main", "main~2")
+        git(self.clone, "branch", "rebasing", "main~1")
+        git(self.clone, "worktree", "add", "--quiet", str(trees["rebasing"]), "rebasing")
+        stopped = subprocess.run(
+            ["git", "-C", str(trees["rebasing"]), "rebase", "--exec", "exit 1", "main~2"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(0, stopped.returncode, "the rebase stops at its failing exec line")
+        own = git(trees["ref-holding"], "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "kept by a worktree ref")
+        git(trees["ref-holding"], "update-ref", "refs/worktree/keep", own)
+        for tree in trees.values():
+            self.assertEqual("", git(tree, "status", "--porcelain"), tree)
+        planned, applied = self.clean()
+        judged = self.worktree_facts(planned)
+        self.assertEqual(("ask", "clean, its commit is on main or a remote branch"), judged["plain wt"])
+        action, detail = judged["bisecting wt"]
+        self.assertEqual("keep", action)
+        self.assertTrue(
+            detail.startswith(
+                "has a bisect in progress; holds 2 refs only it sees: refs/bisect/bad, refs/bisect/good-"
+            ),
+            detail,
+        )
+        self.assertEqual(("keep", "has a rebase in progress"), judged["rebasing wt"])
+        self.assertEqual(("keep", "holds 1 ref only it sees: refs/worktree/keep"), judged["ref-holding wt"])
+        self.assertEqual(["plain wt"], [Path(fields[0]).name for fields in facts(applied, "CONFIRM_DETACHED")])
+        self.assertIn("rebasing wt (has a rebase in progress)", self.summary(applied))
+
+        # A ref made after the offer: the confirmed removal asks again and keeps the worktree.
+        git(trees["plain"], "update-ref", "refs/worktree/later", own)
+        code, lines = self.invoke("remove-directory", "--plan", str(self.plan_file), "--path", str(trees["plain"]))
+        self.assertEqual(1, code, lines)
+        (kept, why), *rest = facts(lines, "PRESERVED")
+        self.assertEqual([], rest, lines)
+        self.same(trees["plain"], kept)
+        self.assertTrue(why.endswith(" holds 1 ref only it sees: refs/worktree/later"), why)
+        self.assertEqual([], facts(lines, "REMOVED"))
+        self.assertTrue(all(tree.is_dir() for tree in trees.values()), "nothing is removed")
+        self.assertEqual(own, git(trees["plain"], "rev-parse", "refs/worktree/later"))
+
+    def test_edits_hidden_from_status_keep_a_worktree_and_a_sparse_worktree_is_still_removed(self) -> None:
+        for name, content in (("settings.json", "{}\n"), ("docs/guide.md", "guide\n"), ("src/app.py", "pass\n")):
+            (self.clone / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.clone / name).write_text(content, encoding="utf-8")
+        git(self.clone, "add", "settings.json", "docs/guide.md", "src/app.py")
+        self.commit(self.clone, "files")
+        git(self.clone, "push", "--quiet", "origin", "main")
+        for name in ("skipped", "assumed", "sparse"):
+            self.finished_branch(name)
+        trees = {name: self.area / f"{name} wt" for name in ("skipped", "assumed", "sparse", "detached")}
+        for name in ("skipped", "assumed", "sparse"):
+            git(self.clone, "worktree", "add", "--quiet", str(trees[name]), name)
+        git(self.clone, "worktree", "add", "--quiet", "--detach", str(trees["detached"]), "main")
+        for name, bit in (
+            ("skipped", "--skip-worktree"),
+            ("assumed", "--assume-unchanged"),
+            ("detached", "--assume-unchanged"),
+        ):
+            (trees[name] / "settings.json").write_text('{"local": true}\n', encoding="utf-8")
+            git(trees[name], "update-index", bit, "settings.json")
+        git(trees["sparse"], "sparse-checkout", "set", "src")
+        self.assertFalse((trees["sparse"] / "docs" / "guide.md").exists(), "the sparse checkout leaves docs out")
+        for tree in trees.values():
+            self.assertEqual("", git(tree, "status", "--porcelain"), tree)
+        planned, applied = self.clean()
+        hidden = "holds edits status does not show, to 1 file marked skip-worktree or assume-unchanged: settings.json"
+        judged = self.worktree_facts(planned)
+        self.assertEqual(
+            {"skipped wt": ("held", hidden), "assumed wt": ("held", hidden)},
+            {name: judged[name] for name in ("skipped wt", "assumed wt")},
+        )
+        self.assertEqual(("keep", hidden), judged["detached wt"])
+        self.assertEqual(["sparse wt"], [Path(fields[0]).name for fields in facts(applied, "REMOVED")])
+        self.assertEqual(["sparse"], [fields[0] for fields in facts(applied, "DELETED")])
+        self.assertEqual([], facts(applied, "CONFIRM_DETACHED"))
+        for name in ("skipped", "assumed", "detached"):
+            self.assertEqual('{"local": true}\n', (trees[name] / "settings.json").read_text(encoding="utf-8"))
+        self.assertIsNotNone(self.tip("skipped"))
+        self.assertIsNotNone(self.tip("assumed"))
+        summary = self.summary(applied)
+        self.assertIn("  Dirty worktrees skipped: 2 — ", summary)
+        self.assertIn(f"(skipped, {hidden})", summary)
+
+    def test_a_confirmed_orphan_whose_area_a_link_now_reaches_is_refused_with_the_reason_and_exits_1(self) -> None:
+        stale = self.area / "stale wt"
+        stale.mkdir(parents=True)
+        (stale / "file.txt").write_text("left\n", encoding="utf-8")
+        _, applied = self.clean()
+        self.assertEqual(1, len(facts(applied, "ORPHAN")), applied)
+        moved = self.root / "moved area"
+        self.area.rename(moved)
+        link_directory(moved, self.area)
+        code, lines = self.invoke("remove-directory", "--plan", str(self.plan_file), "--path", str(stale))
+        self.assertEqual(1, code, lines)
+        self.preserved(lines, (stale, "it resolves outside the worktree areas"))
+        self.assertTrue((moved / "stale wt" / "file.txt").is_file())
+
+    def test_an_entry_whose_name_does_not_survive_one_line_is_not_offered_and_says_why(self) -> None:
+        separator = "\u2028"
+        branch = f"odd{separator}gone"
+        self.finished_branch(branch, merged=False, state=None)
+        sha = self.tip(branch)
+        detached = self.area / f"odd{separator}detached wt"
+        git(self.clone, "worktree", "add", "--quiet", "--detach", str(detached), "main")
+        leftover = self.area / f"left{separator}over"
+        leftover.mkdir()
+        _, applied = self.clean()
+        for kind in ("UNMERGED", "CONFIRM_DETACHED", "ORPHAN", "CONFIRM_LOCAL"):
+            self.assertEqual([], facts(applied, kind), kind)
+        offers = [fields for fields in facts(applied, "PRESERVED") if fields[1].startswith("not offered: ")]
+        self.assertEqual([UNNAMEABLE.format(name) for name, _ in offers], [why for _, why in offers], applied)
+        self.assertEqual(
+            ["left over", "odd detached wt", "odd gone"], sorted(name.rsplit("/", 1)[-1] for name, _ in offers)
+        )
+        self.assertTrue(all(separator not in line for line in applied), "every fact stays on one line")
+        self.assertEqual(sha, self.tip(branch))
+        self.assertTrue(detached.is_dir() and leftover.is_dir())
+
+    def test_a_link_where_a_regenerable_directory_is_named_is_not_regenerable(self) -> None:
+        tree = self.root / "layout"
+        (tree / "web").mkdir(parents=True)
+        (tree / "web" / "package.json").write_text("{}\n", encoding="utf-8")
+        target = self.outside_area("store")
+        link_directory(target, tree / "web" / "node_modules")
+        link_directory(target, tree / ".vs")
+        for entry in ("web/node_modules/", "web/node_modules/victim/keep.txt", ".vs/", ".vs/victim/"):
+            with self.subTest(entry=entry):
+                self.assertFalse(rc.is_regenerable(entry, str(tree)))
+        (tree / "real").mkdir()
+        link_directory(tree / "real", tree / "linked")
+        (tree / "real" / "__pycache__").mkdir()
+        self.assertTrue(rc.is_regenerable("real/__pycache__/", str(tree)))
+        self.assertFalse(rc.is_regenerable("linked/__pycache__/", str(tree)), "reached through a link")
 
 
 if __name__ == "__main__":
