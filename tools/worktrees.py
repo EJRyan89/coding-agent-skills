@@ -37,8 +37,9 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
 
+import git_worktrees
 from console import run_main
-from git_client import GitClient, GitResult
+from git_client import GitClient, GitError, GitResult
 
 from deployer import platform_support
 from tools import bash_syntax
@@ -1934,43 +1935,23 @@ class Row:
     path: str
 
 
-def worktrees(hub: Path) -> list[dict[str, str]]:
-    entries: list[dict[str, str]] = []
-    # The NUL-separated listing, so a path that holds a line break is read whole.
-    for record in git(hub, "worktree", "list", "--porcelain", "-z", timeout=None).stdout.split("\0"):
-        key, _, value = record.partition(" ")
-        if key == "worktree":
-            entries.append({"worktree": value})
-        elif entries and key:
-            entries[-1][key] = value
-    return entries
-
-
-def changed_paths(path: Path) -> int:
-    """The paths with changes in the checkout at path, untracked files included whatever status.showUntrackedFiles
-    says, from the NUL-separated listing, where a rename or a copy is one path followed by the one it came from."""
-    listed = git(path, "status", "--porcelain", "-z", "--untracked-files=normal", timeout=None).stdout
-    entries = iter(listed.split("\0"))
-    count = 0
-    for entry in entries:
-        if entry:
-            count += 1
-            if "R" in entry[:2] or "C" in entry[:2]:
-                next(entries, None)
-    return count
-
-
-def row(hub: Path, entry: dict[str, str]) -> Row:
-    path = Path(entry["worktree"])
-    branch = entry.get("branch", "").removeprefix("refs/heads/") or "(detached)"
+def row(hub: Path, tree: git_worktrees.Worktree) -> Row:
+    path = Path(tree.path)
+    branch = tree.branch or "(detached)"
     shown = platform_support.normalize(path)
     if not path.is_dir():
         return Row(branch, "missing", "-", "-", "-", shown)
     counts = git(
-        hub, "rev-list", "--left-right", "--count", f"{MAIN}...{entry.get('HEAD', 'HEAD')}", timeout=None
+        hub, "rev-list", "--left-right", "--count", f"{MAIN}...{tree.head or 'HEAD'}", timeout=None
     ).stdout.split()
     behind, ahead = counts if len(counts) == 2 else ("-", "-")
-    dirty = changed_paths(path)
+    try:
+        dirty = git_worktrees.changed_paths(CLIENT, path)
+    except GitError as exc:
+        if exc.returncode is None:
+            raise
+        # Git ran and could not read the checkout, as when its .git file names a folder that is gone.
+        return Row(branch, "unreadable", ahead, behind, "-", shown)
     if same_path(path, hub):
         problems = [*(["off main"] if branch != MAIN else []), *(["dirty"] if dirty else [])]
         state = " · ".join(["hub", *problems])
@@ -1981,7 +1962,10 @@ def row(hub: Path, entry: dict[str, str]) -> Row:
 
 def list_worktrees() -> int:
     hub = current_hub()
-    rows = [Row("BRANCH", "STATE", "AHEAD", "BEHIND", "DIRTY", "PATH"), *(row(hub, e) for e in worktrees(hub))]
+    rows = [
+        Row("BRANCH", "STATE", "AHEAD", "BEHIND", "DIRTY", "PATH"),
+        *(row(hub, t) for t in git_worktrees.list_worktrees(CLIENT, hub)),
+    ]
     widths = [max(len(getattr(r, field)) for r in rows) for field in ("branch", "state", "ahead", "behind", "dirty")]
     for r in rows:
         cells = (r.branch, r.state, r.ahead, r.behind, r.dirty)
