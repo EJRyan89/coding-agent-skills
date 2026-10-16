@@ -120,9 +120,8 @@ class RecoveryTests(RecoveryTestCase):
         for arguments in ((), ("--dry-run",), ("--canary-home", str(self.home))):
             with self.subTest(arguments=arguments):
                 result = self.deploy_fails(
-                    "--all", *arguments, "--include", "missing", pattern="--include names no bundle or skill"
+                    "--all", *arguments, "--include", "missing", code=2, pattern="--include names no bundle or skill"
                 )
-                self.assertEqual(2, result.code, result.output)
                 self.assertEqual(
                     "\nERROR: --include names no bundle or skill in this source: missing\n"
                     f"Run '{DEPLOY_COMMAND} --help' for usage.\n\n",
@@ -150,8 +149,7 @@ class RecoveryTests(RecoveryTestCase):
         )
         for arguments in (("--all",), (), ("--all", "--dry-run"), ("--dry-run",)):
             with self.subTest(arguments=arguments):
-                result = self.deploy_fails(*arguments, "--force-item", "gamma", pattern="--force-item names")
-                self.assertEqual(2, result.code, result.output)
+                result = self.deploy_fails(*arguments, "--force-item", "gamma", code=2, pattern="--force-item names")
                 self.assertEqual(expected, result.output)
         recovered = self.deploy_ok("--all")
         self.assertIn("Recovering uncommitted run 20260101-000000-fake (rolling back)...", recovered.output)
@@ -960,6 +958,90 @@ class RecoveryBranchTests(RecoveryTestCase):
             journal_file, f"  WARNING: Permanent backup hash mismatch for alpha at .backups/{self.RUN}/alpha"
         )
         self.assertEqual("changed after the run\n", (destination / "SKILL.md").read_text(encoding="utf-8"))
+
+    def test_an_installed_copy_changed_after_a_committed_run_stops_completion_and_keeps_both_copies(self) -> None:
+        journal_file, destination = self.committed_with_kept_backup()
+        installed = hashing.hash_path(self.skills_dir / "alpha")
+        self.append(self.skills_dir / "alpha" / "SKILL.md", "edited after the run\n")
+        edited = hashing.hash_path(self.skills_dir / "alpha")
+        self.assertNotEqual(installed, edited)
+        self.assert_completion_stopped(
+            journal_file, f"  WARNING: Installed alpha hash mismatch (expected {installed}, got {edited})"
+        )
+        self.assertIn("edited after the run", self.skill_text("alpha"))
+        self.assertEqual("previous alpha\n", (self.skills_dir / "alpha.deploying-bak" / "SKILL.md").read_text())
+        self.assertFalse(destination.exists())
+
+    def uncommitted_replacement(self) -> Path:
+        """An uncommitted run that moved alpha aside and installed a new copy, then stopped before its commit."""
+        self.deployed(("alpha", "Alpha content"))
+        original = hashing.hash_path(self.skills_dir / "alpha")
+        (self.skills_dir / "alpha").rename(self.skills_dir / "alpha.deploying-bak")
+        self.write(self.skills_dir / "alpha" / "SKILL.md", "installed by the interrupted run\n")
+        installed = hashing.hash_path(self.skills_dir / "alpha")
+        return self.write_journal(self.RUN, backup_entry("alpha", original), install_entry("alpha", installed))
+
+    def assert_rollback_stopped(self, journal_file: Path, *warnings: str, changes_home: str = "") -> None:
+        result = self.deploy_fails("--all", pattern="Recovery failed", changes_home=changes_home)
+        self.assert_lines(
+            result.output,
+            f"Recovering uncommitted run {self.RUN} (rolling back)...",
+            *warnings,
+            f"  ERROR: Recovery has unreconciled entries. Journal retained at: {forward(journal_file)}",
+            "ERROR: Recovery failed, so this deployment stopped before deploying anything.",
+        )
+        self.assertNotIn("Recovery complete", result.output)
+        self.assertTrue(journal_file.is_file())
+        self.assertFalse(self.lock_dir.exists())
+
+    def test_an_installed_copy_changed_after_an_uncommitted_run_is_not_rolled_back(self) -> None:
+        journal_file = self.uncommitted_replacement()
+        self.append(self.skills_dir / "alpha" / "SKILL.md", "edited after the run\n")
+        self.assert_rollback_stopped(
+            journal_file,
+            "  WARNING: Cannot rollback install of alpha (hash mismatch)",
+            "  WARNING: Both alpha and alpha.deploying-bak exist during rollback",
+        )
+        self.assertEqual(
+            "installed by the interrupted run\nedited after the run\n",
+            (self.skills_dir / "alpha" / "SKILL.md").read_text(encoding="utf-8"),
+        )
+        self.assertIn("Alpha content", (self.skills_dir / "alpha.deploying-bak" / "SKILL.md").read_text())
+
+    def test_an_installed_copy_that_appears_while_rollback_reads_it_is_not_removed(self) -> None:
+        journal_file = self.uncommitted_replacement()
+        alpha = self.skills_dir / "alpha"
+        read = journal._hash_existing
+
+        def appearing(path: Path) -> str | None:
+            # Absent when hashed, present when checked: something wrote it between the two reads.
+            return None if path == alpha else read(path)
+
+        with mock.patch("deployer.journal._hash_existing", side_effect=appearing):
+            self.assert_rollback_stopped(
+                journal_file,
+                "  WARNING: Unexpected state for alpha during rollback",
+                "  WARNING: Both alpha and alpha.deploying-bak exist during rollback",
+            )
+        self.assertEqual("installed by the interrupted run\n", (alpha / "SKILL.md").read_text(encoding="utf-8"))
+        self.assertIn("Alpha content", (self.skills_dir / "alpha.deploying-bak" / "SKILL.md").read_text())
+
+    def test_a_backup_that_cannot_be_moved_back_stops_rollback_and_the_next_deployment_restores_it(self) -> None:
+        journal_file = self.uncommitted_replacement()
+        transient = self.skills_dir / "alpha.deploying-bak"
+        with failing_at("move", transient):
+            self.assert_rollback_stopped(
+                journal_file, "  WARNING: Failed to restore backup for alpha", changes_home=RECOVERS
+            )
+        self.assertFalse((self.skills_dir / "alpha").exists())
+        self.assertIn("Alpha content", (transient / "SKILL.md").read_text(encoding="utf-8"))
+        result = self.deploy_ok("--all")
+        self.assert_lines(
+            result.output, f"Recovering uncommitted run {self.RUN} (rolling back)...", "  Recovery complete."
+        )
+        self.assertIn("Alpha content", self.skill_text("alpha"))
+        self.assertFalse(transient.exists())
+        self.assertFalse(journal_file.exists())
 
     def test_an_uncommitted_run_that_preserved_a_backup_puts_it_back(self) -> None:
         self.deployed(("alpha", "Alpha content"))
@@ -1843,14 +1925,44 @@ class MigrationTests(DeployerTestCase):
         self.deploy_fails("--migrate-from", "old/source", pattern="differs from the old manifest")
         self.assertEqual(before, hashlib.sha256(self.manifest_file.read_bytes()).hexdigest())
 
+    def test_a_name_this_source_deploys_as_another_kind_stays_with_the_old_source_and_the_deployment_refuses(
+        self,
+    ) -> None:
+        self.make_source_json("test/old")
+        self.make_skill("alpha", "Old alpha skill")
+        self.make_skill("gamma", "Gamma")
+        self.make_config("test/old")
+        self.deploy_from(self.snapshot_source("old"), "--all")
+        self.remove_skill("alpha")
+        self.make_source_json(shared_assets={"alpha": "owner"})
+        self.make_shared_asset("alpha", "New alpha shared asset")
+        self.make_skill("gamma", "Gamma", shared_deps=["alpha"])
+        self.make_config()
+        before = self.owned("skills", "test/old")["alpha"]
+        result = self.deploy_ok("--migrate-from", "test/old")
+        self.assertEqual(["gamma"], self.report_groups(result.output, "MIGRATED")["MIGRATED"])
+        self.assertEqual(before, self.owned("skills", "test/old")["alpha"])
+        self.assertNotIn("alpha", self.owned("skills"))
+        self.assertNotIn("alpha", self.owned("shared"))
+        refused = self.deploy_fails("--all", pattern="collides with")
+        self.assertIn(
+            "ERROR: Shared asset 'alpha' collides with a skill owned by source 'test/old'.\n"
+            "One name cannot be deployed as two kinds. Rename it in one source, or stop deploying it from "
+            "'test/old'.\n",
+            refused.output,
+        )
+        self.assertIn("Old alpha skill", self.skill_text("alpha"))
+
     def test_migration_argument_rules(self) -> None:
         self.make_source_json()
         self.make_skill("alpha", "Alpha")
         self.make_config()
-        self.deploy_fails("--migrate-from", pattern="argument --migrate-from: expected one argument")
-        self.deploy_fails("--migrate-from", "Not Valid", pattern="Invalid migration source ID")
-        self.deploy_fails("--migrate-from", "test/skills", pattern="must name a different source")
-        self.deploy_fails("--migrate-from", "old/source", "--dry-run", pattern="cannot be combined with --dry-run")
+        self.deploy_fails("--migrate-from", code=2, pattern="argument --migrate-from: expected one argument")
+        self.deploy_fails("--migrate-from", "Not Valid", code=2, pattern="Invalid migration source ID")
+        self.deploy_fails("--migrate-from", "test/skills", code=2, pattern="must name a different source")
+        self.deploy_fails(
+            "--migrate-from", "old/source", "--dry-run", code=2, pattern="cannot be combined with --dry-run"
+        )
 
 
 class ManifestStateTests(RecoveryTestCase):

@@ -179,13 +179,12 @@ class AgentDeploymentTests(DeployerTestCase):
         forced = ("--force-item", "gamma", "--force-item", "alpha", "--force-item", "reviewer.txt")
         for arguments in (("--dry-run",), ()):
             with self.subTest(arguments=arguments):
-                result = self.deploy_fails("--all", *arguments, *forced, pattern="--force-item names")
+                result = self.deploy_fails("--all", *arguments, *forced, code=2, pattern="--force-item names")
                 self.assertIn(refusal, result.output)
-                self.assertEqual(2, result.code)
                 self.assertFalse(self.manifest_file.exists())
                 self.assertFalse((self.skills_dir / "alpha").exists())
                 self.assertEqual("my own reviewer\n", self.agent.read_text(encoding="utf-8"))
-        nothing = self.deploy_fails("--force-item", "alpha", stdin="none\n", pattern="--force-item names")
+        nothing = self.deploy_fails("--force-item", "alpha", stdin="none\n", code=2, pattern="--force-item names")
         self.assertIn(
             "ERROR: --force-item names 'alpha', which this run does not install.\n"
             "This run installs nothing, so --force-item has nothing to replace.\n",
