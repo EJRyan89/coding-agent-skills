@@ -1,19 +1,26 @@
 """Run the complete repository validation suite.
 
-Usage: python -B tests/run_validation.py [-k PATTERN ...] [-v] [--full] [--pr-body FILE] [--pr-title FILE]
-                                        [--shard INDEX/COUNT]
+Usage: python -B tests/run_validation.py [-k PATTERN ... | --changed | --full] [-v] [--pr-body FILE]
+                                        [--pr-title FILE] [--shard INDEX/COUNT]
 
 It runs every regression suite under tests/ and each skill's scripts/ in one pool of worker processes, largest first,
 and the policy checks in this process while the pool works, printing their report when they finish. The policies live
 in tests/validation/, one module per family, each with its fixture tests beside it as
 tests/validation/test_<module>.py, which run in the pool as regression suites. A large Python suite is split into
 shards, each run by tests/run_shard.py in its own process, so no single suite sets the length of the run.
--k selects the policy checks whose name, and the suites whose path, matches a pattern. VALIDATION_JOBS sets the
-number of workers.
+-k selects the policy checks whose name, and the suites whose path, matches a pattern, and a pattern that matches
+none of either is a usage error, exit 2, rather than a run that passes empty. VALIDATION_JOBS sets the number of
+workers.
 
 When every changed file is documentation, it runs the policy checks and only the suites that name a changed
 file, and, when a changed file is Markdown, the PowerShell analyzer and the ShellCheck check of Markdown Bash fences;
 anything else, or a change it cannot determine, runs everything. --full always runs everything.
+
+--changed, the local check of a change, runs the policy checks, the static checks that read a changed file's kind,
+and the suites the change reaches: a changed suite, a suite that imports a changed module directly or through others,
+one that names a changed file or such an importer, one in the skill a changed file sits in, and the suites
+job_selection.CHANGE_REACHES adds, such as the deployer's rendering suite for a shipped skill's files and the floor
+suites for a tool floor. A change it cannot determine runs everything.
 
 --pr-body names a file holding the pull request's body, whose `## Upgrade note` the upgrade-notes check reads beside
 the notes merged into origin/main since the last tag; CI passes the body this way. Without it, the check reads the
@@ -34,6 +41,7 @@ suite_discovery.pool_shared_state_problems holds the rule.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fnmatch
 import io
 import os
@@ -66,6 +74,7 @@ import skill_scripts
 import suite_discovery
 import toolchain
 import upgrade_notes
+import workarounds
 import workflows
 from console import run_main
 from job_pool import (
@@ -83,6 +92,7 @@ from job_selection import (
     MARKDOWN_SHELL_JOB,
     POWERSHELL_JOB,
     all_jobs,
+    changed_jobs,
     changed_paths,
     documentation_jobs,
     leg_jobs,
@@ -113,6 +123,7 @@ POLICY_MODULES = (
     suite_discovery,
     toolchain,
     upgrade_notes,
+    workarounds,
     workflows,
 )
 
@@ -251,6 +262,78 @@ class ShardOption(unittest.TestCase):
         self.assertEqual(2, raised.exception.code)
         self.assertIn("argument --shard: expected <index>/<count>", error.getvalue())
         versions.assert_not_called()
+
+
+class SelectionOptions(unittest.TestCase):
+    """What -k and --changed select, read through the stream and the environment main is given."""
+
+    def run_main(self, argv: list[str], **patches: Any) -> tuple[int, str, str, list[list[Job]]]:
+        """main's exit code, output, error output, and the jobs it gave the pool, with the tools and the files the
+        checks read held still and the named functions of this module replaced."""
+        started: list[list[Job]] = []
+
+        def pool_runs(_policies: object, jobs: list[Job], *_: object) -> tuple[unittest.TestResult, PoolResult]:
+            started.append(jobs)
+            return unittest.TestResult(), PoolResult([], [])
+
+        printed, error = io.StringIO(), io.StringIO()
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(upgrade_notes, "pull_request_body", None))
+            stack.enter_context(mock.patch.object(pull_request_title, "pull_request_title", None))
+            stack.enter_context(mock.patch(f"{__name__}.tool_versions", return_value={}))
+            stack.enter_context(mock.patch(f"{__name__}.report_prerequisite_problems", return_value=False))
+            stack.enter_context(mock.patch(f"{__name__}.run_beside", side_effect=pool_runs))
+            for name, replacement in patches.items():
+                stack.enter_context(mock.patch(f"{__name__}.{name}", replacement))
+            code = main(argv, out=printed, errors=error, environment={})
+        return code, printed.getvalue(), error.getvalue(), started
+
+    def test_a_pattern_matching_no_policy_check_and_no_suite_is_a_usage_error_before_any_job_starts(self) -> None:
+        unmatched = Job("tests/test_other.py", "tests/test_other.py", 1, lambda: None)
+        code, _, error, started = self.run_main(
+            ["-k", "zz names nothing"], all_jobs=mock.Mock(return_value=[unmatched])
+        )
+        self.assertEqual(2, code)
+        self.assertEqual("No policy check or suite matches zz names nothing.\n", error)
+        self.assertEqual([], started)
+
+    def test_changed_runs_the_jobs_the_changed_files_reach(self) -> None:
+        reached = Job("tests/deployer/test_rendering_locking.py", "tests/deployer/test_rendering_locking.py", 1, print)
+        paths = ["skills/a/scripts/tool.py"]
+        selection = mock.Mock(return_value=[reached])
+        code, printed, _, started = self.run_main(
+            ["--changed"], changed_paths=mock.Mock(return_value=paths), changed_jobs=selection
+        )
+        self.assertEqual(0, code)
+        selection.assert_called_once_with(REPOSITORY_ROOT, paths)
+        self.assertEqual([[reached]], started)
+        self.assertIn("Changed files: 1 files changed since origin/main.", printed)
+
+    def test_changed_runs_everything_when_the_changed_files_cannot_be_determined(self) -> None:
+        every = [Job("tests/test_a.py", "tests/test_a.py", 1, print)]
+        selection = mock.Mock()
+        code, printed, _, started = self.run_main(
+            ["--changed"],
+            changed_paths=mock.Mock(return_value=None),
+            changed_jobs=selection,
+            all_jobs=mock.Mock(return_value=every),
+        )
+        self.assertEqual(0, code)
+        selection.assert_not_called()
+        self.assertEqual([every], started)
+        self.assertIn("Full validation: the files changed since origin/main could not be determined.", printed)
+
+    def test_changed_with_a_pattern_or_full_is_a_usage_error(self) -> None:
+        for argv, message in (
+            (["--changed", "-k", "deployer"], "argument --changed: not allowed with argument -k"),
+            (["--changed", "--full"], "argument --full: not allowed with argument --changed"),
+        ):
+            with self.subTest(argv=argv):
+                error = io.StringIO()
+                with self.assertRaises(SystemExit) as raised:
+                    parse_arguments(argv, error)
+                self.assertEqual(2, raised.exception.code)
+                self.assertIn(message, error.getvalue())
 
 
 class TerminationReport(unittest.TestCase):
@@ -437,7 +520,13 @@ def parse_arguments(argv: list[str] | None, errors: TextIO | None = None) -> arg
         help="run only the policy checks whose name, and the suites whose path, match; repeatable",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="list each policy check and suite as it finishes")
-    parser.add_argument("--full", action="store_true", help="run every suite even when only documentation changed")
+    reach = parser.add_mutually_exclusive_group()
+    reach.add_argument("--full", action="store_true", help="run every suite even when only documentation changed")
+    reach.add_argument(
+        "--changed",
+        action="store_true",
+        help="run the policy checks and the static checks and suites the files changed since the base reach",
+    )
     parser.add_argument(
         "--pr-body",
         type=Path,
@@ -457,11 +546,39 @@ def parse_arguments(argv: list[str] | None, errors: TextIO | None = None) -> arg
         help="run leg INDEX of COUNT: a share of the selected policy checks and suites, dealt alike on every leg",
     )
     arguments = parser.parse_args(argv)
+    if arguments.changed and arguments.patterns:
+        parser.error("argument --changed: not allowed with argument -k, which selects by name instead")
     if arguments.pr_body is not None and not arguments.pr_body.is_file():
         parser.error(f"--pr-body is not a file: {arguments.pr_body}")
     if arguments.pr_title is not None and not arguments.pr_title.is_file():
         parser.error(f"--pr-title is not a file: {arguments.pr_title}")
     return arguments
+
+
+def select_jobs(arguments: argparse.Namespace, base: str) -> tuple[list[Job], str]:
+    """The jobs a run without -k selects and the line that says why: every job with --full; with --changed the static
+    checks and suites the change since base reaches; otherwise, when every changed file is documentation, the fence
+    checks and the suites that name a changed file; and every job when the changed files cannot be determined."""
+    paths = None if arguments.full else changed_paths(REPOSITORY_ROOT, base)
+    if arguments.changed:
+        if paths is None:
+            return all_jobs(), f"Full validation: the files changed since {base} could not be determined."
+        jobs = changed_jobs(REPOSITORY_ROOT, paths)
+        return jobs, (
+            f"Changed files: {len(paths)} files changed since {base}. Running the policy checks and the "
+            f"{len({job.name for job in jobs})} static checks and suites they reach; pass --full to run every suite."
+        )
+    only, reason = (False, "--full was given") if arguments.full else documentation_only(paths)
+    if not only or paths is None:
+        return all_jobs(), f"Full validation: {reason}."
+    jobs = documentation_jobs(REPOSITORY_ROOT, paths, regression_suites())
+    fences = [job.label for job in jobs if job.label in (POWERSHELL_JOB, MARKDOWN_SHELL_JOB)]
+    suites = sorted({job.name for job in jobs if job.label not in fences})
+    return jobs, (
+        f"Documentation only: {reason} since {base}. Running the policy checks, "
+        + (f"the {len(fences)} Markdown fence checks, " if fences else "")
+        + f"and the {len(suites)} suites that name a changed file; pass --full to run every suite."
+    )
 
 
 class Run(NamedTuple):
@@ -555,21 +672,7 @@ def main(
         jobs = [job for job in all_jobs() if any(fnmatch.fnmatchcase(job.name, pattern) for pattern in patterns)]
         mode = f"Selected by -k {' '.join(arguments.patterns)}."
     else:
-        base = f"origin/{environment.get('GITHUB_BASE_REF') or 'main'}"
-        paths = None if arguments.full else changed_paths(REPOSITORY_ROOT, base)
-        only, reason = (False, "--full was given") if arguments.full else documentation_only(paths)
-        if only and paths is not None:
-            jobs = documentation_jobs(REPOSITORY_ROOT, paths, regression_suites())
-            fences = [job.label for job in jobs if job.label in (POWERSHELL_JOB, MARKDOWN_SHELL_JOB)]
-            suites = sorted({job.name for job in jobs if job.label not in fences})
-            mode = (
-                f"Documentation only: {reason} since {base}. Running the policy checks, "
-                + (f"the {len(fences)} Markdown fence checks, " if fences else "")
-                + f"and the {len(suites)} suites that name a changed file; pass --full to run every suite."
-            )
-        else:
-            jobs = all_jobs()
-            mode = f"Full validation: {reason}."
+        jobs, mode = select_jobs(arguments, f"origin/{environment.get('GITHUB_BASE_REF') or 'main'}")
         print(mode, file=out, flush=True)
     if not policies.countTestCases() and not jobs:
         print(f"No policy check or suite matches {' '.join(arguments.patterns)}.", file=errors)
