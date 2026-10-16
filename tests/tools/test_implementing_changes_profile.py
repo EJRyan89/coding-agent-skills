@@ -69,6 +69,35 @@ class ImplementingChangesProfileTest(GitTestCase):
         self.assertIn("Bug class", steps)
         self.assertLess(steps.index("Bug class"), steps.index("Implement"))
 
+    def test_step_8_checks_the_written_title_and_body_then_brings_current_and_pushes_before_opening(self) -> None:
+        section = SKILL.read_text(encoding="utf-8").split("## 8. Pull request", 1)[1]
+        steps = [
+            "1. Write the title",
+            "2. Run *Validation*'s title and body checks",
+            "3. Bring the branch up to date",
+            "4. Push the branch",
+            "5. Open the pull request",
+            "gh pr create",
+        ]
+        found = [section.find(step) for step in steps]
+        self.assertNotIn(-1, found, dict(zip(steps, found, strict=True)))
+        self.assertEqual(sorted(found), found)
+        self.assertIn("upgrade note", section)
+
+    def test_skill_hands_over_the_title_and_the_upgrade_note_with_the_plan(self) -> None:
+        plan = SKILL.read_text(encoding="utf-8").split("## 5. Plan", 1)[1].split("## 6.", 1)[0]
+        self.assertIn("- the pull request's title, and whether the change owes an upgrade note", plan)
+
+    def test_profile_states_both_starts_and_the_base_rules(self) -> None:
+        found = headings(PROFILE.read_text(encoding="utf-8"))
+        self.assertIn("**In the hub.**", found["Worktree"])
+        self.assertIn("**In a worktree a runtime already made**", found["Worktree"])
+        self.assertIn("create no second tree", found["Worktree"])
+        for rule in ("`git rebase origin/main`", "never rebase or force-push it", "If a push is rejected"):
+            with self.subTest(rule=rule):
+                self.assertIn(rule, found["Pull requests"])
+        self.assertIn("`## Upgrade note`", found["Pull requests"])
+
     def test_bug_and_enhancement_templates_ask_for_known_siblings(self) -> None:
         for name in ("bug.md", "enhancement.md"):
             with self.subTest(template=name):

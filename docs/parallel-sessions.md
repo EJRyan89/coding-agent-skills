@@ -53,22 +53,39 @@ After a task's pull request merges, run the `repo-cleanup` skill on the hub (by 
 absolute path). In one pass it does the following:
 
 - **Updates the hub.** It fetches with prune and fast-forwards `main`.
-- **Removes finished worktrees.** A worktree is removed when it is clean and its branch's remote is gone. The
-  branch must also have no pull request at all, or one that merged or closed at exactly the branch's local tip.
+- **Removes finished worktrees.** A clean worktree is removed when its branch's pull request merged, whether or
+  not its remote branch still exists; when its remote branch is gone and it has no pull request; or when it was
+  pushed under its own name, has no pull request, and `main` holds both its tip and its remote branch's. A merged
+  pull request counts at the branch's exact local tip, at one of its commits followed only by "Update branch"
+  merges, or when its merge commit made the branch's whole change. A clean worktree whose pull request closed
+  without a merge is removed too, but its branch is kept and asked about.
 - **Deletes their branches, squash merges included.** `git branch -d` refuses a squash-merged branch, so
-  `repo-cleanup` uses `-D`. It does so only when GitHub shows the pull request merged at that exact tip.
+  `repo-cleanup` uses `-D` for a branch whose pull request merged by one of the proofs above, and when `-d` refuses
+  only because `HEAD` lacks a branch `main` holds. A branch not checked out in a worktree is deleted by the same
+  rules.
 - **Removes leftover folders.** Empty parent folders of a removed tree go, but `.claude` itself always stays,
   because it holds `settings.json`.
 
+It offers, and acts only when you confirm:
+
+- a clean worktree whose branch has no remote and no pull request, since it may hold a task just started;
+- a clean detached worktree whose commit is on `main` or a remote branch;
+- a folder under `.claude/worktrees` that Git no longer tracks as a worktree;
+- a branch whose pull request closed without a merge, and other unmerged branches.
+
 Anything else is kept and reported:
 
-- trees with uncommitted changes, an operation such as a rebase or bisect in progress, or edits hidden from
-  `git status`;
+- trees with uncommitted changes, an operation such as a rebase or bisect in progress, refs only that tree sees,
+  edits hidden from `git status`, or ignored files other than regenerable build output such as `__pycache__` or a
+  project's `bin` and `obj`, which is deleted with the tree;
 - open pull requests;
-- branches with no matching pull request;
-- branches still on the remote.
+- branches whose pull request status is unmatched or could not be read.
 
-So the trees other sessions are still using survive the sweep.
+So a tree another session is still using is kept, or only offered, while its branch is unpushed or has an open pull
+request. One whose branch was pushed before it had a commit of its own, with no pull request yet, does not: `main`
+holds both its tips, so it is removed and its branch deleted. `tools/worktrees.py new` creates the branch without
+an upstream, so this needs a push before the first commit. [`repo-cleanup`](skills.md#repo-cleanup) in the skill
+reference states every rule in full.
 
 Run it from a session that is **not** inside the tree being retired. Windows will not delete a folder that is
 some process's working directory. Git then removes the files and the worktree record but fails on the folder
