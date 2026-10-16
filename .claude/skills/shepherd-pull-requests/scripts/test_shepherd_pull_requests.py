@@ -547,7 +547,7 @@ class JudgementTest(FixtureTestCase):
         self.assertTrue(self.line(lines, "PR #21 ").endswith(" would-update"))
 
 
-class LogTest(unittest.TestCase):
+class LogTest(GitTestCase):
     def test_log_lines_drop_github_s_prefixes_and_terminal_escapes(self) -> None:
         text = PREFIX + "\x1b[31mFAIL\x1b[0m one\n2026-10-16T05:51:51Z two\nthree\twith a tab\n"
         self.assertEqual(["FAIL one", "two", "three\twith a tab"], shepherd.log_lines(text))
@@ -601,7 +601,7 @@ class MergedTest(FixtureTestCase):
         self.assertEqual("REMAINING 0", lines[-1])
 
 
-class MainTest(unittest.TestCase):
+class MainTest(GitTestCase):
     def test_main_runs_one_tick_from_the_working_directory(self) -> None:
         with mock.patch.object(shepherd, "tick", return_value=0) as tick:
             self.assertEqual(0, shepherd.main(["--dry-run"]))
