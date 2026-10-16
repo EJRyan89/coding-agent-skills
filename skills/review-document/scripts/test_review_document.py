@@ -31,7 +31,7 @@ import review_document
 import review_pipeline as rp
 import review_runtime
 from flat_text import flat_text
-from git_client import subprocess_runner
+from git_client import GitClient, GitResult, subprocess_runner
 from git_test_base import GitTestCase
 from github_client import CommandResult
 from review_canary import fixture_change, validate_fixture_pull
@@ -250,6 +250,50 @@ class CheckoutTests(DocumentTestCase):
         code, lines = run_main("build", str(draft), "--output", str(self.output), "--base", "committed")
         self.assertEqual(
             (1, ["FAILED --base committed has nothing to compare with: the file is not committed"]), (code, lines)
+        )
+        self.assertFalse(self.output.exists())
+
+    def test_a_checkout_with_no_commit_reviews_the_file_whole_and_refuses_base_committed(self) -> None:
+        checkout = self.root / "new checkout"
+        checkout.mkdir()
+        git(checkout, "init", "--quiet")
+        draft = checkout / "draft.md"
+        draft.write_bytes(b"# Draft\n\nA new idea.\n")
+        code, lines = run_main("build", str(draft), "--output", str(self.output), "--base", "committed")
+        self.assertEqual(
+            (1, ["FAILED --base committed has nothing to compare with: the checkout has no commit yet"]), (code, lines)
+        )
+        self.assertFalse(self.output.exists())
+        result = self.build(draft)
+        self.assertEqual("none the checkout has no commit yet", result["BASE"])
+        self.assertEqual("draft.md", result["DOCUMENT"])
+
+    def test_a_file_in_the_checkouts_git_folder_is_refused_with_gits_reason(self) -> None:
+        note = self.checkout() / ".git" / "note.md"
+        note.write_bytes(QUEUE_PLAN)
+        code, lines = run_main("build", str(note), "--output", str(self.output))
+        reason = "fatal: this operation must be run in a work tree"
+        self.assertEqual((1, [f"FAILED git could not read the checkout around {note}: {reason}"]), (code, lines))
+        self.assertFalse(self.output.exists())
+
+    def test_a_git_that_names_the_checkout_around_its_git_folder_is_refused(self) -> None:
+        # Real git refuses a path in the .git folder first; a git that answers anyway still reaches no fixture.
+        checkout = self.checkout()
+        note = checkout / ".git" / "note.md"
+        note.write_bytes(QUEUE_PLAN)
+
+        def runner(command: Sequence[str], timeout: float) -> GitResult:
+            if "--show-toplevel" in command:
+                return GitResult(0, f"{checkout}\n", "")
+            return subprocess_runner(command, timeout)
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = review_document.main(
+                ["build", str(note), "--output", str(self.output)], git=GitClient(runner=runner)
+            )
+        self.assertEqual(
+            (1, [f"FAILED {note} is inside the checkout's .git folder"]), (code, output.getvalue().splitlines())
         )
         self.assertFalse(self.output.exists())
 
@@ -955,6 +999,25 @@ class PullRequestTests(PipelineTestCase):
         reason = "--base committed has nothing to compare with: docs/design/queue plan.md is added in the pull request"
         self.assertEqual((1, [f"FAILED {reason}"]), (code, lines))
         self.assertEqual([], stub.reads())
+        self.assertFalse(self.output.exists())
+
+    def test_bytes_that_do_not_hash_to_the_blob_github_named_fail_the_build(self) -> None:
+        stub = self.stub()
+        named = blob_id(EDITED)
+        stub.blobs[named] = EDITED.replace(b"90 days", b"9 days")
+        code, lines = run_main(
+            "build",
+            "octo-org/widgets#7",
+            "--document",
+            "docs/design/retention.md",
+            "--output",
+            str(self.output),
+            github=stub.client(),
+        )
+        self.assertEqual(
+            (1, [f"FAILED GitHub did not return blob {named} for docs/design/retention.md"]), (code, lines)
+        )
+        self.assertEqual([f"docs/design/retention.md@{HEAD}"], stub.reads())
         self.assertFalse(self.output.exists())
 
     def test_a_pull_request_with_no_document_to_review_is_refused(self) -> None:

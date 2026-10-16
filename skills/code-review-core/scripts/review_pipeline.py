@@ -1825,6 +1825,14 @@ def role_errors(run: Path, state: dict[str, Any]) -> dict[str, str]:
         return {role["id"]: str(exc)}
     if result["status"] != "complete":
         return {role["id"]: f"result status is {result['status']}"}
+    # As a specialist's finding must sit in its own files, an entrypoint's must sit in a file the diff changes.
+    changed = parse_unified_diff(read_diff(Path(request["diff_path"])))
+    for finding in result["findings"]:
+        if finding["path"] not in changed:
+            return {
+                role["id"]: f"Finding {finding['candidate_key']} at {finding['path']}:{finding['line']} is not on a "
+                "file the pull request changes; take the path from a `diff --git` header in DIFF_FILE"
+            }
     return {}
 
 
