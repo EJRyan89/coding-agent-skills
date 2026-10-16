@@ -662,11 +662,17 @@ class CrossSkillContractTests(GitTestCase):
 
         tracker = read("update-pr-dashboard")
         self.assertIn(
-            "invoke `review-prs` once for every confirmed pull request, with `--pull <owner/repo#number>` for each "
-            "`missing` and `--re-review <owner/repo#number>` for each `stale`",
+            "invoke `review-prs` once with exactly the arguments the `REVIEW_ARGUMENTS <arguments>` line prints, so "
+            "every confirmed pull request is reviewed in one pass",
             tracker,
         )
         self.assertNotIn("`re-review <owner/repo#number>`", tracker)
+        # The tracker's script prints the arguments, so each option it prints is one review-prs takes.
+        dashboard = REPOSITORY_ROOT / "skills/update-pr-dashboard/scripts/dashboard_pipeline.py"
+        printed = dashboard.read_text(encoding="utf-8")
+        for option in ("--pull", "--re-review", "--scope"):
+            with self.subTest(option=option):
+                self.assertIn(f'"{option}"', printed)
         review_prs = read("review-prs")
         self.assertIn(
             "--pull owner/repo#number ... --re-review owner/repo#number ...",
@@ -674,7 +680,13 @@ class CrossSkillContractTests(GitTestCase):
         )
         self.assertIn("(or `--re-review` for one given with `--re-review`)", review_prs)
         pipeline = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py"
-        self.assertEqual("'append'", declared_options(pipeline, "prepare_parser")["--re-review"]["action"])
+        options = declared_options(pipeline, "prepare_parser")
+        for option in ("--pull", "--re-review"):
+            with self.subTest(repeatable=option):
+                self.assertEqual("'append'", options[option]["action"])
+        self.assertEqual(
+            options["--scope"]["choices"], declared_options(dashboard, "arguments_parser")["--scope"]["choices"]
+        )
 
     def test_review_prs_waits_for_the_copilot_host_in_bounded_calls(self) -> None:
         # A foreground command ends after 2 minutes by default in Claude Code; a host review can take 30.
@@ -930,7 +942,12 @@ class CrossSkillContractTests(GitTestCase):
         )
         tracker = read("update-pr-dashboard")[1]
         self.assertIn("Ask once for the run, never per pull request.", tracker)
-        self.assertIn("plus `--scope <scope>` with the chosen scope when any is `stale`", tracker)
+        self.assertIn(
+            "If it prints `SCOPE_NEEDED <owner/repo#number>` lines, those confirmed pull requests are `stale`: "
+            "ask in a second AskUserQuestion call how to re-review them",
+            tracker,
+        )
+        self.assertIn("then run the command again adding `--scope <scope>`", tracker)
         pipeline = (REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py").read_text(encoding="utf-8")
         self.assertIn('parser.error("--scope is required with --re-review and taken only with it")', pipeline)
 
