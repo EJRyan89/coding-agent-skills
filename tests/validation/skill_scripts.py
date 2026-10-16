@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from duplication import SKILL_CORE, SKILL_CORE_SCRIPTS
+from markdown_sections import SHELL_FENCES
 from toolchain import find_powershell
 from validation_support import (
     REPOSITORY_ROOT,
@@ -239,15 +240,19 @@ def shell_commands(script: str) -> set[str]:
     return found - functions
 
 
-def _fences(markdown: str, context: str) -> list[str]:
-    """The body of each fence that deployer/render.py renders in a context: shell for a Bash, sh, or shell fence, and
-    powershell for a PowerShell, ps1, or pwsh fence. A fence left open runs to the end of what holds it, as the
-    renderer reads it, so its commands are held like any other's; unclosed_fence_problems reports it."""
+# The contexts deployer/render.py gives a fence of commands for a command shell: a POSIX shell's, fish's, and cmd's.
+COMMAND_SHELL_CONTEXTS = frozenset(render.FENCE_CONTEXT[label] for label in SHELL_FENCES)
+
+
+def _fences(markdown: str, *contexts: str) -> list[str]:
+    """The body of each fence that deployer/render.py renders in one of these contexts: shell for a Bash, sh, zsh, or
+    console fence, and powershell for a PowerShell, ps1, or pwsh fence. A fence left open runs to the end of what holds
+    it, as the renderer reads it, so its commands are held like any other's; unclosed_fence_problems reports it."""
     lines = markdown.splitlines()
     return [
         "\n".join(fence.text(lines[index]) for index in fence.body())
         for fence in find_fences(lines)
-        if render.fence_context(fence) == context
+        if render.fence_context(fence) in contexts
     ]
 
 
@@ -1146,7 +1151,7 @@ def _file_commands(path: Path, known: set[str], powershell: dict[str, set[str]])
     elif suffix in {".sh", ".bash"}:
         found |= shell_commands(text)
     elif suffix == ".md":
-        found |= {command for block in _fences(text, "shell") for command in shell_commands(block)}
+        found |= {command for block in _fences(text, *COMMAND_SHELL_CONTEXTS) for command in shell_commands(block)}
     return found
 
 

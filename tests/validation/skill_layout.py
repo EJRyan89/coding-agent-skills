@@ -6,12 +6,11 @@ from __future__ import annotations
 
 import json
 import re
-import sys
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
-from skill_roots import sibling_scripts
+from markdown_sections import EXECUTABLE_FENCES
 from validation_support import (
     CODE_SPAN,
     EXECUTABLE_SCRIPT_EXTENSIONS,
@@ -39,26 +38,13 @@ from validation_support import (
 
 from deployer import platform_support
 
-# The analyze-skill-cost inventory owns the labels it reads as command shells, the grant checks among its readers, so
-# a fence the grant checks read as commands is one the five-line and output-placeholder rules read too. The path is set
-# once here, at import, as skill_grants sets it.
-sys.path.insert(0, str(sibling_scripts("analyze-skill-cost")))
-import skill_inventory
-
 MAXIMUM_INLINE_EXECUTABLE_LINES = 5
 
 
-# Every label a fence of commands or a program may carry: the command shells and PowerShell the inventory reads, and
-# Python, JavaScript, and TypeScript under each name Markdown gives them.
-EXECUTABLE_FENCE_LANGUAGES = frozenset(
-    {
-        *skill_inventory.SHELL_FENCES,
-        *skill_inventory.POWERSHELL_FENCES,
-        *("python", "python3", "py"),
-        *("javascript", "js", "node", "mjs", "cjs"),
-        *("typescript", "ts"),
-    }
-)
+# Every label a fence of commands or a program may carry, from skill-core's one table, which the renderer substitutes
+# tokens by and the analyze-skill-cost inventory reads commands by, so a fence the grant checks read as commands, or
+# the renderer escapes for a language, is one the five-line and output-placeholder rules read too.
+EXECUTABLE_FENCE_LANGUAGES = EXECUTABLE_FENCES
 
 
 @dataclass(frozen=True)
