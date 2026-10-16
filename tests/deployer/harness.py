@@ -23,14 +23,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 
 from git_test_base import GitTestCase
 
-from deployer import cli, configure, fsops, pipeline, platform_support
+from deployer import cli, configure, fsops, pipeline, platform_support, source_ref
 from deployer.paths import Paths
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 SOURCE_ID = "test/skills"
-# The grant shipped skills use: Bash and PowerShell for the skill's own scripts only. See "Granting tools" in
-# docs/adding-a-skill.md.
+# The fixture skills' shell grant, written un-rendered with the interpreter by hand, since make_skill declares no
+# PYTHON in required_vars; the deployer reads no shell grant, so its form changes no test. A shipped skill grants each
+# script it runs by name, as {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/<script>.py" *, which the deployer renders with
+# the platform's Python command; see "Granting tools" in docs/adding-a-skill.md.
 OWN_SCRIPTS = 'python -B "${CLAUDE_SKILL_DIR}/scripts/*'
 ALLOWED_TOOLS = json.dumps([f"Bash({OWN_SCRIPTS})", f"PowerShell({OWN_SCRIPTS})"])
 REPORT_GROUP = re.compile(r"([A-Z][A-Z ]*[A-Z]) \(([0-9]+)\):")
@@ -41,6 +43,15 @@ TAKES_THE_LOCK = "the lock is taken, or a stale one reclaimed, before the failur
 # The command line every deploy.py hint and usage line names, pinned as each platform's literal: Windows runs
 # Python as python, and Linux as python3, where a distribution may install no python command.
 DEPLOY_COMMAND = "python deploy.py" if platform_support.WINDOWS else "python3 deploy.py"
+# A well-formed hash that matches no tree, for a journal or manifest entry whose item is never hashed.
+ZERO_HASH = "sha256:" + "0" * 64
+SEE_RECOVERY_FAILED = 'See "When recovery fails" in docs/recovery.md.'
+# Each journal root's destination prefix and staging folder, as the deployer writes them.
+JOURNAL_ROOTS = {
+    "": ("skills", "staging"),
+    "agents": ("agents", "staging/.agent-adapters"),
+    "claude-agents": ("claude-agents", "staging/.claude-agents"),
+}
 
 
 def forward(path: Path) -> str:
@@ -95,6 +106,93 @@ def git(directory: Path, *arguments: str) -> str:
         check=True,
     )
     return completed.stdout.strip()
+
+
+def journal_line(entry: dict) -> str:
+    return json.dumps(entry, separators=(",", ":")) + "\n"
+
+
+def backup_entry(item: str, backup_hash: str, retain: bool = False, run_id: str = "", root: str = "") -> dict:
+    """The journal entry a run writes before it moves item in root aside, retained under .backups when retain."""
+    prefix = JOURNAL_ROOTS[root][0]
+    entry: dict = {"op": "backup", **({"root": root} if root else {})}
+    entry.update(
+        {
+            "item": item,
+            "from": f"{prefix}/{item}",
+            "to": f"{prefix}/{item}.deploying-bak",
+            "retain": retain,
+            "backup_hash": backup_hash,
+        }
+    )
+    if retain:
+        entry["backup_dest"] = f".backups/{run_id}/{item}"
+    return entry
+
+
+def install_entry(item: str, staged_hash: str, root: str = "") -> dict:
+    """The journal entry a run writes before it moves item's staged copy into root."""
+    prefix, staging = JOURNAL_ROOTS[root]
+    return {
+        "op": "install",
+        **({"root": root} if root else {}),
+        "item": item,
+        "from": f"{staging}/{item}",
+        "to": f"{prefix}/{item}",
+        "staged_hash": staged_hash,
+    }
+
+
+def probe_returning(alive: bool, start_time: int | None) -> Callable[[int], platform_support.ProcessStatus]:
+    """A process probe that reports every lock holder alive or gone, with this start time."""
+    return lambda pid: platform_support.ProcessStatus(alive, start_time)
+
+
+def interrupting() -> io.StringIO:
+    """Standard input whose next read behaves as if the user pressed Ctrl+C."""
+    # A mock rather than a subclass: typeshed's StringIO.readline cannot be overridden without breaking the override
+    # rule against io's binary base class.
+    return mock.Mock(io.StringIO, readline=mock.Mock(side_effect=KeyboardInterrupt))
+
+
+def recorded_temporary_directories() -> tuple[Any, list[Path]]:
+    """A patch of --at's mkdtemp that records each directory the export makes, and the list it records them in."""
+    made: list[Path] = []
+    real = tempfile.mkdtemp
+
+    def mkdtemp(*positional: Any, **keywords: Any) -> str:
+        made.append(Path(real(*positional, **keywords)))
+        return str(made[-1])
+
+    return mock.patch.object(source_ref.tempfile, "mkdtemp", mkdtemp), made
+
+
+def failing_lock_metadata_write() -> mock._patch:
+    """Make writing the lock's info.json fail, leaving every other atomic write alone."""
+    real_write = fsops.write_atomic
+
+    def failing_write(path: Path, content: bytes) -> None:
+        if path.name == "info.json":
+            raise OSError("synthetic metadata write failure")
+        real_write(path, content)
+
+    return mock.patch("deployer.fsops.write_atomic", side_effect=failing_write)
+
+
+def contended_lock(lock_dir: Path) -> mock._patch:
+    """Let another deployment take the lock at lock_dir just before this one's second attempt to make it."""
+    real_make_directory = fsops.make_directory
+    calls = {"count": 0}
+
+    def contended(path: Path) -> None:
+        if path == lock_dir:
+            calls["count"] += 1
+            if calls["count"] == 2:
+                real_make_directory(path)
+                raise FileExistsError(str(path))
+        real_make_directory(path)
+
+    return mock.patch("deployer.fsops.make_directory", side_effect=contended)
 
 
 @dataclass
@@ -154,6 +252,21 @@ class DeployerTestCase(GitTestCase):
     @property
     def manifest_file(self) -> Path:
         return self.skills_dir / ".deploy-manifest.json"
+
+    @property
+    def lock_dir(self) -> Path:
+        return self.home / ".claude" / "deployer" / ".deploy.lock.d"
+
+    def staging_run(self, run_id: str) -> Path:
+        directory = self.home / ".claude" / "deployer" / "staging" / run_id
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
+
+    def assert_lines(self, output: str, *lines: str) -> None:
+        """Each line appears whole, so a message cannot be cut short or run into the next one."""
+        printed = output.splitlines()
+        for line in lines:
+            self.assertIn(line, printed, output)
 
     def make_source_json(
         self,

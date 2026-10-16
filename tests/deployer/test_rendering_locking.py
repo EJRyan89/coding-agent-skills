@@ -14,15 +14,19 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 import process_identity
-from harness import REPOSITORY_ROOT, TAKES_THE_LOCK, DeployerTestCase, forward
+from harness import (
+    REPOSITORY_ROOT,
+    TAKES_THE_LOCK,
+    DeployerTestCase,
+    contended_lock,
+    failing_lock_metadata_write,
+    forward,
+    probe_returning,
+)
 from markdown_sections import find_fences
 
 from deployer import fsops, lock, platform_support
 from deployer.paths import Paths
-
-
-def probe_returning(alive: bool, start_time: int | None):
-    return lambda pid: platform_support.ProcessStatus(alive, start_time)
 
 
 class RenderedExecutableTests(DeployerTestCase):
@@ -548,14 +552,7 @@ class LockTests(DeployerTestCase):
 
     def test_failed_lock_initialization_removes_the_new_lock(self) -> None:
         self.fixture()
-        real_write = fsops.write_atomic
-
-        def failing_write(path: Path, content: bytes) -> None:
-            if path.name == "info.json":
-                raise OSError("synthetic metadata write failure")
-            real_write(path, content)
-
-        with mock.patch("deployer.fsops.write_atomic", side_effect=failing_write):
+        with failing_lock_metadata_write():
             self.deploy_fails("--all", pattern="Failed to initialize deployment lock: synthetic metadata write failure")
         self.assertFalse((self.home / ".claude" / "deployer" / ".deploy.lock.d").exists())
         self.assertFalse((self.skills_dir / "alpha").exists())
@@ -633,18 +630,7 @@ class LockTests(DeployerTestCase):
     def test_double_contention_cleans_renamed_stale_lock(self) -> None:
         self.fixture()
         lock_dir = self.write_lock({"pid": 999999, "token": "stale-token", "start_time": 1})
-        real_make_directory = fsops.make_directory
-        calls = {"count": 0}
-
-        def contended(path: Path) -> None:
-            if path == lock_dir:
-                calls["count"] += 1
-                if calls["count"] == 2:
-                    real_make_directory(path)
-                    raise FileExistsError(str(path))
-            real_make_directory(path)
-
-        with mock.patch("deployer.fsops.make_directory", side_effect=contended):
+        with contended_lock(lock_dir):
             self.deploy_fails(
                 "--all",
                 pattern="Failed to acquire lock after stale reclaim",
@@ -758,20 +744,10 @@ class LockTests(DeployerTestCase):
         self.assertTrue((stale / "info.json").is_file())
         self.assertTrue((self.skills_dir / "alpha" / "SKILL.md").is_file())
 
-    def failing_metadata_write(self) -> mock._patch:
-        real_write = fsops.write_atomic
-
-        def failing_write(path: Path, content: bytes) -> None:
-            if path.name == "info.json":
-                raise OSError("synthetic metadata write failure")
-            real_write(path, content)
-
-        return mock.patch("deployer.fsops.write_atomic", side_effect=failing_write)
-
     def test_a_failed_metadata_write_during_a_reclaim_deletes_the_lock_moved_aside(self) -> None:
         self.fixture()
         lock_dir = self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
-        with self.failing_metadata_write():
+        with failing_lock_metadata_write():
             result = self.deploy_fails(
                 "--all",
                 pattern="Failed to initialize deployment lock",
@@ -793,7 +769,7 @@ class LockTests(DeployerTestCase):
         self.fixture()
         self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
         stale = self.home / ".claude" / "deployer" / f".deploy.lock.stale.{os.getpid()}"
-        with self.failing_metadata_write(), self.denied_at(stale):
+        with failing_lock_metadata_write(), self.denied_at(stale):
             result = self.deploy_fails(
                 "--all",
                 pattern="Failed to initialize deployment lock",

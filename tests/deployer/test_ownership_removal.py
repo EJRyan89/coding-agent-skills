@@ -11,7 +11,15 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from harness import FAILS_PARTWAY, SOURCE_ID, DeployerTestCase, forward, make_directory_link, remove_directory_link
+from harness import (
+    FAILS_PARTWAY,
+    SOURCE_ID,
+    ZERO_HASH,
+    DeployerTestCase,
+    forward,
+    make_directory_link,
+    remove_directory_link,
+)
 
 from deployer import fsops, hashing
 from deployer.errors import DeployError
@@ -386,7 +394,7 @@ class RemovalTests(DeployerTestCase):
         for details in data["sources"][SOURCE_ID]["skills"].values():
             del details["skill_deps"]
         data["sources"]["other/source"] = {
-            "skills": {name: {"hash": "sha256:" + "0" * 64} for name in ("other-public", "other-core")}
+            "skills": {name: {"hash": ZERO_HASH} for name in ("other-public", "other-core")}
         }
         self.write_manifest(data)
         self.deploy_ok("--all", "--force-item", "public")
@@ -397,7 +405,7 @@ class RemovalTests(DeployerTestCase):
         others = self.manifest()["sources"]["other/source"]["skills"]
         self.assertEqual(["other-core"], others["other-public"]["skill_deps"])
         self.assertEqual(["other-public"], others["other-core"]["skill_deps"])
-        self.assertTrue(all(details["hash"] == "sha256:" + "0" * 64 for details in others.values()))
+        self.assertTrue(all(details["hash"] == ZERO_HASH for details in others.values()))
 
     def test_obsolete_unmodified_shared_asset_is_removed(self) -> None:
         self.make_source_json(shared_assets={"shared-doc.md": "owner"})
@@ -481,7 +489,7 @@ class ManifestValidationTests(DeployerTestCase):
             (
                 "Manifest entry is malformed: source 'test/skills' shared",
                 lambda data: data["sources"]["test/skills"]["shared"].update(
-                    {"doc.md": {"hash": "sha256:" + "0" * 64, "role": "tenant"}}
+                    {"doc.md": {"hash": ZERO_HASH, "role": "tenant"}}
                 ),
             ),
             ("Manifest source ID is malformed", lambda data: data["sources"].update({"../escape": {}})),
@@ -833,7 +841,7 @@ class CrossSourceOwnershipTests(DeployerTestCase):
         self.deploy_ok("--all")
         data = self.manifest()
         data["sources"]["other/source"] = {
-            "skills": {"alpha": {"hash": "sha256:" + "0" * 64, "skill_deps": []}},
+            "skills": {"alpha": {"hash": ZERO_HASH, "skill_deps": []}},
             "shared": {},
         }
         self.write_manifest(data)
@@ -845,7 +853,7 @@ class CrossSourceOwnershipTests(DeployerTestCase):
         self.make_config()
         self.deploy_ok("--all")
         data = self.manifest()
-        data["sources"]["other/source"] = {"wrappers": {"alpha": {"hash": "sha256:" + "0" * 64}}}
+        data["sources"]["other/source"] = {"wrappers": {"alpha": {"hash": ZERO_HASH}}}
         self.write_manifest(data)
         self.deploy_fails("--all", pattern="Runtime adapter 'alpha' is owned by both")
 

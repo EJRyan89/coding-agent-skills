@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import re
 import shutil
-import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -12,7 +11,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 from git_test_base import GitTestCase
-from harness import DEPLOY_COMMAND, DeployerTestCase, Result, forward, make_directory_link, tree_state
+from harness import DEPLOY_COMMAND, DeployerTestCase, Result, forward, git, make_directory_link, tree_state
 
 from deployer import config, names, platform_support, source
 from deployer.errors import DeployError
@@ -525,18 +524,15 @@ class SharedAssetValidationTests(DeployerTestCase):
 class LinkedWorktreeTestCase(DeployerTestCase):
     """A source checkout made a git repository with a linked worktree, for the classes below."""
 
-    def git(self, *arguments: str) -> None:
-        subprocess.run(["git", "-C", str(self.source), *arguments], check=True, capture_output=True)
-
     def make_linked_worktree(self) -> Path:
         self.make_source_json()
         self.make_skill("alpha", "Worktree fixture")
         self.make_config()
-        self.git("init", "-q", "-b", "main")
-        self.git("add", ".")
-        self.git("commit", "-q", "-m", "fixture")
+        git(self.source, "init", "-q", "-b", "main")
+        git(self.source, "add", ".")
+        git(self.source, "commit", "-q", "-m", "fixture")
         linked = self.root / "Linked Tree (task)"
-        self.git("worktree", "add", "-q", "-b", "task", str(linked))
+        git(self.source, "worktree", "add", "-q", "-b", "task", str(linked))
         return linked
 
     def deploy_fails_from(self, directory: Path, *arguments: str) -> Result:

@@ -12,12 +12,26 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 from git_test_base import GitTestCase
-from harness import DEPLOY_COMMAND, FAILS_PARTWAY, REPOSITORY_ROOT, TAKES_THE_LOCK, DeployerTestCase, forward
+from harness import (
+    DEPLOY_COMMAND,
+    FAILS_PARTWAY,
+    REPOSITORY_ROOT,
+    SEE_RECOVERY_FAILED,
+    TAKES_THE_LOCK,
+    ZERO_HASH,
+    DeployerTestCase,
+    backup_entry,
+    contended_lock,
+    failing_lock_metadata_write,
+    forward,
+    install_entry,
+    journal_line,
+    probe_returning,
+)
 
 from deployer import errors, fsops, platform_support
 from deployer.errors import DeployError
 
-ZERO_HASH = "sha256:" + "0" * 64
 NAME_RULES = (
     "Rename it with only lowercase letters, digits, and hyphens, no leading or trailing hyphen, at most 64 characters, "
     "not a Windows device name such as con or nul, and, for a skill, without the reserved words anthropic or claude; "
@@ -25,13 +39,8 @@ NAME_RULES = (
 )
 RESET = f"Run '{DEPLOY_COMMAND} configure --reset' to write a new configuration for this source."
 SEE_OWNERSHIP = 'See "Ownership held by another source" in docs/recovery.md.'
-SEE_RECOVERY_FAILED = 'See "When recovery fails" in docs/recovery.md.'
 SEE_BACKUPS = 'See "Backups" in docs/recovery.md.'
 SEE_LOCK = 'See "The deployment lock" in docs/recovery.md.'
-
-
-def probe_returning(alive: bool, start_time: int | None):
-    return lambda pid: platform_support.ProcessStatus(alive, start_time)
 
 
 class RemedyTestCase(DeployerTestCase):
@@ -39,21 +48,6 @@ class RemedyTestCase(DeployerTestCase):
         self.make_source_json()
         self.make_skill("alpha", "Alpha content")
         self.make_config()
-
-    def assert_lines(self, output: str, *lines: str) -> None:
-        """Each line appears whole, so a remedy cannot be cut short or run into the next message."""
-        printed = output.splitlines()
-        for line in lines:
-            self.assertIn(line, printed, output)
-
-    @property
-    def lock_dir(self) -> Path:
-        return self.home / ".claude" / "deployer" / ".deploy.lock.d"
-
-    def staging_run(self, run_id: str) -> Path:
-        directory = self.home / ".claude" / "deployer" / "staging" / run_id
-        directory.mkdir(parents=True, exist_ok=True)
-        return directory
 
 
 class SourceRemedyTests(RemedyTestCase):
@@ -268,20 +262,7 @@ class RecoveryRemedyTests(RemedyTestCase):
     def test_failed_rollback_says_what_to_put_back_and_where(self) -> None:
         self.fixture()
         run = self.staging_run("20260101-000000-gone")
-        self.write(
-            run / "journal.jsonl",
-            json.dumps(
-                {
-                    "op": "backup",
-                    "item": "alpha",
-                    "from": "skills/alpha",
-                    "to": "skills/alpha.deploying-bak",
-                    "retain": False,
-                    "backup_hash": ZERO_HASH,
-                }
-            )
-            + "\n",
-        )
+        self.write(run / "journal.jsonl", journal_line(backup_entry("alpha", ZERO_HASH)))
         result = self.deploy_fails("--all", pattern="Recovery failed")
         self.assert_lines(
             result.output,
@@ -300,19 +281,7 @@ class RecoveryRemedyTests(RemedyTestCase):
         data["last_run_id"] = "20260101-000000-done"
         self.write_manifest(data)
         run = self.staging_run("20260101-000000-done")
-        self.write(
-            run / "journal.jsonl",
-            json.dumps(
-                {
-                    "op": "install",
-                    "item": "ghost",
-                    "from": "staging/ghost",
-                    "to": "skills/ghost",
-                    "staged_hash": ZERO_HASH,
-                }
-            )
-            + "\n",
-        )
+        self.write(run / "journal.jsonl", journal_line(install_entry("ghost", ZERO_HASH)))
         result = self.deploy_fails("--all", pattern="Installed destination missing for ghost")
         self.assert_lines(
             result.output,
@@ -421,14 +390,9 @@ class LockRemedyTests(RemedyTestCase):
 
     def test_failed_lock_initialization_says_to_retry_or_remove_the_lock(self) -> None:
         self.fixture()
-        real_write, real_remove = fsops.write_atomic, fsops.remove
+        real_remove = fsops.remove
 
-        def failing_write(path: Path, content: bytes) -> None:
-            if path.name == "info.json":
-                raise OSError("synthetic write failure")
-            real_write(path, content)
-
-        with mock.patch("deployer.fsops.write_atomic", side_effect=failing_write):
+        with failing_lock_metadata_write():
             result = self.deploy_fails("--all", pattern="Failed to initialize deployment lock")
         self.assert_lines(result.output, "Retry the deployment.")
 
@@ -437,10 +401,7 @@ class LockRemedyTests(RemedyTestCase):
                 raise OSError("synthetic remove failure")
             real_remove(path)
 
-        with (
-            mock.patch("deployer.fsops.write_atomic", side_effect=failing_write),
-            mock.patch("deployer.fsops.remove", side_effect=failing_remove),
-        ):
+        with failing_lock_metadata_write(), mock.patch("deployer.fsops.remove", side_effect=failing_remove):
             result = self.deploy_fails(
                 "--all", pattern="Failed to initialize deployment lock", changes_home=TAKES_THE_LOCK
             )
@@ -453,7 +414,7 @@ class LockRemedyTests(RemedyTestCase):
     def test_failed_stale_lock_reclaim_says_to_retry(self) -> None:
         self.fixture()
         self.write_lock({"pid": 999999, "token": "stale-token", "start_time": 1})
-        real_move, real_make_directory = fsops.move, fsops.make_directory
+        real_move = fsops.move
 
         def failing_move(source: Path, destination: Path) -> None:
             if source == self.lock_dir:
@@ -466,17 +427,7 @@ class LockRemedyTests(RemedyTestCase):
             )
         self.assert_lines(result.output, "Retry the deployment.", SEE_LOCK)
 
-        calls = {"count": 0}
-
-        def contended(path: Path) -> None:
-            if path == self.lock_dir:
-                calls["count"] += 1
-                if calls["count"] == 2:
-                    real_make_directory(path)
-                    raise FileExistsError(str(path))
-            real_make_directory(path)
-
-        with mock.patch("deployer.fsops.make_directory", side_effect=contended):
+        with contended_lock(self.lock_dir):
             result = self.deploy_fails(
                 "--all", pattern="after stale reclaim", probe=probe_returning(False, None), changes_home=TAKES_THE_LOCK
             )

@@ -10,7 +10,16 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from harness import RECOVERS, TAKES_THE_LOCK, DeployerTestCase, Result
+from harness import (
+    RECOVERS,
+    TAKES_THE_LOCK,
+    DeployerTestCase,
+    Result,
+    backup_entry,
+    install_entry,
+    interrupting,
+    journal_line,
+)
 
 from deployer import fsops, hashing, platform_support
 
@@ -21,11 +30,6 @@ CONFIGURE_CANCELLED = "Configuration cancelled; existing config was not changed.
 
 def interrupt(*_arguments: Any, **_keywords: Any) -> Any:
     raise KeyboardInterrupt
-
-
-def interrupting() -> io.StringIO:
-    """Standard input whose next read behaves as if the user pressed Ctrl+C."""
-    return mock.Mock(io.StringIO, readline=mock.Mock(side_effect=KeyboardInterrupt))
 
 
 class CancellationTests(DeployerTestCase):
@@ -63,10 +67,6 @@ class CancellationTests(DeployerTestCase):
                 self.assert_cancelled(self.run_cli(*arguments), CANCELLED)
                 self.assertFalse(self.manifest_file.exists())
 
-    @property
-    def lock_dir(self) -> Path:
-        return self.home / ".claude" / "deployer" / ".deploy.lock.d"
-
     def interrupted_run(self) -> Path:
         """Deploy alpha, then leave the journal of an uncommitted run killed after it replaced alpha."""
         self.assertEqual(0, self.run_cli("--all").code)
@@ -74,12 +74,9 @@ class CancellationTests(DeployerTestCase):
         original = hashing.hash_path(alpha)
         alpha.rename(self.skills_dir / "alpha.deploying-bak")
         self.write(alpha / "SKILL.md", "installed by the interrupted run\n")
-        backup: dict[str, object] = {"op": "backup", "item": "alpha", "from": "skills/alpha", "retain": False}
-        backup.update({"to": "skills/alpha.deploying-bak", "backup_hash": original})
-        install = {"op": "install", "item": "alpha", "from": "staging/alpha", "to": "skills/alpha"}
-        install["staged_hash"] = hashing.hash_path(alpha)
+        entries = (backup_entry("alpha", original), install_entry("alpha", hashing.hash_path(alpha)))
         run = self.home / ".claude" / "deployer" / "staging" / "20260101-000000-kill"
-        self.write(run / "journal.jsonl", "".join(json.dumps(entry) + "\n" for entry in (backup, install)))
+        self.write(run / "journal.jsonl", "".join(journal_line(entry) for entry in entries))
         return run
 
     def test_ctrl_c_during_startup_recovery_cancels_and_the_next_deployment_finishes_it(self) -> None:
