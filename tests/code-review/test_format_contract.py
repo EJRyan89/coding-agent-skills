@@ -883,10 +883,19 @@ def state_fixtures() -> list[dict[str, Any]]:
 
 
 def tracker_fixtures() -> list[dict[str, Any]]:
-    """A tracker record holding pull requests in two repositories, and one holding none."""
+    """A tracker record holding pull requests in two repositories and the reviews of the rows it showed, one holding
+    none, and one written before records held reviews."""
     return [
-        {"schema_version": 1, "pulls": ["example/one#2", "Example/Two#5"]},
-        {"schema_version": 1, "pulls": []},
+        {
+            "schema_version": 2,
+            "pulls": ["example/one#2", "Example/Two#5", "example/two#6"],
+            "reviews": {
+                "example/one#2": {"state": "stale", "reviewed_head_sha": "a" * 40},
+                "example/two#5": {"state": "missing", "reviewed_head_sha": None},
+            },
+        },
+        {"schema_version": 2, "pulls": [], "reviews": {}},
+        {"schema_version": 1, "pulls": ["example/one#2"]},
     ]
 
 

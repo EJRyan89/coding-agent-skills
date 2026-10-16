@@ -3,7 +3,8 @@
     collect  read every open pull request and its reviewed head for the selected repositories into a tracker input file
              (by default in a new temporary directory)
     update   render the owned dashboard section from that file, with every other argument taken from the configuration,
-             and record the pull requests the tracker holds in `tracker.json` beside the configuration
+             name each review that went stale since the last update, and record the pull requests the tracker holds
+             and their reviews beside the configuration
     override list, set, or clear the configuration's `dashboard.status_overrides`, validating the whole configuration
              before it is written; a set must name a pull request that record holds, and the listing marks each
              override it does not, but it reads nothing from GitHub, so a closed pull request's override clears like
@@ -31,6 +32,7 @@ sys.path.insert(0, str(sibling_scripts("code-review-core")))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from console import run_main
+from flat_text import flat_text
 from pr_change import FATAL_ERROR_KINDS, ChangeDetector, at_or_before
 from review_archive import ArchiveError, pull_records
 from review_config import (
@@ -52,14 +54,16 @@ from update_pr_tracker import (
     TrackerError,
     normalize_overrides,
     normalize_pull_keys,
+    replacement,
     review_candidates,
+    stale_since,
     update_dashboard_rows,
     validate_items,
     validate_tracker_record,
 )
 
-# One query per page of 50 open pull requests. Nested connections are not paginated: a pull request with more
-# than 100 review requests or participants fails its repository rather than being tracked from partial data.
+# One query per page of 50 open pull requests. A pull request with more than 100 review requests or participants has
+# that connection read again, whole, by `CONNECTION_QUERIES`, so no item is tracked from partial data.
 PULLS_QUERY = """
 query($owner: String!, $name: String!, $login: String!, $after: String) {
   repository(owner: $owner, name: $name) {
@@ -81,8 +85,29 @@ query($owner: String!, $name: String!, $login: String!, $after: String) {
   }
 }
 """.strip()
+# Every page of one pull request's review requests or participants, by connection name.
+CONNECTION_QUERIES = {
+    connection: f"""
+query($owner: String!, $name: String!, $number: Int!, $after: String) {{
+  repository(owner: $owner, name: $name) {{
+    pullRequest(number: $number) {{
+      {connection}(first: 100, after: $after) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ {fields} }} }}
+    }}
+  }}
+}}
+""".strip()
+    for connection, fields in (
+        (
+            "reviewRequests",
+            "requestedReviewer { ... on User { login } ... on Bot { login } ... on Mannequin { login } }",
+        ),
+        ("participants", "login"),
+    )
+}
 GHOST_LOGIN = "ghost"
 TRACKER_RECORD = "tracker.json"
+# The file name review_config gives the default configuration, whose record keeps the plain name `TRACKER_RECORD`.
+DEFAULT_CONFIG_NAME = "config.json"
 # Whether a repository's first commit is its second commit or an ancestor of it; None when that cannot be told.
 Ancestry = Callable[[str, str, str], "bool | None"]
 
@@ -115,6 +140,28 @@ class Services:
 def configured_login(config: dict[str, Any], github: GitHubClient) -> str:
     """The configured `github_login`, else the account GitHub CLI is authenticated as."""
     return config["github_login"] or github.authenticated_login()
+
+
+def complete_connections(github: GitHubClient, repository: str, node: Any) -> Any:
+    """The pull-request node with each review-request or participant connection that has another page replaced by
+    every node of it, read through `github`; a node of an unexpected shape is returned as it is, for `tracker_item`
+    to refuse."""
+    if not isinstance(node, dict) or not isinstance(node.get("number"), int):
+        return node
+    owner, name = repository.split("/", 1)
+    completed = dict(node)
+    for connection, query in CONNECTION_QUERIES.items():
+        value = node.get(connection)
+        if not (isinstance(value, dict) and isinstance(value.get("pageInfo"), dict)):
+            continue
+        if value["pageInfo"].get("hasNextPage") is True:
+            nodes = github.graphql_nodes(
+                query,
+                {"owner": owner, "name": name, "number": node["number"]},
+                ("repository", "pullRequest", connection),
+            )
+            completed[connection] = {"pageInfo": {"hasNextPage": False}, "nodes": nodes}
+    return completed
 
 
 def _complete_logins(connection: dict[str, Any], key: str | None, what: str) -> list[str]:
@@ -262,8 +309,9 @@ def collect(
         nodes = services.github.graphql_nodes(
             PULLS_QUERY, {"owner": owner, "name": name, "login": login}, ("repository", "pullRequests")
         )
+        complete = [complete_connections(services.github, repository, node) for node in nodes]
         return validate_items(
-            [tracker_item(repository, node, archive_root, ancestry=ancestry, flags=flags) for node in nodes]
+            [tracker_item(repository, node, archive_root, ancestry=ancestry, flags=flags) for node in complete]
         )
 
     outcomes = map_in_order(
@@ -297,13 +345,16 @@ def update(
     removals: list[str] | None = None,
     config_path: Path | None = None,
     services: Services | None = None,
-) -> tuple[Path, list[Row]]:
+) -> tuple[Path, list[Row], list[str]]:
     """Render the owned section with the configured dashboard, login, markers, overrides, author names, and
-    home repositories."""
+    home repositories, and return the dashboard, its rows, and the pull requests whose review went stale since the
+    update that wrote the tracker record (see `stale_since`)."""
     services = services or Services()
     config_path = (config_path or default_config_path()).resolve()
     config = load_config(config_path)
     dashboard = Path(config["dashboard_file"])
+    record = tracker_record_path(config_path)
+    previous = read_tracker_record(record)
     rows = update_dashboard_rows(
         input_path,
         dashboard,
@@ -316,22 +367,32 @@ def update(
         removals=removals or [],
         home_repositories=config["repository_sets"][config["default_repository_set"]],
         config_path=str(config_path),
-        record=tracker_record_path(config_path),
+        record=record,
     )
-    return dashboard, rows
+    return dashboard, rows, stale_since(previous, rows)
 
 
 def tracker_record_path(config_path: Path) -> Path:
-    """Where `update` records the pull requests the tracker holds: beside the configuration it read."""
-    return config_path.parent / TRACKER_RECORD
+    """Where `update` records the pull requests the tracker holds, the one derivation every command reads it by: beside
+    the file the configuration path leads to, through any link, so a configuration reached through a link in another
+    folder has the record `update` wrote. It is named after that file, `tracker.json` for the default name and
+    `<name>.tracker.json` for any other, so two configurations in one folder never share one."""
+    resolved = config_path.resolve()
+    name = TRACKER_RECORD if resolved.name == DEFAULT_CONFIG_NAME else f"{resolved.stem}.{TRACKER_RECORD}"
+    return resolved.parent / name
+
+
+def read_tracker_record(record: Path) -> dict[str, Any] | None:
+    """The validated tracker record at `record`, or None before any update has written it."""
+    if not record.exists():
+        return None
+    return validate_tracker_record(read_json(record))
 
 
 def held_pulls(config_path: Path) -> set[str] | None:
     """The pull requests the last `update` with this configuration held, or None before any has recorded them."""
-    record = tracker_record_path(config_path)
-    if not record.exists():
-        return None
-    return set(validate_tracker_record(read_json(record))["pulls"])
+    record = read_tracker_record(tracker_record_path(config_path))
+    return None if record is None else set(record["pulls"])
 
 
 def list_overrides(config_path: Path | None = None) -> list[tuple[str, str, bool]]:
@@ -377,8 +438,10 @@ def change_overrides(
     wrote changes only in its overrides; keeping an arbitrary hand layout would need an indentation guess in the
     shared writer, and JSON holds no comments to lose. A change that fails, such as a computed state, a malformed key,
     clearing an override that is not set, or setting one for a pull request the tracker does not hold, writes
-    nothing."""
+    nothing, as does a configuration `replacement` refuses. The write replaces the file the configuration path leads
+    to, through any symbolic link, and keeps that file's mode."""
     path = config_path or default_config_path()
+    target, mode = replacement(path)
     changes = override_changes(sets, clears)
     raw = read_json(path)
     validate_config(raw)
@@ -392,7 +455,7 @@ def change_overrides(
     dashboard["status_overrides"] = {**kept, **{key: status for key, status in changes.items() if status is not None}}
     validate_config(raw)
     _refuse_untracked([key for key, status in changes.items() if status is not None], path)
-    atomic_write_json(path, raw, validator=validate_config)
+    atomic_write_json(target, raw, validator=validate_config, mode=mode)
     return path, changes
 
 
@@ -447,7 +510,7 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
                 print(
                     f"REPOSITORY {repository} pulls={result}"
                     if isinstance(result, int)
-                    else f"REPOSITORY_FAILED {repository} {result}"
+                    else f"REPOSITORY_FAILED {repository} {flat_text(result)}"
                 )
             failed = sum(1 for result in results.values() if not isinstance(result, int))
             if failed:
@@ -459,20 +522,22 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
             print(f"INPUT {output}")
             return 0
         calls = services.github.call_count
-        dashboard, rows = update(args.input, removals=args.remove, config_path=args.config, services=services)
+        dashboard, rows, stale = update(args.input, removals=args.remove, config_path=args.config, services=services)
         print(f"UPDATED {dashboard} rows={len(rows)}")
         print(f"GITHUB_CALLS {services.github.call_count - calls}")
+        for key in stale:
+            print(f"STALE_SINCE_LAST_UPDATE {key}")
         if args.candidates:
             for candidate in review_candidates(rows):
                 print(f"CANDIDATE {candidate['status']} {candidate['repository']}#{candidate['number']}")
         return 0
     except ComparisonFailures as exc:
         for failure in exc.failures:
-            print(f"PULL_FAILED {failure.pull} {failure.reason}")
-        print(f"FAILED {exc}")
+            print(f"PULL_FAILED {failure.pull} {flat_text(failure.reason)}")
+        print(f"FAILED {flat_text(str(exc))}")
         return 1
     except EXPECTED_ERRORS as exc:
-        print(f"FAILED {exc}")
+        print(f"FAILED {flat_text(str(exc))}")
         return 1
 
 

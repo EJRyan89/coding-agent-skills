@@ -61,6 +61,12 @@ def pull_node(number: int, **changes: Any) -> dict[str, Any]:
     return node
 
 
+def connection_page(connection: str, nodes: list[dict[str, Any]], cursor: str | None = None) -> str:
+    """One page of a pull request's review requests or participants, as the follow-up query reads it."""
+    info = {"hasNextPage": cursor is not None, "endCursor": cursor}
+    return json.dumps({"data": {"repository": {"pullRequest": {connection: {"pageInfo": info, "nodes": nodes}}}}})
+
+
 def page(nodes: list[dict[str, Any]], cursor: str | None = None) -> str:
     return json.dumps(
         {
@@ -82,6 +88,12 @@ class FakeGitHub:
     def __init__(self) -> None:
         self.pages: dict[str, list[str]] = {}
         self.failures: dict[str, tuple[str, str]] = {}
+        # The follow-up pages of one pull request's connection, by (repository, number, connection), and the error
+        # stderr a connection's follow-up fails with.
+        self.connection_pages: dict[tuple[str, int, str], list[str]] = {}
+        self.connection_failures: dict[tuple[str, int, str], str] = {}
+        # The exit code and stderr of a failed authenticated-user lookup.
+        self.user_failure: tuple[int, str] | None = None
         self.comparisons: dict[tuple[str, str], str] = {}
         # Raised, as a failed gh call would be, by every ancestry comparison, or by every other comparison and tree.
         self.ancestry_failure: GitHubError | None = None
@@ -94,12 +106,19 @@ class FakeGitHub:
         if arguments[:3] == ["gh", "api", "graphql"]:
             fields = dict(value.split("=", 1) for value in arguments[4::2])
             repository = f"{fields['owner']}/{fields['name']}"
+            index = int(fields["after"].removeprefix("cursor-")) if "after" in fields else 0
+            if "number" in fields:
+                connection = "participants" if "participants(" in fields["query"] else "reviewRequests"
+                key = (repository, int(fields["number"]), connection)
+                if key in self.connection_failures:
+                    return CommandResult(1, "", self.connection_failures[key])
+                return CommandResult(0, self.connection_pages[key][index], "")
             if repository in self.failures:
                 return CommandResult(1, "", self.failures[repository][1])
-            pages = self.pages[repository]
-            index = int(fields["after"].removeprefix("cursor-")) if "after" in fields else 0
-            return CommandResult(0, pages[index], "")
+            return CommandResult(0, self.pages[repository][index], "")
         if arguments[-1] == "user":
+            if self.user_failure is not None:
+                return CommandResult(self.user_failure[0], "", self.user_failure[1])
             return CommandResult(0, json.dumps({"login": "reviewer"}), "")
         if arguments[-1].endswith("?per_page=1"):
             # An ancestry comparison between two commits; one not served cannot be compared.
@@ -116,12 +135,12 @@ class FakeGitHub:
         return CommandResult(1, "", "HTTP 404: Not Found")
 
 
-def archived_record(head: str) -> dict[str, Any]:
+def archived_record(head: str, number: int = 2) -> dict[str, Any]:
     request = {
         "repository": "example/one",
-        "pull_number": 2,
-        "pull_url": "https://github.com/example/one/pull/2",
-        "title": "Change 2",
+        "pull_number": number,
+        "pull_url": f"https://github.com/example/one/pull/{number}",
+        "title": f"Change {number}",
         "base_ref": "main",
         "base_sha": "d" * 40,
         "head_sha": head,
@@ -132,7 +151,7 @@ def archived_record(head: str) -> dict[str, Any]:
         {
             "protocol_version": 1,
             "repository": "example/one",
-            "pull_number": 2,
+            "pull_number": number,
             "head_sha": head,
             "summary": "Fixture",
             "reviewer": "fixture",
@@ -153,7 +172,7 @@ def archived_record(head: str) -> dict[str, Any]:
             "usage": None,
         },
         expected_repository="example/one",
-        expected_number=2,
+        expected_number=number,
         expected_head_sha=head,
     )
     return build_record(
@@ -225,6 +244,14 @@ class TrackerPipelineFixture(unittest.TestCase):
     @property
     def record(self) -> Path:
         return self.config_path.parent / "tracker.json"
+
+    def assert_one_fact_per_line(self, out: str) -> None:
+        """Every line starts with a line the skill names, and the last is the FAILED line."""
+        lines = out.splitlines()
+        known = ("REPOSITORY ", "REPOSITORY_FAILED ", "PULL_FAILED ", "FAILED ")
+        for line in lines:
+            self.assertTrue(line.startswith(known), lines)
+        self.assertTrue(lines[-1].startswith("FAILED "), lines)
 
     def run_main(self, *arguments: str) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
@@ -366,14 +393,72 @@ class CollectTests(TrackerPipelineFixture):
         self.assertNotIn("INPUT", out)
         self.assertEqual("[]", self.input.read_text(encoding="utf-8"), "the previous input is left untouched")
 
-    def test_partial_nested_data_fails_its_repository(self) -> None:
-        crowded = pull_node(1, participants={"pageInfo": {"hasNextPage": True}, "nodes": []})
-        self.github.pages["example/one"] = [page([crowded])]
-        code, out, _ = self.run_main("collect", "--repository", "example/one", "--output", str(self.input))
-        self.assertEqual(1, code)
-        self.assertIn("REPOSITORY_FAILED example/one example/one#1 has more than 100 participants", out)
-        self.assertTrue(out.splitlines()[-1].startswith("FAILED 1 of 1 repositories"), out)
+    def crowded(self) -> None:
+        """example/one#1 with a second page of both review requests and participants."""
+        crowded = pull_node(
+            1,
+            reviewRequests={"pageInfo": {"hasNextPage": True}, "nodes": [{"requestedReviewer": {"login": "r0"}}]},
+            participants={"pageInfo": {"hasNextPage": True}, "nodes": [{"login": "p0"}]},
+        )
+        self.github.pages = {"example/one": [page([crowded, pull_node(2)])], "example/two": [page([])]}
+        self.github.connection_pages[("example/one", 1, "reviewRequests")] = [
+            connection_page(
+                "reviewRequests", [{"requestedReviewer": {"login": f"r{n}"}} for n in range(100)], "cursor-1"
+            ),
+            connection_page(
+                "reviewRequests", [{"requestedReviewer": {"login": "reviewer"}}, {"requestedReviewer": {}}]
+            ),
+        ]
+        self.github.connection_pages[("example/one", 1, "participants")] = [
+            connection_page("participants", [{"login": f"p{n}"} for n in range(100)], "cursor-1"),
+            connection_page("participants", [{"login": "ada"}]),
+        ]
+
+    def test_a_pull_request_with_more_than_100_review_requests_or_participants_is_collected_whole(self) -> None:
+        self.crowded()
+        code, out, err = self.run_main("collect", "--repository", "example/one", "--output", str(self.input))
+        self.assertEqual(0, code, err)
+        self.assertEqual(["REPOSITORY example/one pulls=2", f"INPUT {self.input}"], out.splitlines())
+        item = json.loads(self.input.read_text(encoding="utf-8"))[0]
+        self.assertEqual([f"r{n}" for n in range(100)] + ["reviewer"], item["requested_reviewers"])
+        self.assertEqual([f"p{n}" for n in range(100)] + ["ada"], item["participants"])
+        follow_ups = [call for call in self.github.calls if "number=1" in call]
+        self.assertEqual(4, len(follow_ups), "two pages of each connection, for the crowded pull request alone")
+        self.assertTrue(all(call[call.index("number=1") - 1] == "-F" for call in follow_ups), "the number is typed")
+
+    def test_a_failed_follow_up_page_fails_its_repository(self) -> None:
+        self.crowded()
+        self.github.connection_failures[("example/one", 1, "participants")] = "HTTP 502: Bad Gateway"
+        code, out, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual((1, ""), (code, err))
+        lines = out.splitlines()
+        self.assertTrue(lines[0].startswith("REPOSITORY_FAILED example/one HTTP 502: Bad Gateway"), lines)
+        self.assertTrue(lines[-1].startswith("FAILED 1 of 2 repositories"), lines)
         self.assertFalse(self.input.exists())
+
+    def test_a_multi_line_gh_error_is_printed_on_one_line(self) -> None:
+        self.serve_default_pages()
+        self.github.failures["example/two"] = ("", "GraphQL: Could not resolve\nREPOSITORY example/three pulls=9")
+        code, out, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual((1, ""), (code, err))
+        self.assert_one_fact_per_line(out)
+        self.assertIn("REPOSITORY_FAILED example/two GraphQL: Could not resolve REPOSITORY example/three pulls=9", out)
+        # A sign-in failure stops the collection with GitHub CLI's two-line message as one FAILED line.
+        self.configure(login=None)
+        self.github.user_failure = (
+            4,
+            "To get started with GitHub CLI, please run:  gh auth login\n"
+            "Alternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token.\n",
+        )
+        code, out, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual((1, ""), (code, err))
+        self.assertEqual(
+            [
+                "FAILED To get started with GitHub CLI, please run: gh auth login Alternatively, populate the GH_TOKEN "
+                "environment variable with a GitHub API authentication token."
+            ],
+            out.splitlines(),
+        )
 
     def test_active_review_without_a_commit_fails_its_repository(self) -> None:
         orphan = pull_node(1, reviews={"nodes": [{"state": "APPROVED", "commit": None}]})
@@ -488,8 +573,18 @@ class UpdateTests(TrackerPipelineFixture):
         self.assertIn("[two#5 Change 5]", content)
         self.assertIn(f"vscode://file/{self.config_path.as_posix().replace(' ', '%20')}", content)
         self.assertIn("### My PRs (1)", content)
+        missing = {"state": "missing", "reviewed_head_sha": None}
         self.assertEqual(
-            {"schema_version": 1, "pulls": ["example/one#1", "example/one#2", "example/one#3", "example/two#5"]},
+            {
+                "schema_version": 2,
+                "pulls": ["example/one#1", "example/one#2", "example/one#3", "example/two#5"],
+                "reviews": {
+                    "example/one#1": missing,
+                    "example/one#2": {"state": "stale", "reviewed_head_sha": OLD_HEAD},
+                    "example/one#3": missing,
+                    "example/two#5": missing,
+                },
+            },
             json.loads(self.record.read_text(encoding="utf-8")),
         )
 
@@ -506,7 +601,7 @@ class UpdateTests(TrackerPipelineFixture):
         self.assertEqual(f"UPDATED {self.dashboard} rows=0", out.splitlines()[0], "removed and approved rows hide")
         # The record replaces the last one: a removed or approved pull request is still held, an unrelated one never.
         self.assertEqual(
-            {"schema_version": 1, "pulls": ["example/one#1", "example/one#8"]},
+            {"schema_version": 2, "pulls": ["example/one#1", "example/one#8"], "reviews": {}},
             json.loads(self.record.read_text(encoding="utf-8")),
         )
 
@@ -804,6 +899,117 @@ class UpdateTests(TrackerPipelineFixture):
         self.assertEqual([f"UPDATED {self.dashboard} rows=3", "GITHUB_CALLS 3"], out.splitlines())
         self.assertNotIn("example/one/pull/1)", self.dashboard.read_text(encoding="utf-8"))
 
+    def test_a_removal_naming_no_tracked_pull_request_is_refused_before_github_is_asked(self) -> None:
+        self.collect()
+        before = self.dashboard.read_bytes()
+        reason = (
+            "names no collected pull request the configured user authored, is asked to review, or takes part in; "
+            "check the number, or leave it out if the pull request has closed"
+        )
+        # A mistyped number, a pull request in another repository, and one the user does not relate to.
+        unrelated = pull_node(7, reviewRequests={"pageInfo": {"hasNextPage": False}, "nodes": []})
+        self.github.pages["example/two"] = [page([unrelated])]
+        code, _, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual(0, code, err)
+        for key in ("example/one#4", "other/one#1", "Example/Two#7"):
+            with self.subTest(key=key):
+                calls = len(self.github.calls)
+                code, out, err = self.run_main(
+                    "update", "--input", str(self.input), "--remove", "example/one#1", "--remove", key
+                )
+                expected = f"FAILED Removal {key.lower()} {reason}"
+                self.assertEqual((1, "", [expected]), (code, err, out.splitlines()))
+                self.assertEqual(calls, len(self.github.calls), "GitHub is asked nothing")
+                self.assertEqual(before, self.dashboard.read_bytes())
+        code, out, err = self.run_main("update", "--input", str(self.input), "--remove", "example/one#1")
+        self.assertEqual(0, code, err)
+        self.assertNotIn("example/one/pull/1)", self.dashboard.read_text(encoding="utf-8"))
+
+    def test_update_names_each_review_that_went_stale_since_the_last_update(self) -> None:
+        # The last update showed #1 with no review, #2 reviewed at its head, and #3 already stale.
+        reviewed = pull_node(
+            2,
+            reviewRequests={"pageInfo": {"hasNextPage": False}, "nodes": []},
+            participants={"pageInfo": {"hasNextPage": False}, "nodes": [{"login": "reviewer"}]},
+        )
+        stale = pull_node(3, headRefOid=HEAD)
+        for number, head in ((2, HEAD), (3, OLD_HEAD)):
+            commit_record(
+                self.archive, "example/one", number, archived_record(head, number), expected_latest_version=None
+            )
+        self.github.pages = {"example/one": [page([pull_node(1), reviewed, stale])], "example/two": [page([])]}
+        code, _, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual(0, code, err)
+        code, out, err = self.run_main("update", "--input", str(self.input), "--candidates")
+        self.assertEqual(0, code, err)
+        self.assertEqual(["CANDIDATE missing example/one#1", "CANDIDATE stale example/one#3"], out.splitlines()[2:])
+        # An update with nothing moved names nothing.
+        code, out, err = self.run_main("update", "--input", str(self.input))
+        self.assertEqual(0, code, err)
+        self.assertNotIn("STALE_SINCE_LAST_UPDATE", out)
+        # During the run #1 was reviewed at its head, which then moved, as did #2's; #3 stays stale as it was.
+        commit_record(self.archive, "example/one", 1, archived_record(OLD_HEAD, 1), expected_latest_version=None)
+        moved = "e" * 40
+        self.github.pages["example/one"] = [
+            page([pull_node(1, headRefOid=moved), {**reviewed, "headRefOid": moved}, stale])
+        ]
+        code, _, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual(0, code, err)
+        code, out, err = self.run_main("update", "--input", str(self.input))
+        self.assertEqual(0, code, err)
+        self.assertEqual(
+            [
+                f"UPDATED {self.dashboard} rows=3",
+                "GITHUB_CALLS 3",
+                "STALE_SINCE_LAST_UPDATE example/one#1",
+                "STALE_SINCE_LAST_UPDATE example/one#2",
+            ],
+            out.splitlines(),
+        )
+
+    def test_update_writes_the_file_a_linked_dashboard_leads_to_and_keeps_its_mode(self) -> None:
+        self.collect()
+        notes = self.root / "synced notes"
+        notes.mkdir()
+        target = notes / "PullRequests.md"
+        target.write_bytes(self.dashboard.read_bytes())
+        target.chmod(0o644)
+        if sys.platform != "win32":  # a symbolic link to a file needs a privilege Windows rarely grants
+            self.dashboard.unlink()
+            self.dashboard.symlink_to(target)
+        else:
+            self.dashboard = target
+            self.configure()
+        code, out, err = self.run_main("update", "--input", str(self.input))
+        self.assertEqual(0, code, err)
+        self.assertEqual(f"UPDATED {self.dashboard} rows=4", out.splitlines()[0])
+        self.assertIn("### My PRs (1)", target.read_text(encoding="utf-8"))
+        if sys.platform != "win32":
+            self.assertTrue(self.dashboard.is_symlink(), "the link stays a link")
+            self.assertEqual(0o644, target.stat().st_mode & 0o777)
+        self.assertEqual([target.name], [path.name for path in notes.iterdir()], "no copy is left beside it")
+
+    def test_update_refuses_a_hard_linked_dashboard_before_github_is_asked(self) -> None:
+        self.collect()
+        other = self.root / "other name.md"
+        os.link(self.dashboard, other)
+        before = self.dashboard.read_bytes()
+        calls = len(self.github.calls)
+        code, out, err = self.run_main("update", "--input", str(self.input))
+        reason = "has another hard link, which a replacement would leave with the old content; give it one name"
+        self.assertEqual((1, "", [f"FAILED {self.dashboard} {reason}"]), (code, err, out.splitlines()))
+        self.assertEqual(calls, len(self.github.calls))
+        self.assertEqual((before, before), (self.dashboard.read_bytes(), other.read_bytes()))
+        self.assertFalse(self.record.exists())
+
+    def test_a_multi_line_comparison_error_is_printed_on_one_line(self) -> None:
+        self.collect()
+        self.github.change_failure = GitHubError("HTTP 502\nFAILED shaped second line", kind="api")
+        code, out, err = self.run_main("update", "--input", str(self.input))
+        self.assertEqual((1, ""), (code, err))
+        self.assert_one_fact_per_line(out)
+        self.assertEqual("PULL_FAILED example/one#2 HTTP 502 FAILED shaped second line", out.splitlines()[0])
+
     def test_a_failed_comparison_fails_the_update_instead_of_marking_its_review_stale(self) -> None:
         self.collect()
         before = self.dashboard.read_text(encoding="utf-8")
@@ -1053,13 +1259,82 @@ class OverrideTests(TrackerPipelineFixture):
         self.assertEqual({"example/two#5": "on hold"}, self.written()["dashboard"]["status_overrides"])
         self.assertEqual(calls, len(self.github.calls), "override reads nothing from GitHub")
 
+    def test_two_configurations_in_one_folder_keep_records_of_their_own(self) -> None:
+        self.serve_default_pages()
+        code, _, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual(0, code, err)
+        default = self.config_path
+        other = self.root / "other.json"
+        other.write_bytes(default.read_bytes())
+        for config in (default, other):
+            self.config_path = config
+            with self.subTest(config=config.name):
+                code, _, err = self.run_main("update", "--input", str(self.input), "--remove", "example/two#5")
+                self.assertEqual(0, code, err)
+        self.assertTrue((self.root / "tracker.json").exists())
+        self.assertTrue((self.root / "other.tracker.json").exists())
+        # A set is checked against its own configuration's record.
+        (self.root / "other.tracker.json").unlink()
+        code, out, _ = self.run_main("override", "--set", "example/two#5=on hold")
+        record = self.root / "other.tracker.json"
+        reason = f"Status override example/two#5 names no tracked pull request: no update has written {record}"
+        self.assertEqual((1, [f"FAILED {reason}"]), (code, out.splitlines()))
+        self.config_path = default
+        code, out, err = self.run_main("override", "--set", "example/two#5=on hold")
+        self.assertEqual((0, ""), (code, err))
+
+    def test_a_configuration_reached_through_a_link_has_the_record_update_wrote_and_stays_linked(self) -> None:
+        self.serve_default_pages()
+        code, _, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual(0, code, err)
+        target = self.config_path
+        target.chmod(0o644)
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        if sys.platform != "win32":  # a symbolic link to a file needs a privilege Windows rarely grants
+            self.config_path = elsewhere / "config.json"
+            self.config_path.symlink_to(target)
+        code, _, err = self.run_main("update", "--input", str(self.input))
+        self.assertEqual(0, code, err)
+        self.assertEqual([], list(elsewhere.iterdir())[1:], "no record is written beside the link")
+        code, out, err = self.run_main("override", "--set", "example/two#5=on hold")
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual(["SET example/two#5 on hold", f"WROTE {self.config_path}"], out.splitlines())
+        self.assertEqual({"example/two#5": "on hold"}, load_config(target)["dashboard"]["status_overrides"])
+        code, out, err = self.run_main("override")
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual(["OVERRIDE example/two#5 on hold", "OVERRIDES 1"], out.splitlines())
+        if sys.platform != "win32":
+            self.assertTrue(self.config_path.is_symlink(), "the link stays a link")
+            self.assertEqual(0o644, target.stat().st_mode & 0o777)
+
     def test_an_unreadable_record_fails_the_listing_and_a_set(self) -> None:
         self.configure(overrides={"example/one#2": "waiting"})
         original = self.config_path.read_bytes()
+        stale = {"state": "stale", "reviewed_head_sha": HEAD}
         for record, reason in (
-            ({"schema_version": 2, "pulls": []}, "tracker.schema_version must be one of 1, found integer 2"),
+            ({"schema_version": 3, "pulls": []}, "tracker.schema_version must be one of 1, 2, found integer 3"),
+            ({"schema_version": 2, "pulls": []}, "tracker must be an object with field reviews"),
+            ({"schema_version": 1, "pulls": [], "reviews": {}}, "tracker"),
             ({"schema_version": 1, "pulls": ["example/one"]}, "Invalid tracker pull-request identity"),
             ({"schema_version": 1, "pulls": ["example/one#2", "Example/One#2"]}, "Duplicate tracker pull-request"),
+            ({"schema_version": 2, "pulls": [], "reviews": {"example/one#2": stale}}, "names no pull request"),
+            (
+                {
+                    "schema_version": 2,
+                    "pulls": ["example/one#2"],
+                    "reviews": {"example/one#2": {**stale, "state": "x"}},
+                },
+                "tracker.reviews.example/one#2.state must be one of",
+            ),
+            (
+                {
+                    "schema_version": 2,
+                    "pulls": ["example/one#2"],
+                    "reviews": {"example/one#2": {**stale, "state": "missing"}},
+                },
+                "must name a reviewed head exactly when its review is not missing",
+            ),
         ):
             self.record.write_text(json.dumps(record), encoding="utf-8")
             for arguments in ([], ["--set", "example/one#2=on hold"]):
