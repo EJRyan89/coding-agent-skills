@@ -23,6 +23,7 @@ from typing import IO, Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+from device_names import is_reserved_device_name
 from executable_locator import find_executable
 from git_client import GitClient, GitError, GitResult, GitStream, Runner, subprocess_runner
 from github_client import GitHubClient, GitHubError, replace_undecodable
@@ -72,11 +73,6 @@ SNAPSHOT_EXCLUSION_REASONS = {
     "unextractable",
 }
 WINDOWS_UNSAFE = re.compile(r'[:<>"|?*\x00-\x1f]')
-# Names Windows opens as a device rather than a file, alone or before any extension: `nul.txt` and `COM1.tar.gz` too.
-RESERVED_DEVICE_NAMES = frozenset(
-    {"con", "prn", "aux", "nul", "conin$", "conout$"}
-    | {f"{port}{digit}" for port in ("com", "lpt") for digit in "0123456789¹²³"}
-)
 MAX_SEGMENT_UNITS = 255  # NTFS, ReFS, exFAT, and FAT32 all stop a name at 255 UTF-16 code units
 MAX_PATH = 260  # a Windows path without long-path support, its terminating NUL included
 LONG_PATH_UNITS = 32_767  # an NT path with long-path support, counted with the volume's device name for the drive
@@ -279,9 +275,7 @@ UNSAFE_PATH_RULES: tuple[tuple[str, Callable[[str, PathRoom], bool]], ...] = (
     ),
     (
         "a reserved device name as a segment, with or without an extension: Windows opens the device, not a file",
-        lambda relative, room: any(
-            segment.split(".", 1)[0].rstrip(" ").casefold() in RESERVED_DEVICE_NAMES for segment in _segments(relative)
-        ),
+        lambda relative, room: any(is_reserved_device_name(segment) for segment in _segments(relative)),
     ),
     (
         f"a segment over {MAX_SEGMENT_UNITS} UTF-16 code units: no Windows file system holds a longer name",

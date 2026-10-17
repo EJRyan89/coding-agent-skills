@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict
 
+import device_names
 import executable_locator
 import job_tree
 import process_identity
@@ -227,13 +228,9 @@ def _asked_folds_case(directory: Path) -> bool | None:
 
 
 # The device names Windows reserves in every directory, alone or before an extension: con and con.md each open the
-# console. Every platform refuses them, so a name deployed on one deploys on each.
-RESERVED_DEVICE_NAME = re.compile(r"^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(\.|$)")
-
-
-def is_reserved_device_name(name: str) -> bool:
-    """Whether a name, in any case, is a Windows device name, alone or before an extension."""
-    return bool(RESERVED_DEVICE_NAME.match(name.upper()))
+# console. Every platform refuses them, so a name deployed on one deploys on each. skill-core holds the one list,
+# since a review snapshot refuses the same names.
+is_reserved_device_name = device_names.is_reserved_device_name
 
 
 # The extension Windows finds a program by when its caller leaves it off, so git and git.exe start one program.

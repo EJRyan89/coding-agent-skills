@@ -11,8 +11,9 @@ with the reason, so each caller decides what a folder it could not search costs 
   NuGet's `packages` (`dotnet_solution.SEARCH_SKIPPED_FOLDERS`).
 - Nested checkouts: a folder below `top` holding a `.git` folder or file, a clone, a submodule, or a worktree, is
   another repository's, so its files are not given; it is reported as `NESTED_CHECKOUT`. `top` itself is searched.
-- Links: a folder that is a symbolic link or a Windows junction is not entered, since it may lead out of the tree or
-  back into it, and is reported as `LINKED`, unless the caller's `follow` accepts its path. Even then a link that leads
+- Links: an entry that is a symbolic link, a Windows junction, or another reparse point, as `link_probe` judges one,
+  and that leads to no file, a folder or nothing, is not entered, since it may lead out of the tree or back into it,
+  and is reported as `LINKED`, unless the caller's `follow` accepts its path. Even then a link that leads
   back into a folder the walk is inside is reported as `LOOP` and not entered, so the walk always ends. `top` is
   searched as given, link or not; a link to a file is a file, which the caller judges.
 - Failures: a folder that cannot be listed is reported as `UNLISTABLE`, and an entry that cannot be examined as
@@ -23,10 +24,11 @@ with the reason, so each caller decides what a folder it could not search costs 
 from __future__ import annotations
 
 import os
-import stat
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from link_probe import is_link_or_junction
 
 SKIPPED_FOLDERS = frozenset(
     {".git", ".hg", ".svn", "node_modules", ".venv", "venv", ".tox", ".nox", "__pycache__", "bin", "obj", ".vs"}
@@ -62,12 +64,10 @@ class Walk:
 
 
 def is_folder_link(entry: os.DirEntry[str]) -> bool:
-    """Whether a listed entry is a Windows junction or a symbolic link to a folder, judged from the entry's own
-    metadata, so a junction whose target is gone counts too. Only Windows has the tag and the field, so elsewhere no
-    entry is a junction."""
-    tag = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", None)
-    junction = tag is not None and getattr(entry.stat(follow_symlinks=False), "st_reparse_tag", None) == tag
-    return junction or (entry.is_symlink() and entry.is_dir())
+    """Whether a listed entry is a link the walk does not enter: a symbolic link, a junction, or another reparse point,
+    as `link_probe` judges one from the entry's own metadata, that does not lead to a file. A link whose target is gone
+    counts too, on every platform, since nothing shows it leads to a file."""
+    return is_link_or_junction(entry.path, entry.stat(follow_symlinks=False)) and not entry.is_file()
 
 
 def folder_identity(path: Path) -> tuple[int, int]:
