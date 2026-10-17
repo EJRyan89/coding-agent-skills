@@ -11,7 +11,7 @@ Validation (`tests/run_validation.py`) compares the contract files at the last t
 An entry is a `###` heading saying what changed, followed by these fields:
 
 - `Level:` starts with a level word from the Versioning section: `patch`, `minor`, or `major`. Before `1.0.0`, a change that would be major is carried in a minor, and the entry says so.
-- `Contract:` the contract items the entry covers, each in backticks as the validation failure names it, or `none` for a demand no contract file records. `none` is case-insensitive and may end with a period.
+- `Contract:` the contract items the entry covers, each in backticks, or `none` when the change touches no contract item. `none` is case-insensitive and may end with a period. An item a contract file holds is named as the validation failure names it. A shipped skill's arguments, status lines, and exit codes are contract items too, the skill invocation contract of [Versioning](releasing.md#versioning), though no file holds them: an entry for a change that adds, renames, or removes one, or gives one a new value, field, or meaning, names the skill and each such item, as in `` `repo-cleanup` `report` `` or `` `update-coding-agent-skills` `DEPLOY_PINNED` ``, and no check catches its absence. A repository skill under `.claude/skills/` is not deployed, so its arguments, status lines, and exit codes are no contract item, and an entry for a change to them says `Contract: none`. This is the one statement of how an entry names such a change; the other documents point here.
 - `User action:` what the user must do after updating, or `none`.
 - `Pull request:` the pull request as `#N`. The script adds it from the squash commit's title, so a body leaves it out.
 

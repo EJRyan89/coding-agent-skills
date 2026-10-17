@@ -78,14 +78,15 @@ pull request body (the Versioning section of [releasing.md](releasing.md) holds 
 - a schema under `skills/code-review-core/references/`, or a format table in
   `docs/code-review-operations-contract.md`, among them the code-review configuration file's format and the reviewer
   manifest format;
-- a skill directory name under `skills/`, or a skill's arguments or status lines;
+- a skill directory name under `skills/`, or a shipped skill's arguments, status lines, or exit codes, named as the
+  `Contract:` field in [upgrade-notes.md](upgrade-notes.md) says;
 - a tool floor in `deployer/tools.py`: `MINIMUM_PYTHON`, or a tool's `minimum`.
 - a provider-specific PDF tool floor in `skills/skill-core/scripts/pdf_tool.py`, referenced by the catalogue's
   `provider_minimum`.
 
 The upgrade-notes check in `tests/validation/upgrade_notes.py` compares every item above at the last tag except the
-arguments and the status lines, which no file holds, and fails while this list or the Versioning section of
-[releasing.md](releasing.md) leaves out a file or directory it reads.
+arguments, the status lines, and the exit codes, which no file holds, and fails while this list or the Versioning
+section of [releasing.md](releasing.md) leaves out a file or directory it reads.
 
 ## Pull requests
 
@@ -112,8 +113,9 @@ issue by that line, and an issue a change resolved without one stays open.
 
 A change a user who updates meets, every [contract change](#contract-files) included, states it under
 `## Upgrade note` in the body, in the shape [upgrade-notes.md](upgrade-notes.md) gives, and never in that file: the
-squash merge carries the body into `main`, and the release's notes are written from it. A skill's arguments and status
-lines are the contract items no check compares, so a change to them owes the note with nothing to catch its absence.
+squash merge carries the body into `main`, and the release's notes are written from it. A shipped skill's arguments,
+status lines, and exit codes are the contract items no check compares, so a change to them owes the note with nothing
+to catch its absence; the `Contract:` field in [upgrade-notes.md](upgrade-notes.md) says how the entry names them.
 
 Before `gh pr create`, run `git fetch origin main` and `git rebase origin/main`: onto `origin/main`, not the local
 `main`, which is only as fresh as the hub's last pull. The branch is unpublished, so the rebase rewrites nothing anyone
