@@ -160,20 +160,30 @@ class LinkTests(WalkTestCase):
 
     def test_a_link_is_judged_by_link_probe_from_the_entrys_own_metadata_and_one_to_a_file_is_a_file(self) -> None:
         reparse = stat.FILE_ATTRIBUTE_REPARSE_POINT
+        gone = FileNotFoundError(2, "No such file or directory")
         cases = (
-            ("a symbolic link to a folder or to nothing", stat.S_IFLNK, 0, False, True),
-            ("a symbolic link to a file", stat.S_IFLNK, 0, True, False),
-            ("a folder that is a reparse point of any tag", stat.S_IFDIR, reparse, False, True),
-            ("a file that is a reparse point", stat.S_IFREG, reparse, True, False),
-            ("a plain folder", stat.S_IFDIR, 0x10, False, False),
+            ("a symbolic link to a folder", stat.S_IFLNK, 0, stat.S_IFDIR, True),
+            ("a symbolic link that leads nowhere", stat.S_IFLNK, 0, gone, True),
+            ("a symbolic link to a file", stat.S_IFLNK, 0, stat.S_IFREG, False),
+            ("a symbolic link to a device", stat.S_IFLNK, 0, stat.S_IFCHR, False),
+            ("a folder that is a reparse point of any tag", stat.S_IFDIR, reparse, stat.S_IFDIR, True),
+            ("a file that is a reparse point", stat.S_IFREG, reparse, stat.S_IFREG, False),
+            ("a plain folder", stat.S_IFDIR, 0x10, stat.S_IFDIR, False),
         )
-        for case, mode, attributes, leads_to_file, linked in cases:
+        for case, mode, attributes, target, linked in cases:
             with self.subTest(case=case):
+                own = mock.Mock(st_mode=mode, st_file_attributes=attributes)
+
+                def metadata(*, follow_symlinks: bool = True, own: object = own, target: object = target) -> object:
+                    if not follow_symlinks:
+                        return own
+                    if isinstance(target, OSError):
+                        raise target
+                    return mock.Mock(st_mode=target)
+
                 entry = mock.Mock(spec=os.DirEntry, path=str(self.root / "entry"))
-                entry.stat.return_value = mock.Mock(st_mode=mode, st_file_attributes=attributes)
-                entry.is_file.return_value = leads_to_file
+                entry.stat.side_effect = metadata
                 self.assertEqual(linked, folder_walk.is_folder_link(entry))
-                entry.stat.assert_called_once_with(follow_symlinks=False)
 
     def test_a_link_named_like_a_skipped_folder_is_skipped_unreported(self) -> None:
         self.link(self.base, "node_modules")

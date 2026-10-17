@@ -12,10 +12,10 @@ with the reason, so each caller decides what a folder it could not search costs 
 - Nested checkouts: a folder below `top` holding a `.git` folder or file, a clone, a submodule, or a worktree, is
   another repository's, so its files are not given; it is reported as `NESTED_CHECKOUT`. `top` itself is searched.
 - Links: an entry that is a symbolic link, a Windows junction, or another reparse point, as `link_probe` judges one,
-  and that leads to no file, a folder or nothing, is not entered, since it may lead out of the tree or back into it,
+  and that leads to a folder or to nothing, is not entered, since it may lead out of the tree or back into it,
   and is reported as `LINKED`, unless the caller's `follow` accepts its path. Even then a link that leads
   back into a folder the walk is inside is reported as `LOOP` and not entered, so the walk always ends. `top` is
-  searched as given, link or not; a link to a file is a file, which the caller judges.
+  searched as given, link or not; a link to a file or a device is an entry the caller judges.
 - Failures: a folder that cannot be listed is reported as `UNLISTABLE`, and an entry that cannot be examined as
   `UNEXAMINED`, each by path with the reason, and the walk goes on; an error never ends it.
 - Bounds: none by depth or count. No caller bounds its search, and the walk enters no folder twice along one path.
@@ -24,6 +24,7 @@ with the reason, so each caller decides what a folder it could not search costs 
 from __future__ import annotations
 
 import os
+import stat
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -65,9 +66,15 @@ class Walk:
 
 def is_folder_link(entry: os.DirEntry[str]) -> bool:
     """Whether a listed entry is a link the walk does not enter: a symbolic link, a junction, or another reparse point,
-    as `link_probe` judges one from the entry's own metadata, that does not lead to a file. A link whose target is gone
-    counts too, on every platform, since nothing shows it leads to a file."""
-    return is_link_or_junction(entry.path, entry.stat(follow_symlinks=False)) and not entry.is_file()
+    as `link_probe` judges one from the entry's own metadata, that leads to a folder or to nothing. A link whose
+    target is gone counts too, on every platform, since nothing shows it leads to a file; a link to a file or a device
+    is given to the caller, which judges it."""
+    if not is_link_or_junction(entry.path, entry.stat(follow_symlinks=False)):
+        return False
+    try:
+        return stat.S_ISDIR(entry.stat().st_mode)
+    except FileNotFoundError:
+        return True
 
 
 def folder_identity(path: Path) -> tuple[int, int]:
