@@ -1624,6 +1624,24 @@ class MigrationTests(DeployerTestCase):
         self.assertEqual((["pack"], {"pack": ["alpha", "beta"]}, []), self.requests())
         self.kept_by_all("Selected 1 item (2 skills):\n  pack (bundle)\n    alpha\n    beta\n", ["alpha", "beta"])
 
+    def test_a_skill_an_entry_without_members_stood_for_stays_chosen_when_the_source_makes_it_a_dependency(
+        self,
+    ) -> None:
+        # The entry records no dependency between the bundle's members; the source now declares beta alpha's
+        # dependency. Read from the source alone, beta would stand for no request, lose its menu mark, and be kept only
+        # as alpha's dependency.
+        self.pack_from_the_old_source()
+        self.migrate_as_before_members_were_recorded("test/old")
+        self.make_source_json()
+        self.make_skill("alpha", "Alpha", skill_deps=["beta"], opt_in=True)
+        self.make_skill("beta", "Beta", opt_in=True)
+        self.make_config()
+        menu = self.deploy("--dry-run", stdin="\n").output
+        self.assertRegex(menu, r"(?m)^  \[\*\] [0-9]+\. alpha \(opt-in\)$")
+        self.assertRegex(menu, r"(?m)^  \[\*\] [0-9]+\. beta \(opt-in\)$")
+        self.kept_by_all("Selected 2 items (2 skills):\n  alpha\n    beta (dependency)\n  beta\n", ["alpha", "beta"])
+        self.assertEqual(([], {}, ["alpha", "beta"]), self.requests())
+
     def test_a_migration_carries_a_bundle_request_beside_a_skill_preserved_through_the_version_8_upgrade(self) -> None:
         self.make_skill("everyday", "Everyday")
         self.pack_from_the_old_source()

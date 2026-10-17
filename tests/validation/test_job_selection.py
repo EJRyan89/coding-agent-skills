@@ -322,7 +322,9 @@ CHANGED_TREE = {
     "skills/a/scripts/test_tool.sh": "bash tool.sh\n",
     "skills/b/SKILL.md": "# b\n",
     "skills/b/scripts/test_b.py": "from importlib import import_module\nimport_module('tool')\n",
+    "deploy-meta/a.json": "{}\n",
     "tests/deployer/test_rendering_locking.py": "pass\n",
+    "tests/deployer/test_bundles_dependencies.py": "pass\n",
     "tests/deployer/test_plan.py": "pass\n",
     "tests/validation/test_toolchain.py": "pass\n",
     "tests/validation/test_upgrade_notes.py": "pass\n",
@@ -387,10 +389,22 @@ class ChangedSelectionFixtures(GitTestCase):
             self.selected(["requirements-dev.txt"]),
         )
         self.assertEqual(
-            ["tests/deployer/test_check.py", "tests/deployer/test_plan.py", "tests/deployer/test_rendering_locking.py"],
+            [
+                "tests/deployer/test_bundles_dependencies.py",
+                "tests/deployer/test_check.py",
+                "tests/deployer/test_plan.py",
+                "tests/deployer/test_rendering_locking.py",
+            ],
             self.selected(["deploy.py"]),
         )
         self.assertEqual([], self.selected(["LICENSE"]))
+
+    def test_a_skill_metadata_change_reaches_the_suites_that_deploy_it(self) -> None:
+        # No suite names the metadata file or imports it; the deployer reads it when it renders and resolves skills.
+        self.assertEqual(
+            ["tests/deployer/test_bundles_dependencies.py", "tests/deployer/test_rendering_locking.py"],
+            self.selected(["deploy-meta/a.json"]),
+        )
 
     def test_the_static_checks_follow_the_kind_of_file_changed(self) -> None:
         jobs = [
@@ -410,6 +424,7 @@ class ChangedSelectionFixtures(GitTestCase):
     def test_a_reach_that_matches_nothing_is_reported(self) -> None:
         files = [
             "skills/a/scripts/tool.py",
+            "deploy-meta/a.json",
             "deployer/tools.py",
             "deploy.py",
             "skills/skill-core/scripts/pdf_tool.py",
@@ -418,6 +433,7 @@ class ChangedSelectionFixtures(GitTestCase):
         ]
         suites = [
             "tests/deployer/test_rendering_locking.py",
+            "tests/deployer/test_bundles_dependencies.py",
             "tests/deployer/test_check.py",
             "tests/validation/test_toolchain.py",
             "tests/validation/test_upgrade_notes.py",
@@ -441,6 +457,13 @@ class ChangedSelectionFixtures(GitTestCase):
                 LINT_JOB,
             },
             names,
+        )
+        self.assertNotIn("tests/deployer/test_plan.py", names)
+
+    def test_a_change_to_a_skills_metadata_selects_the_deployer_suites_that_read_it_in_this_repository(self) -> None:
+        names = {job.name for job in changed_jobs(REPOSITORY_ROOT, ["deploy-meta/review-prs.json"])}
+        self.assertLessEqual(
+            {"tests/deployer/test_rendering_locking.py", "tests/deployer/test_bundles_dependencies.py"}, names
         )
         self.assertNotIn("tests/deployer/test_plan.py", names)
 

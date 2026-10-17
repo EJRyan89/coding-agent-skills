@@ -10,6 +10,8 @@ Run it from the hub on main. One tick:
 - arms squash auto-merge on each one that has none;
 - names each pull request whose recorded head is not the commit its branch on origin holds, because GitHub missed a
   push, and neither judges nor updates it, since GitHub refuses to update a stale head;
+- names each pull request in conflict with main (GitHub's merge state DIRTY), which only its owner can resolve, and
+  does not update it;
 - judges each red Validation check: it compares the head the check's run tested with the pull request's head, and the
   run with the newest pull request run on that head, first, since a red run on a superseded head, or one a newer run
   on the same head replaced, is no failure; then it reruns the failed legs, once per head, when every failure is a
@@ -44,6 +46,9 @@ Every line is one fact:
     OUT_OF_STEP #<number> <branch> head <commit> branch <commit>
                                        a pull request whose recorded head is not its branch's commit on origin,
                                        neither judged nor updated until its owner pushes again
+    CONFLICT #<number> <branch> head <commit> merge origin/main and resolve
+                                       a pull request in conflict with main, not updated until its owner merges
+                                       origin/main into the branch, resolves the conflict, and pushes
     JUDGED #<number> run <id> attempt <n> head <commit> current|superseded by <commit>|superseded by run <id>
                                        the head a red check's run tested, beside the pull request's own, or the newer
                                        pull request run on the same head that replaced it
@@ -65,8 +70,10 @@ Every line is one fact:
     MERGED_FAILED <reason>             the merged pull requests could not be listed or matched to the worktrees
     REMAINING <count>                  the open pull requests that are not drafts; 0 means none remains
 
+Every branch, path, state, leg, step, and check name that GitHub returned is flattened onto its line.
+
 Exit status 0 means the tick ran with nothing left for the shepherd's judgment; 1 that it printed an OUT_OF_STEP,
-DEFECT, RERUN_SPENT, PR_FAILED, or MERGED_FAILED line, or a last line FAILED <reason>; 2 a usage error.
+CONFLICT, DEFECT, RERUN_SPENT, PR_FAILED, or MERGED_FAILED line, or a last line FAILED <reason>; 2 a usage error.
 """
 
 from __future__ import annotations
@@ -85,6 +92,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-c
 from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError
+from git_worktrees import Worktree, list_worktrees
 from github_client import GitHubClient, GitHubError
 from github_remote import github_repository
 
@@ -106,6 +114,8 @@ PULL_FIELDS = (
     "number,headRefName,headRefOid,isCrossRepository,isDraft,mergeStateStatus,autoMergeRequest,files,statusCheckRollup"
 )
 RUN_FIELDS = "headSha,attempt,conclusion,status,jobs"
+# GitHub's merge state of a pull request whose merge commit cannot be made cleanly: a conflict with main.
+CONFLICTED = "DIRTY"
 # The event of the runs that report the required check on a pull request; the workflow's other events run on main.
 PULL_EVENT = "pull_request"
 RUNS_LISTED = 20
@@ -135,13 +145,6 @@ SERVICE_MARKERS = (
 
 class ShepherdError(RuntimeError):
     """A checkout the tick cannot shepherd, such as one whose origin names no GitHub repository."""
-
-
-@dataclass(frozen=True)
-class Worktree:
-    path: Path
-    branch: str | None
-    head: str = ""
 
 
 @dataclass(frozen=True)
@@ -215,31 +218,12 @@ def same_path(first: Path, second: Path) -> bool:
     return os.path.normcase(os.path.realpath(first)) == os.path.normcase(os.path.realpath(second))
 
 
-def parse_worktrees(listing: str) -> tuple[Worktree, ...]:
-    """The worktrees `git worktree list --porcelain` names, the main one first, with each one's branch and HEAD."""
-    worktrees: list[Worktree] = []
-    path: Path | None = None
-    branch: str | None = None
-    head = ""
-    for line in [*listing.splitlines(), ""]:
-        if line.startswith("worktree "):
-            path, branch, head = Path(line[len("worktree ") :]), None, ""
-        elif line.startswith("HEAD "):
-            head = line[len("HEAD ") :]
-        elif line.startswith("branch refs/heads/"):
-            branch = line[len("branch refs/heads/") :]
-        elif not line and path is not None:
-            worktrees.append(Worktree(path, branch, head))
-            path = None
-    return tuple(worktrees)
-
-
 def locate(git: GitClient, directory: Path) -> Place:
     """The checkout `directory` lies in, its hub, every worktree of it, and the GitHub repository origin names."""
     top = git.rev_parse_path("--show-toplevel", directory=directory)
     if top is None:
         raise ShepherdError(f"{directory.as_posix()} is not in a git checkout")
-    worktrees = parse_worktrees(git.output(["worktree", "list", "--porcelain"], directory=top))
+    worktrees = tuple(list_worktrees(git, top))
     if not worktrees:
         raise ShepherdError(f"git lists no worktree for {top.as_posix()}")
     url = git.run(["config", "--get", f"remote.{REMOTE}.url"], directory=top)
@@ -248,7 +232,7 @@ def locate(git: GitClient, directory: Path) -> Place:
     repository = github_repository(url.stdout)
     if repository is None:
         raise ShepherdError(f"{REMOTE} names no GitHub repository: {flat_text(url.stdout)}")
-    return Place(top, worktrees[0].path, worktrees, repository)
+    return Place(top, Path(worktrees[0].path), worktrees, repository)
 
 
 def hub_line(git: GitClient, place: Place, dry_run: bool) -> str:
@@ -355,7 +339,8 @@ def read_pulls(client: GitHubClient, repository: str) -> list[Pull]:
 def branch_heads(git: GitClient, top: Path) -> dict[str, str]:
     """The commit each branch on origin holds, by its name, read from origin itself rather than a fetched ref."""
     heads: dict[str, str] = {}
-    for line in git.output(["ls-remote", "--heads", REMOTE], directory=top).splitlines():
+    # Split on git's own line ends alone: a branch name may hold a character splitlines breaks on, such as U+2028.
+    for line in git.output(["ls-remote", "--heads", REMOTE], directory=top).split("\n"):
         commit, _, ref = line.partition("\t")
         if ref.startswith("refs/heads/"):
             heads[ref[len("refs/heads/") :]] = commit
@@ -473,10 +458,10 @@ def judge_leg(client: GitHubClient, repository: str, job: dict[str, Any]) -> Leg
     steps = [step for step in job.get("steps") or [] if isinstance(step, dict)]
     failed = [str(step.get("name")) for step in steps if step.get("conclusion") == "failure"]
     if conclusion == "timed_out":
-        return Leg(name, None, f"the leg's time limit{f' in {failed[0]}' if failed else ''}")
+        return Leg(name, None, f"the leg's time limit{f' in {flat_text(failed[0])}' if failed else ''}")
     setup = next((step for step in failed if step not in VALIDATION_STEPS), None)
     if setup is not None:
-        return Leg(name, "service", setup)
+        return Leg(name, "service", flat_text(setup))
     log = client.run(["run", "view", "--repo", repository, "--job", str(job.get("databaseId")), "--log-failed"])
     reason, check = classify_log(log_lines(log.stdout))
     return Leg(name, reason, flat_text(check or (failed[0] if failed else "unknown")))
@@ -534,7 +519,9 @@ def judge_red(client: GitHubClient, repository: str, pull: Pull, outcome: Outcom
         tested = f"run {judgement.run} attempt {judgement.attempt} head {short(judgement.head)}"
         outcome.lines.append(f"JUDGED #{pull.number} {tested} {state}")
     if judgement.kind == "defect":
-        outcome.lines.append(f'DEFECT #{pull.number} {pull.branch} leg "{judgement.leg}" check "{judgement.check}"')
+        outcome.lines.append(
+            f'DEFECT #{pull.number} {flat_text(pull.branch)} leg "{judgement.leg}" check "{judgement.check}"'
+        )
         outcome.flagged = True
     elif judgement.kind == "spent":
         outcome.lines.append(
@@ -651,7 +638,7 @@ def reaches(history: dict[str, list[str]], head: str, commit: str) -> bool:
 
 def local_branches(git: GitClient, top: Path) -> set[str]:
     listing = git.output(["for-each-ref", "--format=%(refname)", "refs/heads/"], directory=top)
-    return {line[len("refs/heads/") :] for line in listing.splitlines() if line.startswith("refs/heads/")}
+    return {line[len("refs/heads/") :] for line in listing.split("\n") if line.startswith("refs/heads/")}
 
 
 def merged_lines(
@@ -685,16 +672,17 @@ def merged_lines(
         for each in sorted(carried, key=lambda item: -item.number):
             if each.branch in local and each.branch not in others and each.branch not in branches:
                 branches.append(each.branch)
-        named = "".join(f" branch {branch}" for branch in branches)
+        named = "".join(f" branch {flat_text(branch)}" for branch in branches)
         number = max(each.number for each in carried)
-        lines.append(f'MERGED #{number} worktree "{worktree.path.as_posix()}"{named}')
+        lines.append(f'MERGED #{number} worktree "{Path(worktree.path).as_posix()}"{named}')
     return lines
 
 
 def pull_line(pull: Pull, outcome: Outcome) -> str:
     return (
-        f"PR #{pull.number} {pull.branch} {pull.merge_state} auto-merge {'on' if pull.armed else 'off'} head "
-        f"{short(pull.head)} {REQUIRED_CHECK} {pull.check.state} {','.join(outcome.actions) or 'none'}"
+        f"PR #{pull.number} {flat_text(pull.branch)} {flat_text(pull.merge_state)} auto-merge "
+        f"{'on' if pull.armed else 'off'} head {short(pull.head)} {REQUIRED_CHECK} {flat_text(pull.check.state)} "
+        f"{','.join(outcome.actions) or 'none'}"
     )
 
 
@@ -721,7 +709,7 @@ def tick(git: GitClient, client: GitHubClient, directory: Path, *, dry_run: bool
         return 1
     holds = {pull.number: path for pull in pulls if (path := holding_path(pull.files)) is not None}
     for number, path in holds.items():
-        emit(f"HOLD #{number} changes {path}")
+        emit(f"HOLD #{number} changes {flat_text(path)}")
     outcomes = {pull.number: Outcome() for pull in pulls}
     stale = {pull.number: branch for pull in pulls if (branch := out_of_step(pull, heads)) is not None}
     behind = {
@@ -731,11 +719,14 @@ def tick(git: GitClient, client: GitHubClient, directory: Path, *, dry_run: bool
         outcome = outcomes[pull.number]
         arm(client, place.repository, pull, outcome, dry_run)
         if pull.number in stale:
-            outcome.lines.append(
-                f"OUT_OF_STEP #{pull.number} {pull.branch} head {short(pull.head)} branch {short(stale[pull.number])}"
-            )
+            named = f"{flat_text(pull.branch)} head {short(pull.head)}"
+            outcome.lines.append(f"OUT_OF_STEP #{pull.number} {named} branch {short(stale[pull.number])}")
             outcome.flagged = True
             continue
+        if pull.merge_state == CONFLICTED:
+            named = f"{flat_text(pull.branch)} head {short(pull.head)}"
+            outcome.lines.append(f"CONFLICT #{pull.number} {named} merge {REMOTE}/{BASE} and resolve")
+            outcome.flagged = True
         judge_red(client, place.repository, pull, outcome, dry_run)
     update(client, place.repository, pulls, behind, holds, outcomes, dry_run)
     flagged = False
