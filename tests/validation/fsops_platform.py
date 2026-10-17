@@ -803,8 +803,8 @@ def _literal_callee(node: ast.expr, resolver: CallableResolver) -> ast.expr | No
         if isinstance(node.value, ast.Attribute) and node.value.attr == "__dict__":
             key = _literal_name(node.slice)
             return attribute_of(node.value.value, key) if key is not None else None
-        module = module_lookup(node, resolver)
-        return module_named(module) if module and module != COMPUTED_NAME else None
+        looked_up = module_lookup(node, resolver)
+        return module_named(looked_up) if looked_up and looked_up != COMPUTED_NAME else None
     if not isinstance(node, ast.Call):
         return None
     loader = resolver.name(node.func)
