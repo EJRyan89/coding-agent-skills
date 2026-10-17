@@ -50,8 +50,9 @@ from a project it accepted, and a file one of them finds is read only inside tha
 
 ## Requirements
 
-`dotnet-format` needs the .NET SDK and the `dotnet-format` global tool. It runs the SDK's `dotnet format` on a `.slnx`
-solution, which the global tool cannot open, and on a `.sln` whose projects are all SDK-style, and the global tool on
-any other `.sln`; a `.slnx` therefore needs an SDK at the floor that reads it. `dotnet-dependencies` reads project
+`dotnet-format` needs the .NET SDK, and the deprecated `dotnet-format` global tool only for an older solution. It runs
+the SDK's `dotnet format` on a `.slnx` solution, which the global tool cannot open, and on a `.sln` whose projects are
+all SDK-style, so a `.slnx` needs an SDK at the floor that reads it; it runs the global tool on any other `.sln`, one
+holding a project in the format before SDK-style ones. `dotnet-dependencies` reads project
 files on its own and uses the SDK, when present, for `dotnet nuget why`. `python deploy.py check` reports both tools
 and their floors, and [Requirements](installation.md#requirements) lists them with their install commands.

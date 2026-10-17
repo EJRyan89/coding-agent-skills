@@ -365,6 +365,20 @@ class CheckCommandTests(DeployerTestCase):
         self.assertEqual(["dotnet 9.0.100 (needs 9.0.200 or newer)"], groups["OUTDATED"])
         groups = self.report_groups(self.check(Machine(versions={"dotnet": "9.0.200\n"})).output, "CHECK")
         self.assertIn("dotnet 9.0.200 (used by formatter)", groups["OPTIONAL"])
+
+    def test_dotnet_format_requires_the_sdk_and_leaves_the_deprecated_global_tool_optional(self) -> None:
+        # The SDK's `dotnet format` formats every .slnx and SDK-style .sln; the global tool only an older .sln.
+        metadata = json.loads((REPOSITORY_ROOT / "deploy-meta" / "dotnet-format.json").read_text(encoding="utf-8"))
+        self.assertEqual((["dotnet"], ["dotnet-format", "gh"]), (metadata["tools"], metadata["optional_tools"]))
+        set_tools(self, "formatter", metadata["tools"])
+        set_tools(self, "formatter", metadata["optional_tools"], key="optional_tools")
+        groups = self.report_groups(self.check(Machine(missing=("dotnet",))).output, "CHECK")
+        self.assertEqual(["dotnet (used by formatter)"], groups["MISSING"])
+        self.assertIn("dotnet-format 5.1.250801 (used by formatter)", groups["OPTIONAL"])
+        groups = self.report_groups(self.check(Machine(missing=("dotnet-format",))).output, "CHECK")
+        self.assertIn("dotnet 10.0.301 (used by formatter)", groups["FOUND"])
+        self.assertIn("dotnet-format (not installed; used by formatter)", groups["OPTIONAL"])
+        self.assertNotIn("MISSING", groups)
         self.assertNotIn("OUTDATED", groups)
 
     def test_pdftotext_reports_separate_provider_floors_and_unusable_probes(self) -> None:
