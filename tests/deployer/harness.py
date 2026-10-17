@@ -425,6 +425,34 @@ class DeployerTestCase(GitTestCase):
 
         return self.run_command(run, source=checkout, changes_home=changes_home)
 
+    def run_in_checkout(
+        self, program: str, *arguments: str, environment: dict[str, str], changes_home: str = ""
+    ) -> Result:
+        """Run Python code in a child process against a copy of this checkout, under the harness's source and refusal
+        guards, as run_entry_point runs deploy.py: the code takes the copy's path as its first argument, then the
+        arguments given, and runs with exactly this environment and no input, its streams kept apart in the result.
+        A test's later runs reuse the copy its first made, which each run compares again.
+        """
+        copied = self.root / "repository"
+        checkout = copied if (copied / "deploy.py").is_file() else self.entry_point_source()
+
+        def run() -> int:
+            completed = subprocess.run(
+                [sys.executable, "-B", "-c", program, str(checkout), *arguments],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                stdin=subprocess.DEVNULL,
+                env=environment,
+                timeout=120,
+                check=False,
+            )
+            print(completed.stdout, end="")
+            print(completed.stderr, end="", file=sys.stderr)
+            return completed.returncode
+
+        return self.run_command(run, source=checkout, changes_home=changes_home)
+
     def run_cli(
         self,
         *arguments: str,
