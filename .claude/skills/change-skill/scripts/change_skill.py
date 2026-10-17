@@ -16,8 +16,9 @@ declares. The reference is regenerated after a shipped skill's frontmatter or me
 repository skill's frontmatter changes, and the runtime prompt samples after a file they are rendered from changes.
 The cost audit is owed for each touched skill still present; the runtime canary for each present shipped skill that
 is new, changes a frontmatter key its runtime adapter or grants read, changes the `${CLAUDE_SKILL_DIR}` paths it names
-its own files by, changes the metadata its agents, guidance, or declared runtime support come from, or declares a
-changed agent; and the evaluation for each skill with scenarios whose skill_deps reach a touched skill.
+its own files by, changes the metadata its agents, guidance, or declared runtime support come from or whether it
+is selectable, which decides whether it has a runtime adapter, or declares a changed agent; and the evaluation for
+each skill with scenarios whose skill_deps reach a touched skill.
 
 Every line is one fact:
 
@@ -85,9 +86,10 @@ METADATA = "deploy-meta"
 AGENTS = "agents"
 SCENARIOS = "tests/fixtures/skill-evals"
 # The frontmatter keys the runtime adapter carries or a runtime grants by, and the metadata the deployer installs a
-# skill's agents, guidance, and declared support from: a change to any of them changes what a runtime finds.
+# skill's agents, guidance, and declared support from, and whether it is selectable, which decides whether the
+# deployer writes its adapter: a change to any of them changes what a runtime finds.
 CANARY_KEYS = ("name", "description", "disable-model-invocation", "allowed-tools")
-CANARY_METADATA = ("agent_deps", "shared_deps", "runtime_support")
+CANARY_METADATA = ("agent_deps", "shared_deps", "runtime_support", "selectable")
 # What tools/runtime_prompts.py renders its samples from: the skills whose scripts write the prompts, the fixtures it
 # renders them over, and the tools themselves. The suite holds this list to that module's imports.
 RUNTIME_PROMPT_SOURCES = (
@@ -317,7 +319,7 @@ def regenerations(tree: Tree, touched: dict[str, str], paths: set[str]) -> list[
 def needs_canary(tree: Tree, name: str, paths: set[str]) -> bool:
     """Whether a change to the shipped skill can change what a runtime finds or runs: a new skill, a key its adapter
     or grants read, a path it names its own files by, or metadata its agents, guidance, or declared support come
-    from."""
+    from or that decides whether it has an adapter."""
     skill_file, meta_file = f"{SHIPPED}/{name}/SKILL.md", f"{METADATA}/{name}.json"
     if skill_file in paths:
         base, head = tree.base(skill_file), tree.head(skill_file) or ""
