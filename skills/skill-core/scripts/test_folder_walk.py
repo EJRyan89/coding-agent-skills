@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import sys
 import tempfile
 import unittest
@@ -144,13 +145,11 @@ class LinkTests(WalkTestCase):
         self.link(outside, "out")
         self.link(self.root, "inside/loop")
         self.link(self.root / "inside", "sideways")
-        expected = [("out", LINKED), ("sideways", LINKED), ("inside/loop", LINKED)]
-        if sys.platform == "win32":
-            gone = self.base / "gone"
-            gone.mkdir()
-            self.link(gone, "stale")
-            gone.rmdir()
-            expected.insert(2, ("stale", LINKED))
+        gone = self.base / "gone"
+        gone.mkdir()
+        self.link(gone, "stale")
+        gone.rmdir()
+        expected = [("out", LINKED), ("sideways", LINKED), ("stale", LINKED), ("inside/loop", LINKED)]
         walk = walk_files(self.root, every_file)
         self.assertEqual(["inside/inside.txt"], self.files(walk))
         self.assertEqual(expected, self.not_entered(walk))
@@ -158,6 +157,33 @@ class LinkTests(WalkTestCase):
             "the folder is a junction or a symbolic link, which the search does not follow", walk.not_entered[0].reason
         )
         self.assertEqual(LINKED_REASON, walk.not_entered[0].reason)
+
+    def test_a_link_is_judged_by_link_probe_from_the_entrys_own_metadata_and_one_to_a_file_is_a_file(self) -> None:
+        reparse = stat.FILE_ATTRIBUTE_REPARSE_POINT
+        gone = FileNotFoundError(2, "No such file or directory")
+        cases = (
+            ("a symbolic link to a folder", stat.S_IFLNK, 0, stat.S_IFDIR, True),
+            ("a symbolic link that leads nowhere", stat.S_IFLNK, 0, gone, True),
+            ("a symbolic link to a file", stat.S_IFLNK, 0, stat.S_IFREG, False),
+            ("a symbolic link to a device", stat.S_IFLNK, 0, stat.S_IFCHR, False),
+            ("a folder that is a reparse point of any tag", stat.S_IFDIR, reparse, stat.S_IFDIR, True),
+            ("a file that is a reparse point", stat.S_IFREG, reparse, stat.S_IFREG, False),
+            ("a plain folder", stat.S_IFDIR, 0x10, stat.S_IFDIR, False),
+        )
+        for case, mode, attributes, target, linked in cases:
+            with self.subTest(case=case):
+                own = mock.Mock(st_mode=mode, st_file_attributes=attributes)
+
+                def metadata(*, follow_symlinks: bool = True, own: object = own, target: object = target) -> object:
+                    if not follow_symlinks:
+                        return own
+                    if isinstance(target, OSError):
+                        raise target
+                    return mock.Mock(st_mode=target)
+
+                entry = mock.Mock(spec=os.DirEntry, path=str(self.root / "entry"))
+                entry.stat.side_effect = metadata
+                self.assertEqual(linked, folder_walk.is_folder_link(entry))
 
     def test_a_link_named_like_a_skipped_folder_is_skipped_unreported(self) -> None:
         self.link(self.base, "node_modules")
