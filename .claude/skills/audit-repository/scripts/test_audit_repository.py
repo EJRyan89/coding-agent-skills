@@ -835,17 +835,40 @@ class RemoveBriefsTests(Fixture):
         self.assertEqual((0, [f'REMOVED "{directory.resolve().as_posix()}"']), (code, lines))
         self.assertFalse(directory.exists())
 
+    def briefs_lookalike(self, marker: str | None = None) -> Path:
+        """A directory named like a briefs directory in the temporary directory, holding one Markdown file and, when
+        given, a marker with that text."""
+        directory = Path(tempfile.mkdtemp(prefix=audit.BRIEFS_PREFIX))
+        self.addCleanup(remove_briefs_left, directory)
+        (directory / "brief.md").write_text("x", encoding="utf-8")
+        if marker is not None:
+            (directory / ".audit-repository-briefs.json").write_text(marker, encoding="utf-8")
+        return directory
+
+    def test_a_run_marks_its_directory_with_its_own_path(self) -> None:
+        _, lines = self.run_main("release", "--since", "v0.1.0")
+        directory = Path(next(line for line in lines if line.startswith("BRIEFS ")).split(" ", 1)[1].strip('"'))
+        marker = json.loads((directory / ".audit-repository-briefs.json").read_text(encoding="utf-8"))
+        self.assertEqual({"directory": directory.resolve().as_posix()}, marker)
+
     def test_refuses_any_other_directory_and_leaves_it(self) -> None:
         other = Path(tempfile.mkdtemp(prefix="not-audit-"))
         self.addCleanup(remove_tree, other)
         (other / "brief.md").write_text("x", encoding="utf-8")
         nested = Path(tempfile.mkdtemp(prefix=audit.BRIEFS_PREFIX, dir=self.temporary))
+        unmarked = self.briefs_lookalike()
+        elsewhere = self.briefs_lookalike(json.dumps({"directory": other.resolve().as_posix()}))
+        unreadable = self.briefs_lookalike("{not json")
         cases = {
             other: "is not a briefs directory this script made",
             nested: "is not a briefs directory this script made",
             self.temporary / "missing": "is not a briefs directory this script made",
+            # Named like one, holding only Markdown, but no run of this script marked it.
+            unmarked: "holds no .audit-repository-briefs.json naming it",
+            elsewhere: "holds no .audit-repository-briefs.json naming it",
+            unreadable: "holds no .audit-repository-briefs.json naming it",
             # The fixture's own directory is named like one but holds a repository.
-            self.temporary: "holds more than briefs",
+            self.temporary: "holds no .audit-repository-briefs.json naming it",
         }
         for directory, reason in cases.items():
             with self.subTest(directory=directory.name):
@@ -853,8 +876,18 @@ class RemoveBriefsTests(Fixture):
                 self.assertEqual(1, code)
                 self.assertEqual(1, len(lines), lines)
                 self.assertTrue(lines[0].startswith("FAILED ") and reason in lines[0], lines)
-        self.assertTrue((other / "brief.md").exists())
+        for directory in (other, unmarked, elsewhere, unreadable):
+            self.assertTrue((directory / "brief.md").exists())
         self.assertTrue((self.root / "README.md").exists())
+
+    def test_refuses_a_marked_directory_holding_more_than_briefs_and_leaves_it(self) -> None:
+        _, lines = self.run_main("release", "--since", "v0.1.0")
+        directory = Path(next(line for line in lines if line.startswith("BRIEFS ")).split(" ", 1)[1].strip('"'))
+        (directory / "notes.txt").write_text("x", encoding="utf-8")
+        code, lines = self.remove(directory)
+        self.assertEqual(1, code)
+        self.assertTrue(lines[0].startswith("FAILED ") and "holds more than briefs, such as notes.txt" in lines[0])
+        self.assertTrue((directory / ".audit-repository-briefs.json").exists())
 
     def test_a_file_that_cannot_be_removed_fails_with_the_reason(self) -> None:
         _, lines = self.run_main("release", "--since", "v0.1.0")
@@ -864,6 +897,9 @@ class RemoveBriefsTests(Fixture):
         self.assertEqual(1, code)
         self.assertTrue(lines[0].startswith("FAILED cannot remove ") and lines[0].endswith(": access denied"), lines)
         self.assertTrue(directory.exists())
+        # The marker goes last, so the directory a failed removal leaves can be removed again.
+        self.assertEqual(0, self.remove(directory)[0])
+        self.assertFalse(directory.exists())
 
 
 class CommandLineTests(Fixture):
@@ -925,7 +961,7 @@ class CommandLineTests(Fixture):
                 )
                 self.assertEqual(b"", result.stderr)
                 self.assertEqual("partial brief", failed_path.read_text(encoding="utf-8"))
-                expected = [failed_path.name]
+                expected = [failed_path.name, ".audit-repository-briefs.json"]
                 if mode == "release" and failed_area == "code-review":
                     expected.append("deployer.md")
                     text = (directory / "deployer.md").read_text(encoding="utf-8")

@@ -34,7 +34,7 @@ Add `--since '<ref>'` to `release` to start from another base. Keep these lines 
 - `CARRIED <number> "<title>"`: an open issue the next milestone carries; every rotation brief names them too.
 - `BRIEFS "<directory>"`, then one `BRIEF <name> "<file>"` per reader, each its whole prompt; `READERS` counts an area's.
 
-A `FAILED` line is the last line and names what stopped the run, such as no release tag reachable from `HEAD` or gh's own reason. A run that fails while writing the briefs leaves the directory it named in place; remove it as step 6 says once you have diagnosed the failure.
+A `FAILED` line is the last line and names what stopped the run, such as no release tag reachable from `HEAD` or gh's own reason. A run that fails while writing the briefs prints no `BRIEFS` line and leaves its directory in place: the folder holding the file its `FAILED` line names. Once you have diagnosed the failure, remove that folder as step 6 says; a failure writing the marker, `.audit-repository-briefs.json`, leaves a folder `remove-briefs` refuses, so delete it yourself.
 
 ## 3. Start one reader per brief
 
@@ -69,7 +69,7 @@ python -B .claude/skills/audit-repository/scripts/audit_repository.py rotation -
 
 `RECORDED <tag> <area> <date>` confirms the entry it appended to `.claude/skills/audit-repository/references/rotation.json`. If the write fails, the `FAILED` line says the record is unchanged and names any copy left beside it to delete; fix the cause and run the command again.
 
-When each audit's findings are filed, delete its briefs directory, the one its `BRIEFS` line named. `REMOVED "<directory>"` confirms it; the script deletes nothing but a briefs directory it made:
+When each audit's findings are filed, delete its briefs directory, the one its `BRIEFS` line named. `REMOVED "<directory>"` confirms it; the script deletes nothing but a briefs directory holding the marker its run wrote there:
 
 ```bash
 python -B .claude/skills/audit-repository/scripts/audit_repository.py remove-briefs '<directory>'

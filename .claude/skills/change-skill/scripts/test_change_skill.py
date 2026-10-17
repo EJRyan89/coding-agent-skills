@@ -252,6 +252,17 @@ class GateTests(GitTestCase):
         agents = json.dumps({"tools": ["gh"], "agent_deps": ["helper"]}) + "\n"
         self.assertIn("GATE runtime-canary alpha", self.gates(uncommitted={"deploy-meta/alpha.json": agents}))
 
+    def test_a_flip_of_selectable_owes_the_canary_because_it_adds_or_removes_the_adapter(self) -> None:
+        hidden = json.dumps({"tools": [], "agent_deps": [], "selectable": False}) + "\n"
+        self.assertEqual(
+            [
+                "REGENERATE python tools/skill_reference.py --write",
+                "GATE analyze-skill-cost alpha",
+                "GATE runtime-canary alpha",
+            ],
+            self.gates(uncommitted={"deploy-meta/alpha.json": hidden}),
+        )
+
     def test_metadata_that_cannot_be_read_owes_the_canary(self) -> None:
         self.assertIn("GATE runtime-canary alpha", self.gates(uncommitted={"deploy-meta/alpha.json": "{not json\n"}))
 

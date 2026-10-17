@@ -11,7 +11,8 @@ confirms what they find, and files it.
                    writes a copy beside the record and replaces the record with it, so a write that fails leaves the
                    record as it was
     duplicates     search the open issues for each QUERY, so a finding already filed is not filed twice
-    remove-briefs  delete a briefs directory a release or rotation run printed as BRIEFS, and nothing else
+    remove-briefs  delete a briefs directory a release or rotation run printed as BRIEFS, and nothing else: one
+                   holding the BRIEFS_MARKER file the run wrote before its first brief, naming the directory
 
 An area holding more than MAX_FILES_PER_READER files is split between readers by directory: one brief per part, no
 part above that size, and a directory split only when it alone holds more than a part. A release or rotation run
@@ -84,6 +85,9 @@ VERSION = re.compile(r"v?(\d+)\.(\d+)\.(\d+)")
 MAX_FILES_PER_READER = 60
 # Every briefs directory starts with this, directly in the temporary directory; remove-briefs deletes no other.
 BRIEFS_PREFIX = "audit-repository-"
+# The file a run writes in its briefs directory before any brief, naming the directory; remove-briefs deletes only a
+# directory holding it, so a directory another program named with the prefix is left alone.
+BRIEFS_MARKER = ".audit-repository-briefs.json"
 # The most open issues one duplicate search lists, and one milestone's open issues the rotation brief names.
 SEARCH_LIMIT = 30
 CARRIED_LIMIT = 1000
@@ -574,6 +578,11 @@ def write_briefs(briefs: list[tuple[str, str]]) -> list[str]:
         directory = Path(tempfile.mkdtemp(prefix=BRIEFS_PREFIX))
     except OSError as exc:
         raise AuditError(f"cannot create the briefs directory: {exc}") from exc
+    marker = directory / BRIEFS_MARKER
+    try:
+        marker.write_text(json.dumps({"directory": directory.resolve().as_posix()}) + "\n", encoding="utf-8")
+    except OSError as exc:
+        raise AuditError(f"cannot write the briefs marker {marker.as_posix()}: {exc}") from exc
     lines = [f'BRIEFS "{directory.as_posix()}"']
     for name, text in briefs:
         path = directory / f"{name}.md"
@@ -700,7 +709,8 @@ def duplicates(github: GitHubClient, queries: Sequence[str]) -> list[str]:
 
 def remove_briefs(directory: Path) -> list[str]:
     """Delete a briefs directory this script made: a BRIEFS_PREFIX directory directly in the temporary directory,
-    reached through no link, that holds only Markdown files. Anything else is refused and left as it is."""
+    reached through no link, holding the BRIEFS_MARKER that names it and otherwise only Markdown files. Anything else
+    is refused and left as it is. The marker goes last, so a removal that fails part way can be run again."""
     temporary = Path(tempfile.gettempdir()).resolve()
     resolved = directory.resolve()
     if (
@@ -710,19 +720,34 @@ def remove_briefs(directory: Path) -> list[str]:
         or not resolved.name.startswith(BRIEFS_PREFIX)
     ):
         raise AuditError(f"{directory.as_posix()} is not a briefs directory this script made in {temporary.as_posix()}")
+    marker = resolved / BRIEFS_MARKER
+    if not names_directory(marker, resolved):
+        raise AuditError(f"{resolved.as_posix()} holds no {BRIEFS_MARKER} naming it, so this script did not make it")
     try:
-        entries = list(resolved.iterdir())
-        strays = [entry.name for entry in entries if entry.is_symlink() or not entry.is_file() or entry.suffix != ".md"]
+        briefs = [entry for entry in resolved.iterdir() if entry != marker]
+        strays = [entry.name for entry in briefs if entry.is_symlink() or not entry.is_file() or entry.suffix != ".md"]
         if strays:
             raise AuditError(
                 f"{resolved.as_posix()} holds more than briefs, such as {strays[0]}, so it is left as it is"
             )
-        for entry in entries:
+        for entry in briefs:
             entry.unlink()
+        marker.unlink()
         resolved.rmdir()
     except OSError as exc:
         raise AuditError(f"cannot remove {resolved.as_posix()}: {exc}") from exc
     return [f'REMOVED "{resolved.as_posix()}"']
+
+
+def names_directory(marker: Path, directory: Path) -> bool:
+    """Whether the marker is a file, reached through no link, whose record names the directory."""
+    if marker.is_symlink() or not marker.is_file():
+        return False
+    try:
+        record = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(record, dict) and record.get("directory") == directory.as_posix()
 
 
 def build_parser() -> argparse.ArgumentParser:
