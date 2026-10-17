@@ -607,7 +607,9 @@ class CommandGuardTests(WorktreesTestCase):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, self.hub))
                 self.assertIn(reason, self.reason)
-        self.assertIsNone(self.bash("git unbalanced", self.tree))
+        # A worktree shares the hub's aliases, and its session has the hub in view.
+        self.assertEqual("deny", self.bash("git unbalanced", self.tree))
+        self.assertIn("could not be read", self.reason)
 
     def test_worktree_sessions_may_commit_but_not_reach_into_the_hub(self) -> None:
         self.assertIsNone(self.bash("git commit -m x && git rebase main", self.tree))
@@ -781,7 +783,8 @@ class CommandReadingTests(WorktreesTestCase):
                 *self.at(self.hub, "mv"),
                 *self.at(self.tree, "reset"),
                 *self.at(self.worktrees, "restore"),
-                *self.at(None, "revert", "clean"),
+                *self.at(None, "revert"),
+                *self.at(self.hub / "elsewhere", "clean"),
             ],
             self.read(command, environment=environment),
         )
@@ -930,14 +933,17 @@ class CommandReadingTests(WorktreesTestCase):
     def test_powershell_applies_inherited_and_assigned_location_variables(self) -> None:
         inherited = {**self.environment, "GIT_WORK_TREE": str(self.tree)}
         self.assertEqual(
-            [*self.at(self.tree, "commit"), *self.at(None, "add")],
-            self.read("git commit; $env:GIT_WORK_TREE = 'x'; git add .", environment=inherited),
+            [*self.at(self.tree, "commit"), *self.at(self.hub / "x", "add"), *self.at(None, "rm")],
+            self.read(
+                "git commit; $env:GIT_WORK_TREE = 'x'; git add .; [string]$env:GIT_WORK_TREE = 'y'; git rm y",
+                environment=inherited,
+            ),
         )
         command = (
             'pwsh -c "Set-Item env:GIT_DIR x; git rm x"; git restore x\n'
             "pwsh -c \"[Environment]::SetEnvironmentVariable('GIT_DIR', 'x'); git mv a b\"; git am\n"
             "pwsh -c \"New-Item -Path Env:\\GIT_DIR -Value x; bash -c 'git revert x'\"; git clean -fd\n"
-            f"$env:GIT_WORK_TREE = 'x'; git commit; Set-Location '{self.tree}'; pwsh -c 'git add .'"
+            f"$env:GIT_WORK_TREE = '{self.hub}'; git commit; Set-Location '{self.tree}'; pwsh -c 'git add .'"
         )
         self.assertEqual(
             [
@@ -947,8 +953,8 @@ class CommandReadingTests(WorktreesTestCase):
                 ("elsewhere", "am"),
                 ("unknown", "revert"),
                 ("elsewhere", "clean"),
-                ("unknown", "commit"),
-                ("unknown", "add"),
+                ("hub", "commit"),
+                ("hub", "add"),
             ],
             self.reach(command),
         )
@@ -1024,15 +1030,24 @@ class CommandReadingTests(WorktreesTestCase):
                 self.assertEqual([("elsewhere", "commit")], self.reach(f"{command}; git commit"))
 
     def test_powershell_reads_a_location_variable_assigned_through_variable_notation(self) -> None:
-        # Variable notation takes the paths a cmdlet does: ${env:\NAME} sets NAME, as Set-Item env:\NAME does.
+        # Variable notation takes the paths a cmdlet does: ${env:\NAME} sets NAME, as Set-Item env:\NAME does, and a
+        # plain assignment sets the value it gives.
+        repository = self.hub / ".git"
         for command in (
-            "${Environment::GIT_WORK_TREE} = 'x'",
-            "${Microsoft.PowerShell.Core\\Environment::GIT_DIR} = 'x'",
-            "${\\Environment::GIT_DIR} = 'x'",
-            "${env:GIT_DIR} = 'x'",
-            "${env:\\GIT_DIR} = 'x'",
+            f"${{Environment::GIT_WORK_TREE}} = '{self.hub}'",
+            f"${{Microsoft.PowerShell.Core\\Environment::GIT_DIR}} = '{repository}'",
+            f"${{\\Environment::GIT_DIR}} = '{repository}'",
+            f"${{env:GIT_DIR}} = '{repository}'",
+            f'${{env:\\GIT_DIR}} = "{repository}"',
+            f"$env:GIT_WORK_TREE = $env:HOMEDRIVE; $env:GIT_WORK_TREE = '{self.hub}'",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual([("hub", "reset")], self.reach(f"{command}; git reset --hard"))
+                self.assertEqual(([], []), (self.notes, self.unread))
+        # A compound assignment, a cast or attribute, parentheses, and a multiple assignment assign the variable they
+        # wrap with a value the guard does not settle.
+        for command in (
             "${ENV:/GIT_DIR} += 'x'",
-            # A cast or attribute still assigns the variable it wraps, as do parentheses and a multiple assignment.
             "[string]$env:GIT_DIR = 'x'",
             "[ValidateNotNull()][string]${Environment::GIT_DIR} = 'x'",
             f"(([string]${{Environment::GIT_DIR}})) = '{self.hub}'",
@@ -1130,7 +1145,6 @@ class PowerShellGuardTests(WorktreesTestCase):
         for command in (
             "Rename-Item env:FOO GIT_WORK_TREE; git commit -m x",
             f"Set-Item Environment::GIT_WORK_TREE '{self.hub}'; git reset --hard",
-            f"${{Environment::GIT_WORK_TREE}} = '{self.hub}'; git reset --hard",
             f"($env:GIT_WORK_TREE) = '{self.hub}'; $other, $env:GIT_DIR = 2, 'x'; git reset --hard",
         ):
             with self.subTest(command=command):
@@ -1211,9 +1225,11 @@ class ContractTests(WorktreesTestCase):
                 self.assertIn("The guard could not tell where `git reset` runs", self.reason)
 
     def test_a_location_variable_counts_only_in_the_case_git_reads_it(self) -> None:
-        reading = worktrees.read_command("PowerShell", "$env:git_dir = 'x'; git commit", self.tree, self.environment)
+        command = f"$env:git_dir = '{self.hub / '.git'}'; git commit"
+        reading = worktrees.read_command("PowerShell", command, self.tree, self.environment)
         # Windows reads an environment name in any case; elsewhere git_dir is a variable git never reads.
-        self.assertEqual((None, platform_support.WINDOWS), worktrees.reached_hub(reading.calls[0].place))
+        hub, unknown = worktrees.reached_hub(reading.calls[0].place)
+        self.assertEqual((platform_support.WINDOWS, False), (hub is not None, unknown))
         for command, expected in (
             # With no path, New-Item writes where the session is, on the file system.
             ("New-Item -Name GIT_DIR -Value x; git commit", (None, False)),
@@ -1400,6 +1416,99 @@ class ContractTests(WorktreesTestCase):
         self.assertEqual("deny", self.powershell(f"Set-Location '{self.hub}'; git co feat/demo", outside))
         self.assertIn("is an alias", self.reason)
         self.assertEqual("deny", self.bash(f"cd '{self.hub}' && git co feat/demo", outside))
+
+    def test_an_alias_is_read_wherever_its_call_runs(self) -> None:
+        # A worktree shares the hub's repository configuration, so an alias the hub defines is defined there too.
+        for name, expansion in (
+            ("hop", f'!git -C "{self.hub}" commit -m x'),
+            ("into", f'-C "{self.hub}" switch'),
+            ("save", "!git commit -m x"),
+            ("st", "status --short"),
+            ("unbalanced", "checkout 'feat/demo"),
+        ):
+            self.git(self.hub, "config", f"alias.{name}", expansion)
+        for shell in (self.bash, self.powershell):
+            with self.subTest(shell=shell.__name__):
+                self.assertEqual("deny", shell("git hop", self.tree))
+                self.assertIn("is an alias", self.reason)
+                self.assertIn(WRITES.format("commit"), self.reason)
+                self.assertEqual("deny", shell("git into feat/demo", self.tree))
+                self.assertIn(WRITES.format("switch"), self.reason)
+                self.assertEqual("deny", shell("git unbalanced", self.tree))
+                self.assertIn("could not be read", self.reason)
+                self.assertIsNone(shell("git save", self.tree))
+                self.assertIsNone(shell("git st", self.tree))
+        # With no guarded hub in view, an alias that cannot be read is allowed with a note; one writing a hub is not.
+        other = self.other_repository()
+        self.git(other, "config", "alias.unbalanced", "checkout 'x")
+        self.git(other, "config", "alias.hop", f'!git -C "{self.hub}" commit -m x')
+        for shell in (self.bash, self.powershell):
+            with self.subTest(shell=shell.__name__, cwd="other"):
+                self.assertIsNone(shell("git unbalanced", other))
+                self.assertIn("could not be read", self.stderr)
+                self.assertEqual("deny", shell("git hop", other))
+                self.assertIn(WRITES.format("commit"), self.reason)
+
+    def test_a_subcommand_quoted_in_part_is_the_word_each_shell_makes_of_it(self) -> None:
+        for command in ("git com'mit' -m x", 'git co"mm"it -m x', "g'it' commit -m x"):
+            for shell in (self.bash, self.powershell):
+                with self.subTest(command=command, shell=shell.__name__):
+                    self.assertEqual("deny", shell(command, self.hub))
+                    self.assertIn(WRITES.format("commit"), self.reason)
+        self.assertEqual("deny", self.powershell("git co`mmit -m x", self.hub))
+        self.assertIn(WRITES.format("commit"), self.reason)
+        self.assertEqual("deny", self.bash("git co\\mmit -m x", self.hub))
+        self.assertIn(WRITES.format("commit"), self.reason)
+
+    def test_a_variable_the_command_sets_is_read_with_the_value_it_sets(self) -> None:
+        # The variable holds another place where the hook starts, so only the command's own value names the hub.
+        environment = {**self.environment, "HUB_PLACE": str(self.root)}
+        for bash, powershell in (
+            (
+                f'HUB_PLACE="{self.hub}"; cd "$HUB_PLACE";',
+                f"$env:HUB_PLACE = '{self.hub}'; Set-Location $env:HUB_PLACE;",
+            ),
+            (
+                f'export HUB_PLACE="{self.hub}"; cd "$HUB_PLACE/.";',
+                f"${{env:HUB_PLACE}} = '{self.hub}'; Set-Location \"$env:HUB_PLACE/.\";",
+            ),
+            (
+                f'export GIT_WORK_TREE="{self.hub}";',
+                f"$env:GIT_WORK_TREE = '{self.hub}';",
+            ),
+            (
+                f'export GIT_DIR="{self.hub / ".git"}";',
+                f"${{Environment::GIT_DIR}} = '{self.hub / '.git'}';",
+            ),
+        ):
+            for shell, command in ((self.bash, bash), (self.powershell, powershell)):
+                with self.subTest(command=command):
+                    self.assertEqual("deny", shell(f"{command} git reset --hard", self.tree, environment))
+                    self.assertIn(WRITES.format("reset"), self.reason)
+        for bash, powershell in (
+            (f'GIT_WORK_TREE="{self.tree}" git commit -m x', f"$env:GIT_WORK_TREE = '{self.tree}'; git commit -m x"),
+            (
+                f'export GIT_DIR="{self.hub / ".git" / "worktrees" / "feat-demo"}"; git commit -m x',
+                f"$env:GIT_DIR = '{self.hub / '.git' / 'worktrees' / 'feat-demo'}'; git commit -m x",
+            ),
+            (
+                f'HUB_PLACE="{self.tree}"; cd "$HUB_PLACE" && git commit -m x',
+                f"$env:HUB_PLACE = '{self.tree}'; Set-Location $env:HUB_PLACE; git commit -m x",
+            ),
+        ):
+            for shell, command in ((self.bash, bash), (self.powershell, powershell)):
+                with self.subTest(command=command):
+                    self.assertIsNone(shell(command, self.tree, environment))
+                    self.assertNotIn("could not", self.stderr)
+        # A value the command removes, or sets where the text does not settle it, is not the one the hook was given.
+        for command in (
+            "Remove-Item env:HUB_PLACE; Set-Location $env:HUB_PLACE; git commit -m x",
+            "Set-Item env:HUB_PLACE x; Set-Location $env:HUB_PLACE; git commit -m x",
+            "$env:HUB_PLACE += 'x'; Set-Location $env:HUB_PLACE; git commit -m x",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.hub, environment))
+                self.assertIn("The guard could not tell where `git commit` runs", self.reason)
 
     def test_apply_check_after_a_double_dash_is_a_patch_name(self) -> None:
         for command, expected in (

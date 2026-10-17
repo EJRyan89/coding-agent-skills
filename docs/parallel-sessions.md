@@ -189,9 +189,12 @@ With the guard enabled:
     before or after the upstream value is still refused
 - **Aliases.** A subcommand that is neither refused itself nor one of git's builtins, which no alias can stand for,
   may be an alias, so the guard reads it, first among the `alias.<name>` settings the command line gives (`-c`,
-  `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`), then with `git config --get alias.<name>` in the hub, and judges what
-  it runs, through further aliases. A shell alias (`!...`) is read as Bash from the top of the hub. An alias that
-  cannot be read, nests more than four deep, or runs something the guard cannot judge is refused.
+  `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`), then with `git config --get alias.<name>` in the hub for a call that
+  acts on the hub, or where the call acts for one outside every hub (a worktree shares its hub's configuration, so a
+  hub's alias is read from a worktree too), and judges what it runs, through further aliases. A shell alias (`!...`)
+  is read as Bash from the top of the work tree it runs in. An alias that cannot be read, nests more than four deep,
+  or runs something the guard cannot judge is refused while a guarded hub is in view, and one that writes a hub is
+  refused wherever it is called.
 - **Both shell tools.** The same commands are refused, with the same allowances, whether they run through the
   `Bash` tool or the `PowerShell` tool, or as a `Monitor` tool's command, which runs in the `Bash` tool's shell.
 
@@ -250,7 +253,12 @@ refused while a guarded hub is in view, and what they do not see at all is named
   follows `cd`, `chdir`, `sl`, and `Set-Location` (bare goes home, a leading `~` means home, `cd -` and `cd +` leave
   the location unknown, and one on a provider other than the file system leaves it unknown),
   `Push-Location` and `Pop-Location` with their stack, `$env:NAME` and strings whose only expansions are
-  environment variables that are set, and a function's body where a command calls it. A location set inside a
+  environment variables, and a function's body where a command calls it. A variable's value is the one the session
+  holds at that point, as in Bash: the one the hook was given, or the word a plain assignment in the command gives it
+  (`$env:NAME = <word>` or `${env:NAME} = <word>`, on any path of the provider), while an empty value or `$null`
+  removes it. A compound, cast, parenthesized, or multiple assignment, a `foreach` loop's variable, `PSVariable.Set`,
+  `[Environment]::SetEnvironmentVariable`, and a cmdlet that writes the provider leave its value unsettled, and a
+  variable the session does not hold is unsettled too. A location set inside a
   script block outlives the block, as it does in PowerShell. `Invoke-Expression` (`iex`) with a fixed string is read
   as part of the same session. A command that does not parse is allowed: PowerShell parses a whole script before it
   runs any of it, so none of it runs.
@@ -266,7 +274,8 @@ refused while a guarded hub is in view, and what they do not see at all is named
   followed to four deep; deeper is a command the guard cannot read.
 - **When pwsh starts.** Starting `pwsh` costs far more than the guard's git calls, so the guard starts it only when
   the text names `git` and either, as a word, a refused subcommand, `fetch`, or an alias git defines where the
-  command starts or in a hub in view, or command-line alias configuration; or something that computes a word
+  command starts or in a hub in view, or command-line alias configuration, each also read with the quotes, backticks,
+  and backslashes that join a word taken out, so `com'mit'` names `commit`; or something that computes a word
   follows `git` in its statement; or the command starts outside every repository. `git status`, `git log`, and
   every non-git command never wait for it.
 

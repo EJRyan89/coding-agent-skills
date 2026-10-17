@@ -217,6 +217,9 @@ MENTIONS_WRITING_SUBCOMMAND = re.compile(
 )
 # A git word followed, in the same statement, by something that computes a word: what a subcommand could be made of.
 COMPUTED_AFTER_GIT = re.compile(r"git[^;|&\n]*[$@(`{\[]", re.IGNORECASE)
+# The characters either shell joins one word across without a space: Bash's quotes and backslash, and PowerShell's
+# quotes, its typographic quotes, and its backtick, so com'mit' is the word commit to both.
+WORD_JOINERS = re.compile(r"[\"'`\\\u2018\u2019\u201a\u201b\u201c\u201d\u201e]")
 DENY_REASON = (
     "This checkout is the hub: it stays on main and is never edited, so parallel sessions cannot carry each "
     "other's changes (docs/parallel-sessions.md). Create a worktree with "
@@ -406,7 +409,13 @@ class Reading:
 
     def cannot_read(self, what: str) -> None:
         """Text that may start git and that the guard cannot read: refused when the command names git at all."""
-        (self.unread if MENTIONS_GIT.search(self.text) else self.notes).append(what)
+        (self.unread if mentions(MENTIONS_GIT, self.text) else self.notes).append(what)
+
+
+def mentions(pattern: re.Pattern[str], text: str) -> bool:
+    """Whether pattern finds a word in the text as written, or with the quotes and escapes that join a word taken out
+    as either shell takes them out."""
+    return any(pattern.search(spelling) for spelling in (text, WORD_JOINERS.sub("", text)))
 
 
 # A word is its text, or None when the text does not settle its value (an unset variable, a $( ) result).
@@ -782,15 +791,19 @@ class Judge:
         if hub is None and not (unknown and self.hubs):
             if unknown and (call.subcommand is None or refusal(call) is not None):
                 self.notes.append(f"could not tell where `git {call.subcommand or '<computed>'}` runs")
-            return None
+            if unknown or not may_be_alias(call):
+                return None
+            # Placed outside every guarded hub, the call writes no hub itself, but an alias may run what does.
+            return self.alias_refusal(call, alias_lookups(call.place), depth)
         if call.subcommand is None:
             return (
                 "The guard could not tell which git subcommand runs, and it refuses one it cannot read where it may "
                 f"write a guarded hub. {PLACE_IT if hub is None else ''}".rstrip()
             )
         reason = refusal(call)
-        if reason is None and call.subcommand not in WRITING_SUBCOMMANDS | {FETCH} | git_builtins():
-            reason = self.alias_refusal(call, [hub] if hub is not None else sorted(self.hubs), depth)
+        if reason is None and may_be_alias(call):
+            hubs = [hub] if hub is not None else sorted(self.hubs)
+            reason = self.alias_refusal(call, [AliasLookup(each, None, each) for each in hubs], depth)
         if reason is None or hub is not None:
             return reason
         return (
@@ -798,60 +811,92 @@ class Judge:
             f"write the checkout it runs in when it cannot place it while a hub is guarded. {PLACE_IT}"
         )
 
-    def alias_refusal(self, call: GitCall, hubs: list[Path], depth: int) -> str | None:
+    def unreadable(self, call: GitCall, why: str) -> str | None:
+        """An alias that cannot be read is refused while a guarded hub is in view, unlike a command whose text cannot
+        be: it hides its subcommand. With none in view it is allowed with a note."""
+        message = f"The alias `git {call.subcommand}` could not be read ({why})"
+        if self.hubs:
+            return f"{message}, so it is refused."
+        self.notes.append(message)
+        return None
+
+    def alias_refusal(self, call: GitCall, lookups: list[AliasLookup], depth: int) -> str | None:
         """Why the alias a call names would write a hub; None when it is no alias, or one that would not.
 
         git runs a builtin before an alias, so only a subcommand that is no builtin is looked up: first among aliases
-        given on the command line, then in each hub's configuration. An alias that cannot be read is
-        refused, unlike a command whose text cannot be: it hides its subcommand.
+        given on the command line, then in the configuration of each place the lookups name.
         """
         subcommand = call.subcommand or ""
-        unreadable = f"The alias `git {subcommand}` could not be read"
         aliases = call.place.aliases
         if aliases is None:
-            return (
-                f"{unreadable} (command-line configuration the text does not settle may define it), so it is refused."
-            )
+            return self.unreadable(call, "command-line configuration the text does not settle may define it")
         if subcommand.lower() in aliases:
             expansion = aliases[subcommand.lower()]
             if expansion is None:
-                return f"{unreadable} (its value is computed at run time), so it is refused."
-            return self.expansion_refusal(call, expansion, depth)
-        for hub in hubs:
-            result = git(hub, "config", "--get", f"alias.{subcommand}")
+                return self.unreadable(call, "its value is computed at run time")
+            return self.expansion_refusal(call, expansion, depth, call.place.tree)
+        for lookup in lookups:
+            repository = () if lookup.repository is None else ("--git-dir", str(lookup.repository))
+            result = git(lookup.directory, *repository, "config", "--get", f"alias.{subcommand}")
             if result.returncode == 1:
                 continue
             if result.returncode != 0:
-                return f"{unreadable} ({result.stderr.strip()}), so it is refused."
-            reason = self.expansion_refusal(call, result.stdout.removesuffix("\n"), depth, hub)
+                return self.unreadable(call, result.stderr.strip())
+            reason = self.expansion_refusal(call, result.stdout.removesuffix("\n"), depth, lookup.top)
             if reason is not None:
                 return reason
         return None
 
-    def expansion_refusal(self, call: GitCall, expansion: str, depth: int, hub: Path | None = None) -> str | None:
-        unreadable = f"The alias `git {call.subcommand}` could not be read"
+    def expansion_refusal(self, call: GitCall, expansion: str, depth: int, top: Path | None) -> str | None:
+        """Why what an alias expands to would write a hub; a shell alias runs at top, the top of the work tree."""
         if depth >= NESTING_LIMIT:
-            return f"{unreadable} (it nests more than {NESTING_LIMIT} deep), so it is refused."
+            return self.unreadable(call, f"it nests more than {NESTING_LIMIT} deep")
         reading = Reading(self.environment, expansion)
         if expansion.startswith("!"):
             # git runs a shell alias at the top of the work tree, with the call's arguments after it.
             script = " ".join([expansion[1:], *map(shlex.quote, call.arguments)])
-            top = hub if hub is not None else call.place.tree
             reading.text = script
             read_bash(script, top, reading, depth + 1, inherited_variables(self.environment))
         else:
             try:
                 words: list[Word] = list(shlex.split(expansion))
             except ValueError as exc:
-                return f"{unreadable} ({exc}), so it is refused."
+                return self.unreadable(call, str(exc))
             options = call.options.copy() if call.options is not None else GitOptions.initial(None, {}, opaque=True)
             record_git_call([*words, *call.arguments], options, reading)
         reason = Judge(self.hubs, self.environment, []).denied(reading, depth + 1)
         if reason is not None:
             return f"`git {call.subcommand}` is an alias for `{expansion}`: {reason}"
         if reading.notes or reading.unread:
-            return f"{unreadable} ({(reading.unread or reading.notes)[0]}), so it is refused."
+            return self.unreadable(call, (reading.unread or reading.notes)[0])
         return None
+
+
+@dataclass(frozen=True)
+class AliasLookup:
+    """A place git reads an alias from: the directory it starts in, the git directory it is named, if any, and the top
+    of the work tree, where a shell alias runs."""
+
+    directory: Path
+    repository: Path | None
+    top: Path | None
+
+
+def may_be_alias(call: GitCall) -> bool:
+    """Whether a call's subcommand may be an alias: one the guard neither refuses itself nor finds among git's
+    builtins, which no alias can stand for."""
+    return call.subcommand is not None and call.subcommand not in WRITING_SUBCOMMANDS | {FETCH} | git_builtins()
+
+
+def alias_lookups(place: Place) -> list[AliasLookup]:
+    """Where git reads the aliases of a call at a settled place: the configuration of the repository it uses, found
+    from where it starts or named, which a worktree shares with its hub. A place that does not exist runs nothing."""
+    directory = place.start or place.tree
+    if directory is None or not directory.is_dir():
+        return []
+    checkout = checkout_of(place.tree) if place.tree is not None and place.tree == place.start else None
+    top = checkout.toplevel if checkout is not None else place.tree
+    return [AliasLookup(directory, place.repository if place.repository_named else None, top)]
 
 
 def denied(reading: Reading, hubs: Iterable[Path] = (), depth: int = 0) -> str | None:
@@ -1563,8 +1608,9 @@ def mentions_alias(command: str, directories: Iterable[Path]) -> bool:
         if result.returncode != 0:
             return True
         names = (line.partition(".")[2] for line in result.stdout.splitlines())
-        if any(re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", command, re.IGNORECASE) for name in names if name):
-            return True
+        for name in filter(None, names):
+            if mentions(re.compile(rf"(?<![\w-]){re.escape(name)}(?![\w-])", re.IGNORECASE), command):
+                return True
     return False
 
 
@@ -1575,9 +1621,9 @@ def may_refuse(command: str, cwd: Path | None, reading: Reading) -> bool:
     a hub in view, or command-line alias configuration; or git is followed in its statement by something that computes
     a word; or the command starts outside every repository, where the aliases a hub defines cannot be listed.
     """
-    if not MENTIONS_GIT.search(command):
+    if not mentions(MENTIONS_GIT, command):
         return False
-    if MENTIONS_WRITING_SUBCOMMAND.search(command) or COMPUTED_AFTER_GIT.search(command) or "alias." in command:
+    if mentions(MENTIONS_WRITING_SUBCOMMAND, command) or COMPUTED_AFTER_GIT.search(command) or "alias." in command:
         return True
     if cwd is None or checkout_of(cwd) is None:
         return True
@@ -1625,6 +1671,29 @@ class Session:
     def copy(self) -> Session:
         return replace(self, variables=dict(self.variables), stack=list(self.stack), functions=dict(self.functions))
 
+    def lookup(self, path: str) -> Word:
+        """The value of the variable a path names on the environment provider, as the session holds it; None for one
+        it does not hold or does not settle, or a path elsewhere."""
+        match = ENVIRONMENT_ITEM.match(path)
+        if self.opaque or match is None:
+            return None
+        return self.variables.get(folded(match.group(1)))
+
+    def word(self, word: Mapping[str, Any]) -> Word:
+        """A word the reader reports: its text, or, for one that holds environment variables, its text with the value
+        each has in this session, which the command's own assignments set; None when the text does not settle it."""
+        if "variable" in word:
+            return self.lookup(str(word["variable"]))
+        if "expansions" in word:
+            text = str(word["text"])
+            for expansion in word["expansions"]:
+                value = self.lookup(str(expansion["variable"]))
+                if value is None:
+                    return None
+                text = text.replace(str(expansion["token"]), value)
+            return text
+        return None if word["dynamic"] else str(word["text"])
+
 
 def join_sessions(first: Session, second: Session) -> Session:
     variables: dict[str, Word] = {}
@@ -1641,10 +1710,10 @@ def join_sessions(first: Session, second: Session) -> Session:
     )
 
 
-def environment_names(paths: list[Word], literal: bool) -> list[str] | None:
-    """The tracked variables these provider paths name, by the name git reads; None when a path is not settled.
-    A path that is not on the environment provider names none; a wildcard in a -Path names every tracked one it
-    matches."""
+def environment_names(paths: list[Word], literal: bool, known: Iterable[str] = ()) -> list[str] | None:
+    """The variables these provider paths name, by the name git reads; None when a path is not settled. A path that is
+    not on the environment provider names none; a wildcard in a -Path names every one it matches among those known and
+    the tracked ones."""
     found: list[str] = []
     for path in paths:
         if path is None:
@@ -1654,12 +1723,9 @@ def environment_names(paths: list[Word], literal: bool) -> list[str] | None:
             continue
         name = match.group(1)
         if not literal and any(character in name for character in "*?["):
-            found.extend(
-                variable
-                for variable in (*LOCATION_VARIABLES, *CONFIGURATION_VARIABLES)
-                if fnmatch.fnmatchcase(variable, folded(name))
-            )
-        elif is_tracked(name):
+            candidates = {*known, *LOCATION_VARIABLES, *CONFIGURATION_VARIABLES}
+            found.extend(sorted(variable for variable in candidates if fnmatch.fnmatchcase(variable, folded(name))))
+        else:
             found.append(folded(name))
     return found
 
@@ -1692,21 +1758,15 @@ class PowerShellReader:
         if kind == "command":
             return self.command(event, session)
         if kind == "assigned":
-            names = environment_names([str(event.get("path", ""))], literal=True) or []
-            for name in names:
-                if event.get("removed"):
-                    session.variables.pop(name, None)
-                else:
-                    session.variables[name] = None
+            self.assigned(event, session)
         elif kind == "setVariable":
             variable = event.get("name")
             if variable is None:
                 session.opaque = True
-            elif is_tracked(str(variable)):
-                if event.get("removed"):
-                    session.variables.pop(folded(str(variable)), None)
-                else:
-                    session.variables[folded(str(variable))] = None
+            elif event.get("removed"):
+                session.variables.pop(folded(str(variable)), None)
+            else:
+                session.variables[folded(str(variable))] = None
         elif kind == "opaque":
             session.opaque = True
         elif kind == "unread":
@@ -1715,10 +1775,21 @@ class PowerShellReader:
             self.reading.notes.append(str(event.get("text")))
         return session
 
+    @staticmethod
+    def assigned(event: dict[str, Any], session: Session) -> None:
+        """An assignment to a variable on the environment provider: a plain one sets the value the reader reports, an
+        empty one or $null removes the variable, as PowerShell does, and any other leaves its value unsettled."""
+        value = session.word(event["value"]) if "value" in event else None
+        for name in environment_names([str(event.get("path", ""))], literal=True) or []:
+            if event.get("removed") or value == "":
+                session.variables.pop(name, None)
+            else:
+                session.variables[name] = value
+
     def command(self, event: dict[str, Any], session: Session) -> Session:
-        words: list[Word] = [None if word["dynamic"] else word["text"] for word in event["words"]]
+        words: list[Word] = [session.word(word) for word in event["words"]]
         parameters = {
-            name.lower(): [None if word["dynamic"] else word["text"] for word in values]
+            name.lower(): [session.word(word) for word in values]
             for name, values in (event.get("parameters") or {}).items()
         }
         name, arguments = command_name(words[0]), words[1:]
@@ -1782,10 +1853,12 @@ class PowerShellReader:
             return
         literal = parameters.get("literalpath", [])
         paths = parameters.get("path", []) + literal
-        settled = environment_names(parameters.get("path", []), literal=False) or []
+        known = session.variables.keys()
+        settled = environment_names(parameters.get("path", []), literal=False, known=known) or []
         settled += environment_names(literal, literal=True) or []
         for parameter in ENVIRONMENT_WRITERS.get(name or "", ()):
-            for variable in environment_names(parameters.get(parameter, []), literal=parameter == "literalpath") or []:
+            written = parameters.get(parameter, [])
+            for variable in environment_names(written, literal=parameter == "literalpath", known=known) or []:
                 session.variables[variable] = None
         if name in ENVIRONMENT_REMOVERS:
             for variable in settled:
@@ -1800,7 +1873,7 @@ class PowerShellReader:
     @staticmethod
     def set_named(names: list[Word], session: Session) -> None:
         for word in names:
-            if word is not None and is_tracked(word):
+            if word is not None:
                 session.variables[folded(word)] = None
 
 
@@ -1827,7 +1900,10 @@ def read_powershell(command: str, cwd: Path | None, reading: Reading, depth: int
     events = powershell_events(command, reading, depth)
     if events is None:
         return
-    session = Session(cwd, {folded(name): value for name, value in git_variables(variables, reading.notes).items()})
+    # A session inherits the environment the hook was given; the tracked variables are those its starter passes on.
+    inherited = {name: value for name, value in {**reading.environment, **variables}.items() if not is_tracked(name)}
+    environment = {folded(name): value for name, value in inherited.items()}
+    session = Session(cwd, {**environment, **git_variables(variables, reading.notes)})
     PowerShellReader(reading, depth).run(event_tree(events), session)
 
 

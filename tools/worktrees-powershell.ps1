@@ -10,14 +10,17 @@ using namespace System.Management.Automation.Language
 # Output: one JSON object. {"error": message} when PowerShell would refuse to parse the command, and so would run
 # none of it; otherwise {"events": [...]}, each one of:
 #   {"kind": "command", "words": [{"text", "dynamic"}],  a command, its name first; dynamic means the text does
-#    "parameters": {name: [{"text", "dynamic"}]},       not settle the word's value. parameters are the words
-#    "failed": bool, "whatIf": bool}                     PowerShell's own binder gives each parameter, by the
-#                                                        name the command declares, an array's elements apart;
-#                                                        failed means the binder refused the command and whatIf
-#                                                        that -WhatIf is set, so that it runs nothing
-#   {"kind": "assigned", "path": path, "removed": bool}  a variable on a drive or provider, as in $env:NAME or
-#                                                        ${Environment::NAME}, was assigned, as a foreach loop's
-#                                                        variable, or through PSVariable.Set; removed when $null was
+#    "parameters": {name: [{"text", "dynamic"}]},       not settle the word's value, unless the word names the
+#    "failed": bool, "whatIf": bool}                     variables it holds, as "variable" or "expansions", for
+#                                                        worktrees.py to read in the session. parameters are the
+#                                                        words PowerShell's own binder gives each parameter, by
+#                                                        the name the command declares, an array's elements
+#                                                        apart; failed means the binder refused the command and
+#                                                        whatIf that -WhatIf is set, so that it runs nothing
+#   {"kind": "assigned", "path": path, "removed": bool,  a variable on a drive or provider, as in $env:NAME or
+#    "value": word}                                      ${Environment::NAME}, was assigned, as a foreach loop's
+#                                                        variable, or through PSVariable.Set; removed when $null
+#                                                        was; value, the word a plain assignment gives it
 #   {"kind": "setVariable", "name": name|null,           [Environment]::SetEnvironmentVariable set or, given
 #    "removed": bool}                                     $null, removed a process variable; null when the name is
 #                                                        not settled by the text
@@ -38,15 +41,9 @@ function ConvertTo-Word([string] $Text, [bool] $Dynamic = $false) {
     [ordered]@{ text = $Text; dynamic = $Dynamic }
 }
 
-# The value of $env:NAME when the session has it set; $null for any other variable.
-function Get-EnvironmentValue([VariableExpressionAst] $Variable) {
-    if (-not $Variable.VariablePath.IsDriveQualified -or $Variable.VariablePath.DriveName -ne 'env') {
-        return $null
-    }
-    [Environment]::GetEnvironmentVariable($Variable.VariablePath.UserPath.Substring(4))
-}
-
-# The words one command element passes. `-Name:value` passes two.
+# The words one command element passes. `-Name:value` passes two. A variable's value is the session's, which the
+# command's own assignments change, so a word that holds variables is dynamic here and names them for worktrees.py:
+# "variable", the path of the one it is, or "expansions", each {"token", "variable"} its text holds.
 function Get-ElementWord([CommandElementAst] $Element) {
     $words = [Collections.Generic.List[object]]::new()
     if ($Element -is [CommandParameterAst]) {
@@ -59,20 +56,22 @@ function Get-ElementWord([CommandElementAst] $Element) {
     } elseif ($Element -is [StringConstantExpressionAst] -or $Element -is [ConstantExpressionAst]) {
         $words.Add((ConvertTo-Word "$($Element.Value)"))
     } elseif ($Element -is [VariableExpressionAst]) {
-        $value = Get-EnvironmentValue $Element
-        $words.Add((ConvertTo-Word "$value" ($null -eq $value)))
+        $word = ConvertTo-Word '' $true
+        $word.variable = $Element.VariablePath.UserPath
+        $words.Add($word)
     } elseif ($Element -is [ExpandableStringExpressionAst]) {
-        # Settled only when every expansion in it is an environment variable the session has set.
-        $text = $Element.Value
+        # Settled only when every expansion in it is a variable.
+        $word = ConvertTo-Word $Element.Value $true
+        $expansions = [Collections.Generic.List[object]]::new()
         foreach ($nested in $Element.NestedExpressions) {
-            $value = if ($nested -is [VariableExpressionAst]) { Get-EnvironmentValue $nested }
-            if ($null -eq $value) {
+            if ($nested -isnot [VariableExpressionAst]) {
                 $words.Add((ConvertTo-Word '' $true))
                 return , $words.ToArray()
             }
-            $text = $text.Replace($nested.Extent.Text, $value)
+            $expansions.Add([ordered]@{ token = $nested.Extent.Text; variable = $nested.VariablePath.UserPath })
         }
-        $words.Add((ConvertTo-Word $text))
+        $word.expansions = $expansions.ToArray()
+        $words.Add($word)
     } else {
         $words.Add((ConvertTo-Word '' $true))
     }
@@ -246,10 +245,27 @@ function Add-MethodEvent([InvokeMemberExpressionAst] $Node, [Collections.Generic
 # The events of an assignment, or of a foreach loop's variable, to a variable on a drive or provider.
 function Add-AssignmentEvent([Ast] $Node, [Collections.Generic.List[object]] $Events) {
     if ($Node -is [AssignmentStatementAst]) {
-        $removed = $Node.Operator -eq [TokenKind]::Equals -and (Test-Null $Node.Right)
+        $plain = $Node.Operator -eq [TokenKind]::Equals
+        $removed = $plain -and (Test-Null $Node.Right)
+        # A plain assignment of one word to the variable itself sets that word; any other sets what the text does not
+        # settle.
+        $value = $null
+        if ($plain -and -not $removed -and $Node.Left -is [VariableExpressionAst] -and
+            $Node.Right -is [CommandExpressionAst]) {
+            $values = [object[]] (Get-ElementWord $Node.Right.Expression)
+            if ($values.Count -eq 1) {
+                $value = $values[0]
+            }
+        }
         foreach ($variable in Get-AssignedVariable $Node.Left) {
             if ($variable.VariablePath.IsDriveQualified) {
-                $Events.Add([ordered]@{ kind = 'assigned'; path = $variable.VariablePath.UserPath; removed = $removed })
+                $assignment = [ordered]@{
+                    kind = 'assigned'; path = $variable.VariablePath.UserPath; removed = $removed
+                }
+                if ($null -ne $value) {
+                    $assignment.value = $value
+                }
+                $Events.Add($assignment)
             }
         }
     } elseif ($Node.VariablePath.IsDriveQualified) {
@@ -368,5 +384,5 @@ $parseError = Read-CommandEvent $payload.command 0 ([int] $payload.limit) $event
 if ($null -ne $parseError) {
     [ordered]@{ error = $parseError } | ConvertTo-Json -Compress
 } else {
-    [ordered]@{ events = $events.ToArray() } | ConvertTo-Json -Depth 8 -Compress
+    [ordered]@{ events = $events.ToArray() } | ConvertTo-Json -Depth 10 -Compress
 }
