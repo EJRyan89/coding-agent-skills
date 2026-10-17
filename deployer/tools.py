@@ -143,10 +143,12 @@ SKILL_TOOLS = {
         # 2.48.0 added `gh api --paginate --slurp`, which skill scripts use to parse paginated output as JSON.
         Tool("gh", "gh", lambda: platform_support.find_executable("gh"), minimum=(2, 48, 0)),
         COPILOT,
+        # The deprecated dotnet-format global tool, which formats only a .sln holding a project older than SDK-style,
+        # so a skill that runs it declares it optional.
         Tool("dotnet-format", "dotnet-format", lambda: platform_support.find_executable("dotnet-format")),
         # The .NET SDK's `dotnet format` formats a .slnx solution, which the dotnet-format global tool cannot open,
-        # and a .sln of SDK-style projects, whose analyzers the global tool cannot load; 9.0.200 is the first SDK
-        # that reads .slnx.
+        # and a .sln of SDK-style projects, whose analyzers the global tool cannot load, so a skill that formats
+        # declares it required; 9.0.200 is the first SDK that reads .slnx.
         Tool("dotnet", "dotnet", lambda: platform_support.find_executable("dotnet"), minimum=(9, 0, 200)),
         # Shared maintained-release policy; check and each extraction use the same locator and bounded vendor probe.
         Tool(
