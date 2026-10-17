@@ -1624,7 +1624,9 @@ class MigrationTests(DeployerTestCase):
         self.assertEqual((["pack"], {"pack": ["alpha", "beta"]}, []), self.requests())
         self.kept_by_all("Selected 1 item (2 skills):\n  pack (bundle)\n    alpha\n    beta\n", ["alpha", "beta"])
 
-    def test_a_skill_an_entry_without_members_stood_for_stays_chosen_when_the_source_makes_it_a_dependency(self) -> None:
+    def test_a_skill_an_entry_without_members_stood_for_stays_chosen_when_the_source_makes_it_a_dependency(
+        self,
+    ) -> None:
         # The entry records no dependency between the bundle's members; the source now declares beta alpha's
         # dependency. Read from the source alone, beta would stand for no request, lose its menu mark, and be kept only
         # as alpha's dependency.

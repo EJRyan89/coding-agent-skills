@@ -1556,7 +1556,13 @@ class FsopsPlatformFixtures(GitTestCase):
             root = Path(temporary)
             write_fixture_tree(root, {"deployer/lookups.py": lookups, "deployer/reads.py": reads})
             route = "; route it through deployer/fsops.py"
-            written = [(7, "shutil.rmtree"), (8, "shutil.rmtree"), (9, "shutil.rmtree"), (10, "shutil"), (15, "os.remove")]
+            written = [
+                (7, "shutil.rmtree"),
+                (8, "shutil.rmtree"),
+                (9, "shutil.rmtree"),
+                (10, "shutil"),
+                (15, "os.remove"),
+            ]
             unresolved = [
                 (11, "the callable handlers[kind] looks up"),
                 (12, "the callable shutil.__dict__[name] looks up"),

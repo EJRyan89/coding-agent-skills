@@ -835,10 +835,11 @@ def _unread_lookup(node: ast.expr, resolver: CallableResolver) -> str | None:
 
 
 def _callable_references(tree: ast.Module, resolver: CallableResolver) -> set[int]:
-    """The ids of the names, attributes, subscripts, and calls a module reads as values: neither a call's callable, which
-    _call_writes reads, nor an attribute's receiver, nor a name or an attribute an alias is bound to, which the
-    resolver follows to the calls it makes, nor the owner getattr or hasattr reads by a literal name. A call bound
-    to a name is read here, as in rm = getattr(shutil, "rmtree"), since the resolver does not follow it."""
+    """The ids of the names, attributes, subscripts, and calls a module reads as values: neither a call's callable,
+    which _call_writes reads, nor an attribute's receiver, nor a name or an attribute an alias is bound to, which the
+    resolver follows to the calls it makes, nor the owner getattr or hasattr reads by a literal name. A call or a
+    subscript bound to a name is read here, as in rm = getattr(shutil, "rmtree") or fs = sys.modules["shutil"], since
+    the resolver does not follow it."""
     excluded = {
         id(value)
         for scope in resolver.scopes.values()
