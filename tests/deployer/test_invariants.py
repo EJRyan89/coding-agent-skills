@@ -6,6 +6,7 @@ tests here show each comparison failing on a deployment that breaks its invarian
 
 from __future__ import annotations
 
+import os
 import unittest
 from collections.abc import Callable
 from pathlib import Path
@@ -273,6 +274,28 @@ class RaisingRunGuardTests(DeployerTestCase):
             self.assertRaisesRegex(AssertionError, "the refusal changed the home"),
         ):
             self.run_cli("--all")
+
+
+class CheckoutProgramGuardTests(DeployerTestCase):
+    """A program run against a copy of this checkout is held to the same comparisons as a deployment."""
+
+    def environment(self) -> dict[str, str]:
+        return {**os.environ, "HOME": str(self.home), "USERPROFILE": str(self.home)}
+
+    def test_a_program_that_leaves_its_checkout_alone_passes_with_its_streams_apart(self) -> None:
+        program = "import sys\nprint('out')\nprint('err', file=sys.stderr)\nsys.exit(3)\n"
+        result = self.run_in_checkout(program, environment=self.environment())
+        self.assertEqual((3, "out\n", "err\n"), (result.code, result.stdout, result.stderr))
+
+    def test_a_program_that_writes_into_its_checkout_fails_the_test(self) -> None:
+        program = "import pathlib, sys\n(pathlib.Path(sys.argv[1]) / 'unexpected.txt').write_text('mutation')\n"
+        with self.assertRaisesRegex(AssertionError, "the deployment changed its source"):
+            self.run_in_checkout(program, environment=self.environment())
+
+    def test_a_failing_program_that_changes_the_home_without_saying_why_fails_the_test(self) -> None:
+        program = "import pathlib, sys\n(pathlib.Path(sys.argv[2]) / 'unexpected.txt').write_text('x')\nsys.exit(1)\n"
+        with self.assertRaisesRegex(AssertionError, "the refusal changed the home"):
+            self.run_in_checkout(program, str(self.home), environment=self.environment())
 
 
 class FreshHomeGuardTests(DeployerTestCase):

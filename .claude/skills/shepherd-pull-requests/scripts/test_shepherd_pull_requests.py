@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -34,6 +35,108 @@ PREFIX = "Windows shard 1/4, Python 3.11\tUNKNOWN STEP\t2026-10-16T05:51:51.7718
 VALIDATION_STEP = "Run repository validation"
 # No waits between retries, so a read that fails transiently fails at once.
 NO_WAIT = Backoff(base=0.0, transient_base=0.0)
+# The fields gh 2.102.0 lists for each command's --json, written out here rather than read from the script, so a
+# field the script misspells is refused as gh refuses it.
+GH_JSON_FIELDS: Mapping[str, frozenset[str]] = MappingProxyType(
+    {
+        "pr list": frozenset(
+            [
+                "additions",
+                "assignees",
+                "author",
+                "autoMergeRequest",
+                "baseRefName",
+                "baseRefOid",
+                "body",
+                "changedFiles",
+                "closed",
+                "closedAt",
+                "closingIssuesReferences",
+                "comments",
+                "commits",
+                "createdAt",
+                "deletions",
+                "files",
+                "fullDatabaseId",
+                "headRefName",
+                "headRefOid",
+                "headRepository",
+                "headRepositoryOwner",
+                "id",
+                "isCrossRepository",
+                "isDraft",
+                "labels",
+                "latestReviews",
+                "maintainerCanModify",
+                "mergeCommit",
+                "mergeStateStatus",
+                "mergeable",
+                "mergedAt",
+                "mergedBy",
+                "milestone",
+                "number",
+                "potentialMergeCommit",
+                "projectCards",
+                "projectItems",
+                "reactionGroups",
+                "reviewDecision",
+                "reviewRequests",
+                "reviews",
+                "state",
+                "statusCheckRollup",
+                "title",
+                "updatedAt",
+                "url",
+            ]
+        ),
+        "run list": frozenset(
+            [
+                "attempt",
+                "conclusion",
+                "createdAt",
+                "databaseId",
+                "displayTitle",
+                "event",
+                "headBranch",
+                "headSha",
+                "name",
+                "number",
+                "startedAt",
+                "status",
+                "updatedAt",
+                "url",
+                "workflowDatabaseId",
+                "workflowName",
+            ]
+        ),
+        "run view": frozenset(
+            [
+                "attempt",
+                "conclusion",
+                "createdAt",
+                "databaseId",
+                "displayTitle",
+                "event",
+                "headBranch",
+                "headSha",
+                "jobs",
+                "name",
+                "number",
+                "startedAt",
+                "status",
+                "updatedAt",
+                "url",
+                "workflowDatabaseId",
+                "workflowName",
+            ]
+        ),
+    }
+)
+# A branch name and a step name holding a C1 control and a line separator, which GitHub returns as they are, and
+# what each line prints for them.
+ODD_BRANCH = "fix/odd\x85name\u2028here"
+FLAT_BRANCH = "fix/odd name here"
+ODD_STEP = "Run\x85repository\u2028validation"
 
 
 def rollup(state: str = "SUCCESS", run: int = RUN) -> list[dict[str, Any]]:
@@ -59,10 +162,11 @@ def pull(
     head: str = HEAD,
     run: int = RUN,
     cross: bool = False,
+    branch: str | None = None,
 ) -> dict[str, Any]:
     return {
         "number": number,
-        "headRefName": f"fix/topic-{number}",
+        "headRefName": branch or f"fix/topic-{number}",
         "headRefOid": head,
         "isCrossRepository": cross,
         "isDraft": draft,
@@ -151,6 +255,7 @@ class StubGh:
         self.merged = list(merged)
         self.failing = tuple(failing)
         self.calls: list[list[str]] = []
+        self.requested: dict[str, set[str]] = {}
 
     def __call__(self, command: Sequence[str]) -> CommandResult:
         self.calls.append(list(command))
@@ -158,6 +263,12 @@ class StubGh:
         verb = " ".join(arguments[:2])
         if verb in self.failing:
             return CommandResult(1, "", f"{verb} refused (HTTP 422)")
+        if "--json" in arguments:
+            fields = arguments[arguments.index("--json") + 1].split(",")
+            unknown = [name for name in fields if name not in GH_JSON_FIELDS.get(verb, frozenset())]
+            if unknown:
+                return CommandResult(1, "", f'Unknown JSON field: "{unknown[0]}"')
+            self.requested.setdefault(verb, set()).update(fields)
         if verb == "pr list":
             state = arguments[arguments.index("--state") + 1]
             return CommandResult(0, json.dumps(self.pulls if state == "open" else self.merged), "")
@@ -366,6 +477,104 @@ class ListingTest(FixtureTestCase):
         self.assertEqual(shepherd.Check("MISSING", None), shepherd.required_check(rollup("MISSING")))
         self.assertEqual(shepherd.Check("FAILURE", RUN), shepherd.required_check(rollup("FAILURE")))
         self.assertEqual(shepherd.Check("MISSING", None), shepherd.required_check(None))
+
+
+class FieldTest(FixtureTestCase):
+    def full_tick(self) -> tuple[int, list[str], StubGh]:
+        """A tick that makes every gh request that names --json fields: both listings, a run, and the runs on a head."""
+        gh = StubGh(
+            [pull(20, state="FAILURE")],
+            runs={RUN: run_view([job("Windows shard 2/4", "failure")])},
+            logs={1: failed_log(TERMINATED_BLOCK)},
+            merged=[{"number": 5, "headRefName": "fix/done", "headRefOid": OTHER}],
+        )
+        status, lines = self.tick(gh, dry_run=True)
+        return status, lines, gh
+
+    def test_every_field_the_tick_requests_is_one_gh_lists(self) -> None:
+        git("worktree", "add", "-q", "-b", "fix/done", str(self.root / "done"), directory=self.hub)
+        status, lines, gh = self.full_tick()
+        self.assertEqual(0, status, lines)
+        self.assertEqual({"pr list", "run list", "run view"}, set(gh.requested))
+        for verb, fields in gh.requested.items():
+            with self.subTest(verb=verb):
+                self.assertLessEqual(fields, GH_JSON_FIELDS[verb])
+
+    def test_a_misspelt_field_fails_the_tick_as_gh_refuses_it(self) -> None:
+        misspelt = (
+            ("PULL_FIELDS", "headRefOid", "headRefOID", "FAILED cannot list the open pull requests: "),
+            ("RUN_FIELDS", "headSha", "headSHA", "PR_FAILED #20 judge "),
+        )
+        for constant, name, wrong, failure in misspelt:
+            replaced = getattr(shepherd, constant).replace(name, wrong)
+            with self.subTest(constant=constant), mock.patch.object(shepherd, constant, replaced):
+                status, lines, _ = self.full_tick()
+                self.assertEqual(1, status)
+                self.assertTrue(any(line.startswith(failure) and wrong in line for line in lines), lines)
+
+
+class ConflictTest(FixtureTestCase):
+    def test_a_pull_request_in_conflict_with_main_is_named_for_its_owner_and_not_updated(self) -> None:
+        gh = StubGh([pull(15, merge="DIRTY"), pull(16, merge="BEHIND")])
+        status, lines = self.tick(gh)
+        self.assertEqual(1, status)
+        self.assertEqual(
+            "CONFLICT #15 fix/topic-15 head aaaaaaa merge origin/main and resolve", self.line(lines, "CONFLICT ")
+        )
+        self.assertEqual(
+            "PR #15 fix/topic-15 DIRTY auto-merge on head aaaaaaa Validation SUCCESS none", self.line(lines, "PR #15 ")
+        )
+        self.assertEqual([["pr", "update-branch", "16", "--repo", REPOSITORY]], gh.writes())
+        self.assertLess(lines.index(self.line(lines, "PR #15 ")), lines.index(self.line(lines, "CONFLICT ")))
+
+    def test_a_dry_run_names_the_conflict_too(self) -> None:
+        status, lines = self.tick(StubGh([pull(15, merge="DIRTY")]), dry_run=True)
+        self.assertEqual(1, status)
+        self.assertTrue(self.line(lines, "CONFLICT #15 ").endswith(" merge origin/main and resolve"))
+
+
+class FlatTextTest(FixtureTestCase):
+    def test_every_branch_path_and_step_from_github_is_flattened_onto_its_line(self) -> None:
+        first, after = self.branches_behind_and_current()
+        self.push_branch(after, ODD_BRANCH + "-3")
+        gh = StubGh(
+            [
+                pull(21, state="FAILURE", branch=ODD_BRANCH, files=("tests/validation/odd\u2028name.py",)),
+                pull(22, merge="DIRTY", branch=ODD_BRANCH + "-2"),
+                pull(23, head=first, branch=ODD_BRANCH + "-3"),
+            ],
+            runs={RUN: run_view([job("Windows shard 1/4", "timed_out", ODD_STEP)])},
+        )
+        status, lines = self.tick(gh, dry_run=True)
+        self.assertEqual(1, status)
+        self.assertEqual("HOLD #21 changes tests/validation/odd name.py", self.line(lines, "HOLD "))
+        self.assertEqual(
+            f"PR #21 {FLAT_BRANCH} CLEAN auto-merge on head aaaaaaa Validation FAILURE none",
+            self.line(lines, "PR #21 "),
+        )
+        self.assertEqual(
+            f'DEFECT #21 {FLAT_BRANCH} leg "Windows shard 1/4" check "the leg\'s time limit in Run repository '
+            'validation"',
+            self.line(lines, "DEFECT "),
+        )
+        self.assertEqual(
+            f"CONFLICT #22 {FLAT_BRANCH}-2 head aaaaaaa merge origin/main and resolve", self.line(lines, "CONFLICT ")
+        )
+        self.assertEqual(
+            f"OUT_OF_STEP #23 {FLAT_BRANCH}-3 head {first[:7]} branch {after[:7]}", self.line(lines, "OUT_OF_STEP ")
+        )
+        for line in lines:
+            self.assertEqual([line], line.splitlines(), repr(line))
+            self.assertIsNone(re.search(r"[\x00-\x1f\x7f-\x9f]", line), repr(line))
+
+    def test_a_merged_branch_name_is_flattened(self) -> None:
+        worktree = self.root / "odd"
+        git("worktree", "add", "-q", "-b", ODD_BRANCH, str(worktree), directory=self.hub)
+        merged = [{"number": 9, "headRefName": ODD_BRANCH, "headRefOid": OTHER}]
+        _, lines = self.tick(StubGh(merged=merged), dry_run=True)
+        self.assertEqual(
+            f'MERGED #9 worktree "{worktree.as_posix()}" branch {FLAT_BRANCH}', self.line(lines, "MERGED ")
+        )
 
 
 class UpdateTest(FixtureTestCase):
@@ -687,6 +896,12 @@ class LogTest(GitTestCase):
 
 
 class MergedTest(FixtureTestCase):
+    def test_the_worktrees_are_read_through_skill_core(self) -> None:
+        with mock.patch.object(shepherd, "list_worktrees", wraps=shepherd.list_worktrees) as listed:
+            status, _ = self.tick(StubGh(), dry_run=True)
+        self.assertEqual(0, status)
+        listed.assert_called_once()
+
     def test_a_worktree_whose_branch_merged_is_named_for_retirement(self) -> None:
         done, busy, reused = (self.root / name for name in ("done", "busy", "reused"))
         git("worktree", "add", "-q", "-b", "fix/done", str(done), directory=self.hub)

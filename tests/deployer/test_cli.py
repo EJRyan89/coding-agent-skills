@@ -4,8 +4,6 @@ import contextlib
 import io
 import json
 import os
-import subprocess
-import sys
 import unittest
 from functools import partial
 from typing import Any
@@ -313,7 +311,7 @@ class HomeTests(DeployerTestCase):
 
 
 # Run deploy.py as written in a child Python whose deploy and check commands raise past everything they handle, so the
-# failure reaches the entry point's runner: argv[1] is the repository, argv[2] the failure, and the rest deploy.py's.
+# failure reaches the entry point's runner: argv[1] is the checkout copy, argv[2] the failure, and the rest deploy.py's.
 ESCAPING_FAILURE = r"""
 import runpy, sys
 root = sys.argv.pop(1)
@@ -337,17 +335,8 @@ class EscapingFailureTests(DeployerTestCase):
         environment.update({"HOME": str(self.home), "USERPROFILE": str(self.home)})
         if debug_variable is not None:
             environment["DEPLOYER_DEBUG"] = debug_variable
-        result = subprocess.run(
-            [sys.executable, "-B", "-c", ESCAPING_FAILURE, str(REPOSITORY_ROOT), failure, *arguments],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            stdin=subprocess.DEVNULL,
-            env=environment,
-            timeout=120,
-            check=False,
-        )
-        return result.returncode, result.stdout, result.stderr
+        result = self.run_in_checkout(ESCAPING_FAILURE, failure, *arguments, environment=environment)
+        return result.code, result.stdout, result.stderr
 
     def test_debug_shows_the_traceback_after_the_failed_line_and_keeps_the_exit_code(self) -> None:
         for arguments, variable in (

@@ -1520,6 +1520,64 @@ class FsopsPlatformFixtures(GitTestCase):
                 filesystem_write_problems(root),
             )
 
+    def test_filesystem_write_policy_reads_a_module_lookup_and_a_chained_literal_lookup_or_reports_it(self) -> None:
+        lookups = (
+            "import importlib\n"  # 1
+            "import shutil\n"  # 2
+            "import sys\n"  # 3
+            "\n"  # 4
+            "\n"  # 5
+            "def go(path, name, handlers, kind):\n"  # 6
+            '    sys.modules["shutil"].rmtree(path)\n'  # 7
+            '    getattr(importlib, "import_module")("shutil").rmtree(path)\n'  # 8
+            '    shutil.__dict__["rmtree"](path)\n'  # 9
+            '    module = sys.modules["shutil"]\n'  # 10: the module is called later through the name
+            "    handlers[kind](path)\n"  # 11: unresolved
+            "    shutil.__dict__[name](path)\n"  # 12: unresolved
+            "    importlib.import_module(name).rmtree(path)\n"  # 13: unresolved
+            "    sys.modules[name].rmtree(path)\n"  # 14: unresolved
+            '    __import__("os").__dict__["remove"](path)\n'  # 15
+            "    return module\n"  # 16
+        )
+        # Reads reached through the same lookups, and a call through an item's attribute, write nothing.
+        reads = (
+            "import importlib\n"
+            "import sys\n"
+            "\n"
+            "\n"
+            "def go(path, values, handlers):\n"
+            '    sys.modules["json"].dumps(values)\n'
+            '    getattr(importlib, "import_module")("json").dumps(values)\n'
+            '    sys.modules["shutil"].which("git"), sys.modules["os"].__dict__["getcwd"]()\n'
+            '    handlers["x"].run(path), values[0].strip()\n'
+            '    return sys.modules["json"]\n'
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(root, {"deployer/lookups.py": lookups, "deployer/reads.py": reads})
+            route = "; route it through deployer/fsops.py"
+            written = [
+                (7, "shutil.rmtree"),
+                (8, "shutil.rmtree"),
+                (9, "shutil.rmtree"),
+                (10, "shutil"),
+                (15, "os.remove"),
+            ]
+            unresolved = [
+                (11, "the callable handlers[kind] looks up"),
+                (12, "the callable shutil.__dict__[name] looks up"),
+                (13, "the module importlib.import_module(name) names"),
+                (14, "the module sys.modules[name] names"),
+            ]
+            self.assertEqual(
+                [f"deployer/lookups.py:{line} writes with {token}{route}" for line, token in written]
+                + [
+                    f"deployer/lookups.py:{line} cannot resolve {lookup}; call a known callable instead"
+                    for line, lookup in unresolved
+                ],
+                filesystem_write_problems(root),
+            )
+
     def test_an_allowed_write_named_by_a_literal_must_land_in_the_temporary_directory(self) -> None:
         allowance = (
             "FSOPS_ALLOWED = {\n"
