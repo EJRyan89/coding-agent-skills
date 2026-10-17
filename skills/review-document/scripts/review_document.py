@@ -7,20 +7,24 @@ Every command prints one fact per line:
           ROUTE design-review | ROUTE generic, FIXTURE <fixture directory>, and OUTPUT <output directory>. Given a
           pull request, it first prints PULL <owner/repo#number> base <commit> head <commit>, then that block for each
           document it reviews, each in its own fixture, and SKIPPED <path> <reason> for a changed document it cannot.
-  report  Copies the report `finalize` recorded into the output directory, never over a file already there, and
-          prints REPORT <copy> and RECORD <the record JSON beside the original>.
+  report  Copies the report `finalize` recorded into the output directory, never over a file already there, once its
+          record names the review of the fixture's document, and prints REPORT <copy> and RECORD <the record JSON
+          beside the original>.
 A failure prints `FAILED <reason>` and exits 1; a usage error exits 2.
 
-For a path, the head is the file as it is on disk. The base is the version committed at HEAD when the file lies in a
-git checkout and is committed there, so the review covers the uncommitted change; otherwise, or with `--base none`, the
-base has no such file and the whole document is reviewed.
+For a path, the head is the file as it is on disk, refused over the MAX_CHANGED_FILE_BYTES the snapshot reads of a
+changed file. The base is the version committed at HEAD when the file lies in a git checkout and is committed there,
+under the name git tracks it by, so the review covers the uncommitted change; otherwise, or with `--base none`, the base
+has no such file and the whole document is reviewed. A failure git reports reading the commit or the file fails the
+build with git's reason.
 
 A pull request is named as owner/repo#number or by its URL, and validated as review-prs validates its --pull
 selectors. Its changed files are read from GitHub, through code-review-core's GitHubClient and with no checkout, and
 those the design reviewer reviews (DESIGN_SUFFIXES, or a document format) are kept, or the one `--document` names. Each
 one's head is its blob at the pull request's head commit, and its base its blob at the merge base GitHub diffs the pull
-request against, under its old path when it was renamed; a document the pull request adds has no base. The fixture's
-pull.json names the real pull request, so the record's URL is its URL, and the commits; the pull request's title,
+request against, under its old path when it was renamed; a document the pull request adds has no base, and one GitHub
+answers as a symbolic link or a submodule is skipped. The fixture's pull.json names the real pull request, so the
+record's URL is its URL, and the commits; the pull request's title,
 description, branch names, and comments are never read into it, so the only text from GitHub a reviewer reads is the
 documents' own. Nothing is written to GitHub.
 
@@ -56,10 +60,10 @@ sys.path.insert(0, str(sibling_scripts("code-review-core")))
 
 from console import run_main
 from flat_text import flat_text
-from git_client import GitClient, GitError
+from git_client import GitClient, GitError, GitResult, classify_failure
 from github_client import GitHubError
 from review_documents import ExtractionRefused, document_format, extract, unlabeled
-from review_github import PULL_PAGE_SIZE, GitHubClient
+from review_github import PULL_PAGE_SIZE, GitHubClient, NotOneFile
 from review_github import READ as RESPONSE
 from review_io import PersistenceError, working_path
 from review_operation import parse_pull_selector
@@ -90,6 +94,8 @@ FINDING_CATEGORIES = ["requirement-gap", "alternative-unstated", "risk", "open-q
 LOCAL_OWNER = "review-document.local"
 LOOSE_REPOSITORY = f"{LOCAL_OWNER}/document"
 REPORT_NAME = "report.md"
+# The fields of a fixture's pull.json a record keeps under its pull_request, which together name the reviewed document.
+REVIEWED_FIELDS = ("number", "title", "base_ref", "head_ref")
 
 
 class DocumentError(ValueError):
@@ -143,11 +149,21 @@ class Document:
     base: Base
 
 
+def over_limit(name: str) -> DocumentError:
+    """The refusal of a document over the size the snapshot reads of a changed file, which it would leave out."""
+    return DocumentError(f"{name} is over the {MAX_CHANGED_FILE_BYTES // (1024 * 1024)} MiB a review reads")
+
+
 def document_bytes(path: Path, form: str | None) -> bytes:
-    """The document's bytes, as `checked_content` keeps them. Refused when it is not a file."""
+    """The document's bytes, as `checked_content` keeps them. Refused when it is not a file or is over the size a
+    review reads, read no further than one byte past it."""
     if not path.is_file():
         raise DocumentError(f"{path} is not a file")
-    return checked_content(str(path), path.read_bytes(), form)
+    with path.open("rb") as source:
+        content = source.read(MAX_CHANGED_FILE_BYTES + 1)
+    if len(content) > MAX_CHANGED_FILE_BYTES:
+        raise over_limit(str(path))
+    return checked_content(str(path), content, form)
 
 
 def checked_content(name: str, content: bytes, form: str | None) -> bytes:
@@ -179,7 +195,7 @@ def normalized(content: bytes) -> bytes:
 
 
 def locate(path: Path, git: GitClient) -> Location:
-    """The document's path in its checkout, or its file name with no checkout."""
+    """The document's path in its checkout, as git tracks it, or its file name with no checkout."""
     try:
         top = git.output(["rev-parse", "--show-toplevel"], directory=path.parent).strip()
     except GitError as exc:
@@ -190,19 +206,73 @@ def locate(path: Path, git: GitClient) -> Location:
     relative = PurePosixPath(*path.relative_to(checkout).parts)
     if relative.parts[0] == ".git":
         raise DocumentError(f"{path} is inside the checkout's .git folder")
-    return Location(relative.as_posix(), checkout)
+    return Location(tracked_name(relative.as_posix(), path, checkout, git), checkout)
+
+
+def same_file(candidate: Path, path: Path) -> bool:
+    try:
+        return candidate.samefile(path)
+    except OSError:
+        return False
+
+
+def tracked_name(relative: str, path: Path, checkout: Path, git: GitClient) -> str:
+    """The name git tracks the file at `path` by: `relative` itself, or the one spelling of it, differing only in
+    case, that the index holds for the same file, as a file system that ignores case leaves a file renamed only by
+    case. `relative` when git tracks neither."""
+    listed = git.output(["ls-files", "-z", "--full-name", "--", f":(icase,literal){relative}"], directory=checkout)
+    names = [name for name in listed.split("\0") if name]
+    if relative in names:
+        return relative
+    same = [name for name in names if same_file(checkout.joinpath(*PurePosixPath(name).parts), path)]
+    if len(same) > 1:
+        raise DocumentError(f"{relative} is tracked under several names that differ only in case: {', '.join(same)}")
+    return same[0] if same else relative
+
+
+def git_failure(result: GitResult, doing: str) -> GitError:
+    """A git command's failure, classified as GitClient classifies one, with git's reason."""
+    reason = result.stderr.strip() or f"exit code {result.returncode}"
+    return GitError(
+        f"git could not {doing}: {reason}", kind=classify_failure(result.stderr), returncode=result.returncode
+    )
+
+
+def unborn(checkout: Path, git: GitClient) -> bool:
+    """Whether HEAD names a branch that has no commit yet, as before a checkout's first commit."""
+    branch = git.run(["symbolic-ref", "--quiet", "HEAD"], directory=checkout)
+    if branch.returncode != 0:
+        return False
+    # rev-parse --verify --quiet exits 1, saying nothing, for a ref that does not exist.
+    return git.run(["rev-parse", "--verify", "--quiet", branch.stdout.strip()], directory=checkout).returncode == 1
+
+
+def committed_blob(commit: str, relative: str, checkout: Path, git: GitClient) -> str | None:
+    """The id of the file `relative` names in `commit`, or None when the commit holds no file there."""
+    listed = git.output(["ls-tree", "-z", commit, "--", f":(literal){relative}"], directory=checkout)
+    for entry in listed.split("\0"):
+        info, _, name = entry.partition("\t")
+        fields = info.split()
+        if name == relative and len(fields) == 3 and fields[1] == "blob":
+            return fields[2]
+    return None
 
 
 def committed_base(relative: str, checkout: Path, git: GitClient, *, text: bool) -> Base:
-    """The document as committed at HEAD, a text file's with its line endings as LF, or no base when it has never
-    been committed."""
-    head = git.run(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], directory=checkout)
+    """The document as committed at HEAD, a text file's with its line endings as LF, or no base when the checkout has
+    no commit yet or HEAD holds no file at `relative`. Any other failure to read either fails with git's reason."""
+    head = git.run(["rev-parse", "--verify", "HEAD^{commit}"], directory=checkout)
     if head.returncode != 0:
-        return Base(None, None, "the checkout has no commit yet")
+        if unborn(checkout, git):
+            return Base(None, None, "the checkout has no commit yet")
+        raise git_failure(head, "read the checkout's HEAD commit")
     commit = head.stdout.strip()
-    blob = git.run(["cat-file", "blob", f"{commit}:{relative}"], directory=checkout)
-    if blob.returncode != 0:
+    blob_id = committed_blob(commit, relative, checkout, git)
+    if blob_id is None:
         return Base(None, None, "the file is not committed")
+    blob = git.run(["cat-file", "blob", blob_id], directory=checkout)
+    if blob.returncode != 0:
+        raise git_failure(blob, f"read {relative} as committed at {commit}")
     content = blob.output_bytes()
     return Base(normalized(content) if text else content, commit, "committed")
 
@@ -464,12 +534,15 @@ def pull_changes(github: GitHubClient, repository: str, number: int) -> list[Cha
     return changes
 
 
-def pull_blob(github: GitHubClient, repository: str, commit: str, path: str) -> bytes:
-    """The bytes of the file at `path` in `commit`, once they hash to the blob GitHub names; refused over the size a
-    review reads."""
-    blob, content = github.get_file_blob(repository, commit, path, maximum=MAX_CHANGED_FILE_BYTES)
+def pull_blob(github: GitHubClient, repository: str, commit: str, path: str, at: str) -> bytes:
+    """The bytes of the file at `path` in `commit`, which `at` describes, once they hash to the blob GitHub names;
+    refused over the size a review reads, and for a path GitHub answers as a symbolic link or a submodule."""
+    try:
+        blob, content = github.get_file_blob(repository, commit, path, maximum=MAX_CHANGED_FILE_BYTES)
+    except NotOneFile as exc:
+        raise DocumentError(f"{path} is a {exc.entry} {at}, not a file a review reads") from exc
     if content is None:
-        raise DocumentError(f"{path} is over the {MAX_CHANGED_FILE_BYTES // (1024 * 1024)} MiB a review reads")
+        raise over_limit(path)
     if not blob_matches(blob, content):
         raise GitHubError(f"GitHub did not return blob {blob} for {path}", kind="malformed")
     return content
@@ -486,12 +559,13 @@ def pull_document(github: GitHubClient, pull: Pull, change: Change, requested: s
     if change.status == "removed":
         raise DocumentError(f"{relative} is removed in the pull request")
     form = document_format(relative)
-    content = checked_content(relative, pull_blob(github, pull.repository, pull.head, relative), form)
+    head = pull_blob(github, pull.repository, pull.head, relative, "at the pull request's head")
+    content = checked_content(relative, head, form)
     if requested == "none":
         return Document(relative, content, form, Base(None, None, "the whole document was asked for"))
     if change.status == "added":
         return Document(relative, content, form, Base(None, None, "the document is added in the pull request"))
-    base = pull_blob(github, pull.repository, pull.base, change.previous or relative)
+    base = pull_blob(github, pull.repository, pull.base, change.previous or relative, "at the merge base")
     document = Document(relative, content, form, Base(base if form else normalized(base), pull.base, "committed"))
     refuse_unchanged(document, "change", " in the pull request")
     return document
@@ -596,9 +670,37 @@ def build_pull(
     return lines + [f"SKIPPED {reason}" for reason in skipped]
 
 
+def json_object(path: Path) -> dict[str, Any] | None:
+    """The JSON object in the file at `path`, or None when it holds none."""
+    try:
+        value = json.loads(path.read_bytes())
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def refuse_other_review(fixture: Path, recorded: Path, record: Path) -> None:
+    """Refuse a recorded report whose record does not name the review of the fixture's document: its repository and
+    the number, title, and refs the fixture's pull.json gives, the title naming the document."""
+    pull = json_object(fixture / "pull.json")
+    if pull is None:
+        raise DocumentError(f"{fixture} is not a fixture review-document built")
+    saved = json_object(record)
+    request = saved.get("pull_request") if saved is not None else None
+    if saved is None or not isinstance(request, dict):
+        raise DocumentError(f"{recorded} is not a report finalize recorded")
+    named = {"repository": saved.get("repository"), **{field: request.get(field) for field in REVIEWED_FIELDS}}
+    for field, value in named.items():
+        if value != pull.get(field):
+            raise DocumentError(
+                f"{recorded} is not the review of the fixture {fixture}: its record's {field} is {value!r}, the "
+                f"fixture's {pull.get(field)!r}"
+            )
+
+
 def report(fixture: Path, recorded: Path) -> list[str]:
-    """Copy the recorded report beside the fixture, never over a file already there, and name the record JSON
-    finalize wrote beside it."""
+    """Copy the recorded report beside the fixture, never over a file already there, once its record names the
+    review of the fixture's document, and name the record JSON finalize wrote beside it."""
     fixture = fixture.resolve()
     if not (fixture / "pull.json").is_file():
         raise DocumentError(f"{fixture} is not a fixture review-document built")
@@ -607,6 +709,7 @@ def report(fixture: Path, recorded: Path) -> list[str]:
     record = recorded.with_suffix(".json")
     if recorded.suffix != ".md" or not recorded.is_file() or not record.is_file():
         raise DocumentError(f"{recorded} is not a report finalize recorded")
+    refuse_other_review(fixture, recorded, record)
     target = directory / REPORT_NAME
     try:
         with recorded.open("rb") as source, target.open("xb") as copy:
