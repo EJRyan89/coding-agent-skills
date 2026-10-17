@@ -14,6 +14,7 @@ from pathlib import Path
 
 from validation_support import (
     ATTRIBUTE_LOOKUPS,
+    COMPUTED_NAME,
     MODULE_LOADERS,
     REPOSITORY_ROOT,
     CallableResolver,
@@ -22,6 +23,7 @@ from validation_support import (
     docstring_ids,
     import_aliases,
     module_allowance,
+    module_lookup,
     python_trees,
     qualified_name,
 )
@@ -756,49 +758,84 @@ def _literal_name(node: ast.expr | None) -> str | None:
     return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
 
 
-def _literal_attribute_owner(call: ast.Call, resolver: CallableResolver) -> tuple[ast.expr, str] | None:
+def _literal_attribute_owner(
+    call: ast.Call, resolver: CallableResolver, function: str = ""
+) -> tuple[ast.expr, str] | None:
     """The owner a getattr or hasattr call reads an attribute of by a literal name, with that name, as in
-    getattr(shutil, "rmtree"), or None when the call is neither or names the attribute some other way."""
-    if resolver.name(call.func) not in ATTRIBUTE_BY_NAME or any(isinstance(a, ast.Starred) for a in call.args):
+    getattr(shutil, "rmtree"), or None when the call is neither or names the attribute some other way. A caller that
+    has read the callable some other way, as through a literal lookup, gives its name as function."""
+    if (function or resolver.name(call.func)) not in ATTRIBUTE_BY_NAME or any(
+        isinstance(a, ast.Starred) for a in call.args
+    ):
         return None
     attribute = _literal_name(call.args[1]) if len(call.args) > 1 else None
     return (call.args[0], attribute) if attribute is not None else None
 
 
 def _literal_callee(node: ast.expr, resolver: CallableResolver) -> ast.expr | None:
-    """A callable read as the dotted name it names by a literal: getattr(owner, "name") as owner.name, and
-    importlib.import_module("name") as the module, each also as the receiver of an attribute, as in
-    importlib.import_module("shutil").rmtree; None for any other expression. Each node it builds takes the scope of
-    the expression it stands for, so the resolver reads it as it reads that expression."""
+    """A callable read as the dotted name it names by a literal: getattr(owner, "name") and owner.__dict__["name"] as
+    owner.name, and importlib.import_module("name"), __import__("name"), and sys.modules["name"] as the module, each
+    also as the receiver of an attribute, as in importlib.import_module("shutil").rmtree, and each also when a literal
+    lookup gives the loader, as in getattr(importlib, "import_module")("shutil"); None for any other expression. Each
+    node it builds takes the scope of the expression it stands for, so the resolver reads it as it reads that
+    expression."""
     scope = resolver.scopes[id(node)]
 
     def built(new: ast.expr) -> ast.expr:
         resolver.scopes[id(new)] = scope
         return ast.copy_location(new, node)
 
+    def attribute_of(owner: ast.expr, attribute: str) -> ast.expr:
+        receiver = _literal_callee(owner, resolver) or owner
+        return built(ast.Attribute(value=receiver, attr=attribute, ctx=ast.Load()))
+
+    def module_named(module: str) -> ast.expr:
+        parts = module.split(".")
+        name: ast.expr = built(ast.Name(id=parts[0], ctx=ast.Load()))
+        for part in parts[1:]:
+            name = built(ast.Attribute(value=name, attr=part, ctx=ast.Load()))
+        return name
+
     if isinstance(node, ast.Attribute):
         receiver = _literal_callee(node.value, resolver)
         return built(ast.Attribute(value=receiver, attr=node.attr, ctx=ast.Load())) if receiver is not None else None
+    if isinstance(node, ast.Subscript):
+        if isinstance(node.value, ast.Attribute) and node.value.attr == "__dict__":
+            key = _literal_name(node.slice)
+            return attribute_of(node.value.value, key) if key is not None else None
+        module = module_lookup(node, resolver)
+        return module_named(module) if module and module != COMPUTED_NAME else None
     if not isinstance(node, ast.Call):
         return None
     loader = resolver.name(node.func)
-    if loader in ATTRIBUTE_LOOKUPS and (read := _literal_attribute_owner(node, resolver)) is not None:
-        owner, attribute = read
-        receiver = _literal_callee(owner, resolver) or owner
-        return built(ast.Attribute(value=receiver, attr=attribute, ctx=ast.Load()))
+    if not loader and (named := _literal_callee(node.func, resolver)) is not None:
+        loader = resolver.name(named)
+    if loader in ATTRIBUTE_LOOKUPS and (read := _literal_attribute_owner(node, resolver, loader)) is not None:
+        return attribute_of(*read)
     module = _literal_name(call_argument(node, 0, "name")) if loader in MODULE_LOADERS else None
     if not module:
         return None
     # __import__ returns the top package of a dotted name; import_module returns the module itself.
-    parts = module.split(".") if loader.endswith("import_module") else module.split(".")[:1]
-    name: ast.expr = built(ast.Name(id=parts[0], ctx=ast.Load()))
-    for part in parts[1:]:
-        name = built(ast.Attribute(value=name, attr=part, ctx=ast.Load()))
-    return name
+    return module_named(module if loader.endswith("import_module") else module.partition(".")[0])
+
+
+def _unread_lookup(node: ast.expr, resolver: CallableResolver) -> str | None:
+    """What a callable reaches by a lookup _literal_callee cannot read, described for a report: a subscript, as in
+    handlers[kind] or shutil.__dict__[name], or a module named by anything but one string literal, as in
+    importlib.import_module(name) or sys.modules[name], each also as the receiver of an attribute; None for any other
+    expression, which the resolver reads or reports itself."""
+    root = node
+    while isinstance(root, ast.Attribute):
+        root = root.value
+    if _literal_callee(node, resolver) is not None:
+        return None
+    if module_lookup(root, resolver) == COMPUTED_NAME:
+        return f"the module {ast.unparse(root)} names"
+    return f"the callable {ast.unparse(node)} looks up" if isinstance(node, ast.Subscript) else None
 
 
 def _callable_references(tree: ast.Module, resolver: CallableResolver) -> set[int]:
-    """The ids of the names, attributes, and calls a module reads as values: neither a call's callable, which
+    """The ids of the names, attributes, subscripts, and calls a module reads as values: neither a call's callable, which
     _call_writes reads, nor an attribute's receiver, nor a name or an attribute an alias is bound to, which the
     resolver follows to the calls it makes, nor the owner getattr or hasattr reads by a literal name. A call bound
     to a name is read here, as in rm = getattr(shutil, "rmtree"), since the resolver does not follow it."""
@@ -821,7 +858,7 @@ def _callable_references(tree: ast.Module, resolver: CallableResolver) -> set[in
         for node in ast.walk(tree)
         if (
             isinstance(node, ast.Call)
-            or (isinstance(node, (ast.Name, ast.Attribute)) and isinstance(node.ctx, ast.Load))
+            or (isinstance(node, (ast.Name, ast.Attribute, ast.Subscript)) and isinstance(node.ctx, ast.Load))
         )
         and id(node) not in excluded
     }
@@ -852,7 +889,7 @@ def _write_nodes(tree: ast.Module, resolver: CallableResolver | None = None) -> 
             call = ast.copy_location(ast.Call(func=function, args=node.args, keywords=node.keywords), node)
             if token := _call_writes(call, resolver, bindings):
                 found.append((call, token))
-        if isinstance(node, (ast.Name, ast.Attribute, ast.Call)) and id(node) in references:
+        if isinstance(node, (ast.Name, ast.Attribute, ast.Subscript, ast.Call)) and id(node) in references:
             value = read(node)
             if token := _reference_writes(value, resolver):
                 found.append((value, token))
@@ -865,16 +902,21 @@ def _write_nodes(tree: ast.Module, resolver: CallableResolver | None = None) -> 
 
 def _returned_callee_problems(name: str, tree: ast.Module, resolver: CallableResolver, skipped: set[int]) -> list[str]:
     """Report each call of a callable another call returns that _literal_callee cannot read, as in factory()(path)
-    or operator.methodcaller("unlink")(path): the policy cannot tell what it calls, so it is never guessed."""
-    return [
-        f"{name}:{node.lineno} cannot resolve the callable {ast.unparse(node.func)} returns; "
-        "call a known callable instead"
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and id(node) not in skipped
-        and isinstance(node.func, ast.Call)
-        and _literal_callee(node.func, resolver) is None
-    ]
+    or operator.methodcaller("unlink")(path), and each call of a callable reached by a lookup it cannot read, as
+    _unread_lookup describes: the policy cannot tell what it calls, so it is never guessed."""
+    problems: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or id(node) in skipped:
+            continue
+        if isinstance(node.func, ast.Call):
+            if _literal_callee(node.func, resolver) is None:
+                problems.append(
+                    f"{name}:{node.lineno} cannot resolve the callable {ast.unparse(node.func)} returns; "
+                    "call a known callable instead"
+                )
+        elif (lookup := _unread_lookup(node.func, resolver)) is not None:
+            problems.append(f"{name}:{node.lineno} cannot resolve {lookup}; call a known callable instead")
+    return problems
 
 
 def _filesystem_writes(tree: ast.Module) -> list[tuple[int, str]]:
