@@ -1308,6 +1308,23 @@ def skill_command_problems(root: Path, known: set[str], standard: set[str]) -> l
     return problems
 
 
+def optional_tool_placement_problems(root: Path, always_optional: set[str]) -> list[str]:
+    """Report a skill that lists under tools a tool the catalogue makes optional for every skill.
+
+    check, the deploy warning, and the skill reference treat such a tool as optional whatever a skill declares, so
+    the declaration says so too and the metadata and the catalogue cannot disagree.
+    """
+    problems: list[str] = []
+    for metadata in sorted((root / "deploy-meta").glob("*.json")):
+        document = json.loads(metadata.read_text(encoding="utf-8"))
+        for name in sorted(set(document.get("tools", [])) & always_optional):
+            problems.append(
+                f"skill {metadata.stem} lists {name} under tools, which the catalogue makes optional for every "
+                f"skill; declare it in optional_tools; see {COMMANDS_DOC}"
+            )
+    return problems
+
+
 GH_FILTERS = {"--jq", "--template"}
 GH_SHELL_CALL = re.compile(r"(?:^|[\s;|&(])gh\s")
 GH_SHELL_FILTER = re.compile(r"\s(--jq|--template|-q)(?=[\s=]|$)")
@@ -1762,6 +1779,12 @@ class SkillScriptsPolicies(unittest.TestCase):
         self.assertEqual(
             [], skill_command_problems(REPOSITORY_ROOT, set(tools.SKILL_TOOLS), set(tools.STANDARD_COMMANDS))
         )
+
+    def test_skills_declare_a_tool_optional_for_every_skill_as_optional(self) -> None:
+        from deployer import tools
+
+        always_optional = {name for name, tool in tools.SKILL_TOOLS.items() if tool.optional}
+        self.assertEqual([], optional_tool_placement_problems(REPOSITORY_ROOT, always_optional))
 
     def test_skill_scripts_parse_gh_json_instead_of_filtering_it(self) -> None:
         self.assertEqual([], gh_filter_problems(REPOSITORY_ROOT))

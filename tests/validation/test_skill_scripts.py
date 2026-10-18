@@ -32,6 +32,7 @@ from skill_scripts import (
     console_setup_problems,
     gh_filter_problems,
     main_blocks,
+    optional_tool_placement_problems,
     script_contract_problems,
     secret_named_function_problems,
     shell_commands,
@@ -1434,6 +1435,23 @@ def test_command_reader_keeps_only_the_f_strings_initial_literal_arguments(expre
     CHECK.assertEqual(literals, constants)
     CHECK.assertEqual([prefix], [node.value for node in constants])
     CHECK.assertEqual([1], [node.lineno for node in constants])
+
+
+def test_optional_tool_placement_policy_reports_a_tool_optional_for_every_skill_listed_as_required(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "deploy-meta").mkdir()
+    metadata = tmp_path / "deploy-meta" / "review.json"
+    metadata.write_text(json.dumps({"tools": ["copilot", "gh"], "optional_tools": ["pdftotext"]}), encoding="utf-8")
+    CHECK.assertEqual(
+        [
+            "skill review lists copilot under tools, which the catalogue makes optional for every skill; declare it "
+            'in optional_tools; see "Commands skills may run" in docs/adding-a-skill.md'
+        ],
+        optional_tool_placement_problems(tmp_path, {"copilot"}),
+    )
+    metadata.write_text(json.dumps({"tools": ["gh"], "optional_tools": ["copilot", "pdftotext"]}), encoding="utf-8")
+    CHECK.assertEqual([], optional_tool_placement_problems(tmp_path, {"copilot"}))
 
 
 @pytest.mark.parametrize(
