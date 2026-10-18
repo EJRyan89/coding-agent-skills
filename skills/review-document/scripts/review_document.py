@@ -7,6 +7,9 @@ Every command prints one fact per line:
           ROUTE design-review | ROUTE generic, FIXTURE <fixture directory>, and OUTPUT <output directory>. Given a
           pull request, it first prints PULL <owner/repo#number> base <commit> head <commit>, then that block for each
           document it reviews, each in its own fixture, and SKIPPED <path> <reason> for a changed document it cannot.
+          Its last line is PREPARE_ARGUMENTS --canary --fixture "<fixture directory>" ..., one --fixture for each
+          fixture in the order of the FIXTURE lines, each path in forward-slash form: the arguments code-review-core's
+          prepare takes after --host, passed as printed.
   report  Copies the report `finalize` recorded into the output directory, never over a file already there, once its
           record names the review of the fixture's document, and prints REPORT <copy> and RECORD <the record JSON
           beside the original>.
@@ -94,6 +97,9 @@ FINDING_CATEGORIES = ["requirement-gap", "alternative-unstated", "risk", "open-q
 LOCAL_OWNER = "review-document.local"
 LOOSE_REPOSITORY = f"{LOCAL_OWNER}/document"
 REPORT_NAME = "report.md"
+# What a double-quoted argument does not keep as it is in Bash or PowerShell, so an output directory whose path holds
+# one cannot be named in the PREPARE_ARGUMENTS line.
+UNQUOTABLE = frozenset('"$`\\')
 # The fields of a fixture's pull.json a record keeps under its pull_request, which together name the reviewed document.
 REVIEWED_FIELDS = ("number", "title", "base_ref", "head_ref")
 
@@ -361,13 +367,33 @@ def write_file(root: Path, relative: str, content: bytes) -> None:
     target.write_bytes(content)
 
 
+def refuse_unquotable(directory: Path) -> None:
+    """Refuse an output directory the PREPARE_ARGUMENTS line cannot name each fixture in as a double-quoted argument
+    both shells keep as it is."""
+    text = directory.as_posix()
+    held = sorted({character for character in text if character in UNQUOTABLE})
+    if held or len(text.splitlines()) != 1:
+        named = " ".join(held) if held else "a line break"
+        raise DocumentError(
+            f"{flat_text(text)} holds {named}, which a quoted argument does not keep; name another --output"
+        )
+
+
+def prepare_arguments(fixtures: list[Path]) -> str:
+    """The line naming the arguments prepare takes after --host to review every fixture, as the skill passes them."""
+    named = " ".join(f'--fixture "{fixture.as_posix()}"' for fixture in fixtures)
+    return f"PREPARE_ARGUMENTS --canary {named}"
+
+
 def output_directory(output: Path | None) -> Path | None:
     """The explicit output directory, checked before anything is read or written, or None for a new temporary one.
     One inside a skills directory is refused, since a file left there makes the deployer skip that skill, and so is
-    one that exists and is not empty, so nothing the user keeps there is mixed with the review's files or replaced."""
+    one that exists and is not empty, so nothing the user keeps there is mixed with the review's files or replaced,
+    and one whose path a quoted argument does not keep."""
     if output is None:
         return None
     directory = working_path(output, "review-document-", "").resolve()
+    refuse_unquotable(directory)
     if directory.exists() and (not directory.is_dir() or any(directory.iterdir())):
         raise DocumentError(f"{directory} exists and is not an empty directory; name a new or empty directory")
     return directory
@@ -456,6 +482,7 @@ def output_root(directory: Path | None) -> Iterator[Path]:
         return
     root = Path(tempfile.mkdtemp(prefix="review-document-")).resolve()
     try:
+        refuse_unquotable(root)
         yield root
     except BaseException:
         shutil.rmtree(root, ignore_errors=True)
@@ -497,7 +524,7 @@ def build(
         "head_ref": "working tree",
     }
     with output_root(directory) as root:
-        return write_fixture(root / "fixture", document, pull, stage)
+        return [*write_fixture(root / "fixture", document, pull, stage), prepare_arguments([root / "fixture"])]
 
 
 def pull_reference(argument: str) -> tuple[str, int] | None:
@@ -667,7 +694,8 @@ def build_pull(
                 },
                 stage,
             )
-    return lines + [f"SKIPPED {reason}" for reason in skipped]
+        fixtures = [fixture_folder(root, index) for index in range(1, len(documents) + 1)]
+    return [*lines, *(f"SKIPPED {reason}" for reason in skipped), prepare_arguments(fixtures)]
 
 
 def json_object(path: Path) -> dict[str, Any] | None:

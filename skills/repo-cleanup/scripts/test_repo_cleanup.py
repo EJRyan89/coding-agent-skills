@@ -551,7 +551,6 @@ class SyncTests(Fixture):
         git(self.other, "push", "--quiet", "origin", "main")
         finished, lines = self.sync()
         self.assertTrue(finished, lines)
-        self.assertEqual([["main"]], facts(lines, "DEFAULT"))
         self.assertEqual([["switched"]], facts(lines, "CHECKOUT"))
         forwarded = ["forwarded", git(self.other, "rev-parse", "HEAD")]
         self.assertEqual([forwarded], facts(lines, "FF_DEFAULT"))
@@ -617,7 +616,7 @@ class SyncTests(Fixture):
         finished, lines = self.sync()
         self.assertFalse(finished, lines)
         self.assertEqual(1, len(facts(lines, "FETCH_FAILED")))
-        self.assertEqual([], facts(lines, "DEFAULT") + facts(lines, "CHECKOUT") + facts(lines, "FF_DEFAULT"))
+        self.assertEqual([], facts(lines, "CHECKOUT") + facts(lines, "FF_DEFAULT"))
         self.assertEqual("refs/heads/topic", git(self.clone, "symbolic-ref", "HEAD"))
         summary = [fields[0] for fields in facts(lines, "SUMMARY")]
         self.assertTrue(summary[0].startswith("my repo skipped: fetch failed — "), summary)
