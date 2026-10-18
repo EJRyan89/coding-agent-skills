@@ -1,0 +1,76 @@
+---
+name: audit-repository
+description: >-
+  Run this repository's two audits per release: the release audit of the diff since the last tag, before tagging,
+  and the rotation audit of one area read whole, after it. Writes the briefs for read-only readers, then files what
+  they confirm.
+argument-hint: "release [--since REF] | rotation [--record TAG]"
+disable-model-invocation: true
+allowed-tools: ["Bash(python -B .claude/skills/audit-repository/scripts/audit_repository.py *)", "PowerShell(python -B .claude/skills/audit-repository/scripts/audit_repository.py *)"]
+---
+
+# Audit the repository
+
+Each release is audited twice, as "Before tagging" and "After tagging" in `docs/releasing.md` require. `.claude/skills/audit-repository/scripts/audit_repository.py` does every deterministic step: it sorts files into four areas (`deployer`, `code-review`, `other-skills`, `infrastructure`), reads the rotation record, splits an area too large for one reader, writes one brief per reader to a new temporary directory, looks up the milestone each finding is filed into and the issues the next milestone carries, searches the open issues, and removes the briefs. It prints one fact per line, and its docstring lists every line. Your part is starting the readers, confirming what they report, and filing it once the user agrees.
+
+## 1. Choose the audit
+
+- **release**, before tagging: every file changed since the latest tag. It holds the release.
+- **rotation**, after tagging: the one area the rotation record shows read whole least recently, with the issues the next milestone carries. It holds nothing and feeds the next milestone.
+
+## 2. Run the script
+
+From a checkout of the commit being audited, run the mode you chose:
+
+```bash
+python -B .claude/skills/audit-repository/scripts/audit_repository.py release
+python -B .claude/skills/audit-repository/scripts/audit_repository.py rotation
+```
+
+Add `--since '<ref>'` to `release` to start from another base. Keep these lines for the later steps:
+
+- `MILESTONE <severity> "<title>"`: the milestone a finding of that severity is filed into, or `none`.
+- `PROVENANCE "<sentence>"`: the sentence each filed issue's body opens with.
+- `CARRIED <number> "<title>"`: an open issue the next milestone carries; every rotation brief names them too.
+- `BRIEFS "<directory>"`, then one `BRIEF <name> "<file>"` per reader, each its whole prompt; `READERS` counts an area's.
+
+A `FAILED` line is the last line and names what stopped the run, such as no tag reachable from `HEAD` or gh's own reason. A run that fails while writing the briefs leaves the directory it named in place; remove it as step 6 says once you have diagnosed the failure.
+
+## 3. Start one reader per brief
+
+Start one read-only reader per `BRIEF` line, all at once: in Claude Code a subagent that cannot edit, such as the `Plan` type; elsewhere a separate read-only session. Give each this prompt: `Read <file> and follow it.`
+
+## 4. Confirm before filing
+
+A reader's finding is a lead, not a verdict. Open both sides it quotes and keep it only when both say what the reader claims; otherwise drop it or list it as unconfirmed. Merge findings two readers share.
+
+Then search the open issues so nothing is filed twice, giving one query per confirmed finding, such as its file's name and a distinctive word of its title:
+
+```bash
+python -B .claude/skills/audit-repository/scripts/audit_repository.py duplicates '<query>' '<query>'
+```
+
+`MATCHES <query> <count>` and one `MATCH <query> <number> "<title>"` per open issue it found, queries numbered from 1. Drop a finding an open issue already covers, or name the issue beside it. Show the user the confirmed list, each with its severity and milestone, and ask before filing anything.
+
+## 5. File
+
+- File each confirmed finding as one issue written from the template its `template` field names in `.github/ISSUE_TEMPLATE/`, keeping the template's headings and quoting both sides. Open its body with the `PROVENANCE` sentence, then file it with `gh issue create --body-file '<file>' --milestone '<title>'`, the title its severity's `MILESTONE` line names. When that line says `none`, ask the user which milestone to create or use.
+- `gh issue create` is deliberately ungranted, so the user approves each filing at its prompt: an issue is public once it is filed, and the prompt is the last check that it is one the user agreed to and no trust-boundary finding.
+- A `trust-boundary` finding, or any finding that shows a way past a trust boundary, is a vulnerability. Report it privately as `SECURITY.md` says, through a private security advisory, and never in a public issue, commit message, or pull request.
+- **Release audit:** a confirmed defect is fixed before the tag; the tag waits for its pull request. The release notes' scope section names each drift and polish finding as deferred.
+
+## 6. Record
+
+The filed issues are the audit's record, so no milestone gets a line. After a rotation audit, record its area for the tag just released, from a worktree (the script refuses the main checkout), and merge the change through a pull request whose body names the areas both audits read, as `docs/releasing.md` requires: the release audit's areas, its `BRIEF` lines from the earlier run, and the rotation area, the `NEXT` line of this one. The milestone does not record them, so the body is their only record:
+
+```bash
+python -B .claude/skills/audit-repository/scripts/audit_repository.py rotation --record '<tag>'
+```
+
+`RECORDED <tag> <area> <date>` confirms the entry it appended to `.claude/skills/audit-repository/references/rotation.json`. If the write fails, the `FAILED` line says the record is unchanged and names any copy left beside it to delete; fix the cause and run the command again.
+
+When each audit's findings are filed, delete its briefs directory, the one its `BRIEFS` line named. `REMOVED "<directory>"` confirms it; the script deletes nothing but a briefs directory it made:
+
+```bash
+python -B .claude/skills/audit-repository/scripts/audit_repository.py remove-briefs '<directory>'
+```

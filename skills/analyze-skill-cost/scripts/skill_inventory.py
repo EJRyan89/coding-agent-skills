@@ -9,7 +9,8 @@
     scan PATH...                            list lines with cost cues for the agent to judge, subagent prompts
                                             that a script writes at runtime, and the sample of each such prompt;
                                             a skill folder stands for its SKILL.md and then every other Markdown
-                                            file inventory lists, in its order
+                                            file inventory lists, in its order, and also compares the status lines
+                                            its Markdown names with what its scripts print
 
 Every command prints one fact per line in forward-slash paths. locate prefers a source skill to its deployed
 copy, and counts a .agents/skills shim that points to the .claude/skills skill of its name as that skill. It ends
@@ -84,6 +85,26 @@ and the source tree as <source>. For each sample of the skill, scan prints RUNTI
 one RUNTIME_PROMPT_READ <sample> <path> <tokens> per file of the source tree the prompt names other than a script,
 which the subagent reads on every run, and REPLY_BOUNDED <sample> yes|no, whether the prompt bounds the reply. A skill
 with no sample prints RUNTIME_PROMPT_UNSAMPLED <file> <line> <reason> for each runtime prompt instead.
+
+Deterministic prose: besides the cost cues, scan names prose a script should replace, each a CUE line:
+assembled-arguments (a flag chosen per printed line or value), parsed-output (output split, grouped, or renamed by a
+fixed rule, or a printed value taken apart), carried-state (a count, summary, or last-seen value carried between
+steps), owed-by-rules (the regenerations, gates, or follow-ups a change owes, decided by listed rules), and
+hand-drafted (a file or message written by hand from a template or from printed lines).
+
+Status lines: for a skill folder, scan reads the skill's own scripts, every script its Markdown's commands run,
+through ${CLAUDE_SKILL_DIR} or from the repository root (the nearest folder above with a .git entry), the scripts
+beside each of those, and skill-core's; it skips regression suites. A status word is an upper-case name of three or
+more characters, such as SKILL_FILE. A script prints every status word its strings hold, outside docstrings, and the
+FAILED line skill-core's run_main adds; it prints a line starting with a word when the word leads an f-string, a
+string a print, write, append, insert, extend, emit, or echo call takes, a listed string, or a string of a word, a
+space, and more. It exits 0, a literal an int-returning function returns or an exit call takes, 1 and 130 with
+run_main, and 2 with argparse. UNPRINTED <file> <line> <word> is a word that leads a code span on a prose line about
+output (one that says print, line, output, report, ends with, or exit) that no script prints, unless "such as" brings
+it in as an example. EXIT_MISMATCH <file> <line> <code> is an exit code the prose states that no script uses.
+UNEXPLAINED <script> <line> <word> is a line a script the Markdown runs starts with a word the Markdown never names,
+for a script in the skill's folder or outside every skills folder, such as a repository tool; a sibling skill's script
+is that skill's to explain. A skill with no script of its own that runs none prints none of these.
 """
 
 from __future__ import annotations
@@ -104,6 +125,7 @@ import frontmatter
 from console import run_main
 from git_client import GitClient
 from markdown_sections import CODE_SPAN, POWERSHELL_FENCES, SHELL_FENCES, find_fences, prose_code_spans
+from suite_names import is_suite_name
 
 MAIN_NAME = "skill.md"
 HELPER_SUFFIXES = frozenset({".sh", ".bash", ".ps1", ".py", ".js", ".mjs", ".cjs", ".ts"})
@@ -294,8 +316,98 @@ CUES = (
         ),
     ),
 )
+# Deterministic work a script should print or take, which the prose leaves to the agent. A code span names a printed
+# value when it is not a flag; a status span starts with an upper-case name; an instruction opens its line, item, or
+# sentence, or follows "then" or "and".
+VALUE_SPAN = r"`(?!--)[^`\n]+`"
+STATUS_SPAN = r"`[A-Z][A-Z0-9_]+[^`\n]*`"
+FLAG_SPAN = r"`--[\w-]+[^`\n]*`"
+INSTRUCTION = r"(?:^\s*(?:[-*+]|\d+\.)?\s*|[.:;]\s+|,\s+(?=print\b)|\b(?:then|and)\s+)"
+PROSE_CUES = (
+    # A flag chosen per printed line or value: "`--pull <pr>` for each `missing`", "one `--run` per `RUN` line",
+    # "for a `SYNTHESIZED` line, `--synthesized`", "pass ... every `doc` path".
+    (
+        "assembled-arguments",
+        re.compile(
+            rf"(?i){FLAG_SPAN}[^.;]{{0,40}}?\b(?:for each|for every|per|when|for an?)\s+(?:\w+\s+){{0,3}}?{VALUE_SPAN}|"
+            rf"\b(?:for each|for every|per|for an?)\s+{VALUE_SPAN}[^.;]{{0,60}}?{FLAG_SPAN}|"
+            rf"\bpass(?:ing)?\b[^.;]{{0,60}}\b(?:every|each)\s+(?:\w+\s+)?{VALUE_SPAN}"
+        ),
+    ),
+    # Output split, grouped, or sorted by a fixed rule: a file list split between readers, items prepared in groups,
+    # a list item keyed on a message's text, or a printed line renamed to another status.
+    (
+        "parsed-output",
+        re.compile(
+            r"(?i)\bsplit(?:s|ting)?\s+(?:its|the|their|each)\s+(?:[\w-]+\s+)?(?:list|lines?|output|label)\s+"
+            r"(?:by|between|into)\b|\bin (?:groups|batches) of up to\b|"
+            rf"(?-i:^\s*(?:[-*+]|\d+\.)\s+\*\*`[a-z][^`]*\s[^`]*`)|\breport (?:it|them|that|this) as {STATUS_SPAN}"
+        ),
+    ),
+    # A count, a summary, or a last-seen value carried from one step to a later one.
+    (
+        "carried-state",
+        re.compile(
+            r"(?i)\b(?:the last|the latest|the most recent)\b[^.;]{0,40}\bfor each\b|\bhow many\b|"
+            r"\bper\b[^.;]{0,40}\bprinted\b|\b(?:keep|kept|keeping) (?:a |the )?(?:count|tally|running total)\b"
+        ),
+    ),
+    # The regenerations, gates, or follow-ups a change owes, decided by listing the rules.
+    (
+        "owed-by-rules",
+        re.compile(
+            r"(?i)\b(?:after|when|whenever)\s+(?:any |a |an |the )?(?:[\w'-]+ ){0,5}?changes?"
+            r"(?: to\b|,| touch(?:es)?\b)[^.;]{0,160}?\b(?:run|rerun|regenerate|rewrite|update)\b|"
+            r"\bthe change touched\b|\bgo(?:es)? into the\b[^.;]{0,30}\bmilestone\b"
+        ),
+    ),
+    # A file or a message the agent writes from a template or from printed lines by hand.
+    (
+        "hand-drafted",
+        re.compile(
+            rf"(?i){INSTRUCTION}(?:write|draft|compose|fill|build)\b[^.;]{{0,80}}\bfrom the\b[^.;]{{0,40}}\btemplate\b|"
+            rf"\b(?:copy|paste|cite|include|quote|put)\b[^.;]{{0,40}}{STATUS_SPAN}(?:,\s*{STATUS_SPAN})+,?\s*(?:and|or)\s*"
+            rf"{STATUS_SPAN}\s+lines?|"
+            rf"{INSTRUCTION}(?:print|stop with|finish with|end with|reply with)\s+`[^`]*<[^`>]+>[^`]*`"
+        ),
+    ),
+)
+# A printed value split into its parts by hand: a span holding a space, a colon, and then two spans that are its parts,
+# as "the label `v2 F002`: review version `2` and finding `F002`".
+DECOMPOSED_VALUE = re.compile(r"`([^`\n]*\s[^`\n]*)`:\s([^.]*)")
+VALUE_PART = re.compile(r"`([^`\s<-][^`\s]*)`")
 # Inside code (fences and script files) only these cues apply; the rest describe prose.
 CODE_CUES = frozenset({"wide-glob", "generated-code"})
+# A status word: the upper-case name a printed line starts with, such as FAILED or SKILL_FILE, of at least three
+# characters, so a word such as ID names no line.
+STATUS_WORD = r"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*"
+STATUS_WORD_LENGTH = 3
+ANY_STATUS_WORD = re.compile(rf"(?<![\w-])({STATUS_WORD})(?![\w-])")
+LINE_WORD = re.compile(rf"(?:^|\n)({STATUS_WORD})(?= |=|$)")
+WORD_PREFIX = re.compile(rf"({STATUS_WORD}_)$")
+LOWER_VALUE = re.compile(r"[a-z][a-z0-9_]*")
+SPAN_STATUS = re.compile(rf"({STATUS_WORD})(?=$|\s)")
+# A prose line about output, whose code spans name lines a script prints, and the words that introduce an example of
+# another program's line, such as a subagent's reply.
+OUTPUT_WORDS = re.compile(
+    r"(?i)(?<![\w-])(?:prints?|printed|printing|lines?|outputs?|reports?|ends? with|exits?)(?![\w-])"
+)
+EXAMPLE_LEAD = re.compile(r"(?i)\b(?:such as|e\.g\.)\s*$")
+EXIT_STATED = re.compile(
+    r"(?i)\bexit(?:s|ing)?\s+(?:with\s+)?(?:(?:code|status)\s+)?(\d+)\b|\bexit (?:code|status) (?:of )?(\d+)\b"
+)
+SHELL_PRINT = re.compile(
+    rf"\b(?:echo|printf|Write-Output|Write-Host)\s+(?:-\w+\s+)*[\"']?({STATUS_WORD})(?=[\s\"'=]|$)"
+)
+SHELL_EXIT = re.compile(r"\bexit\s+(\d+)\b")
+STATUS_SCRIPT_SUFFIXES = frozenset({".py", ".sh", ".bash", ".ps1"})
+SKILL_DIR_PREFIX = "${CLAUDE_SKILL_DIR}/"
+# The calls that print a line or add one to the lines a command prints, and those that exit with a code.
+PRINTING_CALLS = frozenset({"print", "write", "append", "insert", "extend", "emit", "echo"})
+EXIT_CALLS = frozenset({"exit", "_exit", "SystemExit"})
+# What every entry point gets from skill-core's run_main, a FAILED line and exits 1 and 130, and from argparse, 2.
+RUN_MAIN_CODES = frozenset({1, 130})
+USAGE_CODE = 2
 # Lines that bound what a subagent sends back; without one, every reply lands in the orchestrator's context.
 REPLY_BOUND = re.compile(r"(?i)\breply (?:with|only)\b|\brespond only\b|\breturn only\b|\bfinal (?:message|reply)\b")
 DELEGATION = re.compile(r"(?i)\bsubagents?\b")
@@ -1180,6 +1292,14 @@ def powershell_inline_code(words: list[str]) -> bool:
     return False
 
 
+def decomposes_a_value(line: str) -> bool:
+    """Whether the line shows a printed value with a space and then names two of its parts, by DECOMPOSED_VALUE."""
+    for match in DECOMPOSED_VALUE.finditer(line):
+        if sum(part in match.group(1) for part in VALUE_PART.findall(match.group(2))) >= 2:
+            return True
+    return False
+
+
 def scanned_files(path: Path) -> list[Path]:
     """A file as given, or a skill folder's main file followed by every doc file inventory lists."""
     if not path.is_dir():
@@ -1216,6 +1336,11 @@ def scan(given: list[Path]) -> list[str]:
                 for name, pattern in CUES
                 if pattern.search(line) or (name == "generated-code" and inline_code(line))
             ]
+            cues += [
+                name
+                for name, pattern in PROSE_CUES
+                if pattern.search(line) or (name == "parsed-output" and decomposes_a_value(line))
+            ]
             if language is not None:
                 cues = [cue for cue in cues if cue in CODE_CUES]
             shell = (
@@ -1235,7 +1360,11 @@ def scan(given: list[Path]) -> list[str]:
             found = delegation_lines(path, lines, languages, start)
             output.extend(found)
             runtime_prompts += [(path, int(line.split()[2])) for line in found if line.startswith("RUNTIME_PROMPT ")]
-    return output + sample_lines(runtime_prompts)
+    return (
+        output
+        + sample_lines(runtime_prompts)
+        + [line for path in given if path.is_dir() for line in status_lines(path)]
+    )
 
 
 def delegation_lines(path: Path, lines: list[str], languages: list[str | None], start: int) -> list[str]:
@@ -1311,6 +1440,266 @@ def measure_sample(root: Path, sample: Path) -> list[str]:
             output.append(f"RUNTIME_PROMPT_READ {posix(sample)} {relative} {tokens}")
     output.append(f"REPLY_BOUNDED {posix(sample)} {'yes' if REPLY_BOUND.search(text) else 'no'}")
     return output
+
+
+# --- status lines ---------------------------------------------------------------------------------
+
+
+@dataclass
+class ScriptFacts:
+    """What a script's text shows it prints and exits with."""
+
+    words: set[str] = field(default_factory=set)  # every status word its strings hold, anywhere in them
+    prefixes: set[str] = field(default_factory=set)  # a word's start a formatted value completes, such as CONFIG_
+    lines: dict[str, int] = field(default_factory=dict)  # the word each line it prints starts with, and where
+    codes: set[int] = field(default_factory=lambda: {0})
+
+
+def docstring_ids(tree: ast.Module) -> set[int]:
+    """The string constants that are a module's, a class's, or a function's docstring, which print nothing."""
+    found: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+                found.add(id(first.value))
+    return found
+
+
+def call_name(node: ast.AST | None) -> str:
+    if not isinstance(node, ast.Call):
+        return ""
+    return node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+
+
+def printed_text(node: ast.Constant, parents: dict[int, ast.AST]) -> str | None:
+    """The text a string constant gives a line the script prints, or None for a value it compares, looks up, or
+    passes to anything but a print: an f-string's leading text, a printed or listed string, or one that starts with
+    a status word and a space, outside a comparison, a subscript, a keyword argument, a dict, or a call."""
+    if not isinstance(node.value, str):
+        return None
+    parent = parents.get(id(node))
+    if isinstance(parent, ast.JoinedStr):
+        leading = parent.values[0] is node and re.match(rf"{STATUS_WORD}(?: |$)", node.value)
+        return node.value if leading else None
+    if call_name(parent) in PRINTING_CALLS:
+        return node.value
+    if isinstance(parent, ast.List):
+        holder = parents.get(id(parent))
+        lookup = isinstance(holder, ast.Call | ast.Compare | ast.Subscript | ast.keyword | ast.Dict)
+        return None if lookup and call_name(holder) not in PRINTING_CALLS else node.value
+    if isinstance(parent, ast.Compare | ast.Subscript | ast.keyword | ast.Dict | ast.Call):
+        return None
+    return node.value if re.match(rf"{STATUS_WORD} \S", node.value) else None
+
+
+def string_facts(facts: ScriptFacts, node: ast.Constant, value: str, parents: dict[int, ast.AST]) -> None:
+    facts.words.update(ANY_STATUS_WORD.findall(value))
+    if LOWER_VALUE.fullmatch(value):  # a state such as "overdue" the script may print upper-cased
+        facts.words.add(value.upper())
+    facts.prefixes.update(WORD_PREFIX.findall(value))
+    text = printed_text(node, parents)
+    for match in LINE_WORD.finditer(text or ""):
+        if len(match.group(1)) >= STATUS_WORD_LENGTH:
+            facts.lines.setdefault(match.group(1), node.lineno)
+
+
+def exit_codes(tree: ast.Module) -> set[int]:
+    """The literal codes a script exits with: what a function annotated to return an int returns, and what an exit
+    call or SystemExit takes, each a number or a module-level name bound to one."""
+    constants = {
+        target.id: node.value.value
+        for node in tree.body
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) and type(node.value.value) is int
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+
+    def literal(node: ast.AST) -> list[int]:
+        if isinstance(node, ast.IfExp):
+            return literal(node.body) + literal(node.orelse)
+        if isinstance(node, ast.Constant) and type(node.value) is int:
+            return [node.value]
+        return [constants[node.id]] if isinstance(node, ast.Name) and node.id in constants else []
+
+    codes: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and isinstance(node.returns, ast.Name) and node.returns.id == "int":
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.Return) and inner.value is not None:
+                    codes.update(literal(inner.value))
+        elif call_name(node) in EXIT_CALLS and isinstance(node, ast.Call) and node.args:
+            codes.update(literal(node.args[0]))
+    return codes
+
+
+def python_facts(text: str) -> ScriptFacts:
+    tree = ast.parse(text)
+    facts = ScriptFacts()
+    docstrings = docstring_ids(tree)
+    parents = {id(child): node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings:
+            string_facts(facts, node, node.value, parents)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, bytes):
+            string_facts(facts, node, node.value.decode("latin-1"), parents)
+    facts.codes |= exit_codes(tree)
+    names = {
+        alias.name for node in ast.walk(tree) if isinstance(node, ast.Import | ast.ImportFrom) for alias in node.names
+    }
+    if "run_main" in names:
+        facts.words.add("FAILED")
+        facts.codes |= RUN_MAIN_CODES
+    if "argparse" in names:
+        facts.codes.add(USAGE_CODE)
+    return facts
+
+
+def shell_facts(text: str) -> ScriptFacts:
+    facts = ScriptFacts()
+    for number, line in enumerate(text.splitlines(), start=1):
+        if line.lstrip().startswith("#"):
+            continue
+        facts.words.update(ANY_STATUS_WORD.findall(line))
+        for match in SHELL_PRINT.finditer(line):
+            facts.lines.setdefault(match.group(1), number)
+        facts.codes.update(int(code) for code in SHELL_EXIT.findall(line))
+    return facts
+
+
+def script_facts(path: Path) -> ScriptFacts | None:
+    """What a script prints and exits with, or None for one that is not UTF-8 text or not valid Python."""
+    text = read_text(path)
+    if text is None:
+        return None
+    if path.suffix.casefold() != ".py":
+        return shell_facts(text)
+    try:
+        return python_facts(text)
+    except SyntaxError:
+        return None
+
+
+def repository_root(folder: Path) -> Path | None:
+    """The nearest folder above a skill that holds a .git entry, where its commands run tools from, or None."""
+    return next((parent for parent in folder.resolve().parents if (parent / ".git").exists()), None)
+
+
+def folder_scripts(folder: Path) -> list[Path]:
+    """The scripts of a folder, resolved, without its regression suites, which are no skill's output."""
+    if not folder.is_dir():
+        return []
+    return [
+        path.resolve()
+        for path in sorted(folder.iterdir())
+        if path.is_file() and path.suffix.casefold() in STATUS_SCRIPT_SUFFIXES and not is_suite_name(path.name)
+    ]
+
+
+def command_scripts(folder: Path, root: Path | None, bodies: list[list[str]]) -> list[Path]:
+    """The scripts the Markdown's commands run that exist: through the skill-directory variable, or from the
+    repository root, as a repository skill runs a tool."""
+    found: list[Path] = []
+    for body in bodies:
+        for _, command in fence_commands(body, 0) + span_commands(body, 0):
+            for match in SCRIPT_FILE.finditer(command):
+                text = match.group(0).strip("\"'")
+                if text.startswith(SKILL_DIR_PREFIX):
+                    path = folder / text.removeprefix(SKILL_DIR_PREFIX)
+                elif root is not None and not text.startswith(("$", "~", "/")):
+                    path = root / text
+                else:
+                    continue
+                if path.is_file():
+                    found.append(path.resolve())
+    return list(dict.fromkeys(found))
+
+
+def shown_path(folder: Path, path: Path) -> str:
+    """A script's path under the skill folder as it was given, or its resolved path outside it."""
+    try:
+        return posix(folder / path.relative_to(folder.resolve()))
+    except ValueError:
+        return posix(path)
+
+
+def stated_lines(folder: Path, path: Path, lines: list[str], printed: set[str], prefixes: set[str]) -> list[str]:
+    """Each status word a code span names on a prose line about output that no script prints, outside an example
+    introduced by "such as", and outside the words a printed prefix such as CONFIG_ may complete."""
+    output: list[str] = []
+    languages, _ = parse_fences(lines)
+    for index in range(body_start(lines), len(lines)):
+        line = lines[index]
+        if languages[index] is not None or not OUTPUT_WORDS.search(line):
+            continue
+        for span in CODE_SPAN.finditer(line):
+            word = SPAN_STATUS.match(span.group(1).strip())
+            if (
+                word
+                and len(word.group(1)) >= STATUS_WORD_LENGTH
+                and not EXAMPLE_LEAD.search(line[: span.start()])
+                and word.group(1) not in printed
+                and not word.group(1).startswith(tuple(prefixes))
+            ):
+                output.append(f"UNPRINTED {posix(path)} {index + 1} {word.group(1)}")
+    return output
+
+
+def stated_codes(path: Path, lines: list[str], codes: set[int]) -> list[str]:
+    languages, _ = parse_fences(lines)
+    return [
+        f"EXIT_MISMATCH {posix(path)} {index + 1} {code}"
+        for index in range(body_start(lines), len(lines))
+        if languages[index] is None
+        for match in EXIT_STATED.finditer(lines[index])
+        if (code := int(match.group(1) or match.group(2))) not in codes
+    ]
+
+
+def status_lines(folder: Path) -> list[str]:
+    """Compare the status lines and exit codes a skill's Markdown names with what its scripts print and exit with.
+
+    The scripts read are the skill's own, every script its commands run and the scripts beside it, and skill-core's.
+    UNPRINTED is a status word a code span names on a prose line about output that none of them prints;
+    EXIT_MISMATCH an exit code the prose states that none of them uses; UNEXPLAINED a line that a script the skill
+    runs, its own or a repository tool, starts with a status word the Markdown never names. A skill with no script
+    of its own that runs none has nothing to compare.
+    """
+    markdown = [(path, require_text(path).splitlines()) for path in scanned_files(folder)]
+    root = repository_root(folder)
+    bodies = [lines[body_start(lines) :] for _, lines in markdown]
+    commands = command_scripts(folder, root, bodies)
+    own = folder_scripts(folder / "scripts")
+    if not own and not commands:
+        return []
+    cores = [folder.parent / "skill-core" / "scripts", *([root / "skills" / "skill-core" / "scripts"] if root else [])]
+    reading = [*own, *commands, *(path for command in commands for path in folder_scripts(command.parent))]
+    reading += [path for core in cores for path in folder_scripts(core)]
+    skills_roots = {folder.resolve().parent, *((root / "skills", root / ".claude" / "skills") if root else ())}
+    runs = [path for path in commands if folder.resolve() in path.parents or skills_roots.isdisjoint(path.parents)]
+    facts = ScriptFacts()
+    first_lines: dict[str, tuple[Path, int]] = {}
+    for path in dict.fromkeys(reading):
+        found = script_facts(path)
+        if found is None:
+            continue
+        facts.words |= found.words
+        facts.prefixes |= found.prefixes
+        facts.codes |= found.codes
+        if path in runs:
+            for word, number in found.lines.items():
+                first_lines.setdefault(word, (path, number))
+    output = [
+        line for path, lines in markdown for line in stated_lines(folder, path, lines, facts.words, facts.prefixes)
+    ]
+    output += [line for path, lines in markdown for line in stated_codes(path, lines, facts.codes)]
+    named = "\n".join("\n".join(body) for body in bodies)
+    unnamed = [
+        (shown_path(folder, path), number, word)
+        for word, (path, number) in first_lines.items()
+        if not re.search(rf"(?<![\w-]){word}(?![\w-])", named)
+    ]
+    return output + [f"UNEXPLAINED {path} {number} {word}" for path, number, word in sorted(unnamed)]
 
 
 def main(arguments: list[str] | None = None) -> int:

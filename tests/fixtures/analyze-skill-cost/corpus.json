@@ -1,0 +1,85 @@
+{
+  "deterministic-prose": {
+    "analyze-skill-cost": {
+      "pull_request": 1239,
+      "commit": "a84a66e79b5a2d3d70d15704b236ff91f7ffba28",
+      "path": "skills/analyze-skill-cost/SKILL.md",
+      "cues": ["assembled-arguments", "hand-drafted"]
+    },
+    "implement-change": {
+      "pull_request": 1240,
+      "commit": "46caca6640864e2931b474d0ac41a6f79def9f62",
+      "path": ".claude/skills/implement-change/SKILL.md",
+      "cues": ["hand-drafted"]
+    },
+    "audit-repository": {
+      "pull_request": 1241,
+      "commit": "58df98d0f86fe2da75423118db765d6bd7d1b709",
+      "path": ".claude/skills/audit-repository/SKILL.md",
+      "cues": ["owed-by-rules", "parsed-output"]
+    },
+    "change-skill": {
+      "pull_request": 1242,
+      "commit": "e895fc3e641f1cda96aca47ad165d3ac0ce75849",
+      "path": ".claude/skills/change-skill/SKILL.md",
+      "cues": ["owed-by-rules"]
+    },
+    "runtime-canary": {
+      "pull_request": 1243,
+      "commit": "4da05a786ca80c0c68d006beffbfb3d4ca778a7e",
+      "path": ".claude/skills/runtime-canary/SKILL.md",
+      "cues": ["hand-drafted", "owed-by-rules"]
+    },
+    "evaluate-skill": {
+      "pull_request": 1245,
+      "commit": "6478008715c12a2068b1b98ad8f8a1e161d94bd9",
+      "path": ".claude/skills/evaluate-skill/SKILL.md",
+      "cues": ["hand-drafted", "parsed-output"]
+    },
+    "update-pr-dashboard": {
+      "pull_request": 1246,
+      "commit": "1a31d05e3d0cba14e51e2623fd47501e0448b878",
+      "path": "skills/update-pr-dashboard/SKILL.md",
+      "cues": ["assembled-arguments"]
+    },
+    "repo-cleanup": {
+      "pull_request": 1248,
+      "commit": "99e812d0279e8376c22bb85321d42eb83a4efbb1",
+      "path": "skills/repo-cleanup/SKILL.md",
+      "cues": ["carried-state", "hand-drafted"]
+    },
+    "flag-review-finding": {
+      "pull_request": 1249,
+      "commit": "8214dd9e3fe48358c55b144c734c96d1dfb2ca17",
+      "path": "skills/flag-review-finding/SKILL.md",
+      "cues": ["parsed-output"]
+    },
+    "review-insights": {
+      "pull_request": 1250,
+      "commit": "e9e0e511e836df986c960cd1097760c41b3b1da9",
+      "path": "skills/review-insights/SKILL.md",
+      "cues": ["assembled-arguments"]
+    },
+    "update-coding-agent-skills": {
+      "pull_request": 1251,
+      "commit": "c8a39f17320f21e6d0fa22eaf54836f3b17c81f9",
+      "path": "skills/update-coding-agent-skills/SKILL.md",
+      "cues": ["parsed-output"]
+    },
+    "review-prs": {
+      "pull_request": 1252,
+      "commit": "ec8894bd679178350c44695fdb96d1785619540f",
+      "path": "skills/review-prs/SKILL.md",
+      "cues": ["assembled-arguments", "carried-state", "parsed-output"]
+    }
+  },
+  "status-lines": {
+    "runtime-canary": {
+      "pull_request": 1229,
+      "commit": "dd279697d876582973ff89cb66a68a570a3dc188",
+      "path": ".claude/skills/runtime-canary/SKILL.md",
+      "script": "tools/runtime_canary.py",
+      "unexplained": ["DEPLOYED", "DEPLOY_FAILED"]
+    }
+  }
+}
