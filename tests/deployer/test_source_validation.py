@@ -8,9 +8,22 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
-from harness import DEPLOY_COMMAND, DeployerTestCase, Result, forward, git, make_directory_link, tree_state
+from harness import (
+    CHECK,
+    DEPLOY_COMMAND,
+    DeployerTestCase,
+    Deployment,
+    Result,
+    deployer,
+    forward,
+    git,
+    make_directory_link,
+    tree_state,
+)
 
 from deployer import config, names, platform_support, source
 from deployer.errors import DeployError
@@ -186,23 +199,6 @@ class MetadataValidationTests(DeployerTestCase):
         self.make_config()
         self.deploy_fails("--all", pattern=f"Skill name '{name}' exceeds 64 characters")
         self.assertFalse((self.skills_dir / name).exists())
-
-    def test_skill_names_use_lowercase_digits_and_inner_hyphens(self) -> None:
-        for name in ("a", "alpha-2", "2-alpha"):
-            with self.subTest(name=name):
-                self.make_source_json()
-                self.make_skill(name, "Test")
-                self.make_config()
-                self.deploy_ok("--all")
-                self.remove_skill(name)
-                self.deploy_ok("--all")
-        for name in ("-alpha", "alpha-", "alpha_beta", "alpha.beta", "Alpha"):
-            with self.subTest(name=name):
-                self.make_source_json()
-                self.make_skill(name, "Test")
-                self.make_config()
-                self.deploy_fails("--all", pattern=f"Skill name '{re.escape(name)}' does not match naming grammar")
-                self.remove_skill(name)
 
     def test_bundle_name_length_is_limited_to_64_characters(self) -> None:
         self.make_skill("alpha", "Test")
@@ -456,91 +452,6 @@ class SharedAssetValidationTests(DeployerTestCase):
         self.make_skill("alpha", "Test")
         self.make_config()
         self.deploy_fails("--all", pattern="shared asset name '../escape.md' contains path separator")
-
-    def test_unsafe_shared_asset_names_are_refused_before_anything_changes(self) -> None:
-        for asset, reason in (
-            (".hidden.md", "starts with dot"),
-            ("notes.md.", "has a trailing dot or space"),
-            ("notes.md ", "has a trailing dot or space"),
-            ("..", "is a dot segment"),
-            ("docs\\notes.md", "contains path separator"),
-        ):
-            with self.subTest(asset=asset):
-                self.make_source_json(shared_assets={asset: "owner"})
-                self.make_skill("alpha", "Test", shared_deps=[asset])
-                self.make_config()
-                line = f"ERROR: shared asset name '{asset}' {reason}"
-                self.deploy_fails("--all", pattern=rf"(?m)^{re.escape(line)}\r?$")
-
-    def test_names_the_deployer_reserves_for_its_own_files_are_rejected(self) -> None:
-        for asset, reason in (
-            ("alpha.deploying-bak", "ends in '.deploying-bak'"),
-            ("Alpha.Deploying-Bak", "ends in '.deploying-bak'"),
-            ("notes.tmp.md", "contains '.tmp.'"),
-            ("Notes.TMP.md", "contains '.tmp.'"),
-        ):
-            with self.subTest(asset=asset):
-                self.make_source_json(shared_assets={asset: "owner"})
-                self.make_shared_asset(asset, "Shared")
-                self.make_skill("alpha", "Test", shared_deps=[asset])
-                self.make_config()
-                self.deploy_fails(
-                    "--all",
-                    pattern=re.escape(
-                        f"ERROR: shared asset name '{asset}' {reason}, which the deployer reserves for its own files"
-                    ),
-                )
-                self.assertFalse(self.manifest_file.exists())
-                (self.source / "skills" / asset).unlink()
-
-    def test_every_reader_of_item_names_refuses_a_reserved_name(self) -> None:
-        for name, reason in (
-            ("alpha.deploying-bak", "ends in '.deploying-bak'"),
-            ("ALPHA.DEPLOYING-BAK", "ends in '.deploying-bak'"),
-            ("a.tmp.1", "contains '.tmp.'"),
-            ("agent.TMP.md", "contains '.tmp.'"),
-        ):
-            with self.subTest(name=name):
-                self.assertEqual(
-                    f"ERROR: item '{name}' {reason}, which the deployer reserves for its own files",
-                    names.safe_name_problem(name, "item"),
-                )
-        for name in ("alpha", "notes.md", "deploying-bak.md", "tmp.md", "alpha.deploying-bak.md"):
-            with self.subTest(name=name):
-                self.assertIsNone(names.safe_name_problem(name, "item"))
-
-    def test_each_unsafe_item_name_is_refused_with_its_own_line(self) -> None:
-        self.assertEqual("ERROR: Empty item", names.safe_name_problem("", "item"))
-        for name, reason in (
-            ("docs/notes.md", "contains path separator"),
-            ("docs\\notes.md", "contains path separator"),
-            (".", "is a dot segment"),
-            ("..", "is a dot segment"),
-            (".hidden", "starts with dot"),
-            ("...", "starts with dot"),
-            ("notes&.md", "contains disallowed character"),
-            ("notes.md.", "has a trailing dot or space"),
-            ("notes.md ", "has a trailing dot or space"),
-        ):
-            with self.subTest(name=name):
-                self.assertEqual(f"ERROR: item '{name}' {reason}", names.safe_name_problem(name, "item"))
-        for name in ("notes.md", "my notes.md", "a.b.c", "notes-1_final.md"):
-            with self.subTest(name=name):
-                self.assertIsNone(names.safe_name_problem(name, "item"))
-
-    def test_item_and_skill_names_refuse_the_same_windows_device_names(self) -> None:
-        for name in ("con", "PRN", "Aux", "nul", "com1", "COM9", "lpt1", "LPT9"):
-            with self.subTest(name=name):
-                for item in (name, f"{name}.md", f"{name}.tar.gz"):
-                    self.assertEqual(
-                        f"ERROR: item '{item}' is a Windows reserved name", names.safe_name_problem(item, "item")
-                    )
-                self.assertFalse(source.is_valid_name(name.lower()))
-        for name in ("console", "con-alpha", "nul-check", "com", "lpt10", "aux2"):
-            with self.subTest(name=name):
-                self.assertIsNone(names.safe_name_problem(name, "item"))
-                self.assertIsNone(names.safe_name_problem(f"{name}.md", "item"))
-                self.assertTrue(source.is_valid_name(name))
 
     def write_shared_assets(self, value: object) -> None:
         self.make_source_json()
@@ -969,3 +880,139 @@ class DerivedAllowlistTests(unittest.TestCase):
         def test_a_backslash_in_a_derived_path_is_a_character_of_the_name_and_refused(self) -> None:
             with self.assertRaisesRegex(DeployError, re.escape("HOME (the home folder) contains disallowed character")):
                 config.derived_values(Path("/home/a\\b"), Path("/src"))
+
+
+# The fixture each test below takes by name, which pytest finds where the suite imports it.
+__all__ = ["deployer"]
+
+
+@pytest.mark.parametrize("name", ["a", "alpha-2", "2-alpha"])
+def test_a_skill_name_of_lowercase_digits_and_inner_hyphens_deploys_and_is_removed(
+    deployer: Deployment, name: str
+) -> None:
+    deployer.make_source_json()
+    deployer.make_skill(name, "Test")
+    deployer.make_config()
+    deployer.deploy_ok("--all")
+    deployer.remove_skill(name)
+    deployer.deploy_ok("--all")
+
+
+@pytest.mark.parametrize("name", ["-alpha", "alpha-", "alpha_beta", "alpha.beta", "Alpha"])
+def test_a_skill_name_outside_the_grammar_is_refused(deployer: Deployment, name: str) -> None:
+    deployer.make_source_json()
+    deployer.make_skill(name, "Test")
+    deployer.make_config()
+    deployer.deploy_fails("--all", pattern=f"Skill name '{re.escape(name)}' does not match naming grammar")
+
+
+@pytest.mark.parametrize(
+    ("asset", "reason"),
+    [
+        (".hidden.md", "starts with dot"),
+        ("notes.md.", "has a trailing dot or space"),
+        ("notes.md ", "has a trailing dot or space"),
+        ("..", "is a dot segment"),
+        ("docs\\notes.md", "contains path separator"),
+    ],
+)
+def test_an_unsafe_shared_asset_name_is_refused_before_anything_changes(
+    deployer: Deployment, asset: str, reason: str
+) -> None:
+    deployer.make_source_json(shared_assets={asset: "owner"})
+    deployer.make_skill("alpha", "Test", shared_deps=[asset])
+    deployer.make_config()
+    line = f"ERROR: shared asset name '{asset}' {reason}"
+    deployer.deploy_fails("--all", pattern=rf"(?m)^{re.escape(line)}\r?$")
+
+
+@pytest.mark.parametrize(
+    ("asset", "reason"),
+    [
+        ("alpha.deploying-bak", "ends in '.deploying-bak'"),
+        ("Alpha.Deploying-Bak", "ends in '.deploying-bak'"),
+        ("notes.tmp.md", "contains '.tmp.'"),
+        ("Notes.TMP.md", "contains '.tmp.'"),
+    ],
+)
+def test_a_name_the_deployer_reserves_for_its_own_files_is_refused(
+    deployer: Deployment, asset: str, reason: str
+) -> None:
+    deployer.make_source_json(shared_assets={asset: "owner"})
+    deployer.make_shared_asset(asset, "Shared")
+    deployer.make_skill("alpha", "Test", shared_deps=[asset])
+    deployer.make_config()
+    deployer.deploy_fails(
+        "--all",
+        pattern=re.escape(
+            f"ERROR: shared asset name '{asset}' {reason}, which the deployer reserves for its own files"
+        ),
+    )
+    CHECK.assertFalse(deployer.manifest_file.exists())
+
+
+@pytest.mark.parametrize(
+    ("name", "reason"),
+    [
+        ("alpha.deploying-bak", "ends in '.deploying-bak'"),
+        ("ALPHA.DEPLOYING-BAK", "ends in '.deploying-bak'"),
+        ("a.tmp.1", "contains '.tmp.'"),
+        ("agent.TMP.md", "contains '.tmp.'"),
+    ],
+)
+def test_every_reader_of_item_names_refuses_a_reserved_name(name: str, reason: str) -> None:
+    expected = f"ERROR: item '{name}' {reason}, which the deployer reserves for its own files"
+    CHECK.assertEqual(expected, names.safe_name_problem(name, "item"))
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "alpha",
+        "notes.md",
+        "deploying-bak.md",
+        "tmp.md",
+        "alpha.deploying-bak.md",
+        "my notes.md",
+        "a.b.c",
+        "notes-1_final.md",
+    ],
+)
+def test_a_safe_item_name_is_accepted(name: str) -> None:
+    CHECK.assertIsNone(names.safe_name_problem(name, "item"))
+
+
+@pytest.mark.parametrize(
+    ("name", "reason"),
+    [
+        ("docs/notes.md", "contains path separator"),
+        ("docs\\notes.md", "contains path separator"),
+        (".", "is a dot segment"),
+        ("..", "is a dot segment"),
+        (".hidden", "starts with dot"),
+        ("...", "starts with dot"),
+        ("notes&.md", "contains disallowed character"),
+        ("notes.md.", "has a trailing dot or space"),
+        ("notes.md ", "has a trailing dot or space"),
+    ],
+)
+def test_each_unsafe_item_name_is_refused_with_its_own_line(name: str, reason: str) -> None:
+    CHECK.assertEqual(f"ERROR: item '{name}' {reason}", names.safe_name_problem(name, "item"))
+
+
+def test_an_empty_item_name_is_refused() -> None:
+    CHECK.assertEqual("ERROR: Empty item", names.safe_name_problem("", "item"))
+
+
+@pytest.mark.parametrize("name", ["con", "PRN", "Aux", "nul", "com1", "COM9", "lpt1", "LPT9"])
+def test_item_and_skill_names_refuse_the_same_windows_device_names(name: str) -> None:
+    for item in (name, f"{name}.md", f"{name}.tar.gz"):
+        CHECK.assertEqual(f"ERROR: item '{item}' is a Windows reserved name", names.safe_name_problem(item, "item"))
+    CHECK.assertFalse(source.is_valid_name(name.lower()))
+
+
+@pytest.mark.parametrize("name", ["console", "con-alpha", "nul-check", "com", "lpt10", "aux2"])
+def test_a_name_that_only_starts_like_a_device_is_accepted(name: str) -> None:
+    CHECK.assertIsNone(names.safe_name_problem(name, "item"))
+    CHECK.assertIsNone(names.safe_name_problem(f"{name}.md", "item"))
+    CHECK.assertTrue(source.is_valid_name(name))

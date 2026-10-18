@@ -13,11 +13,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from unittest import mock
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
@@ -217,11 +219,24 @@ class _Tee(io.StringIO):
         return super().write(text)
 
 
-class DeployerTestCase(unittest.TestCase):
-    def setUp(self) -> None:
-        self._temporary = tempfile.TemporaryDirectory(prefix="deploy-test.")
+# The assertions a Deployment checks a run with: a test case that runs no test of its own, so a check fails with
+# unittest's message whether a unittest test case or a pytest test function called it.
+CHECK = unittest.TestCase()
+
+
+class Deployment:
+    """A fixture source, a throwaway home, and the commands that deploy between them, for one test: a pytest test takes
+    one from the `deployer` fixture, and every DeployerTestCase is one."""
+
+    root: Path
+    home: Path
+    source: Path
+    repos: Path
+
+    def start(self, root: Path) -> None:
+        """Lay the fixture source and the empty home out under root, a folder this test alone uses."""
         # Expand 8.3 short names such as RUNNER~1, which configured paths reject.
-        self.root = Path(self._temporary.name).resolve()
+        self.root = root.resolve()
         self.home = self.root / "home"
         self.source = self.root / "source"
         self.repos = self.root / "repos"
@@ -229,9 +244,6 @@ class DeployerTestCase(unittest.TestCase):
         # manages is seen changing it.
         for directory in (self.home, self.source / "skills", self.source / "deploy-meta"):
             directory.mkdir(parents=True, exist_ok=True)
-
-    def tearDown(self) -> None:
-        self._temporary.cleanup()
 
     @property
     def paths(self) -> Paths:
@@ -266,7 +278,7 @@ class DeployerTestCase(unittest.TestCase):
         """Each line appears whole, so a message cannot be cut short or run into the next one."""
         printed = output.splitlines()
         for line in lines:
-            self.assertIn(line, printed, output)
+            CHECK.assertIn(line, printed, output)
 
     def make_source_json(
         self,
@@ -378,9 +390,9 @@ class DeployerTestCase(unittest.TestCase):
         changes_home: str = "",
     ) -> None:
         """Every run preserves its source; a nonzero exit preserves its home unless it states why it changes it."""
-        self.assertEqual(source_before, tree_state(source), f"the deployment changed its source:\n{result.output}")
+        CHECK.assertEqual(source_before, tree_state(source), f"the deployment changed its source:\n{result.output}")
         if result.code != 0 and not changes_home:
-            self.assertEqual(home_before, tree_state(home), f"the refusal changed the home:\n{result.output}")
+            CHECK.assertEqual(home_before, tree_state(home), f"the refusal changed the home:\n{result.output}")
 
     def run_command(
         self,
@@ -513,7 +525,7 @@ class DeployerTestCase(unittest.TestCase):
 
     def deploy_ok(self, *arguments: str, stdin: str = "", **options: Any) -> Result:
         result = self.deploy(*arguments, stdin=stdin, **options)
-        self.assertEqual(0, result.code, result.output)
+        CHECK.assertEqual(0, result.code, result.output)
         return result
 
     def deploy_fails(
@@ -535,8 +547,8 @@ class DeployerTestCase(unittest.TestCase):
         comes after the deployment began, such as a recovery, a lock reclaim, or a run that fails partway.
         """
         result = self.deploy(*arguments, stdin=stdin, home=home, changes_home=changes_home, **options)
-        self.assertEqual(code, result.code, result.output)
-        self.assertRegex(result.output, pattern)
+        CHECK.assertEqual(code, result.code, result.output)
+        CHECK.assertRegex(result.output, pattern)
         return result
 
     def report_groups(self, output: str, title: str) -> dict[str, list[str]]:
@@ -563,7 +575,7 @@ class DeployerTestCase(unittest.TestCase):
             else:
                 in_extra = True  # a diff or other detail printed under the previous item
         for action, items in groups.items():
-            self.assertEqual(counts[action], len(items), f"{action} header count in:\n{output}")
+            CHECK.assertEqual(counts[action], len(items), f"{action} header count in:\n{output}")
         return groups
 
     def manifest(self) -> dict[str, Any]:
@@ -657,7 +669,30 @@ class DeployerTestCase(unittest.TestCase):
         output = self.deploy("--dry-run", stdin="\n").output
         match = re.search(rf"^  \[[ *]\] ([0-9]+)\. {re.escape(name)}(?: \(([^)]*)\))?$", output, re.MULTILINE)
         if match is None:
-            self.fail(output)
+            CHECK.fail(output)
         labels = (match.group(2) or "").split(", ")
-        self.assertEqual(bundle, "bundle" in labels, output)
+        CHECK.assertEqual(bundle, "bundle" in labels, output)
         return match.group(1)
+
+
+@contextlib.contextmanager
+def deployment() -> Iterator[Deployment]:
+    """A Deployment in a temporary folder of its own, removed with everything in it once the block ends."""
+    with tempfile.TemporaryDirectory(prefix="deploy-test.") as directory:
+        deployed = Deployment()
+        deployed.start(Path(directory))
+        yield deployed
+
+
+@pytest.fixture
+def deployer() -> Iterator[Deployment]:
+    """A Deployment for one pytest test, removed after it; a suite imports this fixture to use it."""
+    with deployment() as deployed:
+        yield deployed
+
+
+class DeployerTestCase(unittest.TestCase, Deployment):
+    """The unittest form of a Deployment: each test starts in a fresh one, removed after its cleanups run."""
+
+    def setUp(self) -> None:
+        self.start(Path(self.enterContext(tempfile.TemporaryDirectory(prefix="deploy-test."))))

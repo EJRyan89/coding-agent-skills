@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from harness import FAILS_PARTWAY, DeployerTestCase, tree_state
+from harness import CHECK, FAILS_PARTWAY, DeployerTestCase, Deployment, deployer, deployment, tree_state
 
 from deployer import cli, pipeline, platform_support, render
 from deployer.errors import DeployError
@@ -398,3 +398,37 @@ class PermanentBackupTests(DeployerTestCase):
             "# first edit",
             (self.skills_dir / ".backups" / first / "alpha" / "SKILL.md").read_text(encoding="utf-8"),
         )
+
+
+# The fixture the tests below take by name, which pytest finds where the suite imports it.
+__all__ = ["deployer"]
+
+
+def test_the_deployer_fixture_starts_each_test_with_an_empty_home_and_a_bare_source(deployer: Deployment) -> None:
+    CHECK.assertEqual([], list(deployer.home.iterdir()))
+    CHECK.assertEqual(["deploy-meta", "skills"], sorted(path.name for path in deployer.source.iterdir()))
+    CHECK.assertEqual([deployer.root] * 2, [deployer.home.parent, deployer.source.parent])
+    deployer.make_source_json()
+    deployer.make_skill("alpha", "Alpha")
+    deployer.make_config()
+    deployer.deploy_ok("--all")
+    CHECK.assertEqual(["alpha"], sorted(deployer.owned("skills")))
+
+
+def test_a_deployment_and_everything_in_it_are_removed_when_its_block_ends() -> None:
+    with deployment() as deployed:
+        root = deployed.root
+        deployed.make_source_json()
+        deployed.make_skill("alpha", "Alpha")
+        deployed.make_config()
+        deployed.deploy_ok("--all")
+        CHECK.assertTrue((deployed.skills_dir / "alpha" / "SKILL.md").is_file())
+    CHECK.assertFalse(root.exists())
+
+
+def test_a_failed_check_names_what_the_run_printed() -> None:
+    with deployment() as deployed:
+        deployed.make_source_json()
+        deployed.make_config()
+        with CHECK.assertRaisesRegex(AssertionError, "Found 0 skills"):
+            deployed.deploy_fails("--all", pattern="a refusal this run never prints")
