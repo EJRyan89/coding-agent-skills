@@ -1,8 +1,9 @@
 """This repository's rule for a regression suite: a file named `test_*`, `test-*`, `*_test`, `*-test`, or `*.test.*`,
 matched against its stem or its whole name ignoring case, with a `.py`, `.sh`, or `.ps1` extension.
 
-Validation finds the suites it runs by it, the review-repository conditions tell a change's tests from its code by it,
-and tools/skill_evals.py leaves a reviewer's suites out of the copy a run reviews by it, so all three read one rule.
+Validation finds the suites it runs by it, the deployer leaves a skill's suites out of what it deploys by it, the
+review-repository conditions tell a change's tests from its code by it, and tools/skill_evals.py leaves a reviewer's
+suites out of the copy a run reviews by it, so all four read one rule.
 """
 
 from __future__ import annotations

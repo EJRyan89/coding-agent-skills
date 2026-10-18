@@ -1,6 +1,6 @@
 # Skills
 
-Every skill this repository deploys: how to start it, what its arguments mean, and what it needs installed.
+Every skill this repository deploys: how to start it, what its arguments mean, and what it needs installed. A deployed skill holds its instructions, references, and scripts; the regression suites beside its scripts stay in this repository, where validation runs them.
 
 ## Starting a skill
 
