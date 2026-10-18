@@ -470,6 +470,7 @@ class PipelineFixture(unittest.TestCase):
         *,
         checkout: bool = True,
         snapshot_exclude: list[str] | None = None,
+        batch_size: int | None = None,
         **settings: Any,
     ) -> None:
         """Write the fixture configuration; `settings` adds or replaces top-level entries."""
@@ -491,6 +492,7 @@ class PipelineFixture(unittest.TestCase):
                         },
                         "checkout_path": str(self.checkout) if checkout else None,
                         **({} if snapshot_exclude is None else {"snapshot_exclude": snapshot_exclude}),
+                        **({} if batch_size is None else {"batch_size": batch_size}),
                     }
                 },
                 "archive_root": str(self.archive),
@@ -5271,6 +5273,100 @@ class BatchTests(PipelineFixture):
         self.run_main("advance", "--batch", str(batch_path))
         self.assertEqual("2026-03-10", load_state(self.state_path)["repositories"][REPOSITORY]["merged_since"])
 
+    def _backlog(self) -> None:
+        """A repository past its 1 March watermark with an open pull request and three merged since, out of number
+        order by merge date, all at the fixture's head."""
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.state_path.write_text(
+            json.dumps({"schema_version": 1, "repositories": {REPOSITORY: {"merged_since": "2026-03-01"}}}),
+            encoding="utf-8",
+        )
+        self.github.listing = [
+            rest_pull(20, self.head, self.base),
+            rest_pull(21, self.head, self.base, state="closed", merged_at="2026-03-06T10:00:00Z"),
+            rest_pull(22, self.head, self.base, state="closed", merged_at="2026-03-03T10:00:00Z"),
+            rest_pull(23, self.head, self.base, state="closed", merged_at="2026-03-04T10:00:00Z"),
+        ]
+        for pull in self.github.listing:
+            self.github.pulls[pull["number"]] = pull
+
+    def _enumerate(self, *options: str) -> tuple[list[str], dict[str, Any]]:
+        """The LISTED and PULL lines enumerate printed, and the repository's entry in the batch it wrote."""
+        batch_path = self.root / "batch.json"
+        code, out, err = self.run_main("enumerate", "--output", str(batch_path), *options)
+        self.assertEqual((0, ""), (code, err))
+        entry = json.loads(batch_path.read_text(encoding="utf-8"))["repositories"][REPOSITORY]
+        return [line for line in out.splitlines() if line.startswith(("LISTED ", "PULL "))], entry
+
+    def _review(self, lines: list[str]) -> None:
+        for line in lines:
+            if line.startswith("PULL "):
+                ready = self.prepare(line.removeprefix("PULL "))
+                self.write_role_result(ready["roles"][0])
+                rp.finalize(ready["run"])
+
+    def test_a_bounded_batch_takes_the_oldest_and_the_next_run_takes_the_rest(self) -> None:
+        self.configure(batch_size=2)
+        self._backlog()
+        lines, entry = self._enumerate()
+        # The two merged longest ago, which hold the watermark back; the open one and the latest merge wait.
+        self.assertEqual(
+            [
+                "LISTED example/one scan=watermark pages=2 pulls=4 read=4 candidates=2 deferred=2",
+                "PULL example/one#22",
+                "PULL example/one#23",
+            ],
+            lines,
+        )
+        self.assertEqual([20, 21], [pull["number"] for pull in entry["deferred"]])
+        self._review(lines)
+        code, out, err = self.run_main("advance", "--batch", str(self.root / "batch.json"))
+        # Short of the deferred merge of 6 March, though every pull request in the batch is reviewed.
+        self.assertEqual((0, "WATERMARK example/one 2026-03-01 -> 2026-03-05\n", ""), (code, out, err))
+
+        lines, entry = self._enumerate()
+        self.assertEqual(
+            [
+                "LISTED example/one scan=watermark pages=2 pulls=4 read=2 candidates=2 deferred=0",
+                "PULL example/one#20",
+                "PULL example/one#21",
+            ],
+            lines,
+        )
+        self.assertEqual([], entry["deferred"])
+        self._review(lines)
+        code, out, err = self.run_main("advance", "--batch", str(self.root / "batch.json"))
+        # Where one unbounded run that reviewed all four would have left it: today.
+        self.assertEqual((0, "WATERMARK example/one 2026-03-05 -> 2026-03-10\n", ""), (code, out, err))
+        self.assertEqual(
+            {"merged_since": "2026-03-10", "updated_at": "2026-03-10"},
+            load_state(self.state_path)["repositories"][REPOSITORY],
+        )
+
+    def test_an_unbounded_batch_takes_every_eligible_pull_request_in_number_order(self) -> None:
+        self._backlog()
+        lines, entry = self._enumerate()
+        self.assertEqual(
+            [
+                "LISTED example/one scan=watermark pages=2 pulls=4 read=4 candidates=4 deferred=0",
+                *(f"PULL example/one#{number}" for number in (20, 21, 22, 23)),
+            ],
+            lines,
+        )
+        self.assertEqual([], entry["deferred"])
+
+    def test_the_batch_size_option_overrides_the_configured_one(self) -> None:
+        for configured, option, taken, deferred in ((None, "1", [22], 3), (1, "3", [21, 22, 23], 1), (2, "9", [], 0)):
+            with self.subTest(configured=configured, option=option):
+                self.state_path.unlink(missing_ok=True)
+                self.configure(batch_size=configured)
+                self._backlog()
+                lines, entry = self._enumerate("--batch-size", option)
+                numbers = taken or [20, 21, 22, 23]
+                self.assertEqual([f"PULL example/one#{number}" for number in numbers], lines[1:])
+                self.assertTrue(lines[0].endswith(f" candidates={len(numbers)} deferred={deferred}"), lines[0])
+                self.assertEqual(deferred, len(entry["deferred"]))
+
     def test_a_pull_merged_later_on_the_utc_day_of_an_empty_batch_stays_eligible(self) -> None:
         # The batch runs at 23:30 UTC on 10 March, when the local date east of UTC is already 11 March, finds nothing
         # pending, and advances; a pull request merged at 23:45 UTC that day must still be listed by the next run.
@@ -5643,11 +5739,13 @@ class RunAndBatchFieldTests(unittest.TestCase):
         self.assert_each_wrong_kind_is_refused(
             "batch", batch, lambda: rp.advance_watermarks(batch, config_path=missing)
         )
-        batch.write_text(json.dumps({"schema_version": 2}), encoding="utf-8")
-        with self.assertRaises(rp.PipelineError) as raised:
-            rp.advance_watermarks(batch, config_path=missing)
-        self.assertIs(rp.PipelineError, type(raised.exception))
-        self.assertEqual(f"{batch} is not a review batch file", str(raised.exception))
+        # Version 1 recorded no deferred pull requests, so it is refused like any other version.
+        for version in (1, 3):
+            batch.write_text(json.dumps({"schema_version": version}), encoding="utf-8")
+            with self.subTest(version=version), self.assertRaises(rp.PipelineError) as raised:
+                rp.advance_watermarks(batch, config_path=missing)
+            self.assertIs(rp.PipelineError, type(raised.exception))
+            self.assertEqual(f"{batch} is not a review batch file", str(raised.exception))
 
 
 class StatsLineTests(unittest.TestCase):
