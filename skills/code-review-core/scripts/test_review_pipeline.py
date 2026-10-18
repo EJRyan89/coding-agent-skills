@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 import review_guard as guard
 import review_pipeline as rp
+import review_runtime
 import review_source
 import review_state
 from git_client import GitError, GitResult
@@ -470,6 +471,7 @@ class PipelineFixture(unittest.TestCase):
         *,
         checkout: bool = True,
         snapshot_exclude: list[str] | None = None,
+        unreviewed_suffixes: list[str] | None = None,
         batch_size: int | None = None,
         **settings: Any,
     ) -> None:
@@ -492,6 +494,7 @@ class PipelineFixture(unittest.TestCase):
                         },
                         "checkout_path": str(self.checkout) if checkout else None,
                         **({} if snapshot_exclude is None else {"snapshot_exclude": snapshot_exclude}),
+                        **({} if unreviewed_suffixes is None else {"unreviewed_suffixes": unreviewed_suffixes}),
                         **({} if batch_size is None else {"batch_size": batch_size}),
                     }
                 },
@@ -4939,6 +4942,22 @@ class SnapshotSizeTests(PipelineFixture):
             snapshot,
         )
         self.assertTrue(snapshot[0].endswith(" excluded=agent-instruction:3,configured:4"), snapshot)
+
+    def test_validate_reviewer_probes_a_listed_file_over_the_changed_file_limit_as_prepare_does(self) -> None:
+        # A package of a type only the repository lists, over the limit, is binary once its suffix is configured.
+        limit = 2 * review_runtime.BINARY_PROBE_BYTES
+        self.push({"models/net.onnx": "ONNX\0" + "x" * limit})
+        head = self.github.pulls[12]["head"]["sha"]
+        reviewer = self.skill_reviewer(".claude/agents/team-review.md", manifest=str(self.local_manifest()))
+        for suffixes, reason in ((None, "file-size-limit"), ([".onnx"], "binary")):
+            with self.subTest(suffixes=suffixes):
+                self.configure(reviewer, unreviewed_suffixes=suffixes)
+                with mock.patch.object(review_runtime, "MAX_CHANGED_FILE_BYTES", limit):
+                    code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
+                self.assertEqual(0, code, err)
+                snapshot = [line for line in out.splitlines() if line.startswith(f"SNAPSHOT {head[:12]} ")]
+                self.assertEqual(1, len(snapshot), out)
+                self.assertTrue(snapshot[0].endswith(f" excluded=agent-instruction:3,{reason}:1"), snapshot)
 
     def test_validate_reviewer_refuses_a_configured_exclusion_over_a_file_the_reviewer_declares(self) -> None:
         reviewer = self.skill_reviewer(".claude/agents/team-review.md", manifest=str(self.local_manifest()))
