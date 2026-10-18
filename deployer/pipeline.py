@@ -17,6 +17,7 @@ from typing import TextIO
 
 from . import (
     config,
+    errors,
     fsops,
     journal,
     lock,
@@ -33,16 +34,7 @@ from . import (
 from . import selection as selection_module
 from .arguments import PROG, USAGE_ERROR, VERIFY_COMMAND_LINE, parse_command, usage_error
 from .context import Context, Options
-from .errors import (
-    Cancelled,
-    DeployError,
-    debug_requested,
-    fail,
-    os_error,
-    print_error,
-    print_traceback,
-    see_recovery,
-)
+from .errors import Cancelled, DeployError, debug_requested, fail, print_error, print_traceback, see_recovery
 from .kinds import ADAPTER_KIND, AGENT_KIND, BY_LABEL, DEPENDENCY_KINDS, KINDS, SHARED, SKILL
 from .paths import Paths, canary_home, claim_canary_home, validate_managed_roots
 from .plan import INSTALLING, RELEASING, PlanEntry
@@ -302,8 +294,6 @@ def _print_source(src: source.Source, home: Path) -> None:
 
 RECOVERY_FAILED = "When recovery fails"
 RECOVERY_CANCELLED = "Cancelled during recovery; the next deployment finishes recovering before it deploys."
-# Ctrl+C after the deployment began, which reconciles its journal before it exits, so nothing is left half-done.
-DEPLOYMENT_CANCELLED = "Cancelled after the deployment began; its changes are reconciled before exit."
 
 
 def _stop_for_pending_recovery(paths: Paths) -> bool:
@@ -561,10 +551,8 @@ def _stopped_recovery(exc: BaseException, debug: bool, paths: Paths, held: lock.
     if isinstance(exc, KeyboardInterrupt):
         error = DeployError(RECOVERY_CANCELLED, *_run_states(paths), exit_code=130)
     else:
-        # An OSError is named by its path and reason, as every other failure is; anything else is a defect.
-        named = os_error(exc, "finish recovery").lines[0] if isinstance(exc, OSError) else _unexpected(exc)
         error = DeployError(
-            named,
+            errors.named(exc, "finish recovery"),
             "Recovery stopped before it finished; the next deployment retries it before deploying anything.",
             *_run_states(paths),
             see_recovery(RECOVERY_FAILED),
@@ -575,37 +563,23 @@ def _stopped_recovery(exc: BaseException, debug: bool, paths: Paths, held: lock.
     return error.exit_code
 
 
-def _unexpected(exc: BaseException) -> str:
-    """The line for an exception the deployer has no message for, a defect rather than a failure it expects."""
-    return f"ERROR: Unexpected {type(exc).__name__}: {exc}"
-
-
-def _converted(exc: OSError | KeyboardInterrupt) -> DeployError:
-    """A failure after the deployment began as the lines it ends with, before its journal is reconciled."""
-    if isinstance(exc, OSError):
-        return os_error(exc, "finish the deployment")
-    cancelled = Cancelled(DEPLOYMENT_CANCELLED)
-    cancelled.__cause__ = exc
-    return cancelled
-
-
 def _recover_from_failure(exc: BaseException, debug: bool, paths: Paths, held: lock.Lock) -> int:
     """Report a failed deployment, then recover its journal.
 
     An exception during recovery releases the lock and keeps the journal; unreconciled entries keep both.
     """
-    if isinstance(exc, (DeployError, OSError, KeyboardInterrupt)):
-        # An OSError, such as of a file another program holds open, ends as every command's does: the action, the
-        # path, the reason, and the remedy; Ctrl+C ends as a cancellation.
-        error = exc if isinstance(exc, DeployError) else _converted(exc)
-        print_error(error, debug)
-        code = error.exit_code
+    outcome = "cancelled" if isinstance(exc, KeyboardInterrupt) else "failed"
+    # An OSError, such as of a file another program holds open, ends as every command's does; Ctrl+C as a cancellation.
+    if isinstance(exc, (OSError, KeyboardInterrupt)):
+        exc = errors.converted(exc, "finish the deployment", errors.DEPLOYMENT_CANCELLED)
+    if isinstance(exc, DeployError):
+        print_error(exc, debug)
+        code = exc.exit_code
     else:
-        print(_unexpected(exc), file=sys.stderr)
+        print(errors.named(exc, "finish the deployment"), file=sys.stderr)
         if debug:
             print_traceback(exc)
         code = 1
-    outcome = "cancelled" if isinstance(exc, KeyboardInterrupt) else "failed"
     print(f"Deployment {outcome}; reconciling the current journal before exit...", file=sys.stderr)
     try:
         recovered = journal.recover_incomplete(paths)
