@@ -27,20 +27,16 @@ def tree_hash(files: dict[str, bytes]) -> str:
     return "sha256:" + digest.hexdigest()
 
 
-def _is_link(path: Path) -> bool:
-    return platform_support.is_link(path) or platform_support.is_reparse_point(path)
-
-
 def find_link(path: Path) -> Path | None:
     """Return the first symlink or junction at or beneath a path, without following any."""
-    if _is_link(path):
+    if platform_support.is_link_or_junction(path):
         return path
     if not path.is_dir():
         return None
     for directory, subdirectories, names in os.walk(path, followlinks=False):
         base = Path(directory)
         for name in [*subdirectories, *names]:
-            if _is_link(base / name):
+            if platform_support.is_link_or_junction(base / name):
                 return base / name
     return None
 
@@ -69,6 +65,6 @@ def read_tree(root: Path) -> dict[str, bytes]:
 
 
 def hash_path(path: Path) -> str:
-    if path.is_dir() or _is_link(path):
+    if path.is_dir() or platform_support.is_link_or_junction(path):
         return tree_hash(read_tree(path))
     return file_hash(path.read_bytes())

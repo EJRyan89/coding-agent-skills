@@ -88,7 +88,7 @@ def tree_state(root: Path) -> dict[str, str]:
         followed = []
         for name in sorted([*directories, *files]):
             path = base / name
-            if platform_support.is_reparse_point(path) or path.is_symlink():
+            if platform_support.is_link_or_junction(path):
                 state[path.relative_to(root).as_posix()] = f"link {path.readlink()}"
             elif name in files:
                 state[path.relative_to(root).as_posix()] = f"file {hashlib.sha256(path.read_bytes()).hexdigest()}"

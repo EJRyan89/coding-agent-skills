@@ -9,6 +9,8 @@ DEBUG_VARIABLE = "DEPLOYER_DEBUG"
 DEBUG_HINT = "Rerun with --debug to see the traceback."
 CHECK_THE_PATH = "Check that the path exists and that you can read it, then retry."
 CANCELLED = "Cancelled; nothing was changed."
+# Ctrl+C after a deployment began, which reconciles its journal before it exits.
+DEPLOYMENT_CANCELLED = "Cancelled after the deployment began; its changes are reconciled before exit."
 
 RECOVERY_GUIDE = "docs/recovery.md"
 # The guide's sections that refusals point at; a test checks each is a heading of the guide.
@@ -82,14 +84,27 @@ def fail(error: DeployError | OSError | KeyboardInterrupt, debug: bool, action: 
 
     An OSError is reported as its DeployError, and Ctrl+C as a cancellation, exit 130.
     """
-    if isinstance(error, OSError):
-        error = os_error(error, action)
-    elif isinstance(error, KeyboardInterrupt):
-        cancelled = Cancelled(CANCELLED)
-        cancelled.__cause__ = error
-        error = cancelled
+    if isinstance(error, (OSError, KeyboardInterrupt)):
+        error = converted(error, action)
     print_error(error, debug)
     return error.exit_code
+
+
+def converted(error: OSError | KeyboardInterrupt, action: str, cancelled: str = CANCELLED) -> DeployError:
+    """An OSError as the DeployError naming the action, path, and reason, or Ctrl+C as the cancellation, exit 130."""
+    if isinstance(error, OSError):
+        return os_error(error, action)
+    cancellation = Cancelled(cancelled)
+    cancellation.__cause__ = error
+    return cancellation
+
+
+def named(error: BaseException, action: str) -> str:
+    """The line that names a failure: an OSError's action, path, and reason, or else the exception the deployer has no
+    message for, a defect rather than a failure it expects."""
+    if isinstance(error, OSError):
+        return os_error(error, action).lines[0]
+    return f"ERROR: Unexpected {type(error).__name__}: {error}"
 
 
 class Cancelled(DeployError):

@@ -835,14 +835,19 @@ class CodexSandboxProbeTests(unittest.TestCase):
                     [["C:/tools/codex.exe", "debug", "prompt-input", "-c", "sandbox_mode=workspace-write"]], calls
                 )
 
-    def test_a_failed_silent_or_unfinished_probe_names_no_mode(self) -> None:
+    def test_a_failed_or_silent_probe_names_no_mode(self) -> None:
         for result in (
             platform_support.ToolResult(1, prompt_input("workspace-write")),
             platform_support.ToolResult(0, "error: unknown subcommand 'debug'\n"),
-            platform_support.ToolTimedOut("C:/tools/codex.exe", 600),
         ):
             with self.subTest(result=result):
                 self.assertIsNone(self.mode(result)[0])
+
+    def test_an_unfinished_probe_stops_with_the_deadline_rather_than_naming_no_mode(self) -> None:
+        timed_out = platform_support.ToolTimedOut("C:/tools/codex.exe", 600)
+        with self.assertRaises(platform_support.ToolTimedOut) as raised:
+            self.mode(timed_out)
+        self.assertIs(timed_out, raised.exception)
 
 
 class VersionTests(unittest.TestCase):

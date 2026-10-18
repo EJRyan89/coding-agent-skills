@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import errno
 import os
+import stat
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
-from harness import DeployerTestCase
+from harness import DeployerTestCase, make_directory_link
 
 from deployer import platform_support
 from deployer.errors import DeployError
@@ -244,7 +247,7 @@ class AppExecutionAliasTests(unittest.TestCase):
         with (
             mock.patch.dict(os.environ, {"LOCALAPPDATA": local}),
             mock.patch.object(platform_support, "HAS_APP_EXECUTION_ALIASES", platform),
-            mock.patch.object(platform_support, "is_reparse_point", return_value=reparse) as reparse_point,
+            mock.patch.object(platform_support, "is_link_or_junction", return_value=reparse) as reparse_point,
         ):
             found = platform_support.is_app_execution_alias(program)
         if found:
@@ -269,6 +272,87 @@ class AppExecutionAliasTests(unittest.TestCase):
         expected = sys.platform == "win32"
         self.assertEqual(expected, platform_support.HAS_APP_EXECUTION_ALIASES)
         self.assertEqual(expected, platform_support.CODEX_NEEDS_SANDBOX_SETTING)
+
+
+# The value Windows gives a reparse point's attribute, written out so the rule is held to it, not to a constant.
+REPARSE_POINT = 0x400
+# Ways a path's own metadata cannot be read: a folder that refuses its listing, and a link chain too long to follow.
+UNREADABLE = (
+    PermissionError(errno.EACCES, "Access is denied"),
+    OSError(errno.ELOOP, "Too many levels of symbolic links"),
+)
+
+
+def own_metadata(path: Path, answer: object) -> Any:
+    """Patch lstat so `path` reports `answer` as its own metadata, or raises it when it is an exception."""
+    real = os.lstat
+
+    def lstat(target: Any, *rest: Any, **options: Any) -> Any:
+        if os.fspath(target) != os.fspath(path):
+            return real(target, *rest, **options)
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+    return mock.patch.object(platform_support.os, "lstat", side_effect=lstat)
+
+
+class LinkJudgementTests(unittest.TestCase):
+    """The deployer judges a link as skill-core's link_probe does, and refuses to judge a path it cannot read."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.folder = self.root / "folder"
+        self.folder.mkdir()
+        self.file = self.root / "file.txt"
+        self.file.write_text("text\n", encoding="utf-8")
+
+    def judged(self, path: Path) -> tuple[bool, bool]:
+        return platform_support.is_link_or_junction(path), platform_support.is_junction(path)
+
+    def test_a_plain_folder_a_file_and_a_missing_path_are_no_links(self) -> None:
+        for path in (self.folder, self.file, self.root / "missing", self.file / "beneath-a-file"):
+            with self.subTest(path=path.name):
+                self.assertEqual((False, False), self.judged(path))
+
+    def test_a_link_to_a_folder_this_platform_makes_is_a_link(self) -> None:
+        link = self.root / "link"
+        make_directory_link(link, self.folder)
+        # A junction on Windows, which is no symbolic link; a symbolic link elsewhere.
+        self.assertEqual((True, sys.platform == "win32"), self.judged(link))
+
+    def test_a_symbolic_link_is_a_link_and_no_junction(self) -> None:
+        link = self.root / "symbolic"
+        attributes = REPARSE_POINT if sys.platform == "win32" else 0
+        with own_metadata(link, SimpleNamespace(st_mode=stat.S_IFLNK, st_file_attributes=attributes)):
+            self.assertEqual((True, False), self.judged(link))
+
+    def test_a_junction_is_a_link_and_a_junction(self) -> None:
+        link = self.root / "junction"
+        with (
+            mock.patch.object(stat, "FILE_ATTRIBUTE_REPARSE_POINT", REPARSE_POINT, create=True),
+            own_metadata(link, SimpleNamespace(st_mode=stat.S_IFDIR, st_file_attributes=REPARSE_POINT)),
+        ):
+            self.assertEqual((True, True), self.judged(link))
+
+    def test_a_path_whose_metadata_cannot_be_read_raises_rather_than_passing_as_no_link(self) -> None:
+        for failure in UNREADABLE:
+            for judge in (platform_support.is_link_or_junction, platform_support.is_junction):
+                with (
+                    self.subTest(failure=failure, judge=judge.__name__),
+                    own_metadata(self.folder, failure),
+                    self.assertRaises(OSError) as raised,
+                ):
+                    judge(self.folder)
+                self.assertIs(failure, raised.exception)
+
+    def test_it_is_skill_cores_link_probe(self) -> None:
+        with mock.patch("link_probe.is_link_or_junction", return_value=True) as probed:
+            self.assertTrue(platform_support.is_link_or_junction(self.folder))
+        probed.assert_called_once()
+        self.assertEqual(self.folder, probed.call_args.args[0])
 
 
 class SupportedPlatformTests(unittest.TestCase):

@@ -110,7 +110,7 @@ def canary_home(value: str) -> Path:
     if not platform_support.is_absolute(value):
         raise usage_error(f"--canary-home must be an absolute path (got: {value})")
     home = Path(value)
-    if platform_support.is_link(home) or platform_support.is_reparse_point(home):
+    if platform_support.is_link_or_junction(home):
         raise usage_error(f"--canary-home must not be a symlink or junction: {platform_support.normalize(home)}")
     if not home.is_dir():
         raise usage_error(f"--canary-home must be an existing directory: {platform_support.normalize(home)}")
@@ -151,7 +151,7 @@ def validate_managed_roots(paths: Paths) -> None:
         parts = Path(root).relative_to(home).parts
         components = [home, *(home.joinpath(*parts[:depth]) for depth in range(1, len(parts) + 1))]
         for component in components:
-            if platform_support.is_link(component) or platform_support.is_reparse_point(component):
+            if platform_support.is_link_or_junction(component):
                 raise DeployError(
                     f"ERROR: Deployment path contains a symlink or junction: {platform_support.normalize(component)}",
                     "Replace it with a real directory, then retry.",

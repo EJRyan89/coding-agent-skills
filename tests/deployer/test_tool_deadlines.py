@@ -331,6 +331,29 @@ class ReadOnlyCommandDeadlineTests(DeadlineCase):
         self.assertNotIn("Traceback", result.output)
         self.assert_ended(self.stubs.started())
 
+    def test_check_stops_at_a_codex_sandbox_probe_that_hangs_and_names_no_sandbox_mode(self) -> None:
+        stub = self.stubs.hanging("codex")
+        real = platform_support.run_tool
+
+        def run(arguments: list[str], environment: dict[str, str] | None = None) -> platform_support.ToolResult:
+            if arguments == [stub, "--version"]:
+                return platform_support.ToolResult(0, "codex-cli 0.160.0\n")
+            return real(arguments, environment, timeout=SHORT_DEADLINE if arguments[0] == stub else None)
+
+        with (
+            mock.patch.object(platform_support, "CODEX_NEEDS_SANDBOX_SETTING", True),
+            self.held_until_started(),
+            found("codex", stub),
+            mock.patch.object(platform_support, "run_tool", side_effect=run),
+        ):
+            result = self.run_cli("check")
+        self.assertEqual(1, result.code, result.output)
+        for line in timed_out_lines(stub, SHORT_DEADLINE):
+            self.assertIn(line, result.output.splitlines())
+        self.assertNotIn("named no sandbox mode", result.output)
+        self.assertNotIn("Traceback", result.output)
+        self.assert_ended(self.stubs.started())
+
     def test_verify_stops_at_a_version_probe_that_hangs(self) -> None:
         self.deploy_ok("--all")
         stub = self.stubs.hanging("codex")

@@ -65,7 +65,7 @@ def remove(path: Path) -> None:
 
     A read-only file, which Windows will not delete, is made writable and deleted.
     """
-    if platform_support.is_link(path) or platform_support.is_reparse_point(path):
+    if platform_support.is_link_or_junction(path):
         try:
             path.unlink()
         except OSError:
