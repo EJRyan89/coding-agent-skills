@@ -1138,7 +1138,7 @@ def request(run: str = "<root>/run", **changes: Any) -> dict[str, Any]:
         },
         "prior_findings": [],
         "github_comments": THREADS,
-        "coverage": {"unavailable_sources": []},
+        "coverage": {"unavailable_sources": [], "unreviewed_files": {}},
         **changes,
     }
 
@@ -1251,7 +1251,10 @@ class InitialReviewTests(PrepareFixture):
         self.assertFalse((self.run_dir / "source" / "app" / "service.py").exists())
         # The author cannot hide a change behind the maintainer's exclusion: the diff names it, and its review is
         # INCOMPLETE.
-        self.assertEqual({"unavailable_sources": ["app/service.py"]}, self.json_file("request.json")["coverage"])
+        self.assertEqual(
+            {"unavailable_sources": ["app/service.py"], "unreviewed_files": {}},
+            self.json_file("request.json")["coverage"],
+        )
         self.assertEqual(
             {"agent-instruction": 1, "configured": len(configured), "symbolic-link": 2}, result["snapshot"]["excluded"]
         )
@@ -1409,7 +1412,8 @@ class SnapshotFromGitHubTests(PrepareFixture):
         )
         # Only a changed file too large or unsafely named is a coverage gap; the others are deliberate exclusions.
         self.assertEqual(
-            {"unavailable_sources": ["app/what?.py", "data/huge.txt"]}, self.json_file("request.json")["coverage"]
+            {"unavailable_sources": ["app/what?.py", "data/huge.txt"], "unreviewed_files": {}},
+            self.json_file("request.json")["coverage"],
         )
         self.assertEqual(
             ["source/README.md", "source/app/service.py", "source/source-snapshot.json"],
@@ -1428,7 +1432,7 @@ class SnapshotFromGitHubTests(PrepareFixture):
         self.assertEqual(("configured", "configured"), (excluded["README.md"], excluded["app/service.py"]))
         self.assertEqual(["source/source-snapshot.json"], [path for path in self.files() if path.startswith("source/")])
         self.assertEqual(
-            {"unavailable_sources": ["app/service.py", "app/what?.py", "data/huge.txt"]},
+            {"unavailable_sources": ["app/service.py", "app/what?.py", "data/huge.txt"], "unreviewed_files": {}},
             self.json_file("request.json")["coverage"],
         )
         self.assertEqual((0, 2), (result["snapshot"]["files"], result["snapshot"]["excluded"]["configured"]))
@@ -1490,7 +1494,8 @@ class SnapshotFromGitHubTests(PrepareFixture):
             self.json_file("source/source-snapshot.json")["excluded_paths"],
         )
         self.assertEqual(
-            {"unavailable_sources": sorted([injected, tabbed])}, self.json_file("request.json")["coverage"]
+            {"unavailable_sources": sorted([injected, tabbed]), "unreviewed_files": {}},
+            self.json_file("request.json")["coverage"],
         )
         self.assertEqual(["app/service.py"], self.json_file("work/plan.json")["changed_files"])
         self.assertEqual("app/service.py\n", self.text_file("work/generic-review.files.txt"))

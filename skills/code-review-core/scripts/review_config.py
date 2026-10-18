@@ -53,11 +53,17 @@ OPERATIONS = {"review-prs", "update-pr-dashboard", "review-insights"}
 # An operation a skill rename retired, with the name it has now: a configuration still naming it is refused with both
 # names, as any unknown operation is refused, so the user renames the key rather than losing its set silently.
 RENAMED_OPERATIONS = {"update-pr-tracker": "update-pr-dashboard"}
-REPOSITORY_KEYS = {"reviewer", "checkout_path", "snapshot_exclude", "batch_size"}
+REPOSITORY_KEYS = {"reviewer", "checkout_path", "snapshot_exclude", "unreviewed_suffixes", "batch_size"}
 # A repository's snapshot_exclude: glob patterns over snapshot-relative paths, matched as review_runtime's
 # configured_exclusion matches them.
 MAX_SNAPSHOT_EXCLUDE_PATTERNS = 100
 MAX_SNAPSHOT_EXCLUDE_PATTERN_LENGTH = 200
+# A repository's unreviewed_suffixes: the file-name suffixes of binary file types the review does not read, beside
+# the ones review_runtime's UNREVIEWED_SUFFIXES ships. Each is lowercase, a dot and then one or more dot-separated
+# parts, such as `.nupkg` or `.tar.lz`, and a file name ending in it, ignoring case, matches it.
+MAX_UNREVIEWED_SUFFIXES = 100
+MAX_UNREVIEWED_SUFFIX_LENGTH = 32
+UNREVIEWED_SUFFIX = re.compile(r"(?:\.[a-z0-9][a-z0-9_+-]*)+")
 REVIEWER_KEYS = {"id", "protocol_version", "trusted_ref", "scope", "manifest_path", "skill", "manifest"}
 DASHBOARD_KEYS = {"start_marker", "end_marker", "status_overrides", "author_names"}
 # The sections the pull-request tracker computes. update-pr-dashboard renders these names, and they live here, beside
@@ -254,9 +260,46 @@ def _validate_repository(identity: str, entry_value: Any) -> dict[str, Any]:
         maximum_patterns=MAX_SNAPSHOT_EXCLUDE_PATTERNS,
         maximum_length=MAX_SNAPSHOT_EXCLUDE_PATTERN_LENGTH,
     )
+    unreviewed = validate_unreviewed_suffixes(
+        entry.get("unreviewed_suffixes", []), f"config.{field}.unreviewed_suffixes"
+    )
     # The most pull requests one batch run reviews; null or absent, a run takes every eligible one.
     batch_size = READ.optional(READ.integer, entry.get("batch_size"), f"config.{field}.batch_size", minimum=1)
-    return {"reviewer": reviewer, "checkout_path": checkout, "snapshot_exclude": exclude, "batch_size": batch_size}
+    return {
+        "reviewer": reviewer,
+        "checkout_path": checkout,
+        "snapshot_exclude": exclude,
+        "unreviewed_suffixes": unreviewed,
+        "batch_size": batch_size,
+    }
+
+
+def is_unreviewed_suffix(value: str) -> bool:
+    """Whether a string is a file-name suffix an unreviewed file type may be named by (see UNREVIEWED_SUFFIX)."""
+    return len(value) <= MAX_UNREVIEWED_SUFFIX_LENGTH and UNREVIEWED_SUFFIX.fullmatch(value) is not None
+
+
+def validate_unreviewed_suffixes(value: Any, field: str, *, reader: FieldReader = READ) -> list[str]:
+    """Distinct file-name suffixes of binary file types the review does not read, each lowercase, as
+    `is_unreviewed_suffix` reads one; `reader` is the reader of the format that holds them."""
+    suffixes = reader.array(
+        value,
+        field,
+        lambda suffix, path: reader.string(suffix, path, maximum=MAX_UNREVIEWED_SUFFIX_LENGTH),
+        maximum=MAX_UNREVIEWED_SUFFIXES,
+    )
+    for index, suffix in enumerate(suffixes):
+        if not is_unreviewed_suffix(suffix):
+            raise reader.fail(
+                f"{field}[{index}]",
+                "a lowercase file-name suffix: a dot, then letters, digits, '_', '+', or '-', in parts each starting "
+                "with a letter or digit and joined by dots",
+                describe(suffix),
+            )
+    for index, suffix in enumerate(suffixes):
+        if suffix in suffixes[:index]:
+            raise reader.fail(field, "distinct file-name suffixes", f"{json.dumps(suffix)} twice")
+    return suffixes
 
 
 def validate_glob_patterns(

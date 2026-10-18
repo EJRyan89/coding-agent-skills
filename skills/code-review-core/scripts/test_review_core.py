@@ -46,6 +46,7 @@ from review_config import (
     ConfigurationError,
     ConfigurationFieldError,
     default_manifest_path,
+    is_unreviewed_suffix,
     resolve_repositories,
     validate_config,
     write_config,
@@ -3308,7 +3309,7 @@ class RuntimeContractTests(unittest.TestCase):
             self.assertFalse((destination / "tools" / "cache").exists(), "nothing is written for a link")
             self.assertFalse((destination / "vendor").exists(), "a submodule has no blob, so nothing is written")
             verify_source_snapshot(destination, expected_repository="example/one", expected_commit=head)
-            # Deliberate, like binary and agent-instruction: reviewed from the diff, never a coverage gap.
+            # Deliberate, like agent-instruction: reviewed from the diff, never a coverage gap.
             diff = root / "diff.patch"
             diff.write_text(
                 "diff --git a/tools/cache b/tools/cache\nnew file mode 120000\nindex 0000000..1111111\n"
@@ -3331,8 +3332,99 @@ class RuntimeContractTests(unittest.TestCase):
             review_runtime.SNAPSHOT_EXCLUSION_REASONS,
         )
         self.assertEqual(
-            {"configured", "file-size-limit", "unsafe-path", "unextractable"}, review_runtime.COVERAGE_GAP_REASONS
+            {"binary", "configured", "file-size-limit", "unsafe-path", "unextractable"},
+            review_runtime.COVERAGE_GAP_REASONS,
         )
+
+    def test_a_changed_binary_of_a_type_the_review_does_not_read_is_unreviewed_and_any_other_binary_a_gap(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            entries = {
+                b"src/app.py": ("100644", b"print('app')\n"),
+                b"dist/Setup.MSI": ("100644", b"MSI\0installer"),
+                b"assets/logo.png": ("100644", b"\x89PNG\r\n\x1a\n\0image"),
+                b"data/blob.bin": ("100644", b"BIN\0data"),
+                b"docs/notes.zip": ("100644", b"A text placeholder named like an archive.\n"),
+                b"assets/old.png": ("100644", b"PNG\0unchanged"),
+            }
+            checkout, head = self._plumbing_repository(root, entries)
+            changed = ["src/app.py", "dist/Setup.MSI", "assets/logo.png", "data/blob.bin", "docs/notes.zip"]
+            metadata = materialize_source_snapshot(
+                checkout, "example/one", head, root / "snapshot", changed_paths=changed
+            )
+            binary = ["assets/logo.png", "assets/old.png", "data/blob.bin", "dist/Setup.MSI"]
+            self.assertEqual(dict.fromkeys(binary, "binary"), metadata["excluded_paths"])
+            self.assertIn("docs/notes.zip", metadata["source_hashes"], "a text file is reviewed whatever its name")
+            diff = root / "diff.patch"
+            diff.write_text(
+                "".join(
+                    f"diff --git a/{path} b/{path}\nindex 1111111..2222222 100644\n"
+                    + (
+                        f"Binary files a/{path} and b/{path} differ\n"
+                        if path in binary
+                        else f"--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old\n+new\n"
+                    )
+                    for path in changed
+                ),
+                encoding="utf-8",
+            )
+            # The shipped list names the installer and the image, matched ignoring case, and nothing names the
+            # unchanged image, which no review is missing.
+            coverage = review_runtime.review_coverage(diff, metadata)
+            self.assertEqual(
+                {
+                    "unavailable_sources": ["data/blob.bin"],
+                    "unreviewed_files": {"assets/logo.png": ".png", "dist/Setup.MSI": ".msi"},
+                },
+                coverage,
+            )
+            self.assertEqual("INCOMPLETE", calculate_verdict([], {}, coverage["unavailable_sources"]))
+            # The repository's own suffix makes the last binary unreviewed too, and the review ends on its findings.
+            coverage = review_runtime.review_coverage(diff, metadata, [".bin", ".dat"])
+            self.assertEqual([], coverage["unavailable_sources"])
+            self.assertEqual(
+                {"assets/logo.png": ".png", "data/blob.bin": ".bin", "dist/Setup.MSI": ".msi"},
+                coverage["unreviewed_files"],
+            )
+            self.assertEqual("APPROVED", calculate_verdict([], {}, coverage["unavailable_sources"]))
+            self.assertEqual([], review_runtime.unavailable_sources(diff, metadata, [".bin"]))
+
+    def test_a_gap_reason_of_a_name_merged_with_a_binary_one_keeps_it_a_gap(self) -> None:
+        # Two undecodable spellings of one name read as one; the gap one of them has is never hidden by the other.
+        one, two = "dist/bad�.zip", "dist/bad��.zip"
+        with tempfile.TemporaryDirectory() as temporary:
+            diff = Path(temporary) / "diff.patch"
+            diff.write_text(f"diff --git a/{one} b/{one}\nBinary files a/{one} and b/{one} differ\n", encoding="utf-8")
+            for excluded in ({one: "binary", two: "file-size-limit"}, {one: "file-size-limit", two: "binary"}):
+                with self.subTest(excluded=excluded):
+                    coverage = review_runtime.review_coverage(diff, {"excluded_paths": excluded})
+                    self.assertEqual({"unavailable_sources": [one], "unreviewed_files": {}}, coverage)
+
+    def test_the_shipped_unreviewed_suffixes_and_how_a_name_matches_one(self) -> None:
+        self.assertEqual(
+            {
+                *(".7z", ".bz2", ".cab", ".gz", ".jar", ".rar", ".tar", ".tgz", ".xz", ".zip", ".zst"),
+                *(".apk", ".appx", ".deb", ".dmg", ".msi", ".msix", ".msp", ".nupkg", ".pkg", ".rpm", ".snupkg"),
+                *(".vsix", ".whl"),
+                *(".bmp", ".gif", ".icns", ".ico", ".jpeg", ".jpg", ".png", ".psd", ".tif", ".tiff", ".webp"),
+                *(".eot", ".otf", ".ttf", ".woff", ".woff2"),
+                *(".a", ".class", ".dll", ".dylib", ".exe", ".lib", ".o", ".obj", ".pdb", ".pyc", ".pyd", ".so"),
+                ".wasm",
+                *(".aac", ".avi", ".flac", ".m4a", ".mkv", ".mov", ".mp3", ".mp4", ".ogg", ".wav", ".webm"),
+            },
+            review_runtime.UNREVIEWED_SUFFIXES,
+        )
+        self.assertTrue(all(is_unreviewed_suffix(suffix) for suffix in review_runtime.UNREVIEWED_SUFFIXES))
+        for path, suffixes, expected in (
+            ("dist/Setup.MSI", [".msi"], ".msi"),
+            ("dist/setup.msi.txt", [".msi"], None),
+            ("pkg/tool.tar.lz", [".lz", ".tar.lz"], ".tar.lz"),
+            ("pkg/.zip", [".zip"], None),
+            ("zip", [".zip"], None),
+            ("src/archive_zip", [".zip"], None),
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(expected, review_runtime.unreviewed_suffix(path, suffixes))
 
     def test_source_snapshot_still_refuses_a_link_at_the_reserved_manifest_path(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

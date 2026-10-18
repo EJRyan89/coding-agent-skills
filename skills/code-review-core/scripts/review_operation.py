@@ -187,6 +187,8 @@ def request_to_record_input(
         "mode": request["mode"],
         "adapter": adapter,
         "unavailable_sources": list((request.get("coverage") or {}).get("unavailable_sources", [])),
+        # Absent from runs prepared before unreviewed files were recorded.
+        "unreviewed_files": dict((request.get("coverage") or {}).get("unreviewed_files", {})),
         "uncovered_files": list(uncovered_files or []),
     }
 

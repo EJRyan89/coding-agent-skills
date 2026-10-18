@@ -973,7 +973,7 @@ class CoverageTests(unittest.TestCase):
 
     def test_request_lists_changed_files_the_snapshot_could_not_provide(self) -> None:
         request, _ = self.request()
-        self.assertEqual({"unavailable_sources": ["db/Big.sql"]}, request["coverage"])
+        self.assertEqual({"unavailable_sources": ["db/Big.sql"], "unreviewed_files": {}}, request["coverage"])
 
     def test_report_names_configured_exclusions_and_other_coverage_gap_causes(self) -> None:
         from review_records import render_markdown, validate_record
@@ -989,7 +989,7 @@ class CoverageTests(unittest.TestCase):
                 snapshot = json.loads((root / "source" / review_runtime.SOURCE_SNAPSHOT_MANIFEST).read_text("utf-8"))
                 self.assertEqual(excluded_paths, snapshot["excluded_paths"])
                 coverage = {"unavailable_sources": sorted(excluded_paths)}
-                self.assertEqual(coverage, request["coverage"])
+                self.assertEqual({**coverage, "unreviewed_files": {}}, request["coverage"])
                 record = self.record(request, [])
                 self.assertEqual(coverage, record["review"]["coverage"])
                 self.assertEqual("INCOMPLETE", record["review"]["verdict"])

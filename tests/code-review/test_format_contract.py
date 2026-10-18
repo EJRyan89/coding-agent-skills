@@ -524,6 +524,7 @@ def record_fixtures() -> list[dict[str, Any]]:
             body_given=24_000,
             unavailable_sources=["assets/large.txt"],
             uncovered_files=["build/settings.props"],
+            unreviewed_files={"assets/setup.msi": ".msi"},
             github_comments=COMMENTS,
             reviewers=[
                 {
@@ -639,6 +640,7 @@ def record_fixtures() -> list[dict[str, Any]]:
         reviewed_at="2026-09-01T09:00:00+00:00",
     )
     del older["ledger"]
+    older["schema_version"] = 1  # written before unreviewed files were recorded
     older["review"].update(version=2, mode="re-review")
     older["prior_dispositions"] = [_disposition("F001", "addressed")]
     return [initial, rereview, uncompared, older]
@@ -677,6 +679,7 @@ def config_fixtures() -> list[dict[str, Any]]:
                 },
                 "checkout_path": native("C:\\Repos\\Five"),
                 "snapshot_exclude": ["**/*.resx", "Reports/Generated/**"],
+                "unreviewed_suffixes": [".nupkg", ".tar.lz"],
                 "batch_size": 25,
             },
             "example/two": {
@@ -1372,13 +1375,16 @@ def legacy_accepts(scratch: Path) -> Callable[[Any], bool]:
 
 
 def request_fixtures(scratch: Path, prior: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Requests as `build_adapter_request` writes them: one with a head branch, prior findings, review comments, and
-    a changed file the snapshot could not hold, and one with none of them."""
+    """Requests as `build_adapter_request` writes them: one with a head branch, prior findings, review comments, a
+    changed file the snapshot could not hold, and a changed binary of a type the review does not read, and one with
+    none of them."""
     diff = scratch / "diff.patch"
     diff.write_text(
-        "diff --git a/src/file.cs b/src/file.cs\ndiff --git a/assets/large.txt b/assets/large.txt\n", encoding="utf-8"
+        "diff --git a/src/file.cs b/src/file.cs\ndiff --git a/assets/large.txt b/assets/large.txt\n"
+        "diff --git a/assets/setup.msi b/assets/setup.msi\n",
+        encoding="utf-8",
     )
-    snapshot = {"excluded_paths": {"assets/large.txt": "file-size-limit"}}
+    snapshot = {"excluded_paths": {"assets/large.txt": "file-size-limit", "assets/setup.msi": "binary"}}
     common: dict[str, Any] = {
         "repository": "example/one",
         "pull_number": 12,
@@ -1584,6 +1590,14 @@ class FormatContractTest(unittest.TestCase):
                 unknown = [path for path in table.paths if path.split(".")[0] not in self.fixtures]
                 self.assertEqual([], unknown, "a table heading names a format this suite does not know")
                 self.assertEqual([], check_table(table.heading, table.rows, instances(table.paths, self.fixtures)))
+
+    def test_the_contract_lists_the_shipped_unreviewed_suffixes(self) -> None:
+        text = CONTRACT.read_text(encoding="utf-8")
+        listing = re.search(r"The suite ships these suffixes(.*?)The suffix decides", text, re.DOTALL)
+        self.assertIsNotNone(listing, "the contract no longer lists the shipped suffixes")
+        listed = re.findall(r"`(\.[^`]+)`", listing.group(1) if listing else "")
+        self.assertEqual(len(listed), len(set(listed)), "a suffix is listed twice")
+        self.assertEqual(review_runtime.UNREVIEWED_SUFFIXES, set(listed))
 
     def test_every_format_and_nested_object_has_a_table(self) -> None:
         documented = {path.split(".")[0] for table in self.tables for path in table.paths}
