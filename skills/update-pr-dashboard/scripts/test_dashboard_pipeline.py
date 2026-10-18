@@ -22,7 +22,7 @@ sys.path.insert(0, str(sibling_scripts("code-review-core")))
 
 import dashboard_pipeline as tp
 import review_archive
-import review_fixture
+import test_review_fixture as review_fixture
 from github_client import CommandResult
 from review_archive import commit_record
 from review_config import load_config, write_config

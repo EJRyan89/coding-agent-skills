@@ -1,4 +1,6 @@
-"""A three-version review archive for the finding-ledger rendering tests of code-review-core and update-pr-dashboard.
+"""A three-version review archive for the finding-ledger tests of code-review-core, flag-review-finding, and
+update-pr-dashboard, and the tests that hold it to what this says. Its name makes it a regression suite, so it runs as
+one and the deployer leaves it out of what it deploys, as it leaves every suite.
 
 Version 1 raises a must-fix that stays open and a should-fix that version 2 addresses. Version 2 reports nothing new.
 Version 3 reports a new suggestion and repeats the open must-fix. Each version's head is its digit repeated.
@@ -6,6 +8,8 @@ Version 3 reports a new suggestion and repeats the open must-fix. Each version's
 
 from __future__ import annotations
 
+import tempfile
+import unittest
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -205,3 +209,29 @@ def commit_fixture(
         )
         persisted.append(saved)
     return persisted
+
+
+class ReviewFixtureTests(unittest.TestCase):
+    """The archive holds what the module docstring says, since every suite that commits it relies on that."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.archive = Path(temporary.name)
+
+    def test_the_three_versions_raise_address_and_repeat_the_documented_findings(self) -> None:
+        records = commit_fixture(self.archive)
+        self.assertEqual(
+            [
+                [("F001", "MUST_FIX", "open"), ("F002", "SHOULD_FIX", "open")],
+                [("F001", "MUST_FIX", "open"), ("F002", "SHOULD_FIX", "closed")],
+                [("F001", "MUST_FIX", "open"), ("F002", "SHOULD_FIX", "closed"), ("F002", "SUGGESTION", "open")],
+            ],
+            [[(entry["id"], entry["severity"], entry["state"]) for entry in record["ledger"]] for record in records],
+        )
+        self.assertEqual(["1" * 40, "2" * 40, "3" * 40], [record["pull_request"]["head_sha"] for record in records])
+        self.assertEqual([REPOSITORY] * 3, [record["repository"] for record in records])
+
+    def test_fewer_versions_commit_only_the_first_reviews(self) -> None:
+        self.assertEqual(1, len(commit_fixture(self.archive, versions=1)))
+        self.assertEqual(1, len(pull_records(self.archive, REPOSITORY, NUMBER)))
