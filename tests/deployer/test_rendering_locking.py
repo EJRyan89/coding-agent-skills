@@ -8,7 +8,7 @@ import subprocess
 import sys
 import unittest
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
@@ -24,8 +24,9 @@ from harness import (
     probe_returning,
 )
 from markdown_sections import find_fences
+from suite_names import is_suite_name
 
-from deployer import fsops, lock, platform_support
+from deployer import fsops, hashing, lock, platform_support
 from deployer.paths import Paths
 
 
@@ -206,6 +207,15 @@ class RenderedExecutableTests(DeployerTestCase):
         self.make_config(source_id)
         repository = self.repository_source()
         self.deploy_from(repository, "--all", "--include", "dotnet")
+        # Every skill deploys each of its files but its regression suites, which stay in the source tree.
+        left_out = 0
+        for metadata in sorted((REPOSITORY_ROOT / "deploy-meta").glob("*.json")):
+            with self.subTest(skill=metadata.stem):
+                files = sorted(hashing.read_tree(REPOSITORY_ROOT / "skills" / metadata.stem))
+                shipped = [relative for relative in files if not is_suite_name(PurePosixPath(relative).name)]
+                left_out += len(files) - len(shipped)
+                self.assertEqual(shipped, sorted(hashing.read_tree(self.skills_dir / metadata.stem)))
+        self.assertGreater(left_out, 0, "the shipped skills hold suites, so the check above compares something")
         for relative in (
             "audit-ai-config/scripts/audit_ai_config.py",
             "dotnet-format/scripts/dotnet_format_targets.py",
@@ -227,7 +237,7 @@ class RenderedExecutableTests(DeployerTestCase):
         self.assertFalse((self.skills_dir / "analyze-skill-cost" / "scripts" / "frontmatter.py").exists())
         # Every skill that runs gh imports skill-core's client; none ships a gh runner of its own.
         for script in sorted(self.skills_dir.glob("*/scripts/*.py")):
-            if script.parent.parent.name != "skill-core" and not script.name.startswith("test_"):
+            if script.parent.parent.name != "skill-core":
                 with self.subTest(script=script.name):
                     self.assertNotRegex(script.read_text(encoding="utf-8"), r'\[\s*"gh"')
         for name in ("analyze-skill-cost", "audit-ai-config", "repo-cleanup", "update-coding-agent-skills"):
