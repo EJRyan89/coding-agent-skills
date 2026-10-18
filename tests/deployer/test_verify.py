@@ -198,21 +198,29 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual({"beta": [Listed("C:/b", False)]}, discovery.parse_copilot(output))
 
     def test_copilot_output_that_is_not_a_json_list_is_a_listing_error(self) -> None:
-        for output in ("", "Error: not signed in", json.dumps({"skills": "none"})):
-            with self.subTest(output=output), self.assertRaises(ListingError):
+        cases = {
+            "": "its skill list is not JSON: Expecting value: line 1 column 1 (char 0)",
+            "Error: not signed in": "its skill list is not JSON: Expecting value: line 1 column 1 (char 0)",
+            json.dumps({"skills": "none"}): "its skill list is not a JSON array",
+            json.dumps("alpha"): "its skill list is not a JSON array",
+        }
+        for output, reason in cases.items():
+            with self.subTest(output=output), self.assertRaises(ListingError) as caught:
                 discovery.parse_copilot(output)
+            self.assertEqual(reason, str(caught.exception))
 
     def test_a_codex_error_or_missing_answer_is_a_listing_error(self) -> None:
         cases = {
-            "refused the skills/list request: unknown method": [
+            "it refused the skills/list request: unknown method": [
                 json.dumps({"id": discovery.CODEX_LIST_ID, "error": {"code": -32601, "message": "unknown method"}})
             ],
-            "did not answer": [json.dumps({"id": 0, "result": {}}), "not json"],
-            "has no data": [json.dumps({"id": discovery.CODEX_LIST_ID, "result": {}})],
+            "it did not answer the skills/list request": [json.dumps({"id": 0, "result": {}}), "not json"],
+            "its skills/list answer has no data": [json.dumps({"id": discovery.CODEX_LIST_ID, "result": {}})],
         }
         for reason, lines in cases.items():
-            with self.subTest(reason=reason), self.assertRaisesRegex(ListingError, reason):
+            with self.subTest(reason=reason), self.assertRaises(ListingError) as caught:
                 discovery.parse_codex(lines)
+            self.assertEqual(reason, str(caught.exception))
 
     def test_codex_is_asked_for_the_skills_of_the_working_directory_after_its_handshake(self) -> None:
         cwd = Path("C:/a dir/work")

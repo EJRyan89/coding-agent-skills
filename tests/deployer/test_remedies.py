@@ -25,6 +25,7 @@ from harness import (
     forward,
     install_entry,
     journal_line,
+    make_directory_link,
     probe_returning,
 )
 
@@ -173,6 +174,52 @@ class ConfigurationRemedyTests(RemedyTestCase):
         )
         self.assertNotIn(RESET, result.output)
 
+    def test_a_config_file_that_is_not_utf8_names_configure_reset(self) -> None:
+        # "Configuration that no longer reads" in docs/recovery.md: the deployment stops, names the problem, and
+        # configure --reset starts from an empty file.
+        self.fixture()
+        self.config_file().write_bytes(b"_source_id=test/skills\nREPOS_ROOT=\xff\n")
+        result = self.deploy_fails("--all", pattern="not valid UTF-8")
+        self.assert_lines(result.output, f"ERROR: Config file is not valid UTF-8: {self.config_file()}", RESET)
+
+    def canonical_directory_of_repos(self, canonical: Exception | str) -> mock._patch:
+        """Make the configured REPOS_ROOT canonicalize to canonical, or fail with it, leaving every other path alone."""
+        real = platform_support.canonical_directory
+
+        def canonicalize(path: str) -> str:
+            if platform_support.normalize(path) != forward(self.repos):
+                return real(path)
+            if isinstance(canonical, Exception):
+                raise canonical
+            return canonical
+
+        return mock.patch.object(platform_support, "canonical_directory", side_effect=canonicalize)
+
+    def test_a_directory_that_cannot_be_canonicalized_names_configure(self) -> None:
+        self.make_source_json()
+        self.make_skill("alpha", "Test {{REPOS_ROOT}}", ["REPOS_ROOT"])
+        self.make_config()
+        with self.canonical_directory_of_repos(PermissionError(13, "Permission denied")):
+            result = self.deploy_fails("--all", pattern="cannot be canonicalized")
+        self.assert_lines(
+            result.output,
+            f"ERROR: REPOS_ROOT cannot be canonicalized: {forward(self.repos)}",
+            f"Run '{DEPLOY_COMMAND} configure' to change it.",
+        )
+
+    def test_a_directory_that_resolves_to_a_filesystem_root_names_configure(self) -> None:
+        self.make_source_json()
+        self.make_skill("alpha", "Test {{REPOS_ROOT}}", ["REPOS_ROOT"])
+        self.make_config()
+        root = "C:/" if platform_support.WINDOWS else "/"
+        with self.canonical_directory_of_repos(root):
+            result = self.deploy_fails("--all", pattern="resolves to filesystem root")
+        self.assert_lines(
+            result.output,
+            f"ERROR: REPOS_ROOT resolves to filesystem root: {root}",
+            f"Run '{DEPLOY_COMMAND} configure' to change it.",
+        )
+
     def test_invalid_directory_names_configure(self) -> None:
         self.make_source_json()
         self.make_skill("alpha", "Test {{REPOS_ROOT}}", ["REPOS_ROOT"])
@@ -255,6 +302,18 @@ class OwnershipRemedyTests(RemedyTestCase):
             "then rerun --migrate-from.",
             SEE_OWNERSHIP,
         )
+
+    def test_migrating_a_shared_asset_whose_owner_file_the_source_lacks_is_refused(self) -> None:
+        self.make_source_json("old/source", shared_assets={"guide.md": "owner"})
+        self.make_shared_asset("guide.md")
+        self.make_skill("alpha", "Alpha", shared_deps=["guide.md"])
+        self.make_config("old/source")
+        self.deploy_ok("--all")
+        self.make_source_json("new/source", shared_assets={"guide.md": "owner"})
+        self.make_config("new/source")
+        (self.source / "skills" / "guide.md").unlink()
+        result = self.deploy_fails("--migrate-from", "old/source", pattern="source owner file is missing")
+        self.assert_lines(result.output, "ERROR: Cannot migrate shared asset 'guide.md': source owner file is missing.")
 
 
 class RecoveryRemedyTests(RemedyTestCase):
@@ -341,6 +400,26 @@ class BackupRemedyTests(RemedyTestCase):
             "Move it out of the deployment root after checking its contents, then retry.",
             SEE_BACKUPS,
         )
+
+    def test_a_backups_folder_that_is_a_link_is_refused_as_an_unsafe_destination(self) -> None:
+        self.fixture()
+        self.deploy_ok("--all")
+        self.append(self.skills_dir / "alpha" / "SKILL.md", "local change\n")
+        outside = self.root / "outside-backups"
+        outside.mkdir()
+        make_directory_link(self.skills_dir / ".backups", outside)
+        result = self.deploy_fails(
+            "--all", "--force-item", "alpha", pattern="unsafe permanent backup", changes_home=FAILS_PARTWAY
+        )
+        printed = result.output.splitlines()
+        reason = f"ERROR: Backup path contains a symlink or junction: {forward(self.skills_dir / '.backups')}"
+        self.assert_lines(result.output, reason, "ERROR: Refusing unsafe permanent backup destination for alpha")
+        self.assertEqual(
+            "ERROR: Refusing unsafe permanent backup destination for alpha",
+            printed[printed.index(reason) + 1],
+            result.output,
+        )
+        self.assertEqual([], list(outside.iterdir()))
 
 
 class LockRemedyTests(RemedyTestCase):

@@ -18,7 +18,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
-from harness import DEPLOY_COMMAND, ZERO_HASH, DeployerTestCase
+from harness import ALLOWED_TOOLS, DEPLOY_COMMAND, ZERO_HASH, DeployerTestCase, forward
 
 from deployer import hashing, manifest, migrate, plan, report, selection
 from deployer.context import Context, Options, Selection
@@ -392,6 +392,76 @@ class PlanTests(DeployerTestCase):
         )
 
 
+class UnmanagedDiffTests(DeployerTestCase):
+    """The diff "Skipped items" in docs/installation.md promises for an unmanaged skill that differs: the whole of it
+    under CONFLICT in a dry run, its first forty lines under SKIPPED in a deployment, and none for a managed skill."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.make_source_json()
+        self.write(self.make_skill("alpha", "Alpha content") / "notes.txt", "staged only\n")
+        self.make_config()
+
+    def place_unmanaged(self, content: str) -> str:
+        """Put an alpha no manifest owns at the destination, differing in three ways: its SKILL.md ends with content
+        in place of the source's last line, it holds a file the source lacks, and it lacks the source's notes.txt."""
+        destination = self.skills_dir / "alpha"
+        skill = (self.source / "skills" / "alpha" / "SKILL.md").read_text(encoding="utf-8")
+        self.write(destination / "SKILL.md", skill.replace("Alpha content\n", content))
+        self.write(destination / "extra.txt", "destination only\n")
+        return forward(destination)
+
+    def detail(self, output: str, title: str, group: str, item: str) -> list[str]:
+        """The lines printed under the group's only item in the title report, up to the blank line ending the group."""
+        lines = output.replace("\r\n", "\n").split("\n")
+        start = lines.index(group, lines.index(f"=== {title} ==="))
+        self.assertEqual(item, lines[start + 1], output)
+        return lines[start + 2 : lines.index("", start)]
+
+    def test_an_unmanaged_skill_shows_every_difference_under_conflict_and_skipped(self) -> None:
+        destination = self.place_unmanaged("Local content\n")
+        expected = [
+            f"--- {destination}/SKILL.md",
+            "+++ staged/alpha/SKILL.md",
+            "@@ -4,4 +4,4 @@",
+            f" allowed-tools: {ALLOWED_TOOLS}",
+            " ---",
+            " ",
+            "-Local content",
+            "+Alpha content",
+            f"Only in {destination}: extra.txt",
+            "Only in staged/alpha: notes.txt",
+        ]
+        dry = self.deploy_ok("--all", "--dry-run").output
+        self.assertEqual(expected, self.detail(dry, "DRY RUN", "CONFLICT (1):", UNMANAGED_ALPHA), dry)
+        applied = self.deploy_ok("--all").output
+        self.assertEqual(expected, self.detail(applied, "DEPLOYED", "SKIPPED (1):", UNMANAGED_ALPHA), applied)
+
+    def test_a_deployment_shows_the_first_forty_lines_of_a_longer_diff(self) -> None:
+        destination = self.place_unmanaged("".join(f"Local line {number}\n" for number in range(1, 51)))
+        dry = self.deploy_ok("--all", "--dry-run").output
+        whole = self.detail(dry, "DRY RUN", "CONFLICT (1):", UNMANAGED_ALPHA)
+        # Three header lines, three of context, fifty removed, one added, and the two Only in lines.
+        self.assertEqual(59, len(whole), dry)
+        self.assertEqual("Only in staged/alpha: notes.txt", whole[-1], dry)
+        self.assertEqual(f"Only in {destination}: extra.txt", whole[-2], dry)
+        applied = self.deploy_ok("--all").output
+        shown = self.detail(applied, "DEPLOYED", "SKIPPED (1):", UNMANAGED_ALPHA)
+        self.assertEqual(whole[:40], shown, applied)
+        self.assertEqual("-Local line 34", shown[-1], applied)
+
+    def test_a_locally_modified_managed_skill_gets_its_label_and_no_diff(self) -> None:
+        self.deploy_ok("--all")
+        self.append(self.skills_dir / "alpha" / "SKILL.md", "local edit\n")
+        self.write(self.skills_dir / "alpha" / "extra.txt", "destination only\n")
+        modified = "  alpha (modified since last deploy)"
+        dry = self.deploy_ok("--all", "--dry-run").output
+        self.assertEqual([], self.detail(dry, "DRY RUN", "CONFLICT (1):", modified), dry)
+        applied = self.deploy_ok("--all").output
+        self.assertEqual([], self.detail(applied, "DEPLOYED", "SKIPPED (1):", modified), applied)
+
+
+UNMANAGED_ALPHA = f"  alpha ({DIFFERS_FROM_SKILL})"
 OWN_SOURCE = "test/skills"
 OTHER_SOURCE = "other/skills"
 DEPENDENCY_BYTES = b"shared by another source\n"
