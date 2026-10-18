@@ -8,10 +8,15 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from diff_paths import HUNK_HEADER, DiffPathError, header_path, snapshot_path, unquote
 from git_client import GitClient
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 SPACED = "tools/report age.py"
 ACCENTED = "tools/résumé.py"
@@ -86,20 +91,6 @@ class RealDiffTests(unittest.TestCase):
         self.assertEqual([SPACED, ACCENTED], [unquote(line.split(" ", 2)[2]) for line in headers])
 
 
-class HunkHeaderTests(unittest.TestCase):
-    def test_a_hunk_header_gives_its_new_side_s_first_line_with_or_without_a_count(self) -> None:
-        for line, first in (("@@ -1,3 +4,5 @@ def f():", "4"), ("@@ -7 +9 @@", "9"), ("@@ -0,0 +1 @@", "1")):
-            with self.subTest(line=line):
-                match = HUNK_HEADER.match(line)
-                self.assertIsNotNone(match)
-                self.assertEqual(first, match.group(1) if match else None)
-
-    def test_a_line_that_is_not_a_hunk_header_does_not_match(self) -> None:
-        for line in ("+@@ -1 +1 @@", "@@ +1 -1 @@", "@@@ -1 -1 +1 @@@", "@@ -a +1 @@"):
-            with self.subTest(line=line):
-                self.assertIsNone(HUNK_HEADER.match(line))
-
-
 class DecoderTests(unittest.TestCase):
     def test_each_escape_git_writes_is_undone(self) -> None:
         self.assertEqual('a\x07\x08\t\n\x0b\x0c\r"\\b', unquote('"a\\a\\b\\t\\n\\v\\f\\r\\"\\\\b"'))
@@ -119,11 +110,6 @@ class DecoderTests(unittest.TestCase):
         self.assertEqual("x/a.py", header_path("x/a.py"))
         self.assertEqual("x\ty.py", header_path('"b/x\\ty.py"'))
         self.assertIsNone(header_path("/dev/null"))
-
-    def test_a_quoted_value_git_does_not_write_is_refused(self) -> None:
-        for value in ('"b/a.py', '"', '"a"b"', '"a\\"', '"a\\q"', '"a\\12"', '"a\\400"', '"a\\08x"'):
-            with self.subTest(value=value), self.assertRaisesRegex(DiffPathError, "^Malformed quoted diff path: "):
-                unquote(value)
 
 
 def link_folder(link: Path, target: Path) -> None:
@@ -204,3 +190,23 @@ class UnresolvableSnapshotPathTests(unittest.TestCase):
         with mock.patch.object(Path, "resolve", resolve):
             self.assertIsNone(snapshot_path(root, "tools/unresolvable.py"))
             self.assertEqual(root.resolve() / "tools" / "inside.py", snapshot_path(root, "tools/inside.py"))
+
+
+@pytest.mark.parametrize(
+    ("line", "first"), [("@@ -1,3 +4,5 @@ def f():", "4"), ("@@ -7 +9 @@", "9"), ("@@ -0,0 +1 @@", "1")]
+)
+def test_a_hunk_header_gives_its_new_side_s_first_line_with_or_without_a_count(line: str, first: str) -> None:
+    match = HUNK_HEADER.match(line)
+    CHECK.assertIsNotNone(match)
+    CHECK.assertEqual(first, match.group(1) if match else None)
+
+
+@pytest.mark.parametrize("line", ["+@@ -1 +1 @@", "@@ +1 -1 @@", "@@@ -1 -1 +1 @@@", "@@ -a +1 @@"])
+def test_a_line_that_is_not_a_hunk_header_does_not_match(line: str) -> None:
+    CHECK.assertIsNone(HUNK_HEADER.match(line))
+
+
+@pytest.mark.parametrize("value", ['"b/a.py', '"', '"a"b"', '"a\\"', '"a\\q"', '"a\\12"', '"a\\400"', '"a\\08x"'])
+def test_a_quoted_value_git_does_not_write_is_refused(value: str) -> None:
+    with CHECK.assertRaisesRegex(DiffPathError, "^Malformed quoted diff path: "):
+        unquote(value)

@@ -7,9 +7,19 @@ import sys
 import unittest
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from markdown_literal import markdown_line, markdown_literal, navigation_url
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
+
+
+def code_points(text: str) -> str:
+    """A test ID naming each character of `text` by its code point, since most are invisible."""
+    return "+".join(f"U+{ord(character):04X}" for character in text)
 
 
 class MarkdownLiteralTests(unittest.TestCase):
@@ -29,9 +39,6 @@ class MarkdownLiteralTests(unittest.TestCase):
 
     def test_line_breaks_are_kept_by_the_literal_and_flattened_by_the_line(self) -> None:
         self.assertEqual("a\nb", markdown_literal("a\nb"))
-        for separator in ("\r", "\n", "\r\n", "\u0085", "\u2028", "\u2029", "\x0b", "\x0c", "\x1c"):
-            with self.subTest(separator=repr(separator)):
-                self.assertEqual("a b", markdown_line(f" a{separator}b "))
 
     def test_a_line_cannot_hold_a_comment_a_cell_or_an_escape(self) -> None:
         self.assertEqual(
@@ -47,7 +54,16 @@ class NavigationUrlTests(unittest.TestCase):
             navigation_url("https://github.com/o/r/pull/1?a=(b)|<c>%20d"),
         )
 
-    def test_any_other_url_is_refused(self) -> None:
-        for url in ("http://github.com/o/r", "javascript:alert(1)", "https://host/a b", "//host/a", "https://h_st/"):
-            with self.subTest(url=url):
-                self.assertIsNone(navigation_url(url))
+
+@pytest.mark.parametrize(
+    "separator", ["\r", "\n", "\r\n", "\u0085", "\u2028", "\u2029", "\x0b", "\x0c", "\x1c"], ids=code_points
+)
+def test_line_breaks_are_kept_by_the_literal_and_flattened_by_the_line(separator: str) -> None:
+    CHECK.assertEqual("a b", markdown_line(f" a{separator}b "))
+
+
+@pytest.mark.parametrize(
+    "url", ["http://github.com/o/r", "javascript:alert(1)", "https://host/a b", "//host/a", "https://h_st/"]
+)
+def test_any_other_url_is_refused(url: str) -> None:
+    CHECK.assertIsNone(navigation_url(url))

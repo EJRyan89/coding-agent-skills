@@ -16,12 +16,17 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import job_tree
 from bounded_process import run_bounded
 from job_tree import GroupTree, JobRefused, JobTree, TreeNotEnded
 from process_identity import process_status
+
+# Runs no test of its own; the test function below checks through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 # Seconds a started program gets to come up on a loaded machine, and a held file to be let go once its holder ends.
 STARTUP_SECONDS = 60.0
@@ -562,13 +567,6 @@ class ProcessTreeTests(unittest.TestCase):
         process.poll.assert_not_called()  # a leader is never checked for having exited, nor killed
         process.kill.assert_not_called()
 
-    def test_windows_holds_a_command_in_a_job_and_every_other_platform_in_a_process_group(self) -> None:
-        for platform, kind in (("win32", JobTree), ("linux", GroupTree), ("darwin", GroupTree)):
-            with self.subTest(platform=platform), mock.patch.object(job_tree.sys, "platform", platform):
-                tree = job_tree.process_tree(hidden_window=True)
-                self.assertIs(kind, type(tree))
-                self.assertTrue(tree.hidden_window)
-
     def test_a_group_lists_its_processes_still_running_as_proc_shows_them(self) -> None:
         with tempfile.TemporaryDirectory(prefix="group-tree-test.") as temporary:
             proc = Path(temporary)
@@ -699,3 +697,13 @@ if sys.platform != "win32":
                 ):
                     self.assertEqual(expected, job_tree.group_members(4242))
                 killpg.assert_called_once_with(4242, 0)
+
+
+@pytest.mark.parametrize(("platform", "kind"), [("win32", JobTree), ("linux", GroupTree), ("darwin", GroupTree)])
+def test_windows_holds_a_command_in_a_job_and_every_other_platform_in_a_process_group(
+    platform: str, kind: type
+) -> None:
+    with mock.patch.object(job_tree.sys, "platform", platform):
+        tree = job_tree.process_tree(hidden_window=True)
+        CHECK.assertIs(kind, type(tree))
+        CHECK.assertTrue(tree.hidden_window)

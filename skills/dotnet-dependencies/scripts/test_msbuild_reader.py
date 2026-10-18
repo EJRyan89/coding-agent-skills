@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
@@ -33,6 +35,9 @@ from msbuild_reader import (
     read_solution,
     same_framework,
 )
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 PACKAGES_CONFIG = """<?xml version="1.0" encoding="utf-8"?>
 <packages>
@@ -124,47 +129,6 @@ class ReaderTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
         return path
-
-    def test_a_framework_is_one_framework_whichever_form_names_it(self) -> None:
-        same = [
-            ("net8.0", ".NETCoreApp,Version=v8.0"),
-            ("netcoreapp3.1", ".NETCoreApp,Version=v3.1"),
-            ("net472", ".NETFramework,Version=v4.7.2"),
-            ("NET48", ".netframework,version=v4.8"),
-            ("net40", ".NETFramework,Version=v4.0"),
-            ("net40-client", ".NETFramework,Version=v4.0,Profile=Client"),
-            ("netstandard2.0", ".NETStandard,Version=v2.0"),
-            # A restore writes out the platform version a project leaves to the default.
-            ("net8.0-windows", "net8.0-windows7.0"),
-            ("net8.0-windows7.0", "NET8.0-Windows7.0"),
-            # A restore drops a platform version's trailing zero parts down to two parts.
-            ("net8.0-windows10.0.19041.0", "net8.0-windows10.0.19041"),
-            ("net8.0-windows10", "net8.0-windows10.0"),
-            ("net8.0-windows7.0.0", "net8.0-windows"),
-            # A workload sets the default of a platform other than Windows, so any version may be it.
-            ("net8.0-android", "net8.0-android34.0"),
-        ]
-        different = [
-            ("net8.0", "netcoreapp8.0-x"),
-            ("net472", ".NETFramework,Version=v4.7.1"),
-            ("netcoreapp3.1", ".NETStandard,Version=v3.1"),
-            ("net8.0", "net8.0-windows"),
-            ("net8.0-windows10.0", "net8.0-windows7.0"),
-            # A name that leaves the version to the default is never one with another version.
-            ("net8.0-windows", "net8.0-windows10.0.19041"),
-            ("net8.0-windows", "net8.0-windows10.0.19041.0"),
-            ("net8.0-windows10.0.19041", "net8.0-windows10.0.22621.0"),
-            ("net8.0-android34.0", "net8.0-android35.0"),
-            ("net8.0-android", "net8.0-ios"),
-            ("net9.0-windows", "net8.0-windows7.0"),
-            (".NETFoo,Version=v1.0", "foo1.0"),
-        ]
-        for expected, cases in ((True, same), (False, different)):
-            for first, second in cases:
-                with self.subTest(first=first, second=second):
-                    self.assertIs(expected, same_framework(first, second))
-                    self.assertIs(expected, same_framework(second, first))
-        self.assertEqual(".netfoo,version=v1.0", framework_key(".NETFoo,Version=v1.0"))
 
     def test_a_restore_keyed_by_long_names_is_keyed_by_the_projects_own_names(self) -> None:
         tuple_reference = {"Lantern.Tuple": {"target": "Package", "version": "[4.5.0, )"}}
@@ -441,3 +405,46 @@ class PathBoundTests(unittest.TestCase):
             with self.assertRaises(Unreadable) as refused:
                 read_solution(listed)
             self.assertIn("larger than the reader's bound of 8 bytes", refused.exception.reason)
+
+
+@pytest.mark.parametrize(
+    ("expected", "first", "second"),
+    [
+        (True, "net8.0", ".NETCoreApp,Version=v8.0"),
+        (True, "netcoreapp3.1", ".NETCoreApp,Version=v3.1"),
+        (True, "net472", ".NETFramework,Version=v4.7.2"),
+        (True, "NET48", ".netframework,version=v4.8"),
+        (True, "net40", ".NETFramework,Version=v4.0"),
+        (True, "net40-client", ".NETFramework,Version=v4.0,Profile=Client"),
+        (True, "netstandard2.0", ".NETStandard,Version=v2.0"),
+        # A restore writes out the platform version a project leaves to the default.
+        (True, "net8.0-windows", "net8.0-windows7.0"),
+        (True, "net8.0-windows7.0", "NET8.0-Windows7.0"),
+        # A restore drops a platform version's trailing zero parts down to two parts.
+        (True, "net8.0-windows10.0.19041.0", "net8.0-windows10.0.19041"),
+        (True, "net8.0-windows10", "net8.0-windows10.0"),
+        (True, "net8.0-windows7.0.0", "net8.0-windows"),
+        # A workload sets the default of a platform other than Windows, so any version may be it.
+        (True, "net8.0-android", "net8.0-android34.0"),
+        (False, "net8.0", "netcoreapp8.0-x"),
+        (False, "net472", ".NETFramework,Version=v4.7.1"),
+        (False, "netcoreapp3.1", ".NETStandard,Version=v3.1"),
+        (False, "net8.0", "net8.0-windows"),
+        (False, "net8.0-windows10.0", "net8.0-windows7.0"),
+        # A name that leaves the version to the default is never one with another version.
+        (False, "net8.0-windows", "net8.0-windows10.0.19041"),
+        (False, "net8.0-windows", "net8.0-windows10.0.19041.0"),
+        (False, "net8.0-windows10.0.19041", "net8.0-windows10.0.22621.0"),
+        (False, "net8.0-android34.0", "net8.0-android35.0"),
+        (False, "net8.0-android", "net8.0-ios"),
+        (False, "net9.0-windows", "net8.0-windows7.0"),
+        (False, ".NETFoo,Version=v1.0", "foo1.0"),
+    ],
+)
+def test_a_framework_is_one_framework_whichever_form_names_it(expected: bool, first: str, second: str) -> None:
+    CHECK.assertIs(expected, same_framework(first, second))
+    CHECK.assertIs(expected, same_framework(second, first))
+
+
+def test_a_framework_key_is_the_name_case_folded() -> None:
+    CHECK.assertEqual(".netfoo,version=v1.0", framework_key(".NETFoo,Version=v1.0"))

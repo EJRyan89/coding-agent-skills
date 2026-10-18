@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import bounded_process
@@ -29,7 +31,11 @@ from github_client import (
     split_response,
 )
 
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
+
 SECONDARY_LIMIT = "gh: You have exceeded a secondary rate limit. (HTTP 403)"
+USER_NOT_FOUND = json.dumps({"errors": [{"type": "NOT_FOUND", "message": "Could not resolve to a User."}]})
 
 
 def sanitized_environment(test: unittest.TestCase) -> tuple[Path, Path]:
@@ -109,65 +115,16 @@ def failed(stderr: str, stdout: str = "") -> CommandResult:
 
 
 class ClassifierTests(unittest.TestCase):
-    def test_every_failure_class_from_literal_gh_stderr(self) -> None:
-        cases = {
-            "gh: API rate limit exceeded for user ID 1234. (HTTP 403)": "rate_limit",
-            SECONDARY_LIMIT: "rate_limit",
-            "gh: HTTP 429: Too Many Requests": "rate_limit",
-            "gh: Bad credentials (HTTP 401)": "authentication",
-            "gh: Requires authentication (HTTP 401)": "authentication",
-            "You are not logged into any GitHub hosts. To log in, run: gh auth login": "authentication",
-            "To get started with GitHub CLI, please run:  gh auth login": "authentication",
-            "gh: Only the first 1000 search results are available (HTTP 422)": "search_cap",
-            "gh: Resource protected by organization SAML enforcement. (HTTP 403)": "forbidden",
-            "gh: Not Found (HTTP 404)": "not_found",
-            "HTTP 404: Not Found (https://api.github.com/repos/o/r/pulls/9)": "not_found",
-            "error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com": "network",
-            'Get "https://api.github.com/user": dial tcp: lookup api.github.com: no such host': "network",
-            "read tcp 10.0.0.2:51000->140.82.112.6:443: wsarecv: connection reset by peer": "network",
-            "dial tcp 140.82.112.6:443: connect: connection refused": "network",
-            'Post "https://api.github.com/graphql": net/http: TLS handshake timeout': "network",
-            "dial tcp 140.82.112.6:443: i/o timeout": "network",
-            "gh: Validation Failed (HTTP 422)": "api",
-            "gh: Server Error (HTTP 502)": "api",
-            "GraphQL: Could not resolve to a Repository with the name 'o/r'. (repository)": "api",
-            "": "api",
-        }
-        for stderr, kind in cases.items():
-            with self.subTest(stderr=stderr):
-                self.assertEqual(kind, classify_failure(stderr))
-
     def test_response_status_and_quota_headers_mark_a_rate_limit(self) -> None:
         self.assertEqual("rate_limit", classify_failure("gh: HTTP 403", 403, {"x-ratelimit-remaining": "0"}))
         self.assertEqual("forbidden", classify_failure("gh: HTTP 403", 403, {"x-ratelimit-remaining": "12"}))
         self.assertEqual("rate_limit", classify_failure("", 429, {}))
 
     def test_graphql_body_errors_are_classified_by_type(self) -> None:
-        cases = (
-            ([{"type": "RATE_LIMITED", "message": "slow down"}], "rate_limit", True),
-            ([{"type": "NOT_FOUND", "message": "gone"}], "not_found", False),
-            ([{"type": "FORBIDDEN", "message": "SSO"}], "forbidden", False),
-            ([{"type": "SOMETHING", "message": "odd"}], "api", False),
-            ({"message": "a lone error"}, "api", False),
-        )
-        for errors, kind, retryable in cases:
-            with self.subTest(errors=errors):
-                error = graphql_failure({"errors": errors})
-                if error is None:
-                    self.fail("each case is a GraphQL failure")
-                self.assertEqual((kind, retryable), (error.kind, error.retryable))
-                self.assertTrue(str(error).startswith("GraphQL request failed"), str(error))
         error = graphql_failure({"errors": [{"type": "FORBIDDEN", "message": "SSO"}]})
         self.assertEqual("GraphQL request failed (FORBIDDEN): SSO", str(error))
         self.assertIsNone(graphql_failure({"data": {}}))
         self.assertIsNone(graphql_failure([]))
-
-    def test_only_a_rate_limit_is_retryable(self) -> None:
-        for stderr in ("gh: HTTP 429", "gh: HTTP 401", "error connecting to api.github.com", "gh: HTTP 502"):
-            client, _ = client_for(scripted(failed(stderr))[0])
-            with self.subTest(stderr=stderr), self.assertRaises(GitHubError) as context:
-                client.run(["api", "user"], retry=False)
-            self.assertEqual(stderr.startswith("gh: HTTP 429"), context.exception.retryable)
 
 
 class BackoffTests(unittest.TestCase):
@@ -266,13 +223,7 @@ class BackoffTests(unittest.TestCase):
             self.assertEqual(("api", []), (context.exception.kind, sleeper.waits))
 
     def test_a_reason_gh_already_printed_or_a_body_without_reasons_adds_nothing(self) -> None:
-        graphql = json.dumps({"errors": [{"type": "NOT_FOUND", "message": "Could not resolve to a User."}]})
-        for stdout in (graphql, "", "not json", "[]", '{"errors": "text"}', '{"errors": [{"message": 5}]}'):
-            client, _ = client_for(scripted(failed("gh: Could not resolve to a User.\n", stdout))[0])
-            with self.subTest(stdout=stdout), self.assertRaises(GitHubError) as context:
-                client.run(["api", "graphql"])
-            self.assertEqual("gh: Could not resolve to a User.", str(context.exception))
-        client, _ = client_for(scripted(failed("gh: pull request not found\n", graphql))[0])
+        client, _ = client_for(scripted(failed("gh: pull request not found\n", USER_NOT_FOUND))[0])
         with self.assertRaises(GitHubError) as context:
             client.run(["pr", "view", "5"])
         self.assertEqual("gh: pull request not found", str(context.exception), "only gh api prints a response body")
@@ -283,39 +234,6 @@ UNKNOWN_OUTCOME = "GitHub may have applied it, so check before repeating it"
 
 
 class TransientTests(unittest.TestCase):
-    def test_transient_failures_from_literal_gh_stderr_and_status(self) -> None:
-        cases = {
-            BAD_GATEWAY: True,
-            "HTTP 503: Service Unavailable (https://api.github.com/graphql)": True,
-            "gh: Gateway Timeout (HTTP 504)": True,
-            "read tcp 10.0.0.2:51000->140.82.112.6:443: wsarecv: connection reset by peer": True,
-            "dial tcp 140.82.112.6:443: i/o timeout": True,
-            'Post "https://api.github.com/graphql": net/http: TLS handshake timeout': True,
-            'Get "https://api.github.com/user": unexpected EOF': True,
-            "http2: server sent GOAWAY and closed the connection; LastStreamID=1999": True,
-            "gh: Server Error (HTTP 500)": False,
-            "gh: Validation Failed (HTTP 422)": False,
-            "gh: Not Found (HTTP 404)": False,
-            "gh: Bad credentials (HTTP 401)": False,
-            SECONDARY_LIMIT: False,
-            "error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com": False,
-            "dial tcp 140.82.112.6:443: connect: connection refused": False,
-            "": False,
-        }
-        for stderr, transient in cases.items():
-            with self.subTest(stderr=stderr):
-                client, _ = client_for(scripted(failed(stderr))[0])
-                with self.assertRaises(GitHubError) as context:
-                    client.run(["api", "user"], retry=False)
-                self.assertEqual(transient, context.exception.transient)
-        for status, transient in ((502, True), (503, True), (504, True), (500, False), (404, False)):
-            with self.subTest(status=status):
-                head = f"HTTP/2.0 {status} Status\r\n\r\n{{}}"
-                client, _ = client_for(scripted(failed("gh: request failed", head))[0])
-                with self.assertRaises(GitHubError) as context:
-                    client.run(["api", "user"], retry=False, headers=True)
-                self.assertEqual(transient, context.exception.transient)
-
     def test_a_transient_read_is_retried_then_succeeds(self) -> None:
         run, calls = scripted(failed(BAD_GATEWAY), ok('{"login": "octo"}'))
         client, sleeper = client_for(run)
@@ -345,20 +263,6 @@ class TransientTests(unittest.TestCase):
             client.download(["api", "repos/o/r/tarball/abc"], Path(temporary) / "source.tar.gz")
         self.assertEqual(([2.0], []), (sleeper.waits, answers))
 
-    def test_a_permanent_read_failure_is_not_retried(self) -> None:
-        for stderr, kind in (
-            ("gh: Server Error (HTTP 500)", "api"),
-            ("gh: Not Found (HTTP 404)", "not_found"),
-            ("gh: Bad credentials (HTTP 401)", "authentication"),
-            ("dial tcp 140.82.112.6:443: connect: connection refused", "network"),
-        ):
-            run, calls = scripted(failed(stderr))
-            client, sleeper = client_for(run)
-            with self.subTest(stderr=stderr), self.assertRaises(GitHubError) as context:
-                client.run(["api", "repos/o/r"])
-            self.assertEqual((kind, stderr), (context.exception.kind, str(context.exception)))
-            self.assertEqual(([], 1), (sleeper.waits, len(calls)))
-
     def test_without_retry_a_transient_read_fails_at_once_unchanged(self) -> None:
         run, calls = scripted(failed(BAD_GATEWAY))
         client, sleeper = client_for(run)
@@ -366,27 +270,6 @@ class TransientTests(unittest.TestCase):
             client.run(["api", "user"], retry=False)
         self.assertEqual(("api", BAD_GATEWAY), (context.exception.kind, str(context.exception)))
         self.assertEqual(([], 1), (sleeper.waits, len(calls)))
-
-    def test_a_transient_failure_on_a_change_is_an_unknown_outcome_never_retried(self) -> None:
-        changes = (
-            (["api", "-X", "PATCH", "repos/o/r/issues/1", "-f", "state=closed"], "PATCH"),
-            (["api", "repos/o/r/issues/1/comments", "-f", "body=hello"], "POST"),
-            (["api", "graphql", "-f", "query=mutation { addStar(input: {}) { clientMutationId } }"], "POST"),
-            (["pr", "comment", "7", "--body", "hello"], "gh pr comment"),
-        )
-        for arguments, change in changes:
-            for retry in (True, False):
-                run, calls = scripted(failed(BAD_GATEWAY))
-                client, sleeper = client_for(run)
-                with self.subTest(arguments=arguments, retry=retry), self.assertRaises(GitHubError) as context:
-                    client.run(arguments, retry=retry)
-                self.assertEqual("unknown_outcome", context.exception.kind)
-                self.assertEqual(
-                    f"{BAD_GATEWAY} (the outcome of this {change} request is unknown: {UNKNOWN_OUTCOME})",
-                    str(context.exception),
-                )
-                self.assertEqual((False, True), (context.exception.retryable, context.exception.transient))
-                self.assertEqual(([], 1), (sleeper.waits, len(calls)))
 
     def test_a_change_that_ran_out_its_time_limit_is_an_unknown_outcome_and_a_read_stays_a_timeout(self) -> None:
         stalled = "GitHub CLI did not finish within 1 seconds"
@@ -443,49 +326,6 @@ class TransientTests(unittest.TestCase):
         self.assertEqual((2.0, 2), (policy.transient_base, policy.transient_retries))
         self.assertEqual([2.0, 4.0], [policy.transient_wait(attempt) for attempt in range(2)])
         self.assertEqual(frozenset({502, 503, 504}), github_client.TRANSIENT_STATUSES)
-
-
-class ChangeTests(unittest.TestCase):
-    def test_reads_are_recognized_and_everything_else_is_a_change(self) -> None:
-        cases: tuple[tuple[list[str], str | None], ...] = (
-            (["api", "user"], None),
-            (["api", "--paginate", "--slurp", "repos/o/r/pulls?state=open"], None),
-            (["api", "-H", "Accept: application/vnd.github.diff", "repos/o/r/pulls/7"], None),
-            (["api", "--hostname", "github.com", "rate_limit"], None),
-            (["api", "-X", "GET", "search/issues", "-f", "q=is:pr"], None),
-            (["api", "--method=get", "search/issues", "-F", "per_page=100"], None),
-            (["api", "-XHEAD", "repos/o/r"], None),
-            (["api", "graphql", "-f", "query=query($after: String) { viewer { login } }", "-F", "n=5"], None),
-            (["api", "graphql", "-F", "query={ viewer { login } }"], None),
-            (["pr", "view", "7", "--json", "title"], None),
-            (["pr", "list", "--repo", "o/r", "--json", "number"], None),
-            (["run", "view", "42", "--log"], None),
-            (["pr", "diff", "7"], None),
-            (["pr", "checks", "7"], None),
-            (["auth", "status"], None),
-            (["search", "prs", "--author", "octo"], None),
-            (["api", "repos/o/r/issues", "-f", "title=x"], "POST"),
-            (["api", "repos/o/r/issues", "--raw-field=title=x"], "POST"),
-            (["api", "repos/o/r/issues", "--input", "body.json"], "POST"),
-            (["api", "-X", "PUT", "repos/o/r/topics"], "PUT"),
-            (["api", "--method", "delete", "repos/o/r"], "DELETE"),
-            (["api", "graphql", "-f", "query=mutation { addStar(input: {}) { clientMutationId } }"], "POST"),
-            (["api", "graphql", "-f", "query=# a note\nmutation Close { closeIssue }"], "POST"),
-            (["api", "graphql", "-F", "query=@query.graphql"], "POST"),
-            (["api", "graphql", "--input", "query.json"], "POST"),
-            (["api", "graphql"], None),  # gh sends a request with no fields as a GET
-            (["api", "-H", "-X", "repos/o/r"], None),
-            (["pr", "comment", "7", "--body", "x"], "gh pr comment"),
-            (["pr", "merge", "7", "--squash"], "gh pr merge"),
-            (["issue", "create", "--title", "x"], "gh issue create"),
-            (["pr", "edit", "7", "--add-label", "view"], "gh pr edit"),
-            (["workflow", "run", "validate.yml"], "gh workflow run"),
-            (["browse"], "gh browse"),
-            ([], "gh"),
-        )
-        for arguments, change in cases:
-            with self.subTest(arguments=arguments):
-                self.assertEqual(change, github_client.change_of(arguments))
 
 
 class RequestTests(unittest.TestCase):
@@ -546,20 +386,6 @@ class RequestTests(unittest.TestCase):
 
 
 class DecodingTests(unittest.TestCase):
-    def test_undecodable_bytes_are_replaced_and_counted(self) -> None:
-        cases = (
-            (b"caf\xe9", "caf\ufffd", 1),
-            (b"\xe2\x82 cut short", "\ufffd\ufffd cut short", 2),  # a truncated sequence is two bytes
-            ("caf\ufffd already".encode(), "caf\ufffd already", 0),  # a real U+FFFD is not counted
-            (b"plain", "plain", 0),
-        )
-        for data, text, count in cases:
-            with self.subTest(data=data):
-                self.assertEqual((text, count), replace_undecodable(undecodable(data)))
-                client, _ = client_for(scripted(CommandResult(0, undecodable(data), undecodable(b"warn \xff")))[0])
-                result = client.run(["api", "user"])
-                self.assertEqual((text, count, "warn \ufffd"), (result.stdout, result.replaced, result.stderr))
-
     def test_a_failure_message_is_valid_unicode(self) -> None:
         client, _ = client_for(scripted(failed(undecodable(b"gh: caf\xe9 Not Found (HTTP 404)")))[0])
         with self.assertRaises(GitHubError) as context:
@@ -656,11 +482,6 @@ class JsonTests(unittest.TestCase):
 
     def test_json_body_is_the_one_parse_a_callers_own_parse_reuses(self) -> None:
         self.assertEqual([1, "two"], github_client.json_body(github_client.CommandResult(0, '[1, "two"]', "")))
-        for stdout in ("", "not-json", "{"):
-            with self.subTest(stdout=stdout), self.assertRaises(GitHubError) as context:
-                github_client.json_body(github_client.CommandResult(0, stdout, ""))
-            self.assertEqual(("malformed", False), (context.exception.kind, context.exception.retryable))
-            self.assertTrue(str(context.exception).startswith("GitHub returned malformed JSON: "))
 
     def test_json_retries_a_graphql_rate_limit_in_the_body(self) -> None:
         limited = json.dumps({"errors": [{"type": "RATE_LIMITED", "message": "slow down"}]})
@@ -746,3 +567,289 @@ class SubprocessRunnerContractTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         return temporary.name
+
+
+def command_id(value: object) -> str | None:
+    """A test ID that reads an argument list as the gh command it runs, leaving every other value's ID to pytest."""
+    return " ".join(["gh", *value]) if isinstance(value, list) else None
+
+
+@pytest.mark.parametrize(
+    ("stderr", "kind"),
+    [
+        pytest.param("gh: API rate limit exceeded for user ID 1234. (HTTP 403)", "rate_limit", id="primary-limit"),
+        pytest.param(SECONDARY_LIMIT, "rate_limit", id="secondary-limit"),
+        pytest.param("gh: HTTP 429: Too Many Requests", "rate_limit", id="too-many-requests"),
+        pytest.param("gh: Bad credentials (HTTP 401)", "authentication", id="bad-credentials"),
+        pytest.param("gh: Requires authentication (HTTP 401)", "authentication", id="requires-authentication"),
+        pytest.param(
+            "You are not logged into any GitHub hosts. To log in, run: gh auth login",
+            "authentication",
+            id="not-logged-in",
+        ),
+        pytest.param("To get started with GitHub CLI, please run:  gh auth login", "authentication", id="get-started"),
+        pytest.param("gh: Only the first 1000 search results are available (HTTP 422)", "search_cap", id="search-cap"),
+        pytest.param(
+            "gh: Resource protected by organization SAML enforcement. (HTTP 403)", "forbidden", id="saml-enforcement"
+        ),
+        pytest.param("gh: Not Found (HTTP 404)", "not_found", id="not-found"),
+        pytest.param(
+            "HTTP 404: Not Found (https://api.github.com/repos/o/r/pulls/9)", "not_found", id="not-found-with-a-url"
+        ),
+        pytest.param(
+            "error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com",
+            "network",
+            id="error-connecting",
+        ),
+        pytest.param(
+            'Get "https://api.github.com/user": dial tcp: lookup api.github.com: no such host',
+            "network",
+            id="no-such-host",
+        ),
+        pytest.param(
+            "read tcp 10.0.0.2:51000->140.82.112.6:443: wsarecv: connection reset by peer",
+            "network",
+            id="connection-reset",
+        ),
+        pytest.param("dial tcp 140.82.112.6:443: connect: connection refused", "network", id="connection-refused"),
+        pytest.param(
+            'Post "https://api.github.com/graphql": net/http: TLS handshake timeout',
+            "network",
+            id="tls-handshake-timeout",
+        ),
+        pytest.param("dial tcp 140.82.112.6:443: i/o timeout", "network", id="i-o-timeout"),
+        pytest.param("gh: Validation Failed (HTTP 422)", "api", id="validation-failed"),
+        pytest.param("gh: Server Error (HTTP 502)", "api", id="server-error"),
+        pytest.param(
+            "GraphQL: Could not resolve to a Repository with the name 'o/r'. (repository)",
+            "api",
+            id="graphql-could-not-resolve",
+        ),
+        pytest.param("", "api", id="empty"),
+    ],
+)
+def test_every_failure_class_from_literal_gh_stderr(stderr: str, kind: str) -> None:
+    CHECK.assertEqual(kind, classify_failure(stderr))
+
+
+@pytest.mark.parametrize(
+    ("errors", "kind", "retryable"),
+    [
+        pytest.param([{"type": "RATE_LIMITED", "message": "slow down"}], "rate_limit", True, id="RATE_LIMITED"),
+        pytest.param([{"type": "NOT_FOUND", "message": "gone"}], "not_found", False, id="NOT_FOUND"),
+        pytest.param([{"type": "FORBIDDEN", "message": "SSO"}], "forbidden", False, id="FORBIDDEN"),
+        pytest.param([{"type": "SOMETHING", "message": "odd"}], "api", False, id="another-type"),
+        pytest.param({"message": "a lone error"}, "api", False, id="a-lone-error"),
+    ],
+)
+def test_graphql_body_errors_are_classified_by_type(errors: object, kind: str, retryable: bool) -> None:
+    error = graphql_failure({"errors": errors})
+    if error is None:
+        CHECK.fail("each case is a GraphQL failure")
+    CHECK.assertEqual((kind, retryable), (error.kind, error.retryable))
+    CHECK.assertTrue(str(error).startswith("GraphQL request failed"), str(error))
+
+
+@pytest.mark.parametrize(
+    "stderr", ["gh: HTTP 429", "gh: HTTP 401", "error connecting to api.github.com", "gh: HTTP 502"]
+)
+def test_only_a_rate_limit_is_retryable(stderr: str) -> None:
+    client, _ = client_for(scripted(failed(stderr))[0])
+    with CHECK.assertRaises(GitHubError) as context:
+        client.run(["api", "user"], retry=False)
+    CHECK.assertEqual(stderr.startswith("gh: HTTP 429"), context.exception.retryable)
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        pytest.param(USER_NOT_FOUND, id="a-graphql-body"),
+        pytest.param("", id="empty"),
+        pytest.param("not json", id="not-json"),
+        pytest.param("[]", id="an-empty-array"),
+        pytest.param('{"errors": "text"}', id="errors-as-text"),
+        pytest.param('{"errors": [{"message": 5}]}', id="a-message-that-is-not-text"),
+    ],
+)
+def test_a_reason_gh_already_printed_or_a_body_without_reasons_adds_nothing(stdout: str) -> None:
+    client, _ = client_for(scripted(failed("gh: Could not resolve to a User.\n", stdout))[0])
+    with CHECK.assertRaises(GitHubError) as context:
+        client.run(["api", "graphql"])
+    CHECK.assertEqual("gh: Could not resolve to a User.", str(context.exception))
+
+
+@pytest.mark.parametrize(
+    ("stderr", "stdout", "headers", "transient"),
+    [
+        pytest.param(BAD_GATEWAY, "", False, True, id="bad-gateway"),
+        pytest.param(
+            "HTTP 503: Service Unavailable (https://api.github.com/graphql)",
+            "",
+            False,
+            True,
+            id="service-unavailable",
+        ),
+        pytest.param("gh: Gateway Timeout (HTTP 504)", "", False, True, id="gateway-timeout"),
+        pytest.param(
+            "read tcp 10.0.0.2:51000->140.82.112.6:443: wsarecv: connection reset by peer",
+            "",
+            False,
+            True,
+            id="connection-reset",
+        ),
+        pytest.param("dial tcp 140.82.112.6:443: i/o timeout", "", False, True, id="i-o-timeout"),
+        pytest.param(
+            'Post "https://api.github.com/graphql": net/http: TLS handshake timeout',
+            "",
+            False,
+            True,
+            id="tls-handshake-timeout",
+        ),
+        pytest.param('Get "https://api.github.com/user": unexpected EOF', "", False, True, id="unexpected-eof"),
+        pytest.param(
+            "http2: server sent GOAWAY and closed the connection; LastStreamID=1999", "", False, True, id="goaway"
+        ),
+        pytest.param("gh: Server Error (HTTP 500)", "", False, False, id="server-error"),
+        pytest.param("gh: Validation Failed (HTTP 422)", "", False, False, id="validation-failed"),
+        pytest.param("gh: Not Found (HTTP 404)", "", False, False, id="not-found"),
+        pytest.param("gh: Bad credentials (HTTP 401)", "", False, False, id="bad-credentials"),
+        pytest.param(SECONDARY_LIMIT, "", False, False, id="secondary-limit"),
+        pytest.param(
+            "error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com",
+            "",
+            False,
+            False,
+            id="error-connecting",
+        ),
+        pytest.param(
+            "dial tcp 140.82.112.6:443: connect: connection refused", "", False, False, id="connection-refused"
+        ),
+        pytest.param("", "", False, False, id="empty"),
+        *(
+            pytest.param(
+                "gh: request failed", f"HTTP/2.0 {status} Status\r\n\r\n{{}}", True, transient, id=f"status-{status}"
+            )
+            for status, transient in ((502, True), (503, True), (504, True), (500, False), (404, False))
+        ),
+    ],
+)
+def test_transient_failures_from_literal_gh_stderr_and_status(
+    stderr: str, stdout: str, headers: bool, transient: bool
+) -> None:
+    client, _ = client_for(scripted(failed(stderr, stdout))[0])
+    with CHECK.assertRaises(GitHubError) as context:
+        client.run(["api", "user"], retry=False, headers=headers)
+    CHECK.assertEqual(transient, context.exception.transient)
+
+
+@pytest.mark.parametrize(
+    ("stderr", "kind"),
+    [
+        ("gh: Server Error (HTTP 500)", "api"),
+        ("gh: Not Found (HTTP 404)", "not_found"),
+        ("gh: Bad credentials (HTTP 401)", "authentication"),
+        ("dial tcp 140.82.112.6:443: connect: connection refused", "network"),
+    ],
+)
+def test_a_permanent_read_failure_is_not_retried(stderr: str, kind: str) -> None:
+    run, calls = scripted(failed(stderr))
+    client, sleeper = client_for(run)
+    with CHECK.assertRaises(GitHubError) as context:
+        client.run(["api", "repos/o/r"])
+    CHECK.assertEqual((kind, stderr), (context.exception.kind, str(context.exception)))
+    CHECK.assertEqual(([], 1), (sleeper.waits, len(calls)))
+
+
+@pytest.mark.parametrize("retry", [True, False])
+@pytest.mark.parametrize(
+    ("arguments", "change"),
+    [
+        (["api", "-X", "PATCH", "repos/o/r/issues/1", "-f", "state=closed"], "PATCH"),
+        (["api", "repos/o/r/issues/1/comments", "-f", "body=hello"], "POST"),
+        (["api", "graphql", "-f", "query=mutation { addStar(input: {}) { clientMutationId } }"], "POST"),
+        (["pr", "comment", "7", "--body", "hello"], "gh pr comment"),
+    ],
+    ids=command_id,
+)
+def test_a_transient_failure_on_a_change_is_an_unknown_outcome_never_retried(
+    arguments: list[str], change: str, retry: bool
+) -> None:
+    run, calls = scripted(failed(BAD_GATEWAY))
+    client, sleeper = client_for(run)
+    with CHECK.assertRaises(GitHubError) as context:
+        client.run(arguments, retry=retry)
+    CHECK.assertEqual("unknown_outcome", context.exception.kind)
+    CHECK.assertEqual(
+        f"{BAD_GATEWAY} (the outcome of this {change} request is unknown: {UNKNOWN_OUTCOME})",
+        str(context.exception),
+    )
+    CHECK.assertEqual((False, True), (context.exception.retryable, context.exception.transient))
+    CHECK.assertEqual(([], 1), (sleeper.waits, len(calls)))
+
+
+@pytest.mark.parametrize(
+    ("arguments", "change"),
+    [
+        (["api", "user"], None),
+        (["api", "--paginate", "--slurp", "repos/o/r/pulls?state=open"], None),
+        (["api", "-H", "Accept: application/vnd.github.diff", "repos/o/r/pulls/7"], None),
+        (["api", "--hostname", "github.com", "rate_limit"], None),
+        (["api", "-X", "GET", "search/issues", "-f", "q=is:pr"], None),
+        (["api", "--method=get", "search/issues", "-F", "per_page=100"], None),
+        (["api", "-XHEAD", "repos/o/r"], None),
+        (["api", "graphql", "-f", "query=query($after: String) { viewer { login } }", "-F", "n=5"], None),
+        (["api", "graphql", "-F", "query={ viewer { login } }"], None),
+        (["pr", "view", "7", "--json", "title"], None),
+        (["pr", "list", "--repo", "o/r", "--json", "number"], None),
+        (["run", "view", "42", "--log"], None),
+        (["pr", "diff", "7"], None),
+        (["pr", "checks", "7"], None),
+        (["auth", "status"], None),
+        (["search", "prs", "--author", "octo"], None),
+        (["api", "repos/o/r/issues", "-f", "title=x"], "POST"),
+        (["api", "repos/o/r/issues", "--raw-field=title=x"], "POST"),
+        (["api", "repos/o/r/issues", "--input", "body.json"], "POST"),
+        (["api", "-X", "PUT", "repos/o/r/topics"], "PUT"),
+        (["api", "--method", "delete", "repos/o/r"], "DELETE"),
+        (["api", "graphql", "-f", "query=mutation { addStar(input: {}) { clientMutationId } }"], "POST"),
+        (["api", "graphql", "-f", "query=# a note\nmutation Close { closeIssue }"], "POST"),
+        (["api", "graphql", "-F", "query=@query.graphql"], "POST"),
+        (["api", "graphql", "--input", "query.json"], "POST"),
+        (["api", "graphql"], None),  # gh sends a request with no fields as a GET
+        (["api", "-H", "-X", "repos/o/r"], None),
+        (["pr", "comment", "7", "--body", "x"], "gh pr comment"),
+        (["pr", "merge", "7", "--squash"], "gh pr merge"),
+        (["issue", "create", "--title", "x"], "gh issue create"),
+        (["pr", "edit", "7", "--add-label", "view"], "gh pr edit"),
+        (["workflow", "run", "validate.yml"], "gh workflow run"),
+        (["browse"], "gh browse"),
+        ([], "gh"),
+    ],
+    ids=command_id,
+)
+def test_reads_are_recognized_and_everything_else_is_a_change(arguments: list[str], change: str | None) -> None:
+    CHECK.assertEqual(change, github_client.change_of(arguments))
+
+
+@pytest.mark.parametrize(
+    ("data", "text", "count"),
+    [
+        (b"caf\xe9", "caf\ufffd", 1),
+        (b"\xe2\x82 cut short", "\ufffd\ufffd cut short", 2),  # a truncated sequence is two bytes
+        ("caf\ufffd already".encode(), "caf\ufffd already", 0),  # a real U+FFFD is not counted
+        (b"plain", "plain", 0),
+    ],
+)
+def test_undecodable_bytes_are_replaced_and_counted(data: bytes, text: str, count: int) -> None:
+    CHECK.assertEqual((text, count), replace_undecodable(undecodable(data)))
+    client, _ = client_for(scripted(CommandResult(0, undecodable(data), undecodable(b"warn \xff")))[0])
+    result = client.run(["api", "user"])
+    CHECK.assertEqual((text, count, "warn \ufffd"), (result.stdout, result.replaced, result.stderr))
+
+
+@pytest.mark.parametrize("stdout", [pytest.param("", id="empty"), "not-json", "{"])
+def test_json_body_is_the_one_parse_a_callers_own_parse_reuses(stdout: str) -> None:
+    with CHECK.assertRaises(GitHubError) as context:
+        github_client.json_body(github_client.CommandResult(0, stdout, ""))
+    CHECK.assertEqual(("malformed", False), (context.exception.kind, context.exception.retryable))
+    CHECK.assertTrue(str(context.exception).startswith("GitHub returned malformed JSON: "))

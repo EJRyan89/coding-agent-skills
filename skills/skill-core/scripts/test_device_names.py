@@ -6,9 +6,14 @@ import sys
 import unittest
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from device_names import RESERVED_DEVICE_NAMES, is_reserved_device_name
+
+# Runs no test of its own; the test functions below check through its assertions, as the class does.
+CHECK = unittest.TestCase()
 
 
 class DeviceNameTests(unittest.TestCase):
@@ -51,23 +56,28 @@ class DeviceNameTests(unittest.TestCase):
             RESERVED_DEVICE_NAMES,
         )
 
-    def test_a_device_name_in_any_case_alone_or_before_an_extension_is_reserved(self) -> None:
-        for name in (
-            "con",
-            "PRN",
-            "Aux",
-            "nul.txt",
-            "COM1.tar.gz",
-            "lpt9",
-            "aux .txt",
-            "CONIN$",
-            "conout$.log",
-            "COM¹.py",
-        ):
-            with self.subTest(name=name):
-                self.assertTrue(is_reserved_device_name(name))
 
-    def test_a_name_that_only_starts_like_one_is_not(self) -> None:
-        for name in ("console", "con-alpha", "nul-check", "com", "com10", "lpt10", "aux2", ".con", " con", "con_.md"):
-            with self.subTest(name=name):
-                self.assertFalse(is_reserved_device_name(name))
+@pytest.mark.parametrize(
+    "name",
+    [
+        "con",
+        "PRN",
+        "Aux",
+        "nul.txt",
+        "COM1.tar.gz",
+        "lpt9",
+        "aux .txt",
+        "CONIN$",
+        "conout$.log",
+        "COM¹.py",
+    ],
+)
+def test_a_device_name_in_any_case_alone_or_before_an_extension_is_reserved(name: str) -> None:
+    CHECK.assertTrue(is_reserved_device_name(name))
+
+
+@pytest.mark.parametrize(
+    "name", ["console", "con-alpha", "nul-check", "com", "com10", "lpt10", "aux2", ".con", " con", "con_.md"]
+)
+def test_a_name_that_only_starts_like_one_is_not(name: str) -> None:
+    CHECK.assertFalse(is_reserved_device_name(name))

@@ -15,11 +15,16 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import audit_ai_config
 import bounded_process
 import mcp_handshake
+
+# Runs no test of its own; the test function below checks through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 # The launcher test's --timeout, and how far past --timeout and the stop allowance a loaded machine may end the run.
 LAUNCHER_TIMEOUT_SECONDS = 2.0
@@ -658,17 +663,17 @@ class HandshakeTests(unittest.TestCase):
 
 
 # Shapes of a JSON MCP configuration that declare no server the handshake would start.
-CONFIG_SHAPES = (
-    '{"servers": {"note": "text", "bad": {}}}',
-    '{"mcpServers": {"note": "text", "bad": {}}}',
-    '{"mcpServers": {}}',
-    '{"servers": {}}',
-    "{}",
-    "[]",
-    '{"servers": []}',
-    '{"mcpServers": []}',
-    "{bad",
-)
+CONFIG_SHAPES = [
+    pytest.param('{"servers": {"note": "text", "bad": {}}}', id="servers-a-note-and-an-empty-server"),
+    pytest.param('{"mcpServers": {"note": "text", "bad": {}}}', id="mcpServers-a-note-and-an-empty-server"),
+    pytest.param('{"mcpServers": {}}', id="mcpServers-empty"),
+    pytest.param('{"servers": {}}', id="servers-empty"),
+    pytest.param("{}", id="an-empty-object"),
+    pytest.param("[]", id="a-list"),
+    pytest.param('{"servers": []}', id="servers-a-list"),
+    pytest.param('{"mcpServers": []}', id="mcpServers-a-list"),
+    pytest.param("{bad", id="not-json"),
+]
 
 
 class OneReaderTests(unittest.TestCase):
@@ -682,31 +687,11 @@ class OneReaderTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def test_each_file_shape_reads_the_same_to_the_audit_and_the_handshake(self) -> None:
+    def test_the_json_files_the_audit_and_the_handshake_read(self) -> None:
         self.assertEqual(
             {".mcp.json": "mcpServers", ".github/mcp.json": "mcpServers", ".vscode/mcp.json": "servers"},
             audit_ai_config.MCP_JSON_FILES,
         )
-        for rel in audit_ai_config.MCP_JSON_FILES:
-            for shape in CONFIG_SHAPES:
-                with self.subTest(rel=rel, shape=shape):
-                    path = self.root / rel
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_text(shape, encoding="utf-8")
-                    audited = [
-                        (f"CONFIG_{f.severity}", f.message)
-                        for f in audit_ai_config.check_mcp(self.root, {})
-                        if f.path == rel
-                    ]
-                    output = io.StringIO()
-                    with contextlib.redirect_stdout(output):
-                        code = mcp_handshake.main(["--root", str(self.root), "--timeout", "5"])
-                    lines = output.getvalue().splitlines()
-                    config = [tuple(line.split(f" {rel} ", 1)) for line in lines if line.startswith("CONFIG_")]
-                    self.assertEqual(audited, config)
-                    failed = any(severity == "CONFIG_ERROR" for severity, _ in audited)
-                    self.assertEqual(1 if failed else 0, code, lines)
-                    path.unlink()
 
     def test_a_vscode_file_without_its_wrapper_fails_both(self) -> None:
         (self.root / ".vscode").mkdir()
@@ -718,3 +703,22 @@ class OneReaderTests(unittest.TestCase):
             (1, ["CONFIG_ERROR .vscode/mcp.json VS Code MCP must use 'servers' wrapper (not 'mcpServers')"]),
             (code, output.getvalue().splitlines()),
         )
+
+
+@pytest.mark.parametrize("rel", list(audit_ai_config.MCP_JSON_FILES))
+@pytest.mark.parametrize("shape", CONFIG_SHAPES)
+def test_each_file_shape_reads_the_same_to_the_audit_and_the_handshake(tmp_path: Path, rel: str, shape: str) -> None:
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(shape, encoding="utf-8")
+    audited = [(f"CONFIG_{f.severity}", f.message) for f in audit_ai_config.check_mcp(root, {}) if f.path == rel]
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        code = mcp_handshake.main(["--root", str(root), "--timeout", "5"])
+    lines = output.getvalue().splitlines()
+    config = [tuple(line.split(f" {rel} ", 1)) for line in lines if line.startswith("CONFIG_")]
+    CHECK.assertEqual(audited, config)
+    failed = any(severity == "CONFIG_ERROR" for severity, _ in audited)
+    CHECK.assertEqual(1 if failed else 0, code, lines)

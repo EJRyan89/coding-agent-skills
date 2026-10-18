@@ -10,9 +10,14 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import pdf_tool
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 XPDF = "pdftotext version {version} [www.xpdfreader.com]\nCopyright 1996-2025 Glyph & Cog, LLC\n"
 POPPLER = (
@@ -38,36 +43,6 @@ DISTRIBUTION_POPPLER = (
 
 
 class PdfPolicyTests(unittest.TestCase):
-    def test_vendor_banners_have_separate_floors_and_expected_exit_statuses(self) -> None:
-        for banner, version, provider, status in (
-            (XPDF, "4.06", "Xpdf", 99),
-            (XPDF, "4.06.0", "Xpdf", 0),
-            (XPDF, "4.07", "Xpdf", 99),
-            (POPPLER, "26.10.0", "Poppler", 0),
-            (POPPLER, "26.11.0", "Poppler", 0),
-        ):
-            with self.subTest(provider=provider, version=version, status=status):
-                identified = pdf_tool.parse_banner(banner.format(version=version), status)
-                self.assertEqual(provider, identified.provider)
-                self.assertEqual(tuple(map(int, version.split("."))), identified.version)
-
-    def test_old_versions_are_refused_using_the_identified_provider_not_a_generic_number(self) -> None:
-        for banner, version, provider, status in (
-            (XPDF, "4.00", "Xpdf", 99),
-            (XPDF, "4.05", "Xpdf", 99),
-            (POPPLER, "0.86.1", "Poppler", 0),
-            (POPPLER, "25.12.0", "Poppler", 0),
-            (POPPLER, "26.9.99", "Poppler", 0),
-        ):
-            with self.subTest(provider=provider, version=version):
-                with self.assertRaises(pdf_tool.PdfToolRefused) as raised:
-                    pdf_tool.parse_banner(banner.format(version=version), status)
-                identity = raised.exception.identity
-                if identity is None:
-                    self.fail("an outdated vendor banner must retain its identified provider")
-                self.assertEqual(provider, identity.provider)
-                self.assertIn("older than", str(raised.exception))
-
     def test_versions_are_named_as_each_vendor_numbers_them_and_compared_as_numbers(self) -> None:
         for banner, version, status, refusal in (
             (XPDF, "4.00", 99, "Xpdf 4.00, older than Xpdf 4.06"),
@@ -92,25 +67,6 @@ class PdfPolicyTests(unittest.TestCase):
         with self.assertRaises(pdf_tool.PdfToolRefused) as raised:
             pdf_tool.parse_banner("pdftotext version 26.10.0\n", 0)
         self.assertEqual("provider/version is unidentifiable", str(raised.exception))
-
-    def test_unknown_ambiguous_malformed_and_failed_banners_are_refused(self) -> None:
-        banners = (
-            ("pdftotext version 26.10.0\n", 0),
-            ("unrelated version 99.99\n" + XPDF.format(version="4.05"), 99),
-            (XPDF.format(version="4.06") + POPPLER.format(version="26.10.0"), 0),
-            (XPDF.format(version="4.06") + "The Poppler Developers\n", 0),
-            (XPDF.format(version="4.06-beta"), 99),
-            (XPDF.format(version="4.06.0.1"), 99),
-            (XPDF.format(version="4"), 99),
-            (POPPLER.format(version="26.10"), 0),
-            (POPPLER.format(version="26.13.0"), 0),
-            (POPPLER.format(version="26.10.0") + "\nUsage: pdftotext\n", 99),
-            (XPDF.format(version="4.06"), 1),
-            (POPPLER.format(version="26.10.0"), 99),
-        )
-        for banner, status in banners:
-            with self.subTest(banner=banner, status=status), self.assertRaises(pdf_tool.PdfToolRefused):
-                pdf_tool.parse_banner(banner, status)
 
     def test_probe_is_no_input_bounded_and_reads_both_streams(self) -> None:
         running = mock.Mock()
@@ -274,3 +230,72 @@ class SelectPdftotextTests(unittest.TestCase):
         with self.assertRaises(ValueError) as raised:
             pdf_tool.select_pdftotext([], mock.Mock())
         self.assertIs(ValueError, type(raised.exception), "not a refusal: the caller reports a missing parser")
+
+
+def banner_id(value: object) -> str | None:
+    """A test ID naming a vendor's banner by its vendor, leaving every other value's ID to pytest."""
+    return {XPDF: "xpdf-banner", POPPLER: "poppler-banner"}.get(value) if isinstance(value, str) else None
+
+
+@pytest.mark.parametrize(
+    ("banner", "version", "provider", "status"),
+    [
+        (XPDF, "4.06", "Xpdf", 99),
+        (XPDF, "4.06.0", "Xpdf", 0),
+        (XPDF, "4.07", "Xpdf", 99),
+        (POPPLER, "26.10.0", "Poppler", 0),
+        (POPPLER, "26.11.0", "Poppler", 0),
+    ],
+    ids=banner_id,
+)
+def test_vendor_banners_have_separate_floors_and_expected_exit_statuses(
+    banner: str, version: str, provider: str, status: int
+) -> None:
+    identified = pdf_tool.parse_banner(banner.format(version=version), status)
+    CHECK.assertEqual(provider, identified.provider)
+    CHECK.assertEqual(tuple(map(int, version.split("."))), identified.version)
+
+
+@pytest.mark.parametrize(
+    ("banner", "version", "provider", "status"),
+    [
+        (XPDF, "4.00", "Xpdf", 99),
+        (XPDF, "4.05", "Xpdf", 99),
+        (POPPLER, "0.86.1", "Poppler", 0),
+        (POPPLER, "25.12.0", "Poppler", 0),
+        (POPPLER, "26.9.99", "Poppler", 0),
+    ],
+    ids=banner_id,
+)
+def test_old_versions_are_refused_using_the_identified_provider_not_a_generic_number(
+    banner: str, version: str, provider: str, status: int
+) -> None:
+    with CHECK.assertRaises(pdf_tool.PdfToolRefused) as raised:
+        pdf_tool.parse_banner(banner.format(version=version), status)
+    identity = raised.exception.identity
+    if identity is None:
+        CHECK.fail("an outdated vendor banner must retain its identified provider")
+    CHECK.assertEqual(provider, identity.provider)
+    CHECK.assertIn("older than", str(raised.exception))
+
+
+@pytest.mark.parametrize(
+    ("banner", "status"),
+    [
+        pytest.param("pdftotext version 26.10.0\n", 0, id="a-version-line-alone"),
+        pytest.param("unrelated version 99.99\n" + XPDF.format(version="4.05"), 99, id="an-unrelated-version-first"),
+        pytest.param(XPDF.format(version="4.06") + POPPLER.format(version="26.10.0"), 0, id="both-vendors-banners"),
+        pytest.param(XPDF.format(version="4.06") + "The Poppler Developers\n", 0, id="xpdf-naming-poppler"),
+        pytest.param(XPDF.format(version="4.06-beta"), 99, id="xpdf-4.06-beta"),
+        pytest.param(XPDF.format(version="4.06.0.1"), 99, id="xpdf-4.06.0.1"),
+        pytest.param(XPDF.format(version="4"), 99, id="xpdf-4"),
+        pytest.param(POPPLER.format(version="26.10"), 0, id="poppler-26.10"),
+        pytest.param(POPPLER.format(version="26.13.0"), 0, id="poppler-26.13.0"),
+        pytest.param(POPPLER.format(version="26.10.0") + "\nUsage: pdftotext\n", 99, id="poppler-with-a-usage-line"),
+        pytest.param(XPDF.format(version="4.06"), 1, id="xpdf-4.06-status-1"),
+        pytest.param(POPPLER.format(version="26.10.0"), 99, id="poppler-26.10.0-status-99"),
+    ],
+)
+def test_unknown_ambiguous_malformed_and_failed_banners_are_refused(banner: str, status: int) -> None:
+    with CHECK.assertRaises(pdf_tool.PdfToolRefused):
+        pdf_tool.parse_banner(banner, status)

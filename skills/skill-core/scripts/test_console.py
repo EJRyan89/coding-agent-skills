@@ -12,9 +12,14 @@ import unittest
 from collections.abc import Callable
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import console
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
@@ -136,49 +141,6 @@ class RunMainTests(unittest.TestCase):
     def test_ctrl_c_prints_failed_interrupted_and_exits_130(self) -> None:
         self.assertEqual((130, "FAILED interrupted\n", ""), run_in_process(raises(KeyboardInterrupt())))
 
-    def test_a_program_prints_no_traceback_and_exits_with_the_contract_codes(self) -> None:
-        for body, code, line in (
-            ("raise LookupError('gone → away')", 1, "FAILED LookupError: gone → away\n"),
-            ("raise KeyboardInterrupt", 130, "FAILED interrupted\n"),
-            ("return 0", 0, ""),
-        ):
-            with self.subTest(body=body):
-                result = child(f"def main():\n    {body}\nconsole.run_main(main)")
-                self.assertEqual(code, result.returncode, result.stderr)
-                self.assertEqual(line.encode(), result.stdout.replace(b"\r\n", b"\n"))
-                self.assertEqual(b"", result.stderr)
-
-    def test_a_requested_traceback_follows_the_line_on_stderr_with_the_same_exit_code(self) -> None:
-        for body, code, line, last in (
-            ("raise LookupError('gone')", 1, "FAILED LookupError: gone\n", "LookupError: gone"),
-            ("raise KeyboardInterrupt", 130, "FAILED interrupted\n", "KeyboardInterrupt"),
-        ):
-            with self.subTest(body=body):
-                result = child(f"def main():\n    {body}\nconsole.run_main(main, traceback_requested=lambda: True)")
-                self.assertEqual(code, result.returncode, result.stderr)
-                self.assertEqual(line.encode(), result.stdout.replace(b"\r\n", b"\n"))
-                errors = result.stderr.replace(b"\r\n", b"\n").decode()
-                self.assertTrue(errors.startswith("Traceback (most recent call last):\n"), errors)
-                self.assertIn("in main", errors)
-                self.assertTrue(errors.endswith(f"{last}\n"), errors)
-
-    def test_a_traceback_is_shown_only_when_asked_and_its_question_answers(self) -> None:
-        def unanswerable() -> bool:
-            raise ImportError("no deployer")
-
-        for requested in (None, lambda: False, unanswerable):
-            with self.subTest(requested=requested):
-                output, errors = io.StringIO(), io.StringIO()
-                with (
-                    contextlib.redirect_stdout(output),
-                    contextlib.redirect_stderr(errors),
-                    self.assertRaises(SystemExit) as exited,
-                ):
-                    console.run_main(raises(ValueError("boom")), traceback_requested=requested)
-                self.assertEqual(
-                    (1, "FAILED ValueError: boom\n", ""), (exited.exception.code, output.getvalue(), errors.getvalue())
-                )
-
     def test_success_and_a_system_exit_never_ask_for_a_traceback(self) -> None:
         asked: list[bool] = []
 
@@ -203,3 +165,62 @@ class RunMainTests(unittest.TestCase):
         self.assertEqual(1, result.returncode, result.stderr)
         self.assertEqual(b"FAILED OSError: bad \\udcff path", result.stdout.rstrip())
         self.assertEqual(b"", result.stderr)
+
+
+@pytest.mark.parametrize(
+    ("body", "code", "line"),
+    [
+        pytest.param("raise LookupError('gone → away')", 1, "FAILED LookupError: gone → away\n", id="an-error"),
+        pytest.param("raise KeyboardInterrupt", 130, "FAILED interrupted\n", id="ctrl-c"),
+        pytest.param("return 0", 0, "", id="success"),
+    ],
+)
+def test_a_program_prints_no_traceback_and_exits_with_the_contract_codes(body: str, code: int, line: str) -> None:
+    result = child(f"def main():\n    {body}\nconsole.run_main(main)")
+    CHECK.assertEqual(code, result.returncode, result.stderr)
+    CHECK.assertEqual(line.encode(), result.stdout.replace(b"\r\n", b"\n"))
+    CHECK.assertEqual(b"", result.stderr)
+
+
+@pytest.mark.parametrize(
+    ("body", "code", "line", "last"),
+    [
+        pytest.param("raise LookupError('gone')", 1, "FAILED LookupError: gone\n", "LookupError: gone", id="an-error"),
+        pytest.param("raise KeyboardInterrupt", 130, "FAILED interrupted\n", "KeyboardInterrupt", id="ctrl-c"),
+    ],
+)
+def test_a_requested_traceback_follows_the_line_on_stderr_with_the_same_exit_code(
+    body: str, code: int, line: str, last: str
+) -> None:
+    result = child(f"def main():\n    {body}\nconsole.run_main(main, traceback_requested=lambda: True)")
+    CHECK.assertEqual(code, result.returncode, result.stderr)
+    CHECK.assertEqual(line.encode(), result.stdout.replace(b"\r\n", b"\n"))
+    errors = result.stderr.replace(b"\r\n", b"\n").decode()
+    CHECK.assertTrue(errors.startswith("Traceback (most recent call last):\n"), errors)
+    CHECK.assertIn("in main", errors)
+    CHECK.assertTrue(errors.endswith(f"{last}\n"), errors)
+
+
+def unanswerable() -> bool:
+    raise ImportError("no deployer")
+
+
+@pytest.mark.parametrize(
+    "requested",
+    [
+        pytest.param(None, id="not-asked"),
+        pytest.param(lambda: False, id="answered-no"),
+        pytest.param(unanswerable, id="unanswerable"),
+    ],
+)
+def test_a_traceback_is_shown_only_when_asked_and_its_question_answers(requested: Callable[[], bool] | None) -> None:
+    output, errors = io.StringIO(), io.StringIO()
+    with (
+        contextlib.redirect_stdout(output),
+        contextlib.redirect_stderr(errors),
+        CHECK.assertRaises(SystemExit) as exited,
+    ):
+        console.run_main(raises(ValueError("boom")), traceback_requested=requested)
+    CHECK.assertEqual(
+        (1, "FAILED ValueError: boom\n", ""), (exited.exception.code, output.getvalue(), errors.getvalue())
+    )

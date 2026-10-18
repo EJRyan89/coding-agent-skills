@@ -9,11 +9,16 @@ from collections.abc import Sequence
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import sdk_why
 from sdk_why import Completed, SdkPath, Services, parse_why, run_why, why_command
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 CYAN = "\x1b[38;5;14m"
 RESET = "\x1b[0m"
@@ -147,56 +152,6 @@ class RunTests(unittest.TestCase):
         self.assertEqual([SdkPath("Shop", "net472", (("Lantern.Json", "12.0.3"),))], answer.paths[api])
         self.assertEqual([], answer.paths[tools])
 
-    def test_failures_name_the_reason_and_leave_the_project_unanswered(self) -> None:
-        # A run with no heading names the first line it printed, which the parser could not read, such as an answer
-        # in a language other than English.
-        unread = "; the first line it printed, which the script cannot read: "
-        localized = (
-            f'\r\n  {CYAN}Projekt "Harbor.Core" weist keine Abh\u00e4ngigkeit von "Lantern.Json" auf.{RESET}\r\n'
-        )
-        for text, code, reason in (
-            (NO_ASSETS_TEXT, 0, "(no restored assets file)"),
-            ("boom", 1, f"(exit code 1){unread}boom"),
-            ("", 1, "(exit code 1)"),
-            (
-                localized,
-                0,
-                f'(exit code 0){unread}Projekt "Harbor.Core" weist keine Abh\u00e4ngigkeit von "Lantern.Json" auf.',
-            ),
-        ):
-            with self.subTest(reason=reason):
-                runs = Runs({"Harbor.Core.csproj": Completed(code, text)})
-                answer = run_why([Path("Harbor.Core.csproj")], "Lantern.Json", Services(run=runs), 30)
-                self.assertEqual(
-                    {Path("Harbor.Core.csproj"): f"dotnet nuget why answered nothing {reason}"}, answer.failures
-                )
-                self.assertEqual(set(), answer.answered)
-        # A run that timed out after printing part of an answer is not taken as an answer.
-        runs = Runs({"Harbor.Core.csproj": Completed(-1, CORE_TEXT, timed_out=True)})
-        answer = run_why([Path("Harbor.Core.csproj")], "Lantern.Json", Services(run=runs), 7)
-        self.assertEqual(
-            {Path("Harbor.Core.csproj"): "dotnet nuget why did not finish within 7 seconds"}, answer.failures
-        )
-        self.assertEqual(({}, set()), (answer.paths, answer.answered))
-
-    def test_a_run_that_exits_nonzero_after_printing_a_heading_is_a_failure_not_an_answer(self) -> None:
-        # Part of a package tree, or a heading saying there is no dependency, followed by a failed exit, whichever
-        # code other than 0 it exits with.
-        partial = CORE_TEXT[: CORE_TEXT.index("  [net472]")]
-        for text, code in ((partial, 1), (ABSENT_TEXT, 1), (partial, 2), (ABSENT_TEXT, 2)):
-            with self.subTest(text=text[:40], code=code):
-                runs = Runs({"Harbor.Core.csproj": Completed(code, text)})
-                answer = run_why([Path("Harbor.Core.csproj")], "Lantern.Json", Services(run=runs), 30)
-                self.assertEqual(
-                    {
-                        Path(
-                            "Harbor.Core.csproj"
-                        ): f"dotnet nuget why exited with code {code} after printing part of an answer"
-                    },
-                    answer.failures,
-                )
-                self.assertEqual(({}, set()), (answer.paths, answer.answered))
-
     def test_the_default_runner_joins_both_streams_and_reports_a_time_limit(self) -> None:
         result = sdk_why.subprocess_runner(
             [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr); sys.exit(3)"], 60
@@ -223,3 +178,61 @@ class RunTests(unittest.TestCase):
 
     def test_the_runner_states_why_the_policy_cannot_read_its_program(self) -> None:
         self.assertIn("subprocess_runner", sdk_why.COMMANDS_ALLOWED)
+
+
+# A run with no heading names the first line it printed, which the parser could not read, such as an answer in a
+# language other than English.
+UNREAD = "; the first line it printed, which the script cannot read: "
+LOCALIZED_TEXT = f'\r\n  {CYAN}Projekt "Harbor.Core" weist keine Abh\u00e4ngigkeit von "Lantern.Json" auf.{RESET}\r\n'
+
+
+@pytest.mark.parametrize(
+    ("text", "code", "reason"),
+    [
+        pytest.param(NO_ASSETS_TEXT, 0, "(no restored assets file)", id="no-assets-file"),
+        pytest.param("boom", 1, f"(exit code 1){UNREAD}boom", id="unread-line"),
+        pytest.param("", 1, "(exit code 1)", id="no-output"),
+        pytest.param(
+            LOCALIZED_TEXT,
+            0,
+            f'(exit code 0){UNREAD}Projekt "Harbor.Core" weist keine Abh\u00e4ngigkeit von "Lantern.Json" auf.',
+            id="localized-answer",
+        ),
+    ],
+)
+def test_failures_name_the_reason_and_leave_the_project_unanswered(text: str, code: int, reason: str) -> None:
+    runs = Runs({"Harbor.Core.csproj": Completed(code, text)})
+    answer = run_why([Path("Harbor.Core.csproj")], "Lantern.Json", Services(run=runs), 30)
+    CHECK.assertEqual({Path("Harbor.Core.csproj"): f"dotnet nuget why answered nothing {reason}"}, answer.failures)
+    CHECK.assertEqual(set(), answer.answered)
+
+
+def test_a_run_that_timed_out_after_printing_part_of_an_answer_is_not_taken_as_an_answer() -> None:
+    runs = Runs({"Harbor.Core.csproj": Completed(-1, CORE_TEXT, timed_out=True)})
+    answer = run_why([Path("Harbor.Core.csproj")], "Lantern.Json", Services(run=runs), 7)
+    CHECK.assertEqual({Path("Harbor.Core.csproj"): "dotnet nuget why did not finish within 7 seconds"}, answer.failures)
+    CHECK.assertEqual(({}, set()), (answer.paths, answer.answered))
+
+
+PARTIAL_TEXT = CORE_TEXT[: CORE_TEXT.index("  [net472]")]
+
+
+# Part of a package tree, or a heading saying there is no dependency, followed by a failed exit, whichever code other
+# than 0 it exits with.
+@pytest.mark.parametrize(
+    ("text", "code"),
+    [
+        pytest.param(PARTIAL_TEXT, 1, id="partial-tree-1"),
+        pytest.param(ABSENT_TEXT, 1, id="no-dependency-1"),
+        pytest.param(PARTIAL_TEXT, 2, id="partial-tree-2"),
+        pytest.param(ABSENT_TEXT, 2, id="no-dependency-2"),
+    ],
+)
+def test_a_run_that_exits_nonzero_after_printing_a_heading_is_a_failure_not_an_answer(text: str, code: int) -> None:
+    runs = Runs({"Harbor.Core.csproj": Completed(code, text)})
+    answer = run_why([Path("Harbor.Core.csproj")], "Lantern.Json", Services(run=runs), 30)
+    CHECK.assertEqual(
+        {Path("Harbor.Core.csproj"): f"dotnet nuget why exited with code {code} after printing part of an answer"},
+        answer.failures,
+    )
+    CHECK.assertEqual(({}, set()), (answer.paths, answer.answered))

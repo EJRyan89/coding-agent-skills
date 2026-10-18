@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import bounded_process
@@ -22,6 +24,9 @@ import git_client
 from git_client import GitClient, GitError, GitResult, classify_failure
 from job_tree import GroupTree, JobTree, TreeNotEnded
 from process_identity import process_status
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 NOT_A_REPOSITORY = "fatal: not a git repository (or any of the parent directories): .git\n"
 
@@ -261,32 +266,6 @@ class TransientTests(unittest.TestCase):
         self.assertEqual([2.0], sleeper.waits)
         self.assertEqual(2, len(calls))
 
-    def test_every_transport_message_is_transient_for_fetch_and_ls_remote(self) -> None:
-        messages = (
-            EARLY_EOF,
-            UNRESOLVED,
-            HUNG_UP,
-            "error: RPC failed; HTTP 502 curl 22 The requested URL returned error: 502\n",
-            "fatal: unable to access 'https://github.com/o/r.git/': Recv failure: Connection reset by peer\n",
-            "fatal: unable to access 'https://github.com/o/r.git/': Failed to connect to github.com port 443 after "
-            "21045 ms: Connection timed out\n",
-            "fatal: unable to access 'https://github.com/o/r.git/': schannel: failed to receive handshake, SSL/TLS "
-            "connection failed\n",
-            "fatal: unable to access 'https://github.com/o/r.git/': OpenSSL SSL_connect: SSL_ERROR_SYSCALL in "
-            "connection to github.com:443\n",
-            "fatal: unable to access 'https://github.com/o/r.git/': gnutls_handshake() failed: The TLS connection "
-            "was non-properly terminated.\n",
-            "ssh: Could not resolve hostname github.com: Name or service not known\n"
-            "fatal: Could not read from remote repository.\n",
-            "fatal: unable to access 'https://github.com/o/r.git/': The requested URL returned error: 503\n",
-        )
-        for arguments in (["fetch", "origin"], ["ls-remote", "--symref", "origin", "HEAD"]):
-            for stderr in messages:
-                with self.subTest(arguments[0], stderr=stderr):
-                    client, sleeper, calls = retrying(GitResult(128, "", stderr), GitResult(0, "answer\n", ""))
-                    self.assertEqual(GitResult(0, "answer\n", ""), client.run(arguments))
-                    self.assertEqual(([2.0], 2), (sleeper.waits, len(calls)))
-
     def test_a_transient_failure_that_outlasts_the_retries_keeps_its_shape_naming_them(self) -> None:
         client, sleeper, calls = retrying(*[GitResult(128, "", UNRESOLVED)] * 3)
         result = client.run(["fetch", "origin", "--quiet"], directory="repo")
@@ -301,13 +280,6 @@ class TransientTests(unittest.TestCase):
             "fatal: the remote end hung up unexpectedly\n(gave up after 2 retries)", str(context.exception)
         )
 
-    def test_a_permanent_failure_is_not_retried(self) -> None:
-        for name, stderr in PERMANENT.items():
-            with self.subTest(name):
-                client, sleeper, calls = retrying(GitResult(128, "", stderr))
-                self.assertEqual(GitResult(128, "", stderr), client.run(["fetch", "origin", "x"]))
-                self.assertEqual(([], 1), (sleeper.waits, len(calls)))
-
     def test_transient_words_the_remote_or_a_hook_printed_do_not_make_a_failure_transient(self) -> None:
         # A commit message quoted by a reference-transaction hook and a line the server sent hold the words; git's
         # own line names a failure no retry cures.
@@ -319,33 +291,6 @@ class TransientTests(unittest.TestCase):
         client, sleeper, calls = retrying(GitResult(1, "", stderr))
         self.assertEqual(GitResult(1, "", stderr), client.run(["fetch", "origin"]))
         self.assertEqual(([], 1), (sleeper.waits, len(calls)))
-
-    def test_push_and_every_other_subcommand_are_never_retried(self) -> None:
-        for arguments in (
-            ["push", "origin", "main"],
-            ["--no-optional-locks", "push", "origin"],
-            ["pull", "--ff-only"],
-            ["clone", "https://github.com/o/r.git", "r"],
-            ["remote", "update"],
-            ["status"],
-            ["-c", "fetch", "push"],
-            [],
-        ):
-            with self.subTest(arguments=arguments):
-                client, sleeper, calls = retrying(GitResult(128, "", EARLY_EOF))
-                self.assertEqual(GitResult(128, "", EARLY_EOF), client.run(arguments))
-                self.assertEqual(([], 1), (sleeper.waits, len(calls)))
-
-    def test_the_subcommand_is_found_after_git_options(self) -> None:
-        for arguments in (
-            ["--no-optional-locks", "fetch", "--all", "--prune", "--quiet"],
-            ["-c", "http.version=HTTP/1.1", "fetch", "origin"],
-            ["--git-dir", "push", "ls-remote", "origin"],
-        ):
-            with self.subTest(arguments=arguments):
-                client, sleeper, _calls = retrying(GitResult(128, "", UNRESOLVED), GitResult(0, "", ""))
-                self.assertEqual(0, client.run(arguments).returncode)
-                self.assertEqual([2.0], sleeper.waits)
 
     def test_a_zero_exit_is_an_answer_whatever_stderr_says(self) -> None:
         client, sleeper, calls = retrying(GitResult(0, "", "warning: early EOF in a progress line\n"))
@@ -872,3 +817,101 @@ class RepositoryVariableTests(unittest.TestCase):
             ),
             bounded_process.REPOSITORY_VARIABLES,
         )
+
+
+def command_id(value: object) -> str | None:
+    """A test ID that reads an argument list as the git command it runs, leaving every other value's ID to pytest."""
+    return " ".join(["git", *value]) if isinstance(value, list) else None
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        pytest.param(EARLY_EOF, id="early-eof"),
+        pytest.param(UNRESOLVED, id="unresolved-host"),
+        pytest.param(HUNG_UP, id="hung-up"),
+        pytest.param("error: RPC failed; HTTP 502 curl 22 The requested URL returned error: 502\n", id="http-502"),
+        pytest.param(
+            "fatal: unable to access 'https://github.com/o/r.git/': Recv failure: Connection reset by peer\n",
+            id="connection-reset",
+        ),
+        pytest.param(
+            "fatal: unable to access 'https://github.com/o/r.git/': Failed to connect to github.com port 443 after "
+            "21045 ms: Connection timed out\n",
+            id="connection-timed-out",
+        ),
+        pytest.param(
+            "fatal: unable to access 'https://github.com/o/r.git/': schannel: failed to receive handshake, SSL/TLS "
+            "connection failed\n",
+            id="schannel-handshake",
+        ),
+        pytest.param(
+            "fatal: unable to access 'https://github.com/o/r.git/': OpenSSL SSL_connect: SSL_ERROR_SYSCALL in "
+            "connection to github.com:443\n",
+            id="openssl-syscall",
+        ),
+        pytest.param(
+            "fatal: unable to access 'https://github.com/o/r.git/': gnutls_handshake() failed: The TLS connection "
+            "was non-properly terminated.\n",
+            id="gnutls-handshake",
+        ),
+        pytest.param(
+            "ssh: Could not resolve hostname github.com: Name or service not known\n"
+            "fatal: Could not read from remote repository.\n",
+            id="ssh-unresolved-hostname",
+        ),
+        pytest.param(
+            "fatal: unable to access 'https://github.com/o/r.git/': The requested URL returned error: 503\n",
+            id="http-503",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "arguments", [["fetch", "origin"], ["ls-remote", "--symref", "origin", "HEAD"]], ids=command_id
+)
+def test_every_transport_message_is_transient_for_fetch_and_ls_remote(arguments: list[str], stderr: str) -> None:
+    client, sleeper, calls = retrying(GitResult(128, "", stderr), GitResult(0, "answer\n", ""))
+    CHECK.assertEqual(GitResult(0, "answer\n", ""), client.run(arguments))
+    CHECK.assertEqual(([2.0], 2), (sleeper.waits, len(calls)))
+
+
+@pytest.mark.parametrize("stderr", [pytest.param(stderr, id=name) for name, stderr in PERMANENT.items()])
+def test_a_permanent_failure_is_not_retried(stderr: str) -> None:
+    client, sleeper, calls = retrying(GitResult(128, "", stderr))
+    CHECK.assertEqual(GitResult(128, "", stderr), client.run(["fetch", "origin", "x"]))
+    CHECK.assertEqual(([], 1), (sleeper.waits, len(calls)))
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["push", "origin", "main"],
+        ["--no-optional-locks", "push", "origin"],
+        ["pull", "--ff-only"],
+        ["clone", "https://github.com/o/r.git", "r"],
+        ["remote", "update"],
+        ["status"],
+        ["-c", "fetch", "push"],
+        [],
+    ],
+    ids=command_id,
+)
+def test_push_and_every_other_subcommand_are_never_retried(arguments: list[str]) -> None:
+    client, sleeper, calls = retrying(GitResult(128, "", EARLY_EOF))
+    CHECK.assertEqual(GitResult(128, "", EARLY_EOF), client.run(arguments))
+    CHECK.assertEqual(([], 1), (sleeper.waits, len(calls)))
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--no-optional-locks", "fetch", "--all", "--prune", "--quiet"],
+        ["-c", "http.version=HTTP/1.1", "fetch", "origin"],
+        ["--git-dir", "push", "ls-remote", "origin"],
+    ],
+    ids=command_id,
+)
+def test_the_subcommand_is_found_after_git_options(arguments: list[str]) -> None:
+    client, sleeper, _calls = retrying(GitResult(128, "", UNRESOLVED), GitResult(0, "", ""))
+    CHECK.assertEqual(0, client.run(arguments).returncode)
+    CHECK.assertEqual([2.0], sleeper.waits)

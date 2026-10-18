@@ -21,6 +21,8 @@ from typing import Any
 from unittest import mock
 from urllib.parse import unquote
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
@@ -48,6 +50,9 @@ from test_review_documents import (
     without_pdftotext,
     word_document,
 )
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 SCRIPT = Path(review_document.__file__).resolve()
 SKILLS_ROOT = SCRIPT.parents[2]
@@ -1580,27 +1585,6 @@ class StageTests(PipelineTestCase):
 
 
 class OutputTests(DocumentTestCase):
-    def test_failures_use_the_shared_flattener_after_converting_the_exception_to_text(self) -> None:
-        message = " \tCannot\r\n read  café\u00a0設計\u2003draft.\v "
-        for error in (review_document.DocumentError(message), OSError(13, message, "draft.md")):
-            for command, arguments in (
-                ("build", ["build", "draft.md"]),
-                ("report", ["report", "--fixture", "fixture", "--report", "report.md"]),
-            ):
-                with (
-                    self.subTest(error=error, command=command),
-                    mock.patch.object(review_document, command, side_effect=error),
-                    mock.patch.object(review_document, "flat_text", wraps=flat_text) as flatten,
-                ):
-                    code, lines = run_main(*arguments)
-                expected = (
-                    "Cannot read café 設計 draft."
-                    if isinstance(error, review_document.DocumentError)
-                    else "[Errno 13] Cannot read café 設計 draft. : 'draft.md'"
-                )
-                self.assertEqual((1, [f"FAILED {expected}"]), (code, lines))
-                flatten.assert_called_once_with(str(error))
-
     def test_an_output_inside_a_skills_directory_is_refused_before_anything_is_read(self) -> None:
         home = self.root / "home"
         targets = [
@@ -1710,3 +1694,33 @@ class ConsoleTests(DocumentTestCase):
             f"FIXTURE {self.output / 'fixture'}\nOUTPUT {self.output}\n",
             result.stdout.decode("utf-8").replace("\r\n", "\n"),
         )
+
+
+# A failure's text before the shared flattener puts it on one line.
+UNFLATTENED = " \tCannot\r\n read  café\u00a0設計\u2003draft.\v "
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        pytest.param(review_document.DocumentError(UNFLATTENED), "Cannot read café 設計 draft.", id="DocumentError"),
+        pytest.param(
+            OSError(13, UNFLATTENED, "draft.md"), "[Errno 13] Cannot read café 設計 draft. : 'draft.md'", id="OSError"
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    ("command", "arguments"),
+    [("build", ["build", "draft.md"]), ("report", ["report", "--fixture", "fixture", "--report", "report.md"])],
+    ids=["build", "report"],
+)
+def test_failures_use_the_shared_flattener_after_converting_the_exception_to_text(
+    error: Exception, expected: str, command: str, arguments: list[str]
+) -> None:
+    with (
+        mock.patch.object(review_document, command, side_effect=error),
+        mock.patch.object(review_document, "flat_text", wraps=flat_text) as flatten,
+    ):
+        code, lines = run_main(*arguments)
+    CHECK.assertEqual((1, [f"FAILED {expected}"]), (code, lines))
+    flatten.assert_called_once_with(str(error))
