@@ -25,7 +25,7 @@ A single line `FAILED <reason>` (for example, the GitHub CLI is not signed in) m
 - `cleaned`: show its `SUMMARY` lines, and ask the step 4 questions for its `CONFIRM_LOCAL`, `UNMERGED`, `CONFIRM_DETACHED`, and `ORPHAN` lines, using its `PLAN` file.
 - `quiet`: nothing changed and nothing needs the user. List these repositories together on one line instead of showing a summary.
 - `dirty`: a `DIRTY_MAIN <n>` line; handle it in step 3.
-- `fetch-failed`: relay its `SUMMARY` lines.
+- `fetch-failed`: a `FETCH_FAILED <error>` line, Git's reason the fetch failed; nothing more ran for it. Relay its `SUMMARY` lines, which say the repository was skipped and nothing in it changed.
 - `error` or `git-failed`: report its `ERROR` line; nothing more runs for it. With a `PLAN` line, it failed partway through cleaning: first show its `SUMMARY` lines, which say what was done before the failure, and ask the step 4 questions for its `CONFIRM_LOCAL`, `UNMERGED`, `CONFIRM_DETACHED`, and `ORPHAN` lines.
 
 A `CHECKOUT failed <reason>` line means the switch to the default branch failed; report it with that repository's summary. A repository with no `PLAN` line may show a `CHECKOUT switched` or `FF_DEFAULT` line, what was already done to its default branch; report it with the repository.

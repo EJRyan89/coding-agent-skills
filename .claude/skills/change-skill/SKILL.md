@@ -17,6 +17,8 @@ A skill change is finished only when it is tested, documented, validated, and au
 python -B .claude/skills/change-skill/scripts/change_skill.py section "<title>"
 ```
 
+It prints `SECTION "<document>" <first>-<last> <heading>`, then the section. When no single heading matches the title, it prints `HEADING <line> <heading>` for each heading of the document before a last line `FAILED <reason>`: run it again with the title from that listing. Any other `FAILED <reason>` line is a stop to report.
+
 A repository skill, under `.claude/skills/<name>/`, meets the shipped standard but has no `deploy-meta` entry, `docs/skills.md` section, or README row; its shim `.agents/skills/<name>/SKILL.md` carries the same frontmatter, and `tools/skill_shims.py` writes it.
 
 ## 1. Plan the skill
@@ -38,7 +40,7 @@ For a new shipped skill, with the values the plan settled:
 python tools/new_skill.py "<name>" --description "<description>" --argument-hint "<hint>" --tool gh
 ```
 
-Add `--user-only` and `--opt-in` as planned, and `--skill-dep <dependency>` for each sibling whose scripts the skill's scripts import; omit `--argument-hint` or `--tool` when there is none. Pass the planned grants as `--allowed-tools`, comma-separated, unless they are its default: both shells for its script named after it, `scripts/<name with underscores>.py`, and the file-reading tool; a skill with more scripts grants each by name. It writes the frontmatter, the metadata, and the generated part of the reference section, refuses without changing anything when the name is taken or a tool is unknown, prints the `SCRIPT_HEADER` lines a script with those dependencies starts with, and prints a `REMAINING` line for each thing validation still needs from you. A skill inside a bundle also needs its entry in `source.json`.
+Add `--user-only` and `--opt-in` as planned, and `--skill-dep <dependency>` for each sibling whose scripts the skill's scripts import; omit `--argument-hint` or `--tool` when there is none. Pass the planned grants as `--allowed-tools`, comma-separated, unless they are its default: both shells for its script named after it, `scripts/<name with underscores>.py`, and the file-reading tool; a skill with more scripts grants each by name. It writes the frontmatter, the metadata, and the generated part of the reference section, printing `CREATED <path>` or `UPDATED <path>` for each file, refuses without changing anything when the name is taken or a tool is unknown, prints the `SCRIPT_HEADER` lines a script with those dependencies starts with, and prints a `REMAINING` line for each thing validation still needs from you. A skill inside a bundle also needs its entry in `source.json`.
 
 For a new repository skill, add `--repository`, which writes `.claude/skills/<name>/SKILL.md` and its shim and takes no `--tool` or `--opt-in`; it grants nothing unless you pass `--allowed-tools`:
 
@@ -58,13 +60,13 @@ Keep `SKILL.md` to orchestration: the commands to run, what their output means, 
 
 ## 4. Document in the same change
 
-Once the change is in place, name what it owes. This reads the files changed since `origin/main`, committed, uncommitted, or untracked, and prints a `REGENERATE` or `GATE` line for each regeneration and manual gate they owe, then `OWED` and their count; run it again whenever the change grows:
+Once the change is in place, name what it owes. This reads the files changed since `origin/main`, committed, uncommitted, or untracked, and prints `BASE <base> <commit>` and `CHANGED <count>`, the merge base it compared with and the files it read, then a `REGENERATE` or `GATE` line for each regeneration and manual gate they owe, then `OWED` and their count, or a last line `FAILED <reason>` to report; run it again whenever the change grows:
 
 ```bash
 python -B .claude/skills/change-skill/scripts/change_skill.py gates
 ```
 
-- Run the command of each `REGENERATE` line: `python tools/skill_reference.py --write`, then `python tools/skill_reference.py` without `--write` to list anything still missing; `python tools/skill_shims.py --write`; or `python tools/runtime_prompts.py --write`. Validation fails while a reference, shim, or sample is stale.
+- Run the command of each `REGENERATE` line: `python tools/skill_reference.py --write`, then `python tools/skill_reference.py` without `--write` to list anything still missing; `python tools/skill_shims.py --write`, which prints `WROTE <path>` for each shim file it writes; or `python tools/runtime_prompts.py --write`. Validation fails while a reference, shim, or sample is stale.
 - Update the hand-written part of the skill's section in `docs/skills.md` to match what shipped: what each argument means, what it does without them, and an example.
 - A new skill, or bundle, gets a row in the "Included skills" table in `README.md`, linking its section in `docs/skills.md`.
 - A code-review skill's configuration or records belong in `docs/code-review-operations.md`.

@@ -476,7 +476,6 @@ def sync(root: str, skip_checkout: bool, services: Services) -> dict[str, Any] |
             emit("SUMMARY", line)
         return None
     default = default_branch(services, root)
-    emit("DEFAULT", default.name, *([default.note] if default.note else []))
     if skip_checkout:
         checkout = "skipped"
         emit("CHECKOUT", checkout)

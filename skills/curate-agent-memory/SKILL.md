@@ -84,7 +84,7 @@ Ask which groups to apply with a multi-select question, one option per non-empty
   {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" reindex --memory-dir "<memory dir>" --write
   ```
 
-  It writes the index from the memory files and prints `WROTE <path>`, or `UNCHANGED`; report its `DROPPED`, `ADDED`, and `UNREADABLE` lines. `OVER_LIMIT` (it still writes the index) or `NEAR_LIMIT` means the index still needs merging or moving entries. A last `FAILED <reason>` means it could not write the index; show the reason.
+  It writes the index from the memory files and prints `WROTE <path>`, or `UNCHANGED`; `WOULD_WRITE <path>` means `--write` was left off, so run it again as shown. It first prints one `INDEX_LINE <file>` per entry of the index, in its order, which needs no report; report its `DROPPED`, `ADDED`, and `UNREADABLE` lines. `OVER_LIMIT` (it still writes the index) or `NEAR_LIMIT` means the index still needs merging or moving entries. A last `FAILED <reason>` means it could not write the index; show the reason.
 - Do not commit, push, or open pull requests; report which repository files changed so the user can review them, and that a change to a skill's source reaches the deployed skill at its next deployment.
 
 ## Step 6: Re-audit and report

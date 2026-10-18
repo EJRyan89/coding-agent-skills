@@ -9,6 +9,7 @@ import hashlib
 import io
 import json
 import os
+import shlex
 import stat
 import subprocess
 import sys
@@ -82,6 +83,11 @@ def run_main(*arguments: str, github: GitHubClient | None = None) -> tuple[int, 
 
 def facts(lines: list[str]) -> dict[str, str]:
     return {line.split(" ", 1)[0]: line.split(" ", 1)[1] for line in lines}
+
+
+def prepare_line(*fixtures: Path) -> str:
+    """The PREPARE_ARGUMENTS line that names `fixtures`, in order, each double-quoted in forward-slash form."""
+    return "PREPARE_ARGUMENTS --canary " + " ".join(f'--fixture "{fixture.as_posix()}"' for fixture in fixtures)
 
 
 def added(diff: str) -> list[str]:
@@ -223,6 +229,7 @@ class CheckoutTests(DocumentTestCase):
                 "ROUTE": "design-review",
                 "FIXTURE": str(self.output / "fixture"),
                 "OUTPUT": str(self.output),
+                "PREPARE_ARGUMENTS": f'--canary --fixture "{(self.output / "fixture").as_posix()}"',
             },
             result,
         )
@@ -895,9 +902,13 @@ class PullRequestTests(PipelineTestCase):
         )
 
     def build_pull(self, stub: StubGitHub, *options: str, reference: str = "octo-org/widgets#7") -> list[str]:
+        """The lines a pull request's build prints but its last, which names every fixture for prepare."""
         code, lines = run_main("build", reference, "--output", str(self.output), *options, github=stub.client())
         self.assertEqual(0, code, lines)
-        return lines
+        count = sum(line.startswith("DOCUMENT ") for line in lines)
+        fixtures = (self.output / str(index) / "fixture" for index in range(1, count + 1))
+        self.assertEqual(prepare_line(*fixtures), lines[-1])
+        return lines[:-1]
 
     def block(self, index: int, document: str, base: str) -> list[str]:
         folder = self.output / str(index)
@@ -985,6 +996,21 @@ class PullRequestTests(PipelineTestCase):
         # A renamed document is compared with its content before the rename, at its new path.
         self.assertEqual(LIMITS, (renamed / "base" / "docs" / "design" / "limits.md").read_bytes())
         self.assertIn("-Ten exports a day.\n+Twenty exports a day.\n", self.fixture_diff(renamed))
+
+    def test_the_last_line_names_every_fixture_in_the_arguments_prepare_takes_as_printed(self) -> None:
+        code, lines = run_main("build", "octo-org/widgets#7", "--output", str(self.output), github=self.stub().client())
+        self.assertEqual(0, code, lines)
+        first, second, third = ((self.output / str(index) / "fixture").as_posix() for index in (1, 2, 3))
+        self.assertEqual(
+            f'PREPARE_ARGUMENTS --canary --fixture "{first}" --fixture "{second}" --fixture "{third}"', lines[-1]
+        )
+        # The skill passes the arguments after --host as printed, so a shell splits them back into each fixture,
+        # the output's space included, and prepare takes every fixture in one command.
+        arguments = shlex.split(lines[-1].removeprefix("PREPARE_ARGUMENTS "))
+        self.assertEqual(["--canary", "--fixture", first, "--fixture", second, "--fixture", third], arguments)
+        prepared = self.pipeline("prepare", "--host", "claude-code", *arguments)
+        self.assertEqual(3, sum(fact.startswith("RUN ") for fact in prepared), prepared)
+        self.assertTrue(prepared[-1].endswith(" pending=0"), prepared)
 
     def test_a_pull_request_is_named_by_its_selector_or_its_url(self) -> None:
         for index, reference in enumerate(
@@ -1624,6 +1650,32 @@ class OutputTests(DocumentTestCase):
         code, lines = run_main("build", str(document), "--output", str(self.root / "empty folder"))
         self.assertEqual((0, str(self.root / "empty folder")), (code, facts(lines)["OUTPUT"]))
 
+    def test_an_output_whose_path_a_quoted_argument_does_not_keep_is_refused_before_anything_is_written(self) -> None:
+        document = self.root / "plan.md"
+        document.write_bytes(b"# Plan\n")
+        for character in ("$", "`"):
+            target = self.root / f"out{character}put"
+            with self.subTest(character=character):
+                code, lines = run_main("build", str(document), "--output", str(target))
+                reason = f"holds {character}, which a quoted argument does not keep; name another --output"
+                self.assertEqual((1, [f"FAILED {target.as_posix()} {reason}"]), (code, lines))
+                self.assertFalse(target.exists())
+
+    def test_a_temporary_output_a_quoted_argument_does_not_keep_is_refused_and_removed(self) -> None:
+        document = self.root / "plan.md"
+        document.write_bytes(b"# Plan\n")
+        temporary = self.root / "temp $dir"
+
+        def mkdtemp(prefix: str) -> str:
+            temporary.mkdir()
+            return str(temporary)
+
+        with mock.patch.object(review_document.tempfile, "mkdtemp", side_effect=mkdtemp):
+            code, lines = run_main("build", str(document))
+        reason = "holds $, which a quoted argument does not keep; name another --output"
+        self.assertEqual((1, [f"FAILED {temporary.as_posix()} {reason}"]), (code, lines))
+        self.assertFalse(temporary.exists())
+
     def test_report_copies_the_recorded_report_beside_the_fixture(self) -> None:
         document = self.root / "plan.md"
         document.write_bytes(b"# Plan\n")
@@ -1691,7 +1743,7 @@ class ConsoleTests(DocumentTestCase):
         self.assertEqual(0, result.returncode, result.stderr.decode("utf-8", "replace"))
         self.assertEqual(
             "DOCUMENT 設計 ✓.md\nBASE none the file is outside any git checkout\nROUTE design-review\n"
-            f"FIXTURE {self.output / 'fixture'}\nOUTPUT {self.output}\n",
+            f"FIXTURE {self.output / 'fixture'}\nOUTPUT {self.output}\n{prepare_line(self.output / 'fixture')}\n",
             result.stdout.decode("utf-8").replace("\r\n", "\n"),
         )
 
