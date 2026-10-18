@@ -278,3 +278,15 @@ def test_the_release_procedure_adds_the_option_and_checks_the_board() -> None:
     before_tagging = text.split("\n## Before tagging\n", 1)[1].split("\n## ", 1)[0]
     CHECK.assertIn("Release", milestones)
     CHECK.assertIn("python tools/project_release_sync.py --check", before_tagging)
+
+
+def test_after_tagging_closes_the_milestone_and_syncs_the_next_one() -> None:
+    text = (REPOSITORY_ROOT / "docs" / "releasing.md").read_text(encoding="utf-8")
+    after_tagging = text.split("\n## After tagging\n", 1)[1].split("\n## ", 1)[0]
+    step = next(line for line in after_tagging.splitlines() if "**Milestones.**" in line)
+    for phrase in ("Close the released milestone", "tag date", "python tools/project_release_sync.py", "`SYNCED`"):
+        with CHECK.subTest(phrase=phrase):
+            CHECK.assertIn(phrase, step)
+    CHECK.assertNotIn("--check", step)
+    # The step comes before the rotation audit, which files its findings into the next milestone.
+    CHECK.assertLess(after_tagging.index("**Milestones.**"), after_tagging.index("**Rotation audit.**"))
