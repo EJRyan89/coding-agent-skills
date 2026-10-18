@@ -159,7 +159,7 @@ def prepare_backup_destination(paths: Paths, run_id: str, item: str, root: str) 
 
     def reject_links(verb: str) -> None:
         for component in components:
-            if platform_support.is_link(component) or platform_support.is_reparse_point(component):
+            if platform_support.is_link_or_junction(component):
                 raise DeployError(
                     f"ERROR: Backup path {verb} a symlink or junction: {platform_support.normalize(component)}"
                 )
@@ -327,11 +327,8 @@ def _restore_backup(paths: Paths, entry: dict[str, Any]) -> bool:
         if _hash_existing(transient) != entry["backup_hash"]:
             _warn(f"Backup hash mismatch for {item} during rollback")
             return False
-        try:
-            fsops.move(transient, target)
-        except OSError:
-            _warn(f"Failed to restore backup for {item}")
-            return False
+        # A move that fails, such as of a backup another program holds open, reaches _guarded, which names the path.
+        fsops.move(transient, target)
         return True
     if transient_exists and target_exists:
         _warn(f"Both {item} and {item}.deploying-bak exist during rollback")
@@ -435,7 +432,7 @@ def _read_entries(journal_file: Path, run_id: str) -> Entries:
 
 def _recover_run(paths: Paths, run_dir: Path) -> bool:
     """Reconcile one interrupted run; return False when it needs manual inspection."""
-    if platform_support.is_link(run_dir) or platform_support.is_reparse_point(run_dir):
+    if platform_support.is_link_or_junction(run_dir):
         print(
             "  ERROR: Staging run is a symlink or junction and was "
             f"not replayed: {platform_support.normalize(run_dir)}",
@@ -504,7 +501,7 @@ def pending_runs(paths: Paths) -> list[tuple[str, bool]]:
         ) from error
     pending: list[tuple[str, bool]] = []
     for run_dir in run_dirs:
-        if platform_support.is_link(run_dir) or platform_support.is_reparse_point(run_dir):
+        if platform_support.is_link_or_junction(run_dir):
             pending.append((run_dir.name, False))
             continue
         journal_file = run_dir / "journal.jsonl"

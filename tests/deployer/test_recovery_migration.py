@@ -773,8 +773,23 @@ with mock.patch("deployer.fsops.move", side_effect=failing_move):
             changes_home=FAILS_PARTWAY,
         )
         self.assertEqual(130 if recovery_failure == "KeyboardInterrupt" else 1, result.returncode, result.stderr)
-        self.assertIn("synthetic deployment failure", result.stderr)
-        self.assertIn("Deployment failed; reconciling the current journal before exit...", result.stderr)
+        # A failed file operation is named as every command names one, and Ctrl+C as a cancellation.
+        opening = {
+            "OSError": [
+                "ERROR: Could not finish the deployment: synthetic deployment failure",
+                "Check that the path exists and that you can read it, then retry.",
+                "Rerun with --debug to see the traceback.",
+                "",
+                "Deployment failed; reconciling the current journal before exit...",
+            ],
+            "KeyboardInterrupt": [
+                "Cancelled after the deployment began; its changes are reconciled before exit.",
+                "",
+                "Deployment cancelled; reconciling the current journal before exit...",
+            ],
+        }[deployment_failure]
+        self.assert_lines(result.stderr, *opening)
+        self.assertNotIn(f"Unexpected {deployment_failure}", result.stderr)
         runs = list(self.paths.staging_root.iterdir())
         self.assertEqual(1, len(runs))
         self.assert_stopped_report(result.stderr, runs[0].name, recovery_failure, committed)
@@ -984,8 +999,11 @@ class RecoveryBranchTests(RecoveryTestCase):
         journal_file = self.uncommitted_replacement()
         transient = self.skills_dir / "alpha.deploying-bak"
         with failing_at("move", transient):
+            # The line "When recovery fails" in docs/recovery.md promises: the run, the path held, and the reason.
             self.assert_rollback_stopped(
-                journal_file, "  WARNING: Failed to restore backup for alpha", changes_home=RECOVERS
+                journal_file,
+                f"  ERROR: Recovery of run {self.RUN} failed at {forward(transient)}: Access is denied",
+                changes_home=RECOVERS,
             )
         self.assertFalse((self.skills_dir / "alpha").exists())
         self.assertIn("Alpha content", (transient / "SKILL.md").read_text(encoding="utf-8"))
@@ -1108,7 +1126,10 @@ class RecoveryBranchTests(RecoveryTestCase):
         run_id = self.manifest()["last_run_id"]
         self.assert_lines(
             result.output,
-            "ERROR: Unexpected OSError: synthetic backup move failure",
+            "ERROR: Could not finish the deployment: synthetic backup move failure",
+            "Check that the path exists and that you can read it, then retry.",
+            "Rerun with --debug to see the traceback.",
+            "",
             "Deployment failed; reconciling the current journal before exit...",
             f"Recovering committed run {run_id} (completing finalization)...",
             f"  Preserved backup: alpha -> .backups/{run_id}/alpha",

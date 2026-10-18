@@ -126,11 +126,11 @@ CODEX_WRITABLE_SANDBOX = "workspace-write"
 
 
 def codex_sandbox_mode(codex: str) -> str | None:
-    """The sandbox mode the Codex CLI at this path would run a skill's scripts in, or None when it names none."""
-    try:
-        result = platform_support.run_tool([codex, *CODEX_SANDBOX_PROBE])
-    except platform_support.ToolTimedOut:
-        return None
+    """The sandbox mode the Codex CLI at this path would run a skill's scripts in, or None when it names none.
+
+    A probe that does not finish raises ToolTimedOut, which stops `check` as every other tool's deadline does.
+    """
+    result = platform_support.run_tool([codex, *CODEX_SANDBOX_PROBE])
     found = CODEX_SANDBOX_MODE.search(result.output) if result.returncode == 0 else None
     return None if found is None else found.group(1)
 
