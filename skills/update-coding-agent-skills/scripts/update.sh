@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
-# Fast-forward a coding-agent-skills clone to origin/main, then redeploy it with `deploy.py --all`.
+# Fast-forward a coding-agent-skills clone to origin/main, then redeploy it with `deploy.py --all`: on the release
+# channel at the highest release tag origin/main holds, through `deploy.py --at refs/tags/<tag>`, and on the main
+# channel at main itself.
 #
-# Usage: update.sh <clone> [--cross-major] [--unpin]
+# Usage: update.sh <clone> <release|main> [--channel <release|main>] [--cross-major] [--unpin]
+# The second argument is the configured channel, and --channel replaces it for this run.
 # Prints one status line first, then details:
 #   DIRTY            followed by the tracked files with uncommitted changes
 #   PINNED <ref> <commit> alone: `deploy.py check` names the deployment as made with `deploy.py --at <ref>`, which
-#                    deployed <commit>, and --unpin was not given
+#                    deployed <commit>, the pin is not the release channel's own, and --unpin was not given; on the
+#                    main channel nothing was fetched, and on the release channel the clone was fetched and the pin
+#                    is at another commit than the release the update would deploy
 #   FETCH_FAILED     followed by Git's error
 #   TAG_SHADOWS_BRANCH followed by each tag named main or origin/main, as "<tag> on origin" or "<tag> in the clone";
 #                    nothing was fetched
+#   NO_RELEASE       alone, on the release channel: no release tag reaches origin/main; the clone was fetched
 #   MAJOR_UPDATE <current>..<target> followed by the commits it would deploy; origin/main's highest
 #                    release tag raises the breaking component (the major, or the minor while the
 #                    major is 0) above the release of the commit `deploy.py check` names as deployed,
@@ -19,11 +25,15 @@
 #   NOT_FAST_FORWARD followed by the commits main has that origin/main lacks, found before switching branches;
 #                    or by Git's error when Git refuses the fast-forward itself, after which the clone is
 #                    switched back to the branch it was found on, or a "still on main:" line says why not
-#   UP_TO_DATE <sha> or UPDATED <old>..<new> followed by the pulled commits, and by
-#                    CROSSED <current>..<target> when --cross-major accepted a release boundary,
-#                    then the deploy output and DEPLOYED, DEPLOY_FAILED <code>, or DEPLOY_PINNED <ref> <commit> when
-#                    the deployer refused to replace a deployment made with `deploy.py --at <ref>`, which deployed
-#                    <commit>, that check did not name: the clone was updated, and nothing was deployed
+#   UP_TO_DATE <sha> or UPDATED <old>..<new> on the main channel, followed by the pulled commits;
+#   UP_TO_DATE <tag> or UPDATED <old>..<tag> on the release channel, where <old> is the deployed commit, or unknown
+#                    when check names none, followed by the commits the release adds to it, and by
+#                    NOT_IN_RELEASE <tag>..<old> and the deployed commits the release does not carry, when there are
+#                    any; either is followed by CROSSED <current>..<target> when --cross-major accepted a release
+#                    boundary, then the deploy output and DEPLOYED, DEPLOY_FAILED <code>, or DEPLOY_PINNED <ref>
+#                    <commit> when the deployer refused to replace a deployment made with `deploy.py --at <ref>`,
+#                    which deployed <commit>, that check did not name: the clone was updated, and nothing was
+#                    deployed
 #   FAILED <reason>  alone: the clone is not a repository with deploy.py, a step failed outright, or a release tag
 #                    the stop compares has a version component too long to compare
 # A stop leaves the clone on the branch it was found on unless a "still on main:" line says otherwise; an update
@@ -40,19 +50,38 @@ esac
 
 # Usage is checked before any work, so a usage error never becomes a FAILED line.
 usage() {
-  echo "usage: update.sh <clone containing deploy.py> [--cross-major] [--unpin]" >&2
+  echo "usage: update.sh <clone containing deploy.py> <release|main> [--channel <release|main>] [--cross-major]" \
+    "[--unpin]" >&2
   exit 2
 }
-[ "$#" -ge 1 ] || usage
+channel_named() {
+  case "$1" in
+    release | main) ;;
+    *) usage ;;
+  esac
+}
+[ "$#" -ge 2 ] || usage
+channel_named "$2"
+CHANNEL=$2
+CHANNEL_GIVEN=
+CHANNEL_NEXT=
 CROSS_MAJOR=
 UNPIN=
-for OPTION in "${@:2}"; do
+for OPTION in "${@:3}"; do
+  if [ -n "$CHANNEL_NEXT" ]; then
+    channel_named "$OPTION"
+    CHANNEL=$OPTION
+    CHANNEL_NEXT=
+    continue
+  fi
   case "$OPTION" in
+    --channel) [ -z "$CHANNEL_GIVEN" ] || usage; CHANNEL_GIVEN=1; CHANNEL_NEXT=1 ;;
     --cross-major) [ -z "$CROSS_MAJOR" ] || usage; CROSS_MAJOR=1 ;;
     --unpin) [ -z "$UNPIN" ] || usage; UNPIN=1 ;;
     *) usage ;;
   esac
 done
+[ -z "$CHANNEL_NEXT" ] || usage
 
 # A command's error output as one line, for a FAILED reason.
 one_line() {
@@ -121,74 +150,6 @@ if [ -n "$DIRTY" ]; then
   exit 1
 fi
 
-# check names the deployed commit as "<name> (<commit>)", the commit alone, or unknown, followed by the pin when the
-# deployment was made with `deploy.py --at <ref>`. Its exit status is not read: a check that reports a missing tool
-# still names the commit. DEPLOYED_COMMIT is the commit's full name, or empty when check names none, so it is never
-# taken for an option.
-PIN_MARK=", pinned with --at "
-DEPLOYED_LINE=$("$PYTHON" "$CLONE/deploy.py" check </dev/null 2>/dev/null | tr -d '\r' | grep -m 1 -e "^Deployed commit: ")
-DEPLOYED=${DEPLOYED_LINE#Deployed commit: }
-PIN_REF=
-case "$DEPLOYED" in
-  *"$PIN_MARK"*) PIN_REF=${DEPLOYED##*"$PIN_MARK"} && DEPLOYED=${DEPLOYED%"$PIN_MARK"*} ;;
-esac
-# A commit check or the deployer names as "<name> (<commit>)" is the commit inside the parentheses.
-commit_named() {
-  local named=$1
-  case "$named" in
-    *")") named=${named##*"("} && named=${named%")"} ;;
-  esac
-  printf '%s' "$named"
-}
-DEPLOYED=$(commit_named "$DEPLOYED")
-DEPLOYED_COMMIT=
-if [[ "$DEPLOYED" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
-  DEPLOYED_COMMIT=$DEPLOYED
-fi
-
-# A pinned deployment would be replaced by main, so the update stops until --unpin. A check that fails or names no
-# pin does not stop the update here; the deployer itself refuses to replace a pin without --unpin, which ends the
-# update with DEPLOY_PINNED below.
-if [ -n "$PIN_REF" ] && [ -z "$UNPIN" ]; then
-  echo "PINNED $PIN_REF $DEPLOYED"
-  exit 1
-fi
-
-# Every ref below is named in full: Git resolves a short name as refs/tags/<name> before refs/heads/<name> or
-# refs/remotes/<name>, so a tag named main or origin/main would stand in for the branch. The checkout and the switch
-# back name a branch by its short name, which checkout resolves as a branch first.
-MAIN=refs/heads/main
-ORIGIN_MAIN=refs/remotes/origin/main
-
-# A tag named like a branch the update reads, on origin or in the clone, stops it before anything is fetched: such a
-# tag still shadows the branch in the user's own Git commands.
-if ! OUTPUT=$(git -C "$CLONE" ls-remote --tags --refs origin "refs/tags/main" "refs/tags/origin/main" 2>&1); then
-  echo "FETCH_FAILED"
-  printf '%s\n' "$OUTPUT" | tr -d '\r'
-  exit 1
-fi
-SHADOWS=$(printf '%s\n' "$OUTPUT" | tr -d '\r' |
-  awk -F '\t' '$2 == "refs/tags/main" || $2 == "refs/tags/origin/main" { print $2 " on origin" }')
-for TAG in refs/tags/main refs/tags/origin/main; do
-  if git -C "$CLONE" show-ref --verify --quiet "$TAG"; then
-    SHADOWS+="${SHADOWS:+$'\n'}$TAG in the clone"
-  fi
-done
-if [ -n "$SHADOWS" ]; then
-  echo "TAG_SHADOWS_BRANCH"
-  printf '%s\n' "$SHADOWS"
-  exit 1
-fi
-
-# Release tags are fetched too, so both sides' versions can be compared below. The negative refspecs keep the tag
-# fetch from creating a shadowing tag that origin published after the check above.
-if ! OUTPUT=$(git -C "$CLONE" fetch --quiet --tags origin "+$MAIN:$ORIGIN_MAIN" \
-  "^refs/tags/main" "^refs/tags/origin/main" 2>&1); then
-  echo "FETCH_FAILED"
-  printf '%s\n' "$OUTPUT" | tr -d '\r'
-  exit 1
-fi
-
 # The highest release tag reachable from a commit, or nothing when there is none; when it cannot be read, a FAILED line
 # naming the second argument, and status 1. What a release tag is, and their order, is skill-core's release_tags.py in
 # the clone, the one definition the release notes and the upgrade-notes check read too, run with the Python that runs
@@ -228,11 +189,122 @@ breaking_component() {
     echo "0 $minor"
   fi
 }
+
+# check names the deployed commit as "<name> (<commit>)", the commit alone, or unknown, followed by the pin when the
+# deployment was made with `deploy.py --at <ref>`. Its exit status is not read: a check that reports a missing tool
+# still names the commit. DEPLOYED_COMMIT is the commit's full name, or empty when check names none, so it is never
+# taken for an option.
+PIN_MARK=", pinned with --at "
+DEPLOYED_LINE=$("$PYTHON" "$CLONE/deploy.py" check </dev/null 2>/dev/null | tr -d '\r' | grep -m 1 -e "^Deployed commit: ")
+DEPLOYED=${DEPLOYED_LINE#Deployed commit: }
+PIN_REF=
+case "$DEPLOYED" in
+  *"$PIN_MARK"*) PIN_REF=${DEPLOYED##*"$PIN_MARK"} && DEPLOYED=${DEPLOYED%"$PIN_MARK"*} ;;
+esac
+# A commit check or the deployer names as "<name> (<commit>)" is the commit inside the parentheses.
+commit_named() {
+  local named=$1
+  case "$named" in
+    *")") named=${named##*"("} && named=${named%")"} ;;
+  esac
+  printf '%s' "$named"
+}
+DEPLOYED=$(commit_named "$DEPLOYED")
+DEPLOYED_COMMIT=
+if [[ "$DEPLOYED" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+  DEPLOYED_COMMIT=$DEPLOYED
+fi
+
+# The release channel pins the installation at the release it deploys, naming the tag in full, as refs/tags/<tag>, so
+# its own pin is one whose ref is the full name of the last release its commit holds. Any other pin is the user's,
+# such as one made by hand with `deploy.py --at <tag>` to step back from a regression, and stops the update until
+# --unpin; the release channel moves its own pin to each later release, and the main channel replaces it.
+OWN_PIN=
+if [ -n "$PIN_REF" ] && [ -n "$DEPLOYED_COMMIT" ] && [ "${PIN_REF#refs/tags/}" != "$PIN_REF" ]; then
+  PINNED_RELEASE=$(release_of "$DEPLOYED_COMMIT" "the pinned commit $DEPLOYED_COMMIT") ||
+    { echo "$PINNED_RELEASE"; exit 1; }
+  if [ -n "$PINNED_RELEASE" ] && [ "$PIN_REF" = "refs/tags/$PINNED_RELEASE" ]; then
+    OWN_PIN=1
+  fi
+fi
+USER_PIN=
+if [ -n "$PIN_REF" ] && [ -z "$OWN_PIN" ] && [ -z "$UNPIN" ]; then
+  USER_PIN=1
+fi
+
+# On the main channel a user's pin would be replaced by main, so the update stops before the fetch. A check that fails
+# or names no pin does not stop the update here; the deployer itself refuses to replace a pin without --unpin, which
+# ends the update with DEPLOY_PINNED below. The release channel stops at a user's pin after the fetch, once it knows
+# the release it would deploy.
+if [ "$CHANNEL" = main ] && [ -n "$USER_PIN" ]; then
+  echo "PINNED $PIN_REF $DEPLOYED"
+  exit 1
+fi
+
+# Every ref below is named in full: Git resolves a short name as refs/tags/<name> before refs/heads/<name> or
+# refs/remotes/<name>, so a tag named main or origin/main would stand in for the branch. The checkout and the switch
+# back name a branch by its short name, which checkout resolves as a branch first.
+MAIN=refs/heads/main
+ORIGIN_MAIN=refs/remotes/origin/main
+
+# A tag named like a branch the update reads, on origin or in the clone, stops it before anything is fetched: such a
+# tag still shadows the branch in the user's own Git commands.
+if ! OUTPUT=$(git -C "$CLONE" ls-remote --tags --refs origin "refs/tags/main" "refs/tags/origin/main" 2>&1); then
+  echo "FETCH_FAILED"
+  printf '%s\n' "$OUTPUT" | tr -d '\r'
+  exit 1
+fi
+SHADOWS=$(printf '%s\n' "$OUTPUT" | tr -d '\r' |
+  awk -F '\t' '$2 == "refs/tags/main" || $2 == "refs/tags/origin/main" { print $2 " on origin" }')
+for TAG in refs/tags/main refs/tags/origin/main; do
+  if git -C "$CLONE" show-ref --verify --quiet "$TAG"; then
+    SHADOWS+="${SHADOWS:+$'\n'}$TAG in the clone"
+  fi
+done
+if [ -n "$SHADOWS" ]; then
+  echo "TAG_SHADOWS_BRANCH"
+  printf '%s\n' "$SHADOWS"
+  exit 1
+fi
+
+# Release tags are fetched too, so both sides' versions can be compared below and the release channel finds its
+# release. The negative refspecs keep the tag fetch from creating a shadowing tag that origin published after the
+# check above.
+if ! OUTPUT=$(git -C "$CLONE" fetch --quiet --tags origin "+$MAIN:$ORIGIN_MAIN" \
+  "^refs/tags/main" "^refs/tags/origin/main" 2>&1); then
+  echo "FETCH_FAILED"
+  printf '%s\n' "$OUTPUT" | tr -d '\r'
+  exit 1
+fi
+
+# The highest release on origin/main: the release the release channel deploys, and the one the stop below compares on
+# either channel. RELEASE_REF is that tag's full name and RELEASE_COMMIT its commit; DEPLOY_END is the commit the
+# update would deploy, which the stop's commit list ends at.
+TARGET=$(release_of "$ORIGIN_MAIN" origin/main) || { echo "$TARGET"; exit 1; }
+DEPLOY_END=$ORIGIN_MAIN
+if [ "$CHANNEL" = release ]; then
+  if [ -z "$TARGET" ]; then
+    echo "NO_RELEASE"
+    exit 1
+  fi
+  RELEASE_REF="refs/tags/$TARGET"
+  if ! RELEASE_COMMIT=$(git -C "$CLONE" rev-parse --verify --quiet "$RELEASE_REF^{commit}" 2>&1); then
+    echo "FAILED cannot read the commit of $RELEASE_REF: $(one_line "$RELEASE_COMMIT")"
+    exit 1
+  fi
+  RELEASE_COMMIT=$(printf '%s' "$RELEASE_COMMIT" | tr -d '\r')
+  DEPLOY_END=$RELEASE_REF
+  # A user's pin at the release's own commit is the deployment the update would make, so it does not stop it.
+  if [ -n "$USER_PIN" ] && [ "$DEPLOYED_COMMIT" != "$RELEASE_COMMIT" ]; then
+    echo "PINNED $PIN_REF $DEPLOYED"
+    exit 1
+  fi
+fi
+
 # The installed version is the release of the deployed commit, not of local main, which a pull by hand may have moved
 # past it. Without a release on origin/main there is nothing to cross. A deployed commit no release tag reaches counts
 # as version zero, and one check does not name stops at any release.
 CROSSED=
-TARGET=$(release_of "$ORIGIN_MAIN" origin/main) || { echo "$TARGET"; exit 1; }
 if [ -n "$TARGET" ]; then
   CURRENT=unknown
   if [ -n "$DEPLOYED_COMMIT" ]; then
@@ -256,7 +328,7 @@ if [ -n "$TARGET" ] && [ "$CURRENT" != "$TARGET" ]; then
       # The commits the update would deploy: from the deployed commit, or from local main when check names none.
       LISTED_FROM=${DEPLOYED_COMMIT:-$MAIN}
       if git -C "$CLONE" rev-parse --verify --quiet "$LISTED_FROM^{commit}" >/dev/null; then
-        git -C "$CLONE" log --oneline --no-decorate "$LISTED_FROM..$ORIGIN_MAIN" | tr -d '\r'
+        git -C "$CLONE" log --oneline --no-decorate "$LISTED_FROM..$DEPLOY_END" | tr -d '\r'
       fi
       exit 1
     fi
@@ -294,21 +366,43 @@ if ! OUTPUT=$(git -C "$CLONE" merge --ff-only --quiet "$ORIGIN_MAIN" 2>&1); then
 fi
 AFTER=$(git -C "$CLONE" rev-parse --short HEAD | tr -d '\r')
 
-if [ "$BEFORE" = "$AFTER" ]; then
-  echo "UP_TO_DATE $AFTER"
+# The main channel reports how local main moved. The release channel reports how the installation moves, from the
+# deployed commit to the release: the commits the release adds, and those the deployment had that the release does
+# not carry, as when the installation followed main past the release.
+if [ "$CHANNEL" = main ]; then
+  if [ "$BEFORE" = "$AFTER" ]; then
+    echo "UP_TO_DATE $AFTER"
+  else
+    echo "UPDATED $BEFORE..$AFTER"
+    git -C "$CLONE" log --oneline --no-decorate "$BEFORE..$AFTER" | tr -d '\r'
+  fi
+elif [ "$DEPLOYED_COMMIT" = "$RELEASE_COMMIT" ]; then
+  echo "UP_TO_DATE $TARGET"
+elif [ -z "$DEPLOYED_COMMIT" ]; then
+  echo "UPDATED unknown..$TARGET"
 else
-  echo "UPDATED $BEFORE..$AFTER"
-  git -C "$CLONE" log --oneline --no-decorate "$BEFORE..$AFTER" | tr -d '\r'
+  OLD=$(git -C "$CLONE" rev-parse --short "$DEPLOYED_COMMIT" | tr -d '\r')
+  echo "UPDATED $OLD..$TARGET"
+  git -C "$CLONE" log --oneline --no-decorate "$DEPLOYED_COMMIT..$RELEASE_REF" | tr -d '\r'
+  LEFT=$(git -C "$CLONE" log --oneline --no-decorate "$RELEASE_REF..$DEPLOYED_COMMIT" | tr -d '\r')
+  if [ -n "$LEFT" ]; then
+    echo "NOT_IN_RELEASE $TARGET..$OLD"
+    printf '%s\n' "$LEFT"
+  fi
 fi
 if [ -n "$CROSSED" ]; then
   echo "CROSSED $CROSSED"
 fi
 
-# A fresh process runs the deployer exactly as it now is on main. It refuses to replace a pin without --unpin, so a
-# pin check could not read stops there too: it exits 1 with the line below, which names the ref the deployment was
-# pinned with and its commit as check does, and which the deployer's tests hold.
+# A fresh process runs the deployer exactly as it now is on main. On the release channel it deploys the release's tree
+# with --at, which moves any pin without --unpin. On the main channel it refuses to replace a pin without --unpin,
+# which it is given for the release channel's own pin, so a pin check could not read stops there too: it exits 1 with
+# the line below, which names the ref the deployment was pinned with and its commit as check does, and which the
+# deployer's tests hold.
 DEPLOY_OPTIONS=(--all)
-if [ -n "$UNPIN" ]; then
+if [ "$CHANNEL" = release ]; then
+  DEPLOY_OPTIONS+=(--at "$RELEASE_REF")
+elif [ -n "$UNPIN" ] || [ -n "$OWN_PIN" ]; then
   DEPLOY_OPTIONS+=(--unpin)
 fi
 "$PYTHON" "$CLONE/deploy.py" "${DEPLOY_OPTIONS[@]}" </dev/null 2>"$DEPLOY_ERRORS"

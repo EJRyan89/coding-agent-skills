@@ -30,6 +30,29 @@ from deployer.paths import Paths
 
 
 class RenderedExecutableTests(DeployerTestCase):
+    def test_update_channel_renders_the_configured_channel_or_its_default_and_executes_with_spaces(self) -> None:
+        # update-coding-agent-skills passes the channel to its script as a quoted argument, as this fixture does.
+        line = "printf '%s\\n' \"update channel {{UPDATE_CHANNEL}}\""
+        self.make_source_json()
+        directory = self.make_skill("alpha", f"Channel fixture\n\n```bash\n{line}\n```", ["UPDATE_CHANNEL"])
+        self.write(directory / "run.sh", f"#!/usr/bin/env bash\n{line}\n")
+        bash = platform_support.find_bash()
+        if bash is None:
+            self.fail("Git Bash is a validation prerequisite")
+        for saved, channel in (
+            ("", "release"),
+            ("UPDATE_CHANNEL=main\n", "main"),
+            ("UPDATE_CHANNEL=release\n", "release"),
+        ):
+            with self.subTest(saved=saved):
+                self.make_config(extra=saved)
+                self.deploy_ok("--all")
+                expected = "update channel " + channel
+                self.assertIn(f'"{expected}"', self.skill_text("alpha"))
+                result = platform_support.run_tool([bash, forward(self.skills_dir / "alpha" / "run.sh")])
+                self.assertEqual(0, result.returncode, result.output)
+                self.assertEqual(expected, result.output.strip())
+
     def test_rendered_bash_validates_and_executes_with_spaces(self) -> None:
         self.make_source_json()
         directory = self.make_skill(

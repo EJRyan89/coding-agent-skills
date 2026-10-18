@@ -16,10 +16,10 @@ class ConfigureTests(DeployerTestCase):
     def test_configure_writes_a_validated_lf_config(self) -> None:
         self.make_source_json()
         self.repos.mkdir()
-        result = self.configure(stdin=f"{forward(self.repos)}\n")
+        result = self.configure(stdin=f"{forward(self.repos)}\n\n")
         self.assertEqual(0, result.code, result.output)
         self.assertEqual(
-            f"_source_id=test/skills\nREPOS_ROOT={forward(self.repos)}\n".encode(),
+            f"_source_id=test/skills\nREPOS_ROOT={forward(self.repos)}\nUPDATE_CHANNEL=release\n".encode(),
             self.config_file().read_bytes(),
         )
         self.assertEqual([self.config_file()], list(self.config_file().parent.iterdir()))
@@ -34,7 +34,7 @@ class ConfigureTests(DeployerTestCase):
     def test_rerun_keeps_the_existing_value_when_enter_is_pressed(self) -> None:
         self.make_source_json()
         self.make_config()
-        result = self.configure(stdin="\n")
+        result = self.configure(stdin="\n\n")
         self.assertEqual(0, result.code, result.output)
         example = "C:/GitHub" if platform_support.WINDOWS else "/home/you/GitHub"
         self.assertIn(
@@ -58,7 +58,7 @@ class ConfigureTests(DeployerTestCase):
         self.make_source_json()
         self.make_config()
         before = self.digest()
-        result = self.configure(stdin="bad&path\n")
+        result = self.configure(stdin="bad&path\n\n")
         self.assertEqual(1, result.code)
         self.assertIn("disallowed character '&'", result.output)
         self.assertEqual(before, self.digest())
@@ -68,7 +68,7 @@ class ConfigureTests(DeployerTestCase):
         self.make_config()
         before = self.digest()
         with mock.patch("deployer.fsops.write_atomic", side_effect=OSError("synthetic config write failure")):
-            result = self.configure(stdin=f"{forward(self.repos)}\n")
+            result = self.configure(stdin=f"{forward(self.repos)}\n\n")
         self.assertEqual(1, result.code, result.output)
         self.assertIn("synthetic config write failure", result.output)
         self.assertEqual(before, self.digest())
@@ -82,7 +82,7 @@ class ConfigureTests(DeployerTestCase):
         # The read fails as a file an editor or a scanner holds does, while the harness still reads the home around it.
         denied = PermissionError(13, "Permission denied", str(target))
         with mock.patch("deployer.config.read", side_effect=denied):
-            result = self.configure(stdin=f"{forward(self.repos)}\n")
+            result = self.configure(stdin=f"{forward(self.repos)}\n\n")
         self.assertEqual(1, result.code, result.output)
         self.assertIn(
             f"\nERROR: Could not read the configuration: {forward(target)}: Permission denied\n"
@@ -98,7 +98,7 @@ class ConfigureTests(DeployerTestCase):
         self.make_config()
         failure = PermissionError(13, "Access is denied", str(self.config_file()))
         with mock.patch("deployer.fsops.write_atomic", side_effect=failure):
-            result = self.configure(stdin=f"{forward(self.repos)}\n")
+            result = self.configure(stdin=f"{forward(self.repos)}\n\n")
         self.assertEqual(1, result.code, result.output)
         self.assertIn(
             f"\nERROR: Could not write the configuration: {forward(self.config_file())}: Access is denied\n"
@@ -116,17 +116,17 @@ class ConfigureTests(DeployerTestCase):
             windows = str(repos).replace("/", "\\")
             for typed in (windows, f'"{windows}"', f"{windows}\\", f"  {windows}/  "):
                 with self.subTest(typed=typed):
-                    result = self.configure(stdin=f"{typed}\n")
+                    result = self.configure(stdin=f"{typed}\n\n")
                     self.assertEqual(0, result.code, result.output)
                     self.assertEqual(
-                        f"_source_id=test/skills\nREPOS_ROOT={forward(repos)}\n".encode(),
+                        f"_source_id=test/skills\nREPOS_ROOT={forward(repos)}\nUPDATE_CHANNEL=release\n".encode(),
                         self.config_file().read_bytes(),
                     )
 
         def test_drive_root_is_still_rejected_after_normalization(self) -> None:
             self.make_source_json()
             drive = forward(self.root)[:2]
-            result = self.configure(stdin=f"{drive}\\\n")
+            result = self.configure(stdin=f"{drive}\\\n\n")
             self.assertEqual(1, result.code)
             self.assertIn(f"ERROR: REPOS_ROOT must not be a filesystem root (got: {drive}/)", result.output)
             self.assertFalse(self.config_file().exists())
@@ -140,10 +140,10 @@ class ConfigureTests(DeployerTestCase):
             typed_path = str(repos)
             for typed in (typed_path, f'"{typed_path}"', f"{typed_path}//", f"  {typed_path}/  "):
                 with self.subTest(typed=typed):
-                    result = self.configure(stdin=f"{typed}\n")
+                    result = self.configure(stdin=f"{typed}\n\n")
                     self.assertEqual(0, result.code, result.output)
                     self.assertEqual(
-                        f"_source_id=test/skills\nREPOS_ROOT={repos}\n".encode(),
+                        f"_source_id=test/skills\nREPOS_ROOT={repos}\nUPDATE_CHANNEL=release\n".encode(),
                         self.config_file().read_bytes(),
                     )
 
@@ -151,7 +151,7 @@ class ConfigureTests(DeployerTestCase):
             # Off Windows a backslash separates nothing, so the value is refused rather than read as another path.
             self.make_source_json()
             typed = str(self.root / "My Repos").replace("/", "\\")
-            result = self.configure(stdin=f"{typed}\n")
+            result = self.configure(stdin=f"{typed}\n\n")
             self.assertEqual(1, result.code)
             self.assertIn(
                 "ERROR: Config key REPOS_ROOT contains disallowed character '\\' at position 0", result.output
@@ -162,7 +162,7 @@ class ConfigureTests(DeployerTestCase):
             self.make_source_json()
             for typed in ("/", "//", "///"):
                 with self.subTest(typed=typed):
-                    result = self.configure(stdin=f"{typed}\n")
+                    result = self.configure(stdin=f"{typed}\n\n")
                     self.assertEqual(1, result.code)
                     self.assertIn("ERROR: REPOS_ROOT must not be a filesystem root (got: /)", result.output)
                     self.assertFalse(self.config_file().exists())
@@ -172,10 +172,64 @@ class ConfigureTests(DeployerTestCase):
         self.make_config()
         before = self.digest()
         missing = forward(self.root / "does-not-exist")
-        result = self.configure(stdin=f"{missing}\n")
+        result = self.configure(stdin=f"{missing}\n\n")
         self.assertEqual(1, result.code)
         self.assertIn(f"ERROR: REPOS_ROOT directory does not exist: {missing}", result.output)
         self.assertEqual(before, self.digest())
+
+    def test_the_update_channel_is_offered_as_release_and_written_as_chosen(self) -> None:
+        self.make_source_json()
+        self.repos.mkdir()
+        for typed, written in (("", "release"), ("main", "main"), ("  main ", "main"), ("release", "release")):
+            with self.subTest(typed=typed):
+                result = self.configure(stdin=f"{forward(self.repos)}\n{typed}\n")
+                self.assertEqual(0, result.code, result.output)
+                self.assertIn(
+                    "UPDATE_CHANNEL: what update-coding-agent-skills deploys: release, the latest release, or main, "
+                    "the head of main\n  Current: release\n",
+                    result.output,
+                )
+                self.assertEqual(
+                    f"_source_id=test/skills\nREPOS_ROOT={forward(self.repos)}\nUPDATE_CHANNEL={written}\n".encode(),
+                    self.config_file().read_bytes(),
+                )
+                self.config_file().unlink()
+
+    def test_rerun_keeps_a_saved_update_channel_when_enter_is_pressed(self) -> None:
+        self.make_source_json()
+        self.make_config(extra="UPDATE_CHANNEL=main\n")
+        result = self.configure(stdin="\n\n")
+        self.assertEqual(0, result.code, result.output)
+        self.assertIn("  Current: main\n", result.output)
+        self.assertIn("UPDATE_CHANNEL=main\n", self.config_file().read_text(encoding="utf-8"))
+
+    def test_an_update_channel_other_than_release_or_main_is_refused_and_the_config_kept(self) -> None:
+        self.make_source_json()
+        self.make_config()
+        before = self.digest()
+        for typed, message in (
+            ("beta", "ERROR: Config key UPDATE_CHANNEL must be one of release, main (got: beta)"),
+            ("mainline", "ERROR: Config key UPDATE_CHANNEL must be one of release, main (got: mainline)"),
+            ("Main", "ERROR: Config key UPDATE_CHANNEL contains disallowed character 'M' at position 0"),
+        ):
+            with self.subTest(typed=typed):
+                result = self.configure(stdin=f"\n{typed}\n")
+                self.assertEqual(1, result.code, result.output)
+                self.assertIn(message, result.output)
+                self.assertEqual(before, self.digest())
+
+    def test_a_saved_update_channel_other_than_release_or_main_refuses_the_deployment(self) -> None:
+        self.make_source_json()
+        self.make_skill("alpha", "Test")
+        for saved in ("UPDATE_CHANNEL=nightly\n", "UPDATE_CHANNEL=\n"):
+            with self.subTest(saved=saved):
+                self.make_config(extra=saved)
+                self.deploy_fails("--all", pattern="Config key UPDATE_CHANNEL must be one of release, main")
+
+    def test_the_update_channel_is_release_or_main_and_defaults_to_release(self) -> None:
+        self.assertEqual({"UPDATE_CHANNEL": ("release", "main")}, config.CHOICE_VARIABLES)
+        self.assertEqual({"UPDATE_CHANNEL": "release"}, config.DEFAULTS)
+        self.assertLessEqual(set(config.CHOICE_VARIABLES), set(config.CONFIGURED_VARIABLES))
 
     def test_directory_variables_are_configured_variables(self) -> None:
         self.assertEqual(("REPOS_ROOT",), config.DIRECTORY_VARIABLES)
@@ -184,7 +238,7 @@ class ConfigureTests(DeployerTestCase):
     def test_invalid_existing_config_aborts_before_prompting(self) -> None:
         self.make_source_json()
         self.make_config(extra="not a key-value line\n")
-        result = self.configure(stdin=f"{forward(self.repos)}\n")
+        result = self.configure(stdin=f"{forward(self.repos)}\n\n")
         self.assertEqual(1, result.code)
         self.assertIn("Config line 3: malformed entry: not a key-value line", result.output)
         self.assertNotIn("REPOS_ROOT", result.output)
@@ -192,11 +246,12 @@ class ConfigureTests(DeployerTestCase):
     def test_a_key_no_longer_declared_is_dropped_with_a_notice(self) -> None:
         self.make_source_json()
         self.make_config(extra="GH_ORG=someone\n")
-        result = self.configure(stdin="\n")
+        result = self.configure(stdin="\n\n")
         self.assertEqual(0, result.code, result.output)
         self.assertIn("NOTE: Dropping GH_ORG, which this deployer no longer reads.", result.output)
         self.assertEqual(
-            f"_source_id=test/skills\nREPOS_ROOT={forward(self.repos)}\n".encode(), self.config_file().read_bytes()
+            f"_source_id=test/skills\nREPOS_ROOT={forward(self.repos)}\nUPDATE_CHANNEL=release\n".encode(),
+            self.config_file().read_bytes(),
         )
         self.deploy_ok("--all", "--dry-run")
 
@@ -214,7 +269,7 @@ class ConfigureTests(DeployerTestCase):
         before = self.digest()
         # The replace inside fsops.write_atomic, after the temporary copy is written.
         with mock.patch.object(Path, "replace", side_effect=OSError("synthetic replace failure")):
-            result = self.configure(stdin="\n")
+            result = self.configure(stdin="\n\n")
         self.assertEqual(1, result.code)
         self.assertIn("synthetic replace failure", result.output)
         self.assertEqual(before, self.digest())
