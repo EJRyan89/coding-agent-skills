@@ -21,6 +21,7 @@ from workflows import (
     leg_problems,
     linux_job_problems,
     linux_verify_log_problems,
+    mutation_job_problems,
     read_workflow,
     required_check_problems,
     tool_cache_problems,
@@ -782,3 +783,47 @@ class WorkflowReaderFixtures(unittest.TestCase):
 def test_yaml_outside_the_subset_is_refused(text: str, reason: str) -> None:
     with CHECK.assertRaisesRegex(WorkflowSyntaxError, reason):
         read_workflow(text)
+
+
+MUTATION = (
+    "on:\n  pull_request:\n    types: [opened, synchronize, reopened]\n"
+    "jobs:\n  mutation:\n    name: Mutation gate\n    runs-on: ubuntu-latest\n    timeout-minutes: 60\n    steps:\n"
+    "      - uses: actions/checkout@abc\n        with:\n          fetch-depth: 0\n"
+    "      - uses: actions/setup-python@abc\n        with:\n          python-version: '3.11'\n          cache: pip\n"
+    "          cache-dependency-path: |\n            requirements-dev.txt\n            requirements-mutation.txt\n"
+    "      - name: Install\n        run: python -m pip install -r requirements-dev.txt -r requirements-mutation.txt\n"
+    "      - name: Gate\n        run: python -B tools/mutation_gate.py\n"
+)
+
+
+def test_the_mutation_job_runs_the_gate_on_linux_outside_the_required_check() -> None:
+    CHECK.assertEqual([], mutation_job_problems(MUTATION))
+
+
+@pytest.mark.parametrize(
+    ("drifted", "problem"),
+    [
+        pytest.param(MUTATION.replace(", reopened]", ", reopened, edited]"), "pull request events", id="on an edit"),
+        pytest.param(
+            MUTATION.replace("    name: Mutation gate\n", "    name: Validation\n"), "required", id="required"
+        ),
+        pytest.param(MUTATION.replace("    name: Mutation gate\n", ""), "required check", id="unnamed"),
+        pytest.param(MUTATION.replace("ubuntu-latest", "windows-latest"), "not ubuntu-latest", id="on Windows"),
+        pytest.param(MUTATION.replace("timeout-minutes: 60", "timeout-minutes: 600"), "time limit", id="a long limit"),
+        pytest.param(MUTATION.replace("fetch-depth: 0", "fetch-depth: 1"), "whole history", id="a shallow checkout"),
+        pytest.param(
+            MUTATION.replace("            requirements-mutation.txt\n", ""), "sets up Python", id="half the cache key"
+        ),
+        pytest.param(MUTATION.replace(" -r requirements-mutation.txt", ""), "runs", id="no mutation tools"),
+        pytest.param(
+            MUTATION.replace("python -B tools/mutation_gate.py", "python -B tools/mutation_gate.py || true"),
+            "runs",
+            id="a swallowed failure",
+        ),
+        pytest.param(MUTATION.replace("  mutation:\n", "  gate:\n"), "the one mutation job", id="renamed job"),
+        pytest.param(MUTATION + "  extra:\n    runs-on: ubuntu-latest\n", "the one mutation job", id="a second job"),
+    ],
+)
+def test_a_mutation_job_off_its_shape_fails(drifted: str, problem: str) -> None:
+    problems = mutation_job_problems(drifted)
+    CHECK.assertTrue(any(problem in found for found in problems), problems)

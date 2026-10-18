@@ -170,6 +170,9 @@ VALIDATION_FLOORS: dict[str, tuple[int, ...]] = {
 # The Python packages validation and CI take from PyPI, which "Development dependencies" in the dependency document
 # lists, and no others.
 DEVELOPMENT_PACKAGES = ("ruff", "mypy", "pytest")
+# The packages only the mutation gate's workflow installs, from requirements-mutation.txt, beside those: mutmut, which
+# makes the mutants, and coverage.py, which measures which suites reach each line.
+MUTATION_PACKAGES = ("mutmut", "coverage")
 REQUIREMENT_PIN = re.compile(r"(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)==[0-9][0-9A-Za-z.+!-]*")
 
 
@@ -285,6 +288,17 @@ class ToolchainPolicies(unittest.TestCase):
         ):
             with self.subTest(row=row):
                 self.assertIn(row, document)
+
+    def test_the_mutation_gate_installs_its_pinned_tools_and_nothing_else(self) -> None:
+        requirements = (REPOSITORY_ROOT / "requirements-mutation.txt").read_text(encoding="utf-8")
+        self.assertEqual(
+            ["mutmut==3.8.0", "coverage==7.16.2"], [line for line in requirements.splitlines() if "==" in line]
+        )
+        self.assertEqual(("mutmut", "coverage"), MUTATION_PACKAGES)
+        self.assertEqual([], requirements_problems(requirements, MUTATION_PACKAGES))
+        document = (REPOSITORY_ROOT / DEPENDENCY_DOC).read_text(encoding="utf-8")
+        self.assertIn("| mutmut | 3.8.0 | `requirements-mutation.txt` |", document)
+        self.assertIn("| coverage.py | 7.16.2 | `requirements-mutation.txt` |", document)
 
     def test_ci_exercises_each_floor(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")

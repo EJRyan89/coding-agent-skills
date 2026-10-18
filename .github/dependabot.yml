@@ -11,7 +11,7 @@ updates:
       actions-security:
         applies-to: security-updates
         patterns: ["*"]
-  # requirements-dev.txt: the pinned development dependencies, ruff and mypy.
+  # requirements-dev.txt, the pinned development dependencies, and requirements-mutation.txt, the mutation gate's tools.
   - package-ecosystem: pip
     directory: /
     schedule:

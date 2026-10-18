@@ -45,6 +45,17 @@ A mypy bump raises the floor with it. In the same pull request, set `VALIDATION_
 
 A pytest bump raises the floor with it. In the same pull request, set `VALIDATION_FLOORS` in `tests/validation/toolchain.py`, the row above, and the pin `test_ci_exercises_each_floor` checks to the new version, read the release's changelog for changes to collection, fixtures, and the unittest support the suites rely on, and fix anything `tests/test_conftest.py` or a suite newly fails on. Run the complete validation before merging.
 
+## Mutation tools
+
+The mutation gate (`tools/mutation_gate.py`, run by `.github/workflows/mutation.yml` on every pull request) takes two more packages from PyPI, pinned in `requirements-mutation.txt`, which only that workflow installs, beside `requirements-dev.txt`, on Linux. They stay out of `requirements-dev.txt` because mutmut refuses to run on Windows, where contributors validate, and the `libcst` it parses with needs a PyYAML wheel that not every Python a contributor runs has; validation never imports either. The gate makes its mutants with mutmut's operators but runs the suites itself (the gate's docstring says why), so it reads mutmut's `create_mutations` and checks a canary mutant before every run, which fails the gate rather than quietly making fewer mutants after a release changes it.
+
+| Tool | Pin | Declared in | How it is reviewed |
+|---|---|---|---|
+| mutmut | 3.8.0 | `requirements-mutation.txt` | BSD-3-Clause, maintained in the open, free of charge, and sends nothing anywhere. Dependabot proposes new releases with the development dependencies; the gate's run on that pull request is the review, since its canary and its summary show whether the release still makes the mutants. |
+| coverage.py | 7.16.2 | `requirements-mutation.txt` | Apache-2.0, maintained in the open, free of charge, and sends nothing anywhere. The gate needs its `patch = subprocess` setting, which measures the processes a suite starts; raise the pin as Dependabot proposes, after the gate's run on that pull request still measures each suite's reach. |
+
+`MUTATION_PACKAGES` in `tests/validation/toolchain.py` holds the file to these two pins and nothing else, as `DEVELOPMENT_PACKAGES` holds `requirements-dev.txt`, and the toolchain policy holds this table to the file.
+
 ## Runtime tool floors
 
 `python deploy.py check` reports each tool a skill declares and each runtime `python deploy.py verify` lists, with its version, and marks one older than its floor; `verify` reports a runtime below its floor as `OUTDATED` instead of listing its skills. Feature floors live in `deployer/tools.py` (`SKILL_TOOLS`, `VERIFY_TOOLS` for the runtimes `verify` lists, or `REPORTED_TOOLS` for Claude Code); raise one when a skill, an agent, or `verify` starts using a newer feature, with a comment naming it. The native PDF parser instead has provider-specific maintained-release support floors in `skills/skill-core/scripts/pdf_tool.py`, referenced by that catalogue and enforced by the same probe at extraction time. Review each provider's official release history before raising its floor, record the evidence and limitations in [Design](design.md), and include the upgrade obligation in the pull request body. `tests/deployer/test_check.py` holds this table, the catalogue, and the shared policy to the same floors; the upgrade-notes guard covers both floor locations.
