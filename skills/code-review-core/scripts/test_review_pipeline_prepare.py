@@ -424,6 +424,7 @@ class PrepareFixture(unittest.TestCase):
         *,
         checkout: bool = True,
         snapshot_exclude: list[str] | None = None,
+        unreviewed_suffixes: list[str] | None = None,
         **settings: Any,
     ) -> None:
         self.config_path = self.root / "config.json"
@@ -437,6 +438,7 @@ class PrepareFixture(unittest.TestCase):
                         "reviewer": reviewer or GENERIC,
                         "checkout_path": str(self.checkout) if checkout else None,
                         **({} if snapshot_exclude is None else {"snapshot_exclude": snapshot_exclude}),
+                        **({} if unreviewed_suffixes is None else {"unreviewed_suffixes": unreviewed_suffixes}),
                     }
                 },
                 "archive_root": str(self.archive),
@@ -2455,6 +2457,29 @@ class RepositoryReviewerTests(PrepareFixture):
         self.assertEqual(configured, sorted(path for path, reason in excluded.items() if reason == "configured"))
         self.assertEqual(len(configured), result["snapshot"]["excluded"]["configured"])
         self.assertEqual([], [path for path in configured if (self.run_dir / "source" / path).exists()])
+
+    def test_the_whole_snapshot_a_condition_needs_probes_a_listed_file_over_the_limit_as_the_first_did(self) -> None:
+        # A package of a type only the repository lists, over the changed-file limit, stays unreviewed once the
+        # snapshot is taken again whole, as it was in the lazy one.
+        limit = 2 * review_runtime.BINARY_PROBE_BYTES
+        (self.checkout / "models").mkdir()
+        (self.checkout / "models" / "net.onnx").write_bytes(b"ONNX\0" + b"x" * limit)
+        git(self.checkout, "add", "models/net.onnx")
+        git(self.checkout, "commit", "-m", "model")
+        self.github.pulls = [pull(git(self.checkout, "rev-parse", "HEAD"), self.base)]
+        self.github.diff = (
+            DIFF + "diff --git a/models/net.onnx b/models/net.onnx\nnew file mode 100644\nindex 0000000..5555555\n"
+            "Binary files /dev/null and b/models/net.onnx differ\n"
+        )
+        self.configure(
+            self.repository("review/conditional.json", trusted_ref="refs/heads/reviewers"),
+            unreviewed_suffixes=[".onnx"],
+        )
+        with mock.patch.object(review_runtime, "MAX_CHANGED_FILE_BYTES", limit):
+            result, _ = self.prepare()
+        self.assertEqual("checkout", result["snapshot"]["source"])
+        self.assertEqual("binary", self.json_file("source/source-snapshot.json")["excluded_paths"]["models/net.onnx"])
+        self.assertEqual({"models/net.onnx": ".onnx"}, self.json_file("request.json")["coverage"]["unreviewed_files"])
 
     def test_the_generic_reviewer_runs_inline_where_the_runtime_cannot_delegate(self) -> None:
         self.runtime = "copilot-cli"
