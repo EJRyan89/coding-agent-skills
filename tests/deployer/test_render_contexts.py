@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -24,6 +25,16 @@ class SubstitutionContextTests(unittest.TestCase):
     def test_json_token_outside_a_string_must_still_parse(self) -> None:
         with self.assertRaisesRegex(DeployError, "Rendered JSON validation failed: s/config.json"):
             render.render_file("s/config.json", b'{"root": {{X}}}', {"X": "value"})
+
+    def test_toml_token_outside_a_string_must_still_parse(self) -> None:
+        # The parser's own reason closes the line, so it is taken from the parser rather than pinned to one release.
+        with self.assertRaises(tomllib.TOMLDecodeError) as parsed:
+            tomllib.loads("root = value\n")
+        with self.assertRaises(DeployError) as caught:
+            render.render_file("s/config.toml", b"root = {{X}}\n", {"X": "value"})
+        self.assertEqual(
+            (f"ERROR: Rendered TOML validation failed: s/config.toml: {parsed.exception}",), caught.exception.lines
+        )
 
     def test_toml_values_are_escaped_and_parsed(self) -> None:
         rendered = render.render_file("s/config.toml", b'root = "{{X}}"\n', {"X": 'C:/a "b"'})

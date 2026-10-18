@@ -414,6 +414,56 @@ class MetadataValidationTests(DeployerTestCase):
         self.make_source_json(bundles={"pack": {"members": ["alpha"], "opt_in": "yes"}})
         self.deploy_fails("--all", pattern="Bundle 'pack' opt_in must be true or false")
 
+    def test_a_source_without_source_json_is_refused_naming_its_tree(self) -> None:
+        self.make_skill("alpha", "Test")
+        self.make_config()
+        result = self.deploy_fails("--all", pattern="source.json not found")
+        self.assert_lines(result.output, f"ERROR: source.json not found at {forward(self.source)}")
+
+    def test_a_source_id_outside_the_grammar_or_missing_is_refused(self) -> None:
+        self.make_skill("alpha", "Test")
+        for source_id, shown in (("Test/Skills", "Test/Skills"), ("no-slash", "no-slash"), (None, "null")):
+            with self.subTest(source_id=source_id):
+                document = {"name": "Test Skills", "shared_assets": {}, "bundles": {}}
+                if source_id is not None:
+                    document["id"] = source_id
+                self.write(self.source / "source.json", json.dumps(document))
+                result = self.deploy_fails("--all", pattern="Invalid source ID format")
+                self.assert_lines(result.output, f"ERROR: Invalid source ID format: {shown}")
+
+    def test_a_source_id_over_128_characters_is_refused(self) -> None:
+        self.make_skill("alpha", "Test")
+        self.make_source_json(f"{'a' * 64}/{'b' * 64}")
+        result = self.deploy_fails("--all", pattern="exceeds 128 characters")
+        self.assert_lines(result.output, "ERROR: Source ID exceeds 128 characters")
+
+    def test_metadata_without_a_skill_directory_is_refused(self) -> None:
+        self.make_source_json()
+        self.make_skill("alpha", "Test")
+        self.write(self.source / "deploy-meta" / "ghost.json", json.dumps({"required_vars": []}))
+        self.make_config()
+        result = self.deploy_fails("--all", pattern="has no matching skill directory")
+        self.assert_lines(result.output, "ERROR: deploy-meta/ghost.json has no matching skill directory")
+
+    def test_a_required_variable_the_deployer_does_not_declare_is_refused(self) -> None:
+        self.make_source_json()
+        self.make_skill("alpha", "Test", ["GH_ORG"])
+        self.make_config()
+        result = self.deploy_fails("--all", pattern="requires unknown variable")
+        self.assert_lines(result.output, "ERROR: Skill 'alpha' requires unknown variable 'GH_ORG'")
+
+    def test_an_unknown_or_repeated_skill_dependency_is_refused(self) -> None:
+        self.make_source_json()
+        self.make_skill("beta", "Beta")
+        self.make_config()
+        for dependencies, line in (
+            (["gamma"], "ERROR: Skill 'alpha' depends on unknown skill 'gamma'"),
+            (["beta", "beta"], "ERROR: Skill 'alpha' contains duplicate skill dependency 'beta'"),
+        ):
+            with self.subTest(dependencies=dependencies):
+                self.make_skill("alpha", "Alpha", skill_deps=dependencies)
+                self.assert_lines(self.deploy_fails("--all", pattern="skill").output, line)
+
     def test_a_directory_link_in_source_is_rejected(self) -> None:
         self.make_source_json()
         directory = self.make_skill("alpha", "Alpha content")

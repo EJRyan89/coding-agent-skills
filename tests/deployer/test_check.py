@@ -323,6 +323,21 @@ class CheckCommandTests(DeployerTestCase):
         found = self.report_groups(result.output, "CHECK")["FOUND"]
         self.assertIn("Python 3.11.4 (needed to deploy; 3.11.4 or newer)", found)
 
+    def test_a_missing_and_an_outdated_deploy_tool_ask_for_both_in_one_lead(self) -> None:
+        result = self.check(Machine(missing=("shellcheck",), python=(3, 11, 3)))
+        self.assertEqual(1, result.code, result.output)
+        groups = self.report_groups(result.output, "CHECK")
+        self.assertEqual(["Python 3.11.3 (needed to deploy; needs 3.11.4 or newer)"], groups["OUTDATED"])
+        self.assertEqual(1, len(groups["MISSING"]), result.output)
+        self.assertTrue(
+            result.output.endswith(
+                "Install the missing tools and update the outdated ones before deploying; see "
+                '"Installing the tools" in\n'
+                "docs/installation.md. Open a new terminal afterwards so the tools are on PATH.\n\n"
+            ),
+            result.output,
+        )
+
     def test_missing_skill_tool_still_allows_deploying(self) -> None:
         result = self.check(Machine(missing=("gh",)))
         self.assertEqual(0, result.code, result.output)

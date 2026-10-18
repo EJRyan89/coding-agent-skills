@@ -941,6 +941,43 @@ class RecoveryBranchTests(RecoveryTestCase):
         self.assertEqual("previous alpha\n", (self.skills_dir / "alpha.deploying-bak" / "SKILL.md").read_text())
         self.assertFalse(destination.exists())
 
+    def test_an_installed_copy_holding_a_link_never_matches_and_stops_completion(self) -> None:
+        journal_file, destination = self.committed_with_kept_backup()
+        installed = hashing.hash_path(self.skills_dir / "alpha")
+        outside = self.root / "outside-alpha"
+        outside.mkdir()
+        link = self.skills_dir / "alpha" / "linked"
+        make_directory_link(link, outside)
+        result = self.deploy_fails("--all", pattern="Recovery failed")
+        self.assert_lines(
+            result.output,
+            f"Recovering committed run {self.RUN} (completing finalization)...",
+            f"  ERROR: Refusing to hash content containing a symlink or junction: {forward(link)}",
+            f"  WARNING: Installed alpha hash mismatch (expected {installed}, got unsafe)",
+            f"  ERROR: Recovery has unreconciled entries. Journal retained at: {forward(journal_file)}",
+            "ERROR: Recovery failed, so this deployment stopped before deploying anything.",
+        )
+        self.assertTrue(journal_file.is_file())
+        self.assertFalse(destination.exists())
+
+    def test_a_staging_run_that_is_a_link_is_not_replayed(self) -> None:
+        self.deployed(("alpha", "Alpha content"))
+        outside = self.root / "outside-run"
+        self.write(outside / "journal.jsonl", journal_line(install_entry("alpha", ZERO_HASH)))
+        staging = self.home / ".claude" / "deployer" / "staging"
+        staging.mkdir(parents=True, exist_ok=True)
+        link = staging / self.RUN
+        make_directory_link(link, outside)
+        result = self.deploy_fails("--all", pattern="was not replayed")
+        self.assert_lines(
+            result.output,
+            f"  ERROR: Staging run is a symlink or junction and was not replayed: {forward(link)}",
+            "ERROR: Recovery failed, so this deployment stopped before deploying anything.",
+        )
+        self.assertNotIn(f"Recovering committed run {self.RUN}", result.output)
+        self.assertNotIn(f"Recovering uncommitted run {self.RUN}", result.output)
+        self.assertIn("Alpha content", self.skill_text("alpha"))
+
     def uncommitted_replacement(self) -> Path:
         """An uncommitted run that moved alpha aside and installed a new copy, then stopped before its commit."""
         self.deployed(("alpha", "Alpha content"))
