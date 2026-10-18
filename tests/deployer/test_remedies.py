@@ -160,7 +160,7 @@ class ConfigurationRemedyTests(RemedyTestCase):
         self.assert_lines(self.deploy_fails("--all", pattern="does not match source.json").output, message, RESET)
         # configure reads the same file, so only the remedy's --reset gets past it.
         self.assert_lines(self.configure().output, message, RESET)
-        self.assertEqual(0, self.configure("--reset", stdin=f"{forward(self.repos)}\n").code)
+        self.assertEqual(0, self.configure("--reset", stdin=f"{forward(self.repos)}\n\n").code)
         self.deploy_ok("--all")
 
     def test_unrecognized_key_names_configure_which_drops_it(self) -> None:

@@ -229,6 +229,26 @@ class DeployAtTests(DeployerTestCase):
         self.deploy_ok("--all", "--at", "v1.0.0")
         self.assertIn(f"\nDeployed commit: v1.0.0 ({self.release}), pinned with --at v1.0.0\n", self.check().output)
 
+    def test_the_update_skill_pins_a_release_by_its_tags_full_name_and_moves_it_without_unpin(self) -> None:
+        # update-coding-agent-skills on the release channel deploys with --at refs/tags/<tag>, which the manifest and
+        # check keep as given, so the update tells its own pin from one made with the tag's short name; the next
+        # release's --at moves it without --unpin, and the main channel replaces it with --unpin.
+        script = REPOSITORY_ROOT / "skills" / "update-coding-agent-skills" / "scripts" / "update.sh"
+        text = script.read_text(encoding="utf-8")
+        self.assertIn('RELEASE_REF="refs/tags/$TARGET"', text)
+        self.assertIn('DEPLOY_OPTIONS+=(--at "$RELEASE_REF")', text)
+        self.assertIn('[ "$PIN_REF" = "refs/tags/$PINNED_RELEASE" ]', text)
+        self.deploy_ok("--all", "--at", "refs/tags/v1.0.0")
+        self.assertEqual("refs/tags/v1.0.0", self.manifest()["sources"][SOURCE_ID]["source_ref"])
+        self.assertIn(
+            f"\nDeployed commit: v1.0.0 ({self.release}), pinned with --at refs/tags/v1.0.0\n", self.check().output
+        )
+        self.deploy_ok("--all", "--at", "refs/tags/v1.0.0")
+        self.assertIn(
+            "\nReplaced the deployment pinned with --at refs/tags/v1.0.0 to ", self.deploy_ok("--all", "--unpin").output
+        )
+        self.assertNotIn("source_ref", self.manifest()["sources"][SOURCE_ID])
+
     def test_the_update_skill_reads_the_pin_from_the_deployers_refusal(self) -> None:
         # When check names no pin, update-coding-agent-skills reads the ref and the commit from this refusal, between
         # these two fixed parts, and ends with DEPLOY_PINNED <ref> <commit>.

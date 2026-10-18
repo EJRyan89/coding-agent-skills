@@ -34,7 +34,7 @@ class SingleEntryPointTests(DeployerTestCase):
     def test_configure_command_writes_the_config(self) -> None:
         self.make_source_json()
         self.repos.mkdir()
-        result = self.run_cli("configure", stdin=f"{forward(self.repos)}\n")
+        result = self.run_cli("configure", stdin=f"{forward(self.repos)}\n\n")
         self.assertEqual(0, result.code, result.output)
         self.assertTrue(result.output.startswith("\nSource: Test Skills (test/skills)\nConfig: "), result.output)
         self.assertTrue(
@@ -42,7 +42,7 @@ class SingleEntryPointTests(DeployerTestCase):
             result.output,
         )
         self.assertEqual(
-            f"_source_id=test/skills\nREPOS_ROOT={forward(self.repos)}\n".encode(),
+            f"_source_id=test/skills\nREPOS_ROOT={forward(self.repos)}\nUPDATE_CHANNEL=release\n".encode(),
             self.config_file().read_bytes(),
         )
 

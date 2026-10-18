@@ -17,14 +17,14 @@ class PromptStreamTests(DeployerTestCase):
 
     def test_configure_prompts_reach_stderr_and_not_stdout(self) -> None:
         self.repos.mkdir(parents=True, exist_ok=True)
-        code, out, err = self.run_split("configure", stdin=f"{forward(self.repos)}\n")
+        code, out, err = self.run_split("configure", stdin=f"{forward(self.repos)}\n\n")
         self.assertEqual(0, code, out + err)
-        for prompt in ("REPOS_ROOT: ", "Value (Ctrl+C cancels): "):
+        for prompt in ("REPOS_ROOT: ", "Value (Ctrl+C cancels): ", "UPDATE_CHANNEL: "):
             with self.subTest(prompt=prompt):
                 self.assertNotIn(prompt, out)
                 self.assertIn(prompt, err)
         self.make_config()
-        code, out, err = self.run_split("configure", stdin="\n")
+        code, out, err = self.run_split("configure", stdin="\n\n")
         self.assertEqual(0, code, out + err)
         for prompt in ("REPOS_ROOT: ", "  Current: ", "New value (Enter keeps the current value, Ctrl+C cancels): "):
             with self.subTest(prompt=prompt):

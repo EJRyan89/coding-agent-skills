@@ -73,8 +73,10 @@ cat >"$GIT_CONFIG_GLOBAL" <<'EOF'
 EOF
 
 # The upstream carries a stand-in deploy.py that records its arguments, prints $FAKE_DEPLOY_STDERR to stderr when it is
-# set, and exits with $FAKE_DEPLOY_EXIT. A deployment that succeeds records the commit it ran from, as the real one does, and check names that commit, or prints
-# $FAKE_CHECK_OUTPUT when it is set, and exits with $FAKE_CHECK_EXIT.
+# set, and exits with $FAKE_DEPLOY_EXIT. A deployment that succeeds records the commit it ran from, or the commit --at
+# names and the ref as its pin, as the real one does, and check names that commit and the pin, or prints
+# $FAKE_CHECK_OUTPUT when it is set, and exits with $FAKE_CHECK_EXIT. Like the real one, it refuses to replace a
+# recorded pin without --at or --unpin.
 UPSTREAM="$FIXTURE/upstream.git"
 SEED="$FIXTURE/seed"
 git_quiet init --bare -b main "$UPSTREAM"
@@ -83,14 +85,18 @@ cat >"$SEED/deploy.py" <<'EOF'
 import os, subprocess, sys
 here = os.path.dirname(os.path.abspath(__file__))
 record = os.path.join(here, ".fake-deployed")
+arguments = sys.argv[1:]
 with open(os.environ["FAKE_DEPLOY_LOG"], "a", encoding="utf-8") as log:
-    log.write(" ".join(sys.argv[1:]) + "\n")
-if sys.argv[1:] == ["check"]:
+    log.write(" ".join(arguments) + "\n")
+commit, pin = None, None
+if os.path.exists(record):
+    with open(record, encoding="utf-8") as recorded:
+        commit, _, pin = recorded.read().strip().partition("\n")
+if arguments == ["check"]:
     if "FAKE_CHECK_OUTPUT" in os.environ:
         print(os.environ["FAKE_CHECK_OUTPUT"])
-    elif os.path.exists(record):
-        with open(record, encoding="utf-8") as recorded:
-            print("Deployed commit: " + recorded.read().strip())
+    elif commit:
+        print("Deployed commit: " + commit + (", pinned with --at " + pin if pin else ""))
     else:
         print("Deployed commit: unknown")
     raise SystemExit(int(os.environ.get("FAKE_CHECK_EXIT", "0")))
@@ -100,10 +106,16 @@ print("fake deploy ran")
 if "FAKE_DEPLOY_STDERR" in os.environ:
     print(os.environ["FAKE_DEPLOY_STDERR"], file=sys.stderr)
 code = int(os.environ.get("FAKE_DEPLOY_EXIT", "0"))
+at = arguments[arguments.index("--at") + 1] if "--at" in arguments else None
+if code == 0 and pin and at is None and "--unpin" not in arguments:
+    print(f"ERROR: Refusing to replace the deployment pinned with --at {pin} to {commit} without --unpin.", file=sys.stderr)
+    code = 1
 if code == 0:
-    head = subprocess.run(["git", "-C", here, "rev-parse", "HEAD"], capture_output=True, text=True, check=True)
+    named = subprocess.run(
+        ["git", "-C", here, "rev-parse", "--verify", (at or "HEAD") + "^{commit}"], capture_output=True, text=True, check=True
+    )
     with open(record, "w", encoding="utf-8") as recorded:
-        recorded.write(head.stdout.strip())
+        recorded.write(named.stdout.strip() + ("\n" + at if at else ""))
 raise SystemExit(code)
 EOF
 printf '__pycache__/\n.fake-deployed\n' >"$SEED/.gitignore"
@@ -262,21 +274,29 @@ run_subject
 expect_status 2 "no argument"
 [ -z "$OUTPUT" ] || fail "no argument: usage went to stdout: $OUTPUT"
 grep -q "^usage: update.sh" "$FIXTURE/stderr" || fail "no argument: usage text missing"
-run_subject "$FIXTURE" --cross-major extra
+run_subject "$FIXTURE" main --cross-major extra
 expect_status 2 "an extra argument"
-run_subject "$FIXTURE" --unpin --unpin
+run_subject "$FIXTURE" main --unpin --unpin
 expect_status 2 "a repeated option"
-run_subject "$FIXTURE" --cross-major --unpin extra
-expect_status 2 "four arguments"
+run_subject "$FIXTURE" main --cross-major --unpin extra
+expect_status 2 "five arguments"
+# The configured channel is required and is release or main, and --channel takes one of the two, once.
+for ARGUMENTS in "" "--cross-major" "beta" "Main" "main --channel" "main --channel beta" "release --channel main --channel main" \
+  "main --channel --unpin" "--channel main"; do
+  read -r -a SPLIT <<<"$ARGUMENTS"
+  run_subject "$FIXTURE" "${SPLIT[@]}"
+  expect_status 2 "channel usage '$ARGUMENTS'"
+  [ -z "$OUTPUT" ] || fail "channel usage '$ARGUMENTS': usage went to stdout: $OUTPUT"
+done
 
 # A path that is not a clone is a named failure, not a usage error.
-run_subject "$FIXTURE"
+run_subject "$FIXTURE" main
 expect_failed "FAILED no deploy.py in $FIXTURE" "directory without deploy.py"
 PLAIN="$FIXTURE/plain dir (no git)"
 mkdir -p "$PLAIN"
 cp "$SEED/deploy.py" "$PLAIN/deploy.py"
 export GIT_CEILING_DIRECTORIES="$FIXTURE"
-run_subject "$PLAIN"
+run_subject "$PLAIN" main
 unset GIT_CEILING_DIRECTORIES
 expect_failed "FAILED not a git repository: $PLAIN" "not a repository"
 expect_not_deployed "not a repository"
@@ -284,7 +304,7 @@ expect_not_deployed "not a repository"
 # An up-to-date clone deploys without moving, even when untracked files are present.
 new_clone
 printf 'scratch\n' >"$CLONE/untracked.txt"
-run_subject "$CLONE"
+run_subject "$CLONE" main
 expect_status 0 "up to date"
 expect_first_line "UP_TO_DATE $(head_of "$CLONE" HEAD)" "up to date"
 expect_deployed "up to date"
@@ -296,7 +316,7 @@ new_clone
 BEFORE=$(head_of "$CLONE" HEAD)
 publish "first change"
 publish "second change"
-run_subject "$CLONE"
+run_subject "$CLONE" main
 expect_status 0 "behind"
 AFTER=$(head_of "$CLONE" HEAD)
 [ "$AFTER" = "$(head_of "$SEED" HEAD)" ] || fail "behind: clone was not fast-forwarded"
@@ -309,7 +329,7 @@ expect_deployed "behind"
 new_clone
 git_quiet -C "$CLONE" checkout -b topic
 publish "third change"
-run_subject "$CLONE"
+run_subject "$CLONE" main
 expect_status 0 "other branch"
 [ "$(git -C "$CLONE" branch --show-current)" = "main" ] || fail "other branch: not switched to main"
 [ "$(head_of "$CLONE" HEAD)" = "$(head_of "$SEED" HEAD)" ] || fail "other branch: main not fast-forwarded"
@@ -320,7 +340,7 @@ new_clone
 BEFORE=$(git -C "$CLONE" rev-parse origin/main)
 printf 'edit\n' >>"$CLONE/notes.txt"
 publish "fourth change"
-run_subject "$CLONE"
+run_subject "$CLONE" main
 expect_status 1 "dirty"
 expect_first_line "DIRTY" "dirty"
 expect_no_stderr "dirty"
@@ -333,7 +353,7 @@ new_clone
 git_quiet -C "$CLONE" commit --allow-empty -m "local work"
 LOCAL=$(git -C "$CLONE" rev-parse HEAD)
 publish "fifth change"
-run_subject "$CLONE"
+run_subject "$CLONE" main
 expect_status 1 "diverged"
 expect_first_line "NOT_FAST_FORWARD" "diverged"
 expect_no_stderr "diverged"
@@ -347,7 +367,7 @@ git_quiet -C "$CLONE" commit --allow-empty -m "local work"
 LOCAL=$(git -C "$CLONE" rev-parse main)
 git_quiet -C "$CLONE" checkout -b topic
 publish "sixth change"
-run_subject "$CLONE"
+run_subject "$CLONE" main
 expect_status 1 "diverged on topic"
 expect_first_line "NOT_FAST_FORWARD" "diverged on topic"
 expect_no_stderr "diverged on topic"
@@ -364,7 +384,7 @@ git_quiet -C "$SEED" add added.txt
 git_quiet -C "$SEED" commit -m "add a file"
 git_quiet -C "$SEED" push origin main
 printf 'untracked copy\n' >"$CLONE/added.txt"
-run_subject "$CLONE"
+run_subject "$CLONE" main
 expect_status 1 "refused on topic"
 expect_first_line "NOT_FAST_FORWARD" "refused on topic"
 expect_no_stderr "refused on topic"
@@ -376,7 +396,7 @@ expect_not_deployed "refused on topic"
 # A detached HEAD is returned to the same commit.
 git_quiet -C "$CLONE" checkout --detach topic
 DETACHED=$(git -C "$CLONE" rev-parse HEAD)
-run_subject "$CLONE"
+run_subject "$CLONE" main
 expect_status 1 "refused detached"
 expect_first_line "NOT_FAST_FORWARD" "refused detached"
 [ -z "$(git -C "$CLONE" branch --show-current)" ] || fail "refused detached: HEAD not detached"
@@ -395,7 +415,7 @@ esac
 exec "$(command -v git)" "\$@"
 EOF
 chmod +x "$WRAPPER/git"
-PATH="$WRAPPER:$PATH" run_subject "$CLONE"
+PATH="$WRAPPER:$PATH" run_subject "$CLONE" main
 expect_status 1 "switch back refused"
 expect_first_line "NOT_FAST_FORWARD" "switch back refused"
 printf '%s\n' "$OUTPUT" | grep -qx "still on main: cannot switch back to topic: error: switch refused by the test" ||
@@ -409,7 +429,7 @@ git_quiet -C "$CLONE" checkout -b topic
 git_quiet -C "$CLONE" rm --quiet notes.txt
 git_quiet -C "$CLONE" commit -m "drop notes"
 printf 'untracked copy\n' >"$CLONE/notes.txt"
-run_subject "$CLONE"
+run_subject "$CLONE" main
 expect_status 1 "checkout failed"
 expect_first_line "CHECKOUT_FAILED" "checkout failed"
 expect_no_stderr "checkout failed"
@@ -420,7 +440,7 @@ expect_not_deployed "checkout failed"
 # An unreachable origin is reported without deploying.
 new_clone
 git_quiet -C "$CLONE" remote set-url origin "$FIXTURE/missing.git"
-run_subject "$CLONE"
+run_subject "$CLONE" main
 expect_status 1 "fetch failed"
 expect_first_line "FETCH_FAILED" "fetch failed"
 expect_no_stderr "fetch failed"
@@ -429,7 +449,7 @@ expect_not_deployed "fetch failed"
 # A Git command that fails outright is a named failure.
 new_clone
 printf 'not an index' >"$CLONE/.git/index"
-run_subject "$CLONE"
+run_subject "$CLONE" main
 expect_failed "FAILED git status failed: " "status failed"
 expect_not_deployed "status failed"
 
@@ -438,7 +458,7 @@ new_clone
 export FAKE_DEPLOY_LOG="$FIXTURE/deploy-$case_number.log"
 : >"$FAKE_DEPLOY_LOG"
 set +e
-OUTPUT=$(TMPDIR="$FIXTURE/absent temporary directory" bash "$SUBJECT" "$CLONE" 2>"$FIXTURE/stderr")
+OUTPUT=$(TMPDIR="$FIXTURE/absent temporary directory" bash "$SUBJECT" "$CLONE" main 2>"$FIXTURE/stderr")
 status=$?
 set -e
 expect_failed "FAILED cannot create a temporary copy of update.sh: " "no temporary copy"
@@ -458,7 +478,7 @@ fi
 exec "$(command -v mktemp)" "\$@"
 EOF
 chmod +x "$MKTEMP_WRAPPER/mktemp"
-TMPDIR="$FIXTURE/tmp for the errors" PATH="$MKTEMP_WRAPPER:$PATH" run_subject "$CLONE"
+TMPDIR="$FIXTURE/tmp for the errors" PATH="$MKTEMP_WRAPPER:$PATH" run_subject "$CLONE" main
 expect_failed "FAILED cannot create a temporary file for the deployer's errors: mktemp: refused by the test" \
   "no file for the errors"
 expect_nothing_run "no file for the errors"
@@ -468,7 +488,7 @@ expect_nothing_run "no file for the errors"
 # A failing deploy is reported with its exit code.
 new_clone
 export FAKE_DEPLOY_EXIT=7
-run_subject "$CLONE"
+run_subject "$CLONE" main
 unset FAKE_DEPLOY_EXIT
 expect_status 1 "deploy failed"
 expect_first_line "UP_TO_DATE $(head_of "$CLONE" HEAD)" "deploy failed"
@@ -478,7 +498,7 @@ expect_deployed "deploy failed"
 # With no release tag on either side there is no release to cross, so the update proceeds.
 new_clone
 publish "untagged change"
-run_subject "$CLONE"
+run_subject "$CLONE" main
 expect_status 0 "no tag"
 printf '%s\n' "$OUTPUT" | grep -q "^UPDATED " || fail "no tag: expected UPDATED: $OUTPUT"
 if printf '%s\n' "$OUTPUT" | grep -q "CROSSED"; then fail "no tag: crossing reported"; fi
@@ -490,7 +510,7 @@ new_clone
 git_quiet -C "$CLONE" commit --allow-empty -m "local release"
 git_quiet -C "$CLONE" tag v0.9.0
 publish "upstream after local release"
-run_subject "$CLONE"
+run_subject "$CLONE" main
 expect_status 1 "local tag only"
 expect_first_line "NOT_FAST_FORWARD" "local tag only"
 expect_not_deployed "local tag only"
@@ -506,14 +526,14 @@ new_clone
 BEFORE=$(head_of "$CLONE" HEAD)
 publish "first release"
 tag_upstream v0.1.0
-run_subject "$CLONE"
+run_subject "$CLONE" main
 expect_status 1 "untagged"
 expect_first_line "MAJOR_UPDATE untagged..v0.1.0" "untagged"
 expect_no_stderr "untagged"
 printf '%s\n' "$OUTPUT" | grep -q "first release" || fail "untagged: pending commit not listed"
 [ "$(head_of "$CLONE" HEAD)" = "$BEFORE" ] || fail "untagged: main moved"
 expect_not_deployed "untagged"
-run_subject "$CLONE" --cross-major
+run_subject "$CLONE" main --cross-major
 expect_status 0 "untagged accepted"
 printf '%s\n' "$OUTPUT" | grep -qx "CROSSED untagged..v0.1.0" || fail "untagged accepted: crossing not named: $OUTPUT"
 expect_deployed "untagged accepted"
@@ -523,7 +543,7 @@ new_clone
 BEFORE=$(head_of "$CLONE" HEAD)
 publish "breaking change"
 tag_upstream v0.2.0
-run_subject "$CLONE"
+run_subject "$CLONE" main
 expect_status 1 "major"
 expect_first_line "MAJOR_UPDATE v0.1.0..v0.2.0" "major"
 expect_no_stderr "major"
@@ -532,7 +552,7 @@ printf '%s\n' "$OUTPUT" | grep -q "breaking change" || fail "major: pending comm
 expect_not_deployed "major"
 
 # With --cross-major the same update proceeds, names the crossing, and deploys.
-run_subject "$CLONE" --cross-major
+run_subject "$CLONE" main --cross-major
 expect_status 0 "cross major"
 AFTER=$(head_of "$CLONE" HEAD)
 expect_first_line "UPDATED $BEFORE..$AFTER" "cross major"
@@ -543,7 +563,7 @@ expect_deployed "cross major"
 new_clone
 publish "patch change"
 tag_upstream v0.2.3
-run_subject "$CLONE"
+run_subject "$CLONE" main
 expect_status 0 "patch"
 printf '%s\n' "$OUTPUT" | grep -q "^UPDATED " || fail "patch: expected UPDATED: $OUTPUT"
 if printf '%s\n' "$OUTPUT" | grep -q "CROSSED"; then fail "patch: crossing reported"; fi
@@ -556,12 +576,12 @@ publish "first stable"
 tag_upstream v1.0.0
 publish "after first stable"
 tag_upstream v2x.0.0
-run_subject "$CLONE"
+run_subject "$CLONE" main
 expect_status 1 "to 1.0.0"
 expect_first_line "MAJOR_UPDATE v0.2.3..v1.0.0" "to 1.0.0"
 expect_no_stderr "to 1.0.0"
 expect_not_deployed "to 1.0.0"
-run_subject "$CLONE" --cross-major
+run_subject "$CLONE" main --cross-major
 expect_status 0 "to 1.0.0 accepted"
 expect_deployed "to 1.0.0 accepted"
 
@@ -569,7 +589,7 @@ expect_deployed "to 1.0.0 accepted"
 new_clone
 publish "minor stable"
 tag_upstream v1.5.0
-run_subject "$CLONE"
+run_subject "$CLONE" main
 expect_status 0 "stable minor"
 if printf '%s\n' "$OUTPUT" | grep -q "CROSSED"; then fail "stable minor: crossing reported"; fi
 expect_deployed "stable minor"
@@ -577,7 +597,7 @@ new_clone
 BEFORE=$(head_of "$CLONE" HEAD)
 publish "second major"
 tag_upstream v2.0.0
-run_subject "$CLONE"
+run_subject "$CLONE" main
 expect_status 1 "stable major"
 expect_first_line "MAJOR_UPDATE v1.5.0..v2.0.0" "stable major"
 [ "$(head_of "$CLONE" HEAD)" = "$BEFORE" ] || fail "stable major: main moved"
@@ -585,23 +605,23 @@ expect_not_deployed "stable major"
 
 # A pre-release is not a release, as skill-core's release_tags.py defines one: one of the next major does not stop the
 # update, and its final release then stops it at the release before the pre-release.
-run_subject "$CLONE" --cross-major
+run_subject "$CLONE" main --cross-major
 expect_status 0 "stable major accepted"
 new_clone
 publish "third major candidate"
 tag_upstream v3.0.0-rc.1
-run_subject "$CLONE"
+run_subject "$CLONE" main
 expect_status 0 "pre-release"
 if printf '%s\n' "$OUTPUT" | grep -q "CROSSED"; then fail "pre-release: crossing reported"; fi
 expect_no_stderr "pre-release"
 expect_deployed "pre-release"
 publish "third major"
 tag_upstream v3.0.0
-run_subject "$CLONE"
+run_subject "$CLONE" main
 expect_status 1 "pre-release to release"
 expect_first_line "MAJOR_UPDATE v2.0.0..v3.0.0" "pre-release to release"
 expect_not_deployed "pre-release to release"
-run_subject "$CLONE" --cross-major
+run_subject "$CLONE" main --cross-major
 expect_status 0 "pre-release to release accepted"
 printf '%s\n' "$OUTPUT" | grep -qx "CROSSED v2.0.0..v3.0.0" || fail "pre-release to release accepted: crossing not named"
 expect_deployed "pre-release to release accepted"
@@ -616,7 +636,7 @@ new_clone
 BEFORE=$(git -C "$CLONE" rev-parse HEAD)
 FETCHED=$(git -C "$CLONE" rev-parse origin/main)
 publish "after the pin"
-FAKE_CHECK_OUTPUT=$PINNED_CHECK run_subject "$CLONE"
+FAKE_CHECK_OUTPUT=$PINNED_CHECK run_subject "$CLONE" main
 expect_status 1 "pinned"
 [ "$OUTPUT" = "PINNED v1.0.0 $PINNED_COMMIT" ] || fail "pinned: expected only the PINNED line, got: $OUTPUT"
 expect_no_stderr "pinned"
@@ -625,14 +645,14 @@ expect_no_stderr "pinned"
 [ "$(cat "$FAKE_DEPLOY_LOG")" = "check" ] || fail "pinned: expected only check to run: $(cat "$FAKE_DEPLOY_LOG")"
 
 # A pin check names by its commit alone, when no tag describes it, is read the same way.
-FAKE_CHECK_OUTPUT="Deployed commit: $PINNED_COMMIT, pinned with --at main~2" run_subject "$CLONE"
+FAKE_CHECK_OUTPUT="Deployed commit: $PINNED_COMMIT, pinned with --at main~2" run_subject "$CLONE" main
 expect_status 1 "pinned untagged"
 [ "$OUTPUT" = "PINNED main~2 $PINNED_COMMIT" ] || fail "pinned untagged: got: $OUTPUT"
 expect_not_deployed "pinned untagged"
 
 # With --unpin the update moves past the pin, but the installed version is the pinned commit's, so a release that
 # raises its major stops it until --cross-major too.
-FAKE_CHECK_OUTPUT=$PINNED_CHECK run_subject "$CLONE" --unpin
+FAKE_CHECK_OUTPUT=$PINNED_CHECK run_subject "$CLONE" main --unpin
 expect_status 1 "unpin across a major"
 expect_first_line "MAJOR_UPDATE v1.0.0..v3.0.0" "unpin across a major"
 printf '%s\n' "$OUTPUT" | grep -q "second major" || fail "unpin across a major: commit since the pin not listed: $OUTPUT"
@@ -641,19 +661,19 @@ expect_not_deployed "unpin across a major"
 
 # With --unpin, before or after --cross-major, the update moves past the pin and deploys main, passing --unpin to the
 # deployer, which refuses to replace a pin without it.
-FAKE_CHECK_OUTPUT=$PINNED_CHECK run_subject "$CLONE" --cross-major --unpin
+FAKE_CHECK_OUTPUT=$PINNED_CHECK run_subject "$CLONE" main --cross-major --unpin
 expect_status 0 "unpin after cross-major"
 expect_first_line "UPDATED $(git -C "$CLONE" rev-parse --short "$BEFORE")..$(head_of "$CLONE" HEAD)" "unpin after cross-major"
 printf '%s\n' "$OUTPUT" | grep -qx "CROSSED v1.0.0..v3.0.0" || fail "unpin after cross-major: crossing not named: $OUTPUT"
 expect_deployed "unpin after cross-major" "--all --unpin"
 publish "unpin first"
-FAKE_CHECK_OUTPUT=$PINNED_CHECK run_subject "$CLONE" --unpin --cross-major
+FAKE_CHECK_OUTPUT=$PINNED_CHECK run_subject "$CLONE" main --unpin --cross-major
 expect_status 0 "unpin before cross-major"
 expect_deployed "unpin before cross-major" "--all --unpin"
 
 # A deployment check names without a pin does not stop the update, and its commit is read from inside the parentheses.
 publish "unpinned change"
-FAKE_CHECK_OUTPUT="Deployed commit: v3.0.0-4-g0000000 ($(git -C "$CLONE" rev-parse HEAD))" run_subject "$CLONE"
+FAKE_CHECK_OUTPUT="Deployed commit: v3.0.0-4-g0000000 ($(git -C "$CLONE" rev-parse HEAD))" run_subject "$CLONE" main
 expect_status 0 "not pinned"
 printf '%s\n' "$OUTPUT" | grep -q "^UPDATED " || fail "not pinned: expected UPDATED: $OUTPUT"
 expect_deployed "not pinned"
@@ -667,7 +687,7 @@ for DESCRIBED in "v1.0.0 ($PINNED_COMMIT)" "$PINNED_COMMIT"; do
   REFUSAL="ERROR: Refusing to replace the deployment pinned with --at v1.0.0 to $DESCRIBED without --unpin."
   FAKE_CHECK_OUTPUT="Deployed commit: $(git -C "$CLONE" rev-parse HEAD)" FAKE_DEPLOY_EXIT=1 \
     FAKE_DEPLOY_STDERR=$'\n'"$REFUSAL"$'\nTo move it to this checkout\'s HEAD, rerun with --unpin.\n' \
-    run_subject "$CLONE"
+    run_subject "$CLONE" main
   expect_status 1 "pin refused '$DESCRIBED'"
   expect_first_line "UPDATED $BEFORE..$(head_of "$SEED" HEAD)" "pin refused '$DESCRIBED'"
   [ "$(head_of "$CLONE" HEAD)" = "$(head_of "$SEED" HEAD)" ] || fail "pin refused '$DESCRIBED': main not fast-forwarded"
@@ -684,7 +704,7 @@ done
 for FAILURE in "1 ERROR: Could not write the manifest." \
   "2 ERROR: Refusing to replace the deployment pinned with --at v1.0.0 to $PINNED_COMMIT without --unpin."; do
   FAKE_CHECK_OUTPUT="Deployed commit: $(git -C "$CLONE" rev-parse HEAD)" FAKE_DEPLOY_EXIT=${FAILURE%% *} \
-    FAKE_DEPLOY_STDERR=${FAILURE#* } run_subject "$CLONE"
+    FAKE_DEPLOY_STDERR=${FAILURE#* } run_subject "$CLONE" main
   expect_status 1 "deploy failed '$FAILURE'"
   [ "$(printf '%s\n' "$OUTPUT" | tail -n 1)" = "DEPLOY_FAILED ${FAILURE%% *}" ] ||
     fail "deploy failed '$FAILURE': expected DEPLOY_FAILED ${FAILURE%% *} last, got: $OUTPUT"
@@ -693,7 +713,7 @@ for FAILURE in "1 ERROR: Could not write the manifest." \
 done
 
 # A check that fails still names the deployed commit when it prints the line, and the update reads it.
-FAKE_CHECK_OUTPUT="Deployed commit: $(git -C "$CLONE" rev-parse HEAD)" FAKE_CHECK_EXIT=1 run_subject "$CLONE"
+FAKE_CHECK_OUTPUT="Deployed commit: $(git -C "$CLONE" rev-parse HEAD)" FAKE_CHECK_EXIT=1 run_subject "$CLONE" main
 expect_status 0 "check failed"
 expect_first_line "UP_TO_DATE $(head_of "$CLONE" HEAD)" "check failed"
 expect_no_stderr "check failed"
@@ -702,25 +722,25 @@ expect_deployed "check failed"
 # With no deployed commit to read, from a check that names none or prints nothing, the installed version is unknown,
 # which any release on origin/main raises, until --cross-major accepts it.
 for CHECK_OUTPUT in "Deployed commit: unknown" ""; do
-  FAKE_CHECK_OUTPUT=$CHECK_OUTPUT FAKE_CHECK_EXIT=1 run_subject "$CLONE"
+  FAKE_CHECK_OUTPUT=$CHECK_OUTPUT FAKE_CHECK_EXIT=1 run_subject "$CLONE" main
   expect_status 1 "no deployed commit '$CHECK_OUTPUT'"
   expect_first_line "MAJOR_UPDATE unknown..v3.0.0" "no deployed commit '$CHECK_OUTPUT'"
   expect_no_stderr "no deployed commit '$CHECK_OUTPUT'"
   expect_not_deployed "no deployed commit '$CHECK_OUTPUT'"
 done
-FAKE_CHECK_OUTPUT="Deployed commit: unknown" run_subject "$CLONE" --cross-major
+FAKE_CHECK_OUTPUT="Deployed commit: unknown" run_subject "$CLONE" main --cross-major
 expect_status 0 "no deployed commit accepted"
 printf '%s\n' "$OUTPUT" | grep -qx "CROSSED unknown..v3.0.0" || fail "no deployed commit accepted: crossing not named: $OUTPUT"
 expect_deployed "no deployed commit accepted"
 
 # A deployed commit the clone does not hold is a named failure, not version zero.
 MISSING_COMMIT=0123456789abcdef0123456789abcdef01234567
-FAKE_CHECK_OUTPUT="Deployed commit: $MISSING_COMMIT" run_subject "$CLONE"
+FAKE_CHECK_OUTPUT="Deployed commit: $MISSING_COMMIT" run_subject "$CLONE" main
 expect_failed "FAILED cannot read the release tags reaching the deployed commit $MISSING_COMMIT: " "deployed commit missing"
 expect_not_deployed "deployed commit missing"
 
 # An unknown option is a usage error.
-run_subject "$CLONE" --force
+run_subject "$CLONE" main --force
 expect_status 2 "unknown option"
 expect_not_deployed "unknown option"
 
@@ -730,13 +750,13 @@ new_clone
 publish "fourth major"
 tag_upstream v4.0.0
 git_quiet -C "$CLONE" pull --ff-only
-run_subject "$CLONE"
+run_subject "$CLONE" main
 expect_status 1 "pulled by hand"
 expect_first_line "MAJOR_UPDATE v3.0.0..v4.0.0" "pulled by hand"
 expect_no_stderr "pulled by hand"
 printf '%s\n' "$OUTPUT" | grep -q "fourth major" || fail "pulled by hand: pending commit not listed: $OUTPUT"
 expect_not_deployed "pulled by hand"
-run_subject "$CLONE" --cross-major
+run_subject "$CLONE" main --cross-major
 expect_status 0 "pulled by hand accepted"
 expect_first_line "UP_TO_DATE $(head_of "$CLONE" HEAD)" "pulled by hand accepted"
 printf '%s\n' "$OUTPUT" | grep -qx "CROSSED v3.0.0..v4.0.0" || fail "pulled by hand accepted: crossing not named: $OUTPUT"
@@ -745,7 +765,7 @@ expect_deployed "pulled by hand accepted"
 # A clone with no local main, detached at the release origin/main is on, is at that release and updates.
 new_clone --branch v4.0.0
 ! git -C "$CLONE" show-ref --verify --quiet refs/heads/main || fail "no local main: the clone has a main"
-run_subject "$CLONE"
+run_subject "$CLONE" main
 expect_status 0 "no local main"
 expect_first_line "UP_TO_DATE $(head_of "$SEED" HEAD)" "no local main"
 expect_no_stderr "no local main"
@@ -758,7 +778,7 @@ publish "oversized release"
 for TAG in v99999999999999999999.0.0 v5.99999999999999999999.0; do
   tag_upstream "$TAG"
   for OPTION in "" --cross-major; do
-    run_subject "$CLONE" ${OPTION:+"$OPTION"}
+    run_subject "$CLONE" main ${OPTION:+"$OPTION"}
     expect_failed "FAILED cannot compare release tag $TAG: " "oversized tag $TAG $OPTION"
     expect_not_deployed "oversized tag $TAG $OPTION"
   done
@@ -772,7 +792,7 @@ done
 PADDED=v00000000000000000000003.0.0
 PADDED_COMMIT=$(git -C "$CLONE" commit-tree -m "padded release" "HEAD^{tree}")
 git_quiet -C "$CLONE" tag "$PADDED" "$PADDED_COMMIT"
-FAKE_CHECK_OUTPUT="Deployed commit: $PADDED_COMMIT" run_subject "$CLONE"
+FAKE_CHECK_OUTPUT="Deployed commit: $PADDED_COMMIT" run_subject "$CLONE" main
 expect_status 1 "leading zeros"
 expect_first_line "MAJOR_UPDATE $PADDED..v4.0.0" "leading zeros"
 expect_no_stderr "leading zeros"
@@ -786,7 +806,7 @@ OTHER_HEAD=$(head_of "$OTHER" HEAD)
 new_clone
 publish "change while GIT_DIR names another clone"
 export GIT_DIR="$OTHER/.git" GIT_INDEX_FILE="$OTHER/.git/index" GIT_NAMESPACE="elsewhere"
-run_subject "$CLONE"
+run_subject "$CLONE" main
 unset GIT_DIR GIT_INDEX_FILE GIT_NAMESPACE
 expect_status 0 "repository variables"
 [ "$(head_of "$CLONE" HEAD)" = "$(head_of "$SEED" HEAD)" ] || fail "repository variables: the named clone did not move"
@@ -800,7 +820,7 @@ OTHER_HEAD=$(head_of "$OTHER" HEAD)
 new_clone
 publish "change while git_dir names another clone"
 export git_dir="$OTHER/.git" Git_Index_File="$OTHER/.git/index" Git_Namespace="elsewhere"
-run_subject "$CLONE"
+run_subject "$CLONE" main
 unset git_dir Git_Index_File Git_Namespace
 expect_status 0 "repository variables in any case"
 [ "$(head_of "$CLONE" HEAD)" = "$(head_of "$SEED" HEAD)" ] || fail "repository variables in any case: the named clone did not move"
@@ -825,7 +845,7 @@ for NAME in origin/main main; do
   FETCHED=$(git -C "$CLONE" rev-parse refs/remotes/origin/main)
   publish "change while origin has a tag $NAME"
   git_quiet -C "$SEED" push origin "$SIDE:refs/tags/$NAME"
-  run_subject "$CLONE"
+  run_subject "$CLONE" main
   expect_shadowed "refs/tags/$NAME on origin" "remote tag $NAME"
   ! git -C "$CLONE" show-ref --verify --quiet "refs/tags/$NAME" || fail "remote tag $NAME: the tag was fetched"
   git_quiet -C "$SEED" push origin ":refs/tags/$NAME"
@@ -835,7 +855,7 @@ BEFORE=$(git -C "$CLONE" rev-parse refs/heads/main)
 FETCHED=$(git -C "$CLONE" rev-parse refs/remotes/origin/main)
 git_quiet -C "$CLONE" tag main "$SIDE"
 publish "change while the clone has a tag main"
-run_subject "$CLONE"
+run_subject "$CLONE" main
 expect_shadowed "refs/tags/main in the clone" "local tag main"
 
 # A shadowing tag origin publishes after the check is not fetched, and the update follows origin's main. A Git wrapper
@@ -850,7 +870,7 @@ case " \$* " in
 esac
 exec "$(command -v git)" "\$@"
 EOF
-PATH="$WRAPPER:$PATH" run_subject "$CLONE"
+PATH="$WRAPPER:$PATH" run_subject "$CLONE" main
 git_quiet -C "$SEED" push origin ":refs/tags/origin/main" ":refs/tags/main"
 expect_status 0 "tag after the check"
 [ "$(head_of "$CLONE" refs/heads/main)" = "$(head_of "$SEED" HEAD)" ] || fail "tag after the check: main is not origin's main"
@@ -858,6 +878,155 @@ for TAG in refs/tags/main refs/tags/origin/main; do
   ! git -C "$CLONE" show-ref --verify --quiet "$TAG" || fail "tag after the check: $TAG was fetched"
 done
 expect_deployed "tag after the check"
+
+# The release channel deploys the highest release tag origin/main holds through deploy.py --at with the tag's full
+# name, lists the commits it adds to the deployed one, and leaves the clone on main at origin/main: the commits on main
+# since, a pre-release tag, and a tag that is not a version do not move it.
+recorded_line() { sed -n "${1}p" "$CLONE/.fake-deployed" | tr -d '\r'; }
+new_clone
+BEFORE=$(head_of "$CLONE" HEAD)
+publish "release four one"
+tag_upstream v4.1.0
+publish "release four two"
+tag_upstream v4.2.0
+RELEASE_COMMIT=$(git -C "$SEED" rev-parse "v4.2.0^{commit}")
+publish "after the last release"
+tag_upstream v4.3.0-rc.1
+tag_upstream latest
+LATEST_COMMIT=$(git -C "$SEED" rev-parse "latest^{commit}")
+run_subject "$CLONE" release
+expect_status 0 "release"
+expect_first_line "UPDATED $BEFORE..v4.2.0" "release"
+expect_no_stderr "release"
+for PULLED in "release four one" "release four two"; do
+  printf '%s\n' "$OUTPUT" | grep -q " $PULLED$" || fail "release: commit '$PULLED' not listed: $OUTPUT"
+done
+if printf '%s\n' "$OUTPUT" | grep -q -e "after the last release" -e "NOT_IN_RELEASE"; then
+  fail "release: listed a commit the release does not carry: $OUTPUT"
+fi
+expect_deployed "release" "--all --at refs/tags/v4.2.0"
+[ "$(recorded_line 1)" = "$RELEASE_COMMIT" ] || fail "release: deployed $(recorded_line 1), not v4.2.0"
+[ "$(git -C "$CLONE" branch --show-current)" = "main" ] || fail "release: the clone is not on main"
+[ "$(head_of "$CLONE" HEAD)" = "$(head_of "$SEED" HEAD)" ] || fail "release: main not fast-forwarded to origin/main"
+
+# A later run is up to date with the release, whatever main gained since, and deploys it again.
+publish "later on main"
+run_subject "$CLONE" release
+expect_status 0 "release again"
+expect_first_line "UP_TO_DATE v4.2.0" "release again"
+expect_deployed "release again" "--all --at refs/tags/v4.2.0"
+[ "$(head_of "$CLONE" HEAD)" = "$(head_of "$SEED" HEAD)" ] || fail "release again: main not fast-forwarded"
+
+# For one run, --channel main follows main as the main channel always has, and replaces the release channel's own
+# pin, which the deployer refuses without --unpin.
+run_subject "$CLONE" release --channel main
+expect_status 0 "main for one run"
+expect_first_line "UP_TO_DATE $(head_of "$CLONE" HEAD)" "main for one run"
+expect_deployed "main for one run" "--all --unpin"
+[ "$(recorded_line 1)" = "$(git -C "$CLONE" rev-parse HEAD)" ] || fail "main for one run: main's head not deployed"
+
+# Back on the release channel, an installation that followed main past the release steps back to it, and the commits
+# the release does not carry are named after NOT_IN_RELEASE.
+FOLLOWED=$(head_of "$CLONE" HEAD)
+run_subject "$CLONE" release
+expect_status 0 "step back"
+expect_first_line "UPDATED $FOLLOWED..v4.2.0" "step back"
+printf '%s\n' "$OUTPUT" | grep -qx "NOT_IN_RELEASE v4.2.0..$FOLLOWED" || fail "step back: no NOT_IN_RELEASE line: $OUTPUT"
+for LEFT in "after the last release" "later on main"; do
+  printf '%s\n' "$OUTPUT" | grep -q " $LEFT$" || fail "step back: commit '$LEFT' not listed: $OUTPUT"
+done
+expect_deployed "step back" "--all --at refs/tags/v4.2.0"
+
+# The configured main channel follows main as before, replacing the release channel's own pin, and --channel release
+# deploys the release for one run.
+BEFORE=$(head_of "$CLONE" HEAD)
+publish "main channel change"
+run_subject "$CLONE" main
+expect_status 0 "configured main"
+expect_first_line "UPDATED $BEFORE..$(head_of "$SEED" HEAD)" "configured main"
+printf '%s\n' "$OUTPUT" | grep -q " main channel change$" || fail "configured main: pulled commit not listed: $OUTPUT"
+expect_deployed "configured main" "--all --unpin"
+FOLLOWED=$(head_of "$CLONE" HEAD)
+run_subject "$CLONE" main --channel release
+expect_status 0 "release for one run"
+expect_first_line "UPDATED $FOLLOWED..v4.2.0" "release for one run"
+expect_deployed "release for one run" "--all --at refs/tags/v4.2.0"
+[ "$(recorded_line 2)" = "refs/tags/v4.2.0" ] || fail "release for one run: the pin is $(recorded_line 2)"
+
+# A pin the user made, at another commit than the release, stops the release channel after the fetch, before main
+# moves or anything is deployed: one made by hand with a tag's short name, or with a full name that is not the last
+# release its commit holds.
+V41=$(git -C "$SEED" rev-parse "v4.1.0^{commit}")
+for PIN in "$V41 v4.1.0" "$LATEST_COMMIT refs/tags/latest" "$V41 main~5"; do
+  BEFORE=$(git -C "$CLONE" rev-parse HEAD)
+  FETCHED=$(git -C "$CLONE" rev-parse origin/main)
+  publish "change over a pin at ${PIN#* }"
+  printf '%s\n%s\n' "${PIN%% *}" "${PIN#* }" >"$CLONE/.fake-deployed"
+  run_subject "$CLONE" release
+  expect_status 1 "user pin ${PIN#* }"
+  [ "$OUTPUT" = "PINNED ${PIN#* } ${PIN%% *}" ] || fail "user pin ${PIN#* }: expected only the PINNED line, got: $OUTPUT"
+  expect_no_stderr "user pin ${PIN#* }"
+  [ "$(git -C "$CLONE" rev-parse origin/main)" != "$FETCHED" ] || fail "user pin ${PIN#* }: not fetched"
+  [ "$(git -C "$CLONE" rev-parse HEAD)" = "$BEFORE" ] || fail "user pin ${PIN#* }: main moved"
+  expect_not_deployed "user pin ${PIN#* }"
+done
+
+# A user's pin at the release's own commit is the deployment the update makes, so it does not stop it, and the update
+# then pins the release under its full name.
+printf '%s\nv4.2.0\n' "$RELEASE_COMMIT" >"$CLONE/.fake-deployed"
+run_subject "$CLONE" release
+expect_status 0 "user pin at the release"
+expect_first_line "UP_TO_DATE v4.2.0" "user pin at the release"
+expect_deployed "user pin at the release" "--all --at refs/tags/v4.2.0"
+[ "$(recorded_line 2)" = "refs/tags/v4.2.0" ] || fail "user pin at the release: the pin is $(recorded_line 2)"
+
+# With --unpin the release channel moves a user's pin to the release through --at, which needs no --unpin.
+printf '%s\nv4.1.0\n' "$V41" >"$CLONE/.fake-deployed"
+run_subject "$CLONE" release --unpin
+expect_status 0 "user pin unpinned"
+expect_first_line "UPDATED $(git -C "$CLONE" rev-parse --short "$V41")..v4.2.0" "user pin unpinned"
+printf '%s\n' "$OUTPUT" | grep -q " release four two$" || fail "user pin unpinned: commit since the pin not listed: $OUTPUT"
+expect_deployed "user pin unpinned" "--all --at refs/tags/v4.2.0"
+
+# A release that raises the breaking component stops the release channel at that tag, listing the commits up to it
+# and none after, until --cross-major.
+BEFORE=$(git -C "$CLONE" rev-parse HEAD)
+publish "fifth major"
+tag_upstream v5.0.0
+publish "after the fifth major"
+run_subject "$CLONE" release
+expect_status 1 "release major"
+expect_first_line "MAJOR_UPDATE v4.2.0..v5.0.0" "release major"
+expect_no_stderr "release major"
+printf '%s\n' "$OUTPUT" | grep -q " fifth major$" || fail "release major: the release's commit not listed: $OUTPUT"
+if printf '%s\n' "$OUTPUT" | grep -q "after the fifth major"; then fail "release major: listed a commit after the tag"; fi
+[ "$(git -C "$CLONE" rev-parse HEAD)" = "$BEFORE" ] || fail "release major: main moved"
+expect_not_deployed "release major"
+run_subject "$CLONE" release --cross-major
+expect_status 0 "release major accepted"
+expect_first_line "UPDATED $(git -C "$CLONE" rev-parse --short "$RELEASE_COMMIT")..v5.0.0" "release major accepted"
+printf '%s\n' "$OUTPUT" | grep -qx "CROSSED v4.2.0..v5.0.0" || fail "release major accepted: crossing not named: $OUTPUT"
+expect_deployed "release major accepted" "--all --at refs/tags/v5.0.0"
+
+# Without a release tag on origin/main the release channel has nothing to deploy: it stops after the fetch, and the
+# main channel still follows main.
+UNTAGGED="$FIXTURE/untagged.git"
+git_quiet init --bare -b main "$UNTAGGED"
+git_quiet -C "$SEED" push "$UNTAGGED" main
+case_number=$((case_number + 1))
+CLONE="$FIXTURE/clone $case_number (untagged)"
+git_quiet clone "$UNTAGGED" "$CLONE"
+git -C "$CLONE" rev-parse HEAD >"$CLONE/.fake-deployed"
+[ -z "$(git -C "$CLONE" tag)" ] || fail "no release: the clone holds tags"
+run_subject "$CLONE" release
+expect_status 1 "no release"
+[ "$OUTPUT" = "NO_RELEASE" ] || fail "no release: expected only NO_RELEASE, got: $OUTPUT"
+expect_no_stderr "no release"
+expect_not_deployed "no release"
+run_subject "$CLONE" release --channel main
+expect_status 0 "no release on main"
+expect_first_line "UP_TO_DATE $(head_of "$CLONE" HEAD)" "no release on main"
+expect_deployed "no release on main"
 
 # The deploy can back up the installed skill directory the script runs from, and the temporary copy is removed.
 new_clone
@@ -867,7 +1036,7 @@ cp "$SUBJECT" "$INSTALLED/scripts/update.sh"
 export FAKE_DEPLOY_LOG="$FIXTURE/deploy-$case_number.log"
 : >"$FAKE_DEPLOY_LOG"
 set +e
-OUTPUT=$(TMPDIR="$FIXTURE/tmp" FAKE_DEPLOY_MOVE="$INSTALLED" bash "$INSTALLED/scripts/update.sh" "$CLONE" 2>"$FIXTURE/stderr")
+OUTPUT=$(TMPDIR="$FIXTURE/tmp" FAKE_DEPLOY_MOVE="$INSTALLED" bash "$INSTALLED/scripts/update.sh" "$CLONE" main 2>"$FIXTURE/stderr")
 status=$?
 set -e
 expect_status 0 "self backup"

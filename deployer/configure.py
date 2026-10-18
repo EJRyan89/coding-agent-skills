@@ -64,11 +64,14 @@ def execute(namespace: argparse.Namespace, paths: Paths, stdin: TextIO | None = 
                 print(f"NOTE: Dropping {key}, which this deployer no longer reads.", file=sys.stderr)
         values = {key: existing[key] for key in config.CONFIGURED_VARIABLES if key in existing}
         for key, description in config.PROMPTS.items():
-            answer = _prompt(key, description, existing.get(key, ""), stdin)
+            # A key the saved configuration lacks offers its default, the value a deployment already takes for it.
+            answer = _prompt(key, description, existing.get(key, config.DEFAULTS.get(key, "")), stdin)
             if answer is None:
                 raise Cancelled(CANCELLED)
             if key in config.DIRECTORY_VARIABLES:
                 answer = platform_support.normalize_path_input(answer)
+            elif key in config.CHOICE_VARIABLES:
+                answer = answer.strip()
             values[key] = answer
         lines = [f"{config.SOURCE_KEY}={source_id}"]
         lines += [f"{key}={values[key]}" for key in config.CONFIGURED_VARIABLES if values.get(key)]
