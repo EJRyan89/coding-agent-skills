@@ -20,7 +20,7 @@ Repository targeting is always one or more full `owner/repo` identities or a nam
 - Archive keys are `<owner>/<repo>/pulls/<number>`; repository short names are display-only.
 - JSON is the machine source of truth. Markdown is a hash-linked projection.
 - Review versions are allocated under a per-PR lock and never overwrite history.
-- Merged-pull watermarks are independent per repository. Incomplete enumeration or a failed eligible merge cannot advance that repository past the missing work. No watermark moves past the pipeline's own UTC today: `advance` reads the batch file's date as input and refuses one later than today, or one that would move a watermark past it.
+- Merged-pull watermarks are independent per repository. Incomplete enumeration, a failed eligible merge, or an eligible merge a bounded batch deferred cannot advance that repository past the missing work. No watermark moves past the pipeline's own UTC today: `advance` reads the batch file's date as input and refuses one later than today, or one that would move a watermark past it.
 - A merged pull request is eligible when it merged on or after its repository's watermark date, judged by the UTC date of its merge time alone: one merged before the watermark stays out however recently it was updated (commented on, labeled, or edited) after merging. Because merging updates a pull request, every one merged on or after the watermark was last updated on or after it, so enumeration may stop listing closed pull requests, read from the most recently updated, at the first page whose last pull request was updated before the watermark. A repository without a watermark lists its whole history once.
 - Mutable state, flags, and review versions use separate short-lived locks; network and semantic review work occurs outside those locks. The configuration file takes none: nothing in the suite changes it in place, and `review_config.py write` replaces it whole through a uniquely named temporary file, so a reader sees the old file or the new one, and of two writes at once the later one stays.
 
@@ -154,6 +154,7 @@ The code-review configuration file, validated by `validate_config` in `review_co
 | `reviewer` | object | yes | Who reviews the repository; see [reviewer](#reviewer-configrepositoriesrepositoryreviewer). |
 | `checkout_path` | string or null | when the reviewer's `scope` is `repository` | Absolute path of a local clone, from which the reviewer's files are read at the trusted commit. |
 | `snapshot_exclude` | array | no | Glob patterns of head files to leave out of the source snapshot, at most 100 distinct ones ignoring case, each 1 to 200 characters with no backslash, control character, or empty, `.`, or `..` segment. Each matches a whole path relative to the repository root, ignoring case: `*`, `?`, and `[...]` within one segment, and a `**` segment any number of segments, none included. A matching file is a `configured` exclusion on every route. Defaults to `[]`. |
+| `batch_size` | integer or null | no | The most of the repository's eligible pull requests one batch run reviews, at least 1: the oldest, merged ones by merge date first, and the rest are deferred to the next run. Null or absent sets no bound. |
 
 #### Reviewer (`config.repositories.<repository>.reviewer`)
 

@@ -210,12 +210,20 @@ class EnumerateTests(MainCase):
             "example/app": {
                 "complete": True,
                 "eligible": [{"number": 3}, {"number": 5}],
+                "deferred": [{"number": 8}, {"number": 9}, {"number": 11}],
                 "listing": {"scan": "watermark", "pages": 2, "pulls": 130, "read": 40},
             },
-            "example/lib": {"complete": False, "error": "gh failed", "eligible": [{"number": 7}], "listing": None},
+            "example/lib": {
+                "complete": False,
+                "error": "gh failed",
+                "eligible": [{"number": 7}],
+                "deferred": [],
+                "listing": None,
+            },
             "example/web": {
                 "complete": True,
                 "eligible": [],
+                "deferred": [],
                 "listing": {"scan": "full", "pages": 20, "pulls": 1803, "read": 30},
             },
         }
@@ -233,6 +241,8 @@ class EnumerateTests(MainCase):
             "--repository",
             "example/lib",
             "--force",
+            "--batch-size",
+            "2",
             "--output",
             "my batch.json",
         )
@@ -241,12 +251,12 @@ class EnumerateTests(MainCase):
         self.assertEqual(
             (
                 1,
-                "LISTED example/app scan=watermark pages=2 pulls=130 read=40 candidates=2\n"
+                "LISTED example/app scan=watermark pages=2 pulls=130 read=40 candidates=2 deferred=3\n"
                 "PULL example/app#3\n"
                 "PULL example/app#5\n"
                 "REPOSITORY_FAILED example/lib gh failed\n"
                 "PULL example/lib#7\n"
-                "LISTED example/web scan=full pages=20 pulls=1803 read=30 candidates=0\n"
+                "LISTED example/web scan=full pages=20 pulls=1803 read=30 candidates=0 deferred=0\n"
                 "BATCH batch.json\n",
                 "",
             ),
@@ -261,6 +271,7 @@ class EnumerateTests(MainCase):
                         "repositories": ["example/app", "example/lib"],
                         "repository_set": None,
                         "force": True,
+                        "batch_size": 2,
                         "config_path": Path(CONFIG),
                         "services": SERVICES,
                     },
@@ -291,6 +302,7 @@ class EnumerateTests(MainCase):
                         "repositories": None,
                         "repository_set": "work",
                         "force": False,
+                        "batch_size": None,
                         "config_path": None,
                         "services": SERVICES,
                     },
@@ -298,6 +310,11 @@ class EnumerateTests(MainCase):
             ],
             batch.calls,
         )
+
+    def test_batch_size_is_a_positive_integer(self) -> None:
+        for value in ("0", "-1", "two", "2.5"):
+            with self.subTest(value=value):
+                self.assertIn("error: argument --batch-size:", self.usage_error("enumerate", "--batch-size", value))
 
     def test_repository_and_repository_set_exclude_each_other(self) -> None:
         self.assert_usage(
@@ -738,7 +755,7 @@ class PrepareTests(RunListCase):
 
     def test_a_batch_file_is_prepared_in_the_order_enumerate_printed_it(self) -> None:
         batch = self.directory / "batch.json"
-        value = {"schema_version": 1, **EnumerateTests.BATCH}
+        value = {"schema_version": 2, **EnumerateTests.BATCH}
         batch.write_text(json.dumps(value), encoding="utf-8")
         prepare = self.stub(
             "prepare", effect=lambda selector, **_: {"status": "skip", "selector": selector, "reason": "x"}
@@ -757,7 +774,7 @@ class PrepareTests(RunListCase):
 
     def test_an_empty_batch_writes_an_empty_run_list(self) -> None:
         batch = self.directory / "batch.json"
-        batch.write_text(json.dumps({"schema_version": 1, "repositories": {}}), encoding="utf-8")
+        batch.write_text(json.dumps({"schema_version": 2, "repositories": {}}), encoding="utf-8")
         self.assertEqual((0, self.runs_line(), ""), self.run_main("prepare", "--batch", str(batch)))
         self.assertEqual(([], []), (self.listed()["pending"], self.listed()["runs"]))
         self.assertEqual((0, "ALL_FINALIZED\n", ""), self.run_main("unfinalized", "--runs", str(self.run_list)))
@@ -765,8 +782,10 @@ class PrepareTests(RunListCase):
     def test_a_batch_file_that_is_not_one_fails_before_any_run_list(self) -> None:
         batch = self.directory / "batch.json"
         for value, reason in (
-            ({"schema_version": 2}, f"{batch} is not a review batch file"),
-            ({"schema_version": 1, "repositories": {"example/app": {"eligible": [{"number": "3"}]}}}, "number"),
+            # Version 1 recorded no deferred pull requests, so reading one as this version would be a guess.
+            ({"schema_version": 1}, f"{batch} is not a review batch file"),
+            ({"schema_version": 3}, f"{batch} is not a review batch file"),
+            ({"schema_version": 2, "repositories": {"example/app": {"eligible": [{"number": "3"}]}}}, "number"),
         ):
             with self.subTest(reason=reason):
                 batch.write_text(json.dumps(value), encoding="utf-8")

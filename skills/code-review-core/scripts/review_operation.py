@@ -113,6 +113,25 @@ def select_eligible_pulls(
     return [pull for pull in window if heads.get(pull["number"]) != pull["headRefOid"]]
 
 
+def split_batch(eligible: list[dict[str, Any]], size: int | None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The eligible pull requests one batch run reviews, in their given order, and those it defers to the next run.
+
+    The run takes the oldest first the way the watermark advances: merged pull requests by merge date, which is what
+    holds the watermark back, then open ones by number. With no size, it takes every one."""
+    if size is None or len(eligible) <= size:
+        return list(eligible), []
+
+    def age(pull: dict[str, Any]) -> tuple[bool, date, int]:
+        merged = pull["state"] == "MERGED"
+        return (not merged, merged_date(pull) if merged else date.min, pull["number"])
+
+    taken = {pull["number"] for pull in sorted(eligible, key=age)[:size]}
+    return (
+        [pull for pull in eligible if pull["number"] in taken],
+        [pull for pull in eligible if pull["number"] not in taken],
+    )
+
+
 def merged_date(pull: dict[str, Any]) -> date:
     try:
         return utc_date(pull["mergedAt"])

@@ -53,7 +53,7 @@ OPERATIONS = {"review-prs", "update-pr-dashboard", "review-insights"}
 # An operation a skill rename retired, with the name it has now: a configuration still naming it is refused with both
 # names, as any unknown operation is refused, so the user renames the key rather than losing its set silently.
 RENAMED_OPERATIONS = {"update-pr-tracker": "update-pr-dashboard"}
-REPOSITORY_KEYS = {"reviewer", "checkout_path", "snapshot_exclude"}
+REPOSITORY_KEYS = {"reviewer", "checkout_path", "snapshot_exclude", "batch_size"}
 # A repository's snapshot_exclude: glob patterns over snapshot-relative paths, matched as review_runtime's
 # configured_exclusion matches them.
 MAX_SNAPSHOT_EXCLUDE_PATTERNS = 100
@@ -254,7 +254,9 @@ def _validate_repository(identity: str, entry_value: Any) -> dict[str, Any]:
         maximum_patterns=MAX_SNAPSHOT_EXCLUDE_PATTERNS,
         maximum_length=MAX_SNAPSHOT_EXCLUDE_PATTERN_LENGTH,
     )
-    return {"reviewer": reviewer, "checkout_path": checkout, "snapshot_exclude": exclude}
+    # The most pull requests one batch run reviews; null or absent, a run takes every eligible one.
+    batch_size = READ.optional(READ.integer, entry.get("batch_size"), f"config.{field}.batch_size", minimum=1)
+    return {"reviewer": reviewer, "checkout_path": checkout, "snapshot_exclude": exclude, "batch_size": batch_size}
 
 
 def validate_glob_patterns(

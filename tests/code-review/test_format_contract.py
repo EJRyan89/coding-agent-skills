@@ -677,6 +677,7 @@ def config_fixtures() -> list[dict[str, Any]]:
                 },
                 "checkout_path": native("C:\\Repos\\Five"),
                 "snapshot_exclude": ["**/*.resx", "Reports/Generated/**"],
+                "batch_size": 25,
             },
             "example/two": {
                 "reviewer": {

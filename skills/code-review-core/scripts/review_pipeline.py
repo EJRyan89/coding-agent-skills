@@ -112,6 +112,7 @@ from review_operation import (
     reviewed_head,
     safe_watermark,
     select_eligible_pulls,
+    split_batch,
     validate_canary_pull,
     validate_pull,
 )
@@ -196,7 +197,8 @@ from skill_roots import skills_directory_holding
 from typed_fields import FieldError, FieldReader
 
 RUN_SCHEMA_VERSION = 1
-BATCH_SCHEMA_VERSION = 1
+# Version 2 records each repository's deferred pull requests, which hold its watermark back.
+BATCH_SCHEMA_VERSION = 2
 RUN_LIST_SCHEMA_VERSION = 1
 RUN_FILE = "run.json"
 # The run list prepare writes in a new temporary directory: the pull requests or fixtures it has still to prepare,
@@ -2318,6 +2320,13 @@ def wait_seconds(value: str) -> int:
     return seconds
 
 
+def positive_integer(value: str) -> int:
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return number
+
+
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -2531,10 +2540,14 @@ def enumerate_batch(
     repositories: list[str] | None = None,
     repository_set: str | None = None,
     force: bool = False,
+    batch_size: int | None = None,
     config_path: Path | None = None,
     services: Services | None = None,
 ) -> dict[str, Any]:
-    """The open non-draft and newly merged pull requests each repository still needs reviewed."""
+    """The open non-draft and newly merged pull requests each repository still needs reviewed.
+
+    A repository's configured `batch_size`, or `batch_size` when given, bounds how many the batch takes; the rest are
+    recorded as deferred, so `advance` keeps the watermark short of them and the next run takes them."""
     services = services or Services()
     config = load_config(config_path)
     selected = resolve_repositories(
@@ -2551,6 +2564,7 @@ def enumerate_batch(
             "complete": False,
             "error": None,
             "eligible": [],
+            "deferred": [],
             "listing": None,
         }
         read: list[int] = []
@@ -2575,9 +2589,11 @@ def enumerate_batch(
                 ]
             # A pull request merged between the two listings is in both; the later listing is the current one.
             pulls = {pull["number"]: pull for found in listings for pull in found.pulls}
-            entry["eligible"] = select_eligible_pulls(
+            eligible = select_eligible_pulls(
                 pulls.values(), merged_since=watermark, reviewed_heads=reviewed_heads, force=force
             )
+            size = config["repositories"][repository]["batch_size"] if batch_size is None else batch_size
+            entry["eligible"], entry["deferred"] = split_batch(eligible, size)
             entry["listing"] = {
                 "scan": "full" if recorded is None else "watermark",
                 "pages": sum(found.pages for found in listings),
@@ -2618,7 +2634,8 @@ def advance_watermarks(
             changes[repository] = (entry["previous_watermark"], None)
             continue
         previous = date.fromisoformat(entry["previous_watermark"])
-        eligible = [validate_pull(pull) for pull in entry["eligible"]]
+        # A deferred merged pull request is pending like an unreviewed one, so a bounded batch skips nothing.
+        eligible = [validate_pull(pull) for pull in (*entry["eligible"], *entry["deferred"])]
         merged = [pull for pull in eligible if pull["state"] == "MERGED"]
         heads = latest_reviewed_heads(archive_root, repository, [pull["number"] for pull in merged])
         completed = {pull["number"] for pull in merged if heads.get(pull["number"]) == pull["headRefOid"]}
@@ -2791,6 +2808,11 @@ def _build_parser() -> argparse.ArgumentParser:
     scope.add_argument("--repository", action="append", dest="repositories")
     scope.add_argument("--repository-set")
     enumerate_parser.add_argument("--force", action="store_true")
+    enumerate_parser.add_argument(
+        "--batch-size",
+        type=positive_integer,
+        help="the most pull requests each repository's batch takes; overrides its configured batch_size",
+    )
     enumerate_parser.add_argument("--output", type=Path, help="batch file; defaults to a new temporary directory")
     prepare_parser = commands.add_parser("prepare")
     prepare_parser.add_argument(
@@ -2961,6 +2983,7 @@ def _run_enumerate(args: argparse.Namespace, services: Services | None) -> int:
         repositories=args.repositories,
         repository_set=args.repository_set,
         force=args.force,
+        batch_size=args.batch_size,
         config_path=args.config,
         services=services,
     )
@@ -2973,7 +2996,7 @@ def _run_enumerate(args: argparse.Namespace, services: Services | None) -> int:
             found = entry["listing"]
             print(
                 f"LISTED {repository} scan={found['scan']} pages={found['pages']} pulls={found['pulls']} "
-                f"read={found['read']} candidates={len(entry['eligible'])}"
+                f"read={found['read']} candidates={len(entry['eligible'])} deferred={len(entry['deferred'])}"
             )
         for pull in entry["eligible"]:
             print(f"PULL {repository}#{pull['number']}")
