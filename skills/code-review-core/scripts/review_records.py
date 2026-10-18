@@ -18,11 +18,14 @@ from flat_text import flat_text
 from markdown_literal import markdown_line as _text
 from markdown_literal import markdown_literal as _literal
 from markdown_literal import navigation_url as _navigation_url
-from review_config import safe_repository_path, validate_repository_identity
+from review_config import is_unreviewed_suffix, safe_repository_path, validate_repository_identity
 from review_io import atomic_write_json, atomic_write_text, read_json
 from typed_fields import FieldError, FieldReader, describe
 
-RECORD_SCHEMA_VERSION = 1
+RECORD_SCHEMA_VERSION = 2
+# The record versions a reader accepts. A version 1 record, written before unreviewed files were recorded, has no
+# `review.coverage.unreviewed_files`; a version 2 record may.
+READABLE_RECORD_VERSIONS = (1, RECORD_SCHEMA_VERSION)
 # How a review's reviewer roles were worked, as its record's `review.dispatch` says: as native subagents (or by a Claude
 # Code Workflow), by the bounded Copilot CLI host, or inline by the orchestrating session itself, one role at a time.
 DISPATCH_MODES = ("subagents", "copilot-host", "inline")
@@ -691,13 +694,9 @@ def build_record(
     if request.get("body_characters") is not None:
         record["pull_request"]["body_characters"] = request["body_characters"]
         record["pull_request"]["body_given"] = request["body_given"]
-    uncovered = sorted(request.get("uncovered_files", []))
-    if unavailable or uncovered:
-        record["review"]["coverage"] = {"unavailable_sources": unavailable}
-    if uncovered:
-        # Files no specialist covers, which the reviewer manifest left unreviewed. A deliberate opt-out, so they do
-        # not make the review INCOMPLETE.
-        record["review"]["coverage"]["uncovered_files"] = uncovered
+    coverage = _record_coverage(request)
+    if coverage is not None:
+        record["review"]["coverage"] = coverage
     if request.get("reviewers"):
         record["review"]["reviewers"] = copy.deepcopy(request["reviewers"])
     if request.get("patches"):
@@ -714,6 +713,25 @@ def build_record(
         ]
         record["comment_dispositions"] = copy.deepcopy(adapter_result["comment_dispositions"])
     return record
+
+
+def _record_coverage(request: dict[str, Any]) -> dict[str, Any] | None:
+    """The record's coverage, or None when none of its lists has a file."""
+    unavailable = sorted(request.get("unavailable_sources", []))
+    uncovered = sorted(request.get("uncovered_files", []))
+    unreviewed = dict(sorted(request.get("unreviewed_files", {}).items()))
+    if not (unavailable or uncovered or unreviewed):
+        return None
+    coverage: dict[str, Any] = {"unavailable_sources": unavailable}
+    if uncovered:
+        # Files no specialist covers, which the reviewer manifest left unreviewed. A deliberate opt-out, so they do
+        # not make the review INCOMPLETE.
+        coverage["uncovered_files"] = uncovered
+    if unreviewed:
+        # Binary files of a type the review does not read, with the suffix that matched; they do not make the review
+        # INCOMPLETE either.
+        coverage["unreviewed_files"] = unreviewed
+    return coverage
 
 
 def _size(count: int) -> str:
@@ -1145,22 +1163,37 @@ def _validate_pull_request(pull: dict[str, Any]) -> None:
     READ.hex_digest(pull["head_sha"], "record.pull_request.head_sha", 40, 64)
 
 
-def _validate_coverage(review: dict[str, Any]) -> None:
-    """The sources a review could not reach and the files no reviewer covered; an INCOMPLETE review names a source."""
-    # Records written before uncovered files were recorded omit them.
+def _validate_coverage(review: dict[str, Any], version: int) -> None:
+    """The sources a review could not reach, the files no reviewer covered, and, from version 2, the files of a type
+    the review does not read; an INCOMPLETE review names a source."""
+    # Records written before uncovered files were recorded omit them, and version 1 records have no unreviewed files.
     coverage = READ.json_object(
         review.get("coverage", {"unavailable_sources": []}),
         "record.review.coverage",
         required={"unavailable_sources"},
-        optional={"uncovered_files"},
+        optional={"uncovered_files", *(["unreviewed_files"] if version >= 2 else [])},
     )
     unavailable = _read_path_set(coverage["unavailable_sources"], "record.review.coverage.unavailable_sources")
     _read_path_set(coverage.get("uncovered_files", []), "record.review.coverage.uncovered_files")
+    _validate_unreviewed(coverage.get("unreviewed_files", {}), set(unavailable))
     if review["verdict"] == "INCOMPLETE" and not unavailable:
         raise RecordError("An INCOMPLETE review must list its unavailable sources")
 
 
-def _validate_review(review: dict[str, Any]) -> None:
+def _validate_unreviewed(value: Any, unavailable: set[str]) -> None:
+    """Each unreviewed file keyed by its path, which no unavailable source repeats, with the suffix its name ends in."""
+    field = "record.review.coverage.unreviewed_files"
+    for path, suffix in READ.json_object(value, field).items():
+        READ.string(path, f"a key of {field}")
+        READ.string(suffix, f"{field}.{path}")
+        name = path.rpartition("/")[2].lower()
+        if not is_unreviewed_suffix(suffix) or len(name) <= len(suffix) or not name.endswith(suffix):
+            raise READ.fail(f"{field}.{path}", "a lowercase file-name suffix the path's name ends in", describe(suffix))
+        if path in unavailable:
+            raise RecordError(f"Review coverage names {path} both as unavailable and as unreviewed")
+
+
+def _validate_review(review: dict[str, Any], version: int) -> None:
     """The review's own metadata, up to its adapter."""
     review_fields = {"version", "mode", "reviewed_at", "summary", "verdict", "counts", "adapter"}
     # Records written before patches, scopes, dispatch modes, or snapshots were recorded omit them.
@@ -1175,7 +1208,7 @@ def _validate_review(review: dict[str, Any]) -> None:
     if "patches" in review:
         _validate_patches(review["patches"])
     READ.one_of(review["verdict"], "record.review.verdict", ("APPROVED", "CHANGES_REQUESTED", "INCOMPLETE"))
-    _validate_coverage(review)
+    _validate_coverage(review, version)
     READ.integer(review["version"], "record.review.version", minimum=1)
     READ.one_of(review["mode"], "record.review.mode", ("initial", "re-review"))
     if "scope" in review:
@@ -1287,14 +1320,15 @@ def _validate_artifacts(value: Any) -> None:
 def validate_record(value: Any) -> dict[str, Any]:
     """A review record, checked part by part in a fixed order; the first fault found is the one raised."""
     record = READ.json_object(value, "record", optional=RECORD_FIELDS)
-    if READ.integer(record.get("schema_version"), "record.schema_version") != RECORD_SCHEMA_VERSION:
+    version = READ.integer(record.get("schema_version"), "record.schema_version")
+    if version not in READABLE_RECORD_VERSIONS:
         raise RecordError("Unsupported or malformed review record")
     _validate_comments(record)
     validate_repository_identity(READ.string(record.get("repository"), "record.repository"))
     pull = READ.json_object(record.get("pull_request"), "record.pull_request")
     review = READ.json_object(record.get("review"), "record.review")
     _validate_pull_request(pull)
-    _validate_review(review)
+    _validate_review(review, version)
     _validate_adapter(review["adapter"])
     findings = _validate_findings(record.get("findings"))
     _validate_counts(review["counts"], findings)
@@ -1577,6 +1611,17 @@ def render_markdown(
                 "> **Not reviewed in full:** these changed files were excluded by the repository's `snapshot_exclude`, "
                 "were too large, could not be represented safely, or were documents whose text could not be extracted, "
                 "so reviewers saw only their diff: " + ", ".join(_code(path) for path in unavailable) + ".",
+                "",
+            ]
+        )
+    unreviewed = (review.get("coverage") or {}).get("unreviewed_files", {})
+    if unreviewed:
+        lines.extend(
+            [
+                "> **Not read:** these changed files are binary files of a type the review does not read, so reviewers "
+                "saw only that they changed, and they do not make the review incomplete: "
+                + ", ".join(f"{_code(path)} ({_code(suffix)})" for path, suffix in unreviewed.items())
+                + ".",
                 "",
             ]
         )

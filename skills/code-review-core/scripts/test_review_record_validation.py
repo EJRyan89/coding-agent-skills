@@ -131,15 +131,21 @@ def _record() -> dict[str, Any]:
 
 
 def _full_record() -> dict[str, Any]:
-    """A valid re-review using every optional part: a finding that repeats an earlier one, with its ledger."""
+    """A valid version 2 re-review using every optional part: a finding that repeats an earlier one, with its ledger,
+    and a file of a type the review does not read."""
     record = _record()
+    record["schema_version"] = 2
     record["pull_request"]["head_ref"] = "fix/zero"
     record["review"].update(
         {
             "version": 2,
             "mode": "re-review",
             "counts": {"MUST_FIX": 1, "SHOULD_FIX": 1, "SUGGESTION": 0},
-            "coverage": {"unavailable_sources": [], "uncovered_files": ["docs/notes.md"]},
+            "coverage": {
+                "unavailable_sources": [],
+                "uncovered_files": ["docs/notes.md"],
+                "unreviewed_files": {"dist/Setup.MSI": ".msi"},
+            },
             "reviewers": [
                 {
                     "id": "correctness",
@@ -296,6 +302,34 @@ ACCEPTED: list[tuple[str, Callable[[], dict[str, Any]], Mutation]] = [
     ("reads unknown", _record, _set((*REVIEW, "reviewers"), [{**REVIEWER, "files_read": None, "bytes_read": None}])),
     ("reads not recorded", _record, _set((*REVIEW, "reviewers"), [REVIEWER])),
     ("coverage without uncovered files", _record, _set((*REVIEW, "coverage"), {"unavailable_sources": []})),
+    # A version 1 record, written before unreviewed files were recorded, is still read, as is a version 2 one.
+    ("version 2 record", _record, _set(("schema_version",), 2)),
+    (
+        "version 2 APPROVED with unreviewed files alone",
+        _record,
+        _chain(
+            _set(("schema_version",), 2),
+            _set((*REVIEW, "verdict"), "APPROVED"),
+            _set(
+                (*REVIEW, "coverage"),
+                {
+                    "unavailable_sources": [],
+                    "unreviewed_files": {"assets/Logo.PNG": ".png", "pkg/tool.tar.lz": ".tar.lz", "a.msi": ".msi"},
+                },
+            ),
+        ),
+    ),
+    (
+        "version 2 INCOMPLETE with an unavailable source beside an unreviewed file",
+        _record,
+        _chain(
+            _set(("schema_version",), 2),
+            _set((*REVIEW, "verdict"), "INCOMPLETE"),
+            _set(
+                (*REVIEW, "coverage"), {"unavailable_sources": ["data/blob.bin"], "unreviewed_files": {"a.msi": ".msi"}}
+            ),
+        ),
+    ),
     (
         "INCOMPLETE with unavailable sources",
         _record,
@@ -425,6 +459,18 @@ EXCLUDED_COUNT = "record.review.snapshot.excluded.configured"
 FILES_READ = "record.review.reviewers[0].files_read"
 
 # Records validate_record refuses, from the minimal record, with the exception class and message it raises.
+UNREVIEWED = "record.review.coverage.unreviewed_files"
+UNREVIEWED_SUFFIX_KIND = "a lowercase file-name suffix the path's name ends in"
+
+
+def _unreviewed(files: Any) -> Mutation:
+    """A version 2 record whose coverage holds these unreviewed files and no other file."""
+    return _chain(
+        _set(("schema_version",), 2),
+        _set((*REVIEW, "coverage"), {"unavailable_sources": [], "unreviewed_files": files}),
+    )
+
+
 REJECTED: list[tuple[str, Mutation, type[Exception], str]] = [
     *(
         (
@@ -459,7 +505,10 @@ REJECTED: list[tuple[str, Mutation, type[Exception], str]] = [
     ),
     ("record not an object", _replace([]), F, "record must be an object, found an array"),
     ("unknown top-level key", _set(("extra",), 1), F, _unknown("record", "extra")),
-    ("schema_version 2", _set(("schema_version",), 2), R, "Unsupported or malformed review record"),
+    *(
+        (f"schema_version {value}", _set(("schema_version",), value), R, "Unsupported or malformed review record")
+        for value in (0, 3)
+    ),
     ("schema_version missing", _delete(("schema_version",)), F, "record.schema_version must be an integer, found null"),
     (
         "comments empty",
@@ -574,6 +623,72 @@ REJECTED: list[tuple[str, Mutation, type[Exception], str]] = [
         _set((*REVIEW, "coverage"), {"unavailable_sources": [], "uncovered_files": "a"}),
         F,
         'record.review.coverage.uncovered_files must be an array, found string "a"',
+    ),
+    (
+        "coverage unreviewed files on a version 1 record",
+        _chain(
+            _set(("schema_version",), 1),
+            _set((*REVIEW, "coverage"), {"unavailable_sources": [], "unreviewed_files": {"a.msi": ".msi"}}),
+        ),
+        F,
+        _unknown("record.review.coverage", "unreviewed_files"),
+    ),
+    (
+        "coverage unreviewed files not an object",
+        _unreviewed([]),
+        F,
+        "record.review.coverage.unreviewed_files must be an object, found an array",
+    ),
+    (
+        "coverage unreviewed file with an empty path",
+        _unreviewed({"": ".msi"}),
+        F,
+        _wrong("a key of record.review.coverage.unreviewed_files", TEXT, ""),
+    ),
+    *(
+        (
+            f"coverage unreviewed file suffix {value!r}",
+            _unreviewed({"a.msi": value}),
+            F,
+            _wrong(f"{UNREVIEWED}.a.msi", TEXT, value),
+        )
+        for value in (None, 1, "", [".msi"])
+    ),
+    *(
+        (
+            f"coverage unreviewed file {path} with suffix {suffix!r}",
+            _unreviewed({path: suffix}),
+            F,
+            _wrong(f"{UNREVIEWED}.{path}", UNREVIEWED_SUFFIX_KIND, suffix),
+        )
+        for path, suffix in (
+            ("a.msi", ".MSI"),
+            ("a.msi", "msi"),
+            ("a.msi", ".zip"),
+            ("a.msi", "*.msi"),
+            ("a.msi", "." + "m" * 32),
+            (".msi", ".msi"),
+            ("dist/.msi", ".msi"),
+            ("a.msi.txt", ".msi"),
+        )
+    ),
+    (
+        "coverage unreviewed file also unavailable",
+        _chain(
+            _set(("schema_version",), 2),
+            _set((*REVIEW, "coverage"), {"unavailable_sources": ["a.msi"], "unreviewed_files": {"a.msi": ".msi"}}),
+        ),
+        R,
+        "Review coverage names a.msi both as unavailable and as unreviewed",
+    ),
+    (
+        "INCOMPLETE with unreviewed files alone",
+        _chain(
+            _unreviewed({"a.msi": ".msi"}),
+            _set((*REVIEW, "verdict"), "INCOMPLETE"),
+        ),
+        R,
+        "An INCOMPLETE review must list its unavailable sources",
     ),
     (
         "INCOMPLETE without coverage",
@@ -1006,7 +1121,7 @@ STAGES: list[tuple[str, Mutation, type[Exception], str]] = [
         F,
         "record.schema_version must be an integer, found boolean true",
     ),
-    ("schema_version", _set(("schema_version",), 2), R, "Unsupported or malformed review record"),
+    ("schema_version", _set(("schema_version",), 3), R, "Unsupported or malformed review record"),
     (
         "comments needed",
         _chain(_set(("github_comments",), None), _set(("comment_dispositions",), [])),
@@ -1149,6 +1264,34 @@ STAGES: list[tuple[str, Mutation, type[Exception], str]] = [
         _set((*REVIEW, "coverage"), {"unavailable_sources": [], "uncovered_files": "a"}),
         F,
         'record.review.coverage.uncovered_files must be an array, found string "a"',
+    ),
+    (
+        "coverage unreviewed files",
+        _unreviewed([]),
+        F,
+        "record.review.coverage.unreviewed_files must be an object, found an array",
+    ),
+    (
+        "coverage unreviewed file path",
+        _unreviewed({"": ".msi"}),
+        F,
+        _wrong("a key of record.review.coverage.unreviewed_files", TEXT, ""),
+    ),
+    ("coverage unreviewed file suffix kind", _unreviewed({"a.msi": 1}), F, _wrong(f"{UNREVIEWED}.a.msi", TEXT, 1)),
+    (
+        "coverage unreviewed file suffix",
+        _unreviewed({"a.msi": ".zip"}),
+        F,
+        _wrong(f"{UNREVIEWED}.a.msi", UNREVIEWED_SUFFIX_KIND, ".zip"),
+    ),
+    (
+        "coverage unreviewed file unavailable",
+        _chain(
+            _set(("schema_version",), 2),
+            _set((*REVIEW, "coverage"), {"unavailable_sources": ["a.msi"], "unreviewed_files": {"a.msi": ".msi"}}),
+        ),
+        R,
+        "Review coverage names a.msi both as unavailable and as unreviewed",
     ),
     (
         "incomplete",
@@ -1379,6 +1522,7 @@ ABSENCE_FAULTS = {"scope on an initial review", "comment dispositions alone", "r
 VALUE_VARIANTS = {
     (R, "Review adapter source is invalid for a repository reviewer"),
     (F, f"{SOURCE_HASHES}.b.md must be {DIGEST_KIND}"),
+    *((F, f"{UNREVIEWED}.{path} must be {UNREVIEWED_SUFFIX_KIND}") for path in (".msi", "dist/.msi", "a.msi.txt")),
 }
 
 

@@ -933,9 +933,11 @@ def _write_request(
     prior: list[dict[str, Any]],
     comments: list[dict[str, Any]],
     unsafe: list[str],
+    unreviewed_suffixes: tuple[str, ...] = (),
 ) -> None:
-    """The adapter request, whose unavailable sources include every changed path no reviewer could be given, and
-    beside it the file of the pull request's description, which is never prompt text."""
+    """The adapter request, whose unavailable sources include every changed path no reviewer could be given, which
+    is then no unreviewed file, and beside it the file of the pull request's description, which is never prompt
+    text."""
     body = pull.get("body", "")
     body_path = request_path.parent / PULL_REQUEST_BODY_FILE
     atomic_write_text(body_path, given_body(body))
@@ -956,9 +958,13 @@ def _write_request(
         snapshot=manifest,  # prepare materialized and verified it, in this call
         body_file=body_path,
         body_characters=len(body),
+        unreviewed_suffixes=unreviewed_suffixes,
     )
     coverage = request["coverage"]
     coverage["unavailable_sources"] = sorted({*coverage["unavailable_sources"], *unsafe})
+    coverage["unreviewed_files"] = {
+        path: suffix for path, suffix in coverage["unreviewed_files"].items() if path not in unsafe
+    }
     write_adapter_request(request_path, request)
 
 
@@ -1080,6 +1086,8 @@ class _Review:
     adopt_source: bool = False
     # The repository's configured snapshot_exclude globs; a fixture has none.
     snapshot_exclude: tuple[str, ...] = ()
+    # The repository's own suffixes of binary file types the review does not read; a fixture has none.
+    unreviewed_suffixes: tuple[str, ...] = ()
     # The stage of a fixture's design document, which the design-review specialist's prompt names; None for a pull
     # request read from GitHub.
     document_stage: str | None = None
@@ -1170,6 +1178,7 @@ def prepare(
         read_diff=lambda diff_path: _fetch_diff(repository, number, pull, diff_path, services, notes),
         canary=canary,
         snapshot_exclude=tuple(entry["snapshot_exclude"]),
+        unreviewed_suffixes=tuple(entry["unreviewed_suffixes"]),
     )
     return _prepare_run(
         review,
@@ -1338,6 +1347,7 @@ def _prepare_run(
             prior=review.prior,
             comments=comments,
             unsafe=unsafe,
+            unreviewed_suffixes=review.unreviewed_suffixes,
         )
         fixture = review.fixture
         if fixture is not None:

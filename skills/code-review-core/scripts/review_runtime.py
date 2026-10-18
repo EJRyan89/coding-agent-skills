@@ -2272,11 +2272,13 @@ def build_adapter_request(
     snapshot: dict[str, Any] | None = None,
     body_file: Path | None = None,
     body_characters: int | None = None,
+    unreviewed_suffixes: Iterable[str] = (),
 ) -> dict[str, Any]:
     """`snapshot` is for a caller that materialized the snapshot itself, moments earlier: the manifest its
     materialization verified, which is only checked to name this request's repository and head. Without it the
     snapshot is verified here, contents included. `body_file` and `body_characters`, given together, name the file
-    holding the description reviewers are given and the description's full length."""
+    holding the description reviewers are given and the description's full length. `unreviewed_suffixes` are the
+    repository's own suffixes of binary file types the review does not read (see `review_coverage`)."""
     READ.one_of(mode, "request.mode", ("initial", "re-review"))
     repository = validate_repository_identity(repository)
     READ.integer(pull_number, "request.pull_number", minimum=1)
@@ -2325,20 +2327,47 @@ def build_adapter_request(
         },
         "prior_findings": prior_findings or [],
         "github_comments": github_comments or [],
-        "coverage": {"unavailable_sources": unavailable_sources(diff_path, snapshot)},
+        "coverage": review_coverage(diff_path, snapshot, unreviewed_suffixes),
     }
 
 
-COVERAGE_GAP_REASONS = {"configured", "file-size-limit", "unsafe-path", "unextractable"}
+COVERAGE_GAP_REASONS = {"binary", "configured", "file-size-limit", "unsafe-path", "unextractable"}
+# The file-name suffixes of the binary file types the review knows it does not read: archives, installers and
+# packages, images, fonts, compiled binaries and symbol files, and media. A changed file the snapshot finds binary
+# whose name ends in one, ignoring case, is an unreviewed file rather than a coverage gap; a repository's
+# unreviewed_suffixes adds its own. The contract document lists them, and a test holds the two to each other.
+UNREVIEWED_SUFFIXES = frozenset(
+    " ".join(
+        (
+            ".7z .bz2 .cab .gz .jar .rar .tar .tgz .xz .zip .zst",  # archives
+            ".apk .appx .deb .dmg .msi .msix .msp .nupkg .pkg .rpm .snupkg .vsix .whl",  # installers and packages
+            ".bmp .gif .icns .ico .jpeg .jpg .png .psd .tif .tiff .webp",  # images
+            ".eot .otf .ttf .woff .woff2",  # fonts
+            ".a .class .dll .dylib .exe .lib .o .obj .pdb .pyc .pyd .so .wasm",  # compiled binaries and symbol files
+            ".aac .avi .flac .m4a .mkv .mov .mp3 .mp4 .ogg .wav .webm",  # media
+        )
+    ).split()
+)
 
 
-def unavailable_sources(diff_path: Path, snapshot: dict[str, Any]) -> list[str]:
-    """Changed files whose source the snapshot could not provide (too large, an unsafe name, a document whose text
-    could not be extracted, or left out by the repository's snapshot_exclude, which the pull request's author cannot
-    hide a change behind).
+def unreviewed_suffix(path: str, suffixes: Iterable[str]) -> str | None:
+    """The longest of `suffixes` the path's file name ends in, ignoring case, with a name before it, or None."""
+    name = path.rpartition("/")[2].lower()
+    matched = [suffix for suffix in suffixes if len(name) > len(suffix) and name.endswith(suffix)]
+    return max(matched, key=len, default=None)
 
-    Binary, agent-instruction, symbolic-link, and non-regular exclusions are deliberate and reviewed from the diff
-    alone.
+
+def review_coverage(diff_path: Path, snapshot: dict[str, Any], suffixes: Iterable[str] = ()) -> dict[str, Any]:
+    """The changed files reviewers see only as diff: `unavailable_sources`, whose source the snapshot could not
+    provide, and `unreviewed_files`, each binary file of a type the review does not read, by its path, with the
+    suffix it matched.
+
+    A changed file is a coverage gap when the snapshot leaves it out as too large, for an unsafe name, as a document
+    whose text could not be extracted, by the repository's snapshot_exclude, which the pull request's author cannot
+    hide a change behind, or as binary. A binary one whose name ends in one of UNREVIEWED_SUFFIXES or `suffixes`
+    (the repository's own) is unreviewed instead: the suffix decides only once the snapshot has found the file binary,
+    so a text file is never unreviewed. Agent-instruction, symbolic-link, and non-regular exclusions are deliberate
+    and reviewed from the diff alone.
     """
     from review_specialists import SpecialistError, parse_unified_diff
 
@@ -2346,10 +2375,26 @@ def unavailable_sources(diff_path: Path, snapshot: dict[str, Any]) -> list[str]:
         changed = parse_unified_diff(read_diff(diff_path))
     except SpecialistError as exc:
         raise RuntimeContractError(f"Cannot read changed paths from the diff: {exc}") from exc
-    gaps = {
-        _undecodable_form(path) for path, reason in snapshot["excluded_paths"].items() if reason in COVERAGE_GAP_REASONS
-    }
-    return sorted(path for path in changed if _undecodable_form(path) in gaps)
+    reasons: dict[str, set[str]] = {}
+    for path, reason in snapshot["excluded_paths"].items():
+        reasons.setdefault(_undecodable_form(path), set()).add(reason)
+    known = UNREVIEWED_SUFFIXES | set(suffixes)
+    unavailable: list[str] = []
+    unreviewed: dict[str, str] = {}
+    for path in sorted(changed):
+        # Every reason any spelling of the name has, so a name merged with a gap's never hides it.
+        gaps = reasons.get(_undecodable_form(path), set()) & COVERAGE_GAP_REASONS
+        suffix = unreviewed_suffix(path, known) if gaps == {"binary"} else None
+        if suffix is not None:
+            unreviewed[path] = suffix
+        elif gaps:
+            unavailable.append(path)
+    return {"unavailable_sources": unavailable, "unreviewed_files": unreviewed}
+
+
+def unavailable_sources(diff_path: Path, snapshot: dict[str, Any], suffixes: Iterable[str] = ()) -> list[str]:
+    """The changed files whose source the snapshot could not provide, as `review_coverage` finds them."""
+    return list(review_coverage(diff_path, snapshot, suffixes)["unavailable_sources"])
 
 
 REPLACEMENT_RUN = re.compile(f"{chr(0xFFFD)}+")

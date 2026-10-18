@@ -106,6 +106,7 @@ def _expected() -> dict[str, Any]:
                 },
                 "checkout_path": None,
                 "snapshot_exclude": [],
+                "unreviewed_suffixes": [],
                 "batch_size": None,
             }
         },
@@ -207,6 +208,7 @@ def _full_expected() -> dict[str, Any]:
                 },
                 "checkout_path": native("C:\\src\\repo"),
                 "snapshot_exclude": [],
+                "unreviewed_suffixes": [],
                 "batch_size": None,
             },
             "owner/tools": {
@@ -221,6 +223,7 @@ def _full_expected() -> dict[str, Any]:
                 },
                 "checkout_path": native("C:\\src\\tools"),
                 "snapshot_exclude": [],
+                "unreviewed_suffixes": [],
                 "batch_size": None,
             },
             "owner/committed": {
@@ -235,6 +238,7 @@ def _full_expected() -> dict[str, Any]:
                 },
                 "checkout_path": native("C:\\src\\committed"),
                 "snapshot_exclude": [],
+                "unreviewed_suffixes": [],
                 "batch_size": None,
             },
             "owner/generic": {
@@ -249,6 +253,7 @@ def _full_expected() -> dict[str, Any]:
                 },
                 "checkout_path": native("D:\\src\\generic"),
                 "snapshot_exclude": [],
+                "unreviewed_suffixes": [],
                 "batch_size": None,
             },
         },
@@ -375,7 +380,13 @@ def _repository_expected(**reviewer: Any) -> Mutation:
     fields.update(reviewer)
     return _set(
         REPO,
-        {"reviewer": fields, "checkout_path": native("C:\\src\\repo"), "snapshot_exclude": [], "batch_size": None},
+        {
+            "reviewer": fields,
+            "checkout_path": native("C:\\src\\repo"),
+            "snapshot_exclude": [],
+            "unreviewed_suffixes": [],
+            "batch_size": None,
+        },
     )
 
 
@@ -392,6 +403,21 @@ ACCEPTED_PATTERNS: list[tuple[str, list[str]]] = [
 NOT_ARRAYS: list[tuple[str, Any]] = [("null", None), ("a string", "*.resx"), ("an object", {})]
 NOT_PATTERNS: list[tuple[str, Any]] = [("null", None), ("a number", 1), ("a list", ["*.resx"])]
 TOO_MANY_PATTERNS = [f"generated/{index}/**" for index in range(101)]
+# Suffixes of unreviewed file types validate_config accepts as given: one, several parts, the punctuation allowed, one
+# the suite already ships, one as long as allowed, and as many as allowed.
+ACCEPTED_SUFFIXES: list[tuple[str, list[str]]] = [
+    ("one", [".nupkg"]),
+    ("of several parts", [".tar.lz", ".bin"]),
+    ("with the punctuation allowed", [".c++", ".my_pkg", ".x-y", ".7z"]),
+    ("already shipped", [".zip"]),
+    ("of 32 characters", ["." + "a" * 31]),
+    ("100 suffixes", [f".x{index}" for index in range(100)]),
+]
+TOO_MANY_SUFFIXES = [f".x{index}" for index in range(101)]
+SUFFIX_MESSAGE = (
+    f"config.{FIELD}.unreviewed_suffixes[0] must be a lowercase file-name suffix: a dot, then letters, digits, '_', "
+    "'+', or '-', in parts each starting with a letter or digit and joined by dots, found "
+)
 PATTERN_MESSAGE = (
     f"config.{FIELD}.snapshot_exclude[0] must be a repository-relative glob pattern without a backslash, a control "
     "character, or an empty, '.', or '..' segment, found "
@@ -409,10 +435,19 @@ ACCEPTED: list[tuple[str, Mutation, Mutation]] = [
         )
         for name, patterns in ACCEPTED_PATTERNS
     ],
+    *[
+        (
+            f"unreviewed_suffixes {name}",
+            _set((*REPO, "unreviewed_suffixes"), suffixes),
+            _set((*REPO, "unreviewed_suffixes"), suffixes),
+        )
+        for name, suffixes in ACCEPTED_SUFFIXES
+    ],
     (
         "every optional section at its default",
         _chain(
             _set((*REPO, "snapshot_exclude"), []),
+            _set((*REPO, "unreviewed_suffixes"), []),
             _set((*REPO, "batch_size"), None),
             _set(("runtime",), "auto"),
             _set(("reviewer_effort",), None),
@@ -1172,6 +1207,66 @@ REJECTED: list[Case] = [
     ],
     *[
         (
+            f"unreviewed_suffixes {name}",
+            _set((*REPO, "unreviewed_suffixes"), value),
+            F,
+            _wrong(f"{FIELD}.unreviewed_suffixes", "an array of at most 100 items", value),
+        )
+        for name, value in NOT_ARRAYS
+    ],
+    (
+        "unreviewed_suffixes of 101 suffixes",
+        _set((*REPO, "unreviewed_suffixes"), TOO_MANY_SUFFIXES),
+        F,
+        f"config.{FIELD}.unreviewed_suffixes must be an array of at most 100 items, found an array of 101 items",
+    ),
+    *[
+        (
+            f"unreviewed_suffixes suffix {name}",
+            _set((*REPO, "unreviewed_suffixes"), [value]),
+            F,
+            f"config.{FIELD}.unreviewed_suffixes[0] must be a non-empty string of at most 32 characters, found {found}",
+        )
+        for name, value, found in [
+            ("null", None, "null"),
+            ("a number", 1, "integer 1"),
+            ("a list", [".zip"], "an array"),
+            ("empty", "", "an empty string"),
+            ("of 33 characters", "." + "a" * 32, "a string of 33 characters"),
+        ]
+    ],
+    *[
+        (
+            f"unreviewed_suffixes suffix {name}",
+            _set((*REPO, "unreviewed_suffixes"), [suffix]),
+            F,
+            SUFFIX_MESSAGE + found,
+        )
+        for name, suffix, found in [
+            ("without a dot", "zip", 'string "zip"'),
+            ("in upper case", ".ZIP", 'string ".ZIP"'),
+            ("in mixed case", ".Nupkg", 'string ".Nupkg"'),
+            ("a dot alone", ".", 'string "."'),
+            ("two dots", "..", 'string ".."'),
+            ("with an empty part", ".tar..gz", 'string ".tar..gz"'),
+            ("ending in a dot", ".zip.", 'string ".zip."'),
+            ("a glob", "*.zip", 'string "*.zip"'),
+            ("with a name before it", "setup.msi", 'string "setup.msi"'),
+            ("with a slash", ".a/b", 'string ".a/b"'),
+            ("with a space", ".a b", 'string ".a b"'),
+            ("with a part starting in punctuation", ".-x", 'string ".-x"'),
+            ("with a letter outside ASCII", ".zi\u00df", 'string ".zi\\u00df"'),
+            ("with a control character", ".zip\n", 'string ".zip\\n"'),
+        ]
+    ],
+    (
+        "unreviewed_suffixes listing a suffix twice",
+        _set((*REPO, "unreviewed_suffixes"), [".bin", ".dat", ".bin"]),
+        F,
+        f'config.{FIELD}.unreviewed_suffixes must be distinct file-name suffixes, found ".bin" twice',
+    ),
+    *[
+        (
             f"batch_size {value!r}",
             _set((*REPO, "batch_size"), value),
             F,
@@ -1733,6 +1828,36 @@ STAGES: list[Case] = [
         f'config.{FIELD}.snapshot_exclude must be distinct glob patterns, ignoring case, found "*.Resx" twice',
     ),
     (
+        "unreviewed_suffixes not an array",
+        _set((*REPO, "unreviewed_suffixes"), ".zip"),
+        F,
+        f'config.{FIELD}.unreviewed_suffixes must be an array of at most 100 items, found string ".zip"',
+    ),
+    (
+        "unreviewed_suffixes too long",
+        _set((*REPO, "unreviewed_suffixes"), TOO_MANY_SUFFIXES),
+        F,
+        f"config.{FIELD}.unreviewed_suffixes must be an array of at most 100 items, found an array of 101 items",
+    ),
+    (
+        "unreviewed_suffixes suffix not a string",
+        _set((*REPO, "unreviewed_suffixes"), [".bin", 1, "ZIP"]),
+        F,
+        f"config.{FIELD}.unreviewed_suffixes[1] must be a non-empty string of at most 32 characters, found integer 1",
+    ),
+    (
+        "unreviewed_suffixes suffix",
+        _set((*REPO, "unreviewed_suffixes"), ["ZIP", ".bin", ".bin"]),
+        F,
+        SUFFIX_MESSAGE + 'string "ZIP"',
+    ),
+    (
+        "unreviewed_suffixes duplicate",
+        _set((*REPO, "unreviewed_suffixes"), [".bin", ".bin"]),
+        F,
+        f'config.{FIELD}.unreviewed_suffixes must be distinct file-name suffixes, found ".bin" twice',
+    ),
+    (
         "batch_size",
         _set((*REPO, "batch_size"), 0),
         F,
@@ -2017,6 +2142,8 @@ VALUE_VARIANTS = {
     "must not be a filesystem root",
     PATTERN_MESSAGE,
     "snapshot_exclude[0] must be a non-empty string of at most 200 characters",
+    SUFFIX_MESSAGE,
+    "unreviewed_suffixes[0] must be a non-empty string of at most 32 characters",
     " twice",
     "verdict_policy.request_changes_for[1] ",
 }

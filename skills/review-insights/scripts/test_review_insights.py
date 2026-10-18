@@ -549,6 +549,19 @@ class ReportTests(InsightFixture):
         self.assertEqual(sorted(set(validated)), validated)
         self.assertEqual(5, record.call_count, "no stage validates a record a second time")
 
+    def test_a_version_one_record_and_one_with_unreviewed_files_are_both_analyzed(self) -> None:
+        older = record("owner/repo", 7, ["Correctness"])
+        older["schema_version"] = 1  # written before unreviewed files were recorded
+        commit_record(self.archive, "owner/repo", 7, older, expected_latest_version=None)
+        newer = record("owner/other", 3, ["Correctness"])
+        self.assertEqual(2, newer["schema_version"])
+        newer["review"]["coverage"] = {"unavailable_sources": [], "unreviewed_files": {"dist/Setup.MSI": ".msi"}}
+        commit_record(self.archive, "owner/other", 3, newer, expected_latest_version=None)
+        json_path, lines = self.report()
+        self.assertEqual(["RECOMMENDATION REC-001 Correctness findings=2 decision=deferred flags=none"], lines)
+        report = json.loads(json_path.read_text(encoding="utf-8"))
+        self.assertEqual(2, report["record_count"])
+
     def test_a_finding_no_later_review_judged_has_no_outcome(self) -> None:
         # v3 judged the Correctness finding still present in the review that repeated it, so no later review has.
         self.commit_repeats(judged_after=False)
