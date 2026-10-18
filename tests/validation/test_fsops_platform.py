@@ -11,11 +11,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 from fsops_platform import _platform_names, filesystem_write_problems, platform_code_problems
 from validation_support import write_fixture_tree
+
+# Runs no test of its own; the test functions below check through its assertions, as the class does.
+CHECK = unittest.TestCase()
 
 
 class FsopsPlatformFixtures(unittest.TestCase):
@@ -68,31 +73,6 @@ class FsopsPlatformFixtures(unittest.TestCase):
                 ],
                 filesystem_write_problems(root),
             )
-
-    def test_filesystem_write_policy_reports_ambiguous_assigned_callables(self) -> None:
-        cases = (
-            "writer = open\nwriter = open\n",
-            "writer = open\nwriter = None\n",
-            "writer = missing\n",
-            "writer = other\nother = writer\n",
-            "writer = open\nfor writer in callbacks:\n    pass\n",
-            "writer = open\nwith callback as writer:\n    pass\n",
-            "import builtins as writer\nwriter = None\n",
-        )
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            for prefix in cases:
-                function = "writer.open" if prefix.startswith("import ") else "writer"
-                source = prefix + f'{function}("x", "w")\n'
-                with self.subTest(source=source):
-                    write_fixture_tree(root, {"deployer/ambiguous.py": source})
-                    self.assertEqual(
-                        [
-                            f"deployer/ambiguous.py:{len(source.splitlines())} cannot resolve callable alias "
-                            f"{function}; use a single binding to a known callable"
-                        ],
-                        filesystem_write_problems(root),
-                    )
 
     def test_filesystem_write_policy_reads_writes_through_assignment_expressions_unpacking_and_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1751,3 +1731,28 @@ class FsopsPlatformFixtures(unittest.TestCase):
                 [f"tools/strayed.py:{line} names {token}{move}" for line, token in expected],
                 platform_code_problems(root),
             )
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        pytest.param("writer = open\nwriter = open\n", id="bound twice"),
+        pytest.param("writer = open\nwriter = None\n", id="rebound to a value"),
+        pytest.param("writer = missing\n", id="bound to an unknown name"),
+        pytest.param("writer = other\nother = writer\n", id="cyclic"),
+        pytest.param("writer = open\nfor writer in callbacks:\n    pass\n", id="rebound by a loop"),
+        pytest.param("writer = open\nwith callback as writer:\n    pass\n", id="rebound by a with"),
+        pytest.param("import builtins as writer\nwriter = None\n", id="rebound module"),
+    ],
+)
+def test_filesystem_write_policy_reports_ambiguous_assigned_callables(tmp_path: Path, prefix: str) -> None:
+    function = "writer.open" if prefix.startswith("import ") else "writer"
+    source = prefix + f'{function}("x", "w")\n'
+    write_fixture_tree(tmp_path, {"deployer/ambiguous.py": source})
+    CHECK.assertEqual(
+        [
+            f"deployer/ambiguous.py:{len(source.splitlines())} cannot resolve callable alias "
+            f"{function}; use a single binding to a known callable"
+        ],
+        filesystem_write_problems(tmp_path),
+    )

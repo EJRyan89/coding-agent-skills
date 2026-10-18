@@ -15,6 +15,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
@@ -39,6 +41,9 @@ from validation_support import REPOSITORY_ROOT, write_fixture_tree
 
 from deployer import platform_support
 
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
+
 
 def mark_skills(root: Path) -> Path:
     """Give each skills/<name> folder with a scripts/ directory the SKILL.md that makes it a skill, and return root."""
@@ -59,55 +64,6 @@ def unreadable(path: str, line: int, description: str) -> str:
 
 
 class SkillScriptsFixtures(unittest.TestCase):
-    def test_process_detection_uses_every_command_runner_and_client_with_dynamic_arguments(self) -> None:
-        for callable_name in (*COMMAND_RUNNERS, *CLIENT_CLASSES):
-            with self.subTest(callable_name=callable_name):
-                module, _, function = callable_name.rpartition(".")
-                # An event loop's runner is a method of the loop a call returns.
-                loop = module == EVENT_LOOP
-                header = (
-                    "import asyncio\nprocess = asyncio.new_event_loop()\n" if loop else f"import {module} as process\n"
-                )
-                # The command goes where the runner takes it: os's spawn calls take a mode first, and an event loop's
-                # runners a protocol factory.
-                position = COMMAND_RUNNERS[callable_name][0] if callable_name in COMMAND_RUNNERS else 0
-                arguments = ", ".join([*(["mode"] * position), "command"])
-                tree = ast.parse(f"{header}start = process.{function}\nstart({arguments})\n")
-                reader = CommandReader(tree)
-                self.assertTrue(reader.starts_process())
-                # A runner given a command the module never binds reports it; a client's argument is not a command.
-                line = header.count("\n") + 2
-                expected = (
-                    [
-                        unreadable(
-                            "start.py", line, "the program in `command`, which the module binds to nothing it reads"
-                        )
-                    ]
-                    if callable_name in COMMAND_RUNNERS
-                    else []
-                )
-                self.assertEqual(expected, reader.problems("start.py"))
-                if not loop:
-                    self.assertFalse(CommandReader(ast.parse(f"from {module} import {function}\n")).starts_process())
-
-    def test_command_reader_keeps_only_the_f_strings_initial_literal_arguments(self) -> None:
-        for expression, prefix in (
-            ('f"gh api {endpoint} --template {template}"', "gh api "),
-            ('f"gh " "api " f"{endpoint} copilot"', "gh api "),
-            ('f"gh.exe api {endpoint}"', "gh.exe api "),
-            ('f"gh"', "gh"),
-        ):
-            with self.subTest(expression=expression):
-                tree = ast.parse(expression)
-                statement = tree.body[0]
-                if not isinstance(statement, ast.Expr):
-                    self.fail("Expected an f-string expression")
-                literals = CommandReader(tree).program_literals(statement.value)
-                constants = [node for node in literals if isinstance(node, ast.Constant)]
-                self.assertEqual(literals, constants)
-                self.assertEqual([prefix], [node.value for node in constants])
-                self.assertEqual([1], [node.lineno for node in constants])
-
     def test_client_command_policy_reads_f_string_prefixes_through_runners_and_bound_names(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -189,36 +145,6 @@ class SkillScriptsFixtures(unittest.TestCase):
             )
             script.write_text(script.read_text(encoding="utf-8").replace("jq ", "python "), encoding="utf-8")
             self.assertEqual([], skill_command_problems(root, {"copilot", "gh"}, {"git", "python"}))
-
-    def test_command_policies_report_f_strings_without_a_readable_literal_prefix(self) -> None:
-        for expression in (
-            'f"{program} api gh"',
-            'f"   {program} api"',
-            'f"{program=}"',
-            '[f"{program}", "api"]',
-            '(f"{program}", "api")',
-            'f"{program}" + " gh api"',
-        ):
-            with self.subTest(expression=expression), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary)
-                write_fixture_tree(
-                    root,
-                    {
-                        "deploy-meta/alpha.json": "{}",
-                        "skills/alpha/SKILL.md": "# alpha\n",
-                        "skills/alpha/scripts/tool.py": "import subprocess\n"
-                        "runner = subprocess.run\n"
-                        f"COMMAND = {expression}\n"
-                        "runner(args=COMMAND)\n"
-                        "runner(COMMAND)\n"
-                        'print(f"{label}")\n',
-                    },
-                )
-                expected = [
-                    unreadable("skills/alpha/scripts/tool.py", 3, "f-string command without a literal program prefix")
-                ]
-                self.assertEqual(expected, client_command_problems(root))
-                self.assertEqual(expected, skill_command_problems(root, {"gh"}, {"git", "python"}))
 
     def test_command_policies_read_format_join_and_split_commands_and_report_one_without_a_program(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -667,48 +593,7 @@ class SkillScriptsFixtures(unittest.TestCase):
         self.assertFalse(CommandReader(ast.parse(typed)).starts_process())
         self.assertEqual([], CommandReader(ast.parse(typed)).problems(path))
 
-    def test_command_policies_read_pty_startfile_an_event_loop_and_asyncio_subprocess_runners(self) -> None:
-        sources = {
-            "pty": "import pty\npty.spawn(['ruby', '-e'])\n",
-            "startfile": "import os\nos.startfile('ruby')\n",
-            "loop": (
-                "import asyncio\n"
-                "async def start():\n"
-                "    loop = asyncio.get_running_loop()\n"
-                "    await loop.subprocess_exec(asyncio.SubprocessProtocol, 'ruby', '-e')\n"
-                "    run = loop.subprocess_shell\n"
-                "    await run(asyncio.SubprocessProtocol, 'jq . | ruby -e 1')\n"
-            ),
-            "asyncio.subprocess": (
-                "import asyncio.subprocess\n"
-                "asyncio.subprocess.create_subprocess_exec('ruby', '-e')\n"
-                "asyncio.subprocess.create_subprocess_shell('ruby -e 1')\n"
-            ),
-        }
-        for label, source in sources.items():
-            with self.subTest(runner=label):
-                reader = CommandReader(ast.parse(source))
-                self.assertTrue(reader.starts_process())
-                self.assertEqual({"ruby", "jq"} if label == "loop" else {"ruby"}, reader.commands(set()))
-                self.assertEqual([], reader.problems("tool.py"))
-
     def test_command_policies_read_a_runner_from_a_module_looked_up_by_name(self) -> None:
-        sources = {
-            "import_module": "import importlib\nimportlib.import_module('subprocess').run(['ruby', '.'])\n",
-            "__import__": "__import__('subprocess').run('ruby .', shell=True)\n",
-            "sys.modules": "import sys\nsys.modules['subprocess'].run(['ruby', '.'])\n",
-            "bound module": "import importlib\nmodule = importlib.import_module('subprocess')\nmodule.run(['ruby'])\n",
-            "bound runner": "import importlib\nrun = importlib.import_module('subprocess').run\nrun(['ruby'])\n",
-            "dotted": (
-                "import importlib\nimportlib.import_module('asyncio.subprocess').create_subprocess_exec('ruby')\n"
-            ),
-        }
-        for label, source in sources.items():
-            with self.subTest(lookup=label):
-                reader = CommandReader(ast.parse(source))
-                self.assertTrue(reader.starts_process())
-                self.assertEqual({"ruby"}, reader.commands(set()))
-                self.assertEqual([], reader.problems("tool.py"))
         computed = (
             "import importlib\n"
             "import sys\n"
@@ -819,18 +704,7 @@ class SkillScriptsFixtures(unittest.TestCase):
                 client_command_problems(root),
             )
 
-    def test_command_reader_follows_runners_bound_by_assignment_expressions_unpacking_and_defaults(self) -> None:
-        for source in (
-            'import subprocess\nif (runner := subprocess.run):\n    runner(["git", "status"])\n',
-            'import subprocess\nrunner, other = subprocess.run, print\nrunner(["git", "status"])\n',
-            'import subprocess\ndef status(runner=subprocess.run):\n    runner(["git", "status"])\n',
-            'import subprocess\nstatus = lambda runner=subprocess.run: runner(["git", "status"])\n',
-        ):
-            with self.subTest(source=source):
-                reader = CommandReader(ast.parse(source))
-                self.assertTrue(reader.starts_process())
-                self.assertEqual({"git"}, reader.commands(set()))
-                self.assertEqual([], reader.problems("tool.py"))
+    def test_command_reader_reports_a_runner_bound_to_several_callables_by_a_loop(self) -> None:
         reader = CommandReader(
             ast.parse('import os, subprocess\nfor runner in (subprocess.run, os.system):\n    runner("git status")\n')
         )
@@ -937,32 +811,7 @@ class SkillScriptsFixtures(unittest.TestCase):
                 script_contract_problems(mark_skills(root)),
             )
 
-    def test_script_contract_policy_reads_each_report_through_the_module_s_names(self) -> None:
-        doc = '"Script results" in docs/adding-a-skill.md'
-        stderr = f"prints FAILED on stderr; print it on stdout; see {doc}"
-        json_output = f"prints JSON; print one fact per line; see {doc}"
-        parser = f"reports a failure through parser.error; print FAILED <reason> and exit 1; see {doc}"
-        for source, breach in (
-            ("import sys\ndef main():\n    sys.stderr.write('FAILED x')\n", stderr),
-            ("from sys import stderr\ndef main():\n    print('FAILED x', file=stderr)\n", stderr),
-            ("import sys\ndef main(reason):\n    print('FAILED ' + reason, file=sys.stderr)\n", stderr),
-            ("import sys\ndef main(reason):\n    print('FAILED {}'.format(reason), file=sys.stderr)\n", stderr),
-            ("from sys import exit\ndef main():\n    exit(3)\n", f"exits 3; scripts exit only 0, 1, or 2; see {doc}"),
-            ("import os\ndef main():\n    os._exit(3)\n", f"exits 3; scripts exit only 0, 1, or 2; see {doc}"),
-            ("def main():\n    exit(4)\n", f"exits 4; scripts exit only 0, 1, or 2; see {doc}"),
-            ("from json import dumps\ndef main():\n    print(dumps({}))\n", json_output),
-            ("import json, sys\ndef main():\n    json.dump({}, sys.stdout)\n", json_output),
-            (
-                "import argparse\ndef main():\n    ap = argparse.ArgumentParser()\n    try:\n        pass\n"
-                "    except OSError as e:\n        ap.error(str(e))\n",
-                parser,
-            ),
-        ):
-            with self.subTest(source=source), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary)
-                write_fixture_tree(root, {"skills/alpha/scripts/run.py": source})
-                problems = script_contract_problems(mark_skills(root))
-                self.assertEqual([breach], [problem.split(" ", 1)[1] for problem in problems])
+    def test_script_contract_policy_allows_a_report_to_a_file_and_a_failed_line_on_stdout(self) -> None:
         # Writing to a file, a FAILED line on stdout, and JSON written to a file are each allowed.
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -999,27 +848,7 @@ class SkillScriptsFixtures(unittest.TestCase):
                 [problem.split(" is named", 1)[0] for problem in secret_named_function_problems(mark_skills(root))],
             )
 
-    def test_shell_command_extraction_reads_the_program_every_wrapper_and_substitution_runs(self) -> None:
-        for script in (
-            'echo "$(rg foo)"',
-            "y=`rg foo`",
-            "xargs rg foo",
-            "xargs -I {} rg {}",
-            "find . -exec rg foo {} \\;",
-            "env A=1 rg foo",
-            "command rg foo",
-            "exec rg foo",
-            "nohup rg foo",
-            "timeout -s KILL 5 rg foo",
-            'eval "rg foo"',
-            'bash -c "rg foo"',
-        ):
-            with self.subTest(script=script):
-                self.assertIn("rg", shell_commands(script))
-        # A lookup, a substitution in single quotes or a comment, and arithmetic run nothing.
-        for script in ("command -v rg", "echo '$(rg foo)'", "# run `rg foo` here", "echo $((1 + 2))"):
-            with self.subTest(script=script):
-                self.assertNotIn("rg", shell_commands(script))
+    def test_shell_command_extraction_marks_a_program_it_cannot_read(self) -> None:
         self.assertIn(f"{UNREAD_PROGRAM}$tool", shell_commands('xargs "$tool" foo'))
 
     def test_powershell_and_python_shell_readers_read_the_program_each_way_runs(self) -> None:
@@ -1078,22 +907,6 @@ class SkillScriptsFixtures(unittest.TestCase):
                 [f"skill alpha runs rg, which a standard install lacks; see {COMMANDS_DOC}"],
                 skill_command_problems(root, set(), set()),
             )
-
-    def test_skill_command_policy_reads_every_command_shell_fence(self) -> None:
-        for label in ("zsh", "console", "dash", "fish", "cmd", "bat"):
-            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary)
-                write_fixture_tree(
-                    root,
-                    {
-                        "deploy-meta/alpha.json": '{"tools": []}',
-                        "skills/alpha/SKILL.md": f"# alpha\n\n```{label}\nrg foo\n```\n",
-                    },
-                )
-                self.assertEqual(
-                    [f"skill alpha runs rg, which a standard install lacks; see {COMMANDS_DOC}"],
-                    skill_command_problems(root, set(), set()),
-                )
 
     def test_command_policies_read_a_bytes_command_and_a_subclass_of_a_client(self) -> None:
         reader = CommandReader(
@@ -1575,6 +1388,274 @@ class SkillScriptsFixtures(unittest.TestCase):
                 ],
                 console_setup_problems(root),
             )
+
+
+@pytest.mark.parametrize("callable_name", [*COMMAND_RUNNERS, *CLIENT_CLASSES])
+def test_process_detection_uses_every_command_runner_and_client_with_dynamic_arguments(callable_name: str) -> None:
+    module, _, function = callable_name.rpartition(".")
+    # An event loop's runner is a method of the loop a call returns.
+    loop = module == EVENT_LOOP
+    header = "import asyncio\nprocess = asyncio.new_event_loop()\n" if loop else f"import {module} as process\n"
+    # The command goes where the runner takes it: os's spawn calls take a mode first, and an event loop's runners a
+    # protocol factory.
+    position = COMMAND_RUNNERS[callable_name][0] if callable_name in COMMAND_RUNNERS else 0
+    arguments = ", ".join([*(["mode"] * position), "command"])
+    tree = ast.parse(f"{header}start = process.{function}\nstart({arguments})\n")
+    reader = CommandReader(tree)
+    CHECK.assertTrue(reader.starts_process())
+    # A runner given a command the module never binds reports it; a client's argument is not a command.
+    line = header.count("\n") + 2
+    expected = (
+        [unreadable("start.py", line, "the program in `command`, which the module binds to nothing it reads")]
+        if callable_name in COMMAND_RUNNERS
+        else []
+    )
+    CHECK.assertEqual(expected, reader.problems("start.py"))
+    if not loop:
+        CHECK.assertFalse(CommandReader(ast.parse(f"from {module} import {function}\n")).starts_process())
+
+
+@pytest.mark.parametrize(
+    ("expression", "prefix"),
+    [
+        ('f"gh api {endpoint} --template {template}"', "gh api "),
+        ('f"gh " "api " f"{endpoint} copilot"', "gh api "),
+        ('f"gh.exe api {endpoint}"', "gh.exe api "),
+        ('f"gh"', "gh"),
+    ],
+)
+def test_command_reader_keeps_only_the_f_strings_initial_literal_arguments(expression: str, prefix: str) -> None:
+    tree = ast.parse(expression)
+    statement = tree.body[0]
+    if not isinstance(statement, ast.Expr):
+        CHECK.fail("Expected an f-string expression")
+    literals = CommandReader(tree).program_literals(statement.value)
+    constants = [node for node in literals if isinstance(node, ast.Constant)]
+    CHECK.assertEqual(literals, constants)
+    CHECK.assertEqual([prefix], [node.value for node in constants])
+    CHECK.assertEqual([1], [node.lineno for node in constants])
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        'f"{program} api gh"',
+        'f"   {program} api"',
+        'f"{program=}"',
+        '[f"{program}", "api"]',
+        '(f"{program}", "api")',
+        'f"{program}" + " gh api"',
+    ],
+)
+def test_command_policies_report_f_strings_without_a_readable_literal_prefix(tmp_path: Path, expression: str) -> None:
+    write_fixture_tree(
+        tmp_path,
+        {
+            "deploy-meta/alpha.json": "{}",
+            "skills/alpha/SKILL.md": "# alpha\n",
+            "skills/alpha/scripts/tool.py": "import subprocess\n"
+            "runner = subprocess.run\n"
+            f"COMMAND = {expression}\n"
+            "runner(args=COMMAND)\n"
+            "runner(COMMAND)\n"
+            'print(f"{label}")\n',
+        },
+    )
+    expected = [unreadable("skills/alpha/scripts/tool.py", 3, "f-string command without a literal program prefix")]
+    CHECK.assertEqual(expected, client_command_problems(tmp_path))
+    CHECK.assertEqual(expected, skill_command_problems(tmp_path, {"gh"}, {"git", "python"}))
+
+
+@pytest.mark.parametrize(
+    ("label", "source"),
+    [
+        pytest.param("pty", "import pty\npty.spawn(['ruby', '-e'])\n", id="pty"),
+        pytest.param("startfile", "import os\nos.startfile('ruby')\n", id="startfile"),
+        pytest.param(
+            "loop",
+            "import asyncio\n"
+            "async def start():\n"
+            "    loop = asyncio.get_running_loop()\n"
+            "    await loop.subprocess_exec(asyncio.SubprocessProtocol, 'ruby', '-e')\n"
+            "    run = loop.subprocess_shell\n"
+            "    await run(asyncio.SubprocessProtocol, 'jq . | ruby -e 1')\n",
+            id="loop",
+        ),
+        pytest.param(
+            "asyncio.subprocess",
+            "import asyncio.subprocess\n"
+            "asyncio.subprocess.create_subprocess_exec('ruby', '-e')\n"
+            "asyncio.subprocess.create_subprocess_shell('ruby -e 1')\n",
+            id="asyncio.subprocess",
+        ),
+    ],
+)
+def test_command_policies_read_pty_startfile_an_event_loop_and_asyncio_subprocess_runners(
+    label: str, source: str
+) -> None:
+    reader = CommandReader(ast.parse(source))
+    CHECK.assertTrue(reader.starts_process())
+    CHECK.assertEqual({"ruby", "jq"} if label == "loop" else {"ruby"}, reader.commands(set()))
+    CHECK.assertEqual([], reader.problems("tool.py"))
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param(
+            "import importlib\nimportlib.import_module('subprocess').run(['ruby', '.'])\n", id="import_module"
+        ),
+        pytest.param("__import__('subprocess').run('ruby .', shell=True)\n", id="__import__"),
+        pytest.param("import sys\nsys.modules['subprocess'].run(['ruby', '.'])\n", id="sys.modules"),
+        pytest.param(
+            "import importlib\nmodule = importlib.import_module('subprocess')\nmodule.run(['ruby'])\n",
+            id="bound module",
+        ),
+        pytest.param(
+            "import importlib\nrun = importlib.import_module('subprocess').run\nrun(['ruby'])\n", id="bound runner"
+        ),
+        pytest.param(
+            "import importlib\nimportlib.import_module('asyncio.subprocess').create_subprocess_exec('ruby')\n",
+            id="dotted",
+        ),
+    ],
+)
+def test_command_policies_read_a_runner_from_a_module_looked_up_by_a_literal_name(source: str) -> None:
+    reader = CommandReader(ast.parse(source))
+    CHECK.assertTrue(reader.starts_process())
+    CHECK.assertEqual({"ruby"}, reader.commands(set()))
+    CHECK.assertEqual([], reader.problems("tool.py"))
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param(
+            'import subprocess\nif (runner := subprocess.run):\n    runner(["git", "status"])\n',
+            id="an assignment expression",
+        ),
+        pytest.param(
+            'import subprocess\nrunner, other = subprocess.run, print\nrunner(["git", "status"])\n', id="unpacking"
+        ),
+        pytest.param(
+            'import subprocess\ndef status(runner=subprocess.run):\n    runner(["git", "status"])\n', id="a default"
+        ),
+        pytest.param(
+            'import subprocess\nstatus = lambda runner=subprocess.run: runner(["git", "status"])\n',
+            id="a lambda default",
+        ),
+    ],
+)
+def test_command_reader_follows_runners_bound_by_assignment_expressions_unpacking_and_defaults(source: str) -> None:
+    reader = CommandReader(ast.parse(source))
+    CHECK.assertTrue(reader.starts_process())
+    CHECK.assertEqual({"git"}, reader.commands(set()))
+    CHECK.assertEqual([], reader.problems("tool.py"))
+
+
+SCRIPT_RESULTS_DOC = '"Script results" in docs/adding-a-skill.md'
+FAILED_ON_STDERR = f"prints FAILED on stderr; print it on stdout; see {SCRIPT_RESULTS_DOC}"
+PRINTS_JSON = f"prints JSON; print one fact per line; see {SCRIPT_RESULTS_DOC}"
+
+
+@pytest.mark.parametrize(
+    ("source", "breach"),
+    [
+        pytest.param(
+            "import sys\ndef main():\n    sys.stderr.write('FAILED x')\n", FAILED_ON_STDERR, id="stderr.write"
+        ),
+        pytest.param(
+            "from sys import stderr\ndef main():\n    print('FAILED x', file=stderr)\n",
+            FAILED_ON_STDERR,
+            id="print to an imported stderr",
+        ),
+        pytest.param(
+            "import sys\ndef main(reason):\n    print('FAILED ' + reason, file=sys.stderr)\n",
+            FAILED_ON_STDERR,
+            id="a joined line",
+        ),
+        pytest.param(
+            "import sys\ndef main(reason):\n    print('FAILED {}'.format(reason), file=sys.stderr)\n",
+            FAILED_ON_STDERR,
+            id="a formatted line",
+        ),
+        pytest.param(
+            "from sys import exit\ndef main():\n    exit(3)\n",
+            f"exits 3; scripts exit only 0, 1, or 2; see {SCRIPT_RESULTS_DOC}",
+            id="an imported exit",
+        ),
+        pytest.param(
+            "import os\ndef main():\n    os._exit(3)\n",
+            f"exits 3; scripts exit only 0, 1, or 2; see {SCRIPT_RESULTS_DOC}",
+            id="os._exit",
+        ),
+        pytest.param(
+            "def main():\n    exit(4)\n",
+            f"exits 4; scripts exit only 0, 1, or 2; see {SCRIPT_RESULTS_DOC}",
+            id="the builtin exit",
+        ),
+        pytest.param(
+            "from json import dumps\ndef main():\n    print(dumps({}))\n", PRINTS_JSON, id="an imported dumps"
+        ),
+        pytest.param(
+            "import json, sys\ndef main():\n    json.dump({}, sys.stdout)\n", PRINTS_JSON, id="json.dump to stdout"
+        ),
+        pytest.param(
+            "import argparse\ndef main():\n    ap = argparse.ArgumentParser()\n    try:\n        pass\n"
+            "    except OSError as e:\n        ap.error(str(e))\n",
+            f"reports a failure through parser.error; print FAILED <reason> and exit 1; see {SCRIPT_RESULTS_DOC}",
+            id="parser.error",
+        ),
+    ],
+)
+def test_script_contract_policy_reads_each_report_through_the_module_s_names(
+    tmp_path: Path, source: str, breach: str
+) -> None:
+    write_fixture_tree(tmp_path, {"skills/alpha/scripts/run.py": source})
+    problems = script_contract_problems(mark_skills(tmp_path))
+    CHECK.assertEqual([breach], [problem.split(" ", 1)[1] for problem in problems])
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        'echo "$(rg foo)"',
+        "y=`rg foo`",
+        "xargs rg foo",
+        "xargs -I {} rg {}",
+        "find . -exec rg foo {} \\;",
+        "env A=1 rg foo",
+        "command rg foo",
+        "exec rg foo",
+        "nohup rg foo",
+        "timeout -s KILL 5 rg foo",
+        'eval "rg foo"',
+        'bash -c "rg foo"',
+    ],
+)
+def test_shell_command_extraction_reads_the_program_every_wrapper_and_substitution_runs(script: str) -> None:
+    CHECK.assertIn("rg", shell_commands(script))
+
+
+# A lookup, a substitution in single quotes or a comment, and arithmetic run nothing.
+@pytest.mark.parametrize("script", ["command -v rg", "echo '$(rg foo)'", "# run `rg foo` here", "echo $((1 + 2))"])
+def test_shell_command_extraction_finds_no_program_where_nothing_runs(script: str) -> None:
+    CHECK.assertNotIn("rg", shell_commands(script))
+
+
+@pytest.mark.parametrize("label", ["zsh", "console", "dash", "fish", "cmd", "bat"])
+def test_skill_command_policy_reads_every_command_shell_fence(tmp_path: Path, label: str) -> None:
+    write_fixture_tree(
+        tmp_path,
+        {
+            "deploy-meta/alpha.json": '{"tools": []}',
+            "skills/alpha/SKILL.md": f"# alpha\n\n```{label}\nrg foo\n```\n",
+        },
+    )
+    CHECK.assertEqual(
+        [f"skill alpha runs rg, which a standard install lacks; see {COMMANDS_DOC}"],
+        skill_command_problems(tmp_path, set(), set()),
+    )
 
 
 # Run in a child Python for one entry point: import it under another name, so its __main__ block does not run, replace

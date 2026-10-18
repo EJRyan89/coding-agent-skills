@@ -15,6 +15,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
@@ -49,6 +51,9 @@ from validation_support import (
     statement_scope,
     write_fixture_tree,
 )
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 SOURCE = (
     "import os.path\n"
@@ -130,33 +135,6 @@ class CallableResolverFixtures(unittest.TestCase):
         names = {node.lineno: resolver.name(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
         self.assertEqual({5: "io.open", 8: "", 9: "open"}, names)
 
-    def test_any_other_binding_invalidates_an_alias_and_its_dependents(self) -> None:
-        changes = (
-            "writer = open",
-            "writer = None",
-            "writer += other",
-            "writer, other = callbacks",
-            "for writer in callbacks:\n    pass",
-            "with callback as writer:\n    pass",
-            "try:\n    pass\nexcept Exception as writer:\n    pass",
-            "(writer := other)",
-            "del writer",
-            "def writer():\n    pass",
-            "match value:\n    case writer:\n        pass",
-        )
-        for change in changes:
-            source = f'writer = open\nalias = writer\n{change}\nalias("x", "w")\n'
-            with self.subTest(change=change):
-                tree = ast.parse(source)
-                resolver = CallableResolver(tree)
-                self.assertEqual(
-                    [
-                        f"fixture.py:{len(source.splitlines())} cannot resolve callable alias alias; "
-                        "use a single binding to a known callable"
-                    ],
-                    resolver.problems("fixture.py"),
-                )
-
     def test_parameters_and_local_definitions_shadow_builtins_without_hiding_alias_rebindings(self) -> None:
         tree = ast.parse(
             "def one(open):\n"
@@ -180,23 +158,6 @@ class CallableResolverFixtures(unittest.TestCase):
         call = next(node for node in ast.walk(resolver.tree) if isinstance(node, ast.Call))
         self.assertEqual("<local>.example", resolver.name(call.func))
         self.assertEqual([], resolver.problems("fixture.py"))
-
-    def test_unknown_cyclic_and_rebound_import_aliases_are_reported_at_the_call(self) -> None:
-        for prefix in (
-            "writer = unknown\n",
-            "writer = other\nother = writer\n",
-            "import builtins as module\nwriter = module.open\nmodule = None\n",
-        ):
-            source = prefix + 'writer("x", "w")\n'
-            with self.subTest(prefix=prefix):
-                resolver = CallableResolver(ast.parse(source))
-                self.assertEqual(
-                    [
-                        f"fixture.py:{len(source.splitlines())} cannot resolve callable alias writer; "
-                        "use a single binding to a known callable"
-                    ],
-                    resolver.problems("fixture.py"),
-                )
 
     def test_rebound_data_receivers_are_not_callable_aliases(self) -> None:
         resolver = CallableResolver(ast.parse('text = header\ntext = "value"\ntext.replace("a", "b")\n'))
@@ -224,25 +185,6 @@ class CallableResolverFixtures(unittest.TestCase):
         self.assertEqual({2: "open", 3: "<local>.writer"}, names)
         self.assertEqual([], resolver.problems("fixture.py"))
 
-    def test_global_and_nonlocal_rebindings_invalidate_the_original_alias(self) -> None:
-        for source in (
-            "writer = open\ndef change():\n    global writer\n    writer = None\nwriter()\n",
-            "def outer():\n    writer = open\n    def change():\n        nonlocal writer\n"
-            "        writer = None\n    writer()\n",
-            "writer = open\ndef outer():\n    def change():\n        nonlocal writer\n"
-            "        writer = None\n    writer = open\n    writer()\n",
-            "writer = open\nitems = [(writer := other) for other in callbacks]\nwriter()\n",
-        ):
-            with self.subTest(source=source):
-                resolver = CallableResolver(ast.parse(source))
-                self.assertEqual(
-                    [
-                        f"fixture.py:{len(source.splitlines())} cannot resolve callable alias writer; "
-                        "use a single binding to a known callable"
-                    ],
-                    resolver.problems("fixture.py"),
-                )
-
     def test_an_annotation_without_a_value_does_not_rebind_an_alias(self) -> None:
         resolver = CallableResolver(ast.parse('writer = open\nwriter: object\nwriter("x", "w")\n'))
         call = next(node for node in ast.walk(resolver.tree) if isinstance(node, ast.Call))
@@ -259,96 +201,187 @@ class CallableResolverFixtures(unittest.TestCase):
         rebound = ast.parse("import os\nenv = os.environ\nenv = {}\nenv |= {}\nenv\n")
         self.assertEqual("", CallableResolver(rebound, in_place_updates=True).name(last_expression(rebound)))
 
-    def test_a_module_looked_up_by_its_name_is_read_through_the_imports(self) -> None:
-        cases = {
-            "import importlib\nimportlib.import_module('a.b')": "a.b",
-            "from importlib import import_module as load\nload(name='a.b')": "a.b",
-            "__import__('a.b')": "a",
-            "__import__('a.b', fromlist=['c'])": "a.b",
-            "import sys\nsys.modules['a.b']": "a.b",
-            "import importlib\nmodule = importlib.import_module('a')\nmodule": "a",
-            "import importlib\nimportlib.import_module(name)": COMPUTED_NAME,
-            "import sys\nsys.modules[name]": COMPUTED_NAME,
-            "import importlib\nmodule = importlib.import_module('a')\nmodule = None\nmodule": "",
-            "modules = {}\nmodules['a']": "",
-            "load('a')": "",
-        }
-        for source, expected in cases.items():
-            with self.subTest(source=source):
-                tree = ast.parse(source)
-                self.assertEqual(expected, module_lookup(last_expression(tree), CallableResolver(tree)))
-
     def test_dynamic_callable_construction_is_not_a_simple_assignment_alias(self) -> None:
         resolver = CallableResolver(ast.parse("callback = library().callback\ncallback()\n"))
         self.assertEqual([], resolver.problems("fixture.py"))
 
-    def test_every_binding_to_a_name_or_attribute_is_followed_as_an_assignment_is(self) -> None:
-        for source in (
-            '(writer := open)\nwriter("x", "w")\n',
-            'if (writer := open):\n    writer("x", "w")\n',
-            'writer, other = open, print\nwriter("x", "w")\n',
-            '[other, (writer, _)] = [print, (open, 0)]\nwriter("x", "w")\n',
-            'first, *rest, writer = print, 0, 1, open\nwriter("x", "w")\n',
-            'for writer in (open,):\n    writer("x", "w")\n',
-            'for name, writer in [("x", open)]:\n    writer(name, "w")\n',
-            'items = [writer("x", "w") for writer in [open]]\n',
-            'def example(writer=open):\n    writer("x", "w")\n',
-            'def example(*, writer=open):\n    writer("x", "w")\n',
-            'example = lambda writer=open: writer("x", "w")\n',
-            'match open:\n    case writer:\n        writer("x", "w")\n',
-            'match open:\n    case object() as writer:\n        writer("x", "w")\n',
-        ):
-            with self.subTest(source=source):
-                tree = ast.parse(source)
-                resolver = CallableResolver(tree)
-                call = next(
-                    node for node in ast.walk(tree) if isinstance(node, ast.Call) and "writer" in ast.dump(node)
-                )
-                self.assertEqual("open", resolver.name(call.func))
-                self.assertEqual([], resolver.problems("fixture.py"))
 
-    def test_a_name_bound_to_several_callables_or_to_an_unknown_one_is_reported_at_the_call(self) -> None:
-        for source in (
-            '(writer := missing)\nwriter("x", "w")\n',
-            'for writer in (open, print):\n    writer("x", "w")\n',
-            'items = [writer("x", "w") for writer in {open, print}]\n',
-            'def example(writer=missing):\n    writer("x", "w")\n',
-            'def example(writer=open):\n    writer = print\n    writer("x", "w")\n',
-            'example = lambda writer=open: [(writer := print), writer("x", "w")]\n',
-            'import os, shutil\nfor writer in (os, shutil):\n    writer.remove("x")\n',
-        ):
-            function = "writer.remove" if "remove" in source else "writer"
-            with self.subTest(source=source):
-                self.assertEqual(
-                    [
-                        f"fixture.py:{len(source.splitlines())} cannot resolve callable alias {function}; "
-                        "use a single binding to a known callable"
-                    ],
-                    CallableResolver(ast.parse(source)).problems("fixture.py"),
-                )
+@pytest.mark.parametrize(
+    "change",
+    [
+        pytest.param("writer = open", id="bound again"),
+        pytest.param("writer = None", id="rebound to a value"),
+        pytest.param("writer += other", id="augmented"),
+        pytest.param("writer, other = callbacks", id="unpacked"),
+        pytest.param("for writer in callbacks:\n    pass", id="a loop target"),
+        pytest.param("with callback as writer:\n    pass", id="a with target"),
+        pytest.param("try:\n    pass\nexcept Exception as writer:\n    pass", id="a caught exception"),
+        pytest.param("(writer := other)", id="an assignment expression"),
+        pytest.param("del writer", id="deleted"),
+        pytest.param("def writer():\n    pass", id="a definition"),
+        pytest.param("match value:\n    case writer:\n        pass", id="a case capture"),
+    ],
+)
+def test_any_other_binding_invalidates_an_alias_and_its_dependents(change: str) -> None:
+    source = f'writer = open\nalias = writer\n{change}\nalias("x", "w")\n'
+    tree = ast.parse(source)
+    resolver = CallableResolver(tree)
+    CHECK.assertEqual(
+        [
+            f"fixture.py:{len(source.splitlines())} cannot resolve callable alias alias; "
+            "use a single binding to a known callable"
+        ],
+        resolver.problems("fixture.py"),
+    )
 
-    def test_a_value_built_any_other_way_stays_a_local_value(self) -> None:
-        # A call's result, an item of anything but a literal, a starred list, a with target, a caught exception, a part
-        # of a case's subject, and a parameter whose default is no name all hold values the module built.
-        for source in (
-            "writer, other = callbacks\nwriter()\n",
-            "writer, other = open, print, input\nwriter()\n",
-            "first, *writer = open, print\nwriter()\n",
-            "for writer in callbacks:\n    writer()\n",
-            "with factory() as writer:\n    writer()\n",
-            "try:\n    pass\nexcept Exception as writer:\n    writer()\n",
-            "match open:\n    case [writer]:\n        writer()\n",
-            "def example(writer=None):\n    writer()\n",
-            "def example(writer=factory()):\n    writer()\n",
-        ):
-            with self.subTest(source=source):
-                tree = ast.parse(source)
-                resolver = CallableResolver(tree)
-                call = next(
-                    node for node in ast.walk(tree) if isinstance(node, ast.Call) and "writer" in ast.dump(node)
-                )
-                self.assertEqual("<local>.writer", resolver.name(call.func))
-                self.assertEqual([], resolver.problems("fixture.py"))
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        pytest.param("writer = unknown\n", id="unknown"),
+        pytest.param("writer = other\nother = writer\n", id="cyclic"),
+        pytest.param("import builtins as module\nwriter = module.open\nmodule = None\n", id="rebound import"),
+    ],
+)
+def test_unknown_cyclic_and_rebound_import_aliases_are_reported_at_the_call(prefix: str) -> None:
+    source = prefix + 'writer("x", "w")\n'
+    resolver = CallableResolver(ast.parse(source))
+    CHECK.assertEqual(
+        [
+            f"fixture.py:{len(source.splitlines())} cannot resolve callable alias writer; "
+            "use a single binding to a known callable"
+        ],
+        resolver.problems("fixture.py"),
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param("writer = open\ndef change():\n    global writer\n    writer = None\nwriter()\n", id="global"),
+        pytest.param(
+            "def outer():\n    writer = open\n    def change():\n        nonlocal writer\n"
+            "        writer = None\n    writer()\n",
+            id="nonlocal",
+        ),
+        pytest.param(
+            "writer = open\ndef outer():\n    def change():\n        nonlocal writer\n"
+            "        writer = None\n    writer = open\n    writer()\n",
+            id="nonlocal in a nested function",
+        ),
+        pytest.param(
+            "writer = open\nitems = [(writer := other) for other in callbacks]\nwriter()\n",
+            id="an assignment expression in a comprehension",
+        ),
+    ],
+)
+def test_global_and_nonlocal_rebindings_invalidate_the_original_alias(source: str) -> None:
+    resolver = CallableResolver(ast.parse(source))
+    CHECK.assertEqual(
+        [
+            f"fixture.py:{len(source.splitlines())} cannot resolve callable alias writer; "
+            "use a single binding to a known callable"
+        ],
+        resolver.problems("fixture.py"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        pytest.param("import importlib\nimportlib.import_module('a.b')", "a.b", id="import_module"),
+        pytest.param("from importlib import import_module as load\nload(name='a.b')", "a.b", id="renamed by keyword"),
+        pytest.param("__import__('a.b')", "a", id="__import__"),
+        pytest.param("__import__('a.b', fromlist=['c'])", "a.b", id="__import__ with a fromlist"),
+        pytest.param("import sys\nsys.modules['a.b']", "a.b", id="sys.modules"),
+        pytest.param("import importlib\nmodule = importlib.import_module('a')\nmodule", "a", id="bound"),
+        pytest.param("import importlib\nimportlib.import_module(name)", COMPUTED_NAME, id="import_module computed"),
+        pytest.param("import sys\nsys.modules[name]", COMPUTED_NAME, id="sys.modules computed"),
+        pytest.param(
+            "import importlib\nmodule = importlib.import_module('a')\nmodule = None\nmodule", "", id="rebound"
+        ),
+        pytest.param("modules = {}\nmodules['a']", "", id="another dictionary"),
+        pytest.param("load('a')", "", id="an unknown call"),
+    ],
+)
+def test_a_module_looked_up_by_its_name_is_read_through_the_imports(source: str, expected: str) -> None:
+    tree = ast.parse(source)
+    CHECK.assertEqual(expected, module_lookup(last_expression(tree), CallableResolver(tree)))
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param('(writer := open)\nwriter("x", "w")\n', id="an assignment expression"),
+        pytest.param('if (writer := open):\n    writer("x", "w")\n', id="an assignment expression in a test"),
+        pytest.param('writer, other = open, print\nwriter("x", "w")\n', id="a tuple"),
+        pytest.param('[other, (writer, _)] = [print, (open, 0)]\nwriter("x", "w")\n', id="a nested list"),
+        pytest.param('first, *rest, writer = print, 0, 1, open\nwriter("x", "w")\n', id="after a starred target"),
+        pytest.param('for writer in (open,):\n    writer("x", "w")\n', id="a loop over one callable"),
+        pytest.param('for name, writer in [("x", open)]:\n    writer(name, "w")\n', id="a loop unpacking"),
+        pytest.param('items = [writer("x", "w") for writer in [open]]\n', id="a comprehension"),
+        pytest.param('def example(writer=open):\n    writer("x", "w")\n', id="a default"),
+        pytest.param('def example(*, writer=open):\n    writer("x", "w")\n', id="a keyword-only default"),
+        pytest.param('example = lambda writer=open: writer("x", "w")\n', id="a lambda default"),
+        pytest.param('match open:\n    case writer:\n        writer("x", "w")\n', id="a case capture"),
+        pytest.param('match open:\n    case object() as writer:\n        writer("x", "w")\n', id="a case as pattern"),
+    ],
+)
+def test_every_binding_to_a_name_or_attribute_is_followed_as_an_assignment_is(source: str) -> None:
+    tree = ast.parse(source)
+    resolver = CallableResolver(tree)
+    call = next(node for node in ast.walk(tree) if isinstance(node, ast.Call) and "writer" in ast.dump(node))
+    CHECK.assertEqual("open", resolver.name(call.func))
+    CHECK.assertEqual([], resolver.problems("fixture.py"))
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param('(writer := missing)\nwriter("x", "w")\n', id="an unknown name"),
+        pytest.param('for writer in (open, print):\n    writer("x", "w")\n', id="a loop over two callables"),
+        pytest.param('items = [writer("x", "w") for writer in {open, print}]\n', id="a comprehension over a set"),
+        pytest.param('def example(writer=missing):\n    writer("x", "w")\n', id="an unknown default"),
+        pytest.param('def example(writer=open):\n    writer = print\n    writer("x", "w")\n', id="a rebound parameter"),
+        pytest.param(
+            'example = lambda writer=open: [(writer := print), writer("x", "w")]\n', id="a rebound lambda parameter"
+        ),
+        pytest.param('import os, shutil\nfor writer in (os, shutil):\n    writer.remove("x")\n', id="two modules"),
+    ],
+)
+def test_a_name_bound_to_several_callables_or_to_an_unknown_one_is_reported_at_the_call(source: str) -> None:
+    function = "writer.remove" if "remove" in source else "writer"
+    CHECK.assertEqual(
+        [
+            f"fixture.py:{len(source.splitlines())} cannot resolve callable alias {function}; "
+            "use a single binding to a known callable"
+        ],
+        CallableResolver(ast.parse(source)).problems("fixture.py"),
+    )
+
+
+# A call's result, an item of anything but a literal, a starred list, a with target, a caught exception, a part of a
+# case's subject, and a parameter whose default is no name all hold values the module built.
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param("writer, other = callbacks\nwriter()\n", id="an item of a value"),
+        pytest.param("writer, other = open, print, input\nwriter()\n", id="an item of a mismatched tuple"),
+        pytest.param("first, *writer = open, print\nwriter()\n", id="a starred list"),
+        pytest.param("for writer in callbacks:\n    writer()\n", id="a loop over a value"),
+        pytest.param("with factory() as writer:\n    writer()\n", id="a with target"),
+        pytest.param("try:\n    pass\nexcept Exception as writer:\n    writer()\n", id="a caught exception"),
+        pytest.param("match open:\n    case [writer]:\n        writer()\n", id="a part of a case subject"),
+        pytest.param("def example(writer=None):\n    writer()\n", id="a default that is no name"),
+        pytest.param("def example(writer=factory()):\n    writer()\n", id="a default call"),
+    ],
+)
+def test_a_value_built_any_other_way_stays_a_local_value(source: str) -> None:
+    tree = ast.parse(source)
+    resolver = CallableResolver(tree)
+    call = next(node for node in ast.walk(tree) if isinstance(node, ast.Call) and "writer" in ast.dump(node))
+    CHECK.assertEqual("<local>.writer", resolver.name(call.func))
+    CHECK.assertEqual([], resolver.problems("fixture.py"))
 
 
 class SharedReaderFixtures(unittest.TestCase):
@@ -397,9 +430,6 @@ class SharedReaderFixtures(unittest.TestCase):
         # An annotated allowance is read as a plain one is, and held to the same shape.
         self.assertEqual({"a": "reason"}, allowance("ALLOWED: dict[str, str] = {'a': 'reason'}\n"))
         self.assertIsNone(allowance("ALLOWED: dict[str, str] = {'a': ''}\n"))
-        for invalid in ("ALLOWED = {'a': ''}", "ALLOWED = {'a': 1}", "ALLOWED = ['a']", "ALLOWED = make()"):
-            with self.subTest(invalid=invalid):
-                self.assertIsNone(allowance(invalid))
         # Only a module-level assignment counts, so this one reads as no allowance.
         self.assertEqual({}, allowance("def f():\n    ALLOWED = {'a': 'reason'}\n"))
 
@@ -407,6 +437,13 @@ class SharedReaderFixtures(unittest.TestCase):
         tree = ast.parse('"""Module."""\nclass C:\n    """Class."""\ndef f():\n    """Function."""\n    x = "text"\n')
         strings = {node.value: id(node) for node in ast.walk(tree) if isinstance(node, ast.Constant)}
         self.assertEqual({strings["Module."], strings["Class."], strings["Function."]}, docstring_ids(tree))
+
+
+@pytest.mark.parametrize(
+    "invalid", ["ALLOWED = {'a': ''}", "ALLOWED = {'a': 1}", "ALLOWED = ['a']", "ALLOWED = make()"]
+)
+def test_an_allowance_of_any_other_shape_is_unreadable(invalid: str) -> None:
+    CHECK.assertIsNone(module_allowance(ast.parse(invalid), "ALLOWED"))
 
 
 def _call(source: str) -> ast.Call:
@@ -476,23 +513,26 @@ class ScopeAndGuardFixtures(unittest.TestCase):
         )
         self.assertEqual(["TABLE", MODULE_SCOPE], [statement_scope(statement) for statement in tree.body[:2]])
 
-    def test_the_main_guard_is_read_either_way_round_and_nothing_else_is_one(self) -> None:
-        for test, expected in (
-            ("__name__ == '__main__'", True),
-            ("'__main__' == __name__", True),
-            ("__name__ != '__main__'", False),
-            ("__name__ == 'main'", False),
-            ("name == '__main__'", False),
-            ("__name__ == '__main__' == x", False),
-        ):
-            with self.subTest(test=test):
-                self.assertEqual(expected, is_main_guard(ast.parse(test, mode="eval").body))
-
     def test_words_are_listed_with_a_comma_before_the_conjunction_only_past_two(self) -> None:
         self.assertEqual("a", listed(["a"]))
         self.assertEqual("a or b", listed(["a", "b"]))
         self.assertEqual("a, b, and c", listed(["a", "b", "c"], "and"))
         self.assertEqual("", listed([]))
+
+
+@pytest.mark.parametrize(
+    ("test", "expected"),
+    [
+        ("__name__ == '__main__'", True),
+        ("'__main__' == __name__", True),
+        ("__name__ != '__main__'", False),
+        ("__name__ == 'main'", False),
+        ("name == '__main__'", False),
+        ("__name__ == '__main__' == x", False),
+    ],
+)
+def test_the_main_guard_is_read_either_way_round_and_nothing_else_is_one(test: str, expected: bool) -> None:
+    CHECK.assertEqual(expected, is_main_guard(ast.parse(test, mode="eval").body))
 
 
 class PythonFileReaderFixtures(unittest.TestCase):
@@ -566,54 +606,76 @@ class PythonFileReaderFixtures(unittest.TestCase):
             )
 
 
+def sys_path_entries(source: str) -> list[ScriptsEntry]:
+    return scripts_entries(ast.parse(source))
+
+
 class ScriptsEntryFixtures(unittest.TestCase):
     """Every way a module puts a sibling's scripts directory on sys.path is read, so the skill_deps, sibling-path, and
     mypy_path policies see it."""
 
-    def entries(self, source: str) -> list[ScriptsEntry]:
-        return scripts_entries(ast.parse(source))
-
-    def test_each_way_a_lookup_reaches_sys_path_is_read(self) -> None:
-        for source in (
-            'import sys\nsys.path.insert(0, str(sibling_scripts("dep")))\n',
-            'import sys\np = sibling_scripts("dep")\nsys.path.insert(0, str(p))\n',
-            'import sys\nsys.path.extend([str(sibling_scripts("dep"))])\n',
-            'import sys\nsys.path[:0] = [str(sibling_scripts("dep"))]\n',
-            'import sys\nsys.path += [str(sibling_scripts("dep"))]\n',
-            'import sys as system\nsystem.path.append(str(sibling_scripts("dep")))\n',
-        ):
-            with self.subTest(source=source):
-                self.assertEqual(["dep"], [entry.name for entry in self.entries(source)])
-                self.assertFalse(self.entries(source)[0].hand_written)
-
-    def test_each_hand_written_path_to_a_sibling_is_read(self) -> None:
-        for source in (
-            'sys.path.insert(0, str(Path(__file__).parents[2] / "repo-cleanup" / "scripts"))\n',
-            'SIBLING = Path(__file__).resolve().parents[2] / "repo-cleanup" / "scripts"\n'
-            "sys.path.insert(0, str(SIBLING))\n",
-            'sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "repo-cleanup", "scripts"))\n',
-            'sys.path.insert(0, str(Path(__file__).parents[2] / "repo-cleanup/scripts"))\n',
-            'sys.path.insert(0, str(Path(__file__).parents[2].joinpath("repo-cleanup", "scripts")))\n',
-        ):
-            with self.subTest(source=source):
-                entries = self.entries(f"import sys\nimport os\nfrom pathlib import Path\n{source}")
-                self.assertEqual([ScriptsEntry(3 + len(source.splitlines()), "repo-cleanup", True)], entries)
-
-    def test_a_path_that_names_no_sibling_and_a_lookup_off_sys_path_are_not_entries(self) -> None:
-        for source in (
-            "import sys\nsys.path.insert(0, str(Path(__file__).parent))\n",
-            'import sys\nsys.path.insert(0, str(Path(__file__).parent / "scripts"))\n',
-            'other = []\nother.insert(0, str(sibling_scripts("dep")))\n',
-            'p = sibling_scripts("dep")\nprint(p)\n',
-        ):
-            with self.subTest(source=source):
-                self.assertEqual([], self.entries(source))
-
     def test_a_lookup_whose_name_is_not_one_literal_is_an_entry_without_a_name(self) -> None:
         self.assertEqual(
             [ScriptsEntry(3, None, False)],
-            self.entries('import sys\nNAME = "dep"\nsys.path.insert(0, str(sibling_scripts(NAME)))\n'),
+            sys_path_entries('import sys\nNAME = "dep"\nsys.path.insert(0, str(sibling_scripts(NAME)))\n'),
         )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param('import sys\nsys.path.insert(0, str(sibling_scripts("dep")))\n', id="insert"),
+        pytest.param('import sys\np = sibling_scripts("dep")\nsys.path.insert(0, str(p))\n', id="insert a name"),
+        pytest.param('import sys\nsys.path.extend([str(sibling_scripts("dep"))])\n', id="extend"),
+        pytest.param('import sys\nsys.path[:0] = [str(sibling_scripts("dep"))]\n', id="a slice"),
+        pytest.param('import sys\nsys.path += [str(sibling_scripts("dep"))]\n', id="augmented"),
+        pytest.param('import sys as system\nsystem.path.append(str(sibling_scripts("dep")))\n', id="append renamed"),
+    ],
+)
+def test_each_way_a_lookup_reaches_sys_path_is_read(source: str) -> None:
+    CHECK.assertEqual(["dep"], [entry.name for entry in sys_path_entries(source)])
+    CHECK.assertFalse(sys_path_entries(source)[0].hand_written)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param('sys.path.insert(0, str(Path(__file__).parents[2] / "repo-cleanup" / "scripts"))\n', id="joined"),
+        pytest.param(
+            'SIBLING = Path(__file__).resolve().parents[2] / "repo-cleanup" / "scripts"\n'
+            "sys.path.insert(0, str(SIBLING))\n",
+            id="a constant",
+        ),
+        pytest.param(
+            'sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "repo-cleanup", "scripts"))\n',
+            id="os.path.join",
+        ),
+        pytest.param(
+            'sys.path.insert(0, str(Path(__file__).parents[2] / "repo-cleanup/scripts"))\n', id="one joined segment"
+        ),
+        pytest.param(
+            'sys.path.insert(0, str(Path(__file__).parents[2].joinpath("repo-cleanup", "scripts")))\n', id="joinpath"
+        ),
+    ],
+)
+def test_each_hand_written_path_to_a_sibling_is_read(source: str) -> None:
+    entries = sys_path_entries(f"import sys\nimport os\nfrom pathlib import Path\n{source}")
+    CHECK.assertEqual([ScriptsEntry(3 + len(source.splitlines()), "repo-cleanup", True)], entries)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param("import sys\nsys.path.insert(0, str(Path(__file__).parent))\n", id="the own folder"),
+        pytest.param(
+            'import sys\nsys.path.insert(0, str(Path(__file__).parent / "scripts"))\n', id="the own scripts folder"
+        ),
+        pytest.param('other = []\nother.insert(0, str(sibling_scripts("dep")))\n', id="another list"),
+        pytest.param('p = sibling_scripts("dep")\nprint(p)\n', id="a lookup never added"),
+    ],
+)
+def test_a_path_that_names_no_sibling_and_a_lookup_off_sys_path_are_not_entries(source: str) -> None:
+    CHECK.assertEqual([], sys_path_entries(source))
 
 
 class RepositoryFilesFixtures(unittest.TestCase):

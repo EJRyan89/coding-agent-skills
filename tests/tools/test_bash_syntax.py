@@ -6,12 +6,17 @@ import sys
 import unittest
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 
 from tools import bash_syntax
 from tools.bash_syntax import BashSyntaxError, parse
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 
 def children(item: object) -> list[object]:
@@ -96,40 +101,45 @@ class HereDocumentTests(unittest.TestCase):
 
 
 class TreeTests(unittest.TestCase):
-    def test_reserved_words_and_prefixes_start_compound_commands_not_programs(self) -> None:
-        cases = {
-            "if git diff --quiet; then echo clean; else git stash; fi": [
-                ["git", "diff", "--quiet"],
-                ["echo", "clean"],
-                ["git", "stash"],
-            ],
-            "{ git switch feat/demo; }": [["git", "switch", "feat/demo"]],
-            "for f in a b; do git add $f; done": [["git", "add", "$f"]],
-            "while true; do git commit; done": [["true"], ["git", "commit"]],
-            "! git commit -m x": [["git", "commit", "-m", "x"]],
-            "time -p git commit": [["git", "commit"]],
-            "case $x in a|b) git add .;; *) echo;; esac": [["git", "add", "."], ["echo"]],
-            "f() { cd /x; }; f": [["cd", "/x"], ["f"]],
-            "function g { git am; }": [["git", "am"]],
-            "[[ -n $x && -d y ]] && git commit": [["[[", "-n", "$x", "-d", "y", "]]"], ["git", "commit"]],
-        }
-        for text, expected in cases.items():
-            with self.subTest(text=text):
-                self.assertEqual(expected, simple_commands(parse(text)))
-
     def test_a_comment_runs_to_the_end_of_its_line_but_a_hash_inside_a_word_does_not_start_one(self) -> None:
         self.assertEqual(
             [["git", "status"], ["echo", "a#b"]], simple_commands(parse("git status # git reset\necho a#b"))
         )
 
-    def test_text_bash_would_refuse_is_an_error(self) -> None:
-        for text in (
-            "git commit -m 'unterminated",
-            'echo "open',
-            "echo $(git status",
-            "if true; then x",
-            "fi",
-            "echo `x",
-        ):
-            with self.subTest(text=text), self.assertRaises(BashSyntaxError):
-                parse(text)
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            "if git diff --quiet; then echo clean; else git stash; fi",
+            [["git", "diff", "--quiet"], ["echo", "clean"], ["git", "stash"]],
+        ),
+        ("{ git switch feat/demo; }", [["git", "switch", "feat/demo"]]),
+        ("for f in a b; do git add $f; done", [["git", "add", "$f"]]),
+        ("while true; do git commit; done", [["true"], ["git", "commit"]]),
+        ("! git commit -m x", [["git", "commit", "-m", "x"]]),
+        ("time -p git commit", [["git", "commit"]]),
+        ("case $x in a|b) git add .;; *) echo;; esac", [["git", "add", "."], ["echo"]]),
+        ("f() { cd /x; }; f", [["cd", "/x"], ["f"]]),
+        ("function g { git am; }", [["git", "am"]]),
+        ("[[ -n $x && -d y ]] && git commit", [["[[", "-n", "$x", "-d", "y", "]]"], ["git", "commit"]]),
+    ],
+)
+def test_reserved_words_and_prefixes_start_compound_commands_not_programs(text: str, expected: list[list[str]]) -> None:
+    CHECK.assertEqual(expected, simple_commands(parse(text)))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "git commit -m 'unterminated",
+        'echo "open',
+        "echo $(git status",
+        "if true; then x",
+        "fi",
+        "echo `x",
+    ],
+)
+def test_text_bash_would_refuse_is_an_error(text: str) -> None:
+    with CHECK.assertRaises(BashSyntaxError):
+        parse(text)

@@ -9,26 +9,14 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-core" / "scripts"))
 
 import conditions
 
-
-class SuiteRuleTests(unittest.TestCase):
-    def test_a_suite_is_named_as_validation_names_one_ignoring_case(self) -> None:
-        for path in (
-            "tests/test_a.py",
-            "tests/deployer/test-b.sh",
-            "skills/x/scripts/c_test.ps1",
-            "skills/x/scripts/d-test.py",
-            "skills/x/scripts/e.test.sh",
-            "tests/TEST_F.PY",
-        ):
-            with self.subTest(path=path):
-                self.assertTrue(conditions.is_suite(path))
-        for path in ("tests/harness.py", "tests/test_a.txt", "tests/contest.py", "tests/a.tests.py", "test_a.js"):
-            with self.subTest(path=path):
-                self.assertFalse(conditions.is_suite(path))
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 
 class FailureTests(unittest.TestCase):
@@ -114,3 +102,25 @@ class ReadFilesTests(unittest.TestCase):
             'REFUSED "tools\\\\..\\\\..\\\\outside.py": a path that could name a file outside the snapshot',
             conditions.refusal_line(refused[0]),
         )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "tests/test_a.py",
+        "tests/deployer/test-b.sh",
+        "skills/x/scripts/c_test.ps1",
+        "skills/x/scripts/d-test.py",
+        "skills/x/scripts/e.test.sh",
+        "tests/TEST_F.PY",
+    ],
+)
+def test_a_suite_is_named_as_validation_names_one_ignoring_case(path: str) -> None:
+    CHECK.assertTrue(conditions.is_suite(path))
+
+
+@pytest.mark.parametrize(
+    "path", ["tests/harness.py", "tests/test_a.txt", "tests/contest.py", "tests/a.tests.py", "test_a.js"]
+)
+def test_a_file_named_otherwise_is_not_a_suite(path: str) -> None:
+    CHECK.assertFalse(conditions.is_suite(path))

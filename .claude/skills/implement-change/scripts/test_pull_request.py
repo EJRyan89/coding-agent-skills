@@ -12,6 +12,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import MappingProxyType
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-core" / "scripts"))
 
@@ -54,6 +56,8 @@ FILLED = (
 AWKWARD_TITLE = (
     'fix(skills): grant each skill\'s scripts by name, keep `$HOME` and "$(x)", and \u2018quote\u2019 \u201atwice\u201b'
 )
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 
 def remove_tree(path: Path) -> None:
@@ -118,20 +122,6 @@ class BodyCheckTests(unittest.TestCase):
     def test_an_author_s_own_comment_is_not_a_placeholder(self) -> None:
         body = FILLED.replace("None\n", "<!-- my note -->\nNone\n")
         self.assertEqual([], pull_request.body_problems(body, TEMPLATE))
-
-    def test_a_closing_line_must_name_one_issue_with_closes(self) -> None:
-        for line in (
-            "Closes #12, #13",
-            "Closes #12 and #13",
-            "Fixes #12",
-            "closes #12",
-            "Resolves: #12",
-            "Closes #12.",
-        ):
-            with self.subTest(line=line):
-                body = FILLED.replace("Closes #34", line)
-                self.assertEqual([f"CLOSES_LINE 2 {line}"], pull_request.body_problems(body, TEMPLATE))
-                self.assertEqual([12], pull_request.closed_issues(body))
 
     def test_prose_that_starts_with_a_closing_word_is_not_a_closes_line(self) -> None:
         body = FILLED.replace("Fixes the quoting of a title.", "Fixes the quoting that #1162 found.")
@@ -367,3 +357,12 @@ class EntryPointTests(unittest.TestCase):
         )
         self.assertEqual(0, ran.returncode, ran.stderr)
         self.assertIn("draft", ran.stdout)
+
+
+@pytest.mark.parametrize(
+    "line", ["Closes #12, #13", "Closes #12 and #13", "Fixes #12", "closes #12", "Resolves: #12", "Closes #12."]
+)
+def test_a_closing_line_must_name_one_issue_with_closes(line: str) -> None:
+    body = FILLED.replace("Closes #34", line)
+    CHECK.assertEqual([f"CLOSES_LINE 2 {line}"], pull_request.body_problems(body, TEMPLATE))
+    CHECK.assertEqual([12], pull_request.closed_issues(body))

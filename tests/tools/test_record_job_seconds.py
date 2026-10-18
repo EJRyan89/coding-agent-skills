@@ -11,12 +11,17 @@ import unittest
 from collections.abc import Sequence
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 from github_client import CommandResult, GitHubClient
 
 from tools import record_job_seconds
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 LEG_1 = "Windows shard 1/4, Python 3.11\tRun repository validation\t2026-10-10T06:17:04.4226827Z "
 LEG_2 = "Windows shard 2/4, Python 3.11\tUNKNOWN STEP\t2026-10-10T06:17:05.0000000Z "
@@ -85,6 +90,23 @@ class Stub:
 
 
 SUCCESS = json.dumps({"workflowName": "Validation", "status": "completed", "conclusion": "success"})
+
+
+def run_record(arguments: list[str], stub: Stub, directory: Path) -> tuple[int, str, str, Path]:
+    """Run the command with its table in directory, returning its exit code, its output, its errors, and the table."""
+    table = directory / "job_seconds.json"
+    output, errors = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+        code = record_job_seconds.main(arguments, client=GitHubClient(runner=stub), table=table)
+    return code, output.getvalue(), errors.getvalue(), table
+
+
+def runs_stub(logs: dict[int, str]) -> Stub:
+    answers: dict[str, str | int] = {}
+    for run, log in logs.items():
+        answers[f"gh run view {run} --json"] = SUCCESS
+        answers[f"gh run view {run} --log"] = log
+    return Stub(answers)
 
 
 class ParseTests(unittest.TestCase):
@@ -161,34 +183,13 @@ class ParseTests(unittest.TestCase):
         self.assertEqual("lacks leg 4/4", record_job_seconds.leg_problem(log_of({"tests/a.py": 1.0}, OLD_LEGS[:3])))
         self.assertEqual((2, 4), record_job_seconds.leg_of("Windows shard 2/4, Python 3.x"))
         self.assertEqual((3, 4), record_job_seconds.leg_of("Shard 3/4 on Python 3.11"))
-        # Only the two shapes the workflow gave its legs: a near miss is no leg.
-        for job in (
-            "Shard 1/4, Python 3.11",
-            "Windows shard 1/4 on Python 3.11",
-            "windows shard 1/4, Python 3.11",
-            "Linux shard 1/4, Python 3.11",
-            "Shard 1/4 on 3.11",
-        ):
-            with self.subTest(job=job):
-                self.assertIsNone(record_job_seconds.leg_of(job))
 
 
 class MainTests(unittest.TestCase):
     def run_main(self, arguments: list[str], stub: Stub) -> tuple[int, str, str, Path]:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        table = Path(directory.name) / "job_seconds.json"
-        output, errors = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
-            code = record_job_seconds.main(arguments, client=GitHubClient(runner=stub), table=table)
-        return code, output.getvalue(), errors.getvalue(), table
-
-    def runs_stub(self, logs: dict[int, str]) -> Stub:
-        answers: dict[str, str | int] = {}
-        for run, log in logs.items():
-            answers[f"gh run view {run} --json"] = SUCCESS
-            answers[f"gh run view {run} --log"] = log
-        return Stub(answers)
+        return run_record(arguments, stub, Path(directory.name))
 
     def test_a_named_run_rewrites_the_table_from_its_logs(self) -> None:
         stub = Stub({"gh run view 38 --json": SUCCESS, "gh run view 38 --log": LOG})
@@ -211,7 +212,7 @@ class MainTests(unittest.TestCase):
         self.assertNotIn(b"\r", table.read_bytes())
 
     def test_named_runs_are_combined_by_median_and_recorded_by_id(self) -> None:
-        stub = self.runs_stub(
+        stub = runs_stub(
             {
                 30: log_of({"tests/a.py": 10.0, "tests/b.py": 4.0}),
                 20: log_of({"tests/a.py": 90.0, "tests/b.py": 6.0}),
@@ -228,7 +229,7 @@ class MainTests(unittest.TestCase):
         self.assertFalse(any(command[:3] == ["gh", "run", "list"] for command in stub.commands))
 
     def test_a_job_some_runs_lack_takes_the_median_of_the_runs_that_have_it(self) -> None:
-        stub = self.runs_stub(
+        stub = runs_stub(
             {
                 1: log_of({"tests/a.py": 10.0}),
                 2: log_of({"tests/a.py": 20.0, "tests/new.py": 8.0}),
@@ -241,7 +242,7 @@ class MainTests(unittest.TestCase):
         self.assertEqual({"tests/a.py": 20.0, "tests/new.py": 10.0}, seconds)
 
     def test_runs_from_both_sides_of_the_legs_rename_are_combined(self) -> None:
-        stub = self.runs_stub(
+        stub = runs_stub(
             {
                 1: log_of({"tests/a.py": 10.0, "tests/b.py": 3.0}, OLD_LEGS),
                 2: log_of({"tests/a.py": 30.0, "tests/b.py": 5.0}, OLD_LEGS),
@@ -258,23 +259,8 @@ class MainTests(unittest.TestCase):
         )
         self.assertIn("as the median of 5 runs (1, 2, 3, 4, 5)", output)
 
-    def test_a_run_whose_log_names_no_leg_by_either_name_is_refused_for_that_cause(self) -> None:
-        for log in (
-            f"{LINUX}ok   90.0s tests/a.py\n{AGGREGATE}ok    1.0s tests/a.py",
-            "Shard 1/4, Python 3.11\tRun repository validation\t2026-10-10T06:17:04Z ok 1.0s tests/a.py",
-            "",
-        ):
-            with self.subTest(log=log):
-                code, _, errors, table = self.run_main(["8"], self.runs_stub({8: log}))
-                self.assertEqual((2, False), (code, table.exists()))
-                self.assertIn("run 8's log names no job as a leg", errors)
-                # The message names the shapes it looked for, and blames no missing -v.
-                self.assertIn("`Windows shard <n>/<count>, Python <version>`", errors)
-                self.assertIn("`Shard <n>/<count> on Python <version>`", errors)
-                self.assertNotIn("-v", errors)
-
     def test_a_job_renamed_or_removed_after_the_older_runs_is_not_recorded(self) -> None:
-        stub = self.runs_stub(
+        stub = runs_stub(
             {
                 1: log_of({"tests/old.py": 10.0, "tests/gone.py": 3.0, "tests/kept.py": 5.0}),
                 2: log_of({"tests/renamed.py": 11.0, "tests/kept.py": 7.0}),
@@ -286,7 +272,7 @@ class MainTests(unittest.TestCase):
         self.assertEqual({"tests/renamed.py": 11.0, "tests/kept.py": 6.0}, seconds)
 
     def test_without_runs_the_latest_successful_main_push_runs_are_read(self) -> None:
-        stub = self.runs_stub({43: LOG, 42: LOG, 41: LOG})
+        stub = runs_stub({43: LOG, 42: LOG, 41: LOG})
         stub.answers["gh run list"] = json.dumps([{"databaseId": 43}, {"databaseId": 42}, {"databaseId": 41}])
         code, output, _, table = self.run_main([], stub)
         self.assertEqual(0, code)
@@ -304,7 +290,7 @@ class MainTests(unittest.TestCase):
             self.assertEqual(value, listing[listing.index(option) + 1])
 
     def test_count_sets_how_many_of_the_latest_runs_are_listed(self) -> None:
-        stub = self.runs_stub({50: LOG})
+        stub = runs_stub({50: LOG})
         stub.answers["gh run list"] = json.dumps([{"databaseId": 50}])
         code, _, _, _ = self.run_main(["--count", "1"], stub)
         self.assertEqual(0, code)
@@ -313,26 +299,8 @@ class MainTests(unittest.TestCase):
             with self.subTest(arguments=arguments), self.assertRaises(SystemExit):
                 self.run_main(arguments, Stub({}))
 
-    def test_a_run_that_did_not_pass_or_is_another_workflow_is_refused_and_the_table_is_left_alone(self) -> None:
-        for state in (
-            {"workflowName": "Validation", "status": "completed", "conclusion": "failure"},
-            # A cancelled leg ends the run as cancelled.
-            {"workflowName": "Validation", "status": "completed", "conclusion": "cancelled"},
-            {"workflowName": "Validation", "status": "in_progress", "conclusion": ""},
-            {"workflowName": "Deployment Smoke Test", "status": "completed", "conclusion": "success"},
-            # A run from before the workflow was renamed carries its old name.
-            {"workflowName": "Validate", "status": "completed", "conclusion": "success"},
-        ):
-            with self.subTest(state=state):
-                stub = Stub({"gh run view 9 --json": json.dumps(state)})
-                code, _, errors, table = self.run_main(["9"], stub)
-                self.assertEqual(2, code)
-                self.assertIn("record from completed, successful Validation runs", errors)
-                self.assertFalse(table.exists())
-                self.assertFalse(any("--log" in command for command in stub.commands))
-
     def test_one_refused_run_among_good_ones_refuses_the_record(self) -> None:
-        stub = self.runs_stub({1: LOG, 3: LOG})
+        stub = runs_stub({1: LOG, 3: LOG})
         stub.answers["gh run view 2 --json"] = json.dumps(
             {"workflowName": "Validation", "status": "completed", "conclusion": "failure"}
         )
@@ -342,13 +310,13 @@ class MainTests(unittest.TestCase):
 
     def test_a_successful_run_whose_log_lacks_a_leg_is_refused(self) -> None:
         # A rerun of one failed leg ends successful but may log only the legs of its last attempt.
-        stub = self.runs_stub({7: log_of({"tests/a.py": 1.0, "tests/b.py": 2.0}, LEGS[:3])})
+        stub = runs_stub({7: log_of({"tests/a.py": 1.0, "tests/b.py": 2.0}, LEGS[:3])})
         code, _, errors, table = self.run_main(["7"], stub)
         self.assertEqual((2, False), (code, table.exists()))
         self.assertIn("run 7's log lacks leg 4/4", errors)
 
     def test_a_run_whose_log_gh_no_longer_holds_refuses_the_record_and_names_the_run(self) -> None:
-        stub = self.runs_stub({1: LOG})
+        stub = runs_stub({1: LOG})
         stub.answers["gh run view 2 --json"] = SUCCESS
         stub.answers["gh run view 2 --log"] = 1
         code, _, errors, table = self.run_main(["1", "2"], stub)
@@ -379,3 +347,65 @@ class MainTests(unittest.TestCase):
         text = (record_job_seconds.REPOSITORY_ROOT / "docs" / "releasing.md").read_text(encoding="utf-8")
         before_tagging = text.split("## Before tagging", 1)[1].split("\n## ", 1)[0]
         self.assertIn("python -B tools/record_job_seconds.py", before_tagging)
+
+
+@pytest.mark.parametrize(
+    "job",
+    [
+        "Shard 1/4, Python 3.11",
+        "Windows shard 1/4 on Python 3.11",
+        "windows shard 1/4, Python 3.11",
+        "Linux shard 1/4, Python 3.11",
+        "Shard 1/4 on 3.11",
+    ],
+)
+def test_a_near_miss_of_either_shape_the_workflow_gave_its_legs_is_no_leg(job: str) -> None:
+    # Only the two shapes the workflow gave its legs: a near miss is no leg.
+    CHECK.assertIsNone(record_job_seconds.leg_of(job))
+
+
+@pytest.mark.parametrize(
+    "log",
+    [
+        pytest.param(f"{LINUX}ok   90.0s tests/a.py\n{AGGREGATE}ok    1.0s tests/a.py", id="Linux and aggregate jobs"),
+        pytest.param(
+            "Shard 1/4, Python 3.11\tRun repository validation\t2026-10-10T06:17:04Z ok 1.0s tests/a.py",
+            id="a near miss of a leg",
+        ),
+        pytest.param("", id="empty"),
+    ],
+)
+def test_a_run_whose_log_names_no_leg_by_either_name_is_refused_for_that_cause(log: str, tmp_path: Path) -> None:
+    code, _, errors, table = run_record(["8"], runs_stub({8: log}), tmp_path)
+    CHECK.assertEqual((2, False), (code, table.exists()))
+    CHECK.assertIn("run 8's log names no job as a leg", errors)
+    # The message names the shapes it looked for, and blames no missing -v.
+    CHECK.assertIn("`Windows shard <n>/<count>, Python <version>`", errors)
+    CHECK.assertIn("`Shard <n>/<count> on Python <version>`", errors)
+    CHECK.assertNotIn("-v", errors)
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        pytest.param({"workflowName": "Validation", "status": "completed", "conclusion": "failure"}, id="failure"),
+        # A cancelled leg ends the run as cancelled.
+        pytest.param({"workflowName": "Validation", "status": "completed", "conclusion": "cancelled"}, id="cancelled"),
+        pytest.param({"workflowName": "Validation", "status": "in_progress", "conclusion": ""}, id="in progress"),
+        pytest.param(
+            {"workflowName": "Deployment Smoke Test", "status": "completed", "conclusion": "success"},
+            id="another workflow",
+        ),
+        # A run from before the workflow was renamed carries its old name.
+        pytest.param({"workflowName": "Validate", "status": "completed", "conclusion": "success"}, id="the old name"),
+    ],
+)
+def test_a_run_that_did_not_pass_or_is_another_workflow_is_refused_and_the_table_is_left_alone(
+    state: dict[str, str], tmp_path: Path
+) -> None:
+    stub = Stub({"gh run view 9 --json": json.dumps(state)})
+    code, _, errors, table = run_record(["9"], stub, tmp_path)
+    CHECK.assertEqual(2, code)
+    CHECK.assertIn("record from completed, successful Validation runs", errors)
+    CHECK.assertFalse(table.exists())
+    CHECK.assertFalse(any("--log" in command for command in stub.commands))

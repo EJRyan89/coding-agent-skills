@@ -22,6 +22,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
@@ -49,6 +51,9 @@ from conftest import GitHome
 from deployer import platform_support
 from tools import skill_evals
 from tools.skill_evals import Outcome, RecordError, Scenario, ScenarioError
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 REVIEW_PRS = skill_evals.SCENARIO_ROOT / "review-prs"
 REVIEW_DOCUMENT = skill_evals.SCENARIO_ROOT / "review-document"
@@ -325,18 +330,6 @@ class LoaderTests(unittest.TestCase):
             self.assertEqual(1, skill_evals.main(["empty-skill", "--write"], self.root, seams))
         self.assertTrue(output.getvalue().startswith('FAILED "no scenarios for empty-skill: '))
 
-    def test_a_skill_is_named_by_its_name_alone(self) -> None:
-        write_scenario(self.root, "one", scenario_spec())
-        for name in (".", "..", "demo/one", "demo\\one", "Demo", ""):
-            with (
-                self.subTest(name=name),
-                contextlib.redirect_stderr(io.StringIO()) as error,
-                self.assertRaises(SystemExit) as raised,
-            ):
-                skill_evals.main([name, "--records", str(self.root / "records")], self.root)
-            self.assertEqual(2, raised.exception.code)
-            self.assertIn("must be a skill's name", error.getvalue())
-
     def test_a_path_on_a_drive_is_refused_on_every_platform(self) -> None:
         for prior in ("C:/outside/prior.json", "C:prior.json", "c:\\outside\\prior.json"):
             with self.subTest(prior=prior):
@@ -386,46 +379,6 @@ class LoaderTests(unittest.TestCase):
         self.assertIn("verdict expectation lacks verdict", self.load_error(scenario_spec({"kind": "verdict"})))
         extra = scenario_spec({"kind": "verdict", "verdict": "APPROVED", "note": "x"})
         self.assertIn("verdict expectation does not take note", self.load_error(extra))
-
-    def test_values_are_checked(self) -> None:
-        cases: list[tuple[dict[str, Any], str]] = [
-            ({"kind": "verdict", "verdict": "LGTM"}, "verdict must be one of"),
-            ({"kind": "finding", "path": "a.go", "lines": [1], "severity": "BLOCKER"}, "severity must be one of"),
-            ({"kind": "finding", "path": "../a.go", "lines": [1], "severity": "MUST_FIX"}, "plain relative path"),
-            ({"kind": "finding", "path": "a\\b.go", "lines": [1], "severity": "MUST_FIX"}, "plain relative path"),
-            ({"kind": "finding", "path": "a.go", "lines": [], "severity": "MUST_FIX"}, "distinct positive line"),
-            ({"kind": "finding", "path": "a.go", "lines": [2, 2], "severity": "MUST_FIX"}, "distinct positive line"),
-            ({"kind": "finding", "path": "a.go", "lines": [0], "severity": "MUST_FIX"}, "distinct positive line"),
-            ({"kind": "no_finding_above", "severity": "SUGGESTION", "paths": []}, "paths must be a list"),
-            (
-                {"kind": "finding", "path": "a.go", "lines": [1], "severity": "MUST_FIX", "category": " "},
-                "category must be a category name",
-            ),
-        ]
-        for spec, message in cases:
-            with self.subTest(spec=spec):
-                self.assertIn(message, refusal(spec, "initial"))
-
-    def test_re_review_values_are_checked(self) -> None:
-        cases: list[tuple[dict[str, Any], str]] = [
-            ({"kind": "ledger", "addressed": -1, "still_present": 0}, "addressed must be a count"),
-            ({"kind": "ledger", "addressed": True, "still_present": 0}, "addressed must be a count"),
-            ({"kind": "disposition", "entry": "F001", "disposition": "addressed"}, "entry must look like v1:F001"),
-            ({"kind": "disposition", "entry": "v1:F001", "disposition": "fixed"}, "disposition must be one of"),
-            ({"kind": "repeats", "path": "a.go", "lines": [1], "entry": "v0:F001"}, "entry must look like v1:F001"),
-        ]
-        for spec, message in cases:
-            with self.subTest(spec=spec):
-                self.assertIn(message, refusal(spec, "re-review"))
-
-    def test_re_review_kinds_need_a_re_review(self) -> None:
-        for spec in (
-            {"kind": "ledger", "addressed": 1, "still_present": 0},
-            {"kind": "disposition", "entry": "v1:F001", "disposition": "addressed"},
-            {"kind": "repeats", "path": "a.go", "lines": [1], "entry": "v1:F001"},
-        ):
-            with self.subTest(kind=spec["kind"]):
-                self.assertIn("needs a re-review", refusal(spec, "initial"))
 
     def test_scenario_fields_are_exact(self) -> None:
         self.assertIn("must have exactly", self.load_error(scenario_spec(extra="x")))
@@ -528,31 +481,6 @@ class LoaderTests(unittest.TestCase):
         write_scenario(self.root, "case", scenario_spec())
         (scenario,) = skill_evals.load_scenarios("demo", root=self.root)
         self.assertEqual((None, None), (scenario.document, scenario.base))
-
-    def test_a_document_is_a_file_among_the_scenarios_and_reviewed_once(self) -> None:
-        cases: list[tuple[dict[str, Any], str]] = [
-            ({"document": "../../../elsewhere.md"}, "document ../../../elsewhere.md is outside the scenarios"),
-            ({"document": "missing.md"}, "document missing.md is missing"),
-            ({"document": "draft.md", "base": "gone.md"}, "base gone.md is missing"),
-            ({"document": "/draft.md"}, "document must be a relative path"),
-            ({"document": "C:/draft.md"}, "document must be a relative path"),
-            ({"document": "sub\\draft.md"}, "document must be a relative path"),
-            ({"document": 3}, "document must be a relative path"),
-            ({"document": ""}, "document must be a relative path"),
-            ({"base": "draft.md"}, "must have exactly"),
-            (
-                {"document": "draft.md", "mode": "re-review", "prior": "prior.json"},
-                "a document scenario is an initial review",
-            ),
-        ]
-        for number, (fields, message) in enumerate(cases):
-            with self.subTest(fields=fields):
-                directory = write_scenario(self.root, f"case{number}", scenario_spec(**fields))
-                (directory / "draft.md").write_text("# Draft\n", encoding="utf-8")
-                (directory / "prior.json").write_text("{}", encoding="utf-8")
-                with self.assertRaises(ScenarioError) as raised:
-                    skill_evals.load_scenarios("demo", [f"case{number}"], root=self.root)
-                self.assertIn(message, str(raised.exception))
 
 
 class FindingTests(unittest.TestCase):
@@ -1985,12 +1913,6 @@ class RunPieceTests(unittest.TestCase):
         )
         self.assertEqual("opus", skill_evals.SESSION_MODEL)
 
-    def test_a_model_is_named_by_its_id_with_or_without_a_dated_suffix(self) -> None:
-        self.assertTrue(skill_evals.names_model("claude-haiku-5-5", "claude-haiku-5-5"))
-        self.assertTrue(skill_evals.names_model("claude-haiku-5-5-20261001", "claude-haiku-5-5"))
-        for other in ("claude-haiku-4-5-20251001", "claude-haiku-5", "claude-haiku-5-5-fast", "claude-haiku-5-55"):
-            self.assertFalse(skill_evals.names_model(other, "claude-haiku-5-5"), other)
-
     def test_the_environment_keeps_the_users_and_gives_the_run_its_own_files(self) -> None:
         run, config = self.root / "run", self.root / "config.json"
         self.assertEqual(
@@ -2373,35 +2295,9 @@ class ResultsTests(unittest.TestCase):
         self.assertEqual([*skill_evals.RESULTS_HEADER, lines[5], lines[6], rows[0], lines[8]], written[begin + 1 : end])
 
     def test_a_table_it_cannot_read_is_refused(self) -> None:
-        lines = RESULTS_TEXT.split("\n")
-        old_header = "| Skill | Model | Model ID | Passed | By scenario | Session model | Claude Code | Date | Note |"
-        cases = {
-            "must start with the header": (3, old_header),
-            "must be followed by its separator": (4, "| --- | --- |"),
-            "line 6 of the results file is not a row": (5, ""),
-            "line 7 of the results file is not a row": (6, "a hand note"),
-            "line 8 of the results file is not a row": (7, f"{lines[7]} n |"),
-            "line 6 of the results file is not a row of the table's 8 columns naming a skill": (
-                5,
-                lines[5].replace("alpha", " "),
-            ),
-        }
-        for reason, (index, line) in cases.items():
-            text = "\n".join([*lines[:index], line, *lines[index + 1 :]])
-            with self.subTest(reason=reason):
-                with self.assertRaisesRegex(ScenarioError, reason):
-                    skill_evals.results_table(text)
-                with self.assertRaisesRegex(ScenarioError, reason):
-                    skill_evals.replace_results(text, "review-prs", [])
         empty = "\n".join([skill_evals.RESULTS_BEGIN, skill_evals.RESULTS_END])
         with self.assertRaisesRegex(ScenarioError, "must start with the header"):
             skill_evals.results_table(empty)
-
-    def test_the_markers_are_required_once_each_in_order(self) -> None:
-        texts = ("no markers", f"{skill_evals.RESULTS_END}\n{skill_evals.RESULTS_BEGIN}", RESULTS_TEXT * 2)
-        for text in texts:
-            with self.subTest(text=text[:20]), self.assertRaises(ScenarioError):
-                skill_evals.results_table(text)
 
     def test_the_shipped_results_file_has_its_table(self) -> None:
         text = skill_evals.RESULTS.read_text(encoding="utf-8")
@@ -3042,3 +2938,199 @@ class EvaluateTests(unittest.TestCase):
             ):
                 skill_evals.main(["review-prs", "--write", *argv], seams=self.seams(StubClaude(self)))
             self.assertEqual(2, raised.exception.code)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [".", "..", "demo/one", "demo\\one", "Demo", ""],
+    ids=["dot", "dot dot", "a slash", "a backslash", "capitals", "empty"],
+)
+def test_a_skill_is_named_by_its_name_alone(name: str, tmp_path: Path) -> None:
+    write_scenario(tmp_path, "one", scenario_spec())
+    with contextlib.redirect_stderr(io.StringIO()) as error, CHECK.assertRaises(SystemExit) as raised:
+        skill_evals.main([name, "--records", str(tmp_path / "records")], tmp_path)
+    CHECK.assertEqual(2, raised.exception.code)
+    CHECK.assertIn("must be a skill's name", error.getvalue())
+
+
+@pytest.mark.parametrize(
+    ("spec", "message"),
+    [
+        pytest.param({"kind": "verdict", "verdict": "LGTM"}, "verdict must be one of", id="unknown verdict"),
+        pytest.param(
+            {"kind": "finding", "path": "a.go", "lines": [1], "severity": "BLOCKER"},
+            "severity must be one of",
+            id="unknown severity",
+        ),
+        pytest.param(
+            {"kind": "finding", "path": "../a.go", "lines": [1], "severity": "MUST_FIX"},
+            "plain relative path",
+            id="a parent path",
+        ),
+        pytest.param(
+            {"kind": "finding", "path": "a\\b.go", "lines": [1], "severity": "MUST_FIX"},
+            "plain relative path",
+            id="a backslash path",
+        ),
+        pytest.param(
+            {"kind": "finding", "path": "a.go", "lines": [], "severity": "MUST_FIX"},
+            "distinct positive line",
+            id="no lines",
+        ),
+        pytest.param(
+            {"kind": "finding", "path": "a.go", "lines": [2, 2], "severity": "MUST_FIX"},
+            "distinct positive line",
+            id="a repeated line",
+        ),
+        pytest.param(
+            {"kind": "finding", "path": "a.go", "lines": [0], "severity": "MUST_FIX"},
+            "distinct positive line",
+            id="line 0",
+        ),
+        pytest.param(
+            {"kind": "no_finding_above", "severity": "SUGGESTION", "paths": []},
+            "paths must be a list",
+            id="no paths",
+        ),
+        pytest.param(
+            {"kind": "finding", "path": "a.go", "lines": [1], "severity": "MUST_FIX", "category": " "},
+            "category must be a category name",
+            id="a blank category",
+        ),
+    ],
+)
+def test_values_are_checked(spec: dict[str, Any], message: str) -> None:
+    CHECK.assertIn(message, refusal(spec, "initial"))
+
+
+@pytest.mark.parametrize(
+    ("spec", "message"),
+    [
+        pytest.param(
+            {"kind": "ledger", "addressed": -1, "still_present": 0}, "addressed must be a count", id="a negative count"
+        ),
+        pytest.param(
+            {"kind": "ledger", "addressed": True, "still_present": 0}, "addressed must be a count", id="a boolean count"
+        ),
+        pytest.param(
+            {"kind": "disposition", "entry": "F001", "disposition": "addressed"},
+            "entry must look like v1:F001",
+            id="an entry without its version",
+        ),
+        pytest.param(
+            {"kind": "disposition", "entry": "v1:F001", "disposition": "fixed"},
+            "disposition must be one of",
+            id="an unknown disposition",
+        ),
+        pytest.param(
+            {"kind": "repeats", "path": "a.go", "lines": [1], "entry": "v0:F001"},
+            "entry must look like v1:F001",
+            id="version 0",
+        ),
+    ],
+)
+def test_re_review_values_are_checked(spec: dict[str, Any], message: str) -> None:
+    CHECK.assertIn(message, refusal(spec, "re-review"))
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        {"kind": "ledger", "addressed": 1, "still_present": 0},
+        {"kind": "disposition", "entry": "v1:F001", "disposition": "addressed"},
+        {"kind": "repeats", "path": "a.go", "lines": [1], "entry": "v1:F001"},
+    ],
+    ids=["ledger", "disposition", "repeats"],
+)
+def test_re_review_kinds_need_a_re_review(spec: dict[str, Any]) -> None:
+    CHECK.assertIn("needs a re-review", refusal(spec, "initial"))
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        pytest.param(
+            {"document": "../../../elsewhere.md"},
+            "document ../../../elsewhere.md is outside the scenarios",
+            id="outside the scenarios",
+        ),
+        pytest.param({"document": "missing.md"}, "document missing.md is missing", id="a missing document"),
+        pytest.param({"document": "draft.md", "base": "gone.md"}, "base gone.md is missing", id="a missing base"),
+        pytest.param({"document": "/draft.md"}, "document must be a relative path", id="a rooted path"),
+        pytest.param({"document": "C:/draft.md"}, "document must be a relative path", id="a drive path"),
+        pytest.param({"document": "sub\\draft.md"}, "document must be a relative path", id="a backslash path"),
+        pytest.param({"document": 3}, "document must be a relative path", id="a number"),
+        pytest.param({"document": ""}, "document must be a relative path", id="empty"),
+        pytest.param({"base": "draft.md"}, "must have exactly", id="a base without a document"),
+        pytest.param(
+            {"document": "draft.md", "mode": "re-review", "prior": "prior.json"},
+            "a document scenario is an initial review",
+            id="a re-review",
+        ),
+    ],
+)
+def test_a_document_is_a_file_among_the_scenarios_and_reviewed_once(
+    fields: dict[str, Any], message: str, tmp_path: Path
+) -> None:
+    directory = write_scenario(tmp_path, "case", scenario_spec(**fields))
+    (directory / "draft.md").write_text("# Draft\n", encoding="utf-8")
+    (directory / "prior.json").write_text("{}", encoding="utf-8")
+    with CHECK.assertRaises(ScenarioError) as raised:
+        skill_evals.load_scenarios("demo", ["case"], root=tmp_path)
+    CHECK.assertIn(message, str(raised.exception))
+
+
+@pytest.mark.parametrize(
+    ("reported", "expected"),
+    [
+        ("claude-haiku-5-5", True),
+        ("claude-haiku-5-5-20261001", True),
+        ("claude-haiku-4-5-20251001", False),
+        ("claude-haiku-5", False),
+        ("claude-haiku-5-5-fast", False),
+        ("claude-haiku-5-55", False),
+    ],
+)
+def test_a_model_is_named_by_its_id_with_or_without_a_dated_suffix(reported: str, expected: bool) -> None:
+    CHECK.assertIs(expected, skill_evals.names_model(reported, "claude-haiku-5-5"), reported)
+
+
+RESULTS_LINES = RESULTS_TEXT.split("\n")
+
+
+@pytest.mark.parametrize(
+    ("reason", "index", "line"),
+    [
+        (
+            "must start with the header",
+            3,
+            "| Skill | Model | Model ID | Passed | By scenario | Session model | Claude Code | Date | Note |",
+        ),
+        ("must be followed by its separator", 4, "| --- | --- |"),
+        ("line 6 of the results file is not a row", 5, ""),
+        ("line 7 of the results file is not a row", 6, "a hand note"),
+        ("line 8 of the results file is not a row", 7, f"{RESULTS_LINES[7]} n |"),
+        (
+            "line 6 of the results file is not a row of the table's 8 columns naming a skill",
+            5,
+            RESULTS_LINES[5].replace("alpha", " "),
+        ),
+    ],
+    ids=["an old header", "no separator", "an empty line", "a hand note", "an extra column", "no skill"],
+)
+def test_a_table_it_cannot_read_is_refused(reason: str, index: int, line: str) -> None:
+    text = "\n".join([*RESULTS_LINES[:index], line, *RESULTS_LINES[index + 1 :]])
+    with CHECK.assertRaisesRegex(ScenarioError, reason):
+        skill_evals.results_table(text)
+    with CHECK.assertRaisesRegex(ScenarioError, reason):
+        skill_evals.replace_results(text, "review-prs", [])
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["no markers", f"{skill_evals.RESULTS_END}\n{skill_evals.RESULTS_BEGIN}", RESULTS_TEXT * 2],
+    ids=["no markers", "out of order", "twice each"],
+)
+def test_the_markers_are_required_once_each_in_order(text: str) -> None:
+    with CHECK.assertRaises(ScenarioError):
+        skill_evals.results_table(text)

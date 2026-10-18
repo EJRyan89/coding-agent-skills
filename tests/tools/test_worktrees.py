@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "validation"))
@@ -26,6 +28,9 @@ import skill_scripts
 
 from deployer import platform_support
 from tools import worktrees
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPOSITORY_ROOT / "tools" / "worktrees.py"
@@ -336,69 +341,8 @@ class HookCommandTests(WorktreesTestCase):
                 self.assertEqual((0, ["-B", f"{self.hub}/tools/worktrees.py", "guard"]), (code, arguments))
 
 
-class BranchOptionTests(unittest.TestCase):
-    def test_upstream_and_tracking_values_are_not_rename_options(self) -> None:
-        for arguments in (
-            ["-uorigin/main"],
-            ["-uorigin/MAIN"],
-            ["-uorigin/mM-feature"],
-            ["-quorigin/main"],
-            ["-vvuorigin/MAIN"],
-            ["-u", "origin/main"],
-            ["-qu", "origin/MAIN"],
-            ["-um"],
-            ["-uM"],
-            ["-u-mM"],
-            ["-u", "-m"],
-            ["-u", "-M"],
-            ["-tm"],
-            ["-tM"],
-            ["--set-upstream-to=origin/main"],
-            ["--set-upstream-to", "-m"],
-            ["--set-upstream-t", "-M"],
-            ["--", "-m"],
-        ):
-            with self.subTest(arguments=arguments):
-                self.assertFalse(worktrees.renames_a_branch(arguments))
-
-    def test_rename_options_before_or_after_values_are_still_detected(self) -> None:
-        for arguments in (
-            ["-m", "renamed"],
-            ["-M", "renamed"],
-            ["-fm", "main", "renamed"],
-            ["-qM", "main", "renamed"],
-            ["-mM", "renamed"],
-            ["-muorigin/main"],
-            ["-Mtorigin/main"],
-            ["-uorigin/main", "-m", "renamed"],
-            ["-u", "origin/MAIN", "-M", "renamed"],
-            ["-u", "--", "-m", "renamed"],
-            ["-t", "-m", "renamed"],
-            ["-tdirect", "-M", "renamed"],
-            ["--mo", "main", "renamed"],
-            ["--mov", "main", "renamed"],
-            ["--move", "main", "renamed"],
-            ["--move=main", "renamed"],
-            ["--set-upstream-to", "origin/main", "--move", "renamed"],
-            ["--set-upstream", "-m", "renamed"],
-        ):
-            with self.subTest(arguments=arguments):
-                self.assertTrue(worktrees.renames_a_branch(arguments))
-
-
 class CommandNameTests(unittest.TestCase):
     def test_a_command_is_named_lower_cased_without_its_directory_or_exe(self) -> None:
-        cases = {
-            "git": "git",
-            "GIT.EXE": "git",
-            "/c/Program Files/Git/cmd/Git.Exe": "git",
-            "codex.cmd": "codex.cmd",
-            # Only Windows separates a path with a backslash.
-            **({"C:\\Program Files\\Git\\cmd\\git.exe": "git"} if platform_support.WINDOWS else {}),
-        }
-        for word, expected in cases.items():
-            with self.subTest(word=word):
-                self.assertEqual(expected, worktrees.command_name(word))
         self.assertIsNone(worktrees.command_name(None))
 
 
@@ -1782,3 +1726,74 @@ class ToolsGitTests(unittest.TestCase):
             )
         ]
         self.assertEqual([], found)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["-uorigin/main"],
+        ["-uorigin/MAIN"],
+        ["-uorigin/mM-feature"],
+        ["-quorigin/main"],
+        ["-vvuorigin/MAIN"],
+        ["-u", "origin/main"],
+        ["-qu", "origin/MAIN"],
+        ["-um"],
+        ["-uM"],
+        ["-u-mM"],
+        ["-u", "-m"],
+        ["-u", "-M"],
+        ["-tm"],
+        ["-tM"],
+        ["--set-upstream-to=origin/main"],
+        ["--set-upstream-to", "-m"],
+        ["--set-upstream-t", "-M"],
+        ["--", "-m"],
+    ],
+    ids=" ".join,
+)
+def test_upstream_and_tracking_values_are_not_rename_options(arguments: list[str]) -> None:
+    CHECK.assertFalse(worktrees.renames_a_branch(arguments))
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["-m", "renamed"],
+        ["-M", "renamed"],
+        ["-fm", "main", "renamed"],
+        ["-qM", "main", "renamed"],
+        ["-mM", "renamed"],
+        ["-muorigin/main"],
+        ["-Mtorigin/main"],
+        ["-uorigin/main", "-m", "renamed"],
+        ["-u", "origin/MAIN", "-M", "renamed"],
+        ["-u", "--", "-m", "renamed"],
+        ["-t", "-m", "renamed"],
+        ["-tdirect", "-M", "renamed"],
+        ["--mo", "main", "renamed"],
+        ["--mov", "main", "renamed"],
+        ["--move", "main", "renamed"],
+        ["--move=main", "renamed"],
+        ["--set-upstream-to", "origin/main", "--move", "renamed"],
+        ["--set-upstream", "-m", "renamed"],
+    ],
+    ids=" ".join,
+)
+def test_rename_options_before_or_after_values_are_still_detected(arguments: list[str]) -> None:
+    CHECK.assertTrue(worktrees.renames_a_branch(arguments))
+
+
+@pytest.mark.parametrize(
+    ("word", "expected"),
+    [
+        ("git", "git"),
+        ("GIT.EXE", "git"),
+        ("/c/Program Files/Git/cmd/Git.Exe", "git"),
+        ("codex.cmd", "codex.cmd"),
+        # Only Windows separates a path with a backslash.
+        *([("C:\\Program Files\\Git\\cmd\\git.exe", "git")] if platform_support.WINDOWS else []),
+    ],
+)
+def test_a_command_is_named_lower_cased_without_its_directory_or_exe(word: str, expected: str) -> None:
+    CHECK.assertEqual(expected, worktrees.command_name(word))

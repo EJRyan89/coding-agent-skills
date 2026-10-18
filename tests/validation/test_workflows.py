@@ -10,6 +10,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
@@ -27,6 +29,9 @@ from workflows import (
     verify_log_problems,
     workflow_guard_problems,
 )
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 
 class WorkflowsFixtures(unittest.TestCase):
@@ -140,24 +145,6 @@ class WorkflowsFixtures(unittest.TestCase):
         )
         self.assertEqual([], workflow_guard_problems(workflow, ["workflow_dispatch"], set()))
 
-    def test_the_allowed_github_fields_and_other_contexts_pass(self) -> None:
-        clean = "on:\n  push:\n\npermissions:\n  contents: read\n\njobs:\n  run:\n    steps:\n"
-        for expression in (
-            "github.event_name == 'schedule' && fromJSON('[\"3.11\", \"3.x\"]') || fromJSON('[\"3.11\"]')",
-            "github.ref != 'refs/heads/main'",
-            "GitHub.Workflow",
-            "github.workflow",
-            "!cancelled()",
-            "matrix.runtimes == 'latest' && 'latest' || inputs.claude-version || '2.1.289'",
-            "steps.shellcheck.outputs.cache-hit",
-            "needs.suite.result",
-            "format('{0} it''s github', matrix.shard)",
-            "inputs.github",
-        ):
-            with self.subTest(expression=expression):
-                workflow = clean + f"      - run: echo '${{{{ {expression} }}}}'\n"
-                self.assertEqual([], workflow_guard_problems(workflow, ["push"], set()))
-
     def test_only_the_workflows_the_policy_knows_may_sit_in_the_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -186,6 +173,27 @@ class WorkflowsFixtures(unittest.TestCase):
         )
 
 
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "github.event_name == 'schedule' && fromJSON('[\"3.11\", \"3.x\"]') || fromJSON('[\"3.11\"]')",
+        "github.ref != 'refs/heads/main'",
+        "GitHub.Workflow",
+        "github.workflow",
+        "!cancelled()",
+        "matrix.runtimes == 'latest' && 'latest' || inputs.claude-version || '2.1.289'",
+        "steps.shellcheck.outputs.cache-hit",
+        "needs.suite.result",
+        "format('{0} it''s github', matrix.shard)",
+        "inputs.github",
+    ],
+)
+def test_the_allowed_github_fields_and_other_contexts_pass(expression: str) -> None:
+    clean = "on:\n  push:\n\npermissions:\n  contents: read\n\njobs:\n  run:\n    steps:\n"
+    workflow = clean + f"      - run: echo '${{{{ {expression} }}}}'\n"
+    CHECK.assertEqual([], workflow_guard_problems(workflow, ["push"], set()))
+
+
 LEGS = (
     "env:\n  TOOL_VERSION: '1.2.3'\n\njobs:\n  suite:\n"
     "    name: Windows shard ${{ matrix.shard }}, Python ${{ matrix.python-version }}\n"
@@ -201,38 +209,74 @@ LEGS = (
 )
 
 
+CACHES = {"tool-${{ env.TOOL_VERSION }}": "install tool --version $env:TOOL_VERSION "}
+
+
 class LegFixtures(unittest.TestCase):
     def test_each_leg_is_named_as_a_windows_leg_and_runs_its_own_shard(self) -> None:
         self.assertEqual([], leg_problems(LEGS, 2))
-        for drifted, problem in (
-            (LEGS, "expected ['1/3', '2/3', '3/3']"),
-            (LEGS.replace("['1/2', '2/2']", "['1/2', '1/2']"), "shards"),
-            (LEGS.replace("runs-on: windows-latest", "runs-on: ubuntu-latest"), "not windows-latest"),
-            (LEGS.replace(" --shard $env:SHARD", ""), "does not run its leg's --shard"),
-            (LEGS.replace("SHARD: ${{ matrix.shard }}", "SHARD: 1/2"), "does not run its leg's --shard"),
-            (LEGS.replace("tests/run_validation.py", "tests/other.py"), "no step runs"),
-            # The name the seconds recorder reads, which says Windows beside the Linux job.
-            (LEGS.replace("Windows shard ${{ matrix.shard }}, ", "Shard ${{ matrix.shard }} on "), "are named"),
-            (LEGS.replace("    name: Windows shard", "    name: Windows Shard"), "are named"),
-        ):
-            with self.subTest(problem=problem):
-                count = 3 if problem.startswith("expected") else 2
-                problems = leg_problems(drifted, count)
-                self.assertTrue(any(problem in found for found in problems), problems)
 
     def test_each_tool_cache_is_keyed_on_a_workflow_pin_its_install_reads(self) -> None:
-        caches = {"tool-${{ env.TOOL_VERSION }}": "install tool --version $env:TOOL_VERSION "}
-        self.assertEqual([], tool_cache_problems(LEGS, caches))
-        for drifted, problem in (
-            (LEGS.replace("key: tool-${{ env.TOOL_VERSION }}", "key: tool-1.2.3"), "the cache keys are"),
-            (LEGS.replace("env:\n  TOOL_VERSION: '1.2.3'\n", "env:\n  OTHER: '1'\n"), "does not pin"),
-            (LEGS.replace("--version $env:TOOL_VERSION", "--version 1.2.3"), "no step runs"),
-            (LEGS.replace("          cache: pip\n", ""), "setup-python does not cache pip"),
-            (LEGS.replace("requirements-dev.txt", "requirements.txt"), "setup-python does not cache pip"),
-        ):
-            with self.subTest(problem=problem):
-                problems = tool_cache_problems(drifted, caches)
-                self.assertTrue(any(problem in found for found in problems), problems)
+        self.assertEqual([], tool_cache_problems(LEGS, CACHES))
+
+
+@pytest.mark.parametrize(
+    ("drifted", "problem"),
+    [
+        pytest.param(LEGS, "expected ['1/3', '2/3', '3/3']", id="fewer legs than shards"),
+        pytest.param(LEGS.replace("['1/2', '2/2']", "['1/2', '1/2']"), "shards", id="a shard twice"),
+        pytest.param(
+            LEGS.replace("runs-on: windows-latest", "runs-on: ubuntu-latest"), "not windows-latest", id="not on Windows"
+        ),
+        pytest.param(LEGS.replace(" --shard $env:SHARD", ""), "does not run its leg's --shard", id="no --shard"),
+        pytest.param(
+            LEGS.replace("SHARD: ${{ matrix.shard }}", "SHARD: 1/2"),
+            "does not run its leg's --shard",
+            id="a literal shard",
+        ),
+        pytest.param(LEGS.replace("tests/run_validation.py", "tests/other.py"), "no step runs", id="another runner"),
+        # The name the seconds recorder reads, which says Windows beside the Linux job.
+        pytest.param(
+            LEGS.replace("Windows shard ${{ matrix.shard }}, ", "Shard ${{ matrix.shard }} on "),
+            "are named",
+            id="named without Windows",
+        ),
+        pytest.param(
+            LEGS.replace("    name: Windows shard", "    name: Windows Shard"), "are named", id="named in other case"
+        ),
+    ],
+)
+def test_a_leg_misnamed_or_off_its_own_shard_fails(drifted: str, problem: str) -> None:
+    count = 3 if problem.startswith("expected") else 2
+    problems = leg_problems(drifted, count)
+    CHECK.assertTrue(any(problem in found for found in problems), problems)
+
+
+@pytest.mark.parametrize(
+    ("drifted", "problem"),
+    [
+        pytest.param(
+            LEGS.replace("key: tool-${{ env.TOOL_VERSION }}", "key: tool-1.2.3"),
+            "the cache keys are",
+            id="a literal key",
+        ),
+        pytest.param(
+            LEGS.replace("env:\n  TOOL_VERSION: '1.2.3'\n", "env:\n  OTHER: '1'\n"), "does not pin", id="no pin"
+        ),
+        pytest.param(
+            LEGS.replace("--version $env:TOOL_VERSION", "--version 1.2.3"), "no step runs", id="a literal version"
+        ),
+        pytest.param(LEGS.replace("          cache: pip\n", ""), "setup-python does not cache pip", id="no pip cache"),
+        pytest.param(
+            LEGS.replace("requirements-dev.txt", "requirements.txt"),
+            "setup-python does not cache pip",
+            id="another requirements file",
+        ),
+    ],
+)
+def test_a_tool_cache_off_its_workflow_pin_fails(drifted: str, problem: str) -> None:
+    problems = tool_cache_problems(drifted, CACHES)
+    CHECK.assertTrue(any(problem in found for found in problems), problems)
 
 
 LINUX = (
@@ -260,31 +304,63 @@ LINUX = (
 class LinuxJobFixtures(unittest.TestCase):
     def test_the_linux_job_runs_the_whole_run_named_as_linux(self) -> None:
         self.assertEqual([], linux_job_problems(LINUX))
-        for drifted, problem in (
-            (LINUX.replace("  linux:\n", "  other:\n"), "there is no linux job"),
-            (LINUX.replace("runs-on: ubuntu-latest", "runs-on: ubuntu-22.04"), "not ubuntu-latest"),
-            (LINUX.replace("    name: Validation on Linux\n", "    name: Validation on Ubuntu\n"), "say Linux"),
-            (LINUX.replace("    name: Validation on Linux\n", ""), "say Linux"),
-            (LINUX.replace("          fetch-depth: 0\n", "          fetch-depth: 1\n"), "the whole history"),
-            (LINUX.replace("'3.11'", "'3.x'"), "sets up Python"),
-            (LINUX.replace("          cache: pip\n", ""), "sets up Python"),
-            (LINUX.replace("install --yes shellcheck", "install shellcheck"), "sudo apt-get install --yes shellcheck"),
-            (LINUX.replace("-RequiredVersion $env:PSSCRIPTANALYZER_VERSION ", ""), "Install-Module PSScriptAnalyzer"),
-            (LINUX.replace("      - run: python -m pip install -r requirements-dev.txt\n", ""), "requirements-dev"),
-            (LINUX.replace("        shell: pwsh\n        run: |", "        shell: bash\n        run: |"), "not pwsh"),
-            (LINUX.replace("'-v')", "'-v', '--shard', $env:SHARD)"), "runs a shard"),
-            (LINUX.replace("{ $arguments += '--full' }", "{ }"), "--full"),
-            (LINUX.replace("          $arguments += @('--pr-title', $titleFile)\n", ""), "--pr-title"),
-            (
-                LINUX.replace(
-                    "      - name: Run\n", "      - run: python tests/run_validation.py\n      - name: Run\n"
-                ),
-                "not one",
-            ),
-        ):
-            with self.subTest(problem=problem):
-                problems = linux_job_problems(drifted)
-                self.assertTrue(any(problem in found for found in problems), problems)
+
+
+@pytest.mark.parametrize(
+    ("drifted", "problem"),
+    [
+        pytest.param(LINUX.replace("  linux:\n", "  other:\n"), "there is no linux job", id="no linux job"),
+        pytest.param(
+            LINUX.replace("runs-on: ubuntu-latest", "runs-on: ubuntu-22.04"), "not ubuntu-latest", id="a pinned Ubuntu"
+        ),
+        pytest.param(
+            LINUX.replace("    name: Validation on Linux\n", "    name: Validation on Ubuntu\n"),
+            "say Linux",
+            id="named for Ubuntu",
+        ),
+        pytest.param(LINUX.replace("    name: Validation on Linux\n", ""), "say Linux", id="unnamed"),
+        pytest.param(
+            LINUX.replace("          fetch-depth: 0\n", "          fetch-depth: 1\n"),
+            "the whole history",
+            id="a shallow checkout",
+        ),
+        pytest.param(LINUX.replace("'3.11'", "'3.x'"), "sets up Python", id="another Python"),
+        pytest.param(LINUX.replace("          cache: pip\n", ""), "sets up Python", id="no pip cache"),
+        pytest.param(
+            LINUX.replace("install --yes shellcheck", "install shellcheck"),
+            "sudo apt-get install --yes shellcheck",
+            id="a prompting install",
+        ),
+        pytest.param(
+            LINUX.replace("-RequiredVersion $env:PSSCRIPTANALYZER_VERSION ", ""),
+            "Install-Module PSScriptAnalyzer",
+            id="an unpinned analyzer",
+        ),
+        pytest.param(
+            LINUX.replace("      - run: python -m pip install -r requirements-dev.txt\n", ""),
+            "requirements-dev",
+            id="no development dependencies",
+        ),
+        pytest.param(
+            LINUX.replace("        shell: pwsh\n        run: |", "        shell: bash\n        run: |"),
+            "not pwsh",
+            id="run in bash",
+        ),
+        pytest.param(LINUX.replace("'-v')", "'-v', '--shard', $env:SHARD)"), "runs a shard", id="a shard"),
+        pytest.param(LINUX.replace("{ $arguments += '--full' }", "{ }"), "--full", id="never --full"),
+        pytest.param(
+            LINUX.replace("          $arguments += @('--pr-title', $titleFile)\n", ""), "--pr-title", id="no title"
+        ),
+        pytest.param(
+            LINUX.replace("      - name: Run\n", "      - run: python tests/run_validation.py\n      - name: Run\n"),
+            "not one",
+            id="two runs",
+        ),
+    ],
+)
+def test_a_linux_job_that_runs_less_than_the_whole_run_or_is_misnamed_fails(drifted: str, problem: str) -> None:
+    problems = linux_job_problems(drifted)
+    CHECK.assertTrue(any(problem in found for found in problems), problems)
 
 
 REQUIRED_CHECK = (
@@ -299,25 +375,55 @@ REQUIRED_CHECK = (
 class RequiredCheckFixtures(unittest.TestCase):
     def test_the_one_required_check_fails_unless_every_platform_passes(self) -> None:
         self.assertEqual([], required_check_problems(REQUIRED_CHECK, ("suite", "linux")))
-        for drifted, problem in (
-            # The shape before the Linux job joined the check: it reported, and a red run could still merge.
-            (
-                REQUIRED_CHECK.replace("    needs: [suite, linux]\n", "    needs: suite\n")
-                .replace("          LINUX: ${{ needs.linux.result }}\n", "")
-                .replace('          test "$LINUX" = success\n', ""),
-                "does not need the linux job",
-            ),
-            (REQUIRED_CHECK.replace("    needs: [suite, linux]\n", "    needs: linux\n"), "the suite job"),
-            (REQUIRED_CHECK.replace('          test "$LINUX" = success\n', ""), "linux job's result"),
-            (REQUIRED_CHECK.replace("${{ needs.linux.result }}", "${{ needs.suite.result }}"), "linux job's result"),
-            (REQUIRED_CHECK.replace('"$WINDOWS" = success', '"$WINDOWS" != cancelled'), "suite job's result"),
-            (REQUIRED_CHECK.replace("    if: ${{ !cancelled() }}\n", ""), "skip the check"),
-            (REQUIRED_CHECK.replace("    if: ${{ !cancelled() }}\n", "    if: ${{ success() }}\n"), "skip the check"),
-            (REQUIRED_CHECK.replace("    name: Validation\n", "    name: Validation on Windows\n"), "required check"),
-        ):
-            with self.subTest(problem=problem):
-                problems = required_check_problems(drifted, ("suite", "linux"))
-                self.assertTrue(any(problem in found for found in problems), problems)
+
+
+@pytest.mark.parametrize(
+    ("drifted", "problem"),
+    [
+        # The shape before the Linux job joined the check: it reported, and a red run could still merge.
+        pytest.param(
+            REQUIRED_CHECK.replace("    needs: [suite, linux]\n", "    needs: suite\n")
+            .replace("          LINUX: ${{ needs.linux.result }}\n", "")
+            .replace('          test "$LINUX" = success\n', ""),
+            "does not need the linux job",
+            id="the suite job alone",
+        ),
+        pytest.param(
+            REQUIRED_CHECK.replace("    needs: [suite, linux]\n", "    needs: linux\n"),
+            "the suite job",
+            id="the linux job alone",
+        ),
+        pytest.param(
+            REQUIRED_CHECK.replace('          test "$LINUX" = success\n', ""),
+            "linux job's result",
+            id="the linux result unchecked",
+        ),
+        pytest.param(
+            REQUIRED_CHECK.replace("${{ needs.linux.result }}", "${{ needs.suite.result }}"),
+            "linux job's result",
+            id="the suite result read twice",
+        ),
+        pytest.param(
+            REQUIRED_CHECK.replace('"$WINDOWS" = success', '"$WINDOWS" != cancelled'),
+            "suite job's result",
+            id="a failed suite passes",
+        ),
+        pytest.param(REQUIRED_CHECK.replace("    if: ${{ !cancelled() }}\n", ""), "skip the check", id="no condition"),
+        pytest.param(
+            REQUIRED_CHECK.replace("    if: ${{ !cancelled() }}\n", "    if: ${{ success() }}\n"),
+            "skip the check",
+            id="only on success",
+        ),
+        pytest.param(
+            REQUIRED_CHECK.replace("    name: Validation\n", "    name: Validation on Windows\n"),
+            "required check",
+            id="renamed",
+        ),
+    ],
+)
+def test_a_required_check_that_passes_without_every_platform_fails(drifted: str, problem: str) -> None:
+    problems = required_check_problems(drifted, ("suite", "linux"))
+    CHECK.assertTrue(any(problem in found for found in problems), problems)
 
 
 VERIFY_LOGS = (
@@ -653,22 +759,26 @@ class WorkflowReaderFixtures(unittest.TestCase):
             read_workflow(text),
         )
 
-    def test_yaml_outside_the_subset_is_refused(self) -> None:
-        for text, reason in (
-            ("a:\n\tb: c\n", "tab"),
-            ("a: 1\na: 2\n", "repeated"),
-            ("a: {b: c}\n", "outside the subset"),
-            ("a: &anchor b\n", "outside the subset"),
-            ("a: *anchor\n", "outside the subset"),
-            ("a: !!str b\n", "outside the subset"),
-            ("a: b: c\n", "outside the subset"),
-            ("a: [b, [c]]\n", "flow sequence"),
-            ("a: 'b\n", "unclosed"),
-            ("a: 'b' c\n", "text after"),
-            ("a:\n  b: c\n d: e\n", "indentation"),
-            ("a:\n  b: c\n    d: e\n", "indentation"),
-            ("just text\n", "expected `key: value`"),
-            ("  a: b\n", "column 0"),
-        ):
-            with self.subTest(text=text), self.assertRaisesRegex(WorkflowSyntaxError, reason):
-                read_workflow(text)
+
+@pytest.mark.parametrize(
+    ("text", "reason"),
+    [
+        pytest.param("a:\n\tb: c\n", "tab", id="a tab"),
+        pytest.param("a: 1\na: 2\n", "repeated", id="a repeated key"),
+        pytest.param("a: {b: c}\n", "outside the subset", id="a flow mapping"),
+        pytest.param("a: &anchor b\n", "outside the subset", id="an anchor"),
+        pytest.param("a: *anchor\n", "outside the subset", id="an alias"),
+        pytest.param("a: !!str b\n", "outside the subset", id="a tag"),
+        pytest.param("a: b: c\n", "outside the subset", id="a mapping in a value"),
+        pytest.param("a: [b, [c]]\n", "flow sequence", id="a nested flow sequence"),
+        pytest.param("a: 'b\n", "unclosed", id="an unclosed quote"),
+        pytest.param("a: 'b' c\n", "text after", id="text after a quote"),
+        pytest.param("a:\n  b: c\n d: e\n", "indentation", id="a dedent to no level"),
+        pytest.param("a:\n  b: c\n    d: e\n", "indentation", id="an indent under a value"),
+        pytest.param("just text\n", "expected `key: value`", id="no key"),
+        pytest.param("  a: b\n", "column 0", id="an indented start"),
+    ],
+)
+def test_yaml_outside_the_subset_is_refused(text: str, reason: str) -> None:
+    with CHECK.assertRaisesRegex(WorkflowSyntaxError, reason):
+        read_workflow(text)

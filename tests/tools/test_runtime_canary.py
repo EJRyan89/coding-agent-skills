@@ -20,9 +20,11 @@ import sys
 import tempfile
 import time
 import unittest
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from unittest import mock
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
@@ -33,6 +35,9 @@ from deployer import source as deploy_source
 from deployer.paths import Paths
 from tools import runtime_canary
 from tools.runtime_canary import Completed
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 # The real runner, kept before setUp replaces it, for the cases that start a stub program through it.
@@ -507,53 +512,24 @@ class RunProcessTests(unittest.TestCase):
         self.assertEqual(Completed(0, "one\ntwo\n\ufffd", "warn"), completed)
 
 
+def remove_home(*arguments: str) -> tuple[int, str]:
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        code = runtime_canary.main(["--remove-home", *arguments])
+    return code, output.getvalue()
+
+
 class RemoveHomeTests(unittest.TestCase):
     # The skill deletes the home through the script, which its allowed-tools already grant, rather than through a
     # prefix grant on rm that would approve deleting any directory.
-    def remove(self, *arguments: str) -> tuple[int, str]:
-        output = io.StringIO()
-        with contextlib.redirect_stdout(output):
-            code = runtime_canary.main(["--remove-home", *arguments])
-        return code, output.getvalue()
-
     def test_a_home_the_canary_made_is_removed(self) -> None:
         home = runtime_canary.create_home()
         runtime_canary.claim_home(home)
         (home / ".runtime-canary" / "transcripts").mkdir(parents=True)
         (home / ".runtime-canary" / "transcripts" / "claude.txt").write_text("a run\n", encoding="utf-8")
-        code, output = self.remove(str(home))
+        code, output = remove_home(str(home))
         self.assertEqual((0, f'REMOVED "{home.as_posix()}"\n'), (code, output))
         self.assertFalse(home.exists())
-
-    def test_a_folder_named_like_a_home_without_the_marker_naming_it_is_refused_and_kept(self) -> None:
-        state = Path(".runtime-canary")
-        cases: dict[str, Callable[[Path], object]] = {
-            "no marker": lambda home: None,
-            "a marker naming another home": lambda home: (home / state / "home.json").write_text(
-                json.dumps({"made_by": "tools/runtime_canary.py", "home": forward(home.parent / "elsewhere")}),
-                encoding="utf-8",
-            ),
-            "a marker that is not JSON": lambda home: (home / state / "home.json").write_text("{", encoding="utf-8"),
-            "a marker that is a folder": lambda home: (home / state / "home.json").mkdir(),
-        }
-        for name, prepare in cases.items():
-            with self.subTest(case=name):
-                # Named and placed as the canary names and places its homes, but made here.
-                home = Path(tempfile.mkdtemp(prefix="runtime-canary-")).resolve()
-                self.addCleanup(shutil.rmtree, home, ignore_errors=True)
-                (home / state).mkdir()
-                (home / "notes.txt").write_text("someone's notes\n", encoding="utf-8")
-                prepare(home)
-                code, output = self.remove(str(home))
-                self.assertEqual(
-                    (
-                        1,
-                        f'FAILED "{home.as_posix()} holds no .runtime-canary/home.json naming it, so the canary did '
-                        'not make it"\n',
-                    ),
-                    (code, output),
-                )
-                self.assertEqual("someone's notes\n", (home / "notes.txt").read_text(encoding="utf-8"))
 
     def test_any_other_directory_is_refused_and_kept(self) -> None:
         with tempfile.TemporaryDirectory(prefix="runtime-canary-") as directory:
@@ -563,7 +539,7 @@ class RemoveHomeTests(unittest.TestCase):
             with tempfile.TemporaryDirectory(prefix="not-a-canary-") as other:
                 for candidate in (nested, Path(other), root / "runtime-canary-missing"):
                     with self.subTest(candidate=candidate.name):
-                        code, output = self.remove(str(candidate))
+                        code, output = remove_home(str(candidate))
                         self.assertEqual(1, code)
                         self.assertRegex(output, r'^FAILED ".+ is not a home the canary made under .+"\n$')
                 self.assertTrue(Path(other).is_dir())
@@ -1946,28 +1922,6 @@ class FinishTests(unittest.TestCase):
             home, code, output = self.finish(0)
         self.assertEqual((1, f'FAILED "cannot remove {home.as_posix()}: held open"\n'), (code, output))
 
-    def test_the_commands_that_make_no_home_take_no_skill_and_no_home_option(self) -> None:
-        for arguments, message in (
-            (["--changed-since", "v1", "review-prs"], "--changed-since takes no SKILL"),
-            (["--changed-since", "--keep-home"], "--changed-since makes no home, so it takes no other home option"),
-            (["--remove-home", "x", "--keep-home"], "--remove-home makes no home, so it takes no other home option"),
-            (
-                ["--remove-home", "x", "--changed-since"],
-                "--remove-home makes no home, so it takes no other home option",
-            ),
-            (["--changed-since=--all"], "--changed-since takes a commit, not an option: --all"),
-        ):
-            with self.subTest(arguments=arguments):
-                output = io.StringIO()
-                with (
-                    mock.patch("tempfile.mkdtemp", side_effect=AssertionError("made a home")),
-                    contextlib.redirect_stderr(output),
-                    self.assertRaises(SystemExit) as raised,
-                ):
-                    runtime_canary.main(arguments)
-                self.assertEqual(2, raised.exception.code)
-                self.assertIn(message, output.getvalue())
-
 
 class ChangedSkillsTests(RuntimeCanaryTestCase):
     def make_changing_source(self) -> Path:
@@ -2165,3 +2119,79 @@ class ChangedSkillsTests(RuntimeCanaryTestCase):
             ),
             listed(),
         )
+
+
+HOME_STATE = Path(".runtime-canary")
+
+
+@pytest.fixture
+def unclaimed_home() -> Iterator[Path]:
+    """A folder named and placed as the canary names and places its homes, but made here."""
+    home = Path(tempfile.mkdtemp(prefix="runtime-canary-")).resolve()
+    yield home
+    shutil.rmtree(home, ignore_errors=True)
+
+
+@pytest.mark.parametrize(
+    "prepare",
+    [
+        pytest.param(lambda home: None, id="no marker"),
+        pytest.param(
+            lambda home: (home / HOME_STATE / "home.json").write_text(
+                json.dumps({"made_by": "tools/runtime_canary.py", "home": forward(home.parent / "elsewhere")}),
+                encoding="utf-8",
+            ),
+            id="a marker naming another home",
+        ),
+        pytest.param(
+            lambda home: (home / HOME_STATE / "home.json").write_text("{", encoding="utf-8"),
+            id="a marker that is not JSON",
+        ),
+        pytest.param(lambda home: (home / HOME_STATE / "home.json").mkdir(), id="a marker that is a folder"),
+    ],
+)
+def test_a_folder_named_like_a_home_without_the_marker_naming_it_is_refused_and_kept(
+    unclaimed_home: Path, prepare: Callable[[Path], object]
+) -> None:
+    home = unclaimed_home
+    (home / HOME_STATE).mkdir()
+    (home / "notes.txt").write_text("someone's notes\n", encoding="utf-8")
+    prepare(home)
+    code, output = remove_home(str(home))
+    CHECK.assertEqual(
+        (
+            1,
+            f'FAILED "{home.as_posix()} holds no .runtime-canary/home.json naming it, so the canary did not make it"\n',
+        ),
+        (code, output),
+    )
+    CHECK.assertEqual("someone's notes\n", (home / "notes.txt").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        (["--changed-since", "v1", "review-prs"], "--changed-since takes no SKILL"),
+        (["--changed-since", "--keep-home"], "--changed-since makes no home, so it takes no other home option"),
+        (["--remove-home", "x", "--keep-home"], "--remove-home makes no home, so it takes no other home option"),
+        (["--remove-home", "x", "--changed-since"], "--remove-home makes no home, so it takes no other home option"),
+        (["--changed-since=--all"], "--changed-since takes a commit, not an option: --all"),
+    ],
+    ids=[
+        "changed-since with a skill",
+        "changed-since with keep-home",
+        "remove-home with keep-home",
+        "remove-home with changed-since",
+        "changed-since given an option",
+    ],
+)
+def test_the_commands_that_make_no_home_take_no_skill_and_no_home_option(arguments: list[str], message: str) -> None:
+    output = io.StringIO()
+    with (
+        mock.patch("tempfile.mkdtemp", side_effect=AssertionError("made a home")),
+        contextlib.redirect_stderr(output),
+        CHECK.assertRaises(SystemExit) as raised,
+    ):
+        runtime_canary.main(arguments)
+    CHECK.assertEqual(2, raised.exception.code)
+    CHECK.assertIn(message, output.getvalue())

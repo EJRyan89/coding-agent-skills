@@ -10,40 +10,37 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 from repository_hygiene import hub_guard_matcher_problems, private_references, tracked_settings_problems
 
+# Runs no test of its own; the test functions below check through its assertions, as the class does.
+CHECK = unittest.TestCase()
+
+# Pinned here as literals, not read back from the policy's constants.
+SCHEMA = "https://json.schemastore.org/claude-code-settings.json"
+ATTRIBUTION_OFF = {"commit": "", "pr": "", "sessionUrl": False}
+
 
 class RepositoryHygieneFixtures(unittest.TestCase):
     def test_tracked_settings_policy_pins_the_keys_the_schema_and_no_attribution(self) -> None:
-        # Pinned here as literals, not read back from the policy's constants.
-        schema = "https://json.schemastore.org/claude-code-settings.json"
-        off = {"commit": "", "pr": "", "sessionUrl": False}
-        self.assertEqual([], tracked_settings_problems({"$schema": schema, "hooks": {}, "attribution": off}))
-        self.assertEqual([], tracked_settings_problems({"attribution": off}))
+        self.assertEqual(
+            [], tracked_settings_problems({"$schema": SCHEMA, "hooks": {}, "attribution": ATTRIBUTION_OFF})
+        )
+        self.assertEqual([], tracked_settings_problems({"attribution": ATTRIBUTION_OFF}))
         self.assertEqual(
             ["tracked settings may not set model", "tracked settings may not set permissions"],
-            tracked_settings_problems({"attribution": off, "permissions": {"allow": ["Bash"]}, "model": "opus"}),
+            tracked_settings_problems(
+                {"attribution": ATTRIBUTION_OFF, "permissions": {"allow": ["Bash"]}, "model": "opus"}
+            ),
         )
         self.assertEqual(
-            ["$schema is 'https://example.com/other.json', not " + schema],
-            tracked_settings_problems({"$schema": "https://example.com/other.json", "attribution": off}),
+            ["$schema is 'https://example.com/other.json', not " + SCHEMA],
+            tracked_settings_problems({"$schema": "https://example.com/other.json", "attribution": ATTRIBUTION_OFF}),
         )
-        for attribution in (
-            None,
-            {"commit": "", "pr": ""},
-            {"commit": "Co-Authored-By: someone", "pr": "", "sessionUrl": False},
-            {"commit": "", "pr": "Generated", "sessionUrl": False},
-            {"commit": "", "pr": "", "sessionUrl": True},
-            {"commit": "", "pr": "", "sessionUrl": False, "extra": 1},
-        ):
-            with self.subTest(attribution=attribution):
-                settings: dict[str, object] = {"hooks": {}}
-                if attribution is not None:
-                    settings["attribution"] = attribution
-                self.assertEqual([f"attribution is {attribution!r}, not {off!r}"], tracked_settings_problems(settings))
 
     def test_hub_guard_matcher_policy_detects_a_missing_tool_or_hook(self) -> None:
         command = 'python -B "$CLAUDE_PROJECT_DIR/tools/worktrees.py" guard'
@@ -109,3 +106,21 @@ class RepositoryHygieneFixtures(unittest.TestCase):
                 ],
                 private_references(root, [root / name for name in samples]),
             )
+
+
+@pytest.mark.parametrize(
+    "attribution",
+    [
+        pytest.param(None, id="missing"),
+        pytest.param({"commit": "", "pr": ""}, id="no session link setting"),
+        pytest.param({"commit": "Co-Authored-By: someone", "pr": "", "sessionUrl": False}, id="commit trailer"),
+        pytest.param({"commit": "", "pr": "Generated", "sessionUrl": False}, id="pull request footer"),
+        pytest.param({"commit": "", "pr": "", "sessionUrl": True}, id="session link"),
+        pytest.param({"commit": "", "pr": "", "sessionUrl": False, "extra": 1}, id="extra key"),
+    ],
+)
+def test_tracked_settings_with_any_other_attribution_fail(attribution: dict[str, object] | None) -> None:
+    settings: dict[str, object] = {"hooks": {}}
+    if attribution is not None:
+        settings["attribution"] = attribution
+    CHECK.assertEqual([f"attribution is {attribution!r}, not {ATTRIBUTION_OFF!r}"], tracked_settings_problems(settings))
