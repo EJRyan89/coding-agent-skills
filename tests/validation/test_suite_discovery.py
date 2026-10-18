@@ -43,7 +43,9 @@ from validation_support import REPOSITORY_ROOT, SUITE_NAME_PATTERNS, is_test_scr
 
 def run_pytest(suite: Path, *options: str) -> subprocess.CompletedProcess[str]:
     """Run a fixture suite as the runner runs a suite, from the repository root, with its conftest.py as a plugin,
-    since a suite outside the repository is outside the root that loads it."""
+    since a suite outside the repository is outside the root that loads it. A pytest.ini beside the suite makes its
+    folder the run's root, so pytest reads no folder above it, where other tests' temporary folders come and go."""
+    (suite.parent / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
     return subprocess.run(
         [*pytest_command(str(suite), *options), "-p", "conftest", "-p", "no:cacheprovider"],
         capture_output=True,

@@ -37,7 +37,8 @@ from job_selection import (
     stale_job_seconds_problems,
     suites_naming,
 )
-from validation_support import REPOSITORY_ROOT
+from suite_discovery import regression_suites
+from validation_support import REPOSITORY_ROOT, relative
 
 
 def fixture_job(label: str, weight: float) -> Job:
@@ -428,6 +429,7 @@ class ChangedSelectionFixtures(unittest.TestCase):
             "deploy.py",
             "skills/skill-core/scripts/pdf_tool.py",
             "tests/validation/toolchain.py",
+            "conftest.py",
             "requirements-dev.txt",
         ]
         suites = [
@@ -458,6 +460,12 @@ class ChangedSelectionFixtures(unittest.TestCase):
             names,
         )
         self.assertNotIn("tests/deployer/test_plan.py", names)
+
+    def test_a_change_to_the_root_conftest_selects_every_python_suite_and_no_shell_suite(self) -> None:
+        names = {job.name for job in changed_jobs(REPOSITORY_ROOT, ["conftest.py"])}
+        python_suites = {relative(suite) for suite in regression_suites() if suite.suffix == ".py"}
+        self.assertLessEqual(python_suites, names)
+        self.assertNotIn("skills/update-coding-agent-skills/scripts/test_update.sh", names)
 
     def test_a_change_to_a_skills_metadata_selects_the_deployer_suites_that_read_it_in_this_repository(self) -> None:
         names = {job.name for job in changed_jobs(REPOSITORY_ROOT, ["deploy-meta/review-prs.json"])}

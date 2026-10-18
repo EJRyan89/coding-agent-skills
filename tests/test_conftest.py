@@ -106,7 +106,10 @@ def maintenance_started(trace: Path) -> list[list[str]]:
 
 def run_child(suite: Path, plugin: bool = True, environment: Mapping[str, str] | None = None) -> int:
     """Run a child suite through pytest from the repository root, with the root conftest.py as a plugin or without it,
-    since a suite outside the repository is outside the root that loads it, and return pytest's exit code."""
+    since a suite outside the repository is outside the root that loads it, and return pytest's exit code. A pytest.ini
+    beside the suite makes its folder the run's root, so pytest reads no folder above it, where other tests' temporary
+    folders come and go."""
+    (suite.parent / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
     plugin_options = ["-p", "conftest"] if plugin else []
     ran = subprocess.run(
         [sys.executable, "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider", *plugin_options, str(suite)],
