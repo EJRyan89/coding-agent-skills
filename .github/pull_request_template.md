@@ -40,7 +40,7 @@ None
 - [ ] For a change to a skill's prompt, model guidance, or reviewer instructions, the `evaluate-skill` run is cited below with its table, and `docs/skill-evaluations.md` holds its result
 - [ ] For a skill change, `analyze-skill-cost` audited each changed skill from the source tree with no MUST FIX left; any SUGGESTION left is named below with why
 - [ ] For a contract change, an entry under `## Upgrade note` above names each changed contract item
-- [ ] The `Mutation gate` job's summary is cited below with each changed module's kill ratio, and each surviving mutant on a changed line is killed by a new test or named with why it cannot be
+- [ ] The `Mutation gate` job's summary is cited below with each changed module's kill ratio, and a surviving mutant on a changed line that alters behavior a caller relies on is killed by a new test
 - [ ] Documentation updated in this change
 - [ ] Diff reviewed for personal paths, organization names, credentials, and generated artifacts
 

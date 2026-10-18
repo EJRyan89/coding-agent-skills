@@ -34,6 +34,7 @@ from tools.mutation_gate import (
     SuiteRunner,
     changed_lines,
     code,
+    counts,
     coverage_settings,
     describe,
     executed_lines,
@@ -105,6 +106,8 @@ class MutantFixtures(unittest.TestCase):
         self.assertEqual("`a + 1`", code("a + 1"))
         self.assertEqual("``print(`x`)``", code("print(`x`)"))
         self.assertEqual("`` `x` ``", code("`x`"))
+        self.assertEqual("`` `x ``", code("`x"))
+        self.assertEqual("`` x` ``", code("x`"))
 
 
 class ReachFixtures(unittest.TestCase):
@@ -233,6 +236,19 @@ class SummaryFixtures(unittest.TestCase):
         self.assertIn("`tests/broken.py` failed unmutated with exit code 1, so no mutant ran against it.", text)
         self.assertIn("left these suites' reach unmeasured, so no mutant ran against them: `tests/late.py`.", text)
         self.assertNotIn("cut", text.split("Kill ratio")[1].split("###")[0].replace("unmutated", ""))
+
+    def test_every_outcome_is_counted_and_survivors_are_counted_and_marked_one_by_one(self) -> None:
+        outcomes = [
+            Outcome(mutant(1), KILLED, ("t",)),
+            Outcome(mutant(2), KILLED, ("t",)),
+            Outcome(mutant(3, changed=True), SURVIVED, ("t",)),
+            Outcome(mutant(5), SURVIVED, ("t",)),
+        ]
+        self.assertEqual({KILLED: 2, TIMED_OUT: 0, SURVIVED: 2, NOT_REACHED: 0, NOT_RUN: 0}, counts(outcomes))
+        text = summary(self.report(outcomes))
+        self.assertIn("### `tools/calc.py`: 2 surviving mutants", text)
+        self.assertIn("- Line 3 (a line this pull request changed): `line 3`", text)
+        self.assertIn("- Line 5: `line 5` became `mutated 5`; passed `t`", text)
 
     def test_the_summary_says_when_the_cap_cut_a_module_short(self) -> None:
         text = summary(self.report([Outcome(mutant(1), KILLED, ("t",)), Outcome(mutant(2), NOT_RUN)], cut_short=True))
