@@ -21,7 +21,7 @@ from harness import (
     remove_directory_link,
 )
 
-from deployer import fsops, hashing
+from deployer import fsops, hashing, render
 from deployer.errors import DeployError
 from deployer.paths import validate_managed_roots
 
@@ -1052,6 +1052,63 @@ class CaseVariantOwnershipTests(DeployerTestCase):
         self.make_skill("alpha", "Alpha", shared_deps=["Guide.md", "guide.md"])
         self.deploy_fails("--all", pattern="ERROR: Shared asset 'guide.md' collides with shared asset 'Guide.md'")
         self.assertFalse(self.manifest_file.exists())
+
+
+class ShippedFileTests(DeployerTestCase):
+    """A skill deploys without its regression suites, which run from the source tree in validation."""
+
+    SHIPPED = ("SKILL.md", "scripts/lib/helper.py", "scripts/testing.py", "scripts/tool.py")
+    SUITES = (
+        "scripts/Tool_Test.PY",
+        "scripts/lib/test_helper.py",
+        "scripts/test-tool.sh",
+        "scripts/test_tool.py",
+        "scripts/tool-test.py",
+        "scripts/tool.test.ps1",
+    )
+
+    def make_skill_with_suites(self) -> None:
+        self.make_source_json()
+        directory = self.make_skill("alpha", "Alpha")
+        for relative in (*self.SHIPPED[1:], *self.SUITES):
+            shebang = "#!/usr/bin/env bash\n" if relative.endswith(".sh") else ""
+            text = "print('alpha')\n" if relative.casefold().endswith(".py") else f"{shebang}exit 0\n"
+            self.write(directory / relative, text)
+        self.make_config()
+
+    def deployed_files(self) -> list[str]:
+        return sorted(hashing.read_tree(self.skills_dir / "alpha"))
+
+    def test_a_deployed_skill_carries_its_files_but_not_its_suites(self) -> None:
+        self.make_skill_with_suites()
+        self.deploy_ok("--all")
+        self.assertEqual(sorted(self.SHIPPED), self.deployed_files())
+        self.assertEqual(hashing.hash_path(self.skills_dir / "alpha"), self.owned("skills")["alpha"]["hash"])
+        self.assertEqual(
+            {"UNCHANGED": ["alpha"]}, self.report_groups(self.deploy_ok("--dry-run", "--all").output, "DRY RUN")
+        )
+        self.assertTrue(
+            (self.source / "skills" / "alpha" / "scripts" / "test_tool.py").is_file(), "the source keeps it"
+        )
+
+    def test_a_deployment_that_shipped_suites_updates_to_one_without_them_and_uninstalls_clean(self) -> None:
+        self.make_skill_with_suites()
+        # A release before suites stopped shipping deployed every file under the skill's directory.
+        with mock.patch.object(render, "shipped_files", hashing.read_tree):
+            self.deploy_ok("--all")
+        self.assertEqual(sorted((*self.SHIPPED, *self.SUITES)), self.deployed_files())
+        preview = self.deploy_ok("--dry-run", "--all")
+        self.assertEqual({"UPDATE": ["alpha"]}, self.report_groups(preview.output, "DRY RUN"))
+        result = self.deploy_ok("--all")
+        self.assertEqual({"UPDATED": ["alpha"]}, self.report_groups(result.output, "DEPLOYED"))
+        self.assertEqual(sorted(self.SHIPPED), self.deployed_files())
+        self.assertEqual(hashing.hash_path(self.skills_dir / "alpha"), self.owned("skills")["alpha"]["hash"])
+        removed = self.deploy_ok("--uninstall")
+        self.assertEqual(
+            {"REMOVED": ["alpha (deselected or absent from source)"]}, self.report_groups(removed.output, "DEPLOYED")
+        )
+        self.assertFalse((self.skills_dir / "alpha").exists())
+        self.assertEqual({}, self.owned("skills"))
 
 
 if __name__ == "__main__":

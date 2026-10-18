@@ -152,7 +152,7 @@ VALIDATION_FLOORS: dict[str, tuple[int, ...]] = {
     "ShellCheck": (0, 9, 0),
     "PSScriptAnalyzer": (1, 25, 0),
     "PowerShell 7 (pwsh)": (7, 0),
-    "ruff": (0, 17, 0),
+    "ruff": (0, 17, 1),
     "mypy": (2, 4, 0),
 }
 
@@ -257,7 +257,7 @@ class ToolchainPolicies(unittest.TestCase):
                 "ShellCheck": (0, 9, 0),
                 "PSScriptAnalyzer": (1, 25, 0),
                 "PowerShell 7 (pwsh)": (7, 0),
-                "ruff": (0, 17, 0),
+                "ruff": (0, 17, 1),
                 "mypy": (2, 4, 0),
             },
             VALIDATION_FLOORS,
@@ -268,7 +268,7 @@ class ToolchainPolicies(unittest.TestCase):
             "| ShellCheck | 0.9.0 |",
             "| PSScriptAnalyzer | 1.25.0 |",
             "| PowerShell 7 (`pwsh`) | 7.0 |",
-            "| ruff | 0.17.0 |",
+            "| ruff | 0.17.1 |",
             "| mypy | 2.4.0 |",
         ):
             with self.subTest(row=row):
@@ -296,7 +296,7 @@ class ToolchainPolicies(unittest.TestCase):
         self.assertIn("python -m pip install -r requirements-dev.txt", workflow)
         self.assertIn("python -m mypy --version", workflow)
         requirements = (REPOSITORY_ROOT / "requirements-dev.txt").read_text(encoding="utf-8")
-        self.assertEqual(["ruff==0.17.0", "mypy==2.4.0"], [line for line in requirements.splitlines() if "==" in line])
+        self.assertEqual(["ruff==0.17.1", "mypy==2.4.0"], [line for line in requirements.splitlines() if "==" in line])
         # Every other line is a comment or blank, and the packages are the two the dependency document lists.
         self.assertEqual(("ruff", "mypy"), DEVELOPMENT_PACKAGES)
         self.assertEqual([], requirements_problems(requirements, DEVELOPMENT_PACKAGES))

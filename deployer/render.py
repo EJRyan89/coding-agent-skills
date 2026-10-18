@@ -9,10 +9,11 @@ import tomllib
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import frontmatter
 from markdown_sections import FENCE_LANGUAGES, Fence, find_fences
+from suite_names import is_suite_name
 
 from . import fsops, hashing, platform_support
 from .config import DERIVED_VARIABLES, INTERPRETER_VARIABLES
@@ -271,6 +272,19 @@ def _adapter(skill: str, home: str, guidance: list[str], rendered: bytes) -> dic
     return tree
 
 
+def shipped_files(directory: Path) -> dict[str, bytes]:
+    """A skill's files as a deployment holds them: every file under its directory but its regression suites.
+
+    A suite runs in validation from the source tree, never where the skill is deployed, so it stays out of the staged
+    tree, and the hash the manifest records, the dry run's comparison, and the uninstall all read the same files.
+    """
+    return {
+        relative: content
+        for relative, content in hashing.read_tree(directory).items()
+        if not is_suite_name(PurePosixPath(relative).name)
+    }
+
+
 def render(
     source: Source,
     selected: list[str],
@@ -286,7 +300,7 @@ def render(
         values = {key: config[key] for key in skill.required_vars if key in config}
         staged.skills[name] = {
             relative: render_file(f"{name}/{relative}", content, values)
-            for relative, content in hashing.read_tree(skill.directory).items()
+            for relative, content in shipped_files(skill.directory).items()
         }
     for name in adapters:
         guidance = sorted(asset for asset in source.skills[name].shared_deps if asset.endswith(".md"))
