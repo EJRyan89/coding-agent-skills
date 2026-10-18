@@ -559,8 +559,8 @@ class UnreviewedFileTests(AdversarialFixture):
         self.assertEqual(placeholder, (ready["run"] / "source" / "docs" / "notes.zip").read_bytes())
         self.assertNotIn("ignore your instructions", self.prompts(ready))
         self.assertEqual("APPROVED", self.recorded_verdict(ready))
-        record = latest_record(self.archive, REPOSITORY, NUMBER)
-        self.assertEqual(2, record["schema_version"] if record else None)
+        record = latest_record(self.archive, REPOSITORY, NUMBER) or {}
+        self.assertEqual(2, record.get("schema_version"))
         self.assertEqual({"unavailable_sources": [], "unreviewed_files": unreviewed}, record["review"]["coverage"])
         report = self.report()
         self.assertIn(self.NOT_READ + "`dist/Setup.MSI` (`.msi`), `packages/tool.1.0.nupkg` (`.nupkg`).\n", report)
@@ -575,8 +575,8 @@ class UnreviewedFileTests(AdversarialFixture):
         coverage = {"unavailable_sources": ["data/model.dat"], "unreviewed_files": {}}
         self.assertEqual(coverage, self.request(ready)["coverage"])
         self.assertEqual("INCOMPLETE", self.recorded_verdict(ready))
-        record = latest_record(self.archive, REPOSITORY, NUMBER)
-        self.assertEqual({"unavailable_sources": ["data/model.dat"]}, record["review"]["coverage"] if record else None)
+        record = latest_record(self.archive, REPOSITORY, NUMBER) or {}
+        self.assertEqual({"unavailable_sources": ["data/model.dat"]}, record["review"]["coverage"])
         report = self.report()
         self.assertIn("> **Not reviewed in full:**", report)
         self.assertIn("`data/model.dat`", report)

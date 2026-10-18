@@ -1212,7 +1212,7 @@ REJECTED: list[Case] = [
             F,
             _wrong(f"{FIELD}.unreviewed_suffixes", "an array of at most 100 items", value),
         )
-        for name, value in [("null", None), ("a string", ".zip"), ("an object", {})]
+        for name, value in NOT_ARRAYS
     ],
     (
         "unreviewed_suffixes of 101 suffixes",
