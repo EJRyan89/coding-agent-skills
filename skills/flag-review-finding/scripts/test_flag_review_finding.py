@@ -20,8 +20,8 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("code-review-core")))
 
-import review_fixture
 import review_flags
+import test_review_fixture as review_fixture
 from flag_review_finding import flag_line, main
 from review_archive import ArchiveError, ArchiveFieldError, pull_directory
 from review_config import write_config

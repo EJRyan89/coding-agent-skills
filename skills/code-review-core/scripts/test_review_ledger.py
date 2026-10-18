@@ -14,7 +14,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import review_fixture
+import test_review_fixture as review_fixture
 from review_archive import archive_head, commit_record, current_ledger, pull_directory, pull_records, record_paths
 from review_operation import archive_base, commit_adapter_result, reviewed_head
 from review_records import (

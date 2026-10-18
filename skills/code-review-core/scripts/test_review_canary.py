@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 import git_client
 import review_canary
-import review_fixture
+import test_review_fixture as review_fixture
 from git_client import subprocess_runner
 from review_canary import FixtureError, FixtureFieldError, fixture_change, validate_fixture_pull, validate_prior_record
 from review_operation import PULL_FIELDS, validate_canary_pull
