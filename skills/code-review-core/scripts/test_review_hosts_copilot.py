@@ -25,7 +25,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 import job_tree
 import review_hosts
 from git_client import GitClient
-from git_test_base import GitTestCase
 from review_hosts import HostSuperseded, ProcessResult, run_copilot
 from review_runtime import RuntimeContractError, RuntimeContractFieldError, stamp_source_snapshot
 from review_specialists import render_entrypoint_prompt
@@ -486,7 +485,7 @@ STAGE_NAMES = [
 ]
 
 
-class CopilotHostTests(GitTestCase):
+class CopilotHostTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="copilot-host-")
         self.addCleanup(temporary.cleanup)
@@ -955,7 +954,7 @@ MATERIALIZATION_KINDS: list[tuple[str, Any, str]] = [
 ]
 
 
-class MaterializationRecordTests(GitTestCase):
+class MaterializationRecordTests(unittest.TestCase):
     """materialized_reviewer_entrypoint, the Copilot host's reader of the trusted reviewer's materialization record."""
 
     def setUp(self) -> None:
@@ -985,7 +984,7 @@ def run_directory_files(paths: dict[str, Path]) -> list[str]:
     return sorted(path.name for path in paths["run"].iterdir() if path.is_file())
 
 
-class CopilotProcessTests(GitTestCase):
+class CopilotProcessTests(unittest.TestCase):
     """The real runner, with a Python program standing in for Copilot CLI: what it reads, keeps, and leaves behind."""
 
     def setUp(self) -> None:
@@ -1185,7 +1184,3 @@ class CopilotProcessTests(GitTestCase):
             )
             self.assertEqual(1, len(processes))
             self.assertIsNotNone(processes[0].returncode, "Copilot was ended and reaped before the refusal")
-
-
-if __name__ == "__main__":
-    unittest.main()

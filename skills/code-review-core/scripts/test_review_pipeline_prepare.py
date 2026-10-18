@@ -33,7 +33,6 @@ import review_pipeline as rp
 import review_runtime
 import review_specialists
 from git_client import GitResult, subprocess_runner
-from git_test_base import GitTestCase
 from github_client import CommandResult
 from review_archive import commit_record, pull_directory
 from review_config import ConfigurationError, write_config
@@ -369,7 +368,7 @@ class RecordingTarball:
         target.write_bytes(gzip.compress(buffer.getvalue(), compresslevel=1))
 
 
-class PrepareFixture(GitTestCase):
+class PrepareFixture(unittest.TestCase):
     maxDiff = None
 
     def setUp(self) -> None:
@@ -2647,7 +2646,3 @@ class NoteOrderTests(PrepareFixture):
             ],
             result["notes"],
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

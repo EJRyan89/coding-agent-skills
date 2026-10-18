@@ -27,7 +27,6 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
-from git_test_base import GitTestCase
 
 from deployer import discovery, platform_support, runtime_support
 from deployer import source as deploy_source
@@ -191,7 +190,7 @@ def running(pid_file: Path) -> bool:
     return platform_support.process_status(int(pid_file.read_text(encoding="utf-8"))).alive
 
 
-class RuntimeCanaryTestCase(GitTestCase):
+class RuntimeCanaryTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="runtime-canary-test.")
         self.root = Path(self._temporary.name).resolve()
@@ -413,7 +412,7 @@ class DeploymentTests(RuntimeCanaryTestCase):
         self.assertIn("unknown skill: no-such-skill", output.getvalue())
 
 
-class LookupTests(GitTestCase):
+class LookupTests(unittest.TestCase):
     def test_a_runtime_is_looked_up_where_check_and_verify_look_for_it(self) -> None:
         # skill-core's locator through the deployer, so a runtime only in WinGet's Links folder is checked too.
         self.assertIs(
@@ -440,7 +439,7 @@ REPOSITORY_SELECTING = (
 )
 
 
-class EnvironmentTests(GitTestCase):
+class EnvironmentTests(unittest.TestCase):
     def test_a_runtime_sees_no_repository_selecting_variable_the_shell_exported(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary)
@@ -455,7 +454,7 @@ class EnvironmentTests(GitTestCase):
         self.assertLessEqual({"GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "PYTHONPATH"}, seen)
 
 
-class RunProcessTests(GitTestCase):
+class RunProcessTests(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="runtime-canary-test.")
         self.addCleanup(self._temporary.cleanup)
@@ -508,7 +507,7 @@ class RunProcessTests(GitTestCase):
         self.assertEqual(Completed(0, "one\ntwo\n\ufffd", "warn"), completed)
 
 
-class RemoveHomeTests(GitTestCase):
+class RemoveHomeTests(unittest.TestCase):
     # The skill deletes the home through the script, which its allowed-tools already grant, rather than through a
     # prefix grant on rm that would approve deleting any directory.
     def remove(self, *arguments: str) -> tuple[int, str]:
@@ -1908,7 +1907,7 @@ class RecordTests(RuntimeCanaryTestCase):
                 self.assertEqual(expected, runtime_canary.placeholders(line, paths))
 
 
-class FinishTests(GitTestCase):
+class FinishTests(unittest.TestCase):
     def finish(self, code: int, *arguments: str) -> tuple[Path, int, str]:
         """main's run with the canary itself replaced by one that exits with `code`, in a home the canary made."""
         home = runtime_canary.create_home()
@@ -2166,7 +2165,3 @@ class ChangedSkillsTests(RuntimeCanaryTestCase):
             ),
             listed(),
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

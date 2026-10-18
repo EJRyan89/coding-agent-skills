@@ -21,7 +21,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-c
 
 import audit_repository as audit
 from git_client import GitClient, GitError, GitResult, subprocess_runner
-from git_test_base import GitTestCase
 from github_client import Backoff, CommandResult, GitHubClient
 
 SCRIPT = Path(__file__).resolve().parent / "audit_repository.py"
@@ -62,7 +61,7 @@ FIRST_RELEASE = {
 }
 
 
-class AuditTestCase(GitTestCase):
+class AuditTestCase(unittest.TestCase):
     """A test whose fixture repositories start on main."""
 
     git_config = GIT_CONFIG
@@ -1021,7 +1020,3 @@ class CommandLineTests(Fixture):
                 result = subprocess.run([sys.executable, "-B", str(SCRIPT), *arguments], capture_output=True)
                 self.assertEqual(2, result.returncode)
                 self.assertEqual(b"", result.stdout)
-
-
-if __name__ == "__main__":
-    unittest.main()

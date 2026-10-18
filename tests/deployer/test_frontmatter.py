@@ -12,7 +12,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 
 import frontmatter
 from frontmatter import FrontmatterError
-from git_test_base import GitTestCase
 
 from deployer import render, source
 
@@ -23,7 +22,7 @@ def parse(block: str) -> frontmatter.Frontmatter:
     return frontmatter.parse(f"---\n{block}\n---\nBody.\n")
 
 
-class HomeTests(GitTestCase):
+class HomeTests(unittest.TestCase):
     def test_the_deployer_reads_frontmatter_from_this_checkouts_skill_core(self) -> None:
         # deployer/__init__.py locates skill-core from its own file, never through the configured source path, so the
         # deployer, the tools, and the skills share one module object and one FrontmatterError.
@@ -34,7 +33,7 @@ class HomeTests(GitTestCase):
         self.assertFalse((REPOSITORY_ROOT / "deployer" / "frontmatter.py").exists())
 
 
-class ScalarTests(GitTestCase):
+class ScalarTests(unittest.TestCase):
     def test_plain_and_quoted_scalars(self) -> None:
         cases = {
             "key: Run the report.": "Run the report.",
@@ -81,7 +80,7 @@ class ScalarTests(GitTestCase):
                 self.assertEqual(expected, parse(block).value("key"))
 
 
-class SequenceTests(GitTestCase):
+class SequenceTests(unittest.TestCase):
     def test_flow_and_block_sequences(self) -> None:
         cases = {
             'key: ["Bash", "Read"]': ["Bash", "Read"],
@@ -100,7 +99,7 @@ class SequenceTests(GitTestCase):
             parse("key: [a]").string("key")
 
 
-class RefusalTests(GitTestCase):
+class RefusalTests(unittest.TestCase):
     def test_unsupported_forms_are_refused_when_read(self) -> None:
         cases = {
             "key:\n  nested: value": "nested mapping",
@@ -235,7 +234,7 @@ class RefusalTests(GitTestCase):
         self.assertNotIn("absent", document)
 
 
-class DocumentTests(GitTestCase):
+class DocumentTests(unittest.TestCase):
     def test_split_finds_the_body(self) -> None:
         self.assertEqual((["name: a"], 3), frontmatter.split(["---", "name: a", "---", "Body."]))
         self.assertIsNone(frontmatter.split(["Body only."]))
@@ -256,7 +255,3 @@ class DocumentTests(GitTestCase):
             path.write_text("No frontmatter.\n", encoding="utf-8")
             with self.assertRaisesRegex(FrontmatterError, "no frontmatter"):
                 frontmatter.read(path)
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -902,7 +902,3 @@ class MainTests(unittest.TestCase):
         )
         self.assertEqual(1, result.returncode, result.stderr.decode("utf-8", "replace"))
         self.assertEqual(["FAILED gh: HTTP 500: proxy → upstream ✓ [api]"], result.stdout.decode("utf-8").splitlines())
-
-
-if __name__ == "__main__":
-    unittest.main()

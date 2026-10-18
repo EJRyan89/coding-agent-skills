@@ -203,7 +203,3 @@ class ExpansionTests(unittest.TestCase):
         )
         self.assertEqual(("/repo",), found)
         self.assertEqual(("",), self.expand("$([MSBuild]::GetPathOfFileAbove('Absent.props', '/repo'))"))
-
-
-if __name__ == "__main__":
-    unittest.main()

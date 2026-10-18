@@ -15,7 +15,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 import python_checks
-from git_test_base import GitTestCase
 from job_selection import all_jobs
 from python_checks import (
     FORMAT_ROOTS,
@@ -38,7 +37,7 @@ from validation_support import REPOSITORY_ROOT, SKILLS_ROOT, relative, write_fix
 from deployer import platform_support
 
 
-class PythonChecksFixtures(GitTestCase):
+class PythonChecksFixtures(unittest.TestCase):
     def setUp(self) -> None:
         super().setUp()
         # The fixtures name Windows' install commands on every platform; test_platform_support pins each platform's.
@@ -62,7 +61,9 @@ class PythonChecksFixtures(GitTestCase):
             self.assertIn("python -m ruff format", message)
 
     def test_format_check_covers_every_python_root(self) -> None:
-        self.assertEqual(("deployer", "tools", "tests", "skills", ".claude/skills", "deploy.py"), FORMAT_ROOTS)
+        self.assertEqual(
+            ("deployer", "tools", "tests", "skills", ".claude/skills", "deploy.py", "conftest.py"), FORMAT_ROOTS
+        )
         self.assertIn("static format check (ruff format --check)", [job.name for job in all_jobs()])
 
     def test_lint_check_names_an_unused_import(self) -> None:
@@ -86,7 +87,7 @@ class PythonChecksFixtures(GitTestCase):
         with mock.patch.object(python_checks, "ruff_lint_check") as lint:
             jobs["static lint check (ruff check)"].run()
         lint.assert_called_once_with(
-            REPOSITORY_ROOT, ["deployer", "tools", "tests", "skills", ".claude/skills", "deploy.py"]
+            REPOSITORY_ROOT, ["deployer", "tools", "tests", "skills", ".claude/skills", "deploy.py", "conftest.py"]
         )
 
     def test_missing_mypy_is_reported_with_the_install_command(self) -> None:
@@ -130,10 +131,12 @@ class PythonChecksFixtures(GitTestCase):
         configuration = REPOSITORY_ROOT / "pyproject.toml"
         with mock.patch.object(python_checks, "mypy_type_check") as check:
             jobs = {job.name: job for job in all_jobs()}
-            core = "static type check (mypy deployer, tools, deploy.py, tests)"
+            core = "static type check (mypy deployer, tools, deploy.py, tests, conftest.py)"
             self.assertIn(core, jobs)
             jobs[core].run()
-            check.assert_called_once_with(REPOSITORY_ROOT, ["deployer", "tools", "deploy.py", "tests"], configuration)
+            check.assert_called_once_with(
+                REPOSITORY_ROOT, ["deployer", "tools", "deploy.py", "tests", "conftest.py"], configuration
+            )
             # Each skill whose scripts/ holds a module is its own root, checked from inside it as the skill imports.
             roots = type_check_skill_roots()
             self.assertIn(SKILLS_ROOT / "code-review-core" / "scripts", roots)
@@ -427,7 +430,3 @@ class PythonChecksFixtures(GitTestCase):
                 ],
                 mypy_path_problems(root, sorted(root.rglob("*"))),
             )
-
-
-if __name__ == "__main__":
-    unittest.main()

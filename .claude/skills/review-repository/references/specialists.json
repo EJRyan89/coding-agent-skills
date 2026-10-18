@@ -72,7 +72,7 @@
       "include": [
         "(?i)^tests/validation/",
         "(?i)^tests/run_validation\\.py$",
-        "(?i)^tests/run_shard\\.py$",
+        "(?i)^conftest\\.py$",
         "(?i)^pyproject\\.toml$"
       ],
       "exclude": [],

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import unittest
-
 from harness import DeployerTestCase, forward
 
 
@@ -49,7 +47,3 @@ class PromptStreamTests(DeployerTestCase):
                 self.assertNotIn(prompt, out)
                 self.assertIn(prompt, err)
         self.assertIn("=== DRY RUN ===", out)
-
-
-if __name__ == "__main__":
-    unittest.main()

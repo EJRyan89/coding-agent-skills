@@ -15,7 +15,6 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 import job_tree
-from git_test_base import GitTestCase
 from harness import (
     DEPLOY_COMMAND,
     DeployerTestCase,
@@ -84,7 +83,7 @@ class Runtimes:
         return answer
 
 
-class AdapterLineTests(GitTestCase):
+class AdapterLineTests(unittest.TestCase):
     def test_an_adapter_is_found_only_as_the_one_enabled_copy_of_its_name_in_its_own_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             ours, other = Path(temporary) / "ours", Path(temporary) / "other"
@@ -104,7 +103,7 @@ class AdapterLineTests(GitTestCase):
                     self.assertEqual(expected, verify.adapter_line("alpha", copies, ours))
 
 
-class ParsingTests(GitTestCase):
+class ParsingTests(unittest.TestCase):
     if platform_support.WINDOWS:
 
         def test_copilot_paths_are_skill_directories_with_forward_slashes(self) -> None:
@@ -676,7 +675,3 @@ class VerifyCommandTests(DeployerTestCase):
         self.assertIn("No model is started; nothing is changed.", result.output)
         self.assertEqual([], self.runtimes.calls)
         self.assertEqual(2, self.verify("--extra").code)
-
-
-if __name__ == "__main__":
-    unittest.main()

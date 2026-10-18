@@ -14,14 +14,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
-from git_test_base import GitTestCase
 from validation_support import write_fixture_tree
 from workarounds import later_comment_problems, skip_problems
 
 SUITE = "tests/test_fixture.py"
 
 
-class WorkaroundFixtures(GitTestCase):
+class WorkaroundFixtures(unittest.TestCase):
     def problems(self, files: dict[str, str]) -> tuple[list[str], list[str]]:
         """The skip and the comment problems of a fixture tree."""
         with tempfile.TemporaryDirectory() as temporary:
@@ -82,6 +81,11 @@ class WorkaroundFixtures(GitTestCase):
                     f"    @unittest.skipIf({condition}, 'not on this platform')\n    def test_a(self): ...\n"
                 )
                 self.assertEqual([], self.skips(source))
+                pytest_source = (
+                    "import os, platform, sys\nimport pytest\n"
+                    f"@pytest.mark.skipif({condition}, reason='not on this platform')\ndef test_a(): ...\n"
+                )
+                self.assertEqual([], self.skips(pytest_source))
         for condition in ("sys.platform == 'win32' or SLOW", "sys.platform == PLATFORM", "os.environ.get('CI')"):
             with self.subTest(condition=condition):
                 source = (
@@ -89,6 +93,11 @@ class WorkaroundFixtures(GitTestCase):
                     f"    @unittest.skipUnless({condition}, 'not here')\n    def test_a(self): ...\n"
                 )
                 self.assertEqual(1, len(self.skips(source)))
+                pytest_source = (
+                    "import os, sys\nfrom pytest import mark\n"
+                    f"@mark.skipif({condition}, reason='not here')\ndef test_a(): ...\n"
+                )
+                self.assertEqual(1, len(self.skips(pytest_source)))
 
     def test_a_test_a_class_body_defines_on_one_platform_passes(self) -> None:
         source = (
@@ -144,7 +153,3 @@ class WorkaroundFixtures(GitTestCase):
         )
         self.assertEqual(1, len(self.problems({"skills/a/scripts/test_x.py": later})[1]))
         self.assertEqual(1, len(self.problems({"deploy.py": later})[1]))
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -32,7 +32,7 @@ from deployer import platform_support
 
 # Every Python file under these is checked with `ruff format --check` and `ruff check`; none is excluded, since
 # pyproject.toml empties ruff's default exclusions.
-FORMAT_ROOTS = ("deployer", "tools", "tests", "skills", ".claude/skills", "deploy.py")
+FORMAT_ROOTS = ("deployer", "tools", "tests", "skills", ".claude/skills", "deploy.py", "conftest.py")
 # A noqa comment names the codes it suppresses and says why after a dash, as in `noqa: F401 - <reason>`.
 NOQA = re.compile(r"#\s*noqa\b", re.IGNORECASE)
 NOQA_WITH_REASON = re.compile(r"#\s*noqa:\s*[A-Z]+[0-9]+(?:\s*,\s*[A-Z]+[0-9]+)*\s+-\s+\S")
@@ -42,7 +42,7 @@ NOQA_CODES = re.compile(r"#\s*noqa:\s*((?:[A-Z]+[0-9]+[\s,]*)+)", re.IGNORECASE)
 CEILING_CODES = frozenset({"C901", "PLR0915"})
 # mypy checks these as one root from the repository root, and each skill's scripts/ directory from inside it, where
 # the deployed skill's own imports resolve. pyproject.toml's [tool.mypy] holds the configuration; it excludes nothing.
-TYPE_CHECK_ROOTS = ("deployer", "tools", "deploy.py", "tests")
+TYPE_CHECK_ROOTS = ("deployer", "tools", "deploy.py", "tests", "conftest.py")
 # The folders mypy passes over when it collects the files under a root it is given, by their names, which no setting
 # changes: a file in one is type-checked by nothing.
 MYPY_SKIPPED_FOLDERS = frozenset({"__pycache__", "site-packages", "node_modules"})

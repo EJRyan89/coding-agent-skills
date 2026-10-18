@@ -22,7 +22,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import review_specialists as rs
-from git_test_base import GitTestCase
 from review_runtime import RuntimeContractError
 
 CORE = Path(__file__).resolve().parents[1]
@@ -558,7 +557,7 @@ def writes(*identities: str, check: bool = False) -> list[tuple[str, ...]]:
     return [*effects, ("write", "plan.json")]
 
 
-class PlanFixture(GitTestCase):
+class PlanFixture(unittest.TestCase):
     """A temporary root holding source/ (the snapshot), reviewer/ (a materialized reviewer), diff.patch, and
     request.json, and work/, which build_plan creates. Every read, condition run, and write is recorded."""
 
@@ -1507,7 +1506,3 @@ class LinkTests(PlanFixture):
         self.assertEqual(
             prompt("tools-review", ["tools/cache"], ["db/Procs.sql", "new-link"]), self.text("tools-review.prompt.md")
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

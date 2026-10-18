@@ -78,7 +78,3 @@ class CheckoutTestCase(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(argparse.ArgumentTypeError, "lies in the skills directory"):
                     checkout_root(str(root))
-
-
-if __name__ == "__main__":
-    unittest.main()

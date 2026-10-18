@@ -659,7 +659,3 @@ class InventoryTests(unittest.TestCase):
                 self.assertEqual(paths[:10], entry["files"])
                 self.assertEqual(more, entry.get("more_files"))
                 self.assertEqual({"tool", "files"} | ({"more_files"} if more else set()), set(entry))
-
-
-if __name__ == "__main__":
-    unittest.main()

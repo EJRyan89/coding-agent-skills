@@ -18,7 +18,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-core" / "scripts"))
 
 import change_skill
-from git_test_base import GitTestCase
 
 SCRIPT = Path(__file__).resolve().parent / "change_skill.py"
 REPOSITORY = Path(__file__).resolve().parents[4]
@@ -82,7 +81,7 @@ def run(argv: list[str], root: Path) -> tuple[int, list[str]]:
     return code, output.getvalue().splitlines()
 
 
-class SectionTests(GitTestCase):
+class SectionTests(unittest.TestCase):
     DOCUMENT = (
         "# Title\n\n## Files\n\nThe paragraph before the first subsection.\n\n"
         "### Granting tools\n\nGrant both shells.\n\n```markdown\n## Not a heading\n```\n\nStill granting.\n\n"
@@ -179,7 +178,7 @@ class SectionTests(GitTestCase):
         self.assertRegex(completed.stdout.splitlines()[0], r'^SECTION "docs/adding-a-skill\.md" \d+-\d+ ### Granting')
 
 
-class GateTests(GitTestCase):
+class GateTests(unittest.TestCase):
     git_config = GIT_CONFIG
 
     def setUp(self) -> None:
@@ -327,7 +326,7 @@ class GateTests(GitTestCase):
         self.assertIn("is not a ref", stderr.getvalue())
 
 
-class RuntimePromptSourceTests(GitTestCase):
+class RuntimePromptSourceTests(unittest.TestCase):
     def test_the_sources_are_the_skills_and_fixtures_the_sample_tool_renders_from(self) -> None:
         tool = REPOSITORY / "tools" / "runtime_prompts.py"
         tree = ast.parse(tool.read_text(encoding="utf-8"))
@@ -349,7 +348,3 @@ class RuntimePromptSourceTests(GitTestCase):
         self.assertIn("from tools import skill_evals", source)
         self.assertIn("tests/fixtures/skill-evals/review-prs/", change_skill.RUNTIME_PROMPT_SOURCES)
         self.assertIn("tools/skill_evals.py", change_skill.RUNTIME_PROMPT_SOURCES)
-
-
-if __name__ == "__main__":
-    unittest.main()

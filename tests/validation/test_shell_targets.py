@@ -19,7 +19,6 @@ import job_pool
 import shell_targets
 import toolchain
 from bounded_process import Finished
-from git_test_base import GitTestCase
 from job_pool import Terminated
 from shell_targets import (
     PowerShellTarget,
@@ -39,7 +38,7 @@ from validation_support import REPOSITORY_ROOT, write_fixture_tree
 from deployer import platform_support
 
 
-class SkillScriptTargetFixtures(GitTestCase):
+class SkillScriptTargetFixtures(unittest.TestCase):
     FILES: ClassVar[dict[str, str]] = {
         "skills/alpha/SKILL.md": "",
         "skills/alpha/scripts/run.sh": "",
@@ -74,7 +73,7 @@ class SkillScriptTargetFixtures(GitTestCase):
         self.assertEqual([".claude/skills/local/scripts/local.ps1"], [target.name for target in targets])
 
 
-class ShellTargetsFixtures(GitTestCase):
+class ShellTargetsFixtures(unittest.TestCase):
     def setUp(self) -> None:
         super().setUp()
         # The fixtures name Windows' install commands on every platform; test_platform_support pins each platform's.
@@ -445,7 +444,7 @@ class ShellTargetsFixtures(GitTestCase):
             )
 
 
-class ProgramEndingFixtures(GitTestCase):
+class ProgramEndingFixtures(unittest.TestCase):
     """Each program a shell or analyzer job starts is recognized when it is ended before its first line of output."""
 
     # The status is the one Windows set on Git Bash before it printed anything; the fixtures read it as Windows does, on
@@ -510,7 +509,3 @@ class ProgramEndingFixtures(GitTestCase):
                 self.assertRaises(AssertionError),
             ):
                 markdown_shell_check(root, files)
-
-
-if __name__ == "__main__":
-    unittest.main()

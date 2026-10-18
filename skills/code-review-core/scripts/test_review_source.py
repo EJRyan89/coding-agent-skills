@@ -22,7 +22,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 import review_guard
 import review_runtime
 import review_source
-from git_test_base import GitTestCase
 from review_analyzers import reads_settings
 from review_guard import read_log
 from review_runtime import (
@@ -87,7 +86,7 @@ def build_checkout(checkout: Path) -> str:
     return git(checkout, "rev-parse", "HEAD")
 
 
-class LazySnapshotFixture(GitTestCase):
+class LazySnapshotFixture(unittest.TestCase):
     # The repository's configured snapshot_exclude globs.
     EXCLUDE: tuple[str, ...] = ()
 
@@ -647,7 +646,7 @@ class ConfiguredExclusionTests(LazySnapshotFixture):
             self.assertEqual(["src/changed.py"], review_runtime.unavailable_sources(diff, snapshot))
 
 
-class GlobMatcherTests(GitTestCase):
+class GlobMatcherTests(unittest.TestCase):
     def test_each_pattern_matches_whole_paths_by_segment_ignoring_case(self) -> None:
         for pattern, path, expected in (
             ("*.resx", "Strings.resx", True),
@@ -677,7 +676,3 @@ class GlobMatcherTests(GitTestCase):
         self.assertFalse(review_runtime.configured_exclusion([])("src/a.cs"))
         either = review_runtime.configured_exclusion(["**/*.resx", "Reports/**"])
         self.assertEqual([True, True, False], [either(path) for path in ("a/b.resx", "Reports/x", "src/a.cs")])
-
-
-if __name__ == "__main__":
-    unittest.main()

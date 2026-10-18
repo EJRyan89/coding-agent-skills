@@ -1,4 +1,5 @@
-"""Regression tests for the test base that isolates every suite's git from the shell that started it."""
+"""Regression tests for the root conftest.py, which isolates every suite's git from the shell that started it and deals
+a suite's shards."""
 
 from __future__ import annotations
 
@@ -7,18 +8,18 @@ import os
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from collections.abc import Mapping
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import git_test_base
-from git_test_base import GitHome, GitTestCase, config_text, isolate_module, isolated_git
+from conftest import GitHome, config_text, deal, git_settings, isolated_git, quoted
 
-SCRIPTS = Path(__file__).resolve().parent
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 # What the shell that starts a suite may hold: command-scope configuration, a hook's repository variables, an
 # identity, transports, tracing, an editor, and a user configuration directory.
 INHERITED = {
@@ -48,7 +49,7 @@ INHERITED = {
     "GIT_LITERAL_PATHSPECS": "1",
     "XDG_CONFIG_HOME": "config home",
 }
-# Variables the base sets, against the values it gives each, the home aside.
+# Variables the fixtures set, against the values they give each, the home aside.
 SET = {
     "GIT_CONFIG_NOSYSTEM": "1",
     "GIT_ATTR_NOSYSTEM": "1",
@@ -103,7 +104,28 @@ def maintenance_started(trace: Path) -> list[list[str]]:
     return [argv for argv in started if "maintenance" in argv or "gc" in argv]
 
 
-class ConfigTextTests(GitTestCase):
+def run_child(suite: Path, plugin: bool = True, environment: Mapping[str, str] | None = None) -> int:
+    """Run a child suite through pytest from the repository root, with the root conftest.py as a plugin or without it,
+    since a suite outside the repository is outside the root that loads it, and return pytest's exit code. A pytest.ini
+    beside the suite makes its folder the run's root, so pytest reads no folder above it, where other tests' temporary
+    folders come and go."""
+    (suite.parent / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    plugin_options = ["-p", "conftest"] if plugin else []
+    ran = subprocess.run(
+        [sys.executable, "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider", *plugin_options, str(suite)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=REPOSITORY_ROOT,
+        env={**os.environ, **(environment or {})},
+        check=False,
+    )
+    return ran.returncode
+
+
+class ConfigTextTests(unittest.TestCase):
+    git_home: GitHome
+
     def test_settings_are_written_quoted_by_section_and_subsection(self) -> None:
         text = config_text(
             {
@@ -139,7 +161,7 @@ class ConfigTextTests(GitTestCase):
                 config_text({"user.name": value})
 
 
-class IsolatedGitTests(GitTestCase):
+class IsolatedGitTests(unittest.TestCase):
     def test_each_variable_is_set_removed_or_kept_and_restored_afterwards(self) -> None:
         names = [*INHERITED, *SET, *KEPT, *HOME_VARIABLES]
         with mock.patch.dict(os.environ, {**INHERITED, **KEPT}):
@@ -171,7 +193,7 @@ class IsolatedGitTests(GitTestCase):
             self.assertEqual([], list(isolated.hooks.iterdir()))
             self.assertEqual(
                 '[user]\n\tname = "Fixture"\n\temail = "fixture@example.invalid"\n'
-                f"[core]\n\thooksPath = {git_test_base._quoted(str(isolated.hooks))}\n"
+                f"[core]\n\thooksPath = {quoted(str(isolated.hooks))}\n"
                 f'{MAINTENANCE_OFF_TEXT}[init]\n\tdefaultBranch = "main"\n',
                 isolated.config.read_text(encoding="utf-8"),
             )
@@ -198,15 +220,23 @@ class IsolatedGitTests(GitTestCase):
         self.assertEqual(before, dict(os.environ))
         self.assertFalse(isolated.home.exists())
 
+    def test_a_class_settings_take_the_place_of_its_modules(self) -> None:
+        module = mock.Mock(git_config={"init.defaultBranch": "main"})
+        case = mock.Mock(git_config={"init.defaultBranch": "trunk"})
+        self.assertEqual({"init.defaultBranch": "trunk"}, git_settings(case, module))
+        self.assertEqual({"init.defaultBranch": "main"}, git_settings(None, module))
+        self.assertEqual({"init.defaultBranch": "main"}, git_settings(mock.Mock(git_config={}), module))
+        self.assertEqual({}, git_settings(None, object()))
 
-class AutomaticMaintenanceTests(GitTestCase):
+
+class AutomaticMaintenanceTests(unittest.TestCase):
     """Nothing git starts in a fixture outlives the command that started it, so a suite sees the same tree each time."""
 
+    git_home: GitHome
     class_fixture_reads: ClassVar[dict[str, str]]
 
     @classmethod
     def setUpClass(cls) -> None:
-        super().setUpClass()
         cls.class_fixture_reads = {name: git("config", "--global", "--get", name).stdout for name in MAINTENANCE_OFF}
 
     def test_the_global_configuration_turns_automatic_maintenance_off_for_a_test_and_a_class_fixture(self) -> None:
@@ -254,128 +284,136 @@ class AutomaticMaintenanceTests(GitTestCase):
         self.assertIn("--auto", started[0])
 
 
-class GitTestCaseTests(GitTestCase):
-    def test_each_test_and_its_set_up_run_in_a_home_of_their_own_without_a_parent_set_up_call(self) -> None:
-        seen: dict[str, str | None] = {}
-
-        class Case(GitTestCase):
-            # Deliberately does not call super().setUp().
-            def setUp(self) -> None:
-                seen["setUp"] = os.environ.get("HOME")
-
-            def test_one(self) -> None:
-                seen["test"] = os.environ.get("HOME")
-                seen["home"] = str(self.git_home.home)
-
-            def tearDown(self) -> None:
-                seen["tearDown"] = os.environ.get("HOME")
-
-        outer = os.environ.get("HOME")
-        result = unittest.TestResult()
-        Case("test_one").run(result)
-        self.assertTrue(result.wasSuccessful(), result.errors + result.failures)
-        self.assertEqual([seen["home"]] * 3, [seen["setUp"], seen["test"], seen["tearDown"]])
-        self.assertNotEqual(outer, seen["home"])
-        self.assertEqual(outer, os.environ.get("HOME"))
-        self.assertFalse(Path(str(seen["home"])).exists())
-
-    def test_two_tests_get_two_homes(self) -> None:
-        homes: list[Path] = []
-
-        class Case(GitTestCase):
-            def test_one(self) -> None:
-                homes.append(self.git_home.home)
-
-            def test_two(self) -> None:
-                homes.append(self.git_home.home)
-
-        unittest.TestSuite([Case("test_one"), Case("test_two")]).run(unittest.TestResult())
-        self.assertEqual(2, len(set(homes)))
-
-    def test_the_class_fixture_runs_isolated_with_the_class_settings(self) -> None:
-        seen: dict[str, str] = {}
-
-        class Case(GitTestCase):
-            git_config: ClassVar[Mapping[str, str]] = {"init.defaultBranch": "trunk"}
-
-            @classmethod
-            def setUpClass(cls) -> None:
-                super().setUpClass()
-                seen["class"] = os.environ["GIT_CONFIG_GLOBAL"]
-                seen["class branch"] = git("config", "--get", "init.defaultBranch").stdout.strip()
-
-            def test_one(self) -> None:
-                seen["test"] = os.environ["GIT_CONFIG_GLOBAL"]
-                seen["test branch"] = git("config", "--get", "init.defaultBranch").stdout.strip()
-
-        outer = os.environ["GIT_CONFIG_GLOBAL"]
-        result = unittest.TestResult()
-        unittest.TestSuite([Case("test_one")]).run(result)
-        self.assertTrue(result.wasSuccessful(), result.errors + result.failures)
-        self.assertEqual(["trunk", "trunk"], [seen["class branch"], seen["test branch"]])
-        self.assertEqual(3, len({outer, seen["class"], seen["test"]}))
-        self.assertEqual(outer, os.environ["GIT_CONFIG_GLOBAL"])
-        self.assertFalse(Path(seen["class"]).exists())
-
-    def test_debug_runs_isolated_too(self) -> None:
-        seen: list[str] = []
-
-        class Case(GitTestCase):
-            def test_one(self) -> None:
-                seen.append(os.environ["GIT_CONFIG_GLOBAL"])
-
-        Case("test_one").debug()
-        self.assertNotEqual(os.environ["GIT_CONFIG_GLOBAL"], seen[0])
-        self.assertFalse(Path(seen[0]).exists())
-
-    def test_a_module_fixture_stays_isolated_until_the_module_cleanups_run(self) -> None:
-        outer = os.environ["GIT_CONFIG_GLOBAL"]
-        isolated = isolate_module({"init.defaultBranch": "main"})
-        self.assertEqual(str(isolated.config), os.environ["GIT_CONFIG_GLOBAL"])
-        self.assertEqual("main\n", git("config", "--get", "init.defaultBranch").stdout)
-        unittest.case.doModuleCleanups()
-        self.assertEqual(outer, os.environ["GIT_CONFIG_GLOBAL"])
-        self.assertFalse(isolated.home.exists())
-
-
-# A suite that commits in a fixture repository and reads a bare clone of it without naming it explicitly.
-CHILD_SUITE = """
+# A child suite's header: it records what each fixture and test sees as JSON lines in the file the run names.
+CHILD_HEADER = """
+import json
+import os
 import subprocess
-import sys
-import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, {scripts!r})
-
-from git_test_base import GitTestCase
-
-BASE = {base}
+LOG = Path({log!r})
 
 
-class Case(BASE):
-    def test_commit_and_read_a_bare_clone(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            subprocess.run(["git", "init", "-q", str(root / "work")], check=True)
-            (root / "work" / "file.txt").write_text("text\\n", encoding="utf-8")
-            subprocess.run(["git", "-C", str(root / "work"), "add", "file.txt"], check=True)
-            subprocess.run(["git", "-C", str(root / "work"), "commit", "-q", "-m", "fixture"], check=True)
-            subprocess.run(["git", "clone", "-q", "--bare", str(root / "work"), str(root / "bare.git")], check=True)
-            logged = subprocess.run(
-                ["git", "-C", str(root / "bare.git"), "log", "-1", "--format=%s"],
-                capture_output=True, text=True, check=True,
-            )
-            self.assertEqual("fixture\\n", logged.stdout)
+def record(where, **seen):
+    seen.update(where=where, home=os.environ.get("HOME"), config=os.environ.get("GIT_CONFIG_GLOBAL"))
+    with LOG.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(seen) + "\\n")
 
 
-if __name__ == "__main__":
-    unittest.main()
+def branch():
+    read = subprocess.run(["git", "config", "--get", "init.defaultBranch"], capture_output=True, text=True)
+    return read.stdout.strip()
+"""
+CHILD_SUITE = """
+git_config = {{"init.defaultBranch": "main"}}
+
+
+def setUpModule():
+    record("module", branch=branch())
+
+
+class Case(unittest.TestCase):
+    # Deliberately does not call super().setUp().
+    def setUp(self):
+        record("setUp")
+
+    def test_one(self):
+        record("test", fixture=str(self.git_home.home), branch=branch())
+
+    def test_two(self):
+        record("test", fixture=str(self.git_home.home), branch=branch())
+
+    def tearDown(self):
+        record("tearDown")
+
+
+class Trunk(unittest.TestCase):
+    git_config = {{"init.defaultBranch": "trunk"}}
+
+    @classmethod
+    def setUpClass(cls):
+        record("class", branch=branch())
+
+    def test_trunk(self):
+        record("trunk", branch=branch())
+
+
+def test_function(git_home):
+    record("function", fixture=str(git_home.home), branch=branch())
 """
 
 
-class AcceptanceTests(GitTestCase):
-    """A suite that inherits the base passes the same under the leaks the base closes, and one that does not fails."""
+class FixtureTests(unittest.TestCase):
+    """The autouse fixtures isolate each test, its setUp and tearDown, a class fixture, and a module fixture, each in a
+    home of its own with its settings, and remove every home afterwards."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="conftest-fixtures.")
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name)
+        self.log = self.directory / "log.jsonl"
+        self.suite = self.directory / "test_child.py"
+        self.suite.write_text(CHILD_HEADER.format(log=str(self.log)) + CHILD_SUITE.format(), encoding="utf-8")
+
+    def entries(self) -> list[dict[str, Any]]:
+        return [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
+
+    def test_each_test_class_and_module_runs_in_a_home_of_its_own_with_its_settings(self) -> None:
+        self.assertEqual(0, run_child(self.suite))
+        entries = self.entries()
+        by_place = {place: [entry for entry in entries if entry["where"] == place] for place in {"module", "test"}}
+        module, tests = by_place["module"][0], by_place["test"]
+        self.assertEqual("main", module["branch"])
+        # A test, its setUp, and its tearDown share one home, which its fixture names, and each test has its own.
+        for test in tests:
+            index = entries.index(test)
+            self.assertEqual([test["home"]] * 3, [entries[index - 1]["home"], test["home"], entries[index + 1]["home"]])
+            self.assertEqual(test["home"], test["fixture"])
+            self.assertEqual("main", test["branch"])
+        self.assertEqual(2, len({test["home"] for test in tests}))
+        trunk_class = next(entry for entry in entries if entry["where"] == "class")
+        trunk = next(entry for entry in entries if entry["where"] == "trunk")
+        self.assertEqual(["trunk", "trunk"], [trunk_class["branch"], trunk["branch"]])
+        function = next(entry for entry in entries if entry["where"] == "function")
+        self.assertEqual((function["home"], "main"), (function["fixture"], function["branch"]))
+        homes = [module["home"], trunk_class["home"], trunk["home"], function["home"], *(t["home"] for t in tests)]
+        self.assertEqual(len(homes), len(set(homes)))
+        self.assertNotIn(os.environ["HOME"], homes)
+        self.assertEqual([], [home for home in homes if Path(home).exists()])
+
+    def test_without_the_conftest_nothing_is_isolated(self) -> None:
+        self.assertEqual(1, run_child(self.suite, plugin=False))
+        self.assertTrue(all(entry["config"] == os.environ["GIT_CONFIG_GLOBAL"] for entry in self.entries()))
+
+
+# A suite that commits in a fixture repository and reads a bare clone of it without naming it explicitly.
+ACCEPTANCE_SUITE = """
+import subprocess
+import tempfile
+from pathlib import Path
+
+
+def test_commit_and_read_a_bare_clone():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        subprocess.run(["git", "init", "-q", str(root / "work")], check=True)
+        (root / "work" / "file.txt").write_text("text\\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(root / "work"), "add", "file.txt"], check=True)
+        subprocess.run(["git", "-C", str(root / "work"), "commit", "-q", "-m", "fixture"], check=True)
+        subprocess.run(["git", "clone", "-q", "--bare", str(root / "work"), str(root / "bare.git")], check=True)
+        logged = subprocess.run(
+            ["git", "-C", str(root / "bare.git"), "log", "-1", "--format=%s"],
+            capture_output=True, text=True, check=True,
+        )
+        assert logged.stdout == "fixture\\n"
+"""
+
+
+class AcceptanceTests(unittest.TestCase):
+    """A suite run with the root conftest.py passes the same under the leaks it closes, and one run without it fails."""
+
+    git_home: GitHome
 
     def setUp(self) -> None:
         self.root = self.git_home.home / "acceptance"
@@ -391,39 +429,29 @@ class AcceptanceTests(GitTestCase):
         )
         self.command_scope = {name: INHERITED[name] for name in ("GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0")}
         self.command_scope["GIT_CONFIG_VALUE_0"] = "explicit"
-
-    def outcome(self, base: str, environment: dict[str, str]) -> tuple[int, str]:
-        suite = self.root / f"test_child_{base.replace('.', '_')}.py"
-        suite.write_text(CHILD_SUITE.format(scripts=str(SCRIPTS), base=base), encoding="utf-8")
-        ran = subprocess.run(
-            [sys.executable, "-B", str(suite)],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            env={**os.environ, "GIT_CONFIG_GLOBAL": str(self.hooked), **environment},
-            check=False,
-        )
-        return ran.returncode, ran.stderr.strip().splitlines()[-1]
-
-    def test_an_inheriting_suite_passes_the_same_under_command_scope_settings_and_a_failing_global_hook(self) -> None:
-        passed = (0, "OK")
-        hooks_only = {"GIT_CONFIG_GLOBAL": str(self.hooked)}
-        self.assertEqual(passed, self.outcome("GitTestCase", {"GIT_CONFIG_GLOBAL": os.environ["GIT_CONFIG_GLOBAL"]}))
-        self.assertEqual(passed, self.outcome("GitTestCase", {**self.command_scope, **hooks_only}))
-
-    def test_a_suite_that_does_not_inherit_it_fails_under_each_leak(self) -> None:
-        self.assertEqual((0, "OK"), self.outcome("unittest.TestCase", {"GIT_CONFIG_GLOBAL": str(self.unhooked())}))
-        self.assertEqual(
-            (1, "FAILED (errors=1)"),
-            self.outcome("unittest.TestCase", {**self.command_scope, "GIT_CONFIG_GLOBAL": str(self.unhooked())}),
-        )
-        self.assertEqual((1, "FAILED (errors=1)"), self.outcome("unittest.TestCase", {}))
+        self.suite = self.root / "test_child.py"
+        self.suite.write_text(textwrap.dedent(ACCEPTANCE_SUITE), encoding="utf-8")
 
     def unhooked(self) -> Path:
         config = self.root / "unhooked.gitconfig"
         config.write_text(config_text({"user.name": "User", "user.email": "user@example.invalid"}), encoding="utf-8")
         return config
 
+    def test_a_suite_run_with_the_conftest_passes_the_same_under_command_scope_settings_and_a_failing_hook(
+        self,
+    ) -> None:
+        hooked = {"GIT_CONFIG_GLOBAL": str(self.hooked)}
+        self.assertEqual(0, run_child(self.suite, environment={"GIT_CONFIG_GLOBAL": str(self.unhooked())}))
+        self.assertEqual(0, run_child(self.suite, environment={**self.command_scope, **hooked}))
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_a_suite_run_without_it_fails_under_each_leak(self) -> None:
+        unhooked = {"GIT_CONFIG_GLOBAL": str(self.unhooked())}
+        self.assertEqual(0, run_child(self.suite, plugin=False, environment=unhooked))
+        self.assertEqual(1, run_child(self.suite, plugin=False, environment={**self.command_scope, **unhooked}))
+        self.assertEqual(1, run_child(self.suite, plugin=False, environment={"GIT_CONFIG_GLOBAL": str(self.hooked)}))
+
+
+class DealTests(unittest.TestCase):
+    def test_the_heaviest_goes_first_onto_the_lightest_shard_and_ties_go_to_the_lowest_index(self) -> None:
+        self.assertEqual({"a": 0, "b": 1, "c": 2, "d": 0}, deal(["d", "c", "b", "a"], 3, {}))
+        self.assertEqual({"a": 1, "b": 2, "c": 0, "d": 1}, deal(["a", "b", "c", "d"], 3, {"c": 5}))

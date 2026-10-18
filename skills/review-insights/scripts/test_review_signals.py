@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import sys
-import unittest
 from pathlib import Path
 from typing import Any, ClassVar
 from unittest import mock
@@ -484,7 +483,3 @@ class UpgradeTests(SignalFixture):
 def _input(json_path: Path) -> list[dict[str, Any]]:
     text = (json_path.parent / rs.INPUT_NAME).read_text(encoding="utf-8")
     return [json.loads(line) for line in text.splitlines()]
-
-
-if __name__ == "__main__":
-    unittest.main()

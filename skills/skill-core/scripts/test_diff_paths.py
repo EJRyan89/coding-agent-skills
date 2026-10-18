@@ -12,13 +12,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from diff_paths import HUNK_HEADER, DiffPathError, header_path, snapshot_path, unquote
 from git_client import GitClient
-from git_test_base import GitTestCase
 
 SPACED = "tools/report age.py"
 ACCENTED = "tools/résumé.py"
 
 
-class RealDiffTests(GitTestCase):
+class RealDiffTests(unittest.TestCase):
     """Each header a real `git diff` writes names the path it was given."""
 
     def setUp(self) -> None:
@@ -87,7 +86,7 @@ class RealDiffTests(GitTestCase):
         self.assertEqual([SPACED, ACCENTED], [unquote(line.split(" ", 2)[2]) for line in headers])
 
 
-class HunkHeaderTests(GitTestCase):
+class HunkHeaderTests(unittest.TestCase):
     def test_a_hunk_header_gives_its_new_side_s_first_line_with_or_without_a_count(self) -> None:
         for line, first in (("@@ -1,3 +4,5 @@ def f():", "4"), ("@@ -7 +9 @@", "9"), ("@@ -0,0 +1 @@", "1")):
             with self.subTest(line=line):
@@ -101,7 +100,7 @@ class HunkHeaderTests(GitTestCase):
                 self.assertIsNone(HUNK_HEADER.match(line))
 
 
-class DecoderTests(GitTestCase):
+class DecoderTests(unittest.TestCase):
     def test_each_escape_git_writes_is_undone(self) -> None:
         self.assertEqual('a\x07\x08\t\n\x0b\x0c\r"\\b', unquote('"a\\a\\b\\t\\n\\v\\f\\r\\"\\\\b"'))
         self.assertEqual("é", unquote('"\\303\\251"'))
@@ -137,7 +136,7 @@ def link_folder(link: Path, target: Path) -> None:
         link.symlink_to(target, target_is_directory=True)
 
 
-class SnapshotPathTests(GitTestCase):
+class SnapshotPathTests(unittest.TestCase):
     def setUp(self) -> None:
         super().setUp()
         temporary = tempfile.TemporaryDirectory()
@@ -187,7 +186,7 @@ class SnapshotPathTests(GitTestCase):
         self.assertIsNone(snapshot_path(self.root, "linked/outside.py"))
 
 
-class UnresolvableSnapshotPathTests(GitTestCase):
+class UnresolvableSnapshotPathTests(unittest.TestCase):
     def test_a_path_whose_resolution_raises_is_refused(self) -> None:
         # Windows' non-strict realpath re-raises some errors, such as a name too long, so the error is raised here
         # for the one path, leaving the root to resolve.
@@ -205,7 +204,3 @@ class UnresolvableSnapshotPathTests(GitTestCase):
         with mock.patch.object(Path, "resolve", resolve):
             self.assertIsNone(snapshot_path(root, "tools/unresolvable.py"))
             self.assertEqual(root.resolve() / "tools" / "inside.py", snapshot_path(root, "tools/inside.py"))
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -20,8 +20,6 @@ from shell_targets import static_markdown_shell_check, static_powershell_check, 
 from suite_discovery import FIXTURE_ROOT, regression_suites, suite_jobs
 from validation_support import REPOSITORY_ROOT, UnreadablePython, git, parse_python, repository_files
 
-from tests.run_shard import deal, flatten
-
 POWERSHELL_JOB = "static PowerShell checks (PSScriptAnalyzer on .ps1 files and PowerShell fences)"
 MARKDOWN_SHELL_JOB = "static Markdown shell checks (ShellCheck on Bash fences outside skills/ and tests/)"
 SHELL_JOB = "static shell checks (bash -n and ShellCheck on skill scripts)"
@@ -32,8 +30,9 @@ LINT_JOB = "static lint check (ruff check)"
 # crosses folders. The deployer renders and deploys every shipped skill's files in its rendering suite; it reads each
 # skill's metadata, its dependencies, agents, tools, runtime support, and selection, in the rendering suite and the
 # bundles-and-dependencies suite; the deployer's suites run deploy.py and every module behind it; and the files that
-# set a tool floor are read by the toolchain, upgrade-note, and check suites. --changed adds them, so no contributor
-# has to remember them.
+# set a tool floor are read by the toolchain, upgrade-note, and check suites; and the root conftest.py sets up every
+# Python suite, whose git it isolates and whose shards it deals. --changed adds them, so no contributor has to
+# remember them.
 CHANGE_REACHES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     (("skills/*",), ("tests/deployer/test_rendering_locking.py",)),
     (
@@ -54,6 +53,7 @@ CHANGE_REACHES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
             "tests/deployer/test_check.py",
         ),
     ),
+    (("conftest.py",), ("*.py",)),
 )
 # The folders skills sit in: a change anywhere in a skill reaches the suites in its scripts/.
 SKILL_PARENTS = ("skills", ".claude/skills")
@@ -317,11 +317,21 @@ def leg_cost(job: Job, shards: int, seconds: Mapping[str, float]) -> float:
     return (UNSPLIT_JOB_COST if job.weight == UNSPLIT_SUITE_WEIGHT else job.weight) * TYPICAL_TEST_SECONDS
 
 
+def flatten(suite: unittest.TestSuite) -> Iterable[unittest.TestCase]:
+    for item in suite:
+        if isinstance(item, unittest.TestSuite):
+            yield from flatten(item)
+        else:
+            yield item
+
+
 def leg_jobs(jobs: list[Job], index: int, count: int, seconds: Mapping[str, float] | None = None) -> list[Job]:
-    """The jobs leg `index` (from 0) of `count` runs, dealt as run_shard.py deals a suite's tests: the heaviest first
+    """The jobs leg `index` (from 0) of `count` runs, dealt as conftest.py deals a suite's tests: the heaviest first
     onto the leg with the least so far, by label on a tie, each weighed by leg_cost from `seconds` (JOB_SECONDS when
     None). The legs run every job exactly once between them, and each leg's share depends only on the jobs and the
     table, never on their order, so legs that select alike deal alike."""
+    from conftest import deal  # imported here, after the runner has found pytest, which conftest.py imports
+
     measured = recorded_job_seconds() if seconds is None else seconds
     shards = Counter(job.name for job in jobs)
     costs = {job.label: leg_cost(job, shards[job.name], measured) for job in jobs}
@@ -332,6 +342,8 @@ def leg_jobs(jobs: list[Job], index: int, count: int, seconds: Mapping[str, floa
 def leg_policies(policies: unittest.TestSuite, index: int, count: int) -> unittest.TestSuite:
     """The policy checks leg `index` (from 0) of `count` runs: one each to the legs in turn, by test ID. They run
     beside the pool rather than in it, so they are dealt apart from the jobs."""
+    from conftest import deal  # imported here, after the runner has found pytest, which conftest.py imports
+
     checks = list(flatten(policies))
     legs = deal([check.id() for check in checks], count, {})
     return unittest.TestSuite(check for check in checks if legs[check.id()] == index)

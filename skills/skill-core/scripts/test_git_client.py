@@ -20,7 +20,6 @@ import bounded_process
 import executable_locator
 import git_client
 from git_client import GitClient, GitError, GitResult, classify_failure
-from git_test_base import GitTestCase
 from job_tree import GroupTree, JobTree, TreeNotEnded
 from process_identity import process_status
 
@@ -77,7 +76,7 @@ def scripted(
     return run, calls
 
 
-class ClientTests(GitTestCase):
+class ClientTests(unittest.TestCase):
     def test_run_builds_the_command_and_returns_any_exit_status(self) -> None:
         runner, calls = scripted(GitResult(0, "abc\n", ""), GitResult(1, "", ""))
         client = GitClient(runner)
@@ -251,7 +250,7 @@ def retrying(*responses: GitResult, timeout: float = 300.0) -> tuple[GitClient, 
     return GitClient(runner, timeout=timeout, sleeper=sleeper, clock=sleeper.clock), sleeper, calls
 
 
-class TransientTests(GitTestCase):
+class TransientTests(unittest.TestCase):
     def test_a_transient_fetch_is_retried_and_the_second_answer_is_returned(self) -> None:
         # The first fetch updated a ref before the connection dropped; fetch is idempotent, so a second run brings
         # the refs to the same values and its own answer is the one the caller sees.
@@ -445,7 +444,7 @@ class TransientTests(GitTestCase):
         self.assertIn("couldn't find remote ref", git_client.PERMANENT_MARKERS)
 
 
-class SubprocessRunnerTests(GitTestCase):
+class SubprocessRunnerTests(unittest.TestCase):
     def test_the_runner_goes_through_the_bounded_layer(self) -> None:
         finished = bounded_process.Finished(2, b"out \xff", b"bad \xff")
         with mock.patch.object(git_client, "run_bounded", return_value=finished) as run:
@@ -575,7 +574,7 @@ class SubprocessRunnerTests(GitTestCase):
                 self.assertEqual("not_repository", context.exception.kind)
 
 
-class StreamTests(GitTestCase):
+class StreamTests(unittest.TestCase):
     def test_cat_file_batch_answers_with_the_exact_bytes(self) -> None:
         content = b"caf\xe9\r\nno newline at the end"
         with tempfile.TemporaryDirectory() as temporary:
@@ -682,7 +681,7 @@ class StreamTests(GitTestCase):
         self.assertIs(not_ended, context.exception.__cause__)
 
 
-class WorkingDirectoryTests(GitTestCase):
+class WorkingDirectoryTests(unittest.TestCase):
     """A git in the working directory is never the git the client starts: Windows process creation looks a bare name
     up there before PATH, and a relative PATH entry such as `.` names it on every platform."""
 
@@ -762,7 +761,7 @@ NAMED_LISTING = b"refs/heads/main\nrefs/heads/only-in-a\n"
 OTHER_LISTING = b"refs/heads/main\n"
 
 
-class RepositoryVariableTests(GitTestCase):
+class RepositoryVariableTests(unittest.TestCase):
     """The issue's two repositories: `a` with branches main and only-in-a, and `b` with main alone."""
 
     def setUp(self) -> None:
@@ -873,7 +872,3 @@ class RepositoryVariableTests(GitTestCase):
             ),
             bounded_process.REPOSITORY_VARIABLES,
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

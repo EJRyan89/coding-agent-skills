@@ -11,7 +11,6 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
-from git_test_base import GitTestCase
 from harness import (
     DEPLOY_COMMAND,
     FAILS_PARTWAY,
@@ -434,7 +433,7 @@ class LockRemedyTests(RemedyTestCase):
         self.assert_lines(result.output, "Retry the deployment.", SEE_LOCK)
 
 
-class RecoveryGuideTests(GitTestCase):
+class RecoveryGuideTests(unittest.TestCase):
     def test_every_section_a_refusal_names_is_a_heading_of_the_guide(self) -> None:
         self.assertEqual("docs/recovery.md", errors.RECOVERY_GUIDE)
         self.assertEqual(
@@ -462,7 +461,3 @@ class RecoveryGuideTests(GitTestCase):
 
     def test_readme_links_the_guide(self) -> None:
         self.assertIn("[Recovery](docs/recovery.md)", (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8"))
-
-
-if __name__ == "__main__":
-    unittest.main()

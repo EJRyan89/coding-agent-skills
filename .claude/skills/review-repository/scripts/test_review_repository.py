@@ -24,7 +24,6 @@ import doc_passages
 import review_specialists
 import untested_functions
 from git_client import GitClient
-from git_test_base import GitTestCase
 from review_runtime import declared_reviewer_files, glob_matcher, validate_adapter_manifest
 from review_specialists import INPUTS, route, uncovered
 
@@ -165,7 +164,7 @@ def reached(paths: list[str]) -> dict[str, set[str]]:
     return found
 
 
-class ManifestTests(GitTestCase):
+class ManifestTests(unittest.TestCase):
     def test_every_file_the_manifest_declares_is_in_the_repository(self) -> None:
         files = set(tracked_files())
         self.assertEqual([], [path for path in declared_reviewer_files(MANIFEST) if path not in files])
@@ -454,7 +453,7 @@ def tree_diff(base: Path, head: Path) -> str:
     return text
 
 
-class DocumentationDriftTests(GitTestCase):
+class DocumentationDriftTests(unittest.TestCase):
     def test_the_drift_route_shares_the_scripts_and_reads_the_documents_its_condition_searches(self) -> None:
         route_entry = drift_route()
         self.assertEqual(
@@ -567,7 +566,7 @@ class DocumentationDriftTests(GitTestCase):
                 self.assertIn(phrase, profile)
 
 
-class DocumentationDriftScenarioTests(GitTestCase):
+class DocumentationDriftScenarioTests(unittest.TestCase):
     """The evaluation scenarios: a change the guide describes, which the condition hands the route, and one no
     document names, which closes it. Each fixture is the reviewed repository alone; the reviewer is this skill's."""
 
@@ -699,7 +698,7 @@ def changed_paths(diff: str) -> list[str]:
     return re.findall(r"^diff --git a/(\S+) b/", diff, re.MULTILINE)
 
 
-class RouteScenarioTests(GitTestCase):
+class RouteScenarioTests(unittest.TestCase):
     """Every specialist is started by an evaluation scenario, so a change to its brief cites a run that reviews with
     it. Each scenario is routed as a review routes it: its changed files through the manifest, and each condition run
     on its head, restored as the evaluation's copy restores it."""
@@ -758,7 +757,7 @@ def untested_route() -> dict[str, Any]:
     return next(item for item in MANIFEST["specialists"] if item["id"] == "untested-changes")
 
 
-class UntestedChangesTests(GitTestCase):
+class UntestedChangesTests(unittest.TestCase):
     def test_the_untested_route_shares_the_code_files_and_reads_every_suite(self) -> None:
         self.assertEqual(
             {
@@ -850,7 +849,7 @@ class UntestedChangesTests(GitTestCase):
                 self.assertIn(phrase, profile)
 
 
-class RealDiffTests(GitTestCase):
+class RealDiffTests(unittest.TestCase):
     """Each condition reads a diff git wrote, whose headers end a path holding a space with a tab and quote a path
     holding a byte outside printable ASCII, and runs from a reviewer folder holding only the declared files."""
 
@@ -901,7 +900,7 @@ class RealDiffTests(GitTestCase):
         self.assertIn("PASSAGE docs/guide.md:5 names résumé.py (script in tools/résumé.py)", written)
 
 
-class RecommendedConfigurationTests(GitTestCase):
+class RecommendedConfigurationTests(unittest.TestCase):
     def entry(self) -> dict[str, Any]:
         """The one repository entry SKILL.md's JSON fence shows, read as the configuration would hold it."""
         text = (REPOSITORY / SKILL / "SKILL.md").read_text(encoding="utf-8")
@@ -927,7 +926,3 @@ class RecommendedConfigurationTests(GitTestCase):
         self.assertTrue(fixtures)
         self.assertEqual(fixtures, [path for path in files if matches(path)])
         self.assertEqual([], [path for path in declared_reviewer_files(MANIFEST) if matches(path)])
-
-
-if __name__ == "__main__":
-    unittest.main()

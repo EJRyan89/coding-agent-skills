@@ -19,7 +19,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 import skill_inventory
 from git_client import GitClient, GitError, GitResult
-from git_test_base import GitTestCase
 
 SCRIPT = Path(__file__).resolve().parent / "skill_inventory.py"
 
@@ -41,7 +40,7 @@ def git(*arguments: str) -> None:
     subprocess.run(["git", *arguments], check=True, capture_output=True)
 
 
-class TemporaryTestCase(GitTestCase):
+class TemporaryTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory()
         self.root = Path(self._temporary.name).resolve()
@@ -1383,7 +1382,7 @@ class ScanTests(TemporaryTestCase):
         )
 
 
-class InstructionsTests(GitTestCase):
+class InstructionsTests(unittest.TestCase):
     def test_every_line_the_script_prints_has_a_stated_handling(self) -> None:
         # The fact names the script prints: a string, or an f-string's leading text, that starts with an upper-case
         # name followed by a space or ending there. Tool names are data, not facts.
@@ -1406,7 +1405,7 @@ class InstructionsTests(GitTestCase):
         )
 
 
-class TemplateValueTests(GitTestCase):
+class TemplateValueTests(unittest.TestCase):
     def test_every_template_value_the_skill_requires_is_one_a_command_or_grant_uses(self) -> None:
         # A value only a sentence names promises what no command reads, as a home folder the script never searches
         # would, and the deployment would require it for that sentence alone.
@@ -1455,7 +1454,3 @@ class ExitContractTests(TemporaryTestCase):
         self.assertEqual(
             [f"CUE {skill.as_posix()} 1 loop For each item."], completed.stdout.decode("utf-8").splitlines()
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

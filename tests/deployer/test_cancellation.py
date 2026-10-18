@@ -5,7 +5,6 @@ from __future__ import annotations
 import io
 import json
 import shutil
-import unittest
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -153,7 +152,3 @@ class CancellationTests(DeployerTestCase):
         self.deploy_ok("--all")
         with mock.patch("deployer.verify.tempfile.mkdtemp", side_effect=interrupt):
             self.assert_cancelled(self.run_cli("verify"), CANCELLED)
-
-
-if __name__ == "__main__":
-    unittest.main()

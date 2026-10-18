@@ -13,11 +13,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from git_client import GitClient
-from git_test_base import GitTestCase
 from release_tags import highest_release, is_release_tag, last_release, main
 
 
-class ReleaseTagTests(GitTestCase):
+class ReleaseTagTests(unittest.TestCase):
     def test_a_release_tag_is_three_ascii_numbers_and_nothing_after_them(self) -> None:
         for name in ("v0.1.0", "v10.20.30", "v01.2.3", "v1.0.000"):
             with self.subTest(name=name):
@@ -52,7 +51,7 @@ class ReleaseTagTests(GitTestCase):
         self.assertIsNone(highest_release([]))
 
 
-class LastReleaseTests(GitTestCase):
+class LastReleaseTests(unittest.TestCase):
     def setUp(self) -> None:
         super().setUp()
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
@@ -101,7 +100,3 @@ class LastReleaseTests(GitTestCase):
         self.assertEqual(1, code)
         self.assertTrue(output.startswith("FAILED git for-each-ref: "), output)
         self.assertEqual(1, len(output.splitlines()), output)
-
-
-if __name__ == "__main__":
-    unittest.main()

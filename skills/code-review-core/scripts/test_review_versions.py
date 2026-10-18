@@ -16,8 +16,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 import review_config
 import review_pipeline
-from console import use_utf8_output
-from git_test_base import GitTestCase
 from review_flags import FlagError, FlagFieldError, add_flag, load_store, upgrade_store
 from review_io import atomic_write_json
 from review_records import RecordError, validate_record
@@ -27,7 +25,7 @@ from test_review_record_validation import _record
 from typed_fields import FieldError
 
 
-class VersionBoundaryTests(GitTestCase):
+class VersionBoundaryTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -259,8 +257,3 @@ class VersionBoundaryTests(GitTestCase):
         for path in ("C:/x.py", "c:/x.py", "C:x.py", "C:\\x.py", "/x.py", "../x.py", "src\\x.py"):
             with self.subTest(path=path):
                 self.assertFalse(review_config.safe_repository_path(path))
-
-
-if __name__ == "__main__":
-    use_utf8_output()
-    unittest.main()

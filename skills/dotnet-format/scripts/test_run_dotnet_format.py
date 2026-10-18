@@ -18,7 +18,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import run_dotnet_format as formatter
-from git_test_base import GitTestCase
 
 INSTALL_HINT = "dotnet-format is not installed; install it with: dotnet tool install -g dotnet-format"
 SDK_INSTALL_HINT = (
@@ -103,7 +102,7 @@ class ScriptedRunner:
         return self.results[len(self.calls) - 1]
 
 
-class CommandTests(GitTestCase):
+class CommandTests(unittest.TestCase):
     def test_check_adds_check_and_keeps_each_file_one_argument(self) -> None:
         self.assertEqual(
             [
@@ -173,7 +172,7 @@ class CommandTests(GitTestCase):
         self.assertEqual("a-b.cs", formatter.include_path("a-b.cs"))
 
 
-class BatchTests(GitTestCase):
+class BatchTests(unittest.TestCase):
     def test_a_list_that_fits_is_one_run(self) -> None:
         self.assertEqual([["A.cs", "My Folder/B.cs"]], formatter.batches(["dotnet-format"], ["A.cs", "My Folder/B.cs"]))
 
@@ -197,7 +196,7 @@ class BatchTests(GitTestCase):
             formatter.batches(["dotnet-format", "App.sln", "--include"], ["A.cs", "Long Name.cs"], limit=40)
 
 
-class ParseTests(GitTestCase):
+class ParseTests(unittest.TestCase):
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -232,7 +231,7 @@ class ParseTests(GitTestCase):
         self.assertEqual([], formatter.parse_diagnostics("", self.root))
 
 
-class SubprocessRunnerTests(GitTestCase):
+class SubprocessRunnerTests(unittest.TestCase):
     def test_merges_standard_error_into_the_output_and_keeps_the_exit_code(self) -> None:
         script = "import sys; print('out', flush=True); print('err', file=sys.stderr, flush=True); sys.exit(3)"
         result = formatter.subprocess_runner([sys.executable, "-c", script], Path.cwd(), 60)
@@ -286,7 +285,7 @@ def install(folder: Path, name: str) -> Path:
     return program
 
 
-class LocatedFormatterTests(GitTestCase):
+class LocatedFormatterTests(unittest.TestCase):
     """The formatter is found by skill-core's locator, as `deploy.py check` finds it, and run by that absolute path.
     The environment is sanitized: PATH is one empty folder and the local application data folder a fresh one, so the
     only programs found are the ones a test puts there."""
@@ -353,7 +352,7 @@ class LocatedFormatterTests(GitTestCase):
         self.assertEqual((1, f"FAILED {INSTALL_HINT}\n"), (status, output.getvalue()))
 
 
-class MainTests(GitTestCase):
+class MainTests(unittest.TestCase):
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -870,7 +869,7 @@ class MainTests(GitTestCase):
                 self.assertEqual([], runner.calls)
 
 
-class ConsoleTests(GitTestCase):
+class ConsoleTests(unittest.TestCase):
     def test_output_a_cp1252_console_cannot_encode_is_written_as_utf_8(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             # A stub the tool lookup finds, so the run reaches the file list, whose path it then prints.
@@ -900,7 +899,3 @@ class ConsoleTests(GitTestCase):
             )
         self.assertEqual(1, result.returncode, result.stderr.decode("utf-8", "replace"))
         self.assertEqual(f"FAILED {file_list} lists no files\n", result.stdout.decode("utf-8").replace("\r\n", "\n"))
-
-
-if __name__ == "__main__":
-    unittest.main()

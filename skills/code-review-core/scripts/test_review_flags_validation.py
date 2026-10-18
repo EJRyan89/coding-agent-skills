@@ -532,7 +532,3 @@ class UpgradeStoreTests(unittest.TestCase):
             validate_store(upgraded)
         self.assertIs(F, type(caught.exception))
         self.assertEqual("flag-store.flags[0] must be an object, found an array", str(caught.exception))
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -14,7 +14,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
-from git_test_base import GitTestCase
 from skill_layout import (
     MAXIMUM_INLINE_EXECUTABLE_LINES,
     REPOSITORY_SKILL_SHIMS,
@@ -42,7 +41,7 @@ from validation_support import REPOSITORY_SKILLS, SKILL_GUIDE, write_fixture_tre
 from deployer import platform_support
 
 
-class SkillTreeFixtures(GitTestCase):
+class SkillTreeFixtures(unittest.TestCase):
     def test_an_executable_outside_a_skills_scripts_fails_in_every_kind_of_skill(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -155,7 +154,7 @@ class SkillTreeFixtures(GitTestCase):
             self.assertFalse([problem for problem in problems if "good-skill" in problem], problems)
 
 
-class SkillLayoutFixtures(GitTestCase):
+class SkillLayoutFixtures(unittest.TestCase):
     def test_shared_guidance_policy_finds_a_skill_naming_a_shared_markdown_asset(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -707,7 +706,3 @@ class SkillLayoutFixtures(GitTestCase):
                 ],
                 sibling_path_problems(root),
             )
-
-
-if __name__ == "__main__":
-    unittest.main()

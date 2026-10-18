@@ -63,7 +63,3 @@ class ReleaseLevelTests(unittest.TestCase):
         for levels in ([], ["patch", "patch"]):
             with self.subTest(levels=levels), self.assertRaisesRegex(ValueError, "Levels"):
                 largest_level([], levels)
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -16,7 +16,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-core" / "scripts"))
 
 import pull_request
-from git_test_base import GitTestCase
 from github_client import CommandResult, GitHubClient
 
 REPOSITORY = Path(__file__).resolve().parents[4]
@@ -75,7 +74,7 @@ def git(directory: Path, *arguments: str) -> str:
     return result.stdout.strip()
 
 
-class DraftTests(GitTestCase):
+class DraftTests(unittest.TestCase):
     def test_each_issue_gets_its_own_closes_line_in_place_of_the_bare_one(self) -> None:
         body = pull_request.draft_body(TEMPLATE, [12, 34])
         self.assertIn("-->\nCloses #12\nCloses #34\n\n<!-- The problem", body)
@@ -100,7 +99,7 @@ class DraftTests(GitTestCase):
         self.assertTrue(any("template comment" in line for line in problems))
 
 
-class BodyCheckTests(GitTestCase):
+class BodyCheckTests(unittest.TestCase):
     def test_a_filled_body_has_no_problem_and_names_its_issues(self) -> None:
         self.assertEqual([], pull_request.body_problems(FILLED, TEMPLATE))
         self.assertEqual([12, 34], pull_request.closed_issues(FILLED))
@@ -150,7 +149,7 @@ class BodyCheckTests(GitTestCase):
         self.assertNotIn("### What changed", " ".join(pull_request.body_problems(FILLED, TEMPLATE)))
 
 
-class TitleCheckTests(GitTestCase):
+class TitleCheckTests(unittest.TestCase):
     def test_one_line_is_the_title_with_its_line_break_dropped(self) -> None:
         self.assertEqual((AWKWARD_TITLE, []), pull_request.read_title(AWKWARD_TITLE + "\r\n"))
 
@@ -159,7 +158,7 @@ class TitleCheckTests(GitTestCase):
         self.assertEqual(["TITLE_LINES 2"], pull_request.read_title("fix: a\nsecond\n")[1])
 
 
-class TemplateLookupTests(GitTestCase):
+class TemplateLookupTests(unittest.TestCase):
     def setUp(self) -> None:
         self.root = Path(tempfile.mkdtemp(prefix="implement-change-test-"))
         self.addCleanup(remove_tree, self.root)
@@ -181,7 +180,7 @@ class TemplateLookupTests(GitTestCase):
         self.assertIsNone(pull_request.find_template(self.root))
 
 
-class Repository(GitTestCase):
+class Repository(unittest.TestCase):
     """A clone of a bare origin whose main holds the template, on a branch with one commit of its own."""
 
     git_config = GIT_CONFIG
@@ -356,7 +355,7 @@ class OpenCommandTests(Repository):
         self.assertIn("already exists", lines[-1])
 
 
-class EntryPointTests(GitTestCase):
+class EntryPointTests(unittest.TestCase):
     def test_the_script_runs_as_a_program(self) -> None:
         ran = subprocess.run(
             [sys.executable, "-B", str(Path(pull_request.__file__)), "--help"],
@@ -368,7 +367,3 @@ class EntryPointTests(GitTestCase):
         )
         self.assertEqual(0, ran.returncode, ran.stderr)
         self.assertIn("draft", ran.stdout)
-
-
-if __name__ == "__main__":
-    unittest.main()

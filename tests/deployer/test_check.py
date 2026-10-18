@@ -31,7 +31,6 @@ import review_documents
 import review_hosts
 import review_runtime
 import run_dotnet_format
-from git_test_base import GitTestCase
 from harness import DEPLOY_COMMAND, REPOSITORY_ROOT, SOURCE_ID, DeployerTestCase, Result, forward
 from pdf_tool import MINIMUMS, PdfIdentity, PdfToolRefused, parse_banner
 
@@ -740,7 +739,7 @@ class DeployWarningTests(DeployerTestCase):
             self.assertNotIn("WARNING", self.deploy_ok("--all", "--dry-run").output)
 
 
-class InstallationGuideTests(GitTestCase):
+class InstallationGuideTests(unittest.TestCase):
     def test_the_section_install_messages_name_exists(self) -> None:
         guide = (REPOSITORY_ROOT / "docs" / "installation.md").read_text(encoding="utf-8")
         self.assertIn("Installing the tools", re.findall(r"^## (.+)$", guide, re.MULTILINE))
@@ -753,7 +752,7 @@ class InstallationGuideTests(GitTestCase):
                 self.assertIn(section, headings)
 
 
-class StandardCommandTests(GitTestCase):
+class StandardCommandTests(unittest.TestCase):
     def test_standard_commands_are_the_documented_set(self) -> None:
         # "Commands skills may run" in docs/adding-a-skill.md lists these; the platform's part comes from
         # platform_support: Python as python, Windows PowerShell, and cygpath on Windows, and python3 elsewhere.
@@ -812,7 +811,7 @@ class StandardCommandTests(GitTestCase):
         )
 
 
-class CodexSandboxProbeTests(GitTestCase):
+class CodexSandboxProbeTests(unittest.TestCase):
     """The sandbox mode Codex CLI would use, read from the documented probe that starts no model."""
 
     def mode(self, result: platform_support.ToolResult | Exception) -> tuple[str | None, list[list[str]]]:
@@ -846,7 +845,7 @@ class CodexSandboxProbeTests(GitTestCase):
                 self.assertIsNone(self.mode(result)[0])
 
 
-class VersionTests(GitTestCase):
+class VersionTests(unittest.TestCase):
     def test_verify_runtimes_are_catalogued_with_their_floors(self) -> None:
         from deployer import discovery
 
@@ -954,7 +953,7 @@ class VersionTests(GitTestCase):
             ast.parse("if (found := 1):\n    pass\n", feature_version=(3, 7))
 
 
-class LocatorFixture(GitTestCase):
+class LocatorFixture(unittest.TestCase):
     """A sanitized fixture: PATH is one empty folder, and the local application data folder is a fresh one with an
     empty WinGet Links folder, so the only programs `check` and a skill find are the ones a test installs. Off
     Windows, where no package manager links commands into a folder of its own, `links` is the folder PATH names
@@ -1132,7 +1131,3 @@ class SkillToolLocatorTests(LocatorFixture):
                 program = self.install(self.links, name)
                 self.assertEqual(str(program), catalogue[name].locate())
                 self.assertEqual(runtime, review_runtime.resolve_runtime("auto"))
-
-
-if __name__ == "__main__":
-    unittest.main()

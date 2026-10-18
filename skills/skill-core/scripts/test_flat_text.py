@@ -45,7 +45,3 @@ class SingleLineTests(unittest.TestCase):
     def test_it_flattens_the_characters_flat_text_does(self) -> None:
         text = " a\x1b\u2028 b  \u0085c\x7f "
         self.assertEqual(flat_text(text), " ".join(single_line(text).split()))
-
-
-if __name__ == "__main__":
-    unittest.main()

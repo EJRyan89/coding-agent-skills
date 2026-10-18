@@ -15,11 +15,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 from fsops_platform import _platform_names, filesystem_write_problems, platform_code_problems
-from git_test_base import GitTestCase
 from validation_support import write_fixture_tree
 
 
-class FsopsPlatformFixtures(GitTestCase):
+class FsopsPlatformFixtures(unittest.TestCase):
     def test_filesystem_write_policy_resolves_assigned_callables_in_their_own_scopes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -590,7 +589,7 @@ class FsopsPlatformFixtures(GitTestCase):
             "\n"  # 37
             "class MoreTests(TestCase):\n"  # 38
             "    value = os.name\n"  # 39
-            "class GitTests(GitTestCase): value = os.name\n"  # 40
+            "class GitTests(unittest.TestCase): value = os.name\n"  # 40
             "\n"  # 41
             "class Generic(Base[int]):\n"  # 42
             '    value = "cygpath"\n'  # 43
@@ -1752,7 +1751,3 @@ class FsopsPlatformFixtures(GitTestCase):
                 [f"tools/strayed.py:{line} names {token}{move}" for line, token in expected],
                 platform_code_problems(root),
             )
-
-
-if __name__ == "__main__":
-    unittest.main()

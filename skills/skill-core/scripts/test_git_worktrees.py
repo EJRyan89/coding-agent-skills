@@ -14,7 +14,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from git_client import GitClient, GitError, GitResult
-from git_test_base import GitTestCase
 from git_worktrees import Change, Worktree, changed_paths, changes, list_worktrees
 
 
@@ -29,7 +28,7 @@ def answering(output: str, returncode: int = 0, stderr: str = "") -> tuple[GitCl
     return GitClient(run), calls
 
 
-class RepositoryTestCase(GitTestCase):
+class RepositoryTestCase(unittest.TestCase):
     def setUp(self) -> None:
         super().setUp()
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="git worktrees "))).resolve()
@@ -152,7 +151,3 @@ class ChangeTests(RepositoryTestCase):
             ],
             calls,
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

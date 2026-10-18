@@ -182,7 +182,3 @@ class ConfigCommandTests(unittest.TestCase):
         usage = run("validate", "a.json", "b.json")
         self.assertEqual((2, ""), (usage.returncode, usage.stdout))
         self.assertIn("usage:", usage.stderr)
-
-
-if __name__ == "__main__":
-    unittest.main()

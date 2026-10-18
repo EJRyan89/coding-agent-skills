@@ -1517,7 +1517,3 @@ class ReviewArgumentsTests(TrackerPipelineFixture):
         for word in sorted(printed):
             with self.subTest(line=word):
                 self.assertTrue(f"`{word} <" in skill, word)
-
-
-if __name__ == "__main__":
-    unittest.main()

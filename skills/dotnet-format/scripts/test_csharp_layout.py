@@ -15,7 +15,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 import csharp_layout as layout
 import dotnet_solution
-from git_test_base import GitTestCase
 from run_dotnet_format import Completed, Services
 
 LINKED_FILE = "the file is a symbolic link or junction, which the script does not write through"
@@ -84,7 +83,7 @@ TRICKY = source(
 )
 
 
-class LexerTests(GitTestCase):
+class LexerTests(unittest.TestCase):
     def test_literals_and_comments_hide_braces_and_directives(self) -> None:
         scan = layout.Lexer(TRICKY).lex()
         directives = [(event.line + 1, event.name) for event in scan.events if event.kind == "directive"]
@@ -148,7 +147,7 @@ def lexed(text: str, hole: int = 0) -> Lexed:
     return lexer.i, lexer.line, events, sorted(lexer.scan.continuation)
 
 
-class CodeTests(GitTestCase):
+class CodeTests(unittest.TestCase):
     """Lexer.code called directly, for each arm, with where it stops and every event and continuation it records."""
 
     def test_code_outside_a_hole_records_braces_and_directives_to_the_end(self) -> None:
@@ -223,7 +222,7 @@ class CodeTests(GitTestCase):
                 self.assertEqual(expected, lexed(text, hole))
 
 
-class RuleTests(GitTestCase):
+class RuleTests(unittest.TestCase):
     def test_endregion_must_close_in_the_scope_its_region_opened(self) -> None:
         text = source(
             "class C",  # 1
@@ -345,7 +344,7 @@ class RuleTests(GitTestCase):
         self.assertEqual(["endregion-description"], [violation.rule for violation in applied])
 
 
-class FileTests(GitTestCase):
+class FileTests(unittest.TestCase):
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -640,7 +639,7 @@ class MSBuild:
 PACKAGE_REFERENCE = {"PackageReference": [{"Identity": "Roslynator.Formatting.Analyzers", "Version": "4.12.0"}]}
 
 
-class ConfigTests(GitTestCase):
+class ConfigTests(unittest.TestCase):
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -1193,7 +1192,3 @@ class ConfigTests(GitTestCase):
         for section, path, expected in cases:
             with self.subTest(section=section, path=path):
                 self.assertEqual(expected, layout.section_matches(section, path))
-
-
-if __name__ == "__main__":
-    unittest.main()

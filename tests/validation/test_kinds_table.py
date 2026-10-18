@@ -16,7 +16,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
-from git_test_base import GitTestCase
 from kinds_table import kind_findings, kind_vocabulary_problems, kinds_table_problems
 from validation_support import write_fixture_tree
 
@@ -31,7 +30,7 @@ class Kind:
 SUFFIX = "; iterate deployer/kinds.py's KINDS, or state why in KINDS_ALLOWED"
 
 
-class KindsTableFixtures(GitTestCase):
+class KindsTableFixtures(unittest.TestCase):
     def problems(self, files: dict[str, str]) -> list[str]:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -190,7 +189,3 @@ class KindsTableFixtures(GitTestCase):
             ],
             kind_vocabulary_problems([pinned, added]),
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

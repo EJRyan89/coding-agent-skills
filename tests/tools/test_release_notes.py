@@ -16,7 +16,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 import git_client
-from git_test_base import GitTestCase
 
 from tools import release_notes
 
@@ -42,7 +41,7 @@ BODY = (
 )
 
 
-class BodyEntriesTests(GitTestCase):
+class BodyEntriesTests(unittest.TestCase):
     def test_entries_come_only_from_the_upgrade_note_section_and_not_from_its_comments(self) -> None:
         entries = release_notes.body_entries(BODY)
         self.assertEqual(["A skill is added"], [entry.heading for entry in entries])
@@ -98,7 +97,7 @@ class BodyEntriesTests(GitTestCase):
         self.assertEqual([], release_notes.body_entries(body.replace("## Upgrade note \t", " ## Upgrade note")))
 
 
-class FixtureRepository(GitTestCase):
+class FixtureRepository(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -449,12 +448,12 @@ class CheckTests(FixtureRepository):
         self.assertEqual(2, raised.exception.code)
 
 
-class InsertSectionTests(GitTestCase):
+class InsertSectionTests(unittest.TestCase):
     def test_a_file_with_no_version_gets_the_section_at_its_end(self) -> None:
         self.assertEqual(f"{INTRO}\n## v0.1.0\n", release_notes.insert_section(INTRO, "v0.1.0", "## v0.1.0\n"))
 
 
-class ReleaseProcedureTests(GitTestCase):
+class ReleaseProcedureTests(unittest.TestCase):
     def test_the_release_procedure_writes_the_section_before_tagging(self) -> None:
         root = Path(__file__).resolve().parents[2]
         text = (root / "docs" / "releasing.md").read_text(encoding="utf-8")
@@ -469,7 +468,7 @@ class ReleaseProcedureTests(GitTestCase):
         self.assertEqual([], release_notes.body_entries(template))
 
 
-class GitProgramTests(GitTestCase):
+class GitProgramTests(unittest.TestCase):
     def test_git_runs_through_skill_cores_client_on_the_checkout_never_by_name(self) -> None:
         # The client's runner starts git at the path the locator finds and without the repository-selecting
         # variables; skill-core's suites hold both.
@@ -499,7 +498,3 @@ class GitProgramTests(GitTestCase):
                 self.assertRaisesRegex(ValueError, message),
             ):
                 release_notes.git(Path("a checkout"), "log")
-
-
-if __name__ == "__main__":
-    unittest.main()

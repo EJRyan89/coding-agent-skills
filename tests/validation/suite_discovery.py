@@ -1,5 +1,8 @@
-"""Regression suites: how they are found, sharded, and run, the rules the skill guide states for them, and that
-every module is named by a test.
+"""Regression suites: how they are found, sharded, and run, the rules the skill guide states for them, that every
+module is named by a test, and that the root conftest.py isolates git for every Python suite.
+
+Each Python suite runs as `python -B -m pytest <suite>`, or as one shard of it with conftest.py's --suite-shard, in
+a process of its own; a Bash or PowerShell suite runs as a program.
 """
 
 from __future__ import annotations
@@ -12,17 +15,17 @@ import re
 import sys
 import tomllib
 import unittest
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
+from typing import TypeGuard
 
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
 from shell_targets import run_git_bash, shell_quote
-from skill_scripts import STANDARD_STREAMS, command_reader
+from skill_scripts import STANDARD_STREAMS
 from toolchain import find_powershell
 from validation_support import (
     ATTRIBUTE_LOOKUPS,
     COMPUTED_NAME,
-    PYTHON_ENTRY_POINT,
     REPOSITORY_ROOT,
     SKILL_GUIDE,
     SUITE_EXTENSIONS,
@@ -49,33 +52,32 @@ from validation_support import (
     skill_script_directories,
 )
 
-from tests import run_shard as shard_runner
-
-SHARD_RUNNER = REPOSITORY_ROOT / "tests" / "run_shard.py"
+CONFTEST = "conftest.py"
 # A Python suite is split into one shard per this many tests, up to MAXIMUM_SHARDS. Smaller shards spread a long
 # suite further, at the cost of one more process start and suite import each. A recorded test counts as its seconds.
 TESTS_PER_SHARD = 6
 MAXIMUM_SHARDS = 8
 # The seconds a test takes run alone, recorded for a test that costs many times a typical one, by suite and then by
-# Class.test; any other test counts as one. The suite gets shards for its total, and run_shard.py packs the heaviest
-# test first onto the lightest shard, so a recorded test runs on a shard of its own instead of lengthening a shared
-# one, as long as the suite's other tests fit on its other shards; recorded_shard_problems holds that, which can fail
-# once a suite outgrows MAXIMUM_SHARDS. Measured on 2026-10-08 on a 24-CPU Windows machine, each test run alone.
+# the test's name within the suite as pytest names it, `Class::test`; any other test counts as one. The suite gets
+# shards for its total, and conftest.py deals the heaviest test first onto the lightest shard, so a recorded test runs
+# on a shard of its own instead of lengthening a shared one, as long as the suite's other tests fit on its other
+# shards; recorded_shard_problems holds that, which can fail once a suite outgrows MAXIMUM_SHARDS. Measured on
+# 2026-10-08 on a 24-CPU Windows machine, each test run alone.
 RECORDED_TEST_SECONDS: dict[str, dict[str, float]] = {
     "skills/code-review-core/scripts/test_adversarial_inputs.py": {
         # Writes and reads back a path at this machine's limit, which with long paths enabled is 32,507 units.
         (
-            "PathLengthTests.test_a_path_at_this_machines_limit_is_written_and_one_unit_longer_is_an_unsafe_path_"
+            "PathLengthTests::test_a_path_at_this_machines_limit_is_written_and_one_unit_longer_is_an_unsafe_path_"
             "exclusion"
         ): 13,
     },
     "skills/repo-cleanup/scripts/test_repo_cleanup.py": {
         # Pushes nine branches to a local remote, deletes them there, and plans and applies a cleanup of each with git.
-        "PlanApplyTests.test_gone_branches_are_deleted_only_when_their_pull_request_proves_them_stale": 13,
+        "PlanApplyTests::test_gone_branches_are_deleted_only_when_their_pull_request_proves_them_stale": 13,
     },
     "tests/validation/test_skill_scripts.py": {
         # Starts a Python per entry point, which imports the entry point and runs its __main__ block twice.
-        "EntryPointRunnerTests.test_every_entry_point_turns_a_failure_into_a_failed_line_and_ctrl_c_into_exit_130": 10,
+        "EntryPointRunnerTests::test_every_entry_point_turns_a_failure_into_a_failed_line_and_ctrl_c_into_exit_130": 10,
     },
 }
 
@@ -115,15 +117,20 @@ def suite_discovery_documentation_problems(root: Path) -> list[str]:
     section = markdown_section((root / SKILL_GUIDE).read_text(encoding="utf-8"), "## Validation")
     if section is None:
         return [f'{SKILL_GUIDE} has no "Validation" section']
-    rules = [*SUITE_NAME_PATTERNS, *sorted(SUITE_EXTENSIONS), PYTHON_ENTRY_POINT]
+    rules = [*SUITE_NAME_PATTERNS, *sorted(SUITE_EXTENSIONS), CONFTEST]
     return [f'{SKILL_GUIDE} "Validation" does not name `{rule}`' for rule in rules if f"`{rule}`" not in section]
+
+
+def pytest_command(target: str, *options: str) -> list[str]:
+    """How the runner starts a Python suite: pytest on the one file, from the repository root, with no bytecode."""
+    return [sys.executable, "-B", "-m", "pytest", target, *options]
 
 
 def run_test_script(path: Path) -> None:
     target = relative(path)
     suffix = path.suffix.casefold()
     if suffix == ".py":
-        run_process([sys.executable, "-B", target])
+        run_process(pytest_command(target))
     elif suffix == ".sh":
         run_git_bash(f"bash {shell_quote(target)}")
     elif suffix == ".ps1":
@@ -167,9 +174,14 @@ def shard_count(suite: Path, recorded: Mapping[str, float] | None = None) -> int
     return max(1, min(MAXIMUM_SHARDS, int(suite_cost(suite, recorded or {})) // TESTS_PER_SHARD))
 
 
+def shard_options(index: int, count: int, recorded: Mapping[str, float]) -> list[str]:
+    """The options that run shard `index` (from 0) of `count` of a suite, with each recorded test's seconds."""
+    costs = [option for test, seconds in sorted(recorded.items()) for option in ("--test-seconds", f"{test}={seconds}")]
+    return ["--suite-shard", f"{index + 1}/{count}", *costs]
+
+
 def run_shard(suite: Path, index: int, count: int, recorded: Mapping[str, float]) -> None:
-    costs = [f"{test}={seconds}" for test, seconds in sorted(recorded.items())]
-    run_process([sys.executable, "-B", relative(SHARD_RUNNER), relative(suite), str(index), str(count), *costs])
+    run_process(pytest_command(relative(suite), *shard_options(index, count, recorded)))
 
 
 def suite_jobs(
@@ -201,22 +213,29 @@ def suite_jobs(
     return jobs
 
 
+def _is_test(node: ast.stmt) -> TypeGuard[ast.FunctionDef | ast.AsyncFunctionDef]:
+    return isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name.startswith("test")
+
+
 def _class_tests(tree: ast.Module) -> list[tuple[str, bool]]:
-    """Each Class.test a class body defines, named test* as unittest's loader finds them, and whether a block of the
-    class body holds it, such as an `if sys.platform == "win32":`, so the loader finds it on some platforms only."""
-    return [
-        (f"{node.name}.{item.name}", item not in node.body)
+    """Each test the module defines, named as pytest names it within the suite: `Class::test` for a test* method of a
+    class body, and `test` for a test* function at module level, with whether a block holds it, such as an
+    `if sys.platform == "win32":`, so pytest collects it on some platforms only."""
+    methods = [
+        (f"{node.name}::{item.name}", item not in node.body)
         for node in ast.walk(tree)
         if isinstance(node, ast.ClassDef)
         for item in module_statements(node.body)
-        if isinstance(item, ast.FunctionDef | ast.AsyncFunctionDef) and item.name.startswith("test")
+        if _is_test(item)
     ]
+    functions = [(node.name, node not in tree.body) for node in module_statements(tree.body) if _is_test(node)]
+    return methods + functions
 
 
 def defined_tests(tree: ast.Module) -> list[str]:
-    """Each Class.test the module defines in a class body, named test* as unittest's loader finds them, one in an if,
-    try, or with block of the body included: the one reader of a suite's tests, for its cost, its shards, and the tests
-    its recorded seconds name."""
+    """Each test the module defines, as _class_tests names it, one in an if, try, or with block included: the one
+    reader of a suite's tests, for its cost, its shards, the tests its recorded seconds name, and whether it has any.
+    """
     return sorted({test for test, _ in _class_tests(tree)})
 
 
@@ -224,8 +243,8 @@ def recorded_cost_problems(
     root: Path, recorded: Mapping[str, Mapping[str, float]] = RECORDED_TEST_SECONDS
 ) -> list[str]:
     """Report a recorded test cost that names no Python regression suite, a test the suite does not define, a test it
-    defines on some platforms only, which tests/run_shard.py refuses where the loader does not find it, or a cost no
-    heavier than a typical test."""
+    defines on some platforms only, which conftest.py's --test-seconds refuses where pytest does not collect it, or a
+    cost no heavier than a typical test."""
     problems: list[str] = []
     for name, tests in recorded.items():
         path = root / name
@@ -244,7 +263,7 @@ def recorded_cost_problems(
                 problems.append(f"{name} records {test}, which it does not define")
             elif test in conditional:
                 problems.append(
-                    f"{name} records {test}, which a block of its class body holds, so the loader finds it on some "
+                    f"{name} records {test}, which a block of its suite holds, so pytest collects it on some "
                     "platforms only; record only a test every platform runs"
                 )
             elif seconds <= 1:
@@ -255,12 +274,14 @@ def recorded_cost_problems(
 def recorded_shard_problems(
     root: Path, recorded: Mapping[str, Mapping[str, float]] = RECORDED_TEST_SECONDS
 ) -> list[str]:
-    """Report a recorded test that run_shard.py would deal onto a shard beside another test.
+    """Report a recorded test that conftest.py would deal onto a shard beside another test.
 
     The heaviest test goes first onto an empty shard, and another test joins it only once every other shard carries as
     much. Below MAXIMUM_SHARDS a suite's shard count grows with its tests, so the others fit around a recorded test; at
     the cap a growing suite fills them, and the recorded test would lengthen a shared shard again.
     """
+    from conftest import deal  # imported here, after the runner has found pytest, which conftest.py imports
+
     problems: list[str] = []
     for name, seconds in recorded.items():
         path = root / name
@@ -270,7 +291,7 @@ def recorded_shard_problems(
             defined = defined_tests(parse_python(path))
         except UnreadablePython:
             continue
-        shards = shard_runner.deal(defined, shard_count(path, seconds), seconds)
+        shards = deal(defined, shard_count(path, seconds), seconds)
         for test in sorted(set(seconds) & set(shards)):
             if list(shards.values()).count(shards[test]) > 1:
                 problems.append(
@@ -280,31 +301,24 @@ def recorded_shard_problems(
     return problems
 
 
-def _calls_unittest_main(statement: ast.stmt, aliases: dict[str, str]) -> bool:
-    """Whether a statement calls unittest.main, resolved through the module's imports, or exits with its result."""
-    if not isinstance(statement, ast.Expr | ast.Raise):
-        return False
-    call = statement.value if isinstance(statement, ast.Expr) else statement.exc
-    if isinstance(call, ast.Call) and qualified_name(call.func, aliases) in {"sys.exit", "SystemExit"} and call.args:
-        call = call.args[0]
-    return isinstance(call, ast.Call) and qualified_name(call.func, aliases) == "unittest.main"
+def suite_shape_problems(root: Path) -> list[str]:
+    """Report a Python regression suite that defines no test pytest collects, or that still holds an
+    `if __name__ == "__main__":` block.
 
-
-def suite_entry_point_problems(root: Path) -> list[str]:
-    """Report a Python regression suite whose last top-level statement is not an `if __name__ == "__main__":` block
-    that calls unittest.main().
-
-    Every suite runs as `python <file>`, so one without that block defines its tests, runs none, and still exits 0;
-    the block comes last, after every test it runs is defined.
+    The runner starts every Python suite through pytest, so a suite with no test runs nothing, and a main block would
+    run the suite a second way, without the root conftest.py that isolates git.
     """
     problems: list[str] = []
     suites = [path for path in regression_suites(root) if path.suffix.casefold() == ".py"]
     for _, name, tree in python_trees(suites, root, problems):
-        last = tree.body[-1] if tree.body else None
-        if not (isinstance(last, ast.If) and is_main_guard(last.test)):
-            problems.append(f"{name} does not end with an `{PYTHON_ENTRY_POINT}` block, so it runs no tests")
-        elif not any(_calls_unittest_main(statement, import_aliases(tree)) for statement in last.body):
-            problems.append(f"{name}:{last.lineno} its `{PYTHON_ENTRY_POINT}` block does not call unittest.main()")
+        if not defined_tests(tree):
+            problems.append(f"{name} defines no test pytest collects: no test* method of a class and no test* function")
+        problems += [
+            f'{name}:{node.lineno} holds an `if __name__ == "__main__":` block; the runner starts the suite through '
+            "pytest, so remove it"
+            for node in module_statements(tree.body)
+            if isinstance(node, ast.If) and is_main_guard(node.test)
+        ]
     return problems
 
 
@@ -323,25 +337,7 @@ def unsuited_script_problems(root: Path) -> list[str]:
     return problems
 
 
-# The base every test class in a suite that runs git inherits, and the call a setUpModule of such a suite starts with.
-GIT_TEST_BASE = "git_test_base.GitTestCase"
-GIT_MODULE_ISOLATION = "git_test_base.isolate_module"
-TEST_CASE_BASES = frozenset({"unittest.TestCase", "unittest.IsolatedAsyncioTestCase"})
 MYPY_PATH_PREFIX = "$MYPY_CONFIG_FILE_DIR/"
-# What a module that runs git holds: a string that starts with the word git, or the git client.
-GIT_MARKER = re.compile(r"""["']git(?![\w-])|GitClient""")
-
-
-def _starts_git(node: ast.AST) -> bool:
-    """Whether a node is a list or tuple whose first item is the string git."""
-    return (
-        isinstance(node, (ast.List, ast.Tuple))
-        and bool(node.elts)
-        and isinstance(node.elts[0], ast.Constant)
-        and node.elts[0].value == "git"
-    )
-
-
 # The calls that load a module from a file by its path, by their last name, and the position and keyword of the path.
 PATH_LOADERS = {
     "spec_from_file_location": (1, "location"),
@@ -353,7 +349,7 @@ NAME_LOADERS = frozenset({"import_module", "__import__"})
 
 
 class RepositoryModules:
-    """The repository modules a Python file imports, resolved as they are at run time, and whether each runs git.
+    """The repository modules a Python file imports, resolved as they are at run time.
 
     A dotted import resolves beside the file, then from the repository root, as deployer.x, tools.x, and tests.x
     do; a relative import from the file's package; and a name each candidate resolves to in the mypy_path
@@ -361,10 +357,8 @@ class RepositoryModules:
     resolves beside the file only, since the interpreter finds its own module before any other directory's. A
     module named by a literal to importlib.import_module or __import__ is imported as a statement imports it, and a
     file loaded by its path, by spec_from_file_location, a SourceFileLoader, or runpy.run_path, is found by the
-    literal end of the path: beside the file, at the root, or every repository file whose path ends so. A module
-    runs git as skill_scripts.CommandReader reads it: a list or tuple that starts with git, a command runner or a
-    lookup given git, or a GitClient. A file no policy can read imports nothing and runs nothing here, and
-    unreadable_problems names it.
+    literal end of the path: beside the file, at the root, or every repository file whose path ends so. A file no
+    policy can read imports nothing here, and unreadable_problems names it.
     """
 
     def __init__(self, root: Path) -> None:
@@ -375,11 +369,8 @@ class RepositoryModules:
         self.path_directories = [root / entry.removeprefix(MYPY_PATH_PREFIX) for entry in entries]
         self._sources: dict[Path, str] = {}
         self._trees: dict[Path, ast.Module] = {}
-        self._aliases: dict[Path, dict[str, str]] = {}
-        self._resolvers: dict[Path, CallableResolver] = {}
         self._imports: dict[tuple[Path, bool], list[Path]] = {}
         self._resolved: dict[tuple[Path, str, int], list[Path]] = {}
-        self._runs_git: dict[Path, bool] = {}
         self._unreadable: dict[Path, str] = {}
 
     def source(self, path: Path) -> str:
@@ -406,16 +397,6 @@ class RepositoryModules:
             f"{path.resolve().relative_to(self.root.resolve()).as_posix()} {reason}"
             for path, reason in self._unreadable.items()
         )
-
-    def aliases(self, path: Path) -> dict[str, str]:
-        if path not in self._aliases:
-            self._aliases[path] = import_aliases(self.tree(path))
-        return self._aliases[path]
-
-    def resolver(self, path: Path) -> CallableResolver:
-        if path not in self._resolvers:
-            self._resolvers[path] = CallableResolver(self.tree(path))
-        return self._resolvers[path]
 
     @staticmethod
     def _module_file(base: Path, parts: list[str]) -> Path | None:
@@ -510,131 +491,136 @@ class RepositoryModules:
         self._imports[key] = list(dict.fromkeys(found))
         return self._imports[key]
 
-    def runs_git_itself(self, path: Path) -> bool:
-        if path not in self._runs_git:
-            # The reader finds git only in a string that starts with it or in GitClient, so a module without either
-            # is not read, and a command list that starts with git answers before the reader resolves every name.
-            source = self.source(path)
-            if not GIT_MARKER.search(source):
-                self._runs_git[path] = False
-            elif any(_starts_git(node) for node in ast.walk(self.tree(path))):
-                self._runs_git[path] = True
-            else:
-                self._runs_git[path] = "git" in command_reader(path).commands({"git"})
-        return self._runs_git[path]
 
-    def git_runner(self, path: Path) -> Path | None:
-        """The first module, path itself first and then what it imports breadth first, that runs git."""
-        queue, seen = [path.resolve()], {path.resolve()}
-        while queue:
-            current = queue.pop(0)
-            if self.runs_git_itself(current):
-                return current
-            for imported in self.imports(current):
-                if imported not in seen:
-                    seen.add(imported)
-                    queue.append(imported)
-        return None
-
-    def class_bases(self, path: Path, name: str, seen: frozenset[tuple[Path, str]] = frozenset()) -> set[str]:
-        """The test bases a class of path's derives from, through its own classes and the repository's: each of
-        TEST_CASE_BASES and GIT_TEST_BASE it reaches. A class defined in a module-level if, try, or with block is a
-        module's class as a top-level one is."""
-        tree = self.tree(path)
-        definition = next(
-            (node for node in module_statements(tree.body) if isinstance(node, ast.ClassDef) and node.name == name),
-            None,
-        )
-        if definition is None or (path, name) in seen:
-            return set()
-        aliases = self.aliases(path)
-        resolver = self.resolver(path)
-        found: set[str] = set()
-        for base in definition.bases:
-            # A base is read through the names the module binds to one by assignment, as `Base = unittest.TestCase`,
-            # and otherwise through its imports, as a class a module-level block defines twice is.
-            qualified = resolver.name(base).removeprefix("<local>.") or qualified_name(base, aliases)
-            if qualified in TEST_CASE_BASES or qualified == GIT_TEST_BASE:
-                found.add(qualified)
-            elif "." not in qualified:
-                found |= self.class_bases(path, qualified, seen | {(path, name)})
-            else:
-                module, _, imported = qualified.rpartition(".")
-                for file in self.resolve(path, module):
-                    found |= self.class_bases(file, imported, seen | {(path, name)})
-        return found
+# The autouse fixtures the root conftest.py isolates git with, against the scope each declares: a test's own home, and
+# the homes a class's and a module's fixtures run in.
+ISOLATION_FIXTURES = {"isolated_git_module": "module", "isolated_git_class": "class", "git_home": "function"}
+# The configuration pytest runs every suite with, as pyproject.toml's [tool.pytest.ini_options] holds it: no cache
+# written into the checkout, output not captured, misspelled markers and options refused, and nothing selected,
+# deselected, or skipped.
+PYTEST_CONFIGURATION = {
+    "addopts": ["-p", "no:cacheprovider", "--capture=no", "--strict-markers", "--strict-config"],
+}
+# The files pytest reads its configuration from ahead of pyproject.toml, none of which the repository holds.
+PYTEST_CONFIGURATION_FILES = ("pytest.ini", ".pytest.ini", "tox.ini", "setup.cfg")
 
 
-def _starts_with_call(function: ast.FunctionDef | ast.AsyncFunctionDef, matches: Callable[[ast.expr], bool]) -> bool:
-    """Whether the function's first statement after its docstring is a call whose callable `matches` accepts."""
-    body = function.body[1:] if function.body and ast.get_docstring(function) is not None else function.body
-    first = body[0] if body else None
-    return isinstance(first, ast.Expr) and isinstance(first.value, ast.Call) and matches(first.value.func)
+def _autouse_scope(function: ast.FunctionDef | ast.AsyncFunctionDef, aliases: dict[str, str]) -> str | None:
+    """The scope a function declares as an autouse pytest fixture, or None when it is not one."""
+    for decorator in function.decorator_list:
+        if not (isinstance(decorator, ast.Call) and qualified_name(decorator.func, aliases) == "pytest.fixture"):
+            continue
+        keywords = {keyword.arg: keyword.value for keyword in decorator.keywords}
+        autouse = keywords.get("autouse")
+        scope = keywords.get("scope", ast.Constant("function"))
+        if isinstance(autouse, ast.Constant) and autouse.value is True and isinstance(scope, ast.Constant):
+            return str(scope.value)
+    return None
 
 
-def _is_parent_set_up_class(node: ast.expr) -> bool:
-    return (
-        isinstance(node, ast.Attribute)
-        and node.attr == "setUpClass"
-        and isinstance(node.value, ast.Call)
-        and ast.unparse(node.value.func) == "super"
+def _suite_python_files(root: Path) -> list[Path]:
+    """The Python under tests/, outside tests/fixtures/, and under each shipped or repository skill's scripts/."""
+    tops = [root / "tests", *skill_script_directories(root)]
+    return sorted(
+        path
+        for top in tops
+        if top.is_dir()
+        for path in top.rglob("*.py")
+        if not path.is_relative_to(root / FIXTURE_ROOT) and "__pycache__" not in path.parts
     )
 
 
-def _suite_git_problems(modules: RepositoryModules, path: Path, name: str, runner: str) -> list[str]:
-    tree = modules.tree(path)
-    aliases = modules.aliases(path)
-    reason = f"runs git ({'itself' if runner == name else f'through {runner}'})"
-    problems: list[str] = []
-    for node in module_statements(tree.body):
+def _overrides(tree: ast.Module) -> list[tuple[int, str]]:
+    """Each definition, module- or class-level assignment of a value, or parametrize of an isolation fixture's name,
+    which would take the fixture's place for the tests beneath it. An annotation alone binds nothing, so a test case
+    may declare the `git_home` the fixture gives it."""
+    found: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) and node.name in ISOLATION_FIXTURES:
+            found.append((node.lineno, node.name))
         if (
-            isinstance(node, ast.FunctionDef)
-            and node.name == "setUpModule"
-            and not _starts_with_call(node, lambda call: qualified_name(call, aliases) == GIT_MODULE_ISOLATION)
+            isinstance(node, ast.Call)
+            and ast.unparse(node.func).rsplit(".", 1)[-1] == "parametrize"
+            and isinstance(names := call_argument(node, 0, "argnames"), ast.Constant)
+            and isinstance(names.value, str)
         ):
-            problems.append(f"{name}:{node.lineno} {reason}, so its setUpModule starts with {GIT_MODULE_ISOLATION}()")
-        if not isinstance(node, ast.ClassDef):
-            continue
-        bases = modules.class_bases(path, node.name)
-        if not bases:
-            continue
-        if GIT_TEST_BASE not in bases:
-            problems.append(
-                f"{name}:{node.lineno} {node.name} does not inherit {GIT_TEST_BASE}, and the suite {reason}"
-            )
-        for item in node.body:
-            if (
-                isinstance(item, ast.FunctionDef)
-                and item.name == "setUpClass"
-                and not _starts_with_call(item, _is_parent_set_up_class)
-            ):
-                problems.append(
-                    f"{name}:{item.lineno} {node.name}.setUpClass does not start with super().setUpClass(), which "
-                    f"isolates its git, and the suite {reason}"
-                )
-    return problems
+            found += [
+                (node.lineno, name.strip()) for name in names.value.split(",") if name.strip() in ISOLATION_FIXTURES
+            ]
+        if isinstance(node, ast.Module | ast.ClassDef):
+            for statement in node.body:
+                targets = statement.targets if isinstance(statement, ast.Assign) else []
+                if isinstance(statement, ast.AugAssign) or (
+                    isinstance(statement, ast.AnnAssign) and statement.value is not None
+                ):
+                    targets = [statement.target]
+                found += [
+                    (statement.lineno, target.id)
+                    for target in targets
+                    if isinstance(target, ast.Name) and target.id in ISOLATION_FIXTURES
+                ]
+    return found
 
 
 def git_isolation_problems(root: Path) -> list[str]:
-    """Report a Python regression suite that runs git, itself or through a repository module it imports, with a test
-    class that does not inherit git_test_base.GitTestCase, a setUpClass that does not start by calling its parent's,
-    or a setUpModule that does not start with git_test_base.isolate_module(). A class or setUpModule defined in a
-    module-level if, try, or with block is read as a top-level one is, since unittest finds it the same way.
+    """Report a root conftest.py that does not define each isolation fixture as an autouse fixture of its scope, a
+    conftest.py below the root, and a suite or helper that defines or assigns a fixture's name.
 
-    The shell that starts a suite reaches its git otherwise: a command-scope setting outranks every file, a global
-    hook runs on a fixture's commit, and a hook's GIT_DIR points every command at another repository.
+    Every Python suite runs through pytest from the root, which loads the root conftest.py for it, so its autouse
+    fixtures isolate git for every test, class fixture, and module fixture there is. A nearer conftest.py or a
+    definition of the same name would take a fixture's place for the tests beneath it, and the shell that started the
+    suite would reach its git again: a command-scope setting outranks every file, a global hook runs on a fixture's
+    commit, and a hook's GIT_DIR points every command at another repository.
     """
-    modules = RepositoryModules(root)
     problems: list[str] = []
-    for path in regression_suites(root):
-        if path.suffix.casefold() != ".py":
-            continue
-        runner = modules.git_runner(path)
-        if runner is None:
-            continue
-        name = path.relative_to(root).as_posix()
-        problems += _suite_git_problems(modules, path.resolve(), name, runner.relative_to(root.resolve()).as_posix())
-    return problems + modules.unreadable_problems()
+    conftest = root / CONFTEST
+    trees = list(python_trees([conftest] if conftest.is_file() else [], root, problems))
+    if not trees:
+        problems.append(f"{CONFTEST} is missing; its autouse fixtures isolate git for every Python suite")
+    for _, name, tree in trees:
+        aliases = import_aliases(tree)
+        declared = {
+            node.name: _autouse_scope(node, aliases)
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        }
+        problems += [
+            f"{name} does not define {fixture} as an autouse fixture of {scope} scope, which isolates git for each "
+            f"{'test' if scope == 'function' else scope} of every suite"
+            for fixture, scope in ISOLATION_FIXTURES.items()
+            if declared.get(fixture) != scope
+        ]
+    files = _suite_python_files(root)
+    problems += [
+        f"{relative_name} is a conftest.py below the root; the root's conftest.py is the one that sets up every suite"
+        for path in files
+        if path.name == CONFTEST and (relative_name := path.relative_to(root).as_posix())
+    ]
+    for _, name, tree in python_trees(files, root, problems):
+        problems += [
+            f"{name}:{line} defines {fixture}, which takes the place of the root conftest.py's fixture that isolates "
+            "git"
+            for line, fixture in _overrides(tree)
+        ]
+    return problems
+
+
+def pytest_configuration_problems(root: Path) -> list[str]:
+    """Report a pytest configuration other than PYTEST_CONFIGURATION, or a file pytest would read one from first.
+
+    A configuration could select, deselect, or skip tests, or turn the conftest plugin off, for every suite at once,
+    so it is pinned here rather than read.
+    """
+    problems = [
+        f"{name} holds pytest configuration ahead of pyproject.toml; keep it in [tool.pytest.ini_options] alone"
+        for name in PYTEST_CONFIGURATION_FILES
+        if (root / name).is_file()
+    ]
+    configuration = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    table = configuration.get("tool", {}).get("pytest", {})
+    if table != {"ini_options": PYTEST_CONFIGURATION}:
+        problems.append(f"pyproject.toml: [tool.pytest] must be ini_options = {PYTEST_CONFIGURATION!r}, not {table!r}")
+    return problems
 
 
 # What the validation pool's thread reads while the policy checks run on the main thread: it starts each job from a
@@ -859,11 +845,14 @@ class SuiteDiscoveryPolicies(unittest.TestCase):
         ):
             self.assertIn(expected, suites)
         self.assertNotIn("tests/deployer/harness.py", suites)
-        self.assertNotIn("tests/run_shard.py", suites)
+        self.assertNotIn("conftest.py", suites)
 
-    def test_python_suites_run_their_tests_when_executed(self) -> None:
+    def test_python_suites_define_tests_and_run_only_through_pytest(self) -> None:
         self.assertTrue([path for path in regression_suites() if path.suffix.casefold() == ".py"])
-        self.assertEqual([], suite_entry_point_problems(REPOSITORY_ROOT))
+        self.assertEqual([], suite_shape_problems(REPOSITORY_ROOT))
+
+    def test_the_pytest_configuration_selects_and_skips_nothing(self) -> None:
+        self.assertEqual([], pytest_configuration_problems(REPOSITORY_ROOT))
 
     def test_suite_discovery_rules_are_documented(self) -> None:
         self.assertEqual([], suite_discovery_documentation_problems(REPOSITORY_ROOT))
@@ -877,7 +866,7 @@ class SuiteDiscoveryPolicies(unittest.TestCase):
     def test_every_module_is_named_by_a_test(self) -> None:
         self.assertEqual([], untested_module_problems(REPOSITORY_ROOT))
 
-    def test_every_suite_that_runs_git_isolates_it(self) -> None:
+    def test_the_root_conftest_isolates_git_for_every_python_suite(self) -> None:
         self.assertEqual([], git_isolation_problems(REPOSITORY_ROOT))
 
     def test_no_policy_check_changes_what_the_pool_reads(self) -> None:

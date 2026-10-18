@@ -769,7 +769,3 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(
             sorted(["Directory.Packages.props", "A.csproj", "B.csproj"]), sorted(path.name for path in parsed)
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

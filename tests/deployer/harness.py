@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unittest
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,7 +22,6 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
-from git_test_base import GitTestCase
 
 from deployer import cli, configure, fsops, pipeline, platform_support, source_ref
 from deployer.paths import Paths
@@ -217,7 +217,7 @@ class _Tee(io.StringIO):
         return super().write(text)
 
 
-class DeployerTestCase(GitTestCase):
+class DeployerTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="deploy-test.")
         # Expand 8.3 short names such as RUNNER~1, which configured paths reject.

@@ -338,7 +338,3 @@ class ConditionTests(unittest.TestCase):
         code, out, _ = self.run_condition({}, {}, environment=missing)
         self.assertEqual(2, code)
         self.assertTrue(out.startswith("FAILED FileNotFoundError: "), out)
-
-
-if __name__ == "__main__":
-    unittest.main()

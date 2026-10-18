@@ -274,7 +274,3 @@ class SelectPdftotextTests(unittest.TestCase):
         with self.assertRaises(ValueError) as raised:
             pdf_tool.select_pdftotext([], mock.Mock())
         self.assertIs(ValueError, type(raised.exception), "not a refusal: the caller reports a missing parser")
-
-
-if __name__ == "__main__":
-    unittest.main()

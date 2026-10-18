@@ -238,7 +238,3 @@ class NamedPathTests(unittest.TestCase):
             # A local device form is refused on every platform: as a device where it names one, else as a share.
             self.assertIsNotNone(refusal(project_path(project_dir, "\\\\.\\pipe\\x.csproj"), tree))
         self.assertEqual(tree / "Lib" / "Lib.csproj", project_path(project_dir, "..\\Lib\\Lib.csproj"))
-
-
-if __name__ == "__main__":
-    unittest.main()

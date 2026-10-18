@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import unittest
 from unittest import mock
 
 from harness import DEPLOY_COMMAND, DeployerTestCase, tree_state
@@ -265,7 +264,3 @@ class DeployUsageErrorTests(DeployerTestCase):
                     f"Name one of: alpha.\n{self.HELP}\n\n",
                     result.output,
                 )
-
-
-if __name__ == "__main__":
-    unittest.main()

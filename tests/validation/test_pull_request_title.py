@@ -18,7 +18,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 
 import pull_request_title
 from git_client import GitResult
-from git_test_base import GitTestCase
 from pull_request_title import head_branch, title_problems, title_types_problems
 
 
@@ -26,7 +25,7 @@ def git(repository: Path, *arguments: str) -> None:
     subprocess.run(["git", "-C", str(repository), *arguments], capture_output=True, check=True)
 
 
-class PullRequestTitlePolicy(GitTestCase):
+class PullRequestTitlePolicy(unittest.TestCase):
     def test_the_types_are_the_agreed_ones(self) -> None:
         self.assertEqual(
             ("feat", "fix", "docs", "test", "refactor", "chore", "ci", "build"), pull_request_title.TITLE_TYPES
@@ -89,7 +88,7 @@ class PullRequestTitlePolicy(GitTestCase):
         self.assertEqual(["GUIDE.md does not name the pull request title type `build`"], problems)
 
 
-class HeadBranch(GitTestCase):
+class HeadBranch(unittest.TestCase):
     """head_branch reads GITHUB_HEAD_REF in CI, where the checkout is a detached merge ref, and the checkout's own
     branch elsewhere; when neither names a branch, the title's type is left unconstrained."""
 
@@ -137,7 +136,3 @@ class HeadBranch(GitTestCase):
         # Nor does a git that cannot run at all.
         with mock.patch.object(pull_request_title, "git", side_effect=ValueError("git was not found")):
             self.assertIsNone(head_branch())
-
-
-if __name__ == "__main__":
-    unittest.main()

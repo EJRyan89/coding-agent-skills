@@ -20,7 +20,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-c
 
 import shepherd_pull_requests as shepherd
 from git_client import GitClient
-from git_test_base import GitTestCase
 from github_client import Backoff, CommandResult, GitHubClient
 
 GIT_CONFIG: Mapping[str, str] = MappingProxyType({"init.defaultBranch": "main"})
@@ -302,7 +301,7 @@ def git(*arguments: str, directory: Path) -> str:
     ).stdout.strip()
 
 
-class FixtureTestCase(GitTestCase):
+class FixtureTestCase(unittest.TestCase):
     """A hub on main whose origin URL names a GitHub repository and fetches from a bare repository beside it."""
 
     git_config = GIT_CONFIG
@@ -877,7 +876,7 @@ class JudgementTest(FixtureTestCase):
         self.assertTrue(self.line(lines, "PR #21 ").endswith(" would-update"))
 
 
-class LogTest(GitTestCase):
+class LogTest(unittest.TestCase):
     def test_log_lines_drop_github_s_prefixes_and_terminal_escapes(self) -> None:
         text = PREFIX + "\x1b[31mFAIL\x1b[0m one\n2026-10-16T05:51:51Z two\nthree\twith a tab\n"
         self.assertEqual(["FAIL one", "two", "three\twith a tab"], shepherd.log_lines(text))
@@ -1003,7 +1002,7 @@ class MergedTest(FixtureTestCase):
         self.assertEqual("REMAINING 0", lines[-1])
 
 
-class MainTest(GitTestCase):
+class MainTest(unittest.TestCase):
     def test_main_runs_one_tick_from_the_working_directory(self) -> None:
         with mock.patch.object(shepherd, "tick", return_value=0) as tick:
             self.assertEqual(0, shepherd.main(["--dry-run"]))
@@ -1014,7 +1013,3 @@ class MainTest(GitTestCase):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
             shepherd.main(["--rebase"])
         self.assertEqual(2, raised.exception.code)
-
-
-if __name__ == "__main__":
-    unittest.main()

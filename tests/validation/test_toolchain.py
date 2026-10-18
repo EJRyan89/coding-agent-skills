@@ -16,7 +16,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 import toolchain
-from git_test_base import GitTestCase
 from job_pool import Terminated
 from toolchain import (
     PREREQUISITES,
@@ -33,7 +32,7 @@ from toolchain import (
 from deployer import platform_support
 
 
-class ToolchainFixtures(GitTestCase):
+class ToolchainFixtures(unittest.TestCase):
     def setUp(self) -> None:
         super().setUp()
         # The fixtures name Windows' install commands on every platform; test_platform_support pins each platform's.
@@ -189,7 +188,7 @@ class ToolchainFixtures(GitTestCase):
             self.assertEqual({}, tool_versions(prerequisite, read_version=lambda path: (1, 25, 0)))
 
 
-class PowerShellJsonRunner(GitTestCase):
+class PowerShellJsonRunner(unittest.TestCase):
     def run_script(self, result: platform_support.ToolResult) -> tuple[list[object], list[dict[str, str]]]:
         """The runner's list for a fake pwsh's result, and each environment it was started with."""
         seen: list[dict[str, str]] = []
@@ -228,5 +227,21 @@ class PowerShellJsonRunner(GitTestCase):
             self.run_script(platform_support.ToolResult(2_147_483_652, ""))
 
 
-if __name__ == "__main__":
-    unittest.main()
+class PytestPrerequisiteFixtures(unittest.TestCase):
+    def test_missing_pytest_is_reported_with_the_install_command(self) -> None:
+        self.assertIn(("pytest", "pytest", toolchain.find_pytest), toolchain.PREREQUISITES)
+        with (
+            mock.patch.object(platform_support, "find_on_path", return_value=None),
+            mock.patch.object(platform_support, "find_executable", return_value=None),
+        ):
+            self.assertIsNone(toolchain.find_pytest())
+        python = "python" if platform_support.WINDOWS else "python3"
+        self.assertEqual(
+            [f"  - pytest: {python} -m pip install -r requirements-dev.txt"],
+            toolchain.missing_prerequisites((("pytest", "pytest", lambda: None),)),
+        )
+
+    def test_pytest_older_than_its_pin_stops_the_run(self) -> None:
+        outdated = toolchain.outdated_prerequisites({"pytest": (9, 0, 3)}, (3, 11, 4))
+        self.assertEqual(1, len(outdated))
+        self.assertIn("pytest 9.0.3 is older than the floor 9.1.1 in docs/dependency-updates.md", outdated[0])

@@ -112,6 +112,13 @@ def find_mypy() -> str | None:
     return platform_support.find_on_path("mypy", scripts) or platform_support.find_executable("mypy")
 
 
+def find_pytest() -> str | None:
+    """pytest from this interpreter's scripts directory, where requirements-dev.txt installs it, or else from PATH.
+    The runner starts it as `python -m pytest`, so this interpreter's copy is the one whose version counts."""
+    scripts = sysconfig.get_path("scripts")
+    return platform_support.find_on_path("pytest", scripts) or platform_support.find_executable("pytest")
+
+
 PREREQUISITES: tuple[tuple[str, str, Callable[[], str | None]], ...] = (
     (platform_support.BASH_NAME, platform_support.BASH_NAME, find_git_bash),
     ("ShellCheck", "ShellCheck", find_shellcheck),
@@ -119,6 +126,7 @@ PREREQUISITES: tuple[tuple[str, str, Callable[[], str | None]], ...] = (
     ("PowerShell 7 (pwsh)", "PowerShell", find_powershell),
     ("ruff", "ruff", find_ruff),
     ("mypy", "mypy", find_mypy),
+    ("pytest", "pytest", find_pytest),
 )
 
 
@@ -141,11 +149,12 @@ def missing_prerequisites(
 
 
 # The oldest release of each validation tool the suite is known to work with. docs/dependency-updates.md owns these.
-# CI installs PSScriptAnalyzer, ruff, and mypy at their floors on every leg, Python at the newest release of its floor's
-# minor version, and ShellCheck at its floor on the Windows legs; the Linux job takes Ubuntu's archive ShellCheck
-# unpinned, which this floor must not pass. PowerShell 7 arrives unpinned with each runner image. Git Bash has no floor:
-# the shell scripts need no Bash 4. ruff's and mypy's floors are their pins in requirements-dev.txt, because a newer
-# release can change the formatting style or report new errors in an unchanged tree.
+# CI installs PSScriptAnalyzer, ruff, mypy, and pytest at their floors on every leg, Python at the newest release of
+# its floor's minor version, and ShellCheck at its floor on the Windows legs; the Linux job takes Ubuntu's archive
+# ShellCheck unpinned, which this floor must not pass. PowerShell 7 arrives unpinned with each runner image. Git Bash
+# has no floor: the shell scripts need no Bash 4. ruff's, mypy's, and pytest's floors are their pins in
+# requirements-dev.txt, because a newer release can change the formatting style, report new errors, or collect and
+# report tests differently in an unchanged tree.
 DEPENDENCY_DOC = "docs/dependency-updates.md"
 VALIDATION_FLOORS: dict[str, tuple[int, ...]] = {
     "Python": tools.MINIMUM_PYTHON,
@@ -154,12 +163,13 @@ VALIDATION_FLOORS: dict[str, tuple[int, ...]] = {
     "PowerShell 7 (pwsh)": (7, 0),
     "ruff": (0, 17, 1),
     "mypy": (2, 4, 0),
+    "pytest": (9, 1, 1),
 }
 
 
 # The Python packages validation and CI take from PyPI, which "Development dependencies" in the dependency document
 # lists, and no others.
-DEVELOPMENT_PACKAGES = ("ruff", "mypy")
+DEVELOPMENT_PACKAGES = ("ruff", "mypy", "pytest")
 REQUIREMENT_PIN = re.compile(r"(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)==[0-9][0-9A-Za-z.+!-]*")
 
 
@@ -259,6 +269,7 @@ class ToolchainPolicies(unittest.TestCase):
                 "PowerShell 7 (pwsh)": (7, 0),
                 "ruff": (0, 17, 1),
                 "mypy": (2, 4, 0),
+                "pytest": (9, 1, 1),
             },
             VALIDATION_FLOORS,
         )
@@ -270,6 +281,7 @@ class ToolchainPolicies(unittest.TestCase):
             "| PowerShell 7 (`pwsh`) | 7.0 |",
             "| ruff | 0.17.1 |",
             "| mypy | 2.4.0 |",
+            "| pytest | 9.1.1 |",
         ):
             with self.subTest(row=row):
                 self.assertIn(row, document)
@@ -292,17 +304,23 @@ class ToolchainPolicies(unittest.TestCase):
             workflow,
         )
         self.assertIn("if: github.event_name == 'schedule' && matrix.python-version == '3.x'", workflow)
-        # Both matrix entries install the pinned development dependencies, so ruff and mypy run at their floors.
+        # Both matrix entries install the pinned development dependencies, so ruff, mypy, and pytest run at their
+        # floors.
         self.assertIn("python -m pip install -r requirements-dev.txt", workflow)
         self.assertIn("python -m mypy --version", workflow)
         requirements = (REPOSITORY_ROOT / "requirements-dev.txt").read_text(encoding="utf-8")
-        self.assertEqual(["ruff==0.17.1", "mypy==2.4.0"], [line for line in requirements.splitlines() if "==" in line])
-        # Every other line is a comment or blank, and the packages are the two the dependency document lists.
-        self.assertEqual(("ruff", "mypy"), DEVELOPMENT_PACKAGES)
+        self.assertEqual(
+            ["ruff==0.17.1", "mypy==2.4.0", "pytest==9.1.1"],
+            [line for line in requirements.splitlines() if "==" in line],
+        )
+        # Every other line is a comment or blank, and the packages are the ones the dependency document lists.
+        self.assertEqual(("ruff", "mypy", "pytest"), DEVELOPMENT_PACKAGES)
         self.assertEqual([], requirements_problems(requirements, DEVELOPMENT_PACKAGES))
         document = (REPOSITORY_ROOT / DEPENDENCY_DOC).read_text(encoding="utf-8")
         self.assertIn(
-            "pinned in `requirements-dev.txt`, and no others: `ruff`, the formatter and linter, and `mypy`", document
+            "pinned in `requirements-dev.txt`, and no others: `ruff`, the formatter and linter, `mypy`, the type "
+            "checker, and `pytest`, the test runner",
+            document,
         )
         dependabot = (REPOSITORY_ROOT / ".github/dependabot.yml").read_text(encoding="utf-8")
         self.assertRegex(

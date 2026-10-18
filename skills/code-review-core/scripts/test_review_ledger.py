@@ -966,7 +966,3 @@ class LedgerReportTests(unittest.TestCase):
                 for item in carried_findings(records, flags)
             ],
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

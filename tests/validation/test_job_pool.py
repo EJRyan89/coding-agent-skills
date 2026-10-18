@@ -22,7 +22,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 import job_pool
 import pull_request_title
 import upgrade_notes
-from git_test_base import GitTestCase
 from job_pool import (
     OUTPUT_LOCK,
     Job,
@@ -76,7 +75,7 @@ def job_running(label: str, *commands: list[str]) -> tuple[Job, list[list[str]]]
     return Job(label, label, 1, run), started
 
 
-class JobPoolFixtures(GitTestCase):
+class JobPoolFixtures(unittest.TestCase):
     def test_step_summary_reports_the_result_and_each_failure(self) -> None:
         text = step_summary(
             (3, 11, 9),
@@ -244,7 +243,7 @@ class JobPoolFixtures(GitTestCase):
             self.assertEqual(["summary with spaces.md"], [child.name for child in Path(temporary).iterdir()])
 
 
-class TerminationFixtures(GitTestCase):
+class TerminationFixtures(unittest.TestCase):
     """A program ended with a termination status before its first line is the program's ending, not a failed check."""
 
     def test_a_job_is_started_again_once(self) -> None:
@@ -353,7 +352,7 @@ class TerminationFixtures(GitTestCase):
         )
 
 
-class RunnerDefaultEnvironment(GitTestCase):
+class RunnerDefaultEnvironment(unittest.TestCase):
     """The runner's main as CI starts it, with no environment argument: it reads the step summary's path, the base
     branch, and the worker count from os.environ. Its own policy checks pass an environment, and a policy check may not
     change os.environ beside the pool, so this suite, which runs in its own process, holds the default."""
@@ -385,7 +384,3 @@ class RunnerDefaultEnvironment(GitTestCase):
         self.assertIn("suite jobs on 3 workers.", output.getvalue())
         self.assertIn("## Repository validation\n", text)
         self.assertIn("**validation passed**", text)
-
-
-if __name__ == "__main__":
-    unittest.main()

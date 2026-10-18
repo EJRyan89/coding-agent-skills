@@ -718,7 +718,3 @@ class OneReaderTests(unittest.TestCase):
             (1, ["CONFIG_ERROR .vscode/mcp.json VS Code MCP must use 'servers' wrapper (not 'mcpServers')"]),
             (code, output.getvalue().splitlines()),
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

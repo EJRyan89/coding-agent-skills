@@ -40,7 +40,3 @@ class SupportedLineTest(unittest.TestCase):
         text = "# Title\n\n## Updating\n\nKept.\n\n## Uninstalling\n\nDropped.\n"
         self.assertEqual("\n\nKept.\n\n", section(text, "Updating"))
         self.assertEqual("", section(text, "Missing"))
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -15,12 +15,11 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
-from git_test_base import GitTestCase
 
 from deployer import fsops, platform_support
 
 
-class FilesystemOperationTests(GitTestCase):
+class FilesystemOperationTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="deploy-fsops.")
         self.addCleanup(temporary.cleanup)
@@ -220,7 +219,3 @@ class FilesystemOperationTests(GitTestCase):
                 with self.assertRaises(refusal):
                     fsops.extract_archive(self.archive(name), destination)
                 self.assertFalse((self.root / "notes.md").exists())
-
-
-if __name__ == "__main__":
-    unittest.main()

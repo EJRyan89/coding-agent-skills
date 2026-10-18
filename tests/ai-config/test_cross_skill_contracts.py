@@ -28,7 +28,6 @@ import frontmatter as skill_frontmatter
 import review_guard
 import review_pipeline
 import review_source
-from git_test_base import GitTestCase
 from review_config import COMPUTED_DASHBOARD_STATES
 
 from deployer import platform_support
@@ -137,7 +136,7 @@ def claude_code_grants(pattern: str, command: str, skill: Path) -> bool:
     return re.fullmatch(".*".join(re.escape(part) for part in filled.split("*")), command, re.DOTALL) is not None
 
 
-class CrossSkillContractTests(GitTestCase):
+class CrossSkillContractTests(unittest.TestCase):
     def test_runtime_compatibility_keeps_skill_tool_mapping(self) -> None:
         contract = (REPOSITORY_ROOT / "skills/runtime-compatibility.md").read_text(encoding="utf-8-sig")
         self.assertIn("For `Skill`, use native skill invocation.", contract)
@@ -1022,7 +1021,3 @@ class CrossSkillContractTests(GitTestCase):
         self.assertTrue((REPOSITORY_ROOT / "skills/code-review-core/references/generic-reviewer.md").is_file())
         self.assertNotIn("C:/GitHub", combined)
         self.assertNotIn("C:\\GitHub", combined)
-
-
-if __name__ == "__main__":
-    unittest.main()

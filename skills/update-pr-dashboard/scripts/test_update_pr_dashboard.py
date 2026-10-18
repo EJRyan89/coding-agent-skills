@@ -1346,7 +1346,3 @@ class OverrideAndPullKeyTests(unittest.TestCase):
             ("TrackerError", "Duplicate removal pull-request identity: owner/repo#1"),
             raised(partial(normalize_pull_keys, ["owner/repo#1", "OWNER/repo#1"], "removal")),
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

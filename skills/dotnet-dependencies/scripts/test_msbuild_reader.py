@@ -441,7 +441,3 @@ class PathBoundTests(unittest.TestCase):
             with self.assertRaises(Unreadable) as refused:
                 read_solution(listed)
             self.assertIn("larger than the reader's bound of 8 bytes", refused.exception.reason)
-
-
-if __name__ == "__main__":
-    unittest.main()

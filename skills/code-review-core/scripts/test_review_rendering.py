@@ -14,7 +14,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import review_records as records
-from git_test_base import GitTestCase
 from review_documents import extract, locations
 from review_operation import archive_base, commit_adapter_result
 from test_review_core import valid_adapter_result, valid_request
@@ -42,7 +41,7 @@ def validated_result() -> dict:
     )
 
 
-class LiteralReportTests(GitTestCase):
+class LiteralReportTests(unittest.TestCase):
     def test_summary_body_title_category_and_source_are_literal_without_changing_the_record(self) -> None:
         result = validated_result()
         record = records.build_record(valid_request(), result, version=1, policy={})
@@ -340,7 +339,3 @@ class LiteralReportTests(GitTestCase):
         records.validate_record(record)
         report = records.render_markdown(record, record_payload_hash="0" * 64)
         self.assertIn("> **Evidence:** `x = 1`<br>`` `tick` ``<br>``` `` `` ```", report)
-
-
-if __name__ == "__main__":
-    unittest.main()

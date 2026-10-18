@@ -38,7 +38,6 @@ import review_source
 import review_specialists
 import skill_inventory
 from git_client import GitClient, GitResult
-from git_test_base import GitTestCase
 from review_config import write_config
 from review_documents import document_format, extract, locations, split_label
 from review_github import GitHubClient
@@ -46,6 +45,7 @@ from review_records import build_record, validate_record
 from review_runtime import validate_adapter_manifest
 from test_review_documents import StubPdftotext
 
+from conftest import GitHome
 from deployer import platform_support
 from tools import skill_evals
 from tools.skill_evals import Outcome, RecordError, Scenario, ScenarioError
@@ -257,7 +257,7 @@ def run_main(argv: Sequence[str], root: Path) -> tuple[int, list[str]]:
     return status, output.getvalue().splitlines()
 
 
-class LoaderTests(GitTestCase):
+class LoaderTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -555,7 +555,7 @@ class LoaderTests(GitTestCase):
                 self.assertIn(message, str(raised.exception))
 
 
-class FindingTests(GitTestCase):
+class FindingTests(unittest.TestCase):
     spec: ClassVar[dict[str, Any]] = {
         "kind": "finding",
         "path": "store.go",
@@ -608,7 +608,7 @@ class FindingTests(GitTestCase):
         )
 
 
-class NoFindingAboveTests(GitTestCase):
+class NoFindingAboveTests(unittest.TestCase):
     def test_on_listed_paths(self) -> None:
         spec = {"kind": "no_finding_above", "severity": "SUGGESTION", "paths": ["labels.go"]}
         self.assertIsNone(
@@ -643,7 +643,7 @@ class NoFindingAboveTests(GitTestCase):
             skill_evals.expectation({**spec, "lines": [0]}, "initial")
 
 
-class OnlyAtTests(GitTestCase):
+class OnlyAtTests(unittest.TestCase):
     spec: ClassVar[dict[str, Any]] = {"kind": "only_at", "path": "draft.md", "lines": [17]}
 
     def test_every_finding_of_any_severity_must_be_there(self) -> None:
@@ -662,7 +662,7 @@ class OnlyAtTests(GitTestCase):
         self.assertIn("distinct positive line", refusal({**self.spec, "lines": []}, "initial"))
 
 
-class VerdictTests(GitTestCase):
+class VerdictTests(unittest.TestCase):
     def test_verdict(self) -> None:
         spec = {"kind": "verdict", "verdict": "CHANGES_REQUESTED"}
         self.assertIsNone(check(spec, record(verdict="CHANGES_REQUESTED")))
@@ -670,7 +670,7 @@ class VerdictTests(GitTestCase):
         self.assertEqual("verdict CHANGES_REQUESTED", skill_evals.expectation(spec, "initial").label)
 
 
-class LedgerTests(GitTestCase):
+class LedgerTests(unittest.TestCase):
     ledger: ClassVar[list[dict[str, Any]]] = [
         entry(1, "F001", (2, "still_present")),
         entry(1, "F002", (2, "still_present")),
@@ -695,7 +695,7 @@ class LedgerTests(GitTestCase):
             check(spec, record(version=2))
 
 
-class DispositionTests(GitTestCase):
+class DispositionTests(unittest.TestCase):
     ledger: ClassVar[list[dict[str, Any]]] = [
         entry(1, "F001", (2, "still_present")),
         entry(1, "F002", (2, "addressed")),
@@ -720,7 +720,7 @@ class DispositionTests(GitTestCase):
                 )
 
 
-class RepeatsTests(GitTestCase):
+class RepeatsTests(unittest.TestCase):
     spec: ClassVar[dict[str, Any]] = {"kind": "repeats", "path": "store.go", "lines": [44, 45], "entry": "v1:F001"}
     link: ClassVar[dict[str, Any]] = {"version": 1, "id": "F001"}
 
@@ -784,7 +784,7 @@ class RepeatsTests(GitTestCase):
                 check(self.spec, value)
 
 
-class JudgeTests(GitTestCase):
+class JudgeTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -1038,7 +1038,7 @@ def constant(value: dict[str, Any]) -> skill_evals.RecordSource:
     return lambda _scenario, _model: value
 
 
-class ReviewPrsScenarioTests(GitTestCase):
+class ReviewPrsScenarioTests(unittest.TestCase):
     """The shipped scenarios load, point at lines that changed, and an ideal run of each passes."""
 
     def setUp(self) -> None:
@@ -1199,7 +1199,7 @@ def design_document(scenario: str) -> Path:
     return path.resolve()
 
 
-class ReviewDocumentScenarioTests(GitTestCase):
+class ReviewDocumentScenarioTests(unittest.TestCase):
     """The review-document scenarios review the review-prs design documents, which they name rather than copy, one
     edit of the clean one, and the gaps document written as a Word draft and as a PDF; an ideal run of each passes."""
 
@@ -1328,8 +1328,11 @@ class ReviewDocumentScenarioTests(GitTestCase):
                 self.assertEqual([], [outcome for outcome in outcomes if outcome.failure is not None])
 
 
-class DocumentStagingTests(GitTestCase):
+class DocumentStagingTests(unittest.TestCase):
     """A document scenario's document is written into the run's folder for the skill to find by its path."""
+
+    # The home conftest.py's git_home fixture gives the running test's git.
+    git_home: GitHome
 
     def setUp(self) -> None:
         self.root = temporary_root(self)
@@ -1371,8 +1374,8 @@ class DocumentStagingTests(GitTestCase):
             hook = hooks / name
             hook.write_text(f"#!/bin/sh\nprintf '%s\\n' '{name}' >> '../hook-effects'\n", encoding="utf-8")
             hook.chmod(0o755)
-        # The global configuration GitTestCase gives the test, its empty hooks folder replaced by the hooks and signing
-        # a user may have.
+        # The global configuration conftest.py gives the test, its empty hooks folder replaced by the hooks and
+        # signing a user may have.
         config = self.git_home.config
         self.git.output(["config", "--file", str(config), "--unset", "core.hooksPath"])
         self.git.output(
@@ -1450,7 +1453,7 @@ def write_reviewer_scenario(
     return directory
 
 
-class ReviewerScenarioTests(GitTestCase):
+class ReviewerScenarioTests(unittest.TestCase):
     """A repository reviewer's scenarios: review-prs starts them, and a run places the reviewer's files from the
     checkout in a throwaway copy of the fixture, never in the fixture."""
 
@@ -1768,7 +1771,7 @@ def temporary_root(test: unittest.TestCase) -> Path:
     return root
 
 
-class FixtureCanaryRunTests(GitTestCase):
+class FixtureCanaryRunTests(unittest.TestCase):
     """Each shipped scenario runs through prepare_arguments' fixture canary, under the configuration a run writes, a
     stub reviewer, check, and finalize with no gh call, and the record finalize writes is judged by the same code a
     model's run is."""
@@ -1886,7 +1889,7 @@ def scenario_of(mode: str) -> Scenario:
     return next(item for item in skill_evals.load_scenarios("review-prs") if item.mode == mode)
 
 
-class RunPieceTests(GitTestCase):
+class RunPieceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.root = temporary_root(self)
         self.initial, self.re_review = scenario_of("initial"), scenario_of("re-review")
@@ -2234,7 +2237,7 @@ RESULTS_TEXT = "\n".join(
 )
 
 
-class CitationTests(GitTestCase):
+class CitationTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -2288,7 +2291,7 @@ class CitationTests(GitTestCase):
         )
 
 
-class ResultsTests(GitTestCase):
+class ResultsTests(unittest.TestCase):
     def test_rows_name_the_models_and_a_model_that_never_ran(self) -> None:
         scenarios = [Scenario("review-prs", name, Path(name), "initial", None, ()) for name in ("a", "b")]
         run = skill_evals.Run
@@ -2479,7 +2482,7 @@ def forward(path: Path) -> str:
     return skill_evals.quote(str(path).replace(os.sep, "/"))
 
 
-class EvaluateTests(GitTestCase):
+class EvaluateTests(unittest.TestCase):
     """The run step with a stub Claude Code: no model is called."""
 
     def setUp(self) -> None:
@@ -3039,7 +3042,3 @@ class EvaluateTests(GitTestCase):
             ):
                 skill_evals.main(["review-prs", "--write", *argv], seams=self.seams(StubClaude(self)))
             self.assertEqual(2, raised.exception.code)
-
-
-if __name__ == "__main__":
-    unittest.main()

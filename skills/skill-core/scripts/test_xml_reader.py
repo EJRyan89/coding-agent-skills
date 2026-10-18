@@ -102,7 +102,3 @@ class ParseTests(ReaderTestCase):
 
     def test_only_the_leading_declaration_is_stripped(self) -> None:
         self.assertTrue(self.refusal('<a/><?xml version="1.0"?>').startswith(NOT_WELL_FORMED))
-
-
-if __name__ == "__main__":
-    unittest.main()

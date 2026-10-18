@@ -7,7 +7,6 @@ tests here show each comparison failing on a deployment that breaks its invarian
 from __future__ import annotations
 
 import os
-import unittest
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -399,7 +398,3 @@ class PermanentBackupTests(DeployerTestCase):
             "# first edit",
             (self.skills_dir / ".backups" / first / "alpha" / "SKILL.md").read_text(encoding="utf-8"),
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

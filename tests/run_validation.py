@@ -6,8 +6,10 @@ Usage: python -B tests/run_validation.py [-k PATTERN ... | --changed | --full] [
 It runs every regression suite under tests/ and each skill's scripts/ in one pool of worker processes, largest first,
 and the policy checks in this process while the pool works, printing their report when they finish. The policies live
 in tests/validation/, one module per family, each with its fixture tests beside it as
-tests/validation/test_<module>.py, which run in the pool as regression suites. A large Python suite is split into
-shards, each run by tests/run_shard.py in its own process, so no single suite sets the length of the run.
+tests/validation/test_<module>.py, which run in the pool as regression suites. Each Python suite runs as
+`python -B -m pytest <suite>` from the repository root, where pytest loads the root conftest.py, and a large one is
+split into shards, each its own pytest process that conftest.py's --suite-shard deals the suite's tests to, so no single
+suite sets the length of the run.
 -k selects the policy checks whose name, and the suites whose path, matches a pattern, and a pattern that matches
 none of either is a usage error, exit 2, rather than a run that passes empty. VALIDATION_JOBS sets the number of
 workers.

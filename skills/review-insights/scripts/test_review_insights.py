@@ -29,7 +29,6 @@ import review_insights as ri
 import review_records
 import review_synthesis
 import skill_roots
-from git_test_base import GitTestCase
 from review_archive import commit_record, current_ledger, pull_records
 from review_config import write_config
 from review_flags import add_flag, load_store, resolve_flag
@@ -129,7 +128,7 @@ def record(
     )
 
 
-class InsightFixture(GitTestCase):
+class InsightFixture(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -1786,7 +1785,3 @@ class ScopeTests(InsightFixture):
                     self.scope(cwd),
                 )
         self.assertEqual("NO_CURRENT_REPOSITORY", self.scope(self.root, common=self.root / "bare.git")[0])
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -35,7 +35,3 @@ class LoginTests(unittest.TestCase):
         for login in ("", "octo cat", "octo:cat", "octo'cat", 'octo"cat', "octo/cat", "octocat\n", "octo.cat", "ö"):
             with self.subTest(login=login):
                 self.assertFalse(is_login(login))
-
-
-if __name__ == "__main__":
-    unittest.main()

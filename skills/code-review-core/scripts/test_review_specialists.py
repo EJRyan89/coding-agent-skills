@@ -18,7 +18,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 import job_tree
 import review_specialists as rs
-from git_test_base import GitTestCase
 from review_records import validate_adapter_result
 from review_runtime import (
     RuntimeContractError,
@@ -111,7 +110,7 @@ def manifest(**overrides: object) -> dict:
     return value
 
 
-class ManifestTests(GitTestCase):
+class ManifestTests(unittest.TestCase):
     def test_valid_manifest_declares_each_file_once(self) -> None:
         normalized = validate_adapter_manifest(manifest())
         self.assertEqual(
@@ -180,7 +179,7 @@ class ManifestTests(GitTestCase):
             validate_adapter_manifest(sharing("yes"))
 
 
-class DiffAndRoutingTests(GitTestCase):
+class DiffAndRoutingTests(unittest.TestCase):
     def test_parse_paths_and_new_file_line_numbers(self) -> None:
         files = rs.parse_unified_diff(DIFF)
         self.assertEqual(["db/Procs.sql", "src dir/A Test.cs", "docs/café.md", "src dir/Old.cs"], list(files))
@@ -684,7 +683,7 @@ PARSE_ERRORS: list[tuple[str, str, str]] = [
 ]
 
 
-class UnifiedDiffParsingTests(GitTestCase):
+class UnifiedDiffParsingTests(unittest.TestCase):
     def test_each_diff_parses_to_its_exact_entries(self) -> None:
         for name, text, expected in PARSED_DIFFS:
             with self.subTest(name):
@@ -715,7 +714,7 @@ def _keys(split: tuple[dict[str, Any], list[str]]) -> tuple[list[str], list[str]
     return list(split[0]), split[1]
 
 
-class UnsafeDiffPathTests(GitTestCase):
+class UnsafeDiffPathTests(unittest.TestCase):
     """A path no reviewer prompt, work file, or link may carry is left out of the parsed diff and listed apart."""
 
     def test_a_quoted_newline_path_cannot_inject_a_prompt_line(self) -> None:
@@ -768,7 +767,7 @@ class UnsafeDiffPathTests(GitTestCase):
         self.assertEqual((["�.py"], []), _keys(rs.split_unified_diff(_new_file('"b/\\377.py"'))))
 
 
-class OtherFilesListTests(GitTestCase):
+class OtherFilesListTests(unittest.TestCase):
     def test_a_long_list_of_other_files_is_capped(self) -> None:
         paths = [f"src/F{index}.cs" for index in range(rs.OTHER_FILES_LISTED + 7)]
         listed = rs._listed(paths)
@@ -778,7 +777,7 @@ class OtherFilesListTests(GitTestCase):
         self.assertEqual([], rs._listed([]))
 
 
-class PromptCommentTests(GitTestCase):
+class PromptCommentTests(unittest.TestCase):
     def test_a_body_is_cut_past_four_thousand_characters_and_every_line_break_is_escaped(self) -> None:
         comment = {"id": "C1", "author": "a", "path": "src/A.cs", "line": 2, "outdated": False, "url": "u"}
         kept = {**comment, "body": "k" * 4000}
@@ -833,7 +832,7 @@ class PromptCommentTests(GitTestCase):
         self.assertEqual([described], described.splitlines())
 
 
-class EntrypointPromptTests(GitTestCase):
+class EntrypointPromptTests(unittest.TestCase):
     HEAD = "b" * 40
 
     def request(self, **changes: Any) -> dict[str, Any]:
@@ -971,7 +970,7 @@ class EntrypointPromptTests(GitTestCase):
         )
 
 
-class SymbolicLinkPromptTests(GitTestCase):
+class SymbolicLinkPromptTests(unittest.TestCase):
     DIFF = (
         "diff --git a/tools/cache b/tools/cache\nnew file mode 120000\nindex 0000000..1111111\n--- /dev/null\n"
         '+++ b/tools/cache\n@@ -0,0 +1 @@\n+/home/dev/"x"\n\\ No newline at end of file\n'
@@ -1065,7 +1064,7 @@ class SymbolicLinkPromptTests(GitTestCase):
         self.assertIn(json.dumps([prior], indent=2) + "\n\nOpen review comments", unflagged)
 
 
-class FindingCategoryTests(GitTestCase):
+class FindingCategoryTests(unittest.TestCase):
     CATEGORIES: ClassVar[list[str]] = ["Correctness", "Style"]
 
     def role(self, root: Path, identity: str, findings: list[dict[str, Any]], **extra: Any) -> dict[str, Any]:
@@ -1198,7 +1197,7 @@ class FindingCategoryTests(GitTestCase):
         self.assertEqual(["csharp-review label"], [item["category"] for item in uncategorized["findings"]])
 
 
-class DedupeTests(GitTestCase):
+class DedupeTests(unittest.TestCase):
     def test_same_issue_rules(self) -> None:
         self.assertTrue(rs.same_issue(located(QUALIFIER_134, "qualifier-review"), located(CSHARP_134, "csharp-review")))
         self.assertFalse(
@@ -1307,7 +1306,7 @@ class DedupeTests(GitTestCase):
             self.assertEqual(expected, merged[0].get("analyzer"), (qualifier, csharp))
 
 
-class RepeatLinkTests(GitTestCase):
+class RepeatLinkTests(unittest.TestCase):
     """A reviewer links a finding that repeats another one, so the verdict counts the problem once."""
 
     PRIOR: ClassVar[dict[str, str]] = {"v1:F001": "SHOULD_FIX"}
@@ -1479,7 +1478,7 @@ def _finding(**fields: Any) -> dict[str, Any]:
     return _result(findings=[{**FINDING, **fields}])
 
 
-class ResultFieldKindTests(GitTestCase):
+class ResultFieldKindTests(unittest.TestCase):
     """Each field load_role_result, its finding check, and its repeat check read, given a value of another kind, is
     refused in the one shape a wrong kind takes, at the field's path under the role's specialist result."""
 
@@ -1681,7 +1680,7 @@ class SpecialistFixture:
         )
 
 
-class EndToEndTests(SpecialistFixture, GitTestCase):
+class EndToEndTests(SpecialistFixture, unittest.TestCase):
     def test_plan_reads_a_diff_with_undecodable_bytes_as_replacement_characters(self) -> None:
         diff = self.root / "diff.patch"
         diff.write_bytes(diff.read_bytes().replace(b"+class B {}", b"+class B {} // caf\xe9"))
@@ -2585,7 +2584,7 @@ class EndToEndTests(SpecialistFixture, GitTestCase):
         self.assertEqual([], assembled["findings"])
 
 
-class SharingSpecialistTests(SpecialistFixture, GitTestCase):
+class SharingSpecialistTests(SpecialistFixture, unittest.TestCase):
     """compat-review shares its files: src/Generated/B.cs, which csharp-review excludes and compat-review alone
     matches, still reaches the generic reviewer, whether compat-review's condition opens or not."""
 
@@ -2624,7 +2623,7 @@ class SharingSpecialistTests(SpecialistFixture, GitTestCase):
         )
 
 
-class UncoveredFilesTests(SpecialistFixture, GitTestCase):
+class UncoveredFilesTests(SpecialistFixture, unittest.TestCase):
     """A change in which some files route to specialists and others match none of them."""
 
     HEAD_EXTRA: ClassVar[dict[str, str]] = {
@@ -2803,7 +2802,7 @@ class UncoveredFilesTests(SpecialistFixture, GitTestCase):
             self.assertEqual([], plan["uncovered_files"])
 
 
-class SuiteProfileTests(SpecialistFixture, GitTestCase):
+class SuiteProfileTests(SpecialistFixture, unittest.TestCase):
     """A specialist whose profile is one the suite ships, named `suite:<name>` in the manifest."""
 
     SUITE_FILE = Path(rs.__file__).resolve().parents[1] / "references" / "design-reviewer.md"
@@ -2897,7 +2896,7 @@ class SuiteProfileTests(SpecialistFixture, GitTestCase):
                     rs.build_plan(self.request_path, root, self.root / f"work-tampered-{index}")
 
 
-class GenericInstructionsTests(GitTestCase):
+class GenericInstructionsTests(unittest.TestCase):
     def test_the_generic_reviewer_writes_the_result_its_prompts_output_contract_states(self) -> None:
         # The generic reviewer runs as a specialist, so the prompt's OUTPUT contract is its result format: its
         # instructions name no other format, and every result field or repeat-target disposition they name is
@@ -2917,7 +2916,3 @@ class GenericInstructionsTests(GitTestCase):
             with self.subTest(instruction=instruction):
                 self.assertIn(instruction, text)
                 self.assertIn(contract, rs.OUTPUT)
-
-
-if __name__ == "__main__":
-    unittest.main()

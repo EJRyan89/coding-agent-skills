@@ -478,7 +478,3 @@ class DocumentationTests(unittest.TestCase):
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, step)
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -33,7 +33,6 @@ import review_pipeline as rp
 import review_runtime
 from flat_text import flat_text
 from git_client import GitClient, GitResult, subprocess_runner
-from git_test_base import GitTestCase
 from github_client import CommandResult
 from review_canary import fixture_change, validate_fixture_pull
 from review_config import write_config
@@ -176,7 +175,7 @@ def changed(path: str, status: str, previous: str | None = None) -> dict[str, An
     return entry if previous is None else {**entry, "previous_filename": previous}
 
 
-class DocumentTestCase(GitTestCase):
+class DocumentTestCase(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="review-document-test-", ignore_cleanup_errors=True)
         self.addCleanup(temporary.cleanup)
@@ -1711,7 +1710,3 @@ class ConsoleTests(DocumentTestCase):
             f"FIXTURE {self.output / 'fixture'}\nOUTPUT {self.output}\n",
             result.stdout.decode("utf-8").replace("\r\n", "\n"),
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -1,6 +1,14 @@
 # Tool configuration for contributors and CI. Nothing here is installed, so there is no [project] table;
 # requirements-dev.txt pins the tools and docs/dependency-updates.md owns the decision.
 
+# Validation starts each Python regression suite, or each shard of a large one, as `python -B -m pytest <suite>` from
+# this root, which conftest.py beside this file sets up. The cache plugin is off, so a run writes nothing into the
+# checkout; output is not captured, so a suite's own output and its subprocesses' reach the runner as they did under
+# unittest; and a misspelled marker or option is an error. Nothing here selects, deselects, or skips a test, which
+# tests/validation/suite_discovery.py holds by pinning this table.
+[tool.pytest.ini_options]
+addopts = ["-p", "no:cacheprovider", "--capture=no", "--strict-markers", "--strict-config"]
+
 [tool.ruff]
 # Empty, so ruff's default exclusions, such as dist/, venv/, site-packages/, node_modules/, and _build/, skip no file
 # under the roots validation names; a gitignored file is still skipped, since nothing can commit one.

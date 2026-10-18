@@ -8,7 +8,7 @@ python -B tests/run_validation.py
 
 ## Validation tools
 
-`tests/run_validation.py` stops before running any test when one of these tools is missing or older than its floor, and names the tool, the version it found, and the floor. CI's Windows legs install ShellCheck, PSScriptAnalyzer, ruff, and mypy at their floors, so each of those floors is exercised on every run, and Python at the newest release of its floor's minor version, as the Python row says. The `Validation on Linux` job installs PSScriptAnalyzer, ruff, mypy, and Python the same way, but takes ShellCheck unpinned from Ubuntu's archive, as the ShellCheck row says, and has no verify step, so it prints no tool's version; the toolchain check still stops it on a tool below its floor.
+`tests/run_validation.py` stops before running any test when one of these tools is missing or older than its floor, and names the tool, the version it found, and the floor. CI's Windows legs install ShellCheck, PSScriptAnalyzer, ruff, mypy, and pytest at their floors, so each of those floors is exercised on every run, and Python at the newest release of its floor's minor version, as the Python row says. The `Validation on Linux` job installs PSScriptAnalyzer, ruff, mypy, pytest, and Python the same way, but takes ShellCheck unpinned from Ubuntu's archive, as the ShellCheck row says, and has no verify step, so it prints no tool's version; the toolchain check still stops it on a tool below its floor.
 
 | Tool | Floor | Declared in | How it is reviewed |
 |---|---|---|---|
@@ -18,11 +18,12 @@ python -B tests/run_validation.py
 | PowerShell 7 (`pwsh`) | 7.0 | `VALIDATION_FLOORS` in `tests/validation/toolchain.py` | Arrives unpinned with each runner image; the Windows legs' verify step prints its version. Deployment needs only Windows PowerShell 5.1 on Windows, and PowerShell 7 on Linux (`docs/installation.md`). |
 | ruff | 0.17.1 | `requirements-dev.txt`; `VALIDATION_FLOORS` in `tests/validation/toolchain.py` | The floor is the pin, because a new minor release can change the formatting style or the lint rules and fail `ruff format --check` or `ruff check` on an unchanged tree. Dependabot proposes new releases; see [Development dependencies](#development-dependencies). |
 | mypy | 2.4.0 | `requirements-dev.txt`; `VALIDATION_FLOORS` in `tests/validation/toolchain.py` | The floor is the pin, because a new release can report new errors in an unchanged tree and fail the type check. Dependabot proposes new releases; see [Development dependencies](#development-dependencies). |
+| pytest | 9.1.1 | `requirements-dev.txt`; `VALIDATION_FLOORS` in `tests/validation/toolchain.py` | The floor is the pin, because a new release can change how a suite is collected or how a test's result is reported, and the runner and the root `conftest.py` depend on both. Dependabot proposes new releases; see [Development dependencies](#development-dependencies). |
 | Git Bash, or Bash on Linux | none | Git for Windows on Windows; the system's `bash` on Linux | The repository's shell scripts use no Bash 4 features, so no floor is checked. Arrives with each runner image; the Windows legs' verify step prints Git Bash's version. |
 
 ## Development dependencies
 
-Validation and CI take two Python packages from PyPI, pinned in `requirements-dev.txt`, and no others: `ruff`, the formatter and linter, and `mypy`, the type checker. They are contributor and CI dependencies only. The deployer and every shipped skill stay standard-library, so deploying needs neither. Install them into the interpreter that runs validation:
+Validation and CI take these Python packages from PyPI, pinned in `requirements-dev.txt`, and no others: `ruff`, the formatter and linter, `mypy`, the type checker, and `pytest`, the test runner, which starts every Python suite. They are contributor and CI dependencies only. The deployer and every shipped skill stay standard-library, so deploying needs neither. Install them into the interpreter that runs validation:
 
 ```powershell
 python -m pip install -r requirements-dev.txt
@@ -30,15 +31,19 @@ python -m pip install -r requirements-dev.txt
 
 `pyproject.toml` configures the tools and installs nothing, so it has no `[project]` table. [Python checks](../CONTRIBUTING.md#python-checks) in the contributing guide states what validation runs with them and how to fix what each check names.
 
-Dependabot (`.github/dependabot.yml`) checks `requirements-dev.txt` weekly, on the same cadence as the actions, and groups the bumps into one pull request, with security updates in their own group. A new development dependency is a decision recorded here first, and then added to `DEVELOPMENT_PACKAGES` in `tests/validation/toolchain.py`: `test_ci_exercises_each_floor` fails on every line of `requirements-dev.txt` that is not a comment, a blank line, or `name==version` for a package that list names, so an unpinned package, another index, an included requirements file, or an install from a repository cannot enter it.
+Dependabot (`.github/dependabot.yml`) checks `requirements-dev.txt` weekly, on the same cadence as the actions, and groups the bumps into one pull request, with security updates in their own group. Each is MIT-licensed, maintained in the open, free of charge, and sends nothing anywhere, which the repository's rule for a dependency requires. pytest came with the move of the suites onto it ([#1275](https://github.com/EJRyan89/coding-agent-skills/issues/1275)); no parallel or splitting plugin came with it, because the runner's pool already runs the suites side by side in processes of their own, and the runner already deals the legs and a suite's shards by recorded seconds. A new development dependency is a decision recorded here first, and then added to `DEVELOPMENT_PACKAGES` in `tests/validation/toolchain.py`: `test_ci_exercises_each_floor` fails on every line of `requirements-dev.txt` that is not a comment, a blank line, or `name==version` for a package that list names, so an unpinned package, another index, an included requirements file, or an install from a repository cannot enter it.
 
 ### After a Dependabot pull request for ruff
 
-A ruff bump raises the floor with it. In the same pull request, set `VALIDATION_FLOORS` in `tests/validation/toolchain.py`, the row above, and the pin `test_ci_exercises_each_floor` checks to the new version, then run `python -m ruff format` on the six roots and commit the result on its own, and fix anything `ruff check` newly names in a commit of its own. Run the complete validation before merging.
+A ruff bump raises the floor with it. In the same pull request, set `VALIDATION_FLOORS` in `tests/validation/toolchain.py`, the row above, and the pin `test_ci_exercises_each_floor` checks to the new version, then run `python -m ruff format` on the format roots and commit the result on its own, and fix anything `ruff check` newly names in a commit of its own. Run the complete validation before merging.
 
 ### After a Dependabot pull request for mypy
 
 A mypy bump raises the floor with it. In the same pull request, set `VALIDATION_FLOORS` in `tests/validation/toolchain.py`, the row above, and the pin `test_ci_exercises_each_floor` checks to the new version, then fix each error the type check newly names, one commit per root. Run the complete validation before merging.
+
+### After a Dependabot pull request for pytest
+
+A pytest bump raises the floor with it. In the same pull request, set `VALIDATION_FLOORS` in `tests/validation/toolchain.py`, the row above, and the pin `test_ci_exercises_each_floor` checks to the new version, read the release's changelog for changes to collection, fixtures, and the unittest support the suites rely on, and fix anything `tests/test_conftest.py` or a suite newly fails on. Run the complete validation before merging.
 
 ## Runtime tool floors
 

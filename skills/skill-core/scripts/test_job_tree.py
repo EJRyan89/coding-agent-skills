@@ -699,7 +699,3 @@ if sys.platform != "win32":
                 ):
                     self.assertEqual(expected, job_tree.group_members(4242))
                 killpg.assert_called_once_with(4242, 0)
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -746,7 +746,3 @@ class SubprocessRunnerContractTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         return temporary.name
-
-
-if __name__ == "__main__":
-    unittest.main()

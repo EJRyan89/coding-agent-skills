@@ -25,7 +25,3 @@ class SuiteNameTests(unittest.TestCase):
         for name in ("test_a.txt", "test_a", "testa.py", "a_tests.py", "contest_a.py", ".py", "test_.md"):
             with self.subTest(name=name):
                 self.assertFalse(is_suite_name(name))
-
-
-if __name__ == "__main__":
-    unittest.main()
