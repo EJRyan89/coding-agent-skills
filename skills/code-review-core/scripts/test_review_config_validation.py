@@ -106,6 +106,7 @@ def _expected() -> dict[str, Any]:
                 },
                 "checkout_path": None,
                 "snapshot_exclude": [],
+                "batch_size": None,
             }
         },
         "archive_root": native("C:\\reviews\\archive"),
@@ -206,6 +207,7 @@ def _full_expected() -> dict[str, Any]:
                 },
                 "checkout_path": native("C:\\src\\repo"),
                 "snapshot_exclude": [],
+                "batch_size": None,
             },
             "owner/tools": {
                 "reviewer": {
@@ -219,6 +221,7 @@ def _full_expected() -> dict[str, Any]:
                 },
                 "checkout_path": native("C:\\src\\tools"),
                 "snapshot_exclude": [],
+                "batch_size": None,
             },
             "owner/committed": {
                 "reviewer": {
@@ -232,6 +235,7 @@ def _full_expected() -> dict[str, Any]:
                 },
                 "checkout_path": native("C:\\src\\committed"),
                 "snapshot_exclude": [],
+                "batch_size": None,
             },
             "owner/generic": {
                 "reviewer": {
@@ -245,6 +249,7 @@ def _full_expected() -> dict[str, Any]:
                 },
                 "checkout_path": native("D:\\src\\generic"),
                 "snapshot_exclude": [],
+                "batch_size": None,
             },
         },
         "archive_root": native("C:\\reviews\\archive"),
@@ -368,7 +373,10 @@ def _repository_expected(**reviewer: Any) -> Mutation:
         "manifest": None,
     }
     fields.update(reviewer)
-    return _set(REPO, {"reviewer": fields, "checkout_path": native("C:\\src\\repo"), "snapshot_exclude": []})
+    return _set(
+        REPO,
+        {"reviewer": fields, "checkout_path": native("C:\\src\\repo"), "snapshot_exclude": [], "batch_size": None},
+    )
 
 
 # Snapshot exclusion patterns validate_config accepts as given: a root file, any depth, a whole folder, character
@@ -405,6 +413,7 @@ ACCEPTED: list[tuple[str, Mutation, Mutation]] = [
         "every optional section at its default",
         _chain(
             _set((*REPO, "snapshot_exclude"), []),
+            _set((*REPO, "batch_size"), None),
             _set(("runtime",), "auto"),
             _set(("reviewer_effort",), None),
             _set(("re_review_scope",), {}),
@@ -419,6 +428,10 @@ ACCEPTED: list[tuple[str, Mutation, Mutation]] = [
         ),
         _set(("github_login",), None),
     ),
+    *[
+        (f"batch_size {size}", _set((*REPO, "batch_size"), size), _set((*REPO, "batch_size"), size))
+        for size in [1, 25, 10_000]
+    ],
     *[
         (f"runtime {host}", _set(("runtime",), host), _set(("runtime",), host))
         for host in ["auto", "claude-code", "codex", "copilot-cli"]
@@ -1157,6 +1170,15 @@ REJECTED: list[Case] = [
             ("of 201 characters", "a" * 201, "a string of 201 characters"),
         ]
     ],
+    *[
+        (
+            f"batch_size {value!r}",
+            _set((*REPO, "batch_size"), value),
+            F,
+            _wrong(f"{FIELD}.batch_size", "an integer of at least 1 or null", value),
+        )
+        for value in [0, -1, True, False, 1.0, 10.5, "25", [25], {}]
+    ],
     (
         "snapshot_exclude listing a pattern twice ignoring case",
         _set((*REPO, "snapshot_exclude"), ["**/*.resx", "Reports/**", "**/*.RESX"]),
@@ -1709,6 +1731,12 @@ STAGES: list[Case] = [
         _set((*REPO, "snapshot_exclude"), ["*.resx", "*.Resx"]),
         F,
         f'config.{FIELD}.snapshot_exclude must be distinct glob patterns, ignoring case, found "*.Resx" twice',
+    ),
+    (
+        "batch_size",
+        _set((*REPO, "batch_size"), 0),
+        F,
+        _wrong(f"{FIELD}.batch_size", "an integer of at least 1 or null", 0),
     ),
     (
         "second entry",
