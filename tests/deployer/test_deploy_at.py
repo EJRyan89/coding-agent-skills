@@ -296,6 +296,25 @@ class DeployAtTests(DeployerTestCase):
         fsops.remove(plain / ".git")
         self.deploy_fails("--all", "--at", "main", source=plain, pattern=r"--at needs a Git checkout")
 
+    def test_a_machine_without_git_is_refused_with_the_install_remedy_before_anything_runs(self) -> None:
+        real = platform_support.find_executable
+
+        def find_executable(name: str) -> str | None:
+            return None if name == "git" else real(name)
+
+        with (
+            mock.patch.object(platform_support, "find_executable", side_effect=find_executable),
+            mock.patch.object(platform_support, "run_tool") as run_tool,
+        ):
+            result = self.deploy_fails("--all", "--at", "v1.0.0", pattern=r"--at needs Git")
+        self.assert_lines(
+            result.output,
+            "ERROR: --at needs Git, which was not found.",
+            'Install it as "Installing the tools" in docs/installation.md says, then retry.',
+        )
+        run_tool.assert_not_called()
+        self.assert_exports_removed(0)
+
     def test_an_export_git_refuses_leaves_no_directory_behind(self) -> None:
         patch, made = recorded_temporary_directories()
         with patch, self.assertRaisesRegex(DeployError, "git archive could not export 0{40}"):
