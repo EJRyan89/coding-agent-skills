@@ -529,6 +529,19 @@ class LockTests(DeployerTestCase):
         self.make_skill("alpha", "Alpha content")
         self.make_config()
 
+    def test_a_held_lock_is_released_when_its_block_ends_however_it_ends_unless_retained(self) -> None:
+        paths = self.paths
+        with lock.acquire(paths):
+            self.assertTrue(self.lock_dir.is_dir())
+        self.assertFalse(self.lock_dir.exists())
+        with self.assertRaises(KeyboardInterrupt), lock.acquire(paths):
+            raise KeyboardInterrupt
+        self.assertFalse(self.lock_dir.exists())
+        with lock.acquire(paths) as held:
+            held.retain()
+        self.assertTrue((self.lock_dir / "token").is_file())
+        self.assertTrue((self.lock_dir / "info.json").is_file())
+
     def test_pid_reuse_is_detected_and_stale_lock_reclaimed(self) -> None:
         self.fixture()
         self.write_lock({"pid": 4242, "token": "old-token", "start_time": 1})

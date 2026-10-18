@@ -19,6 +19,7 @@ from .paths import Paths
 from .tools import SKILL_TOOLS
 
 SOURCE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$")
+SOURCE_ID_MAX_LENGTH = 128
 SKILL_NAME_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 # The Agent Skills frontmatter rules ("YAML frontmatter requirements" in Anthropic's skill authoring best
 # practices): a skill name may not contain these words, and neither its name nor its description an XML tag.
@@ -28,7 +29,7 @@ XML_TAG_PATTERN = re.compile(r"</?[A-Za-z][^<>]*>")
 AGENT_SKILLS_RULE = "which the Agent Skills frontmatter rules forbid"
 
 
-@dataclass
+@dataclass(frozen=True, kw_only=True)
 class Skill:
     name: str
     directory: Path
@@ -80,8 +81,8 @@ def load_source_id(paths: Paths) -> str:
     shown = source_id if isinstance(source_id, str) else "null"
     if not isinstance(source_id, str) or not SOURCE_ID_PATTERN.fullmatch(source_id):
         raise DeployError(f"ERROR: Invalid source ID format: {shown}")
-    if len(source_id) > 128:
-        raise DeployError("ERROR: Source ID exceeds 128 characters")
+    if len(source_id) > SOURCE_ID_MAX_LENGTH:
+        raise DeployError(f"ERROR: Source ID exceeds {SOURCE_ID_MAX_LENGTH} characters")
     return source_id
 
 
@@ -273,17 +274,17 @@ def _load_skill(paths: Paths, name: str, directories: dict[str, Path]) -> Skill:
     if both:
         raise DeployError(f"ERROR: Skill '{name}' declares tool '{both[0]}' both required and optional")
     return Skill(
-        name,
-        directory,
-        required,
-        shared,
-        dependencies,
-        selectable,
-        sorted(set(tools)),
-        opt_in,
-        agents,
-        sorted(set(optional_tools)),
-        _runtime_support(name, metadata),
+        name=name,
+        directory=directory,
+        required_vars=required,
+        shared_deps=shared,
+        skill_deps=dependencies,
+        selectable=selectable,
+        tools=sorted(set(tools)),
+        opt_in=opt_in,
+        agent_deps=agents,
+        optional_tools=sorted(set(optional_tools)),
+        runtime_support=_runtime_support(name, metadata),
     )
 
 
