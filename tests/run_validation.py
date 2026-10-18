@@ -70,6 +70,7 @@ import pull_request_title
 import python_checks
 import repository_hygiene
 import shell_targets
+import silent_reverts
 import skill_grants
 import skill_layout
 import skill_scripts
@@ -119,6 +120,7 @@ POLICY_MODULES = (
     python_checks,
     repository_hygiene,
     shell_targets,
+    silent_reverts,
     skill_grants,
     skill_layout,
     skill_scripts,
@@ -214,6 +216,7 @@ class PullRequestBodyOption(unittest.TestCase):
         error = io.StringIO()
         with (
             mock.patch.object(upgrade_notes, "pull_request_body", None),
+            mock.patch.object(silent_reverts, "pull_request_body", None),
             mock.patch(f"{__name__}.tool_versions") as versions,
             self.assertRaises(SystemExit) as raised,
         ):
@@ -237,9 +240,10 @@ class PullRequestBodyOption(unittest.TestCase):
 
     def test_the_title_reaches_the_title_check(self) -> None:
         title = REPOSITORY_ROOT / "tests" / "run_validation.py"
-        # main sets both files the checks read, so both are restored for the run this check is part of.
+        # main sets each file the checks read, so each is restored for the run this check is part of.
         with (
             mock.patch.object(upgrade_notes, "pull_request_body", upgrade_notes.pull_request_body),
+            mock.patch.object(silent_reverts, "pull_request_body", silent_reverts.pull_request_body),
             mock.patch.object(pull_request_title, "pull_request_title", None),
             mock.patch(f"{__name__}.report_prerequisite_problems", return_value=True),
             mock.patch(f"{__name__}.tool_versions"),
@@ -281,6 +285,7 @@ class SelectionOptions(unittest.TestCase):
         printed, error = io.StringIO(), io.StringIO()
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(upgrade_notes, "pull_request_body", None))
+            stack.enter_context(mock.patch.object(silent_reverts, "pull_request_body", None))
             stack.enter_context(mock.patch.object(pull_request_title, "pull_request_title", None))
             stack.enter_context(mock.patch(f"{__name__}.tool_versions", return_value={}))
             stack.enter_context(mock.patch(f"{__name__}.report_prerequisite_problems", return_value=False))
@@ -367,6 +372,7 @@ class TerminationReport(unittest.TestCase):
             summary = Path(temporary) / "step summary.md"
             with (
                 mock.patch.object(upgrade_notes, "pull_request_body", None),
+                mock.patch.object(silent_reverts, "pull_request_body", None),
                 mock.patch.object(pull_request_title, "pull_request_title", None),
                 mock.patch(f"{__name__}.tool_versions", return_value={}),
                 mock.patch(f"{__name__}.report_prerequisite_problems", return_value=False),
@@ -411,6 +417,7 @@ class RunnerFailures(unittest.TestCase):
             summary = Path(temporary) / "step summary.md"
             with (
                 mock.patch.object(upgrade_notes, "pull_request_body", None),
+                mock.patch.object(silent_reverts, "pull_request_body", None),
                 mock.patch.object(pull_request_title, "pull_request_title", None),
                 mock.patch(f"{__name__}.tool_versions", return_value={}),
                 mock.patch(f"{__name__}.report_prerequisite_problems", return_value=False),
@@ -436,6 +443,7 @@ class RunnerFailures(unittest.TestCase):
         error = io.StringIO()
         with (
             mock.patch.object(upgrade_notes, "pull_request_body", upgrade_notes.pull_request_body),
+            mock.patch.object(silent_reverts, "pull_request_body", silent_reverts.pull_request_body),
             mock.patch.object(pull_request_title, "pull_request_title", pull_request_title.pull_request_title),
             mock.patch(f"{__name__}.tool_versions", return_value={}),
             mock.patch(f"{__name__}.report_prerequisite_problems", return_value=False),
@@ -658,6 +666,7 @@ def main(
         print(f"run_validation.py: error: {error}", file=errors)
         return 2
     upgrade_notes.pull_request_body = arguments.pr_body
+    silent_reverts.pull_request_body = arguments.pr_body
     pull_request_title.pull_request_title = arguments.pr_title
     versions = tool_versions()
     if report_prerequisite_problems(versions):
