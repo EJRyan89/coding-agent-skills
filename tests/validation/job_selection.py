@@ -211,14 +211,17 @@ def changed_suites(root: Path, paths: list[str], suites: list[Path], files: list
     return selected
 
 
+def reached_suites(root: Path, paths: list[str]) -> list[Path]:
+    """The suites the changed paths reach, as --changed selects them; tools/mutation_gate.py runs those that reach a
+    changed module against its mutants."""
+    files = [path.relative_to(root).as_posix() for path in repository_files(root)]
+    return changed_suites(root, paths, regression_suites(root), files)
+
+
 def changed_jobs(root: Path, paths: list[str]) -> list[Job]:
     """What --changed runs beside the policy checks: the static checks and the suites the changed paths reach."""
-    files = [path.relative_to(root).as_posix() for path in repository_files(root)]
     type_checks = {job.label for job in type_check_jobs()}
-    return [
-        *changed_static_jobs(paths, static_jobs(), type_checks),
-        *suite_jobs(changed_suites(root, paths, regression_suites(root), files)),
-    ]
+    return [*changed_static_jobs(paths, static_jobs(), type_checks), *suite_jobs(reached_suites(root, paths))]
 
 
 def change_reach_problems(files: list[str], suites: list[str]) -> list[str]:

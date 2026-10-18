@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import os
 import tempfile
+import unittest
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
 from harness import DeployerTestCase
+
+from deployer import errors
 
 PATH = "C:/blocked/item"
 RETRY = "Check that the path exists and that you can read it, then retry."
@@ -124,3 +127,38 @@ class OSErrorTests(DeployerTestCase):
                 result = self.run_cli("--all", "--dry-run")
                 self.assertEqual(1, result.code, result.output)
                 self.assertNotIn(TRACEBACK, result.output)
+
+
+class ConvertedTests(unittest.TestCase):
+    """An OSError or Ctrl+C as the lines a command ends with, and the line naming any other exception."""
+
+    def test_an_os_error_names_the_action_path_and_reason_with_the_remedy(self) -> None:
+        failure = PermissionError(13, "Permission denied", PATH)
+        converted = errors.converted(failure, "finish the deployment")
+        self.assertEqual(
+            (f"ERROR: Could not finish the deployment: {PATH}: Permission denied", RETRY, DEBUG_HINT),
+            converted.lines,
+        )
+        self.assertEqual(1, converted.exit_code)
+        self.assertIs(failure, converted.__cause__)
+        self.assertEqual(
+            f"ERROR: Could not finish recovery: {PATH}: Permission denied", errors.named(failure, "finish recovery")
+        )
+
+    def test_ctrl_c_is_a_cancellation_in_the_words_its_moment_gives(self) -> None:
+        for given, lines in (
+            ((), ("Cancelled; nothing was changed.",)),
+            (
+                (errors.DEPLOYMENT_CANCELLED,),
+                ("Cancelled after the deployment began; its changes are reconciled before exit.",),
+            ),
+        ):
+            with self.subTest(lines=lines):
+                interrupt = KeyboardInterrupt()
+                converted = errors.converted(interrupt, "finish the deployment", *given)
+                self.assertEqual(lines, converted.lines)
+                self.assertEqual(130, converted.exit_code)
+                self.assertIs(interrupt, converted.__cause__)
+
+    def test_any_other_exception_is_named_as_unexpected(self) -> None:
+        self.assertEqual("ERROR: Unexpected RuntimeError: boom", errors.named(RuntimeError("boom"), "finish recovery"))

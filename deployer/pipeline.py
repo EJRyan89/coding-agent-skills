@@ -17,6 +17,7 @@ from typing import TextIO
 
 from . import (
     config,
+    errors,
     fsops,
     journal,
     lock,
@@ -551,7 +552,7 @@ def _stopped_recovery(exc: BaseException, debug: bool, paths: Paths, held: lock.
         error = DeployError(RECOVERY_CANCELLED, *_run_states(paths), exit_code=130)
     else:
         error = DeployError(
-            f"ERROR: Unexpected {type(exc).__name__}: {exc}",
+            errors.named(exc, "finish recovery"),
             "Recovery stopped before it finished; the next deployment retries it before deploying anything.",
             *_run_states(paths),
             see_recovery(RECOVERY_FAILED),
@@ -567,15 +568,19 @@ def _recover_from_failure(exc: BaseException, debug: bool, paths: Paths, held: l
 
     An exception during recovery releases the lock and keeps the journal; unreconciled entries keep both.
     """
+    outcome = "cancelled" if isinstance(exc, KeyboardInterrupt) else "failed"
+    # An OSError, such as of a file another program holds open, ends as every command's does; Ctrl+C as a cancellation.
+    if isinstance(exc, (OSError, KeyboardInterrupt)):
+        exc = errors.converted(exc, "finish the deployment", errors.DEPLOYMENT_CANCELLED)
     if isinstance(exc, DeployError):
         print_error(exc, debug)
         code = exc.exit_code
     else:
-        print(f"ERROR: Unexpected {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(errors.named(exc, "finish the deployment"), file=sys.stderr)
         if debug:
             print_traceback(exc)
-        code = 130 if isinstance(exc, KeyboardInterrupt) else 1
-    print("Deployment failed; reconciling the current journal before exit...", file=sys.stderr)
+        code = 1
+    print(f"Deployment {outcome}; reconciling the current journal before exit...", file=sys.stderr)
     try:
         recovered = journal.recover_incomplete(paths)
     except (Exception, KeyboardInterrupt) as recovery_error:

@@ -1,0 +1,46 @@
+name: Mutation
+
+# The mutation gate: the Python modules a pull request changes, mutated and run against the suites that reach them,
+# with the survivors and each module's kill ratio in the step summary. It is not a required check; the summary is the
+# record, which the author reads. A body or title edit does not rerun it, since it reads neither.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+# A newer push to a pull request cancels its older run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mutation:
+    name: Mutation gate
+    runs-on: ubuntu-latest
+    # tools/mutation_gate.py stops starting mutants at its own 40-minute cap; this leaves room for the setup and for the
+    # suites still running when the cap is reached.
+    timeout-minutes: 60
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The gate diffs the pull request against its base branch to find the changed modules.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            requirements-dev.txt
+            requirements-mutation.txt
+
+      - name: Install the mutation tools
+        run: python -m pip install -r requirements-dev.txt -r requirements-mutation.txt
+
+      # It calls no model and reads no secret; GITHUB_BASE_REF names the base it diffs against.
+      - name: Run the mutation gate
+        run: python -B tools/mutation_gate.py

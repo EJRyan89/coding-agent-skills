@@ -22,6 +22,7 @@ import time
 import unittest
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import pytest
@@ -544,6 +545,27 @@ class RemoveHomeTests(unittest.TestCase):
                         self.assertRegex(output, r'^FAILED ".+ is not a home the canary made under .+"\n$')
                 self.assertTrue(Path(other).is_dir())
             self.assertTrue(nested.is_dir())
+
+    def test_a_home_whose_claim_cannot_be_judged_for_links_is_not_claimed_and_is_kept(self) -> None:
+        home = runtime_canary.create_home()
+        self.addCleanup(shutil.rmtree, home, ignore_errors=True)
+        runtime_canary.claim_home(home)
+        state = home / ".runtime-canary"
+        real = os.lstat
+
+        def lstat(target: Any, *rest: Any, **options: Any) -> os.stat_result:
+            if Path(os.fsdecode(target)) == state:
+                raise PermissionError(13, "Access is denied", os.fspath(state))
+            return real(target, *rest, **options)
+
+        with mock.patch.object(platform_support.os, "lstat", side_effect=lstat):
+            self.assertFalse(runtime_canary.claimed(home))
+            code, output = remove_home(str(home))
+        self.assertEqual(1, code)
+        self.assertRegex(
+            output, r'^FAILED ".+ holds no \.runtime-canary/home\.json naming it, so the canary did not make it"\n$'
+        )
+        self.assertTrue((state / "home.json").is_file())
 
     def test_remove_home_takes_no_skill(self) -> None:
         output = io.StringIO()
