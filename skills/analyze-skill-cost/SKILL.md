@@ -48,7 +48,7 @@ Judge content, not size: a long body whose every section earns its space passes,
 
 ## Step 5 — Tool-call efficiency
 
-It scans the main file and every `doc` file:
+It scans the main file and every `doc` file, then compares the status lines they name with the scripts':
 
 ```bash
 {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py" scan "<SKILL_DIR>"
@@ -72,9 +72,25 @@ Flag steps that make the agent do work a program would do the same way every tim
 
 - **MUST FIX** — the agent must write or generate code to finish a step (glue scripts, `python -c`, heredoc programs). Cue: `generated-code`.
 - **MUST FIX** — the body has the agent redo logic that a script in the skill or one of its dependencies already implements, such as reading a module to learn its functions and then calling them by hand.
-- **SUGGESTION** — the agent must parse or normalize command output, or loop applying rule-based decisions (counting, comparing, sorting, classifying by fixed rules). Cues: `rule-based-work`, `loop`.
+- **SUGGESTION** — the agent must parse or normalize command output, or loop applying rule-based decisions (counting, comparing, sorting, classifying by fixed rules). Cues: `rule-based-work`, `loop`, and the shapes below, each with what to recommend.
+
+| Prose that | Cue | Recommendation |
+|---|---|---|
+| Chooses a command's flags from the lines or values another command printed | `assembled-arguments` | "Have the first command print the second one's arguments on one line, passed as printed" |
+| Splits, groups, or renames output by a fixed rule, or takes a printed value apart | `parsed-output` | "Have the script take the value as printed, or print the parts, groups, or status itself" |
+| Carries a count, a summary, or a last-seen value from step to step | `carried-state` | "Keep the record in a file and add a command that prints the totals" |
+| Decides the regenerations, gates, or follow-ups a change owes by listing rules | `owed-by-rules` | "Add a command that reads the change and prints one line per thing it owes" |
+| Drafts a file or a message by hand from a template, or copies a list of printed lines into one | `hand-drafted` | "Have the script draft the file, or print the block to paste as it is" |
 
 Recommend a tested command under `scripts/` that prints one fact per line, so the agent keeps only judgment and user questions. Respect the limits: prefer an established tool or an existing option (a `--json` output flag, `gh --jq`) over a new script; never script genuine judgment such as severity, wording, or whether a section earns its space; and skip the recommendation when the step is rare or a one-liner and the script's tests and upkeep would outweigh the tokens and calls it saves.
+
+### Status lines the scripts print
+
+The same command compares the status words the skill's Markdown names with what its scripts print and exit with; the script's docstring says which scripts it reads.
+
+- `UNPRINTED <file> <line> <word>` → **MUST FIX** when the word names a line the skill acts on: no script prints it, so the agent waits for a line that never comes. Recommend the word a script prints, or the script change. Drop it when the word names another program's line, a variable, or a value.
+- `EXIT_MISMATCH <file> <line> <code>` → **MUST FIX**: the prose states an exit code no script uses. Recommend the code a script exits with, or acting on the printed line instead.
+- `UNEXPLAINED <script> <line> <word>` → SUGGESTION: the agent meets a line it was not told about. Recommend naming it beside the command that prints it; drop it for a command the skill never runs, or one whose lines the body sends the agent to a list of.
 
 ## Step 6 — Agent delegation cost
 
@@ -116,7 +132,7 @@ Allowed-tools grants. `ALLOWED` lines fill the Scope. `NO_ALLOWED_TOOLS` renders
 Group all findings into four buckets. Within each bucket, subdivide into MUST FIX and SUGGESTIONS; omit empty subsections. A bucket with zero findings renders as `No issues found. ✓` (omit the sub-headings). No `SHOULD FIX` tier — promote to MUST FIX.
 
 1. **Token footprint** — Step 4
-2. **Tool-call efficiency** — Step 5, including deterministic steps left to prose
+2. **Tool-call efficiency** — Step 5, including deterministic steps left to prose and status lines
 3. **Agent delegation cost** — Step 6
 4. **Model, tools & listing** — Step 7
 

@@ -1322,6 +1322,261 @@ class ScanTests(TemporaryTestCase):
         )
 
 
+PROSE_CUE_NAMES = {name for name, _ in skill_inventory.PROSE_CUES}
+
+
+@pytest.mark.parametrize(
+    ("line", "cue"),
+    [
+        # A flag chosen per printed line or value, after it or before it, or each printed path passed on.
+        (
+            "Invoke it with `--pull <pr>` for each `missing` and `--re-review <pr>` for each `stale`.",
+            "assembled-arguments",
+        ),
+        ("Run it with one `--run` per `RUN` directory.", "assembled-arguments"),
+        ("Pass `--repository-set <name>` when `set=` names one.", "assembled-arguments"),
+        ('For a `SYNTHESIZED` line, the subject is `--synthesized "<title>"`.', "assembled-arguments"),
+        ("Pass the main file followed by every `doc` path:", "assembled-arguments"),
+        # Output split, grouped, keyed on a message's text, or renamed to a status.
+        ("If it is too large, split its file list between two readers by directory.", "parsed-output"),
+        ("Prepare the pull requests in groups of up to four.", "parsed-output"),
+        ("- **`the run recorded no review; ...`**: the session ended early.", "parsed-output"),
+        ("When it refuses, report it as `PINNED` below.", "parsed-output"),
+        ("Use the label, such as `v2 F002`: review version `2` and finding `F002`.", "parsed-output"),
+        # A last-seen value, a count, or a list of printed lines carried to a later step.
+        ("Show the text of the last summary printed for each repository.", "carried-state"),
+        ("Finish with how many were skipped.", "carried-state"),
+        ("Run it with one argument per directory the first step printed.", "carried-state"),
+        ("Keep a running total of the failures.", "carried-state"),
+        # The follow-ups a change owes, decided by listed rules.
+        ("After any frontmatter change to a skill, regenerate the reference.", "owed-by-rules"),
+        ("When the change touches a skill's prompt, also run the evaluation.", "owed-by-rules"),
+        ("Name the skills the change touched: a changed script or metadata.", "owed-by-rules"),
+        ("Drift and polish go into the next milestone.", "owed-by-rules"),
+        # A file or message drafted by hand.
+        ("1. Write the title and the body from the repository's template, each to a file.", "hand-drafted"),
+        ("Copy the `RUNTIME`, `MATRIX`, and `SKIPPED` lines into the pull request.", "hand-drafted"),
+        ("If it is empty, print `usage: tool <name>` and stop.", "hand-drafted"),
+        ("Finish with `Processed <N> repositories.` from the count.", "hand-drafted"),
+    ],
+)
+def test_a_deterministic_prose_shape_is_its_cue(line: str, cue: str, tmp_path: Path) -> None:
+    skill = write(tmp_path / "SKILL.md", line + "\n")
+    _, lines, _ = run("scan", str(skill))
+    CHECK.assertIn(cue, [found.split()[3] for found in lines if found])
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # Flags the user chose, a flag with no printed value after its quantifier, and a pasted block.
+        "Pass after the clone path each of `--cross-major` and `--unpin` that the user started it with.",
+        'Add `--remove "<pr>"` for each removal and `--candidates` unless `--no-review` was given.',
+        "Name each confirmed pull request with its own `--confirm`.",
+        "Then add `--force` when given. Ask once for the run, never per pull request.",
+        # A value shown once, a recommendation to split a file, and lines that come in groups.
+        "Associate it using the finding's label, such as `v2 F002`, as the report shows it.",
+        "Recommend splitting the body into reference files.",
+        "`CONFLICT` lines come in groups of two or more versions.",
+        "- **`judgment`**: the evaluation's result for that model.",
+        # A line the last command printed, with no per-item record, and a rule that sets no follow-up.
+        "For each `ROLE` line the last `prepare` printed, start one subagent.",
+        "Read the files the change touches and their tests.",
+        "When the change sets or clears a flag, update the metadata.",
+        "Decide whether the change touches that skill's prompt.",
+        "The script names the shipped skills a change reaches.",
+        # A script that drafts, a block pasted as printed, and a line the script prints.
+        "It drafts the body from the repository's pull request template.",
+        "Paste the lines between `CITATION BEGIN` and `CITATION END` into the pull request as they are.",
+        "It prints `UPDATED <dashboard> rows=<count>` on success.",
+        "File each finding as one issue written from the template its field names.",
+    ],
+)
+def test_prose_a_script_already_does_or_the_user_decides_is_no_deterministic_prose_cue(
+    line: str, tmp_path: Path
+) -> None:
+    skill = write(tmp_path / "SKILL.md", line + "\n")
+    _, lines, _ = run("scan", str(skill))
+    CHECK.assertEqual([], [found for found in lines if found and found.split()[3] in PROSE_CUE_NAMES])
+
+
+def test_deterministic_prose_cues_skip_fences_and_frontmatter(tmp_path: Path) -> None:
+    skill = write(
+        tmp_path / "SKILL.md",
+        "---\ndescription: Finish with how many were skipped.\n---\n```text\nFinish with how many were skipped.\n```\n",
+    )
+    code, lines, error = run("scan", str(skill))
+    CHECK.assertEqual((0, [], ""), (code, [line for line in lines if line], error))
+
+
+class StatusLineTests(TemporaryTestCase):
+    """The status lines and exit codes a skill's Markdown names, compared with what its scripts print and exit with."""
+
+    def skill(self, body: str, script: str = "", name: str = "tool.py") -> Path:
+        folder = self.root / "repo" / "skills" / "alpha"
+        write(self.root / "repo" / ".git" / "HEAD", "ref: refs/heads/main\n")
+        write(folder / "SKILL.md", "---\nname: alpha\n---\n" + body)
+        if script:
+            write(folder / "scripts" / name, script)
+        return folder
+
+    def status(self, folder: Path) -> list[str]:
+        code, lines, error = run("scan", str(folder))
+        self.assertEqual((0, ""), (code, error))
+        return [line for line in lines if line.startswith(("UNPRINTED ", "UNEXPLAINED ", "EXIT_MISMATCH "))]
+
+    def test_a_document_promising_a_line_no_script_prints_is_unprinted(self) -> None:
+        folder = self.skill(
+            "It prints `READY <run>` and then `DONE`, or `GONE <path>` when it removed one.\n",
+            'import sys\n\ndef main() -> int:\n    print(f"READY {sys.argv}")\n    print("DONE")\n    return 0\n',
+        )
+        self.assertEqual([f"UNPRINTED {(folder / 'SKILL.md').as_posix()} 4 GONE"], self.status(folder))
+
+    def test_a_document_and_its_script_that_agree_print_nothing(self) -> None:
+        folder = self.skill(
+            "Run it:\n\n```bash\n"
+            'python -B "${CLAUDE_SKILL_DIR}/scripts/tool.py" run\n'
+            "```\n\nIt prints `READY <run>`, or a last line `FAILED <reason>` and exits 1.\n",
+            "from console import run_main\n\n"
+            'def main() -> int:\n    print(f"READY {1}")\n    return 0\n\n'
+            'if __name__ == "__main__":\n    run_main(main)\n',
+        )
+        self.assertEqual([], self.status(folder))
+
+    def test_a_line_the_script_prints_that_the_document_never_names_is_unexplained(self) -> None:
+        folder = self.skill(
+            '```bash\npython -B "${CLAUDE_SKILL_DIR}/scripts/tool.py" run\n```\n\nIt prints `READY <run>`.\n',
+            "def main(lines: list[str]) -> int:\n"
+            '    print(f"READY {1}")\n'  # 2
+            '    lines.append("NOTHING_TO_DO")\n'  # 3
+            '    return ["STALE x"] and 0\n',  # 4: a listed string
+        )
+        script = (folder / "scripts" / "tool.py").as_posix()
+        self.assertEqual(
+            [f"UNEXPLAINED {script} 3 NOTHING_TO_DO", f"UNEXPLAINED {script} 4 STALE"], self.status(folder)
+        )
+
+    def test_values_a_script_compares_looks_up_or_passes_are_no_lines(self) -> None:
+        folder = self.skill(
+            '```bash\npython -B "${CLAUDE_SKILL_DIR}/scripts/tool.py"\n```\n',
+            '"""DOCUMENTED <line> a docstring names it."""\n'
+            "import os\n\n"
+            "def main(state: str) -> int:\n"
+            '    """INNER also a docstring."""\n'
+            '    if state == "MERGED":\n'
+            "        return 0\n"
+            '    run(["git", "rev-parse", "HEAD"], key={"OPEN": 1}, name="OWNER")\n'
+            '    return int(os.environ["GITHUB_STEP_SUMMARY"] or 0)\n',
+        )
+        self.assertEqual([], self.status(folder))
+
+    def test_a_word_the_script_holds_anywhere_or_completes_from_a_prefix_is_printed(self) -> None:
+        folder = self.skill(
+            "It prints `RUNTIME <runtime> DISAGREES <level>`, `CONFIG_ERROR <file>`, and `OVERDUE <role>` lines.\n",
+            "def main(severity: str, level: str) -> None:\n"
+            '    print(f"RUNTIME x DISAGREES {level}")\n'
+            '    print(f"CONFIG_{severity} file")\n'
+            '    state = "overdue"\n'
+            "    print(state.upper())\n",
+        )
+        self.assertEqual([], self.status(folder))
+
+    def test_only_a_prose_line_about_output_names_lines_and_an_example_names_none(self) -> None:
+        folder = self.skill(
+            "No `SHOULD FIX` tier.\n"
+            "Recommend a one-line reply such as `WROTE <path>`, which the subagent prints.\n"
+            "```text\nIt prints `ABSENT` here.\n```\n",
+            'print("PRESENT")\n',
+        )
+        self.assertEqual([], self.status(folder))
+
+    def test_an_exit_code_no_script_uses_is_a_mismatch(self) -> None:
+        folder = self.skill(
+            "It exits 3 when the plan is stale, exit code 2 for a usage error, and exits 1 on a `FAILED` line.\n",
+            "import argparse\nimport sys\n\nfrom console import run_main\n\n"
+            "STALE = 4\n\n"
+            "def main() -> int:\n    argparse.ArgumentParser().parse_args()\n    return STALE if sys.argv else 0\n",
+        )
+        self.assertEqual([f"EXIT_MISMATCH {(folder / 'SKILL.md').as_posix()} 4 3"], self.status(folder))
+
+    def test_exit_codes_come_from_exit_calls_and_named_constants(self) -> None:
+        folder = self.skill(
+            "It exits 3 or exits with status 5, never 2.\n",
+            "import sys\n\nREFUSED = 5\n\n"
+            "def stop() -> None:\n    sys.exit(3)\n\n"
+            "def refuse() -> None:\n    raise SystemExit(REFUSED)\n",
+        )
+        self.assertEqual([], self.status(folder))
+        write(folder / "SKILL.md", "---\nname: alpha\n---\nIt exits 2 on a usage error.\n")
+        self.assertEqual(
+            [f"EXIT_MISMATCH {(folder / 'SKILL.md').as_posix()} 4 2"], self.status(folder), "no argparse, no 2"
+        )
+
+    def test_a_shell_script_prints_what_it_echoes_and_exits_with_what_it_exits(self) -> None:
+        folder = self.skill(
+            '```bash\nbash "${CLAUDE_SKILL_DIR}/scripts/update.sh"\n```\n\n'
+            "It prints `UP_TO_DATE <sha>` and exits 0, or exits 4.\n",
+            '#!/usr/bin/env bash\n# PINNED in a comment prints nothing\necho "UP_TO_DATE $sha"\n'
+            'echo "PINNED $ref"\nexit 3\n',
+            name="update.sh",
+        )
+        script = (folder / "scripts" / "update.sh").as_posix()
+        self.assertEqual(
+            [f"EXIT_MISMATCH {(folder / 'SKILL.md').as_posix()} 8 4", f"UNEXPLAINED {script} 4 PINNED"],
+            self.status(folder),
+        )
+
+    def test_a_repository_tool_is_explained_by_its_skill_and_a_sibling_skills_script_is_not(self) -> None:
+        folder = self.skill(
+            "```bash\npython -B tools/canary.py\n"
+            'python -B "${CLAUDE_SKILL_DIR}/../core/scripts/pipeline.py" run\n```\n\n'
+            "The pipeline prints `ROLE <id>` lines.\n"
+        )
+        tool = write(self.root / "repo" / "tools" / "canary.py", 'print("DEPLOYED x")\n')
+        write(folder.parent / "core" / "scripts" / "pipeline.py", 'print("ROLE x")\nprint("NOTE x")\n')
+        write(folder.parent / "core" / "scripts" / "records.py", 'print("RECORDED x")\n')
+        write(folder.parent / "core" / "scripts" / "test_pipeline.py", 'print("SUITE_ONLY x")\n')
+        self.assertEqual([f"UNEXPLAINED {tool.resolve().as_posix()} 1 DEPLOYED"], self.status(folder))
+        write(
+            folder / "SKILL.md",
+            "---\nname: alpha\n---\n```bash\npython -B tools/canary.py\n"
+            'python -B "${CLAUDE_SKILL_DIR}/../core/scripts/pipeline.py" run\n```\n\n'
+            "It prints `DEPLOYED <id>`, then `RECORDED <x>`, never `SUITE_ONLY <x>`.\n",
+        )
+        self.assertEqual(
+            [f"UNPRINTED {(folder / 'SKILL.md').as_posix()} 9 SUITE_ONLY"],
+            self.status(folder),
+            "the scripts beside a script the skill runs count, its suites never",
+        )
+
+    def test_skill_cores_failed_line_counts_and_its_own_lines_do_too(self) -> None:
+        folder = self.skill(
+            "It prints `UNSAFE <path>` or `FAILED <reason>` lines.\n", 'from console import run_main\n\nprint("OK x")\n'
+        )
+        self.assertEqual([f"UNPRINTED {(folder / 'SKILL.md').as_posix()} 4 UNSAFE"], self.status(folder))
+        write(folder.parent / "skill-core" / "scripts" / "guard.py", 'print(f"UNSAFE {1}")\n')
+        self.assertEqual([], self.status(folder))
+
+    def test_a_skill_that_holds_and_runs_no_script_compares_nothing(self) -> None:
+        folder = self.skill("It prints `NOWHERE <x>` and exits 9.\n")
+        self.assertEqual([], self.status(folder))
+
+    def test_a_named_file_and_a_script_that_cannot_be_read_compare_nothing_more(self) -> None:
+        folder = self.skill(
+            '```bash\npython -B "${CLAUDE_SKILL_DIR}/scripts/broken.py"\npython -B "$HOME/x.py"\n```\n\n'
+            "It prints `BROKEN <x>`.\n",
+            "def (:\n",
+            name="broken.py",
+        )
+        write(folder / "scripts" / "binary.py", b"\xff\xfe\0")
+        self.assertEqual([f"UNPRINTED {(folder / 'SKILL.md').as_posix()} 9 BROKEN"], self.status(folder))
+
+    def test_scanning_files_compares_no_status_lines(self) -> None:
+        folder = self.skill("It prints `GONE <x>`.\n", 'print("HERE")\n')
+        _, lines, _ = run("scan", str(folder / "SKILL.md"))
+        self.assertEqual([], [line for line in lines if line])
+
+
 class InstructionsTests(unittest.TestCase):
     def test_every_line_the_script_prints_has_a_stated_handling(self) -> None:
         # The fact names the script prints: a string, or an f-string's leading text, that starts with an upper-case
