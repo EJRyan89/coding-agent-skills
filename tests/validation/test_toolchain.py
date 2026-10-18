@@ -12,6 +12,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
@@ -30,6 +32,12 @@ from toolchain import (
 )
 
 from deployer import platform_support
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
+
+REQUIREMENT_PACKAGES = ("ruff", "mypy")
+CLEAN_REQUIREMENTS = "# Development dependencies.\n\nruff==0.16.10\n  # Indented comment.\nmypy==2.4.0\n"
 
 
 class ToolchainFixtures(unittest.TestCase):
@@ -60,32 +68,14 @@ class ToolchainFixtures(unittest.TestCase):
         self.assertEqual([], missing_prerequisites((("ShellCheck", "ShellCheck", lambda: "shellcheck"),)))
 
     def test_requirements_hold_only_comments_blank_lines_and_the_listed_pins(self) -> None:
-        packages = ("ruff", "mypy")
-        clean = "# Development dependencies.\n\nruff==0.16.10\n  # Indented comment.\nmypy==2.4.0\n"
-        self.assertEqual([], requirements_problems(clean, packages))
-        for added in (
-            "requests\n",
-            "requests==2.32.0\n",
-            "--extra-index-url https://example.invalid/simple\n",
-            "--index-url https://example.invalid/simple\n",
-            "-r other.txt\n",
-            "-c constraints.txt\n",
-            "-e git+https://example.invalid/pkg.git#egg=pkg\n",
-            "pkg @ https://example.invalid/pkg.whl\n",
-            "ruff>=0.16.10\n",
-            "mypy==2.4.0 --hash=sha256:00\n",
-            "mypy==2.4.0; python_version > '3.11'\n",
-            "mypy==2.4.0 # a trailing comment\n",
-            "Ruff==0.16.10\n",
-        ):
-            with self.subTest(added=added):
-                problems = requirements_problems(clean + added, packages)
-                self.assertTrue(any("line 6 is not name==version" in problem for problem in problems), problems)
+        clean = CLEAN_REQUIREMENTS
+        self.assertEqual([], requirements_problems(clean, REQUIREMENT_PACKAGES))
         self.assertEqual(
-            ["mypy is pinned 0 times, not once"], requirements_problems(clean.replace("mypy==2.4.0\n", ""), packages)
+            ["mypy is pinned 0 times, not once"],
+            requirements_problems(clean.replace("mypy==2.4.0\n", ""), REQUIREMENT_PACKAGES),
         )
         self.assertEqual(
-            ["ruff is pinned 2 times, not once"], requirements_problems(clean + "ruff==0.17.0\n", packages)
+            ["ruff is pinned 2 times, not once"], requirements_problems(clean + "ruff==0.17.0\n", REQUIREMENT_PACKAGES)
         )
 
     def test_missing_ruff_is_reported_with_the_install_command(self) -> None:
@@ -188,43 +178,73 @@ class ToolchainFixtures(unittest.TestCase):
             self.assertEqual({}, tool_versions(prerequisite, read_version=lambda path: (1, 25, 0)))
 
 
+@pytest.mark.parametrize(
+    "added",
+    [
+        "requests\n",
+        "requests==2.32.0\n",
+        "--extra-index-url https://example.invalid/simple\n",
+        "--index-url https://example.invalid/simple\n",
+        "-r other.txt\n",
+        "-c constraints.txt\n",
+        "-e git+https://example.invalid/pkg.git#egg=pkg\n",
+        "pkg @ https://example.invalid/pkg.whl\n",
+        "ruff>=0.16.10\n",
+        "mypy==2.4.0 --hash=sha256:00\n",
+        "mypy==2.4.0; python_version > '3.11'\n",
+        "mypy==2.4.0 # a trailing comment\n",
+        "Ruff==0.16.10\n",
+    ],
+)
+def test_a_requirements_line_that_is_not_a_listed_pin_fails(added: str) -> None:
+    problems = requirements_problems(CLEAN_REQUIREMENTS + added, REQUIREMENT_PACKAGES)
+    CHECK.assertTrue(any("line 6 is not name==version" in problem for problem in problems), problems)
+
+
+def run_script(result: platform_support.ToolResult) -> tuple[list[object], list[dict[str, str]]]:
+    """The runner's list for a fake pwsh's result, and each environment it was started with."""
+    seen: list[dict[str, str]] = []
+
+    def fake(command: list[str], environment: dict[str, str]) -> platform_support.ToolResult:
+        seen.append(environment)
+        CHECK.assertEqual(["C:/tools/pwsh.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command"], command[:5])
+        CHECK.assertEqual(["a", 1], json.loads(Path(environment["INPUTS"]).read_text(encoding="utf-8")))
+        return result
+
+    with (
+        mock.patch.object(toolchain, "find_powershell", return_value="C:/tools/pwsh.exe"),
+        mock.patch.object(platform_support, "run_tool", side_effect=fake),
+    ):
+        return powershell_json("Get-Thing", ["a", 1], "INPUTS", "Could not run", {"FLOOR": "1.0"}), seen
+
+
 class PowerShellJsonRunner(unittest.TestCase):
-    def run_script(self, result: platform_support.ToolResult) -> tuple[list[object], list[dict[str, str]]]:
-        """The runner's list for a fake pwsh's result, and each environment it was started with."""
-        seen: list[dict[str, str]] = []
-
-        def fake(command: list[str], environment: dict[str, str]) -> platform_support.ToolResult:
-            seen.append(environment)
-            self.assertEqual(["C:/tools/pwsh.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command"], command[:5])
-            self.assertEqual(["a", 1], json.loads(Path(environment["INPUTS"]).read_text(encoding="utf-8")))
-            return result
-
-        with (
-            mock.patch.object(toolchain, "find_powershell", return_value="C:/tools/pwsh.exe"),
-            mock.patch.object(platform_support, "run_tool", side_effect=fake),
-        ):
-            return powershell_json("Get-Thing", ["a", 1], "INPUTS", "Could not run", {"FLOOR": "1.0"}), seen
-
     def test_the_last_line_s_list_is_the_result_and_the_inputs_reach_the_script(self) -> None:
-        found, seen = self.run_script(platform_support.ToolResult(0, 'warming up\n[{"line": 3}]\n\n'))
+        found, seen = run_script(platform_support.ToolResult(0, 'warming up\n[{"line": 3}]\n\n'))
         self.assertEqual([{"line": 3}], found)
         self.assertEqual("1.0", seen[0]["FLOOR"])
-
-    def test_a_failed_exit_or_output_that_is_not_a_list_is_a_failure_naming_the_status(self) -> None:
-        for result in (
-            platform_support.ToolResult(1, "[]\n"),
-            platform_support.ToolResult(0, '{"line": 3}\n'),
-            platform_support.ToolResult(0, "not json\n"),
-            platform_support.ToolResult(0, ""),
-        ):
-            with self.subTest(output=result.output), self.assertRaises(AssertionError) as raised:
-                self.run_script(result)
-            self.assertTrue(str(raised.exception).startswith(f"Could not run (exit code {result.returncode}):\n"))
 
     @mock.patch.object(platform_support, "WINDOWS", True)
     def test_a_pwsh_ended_before_output_is_a_termination(self) -> None:
         with self.assertRaises(Terminated):
-            self.run_script(platform_support.ToolResult(2_147_483_652, ""))
+            run_script(platform_support.ToolResult(2_147_483_652, ""))
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        pytest.param(platform_support.ToolResult(1, "[]\n"), id="failed exit"),
+        pytest.param(platform_support.ToolResult(0, '{"line": 3}\n'), id="an object"),
+        pytest.param(platform_support.ToolResult(0, "not json\n"), id="not json"),
+        pytest.param(platform_support.ToolResult(0, ""), id="no output"),
+    ],
+)
+def test_a_failed_exit_or_output_that_is_not_a_list_is_a_failure_naming_the_status(
+    result: platform_support.ToolResult,
+) -> None:
+    with CHECK.assertRaises(AssertionError) as raised:
+        run_script(result)
+    CHECK.assertTrue(str(raised.exception).startswith(f"Could not run (exit code {result.returncode}):\n"))
 
 
 class PytestPrerequisiteFixtures(unittest.TestCase):

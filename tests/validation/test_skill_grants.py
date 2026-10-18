@@ -11,6 +11,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
@@ -26,6 +28,9 @@ from skill_grants import (
     tool_grant_problems,
 )
 from validation_support import write_fixture_tree
+
+# Runs no test of its own; the test functions below check through its assertions, as the class does.
+CHECK = unittest.TestCase()
 
 # The allowance a script that starts the command a repository configures states, since its program is not the
 # script's to name.
@@ -497,82 +502,6 @@ class SkillGrantsFixtures(unittest.TestCase):
                 skill_grant_problems(root),
             )
 
-    def test_repository_code_declarations_accept_process_routes_but_refuse_their_grants(self) -> None:
-        # A script that starts a configured command states why, beside the code, for each scope that starts one.
-        configured = f"COMMANDS_ALLOWED = {CONFIGURED}\n"
-        sources = (
-            'import subprocess as sp\nsp.run(f"python {script}")\n',
-            f"from subprocess import Popen as start\nstart(command)\n{configured}",
-            f"import os as operating\noperating.system(command)\n{configured}",
-            f"from os import popen as start\nstart(cmd=command)\n{configured}",
-            f"from os import system\nrunner = system\nalias = runner\nalias(command)\n{configured}",
-            f"import asyncio as tasks\ntasks.create_subprocess_exec(program=program)\n{configured}",
-            f"from asyncio import create_subprocess_shell as start\nstart(cmd=command)\n{configured}",
-            f"import bounded_process as bounded\nbounded.run_bounded(command, 5)\n{configured}",
-            f"from bounded_process import streaming as start\nstart(command, 5)\n{configured}",
-            'from git_client import GitClient as Client\nClient().run(["status"])\n',
-            'import github_client as api\napi.GitHubClient().run(["api"])\n',
-            "from github_client import GitHubClient\nclient = GitHubClient\nalias = client\nalias()\n",
-            "import os\n"
-            "def first():\n    runner = os.system\n    runner(command)\n"
-            "def second():\n    runner = os.popen\n    runner(command)\n"
-            'COMMANDS_ALLOWED = {"first": "starts the configured server", "second": "reads the configured server"}\n',
-        )
-        own = 'python -B "${CLAUDE_SKILL_DIR}/scripts/'
-        command = f'{own}start.py" --root "<repository root>"'
-        for source in sources:
-            with self.subTest(source=source), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary)
-                files: dict[str, str] = {}
-                for skill, scripts in (("wide", ("audit", "start")), ("narrow", ("audit",))):
-                    grants = json.dumps(
-                        [f'{tool}({own}{script}.py" *)' for script in scripts for tool in ("Bash", "PowerShell")]
-                    )
-                    files[f"deploy-meta/{skill}.json"] = "{}"
-                    files[f"skills/{skill}/scripts/start.py"] = (
-                        'RUNS_REPOSITORY_CODE = "starts configured repository code"\n' + source
-                    )
-                    # Starting a process alone does not make an own-script command repository code.
-                    files[f"skills/{skill}/scripts/audit.py"] = "import os\nos.system(command)\n"
-                    files[f"skills/{skill}/SKILL.md"] = (
-                        f"---\nname: {skill}\nallowed-tools: {grants}\n---\n\n"
-                        f'```bash\n{own}audit.py" --check\n{command}\n```\n'
-                    )
-                write_fixture_tree(root, files)
-                self.assertEqual([], repository_code_declaration_problems(root))
-                self.assertEqual(
-                    [
-                        f"skills/wide/SKILL.md:8 a {tool} grant pre-approves {command}, which runs code from the "
-                        f"target repository; see {GRANTS_DOC}"
-                        for tool in ("Bash", "PowerShell")
-                    ],
-                    skill_grant_problems(root),
-                )
-
-    def test_repository_code_declarations_refuse_imports_lookups_and_shadowed_calls_without_a_process(self) -> None:
-        sources = (
-            "import subprocess\n",
-            "from bounded_process import run_bounded\nrunner = run_bounded\n",
-            "from github_client import GitHubClient\nclient = GitHubClient\n",
-            "import os\nos.getenv('COMMAND')\n",
-            "import asyncio\nasyncio.run(main())\n",
-            'import shutil\nshutil.which("python")\n',
-            'COMMAND = ["python", script]\nprint(COMMAND)\n',
-            "import os\nrunner = os.system\ndef run(runner):\n    runner(command)\n",
-            "import os\ndef run():\n    os = service\n    os.system(command)\n",
-            "import subprocess\ndef run(command):\n    pass\nrun(command)\n",
-            "from .os import system\nsystem(command)\n",
-        )
-        for source in sources:
-            with self.subTest(source=source), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary)
-                name = ".claude/skills/a/scripts/stale.py"
-                write_fixture_tree(root, {name: 'RUNS_REPOSITORY_CODE = "starts servers"\n' + source})
-                self.assertEqual(
-                    [f"{name}: declares RUNS_REPOSITORY_CODE but starts no process; remove the declaration"],
-                    repository_code_declaration_problems(root),
-                )
-
     def test_repository_code_declarations_report_unresolved_aliases_and_unreadable_commands(self) -> None:
         alias_error = "cannot resolve callable alias runner; use a single binding to a known callable"
         unread = (
@@ -640,3 +569,113 @@ class SkillGrantsFixtures(unittest.TestCase):
                 ],
                 repository_code_declaration_problems(root),
             )
+
+
+# A script that starts a configured command states why, beside the code, for each scope that starts one.
+CONFIGURED_ALLOWANCE = f"COMMANDS_ALLOWED = {CONFIGURED}\n"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param('import subprocess as sp\nsp.run(f"python {script}")\n', id="subprocess under an alias"),
+        pytest.param(
+            f"from subprocess import Popen as start\nstart(command)\n{CONFIGURED_ALLOWANCE}", id="Popen renamed"
+        ),
+        pytest.param(
+            f"import os as operating\noperating.system(command)\n{CONFIGURED_ALLOWANCE}", id="os under an alias"
+        ),
+        pytest.param(
+            f"from os import popen as start\nstart(cmd=command)\n{CONFIGURED_ALLOWANCE}", id="popen by keyword"
+        ),
+        pytest.param(
+            f"from os import system\nrunner = system\nalias = runner\nalias(command)\n{CONFIGURED_ALLOWANCE}",
+            id="system through aliases",
+        ),
+        pytest.param(
+            f"import asyncio as tasks\ntasks.create_subprocess_exec(program=program)\n{CONFIGURED_ALLOWANCE}",
+            id="asyncio exec by keyword",
+        ),
+        pytest.param(
+            f"from asyncio import create_subprocess_shell as start\nstart(cmd=command)\n{CONFIGURED_ALLOWANCE}",
+            id="asyncio shell renamed",
+        ),
+        pytest.param(
+            f"import bounded_process as bounded\nbounded.run_bounded(command, 5)\n{CONFIGURED_ALLOWANCE}",
+            id="run_bounded",
+        ),
+        pytest.param(
+            f"from bounded_process import streaming as start\nstart(command, 5)\n{CONFIGURED_ALLOWANCE}",
+            id="streaming renamed",
+        ),
+        pytest.param('from git_client import GitClient as Client\nClient().run(["status"])\n', id="GitClient renamed"),
+        pytest.param('import github_client as api\napi.GitHubClient().run(["api"])\n', id="GitHubClient by module"),
+        pytest.param(
+            "from github_client import GitHubClient\nclient = GitHubClient\nalias = client\nalias()\n",
+            id="GitHubClient through aliases",
+        ),
+        pytest.param(
+            "import os\n"
+            "def first():\n    runner = os.system\n    runner(command)\n"
+            "def second():\n    runner = os.popen\n    runner(command)\n"
+            'COMMANDS_ALLOWED = {"first": "starts the configured server", "second": "reads the configured server"}\n',
+            id="a runner in each of two scopes",
+        ),
+    ],
+)
+def test_repository_code_declarations_accept_process_routes_but_refuse_their_grants(
+    tmp_path: Path, source: str
+) -> None:
+    own = 'python -B "${CLAUDE_SKILL_DIR}/scripts/'
+    command = f'{own}start.py" --root "<repository root>"'
+    files: dict[str, str] = {}
+    for skill, scripts in (("wide", ("audit", "start")), ("narrow", ("audit",))):
+        grants = json.dumps([f'{tool}({own}{script}.py" *)' for script in scripts for tool in ("Bash", "PowerShell")])
+        files[f"deploy-meta/{skill}.json"] = "{}"
+        files[f"skills/{skill}/scripts/start.py"] = (
+            'RUNS_REPOSITORY_CODE = "starts configured repository code"\n' + source
+        )
+        # Starting a process alone does not make an own-script command repository code.
+        files[f"skills/{skill}/scripts/audit.py"] = "import os\nos.system(command)\n"
+        files[f"skills/{skill}/SKILL.md"] = (
+            f'---\nname: {skill}\nallowed-tools: {grants}\n---\n\n```bash\n{own}audit.py" --check\n{command}\n```\n'
+        )
+    write_fixture_tree(tmp_path, files)
+    CHECK.assertEqual([], repository_code_declaration_problems(tmp_path))
+    CHECK.assertEqual(
+        [
+            f"skills/wide/SKILL.md:8 a {tool} grant pre-approves {command}, which runs code from the "
+            f"target repository; see {GRANTS_DOC}"
+            for tool in ("Bash", "PowerShell")
+        ],
+        skill_grant_problems(tmp_path),
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param("import subprocess\n", id="an import"),
+        pytest.param("from bounded_process import run_bounded\nrunner = run_bounded\n", id="a runner never called"),
+        pytest.param("from github_client import GitHubClient\nclient = GitHubClient\n", id="a client never made"),
+        pytest.param("import os\nos.getenv('COMMAND')\n", id="an environment lookup"),
+        pytest.param("import asyncio\nasyncio.run(main())\n", id="asyncio.run"),
+        pytest.param('import shutil\nshutil.which("python")\n', id="a program lookup"),
+        pytest.param('COMMAND = ["python", script]\nprint(COMMAND)\n', id="a command never run"),
+        pytest.param(
+            "import os\nrunner = os.system\ndef run(runner):\n    runner(command)\n", id="a parameter shadows a runner"
+        ),
+        pytest.param("import os\ndef run():\n    os = service\n    os.system(command)\n", id="a local shadows os"),
+        pytest.param("import subprocess\ndef run(command):\n    pass\nrun(command)\n", id="a function named run"),
+        pytest.param("from .os import system\nsystem(command)\n", id="a relative module named os"),
+    ],
+)
+def test_repository_code_declarations_refuse_imports_lookups_and_shadowed_calls_without_a_process(
+    tmp_path: Path, source: str
+) -> None:
+    name = ".claude/skills/a/scripts/stale.py"
+    write_fixture_tree(tmp_path, {name: 'RUNS_REPOSITORY_CODE = "starts servers"\n' + source})
+    CHECK.assertEqual(
+        [f"{name}: declares RUNS_REPOSITORY_CODE but starts no process; remove the declaration"],
+        repository_code_declaration_problems(tmp_path),
+    )

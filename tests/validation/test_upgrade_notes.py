@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import ClassVar
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
@@ -28,61 +30,90 @@ from validation_support import write_fixture_tree
 from tests import run_validation
 from tools import release_notes
 
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
+
 
 def snapshot(files: Mapping[str, str]) -> Snapshot:
     return Snapshot(frozenset(files), lambda name: files[name])
 
 
+def changed(module: str, before: str, after: str) -> list[str]:
+    return [item for item, _ in changed_contract_items(snapshot({module: before}), snapshot({module: after}))]
+
+
 class ContractValueReaders(unittest.TestCase):
     """Each contract value is read however it is written, so a raised floor or a new manifest version is named."""
-
-    TOOL = "@dataclass\nclass Tool:\n    name: str\n    label: str\n    locate: object\n    version_arguments: tuple\n"
-
-    def changed(self, module: str, before: str, after: str) -> list[str]:
-        return [item for item, _ in changed_contract_items(snapshot({module: before}), snapshot({module: after}))]
-
-    def test_a_floor_by_position_by_keyword_or_in_a_constant_and_an_annotated_or_nested_version_are_read(self) -> None:
-        tools = "deployer/tools.py"
-        for before, after in (
-            (
-                f'{self.TOOL}    minimum: tuple = ()\nT = Tool("gh", "gh", locate, ("--version",), (2, 48, 0))\n',
-                f'{self.TOOL}    minimum: tuple = ()\nT = Tool("gh", "gh", locate, ("--version",), (2, 49, 0))\n',
-            ),
-            (
-                'T = Tool(name="gh", label="gh", locate=locate, minimum=(2, 48, 0))\n',
-                'T = Tool(name="gh", label="gh", locate=locate, minimum=(2, 49, 0))\n',
-            ),
-            (
-                'GH = (2, 48, 0)\nT = Tool("gh", "gh", locate, minimum=GH)\n',
-                'GH = (2, 49, 0)\nT = Tool("gh", "gh", locate, minimum=GH)\n',
-            ),
-            ("MINIMUM_PYTHON: tuple[int, ...] = (3, 11, 4)\n", "MINIMUM_PYTHON: tuple[int, ...] = (3, 12, 0)\n"),
-            # The control: a floor by keyword, as the check always read one.
-            (
-                'T = Tool("gh", "gh", locate, minimum=(2, 48, 0))\n',
-                'T = Tool("gh", "gh", locate, minimum=(2, 49, 0))\n',
-            ),
-        ):
-            with self.subTest(after=after):
-                self.assertEqual([tools], self.changed(tools, before, after))
-        manifest = "deployer/manifest.py"
-        for before, after in (
-            ("MANIFEST_VERSION: int = 8\n", "MANIFEST_VERSION: int = 9\n"),
-            ("if True:\n    MANIFEST_VERSION = 8\n", "if True:\n    MANIFEST_VERSION = 9\n"),
-            ("MANIFEST_VERSION = 8\n", "MANIFEST_VERSION = 9\n"),
-        ):
-            with self.subTest(after=after):
-                self.assertEqual([manifest], self.changed(manifest, before, after))
 
     def test_a_floor_written_another_way_with_the_same_value_is_no_change(self) -> None:
         self.assertEqual(
             [],
-            self.changed(
+            changed(
                 "deployer/tools.py",
                 'T = Tool("gh", "gh", locate, minimum=(2, 48, 0))\n',
                 '# The tools.\nGH = (2, 48, 0)\nT = Tool(name="gh", label="gh", locate=locate, minimum=GH)\n',
             ),
         )
+
+
+TOOL = "@dataclass\nclass Tool:\n    name: str\n    label: str\n    locate: object\n    version_arguments: tuple\n"
+
+
+@pytest.mark.parametrize(
+    ("module", "before", "after"),
+    [
+        pytest.param(
+            "deployer/tools.py",
+            f'{TOOL}    minimum: tuple = ()\nT = Tool("gh", "gh", locate, ("--version",), (2, 48, 0))\n',
+            f'{TOOL}    minimum: tuple = ()\nT = Tool("gh", "gh", locate, ("--version",), (2, 49, 0))\n',
+            id="a floor by position",
+        ),
+        pytest.param(
+            "deployer/tools.py",
+            'T = Tool(name="gh", label="gh", locate=locate, minimum=(2, 48, 0))\n',
+            'T = Tool(name="gh", label="gh", locate=locate, minimum=(2, 49, 0))\n',
+            id="every argument by keyword",
+        ),
+        pytest.param(
+            "deployer/tools.py",
+            'GH = (2, 48, 0)\nT = Tool("gh", "gh", locate, minimum=GH)\n',
+            'GH = (2, 49, 0)\nT = Tool("gh", "gh", locate, minimum=GH)\n',
+            id="a floor in a constant",
+        ),
+        pytest.param(
+            "deployer/tools.py",
+            "MINIMUM_PYTHON: tuple[int, ...] = (3, 11, 4)\n",
+            "MINIMUM_PYTHON: tuple[int, ...] = (3, 12, 0)\n",
+            id="an annotated floor",
+        ),
+        # The control: a floor by keyword, as the check always read one.
+        pytest.param(
+            "deployer/tools.py",
+            'T = Tool("gh", "gh", locate, minimum=(2, 48, 0))\n',
+            'T = Tool("gh", "gh", locate, minimum=(2, 49, 0))\n',
+            id="a floor by keyword",
+        ),
+        pytest.param(
+            "deployer/manifest.py",
+            "MANIFEST_VERSION: int = 8\n",
+            "MANIFEST_VERSION: int = 9\n",
+            id="an annotated manifest version",
+        ),
+        pytest.param(
+            "deployer/manifest.py",
+            "if True:\n    MANIFEST_VERSION = 8\n",
+            "if True:\n    MANIFEST_VERSION = 9\n",
+            id="a nested manifest version",
+        ),
+        pytest.param(
+            "deployer/manifest.py", "MANIFEST_VERSION = 8\n", "MANIFEST_VERSION = 9\n", id="a manifest version"
+        ),
+    ],
+)
+def test_a_floor_by_position_by_keyword_or_in_a_constant_and_an_annotated_or_nested_version_are_read(
+    module: str, before: str, after: str
+) -> None:
+    CHECK.assertEqual([module], changed(module, before, after))
 
 
 class UpgradeNotesPolicy(unittest.TestCase):

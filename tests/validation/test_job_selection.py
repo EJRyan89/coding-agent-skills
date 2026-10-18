@@ -13,6 +13,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
@@ -39,6 +41,9 @@ from job_selection import (
 )
 from suite_discovery import regression_suites
 from validation_support import REPOSITORY_ROOT, relative
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 
 def fixture_job(label: str, weight: float) -> Job:
@@ -162,29 +167,6 @@ class JobSecondsFixtures(unittest.TestCase):
         self.assertTrue(JOB_SECONDS.is_file())
         self.assertTrue(job_seconds(JOB_SECONDS))
 
-    def test_a_malformed_table_is_refused(self) -> None:
-        for text in (
-            "not json",
-            "[]",
-            '{"runs": [7]}',
-            '{"runs": [7], "seconds": []}',
-            '{"runs": [7], "seconds": {"tests/test_a.py": "12"}}',
-            '{"runs": [7], "seconds": {"tests/test_a.py": 0}}',
-            '{"runs": [7], "seconds": {"tests/test_a.py": true}}',
-            '{"runs": [7], "seconds": {}, "extra": 1}',
-            '{"seconds": {"tests/test_a.py": 1}}',
-            '{"runs": [], "seconds": {"tests/test_a.py": 1}}',
-            '{"runs": 7, "seconds": {"tests/test_a.py": 1}}',
-            '{"runs": [7, 7], "seconds": {"tests/test_a.py": 1}}',
-            '{"runs": ["7"], "seconds": {"tests/test_a.py": 1}}',
-            '{"runs": [true], "seconds": {"tests/test_a.py": 1}}',
-            '{"runs": [0], "seconds": {"tests/test_a.py": 1}}',
-            '{"runs": [[7]], "seconds": {"tests/test_a.py": 1}}',
-            '{"runs": [7, {"id": 9}], "seconds": {"tests/test_a.py": 1}}',
-        ):
-            with self.subTest(text=text), self.assertRaisesRegex(ValueError, "job_seconds.json"):
-                job_seconds(self.write_table(text))
-
     def test_a_table_from_one_run_is_refused_with_the_step_that_rewrites_it(self) -> None:
         path = self.write_table('{"run": 7, "seconds": {"tests/test_a.py": 1}}\n')
         with self.assertRaisesRegex(ValueError, r'one run under "run"; rerun tools/record_job_seconds\.py'):
@@ -197,6 +179,35 @@ class JobSecondsFixtures(unittest.TestCase):
         self.assertIn("tests/test_gone.py", problems[0])
         self.assertIn("tools/record_job_seconds.py", problems[0])
         self.assertEqual([], stale_job_seconds_problems({"tests/test_kept.py": 3.0}, {"tests/test_kept.py"}))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "not json",
+        "[]",
+        '{"runs": [7]}',
+        '{"runs": [7], "seconds": []}',
+        '{"runs": [7], "seconds": {"tests/test_a.py": "12"}}',
+        '{"runs": [7], "seconds": {"tests/test_a.py": 0}}',
+        '{"runs": [7], "seconds": {"tests/test_a.py": true}}',
+        '{"runs": [7], "seconds": {}, "extra": 1}',
+        '{"seconds": {"tests/test_a.py": 1}}',
+        '{"runs": [], "seconds": {"tests/test_a.py": 1}}',
+        '{"runs": 7, "seconds": {"tests/test_a.py": 1}}',
+        '{"runs": [7, 7], "seconds": {"tests/test_a.py": 1}}',
+        '{"runs": ["7"], "seconds": {"tests/test_a.py": 1}}',
+        '{"runs": [true], "seconds": {"tests/test_a.py": 1}}',
+        '{"runs": [0], "seconds": {"tests/test_a.py": 1}}',
+        '{"runs": [[7]], "seconds": {"tests/test_a.py": 1}}',
+        '{"runs": [7, {"id": 9}], "seconds": {"tests/test_a.py": 1}}',
+    ],
+)
+def test_a_malformed_table_is_refused(tmp_path: Path, text: str) -> None:
+    path = tmp_path / "job_seconds.json"
+    path.write_text(text, encoding="utf-8")
+    with CHECK.assertRaisesRegex(ValueError, "job_seconds.json"):
+        job_seconds(path)
 
 
 class JobSelectionFixtures(unittest.TestCase):

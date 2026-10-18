@@ -12,6 +12,8 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import ClassVar
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
@@ -22,6 +24,9 @@ from duplication import (
     skill_script_import_problems,
 )
 from validation_support import write_fixture_tree
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 
 class DuplicatedDefinitionPolicy(unittest.TestCase):
@@ -392,22 +397,6 @@ class SkillCoreHomePolicy(unittest.TestCase):
             ),
         )
 
-    def test_the_deployer_states_the_path_first_and_relative_to_itself(self) -> None:
-        expected = [
-            "deployer/__init__.py does not put skills/skill-core/scripts first on sys.path, located from its own "
-            f"file; see {self.DOC}"
-        ]
-        for statement in (
-            "",
-            'sys.path.insert(0, str(Path(SOURCE) / "skills" / "skill-core" / "scripts"))\n',
-            self.STATEMENT.replace("insert(0,", "insert(1,"),
-            self.STATEMENT.replace("insert(0, ", "append("),
-            "def later() -> None:\n    " + self.STATEMENT,
-        ):
-            with self.subTest(statement=statement):
-                files = {"deployer/__init__.py": self.HEADER + statement}
-                self.assertEqual(expected, self.run_policy(skill_core_import_problems, files))
-
     def test_skill_core_imports_nothing_from_the_deployer_and_the_deployer_only_the_standard_library(self) -> None:
         def reaches(name: str, line: int, module: str) -> str:
             return (
@@ -502,3 +491,27 @@ class SkillCoreHomePolicy(unittest.TestCase):
                 },
             ),
         )
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        pytest.param("", id="no statement"),
+        pytest.param(
+            'sys.path.insert(0, str(Path(SOURCE) / "skills" / "skill-core" / "scripts"))\n',
+            id="located from the configured source",
+        ),
+        pytest.param(SkillCoreHomePolicy.STATEMENT.replace("insert(0,", "insert(1,"), id="not first"),
+        pytest.param(SkillCoreHomePolicy.STATEMENT.replace("insert(0, ", "append("), id="appended"),
+        pytest.param("def later() -> None:\n    " + SkillCoreHomePolicy.STATEMENT, id="inside a function"),
+    ],
+)
+def test_the_deployer_states_the_path_first_and_relative_to_itself(tmp_path: Path, statement: str) -> None:
+    expected = [
+        "deployer/__init__.py does not put skills/skill-core/scripts first on sys.path, located from its own "
+        f"file; see {SkillCoreHomePolicy.DOC}"
+    ]
+    write_fixture_tree(
+        tmp_path, {**SkillCoreHomePolicy.CORE, "deployer/__init__.py": SkillCoreHomePolicy.HEADER + statement}
+    )
+    CHECK.assertEqual(expected, skill_core_import_problems(tmp_path))

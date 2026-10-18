@@ -10,11 +10,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 
 from tools import skill_reference
+
+# Runs no test of its own; the test functions below check through its assertions, as the class does.
+CHECK = unittest.TestCase()
 
 INITIAL_REFERENCE = (
     "# Skills\n\nIntro.\n\n<!-- generated:summary -->\n<!-- /generated:summary -->\n\n## Runtime support\n\n"
@@ -217,17 +222,6 @@ class SkillReferenceTestCase(unittest.TestCase):
             ],
             skill_reference.problems(self.root),
         )
-        for description in (
-            "Sweeps. Use it when asked.",
-            "Sweeps; use this skill before a release.",
-            "Sweeps. Use whenever a branch is merged.",
-            "Sweeps. Use after deploying.",
-        ):
-            with self.subTest(description=description):
-                self.assertTrue(skill_reference.says_when(description))
-        for description in ("Sweeps every repository.", "Sweeps when asked.", "Uses whatever is configured."):
-            with self.subTest(description=description):
-                self.assertFalse(skill_reference.says_when(description))
 
     def test_the_readme_must_list_every_menu_item_and_link_the_reference(self) -> None:
         self.written_and_explained()
@@ -341,3 +335,19 @@ class SkillReferenceTestCase(unittest.TestCase):
         code, _, stderr = run("--write")
         self.assertEqual(2, code)
         self.assertIn("FAILED", stderr)
+
+
+@pytest.mark.parametrize(
+    ("description", "expected"),
+    [
+        ("Sweeps. Use it when asked.", True),
+        ("Sweeps; use this skill before a release.", True),
+        ("Sweeps. Use whenever a branch is merged.", True),
+        ("Sweeps. Use after deploying.", True),
+        ("Sweeps every repository.", False),
+        ("Sweeps when asked.", False),
+        ("Uses whatever is configured.", False),
+    ],
+)
+def test_a_model_invocable_description_must_say_when_to_use_the_skill(description: str, expected: bool) -> None:
+    CHECK.assertIs(expected, skill_reference.says_when(description))

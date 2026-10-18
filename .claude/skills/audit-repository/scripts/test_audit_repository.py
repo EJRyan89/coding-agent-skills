@@ -16,6 +16,8 @@ from pathlib import Path
 from types import MappingProxyType
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-core" / "scripts"))
 
@@ -44,6 +46,16 @@ HOSTILE_PATHS = (
     "docs/tick`.md",
     "#heading.md",
 )
+# What each of HOSTILE_PATHS holds, naming its case among the parametrized tests.
+HOSTILE_PATH_IDS = (
+    "injected-heading",
+    "carriage-return",
+    "next-line",
+    "line-separator",
+    "paragraph-separator",
+    "backtick",
+    "leading-hash",
+)
 GIT_CONFIG: Mapping[str, str] = MappingProxyType({"init.defaultBranch": "main"})
 # One file in each area, and the files whose area depends on the classification order.
 FIRST_RELEASE = {
@@ -59,6 +71,8 @@ FIRST_RELEASE = {
     "docs/old guide.md": "old\n",
     "README.md": "readme\n",
 }
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 
 class AuditTestCase(unittest.TestCase):
@@ -270,16 +284,6 @@ class QuotingTests(AuditTestCase):
         headings = [line for line in plain.splitlines() if line.startswith("#")]
         self.assertEqual(headings, [line for line in hostile.splitlines() if line.startswith("#")])
 
-    def test_a_code_literal_reads_back_exactly_and_stays_one_printable_code_span(self) -> None:
-        for value in (*HOSTILE_PATHS, "docs/π guide.md", "tab\there", "del\x7f", "astral\U000e0001", "back\\slash"):
-            with self.subTest(value=value):
-                literal = audit.code_literal(value)
-                self.assertTrue(literal.startswith('`"') and literal.endswith('"`'), literal)
-                self.assertNotIn("`", literal[1:-1])
-                self.assertTrue(literal.isprintable(), literal)
-                self.assertEqual(value, json.loads(literal[1:-1]))
-        self.assertEqual('`"docs/π guide.md"`', audit.code_literal("docs/π guide.md"))
-
     def test_a_release_brief_lists_each_hostile_path_on_one_line(self) -> None:
         def brief(paths: tuple[str, ...], base: str) -> str:
             return audit.release_brief(
@@ -320,30 +324,6 @@ class RecordTests(AuditTestCase):
     def test_this_repository_record_starts_with_the_first_rotation_audit(self) -> None:
         entries = audit.read_record(REPOSITORY / RECORD)
         self.assertEqual(audit.Entry("2026-10-09", "v0.4.0", "deployer"), entries[0])
-
-    def test_a_malformed_record_fails_with_the_reason(self) -> None:
-        directory = Path(tempfile.mkdtemp(prefix="audit-repository-record-"))
-        self.addCleanup(remove_tree, directory)
-        path = directory / "rotation.json"
-        cases = {
-            "not json": "cannot read the rotation record",
-            "[]": "must be an object whose audits is a list",
-            '{"audits": [{"date": "2026-01-01", "tag": "v1"}]}': "exactly a date, a tag, and an area",
-            '{"audits": [{"date": "1 Jan", "tag": "v1", "area": "deployer"}]}': "not YYYY-MM-DD",
-            '{"audits": [{"date": "2026-01-01", "tag": " ", "area": "deployer"}]}': "has no tag",
-            '{"audits": [{"date": "2026-01-01", "tag": "v1", "area": "docs"}]}': "names area 'docs'",
-            '{"audits": [{"date": "2026-01-01", "tag": "v1", "area": "deployer"}, '
-            '{"date": "2026-02-01", "tag": "v1", "area": "code-review"}]}': "records v1 more than once",
-        }
-        for text, reason in cases.items():
-            with self.subTest(text=text):
-                path.write_text(text, encoding="utf-8")
-                with self.assertRaises(audit.AuditError) as caught:
-                    audit.read_record(path)
-                self.assertIn(reason, str(caught.exception))
-        with self.assertRaises(audit.AuditError) as caught:
-            audit.read_record(directory / "missing.json")
-        self.assertIn("no rotation record at", str(caught.exception))
 
 
 class ReleaseTests(Fixture):
@@ -1014,9 +994,78 @@ class CommandLineTests(Fixture):
         self.addCleanup(remove_tree, Path(briefs.split(" ", 1)[1].strip('"')))
         self.assertIn('- A `"docs/π guide.md"`', self.briefs(lines)["infrastructure"])
 
-    def test_a_usage_error_exits_2(self) -> None:
-        for arguments in ([], ["audit"], ["release", "--record", "v1"]):
-            with self.subTest(arguments=arguments):
-                result = subprocess.run([sys.executable, "-B", str(SCRIPT), *arguments], capture_output=True)
-                self.assertEqual(2, result.returncode)
-                self.assertEqual(b"", result.stdout)
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        *(pytest.param(path, id=name) for path, name in zip(HOSTILE_PATHS, HOSTILE_PATH_IDS, strict=True)),
+        pytest.param("docs/π guide.md", id="non-ascii"),
+        pytest.param("tab\there", id="tab"),
+        pytest.param("del\x7f", id="delete"),
+        pytest.param("astral\U000e0001", id="astral"),
+        pytest.param("back\\slash", id="backslash"),
+    ],
+)
+def test_a_code_literal_reads_back_exactly_and_stays_one_printable_code_span(value: str) -> None:
+    literal = audit.code_literal(value)
+    CHECK.assertTrue(literal.startswith('`"') and literal.endswith('"`'), literal)
+    CHECK.assertNotIn("`", literal[1:-1])
+    CHECK.assertTrue(literal.isprintable(), literal)
+    CHECK.assertEqual(value, json.loads(literal[1:-1]))
+
+
+def test_a_code_literal_of_a_printable_path_is_its_json_string_in_backticks() -> None:
+    CHECK.assertEqual('`"docs/π guide.md"`', audit.code_literal("docs/π guide.md"))
+
+
+@pytest.mark.parametrize(
+    ("text", "reason"),
+    [
+        pytest.param("not json", "cannot read the rotation record", id="not-json"),
+        pytest.param("[]", "must be an object whose audits is a list", id="a-list"),
+        pytest.param(
+            '{"audits": [{"date": "2026-01-01", "tag": "v1"}]}', "exactly a date, a tag, and an area", id="no-area"
+        ),
+        pytest.param(
+            '{"audits": [{"date": "1 Jan", "tag": "v1", "area": "deployer"}]}', "not YYYY-MM-DD", id="date-not-iso"
+        ),
+        pytest.param(
+            '{"audits": [{"date": "2026-01-01", "tag": " ", "area": "deployer"}]}', "has no tag", id="blank-tag"
+        ),
+        pytest.param(
+            '{"audits": [{"date": "2026-01-01", "tag": "v1", "area": "docs"}]}', "names area 'docs'", id="unknown-area"
+        ),
+        pytest.param(
+            '{"audits": [{"date": "2026-01-01", "tag": "v1", "area": "deployer"}, '
+            '{"date": "2026-02-01", "tag": "v1", "area": "code-review"}]}',
+            "records v1 more than once",
+            id="tag-twice",
+        ),
+    ],
+)
+def test_a_malformed_record_fails_with_the_reason(tmp_path: Path, text: str, reason: str) -> None:
+    path = tmp_path / "rotation.json"
+    path.write_text(text, encoding="utf-8")
+    with CHECK.assertRaises(audit.AuditError) as caught:
+        audit.read_record(path)
+    CHECK.assertIn(reason, str(caught.exception))
+
+
+def test_a_missing_record_fails_with_the_reason(tmp_path: Path) -> None:
+    with CHECK.assertRaises(audit.AuditError) as caught:
+        audit.read_record(tmp_path / "missing.json")
+    CHECK.assertIn("no rotation record at", str(caught.exception))
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        pytest.param([], id="no-mode"),
+        pytest.param(["audit"], id="unknown-mode"),
+        pytest.param(["release", "--record", "v1"], id="record-on-release"),
+    ],
+)
+def test_a_usage_error_exits_2(arguments: list[str]) -> None:
+    result = subprocess.run([sys.executable, "-B", str(SCRIPT), *arguments], capture_output=True)
+    CHECK.assertEqual(2, result.returncode)
+    CHECK.assertEqual(b"", result.stdout)

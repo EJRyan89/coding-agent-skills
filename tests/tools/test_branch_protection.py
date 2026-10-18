@@ -20,12 +20,17 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 from github_client import CommandResult, GitHubClient, GitHubError
 
 from tools import branch_protection
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
@@ -130,49 +135,63 @@ def answers(**replaced: tuple[int, str]) -> dict[str, tuple[int, str]]:
     return {ENDPOINTS[name]: answer for name, answer in {**recorded, **replaced}.items()}
 
 
+def run_main(answers: dict[str, tuple[int, str]], issue_error: GitHubError | None = None) -> tuple[int, str, str]:
+    calls: list[list[str]] = []
+
+    def runner(arguments: Sequence[str]) -> CommandResult:
+        calls.append(list(arguments))
+        if arguments[-1] == ENDPOINTS["issue_config"] and issue_error is not None:
+            raise issue_error
+        code, output = answers[arguments[-1]]
+        return CommandResult(code, output if code == 0 else "", output if code != 0 else "")
+
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        code = branch_protection.main([], client=GitHubClient(runner=runner, sleeper=lambda _: None))
+    CHECK.assertTrue(all(call[:2] == ["gh", "api"] and len(call) == 3 for call in calls), calls)
+    return code, stdout.getvalue(), stderr.getvalue()
+
+
+# Each drift from the recorded settings: the path it changes, its value there, the document that holds it, and the
+# name the one problem it causes carries.
+DRIFTS: list[tuple[tuple[str, ...], object, str, str]] = [
+    (("required_status_checks", "strict"), False, "protection", "strict"),
+    (("required_status_checks", "contexts"), [], "protection", "Validation"),
+    (("required_linear_history", "enabled"), False, "protection", "linear history"),
+    (("enforce_admins", "enabled"), False, "protection", "administrators"),
+    (("required_conversation_resolution", "enabled"), False, "protection", "conversation resolution"),
+    (("required_pull_request_reviews", "required_approving_review_count"), 1, "protection", "approvals"),
+    (("allow_force_pushes", "enabled"), True, "protection", "force pushes"),
+    (("allow_deletions", "enabled"), True, "protection", "deletion"),
+    (("allow_merge_commit",), True, "repository", "merge commits"),
+    (("allow_rebase_merge",), True, "repository", "rebase merges"),
+    (("allow_squash_merge",), False, "repository", "squash merges"),
+    (("squash_merge_commit_title",), "COMMIT_OR_PR_TITLE", "repository", "expected PR_TITLE"),
+    (("squash_merge_commit_message",), "COMMIT_MESSAGES", "repository", "expected PR_BODY"),
+    (("squash_merge_commit_message",), "BLANK", "repository", "carries its upgrade note"),
+    (("has_discussions",), True, "repository", "Discussions are enabled"),
+    (("content",), ISSUE_CONFIG_ENABLED, "issue_config", "blank issues are enabled"),
+    (("security_and_analysis", "secret_scanning", "status"), "disabled", "repository", "secret scanning"),
+    (
+        ("security_and_analysis", "secret_scanning_push_protection", "status"),
+        "disabled",
+        "repository",
+        "push protection",
+    ),
+    (
+        ("security_and_analysis", "dependabot_security_updates", "status"),
+        "disabled",
+        "repository",
+        "Dependabot security updates",
+    ),
+    (("enabled",), False, "reporting", "private vulnerability reporting"),
+    (("default_workflow_permissions",), "write", "workflow", "workflow token"),
+]
+
+
 class ProtectionProblemsTests(unittest.TestCase):
     def test_the_live_settings_hold_every_invariant(self) -> None:
         self.assertEqual([], problems(DOCUMENTS))
-
-    def test_each_drift_is_reported_by_name(self) -> None:
-        cases: list[tuple[tuple[str, ...], object, str, str]] = [
-            (("required_status_checks", "strict"), False, "protection", "strict"),
-            (("required_status_checks", "contexts"), [], "protection", "Validation"),
-            (("required_linear_history", "enabled"), False, "protection", "linear history"),
-            (("enforce_admins", "enabled"), False, "protection", "administrators"),
-            (("required_conversation_resolution", "enabled"), False, "protection", "conversation resolution"),
-            (("required_pull_request_reviews", "required_approving_review_count"), 1, "protection", "approvals"),
-            (("allow_force_pushes", "enabled"), True, "protection", "force pushes"),
-            (("allow_deletions", "enabled"), True, "protection", "deletion"),
-            (("allow_merge_commit",), True, "repository", "merge commits"),
-            (("allow_rebase_merge",), True, "repository", "rebase merges"),
-            (("allow_squash_merge",), False, "repository", "squash merges"),
-            (("squash_merge_commit_title",), "COMMIT_OR_PR_TITLE", "repository", "expected PR_TITLE"),
-            (("squash_merge_commit_message",), "COMMIT_MESSAGES", "repository", "expected PR_BODY"),
-            (("squash_merge_commit_message",), "BLANK", "repository", "carries its upgrade note"),
-            (("has_discussions",), True, "repository", "Discussions are enabled"),
-            (("content",), ISSUE_CONFIG_ENABLED, "issue_config", "blank issues are enabled"),
-            (("security_and_analysis", "secret_scanning", "status"), "disabled", "repository", "secret scanning"),
-            (
-                ("security_and_analysis", "secret_scanning_push_protection", "status"),
-                "disabled",
-                "repository",
-                "push protection",
-            ),
-            (
-                ("security_and_analysis", "dependabot_security_updates", "status"),
-                "disabled",
-                "repository",
-                "Dependabot security updates",
-            ),
-            (("enabled",), False, "reporting", "private vulnerability reporting"),
-            (("default_workflow_permissions",), "write", "workflow", "workflow token"),
-        ]
-        for path, value, document, name in cases:
-            with self.subTest(path=path):
-                problems = drifted(path, value, document)
-                self.assertEqual(1, len(problems), problems)
-                self.assertIn(name, problems[0])
 
     def test_a_missing_section_is_drift_not_a_crash(self) -> None:
         protection = {key: value for key, value in PROTECTION.items() if key != "required_pull_request_reviews"}
@@ -180,26 +199,7 @@ class ProtectionProblemsTests(unittest.TestCase):
         self.assertEqual(1, len(found), found)
         self.assertIn("approvals", found[0])
 
-    def test_an_issue_configuration_that_does_not_turn_blank_issues_off_is_drift_not_a_crash(self) -> None:
-        # GitHub offers a blank issue unless config.yml sets blank_issues_enabled to false.
-        for name, document in (
-            ("no setting", issue_config("contact_links: []\n")),
-            ("quoted", issue_config('blank_issues_enabled: "false"\n')),
-            ("quoted with comment", issue_config('blank_issues_enabled: "false" # a string\n')),
-            ("no comment separator", issue_config("blank_issues_enabled: false#not-a-comment\n")),
-            ("extra scalar text", issue_config("blank_issues_enabled: false extra # comment\n")),
-            ("empty with comment", issue_config("blank_issues_enabled: # no value\n")),
-            ("commented out", issue_config("# blank_issues_enabled: false\n")),
-            ("nested", issue_config("other:\n  blank_issues_enabled: false # nested\n")),
-            ("unsupported scalar", issue_config("blank_issues_enabled: [false] # a list\n")),
-            ("not base64", {"encoding": "base64", "content": "%%%"}),
-            ("not UTF-8", {"encoding": "base64", "content": base64.b64encode(b"\xff").decode()}),
-            ("no content", {}),
-        ):
-            with self.subTest(name=name):
-                found = problems({**DOCUMENTS, "issue_config": document})
-                self.assertEqual(1, len(found), found)
-                self.assertIn("blank issues are enabled", found[0])
+    def test_an_issue_configuration_that_turns_blank_issues_off_in_capitals_and_crlf_holds(self) -> None:
         self.assertEqual([], problems({**DOCUMENTS, "issue_config": issue_config("blank_issues_enabled: False\r\n")}))
 
     def test_a_repository_that_does_not_say_discussions_are_off_is_drift(self) -> None:
@@ -253,54 +253,24 @@ class ProtectionProblemsTests(unittest.TestCase):
 
 
 class MainTests(unittest.TestCase):
-    def run_main(
-        self, answers: dict[str, tuple[int, str]], issue_error: GitHubError | None = None
-    ) -> tuple[int, str, str]:
-        calls: list[list[str]] = []
-
-        def runner(arguments: Sequence[str]) -> CommandResult:
-            calls.append(list(arguments))
-            if arguments[-1] == ENDPOINTS["issue_config"] and issue_error is not None:
-                raise issue_error
-            code, output = answers[arguments[-1]]
-            return CommandResult(code, output if code == 0 else "", output if code != 0 else "")
-
-        stdout, stderr = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            code = branch_protection.main([], client=GitHubClient(runner=runner, sleeper=lambda _: None))
-        self.assertTrue(all(call[:2] == ["gh", "api"] and len(call) == 3 for call in calls), calls)
-        return code, stdout.getvalue(), stderr.getvalue()
-
     def test_protected_when_nothing_drifted(self) -> None:
-        self.assertEqual((0, "PROTECTED\n" + SECURITY_OUTPUT, ""), self.run_main(answers()))
+        self.assertEqual((0, "PROTECTED\n" + SECURITY_OUTPUT, ""), run_main(answers()))
 
     def test_a_missing_issue_configuration_is_drift_with_exit_one(self) -> None:
         self.assertEqual(
             (1, "DRIFTED\n" + BLANK_ISSUES_DRIFT + SECURITY_OUTPUT, ""),
-            self.run_main(answers(issue_config=(1, "gh: Not Found (HTTP 404)"))),
+            run_main(answers(issue_config=(1, "gh: Not Found (HTTP 404)"))),
         )
-
-    def test_a_trailing_comment_on_false_is_protected_with_exit_zero(self) -> None:
-        for text in (
-            "blank_issues_enabled: false  # no blank issues\n",
-            "blank_issues_enabled: false\t# no blank issues\r\n",
-            "blank_issues_enabled: False # blank_issues_enabled: true\ncontact_links: []\n",
-        ):
-            with self.subTest(text=text):
-                self.assertEqual(
-                    (0, "PROTECTED\n" + SECURITY_OUTPUT, ""),
-                    self.run_main(answers(issue_config=(0, json.dumps(issue_config(text))))),
-                )
 
     def test_a_trailing_comment_does_not_turn_true_into_false(self) -> None:
         self.assertEqual(
             (1, "DRIFTED\n" + BLANK_ISSUES_DRIFT + SECURITY_OUTPUT, ""),
-            self.run_main(answers(issue_config=(0, json.dumps(issue_config("blank_issues_enabled: true # false\n"))))),
+            run_main(answers(issue_config=(0, json.dumps(issue_config("blank_issues_enabled: true # false\n"))))),
         )
 
     def test_each_drift_is_printed_and_the_check_fails(self) -> None:
         loose = {**REPOSITORY, "allow_merge_commit": True, "allow_rebase_merge": True}
-        code, stdout, _ = self.run_main(
+        code, stdout, _ = run_main(
             answers(
                 repository=(0, json.dumps(loose)),
                 workflow=(0, json.dumps({**WORKFLOW, "default_workflow_permissions": "write"})),
@@ -312,51 +282,6 @@ class MainTests(unittest.TestCase):
         self.assertEqual(3, len([line for line in lines if line.startswith("- ")]), lines)
         self.assertIn("  default workflow token: write", lines)
 
-    def test_a_gh_failure_is_reported_without_a_traceback(self) -> None:
-        for endpoint in ENDPOINTS:
-            with self.subTest(endpoint=endpoint):
-                message = "HTTP 403: Resource not accessible by integration"
-                self.assertEqual(
-                    (2, "", f"ERROR: gh api {ENDPOINTS[endpoint]} failed: {message}\n"),
-                    self.run_main(answers(**{endpoint: (1, message)})),
-                )
-
-    def test_not_found_is_an_error_for_every_other_endpoint(self) -> None:
-        for endpoint in ENDPOINTS:
-            if endpoint == "issue_config":
-                continue
-            with self.subTest(endpoint=endpoint):
-                message = "HTTP 404: Not Found"
-                self.assertEqual(
-                    (2, "", f"ERROR: gh api {ENDPOINTS[endpoint]} failed: {message}\n"),
-                    self.run_main(answers(**{endpoint: (1, message)})),
-                )
-
-    def test_real_issue_configuration_read_failures_keep_their_diagnostics_and_exit_two(self) -> None:
-        for message in (
-            "HTTP 401: Requires authentication",
-            "HTTP 403: Forbidden (Not Found)",
-            "error connecting to api.github.com: connection refused",
-            "HTTP 500: Internal Server Error",
-        ):
-            with self.subTest(message=message):
-                self.assertEqual(
-                    (2, "", f"ERROR: gh api {ENDPOINTS['issue_config']} failed: {message}\n"),
-                    self.run_main(answers(issue_config=(1, message))),
-                )
-
-    def test_client_execution_failures_are_not_mistaken_for_missing_configuration(self) -> None:
-        for kind, message in (
-            ("prerequisite", "GitHub CLI executable 'gh' was not found; install GitHub CLI and authenticate first"),
-            ("execution", "GitHub CLI could not be started: file not found"),
-            ("timeout", "GitHub CLI did not finish within 300 seconds"),
-        ):
-            with self.subTest(kind=kind):
-                self.assertEqual(
-                    (2, "", f"ERROR: gh api {ENDPOINTS['issue_config']} failed: {message}\n"),
-                    self.run_main(answers(), issue_error=GitHubError(message, kind=kind)),
-                )
-
     def test_rate_limit_retries_do_not_turn_a_read_failure_into_missing_configuration(self) -> None:
         message = "HTTP 429: rate limit exceeded (Not Found)"
         self.assertEqual(
@@ -365,67 +290,19 @@ class MainTests(unittest.TestCase):
                 "",
                 f"ERROR: gh api {ENDPOINTS['issue_config']} failed: {message} (gave up after 5 retries)\n",
             ),
-            self.run_main(answers(issue_config=(1, message))),
+            run_main(answers(issue_config=(1, message))),
         )
 
     def test_malformed_issue_configuration_responses_remain_errors_with_exit_two(self) -> None:
-        for output in ("[]", "null"):
-            with self.subTest(output=output):
-                self.assertEqual(
-                    (2, "", f"ERROR: gh api {ENDPOINTS['issue_config']} did not return a JSON object\n"),
-                    self.run_main(answers(issue_config=(0, output))),
-                )
-        code, stdout, stderr = self.run_main(answers(issue_config=(0, "not json")))
+        code, stdout, stderr = run_main(answers(issue_config=(0, "not json")))
         self.assertEqual((2, ""), (code, stdout))
         self.assertTrue(stderr.startswith(f"ERROR: gh api {ENDPOINTS['issue_config']} did not return JSON: "))
         self.assertNotIn("Traceback", stderr)
 
     def test_output_that_is_not_json_is_reported_without_a_traceback(self) -> None:
-        code, _, stderr = self.run_main(answers(protection=(0, "not json")))
+        code, _, stderr = run_main(answers(protection=(0, "not json")))
         self.assertEqual(2, code)
         self.assertNotIn("Traceback", stderr)
-
-    def test_cli_entry_point_has_the_exact_status_output_and_process_exit_code(self) -> None:
-        for response, expected in (
-            ((1, "gh: Not Found (HTTP 404)"), (1, "DRIFTED\n" + BLANK_ISSUES_DRIFT + SECURITY_OUTPUT, "")),
-            (
-                (0, json.dumps(issue_config("blank_issues_enabled: false  # no blank issues\n"))),
-                (0, "PROTECTED\n" + SECURITY_OUTPUT, ""),
-            ),
-            (
-                (1, "HTTP 403: Forbidden"),
-                (2, "", f"ERROR: gh api {ENDPOINTS['issue_config']} failed: HTTP 403: Forbidden\n"),
-            ),
-            (
-                (1, "error connecting to api.github.com: connection refused"),
-                (
-                    2,
-                    "",
-                    f"ERROR: gh api {ENDPOINTS['issue_config']} failed: "
-                    "error connecting to api.github.com: connection refused\n",
-                ),
-            ),
-        ):
-            with self.subTest(response=response):
-                recorded = answers(issue_config=response)
-                results = [
-                    CommandResult(code, output if code == 0 else "", output if code != 0 else "")
-                    for code, output in recorded.values()
-                ]
-                stdout, stderr = io.StringIO(), io.StringIO()
-                with (
-                    mock.patch("github_client.subprocess_runner", side_effect=results) as runner,
-                    mock.patch.object(sys, "argv", ["branch_protection.py"]),
-                    contextlib.redirect_stdout(stdout),
-                    contextlib.redirect_stderr(stderr),
-                    self.assertRaises(SystemExit) as raised,
-                ):
-                    runpy.run_path(str(REPOSITORY_ROOT / "tools" / "branch_protection.py"), run_name="__main__")
-                self.assertEqual(expected, (raised.exception.code, stdout.getvalue(), stderr.getvalue()))
-                self.assertEqual(
-                    [["gh", "api", endpoint] for endpoint in ENDPOINTS.values()],
-                    [call.args[0] for call in runner.call_args_list],
-                )
 
 
 class DocumentationTests(unittest.TestCase):
@@ -478,3 +355,164 @@ class DocumentationTests(unittest.TestCase):
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, step)
+
+
+@pytest.mark.parametrize(("path", "value", "document", "name"), DRIFTS, ids=[name for *_, name in DRIFTS])
+def test_each_drift_is_reported_by_name(path: tuple[str, ...], value: object, document: str, name: str) -> None:
+    problems = drifted(path, value, document)
+    CHECK.assertEqual(1, len(problems), problems)
+    CHECK.assertIn(name, problems[0])
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        pytest.param(issue_config("contact_links: []\n"), id="no setting"),
+        pytest.param(issue_config('blank_issues_enabled: "false"\n'), id="quoted"),
+        pytest.param(issue_config('blank_issues_enabled: "false" # a string\n'), id="quoted with comment"),
+        pytest.param(issue_config("blank_issues_enabled: false#not-a-comment\n"), id="no comment separator"),
+        pytest.param(issue_config("blank_issues_enabled: false extra # comment\n"), id="extra scalar text"),
+        pytest.param(issue_config("blank_issues_enabled: # no value\n"), id="empty with comment"),
+        pytest.param(issue_config("# blank_issues_enabled: false\n"), id="commented out"),
+        pytest.param(issue_config("other:\n  blank_issues_enabled: false # nested\n"), id="nested"),
+        pytest.param(issue_config("blank_issues_enabled: [false] # a list\n"), id="unsupported scalar"),
+        pytest.param({"encoding": "base64", "content": "%%%"}, id="not base64"),
+        pytest.param({"encoding": "base64", "content": base64.b64encode(b"\xff").decode()}, id="not UTF-8"),
+        pytest.param({}, id="no content"),
+    ],
+)
+def test_an_issue_configuration_that_does_not_turn_blank_issues_off_is_drift_not_a_crash(
+    document: dict[str, Any],
+) -> None:
+    # GitHub offers a blank issue unless config.yml sets blank_issues_enabled to false.
+    found = problems({**DOCUMENTS, "issue_config": document})
+    CHECK.assertEqual(1, len(found), found)
+    CHECK.assertIn("blank issues are enabled", found[0])
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "blank_issues_enabled: false  # no blank issues\n",
+        "blank_issues_enabled: false\t# no blank issues\r\n",
+        "blank_issues_enabled: False # blank_issues_enabled: true\ncontact_links: []\n",
+    ],
+    ids=["two spaces", "tab and CRLF", "capitalised with a true in the comment"],
+)
+def test_a_trailing_comment_on_false_is_protected_with_exit_zero(text: str) -> None:
+    CHECK.assertEqual(
+        (0, "PROTECTED\n" + SECURITY_OUTPUT, ""),
+        run_main(answers(issue_config=(0, json.dumps(issue_config(text))))),
+    )
+
+
+@pytest.mark.parametrize("endpoint", ENDPOINTS)
+def test_a_gh_failure_is_reported_without_a_traceback(endpoint: str) -> None:
+    message = "HTTP 403: Resource not accessible by integration"
+    CHECK.assertEqual(
+        (2, "", f"ERROR: gh api {ENDPOINTS[endpoint]} failed: {message}\n"),
+        run_main(answers(**{endpoint: (1, message)})),
+    )
+
+
+@pytest.mark.parametrize("endpoint", [endpoint for endpoint in ENDPOINTS if endpoint != "issue_config"])
+def test_not_found_is_an_error_for_every_other_endpoint(endpoint: str) -> None:
+    message = "HTTP 404: Not Found"
+    CHECK.assertEqual(
+        (2, "", f"ERROR: gh api {ENDPOINTS[endpoint]} failed: {message}\n"),
+        run_main(answers(**{endpoint: (1, message)})),
+    )
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "HTTP 401: Requires authentication",
+        "HTTP 403: Forbidden (Not Found)",
+        "error connecting to api.github.com: connection refused",
+        "HTTP 500: Internal Server Error",
+    ],
+)
+def test_real_issue_configuration_read_failures_keep_their_diagnostics_and_exit_two(message: str) -> None:
+    CHECK.assertEqual(
+        (2, "", f"ERROR: gh api {ENDPOINTS['issue_config']} failed: {message}\n"),
+        run_main(answers(issue_config=(1, message))),
+    )
+
+
+@pytest.mark.parametrize(
+    ("kind", "message"),
+    [
+        ("prerequisite", "GitHub CLI executable 'gh' was not found; install GitHub CLI and authenticate first"),
+        ("execution", "GitHub CLI could not be started: file not found"),
+        ("timeout", "GitHub CLI did not finish within 300 seconds"),
+    ],
+    ids=["prerequisite", "execution", "timeout"],
+)
+def test_client_execution_failures_are_not_mistaken_for_missing_configuration(kind: str, message: str) -> None:
+    CHECK.assertEqual(
+        (2, "", f"ERROR: gh api {ENDPOINTS['issue_config']} failed: {message}\n"),
+        run_main(answers(), issue_error=GitHubError(message, kind=kind)),
+    )
+
+
+@pytest.mark.parametrize("output", ["[]", "null"])
+def test_malformed_issue_configuration_responses_remain_errors_with_exit_two(output: str) -> None:
+    CHECK.assertEqual(
+        (2, "", f"ERROR: gh api {ENDPOINTS['issue_config']} did not return a JSON object\n"),
+        run_main(answers(issue_config=(0, output))),
+    )
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        pytest.param(
+            (1, "gh: Not Found (HTTP 404)"),
+            (1, "DRIFTED\n" + BLANK_ISSUES_DRIFT + SECURITY_OUTPUT, ""),
+            id="not found",
+        ),
+        pytest.param(
+            (0, json.dumps(issue_config("blank_issues_enabled: false  # no blank issues\n"))),
+            (0, "PROTECTED\n" + SECURITY_OUTPUT, ""),
+            id="false with a comment",
+        ),
+        pytest.param(
+            (1, "HTTP 403: Forbidden"),
+            (2, "", f"ERROR: gh api {ENDPOINTS['issue_config']} failed: HTTP 403: Forbidden\n"),
+            id="forbidden",
+        ),
+        pytest.param(
+            (1, "error connecting to api.github.com: connection refused"),
+            (
+                2,
+                "",
+                f"ERROR: gh api {ENDPOINTS['issue_config']} failed: "
+                "error connecting to api.github.com: connection refused\n",
+            ),
+            id="connection refused",
+        ),
+    ],
+)
+def test_cli_entry_point_has_the_exact_status_output_and_process_exit_code(
+    response: tuple[int, str], expected: tuple[int, str, str]
+) -> None:
+    recorded = answers(issue_config=response)
+    results = [
+        CommandResult(code, output if code == 0 else "", output if code != 0 else "")
+        for code, output in recorded.values()
+    ]
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with (
+        mock.patch("github_client.subprocess_runner", side_effect=results) as runner,
+        mock.patch.object(sys, "argv", ["branch_protection.py"]),
+        contextlib.redirect_stdout(stdout),
+        contextlib.redirect_stderr(stderr),
+        CHECK.assertRaises(SystemExit) as raised,
+    ):
+        runpy.run_path(str(REPOSITORY_ROOT / "tools" / "branch_protection.py"), run_name="__main__")
+    CHECK.assertEqual(expected, (raised.exception.code, stdout.getvalue(), stderr.getvalue()))
+    CHECK.assertEqual(
+        [["gh", "api", endpoint] for endpoint in ENDPOINTS.values()],
+        [call.args[0] for call in runner.call_args_list],
+    )

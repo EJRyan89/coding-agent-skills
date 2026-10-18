@@ -17,6 +17,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
@@ -24,6 +26,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 from deployer import discovery, manifest, platform_support
 from deployer.paths import Paths
 from tools import deployable_report as report
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 SOURCE_ID = "test/source"
 HASH = "sha256:" + "0" * 64
@@ -178,18 +183,6 @@ class DeployableReportTests(unittest.TestCase):
         self.assertEqual(report.FAILED, results["codex"].status)
         self.assertIn("no answer within 120 seconds", results["codex"].detail)
         self.assertEqual(1, report.exit_code(list(results.values()), 1, CODEX_FAILED))
-
-    def test_only_a_request_to_sign_in_is_a_sign_in_problem(self) -> None:
-        for message in (
-            "no answer within 120 seconds",
-            "it refused the skills/list request: bad",
-            "cannot start it: [WinError 2] The system cannot find the file specified",
-        ):
-            with self.subTest(message=message):
-                self.assertFalse(report.sign_in_problem(message))
-        for message in ("Error: not authenticated", "please sign in first", "401 Unauthorized", "run copilot login"):
-            with self.subTest(message=message):
-                self.assertTrue(report.sign_in_problem(message))
 
     def test_a_runtime_that_is_not_installed_fails_because_the_workflow_installed_it(self) -> None:
         self.fake.installed.discard("codex")
@@ -634,3 +627,19 @@ class DeployableReportTests(unittest.TestCase):
         self.assertEqual("version could not be read", versions["Codex CLI"])
         self.assertEqual("9.8.7", versions["Node.js"])
         self.assertEqual("9.8.7", versions["Claude Code"])
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("no answer within 120 seconds", False),
+        ("it refused the skills/list request: bad", False),
+        ("cannot start it: [WinError 2] The system cannot find the file specified", False),
+        ("Error: not authenticated", True),
+        ("please sign in first", True),
+        ("401 Unauthorized", True),
+        ("run copilot login", True),
+    ],
+)
+def test_only_a_request_to_sign_in_is_a_sign_in_problem(message: str, expected: bool) -> None:
+    CHECK.assertIs(expected, report.sign_in_problem(message))

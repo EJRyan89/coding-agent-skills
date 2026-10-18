@@ -14,6 +14,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from types import MappingProxyType
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-core" / "scripts"))
 
@@ -22,6 +24,8 @@ import change_skill
 SCRIPT = Path(__file__).resolve().parent / "change_skill.py"
 REPOSITORY = Path(__file__).resolve().parents[4]
 GIT_CONFIG: Mapping[str, str] = MappingProxyType({"init.defaultBranch": "main"})
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 
 def skill_text(description: str, body: str = "Run it.\n", grants: str = '["Read"]') -> str:
@@ -157,14 +161,6 @@ class SectionTests(unittest.TestCase):
                 code, lines = run(["section", "Files", "--document", document], self.root)
                 self.assertEqual(1, code)
                 self.assertEqual([f"FAILED {document} is not a Markdown file in this checkout"], lines)
-
-    def test_every_section_the_skill_quotes_from_the_contract_is_one_heading_there(self) -> None:
-        contract = (REPOSITORY / "docs" / "adding-a-skill.md").read_text(encoding="utf-8").splitlines()
-        for title in ("Files", "Description", "Granting tools", "Paths to a skill's own files", "Validation"):
-            with self.subTest(title=title):
-                heading, body = change_skill.section(contract, title)
-                self.assertEqual(title, heading.text)
-                self.assertTrue(any(line.strip() for line in body))
 
     def test_the_script_prints_a_section_of_this_checkout_as_a_program(self) -> None:
         completed = subprocess.run(
@@ -348,3 +344,13 @@ class RuntimePromptSourceTests(unittest.TestCase):
         self.assertIn("from tools import skill_evals", source)
         self.assertIn("tests/fixtures/skill-evals/review-prs/", change_skill.RUNTIME_PROMPT_SOURCES)
         self.assertIn("tools/skill_evals.py", change_skill.RUNTIME_PROMPT_SOURCES)
+
+
+@pytest.mark.parametrize(
+    "title", ["Files", "Description", "Granting tools", "Paths to a skill's own files", "Validation"]
+)
+def test_every_section_the_skill_quotes_from_the_contract_is_one_heading_there(title: str) -> None:
+    contract = (REPOSITORY / "docs" / "adding-a-skill.md").read_text(encoding="utf-8").splitlines()
+    heading, body = change_skill.section(contract, title)
+    CHECK.assertEqual(title, heading.text)
+    CHECK.assertTrue(any(line.strip() for line in body))

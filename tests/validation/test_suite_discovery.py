@@ -14,6 +14,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import ClassVar
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
@@ -39,6 +41,9 @@ from suite_discovery import (
     untested_module_problems,
 )
 from validation_support import REPOSITORY_ROOT, SUITE_NAME_PATTERNS, is_test_script, write_fixture_tree
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 
 def run_pytest(suite: Path, *options: str) -> subprocess.CompletedProcess[str]:
@@ -313,31 +318,31 @@ class SuiteDiscoveryFixtures(unittest.TestCase):
 
     def test_suite_names_follow_the_documented_patterns(self) -> None:
         self.assertEqual(("test_*", "test-*", "*_test", "*-test", "*.test.*"), SUITE_NAME_PATTERNS)
-        for name in (
-            "test_a.py",
-            "test-a.sh",
-            "a_test.ps1",
-            "a-test.py",
-            "a.test.py",
-            "a.test.b.sh",
-            "TEST_A.PY",
-            "Test-A.Ps1",
-            "test_.py",
-        ):
-            with self.subTest(name=name):
-                self.assertTrue(is_test_script(Path(name)))
-        for name in (
-            "a.py",
-            "testa.py",
-            "atest.py",
-            "test_a.txt",
-            "a_tests.py",
-            "contest.py",
-            "a.tests.py",
-            "test_a.js",
-        ):
-            with self.subTest(name=name):
-                self.assertFalse(is_test_script(Path(name)))
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "test_a.py",
+        "test-a.sh",
+        "a_test.ps1",
+        "a-test.py",
+        "a.test.py",
+        "a.test.b.sh",
+        "TEST_A.PY",
+        "Test-A.Ps1",
+        "test_.py",
+    ],
+)
+def test_a_name_a_pattern_matches_is_a_suite(name: str) -> None:
+    CHECK.assertTrue(is_test_script(Path(name)))
+
+
+@pytest.mark.parametrize(
+    "name", ["a.py", "testa.py", "atest.py", "test_a.txt", "a_tests.py", "contest.py", "a.tests.py", "test_a.js"]
+)
+def test_a_name_no_pattern_matches_is_no_suite(name: str) -> None:
+    CHECK.assertFalse(is_test_script(Path(name)))
 
 
 class SkillSuiteFixtures(unittest.TestCase):
