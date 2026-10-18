@@ -129,6 +129,18 @@ squash merge carries the body into `main`, and the release's notes are written f
 status lines, and exit codes are the contract items no check compares, so a change to them owes the note with nothing
 to catch its absence; the `Contract:` field in [upgrade-notes.md](upgrade-notes.md) says how the entry names them.
 
+A pull request that returns a file to its state before a commit on `main` reverts that commit's change to it, and
+validation's silent-revert check, in `tests/validation/silent_reverts.py`, names each such file with the commit and
+its pull request. A branch left behind, or a conflict resolved by taking the branch's side of a file it never set out
+to change, carries such a revert unseen. The check compares each changed file's content with its versions on `main`'s
+first-parent line, from the tip back to `COMMITS_BEFORE_MERGE_BASE` commits before the branch's merge base, and judges
+a branch that merged `origin/main` in by what it holds. A file the branch deletes is never a revert, and one it adds
+is one only when it brings back a file `main` deleted, as it stood. A deliberate revert is declared on a
+line of the body of its own, optionally as a list item and outside an HTML comment, as
+``Reverts `<path>` to its state before <commit>``, with seven or more hexadecimal digits of the commit the check
+names. The check reads the body from `--pr-body <file>` locally, otherwise the branch's commit messages, and the pull
+request in continuous integration.
+
 Before `gh pr create`, run `git fetch origin main` and `git rebase origin/main`: onto `origin/main`, not the local
 `main`, which is only as fresh as the hub's last pull. The branch is unpublished, so the rebase rewrites nothing anyone
 has. Then push it under its own name with `git push -u origin HEAD`. While the pull request is open, merge
