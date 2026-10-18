@@ -74,10 +74,10 @@ each Python module the pull request changes under `deployer/`, `tools/`, a skill
 executed its line unmutated, as coverage.py measured them, until one fails. Its step summary gives each module's kill
 ratio and names each surviving mutant by its line, the mutation, and the suites it passed; a pull request that changes
 no such module gets one line saying so. The run is capped by `DEFAULT_MINUTES` in the gate, and the summary says
-which module the cap cut short. Cite the summary in the pull request's Validation section, and for a surviving mutant on a line the pull
-request changed that alters behavior a caller relies on, such as a refusal or a line a document or test treats as a
-contract, add the test that kills it; an equivalent mutant, or one that only changes text no reader depends on, needs
-none. It runs on Linux only, because mutmut refuses Windows; the gate's docstring
+which module the cap cut short. The summary on the job is the record: read it, and for a surviving mutant on a
+line the pull request changed that alters behavior a caller relies on, such as a refusal or a line a document or
+test treats as a contract, add the test that kills it, or name it in the pull request with why it is equivalent.
+A mutant that only changes text no reader depends on needs neither, and no kill ratio is copied anywhere. It runs on Linux only, because mutmut refuses Windows; the gate's docstring
 in `tools/mutation_gate.py` gives the details.
 
 ## Contract files

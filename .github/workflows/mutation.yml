@@ -1,8 +1,8 @@
 name: Mutation
 
 # The mutation gate: the Python modules a pull request changes, mutated and run against the suites that reach them,
-# with the survivors and each module's kill ratio in the step summary. It is not a required check, and its result is
-# cited in the pull request's Validation section. A body or title edit does not rerun it, since it reads neither.
+# with the survivors and each module's kill ratio in the step summary. It is not a required check; the summary is the
+# record, which the author reads. A body or title edit does not rerun it, since it reads neither.
 on:
   pull_request:
     types: [opened, synchronize, reopened]
