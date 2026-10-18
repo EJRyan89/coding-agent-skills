@@ -1,0 +1,7 @@
+# The mutation gate's tools, installed only by .github/workflows/mutation.yml on Linux beside requirements-dev.txt:
+# mutmut refuses to run on Windows, and the libcst it parses with needs a PyYAML wheel that not every Python a
+# contributor runs validation on has, so they stay out of requirements-dev.txt. coverage.py measures which suites reach
+# each changed line, through subprocesses too, which needs its `patch = subprocess` setting.
+# docs/dependency-updates.md owns these pins; Dependabot reviews them weekly.
+mutmut==3.8.0
+coverage==7.16.2

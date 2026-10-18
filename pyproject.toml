@@ -96,3 +96,8 @@ mypy_path = [
     "$MYPY_CONFIG_FILE_DIR/tests/deployer",
     "$MYPY_CONFIG_FILE_DIR/tests/validation",
 ]
+
+# mutmut reads its configuration from the working directory; tools/mutation_gate.py makes its mutants from this root
+# and chooses the modules itself, so this names only where they may come from.
+[tool.mutmut]
+source_paths = ["deployer", "tools", "skills", ".claude/skills"]

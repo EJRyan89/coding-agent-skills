@@ -344,13 +344,15 @@ WORKFLOWS_DIRECTORY = ".github/workflows"
 # to. A file not named here fails validation, so a new workflow is added here in the pull request that adds the file.
 # validate.yml takes no pull_request_target, so a pull request's code never runs with the base repository's token or
 # secrets. deployable.yml takes only dispatch and a weekly schedule, so it can never be a required status check or run
-# on a pull request, and its schedule is Tuesday's, the day after validate.yml's Monday run.
+# on a pull request, and its schedule is Tuesday's, the day after validate.yml's Monday run. mutation.yml runs on pull
+# requests only, also without pull_request_target, and its job is not the required check.
 WORKFLOW_GUARDS: dict[str, tuple[list[str], set[str], tuple[str, ...]]] = {
     "deployable.yml": (
         ["workflow_dispatch", "schedule"],
         {"actions/checkout", "actions/setup-python", "actions/setup-node", "actions/upload-artifact"},
         ("23 6 * * 2",),
     ),
+    "mutation.yml": (["pull_request"], {"actions/checkout", "actions/setup-python"}, ()),
     "validate.yml": (
         ["pull_request", "push", "schedule", "workflow_dispatch"],
         {"actions/checkout", "actions/setup-python", "actions/cache"},
@@ -726,6 +728,53 @@ def uninstall_check_problems(workflow: str) -> list[str]:
     return problems
 
 
+# What mutation.yml's one job runs: the development dependencies and the mutation tools at their pins, then the gate,
+# whose own cap (DEFAULT_MINUTES in tools/mutation_gate.py) sits well inside the job's time limit.
+MUTATION_INSTALL = "python -m pip install -r requirements-dev.txt -r requirements-mutation.txt"
+MUTATION_RUN = "python -B tools/mutation_gate.py"
+MUTATION_TIMEOUT_MINUTES = "60"
+
+
+def mutation_job_problems(workflow: str) -> list[str]:
+    """Report how mutation.yml departs from the mutation gate: one job, not the required check's name, on
+    ubuntu-latest, run on a pull request's opening, pushes, and reopening but not an edit of its text, with the whole
+    history to diff against the base, Python at the floor with pip's cache keyed on both requirement files, the pinned
+    tools installed, and the gate run once."""
+    tree = read_workflow(workflow)
+    problems: list[str] = []
+    types = _mapping(tree, "on", "pull_request").get("types")
+    if types != ["opened", "synchronize", "reopened"]:
+        problems.append(f"the gate runs on pull request events {types}, not opened, synchronize, and reopened")
+    jobs = _mapping(tree, "jobs")
+    if list(jobs) != ["mutation"]:
+        return [*problems, f"the workflow's jobs are {list(jobs)}, not the one mutation job"]
+    job = _mapping(jobs, "mutation")
+    if job.get("name") in ("Validation", None):
+        problems.append(f"the mutation job is named {job.get('name')!r}; it must not be the required check")
+    if job.get("runs-on") != "ubuntu-latest":
+        problems.append(f"the mutation job runs on {job.get('runs-on')}, not ubuntu-latest, where mutmut runs")
+    if job.get("timeout-minutes") != MUTATION_TIMEOUT_MINUTES:
+        problems.append(
+            f"the mutation job's time limit is {job.get('timeout-minutes')}, not {MUTATION_TIMEOUT_MINUTES}"
+        )
+    steps = _steps(job)
+    checkouts = [_mapping(step, "with") for step in steps if str(step.get("uses", "")).startswith("actions/checkout@")]
+    if checkouts != [{"fetch-depth": "0"}]:
+        problems.append(f"the mutation job checks out {checkouts}, not the whole history with fetch-depth 0")
+    python = [_mapping(step, "with") for step in steps if str(step.get("uses", "")).startswith("actions/setup-python@")]
+    expected = {
+        "python-version": "3.11",
+        "cache": "pip",
+        "cache-dependency-path": "requirements-dev.txt\nrequirements-mutation.txt\n",
+    }
+    if python != [expected]:
+        problems.append(f"the mutation job sets up Python as {python}, not 3.11 with pip's cache on both requirements")
+    scripts = [_script_lines(step) for step in steps if "run" in step]
+    if scripts != [[MUTATION_INSTALL], [MUTATION_RUN]]:
+        problems.append(f"the mutation job runs {scripts}, not {MUTATION_INSTALL!r} and then {MUTATION_RUN!r}")
+    return problems
+
+
 class WorkflowsPolicies(unittest.TestCase):
     def test_deployable_verify_reports_read_the_logs_saved_by_their_own_steps(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
@@ -748,19 +797,24 @@ class WorkflowsPolicies(unittest.TestCase):
                 workflow = (workflows / name).read_text(encoding="utf-8")
                 self.assertEqual([], workflow_guard_problems(workflow, triggers, actions, crons))
 
-    def test_deployable_workflow_shares_validates_action_pins(self) -> None:
+    def test_deployable_and_mutation_workflows_share_validates_action_pins(self) -> None:
         workflows = REPOSITORY_ROOT / WORKFLOWS_DIRECTORY
-        workflow = (workflows / "deployable.yml").read_text(encoding="utf-8")
         reviewed = (workflows / "validate.yml").read_text(encoding="utf-8")
-        # An action both workflows use is pinned to the commit Dependabot reviews in validate.yml.
-        shared = {action for action, _, _ in action_pins(workflow)} & set(re.findall(r"uses:\s*(\S+)@", reviewed))
-        self.assertTrue(shared)
-        for action in shared:
-            with self.subTest(shared=action):
-                self.assertEqual(
-                    required_match(rf"{re.escape(action)}@(\S+ +# v\S+)", reviewed).group(1),
-                    required_match(rf"{re.escape(action)}@(\S+ +# v\S+)", workflow).group(1),
-                )
+        for name in ("deployable.yml", "mutation.yml"):
+            workflow = (workflows / name).read_text(encoding="utf-8")
+            # An action both workflows use is pinned to the commit Dependabot reviews in validate.yml.
+            shared = {action for action, _, _ in action_pins(workflow)} & set(re.findall(r"uses:\s*(\S+)@", reviewed))
+            self.assertTrue(shared)
+            for action in shared:
+                with self.subTest(workflow=name, shared=action):
+                    self.assertEqual(
+                        required_match(rf"{re.escape(action)}@(\S+ +# v\S+)", reviewed).group(1),
+                        required_match(rf"{re.escape(action)}@(\S+ +# v\S+)", workflow).group(1),
+                    )
+
+    def test_mutation_workflow_runs_the_gate_on_pull_requests_outside_the_required_check(self) -> None:
+        workflow = (REPOSITORY_ROOT / WORKFLOWS_DIRECTORY / "mutation.yml").read_text(encoding="utf-8")
+        self.assertEqual([], mutation_job_problems(workflow))
 
     def test_validate_workflow_reads_the_pull_requests_body_and_title_from_the_event_payload(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")

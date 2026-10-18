@@ -68,6 +68,18 @@ prompt, model guidance, or reviewer instructions runs `evaluate-skill` when the 
 skill under `skills/` or `.claude/skills/` runs `analyze-skill-cost` on it. `CLAUDE.md` ("Required validation") holds
 the rules validation enforces.
 
+The `Mutation gate` job of the `Mutation` workflow runs on every pull request and is not a required check. It mutates
+each Python module the pull request changes under `deployer/`, `tools/`, a skill's `scripts/`, or a repository skill's
+`scripts/`, suites and `conftest.py` left out, with mutmut's operators, and runs each mutant against the suites that
+executed its line unmutated, as coverage.py measured them, until one fails. Its step summary gives each module's kill
+ratio and names each surviving mutant by its line, the mutation, and the suites it passed; a pull request that changes
+no such module gets one line saying so. The run is capped by `DEFAULT_MINUTES` in the gate, and the summary says
+which module the cap cut short. The summary on the job is the record: read it, and for a surviving mutant on a
+line the pull request changed that alters behavior a caller relies on, such as a refusal or a line a document or
+test treats as a contract, add the test that kills it, or name it in the pull request with why it is equivalent.
+A mutant that only changes text no reader depends on needs neither, and no kill ratio is copied anywhere. It runs on Linux only, because mutmut refuses Windows; the gate's docstring
+in `tools/mutation_gate.py` gives the details.
+
 ## Contract files
 
 A change to any of these is a contract change, raises the release level, and is named under `## Upgrade note` in the
