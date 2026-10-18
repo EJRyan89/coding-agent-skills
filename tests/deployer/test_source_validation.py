@@ -846,9 +846,12 @@ class CanaryHomeTests(LinkedWorktreeTestCase):
             with self.subTest(extra=extra):
                 self.assert_untouched(self.run_from(linked, "--canary-home", str(self.canary), *extra), pattern, 2)
 
-    def test_every_configured_variable_has_a_canary_folder(self) -> None:
+    def test_every_configured_variable_has_a_canary_folder_or_a_default(self) -> None:
         self.assertEqual({"REPOS_ROOT": "repos"}, config.CANARY_DIRECTORIES)
-        self.assertEqual(set(config.CONFIGURED_VARIABLES), set(config.CANARY_DIRECTORIES))
+        self.assertEqual(set(config.DIRECTORY_VARIABLES), set(config.CANARY_DIRECTORIES))
+        self.assertEqual(set(config.CONFIGURED_VARIABLES), set(config.CANARY_DIRECTORIES) | set(config.DEFAULTS))
+        values = config.canary("test/skills", self.canary, self.root)
+        self.assertEqual("release", values["UPDATE_CHANNEL"])
 
     def test_without_the_flag_a_linked_worktree_is_still_refused(self) -> None:
         linked = self.make_linked_worktree()

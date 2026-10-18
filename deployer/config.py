@@ -11,10 +11,16 @@ from .arguments import CONFIGURE_COMMAND_LINE
 from .errors import DeployError
 
 ALLOW_PATH = "[A-Za-z0-9 /:.@_()-]"
-CONFIGURED_VARIABLES: dict[str, str] = {"REPOS_ROOT": ALLOW_PATH}
+CONFIGURED_VARIABLES: dict[str, str] = {"REPOS_ROOT": ALLOW_PATH, "UPDATE_CHANNEL": "[a-z]"}
 DIRECTORY_VARIABLES = ("REPOS_ROOT",)
+# The configured variables whose value is one of a fixed set, which a saved configuration and configure's answer are
+# both held to.
+CHOICE_VARIABLES: dict[str, tuple[str, ...]] = {"UPDATE_CHANNEL": ("release", "main")}
+# The value a configuration without the key takes, so a configuration saved before the key existed needs no change.
+DEFAULTS: dict[str, str] = {"UPDATE_CHANNEL": "release"}
 PROMPTS: dict[str, str] = {
-    "REPOS_ROOT": f"root directory for your git repositories, such as {platform_support.EXAMPLE_DIRECTORY}"
+    "REPOS_ROOT": f"root directory for your git repositories, such as {platform_support.EXAMPLE_DIRECTORY}",
+    "UPDATE_CHANNEL": "what update-coding-agent-skills deploys: release, the latest release, or main, the head of main",
 }
 # Rendering escapes a value only for the contexts it knows, so derived values pass an allowlist as configured ones
 # do. Nobody chooses a home folder's name to suit the deployer, so letters of any script are allowed, but nothing a
@@ -57,6 +63,9 @@ def _require_allowed(key: str, value: str) -> None:
     if found is not None:
         position, char = found
         raise DeployError(f"ERROR: Config key {key} contains disallowed character '{char}' at position {position}")
+    choices = CHOICE_VARIABLES.get(key)
+    if choices is not None and value not in choices:
+        raise DeployError(f"ERROR: Config key {key} must be one of {', '.join(choices)} (got: {value})")
 
 
 class UnknownKey(DeployError):
@@ -142,7 +151,7 @@ def validate_directories(values: dict[str, str]) -> None:
 def load(path: Path, source_id: str, home: Path, source_dir: Path) -> dict[str, str]:
     if not path.is_file():
         raise DeployError(f"ERROR: No config found at {path}", f"Run '{CONFIGURE_COMMAND_LINE}' first.")
-    values = read(path, source_id)
+    values = {**DEFAULTS, **read(path, source_id)}
     values.update(derived_values(home, source_dir))
     try:
         validate_directories(values)
@@ -152,8 +161,9 @@ def load(path: Path, source_id: str, home: Path, source_dir: Path) -> dict[str, 
 
 
 def canary(source_id: str, home: Path, source_dir: Path) -> dict[str, str]:
-    """The values for a --canary-home deployment: every configured directory is a folder of that home."""
-    values = {SOURCE_KEY: source_id}
+    """The values for a --canary-home deployment: every configured directory is a folder of that home, and every other
+    configured variable takes its default."""
+    values = {SOURCE_KEY: source_id, **DEFAULTS}
     for key, folder in CANARY_DIRECTORIES.items():
         values[key] = platform_support.normalize(home / folder)
         _require_allowed(key, values[key])

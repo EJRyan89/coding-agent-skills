@@ -11,7 +11,7 @@ Portable agent skills for Claude Code, Codex, and GitHub Copilot CLI, with a gua
 | [`curate-agent-memory`](docs/skills.md#curate-agent-memory) | Audits a project's Claude Code auto-memory and, with approval, moves durable rules to where they belong. |
 | [`github-activity-report`](docs/skills.md#github-activity-report) | Reports one user's pull requests, commits, and reviews in one GitHub organization, month by month. |
 | [`repo-cleanup`](docs/skills.md#repo-cleanup) | Performs guarded Git repository housekeeping. |
-| [`update-coding-agent-skills`](docs/skills.md#update-coding-agent-skills) | Fast-forwards the clone the skills were deployed from to `origin/main` and redeploys them. |
+| [`update-coding-agent-skills`](docs/skills.md#update-coding-agent-skills) | Updates the clone the skills were deployed from and redeploys its latest release, or `main` when you opt in. |
 | [`dotnet`](docs/dotnet.md) | An opt-in bundle installed together: [`dotnet-format`](docs/skills.md#dotnet-format), which runs formatting and analyzer checks against changed C# files, and [`dotnet-dependencies`](docs/skills.md#dotnet-dependencies), which answers why a package or assembly is in a solution, where it is used, and which versions conflict. |
 | [`code-review-operations`](docs/code-review-operations.md) | A bundle installed together: [`review-prs`](docs/skills.md#review-prs), [`update-pr-dashboard`](docs/skills.md#update-pr-dashboard), [`review-insights`](docs/skills.md#review-insights), [`flag-review-finding`](docs/skills.md#flag-review-finding), and [`review-document`](docs/skills.md#review-document). |
 
@@ -52,13 +52,13 @@ python deploy.py --all --dry-run
 python deploy.py --all
 ```
 
-On Linux, run them as `python3`. `check` reports missing tools, `configure` asks for the directory holding your local repositories, and `--all` deploys every skill except opt-in ones such as the `dotnet` bundle, which you add with `--include dotnet`.
+On Linux, run them as `python3`. `check` reports missing tools, `configure` asks for the directory holding your local repositories and whether updates follow releases, the default, or `main`, and `--all` deploys every skill except opt-in ones such as the `dotnet` bundle, which you add with `--include dotnet`.
 
 If you use Codex CLI, make its two [Windows settings](docs/installation.md#codex-cli-settings) before starting a skill. If you use Codex or Copilot CLI, `python deploy.py verify` checks that each finds the deployed skills.
 
 ## Updating and uninstalling
 
-Start `update-coding-agent-skills` from any runtime, or update by hand with `git pull --ff-only` and the same dry run and deployment as above. To uninstall, run `python deploy.py --uninstall`; locally modified copies are kept. [Installation](docs/installation.md#updating) covers both.
+Start `update-coding-agent-skills` from any runtime: it deploys the latest release, since fixes land on `main` and reach you at the next tag, and it follows `main` itself only when you opt in with `UPDATE_CHANNEL=main` in `configure`. To follow `main` by hand, use `git pull --ff-only` and the same dry run and deployment as above. To uninstall, run `python deploy.py --uninstall`; locally modified copies are kept. [Installation](docs/installation.md#updating) covers both.
 
 ## Safety model
 
