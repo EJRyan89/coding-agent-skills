@@ -76,7 +76,7 @@ When the other source is an earlier ID of the same repository, or a clone you no
 python deploy.py --migrate-from '<source-id>'
 ```
 
-This changes nothing on disk. It moves ownership in the manifest of every item both sources deploy, provided each still matches the hash the old source recorded, and prints them under `MIGRATED`. Then deploy as usual. If an item is missing or has been changed since the old source deployed it, migration refuses without moving anything; restore that copy, for example by deploying from the old source again, and rerun it. `--migrate-from` deploys nothing, so it refuses `--dry-run`, `--all`, `--include`, `--force`, `--force-item`, `--canary-home`, `--at`, and `--unpin` as a command-line error (exit 2), rather than ignoring them; give those to the deployment that follows. The source IDs the manifest knows are listed under `sources` in `~/.claude/skills/.deploy-manifest.json`.
+This changes no installed item and rewrites only the manifest, where it moves ownership of every item both sources deploy, provided each still matches the hash the old source recorded, and prints them under `MIGRATED`. Then deploy as usual. If an item is missing or has been changed since the old source deployed it, migration refuses without moving anything; restore that copy, for example by deploying from the old source again, and rerun it. `--migrate-from` deploys nothing, so it refuses `--dry-run`, `--all`, `--include`, `--force`, `--force-item`, `--canary-home`, `--at`, and `--unpin` as a command-line error (exit 2), rather than ignoring them; give those to the deployment that follows. The source IDs the manifest knows are listed under `sources` in `~/.claude/skills/.deploy-manifest.json`.
 
 When both sources are still in use, do not migrate: the other source's next deployment would refuse in turn. Deploy the item from only one of them, by deselecting it in the other and redeploying that one.
 
@@ -94,7 +94,7 @@ If you deployed from the wrong clone, deploy from the recorded one instead. If t
 python deploy.py --all --take-over-source
 ```
 
-It prints the recorded checkout and how many items the source owns, then deploys as usual; when the deployment commits, the manifest records this checkout, and later deployments from it need no flag. `--take-over-source` also works with `--migrate-from`, and records this checkout even when there is nothing to migrate. It cannot be combined with `--dry-run`, which never refuses, or with `--canary-home`, whose throwaway home is empty or one an earlier canary deployment marked. A linked worktree is refused whatever the flag; deploy from the main checkout.
+It prints the recorded checkout and how many items the source owns, then deploys as usual; when the deployment commits, the manifest records this checkout, and later deployments from it need no flag. `--take-over-source` also works with `--migrate-from`, and records this checkout even when there is nothing to migrate. It cannot be combined with `--dry-run`, which never refuses the recorded checkout because it reads the source without claiming it, so the flag has nothing to pass there, or with `--canary-home`, whose throwaway home is empty or one an earlier canary deployment marked. A linked worktree is refused whatever the flag; deploy from the main checkout.
 
 ## Deploying an earlier commit
 

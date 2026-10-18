@@ -4,7 +4,7 @@
     "skill_deps": ["skill-core"],
     "agent_deps": ["code-review-reviewer"],
     "selectable": false,
-    "tools": ["copilot", "gh"],
-    "optional_tools": ["pdftotext"],
+    "tools": ["gh"],
+    "optional_tools": ["copilot", "pdftotext"],
     "runtime_support": {"claude-code": {"level": "none", "needs": [], "reason": "A hidden dependency no runtime starts; the skills that declare it state their own support."}, "codex": {"level": "none", "needs": [], "reason": "A hidden dependency no runtime starts; the skills that declare it state their own support."}, "copilot-cli": {"level": "none", "needs": [], "reason": "A hidden dependency no runtime starts; the skills that declare it state their own support."}}
 }
