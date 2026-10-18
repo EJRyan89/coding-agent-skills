@@ -21,15 +21,15 @@ on:
       claude-version:
         description: Claude Code version to install from npm, or latest. The default is the README's tested version.
         type: string
-        default: '2.1.289'
+        default: '2.1.302'
       codex-version:
         description: Codex CLI version to install from npm, or latest. The default is the README's tested version.
         type: string
-        default: '0.160.0'
+        default: '0.163.0'
       copilot-version:
         description: GitHub Copilot CLI version to install from npm, or latest. The default is the README's tested version.
         type: string
-        default: '1.0.91'
+        default: '1.0.98'
   schedule:
     - cron: '23 6 * * 2'
 
@@ -52,9 +52,9 @@ jobs:
         # the inputs' defaults, and beside them the latest release of every runtime.
         runtimes: ${{ github.event_name == 'schedule' && fromJSON('["readme", "latest"]') || fromJSON('["requested"]') }}
     env:
-      CLAUDE_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.claude-version || '2.1.289' }}
-      CODEX_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.codex-version || '0.160.0' }}
-      COPILOT_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.copilot-version || '1.0.91' }}
+      CLAUDE_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.claude-version || '2.1.302' }}
+      CODEX_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.codex-version || '0.163.0' }}
+      COPILOT_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.copilot-version || '1.0.98' }}
     defaults:
       run:
         shell: pwsh
@@ -264,9 +264,9 @@ jobs:
         # the inputs' defaults, and beside them the latest release of every runtime.
         runtimes: ${{ github.event_name == 'schedule' && fromJSON('["readme", "latest"]') || fromJSON('["requested"]') }}
     env:
-      CLAUDE_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.claude-version || '2.1.289' }}
-      CODEX_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.codex-version || '0.160.0' }}
-      COPILOT_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.copilot-version || '1.0.91' }}
+      CLAUDE_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.claude-version || '2.1.302' }}
+      CODEX_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.codex-version || '0.163.0' }}
+      COPILOT_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.copilot-version || '1.0.98' }}
     defaults:
       run:
         shell: bash
