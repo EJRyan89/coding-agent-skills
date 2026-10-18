@@ -129,18 +129,18 @@ class ToolchainFixtures(GitTestCase):
                 "winget install --id koalaman.shellcheck",
                 "  - PowerShell 7 (pwsh): its version could not be read; the floor is 7.0 in "
                 "docs/dependency-updates.md: winget install --id Microsoft.PowerShell",
-                "  - ruff 0.16.9 is older than the floor 0.16.10 in docs/dependency-updates.md: "
+                "  - ruff 0.16.10 is older than the floor 0.17.0 in docs/dependency-updates.md: "
                 "python -m pip install -r requirements-dev.txt",
             ],
             outdated_prerequisites(
-                {"Git Bash": None, "ShellCheck": (0, 8, 0), "PowerShell 7 (pwsh)": None, "ruff": (0, 16, 9)},
+                {"Git Bash": None, "ShellCheck": (0, 8, 0), "PowerShell 7 (pwsh)": None, "ruff": (0, 16, 10)},
                 (3, 11, 3),
             ),
         )
         self.assertEqual(
             [],
             outdated_prerequisites(
-                {"Git Bash": None, "ShellCheck": (0, 9, 0), "PowerShell 7 (pwsh)": (7, 5, 3), "ruff": (0, 16, 10)},
+                {"Git Bash": None, "ShellCheck": (0, 9, 0), "PowerShell 7 (pwsh)": (7, 5, 3), "ruff": (0, 17, 0)},
                 (3, 11, 4),
             ),
         )
