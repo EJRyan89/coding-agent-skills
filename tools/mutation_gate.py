@@ -433,6 +433,21 @@ def try_module(
     return workers.map(attempt, len(mutants))
 
 
+def run_deadline(started: float, minutes: int) -> float:
+    """When the run's cap is reached, in the clock's seconds."""
+    return started + minutes * 60
+
+
+def reach_deadline(started: float, deadline: float) -> float:
+    """When the reach pass stops starting suites: once it has taken its share of the run."""
+    return started + REACH_SHARE * (deadline - started)
+
+
+def module_deadline(now: float, deadline: float, modules_left: int) -> float:
+    """When a module starting now stops starting mutants: an equal share of what is left among the modules left."""
+    return now + (deadline - now) / modules_left
+
+
 def counts(outcomes: Iterable[Outcome]) -> dict[str, int]:
     found = dict.fromkeys((KILLED, TIMED_OUT, SURVIVED, NOT_REACHED, NOT_RUN), 0)
     for outcome in outcomes:
@@ -523,7 +538,7 @@ class Gate:
 
     def mutate(self, trees: Sequence[Path], modules: Sequence[str], started: float) -> Report:
         """Measure the suites' reach, then test each module's mutants within its share of what time is left."""
-        deadline = started + self.minutes * 60
+        deadline = run_deadline(started, self.minutes)
         workers = Workers(trees, self.clock)
         suites = [
             suite.relative_to(self.root).as_posix()
@@ -531,12 +546,11 @@ class Gate:
             if suite.suffix.casefold() == ".py"
         ]
         reach, failed, unmeasured = measure_reach(
-            workers, suites, modules, started + REACH_SHARE * (deadline - started), self.reach
+            workers, suites, modules, reach_deadline(started, deadline), self.reach
         )
         reports = []
         for index, module in enumerate(modules):
-            now = self.clock()
-            share = now + (deadline - now) / (len(modules) - index)
+            share = module_deadline(self.clock(), deadline, len(modules) - index)
             diff = self.git.output(
                 ["diff", "-U0", "--no-color", f"{self.base}...HEAD", "--", module], directory=self.root
             )

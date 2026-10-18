@@ -202,6 +202,14 @@ class TryMutantFixtures(unittest.TestCase):
         self.assertEqual(self.original, (self.tree / "tools" / "calc.py").read_bytes())
 
 
+def test_the_cap_gives_the_reach_pass_half_and_each_module_an_equal_share_of_what_is_left() -> None:
+    CHECK.assertEqual(100.0 + 40 * 60, mutation_gate.run_deadline(100.0, 40))
+    CHECK.assertEqual(100.0 + 20 * 60, mutation_gate.reach_deadline(100.0, 100.0 + 40 * 60))
+    # Three modules left with 900 seconds to go: the first gets 300 of them, and the last whatever remains.
+    CHECK.assertEqual(1300.0, mutation_gate.module_deadline(1000.0, 1900.0, 3))
+    CHECK.assertEqual(1900.0, mutation_gate.module_deadline(1000.0, 1900.0, 1))
+
+
 class SummaryFixtures(unittest.TestCase):
     def report(self, outcomes: list[Outcome], cut_short: bool = False) -> Report:
         return Report(
@@ -225,7 +233,7 @@ class SummaryFixtures(unittest.TestCase):
         outcomes = [Outcome(mutant(1), KILLED, ("tests/fast.py",)), survivor, Outcome(mutant(9), NOT_REACHED)]
         text = summary(self.report(outcomes))
         self.assertIn("| `tools/calc.py` | 3 | 1 | 0 | 1 | 1 | 0 | 50% (1 of 2) |", text)
-        self.assertIn("### `tools/calc.py`: 1 surviving mutant", text)
+        self.assertIn("### `tools/calc.py`: 1 surviving mutant\n", text)
         self.assertIn(
             "- Line 4 (a line this pull request changed): `line 4` became `mutated 4`; passed `tests/fast.py`, "
             "`tests/slow.py`",
