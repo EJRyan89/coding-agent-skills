@@ -5,12 +5,18 @@ from __future__ import annotations
 import json
 import sys
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from typed_fields import FieldError, FieldReader, describe
+
+# Runs no test of its own; the test functions below check through its assertions, as the class does.
+CHECK = unittest.TestCase()
 
 READ = FieldReader()
 
@@ -34,28 +40,6 @@ class FieldReaderTests(unittest.TestCase):
         error = self.refused('a.b[2] must be an integer, found string "7"', READ.integer, "7", "a.b[2]")
         self.assertEqual(("a.b[2]", "an integer", 'string "7"'), (error.path, error.expected, error.found))
         self.assertIsInstance(error, ValueError)
-
-    def test_what_was_found_names_the_json_type_and_a_short_value(self) -> None:
-        cases = [
-            (None, "null"),
-            (True, "boolean true"),
-            (False, "boolean false"),
-            (7, "integer 7"),
-            (-3, "integer -3"),
-            (10**40, "an integer too long to quote"),
-            (1.0, "number 1.0"),
-            (float("nan"), "number nan"),
-            ("a\nb", 'string "a\\nb"'),
-            ("é", 'string "\\u00e9"'),
-            ("x" * 40, 'string "' + "x" * 40 + '"'),
-            ("x" * 41, "a string of 41 characters"),
-            ([1], "an array"),
-            ({"a": 1}, "an object"),
-            (b"x", "a bytes, not a JSON value"),
-        ]
-        for value, expected in cases:
-            with self.subTest(value=value):
-                self.assertEqual(expected, describe(value))
 
     def test_a_string_is_non_empty_unless_empty_is_allowed(self) -> None:
         self.assertEqual(" x ", READ.string(" x ", "s"))
@@ -284,22 +268,50 @@ class FieldReaderTests(unittest.TestCase):
             READ.integer,
         )
 
-    def test_a_reader_raises_the_error_class_it_was_built_with(self) -> None:
-        reader = FieldReader(DomainFieldError)
-        for read in (
-            lambda: reader.string(1, "f"),
-            lambda: reader.integer("1", "f"),
-            lambda: reader.number(None, "f"),
-            lambda: reader.boolean(1, "f"),
-            lambda: reader.hex_digest(1, "f", 64),
-            lambda: reader.one_of(1, "f", ("a",)),
-            lambda: reader.array(1, "f"),
-            lambda: reader.json_object(1, "f"),
-            lambda: reader.optional(reader.string, 1, "f"),
-            lambda: reader.array([1], "f", reader.string),
-            lambda: reader.either(None, "f", reader.integer, reader.string),
-        ):
-            with self.subTest(read=read), self.assertRaises(DomainError) as caught:
-                read()
-            self.assertIsInstance(caught.exception, DomainFieldError)
-            self.assertTrue(str(caught.exception).startswith("f"))
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, "null"),
+        (True, "boolean true"),
+        (False, "boolean false"),
+        (7, "integer 7"),
+        (-3, "integer -3"),
+        pytest.param(10**40, "an integer too long to quote", id="ten-to-the-fortieth"),
+        (1.0, "number 1.0"),
+        (float("nan"), "number nan"),
+        pytest.param("a\nb", 'string "a\\nb"', id="a-newline-b"),
+        pytest.param("é", 'string "\\u00e9"', id="e-acute"),
+        pytest.param("x" * 40, 'string "' + "x" * 40 + '"', id="forty-characters"),
+        pytest.param("x" * 41, "a string of 41 characters", id="forty-one-characters"),
+        pytest.param([1], "an array", id="an-array"),
+        pytest.param({"a": 1}, "an object", id="an-object"),
+        pytest.param(b"x", "a bytes, not a JSON value", id="bytes"),
+    ],
+)
+def test_what_was_found_names_the_json_type_and_a_short_value(value: object, expected: str) -> None:
+    CHECK.assertEqual(expected, describe(value))
+
+
+@pytest.mark.parametrize(
+    "read",
+    [
+        pytest.param(lambda reader: reader.string(1, "f"), id="string"),
+        pytest.param(lambda reader: reader.integer("1", "f"), id="integer"),
+        pytest.param(lambda reader: reader.number(None, "f"), id="number"),
+        pytest.param(lambda reader: reader.boolean(1, "f"), id="boolean"),
+        pytest.param(lambda reader: reader.hex_digest(1, "f", 64), id="hex_digest"),
+        pytest.param(lambda reader: reader.one_of(1, "f", ("a",)), id="one_of"),
+        pytest.param(lambda reader: reader.array(1, "f"), id="array"),
+        pytest.param(lambda reader: reader.json_object(1, "f"), id="json_object"),
+        pytest.param(lambda reader: reader.optional(reader.string, 1, "f"), id="optional"),
+        pytest.param(lambda reader: reader.array([1], "f", reader.string), id="array-of-strings"),
+        pytest.param(lambda reader: reader.either(None, "f", reader.integer, reader.string), id="either"),
+    ],
+)
+def test_a_reader_raises_the_error_class_it_was_built_with(read: Callable[[FieldReader], object]) -> None:
+    reader = FieldReader(DomainFieldError)
+    with CHECK.assertRaises(DomainError) as caught:
+        read(reader)
+    CHECK.assertIsInstance(caught.exception, DomainFieldError)
+    CHECK.assertTrue(str(caught.exception).startswith("f"))

@@ -9,7 +9,10 @@ import tempfile
 import unittest
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any
 from unittest import mock
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
@@ -30,6 +33,9 @@ from pr_status import (
     classify,
     fetched_bases,
 )
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 TIP = "a" * 40
 OLD = "b" * 40
@@ -102,16 +108,6 @@ def state_of(*pulls: dict) -> str:
 
 
 class ClassifyTests(unittest.TestCase):
-    def test_any_open_pull_request_makes_the_branch_active(self) -> None:
-        cases = (
-            (pull("OPEN"),),
-            (pull("MERGED"), pull("OPEN", OLD)),
-            (pull("CLOSED"), pull("OPEN", owner="fork")),
-        )
-        for pulls in cases:
-            with self.subTest(pulls=pulls):
-                self.assertEqual("OPEN", state_of(*pulls))
-
     def test_closed_pull_request_at_the_current_tip_is_stale(self) -> None:
         self.assertEqual("MERGED", state_of(pull("CLOSED"), pull("MERGED")))
         self.assertEqual("CLOSED", state_of(pull("CLOSED"), pull("MERGED", OLD)))
@@ -144,33 +140,6 @@ class ClassifyTests(unittest.TestCase):
         for field in ("state", "headRefOid", "headRepository", "headRepositoryOwner", "mergeCommit", "baseRefName"):
             self.assertIn(field, fields)
         self.assertEqual(str(LIMIT), arguments[arguments.index("--limit") + 1])
-
-    def test_query_problems_fail_closed(self) -> None:
-        cases = {
-            "gh pr list failed": responder("", returncode=1, stderr="HTTP 500"),
-            "gh pr list failed: GitHub returned malformed JSON": responder("not json"),
-            "did not return a list": responder("{}"),
-            "unexpected pull request state": responder(listing(pull("OPEN"), pull("DRAFT"))),
-            "may be incomplete": responder(listing(*([pull("CLOSED")] * LIMIT))),
-        }
-        for message, run in cases.items():
-            with self.subTest(message=message), self.assertRaisesRegex(QueryError, message):
-                classify("owner/repo", "topic", TIP, runner=run)
-
-    def test_invalid_arguments_fail_before_querying(self) -> None:
-        for repository, sha, upstream, message in (
-            ("owner/repo", "abc", None, "head SHA must be a full lowercase commit SHA"),
-            ("owner/repo", TIP.upper(), None, "head SHA must be a full lowercase commit SHA"),
-            ("owner/repo", TIP, "", "upstream SHA must be a full lowercase commit SHA"),
-            ("repo", TIP, None, "owner/name"),
-        ):
-            run = responder("[]")
-            with (
-                self.subTest(repository=repository, sha=sha, upstream=upstream),
-                self.assertRaisesRegex(QueryError, message),
-            ):
-                classify(repository, "topic", sha, upstream, runner=run)
-            self.assertEqual([], run.calls)
 
     def test_missing_gh_fails_closed(self) -> None:
         def missing(arguments: Sequence[str]) -> CommandResult:
@@ -306,42 +275,6 @@ class UpdatedPullRequestTests(unittest.TestCase):
         self.assertEqual("UNMATCHED", classify("owner/repo", "topic", TIP, runner=run))
         self.assertEqual([], [call for call in run.calls if call[0] == "api"])
 
-    def test_commit_query_problems_fail_closed(self) -> None:
-        merged = listing(dict(pull("MERGED", UPDATE), number=7))
-        many = history(*((f"{index:040x}", BASE) for index in range(COMMIT_LIMIT)))
-        commit = {"sha": UPDATE, "parents": [{"sha": TIP}]}
-        not_json = "commits of pull request 7 failed: GitHub returned malformed JSON: Expecting value: line 1 column 1"
-        cases = {
-            r"commits of pull request 7 failed \(1\): HTTP 500": router(merged, "", 1, "HTTP 500"),
-            "may be incomplete": router(merged, many),
-            f"{not_json} \\(char 0\\)$": router(merged, ""),
-            f"^gh api for the {not_json}": router(merged, "not json"),
-        }
-        malformed = (
-            json.dumps({"message": "Not Found"}),
-            json.dumps([commit]),  # one page, not an array of pages
-            json.dumps([[commit], {"sha": TIP}]),
-        )
-        # Each page holds one commit the query must refuse, a commit that is not even an object among them.
-        unexpected: tuple[list[object], ...] = (
-            [{"parents": []}],
-            [{"sha": "not-a-sha", "parents": []}],
-            [{"sha": UPDATE, "parents": [TIP]}],
-            [{"sha": UPDATE, "parents": [{"sha": "short"}]}],
-            [{"sha": UPDATE, "parents": None}],
-            [{"sha": UPDATE.upper(), "parents": []}],
-            ["a commit"],
-        )
-        for output in malformed:
-            cases[f"malformed commits for pull request 7: {re.escape(output[:20])}"] = router(merged, output)
-        for page in unexpected:
-            cases[f"unexpected commit for pull request 7: {re.escape(repr(page[0])[:20])}"] = router(
-                merged, json.dumps([page])
-            )
-        for message, run in cases.items():
-            with self.subTest(message=message), self.assertRaisesRegex(QueryError, message):
-                classify("owner/repo", "topic", TIP, runner=run, bases=main_only(), default_base="main")
-
 
 LIST_CALL = [
     "pr",
@@ -363,78 +296,44 @@ def commits_call(number: int) -> list[str]:
     return ["api", "--paginate", "--slurp", f"repos/owner/repo/pulls/{number}/commits?per_page=100"]
 
 
+def outcome(
+    *pulls: dict,
+    upstream: str | None = None,
+    bases: Bases | None = None,
+    commits: dict[int, str] | None = None,
+    default_base: str | None = "main",
+) -> tuple[str, list[list[str]]]:
+    """classify called directly on the listed pulls: its state and the exact gh calls it made."""
+    answers = commits or {}
+
+    def answer(arguments: list[str]) -> subprocess.CompletedProcess:
+        if arguments[0] == "api":
+            number = int(arguments[3].split("/")[4])
+            return subprocess.CompletedProcess(["gh", *arguments], 0, answers[number], "")
+        return subprocess.CompletedProcess(["gh", *arguments], 0, listing(*pulls), "")
+
+    run = Recorder(answer)
+    state = classify("owner/repo", "topic", TIP, upstream, runner=run, bases=bases, default_base=default_base)
+    return state, run.calls
+
+
+def refusal(run: Recorder, repository: str = "owner/repo", head: str = TIP, upstream: str | None = None) -> str:
+    """The exact message classify refuses with."""
+    with CHECK.assertRaises(QueryError) as caught:
+        classify(repository, "topic", head, upstream, runner=run, bases=main_only(), default_base="main")
+    return str(caught.exception)
+
+
+# A merged pull request whose head was updated after the tip, and one squash-merged at an older tip.
+UPDATED_PULL = dict(pull("MERGED", UPDATE), number=7)
+SQUASHED = dict(pull("MERGED", OLD), number=7, mergeCommit={"oid": SQUASH})
+OTHER_SQUASHED = dict(SQUASHED, mergeCommit={"oid": OTHER_SQUASH})
+# The commit walk is tried first for every pull request, and the change only once it proves no merge.
+WALKED = [LIST_CALL, commits_call(7)]
+
+
 class ClassifySequenceTests(unittest.TestCase):
     """classify called directly: each outcome with the exact gh calls it made, and each refusal's exact message."""
-
-    def outcome(
-        self,
-        *pulls: dict,
-        upstream: str | None = None,
-        bases: Bases | None = None,
-        commits: dict[int, str] | None = None,
-        default_base: str | None = "main",
-    ) -> tuple[str, list[list[str]]]:
-        answers = commits or {}
-
-        def answer(arguments: list[str]) -> subprocess.CompletedProcess:
-            if arguments[0] == "api":
-                number = int(arguments[3].split("/")[4])
-                return subprocess.CompletedProcess(["gh", *arguments], 0, answers[number], "")
-            return subprocess.CompletedProcess(["gh", *arguments], 0, listing(*pulls), "")
-
-        run = Recorder(answer)
-        state = classify("owner/repo", "topic", TIP, upstream, runner=run, bases=bases, default_base=default_base)
-        return state, run.calls
-
-    def refusal(
-        self, run: Recorder, repository: str = "owner/repo", head: str = TIP, upstream: str | None = None
-    ) -> str:
-        with self.assertRaises(QueryError) as caught:
-            classify(repository, "topic", head, upstream, runner=run, bases=main_only(), default_base="main")
-        return str(caught.exception)
-
-    def test_identities_are_refused_in_order_before_any_query(self) -> None:
-        cases = (
-            ({"repository": "owner"}, "repository must be owner/name, got 'owner'"),
-            ({"repository": "owner/repo/extra"}, "repository must be owner/name, got 'owner/repo/extra'"),
-            ({"repository": "owner", "head": "x"}, "repository must be owner/name, got 'owner'"),
-            ({"head": TIP.upper()}, f"head SHA must be a full lowercase commit SHA, got '{TIP.upper()}'"),
-            ({"head": "a" * 39}, f"head SHA must be a full lowercase commit SHA, got '{'a' * 39}'"),
-            ({"head": "x", "upstream": "y"}, "head SHA must be a full lowercase commit SHA, got 'x'"),
-            ({"upstream": "abc"}, "upstream SHA must be a full lowercase commit SHA, got 'abc'"),
-            ({"upstream": ""}, "upstream SHA must be a full lowercase commit SHA, got ''"),
-        )
-        for arguments, message in cases:
-            run = responder(listing())
-            with self.subTest(arguments=arguments):
-                self.assertEqual(message, self.refusal(run, **arguments))
-                self.assertEqual([], run.calls)
-
-    def test_listing_problems_are_refused_with_their_exact_message(self) -> None:
-        cases = (
-            (responder("", 1, "HTTP 500: Bad"), "gh pr list failed (1): HTTP 500: Bad"),
-            (
-                responder("nope"),
-                "gh pr list failed: GitHub returned malformed JSON: Expecting value: line 1 column 1 (char 0)",
-            ),
-            (responder("{}"), "gh pr list did not return a list"),
-            (responder('"OPEN"'), "gh pr list did not return a list"),
-            (
-                responder(listing(*([pull("CLOSED", OLD)] * 1000))),
-                "branch matches 1000 or more pull requests; the result may be incomplete",
-            ),
-            (responder(json.dumps(["a pull"])), "gh pr list returned an unexpected pull request state: None"),
-            (responder(listing({"number": 1})), "gh pr list returned an unexpected pull request state: None"),
-            (responder(listing(pull("DRAFT"))), "gh pr list returned an unexpected pull request state: 'DRAFT'"),
-            (
-                responder(listing(pull("OPEN"), pull("open"))),
-                "gh pr list returned an unexpected pull request state: 'open'",
-            ),
-        )
-        for run, message in cases:
-            with self.subTest(message=message):
-                self.assertEqual(message, self.refusal(run))
-                self.assertEqual([LIST_CALL], run.calls)
 
     def test_a_gh_that_cannot_start_is_refused(self) -> None:
         def missing(command: Sequence[str]) -> CommandResult:
@@ -445,118 +344,35 @@ class ClassifySequenceTests(unittest.TestCase):
         self.assertEqual("could not run gh: no gh", str(caught.exception))
 
     def test_one_fewer_than_the_limit_is_classified(self) -> None:
-        self.assertEqual(("UNMATCHED", [LIST_CALL]), self.outcome(*([pull("CLOSED", OLD)] * 999)))
-
-    def test_each_outcome_with_its_calls(self) -> None:
-        cases: tuple[tuple[str, tuple[dict, ...], dict], ...] = (
-            ("NONE", (), {}),
-            ("NONE", (pull("MERGED", owner="fork"), pull("CLOSED", name="other")), {}),
-            ("NONE", (dict(pull("MERGED"), headRepository=None), dict(pull("MERGED"), headRepositoryOwner={})), {}),
-            ("OPEN", (pull("MERGED"), pull("OPEN", OLD, owner="fork")), {}),
-            ("OPEN", (pull("OPEN"),), {"upstream": OLD}),
-            ("MERGED", (pull("MERGED"),), {}),
-            ("MERGED", (pull("MERGED", owner="OWNER", name="Repo"),), {}),
-            ("MERGED", (pull("MERGED"),), {"upstream": TIP}),
-            ("UNMATCHED", (pull("MERGED"),), {"upstream": OLD}),
-            ("UNMATCHED", (pull("CLOSED"),), {"upstream": OLD}),
-            ("MERGED", (pull("CLOSED"), pull("MERGED")), {}),
-            ("MERGED", (pull("MERGED"), pull("CLOSED")), {}),
-            ("CLOSED", (pull("CLOSED"), pull("MERGED", OLD)), {}),
-            ("CLOSED", (pull("CLOSED"), pull("MERGED", owner="fork")), {}),
-            ("UNMATCHED", (pull("MERGED", OLD), pull("MERGED", owner="fork")), {}),
-            ("UNMATCHED", (dict(pull("MERGED"), headRefOid=None),), {}),
-        )
-        for expected, pulls, arguments in cases:
-            with self.subTest(expected=expected, pulls=pulls, arguments=arguments):
-                self.assertEqual((expected, [LIST_CALL]), self.outcome(*pulls, **arguments))
+        self.assertEqual(("UNMATCHED", [LIST_CALL]), outcome(*([pull("CLOSED", OLD)] * 999)))
 
     def test_the_repository_matches_its_pull_requests_whatever_its_case(self) -> None:
         run = responder(listing(pull("MERGED")))
         self.assertEqual("MERGED", classify("Owner/Repo", "topic", TIP, runner=run))
         self.assertEqual("Owner/Repo", run.calls[0][3])
 
-    def test_a_merged_pull_request_updated_after_the_tip_is_queried_only_when_it_qualifies(self) -> None:
-        updated = dict(pull("MERGED", UPDATE), number=7)
-        cases: tuple[tuple[str, tuple[dict, ...], dict, list[list[str]]], ...] = (
-            ("MERGED", (updated,), {}, [LIST_CALL, commits_call(7)]),
-            ("MERGED", (updated,), {"upstream": TIP}, [LIST_CALL, commits_call(7)]),
-            ("UNMATCHED", (updated,), {"upstream": OLD}, [LIST_CALL]),
-            ("UNMATCHED", (updated,), {"bases": None}, [LIST_CALL]),
-            ("UNMATCHED", (dict(updated, state="CLOSED"),), {}, [LIST_CALL]),
-            ("NONE", (dict(pull("MERGED", UPDATE, owner="fork"), number=7),), {}, [LIST_CALL]),
-            ("UNMATCHED", (dict(updated, number="7"),), {}, [LIST_CALL]),
-            ("UNMATCHED", (dict(updated, number=None),), {}, [LIST_CALL]),
-            # An exact match is MERGED before any pull request's commits are read.
-            ("MERGED", (updated, pull("MERGED")), {}, [LIST_CALL]),
-            # A proof from the commits comes before an exact CLOSED match.
-            ("MERGED", (pull("CLOSED"), updated), {}, [LIST_CALL, commits_call(7)]),
-        )
-        for expected, pulls, arguments, calls in cases:
-            options = {"bases": main_only(), "commits": {7: UPDATED}, **arguments}
-            with self.subTest(expected=expected, pulls=pulls, arguments=arguments):
-                self.assertEqual((expected, calls), self.outcome(*pulls, **options))
-
     def test_merged_pull_requests_are_queried_in_order_until_one_proves_the_merge(self) -> None:
         unrelated = history((WORK, BASE))
         first, second, third = (dict(pull("MERGED", UPDATE), number=number) for number in (4, 5, 6))
         self.assertEqual(
             ("MERGED", [LIST_CALL, commits_call(4), commits_call(5)]),
-            self.outcome(first, second, third, bases=main_only(), commits={4: unrelated, 5: UPDATED, 6: UPDATED}),
+            outcome(first, second, third, bases=main_only(), commits={4: unrelated, 5: UPDATED, 6: UPDATED}),
         )
         self.assertEqual(
             ("CLOSED", [LIST_CALL, commits_call(4)]),
-            self.outcome(first, pull("CLOSED"), bases=main_only(), commits={4: unrelated}),
+            outcome(first, pull("CLOSED"), bases=main_only(), commits={4: unrelated}),
         )
         self.assertEqual(
             ("UNMATCHED", [LIST_CALL, commits_call(4), commits_call(5)]),
-            self.outcome(first, second, bases=main_only(), commits={4: unrelated, 5: unrelated}),
+            outcome(first, second, bases=main_only(), commits={4: unrelated, 5: unrelated}),
         )
-
-    def test_a_merge_commit_whose_change_is_the_branches_proves_a_rewritten_tip_merged(self) -> None:
-        squashed = dict(pull("MERGED", OLD), number=7, mergeCommit={"oid": SQUASH})
-        other = dict(squashed, mergeCommit={"oid": OTHER_SQUASH})
-        asked: list[tuple[str, str]] = []
-
-        def same_change(tip: str, merge_commit: str) -> bool:
-            asked.append((tip, merge_commit))
-            return (tip, merge_commit) == (TIP, SQUASH)
-
-        # The commit walk is tried first for every pull request, and the change only once it proves no merge.
-        walked = [LIST_CALL, commits_call(7)]
-        cases: tuple[tuple[str, tuple[dict, ...], dict, list[list[str]], list[tuple[str, str]]], ...] = (
-            ("MERGED", (squashed,), {}, walked, [(TIP, SQUASH)]),
-            ("MERGED", (squashed,), {"upstream": TIP}, walked, [(TIP, SQUASH)]),
-            ("UNMATCHED", (squashed,), {"upstream": OLD}, [LIST_CALL], []),
-            ("UNMATCHED", (dict(squashed, state="CLOSED"),), {}, [LIST_CALL], []),
-            ("NONE", (dict(squashed, headRepositoryOwner={"login": "fork"}),), {}, [LIST_CALL], []),
-            ("UNMATCHED", (dict(squashed, mergeCommit=None),), {}, walked, []),
-            ("UNMATCHED", (dict(squashed, mergeCommit={}),), {}, walked, []),
-            ("UNMATCHED", (dict(squashed, mergeCommit={"oid": "short"}),), {}, walked, []),
-            ("UNMATCHED", (dict(squashed, mergeCommit={"oid": OTHER_SQUASH.upper()}),), {}, walked, []),
-            ("UNMATCHED", (dict(squashed, mergeCommit=SQUASH),), {}, walked, []),
-            ("UNMATCHED", (other,), {}, walked, [(TIP, OTHER_SQUASH)]),
-            # An exact match is MERGED before any commit is read or change compared.
-            ("MERGED", (squashed, pull("MERGED")), {}, [LIST_CALL], []),
-            # A proof from the change comes before an exact CLOSED match; a change that differs leaves CLOSED.
-            ("MERGED", (pull("CLOSED"), squashed), {}, walked, [(TIP, SQUASH)]),
-            ("CLOSED", (pull("CLOSED"), other), {}, walked, [(TIP, OTHER_SQUASH)]),
-            # Merged pull requests are compared in listing order until one proves the merge.
-            ("MERGED", (other, squashed), {}, [*walked, commits_call(7)], [(TIP, OTHER_SQUASH), (TIP, SQUASH)]),
-            ("MERGED", (squashed, other), {}, [*walked, commits_call(7)], [(TIP, SQUASH)]),
-        )
-        for expected, pulls, arguments, calls, compared in cases:
-            asked.clear()
-            options = {"bases": main_only(same_change), "commits": {7: history((OLD, BASE))}, **arguments}
-            with self.subTest(expected=expected, pulls=pulls, arguments=arguments):
-                self.assertEqual((expected, calls), self.outcome(*pulls, **options))
-                self.assertEqual(compared, asked)
 
     def test_without_base_tests_a_rewritten_tip_stays_unmatched(self) -> None:
         squashed = dict(pull("MERGED", OLD), number=7, mergeCommit={"oid": SQUASH})
-        self.assertEqual(("UNMATCHED", [LIST_CALL]), self.outcome(squashed))
+        self.assertEqual(("UNMATCHED", [LIST_CALL]), outcome(squashed))
         self.assertEqual(
             ("UNMATCHED", [LIST_CALL, commits_call(7)]),
-            self.outcome(squashed, bases=main_only(), commits={7: history((OLD, BASE))}),
+            outcome(squashed, bases=main_only(), commits={7: history((OLD, BASE))}),
         )
 
     def test_each_pull_request_is_judged_against_its_own_base(self) -> None:
@@ -580,13 +396,11 @@ class ClassifySequenceTests(unittest.TestCase):
         # Several merged pull requests with different bases on one head name: each is compared on its own base.
         self.assertEqual(
             ("MERGED", [LIST_CALL, commits_call(7), commits_call(8)]),
-            self.outcome(into_main, into_release, bases=bases, commits=commits),
+            outcome(into_main, into_release, bases=bases, commits=commits),
         )
         self.assertEqual([("main", TIP, SQUASH), ("release/1.0", TIP, RELEASE_SQUASH)], asked)
         asked.clear()
-        self.assertEqual(
-            ("UNMATCHED", [LIST_CALL, commits_call(7)]), self.outcome(into_main, bases=bases, commits=commits)
-        )
+        self.assertEqual(("UNMATCHED", [LIST_CALL, commits_call(7)]), outcome(into_main, bases=bases, commits=commits))
         self.assertEqual([("main", TIP, SQUASH)], asked)
         asked.clear()
         # The "Update branch" walk reads the base the pull request merged into, too.
@@ -594,89 +408,34 @@ class ClassifySequenceTests(unittest.TestCase):
         released = history((TIP, BASE), (UPDATE, TIP, RELEASE_BASE))
         self.assertEqual(
             ("MERGED", [LIST_CALL, commits_call(9)]),
-            self.outcome(updated_release, bases=bases, commits={9: released}),
+            outcome(updated_release, bases=bases, commits={9: released}),
         )
         self.assertEqual(
             ("UNMATCHED", [LIST_CALL, commits_call(9)]),
-            self.outcome(dict(updated_release, baseRefName="main"), bases=bases, commits={9: released}),
+            outcome(dict(updated_release, baseRefName="main"), bases=bases, commits={9: released}),
         )
         self.assertEqual([], asked)
 
     def test_a_base_not_fetched_locally_proves_nothing(self) -> None:
         squashed = dict(pull("MERGED", OLD, base="release/2.0"), number=7, mergeCommit={"oid": SQUASH})
         always = {"main": BaseTests(in_main, lambda tip, merge_commit: True)}.get
-        self.assertEqual(("UNMATCHED", [LIST_CALL]), self.outcome(squashed, bases=always, commits={}))
+        self.assertEqual(("UNMATCHED", [LIST_CALL]), outcome(squashed, bases=always, commits={}))
         self.assertEqual(
             ("MERGED", [LIST_CALL, commits_call(7)]),
-            self.outcome(dict(squashed, baseRefName="main"), bases=always, commits={7: history((OLD, BASE))}),
+            outcome(dict(squashed, baseRefName="main"), bases=always, commits={7: history((OLD, BASE))}),
         )
-
-    def test_a_pull_request_without_a_usable_base_name_is_judged_against_the_default(self) -> None:
-        squashed = dict(pull("MERGED", OLD), number=7, mergeCommit={"oid": SQUASH})
-        asked: list[str] = []
-
-        def tests(base: str) -> BaseTests | None:
-            asked.append(base)
-            return BaseTests(in_main, lambda tip, merge_commit: True) if base == "main" else None
-
-        unusable: tuple[object, ...] = (None, 7, "", "a..b", "with space", "a^b", "a:b", "a~1", "a@{1}", "a?b")
-        for name in unusable:
-            asked.clear()
-            with self.subTest(name=name):
-                self.assertEqual(
-                    ("MERGED", [LIST_CALL, commits_call(7)]),
-                    self.outcome(dict(squashed, baseRefName=name), bases=tests, commits={7: history((OLD, BASE))}),
-                )
-                self.assertEqual(["main"], asked)
-                asked.clear()
-                self.assertEqual(
-                    ("UNMATCHED", [LIST_CALL]),
-                    self.outcome(dict(squashed, baseRefName=name), bases=tests, commits={}, default_base=None),
-                )
-                self.assertEqual([], asked)
-        # A pull request's own base name is looked up as given, in any shape git accepts.
-        for name in ("main", "release/1.0", "feature-x", "topic.v2", "wip_2026", "-dash", "uni\u00e9"):
-            asked.clear()
-            with self.subTest(name=name):
-                self.outcome(dict(squashed, baseRefName=name), bases=tests, commits={7: history((OLD, BASE))})
-                self.assertEqual([name], asked)
 
     def test_a_closed_or_fork_pull_request_on_another_base_never_matches(self) -> None:
         bases: Bases = {"release/1.0": BaseTests(in_release, lambda tip, merge_commit: True)}.get
         closed = dict(pull("CLOSED", OLD, base="release/1.0"), number=7, mergeCommit={"oid": RELEASE_SQUASH})
         fork = dict(pull("MERGED", OLD, owner="fork", base="release/1.0"), number=7, mergeCommit={"oid": SQUASH})
-        self.assertEqual(("UNMATCHED", [LIST_CALL]), self.outcome(closed, bases=bases, commits={}))
-        self.assertEqual(("NONE", [LIST_CALL]), self.outcome(fork, bases=bases, commits={}))
-        self.assertEqual(("UNMATCHED", [LIST_CALL]), self.outcome(closed, fork, bases=bases, commits={}))
+        self.assertEqual(("UNMATCHED", [LIST_CALL]), outcome(closed, bases=bases, commits={}))
+        self.assertEqual(("NONE", [LIST_CALL]), outcome(fork, bases=bases, commits={}))
+        self.assertEqual(("UNMATCHED", [LIST_CALL]), outcome(closed, fork, bases=bases, commits={}))
 
-    def test_an_upstream_the_pull_requests_base_holds_blocks_no_proof(self) -> None:
-        squashed = dict(pull("MERGED", OLD), number=7, mergeCommit={"oid": SQUASH})
-        bases: Bases = {
-            "main": BaseTests(in_main, lambda tip, merge_commit: True),
-            "release/1.0": BaseTests(in_release, lambda tip, merge_commit: True),
-        }.get
-        commits = {7: UPDATED}
-        cases: tuple[tuple[str, tuple[dict, ...], str | None, list[list[str]]], ...] = (
-            # An exact match, the walk, and the change each pass the gate when the base holds the upstream.
-            ("MERGED", (pull("MERGED"),), MAIN_NOW, [LIST_CALL]),
-            ("MERGED", (dict(pull("MERGED", UPDATE), number=7),), MAIN_NOW, [LIST_CALL, commits_call(7)]),
-            ("MERGED", (squashed,), MAIN_NOW, [LIST_CALL, commits_call(7)]),
-            ("CLOSED", (pull("CLOSED"),), MAIN_NOW, [LIST_CALL]),
-            # The upstream is judged against each pull request's own base, not against every fetched base.
-            ("UNMATCHED", (squashed,), RELEASE_BASE, [LIST_CALL]),
-            ("MERGED", (dict(squashed, baseRefName="release/1.0"),), RELEASE_BASE, [LIST_CALL, commits_call(7)]),
-            ("UNMATCHED", (pull("MERGED"),), RELEASE_BASE, [LIST_CALL]),
-            ("UNMATCHED", (pull("CLOSED"),), RELEASE_BASE, [LIST_CALL]),
-            # Work the base does not hold stays newer work.
-            ("UNMATCHED", (pull("MERGED"), squashed), WORK, [LIST_CALL]),
-        )
-        for expected, pulls, upstream, calls in cases:
-            with self.subTest(expected=expected, pulls=pulls, upstream=upstream):
-                self.assertEqual(
-                    (expected, calls), self.outcome(*pulls, upstream=upstream, bases=bases, commits=commits)
-                )
+    def test_without_base_tests_any_other_upstream_commit_is_newer_work(self) -> None:
         # Without base tests the gate is the old one: any other upstream commit is newer work.
-        self.assertEqual(("UNMATCHED", [LIST_CALL]), self.outcome(pull("MERGED"), upstream=MAIN_NOW))
+        self.assertEqual(("UNMATCHED", [LIST_CALL]), outcome(pull("MERGED"), upstream=MAIN_NOW))
 
 
 class GitFixture(unittest.TestCase):
@@ -969,30 +728,10 @@ NOTES_ENTRY = b":000000 100644 " + b"0" * 40 + b" " + b"3" * 40 + b" A\0notes/a 
 
 
 class ChangeIdentityTests(unittest.TestCase):
-    def test_every_file_with_its_content_before_and_after_counts_and_only_their_order_is_left_out(self) -> None:
+    def test_only_the_order_of_the_files_is_left_out_and_an_empty_listing_is_no_change(self) -> None:
         listing = DEMO_ENTRY + NOTES_ENTRY
         self.assertEqual(change_identity(listing), change_identity(NOTES_ENTRY + DEMO_ENTRY), "order is left out")
-        for changed in (
-            DEMO_ENTRY.replace(b"1" * 40, b"4" * 40) + NOTES_ENTRY,
-            DEMO_ENTRY.replace(b"2" * 40, b"4" * 40) + NOTES_ENTRY,
-            DEMO_ENTRY.replace(b":100644 100644", b":100644 100755") + NOTES_ENTRY,
-            DEMO_ENTRY.replace(b"demo.py", b"other.py") + NOTES_ENTRY,
-            DEMO_ENTRY,
-        ):
-            with self.subTest(changed=changed):
-                self.assertNotEqual(change_identity(listing), change_identity(changed))
         self.assertIsNone(change_identity(b""), "an empty listing is no change")
-
-    def test_a_listing_in_any_other_shape_fails_closed(self) -> None:
-        for listing in (
-            DEMO_ENTRY[:-1],
-            DEMO_ENTRY + b"stray",
-            DEMO_ENTRY.replace(b"\0demo.py\0", b"\0\0"),
-            DEMO_ENTRY.replace(b"1" * 40, b"1" * 7),
-            b"diff --git a/demo.py b/demo.py\n@@ -1 +1 @@\n-old\n+new\n",
-        ):
-            with self.subTest(listing=listing), self.assertRaisesRegex(QueryError, "unexpected shape"):
-                change_identity(listing)
 
 
 class WhitespaceTests(WhitespaceFixture):
@@ -1383,3 +1122,431 @@ class TrackingBaseClassificationTests(SquashFixture):
         self.git("-C", str(self.clone), "update-ref", "refs/heads/topic", self.merged_in)
         self.assertEqual("MERGED", self.state(fetched_bases(str(self.clone))))
         self.assertEqual("UNMATCHED", self.state(None))
+
+
+@pytest.mark.parametrize(
+    "pulls",
+    [
+        pytest.param((pull("OPEN"),), id="an open pull request"),
+        pytest.param((pull("MERGED"), pull("OPEN", OLD)), id="an open one beside a merged one"),
+        pytest.param((pull("CLOSED"), pull("OPEN", owner="fork")), id="an open one from a fork beside a closed one"),
+    ],
+)
+def test_any_open_pull_request_makes_the_branch_active(pulls: tuple[dict, ...]) -> None:
+    CHECK.assertEqual("OPEN", state_of(*pulls))
+
+
+@pytest.mark.parametrize(
+    ("message", "run"),
+    [
+        pytest.param(message, run, id=message)
+        for message, run in {
+            "gh pr list failed": responder("", returncode=1, stderr="HTTP 500"),
+            "gh pr list failed: GitHub returned malformed JSON": responder("not json"),
+            "did not return a list": responder("{}"),
+            "unexpected pull request state": responder(listing(pull("OPEN"), pull("DRAFT"))),
+            "may be incomplete": responder(listing(*([pull("CLOSED")] * LIMIT))),
+        }.items()
+    ],
+)
+def test_query_problems_fail_closed(message: str, run: Recorder) -> None:
+    with CHECK.assertRaisesRegex(QueryError, message):
+        classify("owner/repo", "topic", TIP, runner=run)
+
+
+@pytest.mark.parametrize(
+    ("repository", "sha", "upstream", "message"),
+    [
+        ("owner/repo", "abc", None, "head SHA must be a full lowercase commit SHA"),
+        ("owner/repo", TIP.upper(), None, "head SHA must be a full lowercase commit SHA"),
+        ("owner/repo", TIP, "", "upstream SHA must be a full lowercase commit SHA"),
+        ("repo", TIP, None, "owner/name"),
+    ],
+    ids=["a short head", "an uppercase head", "an empty upstream", "a repository without an owner"],
+)
+def test_invalid_arguments_fail_before_querying(repository: str, sha: str, upstream: str | None, message: str) -> None:
+    run = responder("[]")
+    with CHECK.assertRaisesRegex(QueryError, message):
+        classify(repository, "topic", sha, upstream, runner=run)
+    CHECK.assertEqual([], run.calls)
+
+
+def commit_query_problems() -> list[Any]:
+    """Each refusal of the pull request commits query: the pattern its message matches and the runner that answers."""
+    merged = listing(dict(pull("MERGED", UPDATE), number=7))
+    many = history(*((f"{index:040x}", BASE) for index in range(COMMIT_LIMIT)))
+    commit = {"sha": UPDATE, "parents": [{"sha": TIP}]}
+    not_json = "commits of pull request 7 failed: GitHub returned malformed JSON: Expecting value: line 1 column 1"
+    cases = [
+        pytest.param(
+            r"commits of pull request 7 failed \(1\): HTTP 500", router(merged, "", 1, "HTTP 500"), id="a failed query"
+        ),
+        pytest.param("may be incomplete", router(merged, many), id="as many commits as the limit"),
+        pytest.param(f"{not_json} \\(char 0\\)$", router(merged, ""), id="no output"),
+        pytest.param(f"^gh api for the {not_json}", router(merged, "not json"), id="output that is not JSON"),
+    ]
+    malformed = (
+        ("an object", json.dumps({"message": "Not Found"})),
+        ("a page alone", json.dumps([commit])),  # one page, not an array of pages
+        ("a page beside a commit", json.dumps([[commit], {"sha": TIP}])),
+    )
+    # Each page holds one commit the query must refuse, a commit that is not even an object among them.
+    unexpected: tuple[tuple[str, list[object]], ...] = (
+        ("no sha", [{"parents": []}]),
+        ("a sha that is no SHA", [{"sha": "not-a-sha", "parents": []}]),
+        ("a parent that is not an object", [{"sha": UPDATE, "parents": [TIP]}]),
+        ("a short parent", [{"sha": UPDATE, "parents": [{"sha": "short"}]}]),
+        ("parents that are not a list", [{"sha": UPDATE, "parents": None}]),
+        ("an uppercase sha", [{"sha": UPDATE.upper(), "parents": []}]),
+        ("a commit that is not an object", ["a commit"]),
+    )
+    for name, output in malformed:
+        message = f"malformed commits for pull request 7: {re.escape(output[:20])}"
+        cases.append(pytest.param(message, router(merged, output), id=f"malformed: {name}"))
+    for name, page in unexpected:
+        message = f"unexpected commit for pull request 7: {re.escape(repr(page[0])[:20])}"
+        cases.append(pytest.param(message, router(merged, json.dumps([page])), id=f"unexpected: {name}"))
+    return cases
+
+
+@pytest.mark.parametrize(("message", "run"), commit_query_problems())
+def test_commit_query_problems_fail_closed(message: str, run: Recorder) -> None:
+    with CHECK.assertRaisesRegex(QueryError, message):
+        classify("owner/repo", "topic", TIP, runner=run, bases=main_only(), default_base="main")
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        pytest.param({"repository": "owner"}, "repository must be owner/name, got 'owner'", id="an owner alone"),
+        pytest.param(
+            {"repository": "owner/repo/extra"},
+            "repository must be owner/name, got 'owner/repo/extra'",
+            id="a repository with an extra segment",
+        ),
+        pytest.param(
+            {"repository": "owner", "head": "x"},
+            "repository must be owner/name, got 'owner'",
+            id="the repository before the head",
+        ),
+        pytest.param(
+            {"head": TIP.upper()},
+            f"head SHA must be a full lowercase commit SHA, got '{TIP.upper()}'",
+            id="an uppercase head",
+        ),
+        pytest.param(
+            {"head": "a" * 39}, f"head SHA must be a full lowercase commit SHA, got '{'a' * 39}'", id="a short head"
+        ),
+        pytest.param(
+            {"head": "x", "upstream": "y"},
+            "head SHA must be a full lowercase commit SHA, got 'x'",
+            id="the head before the upstream",
+        ),
+        pytest.param(
+            {"upstream": "abc"}, "upstream SHA must be a full lowercase commit SHA, got 'abc'", id="a short upstream"
+        ),
+        pytest.param(
+            {"upstream": ""}, "upstream SHA must be a full lowercase commit SHA, got ''", id="an empty upstream"
+        ),
+    ],
+)
+def test_identities_are_refused_in_order_before_any_query(arguments: dict[str, str], message: str) -> None:
+    run = responder(listing())
+    CHECK.assertEqual(message, refusal(run, **arguments))
+    CHECK.assertEqual([], run.calls)
+
+
+@pytest.mark.parametrize(
+    ("run", "message"),
+    [
+        pytest.param(responder("", 1, "HTTP 500: Bad"), "gh pr list failed (1): HTTP 500: Bad", id="a failed listing"),
+        pytest.param(
+            responder("nope"),
+            "gh pr list failed: GitHub returned malformed JSON: Expecting value: line 1 column 1 (char 0)",
+            id="malformed JSON",
+        ),
+        pytest.param(responder("{}"), "gh pr list did not return a list", id="an object"),
+        pytest.param(responder('"OPEN"'), "gh pr list did not return a list", id="a string"),
+        pytest.param(
+            responder(listing(*([pull("CLOSED", OLD)] * 1000))),
+            "branch matches 1000 or more pull requests; the result may be incomplete",
+            id="as many pull requests as the limit",
+        ),
+        pytest.param(
+            responder(json.dumps(["a pull"])),
+            "gh pr list returned an unexpected pull request state: None",
+            id="a pull request that is not an object",
+        ),
+        pytest.param(
+            responder(listing({"number": 1})),
+            "gh pr list returned an unexpected pull request state: None",
+            id="a pull request without a state",
+        ),
+        pytest.param(
+            responder(listing(pull("DRAFT"))),
+            "gh pr list returned an unexpected pull request state: 'DRAFT'",
+            id="an unknown state",
+        ),
+        pytest.param(
+            responder(listing(pull("OPEN"), pull("open"))),
+            "gh pr list returned an unexpected pull request state: 'open'",
+            id="a lowercase state",
+        ),
+    ],
+)
+def test_listing_problems_are_refused_with_their_exact_message(run: Recorder, message: str) -> None:
+    CHECK.assertEqual(message, refusal(run))
+    CHECK.assertEqual([LIST_CALL], run.calls)
+
+
+@pytest.mark.parametrize(
+    ("expected", "pulls", "arguments"),
+    [
+        pytest.param("NONE", (), {}, id="no pull request"),
+        pytest.param(
+            "NONE", (pull("MERGED", owner="fork"), pull("CLOSED", name="other")), {}, id="other head repositories"
+        ),
+        pytest.param(
+            "NONE",
+            (dict(pull("MERGED"), headRepository=None), dict(pull("MERGED"), headRepositoryOwner={})),
+            {},
+            id="no head repository",
+        ),
+        pytest.param("OPEN", (pull("MERGED"), pull("OPEN", OLD, owner="fork")), {}, id="open in a fork"),
+        pytest.param("OPEN", (pull("OPEN"),), {"upstream": OLD}, id="open with newer upstream work"),
+        pytest.param("MERGED", (pull("MERGED"),), {}, id="merged at the tip"),
+        pytest.param("MERGED", (pull("MERGED", owner="OWNER", name="Repo"),), {}, id="merged in another case"),
+        pytest.param("MERGED", (pull("MERGED"),), {"upstream": TIP}, id="merged with the tip upstream"),
+        pytest.param("UNMATCHED", (pull("MERGED"),), {"upstream": OLD}, id="merged with newer upstream work"),
+        pytest.param("UNMATCHED", (pull("CLOSED"),), {"upstream": OLD}, id="closed with newer upstream work"),
+        pytest.param("MERGED", (pull("CLOSED"), pull("MERGED")), {}, id="merged after closed"),
+        pytest.param("MERGED", (pull("MERGED"), pull("CLOSED")), {}, id="merged before closed"),
+        pytest.param("CLOSED", (pull("CLOSED"), pull("MERGED", OLD)), {}, id="closed beside merged at another tip"),
+        pytest.param("CLOSED", (pull("CLOSED"), pull("MERGED", owner="fork")), {}, id="closed beside merged in a fork"),
+        pytest.param(
+            "UNMATCHED",
+            (pull("MERGED", OLD), pull("MERGED", owner="fork")),
+            {},
+            id="merged at another tip or in a fork",
+        ),
+        pytest.param("UNMATCHED", (dict(pull("MERGED"), headRefOid=None),), {}, id="merged without a head commit"),
+    ],
+)
+def test_each_outcome_with_its_calls(expected: str, pulls: tuple[dict, ...], arguments: dict[str, Any]) -> None:
+    CHECK.assertEqual((expected, [LIST_CALL]), outcome(*pulls, **arguments))
+
+
+@pytest.mark.parametrize(
+    ("expected", "pulls", "arguments", "calls"),
+    [
+        pytest.param("MERGED", (UPDATED_PULL,), {}, [LIST_CALL, commits_call(7)], id="merged"),
+        pytest.param("MERGED", (UPDATED_PULL,), {"upstream": TIP}, [LIST_CALL, commits_call(7)], id="the tip upstream"),
+        pytest.param("UNMATCHED", (UPDATED_PULL,), {"upstream": OLD}, [LIST_CALL], id="newer upstream work"),
+        pytest.param("UNMATCHED", (UPDATED_PULL,), {"bases": None}, [LIST_CALL], id="no base tests"),
+        pytest.param("UNMATCHED", (dict(UPDATED_PULL, state="CLOSED"),), {}, [LIST_CALL], id="closed"),
+        pytest.param(
+            "NONE", (dict(pull("MERGED", UPDATE, owner="fork"), number=7),), {}, [LIST_CALL], id="from a fork"
+        ),
+        pytest.param("UNMATCHED", (dict(UPDATED_PULL, number="7"),), {}, [LIST_CALL], id="a number that is text"),
+        pytest.param("UNMATCHED", (dict(UPDATED_PULL, number=None),), {}, [LIST_CALL], id="no number"),
+        # An exact match is MERGED before any pull request's commits are read.
+        pytest.param("MERGED", (UPDATED_PULL, pull("MERGED")), {}, [LIST_CALL], id="beside an exact match"),
+        # A proof from the commits comes before an exact CLOSED match.
+        pytest.param(
+            "MERGED", (pull("CLOSED"), UPDATED_PULL), {}, [LIST_CALL, commits_call(7)], id="beside an exact closed one"
+        ),
+    ],
+)
+def test_a_merged_pull_request_updated_after_the_tip_is_queried_only_when_it_qualifies(
+    expected: str, pulls: tuple[dict, ...], arguments: dict[str, Any], calls: list[list[str]]
+) -> None:
+    options: dict[str, Any] = {"bases": main_only(), "commits": {7: UPDATED}, **arguments}
+    CHECK.assertEqual((expected, calls), outcome(*pulls, **options))
+
+
+@pytest.mark.parametrize(
+    ("expected", "pulls", "arguments", "calls", "compared"),
+    [
+        pytest.param("MERGED", (SQUASHED,), {}, WALKED, [(TIP, SQUASH)], id="squash-merged"),
+        pytest.param("MERGED", (SQUASHED,), {"upstream": TIP}, WALKED, [(TIP, SQUASH)], id="the tip upstream"),
+        pytest.param("UNMATCHED", (SQUASHED,), {"upstream": OLD}, [LIST_CALL], [], id="newer upstream work"),
+        pytest.param("UNMATCHED", (dict(SQUASHED, state="CLOSED"),), {}, [LIST_CALL], [], id="closed"),
+        pytest.param(
+            "NONE",
+            (dict(SQUASHED, headRepositoryOwner={"login": "fork"}),),
+            {},
+            [LIST_CALL],
+            [],
+            id="from a fork",
+        ),
+        pytest.param("UNMATCHED", (dict(SQUASHED, mergeCommit=None),), {}, WALKED, [], id="no merge commit"),
+        pytest.param("UNMATCHED", (dict(SQUASHED, mergeCommit={}),), {}, WALKED, [], id="a merge commit without oid"),
+        pytest.param(
+            "UNMATCHED", (dict(SQUASHED, mergeCommit={"oid": "short"}),), {}, WALKED, [], id="a short merge commit"
+        ),
+        pytest.param(
+            "UNMATCHED",
+            (dict(SQUASHED, mergeCommit={"oid": OTHER_SQUASH.upper()}),),
+            {},
+            WALKED,
+            [],
+            id="an uppercase merge commit",
+        ),
+        pytest.param(
+            "UNMATCHED", (dict(SQUASHED, mergeCommit=SQUASH),), {}, WALKED, [], id="a merge commit that is text"
+        ),
+        pytest.param("UNMATCHED", (OTHER_SQUASHED,), {}, WALKED, [(TIP, OTHER_SQUASH)], id="another change"),
+        # An exact match is MERGED before any commit is read or change compared.
+        pytest.param("MERGED", (SQUASHED, pull("MERGED")), {}, [LIST_CALL], [], id="beside an exact match"),
+        # A proof from the change comes before an exact CLOSED match; a change that differs leaves CLOSED.
+        pytest.param(
+            "MERGED", (pull("CLOSED"), SQUASHED), {}, WALKED, [(TIP, SQUASH)], id="beside an exact closed one"
+        ),
+        pytest.param(
+            "CLOSED",
+            (pull("CLOSED"), OTHER_SQUASHED),
+            {},
+            WALKED,
+            [(TIP, OTHER_SQUASH)],
+            id="another change beside an exact closed one",
+        ),
+        # Merged pull requests are compared in listing order until one proves the merge.
+        pytest.param(
+            "MERGED",
+            (OTHER_SQUASHED, SQUASHED),
+            {},
+            [*WALKED, commits_call(7)],
+            [(TIP, OTHER_SQUASH), (TIP, SQUASH)],
+            id="the proof second",
+        ),
+        pytest.param(
+            "MERGED", (SQUASHED, OTHER_SQUASHED), {}, [*WALKED, commits_call(7)], [(TIP, SQUASH)], id="the proof first"
+        ),
+    ],
+)
+def test_a_merge_commit_whose_change_is_the_branches_proves_a_rewritten_tip_merged(
+    expected: str,
+    pulls: tuple[dict, ...],
+    arguments: dict[str, Any],
+    calls: list[list[str]],
+    compared: list[tuple[str, str]],
+) -> None:
+    asked: list[tuple[str, str]] = []
+
+    def same_change(tip: str, merge_commit: str) -> bool:
+        asked.append((tip, merge_commit))
+        return (tip, merge_commit) == (TIP, SQUASH)
+
+    options: dict[str, Any] = {"bases": main_only(same_change), "commits": {7: history((OLD, BASE))}, **arguments}
+    CHECK.assertEqual((expected, calls), outcome(*pulls, **options))
+    CHECK.assertEqual(compared, asked)
+
+
+def recording_bases(asked: list[str]) -> Bases:
+    """Base tests that record each base name looked up and know main alone, on which every change matches."""
+
+    def tests(base: str) -> BaseTests | None:
+        asked.append(base)
+        return BaseTests(in_main, lambda tip, merge_commit: True) if base == "main" else None
+
+    return tests
+
+
+@pytest.mark.parametrize("name", [None, 7, "", "a..b", "with space", "a^b", "a:b", "a~1", "a@{1}", "a?b"], ids=repr)
+def test_a_pull_request_without_a_usable_base_name_is_judged_against_the_default(name: object) -> None:
+    asked: list[str] = []
+    tests = recording_bases(asked)
+    CHECK.assertEqual(
+        ("MERGED", [LIST_CALL, commits_call(7)]),
+        outcome(dict(SQUASHED, baseRefName=name), bases=tests, commits={7: history((OLD, BASE))}),
+    )
+    CHECK.assertEqual(["main"], asked)
+    asked.clear()
+    CHECK.assertEqual(
+        ("UNMATCHED", [LIST_CALL]),
+        outcome(dict(SQUASHED, baseRefName=name), bases=tests, commits={}, default_base=None),
+    )
+    CHECK.assertEqual([], asked)
+
+
+# A pull request's own base name is looked up as given, in any shape git accepts.
+@pytest.mark.parametrize("name", ["main", "release/1.0", "feature-x", "topic.v2", "wip_2026", "-dash", "uni\u00e9"])
+def test_a_pull_requests_own_base_name_is_looked_up_as_given(name: str) -> None:
+    asked: list[str] = []
+    outcome(dict(SQUASHED, baseRefName=name), bases=recording_bases(asked), commits={7: history((OLD, BASE))})
+    CHECK.assertEqual([name], asked)
+
+
+@pytest.mark.parametrize(
+    ("expected", "pulls", "upstream", "calls"),
+    [
+        # An exact match, the walk, and the change each pass the gate when the base holds the upstream.
+        pytest.param("MERGED", (pull("MERGED"),), MAIN_NOW, [LIST_CALL], id="an exact match"),
+        pytest.param(
+            "MERGED", (UPDATED_PULL,), MAIN_NOW, [LIST_CALL, commits_call(7)], id="the walk of an updated one"
+        ),
+        pytest.param("MERGED", (SQUASHED,), MAIN_NOW, [LIST_CALL, commits_call(7)], id="the change of a squash"),
+        pytest.param("CLOSED", (pull("CLOSED"),), MAIN_NOW, [LIST_CALL], id="an exact closed one"),
+        # The upstream is judged against each pull request's own base, not against every fetched base.
+        pytest.param("UNMATCHED", (SQUASHED,), RELEASE_BASE, [LIST_CALL], id="another base's upstream"),
+        pytest.param(
+            "MERGED",
+            (dict(SQUASHED, baseRefName="release/1.0"),),
+            RELEASE_BASE,
+            [LIST_CALL, commits_call(7)],
+            id="its own base's upstream",
+        ),
+        pytest.param(
+            "UNMATCHED", (pull("MERGED"),), RELEASE_BASE, [LIST_CALL], id="another base's upstream at an exact match"
+        ),
+        pytest.param(
+            "UNMATCHED",
+            (pull("CLOSED"),),
+            RELEASE_BASE,
+            [LIST_CALL],
+            id="another base's upstream at an exact closed one",
+        ),
+        # Work the base does not hold stays newer work.
+        pytest.param("UNMATCHED", (pull("MERGED"), SQUASHED), WORK, [LIST_CALL], id="work no base holds"),
+    ],
+)
+def test_an_upstream_the_pull_requests_base_holds_blocks_no_proof(
+    expected: str, pulls: tuple[dict, ...], upstream: str, calls: list[list[str]]
+) -> None:
+    bases: Bases = {
+        "main": BaseTests(in_main, lambda tip, merge_commit: True),
+        "release/1.0": BaseTests(in_release, lambda tip, merge_commit: True),
+    }.get
+    commits = {7: UPDATED}
+    CHECK.assertEqual((expected, calls), outcome(*pulls, upstream=upstream, bases=bases, commits=commits))
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        DEMO_ENTRY.replace(b"1" * 40, b"4" * 40) + NOTES_ENTRY,
+        DEMO_ENTRY.replace(b"2" * 40, b"4" * 40) + NOTES_ENTRY,
+        DEMO_ENTRY.replace(b":100644 100644", b":100644 100755") + NOTES_ENTRY,
+        DEMO_ENTRY.replace(b"demo.py", b"other.py") + NOTES_ENTRY,
+        DEMO_ENTRY,
+    ],
+    ids=["the content before", "the content after", "the mode", "the path", "a file left out"],
+)
+def test_every_file_with_its_content_before_and_after_counts_and_only_their_order_is_left_out(changed: bytes) -> None:
+    CHECK.assertNotEqual(change_identity(DEMO_ENTRY + NOTES_ENTRY), change_identity(changed))
+
+
+@pytest.mark.parametrize(
+    "listed",
+    [
+        DEMO_ENTRY[:-1],
+        DEMO_ENTRY + b"stray",
+        DEMO_ENTRY.replace(b"\0demo.py\0", b"\0\0"),
+        DEMO_ENTRY.replace(b"1" * 40, b"1" * 7),
+        b"diff --git a/demo.py b/demo.py\n@@ -1 +1 @@\n-old\n+new\n",
+    ],
+    ids=["no closing NUL", "stray bytes after an entry", "an empty path", "a short object name", "a patch"],
+)
+def test_a_listing_in_any_other_shape_fails_closed(listed: bytes) -> None:
+    with CHECK.assertRaisesRegex(QueryError, "unexpected shape"):
+        change_identity(listed)

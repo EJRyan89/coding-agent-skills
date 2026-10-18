@@ -15,12 +15,17 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
 import audit_ai_config as audit
 import markdown_literal
+import pytest
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 OWNERSHIP = audit.OWNERSHIP_MARKER
 
@@ -2607,31 +2612,41 @@ LAYERING_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
 }
 
 
-class FindingSequenceTests(unittest.TestCase):
-    """The exact findings, in order, of the MCP and instruction-layering checks for each branch they take."""
+# The exact findings, in order, of the MCP and instruction-layering checks for each branch they take.
 
-    def _rows(self, check, files: dict[str, str], manifest: dict) -> list[tuple[str, str, str | None, str]]:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            for relative, text in files.items():
-                (root / relative).parent.mkdir(parents=True, exist_ok=True)
-                (root / relative).write_text(text, encoding="utf-8")
-            return [
-                (f.severity, f.check, f.path, next((p for p in PARSE_PREFIXES if f.message.startswith(p)), f.message))
-                for f in check(root, manifest)
-            ]
 
-    def test_mcp_findings_and_their_order(self) -> None:
-        self.assertEqual(set(MCP_SCENARIOS), set(MCP_EXPECTED))
-        for name, (files, manifest) in MCP_SCENARIOS.items():
-            with self.subTest(scenario=name):
-                self.assertEqual(MCP_EXPECTED[name], self._rows(audit.check_mcp, files, manifest))
+def sequence_rows(
+    check: Callable[[Path, dict[str, Any]], list[audit.Finding]], files: dict[str, str], manifest: dict
+) -> list[tuple[str, str, str | None, str]]:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        for relative, text in files.items():
+            (root / relative).parent.mkdir(parents=True, exist_ok=True)
+            (root / relative).write_text(text, encoding="utf-8")
+        return [
+            (f.severity, f.check, f.path, next((p for p in PARSE_PREFIXES if f.message.startswith(p)), f.message))
+            for f in check(root, manifest)
+        ]
 
-    def test_instruction_layering_findings_and_their_order(self) -> None:
-        self.assertEqual(set(LAYERING_SCENARIOS), set(LAYERING_EXPECTED))
-        for name, (files, manifest) in LAYERING_SCENARIOS.items():
-            with self.subTest(scenario=name):
-                self.assertEqual(LAYERING_EXPECTED[name], self._rows(audit.check_instruction_layering, files, manifest))
+
+def test_every_mcp_scenario_has_its_expected_findings() -> None:
+    CHECK.assertEqual(set(MCP_SCENARIOS), set(MCP_EXPECTED))
+
+
+@pytest.mark.parametrize("name", list(MCP_SCENARIOS))
+def test_mcp_findings_and_their_order(name: str) -> None:
+    files, manifest = MCP_SCENARIOS[name]
+    CHECK.assertEqual(MCP_EXPECTED[name], sequence_rows(audit.check_mcp, files, manifest))
+
+
+def test_every_layering_scenario_has_its_expected_findings() -> None:
+    CHECK.assertEqual(set(LAYERING_SCENARIOS), set(LAYERING_EXPECTED))
+
+
+@pytest.mark.parametrize("name", list(LAYERING_SCENARIOS))
+def test_instruction_layering_findings_and_their_order(name: str) -> None:
+    files, manifest = LAYERING_SCENARIOS[name]
+    CHECK.assertEqual(LAYERING_EXPECTED[name], sequence_rows(audit.check_instruction_layering, files, manifest))
 
 
 # ---------------------------------------------------------------------------
@@ -3114,20 +3129,26 @@ def parity_rows(files: dict[str, str | bytes], manifest: dict) -> list[tuple[str
         return _finding_rows(audit.check_parity(root, manifest))
 
 
-class AuthorityAndParitySequenceTests(unittest.TestCase):
-    """The exact result of the authority classification and the parity check for each branch they take."""
+# The exact result of the authority classification and the parity check for each branch they take.
 
-    def test_authority_classification_and_findings(self) -> None:
-        self.assertEqual(set(AUTHORITY_SCENARIOS), set(AUTHORITY_EXPECTED))
-        for name, files in AUTHORITY_SCENARIOS.items():
-            with self.subTest(scenario=name):
-                self.assertEqual(AUTHORITY_EXPECTED[name], authority_result(files))
 
-    def test_parity_findings_and_their_order(self) -> None:
-        self.assertEqual(set(PARITY_SCENARIOS), set(PARITY_EXPECTED))
-        for name, (files, manifest) in PARITY_SCENARIOS.items():
-            with self.subTest(scenario=name):
-                self.assertEqual(PARITY_EXPECTED[name], parity_rows(files, manifest))
+def test_every_authority_scenario_has_its_expected_result() -> None:
+    CHECK.assertEqual(set(AUTHORITY_SCENARIOS), set(AUTHORITY_EXPECTED))
+
+
+@pytest.mark.parametrize("name", list(AUTHORITY_SCENARIOS))
+def test_authority_classification_and_findings(name: str) -> None:
+    CHECK.assertEqual(AUTHORITY_EXPECTED[name], authority_result(AUTHORITY_SCENARIOS[name]))
+
+
+def test_every_parity_scenario_has_its_expected_findings() -> None:
+    CHECK.assertEqual(set(PARITY_SCENARIOS), set(PARITY_EXPECTED))
+
+
+@pytest.mark.parametrize("name", list(PARITY_SCENARIOS))
+def test_parity_findings_and_their_order(name: str) -> None:
+    files, manifest = PARITY_SCENARIOS[name]
+    CHECK.assertEqual(PARITY_EXPECTED[name], parity_rows(files, manifest))
 
 
 # ---------------------------------------------------------------------------
@@ -3478,12 +3499,6 @@ def inventory_rows(files: dict[str, str | bytes]) -> list[tuple[str, str, str | 
 class ManifestSchemaAndInventorySequenceTests(unittest.TestCase):
     """The exact result of the manifest schema validation and the inventory check for each branch they take."""
 
-    def test_manifest_schema_errors_and_their_order(self) -> None:
-        self.assertEqual(set(SCHEMA_SCENARIOS), set(SCHEMA_EXPECTED))
-        for name, data in SCHEMA_SCENARIOS.items():
-            with self.subTest(scenario=name):
-                self.assertEqual(SCHEMA_EXPECTED[name], audit._validate_manifest_schema(data))
-
     def test_schema_errors_become_authority_findings_in_order(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             data = SCHEMA_SCENARIOS["every_field_wrong"]
@@ -3491,11 +3506,23 @@ class ManifestSchemaAndInventorySequenceTests(unittest.TestCase):
         self.assertEqual((None, {}), (classification, returned))
         self.assertEqual(SCHEMA_AUTHORITY_ROWS, _finding_rows(findings))
 
-    def test_inventory_findings_and_their_order(self) -> None:
-        self.assertEqual(set(INVENTORY_SCENARIOS), set(INVENTORY_EXPECTED))
-        for name, files in INVENTORY_SCENARIOS.items():
-            with self.subTest(scenario=name):
-                self.assertEqual(INVENTORY_EXPECTED[name], inventory_rows(files))
+
+def test_every_schema_scenario_has_its_expected_errors() -> None:
+    CHECK.assertEqual(set(SCHEMA_SCENARIOS), set(SCHEMA_EXPECTED))
+
+
+@pytest.mark.parametrize("name", list(SCHEMA_SCENARIOS))
+def test_manifest_schema_errors_and_their_order(name: str) -> None:
+    CHECK.assertEqual(SCHEMA_EXPECTED[name], audit._validate_manifest_schema(SCHEMA_SCENARIOS[name]))
+
+
+def test_every_inventory_scenario_has_its_expected_findings() -> None:
+    CHECK.assertEqual(set(INVENTORY_SCENARIOS), set(INVENTORY_EXPECTED))
+
+
+@pytest.mark.parametrize("name", list(INVENTORY_SCENARIOS))
+def test_inventory_findings_and_their_order(name: str) -> None:
+    CHECK.assertEqual(INVENTORY_EXPECTED[name], inventory_rows(INVENTORY_SCENARIOS[name]))
 
 
 class GeneratedLayoutReferenceTests(unittest.TestCase):
@@ -3857,39 +3884,30 @@ class ScopeWithoutAValidManifestTests(unittest.TestCase):
         )
 
 
+def markdown_row(path: str, message: str) -> str:
+    result = audit.AuditResult(
+        repository="example", authority="conforming", findings=[audit.Finding("ERROR", "mcp", path, 3, message)]
+    )
+    rows = [line for line in audit.format_markdown(result).splitlines() if line.startswith("| ERROR")]
+    CHECK.assertEqual(1, len(rows), rows)
+    return rows[0]
+
+
 class MarkdownCellTests(unittest.TestCase):
     """A value the repository controls cannot split a findings row or add a column."""
-
-    def _row(self, path: str, message: str) -> str:
-        result = audit.AuditResult(
-            repository="example", authority="conforming", findings=[audit.Finding("ERROR", "mcp", path, 3, message)]
-        )
-        rows = [line for line in audit.format_markdown(result).splitlines() if line.startswith("| ERROR")]
-        self.assertEqual(1, len(rows), rows)
-        return rows[0]
 
     def test_pipes_are_encoded_and_line_breaks_flattened_in_a_cell(self) -> None:
         self.assertEqual(
             "| ERROR | mcp | a&#124;b c&#46;json | 3 | Server &#39;a&#124;b c&#39;&#58; bad |",
-            self._row("a|b\r\nc.json", "Server 'a|b\nc': bad"),
+            markdown_row("a|b\r\nc.json", "Server 'a|b\nc': bad"),
         )
-
-    def test_a_cell_opens_no_comment_and_an_escaped_pipe_adds_no_cell(self) -> None:
-        for text, cell in (
-            ("a<!-- hidden", "a&lt;&#33;&#45;&#45; hidden"),
-            ("a\\|b", "a&#92;&#124;b"),
-            ("b\u2028x", "b x"),
-            ("c\u0085x", "c x"),
-        ):
-            with self.subTest(text=text):
-                self.assertEqual(f"| ERROR | mcp | {cell} | 3 | {cell} |", self._row(text, text))
 
     def test_every_repository_controlled_cell_is_skill_cores_markdown_line(self) -> None:
         self.assertFalse(hasattr(audit, "_cell"))
         self.assertIs(markdown_literal.markdown_line, audit.markdown_line)
         text = "x`*_[a](b)<i>&|\\"
         line = markdown_literal.markdown_line(text)
-        self.assertEqual(f"| ERROR | mcp | {line} | 3 | {line} |", self._row(text, text))
+        self.assertEqual(f"| ERROR | mcp | {line} | 3 | {line} |", markdown_row(text, text))
 
     def test_server_names_that_open_markup_or_end_a_line_stay_literal_in_their_rows(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -3909,22 +3927,6 @@ class MarkdownCellTests(unittest.TestCase):
                 report,
             )
 
-    def test_no_line_separator_in_a_value_starts_a_report_line(self) -> None:
-        for separator in ("\n", "\r", "\u0085", "\u2028", "\u2029"):
-            with self.subTest(separator=hex(ord(separator))):
-                forged = f"x{separator}RESULT COMPLIANT{separator}SUMMARY ERROR 0"
-                result = audit.AuditResult(
-                    repository="example",
-                    authority="conforming",
-                    findings=[audit.Finding("ERROR", "mcp", forged, None, forged)],
-                )
-                lines = audit.format_markdown(result).splitlines()
-                self.assertEqual(["RESULT ERRORS"], [line for line in lines if line.startswith("RESULT")])
-                self.assertEqual(
-                    ["| ERROR | mcp | x RESULT COMPLIANT SUMMARY ERROR 0 |  | x RESULT COMPLIANT SUMMARY ERROR 0 |"],
-                    [line for line in lines if line.startswith("| ERROR")],
-                )
-
     def test_a_server_name_from_the_repository_stays_in_its_row(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -3935,6 +3937,37 @@ class MarkdownCellTests(unittest.TestCase):
         self.assertTrue(table)
         for line in table:
             self.assertEqual(6, len(re.findall(r"(?<!\\)\|", line)), line)
+
+
+@pytest.mark.parametrize(
+    ("text", "cell"),
+    [
+        pytest.param("a<!-- hidden", "a&lt;&#33;&#45;&#45; hidden", id="a-comment-opening"),
+        pytest.param("a\\|b", "a&#92;&#124;b", id="an-escaped-pipe"),
+        pytest.param("b\u2028x", "b x", id="a-line-separator"),
+        pytest.param("c\u0085x", "c x", id="a-next-line"),
+    ],
+)
+def test_a_cell_opens_no_comment_and_an_escaped_pipe_adds_no_cell(text: str, cell: str) -> None:
+    CHECK.assertEqual(f"| ERROR | mcp | {cell} | 3 | {cell} |", markdown_row(text, text))
+
+
+@pytest.mark.parametrize(
+    "separator", ["\n", "\r", "\u0085", "\u2028", "\u2029"], ids=lambda separator: hex(ord(separator))
+)
+def test_no_line_separator_in_a_value_starts_a_report_line(separator: str) -> None:
+    forged = f"x{separator}RESULT COMPLIANT{separator}SUMMARY ERROR 0"
+    result = audit.AuditResult(
+        repository="example",
+        authority="conforming",
+        findings=[audit.Finding("ERROR", "mcp", forged, None, forged)],
+    )
+    lines = audit.format_markdown(result).splitlines()
+    CHECK.assertEqual(["RESULT ERRORS"], [line for line in lines if line.startswith("RESULT")])
+    CHECK.assertEqual(
+        ["| ERROR | mcp | x RESULT COMPLIANT SUMMARY ERROR 0 |  | x RESULT COMPLIANT SUMMARY ERROR 0 |"],
+        [line for line in lines if line.startswith("| ERROR")],
+    )
 
 
 class OwnershipFindingTests(unittest.TestCase):

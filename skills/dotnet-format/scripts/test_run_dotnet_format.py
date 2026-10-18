@@ -14,10 +14,15 @@ from collections.abc import Sequence
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import run_dotnet_format as formatter
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 INSTALL_HINT = "dotnet-format is not installed; install it with: dotnet tool install -g dotnet-format"
 SDK_INSTALL_HINT = (
@@ -142,27 +147,6 @@ class CommandTests(unittest.TestCase):
             ],
             formatter.command(TOOL, "fix", "App.sln", ["A.cs"], "info"),
         )
-
-    def test_a_name_starting_with_at_or_dash_is_passed_as_a_path_to_either_formatter(self) -> None:
-        # Both formatters read an argument starting with `@` as a response file and one starting with `-` as an
-        # option, anywhere on the command line; `./` makes each a path both match as the same file.
-        names = ["@Program.cs", "-Option.cs", "src/@Kept.cs", "src/-Kept.cs", "A@B.cs", "Plain.cs"]
-        included = ["./@Program.cs", "./-Option.cs", "src/@Kept.cs", "src/-Kept.cs", "A@B.cs", "Plain.cs"]
-        for tool, solution in ((TOOL, "App.sln"), (SDK, "App.slnx"), (SDK, "App.sln")):
-            for mode in ("check", "fix"):
-                with self.subTest(tool=tool, solution=solution, mode=mode):
-                    arguments = formatter.command(tool, mode, solution, names, "warn")
-                    self.assertEqual(included, arguments[arguments.index("--include") + 1 :])
-                    self.assertEqual(
-                        formatter.command(tool, mode, solution, [], "warn"),
-                        arguments[: arguments.index("--include") + 1],
-                    )
-                    self.assertFalse(
-                        [argument for argument in arguments[1:] if argument.startswith("@")],
-                        "no argument is read as a response file",
-                    )
-                    options = [argument for argument in arguments if argument.startswith("-")]
-                    self.assertEqual(options, [argument for argument in options if argument.startswith("--")])
 
     def test_include_path_changes_only_a_name_the_formatter_would_not_read_as_a_path(self) -> None:
         self.assertEqual("./@a.cs", formatter.include_path("@a.cs"))
@@ -846,28 +830,6 @@ class MainTests(unittest.TestCase):
         with mock.patch.object(tempfile, "mkstemp", side_effect=OSError(28, "No space left on device")):
             self.assert_failed(self.run_formatter("check", FakeRunner(0, "")), "[Errno 28] No space left on device")
 
-    def test_usage_errors_exit_2_with_usage_on_stderr(self) -> None:
-        cases = (
-            ["format", "--repo-root", ".", "--solution", "A.sln", "--include-file", "f"],
-            ["check", "--repo-root", ".", "--include-file", "f"],
-            ["check", "--repo-root", ".", "--solution", "A.sln", "--include-file", "f", "--severity", "none"],
-            ["check", "--repo-root", ".", "--solution", "A.sln", "--include-file", "f", "--timeout", "soon"],
-        )
-        for arguments in cases:
-            with self.subTest(arguments=arguments):
-                runner = FakeRunner(0, "")
-                output, errors = io.StringIO(), io.StringIO()
-                with (
-                    contextlib.redirect_stdout(output),
-                    contextlib.redirect_stderr(errors),
-                    self.assertRaises(SystemExit) as raised,
-                ):
-                    formatter.main(arguments, formatter.Services(run=runner, which=lambda name: name))
-                self.assertEqual(2, raised.exception.code)
-                self.assertEqual("", output.getvalue())
-                self.assertIn("usage:", errors.getvalue())
-                self.assertEqual([], runner.calls)
-
 
 class ConsoleTests(unittest.TestCase):
     def test_output_a_cp1252_console_cannot_encode_is_written_as_utf_8(self) -> None:
@@ -899,3 +861,56 @@ class ConsoleTests(unittest.TestCase):
             )
         self.assertEqual(1, result.returncode, result.stderr.decode("utf-8", "replace"))
         self.assertEqual(f"FAILED {file_list} lists no files\n", result.stdout.decode("utf-8").replace("\r\n", "\n"))
+
+
+@pytest.mark.parametrize("mode", ["check", "fix"])
+@pytest.mark.parametrize(("tool", "solution"), [(TOOL, "App.sln"), (SDK, "App.slnx"), (SDK, "App.sln")])
+def test_a_name_starting_with_at_or_dash_is_passed_as_a_path_to_either_formatter(
+    tool: str, solution: str, mode: str
+) -> None:
+    # Both formatters read an argument starting with `@` as a response file and one starting with `-` as an
+    # option, anywhere on the command line; `./` makes each a path both match as the same file.
+    names = ["@Program.cs", "-Option.cs", "src/@Kept.cs", "src/-Kept.cs", "A@B.cs", "Plain.cs"]
+    included = ["./@Program.cs", "./-Option.cs", "src/@Kept.cs", "src/-Kept.cs", "A@B.cs", "Plain.cs"]
+    arguments = formatter.command(tool, mode, solution, names, "warn")
+    CHECK.assertEqual(included, arguments[arguments.index("--include") + 1 :])
+    CHECK.assertEqual(
+        formatter.command(tool, mode, solution, [], "warn"),
+        arguments[: arguments.index("--include") + 1],
+    )
+    CHECK.assertFalse(
+        [argument for argument in arguments[1:] if argument.startswith("@")],
+        "no argument is read as a response file",
+    )
+    options = [argument for argument in arguments if argument.startswith("-")]
+    CHECK.assertEqual(options, [argument for argument in options if argument.startswith("--")])
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        pytest.param(["format", "--repo-root", ".", "--solution", "A.sln", "--include-file", "f"], id="unknown-mode"),
+        pytest.param(["check", "--repo-root", ".", "--include-file", "f"], id="no-solution"),
+        pytest.param(
+            ["check", "--repo-root", ".", "--solution", "A.sln", "--include-file", "f", "--severity", "none"],
+            id="unknown-severity",
+        ),
+        pytest.param(
+            ["check", "--repo-root", ".", "--solution", "A.sln", "--include-file", "f", "--timeout", "soon"],
+            id="unreadable-timeout",
+        ),
+    ],
+)
+def test_usage_errors_exit_2_with_usage_on_stderr(arguments: list[str]) -> None:
+    runner = FakeRunner(0, "")
+    output, errors = io.StringIO(), io.StringIO()
+    with (
+        contextlib.redirect_stdout(output),
+        contextlib.redirect_stderr(errors),
+        CHECK.assertRaises(SystemExit) as raised,
+    ):
+        formatter.main(arguments, formatter.Services(run=runner, which=lambda name: name))
+    CHECK.assertEqual(2, raised.exception.code)
+    CHECK.assertEqual("", output.getvalue())
+    CHECK.assertIn("usage:", errors.getvalue())
+    CHECK.assertEqual([], runner.calls)

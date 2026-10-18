@@ -14,11 +14,16 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import skill_inventory
 from git_client import GitClient, GitError, GitResult
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 SCRIPT = Path(__file__).resolve().parent / "skill_inventory.py"
 
@@ -38,6 +43,10 @@ def run(*arguments: str) -> tuple[int, list[str], str]:
 
 def git(*arguments: str) -> None:
     subprocess.run(["git", *arguments], check=True, capture_output=True)
+
+
+def execute(*arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run([sys.executable, "-B", str(SCRIPT), *arguments], capture_output=True, text=True, check=False)
 
 
 class TemporaryTestCase(unittest.TestCase):
@@ -862,75 +871,6 @@ class ToolsTests(TemporaryTestCase):
         self.assertEqual(0, code, error)
         return [line for line in lines if line.startswith(("UNGRANTED", "REPOSITORY_CODE", "GRANTED_REPOSITORY"))]
 
-    def test_grant_patterns_match_as_claude_code_does(self) -> None:
-        # Claude Code compares the command's text, quotes included: `*` matches any text, a pattern without one
-        # matches exactly, and the legacy `prefix:*` matches the prefix followed by arguments. Claude Code 2.1.288
-        # on Windows denied the unquoted form below for the quoted command and ran the quoted form, in both shells.
-        cases = [
-            ('python -B "${CLAUDE_SKILL_DIR}/scripts/*', 'python -B "${CLAUDE_SKILL_DIR}/scripts/a.py" --help', True),
-            ("python -B ${CLAUDE_SKILL_DIR}/scripts/* *", 'python -B "${CLAUDE_SKILL_DIR}/scripts/a.py" --help', False),
-            ("git rev-parse --show-toplevel", "git rev-parse --show-toplevel", True),
-            ("git rev-parse --show-toplevel", "git rev-parse --show-toplevel x", False),
-            ("git rev-parse:*", "git rev-parse --git-dir", True),
-            ("git rev-parse:*", "git rev-parsed", False),
-            ("ls *", "ls -la", True),
-            ("ls *", "lsof", False),
-            # A `*` at the end after a space, as the only wildcard, also matches the bare command; without the space
-            # it continues the word.
-            ("ls *", "ls", True),
-            ("ls:*", "ls", True),
-            ("ls*", "lsof", True),
-            ("* --help *", "npm --help", False),
-            ('python -B "${CLAUDE_SKILL_DIR}/scripts/a.py" *', 'python -B "${CLAUDE_SKILL_DIR}/scripts/a.py"', True),
-            ("python tools/a.py *", "python tools/a.py --write", True),
-            ("python tools/a.py *", "python tools/a.py/../../b.py", False),
-            ("python tools/a.py*", "python tools/a.py/../../b.py", True),
-            # No path is normalized, so a pattern ending in a folder also matches a `..` path out of it, and one
-            # ending at a script's closing quote matches only that script.
-            (
-                'python -B "${CLAUDE_SKILL_DIR}/scripts/*',
-                'python -B "${CLAUDE_SKILL_DIR}/scripts/../../core/scripts/config.py" write x',
-                True,
-            ),
-            (
-                'python -B "${CLAUDE_SKILL_DIR}/../core/scripts/a.py" *',
-                'python -B "${CLAUDE_SKILL_DIR}/../core/scripts/a.py" run',
-                True,
-            ),
-            (
-                'python -B "${CLAUDE_SKILL_DIR}/../core/scripts/a.py" *',
-                'python -B "${CLAUDE_SKILL_DIR}/../core/scripts/a.py/../config.py" write x',
-                False,
-            ),
-            (
-                'python -B "${CLAUDE_SKILL_DIR}/scripts/a.py" *',
-                'python -B "${CLAUDE_SKILL_DIR}/scripts/a.py/../../../core/scripts/config.py" write x',
-                False,
-            ),
-        ]
-        for pattern, command, expected in cases:
-            with self.subTest(pattern=pattern, command=command):
-                self.assertEqual(expected, skill_inventory.grants(pattern, command))
-
-    def test_a_joined_command_is_granted_only_when_the_pattern_matches_each_command(self) -> None:
-        cases = [
-            ("git status *", "git status --short && rm -rf build", False),
-            ("git status *", "git status ; rm -rf build", False),
-            ("git status *", "git status || rm -rf build", False),
-            ("git status *", "git status | rm -rf build", False),
-            ("git status *", "git status && git status --short", True),
-            ("git *", 'git commit -m "a && b; c | d"', True),
-            ("git *", "git commit -m 'a && b'", True),
-            ("git *", "git log 2>&1", True),
-        ]
-        for pattern, command, expected in cases:
-            with self.subTest(pattern=pattern, command=command):
-                self.assertEqual(expected, skill_inventory.grants(pattern, command))
-        self.assertEqual(
-            ["a", "b", "c", "d", "e 'f; g' \"h | i\"", "j \\&& k"],
-            skill_inventory.command_parts("a && b || c; d | e 'f; g' \"h | i\" | j \\&& k"),
-        )
-
     def test_commands_that_expand_shell_variables_are_reported(self) -> None:
         # Claude Code 2.1.288 asked for approval of a granted command whose arguments held "$PWD", in both shells.
         # It fills in ${CLAUDE_SKILL_DIR} and $ARGUMENTS itself before the command runs.
@@ -1422,24 +1362,11 @@ class TemplateValueTests(unittest.TestCase):
 class ExitContractTests(TemporaryTestCase):
     """The process-level contract: 1 with a last stdout line FAILED for a failure, 2 for usage alone."""
 
-    def execute(self, *arguments: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [sys.executable, "-B", str(SCRIPT), *arguments], capture_output=True, text=True, check=False
-        )
-
     def test_a_missing_input_exits_1_with_failed_on_stdout(self) -> None:
-        completed = self.execute("inventory", str(self.root / "absent"))
+        completed = execute("inventory", str(self.root / "absent"))
         self.assertEqual(1, completed.returncode)
         self.assertEqual("", completed.stderr)
         self.assertTrue(completed.stdout.splitlines()[-1].startswith("FAILED skill directory not found"))
-
-    def test_a_usage_error_exits_2(self) -> None:
-        for arguments in ((), ("unknown",), ("inventory",)):
-            with self.subTest(arguments=arguments):
-                completed = self.execute(*arguments)
-                self.assertEqual(2, completed.returncode)
-                self.assertEqual("", completed.stdout)
-                self.assertIn("usage:", completed.stderr)
 
     def test_output_survives_a_console_that_cannot_encode_it(self) -> None:
         # A Windows pipe defaults to a legacy code page, and every fact names its file as it is named.
@@ -1454,3 +1381,96 @@ class ExitContractTests(TemporaryTestCase):
         self.assertEqual(
             [f"CUE {skill.as_posix()} 1 loop For each item."], completed.stdout.decode("utf-8").splitlines()
         )
+
+
+# Claude Code compares the command's text, quotes included: `*` matches any text, a pattern without one
+# matches exactly, and the legacy `prefix:*` matches the prefix followed by arguments. Claude Code 2.1.288
+# on Windows denied the unquoted form below for the quoted command and ran the quoted form, in both shells.
+@pytest.mark.parametrize(
+    ("pattern", "command", "expected"),
+    [
+        ('python -B "${CLAUDE_SKILL_DIR}/scripts/*', 'python -B "${CLAUDE_SKILL_DIR}/scripts/a.py" --help', True),
+        ("python -B ${CLAUDE_SKILL_DIR}/scripts/* *", 'python -B "${CLAUDE_SKILL_DIR}/scripts/a.py" --help', False),
+        ("git rev-parse --show-toplevel", "git rev-parse --show-toplevel", True),
+        ("git rev-parse --show-toplevel", "git rev-parse --show-toplevel x", False),
+        ("git rev-parse:*", "git rev-parse --git-dir", True),
+        ("git rev-parse:*", "git rev-parsed", False),
+        ("ls *", "ls -la", True),
+        ("ls *", "lsof", False),
+        # A `*` at the end after a space, as the only wildcard, also matches the bare command; without the space
+        # it continues the word.
+        ("ls *", "ls", True),
+        ("ls:*", "ls", True),
+        ("ls*", "lsof", True),
+        ("* --help *", "npm --help", False),
+        ('python -B "${CLAUDE_SKILL_DIR}/scripts/a.py" *', 'python -B "${CLAUDE_SKILL_DIR}/scripts/a.py"', True),
+        ("python tools/a.py *", "python tools/a.py --write", True),
+        ("python tools/a.py *", "python tools/a.py/../../b.py", False),
+        ("python tools/a.py*", "python tools/a.py/../../b.py", True),
+        # No path is normalized, so a pattern ending in a folder also matches a `..` path out of it, and one
+        # ending at a script's closing quote matches only that script.
+        (
+            'python -B "${CLAUDE_SKILL_DIR}/scripts/*',
+            'python -B "${CLAUDE_SKILL_DIR}/scripts/../../core/scripts/config.py" write x',
+            True,
+        ),
+        (
+            'python -B "${CLAUDE_SKILL_DIR}/../core/scripts/a.py" *',
+            'python -B "${CLAUDE_SKILL_DIR}/../core/scripts/a.py" run',
+            True,
+        ),
+        (
+            'python -B "${CLAUDE_SKILL_DIR}/../core/scripts/a.py" *',
+            'python -B "${CLAUDE_SKILL_DIR}/../core/scripts/a.py/../config.py" write x',
+            False,
+        ),
+        (
+            'python -B "${CLAUDE_SKILL_DIR}/scripts/a.py" *',
+            'python -B "${CLAUDE_SKILL_DIR}/scripts/a.py/../../../core/scripts/config.py" write x',
+            False,
+        ),
+    ],
+)
+def test_grant_patterns_match_as_claude_code_does(pattern: str, command: str, expected: bool) -> None:
+    CHECK.assertEqual(expected, skill_inventory.grants(pattern, command))
+
+
+@pytest.mark.parametrize(
+    ("pattern", "command", "expected"),
+    [
+        ("git status *", "git status --short && rm -rf build", False),
+        ("git status *", "git status ; rm -rf build", False),
+        ("git status *", "git status || rm -rf build", False),
+        ("git status *", "git status | rm -rf build", False),
+        ("git status *", "git status && git status --short", True),
+        ("git *", 'git commit -m "a && b; c | d"', True),
+        ("git *", "git commit -m 'a && b'", True),
+        ("git *", "git log 2>&1", True),
+    ],
+)
+def test_a_joined_command_is_granted_only_when_the_pattern_matches_each_command(
+    pattern: str, command: str, expected: bool
+) -> None:
+    CHECK.assertEqual(expected, skill_inventory.grants(pattern, command))
+
+
+def test_a_command_is_split_at_each_operator_outside_quotes_and_escapes() -> None:
+    CHECK.assertEqual(
+        ["a", "b", "c", "d", "e 'f; g' \"h | i\"", "j \\&& k"],
+        skill_inventory.command_parts("a && b || c; d | e 'f; g' \"h | i\" | j \\&& k"),
+    )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        pytest.param((), id="no-command"),
+        pytest.param(("unknown",), id="unknown-command"),
+        pytest.param(("inventory",), id="inventory-without-a-directory"),
+    ],
+)
+def test_a_usage_error_exits_2(arguments: tuple[str, ...]) -> None:
+    completed = execute(*arguments)
+    CHECK.assertEqual(2, completed.returncode)
+    CHECK.assertEqual("", completed.stdout)
+    CHECK.assertIn("usage:", completed.stderr)

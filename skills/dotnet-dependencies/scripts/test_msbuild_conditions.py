@@ -6,9 +6,14 @@ import sys
 import unittest
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from msbuild_conditions import UNKNOWN, FileSystem, Value, condition_value, expanded
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 # The file system as a condition sees it in these tests: `here.props` exists, and `Directory.Build.props` is in `/repo`.
 FILES = FileSystem(
@@ -32,83 +37,12 @@ def holds(text: str, framework: str | None = None, **others: str | tuple[str | N
     return condition_value(text, lambda name: known.get(name.casefold(), UNKNOWN), FILES)
 
 
+def expand(text: str, **values: str | tuple[str | None, ...]) -> Value:
+    known = properties(**values)
+    return expanded(text, lambda name: known.get(name.casefold(), UNKNOWN), FILES)
+
+
 class ConditionTests(unittest.TestCase):
-    def assert_cases(self, cases: dict[bool | None, list[tuple[str, str]]]) -> None:
-        for expected, entries in cases.items():
-            for text, framework in entries:
-                with self.subTest(text=text, framework=framework):
-                    self.assertIs(expected, holds(text, framework))
-
-    def test_conditions_are_evaluated_only_in_the_forms_the_reader_knows(self) -> None:
-        self.assert_cases(
-            {
-                True: [
-                    ("'$(TargetFramework)'=='net472'", "net472"),
-                    ("'$(TargetFramework)' == 'NET472'", "net472"),
-                    ("'net8.0' == '$(TargetFramework)'", "net8.0"),
-                    ("$(TargetFramework) == 'net8.0'", "net8.0"),
-                    (
-                        "('$(TargetFramework)' == 'a' or '$(TargetFramework)' == 'b') AND '$(TargetFramework)' != 'c'",
-                        "b",
-                    ),
-                    ("$(TargetFramework.StartsWith('net4'))", "net472"),
-                    ("'' == ''", "net8.0"),
-                ],
-                False: [
-                    ("'$(TargetFramework)'=='net472'", "net8.0"),
-                    ("'$(TargetFramework)' != 'net8.0'", "net8.0"),
-                    ("$(TargetFramework.StartsWith('net4'))", "net8.0"),
-                    ("'$(TargetFramework)' == 'a' and '$(TargetFramework)' == 'b'", "a"),
-                ],
-                None: [
-                    ("'$(Configuration)' == 'Debug'", "net8.0"),
-                    ("'$(TargetFrameworkIdentifier)' == '.NETFramework'", "net8.0"),
-                    ("$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net6.0'))", "net8.0"),
-                    ("'$(TargetFramework)' ==", "net8.0"),
-                    ("('$(TargetFramework)' == 'net8.0'", "net8.0"),
-                    ("", "net8.0"),
-                ],
-            }
-        )
-
-    def test_one_operand_decides_whatever_its_place_and_a_malformed_condition_is_never_evaluated(self) -> None:
-        debug = "'$(Configuration)'=='Debug'"
-        mirrored = "'Debug'=='$(Configuration)'"
-        framework = "'$(TargetFramework)'=='net472'"
-        self.assert_cases(
-            {
-                True: [
-                    (f"{framework} or {debug}", "net472"),
-                    (f"{framework} or {mirrored}", "net472"),
-                    (f"{debug} or {framework}", "net472"),
-                    (f"({debug}) or ({framework})", "net472"),
-                    ("$(TargetFramework.StartsWith('net'))", "net8.0"),
-                ],
-                False: [
-                    (f"{framework} and {debug}", "net8.0"),
-                    (f"{framework} and {mirrored}", "net8.0"),
-                    (f"{debug} and {framework}", "net8.0"),
-                    # MSBuild's StartsWith compares with regard to case.
-                    ("$(TargetFramework.StartsWith('NET'))", "net8.0"),
-                ],
-                None: [
-                    # An operand the reader cannot evaluate leaves undecided what no other operand decides.
-                    (f"{framework} or {debug}", "net8.0"),
-                    (f"{framework} and {debug}", "net472"),
-                    # A dangling, leading, or doubled keyword, an unclosed or unopened parenthesis, a lone operand
-                    # that is not a boolean, and a missing operand make a condition MSBuild refuses.
-                    (f"{framework} or or", "net472"),
-                    (f"or {framework}", "net472"),
-                    (f"{framework} or", "net472"),
-                    (f"{framework} and", "net472"),
-                    (f"{framework} or and {framework}", "net472"),
-                    (f"{framework})", "net472"),
-                    ("'net472'", "net472"),
-                    ("== 'net472'", "net472"),
-                ],
-            }
-        )
-
     def test_every_property_is_read_by_its_name_in_any_case(self) -> None:
         self.assertIs(True, holds("'$(targetframework)'=='net8.0'", "net8.0"))
         self.assertIs(True, holds("'$(Tfm)'=='net472' and $(TFM.StartsWith('net4'))", tfm="net472"))
@@ -123,83 +57,148 @@ class ConditionTests(unittest.TestCase):
         self.assertIsNone(holds("'$(Tfm)'=='net8.0'", tfm=either))
         self.assertIsNone(holds("'$(Tfm)'=='net8.0'", tfm=("net8.0", None)))
 
-    def test_the_operators_and_functions_the_reader_reads(self) -> None:
-        cases: dict[bool | None, list[str]] = {
-            True: [
-                "!'$(A)'=='b'",
-                "!false",
-                "true",
-                "'$(Flag)'",
-                "'ON' and yes",
-                "$(Version) > 4",
-                "'$(Version)' <= '4.5'",
-                "0x10 >= 16",
-                "$(A.EndsWith('a'))",
-                "$(A.Contains('a'))",
-                "Exists('here.props')",
-                "Exists('$(A)/here.props')",
-                "HasTrailingSlash('$(Dir)')",
-                "'$(A)' == 'a' or $(Undefined.ToUpper())",
-            ],
-            False: [
-                "!true",
-                "no",
-                "'$(Version)' < '4'",
-                "Exists('absent.props')",
-                "Exists('')",
-                "$(A.Contains('z'))",
-                "HasTrailingSlash('$(A)')",
-            ],
-            None: [
-                "'$(Version)' < 'b'",
-                "'@(Compile)' != ''",
-                "'%(Identity)' == 'a'",
-                "'$(A.ToUpper())' == 'A'",
-                "Exists('$(Undefined)')",
-                "SomeFunction('a')",
-                "'$(A)",
-            ],
-        }
-        known = {"a": "a", "flag": "True", "version": "4.5", "dir": "src/"}
-        for expected, texts in cases.items():
-            for text in texts:
-                with self.subTest(text=text):
-                    self.assertIs(expected, holds(text, **known))
-
 
 class ExpansionTests(unittest.TestCase):
-    def expand(self, text: str, **values: str | tuple[str | None, ...]) -> Value:
-        known = properties(**values)
-        return expanded(text, lambda name: known.get(name.casefold(), UNKNOWN), FILES)
-
     def test_a_reference_is_replaced_by_each_value_the_property_may_hold(self) -> None:
-        self.assertEqual(("net472",), self.expand("$(Tfm)", tfm="net472"))
-        self.assertEqual(("lib;net8.0",), self.expand("$(LIB);net8.0", lib="lib"))
-        self.assertEqual(("a-x", "b-x"), self.expand("$(Name)-x", name=("a", "b")))
-        self.assertEqual(("True",), self.expand("$(Tfm.StartsWith('net4'))", tfm="net472"))
-        self.assertEqual(("plain",), self.expand("plain"))
-
-    def test_a_reference_the_reader_cannot_settle_leaves_the_text_unsettled(self) -> None:
-        for text in (
-            "$(Undefined)",
-            "$(A.Substring(1))",
-            "@(Items)",
-            "%(Identity)",
-            "$(A",
-            "$([System.IO.Path]::Combine('a', 'b'))",
-        ):
-            with self.subTest(text=text):
-                self.assertEqual(UNKNOWN, self.expand(text, a="a"))
+        self.assertEqual(("net472",), expand("$(Tfm)", tfm="net472"))
+        self.assertEqual(("lib;net8.0",), expand("$(LIB);net8.0", lib="lib"))
+        self.assertEqual(("a-x", "b-x"), expand("$(Name)-x", name=("a", "b")))
+        self.assertEqual(("True",), expand("$(Tfm.StartsWith('net4'))", tfm="net472"))
+        self.assertEqual(("plain",), expand("plain"))
 
     def test_the_file_above_functions_search_the_folders_above(self) -> None:
-        found = self.expand(
+        found = expand(
             "$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))",
             msbuildthisfiledirectory="/repo/src/",
         )
         self.assertEqual(("/repo/Directory.Build.props",), found)
-        found = self.expand(
+        found = expand(
             "$([MSBuild]::GetDirectoryNameOfFileAbove($(MSBuildThisFileDirectory), 'Directory.Build.props'))",
             msbuildthisfiledirectory="/repo/src/",
         )
         self.assertEqual(("/repo",), found)
-        self.assertEqual(("",), self.expand("$([MSBuild]::GetPathOfFileAbove('Absent.props', '/repo'))"))
+        self.assertEqual(("",), expand("$([MSBuild]::GetPathOfFileAbove('Absent.props', '/repo'))"))
+
+
+@pytest.mark.parametrize(
+    ("expected", "text", "framework"),
+    [
+        (True, "'$(TargetFramework)'=='net472'", "net472"),
+        (True, "'$(TargetFramework)' == 'NET472'", "net472"),
+        (True, "'net8.0' == '$(TargetFramework)'", "net8.0"),
+        (True, "$(TargetFramework) == 'net8.0'", "net8.0"),
+        (
+            True,
+            "('$(TargetFramework)' == 'a' or '$(TargetFramework)' == 'b') AND '$(TargetFramework)' != 'c'",
+            "b",
+        ),
+        (True, "$(TargetFramework.StartsWith('net4'))", "net472"),
+        (True, "'' == ''", "net8.0"),
+        (False, "'$(TargetFramework)'=='net472'", "net8.0"),
+        (False, "'$(TargetFramework)' != 'net8.0'", "net8.0"),
+        (False, "$(TargetFramework.StartsWith('net4'))", "net8.0"),
+        (False, "'$(TargetFramework)' == 'a' and '$(TargetFramework)' == 'b'", "a"),
+        (None, "'$(Configuration)' == 'Debug'", "net8.0"),
+        (None, "'$(TargetFrameworkIdentifier)' == '.NETFramework'", "net8.0"),
+        (None, "$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net6.0'))", "net8.0"),
+        (None, "'$(TargetFramework)' ==", "net8.0"),
+        (None, "('$(TargetFramework)' == 'net8.0'", "net8.0"),
+        (None, "", "net8.0"),
+    ],
+)
+def test_conditions_are_evaluated_only_in_the_forms_the_reader_knows(
+    expected: bool | None, text: str, framework: str
+) -> None:
+    CHECK.assertIs(expected, holds(text, framework))
+
+
+DEBUG = "'$(Configuration)'=='Debug'"
+MIRRORED = "'Debug'=='$(Configuration)'"
+FRAMEWORK = "'$(TargetFramework)'=='net472'"
+
+
+@pytest.mark.parametrize(
+    ("expected", "text", "framework"),
+    [
+        (True, f"{FRAMEWORK} or {DEBUG}", "net472"),
+        (True, f"{FRAMEWORK} or {MIRRORED}", "net472"),
+        (True, f"{DEBUG} or {FRAMEWORK}", "net472"),
+        (True, f"({DEBUG}) or ({FRAMEWORK})", "net472"),
+        (True, "$(TargetFramework.StartsWith('net'))", "net8.0"),
+        (False, f"{FRAMEWORK} and {DEBUG}", "net8.0"),
+        (False, f"{FRAMEWORK} and {MIRRORED}", "net8.0"),
+        (False, f"{DEBUG} and {FRAMEWORK}", "net8.0"),
+        # MSBuild's StartsWith compares with regard to case.
+        (False, "$(TargetFramework.StartsWith('NET'))", "net8.0"),
+        # An operand the reader cannot evaluate leaves undecided what no other operand decides.
+        (None, f"{FRAMEWORK} or {DEBUG}", "net8.0"),
+        (None, f"{FRAMEWORK} and {DEBUG}", "net472"),
+        # A dangling, leading, or doubled keyword, an unclosed or unopened parenthesis, a lone operand
+        # that is not a boolean, and a missing operand make a condition MSBuild refuses.
+        (None, f"{FRAMEWORK} or or", "net472"),
+        (None, f"or {FRAMEWORK}", "net472"),
+        (None, f"{FRAMEWORK} or", "net472"),
+        (None, f"{FRAMEWORK} and", "net472"),
+        (None, f"{FRAMEWORK} or and {FRAMEWORK}", "net472"),
+        (None, f"{FRAMEWORK})", "net472"),
+        (None, "'net472'", "net472"),
+        (None, "== 'net472'", "net472"),
+    ],
+)
+def test_one_operand_decides_whatever_its_place_and_a_malformed_condition_is_never_evaluated(
+    expected: bool | None, text: str, framework: str
+) -> None:
+    CHECK.assertIs(expected, holds(text, framework))
+
+
+@pytest.mark.parametrize(
+    ("expected", "text"),
+    [
+        (True, "!'$(A)'=='b'"),
+        (True, "!false"),
+        (True, "true"),
+        (True, "'$(Flag)'"),
+        (True, "'ON' and yes"),
+        (True, "$(Version) > 4"),
+        (True, "'$(Version)' <= '4.5'"),
+        (True, "0x10 >= 16"),
+        (True, "$(A.EndsWith('a'))"),
+        (True, "$(A.Contains('a'))"),
+        (True, "Exists('here.props')"),
+        (True, "Exists('$(A)/here.props')"),
+        (True, "HasTrailingSlash('$(Dir)')"),
+        (True, "'$(A)' == 'a' or $(Undefined.ToUpper())"),
+        (False, "!true"),
+        (False, "no"),
+        (False, "'$(Version)' < '4'"),
+        (False, "Exists('absent.props')"),
+        (False, "Exists('')"),
+        (False, "$(A.Contains('z'))"),
+        (False, "HasTrailingSlash('$(A)')"),
+        (None, "'$(Version)' < 'b'"),
+        (None, "'@(Compile)' != ''"),
+        (None, "'%(Identity)' == 'a'"),
+        (None, "'$(A.ToUpper())' == 'A'"),
+        (None, "Exists('$(Undefined)')"),
+        (None, "SomeFunction('a')"),
+        (None, "'$(A)"),
+    ],
+)
+def test_the_operators_and_functions_the_reader_reads(expected: bool | None, text: str) -> None:
+    known = {"a": "a", "flag": "True", "version": "4.5", "dir": "src/"}
+    CHECK.assertIs(expected, holds(text, **known))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "$(Undefined)",
+        "$(A.Substring(1))",
+        "@(Items)",
+        "%(Identity)",
+        "$(A",
+        "$([System.IO.Path]::Combine('a', 'b'))",
+    ],
+)
+def test_a_reference_the_reader_cannot_settle_leaves_the_text_unsettled(text: str) -> None:
+    CHECK.assertEqual(UNKNOWN, expand(text, a="a"))

@@ -7,6 +7,8 @@ import time
 import unittest
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from markdown_sections import (
@@ -21,6 +23,9 @@ from markdown_sections import (
     markdown_section,
     prose_code_spans,
 )
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 
 class MarkdownSectionTests(unittest.TestCase):
@@ -67,52 +72,6 @@ class HtmlCommentTests(unittest.TestCase):
         self.assertEqual([(0, "a"), (10, "e")], prose_code_spans(text.split("\n")))
 
 
-class FenceReaderTests(unittest.TestCase):
-    def fences(self, text: str) -> list[tuple[int, int | None, str, int, list[str]]]:
-        lines = text.split("\n")
-        return [
-            (fence.opener, fence.closer, fence.language, fence.stop, [fence.text(lines[i]) for i in fence.body()])
-            for fence in find_fences(lines)
-        ]
-
-    def test_every_fence_form_markdown_allows_is_read(self) -> None:
-        cases = {
-            "top level": ("```bash\necho\n```", [(0, 2, "bash", 2, ["echo"])]),
-            "tildes": ("~~~zsh\necho\n~~~", [(0, 2, "zsh", 2, ["echo"])]),
-            "indented four spaces": ("    ```bash\n    echo\n    ```", [(0, 2, "bash", 2, ["    echo"])]),
-            "on a list item's marker line": ("1. ```sh\n   echo\n   ```", [(0, 2, "sh", 2, ["   echo"])]),
-            "in a blockquote": ("> ```bash\n> echo\n>```", [(0, 2, "bash", 2, ["echo"])]),
-            "in a list item in a blockquote": ("> - ```bash\n>   echo\n>   ```", [(0, 2, "bash", 2, ["  echo"])]),
-            "in nested blockquotes": ("> > ```bash\n> > echo\n> > ```", [(0, 2, "bash", 2, ["echo"])]),
-        }
-        for name, (text, expected) in cases.items():
-            with self.subTest(case=name):
-                self.assertEqual(expected, self.fences(text))
-
-    def test_a_long_run_of_container_markers_is_read_in_linear_time(self) -> None:
-        # A run of whitespace could once be split between two markers in exponentially many ways before a mismatch.
-        for marker in (">", "*"):
-            with self.subTest(marker=marker):
-                started = time.perf_counter()
-                self.assertEqual([], find_fences([marker + f"\t\t{marker}" * 5000 + "x"]))
-                self.assertLess(time.perf_counter() - started, 1.0)
-
-    def test_a_fence_closes_only_on_its_own_run_inside_what_holds_it(self) -> None:
-        cases = {
-            "a shorter run is body": ("````text\n```\n````", [(0, 2, "text", 2, ["```"])]),
-            "a quoted run does not close an unquoted fence": ("```text\n> ```\n```", [(0, 2, "text", 2, ["> ```"])]),
-            "a backtick run with a backtick in its info is inline code": ("```a`b```\nprose", []),
-            "an unclosed fence runs to the end": ("```bash\necho", [(0, None, "bash", 2, ["echo"])]),
-            "an unclosed quoted fence ends with its blockquote": (
-                "> ```bash\n> echo\nprose\n```sh\nls\n```",
-                [(0, None, "bash", 2, ["echo"]), (3, 5, "sh", 5, ["ls"])],
-            ),
-        }
-        for name, (text, expected) in cases.items():
-            with self.subTest(case=name):
-                self.assertEqual(expected, self.fences(text))
-
-
 class FenceLanguageTests(unittest.TestCase):
     def test_each_label_names_one_language_and_the_sets_are_drawn_from_them(self) -> None:
         labels = [label for found in FENCE_LANGUAGES.values() for label in found]
@@ -127,3 +86,63 @@ class FenceLanguageTests(unittest.TestCase):
             with self.subTest(label=label):
                 self.assertIn(label, EXECUTABLE_FENCES)
         self.assertTrue(all(label == label.casefold() for label in labels), "labels are compared casefolded")
+
+
+def fences(text: str) -> list[tuple[int, int | None, str, int, list[str]]]:
+    lines = text.split("\n")
+    return [
+        (fence.opener, fence.closer, fence.language, fence.stop, [fence.text(lines[i]) for i in fence.body()])
+        for fence in find_fences(lines)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        pytest.param("```bash\necho\n```", [(0, 2, "bash", 2, ["echo"])], id="top level"),
+        pytest.param("~~~zsh\necho\n~~~", [(0, 2, "zsh", 2, ["echo"])], id="tildes"),
+        pytest.param("    ```bash\n    echo\n    ```", [(0, 2, "bash", 2, ["    echo"])], id="indented four spaces"),
+        pytest.param("1. ```sh\n   echo\n   ```", [(0, 2, "sh", 2, ["   echo"])], id="on a list item's marker line"),
+        pytest.param("> ```bash\n> echo\n>```", [(0, 2, "bash", 2, ["echo"])], id="in a blockquote"),
+        pytest.param(
+            "> - ```bash\n>   echo\n>   ```", [(0, 2, "bash", 2, ["  echo"])], id="in a list item in a blockquote"
+        ),
+        pytest.param("> > ```bash\n> > echo\n> > ```", [(0, 2, "bash", 2, ["echo"])], id="in nested blockquotes"),
+    ],
+)
+def test_every_fence_form_markdown_allows_is_read(
+    text: str, expected: list[tuple[int, int | None, str, int, list[str]]]
+) -> None:
+    CHECK.assertEqual(expected, fences(text))
+
+
+@pytest.mark.parametrize("marker", [">", "*"])
+def test_a_long_run_of_container_markers_is_read_in_linear_time(marker: str) -> None:
+    # A run of whitespace could once be split between two markers in exponentially many ways before a mismatch.
+    started = time.perf_counter()
+    CHECK.assertEqual([], find_fences([marker + f"\t\t{marker}" * 5000 + "x"]))
+    CHECK.assertLess(time.perf_counter() - started, 1.0)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        pytest.param("````text\n```\n````", [(0, 2, "text", 2, ["```"])], id="a shorter run is body"),
+        pytest.param(
+            "```text\n> ```\n```",
+            [(0, 2, "text", 2, ["> ```"])],
+            id="a quoted run does not close an unquoted fence",
+        ),
+        pytest.param("```a`b```\nprose", [], id="a backtick run with a backtick in its info is inline code"),
+        pytest.param("```bash\necho", [(0, None, "bash", 2, ["echo"])], id="an unclosed fence runs to the end"),
+        pytest.param(
+            "> ```bash\n> echo\nprose\n```sh\nls\n```",
+            [(0, None, "bash", 2, ["echo"]), (3, 5, "sh", 5, ["ls"])],
+            id="an unclosed quoted fence ends with its blockquote",
+        ),
+    ],
+)
+def test_a_fence_closes_only_on_its_own_run_inside_what_holds_it(
+    text: str, expected: list[tuple[int, int | None, str, int, list[str]]]
+) -> None:
+    CHECK.assertEqual(expected, fences(text))

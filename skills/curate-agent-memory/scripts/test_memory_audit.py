@@ -12,6 +12,8 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
@@ -19,6 +21,9 @@ import memory_audit
 import skill_roots
 from flat_text import flat_text
 from git_client import MISSING_GIT, GitError, GitResult
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 
 def temporary_store_folds_case() -> bool:
@@ -114,16 +119,6 @@ class CommandLineContractTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self._temporary.cleanup()
-
-    def test_a_missing_memory_directory_is_a_failed_line(self) -> None:
-        absent = self.root / "absent dir"
-        for arguments in (["audit"], ["reindex"], ["delete", "keep.md"]):
-            command, *rest = arguments
-            with self.subTest(command=command):
-                self.assertEqual(
-                    (1, f"FAILED memory directory not found: {absent}\n", ""),
-                    run_main(command, "--memory-dir", str(absent), *rest),
-                )
 
     def test_usage_errors_exit_2(self) -> None:
         for arguments in (
@@ -275,17 +270,6 @@ class MemoryAuditTests(unittest.TestCase):
         self.assertEqual("one-slug description", entry["description"])
         self.assertEqual("project", entry["type"])
 
-    def test_frontmatter_the_shared_reader_would_refuse_is_read_leniently(self) -> None:
-        # Pinned while parse_frontmatter is kept instead of skill-core's frontmatter.py; see the comment above it.
-        for text, values, body in (
-            ("---\nname: n\ndescription: `x` y\n---\nBody.", {"name": "n", "description": "`x` y"}, "Body."),
-            ("---\nname: first\nname: second\n---\nBody.", {"name": "first"}, "Body."),
-            ("---\nmetadata:\n  type: user\n  type: other\n---\nBody.", {"type": "user"}, "Body."),
-            ("---\nname: open\nBody.", {}, "---\nname: open\nBody."),
-        ):
-            with self.subTest(text=text):
-                self.assertEqual((values, body), memory_audit.parse_frontmatter(text))
-
     def test_a_block_scalar_description_is_read_whole(self) -> None:
         write(
             self.memory_dir / "folded.md",
@@ -295,22 +279,6 @@ class MemoryAuditTests(unittest.TestCase):
         entry = self.by_file(self.run_audit())["folded.md"]
         self.assertEqual("First line of the hook continues here.", entry["description"])
         self.assertEqual("project", entry["type"])
-
-    def test_block_scalars_fold_or_keep_lines_as_their_style_says(self) -> None:
-        for text, values in (
-            ("---\ndescription: >\n  one\n  two\n\n  three\n---\n", {"description": "one two\nthree"}),
-            ("---\ndescription: |-\n  one\n    two\n---\n", {"description": "one\n  two"}),
-            ("---\ndescription: |1- # note\n   one\n   two\n\n---\n", {"description": "one\n  two"}),
-            (
-                "---\ndescription: >-\n  type: not a key\nname: n\n---\n",
-                {"description": "type: not a key", "name": "n"},
-            ),
-            ("---\nmetadata:\n  note: |\n    nested\n  type: user\n---\n", {"note": "nested", "type": "user"}),
-            ("---\ndescription: >-\nname: n\n---\n", {"name": "n"}),
-            ("---\ndescription: >-\n  never closed\n", {}),
-        ):
-            with self.subTest(text=text):
-                self.assertEqual(values, memory_audit.parse_frontmatter(text)[0])
 
     def test_links_resolve_by_name_or_file_stem(self) -> None:
         write(self.memory_dir / "first.md", memory("first-slug", "See [[second]], [[first-slug]] and [[missing-one]]."))
@@ -851,25 +819,6 @@ class ReindexTests(unittest.TestCase):
         flatten.assert_any_call("stem (title)")
         self.assertEqual(before, self.snapshot())
         self.assertEqual(b"", self.index.read_bytes())
-
-    def test_hooks_use_shared_flattening_before_exact_character_and_word_cutoffs(self) -> None:
-        for text, limit, expected in (
-            (" \talpha\r\n beta \v café\u00a0設計\u2003", 150, "alpha beta café 設計"),
-            (" \t\r\n\u00a0\u2003", 150, ""),
-            ("x" * 149, 150, "x" * 149),
-            ("x" * 150, 150, "x" * 150),
-            ("x" * 151, 150, "x" * 147 + "..."),
-            ("設" * 150, 150, "設" * 150),
-            ("設" * 151, 150, "設" * 147 + "..."),
-            ("alpha\tbeta\r\ngamma", 10, "alpha..."),
-            ("alpha,;:.\tbeta gamma", 12, "alpha..."),
-        ):
-            with (
-                self.subTest(text=text, limit=limit),
-                mock.patch.object(memory_audit, "flat_text", wraps=flat_text) as flatten,
-            ):
-                self.assertEqual(expected, memory_audit.one_line(text, limit))
-            flatten.assert_called_once_with(text)
 
     def test_long_descriptions_become_one_short_line(self) -> None:
         description = "word " * 60
@@ -1870,3 +1819,93 @@ class SkillSourceTests(unittest.TestCase):
         code, output, error = run_main("skill-source", "demo", "--file", str(self.source_file))
         self.assertEqual((2, ""), (code, output))
         self.assertIn("not allowed with argument", error)
+
+
+@pytest.mark.parametrize(
+    "arguments", [["audit"], ["reindex"], ["delete", "keep.md"]], ids=["audit", "reindex", "delete"]
+)
+def test_a_missing_memory_directory_is_a_failed_line(tmp_path: Path, arguments: list[str]) -> None:
+    absent = tmp_path / "absent dir"
+    command, *rest = arguments
+    CHECK.assertEqual(
+        (1, f"FAILED memory directory not found: {absent}\n", ""),
+        run_main(command, "--memory-dir", str(absent), *rest),
+    )
+
+
+# Pinned while parse_frontmatter is kept instead of skill-core's frontmatter.py; see the comment above it.
+@pytest.mark.parametrize(
+    ("text", "values", "body"),
+    [
+        pytest.param(
+            "---\nname: n\ndescription: `x` y\n---\nBody.",
+            {"name": "n", "description": "`x` y"},
+            "Body.",
+            id="a-backtick-value",
+        ),
+        pytest.param("---\nname: first\nname: second\n---\nBody.", {"name": "first"}, "Body.", id="a-repeated-key"),
+        pytest.param(
+            "---\nmetadata:\n  type: user\n  type: other\n---\nBody.",
+            {"type": "user"},
+            "Body.",
+            id="a-repeated-nested-key",
+        ),
+        pytest.param("---\nname: open\nBody.", {}, "---\nname: open\nBody.", id="never-closed"),
+    ],
+)
+def test_frontmatter_the_shared_reader_would_refuse_is_read_leniently(
+    text: str, values: dict[str, str], body: str
+) -> None:
+    CHECK.assertEqual((values, body), memory_audit.parse_frontmatter(text))
+
+
+@pytest.mark.parametrize(
+    ("text", "values"),
+    [
+        pytest.param(
+            "---\ndescription: >\n  one\n  two\n\n  three\n---\n", {"description": "one two\nthree"}, id="folded"
+        ),
+        pytest.param("---\ndescription: |-\n  one\n    two\n---\n", {"description": "one\n  two"}, id="literal-strip"),
+        pytest.param(
+            "---\ndescription: |1- # note\n   one\n   two\n\n---\n",
+            {"description": "one\n  two"},
+            id="literal-with-indentation-and-comment",
+        ),
+        pytest.param(
+            "---\ndescription: >-\n  type: not a key\nname: n\n---\n",
+            {"description": "type: not a key", "name": "n"},
+            id="a-key-inside-the-block",
+        ),
+        pytest.param(
+            "---\nmetadata:\n  note: |\n    nested\n  type: user\n---\n",
+            {"note": "nested", "type": "user"},
+            id="nested-under-metadata",
+        ),
+        pytest.param("---\ndescription: >-\nname: n\n---\n", {"name": "n"}, id="an-empty-block"),
+        pytest.param("---\ndescription: >-\n  never closed\n", {}, id="never-closed"),
+    ],
+)
+def test_block_scalars_fold_or_keep_lines_as_their_style_says(text: str, values: dict[str, str]) -> None:
+    CHECK.assertEqual(values, memory_audit.parse_frontmatter(text)[0])
+
+
+@pytest.mark.parametrize(
+    ("text", "limit", "expected"),
+    [
+        pytest.param(" \talpha\r\n beta \v café\u00a0設計\u2003", 150, "alpha beta café 設計", id="mixed-whitespace"),
+        pytest.param(" \t\r\n\u00a0\u2003", 150, "", id="whitespace-only"),
+        pytest.param("x" * 149, 150, "x" * 149, id="under-the-limit"),
+        pytest.param("x" * 150, 150, "x" * 150, id="at-the-limit"),
+        pytest.param("x" * 151, 150, "x" * 147 + "...", id="over-the-limit"),
+        pytest.param("設" * 150, 150, "設" * 150, id="wide-at-the-limit"),
+        pytest.param("設" * 151, 150, "設" * 147 + "...", id="wide-over-the-limit"),
+        pytest.param("alpha\tbeta\r\ngamma", 10, "alpha...", id="cut-at-a-word"),
+        pytest.param("alpha,;:.\tbeta gamma", 12, "alpha...", id="cut-before-punctuation"),
+    ],
+)
+def test_hooks_use_shared_flattening_before_exact_character_and_word_cutoffs(
+    text: str, limit: int, expected: str
+) -> None:
+    with mock.patch.object(memory_audit, "flat_text", wraps=flat_text) as flatten:
+        CHECK.assertEqual(expected, memory_audit.one_line(text, limit))
+    flatten.assert_called_once_with(text)

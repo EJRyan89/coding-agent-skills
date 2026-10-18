@@ -10,33 +10,18 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from git_client import GitClient
 from release_tags import highest_release, is_release_tag, last_release, main
 
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
+
 
 class ReleaseTagTests(unittest.TestCase):
-    def test_a_release_tag_is_three_ascii_numbers_and_nothing_after_them(self) -> None:
-        for name in ("v0.1.0", "v10.20.30", "v01.2.3", "v1.0.000"):
-            with self.subTest(name=name):
-                self.assertTrue(is_release_tag(name))
-        # A pre-release suffix, a build suffix, a missing or extra component, a missing v, digits outside ASCII, and a
-        # name with a line break are not releases.
-        for name in (
-            "v1.0.0-rc.1",
-            "v1.0.0+build",
-            "v1.0",
-            "v1.0.0.0",
-            "1.0.0",
-            "V1.0.0",
-            "v2x.0.0",
-            f"v{chr(0x661)}.0.0",
-            "v1.0.0\n",
-        ):
-            with self.subTest(name=name):
-                self.assertFalse(is_release_tag(name))
-
     def test_releases_are_ordered_by_their_numbers_not_their_text(self) -> None:
         self.assertEqual("v0.10.0", highest_release(["v0.9.0", "v0.10.0", "v0.2.0"]))
         self.assertEqual("v2.0.0", highest_release(["v1.99.99", "v2.0.0", "v1.100.0"]))
@@ -100,3 +85,27 @@ class LastReleaseTests(unittest.TestCase):
         self.assertEqual(1, code)
         self.assertTrue(output.startswith("FAILED git for-each-ref: "), output)
         self.assertEqual(1, len(output.splitlines()), output)
+
+
+@pytest.mark.parametrize(
+    ("name", "released"),
+    [
+        ("v0.1.0", True),
+        ("v10.20.30", True),
+        ("v01.2.3", True),
+        ("v1.0.000", True),
+        # A pre-release suffix, a build suffix, a missing or extra component, a missing v, digits outside ASCII, and a
+        # name with a line break are not releases.
+        ("v1.0.0-rc.1", False),
+        ("v1.0.0+build", False),
+        ("v1.0", False),
+        ("v1.0.0.0", False),
+        ("1.0.0", False),
+        ("V1.0.0", False),
+        ("v2x.0.0", False),
+        pytest.param(f"v{chr(0x661)}.0.0", False, id="arabic-indic-digit"),
+        pytest.param("v1.0.0\n", False, id="v1.0.0-newline"),
+    ],
+)
+def test_a_release_tag_is_three_ascii_numbers_and_nothing_after_them(name: str, released: bool) -> None:
+    CHECK.assertIs(released, is_release_tag(name))

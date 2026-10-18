@@ -10,12 +10,17 @@ from collections.abc import Sequence
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import csharp_layout as layout
 import dotnet_solution
 from run_dotnet_format import Completed, Services
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 LINKED_FILE = "the file is a symbolic link or junction, which the script does not write through"
 
@@ -93,46 +98,9 @@ class LexerTests(unittest.TestCase):
         self.assertEqual({9, 10, 13, 15, 16, 17, 21, 22}, {line + 1 for line in scan.continuation})
         self.assertEqual([], rules(TRICKY))
 
-    def test_line_endings_are_counted_alike(self) -> None:
-        for newline in ("\n", "\r\n", "\r"):
-            with self.subTest(newline=repr(newline)):
-                text = newline.join(("class C", "{", "    #region A", "", "    #endregion", "", "}", ""))
-                self.assertEqual([(5, "endregion-brace-spacing")], rules(text))
-
     def test_multi_dollar_raw_strings_open_holes_only_at_their_brace_count(self) -> None:
         text = source('var s = $$$"""{{ {{{x}}} }}""";', "{")
         self.assertEqual([(1, "open")], [(event.line, event.kind) for event in layout.Lexer(text).lex().events])
-
-    def test_edge_case_literals_end_where_csharp_ends_them(self) -> None:
-        # Each literal holds braces or directive-like lines that would add events if lexed as code, and the brace after
-        # it is recorded only if the literal ended in the right place: (text, that brace's line, continuation lines).
-        cases: tuple[tuple[str, int, list[int]], ...] = (
-            # Verbatim strings: a backslash is literal, and a doubled quote is one quote.
-            (r'var a = @"C:\"; {', 0, []),
-            ('var a = @"a ""{"" }"; {', 0, []),
-            ('var a = @"""#region"""; {', 0, []),
-            ('var a = $@"{{ {b} }}"; {', 0, []),
-            ('var a = @$"{{ {b} }}"; {', 0, []),
-            ('var a = @"\n}\n#endregion\n"; {', 3, [1, 2, 3]),
-            ('var a = $@"{new { B = @"}""}" }.B}"; {', 0, []),
-            # Raw strings: closed only by a run of at least the opening quotes.
-            ('var a = """b "" { c"""; {', 0, []),
-            ('var a = """"b """ } c""""; {', 0, []),
-            ('var a = """\n    }\n#endregion\n    """; {', 3, [1, 2, 3]),
-            ('var a = $$"""{b} {{c}}"""; {', 0, []),
-            ('var a = $$"""{{new { B = "}" }.B}}"""; {', 0, []),
-            # Nested braces in interpolation holes: only the brace that closes the hole ends it.
-            ('var a = $"{new { B = 1 }.B}"; {', 0, []),
-            ('var a = $"{b switch { 1 => "}", _ => "{" }}"; {', 0, []),
-            ('var a = $"{F(() => { return "}"; })}"; {', 0, []),
-            ('var a = $"{$"{new { B = $"{c}" }}"}"; {', 0, []),
-            ('var a = $"{\n    new[] { 1 }[0]\n}"; {', 2, [1, 2]),
-        )
-        for text, line, continuation in cases:
-            with self.subTest(text=text):
-                scan = layout.Lexer(text).lex()
-                self.assertEqual([(line, "open")], [(event.line, event.kind) for event in scan.events])
-                self.assertEqual(continuation, sorted(scan.continuation))
 
 
 # Where Lexer.code stopped, its line, its events as (kind, line, name), and its continuation lines.
@@ -150,29 +118,6 @@ def lexed(text: str, hole: int = 0) -> Lexed:
 class CodeTests(unittest.TestCase):
     """Lexer.code called directly, for each arm, with where it stops and every event and continuation it records."""
 
-    def test_code_outside_a_hole_records_braces_and_directives_to_the_end(self) -> None:
-        cases: tuple[tuple[str, Lexed], ...] = (
-            ("{}", (2, 0, [("open", 0, ""), ("close", 0, "")], [])),
-            ("#region A", (9, 0, [("directive", 0, "region")], [])),
-            ("#", (1, 0, [("directive", 0, "")], [])),
-            (" \t\f\v#if X\n}", (11, 1, [("directive", 0, "if"), ("close", 1, "")], [])),
-            ("x #region A", (11, 0, [], [])),
-            ("{ #endregion", (12, 0, [("open", 0, "")], [])),
-            ("x\n  #endregion", (14, 1, [("directive", 1, "endregion")], [])),
-            ("x\r\n#region\r#endregion\n", (22, 3, [("directive", 1, "region"), ("directive", 2, "endregion")], [])),
-            ("// { #region\n{", (14, 1, [("open", 1, "")], [])),
-            ("/* {\n#region */ }", (17, 1, [("close", 1, "")], [1])),
-            ("/* {", (4, 0, [], [])),
-            ("'{' '}' '\\'' { ", (15, 0, [("open", 0, "")], [])),
-            ('"{" @"}" { ', (11, 0, [("open", 0, "")], [])),
-            ("([{)]}", (6, 0, [("open", 0, ""), ("close", 0, "")], [])),
-            (")) :: : {", (9, 0, [("open", 0, "")], [])),
-            ("a::b }", (6, 0, [("close", 0, "")], [])),
-        )
-        for text, expected in cases:
-            with self.subTest(text=text):
-                self.assertEqual(expected, lexed(text))
-
     def test_a_directive_counts_only_at_the_start_of_a_line(self) -> None:
         lexer = layout.Lexer("x\n#region")
         lexer.i = 1
@@ -182,44 +127,6 @@ class CodeTests(unittest.TestCase):
         lexer.i = 1
         lexer.code(hole=0)
         self.assertEqual([], lexer.scan.events)
-
-    def test_a_hole_returns_after_its_closing_braces(self) -> None:
-        cases: tuple[tuple[str, int, Lexed], ...] = (
-            ("} rest {", 1, (1, 0, [], [])),
-            ("x}}}", 2, (3, 0, [], [])),
-            ("x}", 3, (2, 0, [], [])),
-            ("{a}}{", 1, (4, 0, [], [])),
-            ("{{a}}}", 1, (6, 0, [], [])),
-            ("abc", 1, (3, 0, [], [])),
-            ("a\n#region\nb}", 1, (12, 2, [], [1, 2])),
-            ("#region }", 1, (9, 0, [], [])),
-            ("/* } */ '}' \"}\" } x", 1, (17, 0, [], [])),
-        )
-        for text, hole, expected in cases:
-            with self.subTest(text=text, hole=hole):
-                self.assertEqual(expected, lexed(text, hole))
-
-    def test_a_colon_at_a_holes_top_level_starts_its_format_clause(self) -> None:
-        cases: tuple[tuple[str, int, Lexed], ...] = (
-            ("x:N2} rest", 1, (5, 0, [], [])),
-            ("x:{a}} rest", 1, (5, 0, [], [])),
-            ("x:a\nb}}} rest", 2, (7, 1, [], [1])),
-            # Inside parentheses or brackets a colon is code, so a brace in a string after it does not end the hole.
-            ('(b ? x : "}")} rest', 1, (14, 0, [], [])),
-            ('[b ? x : "}"]} rest', 1, (14, 0, [], [])),
-            # Once they close, a colon starts the format clause again.
-            ('(a):"}"} rest', 1, (6, 0, [], [])),
-            ('[a]:"}"} rest', 1, (6, 0, [], [])),
-            # A closing parenthesis or bracket with none open leaves the count at zero.
-            ('):"}"} rest', 1, (4, 0, [], [])),
-            (']]:"}"} rest', 1, (5, 0, [], [])),
-            ("{a:b}} rest", 1, (6, 0, [], [])),
-            ("a::b{c}} rest", 1, (8, 0, [], [])),
-            ("a ? b : c} rest", 1, (10, 0, [], [])),
-        )
-        for text, hole, expected in cases:
-            with self.subTest(text=text, hole=hole):
-                self.assertEqual(expected, lexed(text, hole))
 
 
 class RuleTests(unittest.TestCase):
@@ -588,26 +495,6 @@ class FileTests(unittest.TestCase):
         self.assertEqual(1, status)
         self.assertEqual(["REFUSED", "Fixable.cs", "Fixable.cs cannot be examined: Permission denied"], lines[0])
         self.assertEqual(b"#region A\n\n#endregion A\n", (self.root / "Fixable.cs").read_bytes())
-
-    def test_usage_errors_exit_2_with_usage_on_stderr(self) -> None:
-        cases: tuple[list[str], ...] = (
-            [],
-            ["check", "--file-list", "f"],
-            ["config", "--repo-root", ".", "--file-list", "f"],
-            ["config", "--repo-root", ".", "--solution", "A.sln", "--file-list", "f", "--fix"],
-        )
-        for arguments in cases:
-            with self.subTest(arguments=arguments):
-                output, errors = io.StringIO(), io.StringIO()
-                with (
-                    contextlib.redirect_stdout(output),
-                    contextlib.redirect_stderr(errors),
-                    self.assertRaises(SystemExit) as raised,
-                ):
-                    layout.main(arguments)
-                self.assertEqual(2, raised.exception.code)
-                self.assertEqual("", output.getvalue())
-                self.assertIn("usage:", errors.getvalue())
 
 
 SDK_PROJECT = '<Project Sdk="Microsoft.NET.Sdk"></Project>\n'
@@ -1102,93 +989,229 @@ class ConfigTests(unittest.TestCase):
         self.changed("src/Top.cs")
         self.assertEqual({"present"}, set(self.states(self.config()).values()))
 
-    def test_section_matching_follows_the_editorconfig_glob_specification(self) -> None:
-        cases = (
-            ("*", "A.cs", True),
-            ("*.{cs,vb}", "src/A.cs", True),
-            ("*.vb", "A.cs", False),
-            ("*.cs", "src/deep/A.cs", True),
-            # `*` never crosses a path separator; `**` does.
-            ("src/*.cs", "src/A.cs", True),
-            ("src/*.cs", "src/deep/A.cs", False),
-            ("src/**.cs", "src/deep/A.cs", True),
-            ("tests/**.cs", "src/A.cs", False),
-            ("**/A.cs", "A.cs", True),
-            ("**/A.cs", "src/deep/A.cs", True),
-            ("src/**/A.cs", "src/A.cs", True),
-            ("src/**/A.cs", "src/deep/A.cs", True),
-            # A separator anywhere, including a leading one, anchors the glob to the .editorconfig directory.
-            ("/A.cs", "A.cs", True),
-            ("/A.cs", "src/A.cs", False),
-            ("src/A.cs", "other/src/A.cs", False),
-            ("?.cs", "src/A.cs", True),
-            ("src?A.cs", "src/A.cs", False),
-            ("[AB].cs", "B.cs", True),
-            ("[AB].cs", "C.cs", False),
-            ("[!AB].cs", "C.cs", True),
-            ("[!AB].cs", "A.cs", False),
-            ("[a-c].cs", "b.cs", True),
-            ("[a-c].cs", "d.cs", False),
-            ("[*].cs", "*.cs", True),
-            ("[*].cs", "A.cs", False),
-            ("[a/b].cs", "x/[a/b].cs", True),  # a bracket holding a separator is literal and anchors nothing
-            ("[a/b].cs", "a.cs", False),
-            ("{a,{b,c}}.cs", "c.cs", True),
-            ("{a,{b,c}}.cs", "d.cs", False),
-            ("{single}.cs", "{single}.cs", True),
-            ("{single}.cs", "single.cs", False),
-            ("{src/A,B}.cs", "src/A.cs", True),
-            ("{src/A,B}.cs", "deep/B.cs", False),
-            ("File{1..3}.cs", "File2.cs", True),
-            ("File{1..3}.cs", "File4.cs", False),
-            ("File{3..1}.cs", "File1.cs", True),
-            ("File{-3..-1}.cs", "File-2.cs", True),
-            ("File{-3..-1}.cs", "File-4.cs", False),
-            ("{a{1..2},b}.cs", "b.cs", True),
-            ("{a{1..2},b}.cs", "a3.cs", False),
-            (r"\*.cs", "*.cs", True),
-            (r"\*.cs", "A.cs", False),
-            ("[.cs", "[.cs", True),
-            ("{.cs", "{.cs", True),
-            ("*.CS", "A.cs", False),
-        )
-        for section, path, expected in cases:
-            with self.subTest(section=section, path=path):
-                self.assertEqual(expected, layout.section_matches(section, path))
 
-    def test_double_star_and_negated_bracket_globs(self) -> None:
-        cases = (
-            # `**/` matches zero or more whole directories; `**` elsewhere matches across separators.
-            ("**/*.cs", "A.cs", True),
-            ("**/*.cs", "x/y/A.cs", True),
-            ("**/*.cs", "x/y/A.vb", False),
-            ("/**/A.cs", "x/A.cs", True),
-            ("src/**/A.cs", "srcx/A.cs", False),
-            ("src/**/A.cs", "x/src/A.cs", False),
-            ("a/**/b/**/c.cs", "a/b/c.cs", True),
-            ("a/**/b/**/c.cs", "a/x/b/y/z/c.cs", True),
-            ("a/**/b/**/c.cs", "a/x/c.cs", False),
-            ("a**b.cs", "a/x/b.cs", True),
-            ("src/**", "src/a/b.cs", True),
-            ("*/**/A.cs", "A.cs", False),
-            ("*/**/A.cs", "x/y/A.cs", True),
-            ("{**/A,B}.cs", "x/y/A.cs", True),
-            ("{**/A,B}.cs", "x/B.cs", False),
-            # `[!seq]` matches one character outside seq, never a separator.
-            ("[!a-c].cs", "d.cs", True),
-            ("[!a-c].cs", "b.cs", False),
-            ("x[!a]y", "xby", True),
-            ("x[!a]y", "x/y", False),
-            (r"[!\]].cs", "a.cs", True),
-            (r"[!\]].cs", "].cs", False),
-            ("[!!].cs", "a.cs", True),
-            ("[!!].cs", "!.cs", False),
-            (r"[\!a].cs", "!.cs", True),  # an escaped `!` is a member, not a negation
-            (r"[\!a].cs", "b.cs", False),
-            ("[!].cs", "[!].cs", True),  # an empty bracket is literal
-            ("[!].cs", "a.cs", False),
-            ("[!/]x", "y/[!/]x", True),  # a negated bracket holding a separator is literal too
-        )
-        for section, path, expected in cases:
-            with self.subTest(section=section, path=path):
-                self.assertEqual(expected, layout.section_matches(section, path))
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"], ids=["lf", "crlf", "cr"])
+def test_line_endings_are_counted_alike(newline: str) -> None:
+    text = newline.join(("class C", "{", "    #region A", "", "    #endregion", "", "}", ""))
+    CHECK.assertEqual([(5, "endregion-brace-spacing")], rules(text))
+
+
+# Each literal holds braces or directive-like lines that would add events if lexed as code, and the brace after it is
+# recorded only if the literal ended in the right place: (text, that brace's line, continuation lines).
+EDGE_CASE_LITERALS: list[tuple[str, int, list[int]]] = [
+    # Verbatim strings: a backslash is literal, and a doubled quote is one quote.
+    (r'var a = @"C:\"; {', 0, []),
+    ('var a = @"a ""{"" }"; {', 0, []),
+    ('var a = @"""#region"""; {', 0, []),
+    ('var a = $@"{{ {b} }}"; {', 0, []),
+    ('var a = @$"{{ {b} }}"; {', 0, []),
+    ('var a = @"\n}\n#endregion\n"; {', 3, [1, 2, 3]),
+    ('var a = $@"{new { B = @"}""}" }.B}"; {', 0, []),
+    # Raw strings: closed only by a run of at least the opening quotes.
+    ('var a = """b "" { c"""; {', 0, []),
+    ('var a = """"b """ } c""""; {', 0, []),
+    ('var a = """\n    }\n#endregion\n    """; {', 3, [1, 2, 3]),
+    ('var a = $$"""{b} {{c}}"""; {', 0, []),
+    ('var a = $$"""{{new { B = "}" }.B}}"""; {', 0, []),
+    # Nested braces in interpolation holes: only the brace that closes the hole ends it.
+    ('var a = $"{new { B = 1 }.B}"; {', 0, []),
+    ('var a = $"{b switch { 1 => "}", _ => "{" }}"; {', 0, []),
+    ('var a = $"{F(() => { return "}"; })}"; {', 0, []),
+    ('var a = $"{$"{new { B = $"{c}" }}"}"; {', 0, []),
+    ('var a = $"{\n    new[] { 1 }[0]\n}"; {', 2, [1, 2]),
+]
+
+
+@pytest.mark.parametrize(
+    ("text", "line", "continuation"), EDGE_CASE_LITERALS, ids=[case[0] for case in EDGE_CASE_LITERALS]
+)
+def test_edge_case_literals_end_where_csharp_ends_them(text: str, line: int, continuation: list[int]) -> None:
+    scan = layout.Lexer(text).lex()
+    CHECK.assertEqual([(line, "open")], [(event.line, event.kind) for event in scan.events])
+    CHECK.assertEqual(continuation, sorted(scan.continuation))
+
+
+OUTSIDE_A_HOLE: list[tuple[str, Lexed]] = [
+    ("{}", (2, 0, [("open", 0, ""), ("close", 0, "")], [])),
+    ("#region A", (9, 0, [("directive", 0, "region")], [])),
+    ("#", (1, 0, [("directive", 0, "")], [])),
+    (" \t\f\v#if X\n}", (11, 1, [("directive", 0, "if"), ("close", 1, "")], [])),
+    ("x #region A", (11, 0, [], [])),
+    ("{ #endregion", (12, 0, [("open", 0, "")], [])),
+    ("x\n  #endregion", (14, 1, [("directive", 1, "endregion")], [])),
+    ("x\r\n#region\r#endregion\n", (22, 3, [("directive", 1, "region"), ("directive", 2, "endregion")], [])),
+    ("// { #region\n{", (14, 1, [("open", 1, "")], [])),
+    ("/* {\n#region */ }", (17, 1, [("close", 1, "")], [1])),
+    ("/* {", (4, 0, [], [])),
+    ("'{' '}' '\\'' { ", (15, 0, [("open", 0, "")], [])),
+    ('"{" @"}" { ', (11, 0, [("open", 0, "")], [])),
+    ("([{)]}", (6, 0, [("open", 0, ""), ("close", 0, "")], [])),
+    (")) :: : {", (9, 0, [("open", 0, "")], [])),
+    ("a::b }", (6, 0, [("close", 0, "")], [])),
+]
+
+
+@pytest.mark.parametrize(("text", "expected"), OUTSIDE_A_HOLE, ids=[text for text, _ in OUTSIDE_A_HOLE])
+def test_code_outside_a_hole_records_braces_and_directives_to_the_end(text: str, expected: Lexed) -> None:
+    CHECK.assertEqual(expected, lexed(text))
+
+
+HOLE_ENDS: list[tuple[str, int, Lexed]] = [
+    ("} rest {", 1, (1, 0, [], [])),
+    ("x}}}", 2, (3, 0, [], [])),
+    ("x}", 3, (2, 0, [], [])),
+    ("{a}}{", 1, (4, 0, [], [])),
+    ("{{a}}}", 1, (6, 0, [], [])),
+    ("abc", 1, (3, 0, [], [])),
+    ("a\n#region\nb}", 1, (12, 2, [], [1, 2])),
+    ("#region }", 1, (9, 0, [], [])),
+    ("/* } */ '}' \"}\" } x", 1, (17, 0, [], [])),
+]
+
+
+@pytest.mark.parametrize(("text", "hole", "expected"), HOLE_ENDS, ids=[text for text, _, _ in HOLE_ENDS])
+def test_a_hole_returns_after_its_closing_braces(text: str, hole: int, expected: Lexed) -> None:
+    CHECK.assertEqual(expected, lexed(text, hole))
+
+
+FORMAT_CLAUSES: list[tuple[str, int, Lexed]] = [
+    ("x:N2} rest", 1, (5, 0, [], [])),
+    ("x:{a}} rest", 1, (5, 0, [], [])),
+    ("x:a\nb}}} rest", 2, (7, 1, [], [1])),
+    # Inside parentheses or brackets a colon is code, so a brace in a string after it does not end the hole.
+    ('(b ? x : "}")} rest', 1, (14, 0, [], [])),
+    ('[b ? x : "}"]} rest', 1, (14, 0, [], [])),
+    # Once they close, a colon starts the format clause again.
+    ('(a):"}"} rest', 1, (6, 0, [], [])),
+    ('[a]:"}"} rest', 1, (6, 0, [], [])),
+    # A closing parenthesis or bracket with none open leaves the count at zero.
+    ('):"}"} rest', 1, (4, 0, [], [])),
+    (']]:"}"} rest', 1, (5, 0, [], [])),
+    ("{a:b}} rest", 1, (6, 0, [], [])),
+    ("a::b{c}} rest", 1, (8, 0, [], [])),
+    ("a ? b : c} rest", 1, (10, 0, [], [])),
+]
+
+
+@pytest.mark.parametrize(("text", "hole", "expected"), FORMAT_CLAUSES, ids=[text for text, _, _ in FORMAT_CLAUSES])
+def test_a_colon_at_a_holes_top_level_starts_its_format_clause(text: str, hole: int, expected: Lexed) -> None:
+    CHECK.assertEqual(expected, lexed(text, hole))
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        pytest.param([], id="no-command"),
+        pytest.param(["check", "--file-list", "f"], id="check-without-repo-root"),
+        pytest.param(["config", "--repo-root", ".", "--file-list", "f"], id="config-without-solution"),
+        pytest.param(
+            ["config", "--repo-root", ".", "--solution", "A.sln", "--file-list", "f", "--fix"], id="config-with-fix"
+        ),
+    ],
+)
+def test_usage_errors_exit_2_with_usage_on_stderr(arguments: list[str]) -> None:
+    output, errors = io.StringIO(), io.StringIO()
+    with (
+        contextlib.redirect_stdout(output),
+        contextlib.redirect_stderr(errors),
+        CHECK.assertRaises(SystemExit) as raised,
+    ):
+        layout.main(arguments)
+    CHECK.assertEqual(2, raised.exception.code)
+    CHECK.assertEqual("", output.getvalue())
+    CHECK.assertIn("usage:", errors.getvalue())
+
+
+@pytest.mark.parametrize(
+    ("section", "path", "expected"),
+    [
+        ("*", "A.cs", True),
+        ("*.{cs,vb}", "src/A.cs", True),
+        ("*.vb", "A.cs", False),
+        ("*.cs", "src/deep/A.cs", True),
+        # `*` never crosses a path separator; `**` does.
+        ("src/*.cs", "src/A.cs", True),
+        ("src/*.cs", "src/deep/A.cs", False),
+        ("src/**.cs", "src/deep/A.cs", True),
+        ("tests/**.cs", "src/A.cs", False),
+        ("**/A.cs", "A.cs", True),
+        ("**/A.cs", "src/deep/A.cs", True),
+        ("src/**/A.cs", "src/A.cs", True),
+        ("src/**/A.cs", "src/deep/A.cs", True),
+        # A separator anywhere, including a leading one, anchors the glob to the .editorconfig directory.
+        ("/A.cs", "A.cs", True),
+        ("/A.cs", "src/A.cs", False),
+        ("src/A.cs", "other/src/A.cs", False),
+        ("?.cs", "src/A.cs", True),
+        ("src?A.cs", "src/A.cs", False),
+        ("[AB].cs", "B.cs", True),
+        ("[AB].cs", "C.cs", False),
+        ("[!AB].cs", "C.cs", True),
+        ("[!AB].cs", "A.cs", False),
+        ("[a-c].cs", "b.cs", True),
+        ("[a-c].cs", "d.cs", False),
+        ("[*].cs", "*.cs", True),
+        ("[*].cs", "A.cs", False),
+        ("[a/b].cs", "x/[a/b].cs", True),  # a bracket holding a separator is literal and anchors nothing
+        ("[a/b].cs", "a.cs", False),
+        ("{a,{b,c}}.cs", "c.cs", True),
+        ("{a,{b,c}}.cs", "d.cs", False),
+        ("{single}.cs", "{single}.cs", True),
+        ("{single}.cs", "single.cs", False),
+        ("{src/A,B}.cs", "src/A.cs", True),
+        ("{src/A,B}.cs", "deep/B.cs", False),
+        ("File{1..3}.cs", "File2.cs", True),
+        ("File{1..3}.cs", "File4.cs", False),
+        ("File{3..1}.cs", "File1.cs", True),
+        ("File{-3..-1}.cs", "File-2.cs", True),
+        ("File{-3..-1}.cs", "File-4.cs", False),
+        ("{a{1..2},b}.cs", "b.cs", True),
+        ("{a{1..2},b}.cs", "a3.cs", False),
+        (r"\*.cs", "*.cs", True),
+        (r"\*.cs", "A.cs", False),
+        ("[.cs", "[.cs", True),
+        ("{.cs", "{.cs", True),
+        ("*.CS", "A.cs", False),
+    ],
+)
+def test_section_matching_follows_the_editorconfig_glob_specification(section: str, path: str, expected: bool) -> None:
+    CHECK.assertEqual(expected, layout.section_matches(section, path))
+
+
+@pytest.mark.parametrize(
+    ("section", "path", "expected"),
+    [
+        # `**/` matches zero or more whole directories; `**` elsewhere matches across separators.
+        ("**/*.cs", "A.cs", True),
+        ("**/*.cs", "x/y/A.cs", True),
+        ("**/*.cs", "x/y/A.vb", False),
+        ("/**/A.cs", "x/A.cs", True),
+        ("src/**/A.cs", "srcx/A.cs", False),
+        ("src/**/A.cs", "x/src/A.cs", False),
+        ("a/**/b/**/c.cs", "a/b/c.cs", True),
+        ("a/**/b/**/c.cs", "a/x/b/y/z/c.cs", True),
+        ("a/**/b/**/c.cs", "a/x/c.cs", False),
+        ("a**b.cs", "a/x/b.cs", True),
+        ("src/**", "src/a/b.cs", True),
+        ("*/**/A.cs", "A.cs", False),
+        ("*/**/A.cs", "x/y/A.cs", True),
+        ("{**/A,B}.cs", "x/y/A.cs", True),
+        ("{**/A,B}.cs", "x/B.cs", False),
+        # `[!seq]` matches one character outside seq, never a separator.
+        ("[!a-c].cs", "d.cs", True),
+        ("[!a-c].cs", "b.cs", False),
+        ("x[!a]y", "xby", True),
+        ("x[!a]y", "x/y", False),
+        (r"[!\]].cs", "a.cs", True),
+        (r"[!\]].cs", "].cs", False),
+        ("[!!].cs", "a.cs", True),
+        ("[!!].cs", "!.cs", False),
+        (r"[\!a].cs", "!.cs", True),  # an escaped `!` is a member, not a negation
+        (r"[\!a].cs", "b.cs", False),
+        ("[!].cs", "[!].cs", True),  # an empty bracket is literal
+        ("[!].cs", "a.cs", False),
+        ("[!/]x", "y/[!/]x", True),  # a negated bracket holding a separator is literal too
+    ],
+)
+def test_double_star_and_negated_bracket_globs(section: str, path: str, expected: bool) -> None:
+    CHECK.assertEqual(expected, layout.section_matches(section, path))

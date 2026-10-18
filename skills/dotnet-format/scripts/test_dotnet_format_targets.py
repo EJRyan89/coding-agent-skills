@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import IO, Any
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
@@ -25,6 +27,9 @@ from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult
 from github_client import CommandResult
 from github_client import Runner as GhRunner
+
+# Runs no test of its own; the test functions below check through its assertions, as the classes do.
+CHECK = unittest.TestCase()
 
 SDK_PROJECT = '<Project Sdk="Microsoft.NET.Sdk"></Project>\n'
 WEB_PROJECT = '<Project Sdk="Microsoft.NET.Sdk.Web"></Project>\n'
@@ -726,20 +731,6 @@ class ResolveTests(unittest.TestCase):
         with mock.patch.object(tempfile, "mkstemp", side_effect=OSError(28, "No space left on device")):
             self.assertEqual("[Errno 28] No space left on device", self.failed())
 
-    def test_usage_errors_exit_2_on_stderr(self) -> None:
-        for arguments in ([], ["resolve", "--unknown"], ["other"]):
-            with self.subTest(arguments=arguments):
-                output, errors = io.StringIO(), io.StringIO()
-                with (
-                    contextlib.redirect_stdout(output),
-                    contextlib.redirect_stderr(errors),
-                    self.assertRaises(SystemExit) as raised,
-                ):
-                    targets.main(arguments, Services())
-                self.assertEqual(2, raised.exception.code)
-                self.assertEqual("", output.getvalue())
-                self.assertIn("usage:", errors.getvalue())
-
     def test_an_slnx_solution_is_found_and_scored_like_an_sln(self) -> None:
         repo = self.repository
         repo.write("Sources/Lib/Lib.csproj", SDK_PROJECT)
@@ -975,3 +966,24 @@ class LocatedToolsTests(unittest.TestCase):
         install(self.links, "gh")
         on_path = install(self.path_folder, "gh")
         self.assertEqual(str(on_path), targets.Services().which("gh"))
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        pytest.param([], id="no-command"),
+        pytest.param(["resolve", "--unknown"], id="unknown-option"),
+        pytest.param(["other"], id="unknown-command"),
+    ],
+)
+def test_usage_errors_exit_2_on_stderr(arguments: list[str]) -> None:
+    output, errors = io.StringIO(), io.StringIO()
+    with (
+        contextlib.redirect_stdout(output),
+        contextlib.redirect_stderr(errors),
+        CHECK.assertRaises(SystemExit) as raised,
+    ):
+        targets.main(arguments, Services())
+    CHECK.assertEqual(2, raised.exception.code)
+    CHECK.assertEqual("", output.getvalue())
+    CHECK.assertIn("usage:", errors.getvalue())
