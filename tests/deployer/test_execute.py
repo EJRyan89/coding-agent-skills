@@ -19,7 +19,6 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
-from git_test_base import GitTestCase
 from harness import DEPLOY_COMMAND
 
 from deployer import config, errors, journal, lock, pipeline, plan, platform_support, source
@@ -54,7 +53,7 @@ class Held:
         self.calls.append("release")
 
 
-class ExecuteTests(GitTestCase):
+class ExecuteTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="execute.")
         self.addCleanup(temporary.cleanup)
@@ -618,7 +617,3 @@ class ExecuteTests(GitTestCase):
                                 journaled_runs=[runs],
                             ),
                         )
-
-
-if __name__ == "__main__":
-    unittest.main()

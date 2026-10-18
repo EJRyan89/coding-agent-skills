@@ -22,7 +22,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 import upgrade_notes
-from git_test_base import GitTestCase
 from upgrade_notes import Snapshot, changed_contract_items, contract_list_problems, upgrade_notes_problems
 from validation_support import write_fixture_tree
 
@@ -34,7 +33,7 @@ def snapshot(files: Mapping[str, str]) -> Snapshot:
     return Snapshot(frozenset(files), lambda name: files[name])
 
 
-class ContractValueReaders(GitTestCase):
+class ContractValueReaders(unittest.TestCase):
     """Each contract value is read however it is written, so a raised floor or a new manifest version is named."""
 
     TOOL = "@dataclass\nclass Tool:\n    name: str\n    label: str\n    locate: object\n    version_arguments: tuple\n"
@@ -86,7 +85,7 @@ class ContractValueReaders(GitTestCase):
         )
 
 
-class UpgradeNotesPolicy(GitTestCase):
+class UpgradeNotesPolicy(unittest.TestCase):
     RELEASING = (
         "# Releasing\n\n## Versioning\n\n**Contracts**:\n\n1. **Durable user data.** Records.\n\n"
         "**Levels**, from `1.0.0` on:\n\n- **Patch.** Nothing to do.\n- **Minor.** Something optional.\n"
@@ -568,7 +567,7 @@ class UpgradeNotesPolicy(GitTestCase):
         )
 
 
-class ContractListPolicy(GitTestCase):
+class ContractListPolicy(unittest.TestCase):
     """Each file the upgrade-notes check reads is named in a contract list, so the list and the check agree."""
 
     NAMED = (
@@ -604,7 +603,3 @@ class ContractListPolicy(GitTestCase):
             ["profile.md has no ## Contract files section naming the contract files the upgrade-notes check reads"],
             contract_list_problems("profile.md", "# Profile\n", "## Contract files"),
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

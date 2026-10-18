@@ -13,7 +13,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
-from git_test_base import GitTestCase
 from workflows import (
     WorkflowSyntaxError,
     deployable_linux_problems,
@@ -30,7 +29,7 @@ from workflows import (
 )
 
 
-class WorkflowsFixtures(GitTestCase):
+class WorkflowsFixtures(unittest.TestCase):
     def test_workflow_guard_reports_each_drift(self) -> None:
         clean = (
             "name: Example\n\non:\n  pull_request:\n  # A comment is not a trigger.\n  push:\n    branches: [main]\n\n"
@@ -202,7 +201,7 @@ LEGS = (
 )
 
 
-class LegFixtures(GitTestCase):
+class LegFixtures(unittest.TestCase):
     def test_each_leg_is_named_as_a_windows_leg_and_runs_its_own_shard(self) -> None:
         self.assertEqual([], leg_problems(LEGS, 2))
         for drifted, problem in (
@@ -258,7 +257,7 @@ LINUX = (
 )
 
 
-class LinuxJobFixtures(GitTestCase):
+class LinuxJobFixtures(unittest.TestCase):
     def test_the_linux_job_runs_the_whole_run_named_as_linux(self) -> None:
         self.assertEqual([], linux_job_problems(LINUX))
         for drifted, problem in (
@@ -297,7 +296,7 @@ REQUIRED_CHECK = (
 )
 
 
-class RequiredCheckFixtures(GitTestCase):
+class RequiredCheckFixtures(unittest.TestCase):
     def test_the_one_required_check_fails_unless_every_platform_passes(self) -> None:
         self.assertEqual([], required_check_problems(REQUIRED_CHECK, ("suite", "linux")))
         for drifted, problem in (
@@ -336,7 +335,7 @@ VERIFY_LOGS = (
 )
 
 
-class VerifyLogFixtures(GitTestCase):
+class VerifyLogFixtures(unittest.TestCase):
     def test_each_report_reads_the_log_its_own_verify_command_saved(self) -> None:
         self.assertEqual([], verify_log_problems(VERIFY_LOGS))
         self.assertEqual([], verify_log_problems(VERIFY_LOGS.replace("'", '"')))
@@ -412,7 +411,7 @@ DEPLOYABLE_JOBS = (
 )
 
 
-class DeployableLinuxFixtures(GitTestCase):
+class DeployableLinuxFixtures(unittest.TestCase):
     def test_the_linux_job_runs_the_windows_jobs_steps_but_the_windows_only_one(self) -> None:
         self.assertEqual([], deployable_linux_problems(DEPLOYABLE_JOBS))
         linux = DEPLOYABLE_JOBS.index("  deployable-linux:")
@@ -456,7 +455,7 @@ LINUX_VERIFY_LOGS = (
 )
 
 
-class LinuxVerifyLogFixtures(GitTestCase):
+class LinuxVerifyLogFixtures(unittest.TestCase):
     def test_each_report_reads_the_log_and_the_status_its_own_verify_left(self) -> None:
         self.assertEqual([], linux_verify_log_problems(LINUX_VERIFY_LOGS))
 
@@ -523,7 +522,7 @@ UNINSTALL_CHECK = (
 )
 
 
-class UninstallCheckFixtures(GitTestCase):
+class UninstallCheckFixtures(unittest.TestCase):
     def test_both_jobs_check_the_layout_before_the_uninstall_and_report_what_is_left_after(self) -> None:
         self.assertEqual([], uninstall_check_problems(UNINSTALL_CHECK))
 
@@ -601,7 +600,7 @@ class UninstallCheckFixtures(GitTestCase):
                 self.assertTrue(any(problem in found for found in problems), problems)
 
 
-class WorkflowReaderFixtures(GitTestCase):
+class WorkflowReaderFixtures(unittest.TestCase):
     def test_the_subset_reads_as_dictionaries_lists_and_strings(self) -> None:
         text = (
             "# A comment.\n"
@@ -673,7 +672,3 @@ class WorkflowReaderFixtures(GitTestCase):
         ):
             with self.subTest(text=text), self.assertRaisesRegex(WorkflowSyntaxError, reason):
                 read_workflow(text)
-
-
-if __name__ == "__main__":
-    unittest.main()

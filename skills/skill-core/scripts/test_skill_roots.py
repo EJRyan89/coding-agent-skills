@@ -171,7 +171,3 @@ class SkillsDirectoryHoldingTests(unittest.TestCase):
 def extended(path: Path) -> Path:
     """`path`, resolved, written with Windows' extended-length prefix."""
     return Path("\\\\?\\" + str(path.resolve()))
-
-
-if __name__ == "__main__":
-    unittest.main()

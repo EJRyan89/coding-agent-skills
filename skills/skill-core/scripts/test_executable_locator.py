@@ -254,7 +254,3 @@ class LinkFoldersTests(LocatorTestCase):
         ):
             self.assertEqual([], link_folders())
             self.assertIsNone(find_executable(PROGRAM))
-
-
-if __name__ == "__main__":
-    unittest.main()

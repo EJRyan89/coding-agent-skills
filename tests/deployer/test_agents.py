@@ -6,7 +6,6 @@ import hashlib
 import json
 import re
 import shutil
-import unittest
 from pathlib import Path
 from unittest import mock
 
@@ -318,7 +317,3 @@ class AgentDeploymentTests(DeployerTestCase):
                 data["sources"]["test/skills"]["agents"] = {bad: {"hash": sha256(self.content)}}
                 self.write_manifest(data)
                 self.deploy_fails("--all", pattern="Manifest entry is malformed")
-
-
-if __name__ == "__main__":
-    unittest.main()

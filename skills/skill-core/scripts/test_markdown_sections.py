@@ -127,7 +127,3 @@ class FenceLanguageTests(unittest.TestCase):
             with self.subTest(label=label):
                 self.assertIn(label, EXECUTABLE_FENCES)
         self.assertTrue(all(label == label.casefold() for label in labels), "labels are compared casefolded")
-
-
-if __name__ == "__main__":
-    unittest.main()

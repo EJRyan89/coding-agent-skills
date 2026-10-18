@@ -203,7 +203,3 @@ class RunMainTests(unittest.TestCase):
         self.assertEqual(1, result.returncode, result.stderr)
         self.assertEqual(b"FAILED OSError: bad \\udcff path", result.stdout.rstrip())
         self.assertEqual(b"", result.stderr)
-
-
-if __name__ == "__main__":
-    unittest.main()

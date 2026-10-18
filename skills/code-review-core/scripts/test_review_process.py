@@ -232,7 +232,3 @@ class StartDetachedTests(unittest.TestCase):
                 self.assertEqual({1, 2}, descriptors_to(pid, log), "the host's output and errors, and nothing else")
                 self.assertEqual(set(), descriptors_to("self", log), "this process keeps no descriptor of the log")
                 self.assertEqual(Path(os.devnull), Path(f"/proc/{pid}/fd/0").readlink(), "no input")
-
-
-if __name__ == "__main__":
-    unittest.main()

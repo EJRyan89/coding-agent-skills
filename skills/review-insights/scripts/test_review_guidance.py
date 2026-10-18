@@ -22,7 +22,6 @@ sys.path.insert(0, str(sibling_scripts("code-review-core")))
 import review_guidance as rg
 import review_synthesis as rs
 from git_client import GitClient
-from git_test_base import GitTestCase
 from review_config import load_config, write_config
 from test_review_insights import InsightFixture
 
@@ -70,7 +69,7 @@ def reviewed(name: str, stamp: str, files: dict[str, str], commit: str | None = 
     return {"repository": "owner/repo", "review": {"reviewed_at": stamp, "adapter": adapter}}
 
 
-class RuleTests(GitTestCase):
+class RuleTests(unittest.TestCase):
     def test_rules_come_from_list_items_and_paragraphs_never_headings_tables_or_code(self) -> None:
         found = [(rule.line, rule.text) for rule in rg.rules("checklist.md", CHECKLIST)]
         self.assertEqual(
@@ -114,7 +113,7 @@ def generated(tag: str, planted: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-class OverlapBoundTests(GitTestCase):
+class OverlapBoundTests(unittest.TestCase):
     """The overlap search stays bounded however large the guidance files it reads."""
 
     def counted(self, limit: int) -> mock.Mock:
@@ -152,7 +151,7 @@ class OverlapBoundTests(GitTestCase):
         self.assertTrue(found and {"duplicate"} == {item["relation"] for item in found})
 
 
-class ReadTests(GitTestCase):
+class ReadTests(unittest.TestCase):
     def setUp(self) -> None:
         super().setUp()
         temporary = tempfile.TemporaryDirectory()
@@ -617,7 +616,3 @@ class ReportTests(InsightFixture):
         self.assertEqual(
             ("included", CHECKLIST), (files["docs/checklist.md"]["status"], files["docs/checklist.md"]["content"])
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

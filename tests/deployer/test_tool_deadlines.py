@@ -6,7 +6,6 @@ from __future__ import annotations
 import contextlib
 import sys
 import textwrap
-import unittest
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -342,7 +341,3 @@ class ReadOnlyCommandDeadlineTests(DeadlineCase):
             self.assertIn(line, result.output.splitlines())
         self.assertNotIn("Traceback", result.output)
         self.assert_ended(self.stubs.started())
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -114,7 +114,3 @@ class ReadFilesTests(unittest.TestCase):
             'REFUSED "tools\\\\..\\\\..\\\\outside.py": a path that could name a file outside the snapshot',
             conditions.refusal_line(refused[0]),
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -200,7 +200,3 @@ class StatFieldsTests(unittest.TestCase):
         self.assertIs(stat_fields, job_tree.stat_fields)
         self.assertEqual(Path("/proc"), process_identity.PROC)
         self.assertEqual(frozenset({b"Z", b"X", b"x"}), process_identity.ENDED_STATES)
-
-
-if __name__ == "__main__":
-    unittest.main()

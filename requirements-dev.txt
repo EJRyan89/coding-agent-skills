@@ -3,3 +3,4 @@
 # docs/dependency-updates.md owns these pins; Dependabot reviews them weekly.
 ruff==0.17.1
 mypy==2.4.0
+pytest==9.1.1

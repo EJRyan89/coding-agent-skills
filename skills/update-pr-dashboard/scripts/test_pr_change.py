@@ -474,7 +474,3 @@ class AncestryTests(unittest.TestCase):
         for kind in (*RUN_LEVEL_KINDS, *CALL_LEVEL_KINDS):
             with self.subTest(kind=kind), self.assertRaises(GitHubError):
                 at_or_before(self.Client(GitHubError("stop", kind=kind)), "owner/repo", REVIEWED, HEAD)
-
-
-if __name__ == "__main__":
-    unittest.main()

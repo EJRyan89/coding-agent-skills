@@ -744,7 +744,3 @@ class FlagCliTests(unittest.TestCase):
                 result = self.store_cli(*arguments)
                 self.assertEqual((2, ""), (result.returncode, result.stdout))
                 self.assertIn("usage:", result.stderr)
-
-
-if __name__ == "__main__":
-    unittest.main()

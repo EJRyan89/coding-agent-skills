@@ -8,7 +8,6 @@ import re
 import shutil
 import subprocess
 import sys
-import unittest
 from pathlib import Path
 from unittest import mock
 
@@ -1992,7 +1991,3 @@ class ManifestStateTests(RecoveryTestCase):
         self.assertNotIn("old/source", sources)
         self.assertEqual(["alpha"], sources["new/source"]["requested_skills"])
         self.assertNotIn("selected_skills", sources["new/source"])
-
-
-if __name__ == "__main__":
-    unittest.main()

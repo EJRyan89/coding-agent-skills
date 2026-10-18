@@ -4,7 +4,6 @@ import contextlib
 import io
 import json
 import os
-import unittest
 from functools import partial
 from typing import Any
 from unittest import mock
@@ -381,7 +380,3 @@ class EscapingFailureTests(DeployerTestCase):
             self.assertFalse(debug_given(["--debug", "--bogus"]))
             self.assertFalse(debug_given(["--debug", "--at"]))
         self.assertEqual(("", ""), (output.getvalue(), errors.getvalue()))
-
-
-if __name__ == "__main__":
-    unittest.main()

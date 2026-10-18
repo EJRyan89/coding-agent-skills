@@ -9,21 +9,21 @@ import os
 import stat
 import subprocess
 import sys
-import unittest
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
-import git_test_base
 import repo_cleanup as rc
 from test_repo_cleanup import GIT_CONFIG, UNNAMEABLE, Fixture, build_template, facts, git, refusing_branch_deletion
+
+# The settings conftest.py adds to the global configuration of every home this suite's git runs in.
+git_config = GIT_CONFIG
 
 
 def setUpModule() -> None:
     """Build the repositories every Fixture test starts from, with Git isolated as each test isolates it."""
-    git_test_base.isolate_module(GIT_CONFIG)
     build_template()
 
 
@@ -731,7 +731,3 @@ class LeftoverTests(Fixture):
         (tree / "real" / "__pycache__").mkdir()
         self.assertTrue(rc.is_regenerable("real/__pycache__/", str(tree)))
         self.assertFalse(rc.is_regenerable("linked/__pycache__/", str(tree)), "reached through a link")
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -5,7 +5,6 @@ import re
 import shutil
 import subprocess
 import sys
-import unittest
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -1109,7 +1108,3 @@ class ShippedFileTests(DeployerTestCase):
         )
         self.assertFalse((self.skills_dir / "alpha").exists())
         self.assertEqual({}, self.owned("skills"))
-
-
-if __name__ == "__main__":
-    unittest.main()

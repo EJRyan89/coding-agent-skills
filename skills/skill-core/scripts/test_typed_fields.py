@@ -303,7 +303,3 @@ class FieldReaderTests(unittest.TestCase):
                 read()
             self.assertIsInstance(caught.exception, DomainFieldError)
             self.assertTrue(str(caught.exception).startswith("f"))
-
-
-if __name__ == "__main__":
-    unittest.main()

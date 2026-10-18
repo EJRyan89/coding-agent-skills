@@ -33,7 +33,6 @@ import review_documents as documents
 import review_pipeline as rp
 import review_runtime
 import review_source
-from git_test_base import GitTestCase
 from review_documents import ExtractionRefused, document_diff, document_format, extract, locations
 from review_guard import read_log
 from review_runtime import (
@@ -294,7 +293,7 @@ def without_pdftotext(test: unittest.TestCase) -> None:
     test.addCleanup(environment.stop)
 
 
-class ExtractionTests(GitTestCase):
+class ExtractionTests(unittest.TestCase):
     def test_paragraphs_headings_lists_and_tables_are_lines_labelled_with_their_place(self) -> None:
         content = word_document(
             paragraph("Design", style="Title"),
@@ -426,7 +425,7 @@ class ExtractionTests(GitTestCase):
         self.assertEqual(locations("[p1 l1] # Not a heading\n[p3 l12] Body\n"), ["page 1, line 1", "page 3, line 12"])
 
 
-class RefusalTests(GitTestCase):
+class RefusalTests(unittest.TestCase):
     def assertRefused(self, content: bytes, reason: str) -> None:
         with self.assertRaises(ExtractionRefused) as caught:
             extract("docx", content)
@@ -548,7 +547,7 @@ PDF = pdf_document(["Scope", "Keep one queue."], ["Retry twice."])
 XPDF_4_00 = "pdftotext version 4.00\nCopyright 1996-2017 Glyph & Cog, LLC\n"
 
 
-class PdfExtractionTests(GitTestCase):
+class PdfExtractionTests(unittest.TestCase):
     """A PDF is read by the pdftotext on PATH, here a stub, given the bytes as a throwaway file and nothing else."""
 
     def assertRefused(self, reason: str) -> None:
@@ -758,7 +757,7 @@ def longest_common(base: Sequence[str], head: Sequence[str]) -> int:
     return lengths[-1][-1]
 
 
-class DiffTests(GitTestCase):
+class DiffTests(unittest.TestCase):
     HEADER = ("diff --git a/docs/design.docx b/docs/design.docx", "index 1111111..2222222 100644")
 
     def test_an_inserted_paragraph_is_one_added_line_and_the_new_side_numbers_the_head_file(self) -> None:
@@ -1009,7 +1008,7 @@ def commit(checkout: Path, files: dict[str, bytes]) -> str:
     return git(checkout, "rev-parse", "HEAD")
 
 
-class SnapshotRouteTests(GitTestCase):
+class SnapshotRouteTests(unittest.TestCase):
     """Every route holds a changed document as its extracted text and leaves an unchanged one `binary`."""
 
     def setUp(self) -> None:
@@ -1183,7 +1182,7 @@ HEAD_PDF_LINES = b"[p1 l1] Scope\n[p1 l2] Bound the queue at ten.\n[p1 l3] Keep 
 HELD = "source-snapshot-text/docs/spec.pdf.txt"
 
 
-class PdfSnapshotTests(GitTestCase):
+class PdfSnapshotTests(unittest.TestCase):
     """Every route holds a changed PDF's text beside it, at a path a reviewer's file reader takes for text, since
     Claude Code's Read parses any file named .pdf as a PDF and refuses text there."""
 
@@ -1385,7 +1384,7 @@ class StubGitHub:
         return self.blob, self.content
 
 
-class GitHubBaseTests(GitTestCase):
+class GitHubBaseTests(unittest.TestCase):
     PULL: ClassVar[dict[str, str]] = {"baseRefOid": "a" * 40, "headRefOid": "b" * 40}
 
     def reader(self, github: StubGitHub) -> rp.BaseReader:
@@ -1412,7 +1411,3 @@ class GitHubBaseTests(GitTestCase):
         with self.assertRaises(RuntimeContractError):
             self.reader(StubGitHub(blob, BASE_DOCUMENT + b"x"))("docs/design.docx", blob[:7])
         self.assertIsNone(self.reader(StubGitHub(blob, None))("docs/design.docx", blob[:7]))
-
-
-if __name__ == "__main__":
-    unittest.main()

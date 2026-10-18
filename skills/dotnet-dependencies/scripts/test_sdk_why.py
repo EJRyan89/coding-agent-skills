@@ -223,7 +223,3 @@ class RunTests(unittest.TestCase):
 
     def test_the_runner_states_why_the_policy_cannot_read_its_program(self) -> None:
         self.assertIn("subprocess_runner", sdk_why.COMMANDS_ALLOWED)
-
-
-if __name__ == "__main__":
-    unittest.main()

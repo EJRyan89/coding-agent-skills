@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import time
-import unittest
 from unittest import mock
 
 from harness import DeployerTestCase, forward, tree_state
@@ -192,7 +191,3 @@ class RunIdTests(DeployerTestCase):
         manifest = self.manifest()
         self.assertRegex(manifest["last_run_id"], r"^20300102-030405-[0-9a-f]{4}$")
         self.assertEqual("2030-01-02T03:04:05Z", manifest["sources"]["test/skills"]["deployed_at"])
-
-
-if __name__ == "__main__":
-    unittest.main()

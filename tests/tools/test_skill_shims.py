@@ -13,7 +13,6 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
-from git_test_base import GitTestCase
 
 from tools import skill_shims
 
@@ -32,7 +31,7 @@ SHIM = (
 SHIM_PATH = Path(".agents/skills/widget-check/SKILL.md")
 
 
-class SkillShimsTestCase(GitTestCase):
+class SkillShimsTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="skill-shims-test.")
         self.root = Path(self._temporary.name).resolve() / "Repo With Spaces"
@@ -194,7 +193,3 @@ class SkillShimsTestCase(GitTestCase):
         self.assertEqual(2, code)
         self.assertIn(f"lies in the skills directory {home / '.claude' / 'skills'}", stderr)
         self.assertEqual(adapter, (home / SHIM_PATH).read_text(encoding="utf-8"))
-
-
-if __name__ == "__main__":
-    unittest.main()

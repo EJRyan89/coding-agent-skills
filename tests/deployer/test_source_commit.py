@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import unittest
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -160,7 +159,3 @@ class SourceCommitTests(DeployerTestCase):
         git(self.source, "tag", "v9.9.9")
         self.deploy_ok("--all")
         self.assertIn(f"\nDeployed commit: v9.9.9 ({head})\n", self.check().output)
-
-
-if __name__ == "__main__":
-    unittest.main()

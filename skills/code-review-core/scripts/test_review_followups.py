@@ -23,7 +23,6 @@ import review_github
 import review_operation
 import review_pipeline
 import review_runtime
-from git_test_base import GitTestCase
 from github_client import CommandResult, GitHubError
 from review_config import (
     ConfigurationError,
@@ -76,7 +75,7 @@ def serving(stdout: str) -> Callable[[Sequence[str]], CommandResult]:
     return lambda _arguments: CommandResult(0, stdout, "")
 
 
-class GitHubSnapshotTests(GitTestCase):
+class GitHubSnapshotTests(unittest.TestCase):
     def snapshot(
         self, members: dict[str, bytes], changed: tuple[str, ...] = (), exclude: tuple[str, ...] = ()
     ) -> tuple[Path, dict]:
@@ -267,7 +266,7 @@ class ScriptedDownloader:
         return answer
 
 
-class GitHubTarballVerificationTests(GitTestCase):
+class GitHubTarballVerificationTests(unittest.TestCase):
     """GitHub builds its tarball with `git archive`, which honours the commit's .gitattributes, so the fetcher checks
     the tarball against the commit's tree and refuses any file it left out or rewrote."""
 
@@ -426,7 +425,7 @@ class GitHubTarballVerificationTests(GitTestCase):
         review_runtime.github_tarball_fetcher("owner/repo", HEAD, self.root / "source.tar.gz", github)
 
 
-class ConfigOperationSetTests(GitTestCase):
+class ConfigOperationSetTests(unittest.TestCase):
     def config(self, **extra: object) -> dict:
         generic = {"reviewer": {"id": "generic", "protocol_version": 1, "scope": "generic"}, "checkout_path": None}
         value = {
@@ -467,7 +466,7 @@ class ConfigOperationSetTests(GitTestCase):
             self.config(operation_repository_sets={"review-prs": "missing"})
 
 
-class ReviewedHeadTests(GitTestCase):
+class ReviewedHeadTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
@@ -690,7 +689,7 @@ class ReviewedHeadTests(GitTestCase):
             review_operation.recorded_watermark(state, "owner/repo")
 
 
-class EnumerateBatchTests(GitTestCase):
+class EnumerateBatchTests(unittest.TestCase):
     """`enumerate` against a gh runner that serves the listings a repository's history answers."""
 
     REPOSITORY = "owner/repo"
@@ -900,7 +899,7 @@ class EnumerateBatchTests(GitTestCase):
                 self.assertNotIn("FAILED", printed.getvalue())
 
 
-class CoverageTests(GitTestCase):
+class CoverageTests(unittest.TestCase):
     POLICY: ClassVar[dict[str, Any]] = {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3}
 
     def request(self, exclude: tuple[str, ...] = ()) -> tuple[dict, Path]:
@@ -1097,7 +1096,7 @@ class CoverageTests(GitTestCase):
                 validate_record(broken)
 
 
-class TrackerIncompleteTests(GitTestCase):
+class TrackerIncompleteTests(unittest.TestCase):
     def test_incomplete_review_is_shown_but_not_reoffered_until_head_changes(self) -> None:
         sys.path.insert(0, str(sibling_scripts("update-pr-dashboard")))
         import update_pr_dashboard as tracker
@@ -1123,7 +1122,7 @@ class TrackerIncompleteTests(GitTestCase):
         self.assertEqual("current", tracker._ai_review({**item, "reviewed_incomplete": False}, Detector(UNCHANGED)))
 
 
-class ReleaseGuidelineTests(GitTestCase):
+class ReleaseGuidelineTests(unittest.TestCase):
     @staticmethod
     def git(path: Path, *arguments: str) -> str:
         return subprocess.run(
@@ -1208,7 +1207,3 @@ class ReleaseGuidelineTests(GitTestCase):
             review_specialists.load_materialized_manifest(destination)
             with self.assertRaisesRegex(RuntimeContractError, "Guideline commit is invalid"):
                 review_runtime.materialize_reviewer(checkout, trusted, loaded, root / "bad", guideline_commit="main")
-
-
-if __name__ == "__main__":
-    unittest.main()

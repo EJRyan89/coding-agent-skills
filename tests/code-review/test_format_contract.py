@@ -50,7 +50,6 @@ import review_guidance
 import review_insights
 import review_runtime
 import review_synthesis
-from git_test_base import GitTestCase
 from review_archive import commit_record, current_ledger
 from review_canary import validate_fixture_pull
 from review_config import validate_config
@@ -1510,7 +1509,7 @@ def schema_rows(described: dict[str, Any]) -> dict[str, Row]:
     return rows
 
 
-class FormatContractTest(GitTestCase):
+class FormatContractTest(unittest.TestCase):
     scratch: tempfile.TemporaryDirectory
     fixtures: ClassVar[dict[str, list[Fixture]]]
 
@@ -1752,7 +1751,7 @@ def toy_rows(**changed: list[str] | None) -> dict[str, Row]:
     return {name: parse_row(row) for name, row in cells.items() if row is not None}
 
 
-class CheckTableTests(GitTestCase):
+class CheckTableTests(unittest.TestCase):
     """check_table called directly on literal rows and fixtures, with every message it gives, in its order."""
 
     def check(self, rows: dict[str, Row], found: list[Instance]) -> list[str]:
@@ -1888,7 +1887,3 @@ class CheckTableTests(GitTestCase):
             ],
             self.check(rows, toy_instances(_judge(lambda value: None))),
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

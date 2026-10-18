@@ -71,7 +71,3 @@ class DeviceNameTests(unittest.TestCase):
         for name in ("console", "con-alpha", "nul-check", "com", "com10", "lpt10", "aux2", ".con", " con", "con_.md"):
             with self.subTest(name=name):
                 self.assertFalse(is_reserved_device_name(name))
-
-
-if __name__ == "__main__":
-    unittest.main()

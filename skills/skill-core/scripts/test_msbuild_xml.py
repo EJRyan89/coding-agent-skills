@@ -67,7 +67,3 @@ class SdkStyleTests(unittest.TestCase):
     def test_names_are_compared_with_case(self) -> None:
         self.assertEqual((False, False), self.judged('<project Sdk="Microsoft.NET.Sdk"></project>'))
         self.assertEqual((False, False), self.judged('<Project><sdk Name="Microsoft.NET.Sdk" /></Project>'))
-
-
-if __name__ == "__main__":
-    unittest.main()

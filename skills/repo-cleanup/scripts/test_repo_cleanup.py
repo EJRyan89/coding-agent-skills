@@ -22,10 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import git_client
-import git_test_base
 import repo_cleanup as rc
 from git_client import GitClient, GitError, GitResult
-from git_test_base import GitTestCase
 from github_client import MISSING_CLI, CommandResult, GitHubError
 
 REMOTE_URL = "https://github.com/owner/repo.git"
@@ -40,9 +38,12 @@ T = TypeVar("T")
 UNNAMEABLE = "not offered: the name {} holds a character a fact line cannot carry, so no confirmation could name it"
 
 
+# The settings conftest.py adds to the global configuration of every home this suite's git runs in.
+git_config = GIT_CONFIG
+
+
 def setUpModule() -> None:
     """Build the repositories every Fixture test starts from, with Git isolated as each test isolates it."""
-    git_test_base.isolate_module(GIT_CONFIG)
     build_template()
 
 
@@ -55,7 +56,7 @@ def build_template() -> None:
     unittest.addModuleCleanup(remove_tree, TEMPLATE.parent)
 
 
-class CleanupTestCase(GitTestCase):
+class CleanupTestCase(unittest.TestCase):
     git_config = GIT_CONFIG
 
 
@@ -2484,7 +2485,3 @@ class PlanVersionTests(CleanupTestCase):
                 self.assertEqual(
                     (1, [f"FAILED\t{plan} is not a repo-cleanup plan"]), (code, out.getvalue().splitlines())
                 )
-
-
-if __name__ == "__main__":
-    unittest.main()

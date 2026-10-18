@@ -19,7 +19,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "validation"))
 
 import frontmatter as fm
-from git_test_base import GitTestCase
 from skill_grants import skill_grant_problems
 from skill_layout import script_dependency_problems, sibling_path_problems
 
@@ -52,7 +51,7 @@ GRANTS_REMAINING = [
 ]
 
 
-class FixtureRepositoryTestCase(GitTestCase):
+class FixtureRepositoryTestCase(unittest.TestCase):
     """A fixture source with two shipped skills, one in a bundle, and a current skill reference."""
 
     def setUp(self) -> None:
@@ -564,7 +563,3 @@ class NewRepositorySkillTestCase(FixtureRepositoryTestCase):
             ],
             stdout.splitlines(),
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

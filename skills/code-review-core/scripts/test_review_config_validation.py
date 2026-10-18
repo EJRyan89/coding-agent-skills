@@ -2125,7 +2125,3 @@ class ConfigValidationTests(unittest.TestCase):
             message for message in sorted(refused - staged) if not any(variant in message for variant in VALUE_VARIANTS)
         ]
         self.assertEqual([], unstaged)
-
-
-if __name__ == "__main__":
-    unittest.main()

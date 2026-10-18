@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import tempfile
-import unittest
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -125,7 +124,3 @@ class OSErrorTests(DeployerTestCase):
                 result = self.run_cli("--all", "--dry-run")
                 self.assertEqual(1, result.code, result.output)
                 self.assertNotIn(TRACEBACK, result.output)
-
-
-if __name__ == "__main__":
-    unittest.main()

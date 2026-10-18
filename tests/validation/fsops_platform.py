@@ -214,7 +214,7 @@ PLATFORM_POLICY_MODULE = "tests/validation/fsops_platform.py"
 
 def _platform_scanned_files(root: Path) -> list[Path]:
     """The code that runs on a user's machine or runs validation, other than platform_support itself."""
-    files = [root / "deploy.py", root / "tests" / "run_validation.py", root / "tests" / "run_shard.py"]
+    files = [root / "deploy.py", root / "tests" / "run_validation.py", root / "conftest.py"]
     files += [*(root / "tests" / "validation").glob("*.py")]
     files += [*(root / "deployer").rglob("*.py"), *(root / "tools").rglob("*.py")]
     return [
@@ -242,8 +242,8 @@ def _platform_names(tree: ast.Module, skipped_tables: set[str]) -> list[tuple[in
     return found
 
 
-# The bases a test case derives from directly: unittest's, and skill-core's git test base.
-TEST_CASE_NAMES = frozenset({"TestCase", "GitTestCase"})
+# The base a test case derives from directly: unittest's, named alone or as an attribute of its module.
+TEST_CASE_NAMES = frozenset({"TestCase"})
 
 
 def _is_test_case(node: ast.AST) -> bool:

@@ -16,7 +16,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 from bounded_process import Finished
 from git_client import GitClient, GitResult, subprocess_runner
-from git_test_base import GitTestCase
 from github_client import CommandResult, GitHubError
 from pr_status import (
     COMMIT_LIMIT,
@@ -102,7 +101,7 @@ def state_of(*pulls: dict) -> str:
     return classify("owner/repo", "topic", TIP, runner=responder(listing(*pulls)))
 
 
-class ClassifyTests(GitTestCase):
+class ClassifyTests(unittest.TestCase):
     def test_any_open_pull_request_makes_the_branch_active(self) -> None:
         cases = (
             (pull("OPEN"),),
@@ -242,7 +241,7 @@ def history(*commits: tuple[str, ...], page_size: int = 100) -> str:
 UPDATED = history((TIP, BASE), (UPDATE, TIP, MAIN_NOW))
 
 
-class UpdatedPullRequestTests(GitTestCase):
+class UpdatedPullRequestTests(unittest.TestCase):
     def state(self, head: str, commits: str, upstream: str | None = None, state: str = "MERGED", **pull_fields) -> str:
         run = router(listing(dict(pull(state, head, **pull_fields), number=7)), commits)
         self.runner = run
@@ -364,7 +363,7 @@ def commits_call(number: int) -> list[str]:
     return ["api", "--paginate", "--slurp", f"repos/owner/repo/pulls/{number}/commits?per_page=100"]
 
 
-class ClassifySequenceTests(GitTestCase):
+class ClassifySequenceTests(unittest.TestCase):
     """classify called directly: each outcome with the exact gh calls it made, and each refusal's exact message."""
 
     def outcome(
@@ -680,7 +679,7 @@ class ClassifySequenceTests(GitTestCase):
         self.assertEqual(("UNMATCHED", [LIST_CALL]), self.outcome(pull("MERGED"), upstream=MAIN_NOW))
 
 
-class GitFixture(GitTestCase):
+class GitFixture(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="pr-status.")
         root = Path(self._temporary.name)
@@ -969,7 +968,7 @@ DEMO_ENTRY = b":100644 100644 " + b"1" * 40 + b" " + b"2" * 40 + b" M\0demo.py\0
 NOTES_ENTRY = b":000000 100644 " + b"0" * 40 + b" " + b"3" * 40 + b" A\0notes/a b.txt\0"
 
 
-class ChangeIdentityTests(GitTestCase):
+class ChangeIdentityTests(unittest.TestCase):
     def test_every_file_with_its_content_before_and_after_counts_and_only_their_order_is_left_out(self) -> None:
         listing = DEMO_ENTRY + NOTES_ENTRY
         self.assertEqual(change_identity(listing), change_identity(NOTES_ENTRY + DEMO_ENTRY), "order is left out")
@@ -1384,7 +1383,3 @@ class TrackingBaseClassificationTests(SquashFixture):
         self.git("-C", str(self.clone), "update-ref", "refs/heads/topic", self.merged_in)
         self.assertEqual("MERGED", self.state(fetched_bases(str(self.clone))))
         self.assertEqual("UNMATCHED", self.state(None))
-
-
-if __name__ == "__main__":
-    unittest.main()

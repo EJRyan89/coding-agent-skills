@@ -4391,7 +4391,3 @@ class GeneratorPathTests(unittest.TestCase):
             named = [candidate for candidate in audit.GENERATOR_CANDIDATES if f"`{candidate}`" in text]
             with self.subTest(reference=reference.name):
                 self.assertIn(named, ([], audit.GENERATOR_CANDIDATES))
-
-
-if __name__ == "__main__":
-    unittest.main()

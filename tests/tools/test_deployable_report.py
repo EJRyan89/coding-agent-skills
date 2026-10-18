@@ -20,7 +20,6 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
-from git_test_base import GitTestCase
 
 from deployer import discovery, manifest, platform_support
 from deployer.paths import Paths
@@ -73,7 +72,7 @@ class FakeRuntimes:
         return [json.dumps(skills)]
 
 
-class DeployableReportTests(GitTestCase):
+class DeployableReportTests(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="deployable-report-test.")
         root = Path(self._temporary.name).resolve()
@@ -635,7 +634,3 @@ class DeployableReportTests(GitTestCase):
         self.assertEqual("version could not be read", versions["Codex CLI"])
         self.assertEqual("9.8.7", versions["Node.js"])
         self.assertEqual("9.8.7", versions["Claude Code"])
-
-
-if __name__ == "__main__":
-    unittest.main()

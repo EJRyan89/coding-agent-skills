@@ -61,7 +61,3 @@ class FoldersUpTests(unittest.TestCase):
         walk = folders_up(STOP / "src" / "App", STOP)
         self.assertEqual(STOP / "src" / "App", next(walk))
         self.assertEqual(STOP / "src", next(walk))
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -6,7 +6,6 @@ import re
 import shutil
 import subprocess
 import sys
-import unittest
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from unittest import mock
@@ -1020,7 +1019,3 @@ class DryRunTests(DeployerTestCase):
             self.report_groups(result.output, "DRY RUN")["CONFLICT"],
         )
         self.assertIn("Locally edited → copy", result.output)
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -654,7 +654,3 @@ class StreamingTests(unittest.TestCase):
                     pass
                 process.kill.assert_called_once_with()
                 process.wait.assert_called_once_with(timeout=bounded_process.KILL_WAIT_SECONDS)
-
-
-if __name__ == "__main__":
-    unittest.main()

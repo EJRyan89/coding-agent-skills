@@ -23,7 +23,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "validation"))
 import git_client
 import git_worktrees
 import skill_scripts
-from git_test_base import GitTestCase
 
 from deployer import platform_support
 from tools import worktrees
@@ -36,7 +35,7 @@ TREE = Path(".claude") / "worktrees" / "feat-demo"
 
 
 def isolated_environment() -> dict[str, str]:
-    """A copy of this process's environment, whose git GitTestCase isolates, for a test to hand a command or change."""
+    """A copy of this process's environment, whose git conftest.py isolates, for a test to hand a command or change."""
     return dict(os.environ)
 
 
@@ -95,7 +94,7 @@ def copy_hub(hub: Path, environment: dict[str, str]) -> None:
         raise AssertionError(repaired.stderr)
 
 
-class WorktreesTestCase(GitTestCase):
+class WorktreesTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="worktrees-test.")
         self.root = Path(self._temporary.name).resolve()
@@ -168,7 +167,7 @@ class WorktreesTestCase(GitTestCase):
         return self.decision(event, environment)
 
 
-class FixtureTemplateTests(GitTestCase):
+class FixtureTemplateTests(unittest.TestCase):
     def test_a_copied_hub_matches_a_freshly_built_one_and_its_worktree_is_its_own(self) -> None:
         def shape(root: Path, environment: dict[str, str]) -> dict[str, str]:
             hub, tree = root / HUB, root / HUB / TREE
@@ -337,7 +336,7 @@ class HookCommandTests(WorktreesTestCase):
                 self.assertEqual((0, ["-B", f"{self.hub}/tools/worktrees.py", "guard"]), (code, arguments))
 
 
-class BranchOptionTests(GitTestCase):
+class BranchOptionTests(unittest.TestCase):
     def test_upstream_and_tracking_values_are_not_rename_options(self) -> None:
         for arguments in (
             ["-uorigin/main"],
@@ -387,7 +386,7 @@ class BranchOptionTests(GitTestCase):
                 self.assertTrue(worktrees.renames_a_branch(arguments))
 
 
-class CommandNameTests(GitTestCase):
+class CommandNameTests(unittest.TestCase):
     def test_a_command_is_named_lower_cased_without_its_directory_or_exe(self) -> None:
         cases = {
             "git": "git",
@@ -1720,7 +1719,7 @@ class ListTests(WorktreesTestCase):
         self.assertEqual(["feat/demo", "unreadable", "0", "0", "-"], self.rows(cwd=self.hub)["feat/demo"][:5])
 
 
-class GitProgramTests(GitTestCase):
+class GitProgramTests(unittest.TestCase):
     def runner(self, output: str = "") -> tuple[list[tuple[list[str], float]], Any]:
         """A runner for worktrees.CLIENT that records each command and its time limit and answers with output."""
         calls: list[tuple[list[str], float]] = []
@@ -1770,7 +1769,7 @@ class GitProgramTests(GitTestCase):
             worktrees.git(Path("a checkout"), "status")
 
 
-class ToolsGitTests(GitTestCase):
+class ToolsGitTests(unittest.TestCase):
     def test_every_tool_runs_git_and_gh_only_through_skill_cores_clients(self) -> None:
         # The policy validation applies to skill scripts, applied to tools/: a command a tool starts itself has no
         # time limit, no prompt turned off, and its own copy of the environment rule.
@@ -1783,7 +1782,3 @@ class ToolsGitTests(GitTestCase):
             )
         ]
         self.assertEqual([], found)
-
-
-if __name__ == "__main__":
-    unittest.main()

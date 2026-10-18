@@ -379,7 +379,3 @@ class MainTests(unittest.TestCase):
         text = (record_job_seconds.REPOSITORY_ROOT / "docs" / "releasing.md").read_text(encoding="utf-8")
         before_tagging = text.split("## Before tagging", 1)[1].split("\n## ", 1)[0]
         self.assertIn("python -B tools/record_job_seconds.py", before_tagging)
-
-
-if __name__ == "__main__":
-    unittest.main()

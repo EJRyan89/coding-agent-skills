@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import unittest
 from pathlib import Path
 from unittest import mock
 
@@ -220,7 +219,3 @@ class ConfigureTests(DeployerTestCase):
         self.assertIn("synthetic replace failure", result.output)
         self.assertEqual(before, self.digest())
         self.assertEqual([], list(self.config_file().parent.glob(".*.config.tmp.*")))
-
-
-if __name__ == "__main__":
-    unittest.main()

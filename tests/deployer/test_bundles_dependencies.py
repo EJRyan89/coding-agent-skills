@@ -5,7 +5,6 @@ import json
 import re
 import shutil
 import sys
-import unittest
 from pathlib import Path
 from typing import Any
 
@@ -1142,7 +1141,3 @@ class RepositoryBundleTests(DeployerTestCase):
         # A later --all keeps the bundle without naming it again.
         groups = self.report_groups(self.deploy_from(repository, "--all", "--dry-run").output, "DRY RUN")
         self.assertNotIn("REMOVE", groups, groups)
-
-
-if __name__ == "__main__":
-    unittest.main()

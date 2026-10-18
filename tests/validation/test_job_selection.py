@@ -17,7 +17,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 import job_selection
-from git_test_base import GitTestCase
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job
 from job_selection import (
     FORMAT_JOB,
@@ -49,7 +48,7 @@ def fixture_job(label: str, weight: float) -> Job:
 MEASURED = {"skills/a/scripts/test_a.sh": 40.0, "tests/test_big.py": 6.0, "tests/test_one.py": 3.5}
 
 
-class LegFixtures(GitTestCase):
+class LegFixtures(unittest.TestCase):
     JOBS = (
         fixture_job("static shell checks", UNSPLIT_SUITE_WEIGHT),
         fixture_job("skills/a/scripts/test_a.sh", UNSPLIT_SUITE_WEIGHT),
@@ -148,7 +147,7 @@ class LegFixtures(GitTestCase):
         self.assertEqual([], list(leg_policies(policies, 5, 6)))
 
 
-class JobSecondsFixtures(GitTestCase):
+class JobSecondsFixtures(unittest.TestCase):
     def write_table(self, text: str) -> Path:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -199,7 +198,7 @@ class JobSecondsFixtures(GitTestCase):
         self.assertEqual([], stale_job_seconds_problems({"tests/test_kept.py": 3.0}, {"tests/test_kept.py"}))
 
 
-class JobSelectionFixtures(GitTestCase):
+class JobSelectionFixtures(unittest.TestCase):
     def test_suites_that_name_a_changed_document_still_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -336,7 +335,7 @@ CHANGED_TREE = {
 }
 
 
-class ChangedSelectionFixtures(GitTestCase):
+class ChangedSelectionFixtures(unittest.TestCase):
     """What --changed selects: the static checks a changed file's kind reaches, and the suites that name, import, or
     share a skill with a changed file, with those CHANGE_REACHES adds."""
 
@@ -466,7 +465,3 @@ class ChangedSelectionFixtures(GitTestCase):
             {"tests/deployer/test_rendering_locking.py", "tests/deployer/test_bundles_dependencies.py"}, names
         )
         self.assertNotIn("tests/deployer/test_plan.py", names)
-
-
-if __name__ == "__main__":
-    unittest.main()

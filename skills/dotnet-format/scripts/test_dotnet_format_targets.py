@@ -23,7 +23,6 @@ import git_client
 import github_client
 from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult
-from git_test_base import GitTestCase
 from github_client import CommandResult
 from github_client import Runner as GhRunner
 
@@ -158,7 +157,7 @@ class Services(targets.Services):
         )
 
 
-class ResolveTests(GitTestCase):
+class ResolveTests(unittest.TestCase):
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -873,7 +872,7 @@ class ResolveTests(GitTestCase):
         self.assertEqual(targets.SDK_FORMATTER, targets.formatter_for(repo.root, repo.root / "Lib.sln"))
 
 
-class ConsoleTests(GitTestCase):
+class ConsoleTests(unittest.TestCase):
     def test_output_a_cp1252_console_cannot_encode_is_written_as_utf_8(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repository = Repository(Path(directory).resolve())
@@ -894,7 +893,7 @@ class ConsoleTests(GitTestCase):
         self.assertEqual(f"STOP\tno .sln or .slnx found under {repository.root}", lines[-1])
 
 
-class FileListTests(GitTestCase):
+class FileListTests(unittest.TestCase):
     """The one reader of a FILE_LIST, which the formatter and the layout checker both use."""
 
     def setUp(self) -> None:
@@ -930,7 +929,7 @@ def install(folder: Path, name: str) -> Path:
     return program
 
 
-class LocatedToolsTests(GitTestCase):
+class LocatedToolsTests(unittest.TestCase):
     """gh and the .NET SDK are found by skill-core's locator, as `deploy.py check` finds them, and gh runs at that
     absolute path. The environment is sanitized: PATH is one empty folder and the local application data folder a
     fresh one, so the only programs found are the ones a test puts there."""
@@ -976,7 +975,3 @@ class LocatedToolsTests(GitTestCase):
         install(self.links, "gh")
         on_path = install(self.path_folder, "gh")
         self.assertEqual(str(on_path), targets.Services().which("gh"))
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -10,7 +10,6 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
-from git_test_base import GitTestCase
 from harness import DeployerTestCase
 
 from deployer import platform_support
@@ -212,21 +211,21 @@ class WorkingDirectoryTests(DeployerTestCase):
         run_tool.assert_not_called()
 
 
-class HiddenWindowTests(GitTestCase):
+class HiddenWindowTests(unittest.TestCase):
     def test_console_programs_start_without_a_window(self) -> None:
         # CREATE_NO_WINDOW on Windows; elsewhere a program opens no window by starting, so nothing is asked.
         expected = {"creationflags": 0x08000000} if platform_support.WINDOWS else {}
         self.assertEqual(expected, platform_support.hidden_window())
 
 
-class LocatorTests(GitTestCase):
+class LocatorTests(unittest.TestCase):
     def test_it_is_skill_cores_lookup(self) -> None:
         with mock.patch("executable_locator.find_executable", return_value="C:/located.exe") as located:
             self.assertEqual("C:/located.exe", platform_support.find_executable("tool"))
         located.assert_called_once_with("tool")
 
 
-class AppExecutionAliasTests(GitTestCase):
+class AppExecutionAliasTests(unittest.TestCase):
     """An app execution alias is a reparse point in the local application data's WindowsApps folder, on Windows."""
 
     def setUp(self) -> None:
@@ -272,7 +271,7 @@ class AppExecutionAliasTests(GitTestCase):
         self.assertEqual(expected, platform_support.CODEX_NEEDS_SANDBOX_SETTING)
 
 
-class SupportedPlatformTests(GitTestCase):
+class SupportedPlatformTests(unittest.TestCase):
     def test_windows_and_linux_are_supported_and_macos_is_refused_by_name(self) -> None:
         for platform in ("win32", "linux"):
             with self.subTest(platform=platform), mock.patch.object(platform_support.sys, "platform", platform):
@@ -291,7 +290,7 @@ class SupportedPlatformTests(GitTestCase):
         self.assertEqual(sys.platform == "win32", platform_support.WINDOWS)
 
 
-class AbsolutePathTests(GitTestCase):
+class AbsolutePathTests(unittest.TestCase):
     """Each platform's absolute-path forms, checked on every platform, and the one this platform configures."""
 
     POSIX_ABSOLUTE = ("/home/you/GitHub", "/srv/repos (dev)/a.b@c", "/a", "/")
@@ -346,7 +345,7 @@ class AbsolutePathTests(GitTestCase):
         self.assertEqual(expected, (platform_support.ABSOLUTE_PATH, platform_support.EXAMPLE_DIRECTORY))
 
 
-class NormalizeTests(GitTestCase):
+class NormalizeTests(unittest.TestCase):
     def test_only_windows_separates_with_a_backslash(self) -> None:
         with mock.patch.object(platform_support, "WINDOWS", True):
             self.assertEqual("C:/Tools/a b", platform_support.normalize("C:\\Tools\\a b"))
@@ -367,7 +366,7 @@ class NormalizeTests(GitTestCase):
                 self.assertEqual(expected, platform_support.normalize_path_input(value))
 
 
-class ShellPathTests(GitTestCase):
+class ShellPathTests(unittest.TestCase):
     def setUp(self) -> None:
         super().setUp()
         patcher = mock.patch.object(platform_support, "WINDOWS", True)
@@ -411,7 +410,7 @@ class ShellPathTests(GitTestCase):
                     self.assertEqual(value, platform_support.to_shell_path(value))
 
 
-class StandardCommandTests(GitTestCase):
+class StandardCommandTests(unittest.TestCase):
     def test_windows_adds_python_windows_powershell_and_cygpath_and_elsewhere_python3(self) -> None:
         expected = {"python", "powershell", "cygpath"} if platform_support.WINDOWS else {"python3"}
         self.assertEqual(frozenset(expected), platform_support.STANDARD_COMMANDS)
@@ -421,7 +420,7 @@ class StandardCommandTests(GitTestCase):
         self.assertIn(platform_support.PYTHON, platform_support.STANDARD_COMMANDS)
 
 
-class InstallHintTests(GitTestCase):
+class InstallHintTests(unittest.TestCase):
     def test_each_platform_names_its_bash_and_its_installer(self) -> None:
         self.assertEqual("winget install --id Git.Git", platform_support.WINDOWS_INSTALL_HINTS["Git Bash"])
         self.assertEqual(
@@ -434,6 +433,7 @@ class InstallHintTests(GitTestCase):
                 "PowerShell": "sudo snap install powershell --classic",
                 "ruff": "python3 -m pip install -r requirements-dev.txt",
                 "mypy": "python3 -m pip install -r requirements-dev.txt",
+                "pytest": "python3 -m pip install -r requirements-dev.txt",
                 "PSScriptAnalyzer": "pwsh -Command 'Install-Module PSScriptAnalyzer -Scope CurrentUser -Force'",
             },
             platform_support.LINUX_INSTALL_HINTS,
@@ -451,7 +451,7 @@ class InstallHintTests(GitTestCase):
         self.assertIn('"Installing the tools"', " ".join(platform_support.INSTALL_HELP))
 
 
-class HomeDirectoryTests(GitTestCase):
+class HomeDirectoryTests(unittest.TestCase):
     PROFILE = r"D:\Profiles\Some One"
 
     def test_on_windows_the_profile_folder_is_the_home_whatever_home_says(self) -> None:
@@ -510,7 +510,7 @@ class HomeDirectoryTests(GitTestCase):
                     self.assertIsNone(platform_support.ignored_home_variable(resolved, environment))
 
 
-class NameKeyTests(GitTestCase):
+class NameKeyTests(unittest.TestCase):
     def setUp(self) -> None:
         super().setUp()
         temporary = tempfile.TemporaryDirectory(prefix="name-key-test.")
@@ -576,7 +576,7 @@ class NameKeyTests(GitTestCase):
             self.assertFalse(platform_support.folds_case(self.directory))
 
 
-class ProgramNameTests(GitTestCase):
+class ProgramNameTests(unittest.TestCase):
     def test_a_program_is_named_without_the_extension_windows_lets_its_caller_add(self) -> None:
         cases = {
             "git.exe": "git",
@@ -594,7 +594,7 @@ class ProgramNameTests(GitTestCase):
                 self.assertEqual(expected, platform_support.program_name(name))
 
 
-class ProcessStatusTests(GitTestCase):
+class ProcessStatusTests(unittest.TestCase):
     def test_the_lock_judges_a_holder_by_skill_cores_probe(self) -> None:
         status = platform_support.process_status(os.getpid())
         self.assertTrue(status.alive)
@@ -602,7 +602,7 @@ class ProcessStatusTests(GitTestCase):
         self.assertIs(platform_support.ProcessStatus, sys.modules["process_identity"].ProcessStatus)
 
 
-class SignalTerminationTests(GitTestCase):
+class SignalTerminationTests(unittest.TestCase):
     """Off Windows, Python reports a process a signal ended by the negated signal number."""
 
     def setUp(self) -> None:
@@ -622,7 +622,7 @@ class SignalTerminationTests(GitTestCase):
                 self.assertIsNone(platform_support.termination_status(returncode))
 
 
-class TerminationStatusTests(GitTestCase):
+class TerminationStatusTests(unittest.TestCase):
     def setUp(self) -> None:
         super().setUp()
         patcher = mock.patch.object(platform_support, "WINDOWS", True)
@@ -641,7 +641,3 @@ class TerminationStatusTests(GitTestCase):
         for returncode in (0, 1, 2, 127, 255, 2_147_483_647):
             with self.subTest(returncode=returncode):
                 self.assertIsNone(platform_support.termination_status(returncode))
-
-
-if __name__ == "__main__":
-    unittest.main()

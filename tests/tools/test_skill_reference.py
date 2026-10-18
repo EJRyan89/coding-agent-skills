@@ -13,7 +13,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
-from git_test_base import GitTestCase
 
 from tools import skill_reference
 
@@ -28,7 +27,7 @@ README = (
 )
 
 
-class SkillReferenceTestCase(GitTestCase):
+class SkillReferenceTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="skill-reference-test.")
         self.root = Path(self._temporary.name).resolve() / "Repo With Spaces"
@@ -342,7 +341,3 @@ class SkillReferenceTestCase(GitTestCase):
         code, _, stderr = run("--write")
         self.assertEqual(2, code)
         self.assertIn("FAILED", stderr)
-
-
-if __name__ == "__main__":
-    unittest.main()

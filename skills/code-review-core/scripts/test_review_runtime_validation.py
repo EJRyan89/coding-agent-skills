@@ -25,7 +25,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import review_runtime
-from git_test_base import GitTestCase
 from review_config import ConfigurationError
 from review_runtime import (
     RuntimeContractError,
@@ -822,7 +821,7 @@ SNAPSHOT_KINDS: list[tuple[str, Mutation, str]] = [
 ]
 
 
-class SourceSnapshotVerificationTests(GitTestCase):
+class SourceSnapshotVerificationTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="snapshot-verify-")
         self.addCleanup(temporary.cleanup)
@@ -944,7 +943,7 @@ def directory_link(link: Path, target: Path) -> None:
         link.symlink_to(target, target_is_directory=True)
 
 
-class SnapshotLinkTests(GitTestCase):
+class SnapshotLinkTests(unittest.TestCase):
     """Real junctions made below a snapshot's root after it was written, as anything that can write to the run could
     make them. A junction's target holds the listed file's exact bytes, so only the walk can tell it apart."""
 
@@ -1044,7 +1043,7 @@ UTIL_BLOB = hashlib.sha1(b"blob %d\0" % len(UTIL) + UTIL, usedforsecurity=False)
 MINUTE = 60 * 10**9  # in the nanoseconds a file's time is set in
 
 
-class SnapshotStampTests(GitTestCase):
+class SnapshotStampTests(unittest.TestCase):
     """stamp_source_snapshot and verify_stamped_snapshot, the Copilot CLI host's check before it starts a reviewer: a
     snapshot whose listing still shows every file prepare wrote at the size and time prepare saw re-reads only the files
     that time cannot vouch for, and anything else gets the full contents pass. Times are set explicitly, so whether a
@@ -2220,7 +2219,7 @@ MANIFEST_KINDS: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutation, 
 ]
 
 
-class AdapterManifestValidationTests(GitTestCase):
+class AdapterManifestValidationTests(unittest.TestCase):
     def assert_refused(self, manifest: Any, error: type[Exception], message: str) -> None:
         with self.assertRaises(Exception) as caught:
             validate_adapter_manifest(manifest)
@@ -2285,7 +2284,7 @@ class AdapterManifestValidationTests(GitTestCase):
                         self.assertEqual(message, str(caught.exception))
 
 
-class ReservedPathMaterializationTests(GitTestCase):
+class ReservedPathMaterializationTests(unittest.TestCase):
     """materialize_reviewer writes its own record to materialization.json, so a trusted commit that holds a reviewer
     file at that path, in any case (Windows file systems ignore it), must never reach it: the file would be written,
     then replaced by the record."""
@@ -2398,7 +2397,7 @@ REQUEST_KINDS: list[tuple[str, dict[str, Any], str]] = [
 ]
 
 
-class AdapterRequestArgumentTests(GitTestCase):
+class AdapterRequestArgumentTests(unittest.TestCase):
     def test_each_argument_of_the_wrong_kind_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -2449,7 +2448,7 @@ LISTING_KINDS: list[tuple[str, Any, str]] = [
 ]
 
 
-class TreeListingTests(GitTestCase):
+class TreeListingTests(unittest.TestCase):
     def test_a_listing_reads_each_blob(self) -> None:
         listing = _listing()
         listing["tree"].append({"type": "tree", "path": "src", "mode": "040000", "sha": "c" * 40})
@@ -2470,7 +2469,3 @@ class TreeListingTests(GitTestCase):
                 review_runtime._listed_blobs({**_listing(), "truncated": truncated})
             self.assertIs(RuntimeContractError, type(caught.exception))
             self.assertEqual("GitHub truncated the tree listing", str(caught.exception))
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -22,7 +22,6 @@ import git_client
 import review_canary
 import review_fixture
 from git_client import subprocess_runner
-from git_test_base import GitTestCase
 from review_canary import FixtureError, FixtureFieldError, fixture_change, validate_fixture_pull, validate_prior_record
 from review_operation import PULL_FIELDS, validate_canary_pull
 from test_review_runtime_validation import directory_link
@@ -79,7 +78,7 @@ def write_fixture(directory: Path, base: dict[str, bytes], head: dict[str, bytes
     return directory
 
 
-class PullTests(GitTestCase):
+class PullTests(unittest.TestCase):
     def test_a_valid_pull_is_normalized_as_a_configured_repository_is(self) -> None:
         pull = validate_fixture_pull(copy.deepcopy(PULL))
         self.assertEqual("example/inventory", pull["repository"])
@@ -240,7 +239,7 @@ class PullTests(GitTestCase):
         self.assertTrue(issubclass(FixtureFieldError, FieldError) and issubclass(FixtureFieldError, FixtureError))
 
 
-class FixtureChangeTests(GitTestCase):
+class FixtureChangeTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -498,7 +497,7 @@ class FixtureChangeTests(GitTestCase):
         self.assertEqual([], list(self.temporary.iterdir()))
 
 
-class PriorRecordTests(GitTestCase):
+class PriorRecordTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -533,7 +532,3 @@ class PriorRecordTests(GitTestCase):
         for name, (value, repository, number, message) in cases.items():
             with self.subTest(name), self.assertRaisesRegex(FixtureError, message):
                 validate_prior_record(copy.deepcopy(value), repository=repository, number=number)
-
-
-if __name__ == "__main__":
-    unittest.main()

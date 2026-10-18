@@ -10,7 +10,6 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
-from git_test_base import GitTestCase
 from harness import DEPLOY_COMMAND, DeployerTestCase, Result, forward, git, make_directory_link, tree_state
 
 from deployer import config, names, platform_support, source
@@ -946,7 +945,7 @@ class CanaryHomeTests(LinkedWorktreeTestCase):
         self.assert_untouched(result, "is a linked git worktree", 1)
 
 
-class DerivedAllowlistTests(GitTestCase):
+class DerivedAllowlistTests(unittest.TestCase):
     def test_derived_paths_admit_letters_of_any_script_and_path_punctuation_only(self) -> None:
         # A home and a checkout as each platform names them absolutely, which abspath leaves as they are.
         profiles, source = ("D:/profiles", Path("C:/src")) if platform_support.WINDOWS else ("/home", Path("/src"))
@@ -970,7 +969,3 @@ class DerivedAllowlistTests(GitTestCase):
         def test_a_backslash_in_a_derived_path_is_a_character_of_the_name_and_refused(self) -> None:
             with self.assertRaisesRegex(DeployError, re.escape("HOME (the home folder) contains disallowed character")):
                 config.derived_values(Path("/home/a\\b"), Path("/src"))
-
-
-if __name__ == "__main__":
-    unittest.main()

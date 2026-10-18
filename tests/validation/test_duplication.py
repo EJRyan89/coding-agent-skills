@@ -21,11 +21,10 @@ from duplication import (
     skill_core_import_problems,
     skill_script_import_problems,
 )
-from git_test_base import GitTestCase
 from validation_support import write_fixture_tree
 
 
-class DuplicatedDefinitionPolicy(GitTestCase):
+class DuplicatedDefinitionPolicy(unittest.TestCase):
     SHARED = "def shared(value):\n    total = value + 1\n    total *= 2\n    return total\n"
 
     DOCUMENTED = SHARED.replace(":\n", ':\n    """The same body, documented."""\n', 1)
@@ -188,7 +187,7 @@ class DuplicatedDefinitionPolicy(GitTestCase):
         )
 
 
-class DuplicatedConstantPolicy(GitTestCase):
+class DuplicatedConstantPolicy(unittest.TestCase):
     FIX = " hold the same value; import one copy, or sanction it in each copy's module with DUPLICATION_ALLOWED"
 
     def problems(self, files: Mapping[str, str]) -> list[str]:
@@ -325,7 +324,7 @@ class DuplicatedConstantPolicy(GitTestCase):
         )
 
 
-class SkillCoreHomePolicy(GitTestCase):
+class SkillCoreHomePolicy(unittest.TestCase):
     STATEMENT = 'sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))\n'
 
     HEADER = "import sys\nfrom pathlib import Path\n\n"
@@ -503,7 +502,3 @@ class SkillCoreHomePolicy(GitTestCase):
                 },
             ),
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

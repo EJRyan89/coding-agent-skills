@@ -2741,7 +2741,3 @@ class MSBuildEvaluationTests(Fixture):
             self.lines(rows, "PATH"),
         )
         self.assertEqual([[label, "net8.0;net9.0", "Lantern.Json", "1"]], self.lines(rows, "TRUNCATED"))
-
-
-if __name__ == "__main__":
-    unittest.main()

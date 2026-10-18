@@ -20,7 +20,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 
 import duplication
 import skill_scripts
-from git_test_base import GitTestCase
 from validation_support import (
     CODE_SPAN,
     COMPUTED_NAME,
@@ -70,7 +69,7 @@ def last_expression(tree: ast.Module) -> ast.expr:
     return statement.value
 
 
-class ImportReaderFixtures(GitTestCase):
+class ImportReaderFixtures(unittest.TestCase):
     def test_module_imports_reads_every_absolute_import_and_no_text(self) -> None:
         self.assertEqual(
             [
@@ -99,7 +98,7 @@ class ImportReaderFixtures(GitTestCase):
         self.assertEqual("", qualified_name(ast.parse("make().run", mode="eval").body, aliases))
 
 
-class CallableResolverFixtures(GitTestCase):
+class CallableResolverFixtures(unittest.TestCase):
     def test_assigned_aliases_follow_imports_builtins_and_other_aliases(self) -> None:
         tree = ast.parse(
             "import shutil as sh\nfrom io import open as read\n"
@@ -352,7 +351,7 @@ class CallableResolverFixtures(GitTestCase):
                 self.assertEqual([], resolver.problems("fixture.py"))
 
 
-class SharedReaderFixtures(GitTestCase):
+class SharedReaderFixtures(unittest.TestCase):
     def test_a_section_runs_from_its_heading_to_the_next_second_level_heading(self) -> None:
         text = "# Title\n## One\nfirst\n### Inner\nkept\n## Two\nsecond"
         self.assertEqual("first\n### Inner\nkept", markdown_section(text, "## One"))
@@ -417,7 +416,7 @@ def _call(source: str) -> ast.Call:
     return expression
 
 
-class CallArgumentFixtures(GitTestCase):
+class CallArgumentFixtures(unittest.TestCase):
     def read(self, source: str, position: int | None, *keywords: str) -> str | None:
         found = call_argument(_call(source), position, *keywords)
         return None if found is None else ast.unparse(found)
@@ -449,7 +448,7 @@ class CallArgumentFixtures(GitTestCase):
         self.assertEqual([], call_arguments(_call("extractall()"), 0, {"path"}))
 
 
-class ScopeAndGuardFixtures(GitTestCase):
+class ScopeAndGuardFixtures(unittest.TestCase):
     def test_each_node_is_in_its_innermost_definition_or_its_named_assignment(self) -> None:
         tree = ast.parse(
             "TABLE = {'a': f()}\n"
@@ -496,7 +495,7 @@ class ScopeAndGuardFixtures(GitTestCase):
         self.assertEqual("", listed([]))
 
 
-class PythonFileReaderFixtures(GitTestCase):
+class PythonFileReaderFixtures(unittest.TestCase):
     """Every policy reads a Python file one way: UTF-8 without a byte-order mark, so a file in another encoding is
     named by every policy that reads it, and the policy goes on to the next file."""
 
@@ -567,7 +566,7 @@ class PythonFileReaderFixtures(GitTestCase):
             )
 
 
-class ScriptsEntryFixtures(GitTestCase):
+class ScriptsEntryFixtures(unittest.TestCase):
     """Every way a module puts a sibling's scripts directory on sys.path is read, so the skill_deps, sibling-path, and
     mypy_path policies see it."""
 
@@ -617,7 +616,7 @@ class ScriptsEntryFixtures(GitTestCase):
         )
 
 
-class RepositoryFilesFixtures(GitTestCase):
+class RepositoryFilesFixtures(unittest.TestCase):
     @staticmethod
     def repository(path: Path, files: dict[str, str]) -> None:
         write_fixture_tree(path, files)
@@ -639,7 +638,3 @@ class RepositoryFilesFixtures(GitTestCase):
             # Outside any repository git cannot list them, and the failure says so rather than reading as no files.
             with self.assertRaisesRegex(ValueError, "git ls-files failed"):
                 repository_files(Path(temporary))
-
-
-if __name__ == "__main__":
-    unittest.main()

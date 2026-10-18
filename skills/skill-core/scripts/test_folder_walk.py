@@ -253,7 +253,3 @@ class FailureTests(WalkTestCase):
             [NotEntered(self.root / "broken.txt", UNEXAMINED, "the entry cannot be examined: Input/output error")],
             walk.not_entered,
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

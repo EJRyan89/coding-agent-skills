@@ -51,7 +51,3 @@ class NavigationUrlTests(unittest.TestCase):
         for url in ("http://github.com/o/r", "javascript:alert(1)", "https://host/a b", "//host/a", "https://h_st/"):
             with self.subTest(url=url):
                 self.assertIsNone(navigation_url(url))
-
-
-if __name__ == "__main__":
-    unittest.main()

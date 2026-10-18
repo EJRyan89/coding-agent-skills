@@ -19,7 +19,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 import review_guard as guard
 import review_pipeline as rp
-from git_test_base import GitTestCase
 from review_source import source_commands
 from test_review_runtime_validation import directory_link
 
@@ -54,7 +53,7 @@ def make_run(folder: Path, roles: list[str], *, entrypoint: bool = False) -> Pat
     return folder
 
 
-class GuardFixture(GitTestCase):
+class GuardFixture(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -792,7 +791,3 @@ class HookTests(GuardFixture):
         decision = json.loads(result.stdout.decode("utf-8"))["hookSpecificOutput"]
         self.assertEqual("deny", decision["permissionDecision"])
         self.assertIn(f"{outside}", decision["permissionDecisionReason"])
-
-
-if __name__ == "__main__":
-    unittest.main()

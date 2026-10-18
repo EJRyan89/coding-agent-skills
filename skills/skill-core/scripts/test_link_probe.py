@@ -100,7 +100,3 @@ class LinkProbeTests(unittest.TestCase):
                 is_link_or_junction(self.folder)
             self.assertFalse(is_plain_directory(self.folder))
             self.assertFalse(is_plain_file(self.file))
-
-
-if __name__ == "__main__":
-    unittest.main()

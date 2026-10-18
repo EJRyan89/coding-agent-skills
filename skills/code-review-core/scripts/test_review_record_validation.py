@@ -2992,7 +2992,3 @@ class SuiteProfileReferenceTests(unittest.TestCase):
         for path in ("docs/suite.md", "suites:design-review", "Suite:design-review", "a/suite:design-review"):
             with self.subTest(path):
                 self.assertFalse(is_suite_profile(path))
-
-
-if __name__ == "__main__":
-    unittest.main()

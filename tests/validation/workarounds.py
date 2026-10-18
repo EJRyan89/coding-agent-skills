@@ -2,8 +2,9 @@
 that leaves work for later, in the Python under the format roots outside the fixture trees.
 
 A skipped test and an expected failure both let a suite exit 0, which is all the pool judges a suite by, so either
-hides a failing check. A test that cannot run on a platform is not a workaround: a unittest skipIf or skipUnless
-whose condition reads only the platform is left alone, as is a test a class body defines under an `if` on the platform.
+hides a failing check. A test that cannot run on a platform is not a workaround: a unittest skipIf or skipUnless, or
+a pytest.mark.skipif decorator, whose condition reads only the platform is left alone, as is a test a class body or a
+module defines under an `if` on the platform.
 Any other skip that must stay states its reason beside the code, in a module-level SKIP_ALLOWED keyed by the qualified
 name of the function or class that holds it, `<module>` for module level; an entry that sanctions nothing fails.
 """
@@ -42,8 +43,13 @@ PYTEST_MARKERS = frozenset(
 )
 # A TestCase's own skip, on whatever names the case.
 SKIP_METHOD = "skipTest"
-# The skips whose condition may read the platform alone.
-CONDITIONAL_SKIPS = frozenset(f"{module}.{name}" for module in UNITTEST_MODULES for name in ("skipIf", "skipUnless"))
+# The skips whose condition may read the platform alone, as a decorator.
+CONDITIONAL_SKIPS = frozenset(
+    {
+        *(f"{module}.{name}" for module in UNITTEST_MODULES for name in ("skipIf", "skipUnless")),
+        "pytest.mark.skipif",
+    }
+)
 # What reads the platform: these names, and a call of platform.system.
 PLATFORM_NAMES = frozenset({"sys.platform", "os.name"})
 PLATFORM_CALLS = frozenset({"platform.system"})

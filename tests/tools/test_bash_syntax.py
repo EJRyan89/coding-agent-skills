@@ -9,7 +9,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
-from git_test_base import GitTestCase
 
 from tools import bash_syntax
 from tools.bash_syntax import BashSyntaxError, parse
@@ -51,7 +50,7 @@ def first_simple(text: str) -> bash_syntax.Simple:
     return command
 
 
-class WordTests(GitTestCase):
+class WordTests(unittest.TestCase):
     def test_quotes_and_escapes_are_removed_and_their_text_kept_literal(self) -> None:
         command = first_simple("git commit -m 'it''s' \"a \\\"b\\\" $\" c\\ d")
         texts = ["".join(part.text for part in word.parts) for word in command.words]
@@ -76,7 +75,7 @@ class WordTests(GitTestCase):
         self.assertEqual([">&", ">", ">"], [redirect.operator for redirect in command.redirects])
 
 
-class HereDocumentTests(GitTestCase):
+class HereDocumentTests(unittest.TestCase):
     def test_a_here_document_body_is_data_never_commands(self) -> None:
         tree = parse("cat > run.sh <<EOF\ncd '/wt'\ngit status\nEOF\ngit add run.sh")
         self.assertEqual([["cat"], ["git", "add", "run.sh"]], simple_commands(tree))
@@ -96,7 +95,7 @@ class HereDocumentTests(GitTestCase):
         self.assertEqual([["cat"]], simple_commands(tree))
 
 
-class TreeTests(GitTestCase):
+class TreeTests(unittest.TestCase):
     def test_reserved_words_and_prefixes_start_compound_commands_not_programs(self) -> None:
         cases = {
             "if git diff --quiet; then echo clean; else git stash; fi": [
@@ -134,7 +133,3 @@ class TreeTests(GitTestCase):
         ):
             with self.subTest(text=text), self.assertRaises(BashSyntaxError):
                 parse(text)
-
-
-if __name__ == "__main__":
-    unittest.main()

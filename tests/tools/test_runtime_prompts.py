@@ -14,7 +14,6 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
-from git_test_base import GitTestCase
 
 from tools import runtime_prompts
 
@@ -30,7 +29,7 @@ def renderer(prompts: dict[str, str]) -> Callable[[Path], dict[str, str]]:
     return render
 
 
-class RuntimePromptsTestCase(GitTestCase):
+class RuntimePromptsTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="runtime-prompts-test.")
         self.root = Path(self._temporary.name).resolve() / "Repo With Spaces"
@@ -210,7 +209,3 @@ class RuntimePromptsTestCase(GitTestCase):
         ):
             runtime_prompts.copilot_entrypoint(self.root / "copilot")
         self.assertFalse((self.root / "copilot" / "run").exists())
-
-
-if __name__ == "__main__":
-    unittest.main()

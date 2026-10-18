@@ -47,7 +47,3 @@ class GitHubRepositoryTests(unittest.TestCase):
         ):
             with self.subTest(url=url):
                 self.assertIsNone(github_repository(url))
-
-
-if __name__ == "__main__":
-    unittest.main()
