@@ -162,7 +162,7 @@ def xml_tag(text: str) -> str | None:
 
 def _reject_links(skills_src: Path) -> None:
     pending = [skills_src]
-    if platform_support.is_reparse_point(skills_src) and not platform_support.is_link(skills_src):
+    if platform_support.is_junction(skills_src):
         raise DeployError(
             f"ERROR: Reparse point found in deployable source tree: {platform_support.normalize(skills_src)}"
         )
@@ -176,7 +176,7 @@ def _reject_links(skills_src: Path) -> None:
             path = Path(entry.path)
             if entry.is_symlink():
                 raise DeployError(f"ERROR: Symlink found in deployable source tree: {platform_support.normalize(path)}")
-            if platform_support.is_reparse_point(path):
+            if platform_support.is_link_or_junction(path):
                 raise DeployError(
                     f"ERROR: Reparse point found in deployable source tree: {platform_support.normalize(path)}"
                 )

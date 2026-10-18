@@ -1152,9 +1152,10 @@ def claim_home(home: Path) -> None:
 def claimed(home: Path) -> bool:
     """Whether the home holds the marker claim_home writes, naming this home, with no link on the way to it."""
     state, marker = home / STATE, home / STATE / HOME_MARKER
-    if any(platform_support.is_link(path) or platform_support.is_reparse_point(path) for path in (state, marker)):
-        return False
     try:
+        # A path whose metadata cannot be read is judged as a link is: not this tool's claim.
+        if any(platform_support.is_link_or_junction(path) for path in (state, marker)):
+            return False
         record = json.loads(marker.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return False

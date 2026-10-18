@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import io
 import os
 import stat
@@ -10,11 +11,14 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
+
+from harness import make_directory_link
 
 from deployer import fsops, platform_support
 
@@ -103,6 +107,42 @@ class FilesystemOperationTests(unittest.TestCase):
         (tree / "SKILL.md").write_text("writable\n", encoding="utf-8")
         fsops.remove(tree)
         self.assertFalse(tree.exists())
+
+    def test_remove_unlinks_a_link_and_never_follows_it_into_its_target(self) -> None:
+        target = self.root / "target"
+        (target / "SKILL.md").parent.mkdir(parents=True)
+        (target / "SKILL.md").write_text("kept\n", encoding="utf-8")
+        link = self.root / "link"
+        make_directory_link(link, target)
+        fsops.remove(link)
+        self.assertFalse(os.path.lexists(link))
+        self.assertEqual("kept\n", (target / "SKILL.md").read_text(encoding="utf-8"))
+
+    def test_remove_refuses_a_path_whose_metadata_cannot_be_read_and_deletes_nothing(self) -> None:
+        tree = self.root / "skill"
+        (tree / "SKILL.md").parent.mkdir(parents=True)
+        (tree / "SKILL.md").write_text("kept\n", encoding="utf-8")
+        real = os.lstat
+        for failure in (
+            PermissionError(errno.EACCES, "Access is denied"),
+            OSError(errno.ELOOP, "Too many levels of symbolic links"),
+        ):
+
+            def lstat(target: Any, *rest: Any, failure: OSError = failure, **options: Any) -> os.stat_result:
+                if os.fspath(target) == os.fspath(tree):
+                    raise failure
+                return real(target, *rest, **options)
+
+            with (
+                self.subTest(failure=failure),
+                mock.patch.object(platform_support.os, "lstat", side_effect=lstat),
+                mock.patch.object(fsops, "_remove_tree") as removed_tree,
+                self.assertRaises(OSError) as raised,
+            ):
+                fsops.remove(tree)
+            self.assertIs(failure, raised.exception)
+            removed_tree.assert_not_called()
+            self.assertEqual("kept\n", (tree / "SKILL.md").read_text(encoding="utf-8"))
 
     def test_remove_still_raises_what_clearing_read_only_cannot_fix(self) -> None:
         tree = self.root / "skill"

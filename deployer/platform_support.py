@@ -6,6 +6,7 @@ import errno
 import os
 import re
 import signal
+import stat
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ from typing import TypedDict
 import device_names
 import executable_locator
 import job_tree
+import link_probe
 import process_identity
 from bounded_process import ProcessTree, run_bounded, without_repository_variables
 from job_tree import JobRefused
@@ -36,7 +38,6 @@ POSIX_ABSOLUTE = re.compile(r"^/(?!/)")
 POSIX_ROOT = re.compile(r"^/$")
 GIT_BASH_DRIVE = re.compile(r"^/([A-Za-z])(?:/(.*))?$", re.DOTALL)
 DRIVE_PATH = re.compile(r"^([A-Za-z]):(.*)$", re.DOTALL)
-FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 CREATE_NO_WINDOW = 0x08000000
 # The longest command line CreateProcess accepts, in characters. A tool given one path per file batches below it.
 COMMAND_LINE_LIMIT = 32_767
@@ -283,16 +284,29 @@ def refuse_existing_destination(destination: Path) -> None:
         raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), os.fspath(destination))
 
 
-def is_link(path: Path) -> bool:
-    return path.is_symlink()
+def is_link_or_junction(path: str | os.PathLike[str]) -> bool:
+    """Whether a path is a symbolic link, a junction, or another reparse point, as skill-core's link_probe judges every
+    link a skill must never follow. A missing path is none. A path whose metadata cannot be read raises its OSError,
+    so a caller that would refuse a link refuses a path it cannot judge, rather than following it."""
+    metadata = _own_metadata(path)
+    return metadata is not None and link_probe.is_link_or_junction(path, metadata)
 
 
-def is_reparse_point(path: Path) -> bool:
+def is_junction(path: str | os.PathLike[str]) -> bool:
+    """Whether a path is a link that is no symbolic link: a junction, a mount point, or another reparse point, which
+    only Windows has. A missing path is none, and one whose metadata cannot be read raises its OSError."""
+    metadata = _own_metadata(path)
+    return (
+        metadata is not None and link_probe.is_link_or_junction(path, metadata) and not stat.S_ISLNK(metadata.st_mode)
+    )
+
+
+def _own_metadata(path: str | os.PathLike[str]) -> os.stat_result | None:
+    """A path's own lstat result, or None when nothing is there, a component that is a file included."""
     try:
-        attributes = os.lstat(path).st_file_attributes  # type: ignore[attr-defined]  # Windows only, and AttributeError elsewhere
-    except (AttributeError, OSError):
-        return False
-    return bool(attributes & FILE_ATTRIBUTE_REPARSE_POINT)
+        return os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
 
 
 # The machine settings a runtime needs here before it can run a skill's scripts, which `deploy.py check` reports: on
@@ -317,7 +331,7 @@ def is_app_execution_alias(program: str | os.PathLike[str]) -> bool:
         return False
     path = Path(program)
     aliases = local / "Microsoft" / "WindowsApps"
-    return os.path.normcase(path.parent) == os.path.normcase(aliases) and is_reparse_point(path)
+    return os.path.normcase(path.parent) == os.path.normcase(aliases) and is_link_or_junction(path)
 
 
 def find_executable(name: str) -> str | None:

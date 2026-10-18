@@ -38,6 +38,8 @@ RECOVERY_FAILED = [
     "",
 ]
 RECONCILING = "Deployment failed; reconciling the current journal before exit..."
+# A file another program holds, as Windows reports it, at a path written the same on every platform.
+HELD_FILE = "C:/home/.claude/skills/alpha/SKILL.md"
 RETAINED = [
     "ERROR: Immediate recovery failed; deployment evidence and lock were retained.",
     "The next run reclaims the lock and retries recovery. If that fails too, reconcile the run by hand. "
@@ -483,13 +485,41 @@ class ExecuteTests(unittest.TestCase):
                 ["print_traceback(RuntimeError('boom'))", *recovered],
                 ["ERROR: Unexpected RuntimeError: boom", RECONCILING, ""],
             ),
-            (KeyboardInterrupt(), False, 130, recovered, ["ERROR: Unexpected KeyboardInterrupt: ", RECONCILING, ""]),
+            (
+                KeyboardInterrupt(),
+                False,
+                130,
+                recovered,
+                [
+                    "",
+                    "Cancelled after the deployment began; its changes are reconciled before exit.",
+                    "",
+                    "Deployment cancelled; reconciling the current journal before exit...",
+                    "",
+                ],
+            ),
+            # What "When a command fails" in docs/installation.md promises: what failed, on which path, what next.
+            (
+                PermissionError(13, "Access is denied", HELD_FILE),
+                False,
+                1,
+                recovered,
+                [
+                    "",
+                    f"ERROR: Could not finish the deployment: {HELD_FILE}: Access is denied",
+                    CHECK,
+                    HINT,
+                    "",
+                    RECONCILING,
+                    "",
+                ],
+            ),
             (
                 OSError(5, "Access is denied"),
                 False,
                 1,
                 recovered,
-                ["ERROR: Unexpected OSError: [Errno 5] Access is denied", RECONCILING, ""],
+                ["", "ERROR: Could not finish the deployment: Access is denied", CHECK, HINT, "", RECONCILING, ""],
             ),
         ]
         for failure_raised, debug, code, after, lines in cases:
@@ -528,6 +558,14 @@ class ExecuteTests(unittest.TestCase):
                 1,
                 [
                     "ERROR: Unexpected RuntimeError: recovery defect",
+                    "Recovery stopped before it finished; the next deployment retries it before deploying anything.",
+                ],
+            ),
+            (
+                PermissionError(13, "Access is denied", HELD_FILE),
+                1,
+                [
+                    f"ERROR: Could not finish recovery: {HELD_FILE}: Access is denied",
                     "Recovery stopped before it finished; the next deployment retries it before deploying anything.",
                 ],
             ),
