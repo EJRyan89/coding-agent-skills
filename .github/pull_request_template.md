@@ -7,7 +7,10 @@ Closes #
 
 ## Changes
 
-<!-- One bullet per notable change, with the files or components it touches. -->
+<!-- One bullet per notable change, with the files or components it touches. A file this pull request returns to
+     its state before a commit on main is a revert, which validation fails unless a line of its own declares it:
+     Reverts `<path>` to its state before <commit>
+     with seven or more hexadecimal digits of the commit validation names. -->
 
 -
 
