@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import gzip
 import hashlib
 import io
 import json
@@ -32,7 +33,7 @@ import review_runtime
 import review_state
 import skill_roots
 from executable_locator import located_command
-from git_client import GitError, GitResult
+from git_client import GitError, GitResult, GitStream
 from github_client import CommandResult
 from review_archive import (
     ArchiveError,
@@ -3425,6 +3426,205 @@ class RuntimeContractTests(unittest.TestCase):
         ):
             with self.subTest(path=path):
                 self.assertEqual(expected, review_runtime.unreviewed_suffix(path, suffixes))
+
+    # The changed-file limit the oversized-file tests set: twice the probe, so a file past it has bytes past the probe.
+    OVERSIZED_LIMIT = 2 * review_runtime.BINARY_PROBE_BYTES
+
+    def _oversized_head(self) -> tuple[dict[bytes, tuple[str, bytes]], list[str]]:
+        """A head whose files, but one small source file, are over OVERSIZED_LIMIT, and the paths it changes."""
+        probe, pad = review_runtime.BINARY_PROBE_BYTES, b"x" * self.OVERSIZED_LIMIT
+        entries = {
+            b"src/app.py": ("100644", b"print('app')\n"),
+            b"dist/Setup.MSI": ("100644", b"MSI\0" + pad),  # a shipped suffix, in another case
+            b"models/net.onnx": ("100644", b"PK\0" + pad),  # only the repository's suffix names it
+            b"docs/notes.zip": ("100644", b"A text file named like an archive.\n" + pad),
+            b"media/late.png": ("100644", b"p" * probe + b"\0" + pad),  # its first NUL just past the probe
+            b"data/model.dat": ("100644", b"DAT\0" + pad),  # no suffix names it
+            b"docs/manual.pdf": ("100644", b"%PDF-1.7\n\0" + pad),  # a document, whatever the repository lists
+            b"assets/old.png": ("100644", b"PNG\0" + pad),  # unchanged
+        }
+        changed = [path.decode("ascii") for path in entries if path != b"assets/old.png"]
+        return entries, changed
+
+    def _oversized_reasons(self, configured: bool) -> dict[str, str]:
+        """Why the snapshot of `_oversized_head` leaves each file out, with the repository's suffixes or without."""
+        return {
+            "dist/Setup.MSI": "binary",
+            "models/net.onnx": "binary" if configured else "file-size-limit",
+            "docs/notes.zip": "file-size-limit",
+            "media/late.png": "file-size-limit",
+            "data/model.dat": "file-size-limit",
+            "docs/manual.pdf": "file-size-limit",
+            "assets/old.png": "file-size-limit",
+        }
+
+    @contextlib.contextmanager
+    def _oversized_limits(self) -> Iterator[None]:
+        """Both per-file limits at OVERSIZED_LIMIT, so every file of `_oversized_head` but its source file is over."""
+        with (
+            mock.patch.object(review_runtime, "MAX_CHANGED_FILE_BYTES", self.OVERSIZED_LIMIT),
+            mock.patch.object(review_runtime, "MAX_SOURCE_FILE_BYTES", self.OVERSIZED_LIMIT),
+        ):
+            yield
+
+    @staticmethod
+    def _changed_diff(root: Path, changed: Sequence[str]) -> Path:
+        """A diff changing each of `changed`, every one but the source file as git's binary line."""
+        diff = root / "diff.patch"
+        diff.write_text(
+            "".join(
+                f"diff --git a/{path} b/{path}\nindex 1111111..2222222 100644\n"
+                + (
+                    f"--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old\n+new\n"
+                    if path.endswith(".py")
+                    else f"Binary files a/{path} and b/{path} differ\n"
+                )
+                for path in changed
+            ),
+            encoding="utf-8",
+        )
+        return diff
+
+    def test_a_changed_listed_file_over_the_limit_is_probed_from_the_checkout_and_only_its_first_bytes_read(
+        self,
+    ) -> None:
+        entries, changed = self._oversized_head()
+        probe = review_runtime.BINARY_PROBE_BYTES
+        # Each oversized file by its blob id, as git hashes it.
+        blobs = {
+            review_runtime._git_blob_id("sha1", len(content), [content]): path.decode("ascii")
+            for path, (_, content) in entries.items()
+            if len(content) > self.OVERSIZED_LIMIT
+        }
+        probed: dict[str, int] = {}
+        asked: list[str] = []
+
+        def prefix_reader(checkout: Path, blob: str, size: int) -> bytes:
+            prefix = review_runtime.git_blob_prefix(checkout, blob, size)
+            probed[blobs[blob]] = len(prefix)
+            return prefix
+
+        def blob_reader(checkout: Path, wanted: Sequence[str]) -> Iterator[bytes]:
+            asked.extend(wanted)
+            yield from review_runtime.git_blob_reader(checkout, wanted)
+
+        for configured in ((), (".onnx", ".pdf")):
+            with self.subTest(configured=configured), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                checkout, head = self._plumbing_repository(root, entries)
+                probed.clear()
+                asked.clear()
+                with self._oversized_limits():
+                    metadata = materialize_source_snapshot(
+                        checkout,
+                        "example/one",
+                        head,
+                        root / "snapshot",
+                        changed_paths=changed,
+                        blob_reader=blob_reader,
+                        unreviewed_suffixes=configured,
+                        prefix_reader=prefix_reader,
+                    )
+                self.assertEqual(self._oversized_reasons(bool(configured)), metadata["excluded_paths"])
+                self.assertEqual(["src/app.py"], list(metadata["source_hashes"]))
+                # Only a changed file a listed suffix names is probed, never a document, and only its first bytes;
+                # no oversized blob is read whole.
+                listed = ["dist/Setup.MSI", "docs/notes.zip", "media/late.png"]
+                listed += ["models/net.onnx"] if configured else []
+                self.assertEqual(dict.fromkeys(listed, probe), probed)
+                self.assertEqual([], [blobs[blob] for blob in asked if blob in blobs])
+                coverage = review_runtime.review_coverage(self._changed_diff(root, changed), metadata, configured)
+                unreviewed = {"dist/Setup.MSI": ".msi", **({"models/net.onnx": ".onnx"} if configured else {})}
+                self.assertEqual(unreviewed, coverage["unreviewed_files"])
+                gaps = ["data/model.dat", "docs/manual.pdf", "docs/notes.zip", "media/late.png"]
+                self.assertEqual(
+                    sorted(gaps + ([] if configured else ["models/net.onnx"])), coverage["unavailable_sources"]
+                )
+
+    def test_a_changed_listed_file_over_the_limit_is_probed_from_the_tarball_and_only_its_first_bytes_read(
+        self,
+    ) -> None:
+        entries, changed = self._oversized_head()
+        probe = review_runtime.BINARY_PROBE_BYTES
+        read: dict[str, int] = {}
+        opened = tarfile.TarFile.extractfile
+
+        class Counted:
+            """A tarball entry's stream that counts the bytes the snapshot reads from it."""
+
+            def __init__(self, stream: Any, name: str) -> None:
+                self.stream, self.name = stream, name
+
+            def read(self, size: int = -1) -> bytes:
+                data: bytes = self.stream.read(size)
+                read[self.name] = read.get(self.name, 0) + len(data)
+                return data
+
+            def __enter__(self) -> Counted:
+                return self
+
+            def __exit__(self, *exc: object) -> None:
+                self.stream.close()
+
+        def extractfile(archive: tarfile.TarFile, member: tarfile.TarInfo) -> Counted:
+            return Counted(opened(archive, member), member.name.split("/", 1)[1])
+
+        def fetcher(repository: str, commit: str, target: Path) -> None:
+            buffer = io.BytesIO()
+            with tarfile.open(fileobj=buffer, mode="w") as archive:
+                for path, (_, content) in entries.items():
+                    info = tarfile.TarInfo(f"example-one-0123456/{path.decode('ascii')}")
+                    info.size = len(content)
+                    archive.addfile(info, io.BytesIO(content))
+            target.write_bytes(gzip.compress(buffer.getvalue()))
+
+        for configured in ((), (".onnx", ".pdf")):
+            with self.subTest(configured=configured), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                read.clear()
+                with self._oversized_limits(), mock.patch.object(tarfile.TarFile, "extractfile", extractfile):
+                    metadata = review_runtime.materialize_source_snapshot_from_github(
+                        "example/one",
+                        "a" * 40,
+                        root / "snapshot",
+                        fetcher=fetcher,
+                        changed_paths=changed,
+                        unreviewed_suffixes=configured,
+                    )
+                self.assertEqual(self._oversized_reasons(bool(configured)), metadata["excluded_paths"])
+                listed = ["dist/Setup.MSI", "docs/notes.zip", "media/late.png"]
+                listed += ["models/net.onnx"] if configured else []
+                # The kept file is read whole; a probed entry only to the probe, and no other oversized one at all.
+                self.assertEqual({"src/app.py": 13, **dict.fromkeys(listed, probe)}, read)
+
+    def test_a_blob_prefix_is_read_only_to_the_probe_and_its_size_must_be_the_listed_one(self) -> None:
+        probe = review_runtime.BINARY_PROBE_BYTES
+        large, small = b"L\0" + b"x" * (3 * probe), b"S\0small"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            checkout, head = self._plumbing_repository(
+                root, {b"large.bin": ("100644", large), b"small.bin": ("100644", small)}
+            )
+            sizes: list[int] = []
+            original = GitStream.read
+
+            def counted(stream: GitStream, size: int) -> bytes:
+                sizes.append(size)
+                return original(stream, size)
+
+            for name, content in (("large.bin", large), ("small.bin", small)):
+                with self.subTest(name=name):
+                    sizes.clear()
+                    blob = self._git(checkout, "rev-parse", f"{head}:{name}")
+                    with mock.patch.object(GitStream, "read", counted):
+                        prefix = review_runtime.git_blob_prefix(checkout, blob, len(content))
+                    self.assertEqual(content[:probe], prefix)
+                    self.assertEqual([min(probe, len(content))], sizes, "nothing past the probe is asked for")
+            blob = self._git(checkout, "rev-parse", f"{head}:small.bin")
+            with self.assertRaisesRegex(RuntimeContractError, "Source blob size changed"):
+                review_runtime.git_blob_prefix(checkout, blob, len(small) + 1)
+            with self.assertRaisesRegex(RuntimeContractError, "Not a git object id"):
+                review_runtime.git_blob_prefix(checkout, "HEAD", len(small))
 
     def test_source_snapshot_still_refuses_a_link_at_the_reserved_manifest_path(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

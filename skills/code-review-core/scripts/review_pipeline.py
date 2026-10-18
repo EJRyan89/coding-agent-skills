@@ -489,9 +489,11 @@ def _snapshot(
     services: Services,
     notes: list[str],
     exclude: Sequence[str] = (),
+    unreviewed_suffixes: Sequence[str] = (),
 ) -> tuple[dict[str, tuple[int, str] | None], dict[str, Any], dict[str, Any]]:
     """Snapshot the head at `source`, from the checkout or else GitHub's tarball, leaving out what the repository's
-    `exclude` globs match, and noting each changed document whose text it could not extract. Returns the symbolic
+    `exclude` globs match, probing a changed file over the size limit by the shipped suffixes and the repository's
+    `unreviewed_suffixes`, and noting each changed document whose text it could not extract. Returns the symbolic
     links the snapshot leaves out that the pull request changes, each one noted, the snapshot's statistics: its
     source, files, bytes, and exclusions by reason, and the seconds spent fetching the head and materializing it, and
     the manifest materializing it verified, which the request and the plan take in place of verifying the snapshot
@@ -517,6 +519,7 @@ def _snapshot(
             upfront=lazy_upfront(()),
             exclude=exclude,
             refused=refused,
+            unreviewed_suffixes=unreviewed_suffixes,
         )
     else:
 
@@ -527,7 +530,14 @@ def _snapshot(
             fetched += services.timer() - began
 
         snapshot = materialize_source_snapshot_from_github(
-            repository, head, source, fetcher=fetcher, changed_paths=changed, exclude=exclude, refused=refused
+            repository,
+            head,
+            source,
+            fetcher=fetcher,
+            changed_paths=changed,
+            exclude=exclude,
+            refused=refused,
+            unreviewed_suffixes=unreviewed_suffixes,
         )
     materialized = services.timer() - started - fetched
     # Only the links this pull request adds or changes: a repository that keeps links is not told on every review.
@@ -613,10 +623,11 @@ def _retake_snapshot(
     stats: dict[str, Any],
     exclude: Sequence[str] = (),
     reads: Sequence[str] | None = None,
+    unreviewed_suffixes: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Replace a lazy snapshot, adding the time it takes to `stats`: with the whole one, now of a `checkout` snapshot,
-    when `reads` is None, or else with a lazy one that also holds the paths its glob patterns match. Returns the
-    manifest materializing it verified."""
+    when `reads` is None, or else with a lazy one that also holds the paths its glob patterns match, probing as
+    `_snapshot` does. Returns the manifest materializing it verified."""
     started = services.timer()
     shutil.rmtree(source)
     snapshot = materialize_source_snapshot(
@@ -628,6 +639,7 @@ def _retake_snapshot(
         changed_paths=changed,
         upfront=None if reads is None else lazy_upfront(reads),
         exclude=exclude,
+        unreviewed_suffixes=unreviewed_suffixes,
     )
     stats["source"] = "checkout" if reads is None else "checkout-lazy"
     stats["files"] = len(snapshot["source_hashes"])
@@ -1294,7 +1306,17 @@ def _prepare_run(
         if repository_path is not None and review.adopt_source:
             repository_path = Path(shutil.move(repository_path, run / SOURCE_REPOSITORY))
         links, snapshot, manifest = _snapshot(
-            repository_path, repository, number, head, source, parsed, changed, services, notes, review.snapshot_exclude
+            repository_path,
+            repository,
+            number,
+            head,
+            source,
+            parsed,
+            changed,
+            services,
+            notes,
+            review.snapshot_exclude,
+            review.unreviewed_suffixes,
         )
         kind, adapter, reviewer_root, entrypoint, dispatch = _materialize_reviewer(
             review.reviewer,
@@ -1314,7 +1336,16 @@ def _prepare_run(
         reads = _snapshot_reads(manifest, dispatch, kind, reviewer_root, list(parsed), renamed_from(parsed))
         if repository_path is not None and reads != []:
             manifest = _retake_snapshot(
-                repository_path, repository, head, source, changed, services, snapshot, review.snapshot_exclude, reads
+                repository_path,
+                repository,
+                head,
+                source,
+                changed,
+                services,
+                snapshot,
+                review.snapshot_exclude,
+                reads,
+                review.unreviewed_suffixes,
             )
         documents, patches = _document_diffs(
             diff_path, parsed, manifest, source, _base_reader(repository_path, repository, pull, services), notes
@@ -1520,10 +1551,12 @@ def _snapshot_line(
     services: Services,
     exclude: Sequence[str] = (),
     reads: Sequence[str] | None = (),
+    unreviewed_suffixes: Sequence[str] = (),
 ) -> str:
     """The source snapshot prepare would write for this commit on the route `_route_reads` gave, or the reason prepare
     would refuse it: lazy, writing the changed files, the analyzer settings, and the paths the `reads` patterns
-    match, and listing the rest as fetchable, or whole when `reads` is None."""
+    match, and listing the rest as fetchable, or whole when `reads` is None, probing as prepare probes with the
+    repository's `unreviewed_suffixes`."""
     size = measure_source_snapshot(
         checkout,
         commit,
@@ -1532,6 +1565,7 @@ def _snapshot_line(
         changed_paths=changed,
         exclude=exclude,
         upfront=None if reads is None else lazy_upfront(reads),
+        unreviewed_suffixes=unreviewed_suffixes,
     )
     source = "checkout" if reads is None else "checkout-lazy"
     error = size.limit_error()
@@ -1603,7 +1637,7 @@ def validate_reviewer(
     """
     services = services or Services()
     config_path, repository, entry, checkout, runtime = _repository_reviewer(repository, config_path, services)
-    reviewer, exclude = entry["reviewer"], entry["snapshot_exclude"]
+    reviewer, exclude, suffixes = entry["reviewer"], entry["snapshot_exclude"], entry["unreviewed_suffixes"]
     default_effort = load_config(config_path)["reviewer_effort"]
     targets = _validation_targets(repository, checkout, reviewer, pulls, ref, config_path, services)
     lines: list[str] = []
@@ -1618,7 +1652,11 @@ def validate_reviewer(
                 # The suite's generic reviewer stands in, on the lazy snapshot prepare gives it.
                 lines.extend(pull_lines)
                 if pull is not None:
-                    lines.append(_snapshot_line(checkout, pull["headRefOid"], changed, services, exclude))
+                    lines.append(
+                        _snapshot_line(
+                            checkout, pull["headRefOid"], changed, services, exclude, unreviewed_suffixes=suffixes
+                        )
+                    )
                 lines.append(f"GENERIC files={len(changed)} (the suite's generic reviewer reviews it)")
                 continue
             commit, manifest = target.commit, target.resolved.manifest
@@ -1652,9 +1690,9 @@ def validate_reviewer(
             reads = _route_reads(dispatch, manifest, changed, renamed)
             lines.extend(pull_lines)
             if pull is None:
-                lines.append(_snapshot_line(checkout, commit, [], services, exclude, reads))
+                lines.append(_snapshot_line(checkout, commit, [], services, exclude, reads, suffixes))
                 continue
-            lines.append(_snapshot_line(checkout, pull["headRefOid"], changed, services, exclude, reads))
+            lines.append(_snapshot_line(checkout, pull["headRefOid"], changed, services, exclude, reads, suffixes))
             if kind == "entrypoint":
                 lines.append(f"ENTRYPOINT {manifest['id']} files={len(changed)}")
                 continue

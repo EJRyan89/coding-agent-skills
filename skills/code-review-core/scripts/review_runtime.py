@@ -178,6 +178,8 @@ MANIFEST_FORMATS = {1: "entrypoint-manifest", 2: "specialists-manifest"}
 
 # Reads blobs by id from a checkout's object store, yielding each one's exact bytes in the order asked.
 BlobReader = Callable[[Path, Sequence[str]], Iterable[bytes]]
+# Reads the first BINARY_PROBE_BYTES of one blob of a checkout's object store, given its id and its size, and no more.
+BlobPrefixReader = Callable[[Path, str, int], bytes]
 # A snapshot path with its content bytes when the snapshot keeps it, or the reason it leaves the path out.
 SnapshotMember = tuple[str, bytes | str]
 
@@ -1569,15 +1571,20 @@ def _write_object_ids(stdin: IO[bytes], blobs: Sequence[str]) -> None:
             stdin.write(f"{blob}\n".encode("ascii"))
 
 
-def _read_batch_blob(stdout: GitStream, blob: str) -> bytes:
-    """One `git cat-file --batch` answer: a `<id> blob <size>` line, exactly that many bytes, and a newline."""
+def _batch_blob_size(stdout: GitStream, blob: str) -> int:
+    """The size a `git cat-file --batch` answer's `<id> blob <size>` line gives the blob it names."""
     header = stdout.readline()
     fields = header.split()
     if len(fields) == 2 and fields[1] == b"missing":
         raise RuntimeContractError(f"Blob {blob} is missing from the checkout's object store")
     if len(fields) != 3 or fields[0] != blob.encode("ascii") or fields[1] != b"blob" or not fields[2].isdigit():
         raise RuntimeContractError(f"git cat-file answered {blob} unexpectedly: {header[:200]!r}")
-    size = int(fields[2])
+    return int(fields[2])
+
+
+def _read_batch_blob(stdout: GitStream, blob: str) -> bytes:
+    """One `git cat-file --batch` answer: a `<id> blob <size>` line, exactly that many bytes, and a newline."""
+    size = _batch_blob_size(stdout, blob)
     content = stdout.read(size)
     if len(content) != size or stdout.read(1) != b"\n":
         raise RuntimeContractError(f"git cat-file cut blob {blob} short")
@@ -1615,6 +1622,37 @@ def git_blob_reader(checkout: Path, blobs: Sequence[str]) -> Generator[bytes, No
             writer.join(GIT_WRITER_SECONDS)  # git is gone, so a write it was blocked on has failed
 
 
+def git_blob_prefix(checkout: Path, blob: str, size: int) -> bytes:
+    """The first BINARY_PROBE_BYTES of a blob of `size` bytes, from one `git cat-file --batch` that is stopped once
+    they have arrived, so the rest of a large blob is never read whole.
+
+    It runs through skill-core's client as `git_blob_reader` does, with no prompt and each wait for output bounded, and
+    applies no attribute, filter, or line-ending conversion. Raises unless the object store answers with a blob of
+    exactly `size` bytes.
+    """
+    if not GIT_OBJECT_ID.fullmatch(blob):
+        raise RuntimeContractError(f"Not a git object id: {blob!r}")
+    wanted = min(size, BINARY_PROBE_BYTES)
+    try:
+        with GitClient().stream(["cat-file", "--batch"], directory=checkout) as stream:
+            stream.stdin.write(f"{blob}\n".encode("ascii"))
+            stream.stdin.close()
+            if _batch_blob_size(stream, blob) != size:
+                raise RuntimeContractError(f"Source blob size changed: {blob}")
+            prefix = stream.read(wanted)
+    except GitError as exc:
+        raise RuntimeContractError(str(exc)) from exc
+    if len(prefix) != wanted:
+        raise RuntimeContractError(f"git cat-file cut blob {blob} short")
+    return prefix
+
+
+def _size_limit_reason(prefix: bytes) -> str:
+    """Why the snapshot leaves out a probed file over the size limit, from its first BINARY_PROBE_BYTES: `binary` when
+    the snapshot's own test finds it binary, so coverage can name it as unreviewed, or else `file-size-limit`."""
+    return "binary" if is_binary(prefix) else "file-size-limit"
+
+
 def _commit_members(
     checkout: Path,
     commit: str,
@@ -1627,6 +1665,8 @@ def _commit_members(
     fetchable: dict[str, str] | None = None,
     configured: Exclusion = _never_excluded,
     documents: _Documents | None = None,
+    probed: Exclusion = _never_excluded,
+    prefix_reader: BlobPrefixReader = git_blob_prefix,
 ) -> Generator[SnapshotMember, None, None]:
     """Each path of the commit's tree, as (path, content bytes) when the snapshot keeps it or (path, reason) when not.
     A changed document's content is its extracted text, which `documents` records (see `_kept_content`).
@@ -1640,6 +1680,9 @@ def _commit_members(
     the snapshot would keep by its name, kind, and size goes into `fetchable` with its blob id before the first blob
     is yielded. Whether such a blob is binary is decided when it is fetched, so the names a case-insensitive file
     system would merge are refused among all of them here.
+
+    A changed file over the size limit that `probed` accepts has only its first BINARY_PROBE_BYTES read, through
+    `prefix_reader`, and is `binary` when they are (see `_size_limit_reason`).
     """
     # -z ends each entry with NUL and quotes no name, so stripping the listing's whitespace never touches a path.
     listing = _run_git(checkout, runner, "ls-tree", "-r", "-z", "-l", "--full-tree", commit)
@@ -1658,6 +1701,8 @@ def _commit_members(
             raise RuntimeContractError(f"git ls-tree printed an unexpected entry: {record!r}")
         entry = "symbolic-link" if mode == "120000" else "file" if mode.startswith("100") else "non-regular"
         relative, reason = _entry_exclusion(name, entry, int(size), changed_paths, room, configured)
+        if reason == "file-size-limit" and relative in changed_paths and probed(relative):
+            reason = _size_limit_reason(prefix_reader(checkout, blob, int(size)))
         if reason is None:
             pending.append((relative, blob, int(size)))
         else:
@@ -1693,10 +1738,12 @@ def _tarball_members(
     room: PathRoom,
     configured: Exclusion = _never_excluded,
     documents: _Documents | None = None,
+    probed: Exclusion = _never_excluded,
 ) -> Generator[SnapshotMember, None, None]:
     """Each entry of GitHub's tarball below its top folder, as (path, content bytes) when the snapshot keeps it or
-    (path, reason) when not, a changed document's content being its extracted text, which `documents` records. The
-    count and size limits are the caller's to apply."""
+    (path, reason) when not, a changed document's content being its extracted text, which `documents` records. A
+    changed file over the size limit that `probed` accepts has only the first BINARY_PROBE_BYTES of its entry read
+    (see `_size_limit_reason`). The count and size limits are the caller's to apply."""
     written: dict[str, str] = {}
     documents = documents or _Documents(changed_paths, room)
     with tarfile.open(archive, mode="r:gz") as source:
@@ -1707,16 +1754,24 @@ def _tarball_members(
             kind = "file" if member.isfile() else "symbolic-link" if member.issym() else "non-regular"
             name = PurePosixPath(*parts).as_posix()
             relative, reason = _entry_exclusion(name, kind, member.size, changed_paths, room, configured)
+            if reason == "file-size-limit" and relative in changed_paths and probed(relative):
+                reason = _size_limit_reason(_member_bytes(source, member, relative, BINARY_PROBE_BYTES))
             if reason is not None:
                 yield relative, reason
                 continue
-            extracted = source.extractfile(member)
-            if extracted is None:
-                raise RuntimeContractError(f"Cannot read source snapshot member: {relative}")
-            content = extracted.read()
+            content = _member_bytes(source, member, relative)
             if len(content) != member.size:
                 raise RuntimeContractError(f"Source snapshot member size changed: {relative}")
             yield _kept_content(relative, content, written, documents)
+
+
+def _member_bytes(source: tarfile.TarFile, member: tarfile.TarInfo, relative: str, limit: int = -1) -> bytes:
+    """A tarball entry's bytes, or with `limit` only its first that many, the rest never read."""
+    extracted = source.extractfile(member)
+    if extracted is None:
+        raise RuntimeContractError(f"Cannot read source snapshot member: {relative}")
+    with extracted:
+        return extracted.read(limit)
 
 
 def _populate_snapshot(
@@ -1799,6 +1854,8 @@ def materialize_source_snapshot(
     upfront: Callable[[str], bool] | None = None,
     exclude: Sequence[str] = (),
     refused: dict[str, str] | None = None,
+    unreviewed_suffixes: Iterable[str] = (),
+    prefix_reader: BlobPrefixReader = git_blob_prefix,
 ) -> dict[str, Any]:
     """Snapshot the exact commit from a local checkout's object store (no worktree or branch change).
 
@@ -1806,7 +1863,8 @@ def materialize_source_snapshot(
     manifest lists every other path it would hold, with its blob id, under `fetchable`, for `fetch_source_file`.
     A path one of the `exclude` globs matches is a `configured` exclusion, never written or fetchable. A changed
     document is held as its extracted text, which the manifest lists under `extracted`, and `refused` is given why
-    each one whose extraction was refused is `unextractable`.
+    each one whose extraction was refused is `unextractable`. A changed file over the size limit is read only as far
+    as `probes` says, through `prefix_reader`, with the repository's `unreviewed_suffixes`.
     """
     repository = validate_repository_identity(repository)
     if not GIT_OBJECT_ID.fullmatch(commit):
@@ -1831,6 +1889,8 @@ def materialize_source_snapshot(
             fetchable=fetchable,
             configured=configured_exclusion(exclude),
             documents=documents,
+            probed=probes(unreviewed_suffixes),
+            prefix_reader=prefix_reader,
         )
         with closing(members):
             snapshot = _populate_snapshot(
@@ -2069,13 +2129,15 @@ def measure_source_snapshot(
     blob_reader: BlobReader = git_blob_reader,
     exclude: Sequence[str] = (),
     upfront: Callable[[str], bool] | None = None,
+    unreviewed_suffixes: Iterable[str] = (),
 ) -> SnapshotSize:
     """Measure the snapshot materialize_source_snapshot would write for a commit at `destination`, without writing it.
 
     It applies the same exclusions, the room `destination` leaves each path included, and fails on the same
     unrepresentable entries, but not on the count or size limits, so a commit over them reports how far over it is.
     With `upfront`, it measures the lazy snapshot: the files it would write, read and sized, and the files it would
-    list as fetchable, counted without being read, as the snapshot counts them against its limits.
+    list as fetchable, counted without being read, as the snapshot counts them against its limits. A changed file
+    over the size limit is probed as the snapshot probes it, with the repository's `unreviewed_suffixes`.
     """
     excluded: dict[str, int] = {}
     directories: dict[str, int] = {}
@@ -2092,6 +2154,7 @@ def measure_source_snapshot(
         upfront=upfront,
         fetchable=fetchable,
         configured=configured_exclusion(exclude),
+        probed=probes(unreviewed_suffixes),
     )
     with closing(members):
         for relative, content in members:
@@ -2208,12 +2271,14 @@ def materialize_source_snapshot_from_github(
     changed_paths: Iterable[str] = (),
     exclude: Sequence[str] = (),
     refused: dict[str, str] | None = None,
+    unreviewed_suffixes: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Snapshot the exact commit from GitHub's tarball, for repositories without a configured checkout.
 
     The fetcher is responsible for the tarball being the exact commit; `github_tarball_fetcher` checks it against
     the commit's tree. A path one of the `exclude` globs matches is a `configured` exclusion, never written. Changed
-    documents are extracted as `materialize_source_snapshot` extracts them, and `refused` is given the same reasons.
+    documents are extracted as `materialize_source_snapshot` extracts them, and `refused` is given the same reasons,
+    and a changed file over the size limit is probed as it probes one, with the repository's `unreviewed_suffixes`.
     """
     repository = validate_repository_identity(repository)
     if not GIT_OBJECT_ID.fullmatch(commit):
@@ -2225,7 +2290,12 @@ def materialize_source_snapshot_from_github(
             fetcher(repository, commit, archive)
             documents = _Documents(frozenset(changed_paths), path_room(destination))
             members = _tarball_members(
-                archive, documents.changed, documents.room, configured_exclusion(exclude), documents
+                archive,
+                documents.changed,
+                documents.room,
+                configured_exclusion(exclude),
+                documents,
+                probes(unreviewed_suffixes),
             )
             with closing(members):
                 snapshot = _populate_snapshot(
@@ -2355,6 +2425,17 @@ def unreviewed_suffix(path: str, suffixes: Iterable[str]) -> str | None:
     name = path.rpartition("/")[2].lower()
     matched = [suffix for suffix in suffixes if len(name) > len(suffix) and name.endswith(suffix)]
     return max(matched, key=len, default=None)
+
+
+def probes(suffixes: Iterable[str] = ()) -> Exclusion:
+    """Whether the snapshot reads the first BINARY_PROBE_BYTES of a changed file it leaves out as over the size limit,
+    so a binary of a type the review does not read is found binary and named as unreviewed rather than left a gap.
+
+    Only a name ending in one of UNREVIEWED_SUFFIXES or `suffixes` (the repository's own) is probed, and never a
+    document the snapshot extracts, whose oversized bytes no extractor reads. Every other oversized file is never read.
+    """
+    known = UNREVIEWED_SUFFIXES | set(suffixes)
+    return lambda relative: document_format(relative) is None and unreviewed_suffix(relative, known) is not None
 
 
 def review_coverage(diff_path: Path, snapshot: dict[str, Any], suffixes: Iterable[str] = ()) -> dict[str, Any]:
