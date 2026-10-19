@@ -579,22 +579,8 @@ class RotationTests(Fixture):
         linked = self.linked_worktree()
         record = linked / RECORD
         before, beside = record.read_bytes(), sorted(path.name for path in record.parent.iterdir())
-        fdopen = os.fdopen
-
-        def half_written(descriptor: int, *arguments: object, **options: object) -> io.TextIOWrapper:
-            stream = fdopen(descriptor, *arguments, **options)  # type: ignore[call-overload]  # fdopen's own overloads
-            write = stream.write
-
-            def fail(text: str) -> int:
-                write(text[: len(text) // 2])
-                stream.flush()
-                raise OSError("disk full")
-
-            stream.write = fail  # type: ignore[method-assign]  # the failure injected mid-write
-            return stream
-
         for name, failure in (
-            ("a write cut off midway", mock.patch("os.fdopen", half_written)),
+            ("a write that cannot be synced", mock.patch("os.fsync", side_effect=OSError("disk full"))),
             ("a replace refused", mock.patch("pathlib.Path.replace", side_effect=OSError("disk full"))),
         ):
             with self.subTest(name=name):
@@ -617,6 +603,18 @@ class RotationTests(Fixture):
             lines[-1].endswith(f"disk full; the unfinished copy {left[0].as_posix()} remains: removal denied"), lines
         )
         self.assertEqual(before, record.read_bytes())
+
+    def test_an_interrupted_record_write_leaves_the_record_unchanged_and_no_copy_beside_it(self) -> None:
+        linked = self.linked_worktree()
+        record = linked / RECORD
+        before, beside = record.read_bytes(), sorted(path.name for path in record.parent.iterdir())
+        with (
+            mock.patch("pathlib.Path.replace", side_effect=KeyboardInterrupt),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            self.run_main("rotation", "--record", "v0.2.0", repository=linked)
+        self.assertEqual(before, record.read_bytes())
+        self.assertEqual(beside, sorted(path.name for path in record.parent.iterdir()))
 
     def test_a_missing_record_fails(self) -> None:
         (self.root / RECORD).unlink()

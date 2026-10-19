@@ -850,45 +850,50 @@ def run_skill(
     ]
 
 
-def check_runtime(
-    runtime: str,
-    executable: str,
-    skills: list[str],
-    home: Path,
-    base: Mapping[str, str],
-    runner: Runner,
-    discovery_only: bool,
-    timeout: float,
-    closure: Mapping[str, list[str]],
-    codex_sandbox: str = DEFAULT_CODEX_SANDBOX,
-    talk: discovery.Converse | None = None,
-    declared: Declarations | None = None,
-    unadapted: Mapping[str, str] | None = None,
-) -> Iterator[str]:
+@dataclass(frozen=True, kw_only=True)
+class RuntimeChecks:
+    """What each runtime's checks in one canary run share: the skills in the order checked, the home, the
+    environment and runner, the run's options, and what the deployment declared and adapted."""
+
+    skills: list[str]
+    home: Path
+    base: Mapping[str, str]
+    runner: Runner
+    discovery_only: bool
+    timeout: float
+    closure: Mapping[str, list[str]]
+    codex_sandbox: str = DEFAULT_CODEX_SANDBOX
+    talk: discovery.Converse | None = None
+    declared: Declarations | None = None
+    unadapted: Mapping[str, str] | None = None
+
+
+def check_runtime(runtime: str, executable: str, run: RuntimeChecks) -> Iterator[str]:
     """Each line of the runtime's checks, given as soon as it is known, so a run that fails later loses none."""
     # Claude Code has no listing; its run reports the skills it found.
     if runtime in discovery.RUNTIMES:
-        listing_environment = environment(base, home / STATE / "scripts" / "listing.jsonl", home)
+        listing_environment = environment(run.base, run.home / STATE / "scripts" / "listing.jsonl", run.home)
         try:
-            found = discovery.list_skills(runtime, executable, home, listing_environment, timeout, talk)
+            found = discovery.list_skills(runtime, executable, run.home, listing_environment, run.timeout, run.talk)
         except discovery.ListingError as exc:
             yield f"DISCOVERY_FAILED {runtime} {quote(f'cannot read its skill list: {exc}')}"
         else:
-            yield from discovery_lines(runtime, skills, found, home, unadapted)
-    if discovery_only:
+            yield from discovery_lines(runtime, run.skills, found, run.home, run.unadapted)
+    if run.discovery_only:
         return
-    yield from (f"SUPPLIED {runtime} {quote(setting)}" for setting in supplied(runtime, codex_sandbox))
-    for skill in skills:
-        support = ((declared or {}).get(skill) or {}).get(DECLARED_RUNTIME[runtime])
+    yield from (f"SUPPLIED {runtime} {quote(setting)}" for setting in supplied(runtime, run.codex_sandbox))
+    for skill in run.skills:
+        support = ((run.declared or {}).get(skill) or {}).get(DECLARED_RUNTIME[runtime])
         if support is not None and support.level == runtime_support.NONE:
             yield f"RUNTIME {runtime} {skill} NOT_ATTEMPTED {quote(support.reason)}"
             continue
-        reason = unsupported(runtime, skill, home)
+        reason = unsupported(runtime, skill, run.home)
         if reason:
             yield f"RUNTIME {runtime} {skill} UNSUPPORTED {quote(reason)}"
             continue
+        reachable = run.closure.get(skill, [skill])
         yield from run_skill(
-            runtime, executable, skill, home, base, runner, timeout, closure.get(skill, [skill]), codex_sandbox
+            runtime, executable, skill, run.home, run.base, run.runner, run.timeout, reachable, run.codex_sandbox
         )
 
 
@@ -975,7 +980,19 @@ def checked(
     ordered = [FIXTURE_SKILL, *(skill for skill in dict.fromkeys(skills) if skill != FIXTURE_SKILL)]
     closure = dependencies(sources)
     declared = declarations(sources)
-    unadapted = without_adapter(home)
+    run = RuntimeChecks(
+        skills=ordered,
+        home=home,
+        base=base,
+        runner=runner,
+        discovery_only=discovery_only,
+        timeout=timeout,
+        closure=closure,
+        codex_sandbox=codex_sandbox,
+        talk=talk,
+        declared=declared,
+        unadapted=without_adapter(home),
+    )
     printed = []
     reasons = []
     for runtime in runtimes:
@@ -986,21 +1003,7 @@ def checked(
             continue
         versions[runtime] = runtime_version(executable, runner, base, home)
         lines = []
-        for line in check_runtime(
-            runtime,
-            executable,
-            ordered,
-            home,
-            base,
-            runner,
-            discovery_only,
-            timeout,
-            closure,
-            codex_sandbox,
-            talk,
-            declared,
-            unadapted,
-        ):
+        for line in check_runtime(runtime, executable, run):
             say(line)
             lines.append(line)
         printed += lines

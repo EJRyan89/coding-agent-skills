@@ -10,15 +10,17 @@ import shutil
 import sys
 import tempfile
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
-from harness import ALLOWED_TOOLS, DEPLOY_COMMAND, ZERO_HASH, DeployerTestCase, forward
+from harness import ALLOWED_TOOLS, CHECK, DEPLOY_COMMAND, ZERO_HASH, DeployerTestCase, Deployment, forward
 
 from deployer import hashing, manifest, migrate, plan, report, selection
 from deployer.context import Context, Options, Selection
@@ -32,7 +34,7 @@ class Kind:
     label: str  # the kind as the report names it
     name: str  # the item's name in the report and for --force-item
     manifest_key: str
-    root: Callable[[DeployerTestCase], Path]
+    root: Callable[[Deployment], Path]
     directory: bool
 
 
@@ -207,9 +209,11 @@ LEAVES = frozenset({"SKIP", "PRESERVE", "KEEP"})
 RELEASES = frozenset({"REMOVE", "DROP"})
 
 
-class PlanTests(DeployerTestCase):
-    def setUp(self) -> None:
-        super().setUp()
+class PlanHome(Deployment):
+    """A deployment of one skill with a shared asset, an agent, and a runtime adapter, which one state of one item is
+    arranged in and both runs are checked against."""
+
+    def lay_out(self) -> None:
         self.make_source_json(shared_assets={"shared.md": "owner"})
         self.make_shared_asset("shared.md")
         self.make_agent("reviewer")
@@ -303,12 +307,12 @@ class PlanTests(DeployerTestCase):
 
         with mock.patch.object(plan, "build", side_effect=spy):
             output = self.deploy_ok(*row.arguments, *extra, stdin=row.stdin).output
-        self.assertEqual(1, len(captured), output)
+        CHECK.assertEqual(1, len(captured), output)
         return captured[0], output
 
     def entry(self, entries: list[plan.PlanEntry], kind: Kind) -> plan.PlanEntry:
         matches = [entry for entry in entries if entry.name == kind.name and entry.kind == kind.label]
-        self.assertEqual(1, len(matches), entries)
+        CHECK.assertEqual(1, len(matches), entries)
         return matches[0]
 
     def assert_reported(self, output: str, title: str, label: str, kind: Kind, row: Row) -> None:
@@ -316,80 +320,87 @@ class PlanTests(DeployerTestCase):
         line = f"{kind.name} ({detail})" if detail else kind.name
         groups = self.report_groups(output, title)
         if row.shown:
-            self.assertIn(line, groups.get(label, []), output)
+            CHECK.assertIn(line, groups.get(label, []), output)
         else:
-            self.assertFalse(any(line in group for group in groups.values()), output)
+            CHECK.assertFalse(any(line in group for group in groups.values()), output)
 
     def assert_filesystem(self, kind: Kind, entry: plan.PlanEntry, before: str | None, owned: Any) -> None:
         path = self.path(kind)
         if entry.action in INSTALLS:
-            self.assertEqual(entry.staged, hashing.hash_path(path))
-            self.assertEqual(entry.staged, self.owned_entry(kind)["hash"])
+            CHECK.assertEqual(entry.staged, hashing.hash_path(path))
+            CHECK.assertEqual(entry.staged, self.owned_entry(kind)["hash"])
             backups = list((kind.root(self) / ".backups").glob(f"*/{kind.name}"))
             if entry.action == "REPLACE":
-                self.assertEqual([before], [hashing.hash_path(backup) for backup in backups])
+                CHECK.assertEqual([before], [hashing.hash_path(backup) for backup in backups])
             else:
-                self.assertEqual([], backups)
+                CHECK.assertEqual([], backups)
         elif entry.action in LEAVES:
-            self.assertEqual(before, self.fingerprint(kind))
-            self.assertEqual(owned, self.owned_entry(kind))
+            CHECK.assertEqual(before, self.fingerprint(kind))
+            CHECK.assertEqual(owned, self.owned_entry(kind))
         else:
-            self.assertIn(entry.action, RELEASES)
-            self.assertFalse(os.path.lexists(path))
-            self.assertIsNone(self.owned_entry(kind))
+            CHECK.assertIn(entry.action, RELEASES)
+            CHECK.assertFalse(os.path.lexists(path))
+            CHECK.assertIsNone(self.owned_entry(kind))
 
     def check(self, kind: Kind, row: Row) -> None:
         self.arrange(kind, row.state)
         dry_entries, dry_output = self.planned_run(row, "--dry-run")
         planned = self.entry(dry_entries, kind)
-        self.assertEqual((row.dry, row.apply), report.ACTION_LABELS[planned.action])
-        self.assertEqual(row.reason, planned.reason)
+        CHECK.assertEqual((row.dry, row.apply), report.ACTION_LABELS[planned.action])
+        CHECK.assertEqual(row.reason, planned.reason)
         self.assert_reported(dry_output, "DRY RUN", row.dry, kind, row)
         before, owned = self.fingerprint(kind), self.owned_entry(kind)
         applied_entries, applied_output = self.planned_run(row)
-        self.assertEqual(planned, self.entry(applied_entries, kind), "the deployment planned what the dry run showed")
+        CHECK.assertEqual(planned, self.entry(applied_entries, kind), "the deployment planned what the dry run showed")
         self.assert_reported(applied_output, "DEPLOYED", row.apply, kind, row)
         self.assert_filesystem(kind, planned, before, owned)
 
-    def check_rows(self, rows: dict[Kind, list[Row]], kind: Kind) -> None:
-        for row in rows[kind]:
-            with self.subTest(kind=kind.label or "skill", state=row.state):
-                self.tearDown()
-                self.setUp()
-                self.check(kind, row)
 
-    def test_skill_states(self) -> None:
-        self.check_rows(INSTALL_ROWS, SKILL)
+@pytest.fixture
+def plan_home() -> Iterator[PlanHome]:
+    """A PlanHome for one row, in a temporary folder removed once the row finishes."""
+    with tempfile.TemporaryDirectory(prefix="deploy-test.") as directory:
+        home = PlanHome()
+        home.start(Path(directory))
+        home.lay_out()
+        yield home
 
-    def test_shared_asset_states(self) -> None:
-        self.check_rows(INSTALL_ROWS, SHARED)
 
-    def test_runtime_adapter_states(self) -> None:
-        self.check_rows(INSTALL_ROWS, ADAPTER)
+def row_params(rows: dict[Kind, list[Row]]) -> list[Any]:
+    """Each row of a table as one test, named by its kind and state, as in skill-modified."""
+    return [
+        pytest.param(kind, row, id=f"{kind.label or 'skill'}-{row.state}".replace(" ", "-"))
+        for kind, kind_rows in rows.items()
+        for row in kind_rows
+    ]
 
-    def test_agent_states(self) -> None:
-        self.check_rows(INSTALL_ROWS, AGENT)
 
-    def test_removal_states(self) -> None:
-        for kind in (SKILL, SHARED, ADAPTER, AGENT):
-            self.check_rows(REMOVAL_ROWS, kind)
+@pytest.mark.parametrize(("kind", "row"), row_params(INSTALL_ROWS))
+def test_install_state(plan_home: PlanHome, kind: Kind, row: Row) -> None:
+    plan_home.check(kind, row)
 
-    def test_every_action_has_one_label_in_each_report(self) -> None:
-        self.assertEqual(
-            {
-                "INSTALL": ("FRESH INSTALL", "INSTALLED"),
-                "UPDATE": ("UPDATE", "UPDATED"),
-                "UNCHANGED": ("UNCHANGED", "UNCHANGED"),
-                "ADOPT": ("ADOPT", "ADOPTED"),
-                "REPLACE": ("REPLACE", "REPLACED"),
-                "SKIP": ("CONFLICT", "SKIPPED"),
-                "REMOVE": ("REMOVE", "REMOVED"),
-                "PRESERVE": ("PRESERVE", "PRESERVED"),
-                "DROP": ("DROP OWNERSHIP", "DROPPED OWNERSHIP"),
-                "KEEP": ("KEEP", "KEPT"),
-            },
-            report.ACTION_LABELS,
-        )
+
+@pytest.mark.parametrize(("kind", "row"), row_params(REMOVAL_ROWS))
+def test_removal_state(plan_home: PlanHome, kind: Kind, row: Row) -> None:
+    plan_home.check(kind, row)
+
+
+def test_every_action_has_one_label_in_each_report() -> None:
+    CHECK.assertEqual(
+        {
+            "INSTALL": ("FRESH INSTALL", "INSTALLED"),
+            "UPDATE": ("UPDATE", "UPDATED"),
+            "UNCHANGED": ("UNCHANGED", "UNCHANGED"),
+            "ADOPT": ("ADOPT", "ADOPTED"),
+            "REPLACE": ("REPLACE", "REPLACED"),
+            "SKIP": ("CONFLICT", "SKIPPED"),
+            "REMOVE": ("REMOVE", "REMOVED"),
+            "PRESERVE": ("PRESERVE", "PRESERVED"),
+            "DROP": ("DROP OWNERSHIP", "DROPPED OWNERSHIP"),
+            "KEEP": ("KEEP", "KEPT"),
+        },
+        report.ACTION_LABELS,
+    )
 
 
 class UnmanagedDiffTests(DeployerTestCase):

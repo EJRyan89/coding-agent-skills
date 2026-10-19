@@ -32,6 +32,7 @@ import review_io
 import review_runtime
 import review_state
 import skill_roots
+from atomic_file import UnfinishedCopyError
 from executable_locator import located_command
 from git_client import GitError, GitResult, GitStream
 from github_client import CommandResult
@@ -970,88 +971,29 @@ class StateAndLockTests(unittest.TestCase):
 
 
 class AtomicWriteTests(unittest.TestCase):
-    @contextlib.contextmanager
-    def watched_descriptors(self) -> Iterator[tuple[list[int], list[int], list[int]]]:
-        """The descriptors atomic_write_text opens, each close of one, and each close that found its descriptor
-        already closed. Such a close first gets an unrelated file at that number, as another thread's open would,
-        so the close lands where a second close would land in a running prepare."""
-        opened: list[int] = []
-        closes: list[int] = []
-        reused: list[int] = []
-        real_mkstemp = tempfile.mkstemp
-        real_close = os.close
+    """review_io's atomic writes are skill-core's replace, whose own suite covers the write; here each failure is
+    the PersistenceError the review steps report."""
 
-        def mkstemp(*args: Any, **kwargs: Any) -> tuple[int, str]:
-            descriptor, name = real_mkstemp(*args, **kwargs)
-            opened.append(descriptor)
-            return descriptor, name
-
-        def close(descriptor: int) -> None:
-            if descriptor in opened:
-                closes.append(descriptor)
-                try:
-                    os.fstat(descriptor)
-                except OSError:
-                    unrelated = os.open(os.devnull, os.O_RDONLY)
-                    os.dup2(unrelated, descriptor)
-                    real_close(unrelated)
-                    reused.append(descriptor)
-            real_close(descriptor)
-
-        with mock.patch.object(review_io.tempfile, "mkstemp", mkstemp), mock.patch.object(review_io.os, "close", close):
-            yield opened, closes, reused
-
-    def test_each_failure_closes_the_descriptor_once_and_leaves_the_target(self) -> None:
-        for name, failure in (
-            ("chmod", mock.patch.object(Path, "chmod", side_effect=OSError("synthetic chmod"))),
-            ("write", mock.patch.object(review_io.os, "write", side_effect=OSError("synthetic write"))),
-            ("fsync", mock.patch.object(review_io.os, "fsync", side_effect=OSError("synthetic fsync"))),
-            ("replace", mock.patch.object(Path, "replace", side_effect=OSError("synthetic replace"))),
-        ):
-            with self.subTest(failure=name), tempfile.TemporaryDirectory() as temporary:
-                path = Path(temporary) / "state.json"
-                path.write_bytes(b"previous\n")
-                with (
-                    self.watched_descriptors() as (opened, closes, reused),
-                    failure,
-                    self.assertRaisesRegex(PersistenceError, f"Cannot atomically replace .*synthetic {name}"),
-                ):
-                    review_io.atomic_write_text(path, "next\n")
-                self.assertEqual(1, len(opened))
-                self.assertEqual(opened, closes)
-                self.assertEqual([], reused)
-                with self.assertRaises(OSError):
-                    os.fstat(opened[0])
-                self.assertEqual(b"previous\n", path.read_bytes())
-                self.assertEqual(["state.json"], sorted(item.name for item in Path(temporary).iterdir()))
-
-    def test_success_closes_the_descriptor_once_and_writes_every_byte(self) -> None:
-        real_write = os.write
-
-        def short_write(descriptor: int, data: Any) -> int:
-            return real_write(descriptor, bytes(data[:1]))
-
+    def test_a_failed_replace_is_a_persistence_error_and_leaves_the_target(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "state.json"
             path.write_bytes(b"previous\n")
             with (
-                self.watched_descriptors() as (opened, closes, reused),
-                mock.patch.object(review_io.os, "write", short_write),
+                mock.patch.object(Path, "replace", side_effect=OSError("synthetic replace")),
+                self.assertRaisesRegex(
+                    PersistenceError, f"^Cannot atomically replace {re.escape(str(path))}: synthetic replace$"
+                ) as raised,
             ):
-                review_io.atomic_write_text(path, "café\nnext\n")
-            self.assertEqual(1, len(opened))
-            self.assertEqual(opened, closes)
-            self.assertEqual([], reused)
-            self.assertEqual("café\nnext\n".encode(), path.read_bytes())
+                review_io.atomic_write_text(path, "next\n")
+            self.assertIsInstance(raised.exception.__cause__, OSError)
+            self.assertEqual(b"previous\n", path.read_bytes())
             self.assertEqual(["state.json"], sorted(item.name for item in Path(temporary).iterdir()))
 
     def test_bytes_that_are_not_utf8_replace_the_file_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "condition.txt"
             path.write_bytes(b"previous\n")
-            with self.watched_descriptors() as (opened, closes, _reused):
-                review_io.atomic_write_bytes(path, b"caf\xc3\xa9 \xff\xc3")
-            self.assertEqual(opened, closes)
+            review_io.atomic_write_bytes(path, b"caf\xc3\xa9 \xff\xc3")
             self.assertEqual(b"caf\xc3\xa9 \xff\xc3", path.read_bytes())
             self.assertEqual(["condition.txt"], sorted(item.name for item in Path(temporary).iterdir()))
 
@@ -1067,14 +1009,12 @@ class AtomicWriteTests(unittest.TestCase):
             ):
                 with (
                     self.subTest(failure=name),
-                    self.watched_descriptors() as (opened, _closes, _reused),
                     self.assertRaisesRegex(
                         PersistenceError, f"^Cannot atomically replace {re.escape(str(target))}: "
                     ) as raised,
                 ):
                     review_io.atomic_write_text(target, content)
                 self.assertIsInstance(raised.exception.__cause__, cause)
-                self.assertEqual([], opened, "no copy was made")
             self.assertEqual(b"previous\n", path.read_bytes())
             self.assertEqual(["blocker", "state.json"], sorted(item.name for item in Path(temporary).iterdir()))
 
@@ -1093,10 +1033,7 @@ class AtomicWriteTests(unittest.TestCase):
             self.assertEqual(
                 f"Cannot remove {copies[0]}, the unfinished copy of {path}: synthetic unlink", str(raised.exception)
             )
-            removal = raised.exception.__cause__
-            if not isinstance(removal, OSError):
-                self.fail(f"Expected the removal's OSError, got {removal!r}")
-            self.assertRegex(str(removal.__context__), "^Cannot atomically replace .*: synthetic replace$")
+            self.assertIsInstance(raised.exception.__cause__, UnfinishedCopyError)
             self.assertEqual(b"previous\n", path.read_bytes())
 
 
