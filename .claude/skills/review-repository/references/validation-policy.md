@@ -5,7 +5,7 @@ Your files are validation: the policies in `tests/validation/`, the runner, and 
 Ask of each change:
 
 1. **A fixture beside it.** A new or changed policy function has a fixture test in `tests/validation/test_<module>.py` with a violating input failing and a conforming one passing, for each form it claims to catch.
-2. **Read through the language.** Python is read with `ast`, each name resolved through the module's imports: an alias, a `from` import, a call through skill-core's `bounded_process`, a command list held in a variable. Never a regular expression over the file, or a substring a comment or a string can satisfy.
+2. **Read through the language.** Python is read with `ast`, each name resolved through the module's imports: an alias, a `from` import, a call through ejryan89-skill-core's `bounded_process`, a command list held in a variable. Never a regular expression over the file, or a substring a comment or a string can satisfy.
 3. **The sentence and the policy agree.** The sentence names the forms the policy refuses, no more and no fewer, over the same roots (`deployer/`, `tools/`, `deploy.py`, `skills/`, `.claude/skills/`). A change to one changes the other.
 4. **No allowance without its reason.** `FSOPS_ALLOWED`, `PLATFORM_ALLOWED`, `DUPLICATION_ALLOWED`, `noqa`, and `type: ignore` state their reason, and the policy checks the condition the reason claims. Nothing turns a check off beyond one finding, and a ceiling in `pyproject.toml` only goes down.
 5. **Isolation.** A suite makes its own temporary home and fixtures and depends on no other test's order or state.

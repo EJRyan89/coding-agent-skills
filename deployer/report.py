@@ -45,13 +45,16 @@ KEPT_WITH_SKILL = "its skill stays"
 DRY_RUN = "DRY RUN"
 DEPLOYED = "DEPLOYED"
 # What the plan does to one item, which plan.PlanEntry holds.
-Action = Literal["SKIP", "PRESERVE", "REPLACE", "REMOVE", "UPDATE", "INSTALL", "ADOPT", "DROP", "KEEP", "UNCHANGED"]
+Action = Literal[
+    "SKIP", "PRESERVE", "REPLACE", "REMOVE", "RENAME", "UPDATE", "INSTALL", "ADOPT", "DROP", "KEEP", "UNCHANGED"
+]
 # Each planned action, in report order with attention first, and its label in the dry run and the deployment report.
 ACTION_LABELS: dict[Action, tuple[str, str]] = {
     "SKIP": ("CONFLICT", "SKIPPED"),
     "PRESERVE": ("PRESERVE", "PRESERVED"),
     "REPLACE": ("REPLACE", "REPLACED"),
     "REMOVE": ("REMOVE", "REMOVED"),
+    "RENAME": ("RENAME", "RENAMED"),
     "UPDATE": ("UPDATE", "UPDATED"),
     "INSTALL": ("FRESH INSTALL", "INSTALLED"),
     "ADOPT": ("ADOPT", "ADOPTED"),
@@ -171,14 +174,15 @@ def requested_members(owned: manifest.Ownership, src: source.Source) -> set[str]
     request at all, relying on the installed members, so such an entry's requests also stand for each installed skill
     that no other installed skill depends on by a dependency the entry records and this source still declares
     (`Ownership.installed_roots`). It is read from the installed skills rather than from the bundle this source gives
-    the request's name, which may hold other skills since the source regrouped them.
+    the request's name, which may hold other skills since the source regrouped them. A name the source has since
+    renamed, which its source.json records, stands for the skill's name now.
     """
     members = set(owned.requested_skills)
     for bundle in owned.requested_bundles:
         members |= owned.requested_bundle_members.get(bundle, set())
     if not members_recorded(owned):
         members |= owned.installed_roots({name: skill.skill_deps for name, skill in src.skills.items()})
-    return members
+    return {src.renamed.get(name, name) for name in members}
 
 
 def currently_chosen(src: source.Source, owned: manifest.Ownership, name: str, kind: str) -> bool:

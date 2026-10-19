@@ -51,7 +51,7 @@ With --remove-home DIR it prints REMOVED "<dir>", or FAILED "<reason>" and exits
 With --changed-since REF it starts nothing and makes no home: it reads, through git, every file changed since the commit
 REF and HEAD share, committed or not, untracked included, and prints SINCE <ref> <commit>, then CHANGED <skill> "<why>"
 for each shipped skill the change reaches, or NOTHING_CHANGED "<reason>". REF defaults to the last release HEAD holds,
-as skill-core's release_tags.py defines it, the range a release checks; a nearer tag of another name, such as a
+as ejryan89-skill-core's release_tags.py defines it, the range a release checks; a nearer tag of another name, such as a
 pre-release, does not move it, and with no release tag reaching HEAD it prints FAILED. A skill is reached by a changed
 file under skills/<skill>/, its deploy-meta/<skill>.json, a shared asset under skills/ that it declares in shared_deps,
 or an agents/<agent>.md that it declares in agent_deps. A hidden dependency, which has no adapter and no run of its own,
@@ -94,9 +94,9 @@ or a RUNTIME line for a run it started: each runtime was SKIPPED, could not be l
 could list or start, or, under --discovery-only, is Claude Code, whose discovery shows only in a model run.
 
 Discovery is held to what `deploy.py verify` holds: the adapters the canary home's manifest records. A skill deployed
-with none, as the deployer deploys a hidden dependency such as code-review-core, is DISCOVERY_NOT_ATTEMPTED, never
-UNDISCOVERED; a release covers it through the skills that declare it in skill_deps. Since each runtime runs with the
-home as its working directory, one may list the home's own .claude/skills copy of a skill as a project skill, as
+with none, as the deployer deploys a hidden dependency such as ejryan89-code-review-core, is DISCOVERY_NOT_ATTEMPTED,
+never UNDISCOVERED; a release covers it through the skills that declare it in skill_deps. Since each runtime runs with
+the home as its working directory, one may list the home's own .claude/skills copy of a skill as a project skill, as
 Copilot does for a skill with no adapter. That copy is PROJECT_COPY, not SHADOWED: no session started outside the
 home sees it, and it fails nothing.
 
@@ -122,7 +122,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import frontmatter
 from bounded_process import run_bounded, without_repository_variables
@@ -358,9 +358,9 @@ def text(value: bytes | None) -> str:
 def run_process(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Completed:
     """Run a runtime for at most `timeout` seconds with no stdin, which Codex exec would read a prompt addition from.
 
-    The run is skill-core's bounded one in a process tree, so its limit and an interrupt end every process it started,
-    such as the runtime a launcher script like npm's codex.cmd starts, which a kill of the launcher alone would leave
-    running with its model session, and its output goes to files, which nothing waits on such a process to close.
+    The run is ejryan89-skill-core's bounded one in a process tree, so its limit and an interrupt end every process it
+    started, such as the runtime a launcher script like npm's codex.cmd starts, which a kill of the launcher alone would
+    leave running with its model session, and its output goes to files, which nothing waits on such a process to close.
     """
     try:
         finished = run_bounded(arguments, timeout, cwd=cwd, env=environment, tree=platform_support.process_tree())
@@ -600,9 +600,9 @@ def run_command(
             str(home),
             text,
         ]
-    # The isolation of the Copilot review host in code-review-core, except --disallow-temp-dir, since the home is
-    # a temporary directory, and with shell allowed only for the platform's Python command and Bash, which is what the
-    # skills run.
+    # The isolation of the Copilot review host in ejryan89-code-review-core, except --disallow-temp-dir, since the home
+    # is a temporary directory, and with shell allowed only for the platform's Python command and Bash, which is what
+    # the skills run.
     return [
         executable,
         "--no-custom-instructions",

@@ -2,7 +2,7 @@
 """Deterministic read-only audit engine for AI agent configuration.
 
 Owned by the audit-ai-config skill. It needs the standard library and the
-skill-core modules it imports, which deployment installs beside the skill. It
+ejryan89-skill-core modules it imports, which deployment installs beside the skill. It
 checks any repository, and checks the generated layout described in
 references/generated-layout.md where a repository's own ai_config.py generator
 produced one.
@@ -42,7 +42,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import check_provenance
 import folder_walk
@@ -210,7 +210,7 @@ def list_directory(root: Path, directory: Path, pattern: str | None = None) -> L
 
 def walk_files(root: Path, base: Path, wanted: Callable[[str], bool], skipped: frozenset[str] = frozenset()) -> Listing:
     """Every file below `base` whose name `wanted` accepts, outside folders named in `skipped` and nested checkouts,
-    in the order of skill-core's folder walk.
+    in the order of ejryan89-skill-core's folder walk.
 
     A folder or wanted file that leads out of the root is neither entered nor read: it goes in `outside`. A link that
     stays inside the root is followed, but never back into a folder the walk is inside, and a folder that cannot be
@@ -228,7 +228,7 @@ def walk_files(root: Path, base: Path, wanted: Callable[[str], bool], skipped: f
 
 
 def named_files(root: Path, *names: str) -> list[Path]:
-    """Every file below the root with one of these names, outside the folders skill-core's folder walk skips by
+    """Every file below the root with one of these names, outside the folders ejryan89-skill-core's folder walk skips by
     name (`SKIPPED_FOLDERS`) and nested checkouts, in a stable order, never through a link that leads out of the root;
     the inventory reports each such link."""
     return walk_files(root, root, lambda name: name in names, SKIPPED_FOLDERS).paths
@@ -557,7 +557,7 @@ FrontmatterValue = str | list[str] | Nested
 UNREADABLE_ENTRY = "Frontmatter must use key: value entries, block scalars, block lists, or nested mappings"
 
 
-# The line walk is kept beside skill-core's frontmatter.py by decision
+# The line walk is kept beside ejryan89-skill-core's frontmatter.py by decision
 # (https://github.com/EJRyan89/coding-agent-skills/issues/27#issuecomment-6022293710): this audit is a lint policy that
 # reports each frontmatter problem at its line number, which the shared reader does not give. The walk finds each
 # entry's lines and hands quoted values, lists, continued scalars, and block scalars to the shared reader, so both read
@@ -569,8 +569,8 @@ def _frontmatter(path: Path) -> tuple[dict[str, FrontmatterValue], list[Finding]
     """Read YAML frontmatter line by line without executing or loading YAML tags.
 
     A one-line plain value is kept as written, without the trailing comment YAML ends it at. A block scalar (| or >),
-    a quoted value, a list, or a scalar continued on indented lines is read by skill-core's reader, a block scalar it
-    refuses is read here as YAML reads it, and a nested mapping is accepted without reading its entries.
+    a quoted value, a list, or a scalar continued on indented lines is read by ejryan89-skill-core's reader, a block
+    scalar it refuses is read here as YAML reads it, and a nested mapping is accepted without reading its entries.
     """
     rel = path.as_posix()
     try:
@@ -618,7 +618,8 @@ def _frontmatter(path: Path) -> tuple[dict[str, FrontmatterValue], list[Finding]
 
 def _without_comment(inline: str) -> str:
     """An entry's inline text without the comment YAML ends a plain value or a block scalar header at: a # at its start
-    or after a space. A quoted value or flow list keeps it, for skill-core's reader, which knows where they close."""
+    or after a space. A quoted value or flow list keeps it, for ejryan89-skill-core's reader, which knows where they
+    close."""
     if inline.startswith("#"):
         return ""
     if inline.startswith(('"', "'", "[")):
@@ -706,7 +707,8 @@ def _block_scalar_lines(lines: list[str], header: re.Match[str]) -> list[str]:
 
 
 def _block_scalar(key: str, inline: str, body: list[str], header: re.Match[str]) -> str:
-    """A block scalar's value: skill-core's reading, or this module's for a shape skill-core refuses."""
+    """A block scalar's value: ejryan89-skill-core's reading, or this module's for a shape ejryan89-skill-core
+    refuses."""
     try:
         value = Frontmatter([f"{key}: {inline}", *body]).value(key)
     except FrontmatterError:

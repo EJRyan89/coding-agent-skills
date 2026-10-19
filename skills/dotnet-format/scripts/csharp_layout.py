@@ -57,7 +57,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from console import run_main
@@ -845,8 +845,9 @@ class AnalyzerConfigs:
 
 
 def listed_projects_inside(root: Path, solution: Path, emit: Callable[[str], None]) -> dict[str, Path]:
-    """The projects a solution lists, by `same_path`; a solution that cannot be read fails. An entry skill-core's
-    `refusal` refuses, outside `root` or a network-share or device form, is reported and never touched."""
+    """The projects a solution lists, by `same_path`; a solution that cannot be read fails. An entry
+    ejryan89-skill-core's `refusal` refuses, outside `root` or a network-share or device form, is reported and never
+    touched."""
     try:
         listed = read_listed_projects(solution)
     except XmlRefused as error:

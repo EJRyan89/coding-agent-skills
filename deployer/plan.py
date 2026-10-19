@@ -61,6 +61,7 @@ class PlanEntry:
     existing: str = ""  # the current copy's hash, when the destination has the expected type
     staged: str = ""  # the rendered copy's hash, for an item this run selects
     diff: tuple[str, ...] = ()
+    previous: str = ""  # for a rename, the owned item's old name, whose copy the rendered one replaces
 
     def report_line(self, title: str) -> ReportLine:
         dry = title == DRY_RUN
@@ -155,7 +156,9 @@ def _plan_unselected(context: Context, kind: ItemKind, name: str, owned_hash: st
         existing = hashing.hash_path(destination)
         if existing == owned_hash:
             return PlanEntry(name, kind, "unmodified", "REMOVE", kind.removal_reason, existing)
-        return PlanEntry(name, kind, "modified", "PRESERVE", MODIFIED, existing)
+        renamed = context.source.renamed.get(name)
+        reason = f"{MODIFIED}, renamed '{renamed}' in the source" if renamed else MODIFIED
+        return PlanEntry(name, kind, "modified", "PRESERVE", reason, existing)
     if os.path.lexists(destination):
         return PlanEntry(name, kind, "wrong type", "PRESERVE", f"destination is not {kind.type_name}")
     return PlanEntry(name, kind, "absent", "DROP", "already absent")
@@ -235,21 +238,53 @@ def build(context: Context, wanted: Mapping[ItemKind, list[str]], staged: render
             for name in wanted[AGENT_KIND]
         ],
     }
+    return _renames(
+        context,
+        [
+            *unselected_skills,
+            *(
+                PlanEntry(name, kind, "still needed", "KEEP", f"needed by {reason}")
+                for kind, items in retained.items()
+                for name, reason in items.items()
+            ),
+            *(
+                _plan_owned(context, kind, name, value, staying)
+                for kind in KINDS
+                if kind is not SKILL
+                for name, value in sorted(owned.of(kind).items())
+                if name not in kept[kind]
+            ),
+            *(entry for kind in KINDS for entry in installs[kind]),
+        ],
+    )
+
+
+def _renames(context: Context, entries: list[PlanEntry]) -> list[PlanEntry]:
+    """Join each unmodified owned item the source renamed to its fresh install under the new name, as one rename.
+
+    The old copy's removal and the new copy's install become one entry, carried out where the install was, so the
+    reports name the move and the manifest moves the ownership with it. An old item modified, kept, or left for any
+    other reason, or a new name already present, is planned as it would be without the rename.
+    """
+    installs = {(entry.kind, entry.name): entry for entry in entries if entry.action == "INSTALL"}
+    renamed: dict[tuple[ItemKind, str], PlanEntry] = {}
+    for entry in entries:
+        new = context.source.renamed.get(entry.name)
+        install = installs.get((entry.kind, new)) if new is not None and entry.action == "REMOVE" else None
+        if install is not None:
+            renamed[(install.kind, install.name)] = replace(
+                install,
+                state="renamed",
+                action="RENAME",
+                reason=f"from {entry.name}",
+                existing=entry.existing,
+                previous=entry.name,
+            )
+    joined = {(entry.kind, entry.previous) for entry in renamed.values()}
     return [
-        *unselected_skills,
-        *(
-            PlanEntry(name, kind, "still needed", "KEEP", f"needed by {reason}")
-            for kind, items in retained.items()
-            for name, reason in items.items()
-        ),
-        *(
-            _plan_owned(context, kind, name, value, staying)
-            for kind in KINDS
-            if kind is not SKILL
-            for name, value in sorted(owned.of(kind).items())
-            if name not in kept[kind]
-        ),
-        *(entry for kind in KINDS for entry in installs[kind]),
+        renamed.get((entry.kind, entry.name), entry)
+        for entry in entries
+        if entry.action != "REMOVE" or (entry.kind, entry.name) not in joined
     ]
 
 
@@ -521,6 +556,13 @@ def carry_out(record: journal.Journal, paths: Paths, staging_dir: Path, entry: P
         case "REMOVE":
             record.backup(kind.root, entry.name, entry.existing, retain=False)
             fsops.move(base / entry.name, base / transient_name(entry.name))
+        case "RENAME":
+            # The old copy is backed up as a removal is, and the rendered copy installed under the new name.
+            record.backup(kind.root, entry.previous, entry.existing, retain=False)
+            fsops.move(base / entry.previous, base / transient_name(entry.previous))
+            _replace(
+                record, kind.root, base, staging_dir / kind.staging / entry.name, entry.name, entry.staged, None, False
+            )
         case "INSTALL" | "UPDATE" | "ADOPT" | "REPLACE":
             _replace(
                 record,

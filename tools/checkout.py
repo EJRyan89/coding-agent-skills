@@ -4,7 +4,7 @@ tools/new_skill.py, tools/skill_shims.py, and tools/skill_reference.py write int
 take --root to work on another instead, as their regression suites do. A grant over one of them that ends in * covers
 --root too, so each parses it with checkout_root, which refuses any other directory. A checkout holds a source.json
 file and a .claude/skills directory, and neither it nor its .claude/skills or .agents/skills lies in a skills directory
-skill-core's skill_roots names: the checkout's own skills/, or ~/.claude/skills and ~/.agents/skills, which the
+ejryan89-skill-core's skill_roots names: the checkout's own skills/, or ~/.claude/skills and ~/.agents/skills, which the
 deployer owns.
 """
 
@@ -14,7 +14,7 @@ import argparse
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from skill_roots import skills_directory_holding
 

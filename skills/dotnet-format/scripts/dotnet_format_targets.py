@@ -50,7 +50,7 @@ from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import msbuild_xml
 from console import run_main
@@ -102,7 +102,7 @@ class Services:
 
     git: GitClient = field(default_factory=GitClient)
     gh: Callable[[Path], GhRunner] = gh_runner_in
-    # skill-core's locator, which finds a tool where `deploy.py check` does.
+    # ejryan89-skill-core's locator, which finds a tool where `deploy.py check` does.
     which: Callable[[str], str | None] = field(default=find_executable)
 
 
@@ -245,8 +245,8 @@ def is_web_project(project: Path) -> bool:
 
 
 def is_sdk_style(project: Path) -> bool:
-    """Whether a project file is SDK-style, as skill-core's `msbuild_xml` reads one: its Project element names an
-    Sdk, or it holds an Sdk element or an Import of an Sdk. A file that cannot be read is not shown to be one."""
+    """Whether a project file is SDK-style, as ejryan89-skill-core's `msbuild_xml` reads one: its Project element names
+    an Sdk, or it holds an Sdk element or an Import of an Sdk. A file that cannot be read is not shown to be one."""
     try:
         return msbuild_xml.is_sdk_style(read_xml(read_text(project)))
     except (OSError, XmlRefused):
@@ -299,8 +299,9 @@ def nearest_solutions(root: Path, cwd: Path) -> list[Path]:
 
 
 def find_solutions(root: Path) -> list[Path]:
-    """Every solution in the repository, in skill-core's folder walk's order, outside the folders the .NET search
-    skips (`dotnet_solution.SEARCH_SKIPPED_FOLDERS`) and nested checkouts, never through a junction or symbolic link.
+    """Every solution in the repository, in ejryan89-skill-core's folder walk's order, outside the folders the .NET
+    search skips (`dotnet_solution.SEARCH_SKIPPED_FOLDERS`) and nested checkouts, never through a junction or symbolic
+    link.
 
     A folder it cannot list, or an entry it cannot examine, is an error, not an empty one: skipping it could hide the
     solution to choose. A linked folder is not one, since the link may lead out of the repository or back into it.

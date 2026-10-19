@@ -1,4 +1,4 @@
-"""Keep a rendered sample of each prompt a skill's script writes for a subagent at runtime, for analyze-skill-cost.
+"""Keep a rendered sample of each prompt a skill's script writes for a subagent at runtime, for audit-skill.
 
 Usage:
   python tools/runtime_prompts.py           report every missing, stale, or extra sample; exit 1 if there is one
@@ -28,11 +28,11 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from skill_roots import sibling_scripts
 
-sys.path.insert(0, str(sibling_scripts("code-review-core")))
+sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 sys.path.insert(0, str(sibling_scripts("review-document")))
 sys.path.insert(0, str(sibling_scripts("review-insights")))
 

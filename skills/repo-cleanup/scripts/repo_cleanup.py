@@ -42,7 +42,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, TypeVar
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import git_client
 import git_worktrees
@@ -239,8 +239,9 @@ def ahead_behind(services: Services, root: str | Path, local: str, upstream: str
 def read_worktree(
     services: Services, directory: str | Path, subcommand: str, reader: Callable[..., T], *options: str
 ) -> T:
-    """What skill-core's `reader` reads of the checkout at `directory` through `git <subcommand>`, a git that could not
-    run raised as GitUnavailable and one that failed as CleanupError, as every other git call here raises them."""
+    """What ejryan89-skill-core's `reader` reads of the checkout at `directory` through `git <subcommand>`, a git that
+    could not run raised as GitUnavailable and one that failed as CleanupError, as every other git call here raises
+    them."""
     try:
         return reader(services.git, directory, *options)
     except git_client.GitError as exc:

@@ -6,7 +6,7 @@ description: >-
   it up on a machine, check it, or tune it from canary reviews.
 argument-hint: "[PULL_NUMBER ...]"
 disable-model-invocation: true
-allowed-tools: ["Bash(python -B skills/code-review-core/scripts/review_pipeline.py validate-reviewer *)", "PowerShell(python -B skills/code-review-core/scripts/review_pipeline.py validate-reviewer *)"]
+allowed-tools: ["Bash(python -B skills/ejryan89-code-review-core/scripts/review_pipeline.py validate-reviewer *)", "PowerShell(python -B skills/ejryan89-code-review-core/scripts/review_pipeline.py validate-reviewer *)"]
 ---
 
 Read and follow `../../../.claude/skills/review-repository/SKILL.md`, a path relative to this file, as the authoritative workflow.

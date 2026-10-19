@@ -13,12 +13,12 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import quote
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 from markdown_literal import markdown_line, navigation_url
 from skill_roots import sibling_scripts
 
-sys.path.insert(0, str(sibling_scripts("code-review-core")))
+sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from pr_change import CHANGED, UNCHANGED, ChangeDetector, ComparisonError, Query

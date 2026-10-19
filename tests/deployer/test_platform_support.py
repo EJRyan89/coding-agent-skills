@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from harness import DeployerTestCase, make_directory_link
 
@@ -101,7 +101,7 @@ if platform_support.WINDOWS:
                     self.assertIsNone(platform_support.find_pwsh(search_path))
 
     class FindExecutableTests(DeployerTestCase):
-        """The deployer finds a program by skill-core's locator, the one the skills' scripts use."""
+        """The deployer finds a program by ejryan89-skill-core's locator, the one the skills' scripts use."""
 
         def setUp(self) -> None:
             super().setUp()
@@ -298,7 +298,8 @@ def own_metadata(path: Path, answer: object) -> Any:
 
 
 class LinkJudgementTests(unittest.TestCase):
-    """The deployer judges a link as skill-core's link_probe does, and refuses to judge a path it cannot read."""
+    """The deployer judges a link as ejryan89-skill-core's link_probe does, and refuses to judge a path it cannot
+    read."""
 
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()

@@ -33,8 +33,8 @@ SUFFIX_CONTEXT = {
     ".md": "markdown",
     ".txt": "text",
 }
-# A fence's substitution context, by its label: the executable language skill-core's table names it by, which is the
-# table validation reads executable fences by, or a data format.
+# A fence's substitution context, by its label: the executable language ejryan89-skill-core's table names it by, which
+# is the table validation reads executable fences by, or a data format.
 FENCE_CONTEXT = {
     **{label: language for language, labels in FENCE_LANGUAGES.items() for label in labels},
     "yaml": "yaml",

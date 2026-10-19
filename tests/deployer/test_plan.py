@@ -18,7 +18,7 @@ from unittest import mock
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from harness import ALLOWED_TOOLS, DEPLOY_COMMAND, ZERO_HASH, DeployerTestCase, Deployment, forward
 
@@ -389,6 +389,7 @@ def test_every_action_has_one_label_in_each_report() -> None:
     assert report.ACTION_LABELS == {
         "INSTALL": ("FRESH INSTALL", "INSTALLED"),
         "UPDATE": ("UPDATE", "UPDATED"),
+        "RENAME": ("RENAME", "RENAMED"),
         "UNCHANGED": ("UNCHANGED", "UNCHANGED"),
         "ADOPT": ("ADOPT", "ADOPTED"),
         "REPLACE": ("REPLACE", "REPLACED"),
@@ -705,6 +706,18 @@ class ContextStepTests(unittest.TestCase):
 
 
 def test_the_planned_actions_are_the_labelled_ones_in_report_order() -> None:
-    actions = ("SKIP", "PRESERVE", "REPLACE", "REMOVE", "UPDATE", "INSTALL", "ADOPT", "DROP", "KEEP", "UNCHANGED")
+    actions = (
+        "SKIP",
+        "PRESERVE",
+        "REPLACE",
+        "REMOVE",
+        "RENAME",
+        "UPDATE",
+        "INSTALL",
+        "ADOPT",
+        "DROP",
+        "KEEP",
+        "UNCHANGED",
+    )
     assert get_args(report.Action) == actions
     assert tuple(report.ACTION_LABELS) == actions

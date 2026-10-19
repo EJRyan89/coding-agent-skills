@@ -14,11 +14,11 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from skill_roots import sibling_scripts
 
-sys.path.insert(0, str(sibling_scripts("code-review-core")))
+sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 sys.path.insert(0, str(sibling_scripts("review-document")))
 
 from git_client import GitClient
@@ -41,8 +41,8 @@ PLATFORM_ALLOWED = {
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SCENARIO_ROOT = REPOSITORY_ROOT / "tests" / "fixtures" / "skill-evals"
-# The record's own vocabulary, from code-review-core's record module, in a stable order for messages: severities from
-# the lowest rank, dispositions alphabetically.
+# The record's own vocabulary, from ejryan89-code-review-core's record module, in a stable order for messages:
+# severities from the lowest rank, dispositions alphabetically.
 SEVERITIES = tuple(sorted(SEVERITY_RANK, key=SEVERITY_RANK.__getitem__))
 VERDICTS = ("APPROVED", "CHANGES_REQUESTED", "INCOMPLETE")
 DISPOSITIONS = tuple(sorted(RECORD_DISPOSITIONS))

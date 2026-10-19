@@ -14,10 +14,10 @@ result is only accepted against the input it was written from.
 
 The agent works in a run of its own (`Staged.stage_run`): a `code-review-run-*` folder under the temporary directory
 holding the prompt, a copy of the input, and a `run.json` naming the one role, `synthesis`, with its prompt, its result
-file, and its self-check. That is the run shape code-review-core's reviewer guard binds a `code-review-reviewer` to,
-so in Claude Code the agent reads only that run, writes only its result, and runs only its self-check. The prompt
-names the input copy and the one result file the agent may write. The run is removed once its result is recorded or a
-later report stages another.
+file, and its self-check. That is the run shape ejryan89-code-review-core's reviewer guard binds a
+`code-review-reviewer` to, so in Claude Code the agent reads only that run, writes only its result, and runs only its
+self-check. The prompt names the input copy and the one result file the agent may write. The run is removed once its
+result is recorded or a later report stages another.
 
 A repository's guidance files are the files each repository-scoped reviewer was built from (see `review_guidance.py`),
 which a recommendation may name as the file to change. A generic reviewer is built from no repository file, so such a

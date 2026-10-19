@@ -15,7 +15,7 @@ from typing import ClassVar
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from duplication import (
     duplicated_definition_problems,
@@ -87,7 +87,8 @@ class DuplicatedDefinitionPolicy(unittest.TestCase):
         )
 
     def test_no_allowance_sanctions_a_whole_module(self) -> None:
-        # A module shared whole lives in skill-core and is imported from there, so "*" is a name nothing defines.
+        # A module shared whole lives in ejryan89-skill-core and is imported from there, so "*" is a name nothing
+        # defines.
         everything = 'DUPLICATION_ALLOWED = {"*": "the whole module is a sanctioned copy"}\n\n\n'
         self.assertEqual(
             [
@@ -327,13 +328,15 @@ class DuplicatedConstantPolicy(unittest.TestCase):
 
 
 class SkillCoreHomePolicy(unittest.TestCase):
-    STATEMENT = 'sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))\n'
+    STATEMENT = (
+        'sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))\n'
+    )
 
     HEADER = "import sys\nfrom pathlib import Path\n\n"
 
     CORE: ClassVar[dict[str, str]] = {
-        "skills/skill-core/scripts/shared.py": "import json\n",
-        "skills/skill-core/scripts/test_shared.py": "",
+        "skills/ejryan89-skill-core/scripts/shared.py": "import json\n",
+        "skills/ejryan89-skill-core/scripts/test_shared.py": "",
     }
 
     DOC = '"Validation" in docs/adding-a-skill.md'
@@ -346,14 +349,17 @@ class SkillCoreHomePolicy(unittest.TestCase):
     def test_a_module_named_like_a_skill_core_module_outside_it_is_a_copy(self) -> None:
         self.assertEqual(
             [
-                ".claude/skills/r/scripts/shared.py has the name of skills/skill-core/scripts/shared.py; import shared "
-                f"from skill-core instead of keeping another copy; see {self.DOC}",
-                "deployer/shared.py has the name of skills/skill-core/scripts/shared.py; import shared from "
-                f"skill-core instead of keeping another copy; see {self.DOC}",
-                "skills/other/scripts/shared.py has the name of skills/skill-core/scripts/shared.py; import shared "
-                f"from skill-core instead of keeping another copy; see {self.DOC}",
-                "tests/validation/shared.py has the name of skills/skill-core/scripts/shared.py; import shared from "
-                f"skill-core instead of keeping another copy; see {self.DOC}",
+                ".claude/skills/r/scripts/shared.py has the name of skills/ejryan89-skill-core/scripts/shared.py; "
+                "import shared "
+                f"from ejryan89-skill-core instead of keeping another copy; see {self.DOC}",
+                "deployer/shared.py has the name of skills/ejryan89-skill-core/scripts/shared.py; import shared from "
+                f"ejryan89-skill-core instead of keeping another copy; see {self.DOC}",
+                "skills/other/scripts/shared.py has the name of skills/ejryan89-skill-core/scripts/shared.py; import "
+                "shared "
+                f"from ejryan89-skill-core instead of keeping another copy; see {self.DOC}",
+                "tests/validation/shared.py has the name of skills/ejryan89-skill-core/scripts/shared.py; import "
+                "shared from "
+                f"ejryan89-skill-core instead of keeping another copy; see {self.DOC}",
             ],
             self.run_policy(
                 skill_core_copy_problems,
@@ -373,17 +379,20 @@ class SkillCoreHomePolicy(unittest.TestCase):
     def test_deployer_and_tools_import_skill_core_after_the_path_statement(self) -> None:
         self.assertEqual(
             [
-                "deployer/extra.py:4 puts skill-core on sys.path; deployer/__init__.py is the deployer's one place; "
+                "deployer/extra.py:4 puts ejryan89-skill-core on sys.path; deployer/__init__.py is the deployer's one "
+                "place; "
                 f"see {self.DOC}",
-                f"tools/early.py:1 imports shared before putting skills/skill-core/scripts on sys.path; see {self.DOC}",
-                "tools/missing.py:1 imports shared before putting skills/skill-core/scripts on sys.path; see "
+                "tools/early.py:1 imports shared before putting skills/ejryan89-skill-core/scripts on sys.path; "
+                f"see {self.DOC}",
+                "tools/missing.py:1 imports shared before putting skills/ejryan89-skill-core/scripts on sys.path; see "
                 f"{self.DOC}",
             ],
             self.run_policy(
                 skill_core_import_problems,
                 {
                     "deployer/__init__.py": '"""Package."""\n\n' + self.HEADER + self.STATEMENT,
-                    # A package's __init__.py runs before its modules, so a deployer module imports skill-core freely.
+                    # A package's __init__.py runs before its modules, so a deployer module imports ejryan89-skill-core
+                    # freely.
                     "deployer/user.py": "from __future__ import annotations\n\nimport shared\n\nfrom . import extra\n",
                     "deployer/extra.py": self.HEADER + self.STATEMENT,
                     "tools/good.py": self.HEADER + self.STATEMENT + "\nimport shared\n",
@@ -397,35 +406,37 @@ class SkillCoreHomePolicy(unittest.TestCase):
     def test_skill_core_imports_nothing_from_the_deployer_and_the_deployer_only_the_standard_library(self) -> None:
         def reaches(name: str, line: int, module: str) -> str:
             return (
-                f"{name}:{line} imports {module}; skill-core imports nothing from the deployer or tools/; see "
+                f"{name}:{line} imports {module}; ejryan89-skill-core imports nothing from the deployer or tools/; see "
                 f"{self.DOC}"
             )
 
         def foreign(name: str, line: int, module: str) -> str:
             return (
-                f"{name}:{line} imports {module}, which is neither the standard library, the deployer, nor skill-core; "
+                f"{name}:{line} imports {module}, which is neither the standard library, the deployer, nor "
+                "ejryan89-skill-core; "
                 f"see {self.DOC}"
             )
 
         self.assertEqual(
             [
                 foreign("deployer/plan.py", 1, "yaml"),
-                reaches("skills/skill-core/scripts/reach.py", 1, "deployer"),
-                reaches("skills/skill-core/scripts/reach.py", 2, "tools.thing"),
-                foreign("skills/skill-core/scripts/reach.py", 3, "requests"),
-                reaches("skills/skill-core/scripts/test_shared.py", 1, "deployer.paths"),
+                reaches("skills/ejryan89-skill-core/scripts/reach.py", 1, "deployer"),
+                reaches("skills/ejryan89-skill-core/scripts/reach.py", 2, "tools.thing"),
+                foreign("skills/ejryan89-skill-core/scripts/reach.py", 3, "requests"),
+                reaches("skills/ejryan89-skill-core/scripts/test_shared.py", 1, "deployer.paths"),
             ],
             self.run_policy(
                 skill_core_import_problems,
                 {
                     "deployer/__init__.py": self.HEADER + self.STATEMENT,
                     "deployer/plan.py": "import yaml\nimport tomllib\n\nimport shared\n\nfrom . import paths\n",
-                    "skills/skill-core/scripts/reach.py": (
+                    "skills/ejryan89-skill-core/scripts/reach.py": (
                         "from deployer import paths\nimport tools.thing\nimport requests\n"
                     ),
-                    "skills/skill-core/scripts/test_shared.py": "import deployer.paths\nimport shared\n",
+                    "skills/ejryan89-skill-core/scripts/test_shared.py": "import deployer.paths\nimport shared\n",
                     # A suite may import what it tests with; only the direction rule holds it.
-                    "skills/skill-core/scripts/test_other.py": "import unittest\nimport shared\nimport harness\n",
+                    "skills/ejryan89-skill-core/scripts/test_other.py": "import unittest\nimport shared\nimport "
+                    "harness\n",
                 },
             ),
         )
@@ -438,9 +449,9 @@ class SkillCoreHomePolicy(unittest.TestCase):
         self.assertEqual(
             [
                 f"deployer/dynamic.py:2 imports yaml, which is neither the standard library, the deployer, nor "
-                f"skill-core; see {self.DOC}",
+                f"ejryan89-skill-core; see {self.DOC}",
                 f"deployer/dynamic.py:3 imports requests, which is neither the standard library, the deployer, nor "
-                f"skill-core; see {self.DOC}",
+                f"ejryan89-skill-core; see {self.DOC}",
                 unread,
             ],
             self.run_policy(
@@ -458,7 +469,7 @@ class SkillCoreHomePolicy(unittest.TestCase):
         def foreign(line: int, module: str) -> str:
             return (
                 f"skills/demo/scripts/run.py:{line} imports {module}, which is neither the standard library, "
-                f"skill-core, the skill's own scripts, nor a skill its skill_deps reach; see {self.DOC}"
+                f"ejryan89-skill-core, the skill's own scripts, nor a skill its skill_deps reach; see {self.DOC}"
             )
 
         self.assertEqual(
@@ -470,9 +481,9 @@ class SkillCoreHomePolicy(unittest.TestCase):
             self.run_policy(
                 skill_script_import_problems,
                 {
-                    "deploy-meta/demo.json": '{"skill_deps": ["skill-core", "middle"]}',
+                    "deploy-meta/demo.json": '{"skill_deps": ["ejryan89-skill-core", "middle"]}',
                     "deploy-meta/middle.json": '{"skill_deps": ["deep"]}',
-                    "skills/skill-core/SKILL.md": "",
+                    "skills/ejryan89-skill-core/SKILL.md": "",
                     "skills/demo/SKILL.md": "",
                     "skills/middle/SKILL.md": "",
                     "skills/deep/SKILL.md": "",
@@ -495,7 +506,7 @@ class SkillCoreHomePolicy(unittest.TestCase):
     [
         pytest.param("", id="no statement"),
         pytest.param(
-            'sys.path.insert(0, str(Path(SOURCE) / "skills" / "skill-core" / "scripts"))\n',
+            'sys.path.insert(0, str(Path(SOURCE) / "skills" / "ejryan89-skill-core" / "scripts"))\n',
             id="located from the configured source",
         ),
         pytest.param(SkillCoreHomePolicy.STATEMENT.replace("insert(0,", "insert(1,"), id="not first"),
@@ -505,7 +516,7 @@ class SkillCoreHomePolicy(unittest.TestCase):
 )
 def test_the_deployer_states_the_path_first_and_relative_to_itself(tmp_path: Path, statement: str) -> None:
     expected = [
-        "deployer/__init__.py does not put skills/skill-core/scripts first on sys.path, located from its own "
+        "deployer/__init__.py does not put skills/ejryan89-skill-core/scripts first on sys.path, located from its own "
         f"file; see {SkillCoreHomePolicy.DOC}"
     ]
     write_fixture_tree(

@@ -15,7 +15,7 @@ from unittest import mock
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import memory_audit
 import skill_roots
@@ -1829,7 +1829,7 @@ def test_a_missing_memory_directory_is_a_failed_line(tmp_path: Path, arguments: 
     )
 
 
-# Pinned while parse_frontmatter is kept instead of skill-core's frontmatter.py; see the comment above it.
+# Pinned while parse_frontmatter is kept instead of ejryan89-skill-core's frontmatter.py; see the comment above it.
 @pytest.mark.parametrize(
     ("text", "values", "body"),
     [

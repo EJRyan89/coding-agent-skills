@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 from urllib.parse import quote
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 from console import run_main
 from flat_text import flat_text
@@ -157,7 +157,7 @@ def _next_cursor(page_info: Any, path: str, followed: set[str]) -> str | None:
 
 
 class GitHubSearchClient:
-    """The REST and GraphQL searches the report makes, over skill-core's GitHub CLI client.
+    """The REST and GraphQL searches the report makes, over ejryan89-skill-core's GitHub CLI client.
 
     Every request reads the response headers, so GitHub's Retry-After and quota reset set the wait, and a response
     missing results from organizations the token is not SSO-authorized for fails. Searches are also paced.

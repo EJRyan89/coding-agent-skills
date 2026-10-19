@@ -198,7 +198,7 @@ The template's sections ask for the problem and the chosen behavior, and the use
 - regression coverage is added or updated for every behavior change;
 - for a change to skill paths, `allowed-tools`, runtime adapters, or agents, the `runtime-canary` lines are in the body, with each runtime's version and any `SKIPPED` or `NOTHING_CHECKED` reason;
 - for a change to a skill's prompt, model guidance, or reviewer instructions, the `evaluate-skill` run is cited with its table, and `docs/skill-evaluations.md` holds its result;
-- for a skill change, `analyze-skill-cost` audited each changed skill from the source tree with no MUST FIX left, and any SUGGESTION left is named with why;
+- for a skill change, `audit-skill` audited each changed skill from the source tree with no MUST FIX left, and any SUGGESTION left is named with why;
 - for a contract change, the body's `## Upgrade note` has an entry naming each changed contract item;
 - documentation is updated in the same change; and
 - the diff is reviewed for personal paths, organization names, credentials, and generated artifacts.
@@ -217,7 +217,7 @@ Some gates need more than a clone and the validation tools. Run them when you ca
 
 - `runtime-canary`, for a change to skill paths, `allowed-tools`, runtime adapters, or agents. It needs Claude Code, Codex, and Copilot CLI installed and signed in, and each run calls a model.
 - `evaluate-skill`, for a change to a skill's prompt, model guidance, or reviewer instructions when the skill has scenarios under `tests/fixtures/skill-evals/`. It runs headless Claude Code sessions, so it needs Claude Code signed in, and each run calls models.
-- `analyze-skill-cost`, for a skill change. It is a shipped skill, so it runs from a deployment of this suite into your own profile ([Installation](docs/installation.md)); run from the worktree, it audits the source tree, not the deployed copy. Without a deployment, leave it to the maintainer.
+- `audit-skill`, for a skill change. It is a shipped skill, so it runs from a deployment of this suite into your own profile ([Installation](docs/installation.md)); run from the worktree, it audits the source tree, not the deployed copy. Without a deployment, leave it to the maintainer.
 - The `deployable` workflow, which deploys onto a fresh GitHub-hosted runner. It is dispatched by hand before each release ([Releasing](docs/releasing.md#before-tagging)), not for each pull request.
 
 By contributing, you agree that your contribution is licensed under the repository's [MIT License](LICENSE).

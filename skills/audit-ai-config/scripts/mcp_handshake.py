@@ -11,7 +11,7 @@ command with a directory part that is not absolute is relative to it, as a clien
 directory or such a command leads out of the root, through `..`, an absolute path, or a link, is refused with a
 CONFIG_ERROR and never started), the environment added to this
 process's but never carrying git's repository-selecting variables, such as a shell's or its configuration's
-GIT_DIR, which skill-core's bounded_process.streaming removes; it receives initialize,
+GIT_DIR, which ejryan89-skill-core's bounded_process.streaming removes; it receives initialize,
 notifications/initialized, and tools/list, each one line of JSON ended by a line feed and never a carriage
 return, and is then stopped. --timeout bounds each server from its start to its stop, so neither the server nor a
 program its launcher started and left holding its output keeps the run waiting past it; a server still running
@@ -23,7 +23,7 @@ the MCP schema requires and a protocol version this client supports, and every t
 through nextCursor, is a valid list of tools. Each config is read by audit_ai_config.py's reader of that file, so
 the audit and the handshake report the same problems for it. One line per
 config problem, then one per server, each on one line: a name, command, type, or reason the repository's
-configuration or a server supplies is flattened onto it with skill-core's flat_text.
+configuration or a server supplies is flattened onto it with ejryan89-skill-core's flat_text.
 
     CONFIG_ERROR <file> <reason>        the file could not be read or parsed, so none of its servers was checked,
                                         or its servers are not an object (a table in TOML), or
@@ -59,7 +59,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 from audit_ai_config import CODEX_CONFIG, MCP_JSON_FILES, _read_codex_mcp, leaves_root, read_mcp_json
 from bounded_process import Streaming, streaming
@@ -129,8 +129,9 @@ def group_servers(root: Path, only: str | None) -> tuple[list[tuple[str, list[st
 
 
 class Session:
-    """A started server, run by skill-core's bounded process layer so that `--timeout` bounds the whole session: a
-    server, or a program a launcher started that holds its stdout, can neither hold a read nor the stop past it."""
+    """A started server, run by ejryan89-skill-core's bounded process layer so that `--timeout` bounds the whole
+    session: a server, or a program a launcher started that holds its stdout, can neither hold a read nor the stop past
+    it."""
 
     def __init__(self, running: Streaming) -> None:
         self.running = running
@@ -248,8 +249,8 @@ def has_directory_part(command: str) -> bool:
 
 def resolve_command(command: str, cwd: Path) -> str | None:
     """The program a server's command names: a path is relative to the server's working directory, the directory a
-    client starts it in, and a bare name is the program skill-core's locator finds for it, so the folder this script
-    runs from, which `shutil.which` searches first on Windows, never decides it."""
+    client starts it in, and a bare name is the program ejryan89-skill-core's locator finds for it, so the folder this
+    script runs from, which `shutil.which` searches first on Windows, never decides it."""
     if has_directory_part(command):
         return shutil.which(str(cwd / command))
     return find_executable(command)

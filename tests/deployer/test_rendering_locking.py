@@ -10,7 +10,7 @@ from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
 import process_identity
@@ -250,12 +250,12 @@ class RenderedExecutableTests(DeployerTestCase):
             "audit-ai-config/scripts/audit_ai_config.py",
             "dotnet-format/scripts/dotnet_format_targets.py",
             "repo-cleanup/scripts/repo_cleanup.py",
-            "code-review-core/references/generic-reviewer.md",
-            "code-review-core/scripts/review_guard.py",
-            "skill-core/scripts/console.py",
-            "skill-core/scripts/frontmatter.py",
-            "skill-core/scripts/github_client.py",
-            "skill-core/scripts/skill_roots.py",
+            "ejryan89-code-review-core/references/generic-reviewer.md",
+            "ejryan89-code-review-core/scripts/review_guard.py",
+            "ejryan89-skill-core/scripts/console.py",
+            "ejryan89-skill-core/scripts/frontmatter.py",
+            "ejryan89-skill-core/scripts/github_client.py",
+            "ejryan89-skill-core/scripts/skill_roots.py",
             "update-coding-agent-skills/scripts/update.sh",
         ):
             with self.subTest(relative=relative):
@@ -263,20 +263,20 @@ class RenderedExecutableTests(DeployerTestCase):
                     (REPOSITORY_ROOT / "skills" / relative).read_bytes(),
                     (self.skills_dir / relative).read_bytes(),
                 )
-        # analyze-skill-cost imports the reader from skill-core and ships no copy of its own.
-        self.assertFalse((self.skills_dir / "analyze-skill-cost" / "scripts" / "frontmatter.py").exists())
-        # Every skill that runs gh imports skill-core's client; none ships a gh runner of its own.
+        # audit-skill imports the reader from ejryan89-skill-core and ships no copy of its own.
+        self.assertFalse((self.skills_dir / "audit-skill" / "scripts" / "frontmatter.py").exists())
+        # Every skill that runs gh imports ejryan89-skill-core's client; none ships a gh runner of its own.
         for script in sorted(self.skills_dir.glob("*/scripts/*.py")):
-            if script.parent.parent.name != "skill-core":
+            if script.parent.parent.name != "ejryan89-skill-core":
                 with self.subTest(script=script.name):
                     self.assertNotRegex(script.read_text(encoding="utf-8"), r'\[\s*"gh"')
-        for name in ("analyze-skill-cost", "audit-ai-config", "repo-cleanup", "update-coding-agent-skills"):
+        for name in ("audit-skill", "audit-ai-config", "repo-cleanup", "update-coding-agent-skills"):
             with self.subTest(skill=name):
                 self.assertNotIn("{{", self.skill_text(name))
         self.assertIn(f'"{forward(repository)}"', self.skill_text("update-coding-agent-skills"))
         self.assertTrue((self.skills_dir / "runtime-compatibility.md").is_file())
-        # The code-review bundle pulls in code-review-core, which ships the reviewer subagent, with its hook naming
-        # Python as this platform does and every other byte as written.
+        # The code-review bundle pulls in ejryan89-code-review-core, which ships the reviewer subagent, with its hook
+        # naming Python as this platform does and every other byte as written.
         source = (REPOSITORY_ROOT / "agents" / "code-review-reviewer.md").read_bytes()
         python = b"python" if platform_support.WINDOWS else b"python3"
         self.assertEqual(
@@ -291,9 +291,9 @@ class RenderedExecutableTests(DeployerTestCase):
         self.assertNotIn("runtime-compatibility", self.skill_text("review-prs"), "Claude runs skip the shared read")
         owned = self.owned("skills", source_id)
         self.assertEqual(sorted(path.stem for path in (REPOSITORY_ROOT / "deploy-meta").glob("*.json")), sorted(owned))
-        # skill-core is a hidden dependency: installed beside its dependents, with no adapter for any runtime.
-        self.assertFalse((self.agents_dir / "skill-core").exists())
-        # Every entry point finds skill-core where the deployer put it, and prints under a legacy code page.
+        # ejryan89-skill-core is a hidden dependency: installed beside its dependents, with no adapter for any runtime.
+        self.assertFalse((self.agents_dir / "ejryan89-skill-core").exists())
+        # Every entry point finds ejryan89-skill-core where the deployer put it, and prints under a legacy code page.
         entry_points = sorted(
             path.relative_to(REPOSITORY_ROOT / "skills")
             for path in (REPOSITORY_ROOT / "skills").glob("*/scripts/*.py")
@@ -314,26 +314,33 @@ class RenderedExecutableTests(DeployerTestCase):
                 self.assertEqual(0, result.returncode, result.stderr.decode("utf-8", "replace"))
 
     def test_an_installation_without_skill_core_adds_it_on_update(self) -> None:
-        # An installation from before skill-core has none; updating one installs it with the skills that import it.
+        # An installation from before ejryan89-skill-core has none; updating one installs it with the skills that import
+        # it.
         source_id = json.loads((REPOSITORY_ROOT / "source.json").read_text(encoding="utf-8"))["id"]
         self.make_config(source_id)
         repository = self.repository_source()
-        core = self.root / "skill-core"
-        shutil.move(repository / "skills" / "skill-core", core)
+        core = self.root / "ejryan89-skill-core"
+        shutil.move(repository / "skills" / "ejryan89-skill-core", core)
         metadata = {path: path.read_bytes() for path in (repository / "deploy-meta").glob("*.json")}
-        (repository / "deploy-meta" / "skill-core.json").unlink()
+        # The source then has no core for source.json's renamed to name, so the record leaves its old name out too.
+        source_json = (repository / "source.json").read_bytes()
+        document = json.loads(source_json)
+        del document["renamed"]["skill-core"]
+        (repository / "source.json").write_text(json.dumps(document), encoding="utf-8")
+        (repository / "deploy-meta" / "ejryan89-skill-core.json").unlink()
         for path, text in metadata.items():
             document = json.loads(text)
-            if "skill-core" in document.get("skill_deps", []):
-                document["skill_deps"].remove("skill-core")
+            if "ejryan89-skill-core" in document.get("skill_deps", []):
+                document["skill_deps"].remove("ejryan89-skill-core")
                 path.write_text(json.dumps(document), encoding="utf-8")
         self.deploy_from(repository, "--all", "--include", "dotnet")
-        self.assertFalse((self.skills_dir / "skill-core").exists())
-        shutil.move(core, repository / "skills" / "skill-core")
+        self.assertFalse((self.skills_dir / "ejryan89-skill-core").exists())
+        shutil.move(core, repository / "skills" / "ejryan89-skill-core")
+        (repository / "source.json").write_bytes(source_json)
         for path, text in metadata.items():
             path.write_bytes(text)
         groups = self.report_groups(self.deploy_from(repository, "--all", "--dry-run").output, "DRY RUN")
-        self.assertEqual(["skill-core"], groups.get("FRESH INSTALL"), groups)
+        self.assertEqual(["ejryan89-skill-core"], groups.get("FRESH INSTALL"), groups)
 
     def test_shellcheck_failure_in_script_blocks_deployment(self) -> None:
         self.make_source_json()

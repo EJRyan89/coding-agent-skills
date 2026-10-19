@@ -9,11 +9,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from skill_roots import sibling_scripts
 
-sys.path.insert(0, str(sibling_scripts("code-review-core")))
+sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 from review_records import Finding, LedgerEntry, Review
 
@@ -26,8 +26,8 @@ DATED = re.compile(r"-[0-9]{8}")
 # What a failure is, decided where the failure is made: a judgment the record shows, a run that recorded no review of
 # its own, or a record that counts for nothing, since it is not the judged model's or no guard held its reviewers.
 JUDGMENT, RUN, RECORD = "judgment", "run", "record"
-# A record a run wrote, which its source has checked: a review record, which code-review-core's record contract holds,
-# read through review, findings, and ledger_entries as that record's shapes, or a trigger record.
+# A record a run wrote, which its source has checked: a review record, which ejryan89-code-review-core's record contract
+# holds, read through review, findings, and ledger_entries as that record's shapes, or a trigger record.
 Record = Mapping[str, Any]
 
 

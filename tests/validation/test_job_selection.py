@@ -16,7 +16,7 @@ from unittest import mock
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import job_selection
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job
@@ -435,7 +435,7 @@ class ChangedSelectionFixtures(unittest.TestCase):
             "deploy-meta/a.json",
             "deployer/tools.py",
             "deploy.py",
-            "skills/skill-core/scripts/pdf_tool.py",
+            "skills/ejryan89-skill-core/scripts/pdf_tool.py",
             "tests/validation/toolchain.py",
             "conftest.py",
             "requirements-dev.in",

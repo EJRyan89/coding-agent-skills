@@ -23,7 +23,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 from bounded_process import non_interactive_environment, run_bounded
 from executable_locator import find_executable, located_command
@@ -65,7 +65,7 @@ COMMANDS_ALLOWED = {
 
 def subprocess_runner(arguments: Sequence[str], timeout: float) -> Completed:
     """Run the command with no stdin, every prompt off, and the CLI in English (`CLI_LANGUAGE`), at the path
-    skill-core's locator finds for its program."""
+    ejryan89-skill-core's locator finds for its program."""
     try:
         result = run_bounded(located_command(arguments), timeout, env={**non_interactive_environment(), **CLI_LANGUAGE})
     except subprocess.TimeoutExpired as expired:

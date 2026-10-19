@@ -14,11 +14,11 @@ from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 from skill_roots import sibling_scripts
 
-sys.path.insert(0, str(sibling_scripts("code-review-core")))
+sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 import dashboard_pipeline as tp
 import review_archive
@@ -477,7 +477,7 @@ class CollectTests(TrackerPipelineFixture):
                 self.assertEqual(1, len(out.splitlines()), out)
                 self.assertTrue(out.startswith("FAILED API rate limit exceeded"), out)
                 self.assertFalse(self.input.exists())
-                # The limit was waited out with skill-core's bounded backoff before it stopped the collection.
+                # The limit was waited out with ejryan89-skill-core's bounded backoff before it stopped the collection.
                 self.assertEqual([5.0, 10.0, 20.0, 40.0, 80.0], self.waits)
                 self.waits.clear()
 

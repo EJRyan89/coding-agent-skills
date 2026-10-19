@@ -77,7 +77,7 @@ with its base needs no local rerun, since continuous integration runs on the res
 The gates that call a model never run in continuous integration, so they stay with the author: a change to skill
 paths, `allowed-tools`, runtime adapters, or agents runs the `runtime-canary` repository skill, a change to a skill's
 prompt, description, model guidance, or reviewer instructions runs `evaluate-skill` when the skill has scenarios, and a change to a
-skill under `skills/` or `.claude/skills/` runs `analyze-skill-cost` on it. `CLAUDE.md` ("Required validation") holds
+skill under `skills/` or `.claude/skills/` runs `audit-skill` on it. `CLAUDE.md` ("Required validation") holds
 the rules validation enforces.
 
 The `Mutation gate` job of the `Mutation` workflow runs on every pull request and is not a required check. It mutates
@@ -99,13 +99,13 @@ pull request body (the Versioning section of [releasing.md](releasing.md) holds 
 
 - `MANIFEST_VERSION` and `OLDEST_READABLE_VERSION` in `deployer/manifest.py`;
 - a `required_vars` list under `deploy-meta/`;
-- a schema under `skills/code-review-core/references/`, or a format table in
+- a schema under `skills/ejryan89-code-review-core/references/`, or a format table in
   `docs/code-review-operations-contract.md`, among them the code-review configuration file's format and the reviewer
   manifest format;
 - a skill directory name under `skills/`, or a shipped skill's arguments, status lines, or exit codes, named as the
   `Contract:` field in [upgrade-notes.md](upgrade-notes.md) says;
 - a tool floor in `deployer/tools.py`: `MINIMUM_PYTHON`, or a tool's `minimum`.
-- a provider-specific PDF tool floor in `skills/skill-core/scripts/pdf_tool.py`, referenced by the catalogue's
+- a provider-specific PDF tool floor in `skills/ejryan89-skill-core/scripts/pdf_tool.py`, referenced by the catalogue's
   `provider_minimum`.
 
 The upgrade-notes check in `tests/validation/upgrade_notes.py` compares every item above at the last tag except the
@@ -202,5 +202,5 @@ specified mechanical edit whose test already exists.
 ## Shared code
 
 Shared code has one home. A module that more than one of the skills, the deployer, and `tools/` need lives in
-`skills/skill-core/scripts`, and each imports it from there; never copy it. [Validation](adding-a-skill.md#validation)
+`skills/ejryan89-skill-core/scripts`, and each imports it from there; never copy it. [Validation](adding-a-skill.md#validation)
 in the skill contract states how each part reaches it and what validation holds.

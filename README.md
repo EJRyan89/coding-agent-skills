@@ -6,8 +6,8 @@ Portable agent skills for Claude Code, Codex, and GitHub Copilot CLI, with a gua
 
 | Skill | What it does |
 |---|---|
-| [`analyze-skill-cost`](docs/skills.md#analyze-skill-cost) | Audits an agent skill for token, tool-call, delegation, adapter, and model-selection efficiency. |
 | [`audit-ai-config`](docs/skills.md#audit-ai-config) | Audits a repository's AI-agent configuration, read-only and deterministically. |
+| [`audit-skill`](docs/skills.md#audit-skill) | Audits an agent skill for token, tool-call, delegation, adapter, and model-selection efficiency. |
 | [`curate-agent-memory`](docs/skills.md#curate-agent-memory) | Audits a project's Claude Code auto-memory and, with approval, moves durable rules to where they belong. |
 | [`github-activity-report`](docs/skills.md#github-activity-report) | Reports one user's pull requests, commits, and reviews in one GitHub organization, month by month. |
 | [`repo-cleanup`](docs/skills.md#repo-cleanup) | Performs guarded Git repository housekeeping. |

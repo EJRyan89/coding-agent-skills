@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import frontmatter
 from harness import DEPLOY_COMMAND, REPOSITORY_ROOT, DeployerTestCase, forward
@@ -1150,7 +1150,7 @@ class RepositoryBundleTests(DeployerTestCase):
         entry = self.manifest()["sources"][source_id]
         self.assertEqual(["code-review-operations", "dotnet"], entry["requested_bundles"])
         self.assertIn("dotnet-dependencies", entry["skills"])
-        self.assertEqual(["skill-core"], entry["skills"]["dotnet-dependencies"]["skill_deps"])
+        self.assertEqual(["ejryan89-skill-core"], entry["skills"]["dotnet-dependencies"]["skill_deps"])
         # A later --all keeps the bundle without naming it again.
         groups = self.report_groups(self.deploy_from(repository, "--all", "--dry-run").output, "DRY RUN")
         self.assertNotIn("REMOVE", groups, groups)

@@ -3,6 +3,6 @@
   "reviewer": "review-repository",
   "mode": "initial",
   "expectations": [
-    {"kind": "finding", "path": "skills/code-review-core/scripts/review_github.py", "lines": [13, 15], "severity": "MUST_FIX", "category": "Unstated trust boundary"}
+    {"kind": "finding", "path": "skills/ejryan89-code-review-core/scripts/review_github.py", "lines": [13, 15], "severity": "MUST_FIX", "category": "Unstated trust boundary"}
   ]
 }

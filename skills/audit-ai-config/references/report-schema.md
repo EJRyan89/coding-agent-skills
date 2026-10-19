@@ -95,7 +95,7 @@ SUMMARY INFO inventory 1
 
 `Authority` and `Scope` print the same lowercase values as the JSON `authority` and `scopeStatus`. A finding with no
 path or line leaves that cell empty. A path or message is text the audited repository controls, so it is written as
-literal text by skill-core's `markdown_literal.markdown_line`: each run of whitespace, a line break, U+0085, U+2028, or
+literal text by ejryan89-skill-core's `markdown_literal.markdown_line`: each run of whitespace, a line break, U+0085, U+2028, or
 U+2029 among it, is written as one space, and every ASCII punctuation character as a character entity (`.` as
 `&#46;`, `|` as `&#124;`, `<` as `&lt;`), so each finding stays one row of five cells and no text in it opens markup,
 an HTML comment included, that would hide the rows after it; the JSON output carries the text as it is.

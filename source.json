@@ -21,5 +21,10 @@
     },
     "shared_assets": {
         "runtime-compatibility.md": "owner"
+    },
+    "renamed": {
+        "analyze-skill-cost": "audit-skill",
+        "code-review-core": "ejryan89-code-review-core",
+        "skill-core": "ejryan89-skill-core"
     }
 }

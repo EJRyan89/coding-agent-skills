@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import git_client
 
@@ -497,7 +497,7 @@ class ReleaseProcedureTests(unittest.TestCase):
 class GitProgramTests(unittest.TestCase):
     def test_git_runs_through_skill_cores_client_on_the_checkout_never_by_name(self) -> None:
         # The client's runner starts git at the path the locator finds and without the repository-selecting
-        # variables; skill-core's suites hold both.
+        # variables; ejryan89-skill-core's suites hold both.
         self.assertIs(git_client.subprocess_runner, release_notes.CLIENT.runner)
         commands: list[list[str]] = []
 

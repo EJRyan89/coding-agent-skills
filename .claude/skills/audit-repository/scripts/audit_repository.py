@@ -2,8 +2,8 @@
 the readers, confirms what they find, and files it.
 
     release        group the files changed since the last release HEAD holds, the highest release tag reachable
-                   from it as skill-core's release_tags.py defines one (or --since REF), into the four areas and write
-                   the briefs for each area that changed, for the release audit before tagging
+                   from it as ejryan89-skill-core's release_tags.py defines one (or --since REF), into the four areas
+                   and write the briefs for each area that changed, for the release audit before tagging
     rotation       name the area the rotation record shows read whole least recently and write its whole-area briefs,
                    naming in each the open issues the next milestone carries, for the rotation audit after tagging;
                    with --record TAG, append that area to the record for TAG instead, which is the only write to the
@@ -80,7 +80,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from atomic_file import UnfinishedCopyError, replace_text
 from console import run_main
@@ -146,7 +146,7 @@ CODE_REVIEW = Area(
     "code-review",
     "the code review skills",
     (
-        "skills/code-review-core/",
+        "skills/ejryan89-code-review-core/",
         "skills/review-prs/",
         "skills/flag-review-finding/",
         "tools/skill_evals.py",
@@ -224,10 +224,13 @@ RUNTIME_FACTS = (
     ("deploy-meta/", "each skill's runtime_support declaration for the runtime"),
     ("deployer/render.py", "how the runtime adapter is rendered for the runtime"),
     ("tools/runtime_canary.py", "the command line that starts the runtime"),
-    ("skills/code-review-core/scripts/review_hosts.py", "the command line the review host starts the runtime with"),
+    (
+        "skills/ejryan89-code-review-core/scripts/review_hosts.py",
+        "the command line the review host starts the runtime with",
+    ),
     ("docs/code-review-operations-contract.md", "the Threat model rows that name the runtime"),
     ("README.md", "the supported-runtimes table"),
-    ("skills/analyze-skill-cost/references/provenance.json", "each check whose source is one of these pages"),
+    ("skills/audit-skill/references/provenance.json", "each check whose source is one of these pages"),
     ("skills/audit-ai-config/references/provenance.json", "each check whose source is one of these pages"),
 )
 PYTHON_FACTS = (
@@ -320,7 +323,7 @@ def commit_of(git: GitClient, repository: Path, ref: str) -> str:
 
 
 def released_tag(git: GitClient, repository: Path, head: str) -> str | None:
-    """The last release `head` holds, as skill-core's release_tags defines it, or None only when no release tag
+    """The last release `head` holds, as ejryan89-skill-core's release_tags defines it, or None only when no release tag
     reaches it: a nearer tag of another name, such as a pre-release, is not the last release."""
     try:
         return last_release(git, repository, head)

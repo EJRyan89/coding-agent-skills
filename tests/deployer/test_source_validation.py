@@ -11,10 +11,11 @@ from unittest import mock
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from harness import (
     DEPLOY_COMMAND,
+    REPOSITORY_ROOT,
     DeployerTestCase,
     Deployment,
     Result,
@@ -475,6 +476,34 @@ class MetadataValidationTests(DeployerTestCase):
         # Windows makes the link a junction, a reparse point that is no symlink; elsewhere it is a symlink.
         self.deploy_fails("--all", pattern="(?i)Reparse point found" if platform_support.WINDOWS else "Symlink found")
         self.assertFalse((self.skills_dir / "alpha").exists())
+
+
+class RenamedValidationTests(DeployerTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.make_skill("alpha", "Alpha")
+        self.make_config()
+
+    def test_a_rename_record_maps_old_names_to_skills_of_the_source(self) -> None:
+        self.make_source_json(renamed={"beta": "alpha"})
+        self.deploy_ok("--all")
+
+    def test_a_malformed_rename_record_is_refused_before_anything_changes(self) -> None:
+        self.make_source_json(bundles={"suite": {"members": ["alpha"]}})
+        cases = {
+            "an object": ["beta"],
+            "an invalid old name": {"Beta": "alpha"},
+            "still a skill": {"alpha": "alpha"},
+            "still a skill or bundle": {"suite": "alpha"},
+            "no skill of this source": {"beta": "gamma"},
+            "to 7, which is no skill": {"beta": 7},
+        }
+        for message, renamed in cases.items():
+            with self.subTest(message=message):
+                document = json.loads((self.source / "source.json").read_text(encoding="utf-8"))
+                document["renamed"] = renamed
+                (self.source / "source.json").write_text(json.dumps(document), encoding="utf-8")
+                self.deploy_fails("--all", pattern=re.escape(message))
 
 
 class SharedAssetValidationTests(DeployerTestCase):
@@ -1090,6 +1119,19 @@ class ContractValueTests(unittest.TestCase):
         self.assertFalse(journal.valid_entry({**backup, "to": "skills/alpha.other-bak"}, "run"))
         preserve = {"op": "preserve", "item": "alpha", "from": "skills/alpha.deploying-bak", "to": ".backups/run/alpha"}
         self.assertTrue(journal.valid_entry(preserve, "run"))
+
+    def test_this_source_records_each_renamed_skill_under_its_old_name(self) -> None:
+        """An installation under an old name moves to the new one only while source.json records the pair."""
+        document = json.loads((REPOSITORY_ROOT / "source.json").read_text(encoding="utf-8"))
+        self.assertEqual("ejryan89/coding-agent-skills", document["id"])
+        self.assertEqual(
+            {
+                "analyze-skill-cost": "audit-skill",
+                "code-review-core": "ejryan89-code-review-core",
+                "skill-core": "ejryan89-skill-core",
+            },
+            document["renamed"],
+        )
 
     def test_skill_dependencies_are_recorded_from_manifest_version_8(self) -> None:
         self.assertEqual(8, manifest.SKILL_DEPS_VERSION)

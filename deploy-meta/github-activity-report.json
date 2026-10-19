@@ -1,7 +1,7 @@
 {
     "required_vars": ["PYTHON"],
     "shared_deps": ["runtime-compatibility.md"],
-    "skill_deps": ["skill-core"],
+    "skill_deps": ["ejryan89-skill-core"],
     "tools": ["gh"],
     "runtime_support": {"claude-code": "full", "codex": {"level": "partial", "needs": ["sandbox-network"], "reason": "Its gh calls need network access, which Codex's default sandbox turns off: unless [sandbox_workspace_write] network_access is true, an interactive session asks to approve each gh call and codex exec fails it."}, "copilot-cli": "full"}
 }

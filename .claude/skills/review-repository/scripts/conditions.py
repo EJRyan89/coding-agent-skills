@@ -18,17 +18,19 @@ from console import failed_line
 from diff_paths import header_path, snapshot_path, unquote
 from suite_names import is_suite_name
 
-# The variables are code-review-core's side of the condition protocol as much as this one's.
+# The variables are ejryan89-code-review-core's side of the condition protocol as much as this one's.
 DUPLICATION_ALLOWED = {
     "DIFF_VARIABLE": (
-        "skills/code-review-core/scripts/review_specialists.py sets it for a condition; a condition runs from a "
+        "skills/ejryan89-code-review-core/scripts/review_specialists.py sets it for a condition; a condition runs from "
+        "a "
         "reviewer folder holding only the manifest's declared resources, and that module's imports reach most of "
-        "code-review-core, so each side of the protocol names it"
+        "ejryan89-code-review-core, so each side of the protocol names it"
     ),
     "OUTPUT_VARIABLE": (
-        "skills/code-review-core/scripts/review_specialists.py sets it for a condition; a condition runs from a "
+        "skills/ejryan89-code-review-core/scripts/review_specialists.py sets it for a condition; a condition runs from "
+        "a "
         "reviewer folder holding only the manifest's declared resources, and that module's imports reach most of "
-        "code-review-core, so each side of the protocol names it"
+        "ejryan89-code-review-core, so each side of the protocol names it"
     ),
 }
 
@@ -41,7 +43,7 @@ FAILURE_STATUS = 2
 
 
 def is_suite(relative: str) -> bool:
-    """Whether a repository path names a suite by validation's rule, skill-core's suite_names."""
+    """Whether a repository path names a suite by validation's rule, ejryan89-skill-core's suite_names."""
     return is_suite_name(relative.rsplit("/", 1)[-1])
 
 

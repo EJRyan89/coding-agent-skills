@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import get_args
+from typing import ClassVar, get_args
 from unittest import mock
 
 from harness import (
@@ -1995,6 +1995,106 @@ class MigrationTests(DeployerTestCase):
         self.deploy_fails(
             "--migrate-from", "old/source", "--dry-run", code=2, pattern="cannot be combined with --dry-run"
         )
+
+
+class RenameMigrationTests(RecoveryTestCase):
+    """A source that renames its skills, recording each old name in source.json's renamed, carries an installation
+    under the old names to the new ones on its next deployment."""
+
+    RENAMED: ClassVar[dict[str, str]] = {"cost": "audit", "extra": "extended", "core": "owner-core"}
+
+    def old_layout(self) -> None:
+        """Deploy the old names: a skill, an opt-in skill requested on its own, and the hidden core both depend on,
+        beside a skill that keeps its name, with a permanent backup of that skill's modified copy in the home."""
+        self.make_source_json()
+        self.make_skill("alpha", "Alpha", skill_deps=["core"])
+        self.make_skill("cost", "Cost", skill_deps=["core"])
+        self.make_skill("extra", "Extra", skill_deps=["core"], opt_in=True)
+        self.make_skill("core", "Core", selectable=False)
+        self.make_config()
+        self.deploy_ok("--all", "--include", "extra")
+        self.append(self.skills_dir / "alpha" / "SKILL.md", "# local note\n")
+        self.deploy_ok("--all", "--force-item", "alpha")
+
+    def rename_in_source(self) -> None:
+        for name in self.RENAMED:
+            self.remove_skill(name)
+        self.make_skill("alpha", "Alpha", skill_deps=["owner-core"])
+        self.make_skill("audit", "Audit", skill_deps=["owner-core"])
+        self.make_skill("extended", "Extended", skill_deps=["owner-core"], opt_in=True)
+        self.make_skill("owner-core", "Owner core", selectable=False)
+        self.make_source_json(renamed=self.RENAMED)
+
+    def permanent_backups(self) -> dict[str, str]:
+        return {
+            path.relative_to(self.skills_dir / ".backups").as_posix(): path.read_text(encoding="utf-8")
+            for path in (self.skills_dir / ".backups").rglob("*")
+            if path.is_file()
+        }
+
+    def test_the_next_deployment_moves_every_old_name_to_its_new_one(self) -> None:
+        self.old_layout()
+        backups = self.permanent_backups()
+        self.assertEqual(1, len(backups), backups)
+        self.rename_in_source()
+        report = self.report_groups(self.deploy_ok("--all").output, "DEPLOYED")
+        self.assertEqual(["audit (from cost)", "extended (from extra)", "owner-core (from core)"], report["RENAMED"])
+        self.assertEqual({"RENAMED", "UNCHANGED"}, set(report), report)
+        new_names = ["alpha", "audit", "extended", "owner-core"]
+        self.assertEqual(new_names, sorted(self.owned("skills")))
+        self.assertEqual(["alpha", "audit", "extended"], sorted(self.owned("wrappers")))
+        for directory, kind in ((self.skills_dir, "skills"), (self.agents_dir, "wrappers")):
+            held = sorted(path.name for path in directory.iterdir() if not path.name.startswith("."))
+            self.assertEqual(sorted(self.owned(kind)), held, "every folder in the home is owned")
+        self.assertIn("Audit", self.skill_text("audit"))
+        self.assertEqual(["owner-core"], self.owned("skills")["alpha"]["skill_deps"])
+        # extended is opt-in: --all keeps it, without --include, because the request for extra carried to it.
+        self.assertEqual(new_names[:-1], self.manifest()["sources"]["test/skills"]["requested_skills"])
+        self.assertEqual(backups, self.permanent_backups(), "the permanent backup is intact")
+        self.assertEqual({"UNCHANGED"}, set(self.report_groups(self.deploy_ok("--all").output, "DEPLOYED")))
+
+    def test_the_dry_run_reports_each_move_under_rename(self) -> None:
+        self.old_layout()
+        self.rename_in_source()
+        before = tree_state(self.home)
+        report = self.report_groups(self.deploy_ok("--all", "--dry-run").output, "DRY RUN")
+        self.assertEqual(["audit (from cost)", "extended (from extra)", "owner-core (from core)"], report["RENAME"])
+        self.assertEqual({"RENAME", "UNCHANGED"}, set(report), report)
+        self.assertEqual(before, tree_state(self.home))
+
+    def test_a_modified_old_copy_is_preserved_and_named_with_its_new_name(self) -> None:
+        self.old_layout()
+        self.append(self.skills_dir / "cost" / "SKILL.md", "# local note\n")
+        self.rename_in_source()
+        report = self.report_groups(self.deploy_ok("--all").output, "DEPLOYED")
+        self.assertEqual(["cost (modified since last deploy, renamed 'audit' in the source)"], report["PRESERVED"])
+        # The preserved copy still runs on the old core, which stays beside the new one.
+        self.assertEqual(["core (needed by cost)"], report["KEPT"])
+        self.assertEqual(["audit", "owner-core"], report["INSTALLED"])
+        self.assertEqual(["extended (from extra)"], report["RENAMED"])
+        self.assertIn("# local note", self.skill_text("cost"))
+        self.assertTrue((self.agents_dir / "cost" / "SKILL.md").is_file(), "its adapter stays with it")
+
+    def test_a_failed_rename_rolls_back_to_the_old_names(self) -> None:
+        self.old_layout()
+        self.rename_in_source()
+        manifest = self.manifest()
+        real_move = fsops.move
+
+        def failing_move(source: Path, destination: Path) -> None:
+            if "staging" in source.parts and destination == self.skills_dir / "owner-core":
+                raise OSError("synthetic rename failure")
+            real_move(source, destination)
+
+        with mock.patch("deployer.fsops.move", side_effect=failing_move):
+            result = self.deploy_fails("--all", pattern="reconciling the current journal", changes_home=RECOVERS)
+        self.assertIn("synthetic rename failure", result.output)
+        self.assertEqual(manifest, self.manifest())
+        for name in self.RENAMED:
+            self.assertTrue((self.skills_dir / name / "SKILL.md").is_file())
+            self.assertFalse((self.skills_dir / f"{name}.deploying-bak").exists())
+        for name in self.RENAMED.values():
+            self.assertFalse((self.skills_dir / name).exists())
 
 
 class ManifestStateTests(RecoveryTestCase):

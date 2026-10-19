@@ -25,13 +25,13 @@ from unittest import mock
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from skill_roots import sibling_scripts
 
-sys.path.insert(0, str(sibling_scripts("code-review-core")))
+sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 sys.path.insert(0, str(sibling_scripts("review-document")))
-sys.path.insert(0, str(sibling_scripts("analyze-skill-cost")))
+sys.path.insert(0, str(sibling_scripts("audit-skill")))
 
 import frontmatter
 import review_document
@@ -71,7 +71,7 @@ REVIEW_REPOSITORY = skill_evals_scenarios.SCENARIO_ROOT / "review-repository"
 
 def review_scenarios(*arguments: Any, **options: Any) -> list[Scenario]:
     """A skill's scenarios as load_scenarios gives them, leaving out its trigger scenarios when it has a review scenario
-    too: the review runs these tests judge are the reviews, and the trigger run is judged on analyze-skill-cost's."""
+    too: the review runs these tests judge are the reviews, and the trigger run is judged on audit-skill's."""
     loaded = skill_evals_scenarios.load_scenarios(*arguments, **options)
     return [scenario for scenario in loaded if scenario.mode != skill_evals_scenarios.TRIGGER] or loaded
 
@@ -103,8 +103,8 @@ REVIEW_REPOSITORY_PLACED = (
     ".claude/skills/review-repository/scripts/untested_functions.py",
     "docs/design.md",
     "docs/adding-a-skill.md",
-    "skills/skill-core/scripts/console.py",
-    "skills/skill-core/scripts/flat_text.py",
+    "skills/ejryan89-skill-core/scripts/console.py",
+    "skills/ejryan89-skill-core/scripts/flat_text.py",
     "CLAUDE.md",
     "docs/implementing-changes.md",
 )
@@ -119,7 +119,7 @@ REVIEW_REPOSITORY_UNPLACED = (
     "tests/tools/test_skill_evals.py",
 )
 SUITE_REFERENCE = (
-    skill_evals_scenarios.REPOSITORY_ROOT / "skills" / "code-review-core" / "references" / "design-reviewer.md"
+    skill_evals_scenarios.REPOSITORY_ROOT / "skills" / "ejryan89-code-review-core" / "references" / "design-reviewer.md"
 )
 # The pdf-gaps draft's text, page by page, one line per block of the page. Its headings are set larger and its body
 # lines alternate between two sizes, so even Xpdf's default reading, which joins evenly set lines into one, reads these
@@ -196,7 +196,7 @@ def record(
 def contract_record(
     found: Sequence[dict[str, Any]] = (), model: str = "claude-haiku-5-5", files_read: int | None = 0
 ) -> ReviewRecord:
-    """An initial review's record as finalize writes it, which code-review-core's record contract accepts: each
+    """An initial review's record as finalize writes it, which ejryan89-code-review-core's record contract accepts: each
     finding raised, by one reviewer that reports `model` and that the guard held, unless `files_read` is None."""
     request = {
         "repository": "example/one",
@@ -1894,7 +1894,7 @@ def fake_deploy(home: Path, _source: Path) -> tuple[int, str]:
     # As the deployer renders it, with Python named as this platform names it.
     rendered = REVIEWER_AGENT_SOURCE.read_bytes().replace(b"{{PYTHON}}", platform_support.PYTHON.encode())
     (agents / "code-review-reviewer.md").write_bytes(rendered)
-    guard = home / ".claude" / "skills" / "code-review-core" / "scripts" / "review_guard.py"
+    guard = home / ".claude" / "skills" / "ejryan89-code-review-core" / "scripts" / "review_guard.py"
     guard.parent.mkdir(parents=True)
     guard.write_text('print("GUARD", __file__)\n', encoding="utf-8")
     return 0, ""
@@ -1941,8 +1941,8 @@ class RunPieceTests(unittest.TestCase):
             self.assertIn(flag, command)
         # Each script at the home's deployed core, spelled through the started skill as Claude Code fills in its
         # folder, and as its resolved path, which on a POSIX system is the same text.
-        started = f"{home.as_posix()}/.claude/skills/review-prs/../code-review-core/scripts/"
-        resolved = f"{home / '.claude' / 'skills' / 'code-review-core' / 'scripts'}{os.sep}"
+        started = f"{home.as_posix()}/.claude/skills/review-prs/../ejryan89-code-review-core/scripts/"
+        resolved = f"{home / '.claude' / 'skills' / 'ejryan89-code-review-core' / 'scripts'}{os.sep}"
         python = platform_support.PYTHON
         self.assertEqual(
             [
@@ -1965,9 +1965,9 @@ class RunPieceTests(unittest.TestCase):
         grants = skill_evals_runs.reviewer_grants(home, "review-document")
         bash = [pattern for tool, pattern in skill_inventory.allowed_entries(grants) if tool == "Bash" and pattern]
         run, role = self.root / "run", "generic-review"
-        core = home / ".claude" / "skills" / "code-review-core" / "scripts"
+        core = home / ".claude" / "skills" / "ejryan89-code-review-core" / "scripts"
         for folder in (
-            f"{home.as_posix()}/.claude/skills/review-document/../code-review-core/scripts/",
+            f"{home.as_posix()}/.claude/skills/review-document/../ejryan89-code-review-core/scripts/",
             f"{core}{os.sep}",
         ):
             commands = [
@@ -2062,7 +2062,7 @@ class RunPieceTests(unittest.TestCase):
         [hook] = group["hooks"]
         self.assertEqual({"type", "command", "timeout", "onFailure"}, set(hook))
         self.assertEqual(("command", 30, "block"), (hook["type"], hook["timeout"], hook["onFailure"]))
-        guard = (self.root / ".claude/skills/code-review-core/scripts/review_guard.py").as_posix()
+        guard = (self.root / ".claude/skills/ejryan89-code-review-core/scripts/review_guard.py").as_posix()
         self.assertIn(f"runpy.run_path(os.path.expanduser('{guard}'),", hook["command"])
         self.assertNotIn("~/", hook["command"])
         self.assertTrue(
@@ -2083,15 +2083,14 @@ class RunPieceTests(unittest.TestCase):
 
     def test_an_agent_the_definition_cannot_carry_is_refused(self) -> None:
         source = REVIEWER_AGENT_SOURCE.read_text(encoding="utf-8")
-        profile_guard = "'~/.claude/skills/code-review-core/scripts/review_guard.py'"
+        profile_guard = "'~/.claude/skills/ejryan89-code-review-core/scripts/review_guard.py'"
         cases = {
             "the evaluation does not pass color with --agents": source.replace(
                 "model: inherit", "model: inherit\ncolor: red"
             ),
             "it is named other, not code-review-reviewer": source.replace("name: code-review-reviewer", "name: other"),
-            "its hook does not name ~/.claude/skills/code-review-core/scripts/review_guard.py once": source.replace(
-                profile_guard, "'~/elsewhere.py'"
-            ),
+            "its hook does not name ~/.claude/skills/ejryan89-code-review-core/scripts/review_guard.py "
+            "once": source.replace(profile_guard, "'~/elsewhere.py'"),
             "its hooks are not one PreToolUse command hook": source.replace("  PreToolUse:", "  PostToolUse:"),
             "its hooks name onFailure 0 times, not once": source.replace("          onFailure: block\n", ""),
             "its hook's onFailure is continue, not block": source.replace("onFailure: block", "onFailure: continue"),
@@ -2112,7 +2111,9 @@ class RunPieceTests(unittest.TestCase):
     def test_a_home_without_the_guard_or_with_an_unquotable_path_is_refused(self) -> None:
         fake_deploy(self.root, self.root)
         (self.root / skill_evals_runs.GUARD).unlink()
-        with self.assertRaisesRegex(skill_evals_runs.AgentError, "the home has no .claude/skills/code-review-core/"):
+        with self.assertRaisesRegex(
+            skill_evals_runs.AgentError, "the home has no .claude/skills/ejryan89-code-review-core/"
+        ):
             skill_evals_runs.reviewer_agents(self.root)
         home = self.root / "it's"
         fake_deploy(home, home)
@@ -2211,7 +2212,7 @@ class RunPieceTests(unittest.TestCase):
     def test_the_reason_the_results_file_records_names_no_path(self) -> None:
         completed = runtime_canary.Completed
         home = "D:/scratch/skill-evals-x1/haiku"
-        command = f'python -B "{home}/.claude/skills/code-review-core/scripts/review_pipeline.py" prepare'
+        command = f'python -B "{home}/.claude/skills/ejryan89-code-review-core/scripts/review_pipeline.py" prepare'
         denials = [{"tool_name": "Bash", "tool_input": {"command": command}}] * 2
         denied = json.dumps({"type": "result", "permission_denials": denials})
         missing = f"the run recorded no review version 1; its latest record cannot be read: {home}/x.json"
@@ -2638,7 +2639,7 @@ class EvaluateTests(unittest.TestCase):
                 self.assertEqual(str(cwd / skill_evals_runs.STATE / "agents.json"), agents)
 
     def test_claude_code_sees_no_repository_selecting_variable_the_shell_exported(self) -> None:
-        # Written out here rather than read from skill-core; a lower-case name is the same variable on Windows.
+        # Written out here rather than read from ejryan89-skill-core; a lower-case name is the same variable on Windows.
         selecting = {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY"}
         exported = dict.fromkeys(selecting, "C:/elsewhere/.git") | {"git_namespace": "elsewhere"}
         configuring = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "fixture.scope", "GIT_CONFIG_VALUE_0": "on"}
@@ -2865,7 +2866,7 @@ class EvaluateTests(unittest.TestCase):
         def denied(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Any:
             if arguments[1:] == ["--version"]:
                 return runtime_canary.Completed(0, "2.1.291 (Claude Code)\n", "")
-            command = f'python -B "{cwd}/.claude/skills/code-review-core/scripts/review_pipeline.py" prepare'
+            command = f'python -B "{cwd}/.claude/skills/ejryan89-code-review-core/scripts/review_pipeline.py" prepare'
             refused = {
                 "type": "result",
                 "permission_denials": [{"tool_name": "Bash", "tool_input": {"command": command}}],
@@ -2948,7 +2949,7 @@ class EvaluateTests(unittest.TestCase):
                 self.assertFalse(any(line.startswith("FAIL ") for line in self.cited), self.cited)
 
     def test_claude_code_is_looked_up_where_check_looks_for_it(self) -> None:
-        # skill-core's locator through the deployer, so a Claude Code only in WinGet's Links folder runs too.
+        # ejryan89-skill-core's locator through the deployer, so a Claude Code only in WinGet's Links folder runs too.
         self.assertIs(platform_support.find_executable, skill_evals.Seams().which)
 
     def test_nothing_runs_without_claude_code_or_the_results_table(self) -> None:
@@ -3128,20 +3129,20 @@ class EvaluateTests(unittest.TestCase):
         self.assertTrue(self.homes.exists())
 
     def test_a_trigger_scenario_judges_whether_each_request_started_the_skill_and_records_it(self) -> None:
-        scenario = skill_evals_scenarios.load_scenarios("analyze-skill-cost", ["description"])[0]
+        scenario = skill_evals_scenarios.load_scenarios("audit-skill", ["description"])[0]
         first, second, third = scenario.requests
         near, other = scenario.near_misses
         # The third request starts nothing, and the second near miss starts the skill: two judgments fail.
         claude = StubTrigger(
             self,
             {
-                first: "analyze-skill-cost",
-                second: "/analyze-skill-cost",
+                first: "audit-skill",
+                second: "/audit-skill",
                 near: "audit-ai-config",
-                other: "analyze-skill-cost",
+                other: "audit-skill",
             },
         )
-        status, lines = self.evaluate(["--write", "--jobs", "1"], self.seams(claude), "analyze-skill-cost")
+        status, lines = self.evaluate(["--write", "--jobs", "1"], self.seams(claude), "audit-skill")
         self.assertEqual(1, status, lines)
         ended = [line.split(" ")[1:3] for line in lines if line.startswith("TRANSCRIPT ")]
         self.assertEqual([["description", model] for model in skill_evals_records.MODELS for _ in range(5)], ended)
@@ -3150,16 +3151,16 @@ class EvaluateTests(unittest.TestCase):
             [line for line in lines if line.startswith("REVIEWER ")],
         )
         self.assertEqual([], [line for line in lines if line.startswith(("GUARDED ", "NOT_COUNTED "))])
-        haiku = [line for line in lines if line.startswith(("PASS analyze-skill-cost description haiku", "FAIL "))]
+        haiku = [line for line in lines if line.startswith(("PASS audit-skill description haiku", "FAIL "))]
         self.assertEqual(
             [
-                f"PASS analyze-skill-cost description haiku starts {json.dumps(first)}",
-                f"PASS analyze-skill-cost description haiku starts {json.dumps(second)}",
-                f'FAIL analyze-skill-cost description haiku starts {json.dumps(third)} judgment "the session started '
+                f"PASS audit-skill description haiku starts {json.dumps(first)}",
+                f"PASS audit-skill description haiku starts {json.dumps(second)}",
+                f'FAIL audit-skill description haiku starts {json.dumps(third)} judgment "the session started '
                 'no skill"',
-                f"PASS analyze-skill-cost description haiku does_not_start {json.dumps(near)}",
-                f"FAIL analyze-skill-cost description haiku does_not_start {json.dumps(other)} judgment "
-                '"the session started analyze-skill-cost"',
+                f"PASS audit-skill description haiku does_not_start {json.dumps(near)}",
+                f"FAIL audit-skill description haiku does_not_start {json.dumps(other)} judgment "
+                '"the session started audit-skill"',
             ],
             haiku[:5],
         )
@@ -3171,17 +3172,17 @@ class EvaluateTests(unittest.TestCase):
             {
                 "models": ["claude-haiku-5-5"],
                 "requests": [
-                    {"request": first, "started": ["analyze-skill-cost"]},
-                    {"request": second, "started": ["analyze-skill-cost"]},
+                    {"request": first, "started": ["audit-skill"]},
+                    {"request": second, "started": ["audit-skill"]},
                     {"request": third, "started": []},
                     {"request": near, "started": ["audit-ai-config"]},
-                    {"request": other, "started": ["analyze-skill-cost"]},
+                    {"request": other, "started": ["audit-skill"]},
                 ],
             },
             record,
         )
         self.assertIn(
-            "| analyze-skill-cost | haiku | claude-haiku-5-5 | 3/5 | 1 | description 3/5 | claude-haiku-5-5 | 2.1.291 "
+            "| audit-skill | haiku | claude-haiku-5-5 | 3/5 | 1 | description 3/5 | claude-haiku-5-5 | 2.1.291 "
             "| 2026-10-08 |",
             self.results.read_text(encoding="utf-8"),
         )
@@ -3193,7 +3194,7 @@ class EvaluateTests(unittest.TestCase):
             "unlisted": (
                 StubTrigger(self, {}, listed=False),
                 "run",
-                "request 1: Claude Code did not list analyze-skill-cost",
+                "request 1: Claude Code did not list audit-skill",
             ),
             "other model": (
                 StubTrigger(self, {}, session="claude-sonnet-5-5"),
@@ -3205,7 +3206,7 @@ class EvaluateTests(unittest.TestCase):
             with self.subTest(name):
                 shutil.rmtree(self.homes, ignore_errors=True)
                 argv = ["--model", "haiku", "--jobs", "1"]
-                status, lines = self.evaluate(argv, self.seams(claude), "analyze-skill-cost")
+                status, lines = self.evaluate(argv, self.seams(claude), "audit-skill")
                 self.assertEqual(1, status, lines)
                 self.assertIn(f"NOT_COUNTED description haiku {kind} {json.dumps(reason)}", lines)
                 failed = [line for line in lines if line.startswith("FAIL ")]
@@ -3437,7 +3438,7 @@ class StubTrigger:
             return runtime_canary.Completed(0, "2.1.291 (Claude Code)\n", "")
         self.test.assertTrue(Path(environment["TMPDIR"]).is_relative_to(cwd / skill_evals_runs.STATE))
         request, model = arguments[2], arguments[arguments.index("--model") + 1]
-        skills = ["audit-ai-config", *(["analyze-skill-cost"] if self.listed else [])]
+        skills = ["audit-ai-config", *(["audit-skill"] if self.listed else [])]
         content: list[dict[str, Any]] = [{"type": "text", "text": "On it."}]
         if request in self.starts:
             content.append(
@@ -3544,9 +3545,9 @@ def test_a_trigger_scenario_s_skill_is_a_shipped_one_the_model_may_start(tmp_pat
 
 
 def test_the_worked_trigger_scenario_draws_on_its_description_and_a_neighbour_s() -> None:
-    scenario = skill_evals_scenarios.load_scenarios("analyze-skill-cost")[0]
+    scenario = skill_evals_scenarios.load_scenarios("audit-skill")[0]
     assert (scenario.name, scenario.mode) == ("description", skill_evals_scenarios.TRIGGER)
-    description = frontmatter.read(skill_evals_scenarios.REPOSITORY_ROOT / "skills" / "analyze-skill-cost" / "SKILL.md")
+    description = frontmatter.read(skill_evals_scenarios.REPOSITORY_ROOT / "skills" / "audit-skill" / "SKILL.md")
     neighbour = frontmatter.read(skill_evals_scenarios.REPOSITORY_ROOT / "skills" / "audit-ai-config" / "SKILL.md")
     # The requests ask what the description's "Use it when" sentence names, and the near misses what the neighbour's.
     assert "Use it when asked what a skill costs, why it is slow or expensive, or to check one before shipping it." in (

@@ -17,7 +17,7 @@ from unittest import mock
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import run_dotnet_format as formatter
 
@@ -267,9 +267,9 @@ def install(folder: Path, name: str) -> Path:
 
 
 class LocatedFormatterTests(unittest.TestCase):
-    """The formatter is found by skill-core's locator, as `deploy.py check` finds it, and run by that absolute path.
-    The environment is sanitized: PATH is one empty folder and the local application data folder a fresh one, so the
-    only programs found are the ones a test puts there."""
+    """The formatter is found by ejryan89-skill-core's locator, as `deploy.py check` finds it, and run by that absolute
+    path. The environment is sanitized: PATH is one empty folder and the local application data folder a fresh one, so
+    the only programs found are the ones a test puts there."""
 
     def setUp(self) -> None:
         super().setUp()

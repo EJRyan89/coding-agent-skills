@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from github_client import CommandResult, GitHubClient
 
@@ -37,9 +37,9 @@ LOG = "\n".join(
         f"{LEG_1}ok   12.0s tests/deployer/test_render.py [shard 1/3]",
         f"{LEG_2}ok    9.5s tests/deployer/test_render.py [shard 2/3]",
         f"{LEG_2}ok    8.0s tests/deployer/test_render.py [shard 3/3]",
-        f"{LEG_2}ok    3.2s static type check (mypy skills/skill-core/scripts)",
+        f"{LEG_2}ok    3.2s static type check (mypy skills/ejryan89-skill-core/scripts)",
         # The weekly run's second interpreter reports the same job again, so it counts at its mean.
-        f"{LATEST}ok    4.2s static type check (mypy skills/skill-core/scripts)",
+        f"{LATEST}ok    4.2s static type check (mypy skills/ejryan89-skill-core/scripts)",
         f"{LEG_2}Ran 12 tests in 0.402s",
         f"{LEG_2}OK",
         f"{LEG_2}test_ok (Tests.test_ok) ... ok",
@@ -49,7 +49,7 @@ LOG = "\n".join(
         f"{LEG_4}Shard 4/4: 16 policy checks and 0 suite jobs in 1s: validation passed.",
         # The Linux job's seconds are not a Windows leg's, so none of them is counted.
         f"{LINUX}ok   90.0s tests/deployer/test_render.py [shard 1/3]",
-        f"{LINUX}ok    9.0s static type check (mypy skills/skill-core/scripts)",
+        f"{LINUX}ok    9.0s static type check (mypy skills/ejryan89-skill-core/scripts)",
         f"{LINUX}ok    7.0s tests/linux_only.py",
         f"{AGGREGATE}ok    1.0s a line the aggregate job printed",
     ]
@@ -113,7 +113,7 @@ class ParseTests(unittest.TestCase):
                 "static format check (ruff format --check)": 0.4,
                 "skills/update-coding-agent-skills/scripts/test_update.sh": 55.7,
                 "tests/deployer/test_render.py": 29.5,
-                "static type check (mypy skills/skill-core/scripts)": 3.7,
+                "static type check (mypy skills/ejryan89-skill-core/scripts)": 3.7,
             },
             record_job_seconds.job_seconds_from_log(LOG),
         )
@@ -198,7 +198,7 @@ class MainTests(unittest.TestCase):
                 "seconds": {
                     "skills/update-coding-agent-skills/scripts/test_update.sh": 55.7,
                     "static format check (ruff format --check)": 0.4,
-                    "static type check (mypy skills/skill-core/scripts)": 3.7,
+                    "static type check (mypy skills/ejryan89-skill-core/scripts)": 3.7,
                     "tests/deployer/test_render.py": 29.5,
                 },
             },

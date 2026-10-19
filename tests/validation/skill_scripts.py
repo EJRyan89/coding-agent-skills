@@ -253,7 +253,7 @@ def shell_commands(script: str, commands: list[list[str]] | None = None) -> set[
 
 def shell_git_subcommands(script: str) -> set[str]:
     """The subcommand of each git command a Bash script runs by name, a command substitution's included, read past
-    git's own options as skill-core's git client reads them."""
+    git's own options as ejryan89-skill-core's git client reads them."""
     commands: list[list[str]] = []
     shell_commands(script, commands)
     return {
@@ -305,7 +305,7 @@ COMMAND_RUNNERS: dict[str, tuple[int, str]] = {
     **{f"{module}.create_subprocess_shell": (0, "cmd") for module in ("asyncio", "asyncio.subprocess")},
     f"{EVENT_LOOP}.subprocess_exec": (1, "program"),
     f"{EVENT_LOOP}.subprocess_shell": (1, "cmd"),
-    # skill-core's runner, which bounds a command with a time limit and gives it no stdin.
+    # ejryan89-skill-core's runner, which bounds a command with a time limit and gives it no stdin.
     "bounded_process.run_bounded": (0, "command"),
     "bounded_process.streaming": (0, "command"),
 }
@@ -337,19 +337,19 @@ EXECUTABLE_RUNNERS = frozenset(
         f"{EVENT_LOOP}.subprocess_shell",
     }
 )
-# skill-core's clients: each runs its one command for every call a script makes through it.
+# ejryan89-skill-core's clients: each runs its one command for every call a script makes through it.
 CLIENT_CLASSES = {"git_client.GitClient": "git", "github_client.GitHubClient": "gh"}
 # shutil.which finds the program a script then runs. A script that takes it as an injected service calls it by its
 # own name, such as services.which("dotnet"), so a call of any function named which counts too, and so do
-# skill-core's locator's find_executable, which the deployer's platform_support also names, find_executables, which
-# lists every match in its search order, and path_programs, which lists every match on PATH. A lookup takes the
+# ejryan89-skill-core's locator's find_executable, which the deployer's platform_support also names, find_executables,
+# which lists every match in its search order, and path_programs, which lists every match on PATH. A lookup takes the
 # program's name first, or by one of LOOKUP_KEYWORDS.
 COMMAND_LOOKUP = "shutil.which"
 LOOKUP_NAMES = frozenset({"which", "path_programs", "find_executable", "find_executables"})
 LOOKUP_KEYWORDS = frozenset({"cmd", "name"})
 # Calls whose result names the program their first argument does: a path or text conversion, a copy into a list or a
-# tuple, a split or a join of a command, and skill-core's located_command, which names a command's program by the
-# path the locator finds for it; and the path methods that do the same for the path they are called on.
+# tuple, a split or a join of a command, and ejryan89-skill-core's located_command, which names a command's program by
+# the path the locator finds for it; and the path methods that do the same for the path they are called on.
 PROGRAM_CONVERSIONS = frozenset(
     {
         "executable_locator.located_command",
@@ -659,8 +659,8 @@ class CommandReader:
         self._unreadable: list[Unreadable] | None = None
 
     def _client_classes(self) -> dict[str, str]:
-        """The command each skill-core client runs, by the client's qualified name, and the module's own classes that
-        derive from one, each by its local name, so a call through a subclass runs the client's command."""
+        """The command each ejryan89-skill-core client runs, by the client's qualified name, and the module's own
+        classes that derive from one, each by its local name, so a call through a subclass runs the client's command."""
         clients = dict(CLIENT_CLASSES)
         classes = [node for node in ast.walk(self.tree) if isinstance(node, ast.ClassDef)]
         while True:
@@ -985,7 +985,7 @@ class CommandReader:
         return named + self._shell_scripts(call)
 
     def starts_process(self) -> bool:
-        """Whether the module calls a command runner or a skill-core client, even with a dynamic command.
+        """Whether the module calls a command runner or an ejryan89-skill-core client, even with a dynamic command.
 
         An import, command lookup, or command list alone starts nothing. This does not say whether the process
         runs code from the target repository; that is the script's RUNS_REPOSITORY_CODE declaration.
@@ -1048,8 +1048,8 @@ class CommandReader:
         return problems
 
     def commands(self, known: set[str]) -> set[str]:
-        """Every program the module runs through a runner or a skill-core client, or looks up with which, and every
-        known tool a list or tuple begins with, since a module may hand that command to a function of its own."""
+        """Every program the module runs through a runner or an ejryan89-skill-core client, or looks up with which, and
+        every known tool a list or tuple begins with, since a module may hand that command to a function of its own."""
         key = frozenset(known)
         if key not in self._commands:
             found: set[str] = set()
@@ -1276,7 +1276,7 @@ def skill_command_problems(root: Path, known: set[str], standard: set[str]) -> l
 
     A skill runs what its own scripts and Bash examples run, and what the scripts of its skill_deps that it reaches
     run: a dependency's tools are not the skill's unless it imports or names the script that runs them, and then the
-    skill declares them too, so a skill that reaches skill-core's GitHub client declares gh.
+    skill declares them too, so a skill that reaches ejryan89-skill-core's GitHub client declares gh.
     """
     skills: list[tuple[str, set[str], list[Path], list[Path]]] = []
     directories = skills_by_name(root)
@@ -1388,19 +1388,18 @@ def gh_filter_problems(root: Path) -> list[str]:
     return problems
 
 
-CONSOLE_CORE = "skill-core"
 CONSOLE_RUNNER = "run_main"
 CONSOLE_FUNCTION = f"console.{CONSOLE_RUNNER}"
 CONSOLE_DOC = '"Script results" in docs/adding-a-skill.md'
 
 
 def console_entry_points(root: Path) -> list[Path]:
-    """The Python that can run as a program: every shipped and repository skill's scripts outside skill-core, deploy.py,
-    the deployer, and tools/, regression suites aside."""
+    """The Python that can run as a program: every shipped and repository skill's scripts outside ejryan89-skill-core,
+    deploy.py, the deployer, and tools/, regression suites aside."""
     files = [
         path
         for scripts in skill_script_directories(root)
-        if scripts.parent.name != CONSOLE_CORE
+        if scripts.parent.name != SKILL_CORE
         for path in scripts.glob("*.py")
     ]
     files += [root / "deploy.py", *(root / "deployer").rglob("*.py"), *(root / "tools").rglob("*.py")]
@@ -1525,7 +1524,7 @@ def _unguarded_main_lines(tree: ast.Module, aliases: dict[str, str]) -> list[int
 
 
 def _runs_through_the_runner(statement: ast.stmt, aliases: dict[str, str]) -> bool:
-    """Whether a statement calls skill-core's run_main, resolved through the module's imports."""
+    """Whether a statement calls ejryan89-skill-core's run_main, resolved through the module's imports."""
     return (
         isinstance(statement, ast.Expr)
         and isinstance(statement.value, ast.Call)
@@ -1534,8 +1533,8 @@ def _runs_through_the_runner(statement: ast.stmt, aliases: dict[str, str]) -> bo
 
 
 def console_setup_problems(root: Path) -> list[str]:
-    """Report an entry point whose __main__ block does not start by calling skill-core's run_main(), and a module
-    that reconfigures a stream's encoding itself.
+    """Report an entry point whose __main__ block does not start by calling ejryan89-skill-core's run_main(), and a
+    module that reconfigures a stream's encoding itself.
 
     Skill scripts, deploy.py, the deployer, and tools/ print paths and text the user wrote, which a Windows pipe's
     legacy code page cannot encode, and promise a FAILED line, never a traceback, when they fail; one runner sets up
@@ -1545,19 +1544,19 @@ def console_setup_problems(root: Path) -> list[str]:
     for _, name, tree in python_trees(console_entry_points(root), root, problems):
         aliases = import_aliases(tree)
         problems += [
-            f"{name}:{line} reconfigures a stream itself; call {CONSOLE_RUNNER}() from {CONSOLE_CORE} instead; "
+            f"{name}:{line} reconfigures a stream itself; call {CONSOLE_RUNNER}() from {SKILL_CORE} instead; "
             f"see {CONSOLE_DOC}"
             for line in _stream_change_lines(tree, aliases)
         ]
         for node in main_blocks(tree):
             if not _runs_through_the_runner(node.body[0], aliases):
                 problems.append(
-                    f"{name}:{node.lineno} does not call {CONSOLE_CORE}'s {CONSOLE_RUNNER}() first in its __main__ "
+                    f"{name}:{node.lineno} does not call {SKILL_CORE}'s {CONSOLE_RUNNER}() first in its __main__ "
                     f"block; see {CONSOLE_DOC}"
                 )
         problems += [
             f'{name}:{line} runs main outside an `if __name__ == "__main__":` block, so importing it runs it; run '
-            f"{CONSOLE_CORE}'s {CONSOLE_RUNNER}(main) first in that block instead; see {CONSOLE_DOC}"
+            f"{SKILL_CORE}'s {CONSOLE_RUNNER}(main) first in that block instead; see {CONSOLE_DOC}"
             for line in _unguarded_main_lines(tree, aliases)
         ]
     return problems
@@ -1756,7 +1755,8 @@ def _client_commands(node: ast.AST, reader: CommandReader) -> list[tuple[int, st
 
 
 def client_command_problems(root: Path) -> list[str]:
-    """Report a Python skill script outside skill-core that runs git or gh itself instead of through skill-core.
+    """Report a Python skill script outside ejryan89-skill-core that runs git or gh itself instead of through
+    ejryan89-skill-core.
 
     The clients read no stdin, turn every prompt off, bound each command with a timeout, and classify its failures;
     a command a script starts itself has none of that, so a sweep can wait forever on a credential prompt.

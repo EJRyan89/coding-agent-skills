@@ -1,12 +1,12 @@
 """Deploy this repository's skills, or configure them with `python deploy.py configure`. See README.md."""
 
 # Keep this module importable by a Python 3 older than the floor, so it reaches the version check below: nothing
-# from the deployer package until the check passes. skill-core's console module, imported first for the runner every
-# entry point shares, and the flat_text module it imports need only Python 3.7.
+# from the deployer package until the check passes. ejryan89-skill-core's console module, imported first for the runner
+# every entry point shares, and the flat_text module it imports need only Python 3.7.
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from console import run_main
 

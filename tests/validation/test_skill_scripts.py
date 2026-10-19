@@ -18,7 +18,7 @@ from unittest import mock
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import skill_scripts
 from skill_scripts import (
@@ -89,8 +89,13 @@ class SkillScriptsFixtures(unittest.TestCase):
                 },
             )
             doc = '"Script results" in docs/adding-a-skill.md'
-            git = "run it through skill-core's git_client.py's GitClient, which bounds it and turns prompts off"
-            gh = "run it through skill-core's github_client.py's GitHubClient, which bounds it and turns prompts off"
+            git = (
+                "run it through ejryan89-skill-core's git_client.py's GitClient, which bounds it and turns prompts off"
+            )
+            gh = (
+                "run it through ejryan89-skill-core's github_client.py's GitHubClient, which bounds it and turns "
+                "prompts off"
+            )
             self.assertEqual(
                 [
                     f"skills/alpha/scripts/tool.py:{line} runs {command} itself; {client}; see {doc}"
@@ -175,8 +180,13 @@ class SkillScriptsFixtures(unittest.TestCase):
                 )
             ]
             doc = '"Script results" in docs/adding-a-skill.md'
-            git = "run it through skill-core's git_client.py's GitClient, which bounds it and turns prompts off"
-            gh = "run it through skill-core's github_client.py's GitHubClient, which bounds it and turns prompts off"
+            git = (
+                "run it through ejryan89-skill-core's git_client.py's GitClient, which bounds it and turns prompts off"
+            )
+            gh = (
+                "run it through ejryan89-skill-core's github_client.py's GitHubClient, which bounds it and turns "
+                "prompts off"
+            )
             self.assertEqual(
                 [
                     *unread,
@@ -361,8 +371,13 @@ class SkillScriptsFixtures(unittest.TestCase):
                 },
             )
             doc = '"Script results" in docs/adding-a-skill.md'
-            git = "run it through skill-core's git_client.py's GitClient, which bounds it and turns prompts off"
-            gh = "run it through skill-core's github_client.py's GitHubClient, which bounds it and turns prompts off"
+            git = (
+                "run it through ejryan89-skill-core's git_client.py's GitClient, which bounds it and turns prompts off"
+            )
+            gh = (
+                "run it through ejryan89-skill-core's github_client.py's GitHubClient, which bounds it and turns "
+                "prompts off"
+            )
             unread = unreadable(
                 "skills/alpha/scripts/tool.py",
                 10,
@@ -691,8 +706,13 @@ class SkillScriptsFixtures(unittest.TestCase):
                 },
             )
             doc = '"Script results" in docs/adding-a-skill.md'
-            git = "run it through skill-core's git_client.py's GitClient, which bounds it and turns prompts off"
-            gh = "run it through skill-core's github_client.py's GitHubClient, which bounds it and turns prompts off"
+            git = (
+                "run it through ejryan89-skill-core's git_client.py's GitClient, which bounds it and turns prompts off"
+            )
+            gh = (
+                "run it through ejryan89-skill-core's github_client.py's GitHubClient, which bounds it and turns "
+                "prompts off"
+            )
             self.assertEqual(
                 [
                     f"skills/alpha/scripts/tool.py:6 runs git itself; {git}; see {doc}",
@@ -929,7 +949,8 @@ class SkillScriptsFixtures(unittest.TestCase):
             )
             self.assertEqual(
                 [
-                    "skills/alpha/scripts/run.py:2 runs git itself; run it through skill-core's git_client.py's "
+                    "skills/alpha/scripts/run.py:2 runs git itself; run it through ejryan89-skill-core's "
+                    "git_client.py's "
                     'GitClient, which bounds it and turns prompts off; see "Script results" in docs/adding-a-skill.md'
                 ],
                 client_command_problems(mark_skills(root)),
@@ -954,12 +975,17 @@ class SkillScriptsFixtures(unittest.TestCase):
             (scripts / "nested" / "helper.py").write_text('run(["git", "status"])\n', encoding="utf-8")
             (scripts / "test_tool.py").write_text('run(["git", "init"])\n', encoding="utf-8")
             (scripts / "tool.sh").write_text("git fetch --all\n", encoding="utf-8")
-            core = root / "skills" / "skill-core" / "scripts"
+            core = root / "skills" / "ejryan89-skill-core" / "scripts"
             core.mkdir(parents=True)
             (core / "git_client.py").write_text('command = ["git", *arguments]\n', encoding="utf-8")
             doc = '"Script results" in docs/adding-a-skill.md'
-            git = "run it through skill-core's git_client.py's GitClient, which bounds it and turns prompts off"
-            gh = "run it through skill-core's github_client.py's GitHubClient, which bounds it and turns prompts off"
+            git = (
+                "run it through ejryan89-skill-core's git_client.py's GitClient, which bounds it and turns prompts off"
+            )
+            gh = (
+                "run it through ejryan89-skill-core's github_client.py's GitHubClient, which bounds it and turns "
+                "prompts off"
+            )
             self.assertEqual(
                 [
                     f"skills/alpha/scripts/nested/helper.py:1 runs git itself; {git}; see {doc}",
@@ -992,8 +1018,13 @@ class SkillScriptsFixtures(unittest.TestCase):
                 encoding="utf-8",
             )
             doc = '"Script results" in docs/adding-a-skill.md'
-            git = "run it through skill-core's git_client.py's GitClient, which bounds it and turns prompts off"
-            gh = "run it through skill-core's github_client.py's GitHubClient, which bounds it and turns prompts off"
+            git = (
+                "run it through ejryan89-skill-core's git_client.py's GitClient, which bounds it and turns prompts off"
+            )
+            gh = (
+                "run it through ejryan89-skill-core's github_client.py's GitHubClient, which bounds it and turns "
+                "prompts off"
+            )
             self.assertEqual(
                 [
                     f"skills/alpha/scripts/tool.py:7 runs gh itself; {gh}; see {doc}",
@@ -1095,17 +1126,18 @@ class SkillScriptsFixtures(unittest.TestCase):
                 'check_output(["rg", "x"])\n',
                 "skills/alpha/scripts/keyword.py": 'import subprocess\n\nsubprocess.run(args=["perl", "-e", "1"])\n',
                 "skills/alpha/scripts/shell.py": 'import os\n\nos.system("node --version")\n',
-                # skill-core's bounded runner, given a command held in a name or built from one.
+                # ejryan89-skill-core's bounded runner, given a command held in a name or built from one.
                 "skills/alpha/scripts/bounded.py": 'from bounded_process import run_bounded\n\nCOMMAND = ["jq", "."]\n'
                 "run_bounded(COMMAND, 5)\n",
                 "skills/alpha/scripts/built.py": 'import bounded_process\n\nBASE = ["dotnet-format"]\n'
                 'bounded_process.run_bounded([*BASE, "--version"], timeout=5)\n',
-                # skill-core's clients run their command, and a program looked up is one the script runs.
+                # ejryan89-skill-core's clients run their command, and a program looked up is one the script runs.
                 "skills/alpha/scripts/client.py": "from github_client import GitHubClient\n\n"
                 'GitHubClient().run(["api"])\n',
                 "skills/alpha/scripts/git.py": 'import git_client\n\ngit_client.GitClient().run(["status"])\n',
                 "skills/alpha/scripts/lookup.py": 'import shutil as sh\n\nPROGRAM = sh.which("copilot")\n',
-                # skill-core's locator looks a program up as shutil.which does, and so do its lists of every match.
+                # ejryan89-skill-core's locator looks a program up as shutil.which does, and so do its lists of every
+                # match.
                 "skills/alpha/scripts/walked.py": "from executable_locator import path_programs\n\n"
                 'PROGRAMS = path_programs("ruby")\n',
                 "skills/alpha/scripts/candidates.py": "import executable_locator\n\n"
@@ -1242,7 +1274,8 @@ class SkillScriptsFixtures(unittest.TestCase):
             )
 
     def test_skill_command_policy_follows_dependencies_of_dependencies(self) -> None:
-        # code-review-core depends on skill-core, so a skill that reaches code-review-core reaches skill-core too.
+        # ejryan89-code-review-core depends on ejryan89-skill-core, so a skill that reaches ejryan89-code-review-core
+        # reaches ejryan89-skill-core too.
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "deploy-meta").mkdir()
@@ -1282,14 +1315,14 @@ class SkillScriptsFixtures(unittest.TestCase):
                 # The console setup alone leaves an unhandled exception to print a traceback.
                 "skills/alpha/scripts/setup_only.py": "from console import use_utf8_output\n\n"
                 f"{main}    use_utf8_output()\n    raise SystemExit(main())\n",
-                # A function of the same name that is not skill-core's is a second runner.
+                # A function of the same name that is not ejryan89-skill-core's is a second runner.
                 "skills/alpha/scripts/local.py": f"def run_main(main):\n    main()\n\n\n{main}    run_main(main)\n",
                 "skills/alpha/scripts/copied.py": 'def main():\n    sys.stdout.reconfigure(encoding="utf-8")\n\n\n'
                 f"{imported}{main}    run_main(main)\n",
                 "skills/alpha/scripts/library.py": "def helper():\n    return 1\n",
                 # Suites are not entry points.
                 "skills/alpha/scripts/test_good.py": f"{main}    unittest.main()\n",
-                "skills/skill-core/scripts/console.py": 'sys.stdout.reconfigure(encoding="utf-8")\n',
+                "skills/ejryan89-skill-core/scripts/console.py": 'sys.stdout.reconfigure(encoding="utf-8")\n',
                 # deploy.py, the deployer, and tools/ are held as skill scripts are.
                 "deploy.py": f"{imported}{main}    raise SystemExit(main())\n",
                 "deployer/platform_support.py": "def setup():\n    reconfigure = sys.stdout.reconfigure\n"
@@ -1302,8 +1335,8 @@ class SkillScriptsFixtures(unittest.TestCase):
             write_fixture_tree(root, files)
             mark_skills(root)
             doc = '"Script results" in docs/adding-a-skill.md'
-            late = f"does not call skill-core's run_main() first in its __main__ block; see {doc}"
-            copied = f"reconfigures a stream itself; call run_main() from skill-core instead; see {doc}"
+            late = f"does not call ejryan89-skill-core's run_main() first in its __main__ block; see {doc}"
+            copied = f"reconfigures a stream itself; call run_main() from ejryan89-skill-core instead; see {doc}"
             self.assertEqual(
                 [
                     f"deploy.py:3 {late}",
@@ -1334,14 +1367,15 @@ class SkillScriptsFixtures(unittest.TestCase):
             write_fixture_tree(root, files)
             mark_skills(root)
             doc = '"Script results" in docs/adding-a-skill.md'
-            late = f"does not call skill-core's run_main() first in its __main__ block; see {doc}"
+            late = f"does not call ejryan89-skill-core's run_main() first in its __main__ block; see {doc}"
             self.assertEqual(
                 [
                     f"skills/demo/scripts/control.py:5 {late}",
                     f"skills/demo/scripts/in_try.py:6 {late}",
                     f"skills/demo/scripts/reversed.py:5 {late}",
                     'skills/demo/scripts/unguarded.py:8 runs main outside an `if __name__ == "__main__":` block, so '
-                    f"importing it runs it; run skill-core's run_main(main) first in that block instead; see {doc}",
+                    "importing it runs it; run ejryan89-skill-core's run_main(main) first in that block instead; "
+                    f"see {doc}",
                 ],
                 sorted(console_setup_problems(root)),
             )
@@ -1373,7 +1407,7 @@ class SkillScriptsFixtures(unittest.TestCase):
             write_fixture_tree(root, files)
             mark_skills(root)
             doc = '"Script results" in docs/adding-a-skill.md'
-            copied = f"reconfigures a stream itself; call run_main() from skill-core instead; see {doc}"
+            copied = f"reconfigures a stream itself; call run_main() from ejryan89-skill-core instead; see {doc}"
             self.assertEqual(
                 [
                     f"deployer/renamed.py:4 {copied}",

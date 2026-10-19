@@ -1,4 +1,4 @@
-"""No definition is copied between files, and shared code lives in skill-core and is imported from there."""
+"""No definition is copied between files, and shared code lives in ejryan89-skill-core and is imported from there."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import unittest
 from collections.abc import Iterator
 from pathlib import Path
 
+from skill_roots import SKILL_CORE
 from validation_support import (
     MODULE_LOADERS,
     REPOSITORY_ROOT,
@@ -27,7 +28,7 @@ from validation_support import (
 
 # A module sanctions a copy beside the code it excuses, as a module-level DUPLICATION_ALLOWED = {name: reason}, and
 # every module holding the copy states it under its own name for the copy. Nothing sanctions a whole module: shared
-# code lives in skill-core. An allowance the module no longer needs is reported.
+# code lives in ejryan89-skill-core. An allowance the module no longer needs is reported.
 DUPLICATION_ALLOWANCE = "DUPLICATION_ALLOWED"
 # Every tree of the repository's own Python but its suites and fixtures: the shipped skills, the deployer, the tools,
 # the repository skills, which meet the shipped-skill standard, and the policies, which share what they repeat through
@@ -190,23 +191,23 @@ def duplicated_definition_problems(root: Path) -> list[str]:
     return sorted(found) + sorted(problems)
 
 
-# skills/skill-core/scripts is the one home of the repository's shared modules: skill scripts, the deployer, and
-# tools/ import them from there. deployer/__init__.py puts the directory on sys.path for every deployer module, since a
-# package runs its __init__.py before any of its modules; a tools module states the same path statement itself, above
-# its imports, because ruff sorts a skill-core import above the deployer's.
-SKILL_CORE = "skill-core"
+# skills/ejryan89-skill-core/scripts is the one home of the repository's shared modules: skill scripts, the deployer,
+# and tools/ import them from there. deployer/__init__.py puts the directory on sys.path for every deployer module,
+# since a package runs its __init__.py before any of its modules; a tools module states the same path statement itself,
+# above its imports, because ruff sorts an ejryan89-skill-core import above the deployer's.
 SKILL_CORE_SCRIPTS = f"skills/{SKILL_CORE}/scripts"
 SKILL_CORE_DOC = VALIDATION_DOC
 DEPLOYER_PACKAGE = "deployer/__init__.py"
 
 
 def skill_core_modules(root: Path) -> set[str]:
-    """The names of skill-core's shared modules, which skill scripts, the deployer, and tools/ import."""
+    """The names of ejryan89-skill-core's shared modules, which skill scripts, the deployer, and tools/ import."""
     return {path.stem for path in (root / SKILL_CORE_SCRIPTS).glob("*.py") if not is_test_script(path)}
 
 
 def skill_core_copy_problems(root: Path) -> list[str]:
-    """Report a module outside skill-core with the name of a skill-core module: another copy of shared code.
+    """Report a module outside ejryan89-skill-core with the name of an ejryan89-skill-core module: another copy of
+    shared code.
 
     A renamed copy is caught by the duplication policy, which sanctions no whole module, and a same-named one here
     even after it drifts, as the frontmatter reader's deployer copy would have.
@@ -225,7 +226,8 @@ def skill_core_copy_problems(root: Path) -> list[str]:
 
 
 def _skill_core_statement_lines(tree: ast.Module) -> list[int]:
-    """Lines of the module-level statements that put skill-core's scripts first on sys.path, located from __file__."""
+    """Lines of the module-level statements that put ejryan89-skill-core's scripts first on sys.path, located from
+    __file__."""
     lines: list[int] = []
     for node in tree.body:
         call = node.value if isinstance(node, ast.Expr) else None
@@ -263,13 +265,13 @@ def _unreadable_import(name: str, line: int) -> str:
 
 
 def skill_core_import_problems(root: Path) -> list[str]:
-    """Report a deployer or tools module that imports skill-core before putting it on sys.path, and an import that
-    breaks the direction or the standard-library rule.
+    """Report a deployer or tools module that imports ejryan89-skill-core before putting it on sys.path, and an import
+    that breaks the direction or the standard-library rule.
 
     deployer/__init__.py holds the deployer's one path statement, located from its own file and never through the
-    configured source path; a tools module states it above its skill-core imports. Skill-core imports nothing from the
-    deployer or tools/, so a deployed skill never needs the checkout, and the deployer and skill-core import only the
-    standard library, the deployer, and skill-core.
+    configured source path; a tools module states it above its ejryan89-skill-core imports. `ejryan89-skill-core`
+    imports nothing from the deployer or tools/, so a deployed skill never needs the checkout, and the deployer and
+    ejryan89-skill-core import only the standard library, the deployer, and ejryan89-skill-core.
     """
     shared = skill_core_modules(root)
     problems: list[str] = []
@@ -334,8 +336,9 @@ def _module_names(scripts: Path) -> set[str]:
 
 
 def skill_script_import_problems(root: Path) -> list[str]:
-    """Report a shipped skill script outside skill-core that imports a module other than the standard library's,
-    skill-core's, its own skill's, or one of a skill its skill_deps reach, by a statement or by name.
+    """Report a shipped skill script outside ejryan89-skill-core that imports a module other than the standard
+    library's, ejryan89-skill-core's, its own skill's, or one of a skill its skill_deps reach, by a statement or by
+    name.
 
     A deployed skill runs on a machine with the prerequisites and nothing else, so a module beyond these is missing
     wherever the skill is deployed, and an installed development dependency would hide that until then.

@@ -18,11 +18,11 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from skill_roots import sibling_scripts
 
-sys.path.insert(0, str(sibling_scripts("code-review-core")))
+sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 import frontmatter as skill_frontmatter
 import review_batches
@@ -72,7 +72,7 @@ PIPELINE_MODULES = (
 
 def pipeline_source() -> str:
     """The source of the review pipeline: its command line, then each module its steps are cut into."""
-    scripts = REPOSITORY_ROOT / "skills/code-review-core/scripts"
+    scripts = REPOSITORY_ROOT / "skills/ejryan89-code-review-core/scripts"
     return "\n".join((scripts / f"{name}.py").read_text(encoding="utf-8") for name in PIPELINE_MODULES)
 
 
@@ -84,7 +84,8 @@ def literal_int(path: Path, name: str) -> int:
 
 
 def frontmatter_and_body(text: str) -> tuple[str, str]:
-    """A Markdown document's frontmatter and the body after it, split where skill-core's one reader splits them."""
+    """A Markdown document's frontmatter and the body after it, split where ejryan89-skill-core's one reader splits
+    them."""
     lines = text.splitlines()
     found = skill_frontmatter.split(lines)
     if found is None:
@@ -93,7 +94,7 @@ def frontmatter_and_body(text: str) -> tuple[str, str]:
 
 
 def allowed_tools(text: str) -> list[str]:
-    """The allowed-tools list in a Markdown document's frontmatter, as skill-core's one reader reads it."""
+    """The allowed-tools list in a Markdown document's frontmatter, as ejryan89-skill-core's one reader reads it."""
     value = skill_frontmatter.parse(text).value("allowed-tools")
     if not isinstance(value, list):
         raise AssertionError(f"allowed-tools is not a list: {value!r}")
@@ -206,7 +207,7 @@ class CrossSkillContractTests(unittest.TestCase):
             for path in (REPOSITORY_ROOT / "deploy-meta").glob("*.json")
             if json.loads(path.read_text(encoding="utf-8")).get("selectable") is False
         )
-        self.assertEqual(["code-review-core", "skill-core"], hidden)
+        self.assertEqual(["ejryan89-code-review-core", "ejryan89-skill-core"], hidden)
         for name in hidden:
             with self.subTest(hidden=name):
                 self.assertEqual(
@@ -219,14 +220,14 @@ class CrossSkillContractTests(unittest.TestCase):
     def test_the_cost_audit_finds_every_skill_in_this_source_tree(self) -> None:
         # change-skill audits a changed skill from its worktree, which must reach the source, not the deployed copy.
         change_skill = (REPOSITORY_ROOT / ".claude/skills/change-skill/SKILL.md").read_text(encoding="utf-8-sig")
-        self.assertIn("analyze-skill-cost <name>", change_skill)
+        self.assertIn("audit-skill <name>", change_skill)
         self.assertIn("SCOPE source", change_skill)
-        script = REPOSITORY_ROOT / "skills/analyze-skill-cost/scripts/skill_inventory.py"
+        script = REPOSITORY_ROOT / "skills/audit-skill/scripts/skill_inventory.py"
         names = sorted(path.stem for path in (REPOSITORY_ROOT / "deploy-meta").glob("*.json"))
-        self.assertIn("analyze-skill-cost", names)
+        self.assertIn("audit-skill", names)
         with tempfile.TemporaryDirectory() as home:
             # A deployed copy in the home must not win over the source.
-            deployed = Path(home) / ".claude/skills/analyze-skill-cost/SKILL.md"
+            deployed = Path(home) / ".claude/skills/audit-skill/SKILL.md"
             deployed.parent.mkdir(parents=True)
             deployed.write_text("deployed", encoding="utf-8")
             for name in names:
@@ -256,7 +257,7 @@ class CrossSkillContractTests(unittest.TestCase):
         # change-skill audits a changed repository skill too; its .agents/skills shim must not make the name ambiguous.
         change_skill = (REPOSITORY_ROOT / ".claude/skills/change-skill/SKILL.md").read_text(encoding="utf-8-sig")
         self.assertIn("SCOPE project-claude", change_skill)
-        script = REPOSITORY_ROOT / "skills/analyze-skill-cost/scripts/skill_inventory.py"
+        script = REPOSITORY_ROOT / "skills/audit-skill/scripts/skill_inventory.py"
         names = sorted(path.parent.name for path in (REPOSITORY_ROOT / ".claude/skills").glob("*/SKILL.md"))
         self.assertIn("change-skill", names)
         with tempfile.TemporaryDirectory() as home:
@@ -314,7 +315,7 @@ class CrossSkillContractTests(unittest.TestCase):
         from deployer import runtime_support
 
         pipeline = literal_assignment(
-            REPOSITORY_ROOT / "skills/code-review-core/scripts/review_runtime.py", "RUNTIME_CAPABILITIES"
+            REPOSITORY_ROOT / "skills/ejryan89-code-review-core/scripts/review_runtime.py", "RUNTIME_CAPABILITIES"
         )
         if not isinstance(pipeline, dict):
             self.fail("RUNTIME_CAPABILITIES in review_runtime.py is not a dictionary")
@@ -403,7 +404,7 @@ class CrossSkillContractTests(unittest.TestCase):
                 " kind.__name__ + ').'}}),",
                 "            flush=True), os._exit(0));",
                 "            runpy.run_path(os.path.expanduser("
-                "'~/.claude/skills/code-review-core/scripts/review_guard.py'),",
+                "'~/.claude/skills/ejryan89-code-review-core/scripts/review_guard.py'),",
                 "            run_name='__main__')\"",
                 "          timeout: 30",
                 # A hook that cannot start, times out, or exits with another status than 0 or 2 lets the call
@@ -412,13 +413,15 @@ class CrossSkillContractTests(unittest.TestCase):
             ],
             frontmatter_and_body(agent)[0].splitlines(),
         )
-        guard = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_guard.py"
-        self.assertTrue(guard.is_file(), "the hook runs the guard code-review-core deploys")
+        guard = REPOSITORY_ROOT / "skills/ejryan89-code-review-core/scripts/review_guard.py"
+        self.assertTrue(guard.is_file(), "the hook runs the guard ejryan89-code-review-core deploys")
         self.assertIn('READ_TOOLS = {"Read", "Grep", "Glob"}', guard.read_text(encoding="utf-8"))
         self.assertIn('WRITE_TOOLS = {"Write", "Edit"}', guard.read_text(encoding="utf-8"))
-        meta = json.loads((REPOSITORY_ROOT / "deploy-meta/code-review-core.json").read_text(encoding="utf-8"))
+        meta = json.loads((REPOSITORY_ROOT / "deploy-meta/ejryan89-code-review-core.json").read_text(encoding="utf-8"))
         self.assertEqual(["code-review-reviewer"], meta["agent_deps"])
-        dispatch = (REPOSITORY_ROOT / "skills/code-review-core/scripts/review_dispatch.py").read_text(encoding="utf-8")
+        dispatch = (REPOSITORY_ROOT / "skills/ejryan89-code-review-core/scripts/review_dispatch.py").read_text(
+            encoding="utf-8"
+        )
         self.assertIn('REVIEWER_AGENT = "code-review-reviewer"', dispatch)
         skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")
         self.assertIn("start one fresh native subagent of type `code-review-reviewer`", skill)
@@ -430,7 +433,9 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertIn("If this session has no `code-review-reviewer` type, use a general-purpose subagent", insights)
         self.assertNotIn("general-purpose subagent with exactly this prompt", insights)
         insights_meta = json.loads((REPOSITORY_ROOT / "deploy-meta/review-insights.json").read_text(encoding="utf-8"))
-        self.assertIn("code-review-core", insights_meta["skill_deps"], "the agent comes with code-review-core")
+        self.assertIn(
+            "ejryan89-code-review-core", insights_meta["skill_deps"], "the agent comes with ejryan89-code-review-core"
+        )
 
     def test_reviewer_read_guidance_names_only_the_guarded_roots(self) -> None:
         _, body = frontmatter_and_body((REPOSITORY_ROOT / "agents/code-review-reviewer.md").read_text(encoding="utf-8"))
@@ -438,12 +443,12 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertIn("Read only the files the prompt names and paths under the roots it names.", body)
         self.assertIn(
             "Give Read, Grep, and Glob an absolute path inside your claimed review run folder or "
-            "code-review-core's `references` folder; a hook refuses paths outside those roots.",
+            "ejryan89-code-review-core's `references` folder; a hook refuses paths outside those roots.",
             body,
         )
 
     def test_generic_reviewer_repeat_guidance_matches_the_output_contract(self) -> None:
-        reference = (REPOSITORY_ROOT / "skills/code-review-core/references/generic-reviewer.md").read_text(
+        reference = (REPOSITORY_ROOT / "skills/ejryan89-code-review-core/references/generic-reviewer.md").read_text(
             encoding="utf-8"
         )
         self.assertIn("that finding's 0-based index in your `findings`", reference)
@@ -558,14 +563,16 @@ class CrossSkillContractTests(unittest.TestCase):
             missing = root / "profile without guard"
             missing.mkdir()
             broken = root / "profile with broken guard"
-            guard = broken / ".claude/skills/code-review-core/scripts/review_guard.py"
+            guard = broken / ".claude/skills/ejryan89-code-review-core/scripts/review_guard.py"
             guard.parent.mkdir(parents=True)
             guard.write_text("raise RuntimeError('the guard failed to load')\n", encoding="utf-8")
-            # A guard deployed without the skill-core it imports cannot load either.
-            coreless = root / "profile without skill-core"
-            real_guard = coreless / ".claude/skills/code-review-core/scripts/review_guard.py"
+            # A guard deployed without the ejryan89-skill-core it imports cannot load either.
+            coreless = root / "profile without ejryan89-skill-core"
+            real_guard = coreless / ".claude/skills/ejryan89-code-review-core/scripts/review_guard.py"
             real_guard.parent.mkdir(parents=True)
-            real_guard.write_bytes((REPOSITORY_ROOT / "skills/code-review-core/scripts/review_guard.py").read_bytes())
+            real_guard.write_bytes(
+                (REPOSITORY_ROOT / "skills/ejryan89-code-review-core/scripts/review_guard.py").read_bytes()
+            )
             cases = {
                 "missing": (missing, "review_guard.py", "FileNotFoundError"),
                 "broken": (broken, "the guard failed to load", "RuntimeError"),
@@ -608,15 +615,19 @@ class CrossSkillContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             profile = root / "Some O'Neil (profile)"
-            guard = profile / ".claude/skills/code-review-core/scripts/review_guard.py"
+            guard = profile / ".claude/skills/ejryan89-code-review-core/scripts/review_guard.py"
             guard.parent.mkdir(parents=True)
-            guard.write_bytes((REPOSITORY_ROOT / "skills/code-review-core/scripts/review_guard.py").read_bytes())
-            # The guard imports skill-core's runner, the flattener the runner imports, its typed-field reader, and the
-            # locator that names Python's command from the sibling skill the deployer installs beside it.
-            core = profile / ".claude/skills/skill-core/scripts"
+            guard.write_bytes(
+                (REPOSITORY_ROOT / "skills/ejryan89-code-review-core/scripts/review_guard.py").read_bytes()
+            )
+            # The guard imports ejryan89-skill-core's runner, the flattener the runner imports, its typed-field reader,
+            # and the locator that names Python's command from the sibling skill the deployer installs beside it.
+            core = profile / ".claude/skills/ejryan89-skill-core/scripts"
             core.mkdir(parents=True)
             for module in ("console.py", "executable_locator.py", "flat_text.py", "typed_fields.py"):
-                (core / module).write_bytes((REPOSITORY_ROOT / "skills/skill-core/scripts" / module).read_bytes())
+                (core / module).write_bytes(
+                    (REPOSITORY_ROOT / "skills/ejryan89-skill-core/scripts" / module).read_bytes()
+                )
             # A session's working directory is untrusted: its modules must never shadow the standard library or the
             # core.
             cwd = root / "session"
@@ -671,7 +682,7 @@ class CrossSkillContractTests(unittest.TestCase):
     def test_native_and_workflow_reviewers_get_the_same_task(self) -> None:
         task = "Read <prompt file> and follow it exactly. It is your complete task."
         skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")
-        dispatch = (REPOSITORY_ROOT / "skills/code-review-core/scripts/review_dispatch.py").read_text(
+        dispatch = (REPOSITORY_ROOT / "skills/ejryan89-code-review-core/scripts/review_dispatch.py").read_text(
             encoding="utf-8-sig"
         )
         self.assertIn(f"with exactly this prompt and nothing else: `{task}`", skill)
@@ -729,7 +740,7 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertIn(
             "the skill's own `--pull`, `--re-review`, `--scope`, and `--canary` arguments as given", review_prs
         )
-        pipeline = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py"
+        pipeline = REPOSITORY_ROOT / "skills/ejryan89-code-review-core/scripts/review_pipeline.py"
         options = declared_options(pipeline, "prepare_parser")
         for option in ("--pull", "--re-review"):
             with self.subTest(repeatable=option):
@@ -750,7 +761,7 @@ class CrossSkillContractTests(unittest.TestCase):
         timeout, command_minutes = (int(value) for value in waits[0])
         self.assertLessEqual(timeout, 100, "each wait fits well inside a 2-minute command limit")
         self.assertGreater(command_minutes * 60, timeout)
-        dispatch = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_dispatch.py"
+        dispatch = REPOSITORY_ROOT / "skills/ejryan89-code-review-core/scripts/review_dispatch.py"
         self.assertLessEqual(timeout, literal_int(dispatch, "MAX_WAIT_SECONDS"))
         self.assertIn("prints `STARTED <run directory>` at once", skill)
         self.assertIn("`RUNNING <selector> <id> <seconds>s` means that run's Copilot CLI host is still going", skill)
@@ -786,7 +797,9 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertGreater(command_minutes * 60, timeout)
         self.assertLessEqual(
             timeout,
-            literal_int(REPOSITORY_ROOT / "skills/code-review-core/scripts/review_dispatch.py", "MAX_WAIT_SECONDS"),
+            literal_int(
+                REPOSITORY_ROOT / "skills/ejryan89-code-review-core/scripts/review_dispatch.py", "MAX_WAIT_SECONDS"
+            ),
         )
         self.assertIn("Its `READY` and `OVERDUE` lines mean what they mean in step 3.", workflow)
         # Every mode ends by listing the runs that never reached finalize, and a denied command is a failure.
@@ -822,7 +835,7 @@ class CrossSkillContractTests(unittest.TestCase):
         timeout, command_minutes = (int(value) for value in waits[0])
         self.assertLessEqual(timeout, 100, "each wait fits well inside a 2-minute command limit")
         self.assertGreater(command_minutes * 60, timeout)
-        dispatch = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_dispatch.py"
+        dispatch = REPOSITORY_ROOT / "skills/ejryan89-code-review-core/scripts/review_dispatch.py"
         self.assertLessEqual(timeout, literal_int(dispatch, "MAX_WAIT_SECONDS"))
         self.assertIn("`READY <selector>` means every role of that run has a valid result.", review)
         self.assertIn(
@@ -887,7 +900,7 @@ class CrossSkillContractTests(unittest.TestCase):
             "Work each `HOST copilot-cli` and `INLINE` run as step 3 says once the Workflow has started.", body
         )
         self.assertIn("or `WORKFLOW none` when no run printed `ROLE` lines.", body)
-        pipeline = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py"
+        pipeline = REPOSITORY_ROOT / "skills/ejryan89-code-review-core/scripts/review_pipeline.py"
         self.assertIn("--inline", declared_options(pipeline, "prepare_parser"))
         source = pipeline_source()
         self.assertIn('commands.add_parser("next-role")', source)
@@ -897,8 +910,8 @@ class CrossSkillContractTests(unittest.TestCase):
     def test_an_inline_role_s_commands_match_the_grants_the_review_skills_started_the_pipeline_under(self) -> None:
         # An inline role runs its prompt's commands in the session the review skill runs in, under the skill's grant,
         # which Claude Code matches as text, normalizing no path: the resolved path of the same script, with no `..`,
-        # never matches it. The grants name the scripts, so no other code-review-core script and no `..` path out of a
-        # named one matches either.
+        # never matches it. The grants name the scripts, so no other ejryan89-code-review-core script and no `..` path
+        # out of a named one matches either.
         for name in ("review-prs", "review-document"):
             with self.subTest(skill=name):
                 self.assert_inline_commands_match_only_the_named_grants(REPOSITORY_ROOT / "skills" / name)
@@ -938,7 +951,7 @@ class CrossSkillContractTests(unittest.TestCase):
             *commands(["review_pipeline.py", "prepare"]),
             f'{python} -B "{core}review_config.py" write config.json',
             f'{python} -B "{core}review_pipeline.py/../review_config.py" write config.json',
-            f'{python} -B "{skill}/scripts/../../code-review-core/scripts/review_config.py" write config.json',
+            f'{python} -B "{skill}/scripts/../../ejryan89-code-review-core/scripts/review_config.py" write config.json',
         ]
         for command in commands([pipeline, "prepare"]):
             with self.subTest(command=command):
@@ -954,10 +967,12 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertIn(
             "`--host` names the runtime this session is running in: `claude-code`, `codex`, or `copilot-cli`.", skill
         )
-        pipeline = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py"
+        pipeline = REPOSITORY_ROOT / "skills/ejryan89-code-review-core/scripts/review_pipeline.py"
         host = declared_options(pipeline, "prepare_parser")["--host"]
         self.assertEqual("sorted(RUNTIME_CAPABILITIES)", host["choices"])
-        runtime = (REPOSITORY_ROOT / "skills/code-review-core/scripts/review_runtime.py").read_text(encoding="utf-8")
+        runtime = (REPOSITORY_ROOT / "skills/ejryan89-code-review-core/scripts/review_runtime.py").read_text(
+            encoding="utf-8"
+        )
         hosts = runtime.split("RUNTIME_CAPABILITIES = {", 1)[1].split("\n}", 1)[0]
         self.assertEqual(
             ["claude-code", "codex", "copilot-cli"], [line.split('"')[1] for line in hosts.strip().splitlines()]
@@ -979,7 +994,7 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertEqual(["example/app#1", "example/app#2"], given.canaries)
         fixture = parser.parse_args(["prepare", "--canary", "--fixture", "fixture"])
         self.assertEqual(([""], [Path("fixture")]), (fixture.canaries, fixture.fixtures))
-        script = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py"
+        script = REPOSITORY_ROOT / "skills/ejryan89-code-review-core/scripts/review_pipeline.py"
         options = declared_options(script, "prepare_parser")
         self.assertLessEqual({"--fixture", "--prior", "--re-review", "--canary", "--batch", "--runs"}, set(options))
         self.assertEqual(("'?'", "''"), (options["--re-review"].get("nargs"), options["--re-review"].get("const")))
@@ -1007,7 +1022,9 @@ class CrossSkillContractTests(unittest.TestCase):
             tracker,
         )
         self.assertIn("then run the command again adding `--scope <scope>`", tracker)
-        pipeline = (REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py").read_text(encoding="utf-8")
+        pipeline = (REPOSITORY_ROOT / "skills/ejryan89-code-review-core/scripts/review_pipeline.py").read_text(
+            encoding="utf-8"
+        )
         self.assertIn('parser.error("--scope is required with --re-review and taken only with it")', pipeline)
 
     def test_no_skill_replays_another_skills_steps(self) -> None:
@@ -1052,19 +1069,19 @@ class CrossSkillContractTests(unittest.TestCase):
 
     def test_generic_reviewer_resources_do_not_depend_on_checkout_path(self) -> None:
         skill_paths = [
-            REPOSITORY_ROOT / "skills/code-review-core/SKILL.md",
+            REPOSITORY_ROOT / "skills/ejryan89-code-review-core/SKILL.md",
             REPOSITORY_ROOT / "skills/review-prs/SKILL.md",
         ]
         combined = "\n".join(path.read_text(encoding="utf-8-sig") for path in skill_paths)
         # The pipeline plans the generic reviewer, so the code, not the skill text, must resolve its
         # instructions from the installed core skill rather than from any repository checkout.
-        specialists = (REPOSITORY_ROOT / "skills/code-review-core/scripts/review_specialists.py").read_text(
+        specialists = (REPOSITORY_ROOT / "skills/ejryan89-code-review-core/scripts/review_specialists.py").read_text(
             encoding="utf-8-sig"
         )
         self.assertIn(
             'DEFAULT_GENERIC_INSTRUCTIONS = Path(__file__).resolve().parents[1] / "references" / "generic-reviewer.md"',
             specialists,
         )
-        self.assertTrue((REPOSITORY_ROOT / "skills/code-review-core/references/generic-reviewer.md").is_file())
+        self.assertTrue((REPOSITORY_ROOT / "skills/ejryan89-code-review-core/references/generic-reviewer.md").is_file())
         self.assertNotIn("C:/GitHub", combined)
         self.assertNotIn("C:\\GitHub", combined)

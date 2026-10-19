@@ -82,7 +82,7 @@ def markdown_link_problems(root: Path) -> list[str]:
 
 THREAT_MODEL_DOC = OPERATIONS_CONTRACT
 THREAT_MODEL_HEADING = "## Threat model"
-THREAT_MODEL_SUITES = "skills/code-review-core/scripts"
+THREAT_MODEL_SUITES = "skills/ejryan89-code-review-core/scripts"
 # The suite that holds the threat model one row at a time: every row names at least one of its tests.
 THREAT_MODEL_ADVERSARIAL_SUITE = "test_adversarial_inputs.py"
 CITED_TEST = re.compile(r"`(test_[\w-]+\.py)::(test_\w+)`")
@@ -90,7 +90,8 @@ CITED_TEST = re.compile(r"`(test_[\w-]+\.py)::(test_\w+)`")
 
 def threat_model_test_problems(root: Path) -> list[str]:
     """Report each row of the code-review threat model that names no test in test_adversarial_inputs.py, and each
-    `<suite>::<test>` it names that is not a test function in that suite under skills/code-review-core/scripts/."""
+    `<suite>::<test>` it names that is not a test function in that suite under
+    skills/ejryan89-code-review-core/scripts/."""
     section = markdown_section((root / THREAT_MODEL_DOC).read_text(encoding="utf-8"), THREAT_MODEL_HEADING)
     rows = [line for line in (section or "").split("\n") if line.startswith("|")][2:]
     if not rows:

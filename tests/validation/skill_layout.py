@@ -13,6 +13,7 @@ from pathlib import Path
 
 import frontmatter
 from markdown_sections import EXECUTABLE_FENCES
+from skill_roots import SKILL_CORE
 from skill_scripts import shell_git_subcommands
 from validation_support import (
     CODE_SPAN,
@@ -45,9 +46,9 @@ from deployer import platform_support
 MAXIMUM_INLINE_EXECUTABLE_LINES = 5
 
 
-# Every label a fence of commands or a program may carry, from skill-core's one table, which the renderer substitutes
-# tokens by and the analyze-skill-cost inventory reads commands by, so a fence the grant checks read as commands, or
-# the renderer escapes for a language, is one the five-line and output-placeholder rules read too.
+# Every label a fence of commands or a program may carry, from ejryan89-skill-core's one table, which the renderer
+# substitutes tokens by and the audit-skill inventory reads commands by, so a fence the grant checks read as commands,
+# or the renderer escapes for a language, is one the five-line and output-placeholder rules read too.
 EXECUTABLE_FENCE_LANGUAGES = EXECUTABLE_FENCES
 
 
@@ -269,10 +270,10 @@ SKILL_DIR_FILE = re.compile(r"\$\{CLAUDE_SKILL_DIR\}/([A-Za-z0-9._/-]+)(?![A-Za-
 BARE_SCRIPT_PATH = re.compile(r"""(?:^|[\s"'=])(?:\./|\.\./[A-Za-z0-9._-]+/)?scripts/""")
 # In SKILL.md prose, a code span that names the skill's own scripts/ or references/ by a relative path. Claude Code
 # resolves it against the working directory, and Codex and Copilot against the adapter, which has neither folder.
-# A code span is read with skill-core's CODE_SPAN, which validation_support re-exports.
+# A code span is read with ejryan89-skill-core's CODE_SPAN, which validation_support re-exports.
 BARE_OWN_PATH = re.compile(r"""(?:^|[\s"'=(])(?:\./|\.\./[A-Za-z0-9._-]+/)?(?:scripts|references)/""")
-# analyze-skill-cost recommends a command under `scripts/` in the skill it audits, which is not a path of its own.
-BARE_OWN_PATH_EXEMPT = frozenset({("skills/analyze-skill-cost/SKILL.md", "scripts/")})
+# audit-skill recommends a command under `scripts/` in the skill it audits, which is not a path of its own.
+BARE_OWN_PATH_EXEMPT = frozenset({("skills/audit-skill/SKILL.md", "scripts/")})
 SKILL_PATHS_DOC = '"Paths to a skill\'s own files" in docs/adding-a-skill.md'
 # Git Bash takes $HOME from HOME, which need not be the profile folder the deployer installs into.
 HOME_VARIABLE = re.compile(r"\$(?:HOME\b|\{HOME\}|env:HOME\b)", re.IGNORECASE)
@@ -406,8 +407,6 @@ def script_dependency_problems(root: Path) -> list[str]:
     return problems
 
 
-# The skill whose scripts every module reaches by its own fixed sys.path line, which skill_roots needs to be found.
-BOOTSTRAP_SKILL = "skill-core"
 SIBLING_PATH_ROOTS = ("skills", REPOSITORY_SKILLS, "tools", "tests", "deployer")
 SIBLING_LOOKUP_DOC = VALIDATION_DOC
 
@@ -421,12 +420,12 @@ def _sibling_path_files(root: Path) -> list[Path]:
 
 
 def sibling_path_problems(root: Path) -> list[str]:
-    """Report a sys.path entry that reaches a sibling skill's scripts other than through skill-core's lookup.
+    """Report a sys.path entry that reaches a sibling skill's scripts other than through ejryan89-skill-core's lookup.
 
     skill_roots.sibling_scripts knows where a sibling lives, in the checkout and the deployed home alike, so a
-    hand-written path is a copy of that layout that breaks when it changes. The line that puts skill-core on sys.path
-    is the one hand-written entry, since it finds the lookup, and a lookup's name is a literal so the skill_deps check
-    can read it.
+    hand-written path is a copy of that layout that breaks when it changes. The line that puts ejryan89-skill-core on
+    sys.path is the one hand-written entry, since it finds the lookup, and a lookup's name is a literal so the
+    skill_deps check can read it.
     """
     problems: list[str] = []
     for path, name, tree in python_trees(_sibling_path_files(root), root, problems):
@@ -438,14 +437,14 @@ def sibling_path_problems(root: Path) -> list[str]:
                     f"{where} passes {SIBLING_LOOKUP} a name it cannot read; pass the skill's name as one string "
                     f"literal; see {SIBLING_LOOKUP_DOC}"
                 )
-            elif entry.hand_written and entry.name not in {BOOTSTRAP_SKILL, own}:
+            elif entry.hand_written and entry.name not in {SKILL_CORE, own}:
                 problems.append(
                     f"{where} puts {entry.name}'s scripts on sys.path by a hand-written path; put {SIBLING_LOOKUP}(\""
                     f'{entry.name}") from skill_roots there instead; see {SIBLING_LOOKUP_DOC}'
                 )
-            elif not entry.hand_written and entry.name == BOOTSTRAP_SKILL:
+            elif not entry.hand_written and entry.name == SKILL_CORE:
                 problems.append(
-                    f"{where} looks up {BOOTSTRAP_SKILL} through {SIBLING_LOOKUP}; the line that puts it on sys.path "
+                    f"{where} looks up {SKILL_CORE} through {SIBLING_LOOKUP}; the line that puts it on sys.path "
                     f"already does; see {SIBLING_LOOKUP_DOC}"
                 )
     return problems

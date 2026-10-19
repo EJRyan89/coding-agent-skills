@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from skill_layout import (
     MAXIMUM_INLINE_EXECUTABLE_LINES,
@@ -353,7 +353,7 @@ class SkillLayoutFixtures(unittest.TestCase):
             root = Path(temporary)
             (root / "deploy-meta").mkdir()
             (root / "agents").mkdir()
-            skills = {"alpha": {"skill_deps": ["core"]}, "beta": {}, "core": {}, "analyze-skill-cost": {}}
+            skills = {"alpha": {"skill_deps": ["core"]}, "beta": {}, "core": {}, "audit-skill": {}}
             for skill, metadata in skills.items():
                 (root / "deploy-meta" / f"{skill}.json").write_text(json.dumps(metadata), encoding="utf-8")
                 (root / "skills" / skill / "scripts").mkdir(parents=True)
@@ -384,8 +384,8 @@ class SkillLayoutFixtures(unittest.TestCase):
                 "```\n",
                 encoding="utf-8",
             )
-            # analyze-skill-cost describes the scripts/ convention of the skills it audits, so that span is its own.
-            (root / "skills" / "analyze-skill-cost" / "SKILL.md").write_text(
+            # audit-skill describes the scripts/ convention of the skills it audits, so that span is its own.
+            (root / "skills" / "audit-skill" / "SKILL.md").write_text(
                 "Recommend a tested command under `scripts/`, never `scripts/x.py`.\n", encoding="utf-8"
             )
             (root / "skills" / "beta" / "SKILL.md").write_text(
@@ -421,7 +421,7 @@ class SkillLayoutFixtures(unittest.TestCase):
                     f"skills/alpha/SKILL.md:8 names `./scripts/run.py` by a bare relative path; see {doc}",
                     f"skills/alpha/SKILL.md:8 names `../core/scripts/lib.py` by a bare relative path; see {doc}",
                     f"skills/alpha/SKILL.md:8 names `references/` by a bare relative path; see {doc}",
-                    f"skills/analyze-skill-cost/SKILL.md:1 names `scripts/x.py` by a bare relative path; see {doc}",
+                    f"skills/audit-skill/SKILL.md:1 names `scripts/x.py` by a bare relative path; see {doc}",
                     f"skills/beta/SKILL.md:1 names skill core by its install path; see {doc}",
                     f"skills/beta/SKILL.md:3 runs a script by a bare relative path; see {doc}",
                     f"skills/beta/SKILL.md:4 runs a script by a bare relative path; see {doc}",
@@ -442,7 +442,7 @@ class SkillLayoutFixtures(unittest.TestCase):
 
             for skill, metadata in {
                 "alpha": {"skill_deps": ["core"]},
-                "analyze-skill-cost": {},
+                "audit-skill": {},
                 "core": {},
                 "hollow": {},
                 "inner": {"skill_deps": ["core"]},
@@ -450,7 +450,7 @@ class SkillLayoutFixtures(unittest.TestCase):
                 write(f"deploy-meta/{skill}.json", json.dumps(metadata))
             write(
                 "skills/alpha/SKILL.md",
-                "Names `scripts/`, which only analyze-skill-cost may.\n"  # 1
+                "Names `scripts/`, which only audit-skill may.\n"  # 1
                 "Then run scripts/run.py yourself.\n"  # 2
                 "Read {{HOME}}/.claude/skills/unknown/x and {{HOME}}/.claude/skills/inner/y.\n"  # 3
                 'Use "$HOME/x" freely.\n'  # 4
@@ -469,7 +469,7 @@ class SkillLayoutFixtures(unittest.TestCase):
                 "skills/alpha/references/deep/notes.md",
                 "Reach ${CLAUDE_SKILL_DIR}/../stranger/x.md, as `scripts/z.py` says.\n",
             )
-            write("skills/analyze-skill-cost/SKILL.md", "Recommend `scripts/`.\n")
+            write("skills/audit-skill/SKILL.md", "Recommend `scripts/`.\n")
             write("skills/core/SKILL.md", "# core\n")
             write("skills/hollow/notes.md", "Read {{HOME}}/.claude/skills/core/x.\n")
             write("skills/inner/SKILL.md", "Read `scripts/run.py`.\n")
@@ -716,7 +716,7 @@ class SkillLayoutFixtures(unittest.TestCase):
             )
 
     def test_sibling_path_policy_holds_every_module_to_the_lookup(self) -> None:
-        bootstrap = 'sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))\n'
+        bootstrap = 'sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))\n'
         lookup = 'from skill_roots import sibling_scripts\nsys.path.insert(0, str(sibling_scripts("dep")))\n'
         hand_written = 'sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "dep" / "scripts"))\n'
         with tempfile.TemporaryDirectory() as temporary:
@@ -729,12 +729,13 @@ class SkillLayoutFixtures(unittest.TestCase):
                     # A skill may name its own scripts directory; only a sibling's goes through the lookup.
                     "skills/dep/scripts/dep.py": bootstrap + hand_written,
                     f"{REPOSITORY_SKILLS}/local/scripts/local.py": (
-                        'sys.path.insert(0, str(ROOT / "skills" / "skill-core" / "scripts"))\n'
+                        'sys.path.insert(0, str(ROOT / "skills" / "ejryan89-skill-core" / "scripts"))\n'
                         'sys.path.append(str(ROOT / "skills" / "dep" / "scripts"))\n'
                     ),
                     "tools/tool.py": "sys.path.insert(0, str(sibling_scripts(NAME)))\n",
                     "tests/suite/test_suite.py": (
-                        f'sys.path.insert(0, str(skill_roots.sibling_scripts("skill-core")))\nTEXT = {hand_written!r}\n'
+                        'sys.path.insert(0, str(skill_roots.sibling_scripts("ejryan89-skill-core")))\n'
+                        f"TEXT = {hand_written!r}\n"
                     ),
                     "deploy.py": 'sys.path.insert(0, str(sibling_scripts(name="dep")))\n',
                     # A fixture tree is another repository, read and never run from here.
@@ -750,7 +751,8 @@ class SkillLayoutFixtures(unittest.TestCase):
                     f"literal; {doc}",
                     "skills/user/scripts/test_user.py:4 puts dep's scripts on sys.path by a hand-written path; put "
                     f'sibling_scripts("dep") from skill_roots there instead; {doc}',
-                    "tests/suite/test_suite.py:1 looks up skill-core through sibling_scripts; the line that puts it "
+                    "tests/suite/test_suite.py:1 looks up ejryan89-skill-core through sibling_scripts; the line that "
+                    "puts it "
                     f"on sys.path already does; {doc}",
                     "tools/tool.py:1 passes sibling_scripts a name it cannot read; pass the skill's name as one "
                     f"string literal; {doc}",

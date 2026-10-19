@@ -1,4 +1,4 @@
-"""The shared SKILL.md and agent frontmatter reader (skills/skill-core/scripts/frontmatter.py)."""
+"""The shared SKILL.md and agent frontmatter reader (skills/ejryan89-skill-core/scripts/frontmatter.py)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import frontmatter
 from frontmatter import FrontmatterError
@@ -24,9 +24,9 @@ def parse(block: str) -> frontmatter.Frontmatter:
 
 class HomeTests(unittest.TestCase):
     def test_the_deployer_reads_frontmatter_from_this_checkouts_skill_core(self) -> None:
-        # deployer/__init__.py locates skill-core from its own file, never through the configured source path, so the
-        # deployer, the tools, and the skills share one module object and one FrontmatterError.
-        expected = REPOSITORY_ROOT / "skills" / "skill-core" / "scripts" / "frontmatter.py"
+        # deployer/__init__.py locates ejryan89-skill-core from its own file, never through the configured source path,
+        # so the deployer, the tools, and the skills share one module object and one FrontmatterError.
+        expected = REPOSITORY_ROOT / "skills" / "ejryan89-skill-core" / "scripts" / "frontmatter.py"
         self.assertEqual(expected, Path(frontmatter.__file__).resolve())
         self.assertIs(frontmatter, render.frontmatter)
         self.assertIs(frontmatter, source.frontmatter)

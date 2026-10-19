@@ -8,7 +8,7 @@ Ask of each change:
 2. **Script over prose.** A deterministic step (collecting, parsing, applying a rule, writing a record) is a tested script that prints one fact per line, not prose the agent improvises.
 3. **The prose matches the scripts.** Each line format, exit status, limit, and file the prose names is what the script prints or does. Read the script before accepting a claim about it.
 4. **Metadata matches the skill.** `required_vars`, `tools`, `skill_deps`, `agent_deps`, and `runtime_support` agree with the frontmatter and what the scripts run.
-5. **Cost.** The pull request body, which cites the `analyze-skill-cost` run, is not given to you, so judge what that audit would: text the agent reads every run but never acts on, a whole document read where a section would do, a deterministic step left to prose.
+5. **Cost.** The pull request body, which cites the `audit-skill` run, is not given to you, so judge what that audit would: text the agent reads every run but never acts on, a whole document read where a section would do, a deterministic step left to prose.
 6. **Shims.** A repository skill's `.agents/skills` shim carries its frontmatter unchanged.
 
 The audit found this drift here: a grant that pre-approved a script starting repository-configured servers; a grant in a hidden skill that runs nothing; grants hard-coding one repository in a skill that says it is generic, while its git steps went ungranted; prose pointing at a table its file does not have; a line format the next step parses that no step states; a document saying a value is read whole while the script cuts it.

@@ -2,7 +2,7 @@
 
 Every command prints one fact per line on stdout. An expected failure is a last line `FAILED <reason>`
 with exit code 1; a usage error exits 2. Text read from a settings file, the manifest, a memory file's
-name, or a memory reaches a line or a MEMORY.md entry only through skill-core's flat_text, and a path
+name, or a memory reaches a line or a MEMORY.md entry only through ejryan89-skill-core's flat_text, and a path
 holding a line break, which no line can name for a later command, is refused rather than printed.
 
 A memory store is a directory holding MEMORY.md, outside the skills directory this script runs from,
@@ -93,7 +93,7 @@ from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 from console import run_main
 from flat_text import flat_text
@@ -255,7 +255,7 @@ def block_scalar(header: re.Match[str], key_indent: int, following: list[str]) -
     return re.sub(r" ?\n ?", "\n", paragraphs).strip(), count
 
 
-# Kept for good instead of skill-core's frontmatter.py, by the decision recorded in
+# Kept for good instead of ejryan89-skill-core's frontmatter.py, by the decision recorded in
 # https://github.com/EJRyan89/coding-agent-skills/issues/27: memories nest their type in a `metadata:` mapping, which
 # the shared reader does not give, and the audit must read every memory however it is written.
 def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:

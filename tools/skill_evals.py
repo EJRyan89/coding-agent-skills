@@ -13,8 +13,8 @@ every run, since one run is one sample of what a model does.
 A scenario is a directory tests/fixtures/skill-evals/<skill>/<scenario>/, which never ships, holding a scenario.json.
 A fixture scenario is a code-review fixture, which `review_pipeline.py prepare --canary --fixture <scenario>` reviews
 in place of a pull request: the change as two trees, base/ and head/, and the pull request in pull.json (see
-review_canary.py in code-review-core). A re-review scenario's run adds `--re-review --prior <scenario>/<prior>`, its
-prior a plain relative path inside the scenario's folder. A
+review_canary.py in ejryan89-code-review-core). A re-review scenario's run adds `--re-review --prior
+<scenario>/<prior>`, its prior a plain relative path inside the scenario's folder. A
 document scenario names a document instead, for a skill started on one file's path, as review-document is: the run
 writes it under its own file name into a new folder in the run's folder and starts the skill with that path alone.
 With a base, that folder is a new git checkout whose one commit holds the base under the same name, and the document
@@ -99,9 +99,9 @@ the checkout's for a repository reviewer's scenario, or review-document's design
 Records come from a record source, a function of a scenario, a model, and which run, that returns the record that
 run wrote. --records DIR reads DIR/<scenario>/<model>.json, or with --runs N above 1, DIR/<scenario>/<model>-<run>.json
 for each run from 1 to N: the record JSON a run finalized, or a trigger scenario's trigger record. It holds a review
-record to what a run's record is held to: code-review-core's record contract (validate_record), the review version
-of the scenario's mode, a guard that held every reviewer, and every reviewer's `model` naming that model's ID. The
-model is the one each reviewer's result reports, which is weaker than a run's check of the transcript. A trigger
+record to what a run's record is held to: ejryan89-code-review-core's record contract (validate_record), the review
+version of the scenario's mode, a guard that held every reviewer, and every reviewer's `model` naming that model's ID.
+The model is the one each reviewer's result reports, which is weaker than a run's check of the transcript. A trigger
 record must name each of the scenario's requests once, and every model ID in it must be that model's. A missing or
 unreadable record, or one any of those refuses, fails every expectation of its scenario, model, and run.
 
@@ -133,10 +133,10 @@ deployed script as the pipeline's prompts give it, in both shells, with no wildc
 allowed-tools grant the rest. Each run's own folder is <home>/.skill-evals/<scenario>, or with --runs above 1
 <home>/.skill-evals/<run>/<scenario>, and its temporary directory is a folder there, through TMPDIR, which Python
 reads first on every system, so the pipeline's run folders and the canary root that finalize writes land there.
-The record judged is the latest record of the pull request recorded there, read and validated by code-review-core's
-archive, and it must be version 2 for a re-review, whose canary root first holds the prior record as version 1, and
-version 1 otherwise: a run whose latest record is another version, or cannot be read, recorded no review of its own,
-and fails with that reason. The code-review configuration is written once per home at
+The record judged is the latest record of the pull request recorded there, read and validated by
+ejryan89-code-review-core's archive, and it must be version 2 for a re-review, whose canary root first holds the prior
+record as version 1, and version 1 otherwise: a run whose latest record is another version, or cannot be read, recorded
+no review of its own, and fails with that reason. The code-review configuration is written once per home at
 `.skill-evals/config.json`, which all runs in that home read. A record any of whose reviewers has a null `files_read`
 counts for nothing either: the guard's claim starts a role's read log, so a reviewer the guard held has a count, if
 only 0, and null means the boundary was never exercised.
@@ -217,7 +217,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from bounded_process import without_repository_variables
 from console import run_main

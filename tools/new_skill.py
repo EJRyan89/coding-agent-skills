@@ -8,14 +8,14 @@ Usage:
 
 A model-invocable skill's description must say when to use it, and allowed-tools may grant Bash and PowerShell
 only as twin patterns that end each path before any *, by default the skill's script named after it,
-scripts/<name with underscores>.py: the rules validation applies, from skill_reference and the analyze-skill-cost
+scripts/<name with underscores>.py: the rules validation applies, from skill_reference and the audit-skill
 inventory.
 
 It writes skills/<name>/SKILL.md (frontmatter and a title only), deploy-meta/<name>.json, and the generated
 part of the skill's docs/skills.md section, then prints one REMAINING line for each thing validation still needs
 from a person: each problem the skill reference check reports, such as the section's hand-written explanation and
 the README entry; each allowed-tools grant that no step uses or whose pattern matches no command the skill shows,
-by the analyze-skill-cost inventory's rules, which validation applies; and each --tool, which nothing the skill runs
+by the audit-skill inventory's rules, which validation applies; and each --tool, which nothing the skill runs
 yet runs. It refuses, changing nothing, when the name is invalid or already a shipped skill, a bundle, or a
 repository skill under .claude/skills, which would make the cost audit's lookup by name ambiguous, when the name or
 description breaks the Agent Skills frontmatter rules, a description over the length a runtime adapter allows
@@ -29,9 +29,9 @@ repository skill has no metadata or reference section, so it takes no --tool or 
 shipped skill's, which would make the cost audit's lookup by name ambiguous.
 
 It writes no scripts: validation requires a regression suite for any script under scripts/, so a stub would be
-a placeholder that lands untested. Given --skill-dep, it records the skill, with skill-core, in skill_deps and prints
-one SCRIPT_HEADER line for each line a script of the skill starts with: the line that puts skill-core on sys.path,
-then a sibling_scripts call for each other dependency.
+a placeholder that lands untested. Given --skill-dep, it records the skill, with ejryan89-skill-core, in skill_deps and
+prints one SCRIPT_HEADER line for each line a script of the skill starts with: the line that puts ejryan89-skill-core on
+sys.path, then a sibling_scripts call for each other dependency.
 
 --root DIR scaffolds into another checkout of this repository, as the regression suite does. It refuses, as a usage
 error, a directory that does not hold source.json and .claude/skills, or that lies in a skills directory.
@@ -46,10 +46,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from console import run_main
-from skill_roots import sibling_scripts
+from skill_roots import SKILL_CORE, sibling_scripts
 
 from deployer import runtime_support
 from deployer import source as deploy_source
@@ -58,9 +58,9 @@ from deployer.tools import SKILL_TOOLS
 from tools import skill_reference, skill_shims
 from tools.checkout import ROOT_HELP, checkout_root
 
-# The analyze-skill-cost inventory owns the shell-grant rules. A deployed skill cannot import from this
+# The audit-skill inventory owns the shell-grant rules. A deployed skill cannot import from this
 # repository, so this imports the skill's script rather than keeping a second copy here.
-sys.path.insert(0, str(sibling_scripts("analyze-skill-cost")))
+sys.path.insert(0, str(sibling_scripts("audit-skill")))
 import skill_inventory
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -75,8 +75,8 @@ def default_allowed_tools(name: str) -> list[str]:
     return [f"Bash({script})", f"PowerShell({script})", "Read"]
 
 
-# A script finds skill-core by this one fixed line, and every other sibling through skill-core's lookup.
-SKILL_CORE = "skill-core"
+# A script finds ejryan89-skill-core by this one fixed line, and every other sibling through ejryan89-skill-core's
+# lookup.
 SKILL_CORE_LINE = f'sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "{SKILL_CORE}" / "scripts"))'
 
 
@@ -139,7 +139,7 @@ def metadata_text(document: dict[str, object]) -> str:
 
 
 def declared_dependencies(skill_deps: list[str]) -> list[str]:
-    """The skill_deps a skill whose scripts import these skills declares: them and skill-core, sorted."""
+    """The skill_deps a skill whose scripts import these skills declares: them and ejryan89-skill-core, sorted."""
     return sorted(set(skill_deps) | ({SKILL_CORE} if skill_deps else set()))
 
 
@@ -229,7 +229,7 @@ def scaffold(
 ) -> list[str]:
     """Write the new skill's files and return the reference problems a person still has to resolve.
 
-    A skill given skill_deps also depends on skill-core, whose line finds every other sibling.
+    A skill given skill_deps also depends on ejryan89-skill-core, whose line finds every other sibling.
     """
     description, argument_hint, allowed = _frontmatter_values(
         name,
@@ -315,7 +315,7 @@ GRANT_REMAINING = {
 
 def grant_remaining(root: Path, skill_md: Path) -> list[str]:
     """Each allowed-tools grant of the skill at skill_md, relative to root, that validation's grant check still fails,
-    read by the analyze-skill-cost inventory as that check reads it."""
+    read by the audit-skill inventory as that check reads it."""
     found = []
     for line in skill_inventory.tools(root / skill_md):
         kind, _, detail = line.partition(" ")

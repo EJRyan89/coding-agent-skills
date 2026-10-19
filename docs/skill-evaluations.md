@@ -31,7 +31,7 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   grant and a short turn limit, so a session that starts the skill stops soon after. The session started the skill
   when one of its own messages calls the Skill tool naming it. The run writes a trigger record of the skills each
   session started; a session that could not start, timed out, did not list the skill, or ran on another model makes
-  the run count for nothing. `analyze-skill-cost`'s `description` scenario is the worked example.
+  the run count for nothing. `audit-skill`'s `description` scenario is the worked example.
 - **Every shipped skill the model may start** has a trigger scenario, its `description` scenario, and validation
   fails without one ("Validation" in [adding-a-skill.md](adding-a-skill.md#validation)). Its requests are several
   ways a user would ask for what the "Use it when" sentence names, at least one of them without the skill's name, so
@@ -59,13 +59,13 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   an agent loaded from a folder whose workspace trust was never accepted, which a headless session's never is. A run
   whose reviewers did not all run on that ID, a dated suffix allowed, or whose session ran on another, counts for
   nothing, and so does one whose record shows a reviewer the guard did not hold (`files_read` null). The record is
-  the pull request's latest in the run's canary root, read and validated by code-review-core's archive, and must be
+  the pull request's latest in the run's canary root, read and validated by ejryan89-code-review-core's archive, and must be
   the version the run writes: 2 for a re-review, whose canary root first holds the prior record as version 1, and 1
   otherwise, so a run whose own record is missing or unreadable fails rather than being judged by the prior. The
   reviewers' self-check and source commands are granted at the exact quoted paths of the home's scripts. A narrowed run
   can repeat `--scenario` and `--model`; each distinct name counts once, in first-occurrence order, both when
   running scenarios and when judging existing records with `--records`. Without `--scenario`, scenarios are selected
-  in name order. `--records` holds each record to what a run's is held to: code-review-core's record contract, the
+  in name order. `--records` holds each record to what a run's is held to: ejryan89-code-review-core's record contract, the
   version the run writes, the reviewer guard, and each reviewer's model, as the reviewer's result reports it.
 - **What it prints** is `PASS` or `FAIL` per expectation and model, then a table. The tool's `MODELS` constant is the
   one place the models are named, and `tests/tools/test_skill_evals.py` covers the tool with a stub Claude Code and no

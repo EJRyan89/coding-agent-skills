@@ -17,7 +17,7 @@ from types import MappingProxyType
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import change_skill
 
@@ -40,11 +40,11 @@ BASE_FILES = {
     "agents/helper.md": "---\nname: helper\n---\n\nHelp.\n",
     "skills/gamma/SKILL.md": skill_text("Gamma does a thing. Use it when asked."),
     "deploy-meta/gamma.json": json.dumps({"agent_deps": ["helper"]}) + "\n",
-    "skills/code-review-core/SKILL.md": skill_text("The pipeline. Use it when asked."),
-    "skills/code-review-core/scripts/review_pipeline.py": "print('pipeline')\n",
-    "deploy-meta/code-review-core.json": json.dumps({"skill_deps": []}) + "\n",
+    "skills/ejryan89-code-review-core/SKILL.md": skill_text("The pipeline. Use it when asked."),
+    "skills/ejryan89-code-review-core/scripts/review_pipeline.py": "print('pipeline')\n",
+    "deploy-meta/ejryan89-code-review-core.json": json.dumps({"skill_deps": []}) + "\n",
     "skills/review-prs/SKILL.md": skill_text("Reviews. Use it when asked."),
-    "deploy-meta/review-prs.json": json.dumps({"skill_deps": ["code-review-core"]}) + "\n",
+    "deploy-meta/review-prs.json": json.dumps({"skill_deps": ["ejryan89-code-review-core"]}) + "\n",
     "tests/fixtures/skill-evals/review-prs/clean-change/scenario.json": "{}\n",
     "skills/runtime-compatibility.md": "Shared guidance.\n",
     "docs/guide.md": "# Guide\n",
@@ -87,7 +87,7 @@ class SectionTests(unittest.TestCase):
     DOCUMENT = (
         "# Title\n\n## Files\n\nThe paragraph before the first subsection.\n\n"
         "### Granting tools\n\nGrant both shells.\n\n```markdown\n## Not a heading\n```\n\nStill granting.\n\n"
-        "### `analyze-skill-cost`\n\nAudit it.\n\n"
+        "### `audit-skill`\n\nAudit it.\n\n"
         "## Validation\n\nRun the checks.\n"
     )
 
@@ -125,8 +125,8 @@ class SectionTests(unittest.TestCase):
 
     def test_a_title_matches_a_heading_without_its_backticks_and_the_last_section_runs_to_the_end(self) -> None:
         self.assertEqual(
-            (0, ['SECTION "docs/adding-a-skill.md" 17-19 ### `analyze-skill-cost`', "", "Audit it."]),
-            run(["section", "analyze-skill-cost"], self.root),
+            (0, ['SECTION "docs/adding-a-skill.md" 17-19 ### `audit-skill`', "", "Audit it."]),
+            run(["section", "audit-skill"], self.root),
         )
         self.assertEqual(
             (0, ['SECTION "docs/adding-a-skill.md" 21-23 ## Validation', "", "Run the checks."]),
@@ -141,7 +141,7 @@ class SectionTests(unittest.TestCase):
                 "HEADING 1 # Title",
                 "HEADING 3 ## Files",
                 "HEADING 7 ### Granting tools",
-                "HEADING 17 ### `analyze-skill-cost`",
+                "HEADING 17 ### `audit-skill`",
                 "HEADING 21 ## Validation",
                 'FAILED no heading of the document reads "Not a heading"',
             ],
@@ -206,11 +206,11 @@ class GateTests(unittest.TestCase):
 
     def test_a_body_change_owes_the_cost_audit_alone(self) -> None:
         body = skill_text("Alpha does a thing. Use it when asked.", body="Run it twice.\n")
-        self.assertEqual(["GATE analyze-skill-cost alpha"], self.gates(committed={"skills/alpha/SKILL.md": body}))
+        self.assertEqual(["GATE audit-skill alpha"], self.gates(committed={"skills/alpha/SKILL.md": body}))
 
     def test_a_suite_or_script_change_owes_the_cost_audit_alone(self) -> None:
         self.assertEqual(
-            ["GATE analyze-skill-cost alpha"], self.gates(uncommitted={"skills/alpha/scripts/test_alpha.py": "pass\n"})
+            ["GATE audit-skill alpha"], self.gates(uncommitted={"skills/alpha/scripts/test_alpha.py": "pass\n"})
         )
 
     def test_a_description_change_owes_the_reference_the_canary_and_the_trigger_run(self) -> None:
@@ -218,7 +218,7 @@ class GateTests(unittest.TestCase):
         self.assertEqual(
             [
                 "REGENERATE python tools/skill_reference.py --write",
-                "GATE analyze-skill-cost alpha",
+                "GATE audit-skill alpha",
                 "GATE runtime-canary alpha",
                 "GATE evaluate-skill alpha trigger",
             ],
@@ -228,9 +228,7 @@ class GateTests(unittest.TestCase):
     def test_a_skill_with_only_a_trigger_scenario_owes_its_run_for_a_description_change_alone(self) -> None:
         scenario = {"tests/fixtures/skill-evals/alpha/description/scenario.json": '{"mode": "trigger"}\n'}
         body = skill_text("Alpha does a thing. Use it when asked.", body="Run it twice.\n")
-        self.assertEqual(
-            ["GATE analyze-skill-cost alpha"], self.gates(committed={**scenario, "skills/alpha/SKILL.md": body})
-        )
+        self.assertEqual(["GATE audit-skill alpha"], self.gates(committed={**scenario, "skills/alpha/SKILL.md": body}))
         changed = skill_text("Alpha does another thing. Use it when asked.", body="Run it twice.\n")
         self.assertEqual(
             "GATE evaluate-skill alpha trigger", self.gates(uncommitted={"skills/alpha/SKILL.md": changed})[-1]
@@ -249,7 +247,7 @@ class GateTests(unittest.TestCase):
         self.assertEqual(
             [
                 "REGENERATE python tools/skill_reference.py --write",
-                "GATE analyze-skill-cost zeta",
+                "GATE audit-skill zeta",
                 "GATE runtime-canary zeta",
             ],
             self.gates(uncommitted=new),
@@ -263,14 +261,14 @@ class GateTests(unittest.TestCase):
         body = 'Run `python -B "${CLAUDE_SKILL_DIR}/scripts/alpha.py"`.\n'
         changed = skill_text("Alpha does a thing. Use it when asked.", body=body)
         self.assertEqual(
-            ["GATE analyze-skill-cost alpha", "GATE runtime-canary alpha"],
+            ["GATE audit-skill alpha", "GATE runtime-canary alpha"],
             self.gates(uncommitted={"skills/alpha/SKILL.md": changed}),
         )
 
     def test_metadata_owes_the_reference_and_the_canary_only_for_what_a_runtime_finds(self) -> None:
         tools = json.dumps({"tools": ["gh"], "agent_deps": []}) + "\n"
         self.assertEqual(
-            ["REGENERATE python tools/skill_reference.py --write", "GATE analyze-skill-cost alpha"],
+            ["REGENERATE python tools/skill_reference.py --write", "GATE audit-skill alpha"],
             self.gates(committed={"deploy-meta/alpha.json": tools}),
         )
         agents = json.dumps({"tools": ["gh"], "agent_deps": ["helper"]}) + "\n"
@@ -281,7 +279,7 @@ class GateTests(unittest.TestCase):
         self.assertEqual(
             [
                 "REGENERATE python tools/skill_reference.py --write",
-                "GATE analyze-skill-cost alpha",
+                "GATE audit-skill alpha",
                 "GATE runtime-canary alpha",
             ],
             self.gates(uncommitted={"deploy-meta/alpha.json": hidden}),
@@ -293,13 +291,13 @@ class GateTests(unittest.TestCase):
     def test_a_repository_skills_frontmatter_owes_its_shim_and_never_the_canary(self) -> None:
         changed = skill_text("Beta does another thing. Use it when asked.")
         self.assertEqual(
-            ["REGENERATE python tools/skill_shims.py --write", "GATE analyze-skill-cost beta"],
+            ["REGENERATE python tools/skill_shims.py --write", "GATE audit-skill beta"],
             self.gates(committed={".claude/skills/beta/SKILL.md": changed}),
         )
 
     def test_a_changed_agent_owes_the_canary_and_the_audit_of_each_skill_declaring_it(self) -> None:
         self.assertEqual(
-            ["GATE analyze-skill-cost gamma", "GATE runtime-canary gamma"],
+            ["GATE audit-skill gamma", "GATE runtime-canary gamma"],
             self.gates(uncommitted={"agents/helper.md": "---\nname: helper\n---\n\nHelp more.\n"}),
         )
 
@@ -307,10 +305,12 @@ class GateTests(unittest.TestCase):
         self.assertEqual(
             [
                 "REGENERATE python tools/runtime_prompts.py --write",
-                "GATE analyze-skill-cost code-review-core",
+                "GATE audit-skill ejryan89-code-review-core",
                 "GATE evaluate-skill review-prs if-prompt",
             ],
-            self.gates(uncommitted={"skills/code-review-core/scripts/review_prompt.py": "PROMPT = 'review'\n"}),
+            self.gates(
+                uncommitted={"skills/ejryan89-code-review-core/scripts/review_prompt.py": "PROMPT = 'review'\n"}
+            ),
         )
 
     def test_a_tool_the_samples_render_through_owes_them_and_no_skill_gate(self) -> None:
@@ -324,7 +324,7 @@ class GateTests(unittest.TestCase):
         self.assertEqual(
             [
                 "REGENERATE python tools/skill_reference.py --write",
-                "GATE analyze-skill-cost delta",
+                "GATE audit-skill delta",
                 "GATE runtime-canary delta",
                 "GATE evaluate-skill delta trigger",
             ],
@@ -364,7 +364,7 @@ class RuntimePromptSourceTests(unittest.TestCase):
             and node.func.id == "sibling_scripts"
             and isinstance(node.args[0], ast.Constant)
         }
-        self.assertEqual({"code-review-core", "review-document", "review-insights"}, siblings)
+        self.assertEqual({"ejryan89-code-review-core", "review-document", "review-insights"}, siblings)
         skills = {
             source.split("/")[1] for source in change_skill.RUNTIME_PROMPT_SOURCES if source.startswith("skills/")
         }
