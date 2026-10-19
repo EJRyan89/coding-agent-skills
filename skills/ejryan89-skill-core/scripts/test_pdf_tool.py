@@ -178,7 +178,7 @@ class SelectPdftotextTests(unittest.TestCase):
 
     def test_a_path_that_cannot_be_resolved_is_skipped_unprobed(self) -> None:
         with (
-            mock.patch.object(pdf_tool.Path, "resolve", side_effect=OSError("private")),
+            mock.patch.object(Path, "resolve", side_effect=OSError("private")),
             self.assertRaises(pdf_tool.PdfToolRefused) as raised,
         ):
             pdf_tool.select_pdftotext([SUPPORTED], mock.Mock(side_effect=AssertionError("probed")))

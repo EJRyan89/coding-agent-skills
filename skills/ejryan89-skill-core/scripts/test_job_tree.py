@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import ctypes
+import os
 import subprocess
 import sys
 import tempfile
@@ -102,17 +103,17 @@ def ended(pid: int, seconds: float = 20.0) -> bool:
     from ctypes import wintypes
 
     synchronize, wait_object_0, invalid_parameter = 0x00100000, 0, 87
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]  # Windows only
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.OpenProcess.restype = wintypes.HANDLE
     kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     handle = kernel32.OpenProcess(synchronize, False, pid)
     if not handle:
-        error = ctypes.get_last_error()  # type: ignore[attr-defined]  # Windows only
+        error = ctypes.get_last_error()
         if error == invalid_parameter:
             return True  # no process has this PID any more
-        raise ctypes.WinError(error)  # type: ignore[attr-defined]  # Windows only
+        raise ctypes.WinError(error)
     try:
         return bool(kernel32.WaitForSingleObject(handle, int(seconds * 1000)) == wait_object_0)
     finally:
@@ -516,8 +517,8 @@ if sys.platform == "win32":
             kernel32.CreateJobObjectW.return_value = None
             with (
                 mock.patch.object(job_tree, "_kernel32", return_value=kernel32),
-                mock.patch.object(job_tree.ctypes, "get_last_error", return_value=5, create=True),
-                mock.patch.object(job_tree.ctypes, "FormatError", return_value="Access is denied. ", create=True),
+                mock.patch.object(ctypes, "get_last_error", return_value=5, create=True),
+                mock.patch.object(ctypes, "FormatError", return_value="Access is denied. ", create=True),
                 self.assertRaisesRegex(OSError, r"^CreateJobObjectW failed: Access is denied\. \(Windows error 5\)$"),
             ):
                 job_tree.job_holding(1)
@@ -553,9 +554,7 @@ class ProcessTreeTests(unittest.TestCase):
         process = mock.Mock(pid=4242)
         process.poll.return_value = 0
         with (
-            mock.patch.object(
-                job_tree.os, "getpgid", create=True, side_effect=ProcessLookupError(3, "No such process")
-            ),
+            mock.patch.object(os, "getpgid", create=True, side_effect=ProcessLookupError(3, "No such process")),
             mock.patch.object(job_tree, "end_group") as end_group,
         ):
             with GroupTree().hold(process):
@@ -661,14 +660,14 @@ if sys.platform != "win32":
 
         def test_a_group_it_cannot_signal_says_its_processes_may_still_run(self) -> None:
             with (
-                mock.patch.object(job_tree.os, "killpg", side_effect=PermissionError(1, "Operation not permitted")),
+                mock.patch.object(os, "killpg", side_effect=PermissionError(1, "Operation not permitted")),
                 self.assertRaisesRegex(TreeNotEnded, r"^The group's processes may still run: killpg failed: "),
             ):
                 job_tree.end_group(4242)
 
         def test_a_group_with_no_process_left_has_ended(self) -> None:
             with (
-                mock.patch.object(job_tree.os, "killpg", side_effect=ProcessLookupError(3, "No such process")),
+                mock.patch.object(os, "killpg", side_effect=ProcessLookupError(3, "No such process")),
                 mock.patch.object(job_tree, "group_members") as members,
             ):
                 job_tree.end_group(4242)
@@ -676,7 +675,7 @@ if sys.platform != "win32":
 
         def test_processes_that_have_not_ended_in_time_are_reported(self) -> None:
             with (
-                mock.patch.object(job_tree.os, "killpg"),
+                mock.patch.object(os, "killpg"),
                 mock.patch.object(job_tree, "group_members", return_value=[4243]),
                 mock.patch.object(job_tree, "KILL_WAIT_SECONDS", 0.2),
                 self.assertRaisesRegex(
@@ -690,7 +689,7 @@ if sys.platform != "win32":
                 with (
                     self.subTest(raised=raised),
                     mock.patch.object(job_tree, "PROC", str(Path(self.ready.parent) / "not mounted")),
-                    mock.patch.object(job_tree.os, "killpg", side_effect=raised) as killpg,
+                    mock.patch.object(os, "killpg", side_effect=raised) as killpg,
                 ):
                     self.assertEqual(expected, job_tree.group_members(4242))
                 killpg.assert_called_once_with(4242, 0)
@@ -700,7 +699,7 @@ if sys.platform != "win32":
 def test_windows_holds_a_command_in_a_job_and_every_other_platform_in_a_process_group(
     platform: str, kind: type
 ) -> None:
-    with mock.patch.object(job_tree.sys, "platform", platform):
+    with mock.patch.object(sys, "platform", platform):
         tree = job_tree.process_tree(hidden_window=True)
         assert kind is type(tree)
         assert tree.hidden_window

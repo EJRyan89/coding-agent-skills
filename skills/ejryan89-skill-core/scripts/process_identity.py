@@ -95,10 +95,12 @@ def open_failure_status(error: int) -> ProcessStatus:
 def _kernel32() -> Any:
     """kernel32, loaded once, with every function the probe calls declared: a handle is pointer-sized, so it passes as
     a HANDLE, never as the C int ctypes would convert an undeclared argument to."""
+    if sys.platform != "win32":
+        raise OSError("kernel32 is loaded only on Windows")
     import ctypes
     from ctypes import wintypes
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]  # Windows only
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.OpenProcess.restype = wintypes.HANDLE
     kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel32.GetExitCodeProcess.restype = wintypes.BOOL
@@ -112,6 +114,8 @@ def _kernel32() -> Any:
 
 def _windows_status(pid: int) -> ProcessStatus:
     """The process's state as Windows reports it, by a handle that may only query it."""
+    if sys.platform != "win32":
+        raise OSError("a process is queried through kernel32 only on Windows")
     import ctypes
     from ctypes import wintypes
 
@@ -120,7 +124,7 @@ def _windows_status(pid: int) -> ProcessStatus:
     still_active = 259
     handle = kernel32.OpenProcess(query_limited_information, False, pid)
     if not handle:
-        return open_failure_status(ctypes.get_last_error())  # type: ignore[attr-defined]  # Windows only
+        return open_failure_status(ctypes.get_last_error())
     try:
         exit_code = wintypes.DWORD()
         if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):

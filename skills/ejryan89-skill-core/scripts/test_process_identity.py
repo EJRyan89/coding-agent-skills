@@ -125,7 +125,7 @@ class ProcStatusTests(unittest.TestCase):
         ):
             with (
                 self.subTest(raised=raised),
-                mock.patch.object(process_identity.os, "kill", side_effect=raised) as kill,
+                mock.patch.object(os, "kill", side_effect=raised) as kill,
             ):
                 self.assertEqual(expected, proc_status(4251))
             kill.assert_called_once_with(4251, 0)
@@ -139,7 +139,7 @@ class ProcStatusTests(unittest.TestCase):
                 self.assertEqual(ProcessStatus(True, None), proc_status(os.getpid()))
 
     def test_no_signal_is_sent_for_a_pid_of_zero_or_below(self) -> None:
-        with mock.patch.object(process_identity.os, "kill") as kill:
+        with mock.patch.object(os, "kill") as kill:
             self.assertEqual(ProcessStatus(False, None), proc_status(0))
         kill.assert_not_called()
 
@@ -238,8 +238,9 @@ class StatFieldsTests(unittest.TestCase):
                 self.assertEqual([], stat_fields(text))
 
     def test_job_tree_reads_proc_with_this_module_s_definitions(self) -> None:
-        self.assertIs(process_identity.PROC, job_tree.PROC)
-        self.assertIs(process_identity.ENDED_STATES, job_tree.ENDED_STATES)
-        self.assertIs(stat_fields, job_tree.stat_fields)
+        # job_tree imports these and exports none of them, so its namespace is read for each.
+        self.assertIs(process_identity.PROC, vars(job_tree)["PROC"])
+        self.assertIs(process_identity.ENDED_STATES, vars(job_tree)["ENDED_STATES"])
+        self.assertIs(stat_fields, vars(job_tree)["stat_fields"])
         self.assertEqual(Path("/proc"), process_identity.PROC)
         self.assertEqual(frozenset({b"Z", b"X", b"x"}), process_identity.ENDED_STATES)

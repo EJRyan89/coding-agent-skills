@@ -30,7 +30,7 @@ NOT_A_REPOSITORY = "fatal: not a git repository (or any of the parent directorie
 
 def git() -> str:
     """The absolute path the client starts git at."""
-    return git_client.located_command(["git"])[0]
+    return executable_locator.located_command(["git"])[0]
 
 
 # Starts a program that runs on, writes its PID to the file named by its first argument once it has started it, and

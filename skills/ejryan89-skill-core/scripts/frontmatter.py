@@ -272,9 +272,11 @@ def _scalar(text: str) -> str:
         if match is None:
             raise FrontmatterError("a double-quoted value is not closed")
         try:
-            return json.loads('"' + match.group(1).replace("\t", "\\t") + '"')
+            # The match holds no unescaped quote, so the text decoded is one JSON string, which decodes to a str.
+            decoded: str = json.loads('"' + match.group(1).replace("\t", "\\t") + '"')
         except json.JSONDecodeError:
             raise FrontmatterError("a double-quoted value uses an escape this reader does not support") from None
+        return decoded
     if text.startswith("'"):
         match = SINGLE_QUOTED.match(text)
         if match is None:

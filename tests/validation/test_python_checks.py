@@ -45,6 +45,7 @@ from python_checks import (
     ratchet_problems,
     ruff_format_check,
     ruff_lint_check,
+    strict_area_problems,
     type_check_skill_roots,
     type_check_skipped_problems,
     type_ignore_without_reason,
@@ -208,6 +209,18 @@ class PythonChecksFixtures(unittest.TestCase):
             # No cache or other state is written into the checked tree.
             self.assertEqual([], sorted(path.name for path in root.iterdir() if path.name.startswith(".")))
 
+    def test_type_check_in_strict_mode_names_an_error_only_strict_mode_reports(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configuration = root / "pyproject.toml"
+            configuration.write_text('[tool.mypy]\npython_version = "3.11"\n', encoding="utf-8")
+            (root / "module.py").write_text("def answer(value):\n    return value\n", encoding="utf-8")
+            mypy_type_check(root, ["module.py"], configuration)
+            with self.assertRaises(AssertionError) as raised:
+                mypy_type_check(root, ["module.py"], configuration, strict=True)
+            named = r"(?m)^module\.py:1: error: Function is missing a type annotation .*\[no-untyped-def\]\r?$"
+            self.assertRegex(str(raised.exception), named)
+
     def test_type_check_runs_once_per_root(self) -> None:
         configuration = REPOSITORY_ROOT / "pyproject.toml"
         with mock.patch.object(python_checks, "mypy_type_check") as check:
@@ -216,7 +229,7 @@ class PythonChecksFixtures(unittest.TestCase):
             self.assertIn(core, jobs)
             jobs[core].run()
             check.assert_called_once_with(
-                REPOSITORY_ROOT, ["deployer", "tools", "deploy.py", "tests", "conftest.py"], configuration
+                REPOSITORY_ROOT, ["deployer", "tools", "deploy.py", "tests", "conftest.py"], configuration, strict=False
             )
             # Each skill whose scripts/ holds a module is its own root, checked from inside it as the skill imports.
             roots = type_check_skill_roots()
@@ -227,7 +240,62 @@ class PythonChecksFixtures(unittest.TestCase):
                 with self.subTest(root=name):
                     check.reset_mock()
                     jobs[name].run()
-                    check.assert_called_once_with(root, ["."], configuration)
+                    # The first strict area, pinned as a literal, runs in strict mode under the name it always had.
+                    strict = relative(root) == "skills/ejryan89-skill-core/scripts"
+                    check.assert_called_once_with(root, ["."], configuration, strict=strict)
+
+    def test_the_strict_list_only_grows_and_names_areas_checked_on_their_own(self) -> None:
+        pinned = ("skills/alpha/scripts",)
+        files = {
+            "skills/alpha/SKILL.md": "",
+            "skills/alpha/scripts/run.py": "",
+            "skills/beta/SKILL.md": "",
+            "skills/beta/scripts/run.py": "",
+            "deployer/__init__.py": "",
+        }
+
+        def problems(table: str) -> list[str]:
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                write_fixture_tree(root, {**files, "pyproject.toml": table})
+                return strict_area_problems(root, pinned)
+
+        self.assertEqual([], problems('[tool.validation]\nmypy-strict = ["skills/alpha/scripts"]\n'))
+        # An area added beside the pinned one passes.
+        self.assertEqual(
+            [], problems('[tool.validation]\nmypy-strict = ["skills/alpha/scripts", "skills/beta/scripts"]\n')
+        )
+        # An area removed fails, however the rest of the list is left.
+        removed = (
+            "pyproject.toml: [tool.validation] mypy-strict lacks skills/alpha/scripts, which is checked in strict "
+            "mode; an area joins the list and never leaves it, so fix the errors strict mode reports instead"
+        )
+        self.assertEqual([removed], problems("[tool.validation]\nmypy-strict = []\n"))
+        self.assertEqual([removed], problems('[tool.validation]\nmypy-strict = ["skills/beta/scripts"]\n'))
+        # A list that is missing or holds anything but paths is refused whole.
+        malformed = ["pyproject.toml: [tool.validation] mypy-strict must be a list of paths from the repository root"]
+        for table in (
+            "",
+            "[tool.validation]\n",
+            '[tool.validation]\nmypy-strict = "skills/alpha/scripts"\n',
+            '[tool.validation]\nmypy-strict = ["skills/alpha/scripts", 1]\n',
+        ):
+            with self.subTest(table=table):
+                self.assertEqual(malformed, problems(table))
+        # An area no run checks on its own could not be checked in strict mode, and an area is named once.
+        self.assertEqual(
+            [
+                "pyproject.toml: [tool.validation] mypy-strict names deployer, which validation does not type-check "
+                "in a run of its own",
+                "pyproject.toml: [tool.validation] mypy-strict names skills/gamma/scripts, which validation does not "
+                "type-check in a run of its own",
+                "pyproject.toml: [tool.validation] mypy-strict names skills/alpha/scripts more than once",
+            ],
+            problems(
+                '[tool.validation]\nmypy-strict = ["skills/alpha/scripts", "deployer", "skills/gamma/scripts", '
+                '"skills/alpha/scripts"]\n'
+            ),
+        )
 
     def test_type_check_roots_are_the_scripts_of_every_shipped_and_repository_skill(self) -> None:
         files = {

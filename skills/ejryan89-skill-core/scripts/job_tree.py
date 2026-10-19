@@ -162,9 +162,11 @@ def _kill(process: subprocess.Popen[Any]) -> None:
 
 @functools.cache
 def _kernel32() -> Any:
+    if sys.platform != "win32":
+        raise OSError("kernel32 is loaded only on Windows")
     from ctypes import wintypes
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]  # Windows only
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateJobObjectW.restype = wintypes.HANDLE
     kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
     kernel32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
@@ -193,9 +195,18 @@ def _kernel32() -> Any:
     return kernel32
 
 
+def _last_error() -> int:
+    """The Windows error the calling thread's last kernel32 call set."""
+    if sys.platform != "win32":
+        raise OSError("a Windows error is read only on Windows")
+    return ctypes.get_last_error()
+
+
 def _failed(call: str) -> OSError:
-    error = ctypes.get_last_error()  # type: ignore[attr-defined]  # Windows only
-    reason = ctypes.FormatError(error).strip()  # type: ignore[attr-defined]  # Windows only
+    if sys.platform != "win32":
+        raise OSError("a Windows error is read only on Windows")
+    error = _last_error()
+    reason = ctypes.FormatError(error).strip()
     return OSError(f"{call} failed: {reason} (Windows error {error})")
 
 
@@ -219,7 +230,7 @@ def _process_ids(job: int) -> list[int]:
             job, JOB_OBJECT_BASIC_PROCESS_ID_LIST, ctypes.byref(listing), ctypes.sizeof(listing), None
         ):
             return [int(pid) for pid in listing.ProcessIdList[: listing.NumberOfProcessIdsInList]]
-        if ctypes.get_last_error() != ERROR_MORE_DATA:  # type: ignore[attr-defined]  # Windows only
+        if _last_error() != ERROR_MORE_DATA:
             raise _failed("QueryInformationJobObject")
         room = max(room * 2, listing.NumberOfAssignedProcesses)
 
@@ -239,7 +250,7 @@ def _watch(job: int, watched: dict[int, int], unopened: dict[int, OSError]) -> O
         handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
         if handle:
             watched[pid] = handle
-        elif open_failure_status(ctypes.get_last_error()).alive:  # type: ignore[attr-defined]  # Windows only
+        elif open_failure_status(_last_error()).alive:
             unopened[pid] = _failed("OpenProcess")
     return None
 
@@ -366,7 +377,7 @@ def resume(pid: int) -> None:
                 resumed += 1
             call = "Thread32Next"
             listed = kernel32.Thread32Next(snapshot, ctypes.byref(entry))
-        if ctypes.get_last_error() != ERROR_NO_MORE_FILES:  # type: ignore[attr-defined]  # Windows only
+        if _last_error() != ERROR_NO_MORE_FILES:
             raise _failed(call)
     finally:
         kernel32.CloseHandle(snapshot)
@@ -386,6 +397,9 @@ def _resume_thread(thread_id: int) -> None:
         kernel32.CloseHandle(thread)
 
 
+# The group tree calls os.getpgid and os.killpg, which Windows lacks. The suites run it on Windows too, with those calls
+# stubbed, so it takes no platform guard as the job tree's helpers do; each call's type: ignore, which only a check on
+# Windows uses, also names unused-ignore, so a strict check elsewhere does not report it.
 class GroupTree:
     """The process tree of one command where there are no job objects: see the module's description. `hidden_window`
     is taken for the surface `JobTree` has and changes nothing, since a program here opens no window by starting."""
@@ -403,7 +417,7 @@ class GroupTree:
         # The command leads its own session, so its process group's ID is its PID, which names no other process while
         # its caller's Popen has not reaped it, nor any other group while one of the group's processes runs.
         try:
-            leads = os.getpgid(process.pid) == process.pid  # type: ignore[attr-defined]  # Unix only
+            leads = os.getpgid(process.pid) == process.pid  # type: ignore[attr-defined, unused-ignore]  # Unix only
         except ProcessLookupError:
             leads = True  # already reaped, so nothing of it is left to hold but what end_group finds
         if not leads and process.poll() is None:
@@ -420,7 +434,7 @@ def end_group(group: int) -> None:
     """Kill every process of the process group `group`, and return once none is running; raises TreeNotEnded when they
     cannot be killed or have not ended within KILL_WAIT_SECONDS."""
     try:
-        os.killpg(group, signal.SIGKILL)  # type: ignore[attr-defined]  # Unix only
+        os.killpg(group, signal.SIGKILL)  # type: ignore[attr-defined, unused-ignore]  # Unix only
     except ProcessLookupError:
         return  # no process of the group is left
     except OSError as error:
@@ -443,7 +457,7 @@ def group_members(group: int) -> list[int]:
         entries = [entry.name for entry in Path(PROC).iterdir()]
     except OSError:
         try:
-            os.killpg(group, 0)  # type: ignore[attr-defined]  # Unix only
+            os.killpg(group, 0)  # type: ignore[attr-defined, unused-ignore]  # Unix only
         except ProcessLookupError:
             return []
         return [group]

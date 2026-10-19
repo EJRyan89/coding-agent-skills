@@ -15,7 +15,6 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import atomic_file
 from atomic_file import UnfinishedCopyError, replace_bytes, replace_text
 
 
@@ -53,16 +52,16 @@ class ReplaceTests(unittest.TestCase):
             real_close(descriptor)
 
         with (
-            mock.patch.object(atomic_file.tempfile, "mkstemp", mkstemp),
-            mock.patch.object(atomic_file.os, "close", close),
+            mock.patch.object(tempfile, "mkstemp", mkstemp),
+            mock.patch.object(os, "close", close),
         ):
             yield opened, closes, reused
 
     def test_each_failure_closes_the_descriptor_once_leaves_the_target_and_removes_the_copy(self) -> None:
         for name, failure in (
             ("chmod", mock.patch.object(Path, "chmod", side_effect=OSError("synthetic chmod"))),
-            ("write", mock.patch.object(atomic_file.os, "write", side_effect=OSError("synthetic write"))),
-            ("fsync", mock.patch.object(atomic_file.os, "fsync", side_effect=OSError("synthetic fsync"))),
+            ("write", mock.patch.object(os, "write", side_effect=OSError("synthetic write"))),
+            ("fsync", mock.patch.object(os, "fsync", side_effect=OSError("synthetic fsync"))),
             ("replace", mock.patch.object(Path, "replace", side_effect=OSError("synthetic replace"))),
         ):
             with self.subTest(failure=name), tempfile.TemporaryDirectory() as temporary:
@@ -87,7 +86,7 @@ class ReplaceTests(unittest.TestCase):
         for name, failure, raised in (
             (
                 "interrupted write",
-                mock.patch.object(atomic_file.os, "write", side_effect=KeyboardInterrupt),
+                mock.patch.object(os, "write", side_effect=KeyboardInterrupt),
                 KeyboardInterrupt,
             ),
             (
@@ -95,7 +94,7 @@ class ReplaceTests(unittest.TestCase):
                 mock.patch.object(Path, "replace", side_effect=KeyboardInterrupt),
                 KeyboardInterrupt,
             ),
-            ("defect", mock.patch.object(atomic_file.os, "fsync", side_effect=ValueError("synthetic")), ValueError),
+            ("defect", mock.patch.object(os, "fsync", side_effect=ValueError("synthetic")), ValueError),
         ):
             with self.subTest(failure=name), tempfile.TemporaryDirectory() as temporary:
                 path = Path(temporary) / "state.json"
@@ -117,7 +116,7 @@ class ReplaceTests(unittest.TestCase):
             path.write_bytes(b"previous\n")
             with (
                 self.watched_descriptors() as (opened, closes, reused),
-                mock.patch.object(atomic_file.os, "write", short_write),
+                mock.patch.object(os, "write", short_write),
             ):
                 replace_text(path, "café\nnext\n")
             self.assertEqual(1, len(opened))

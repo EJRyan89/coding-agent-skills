@@ -143,6 +143,13 @@ mypy_path = [
     "$MYPY_CONFIG_FILE_DIR/tests/validation",
 ]
 
+# The areas mypy checks in strict mode, each a directory tests/run_validation.py type-checks in a run of its own, as a
+# path from this root. mypy takes strict for a whole run, never for one module, so the runner reads this list and adds
+# --strict to each listed area's run, with the [tool.mypy] configuration above. Areas join in stages and none leaves:
+# tests/validation/python_checks.py fails when an area it pins is missing here.
+[tool.validation]
+mypy-strict = ["skills/ejryan89-skill-core/scripts"]
+
 # mutmut reads its configuration from the working directory; tools/mutation_gate.py makes its mutants from this root
 # and chooses the modules itself, so this names only where they may come from.
 [tool.mutmut]

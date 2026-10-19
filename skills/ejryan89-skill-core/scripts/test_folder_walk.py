@@ -223,7 +223,7 @@ class FailureTests(WalkTestCase):
                 raise PermissionError(13, "Access is denied")
             return listing(path)
 
-        with mock.patch.object(folder_walk.os, "scandir", scandir):
+        with mock.patch.object(os, "scandir", scandir):
             walk = walk_files(self.root, every_file)
         self.assertEqual(["a/open.txt", "b/open.txt"], self.files(walk))
         self.assertEqual(
