@@ -2631,7 +2631,7 @@ class EvaluateTests(unittest.TestCase):
         self.assertIn("PASS review-document committed-edit haiku only_at export-download-links.md:17", lines)
         written = self.results.read_text(encoding="utf-8")
         self.assertIn(
-            "| review-document | haiku | claude-haiku-5-5 | 25/25 | committed-edit 3/3, design-clean 2/2, "
+            "| review-document | haiku | claude-haiku-5-5 | 25/25 | 1 | committed-edit 3/3, design-clean 2/2, "
             "design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5 | "
             "2.1.291 | 2026-10-08 |",
             written,
@@ -2786,7 +2786,7 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(1, status)
         self.assertIn("REVIEWER haiku none", lines)
         self.assertIn(
-            "| review-prs | haiku | not run | 0/21 | the run recorded no review |",
+            "| review-prs | haiku | not run | 0/21 | 1 | the run recorded no review |",
             self.results.read_text(encoding="utf-8"),
         )
 
@@ -2815,7 +2815,7 @@ class EvaluateTests(unittest.TestCase):
         )
         results = self.results.read_text(encoding="utf-8")
         self.assertIn(
-            "| review-prs | haiku | not run | 0/21 | the run recorded no review; Claude Code exited with code 1; "
+            "| review-prs | haiku | not run | 0/21 | 1 | the run recorded no review; Claude Code exited with code 1; "
             "denied 1 command |",
             results,
         )
@@ -2976,7 +2976,7 @@ class EvaluateTests(unittest.TestCase):
         written = self.results.read_text(encoding="utf-8")
         for model, identifier in skill_evals.MODELS.items():
             self.assertIn(
-                f"| review-repository | {model} | {identifier} | 11/11 | branch-name-command 1/1, build-grant 1/1, "
+                f"| review-repository | {model} | {identifier} | 11/11 | 1 | branch-name-command 1/1, build-grant 1/1, "
                 "drifted-guide 2/2, misstated-exit-status 1/1, tested-change 1/1, text-read-policy 1/1, "
                 "undocumented-change 1/1, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 "
                 "| claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
@@ -3321,7 +3321,7 @@ RESULTS_LINES = RESULTS_TEXT.split("\n")
         ("line 7 of the results file is not a row", 6, "a hand note"),
         ("line 8 of the results file is not a row", 7, f"{RESULTS_LINES[7]} n |"),
         (
-            "line 6 of the results file is not a row of the table's 8 columns naming a skill",
+            "line 6 of the results file is not a row of the table's 9 columns naming a skill",
             5,
             RESULTS_LINES[5].replace("alpha", " "),
         ),
