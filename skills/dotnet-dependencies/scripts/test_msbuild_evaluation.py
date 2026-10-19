@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import msbuild_evaluation
 from msbuild_evaluation import ProjectFile, Sources, Unsettled, read_project
-from msbuild_reader import PackageRef, Unreadable
+from msbuild_reader import PackageRef, Unreadable, parse_xml
 
 LEGACY_PROJECT = """<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
@@ -745,7 +745,7 @@ class EvaluationTests(unittest.TestCase):
         sources = Sources(self.root)
         parsed: list[Path] = []
         evaluated: list[object] = []
-        parse = msbuild_evaluation.parse_xml
+        parse = parse_xml
         evaluation = msbuild_evaluation.Evaluation.__init__
 
         def parse_counting(path: Path) -> object:

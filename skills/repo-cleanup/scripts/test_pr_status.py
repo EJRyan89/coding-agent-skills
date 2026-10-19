@@ -51,7 +51,7 @@ RELEASE_SQUASH = "6" * 40
 class Recorder:
     """A gh runner that records every call, without the leading `gh`, and answers it with `answer`."""
 
-    def __init__(self, answer: Callable[[list[str]], subprocess.CompletedProcess]) -> None:
+    def __init__(self, answer: Callable[[list[str]], subprocess.CompletedProcess[str]]) -> None:
         self.answer = answer
         self.calls: list[list[str]] = []
 
@@ -68,7 +68,7 @@ def responder(stdout: str = "[]", returncode: int = 0, stderr: str = "") -> Reco
     return Recorder(lambda arguments: subprocess.CompletedProcess(["gh", *arguments], returncode, stdout, stderr))
 
 
-def pull(state: str, sha: str = TIP, owner: str = "owner", name: str = "repo", base: object = "main") -> dict:
+def pull(state: str, sha: str = TIP, owner: str = "owner", name: str = "repo", base: object = "main") -> dict[str, Any]:
     return {
         "number": 1,
         "state": state,
@@ -96,11 +96,11 @@ def main_only(same_change: Callable[[str, str], bool] = never) -> Bases:
     return {"main": BaseTests(in_main, same_change)}.get
 
 
-def listing(*pulls: dict) -> str:
+def listing(*pulls: dict[str, Any]) -> str:
     return json.dumps(list(pulls))
 
 
-def state_of(*pulls: dict) -> str:
+def state_of(*pulls: dict[str, Any]) -> str:
     return classify("owner/repo", "topic", TIP, runner=responder(listing(*pulls)))
 
 
@@ -189,7 +189,7 @@ class ClassifyTests(unittest.TestCase):
 def router(pulls: str, commits: str = "", returncode: int = 0, stderr: str = "") -> Recorder:
     """Answers `pr list` with pulls and the pull request commits query with commits, recording every call."""
 
-    def answer(arguments: list[str]) -> subprocess.CompletedProcess:
+    def answer(arguments: list[str]) -> subprocess.CompletedProcess[str]:
         if arguments[0] == "api":
             return subprocess.CompletedProcess(["gh", *arguments], returncode, commits, stderr)
         return subprocess.CompletedProcess(["gh", *arguments], 0, pulls, "")
@@ -208,7 +208,9 @@ UPDATED = history((TIP, BASE), (UPDATE, TIP, MAIN_NOW))
 
 
 class UpdatedPullRequestTests(unittest.TestCase):
-    def state(self, head: str, commits: str, upstream: str | None = None, state: str = "MERGED", **pull_fields) -> str:
+    def state(
+        self, head: str, commits: str, upstream: str | None = None, state: str = "MERGED", **pull_fields: str
+    ) -> str:
         run = router(listing(dict(pull(state, head, **pull_fields), number=7)), commits)
         self.runner = run
         return classify("owner/repo", "topic", TIP, upstream, runner=run, bases=main_only(), default_base="main")
@@ -294,7 +296,7 @@ def commits_call(number: int) -> list[str]:
 
 
 def outcome(
-    *pulls: dict,
+    *pulls: dict[str, Any],
     upstream: str | None = None,
     bases: Bases | None = None,
     commits: dict[int, str] | None = None,
@@ -303,7 +305,7 @@ def outcome(
     """classify called directly on the listed pulls: its state and the exact gh calls it made."""
     answers = commits or {}
 
-    def answer(arguments: list[str]) -> subprocess.CompletedProcess:
+    def answer(arguments: list[str]) -> subprocess.CompletedProcess[str]:
         if arguments[0] == "api":
             number = int(arguments[3].split("/")[4])
             return subprocess.CompletedProcess(["gh", *arguments], 0, answers[number], "")
@@ -1001,7 +1003,7 @@ class BranchClassificationTests(GitFixture):
     """The branch's tips, the base's history, and its pull requests together, as repo_cleanup's
     pull_state reads them."""
 
-    def state(self, run, with_bases: bool = False) -> str:
+    def state(self, run: Recorder, with_bases: bool = False) -> str:
         head, upstream = branch_tips(str(self.clone), "topic")
         bases = fetched_bases(str(self.clone)) if with_bases else None
         return classify("owner/repo", "topic", head, upstream, run, bases, "main")
@@ -1129,7 +1131,7 @@ class TrackingBaseClassificationTests(SquashFixture):
         pytest.param((pull("CLOSED"), pull("OPEN", owner="fork")), id="an open one from a fork beside a closed one"),
     ],
 )
-def test_any_open_pull_request_makes_the_branch_active(pulls: tuple[dict, ...]) -> None:
+def test_any_open_pull_request_makes_the_branch_active(pulls: tuple[dict[str, Any], ...]) -> None:
     assert state_of(*pulls) == "OPEN"
 
 
@@ -1329,7 +1331,9 @@ def test_listing_problems_are_refused_with_their_exact_message(run: Recorder, me
         pytest.param("UNMATCHED", (dict(pull("MERGED"), headRefOid=None),), {}, id="merged without a head commit"),
     ],
 )
-def test_each_outcome_with_its_calls(expected: str, pulls: tuple[dict, ...], arguments: dict[str, Any]) -> None:
+def test_each_outcome_with_its_calls(
+    expected: str, pulls: tuple[dict[str, Any], ...], arguments: dict[str, Any]
+) -> None:
     assert (expected, [LIST_CALL]) == outcome(*pulls, **arguments)
 
 
@@ -1355,7 +1359,7 @@ def test_each_outcome_with_its_calls(expected: str, pulls: tuple[dict, ...], arg
     ],
 )
 def test_a_merged_pull_request_updated_after_the_tip_is_queried_only_when_it_qualifies(
-    expected: str, pulls: tuple[dict, ...], arguments: dict[str, Any], calls: list[list[str]]
+    expected: str, pulls: tuple[dict[str, Any], ...], arguments: dict[str, Any], calls: list[list[str]]
 ) -> None:
     options: dict[str, Any] = {"bases": main_only(), "commits": {7: UPDATED}, **arguments}
     assert (expected, calls) == outcome(*pulls, **options)
@@ -1423,7 +1427,7 @@ def test_a_merged_pull_request_updated_after_the_tip_is_queried_only_when_it_qua
 )
 def test_a_merge_commit_whose_change_is_the_branches_proves_a_rewritten_tip_merged(
     expected: str,
-    pulls: tuple[dict, ...],
+    pulls: tuple[dict[str, Any], ...],
     arguments: dict[str, Any],
     calls: list[list[str]],
     compared: list[tuple[str, str]],
@@ -1507,7 +1511,7 @@ def test_a_pull_requests_own_base_name_is_looked_up_as_given(name: str) -> None:
     ],
 )
 def test_an_upstream_the_pull_requests_base_holds_blocks_no_proof(
-    expected: str, pulls: tuple[dict, ...], upstream: str, calls: list[list[str]]
+    expected: str, pulls: tuple[dict[str, Any], ...], upstream: str, calls: list[list[str]]
 ) -> None:
     bases: Bases = {
         "main": BaseTests(in_main, lambda tip, merge_commit: True),

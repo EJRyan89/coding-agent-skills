@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import pytest
@@ -20,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import memory_audit
 import skill_roots
 from flat_text import flat_text
-from git_client import MISSING_GIT, GitError, GitResult
+from git_client import MISSING_GIT, GitClient, GitError, GitResult
 
 
 def temporary_store_folds_case() -> bool:
@@ -143,10 +144,10 @@ class MemoryAuditTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._temporary.cleanup()
 
-    def run_audit(self, **options) -> dict:
+    def run_audit(self, **options: Any) -> dict[str, Any]:
         return memory_audit.audit(self.memory_dir, self.repo, **options)
 
-    def by_file(self, result: dict) -> dict[str, dict]:
+    def by_file(self, result: dict[str, Any]) -> dict[str, dict[str, Any]]:
         return {entry["file"]: entry for entry in result["memories"]}
 
     def test_index_consistency_is_reported(self) -> None:
@@ -847,7 +848,7 @@ class ReindexTests(unittest.TestCase):
 
     def test_a_failed_write_is_the_last_line_and_leaves_no_temporary_file(self) -> None:
         write(self.memory_dir / "one.md", memory("one", "Body."))
-        with mock.patch.object(memory_audit.os, "replace", side_effect=PermissionError(13, "Access is denied")):
+        with mock.patch.object(os, "replace", side_effect=PermissionError(13, "Access is denied")):
             lines = self.reindex("--write", code=1)
         self.assertEqual(
             ["INDEX_LINE one.md", "ADDED one.md", f"FAILED cannot write {self.index.as_posix()}: Access is denied"],
@@ -1192,7 +1193,7 @@ class ResolveTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._temporary.cleanup()
 
-    def resolve(self, environment: dict[str, str] | None = None, repo: Path | None = None) -> dict:
+    def resolve(self, environment: dict[str, str] | None = None, repo: Path | None = None) -> dict[str, Any]:
         return memory_audit.resolve(repo or self.repo, self.home, environment or {}, self.managed)
 
     def derived(self, root: Path | None = None) -> Path:
@@ -1435,7 +1436,7 @@ class ResolveTests(unittest.TestCase):
         for supplied, patch in (
             ("tracked", None),
             ("a symbolic link", mock.patch.object(Path, "is_symlink", return_value=True)),
-            ("unknown to git", mock.patch.object(memory_audit.GitClient, "run", side_effect=GitError("no git"))),
+            ("unknown to git", mock.patch.object(GitClient, "run", side_effect=GitError("no git"))),
         ):
             with self.subTest(supplied=supplied):
                 if patch is None:
@@ -1615,10 +1616,10 @@ class ResolveTests(unittest.TestCase):
             (GitResult(128, "", refused), flat_text(refused)),
         ):
             if isinstance(failure, GitError):
-                patch = mock.patch.object(memory_audit.GitClient, "run", side_effect=failure)
+                patch = mock.patch.object(GitClient, "run", side_effect=failure)
                 shown = str(failure)
             else:
-                patch = mock.patch.object(memory_audit.GitClient, "run", return_value=failure)
+                patch = mock.patch.object(GitClient, "run", return_value=failure)
             for arguments, cwd in (((), worktree), (("--repo", str(worktree)), self.root)):
                 with self.subTest(failure=shown, arguments=arguments), patch:
                     self.assertEqual(
@@ -1799,7 +1800,7 @@ class SkillSourceTests(unittest.TestCase):
             mock.patch.object(Path, "home", return_value=self.home),
             mock.patch.object(skill_roots, "SKILLS_ROOT", self.skills_root),
             mock.patch.object(Path, "cwd", return_value=self.repo),
-            mock.patch.object(memory_audit.GitClient, "run", side_effect=GitError(MISSING_GIT, kind="prerequisite")),
+            mock.patch.object(GitClient, "run", side_effect=GitError(MISSING_GIT, kind="prerequisite")),
         ):
             result = run_main("skill-source", "demo", "--home", str(self.home))
         self.assertEqual(

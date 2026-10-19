@@ -16,9 +16,10 @@ from typing import Any, ClassVar
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from github_client import CommandResult
+from github_client import CommandResult, GitHubError
 from pr_change import CHANGED, UNCHANGED, UNKNOWN, ChangeDetector, ComparisonError
-from review_github import GitHubClient, GitHubError
+from review_config import ConfigurationError
+from review_github import GitHubClient
 from typed_fields import FieldError
 from update_pr_dashboard import (
     END_MARKER,
@@ -26,7 +27,6 @@ from update_pr_dashboard import (
     SECTION_TO_REVIEW,
     START_MARKER,
     ComparisonFailures,
-    ConfigurationError,
     TrackerError,
     TrackerFieldError,
     _ai_review,
@@ -69,7 +69,7 @@ class FailingDetector(FakeDetector):
         return super().detect(repository, number, base_ref, since_sha, head_sha)
 
 
-def item(repository: str = "owner/repo", number: int = 1) -> dict:
+def item(repository: str = "owner/repo", number: int = 1) -> dict[str, Any]:
     return {
         "repository": repository,
         "number": number,
@@ -88,7 +88,7 @@ def item(repository: str = "owner/repo", number: int = 1) -> dict:
     }
 
 
-def reviewed(number: int, state: str) -> dict:
+def reviewed(number: int, state: str) -> dict[str, Any]:
     value = item(number=number)
     value["user_review_state"] = state
     value["user_review_sha"] = USER_REVIEWED
@@ -111,10 +111,10 @@ def sections(content: str) -> dict[str, list[str]]:
 
 
 def run(
-    items: list[dict],
+    items: list[dict[str, Any]],
     detector: FakeDetector | None = None,
-    **options,
-) -> tuple[str, list[dict]]:
+    **options: Any,
+) -> tuple[str, list[dict[str, Any]]]:
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         source = root / "input.json"
@@ -128,7 +128,7 @@ def run(
 
 def ai(
     verdict: str, must: int = 0, should: int = 0, suggestion: int = 0, report: str | None = "C:/Reviews/a b/review.md"
-) -> dict:
+) -> dict[str, Any]:
     """A first review's collected result: its findings are its open ledger entries."""
     counts = {"MUST_FIX": must, "SHOULD_FIX": should, "SUGGESTION": suggestion}
     return {
@@ -266,7 +266,7 @@ class LayoutTests(unittest.TestCase):
             addressed: int | None = 0,
             since: int | None = None,
             version: int | None = 3,
-        ) -> dict:
+        ) -> dict[str, Any]:
             return {
                 "open": {"MUST_FIX": must, "SHOULD_FIX": should, "SUGGESTION": suggestion},
                 "addressed": addressed,
@@ -274,10 +274,10 @@ class LayoutTests(unittest.TestCase):
                 "version": version,
             }
 
-        def since(version: int, new: int = 0, addressed: int = 0) -> dict:
+        def since(version: int, new: int = 0, addressed: int = 0) -> dict[str, Any]:
             return {"version": version, "new": new, "addressed": addressed}
 
-        def unreviewed(summary: dict | None, flagged: int = 0) -> dict:
+        def unreviewed(summary: dict[str, Any] | None, flagged: int = 0) -> dict[str, Any]:
             return ai("CHANGES_REQUESTED") | {"ledger": summary, "since_review": None, "flagged": flagged}
 
         open_since_v1 = ai("CHANGES_REQUESTED", suggestion=1) | {"ledger": ledger(1, 0, 1, addressed=3, since=1)}
@@ -647,7 +647,7 @@ class RecordingDetector(FakeDetector):
         return super().detect(repository, number, base_ref, since_sha, head_sha)
 
 
-def dashboard_files(root: Path, dashboard_bytes: bytes, items: list[dict] | None = None) -> tuple[Path, Path]:
+def dashboard_files(root: Path, dashboard_bytes: bytes, items: list[dict[str, Any]] | None = None) -> tuple[Path, Path]:
     source = root / "input.json"
     dashboard = root / "dashboard.md"
     source.write_text(json.dumps([item()] if items is None else items), encoding="utf-8")
@@ -720,7 +720,7 @@ class GitHubRunner:
 
 
 class ReadAheadTests(unittest.TestCase):
-    def items(self, count: int) -> list[dict]:
+    def items(self, count: int) -> list[dict[str, Any]]:
         """Pull requests reviewed by the user and by the AI at earlier commits, each pair of commits its own."""
         items = []
         for number in range(1, count + 1):

@@ -1684,7 +1684,8 @@ def passed_on(line: str, result: dict[str, Any]) -> bool:
     """
     kind, *fields = line.split("\t")
     if kind == "SUMMARY":
-        return result["state"] != "quiet"
+        state: str = result["state"]
+        return state != "quiet"
     if kind == "CHECKOUT" and fields[0] == "failed":
         return True
     if kind in SYNC_KINDS:
@@ -1786,7 +1787,8 @@ def read_record(directory: Path) -> list[dict[str, Any]]:
         or not all(is_entry(entry) for entry in record["repositories"])
     ):
         raise CleanupError(f"{path} is not a repo-cleanup sweep record")
-    return record["repositories"]
+    repositories: list[dict[str, Any]] = record["repositories"]
+    return repositories
 
 
 def aborted_entries(entries: list[dict[str, Any]], aborted: list[str]) -> list[dict[str, Any]]:

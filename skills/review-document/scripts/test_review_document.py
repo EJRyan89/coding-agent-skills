@@ -534,7 +534,7 @@ class LooseFileTests(DocumentTestCase):
             return str(temporary)
 
         with (
-            mock.patch.object(review_document.tempfile, "mkdtemp", side_effect=mkdtemp),
+            mock.patch.object(tempfile, "mkdtemp", side_effect=mkdtemp),
             mock.patch.object(review_runtime, "_long_paths_enabled", return_value=False),
         ):
             code, lines = run_main("build", str(document))
@@ -1476,7 +1476,7 @@ class PullRequestTests(PipelineTestCase):
             return str(temporary)
 
         stub = StubGitHub([[changed("notes/old.md", "removed")]], self.stub().trees)
-        with mock.patch.object(review_document.tempfile, "mkdtemp", side_effect=mkdtemp):
+        with mock.patch.object(tempfile, "mkdtemp", side_effect=mkdtemp):
             code, lines = run_main("build", "octo-org/widgets#7", github=stub.client())
         reason = (
             "octo-org/widgets#7 changes no document that can be reviewed: notes/old.md is removed in the pull request"
@@ -1669,7 +1669,7 @@ class OutputTests(DocumentTestCase):
             temporary.mkdir()
             return str(temporary)
 
-        with mock.patch.object(review_document.tempfile, "mkdtemp", side_effect=mkdtemp):
+        with mock.patch.object(tempfile, "mkdtemp", side_effect=mkdtemp):
             code, lines = run_main("build", str(document))
         reason = "holds $, which a quoted argument does not keep; name another --output"
         self.assertEqual((1, [f"FAILED {temporary.as_posix()} {reason}"]), (code, lines))

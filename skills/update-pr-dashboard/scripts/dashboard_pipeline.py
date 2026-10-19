@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from console import run_main
 from flat_text import flat_text
+from github_client import GitHubError
 from pr_change import FATAL_ERROR_KINDS, ChangeDetector, at_or_before
 from review_archive import ArchiveError, pull_records
 from review_config import (
@@ -47,7 +48,7 @@ from review_config import (
     validate_config,
 )
 from review_flags import FlagError, default_flags_path, load_store
-from review_github import READ, GitHubClient, GitHubError
+from review_github import READ, GitHubClient
 from review_io import PersistenceError, atomic_write_json, map_in_order, read_json, working_path
 from review_operation import reviewed_head
 from review_records import (

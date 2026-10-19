@@ -369,9 +369,11 @@ def subject_key(item: dict[str, Any]) -> tuple[str, ...]:
 
 def describe(item: dict[str, Any]) -> str:
     if item["kind"] == "category":
-        return item["category"]
+        category: str = item["category"]
+        return category
     if item["kind"] == "synthesized":
-        return item["title"]
+        title: str = item["title"]
+        return title
     return f"{item['coverage']} {item['tool']} {item['rule']}"
 
 
