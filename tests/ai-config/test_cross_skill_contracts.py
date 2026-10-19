@@ -422,7 +422,9 @@ class CrossSkillContractTests(unittest.TestCase):
         dispatch = (REPOSITORY_ROOT / "skills/ejryan89-code-review-core/scripts/review_dispatch.py").read_text(
             encoding="utf-8"
         )
-        self.assertIn('REVIEWER_AGENT = "code-review-reviewer"', dispatch)
+        # The deployed agent's name, which a plugin namespaces as <plugin>:code-review-reviewer.
+        self.assertIn("REVIEWER_AGENT = reviewer_agent_type(PLUGIN)", dispatch)
+        self.assertIn('REVIEWER = "code-review-reviewer"', guard.read_text(encoding="utf-8"))
         skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")
         self.assertIn("start one fresh native subagent of type `code-review-reviewer`", skill)
         self.assertIn("If this session has no `code-review-reviewer` type", skill)
@@ -621,10 +623,11 @@ class CrossSkillContractTests(unittest.TestCase):
                 (REPOSITORY_ROOT / "skills/ejryan89-code-review-core/scripts/review_guard.py").read_bytes()
             )
             # The guard imports ejryan89-skill-core's runner, the flattener the runner imports, its typed-field reader,
-            # and the locator that names Python's command from the sibling skill the deployer installs beside it.
+            # the locator that names Python's command, and the lookup that tells a plugin from the deployed home, from
+            # the sibling skill the deployer installs beside it.
             core = profile / ".claude/skills/ejryan89-skill-core/scripts"
             core.mkdir(parents=True)
-            for module in ("console.py", "executable_locator.py", "flat_text.py", "typed_fields.py"):
+            for module in ("console.py", "executable_locator.py", "flat_text.py", "skill_roots.py", "typed_fields.py"):
                 (core / module).write_bytes(
                     (REPOSITORY_ROOT / "skills/ejryan89-skill-core/scripts" / module).read_bytes()
                 )
@@ -641,6 +644,7 @@ class CrossSkillContractTests(unittest.TestCase):
                 "contextlib",
                 "console",
                 "flat_text",
+                "skill_roots",
                 "typed_fields",
             ):
                 (cwd / f"{module}.py").write_text("print('HIJACKED')\nraise SystemExit(0)\n", encoding="utf-8")

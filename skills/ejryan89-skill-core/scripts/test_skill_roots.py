@@ -12,7 +12,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import skill_roots
-from skill_roots import MissingSibling, deployed_skill_roots, sibling_scripts, skills_directory_holding
+from skill_roots import MissingSibling, deployed_skill_roots, plugin_name, sibling_scripts, skills_directory_holding
 
 
 class DeployedSkillRootsTests(unittest.TestCase):
@@ -83,6 +83,7 @@ class SiblingScriptsTests(unittest.TestCase):
                 sibling_scripts(name)
             self.assertEqual(name, caught.exception.name)
             self.assertIn(f"skill {name} has no scripts under {skills}", str(caught.exception))
+            self.assertIn("; deploy the skills that declare it in skill_deps again", str(caught.exception))
 
     def test_a_script_whose_sibling_is_absent_exits_1_without_a_traceback(self) -> None:
         deployed = self.root / "a home" / ".claude" / "skills"
@@ -103,6 +104,43 @@ class SiblingScriptsTests(unittest.TestCase):
         self.assertEqual("", result.stdout)
         self.assertNotIn("Traceback", result.stderr)
         self.assertIn("skill shared-dep has no scripts under", result.stderr)
+
+
+class PluginNameTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.plugin = Path(temporary.name) / "a plugin" / "1.0.0"
+        (self.plugin / "skills" / "ejryan89-skill-core" / "scripts").mkdir(parents=True)
+        patch = mock.patch.object(skill_roots, "SKILLS_ROOT", self.plugin / "skills")
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def write_manifest(self, text: str) -> None:
+        (self.plugin / ".claude-plugin").mkdir(exist_ok=True)
+        (self.plugin / ".claude-plugin" / "plugin.json").write_text(text, encoding="utf-8")
+
+    def test_this_checkout_and_a_skills_directory_without_a_manifest_beside_it_are_no_plugin(self) -> None:
+        self.assertIsNone(plugin_name())
+        with mock.patch.object(skill_roots, "SKILLS_ROOT", Path(__file__).resolve().parents[2]):
+            self.assertIsNone(plugin_name())
+
+    def test_a_plugin_is_named_by_the_manifest_beside_its_skills_directory(self) -> None:
+        self.write_manifest('{"name": "a-suite", "version": "1.0.0"}')
+        self.assertEqual("a-suite", plugin_name())
+
+    def test_a_manifest_that_names_no_plugin_raises(self) -> None:
+        for text in ('{"version": "1.0.0"}', '{"name": ""}', '{"name": 3}', '["a-suite"]'):
+            self.write_manifest(text)
+            with self.subTest(text=text), self.assertRaisesRegex(ValueError, "names no plugin"):
+                plugin_name()
+
+    def test_an_absent_sibling_in_a_plugin_asks_for_the_plugin_again_not_a_deployment(self) -> None:
+        self.write_manifest('{"name": "a-suite"}')
+        with self.assertRaises(MissingSibling) as caught:
+            sibling_scripts("shared-dep")
+        self.assertIn("; update or reinstall the plugin a-suite", str(caught.exception))
+        self.assertNotIn("deploy", str(caught.exception))
 
 
 class SkillsDirectoryHoldingTests(unittest.TestCase):

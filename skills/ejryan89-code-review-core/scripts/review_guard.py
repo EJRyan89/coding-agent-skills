@@ -40,6 +40,12 @@ short: counting never denies a call.
 Other tools pass. Anything the hook cannot evaluate is denied, a call without an agent ID included: a reviewer
 reading the wrong code, or writing another role's result, produces a plausible but wrong review, which is worse
 than a failed one that check reports and retries.
+
+Installed as a Claude Code plugin, the agent cannot carry this hook: a plugin agent's own hooks are ignored, so the
+plugin's hooks file runs it for every matching tool call of every session, and the guard keeps to the plugin's
+reviewer itself. A call with no agent ID comes from the main session, and a call of any other agent type is another
+agent's; both pass. A subagent's call that carries no agent type cannot be placed, so it is denied, and a call of
+the plugin's reviewer, whose type Claude Code namespaces as `<plugin>:code-review-reviewer`, is held as above.
 """
 
 from __future__ import annotations
@@ -57,6 +63,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 from console import run_main
 from executable_locator import PYTHON
+from skill_roots import plugin_name
 from typed_fields import FieldError, FieldReader
 
 EXIT_CONTRACT_EXEMPT = "Claude Code PreToolUse hook protocol: prints a JSON decision and always exits 0"
@@ -93,6 +100,10 @@ SHELL_DRIVE = re.compile(r"^/([A-Za-z])(/|$)")
 NETWORK_OR_DEVICE = re.compile(r"^[\\/]{2}")
 AGENT_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 CLAIMS = Path(tempfile.gettempdir()) / "code-review-reviewer-claims"
+# The subagent every reviewer role runs as, deployed from agents/ with ejryan89-code-review-core, and the plugin these
+# scripts run from, if any, which namespaces it.
+REVIEWER = "code-review-reviewer"
+PLUGIN = plugin_name()
 FIRST = "read the prompt file your task names first"
 ROLE_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 
@@ -359,12 +370,31 @@ def _check(tool: str, tool_input: dict[str, Any], cwd: Path, agent: str) -> None
         _check_bash(tool_input, cwd, claim)
 
 
-def decide(event: dict[str, Any]) -> str | None:
-    """The reason to deny this tool call, or None to allow it."""
+def reviewer_agent_type(plugin: str | None) -> str:
+    """The subagent type a reviewer role starts as: the deployed agent's name, or a plugin's namespaced one."""
+    return REVIEWER if plugin is None else f"{plugin}:{REVIEWER}"
+
+
+def _another_agents_call(event: dict[str, Any], plugin: str) -> bool:
+    """Whether a call the plugin's hook sees is the main session's or another agent's, which the guard leaves alone.
+    Denied when it is a subagent's whose type the event does not give."""
+    if event.get("agent_id") in (None, ""):
+        return True
+    agent_type = event.get("agent_type")
+    if not isinstance(agent_type, str) or not agent_type:
+        raise Denied("the hook event names a subagent but not its type, so the guard cannot tell a reviewer apart")
+    return agent_type != reviewer_agent_type(plugin)
+
+
+def decide(event: dict[str, Any], plugin: str | None = PLUGIN) -> str | None:
+    """The reason to deny this tool call, or None to allow it. `plugin` is the plugin the guard runs from, whose
+    hook sees every session's calls, or None for the deployed agent's own hook."""
     tool = READ.string(event.get("tool_name", ""), "hook event.tool_name", empty=True)
     if tool not in READ_TOOLS | WRITE_TOOLS | {"Bash"}:
         return None
     try:
+        if plugin is not None and _another_agents_call(event, plugin):
+            return None
         try:
             tool_input = READ.json_object(event.get("tool_input"), "hook event.tool_input")
         except FieldError as exc:

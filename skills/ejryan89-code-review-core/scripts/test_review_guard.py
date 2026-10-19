@@ -762,6 +762,48 @@ class FieldKindTests(GuardFixture):
         self.assertFalse(self.claims.exists())
 
 
+class PluginScopeTests(GuardFixture):
+    """As a plugin's hook, the guard sees every session's calls and holds only the plugin's reviewer."""
+
+    def plugin_decide(self, tool: str, agent: str | None, agent_type: str | None, **tool_input: object) -> str | None:
+        event: dict[str, Any] = {"tool_name": tool, "tool_input": tool_input, "cwd": str(self.outside_cwd)}
+        if agent is not None:
+            event["agent_id"] = agent
+        if agent_type is not None:
+            event["agent_type"] = agent_type
+        return guard.decide(event, "a-suite")
+
+    def test_the_checkout_runs_the_deployed_agents_hook_and_names_the_bare_agent(self) -> None:
+        self.assertIsNone(guard.PLUGIN)
+        self.assertEqual("code-review-reviewer", guard.reviewer_agent_type(None))
+        self.assertEqual("a-suite:code-review-reviewer", guard.reviewer_agent_type("a-suite"))
+
+    def test_the_main_session_and_other_agents_pass_wherever_they_read(self) -> None:
+        outside = str(self.checkout / "app" / "x.cs")
+        for agent, agent_type in ((None, None), ("", None), (AGENT, "Explore"), (AGENT, "code-review-reviewer")):
+            with self.subTest(agent=agent, agent_type=agent_type):
+                self.assertIsNone(self.plugin_decide("Read", agent, agent_type, file_path=outside))
+                self.assertIsNone(self.plugin_decide("Bash", agent, agent_type, command="git status"))
+        self.assertFalse(self.claims.exists())
+
+    def test_a_subagent_call_without_its_type_is_denied(self) -> None:
+        for agent_type in (None, "", 3):
+            with self.subTest(agent_type=agent_type):
+                event: dict[str, Any] = {"tool_name": "Read", "tool_input": {"file_path": self.prompt()}}
+                event["agent_id"] = AGENT
+                if agent_type is not None:
+                    event["agent_type"] = agent_type
+                self.assert_denied(guard.decide(event, "a-suite"), "names a subagent but not its type")
+
+    def test_the_plugins_reviewer_is_held_as_the_deployed_one_is(self) -> None:
+        reviewer = "a-suite:code-review-reviewer"
+        outside = str(self.checkout / "app" / "x.cs")
+        self.assert_denied(self.plugin_decide("Bash", AGENT, reviewer, command="git status"), "read the prompt file")
+        self.assertIsNone(self.plugin_decide("Read", AGENT, reviewer, file_path=self.prompt()))
+        self.assert_denied(self.plugin_decide("Read", AGENT, reviewer, file_path=outside), "may only look inside")
+        self.assertIsNone(self.plugin_decide("Write", AGENT, reviewer, file_path=self.result()))
+
+
 class HookTests(GuardFixture):
     def hook(self, stdin: str | bytes, **environment: str) -> subprocess.CompletedProcess[Any]:
         # The hook process finds its runs and claims under the system temporary directory, here this test's own.

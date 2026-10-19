@@ -868,28 +868,73 @@ def test_trigger_scenario_policy_refuses_a_missing_or_unloadable_scenario(
     assert trigger_scenario_problems(tmp_path) == problems
 
 
+GUARD_PATH = "~/.claude/skills/ejryan89-code-review-core/scripts/review_guard.py"
+PLUGIN_GUARD = (
+    "os.path.join(os.environ['CLAUDE_PLUGIN_ROOT'], 'skills', 'ejryan89-code-review-core', 'scripts', "
+    "'review_guard.py')"
+)
+HELPER_HOOKS = (
+    "hooks:\n"
+    "  PreToolUse:\n"
+    '    - matcher: "Read|Bash"\n'
+    "      hooks:\n"
+    "        - type: command\n"
+    "          command: >-\n"
+    '            {{PYTHON}} -I -c "import os, runpy;\n'
+    f"            runpy.run_path(os.path.expanduser('{GUARD_PATH}'))\"\n"
+    "          timeout: 30\n"
+    "          onFailure: block\n"
+)
 PLUGIN_SOURCES = {
-    "skills/alpha/SKILL.md": "---\nname: alpha\n---\n\nRun {{PYTHON}} -B it.\n",
+    "skills/alpha/SKILL.md": "---\nname: alpha\n---\n\nRun {{PYTHON}} -B it, then start `helper`.\n",
     "skills/alpha/scripts/tool.py": "print('tool')\n",
     "skills/alpha/scripts/test_tool.py": "def test_tool():\n    pass\n",
-    "agents/helper.md": "---\nname: helper\n---\n\nHelp.\n",
+    "agents/helper.md": f"---\nname: helper\ntools: Read\n{HELPER_HOOKS}---\n\nHelp.\n",
+    ".claude-plugin/marketplace.json": json.dumps(
+        {"name": "fixture", "plugins": [{"name": "suite", "description": "A suite.", "source": "./suite"}]}
+    ),
 }
+HELPER_COMMAND = f'python -I -c "import os, runpy; runpy.run_path({PLUGIN_GUARD})"'
+HELPER_HANDLER: dict[str, object] = {"type": "command", "command": HELPER_COMMAND, "timeout": 30, "onFailure": "block"}
+PLUGIN_HOOK_FILE = {"hooks": {"PreToolUse": [{"matcher": "Read|Bash", "hooks": [HELPER_HANDLER]}]}}
 
 
-def plugin_files(root: Path) -> dict[str, bytes]:
-    """The files a conforming plugin of the PLUGIN_SOURCES tree holds."""
+def write_plugin_sources(root: Path, files: Mapping[str, str]) -> None:
+    for relative, text in files.items():
+        (root / relative).parent.mkdir(parents=True, exist_ok=True)
+        (root / relative).write_bytes(text.encode("utf-8"))
+
+
+def plugin_files() -> dict[str, bytes]:
+    """The files a conforming plugin of the PLUGIN_SOURCES tree holds, written out as the assembler writes them."""
     return {
-        path: (root / path).read_bytes().replace(b"{{PYTHON}}", b"python")
-        for path in PLUGIN_SOURCES
-        if not path.endswith("test_tool.py")
+        "skills/alpha/SKILL.md": b"---\nname: alpha\n---\n\nRun python -B it, then start `suite:helper`.\n",
+        "skills/alpha/scripts/tool.py": b"print('tool')\n",
+        "agents/helper.md": b"---\nname: helper\ntools: Read\n---\n\nHelp.\n",
+        ".claude-plugin/plugin.json": json.dumps(
+            {"name": "suite", "description": "A suite.", "version": "1.0.0"}
+        ).encode(),
+        "hooks/hooks.json": json.dumps(PLUGIN_HOOK_FILE).encode(),
     }
 
 
 def test_plugin_policy_passes_a_plugin_that_holds_its_sources_with_the_pinned_answers(tmp_path: Path) -> None:
-    write_fixture_tree(tmp_path, PLUGIN_SOURCES)
-    files = plugin_files(tmp_path)
-    assert b"Run python -B it." in files["skills/alpha/SKILL.md"]
+    write_plugin_sources(tmp_path, PLUGIN_SOURCES)
+    assert plugin_tree_problems(tmp_path, {"suite": plugin_files()}) == []
+
+
+def test_plugin_policy_passes_an_agent_without_hooks_and_a_plugin_without_a_hooks_file(tmp_path: Path) -> None:
+    write_plugin_sources(
+        tmp_path, {**PLUGIN_SOURCES, "agents/helper.md": "---\nname: helper\ntools: Read\n---\n\nHelp.\n"}
+    )
+    files = plugin_files()
+    del files["hooks/hooks.json"]
     assert plugin_tree_problems(tmp_path, {"suite": files}) == []
+
+
+def other_hooks(**changes: object) -> bytes:
+    handler = {**HELPER_HANDLER, **changes}
+    return json.dumps({"hooks": {"PreToolUse": [{"matcher": "Read|Bash", "hooks": [handler]}]}}).encode()
 
 
 @pytest.mark.parametrize(
@@ -902,25 +947,59 @@ def test_plugin_policy_passes_a_plugin_that_holds_its_sources_with_the_pinned_an
         ({"skills/alpha/scripts/tool.py": b"print('other')\n"}, "plugin suite: skills/alpha/scripts/tool.py differs"),
         ({"agents/helper.md": b"Help {{HOME}}.\n"}, "plugin suite: agents/helper.md keeps a template token"),
         ({"skills/alpha/scripts/tool.py": None}, "plugin suite: leaves out skills/alpha/scripts/tool.py"),
+        (
+            {"skills/alpha/SKILL.md": b"---\nname: alpha\n---\n\nRun python -B it, then start `helper`.\n"},
+            "plugin suite: skills/alpha/SKILL.md differs",
+        ),
+        (
+            {
+                "agents/helper.md": f"---\nname: helper\ntools: Read\n{HELPER_HOOKS}---\n\nHelp.\n".replace(
+                    "{{PYTHON}}", "python"
+                ).encode()
+            },
+            "plugin suite: agents/helper.md differs",
+        ),
+        (
+            {".claude-plugin/plugin.json": b'{"name": "suite", "description": "Other.", "version": "1"}'},
+            "differs from its marketplace",
+        ),
+        ({".claude-plugin/plugin.json": b'{"name": "suite", "description": "A suite."}'}, "is no manifest of a plugin"),
+        ({".claude-plugin/plugin.json": None}, "is no manifest of a plugin"),
+        ({"hooks/hooks.json": None}, "its agents declare hooks, but it has no hooks/hooks.json"),
+        ({"hooks/hooks.json": b"[]"}, "is not a hooks file of matchers and handlers"),
+        ({"hooks/hooks.json": other_hooks(onFailure="continue")}, "holds onFailure: continue, which no agent declares"),
+        ({"hooks/hooks.json": other_hooks(timeout=600)}, "holds timeout: 600, which no agent declares"),
+        (
+            {"hooks/hooks.json": other_hooks(command=HELPER_COMMAND.replace(PLUGIN_GUARD, f"'{GUARD_PATH}'"))},
+            "holds command: >- python -I -c",
+        ),
     ],
 )
 def test_plugin_policy_refuses_what_its_sources_do_not_hold(
     change: Mapping[str, bytes | None], problem: str, tmp_path: Path
 ) -> None:
-    write_fixture_tree(tmp_path, PLUGIN_SOURCES)
-    files = plugin_files(tmp_path)
+    write_plugin_sources(tmp_path, PLUGIN_SOURCES)
+    files = plugin_files()
     for path, content in change.items():
         if content is None:
             del files[path]
         else:
             files[path] = content
     problems = plugin_tree_problems(tmp_path, {"suite": files})
-    assert len(problems) == 1
-    assert problems[0].startswith(problem)
+    assert len(problems) == 1, problems
+    assert problem in problems[0]
 
 
 def test_plugin_policy_refuses_a_token_the_source_left_with_no_pinned_answer(tmp_path: Path) -> None:
-    write_fixture_tree(tmp_path, {**PLUGIN_SOURCES, "skills/alpha/SKILL.md": "Root {{REPOS_ROOT}}.\n"})
-    assert plugin_tree_problems(tmp_path, {"suite": plugin_files(tmp_path)}) == [
-        "plugin suite: skills/alpha/SKILL.md keeps a template token"
+    write_plugin_sources(tmp_path, {**PLUGIN_SOURCES, "skills/alpha/scripts/tool.py": "Root {{REPOS_ROOT}}.\n"})
+    files = {**plugin_files(), "skills/alpha/scripts/tool.py": b"Root {{REPOS_ROOT}}.\n"}
+    assert plugin_tree_problems(tmp_path, {"suite": files}) == [
+        "plugin suite: skills/alpha/scripts/tool.py keeps a template token"
+    ]
+
+
+def test_plugin_policy_refuses_a_checkout_that_holds_a_plugin_manifest(tmp_path: Path) -> None:
+    write_plugin_sources(tmp_path, {**PLUGIN_SOURCES, ".claude-plugin/plugin.json": "{}"})
+    assert plugin_tree_problems(tmp_path, {"suite": plugin_files()}) == [
+        ".claude-plugin/plugin.json makes the checkout's skills read as a plugin's"
     ]
