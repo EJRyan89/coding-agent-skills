@@ -454,6 +454,23 @@ class NewRepositorySkillTestCase(FixtureRepositoryTestCase):
             code = new_skill.main(["--root", str(self.root), "--repository", *arguments])
         return code, stdout.getvalue(), stderr.getvalue()
 
+    def test_a_shim_write_that_fails_partway_removes_the_skill_and_the_shim_it_wrote(self) -> None:
+        def write_then_fail(root: Path, names: list[str]) -> list[Path]:
+            shim = root / ".agents" / "skills" / "widget-check" / "SKILL.md"
+            shim.parent.mkdir(parents=True)
+            shim.write_text("half a shim\n", encoding="utf-8")
+            raise OSError("disk full")
+
+        before = self.snapshot()
+        with (
+            mock.patch.object(skill_shims, "write", side_effect=write_then_fail),
+            self.assertRaisesRegex(OSError, "disk full"),
+        ):
+            new_skill.scaffold_repository(self.root, "widget-check", DESCRIPTION)
+        self.assertEqual(before, self.snapshot())
+        self.assertFalse((self.root / ".claude" / "skills" / "widget-check").exists())
+        self.assertFalse((self.root / ".agents" / "skills" / "widget-check").exists())
+
     def test_it_writes_the_skill_and_its_shim_and_nothing_a_shipped_skill_needs(self) -> None:
         before = self.snapshot()
         written = new_skill.scaffold_repository(self.root, "widget-check", DESCRIPTION, argument_hint="TARGET")

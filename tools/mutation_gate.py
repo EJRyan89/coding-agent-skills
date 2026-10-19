@@ -22,7 +22,9 @@ subprocess measurement on, which records the lines of the changed modules each s
 one it started with the environment passed on. A mutant then runs the suites that executed its line, fastest first,
 until one fails: the mutant is killed, or timed out when a suite runs past three times its unmutated time. A mutant
 every one of those suites passes survived. A mutant on a line no suite executed is not reached, and a suite that fails
-unmutated is left out and named. The Bash and PowerShell suites run no Python module and are not used.
+unmutated, or whose coverage data `coverage combine` or `coverage json` fails or times out on, is left out and named
+with the step and its output, never read as a suite that reached nothing. The Bash and PowerShell suites run no Python
+module and are not used.
 
 The run is bounded by --minutes (DEFAULT_MINUTES): the reach pass takes at most half of it, and each module then gets an
 equal share of what is left when it starts, so one large module cannot starve the others. The mutants on the lines the
@@ -82,6 +84,8 @@ SUITE_TIME_FACTOR = 3
 MINIMUM_SUITE_SECONDS = 60.0
 # How much of a suite's output is read back: the gate reports a suite's result, never its output.
 OUTPUT_LIMIT = 4096
+# How much of a failed coverage step's output its reason quotes: the end of it, where coverage.py names its error.
+STEP_OUTPUT_CHARACTERS = 300
 
 KILLED = "killed"
 TIMED_OUT = "timed out"
@@ -311,9 +315,21 @@ def coverage_reach(tree: Path, suite: str, modules: Sequence[str], timeout: floa
             return f"failed unmutated with exit code {finished.returncode}"
         report = folder / "report.json"
         for command in (["combine", rcfile, "-q"], ["json", rcfile, "-q", "-o", str(report)]):
-            run_bounded([*python, "coverage", *command], MINIMUM_SUITE_SECONDS, cwd=tree, output_limit=OUTPUT_LIMIT)
-        data = json.loads(report.read_text(encoding="utf-8")) if report.is_file() else {}
-        return Reach(seconds, executed_lines(data, tree, modules))
+            step = f"coverage {command[0]}"
+            try:
+                done = run_bounded(
+                    [*python, "coverage", *command], MINIMUM_SUITE_SECONDS, cwd=tree, output_limit=OUTPUT_LIMIT
+                )
+            except subprocess.TimeoutExpired:
+                return f"timed out in {code(step)}"
+            if done.returncode != 0:
+                output = flat_text((done.stderr + done.stdout).decode("utf-8", "replace"))[-STEP_OUTPUT_CHARACTERS:]
+                return f"failed in {code(step)} with exit code {done.returncode}" + (
+                    f": {code(output)}" if output else ""
+                )
+        if not report.is_file():
+            return f"failed in {code('coverage json')}, which wrote no report"
+        return Reach(seconds, executed_lines(json.loads(report.read_text(encoding="utf-8")), tree, modules))
 
 
 @contextlib.contextmanager

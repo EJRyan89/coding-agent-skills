@@ -38,8 +38,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
 
 import git_worktrees
+from bounded_process import run_bounded
 from console import run_main
 from git_client import GitClient, GitError, GitResult
+from job_tree import process_tree
 
 from deployer import platform_support
 from tools import bash_syntax
@@ -211,6 +213,9 @@ POWERSHELL_READER = Path(__file__).with_name("worktrees-powershell.ps1")
 # Bounds only a pwsh that hangs: reading is linear in the command. Generous, since a command pwsh does not read in time
 # is refused while a hub is guarded, and well inside the hook's own 30-second timeout in .claude/settings.json.
 POWERSHELL_TIMEOUT_SECONDS = 20
+# How much of the reader's output is kept: far more than the events of any command a tool call carries, and a reading
+# cut short is not JSON, so it is a command the guard cannot read rather than one read in part.
+POWERSHELL_OUTPUT_LIMIT = 1 << 22
 MENTIONS_GIT = re.compile(r"git", re.IGNORECASE)
 MENTIONS_WRITING_SUBCOMMAND = re.compile(
     r"\b(?:" + "|".join(map(re.escape, sorted(WRITING_SUBCOMMANDS | {FETCH}))) + r")\b", re.IGNORECASE
@@ -1565,17 +1570,15 @@ def powershell_events(command: str, reading: Reading, depth: int) -> list[dict[s
         return None
     payload = json.dumps({"command": command, "limit": NESTING_LIMIT - depth})
     try:
-        result = subprocess.run(
+        # run_bounded takes git's repository-selecting variables out of the hook's environment, and the tree ends
+        # every process pwsh starts once it has finished or been killed.
+        result = run_bounded(
             [pwsh, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", powershell_reader()],
-            input=base64.b64encode(payload.encode("utf-8")).decode("ascii"),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=dict(reading.environment),
-            timeout=POWERSHELL_TIMEOUT_SECONDS,
-            check=False,
-            **platform_support.hidden_window(),
+            POWERSHELL_TIMEOUT_SECONDS,
+            input_bytes=base64.b64encode(payload.encode("utf-8")),
+            env=reading.environment,
+            output_limit=POWERSHELL_OUTPUT_LIMIT,
+            tree=process_tree(hidden_window=True),
         )
     except subprocess.TimeoutExpired:
         reading.cannot_read(f"pwsh did not read the command within {POWERSHELL_TIMEOUT_SECONDS} seconds")
@@ -1584,9 +1587,10 @@ def powershell_events(command: str, reading: Reading, depth: int) -> list[dict[s
         reading.cannot_read(f"could not start pwsh ({exc})")
         return None
     try:
-        output = json.loads(result.stdout)
+        output = json.loads(result.stdout.decode("utf-8", "replace"))
     except ValueError:
-        reading.cannot_read(f"pwsh could not read the command ({(result.stderr.strip().splitlines() or [''])[0]})")
+        errors = result.stderr.decode("utf-8", "replace").strip().splitlines()
+        reading.cannot_read(f"pwsh could not read the command ({(errors or [''])[0]})")
         return None
     if "error" in output:
         # PowerShell parses a whole script before it runs any of it, so a command that does not parse runs

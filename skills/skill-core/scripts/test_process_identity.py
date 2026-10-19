@@ -174,13 +174,56 @@ class OpenFailureTests(unittest.TestCase):
                 kernel32.OpenProcess.return_value = None
                 with (
                     self.subTest(error=error),
-                    mock.patch("ctypes.WinDLL", return_value=kernel32),
+                    mock.patch.object(process_identity, "_kernel32", return_value=kernel32),
                     mock.patch("ctypes.get_last_error", return_value=error),
                 ):
                     self.assertEqual(expected, process_status(4252))
                 kernel32.OpenProcess.assert_called_once_with(0x1000, False, 4252)
                 kernel32.GetExitCodeProcess.assert_not_called()
                 kernel32.CloseHandle.assert_not_called()
+
+
+class Kernel32Tests(unittest.TestCase):
+    """Every kernel32 function the probe calls is declared, so a pointer-sized handle passes whole."""
+
+    if sys.platform == "win32":
+
+        def test_every_function_the_probe_calls_is_declared(self) -> None:
+            import ctypes
+            from ctypes import wintypes
+
+            handle = ctypes.c_void_p
+            dword = ctypes.c_ulong
+            boolean = ctypes.c_long
+            filetime = ctypes.POINTER(wintypes.FILETIME)
+            kernel32 = process_identity._kernel32()
+            for name, argtypes, restype in (
+                ("OpenProcess", [dword, boolean, dword], handle),
+                ("GetExitCodeProcess", [handle, ctypes.POINTER(dword)], boolean),
+                ("GetProcessTimes", [handle, filetime, filetime, filetime, filetime], boolean),
+                ("CloseHandle", [handle], boolean),
+            ):
+                with self.subTest(function=name):
+                    self.assertEqual(argtypes, getattr(kernel32, name).argtypes)
+                    self.assertIs(restype, getattr(kernel32, name).restype)
+
+        def test_a_handle_above_the_range_of_a_c_int_passes_as_a_handle(self) -> None:
+            import ctypes
+            from ctypes import wintypes
+
+            exit_code = wintypes.DWORD()
+            # No such handle exists, so the call fails as Windows fails it rather than in ctypes' conversion.
+            self.assertFalse(process_identity._kernel32().GetExitCodeProcess(2**40, ctypes.byref(exit_code)))
+
+        def test_kernel32_is_loaded_once_for_every_probe(self) -> None:
+            import ctypes
+
+            process_identity._kernel32.cache_clear()
+            self.addCleanup(process_identity._kernel32.cache_clear)
+            with mock.patch("ctypes.WinDLL", wraps=ctypes.WinDLL) as load:
+                process_status(os.getpid())
+                process_status(os.getpid())
+            load.assert_called_once_with("kernel32", use_last_error=True)
 
 
 class StatFieldsTests(unittest.TestCase):
