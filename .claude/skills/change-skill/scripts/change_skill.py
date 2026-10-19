@@ -91,7 +91,8 @@ SCENARIOS = "tests/fixtures/skill-evals"
 CANARY_KEYS = ("name", "description", "disable-model-invocation", "allowed-tools")
 CANARY_METADATA = ("agent_deps", "shared_deps", "runtime_support", "selectable")
 # What tools/runtime_prompts.py renders its samples from: the skills whose scripts write the prompts, the fixtures it
-# renders them over, and the tools themselves. The suite holds this list to that module's imports.
+# renders them over, and the tools themselves, the skill-evals command line among them with the modules it reads a
+# run's configuration from. The suite holds this list to that module's imports.
 RUNTIME_PROMPT_SOURCES = (
     "skills/code-review-core/",
     "skills/review-document/",
@@ -99,6 +100,9 @@ RUNTIME_PROMPT_SOURCES = (
     "tests/fixtures/skill-evals/review-prs/",
     "tools/runtime_prompts.py",
     "tools/skill_evals.py",
+    "tools/skill_evals_records.py",
+    "tools/skill_evals_runs.py",
+    "tools/skill_evals_scenarios.py",
 )
 SKILL_REFERENCE = "python tools/skill_reference.py --write"
 SKILL_SHIMS = "python tools/skill_shims.py --write"

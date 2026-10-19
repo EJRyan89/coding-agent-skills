@@ -50,16 +50,26 @@ from review_runtime import validate_adapter_manifest
 from test_review_documents import StubPdftotext
 
 from conftest import GitHome
-from deployer import platform_support
-from tools import skill_evals
-from tools.skill_evals import Outcome, RecordError, Scenario, ScenarioError
+from deployer import fsops, platform_support
+from tools import (
+    runtime_canary,
+    skill_evals,
+    skill_evals_judging,
+    skill_evals_records,
+    skill_evals_results,
+    skill_evals_runs,
+    skill_evals_scenarios,
+)
+from tools.skill_evals_judging import Outcome
+from tools.skill_evals_records import RecordError
+from tools.skill_evals_scenarios import Scenario, ScenarioError
 
 # Runs no test of its own; the test functions below check through its assertions, as the classes do.
 CHECK = unittest.TestCase()
 
-REVIEW_PRS = skill_evals.SCENARIO_ROOT / "review-prs"
-REVIEW_DOCUMENT = skill_evals.SCENARIO_ROOT / "review-document"
-REVIEW_REPOSITORY = skill_evals.SCENARIO_ROOT / "review-repository"
+REVIEW_PRS = skill_evals_scenarios.SCENARIO_ROOT / "review-prs"
+REVIEW_DOCUMENT = skill_evals_scenarios.SCENARIO_ROOT / "review-document"
+REVIEW_REPOSITORY = skill_evals_scenarios.SCENARIO_ROOT / "review-repository"
 REVIEW_REPOSITORY_SCENARIOS = (
     "branch-name-command",
     "build-grant",
@@ -102,7 +112,9 @@ REVIEW_REPOSITORY_UNPLACED = (
     "docs/skills.md",
     "tests/tools/test_skill_evals.py",
 )
-SUITE_REFERENCE = skill_evals.REPOSITORY_ROOT / "skills" / "code-review-core" / "references" / "design-reviewer.md"
+SUITE_REFERENCE = (
+    skill_evals_scenarios.REPOSITORY_ROOT / "skills" / "code-review-core" / "references" / "design-reviewer.md"
+)
 # The pdf-gaps draft's text, page by page, one line per block of the page. Its headings are set larger and its body
 # lines alternate between two sizes, so even Xpdf's default reading, which joins evenly set lines into one, reads these
 # lines; the snapshot's -raw reads them so with either pdftotext.
@@ -230,13 +242,13 @@ def contract_record(
 
 
 def check(spec: dict[str, Any], value: dict[str, Any], mode: str = "re-review") -> str | None:
-    return skill_evals.expectation(spec, mode).check(value)
+    return skill_evals_scenarios.expectation(spec, mode).check(value)
 
 
 def refusal(spec: dict[str, Any], mode: str) -> str:
     """Why the loader refuses the expectation."""
     try:
-        skill_evals.expectation(spec, mode)
+        skill_evals_scenarios.expectation(spec, mode)
     except ScenarioError as exc:
         return str(exc)
     raise AssertionError(f"{spec} was accepted")
@@ -273,26 +285,26 @@ class LoaderTests(unittest.TestCase):
     def load_error(self, spec: dict[str, Any]) -> str:
         write_scenario(self.root, "case", spec)
         with self.assertRaises(ScenarioError) as raised:
-            skill_evals.load_scenarios("demo", root=self.root)
+            skill_evals_scenarios.load_scenarios("demo", root=self.root)
         return str(raised.exception)
 
     def test_loads_every_scenario_in_name_order(self) -> None:
         write_scenario(self.root, "b-second", scenario_spec())
         write_scenario(self.root, "a-first", scenario_spec())
-        names = [scenario.name for scenario in skill_evals.load_scenarios("demo", root=self.root)]
+        names = [scenario.name for scenario in skill_evals_scenarios.load_scenarios("demo", root=self.root)]
         self.assertEqual(["a-first", "b-second"], names)
 
     def test_loads_only_the_named_scenarios(self) -> None:
         write_scenario(self.root, "one", scenario_spec())
         write_scenario(self.root, "two", scenario_spec())
-        names = [scenario.name for scenario in skill_evals.load_scenarios("demo", ["two"], root=self.root)]
+        names = [scenario.name for scenario in skill_evals_scenarios.load_scenarios("demo", ["two"], root=self.root)]
         self.assertEqual(["two"], names)
 
     def test_named_scenarios_are_distinct_in_first_occurrence_order(self) -> None:
         for name in ("one", "two", "three"):
             write_scenario(self.root, name, scenario_spec())
         selected = ["two", "one", "two", "three", "one"]
-        names = [scenario.name for scenario in skill_evals.load_scenarios("demo", selected, root=self.root)]
+        names = [scenario.name for scenario in skill_evals_scenarios.load_scenarios("demo", selected, root=self.root)]
         self.assertEqual(["two", "one", "three"], names)
 
     def test_a_held_file_in_a_fixture_reviewed_in_place_is_refused(self) -> None:
@@ -300,7 +312,7 @@ class LoaderTests(unittest.TestCase):
         directory = write_scenario(self.root, "case", scenario_spec())
         (directory / "base" / "store.py.fixture").write_text("", encoding="utf-8")
         with self.assertRaises(ScenarioError) as raised:
-            skill_evals.load_scenarios("demo", root=self.root)
+            skill_evals_scenarios.load_scenarios("demo", root=self.root)
         self.assertEqual(
             "case: its base/ tree holds store.py.fixture, which only a repository reviewer's copy restores",
             str(raised.exception),
@@ -309,14 +321,14 @@ class LoaderTests(unittest.TestCase):
     def test_unknown_scenario_and_skill_fail(self) -> None:
         write_scenario(self.root, "one", scenario_spec())
         with self.assertRaisesRegex(ScenarioError, "no scenario three for demo"):
-            skill_evals.load_scenarios("demo", ["one", "one", "three"], root=self.root)
+            skill_evals_scenarios.load_scenarios("demo", ["one", "one", "three"], root=self.root)
         with self.assertRaisesRegex(ScenarioError, "no scenarios for other"):
-            skill_evals.load_scenarios("other", root=self.root)
+            skill_evals_scenarios.load_scenarios("other", root=self.root)
 
     def test_a_skill_with_no_scenario_fails_and_nothing_runs(self) -> None:
         (self.root / "empty-skill" / "not-a-scenario").mkdir(parents=True)
         with self.assertRaisesRegex(ScenarioError, "no scenarios for empty-skill: each is a <scenario>/scenario.json"):
-            skill_evals.load_scenarios("empty-skill", root=self.root)
+            skill_evals_scenarios.load_scenarios("empty-skill", root=self.root)
         records = self.root / "records"
         status, lines = run_main(["empty-skill", "--records", str(records)], self.root)
         self.assertEqual(1, status)
@@ -343,7 +355,7 @@ class LoaderTests(unittest.TestCase):
                 self.assertIn("plain relative path", refusal(spec, "initial"))
 
     def test_no_finding_above_the_highest_severity_holds_nothing_and_is_refused(self) -> None:
-        highest = skill_evals.SEVERITIES[-1]
+        highest = skill_evals_scenarios.SEVERITIES[-1]
         self.assertEqual("MUST_FIX", highest)
         message = refusal({"kind": "no_finding_above", "severity": "MUST_FIX"}, "initial")
         self.assertEqual("no_finding_above MUST_FIX holds for every record: no severity ranks above it", message)
@@ -351,7 +363,9 @@ class LoaderTests(unittest.TestCase):
             "holds for every record",
             self.load_error(scenario_spec({"kind": "no_finding_above", "severity": "MUST_FIX"})),
         )
-        self.assertIsNotNone(skill_evals.expectation({"kind": "no_finding_above", "severity": "SHOULD_FIX"}, "initial"))
+        self.assertIsNotNone(
+            skill_evals_scenarios.expectation({"kind": "no_finding_above", "severity": "SHOULD_FIX"}, "initial")
+        )
 
     def test_a_category_the_manifest_does_not_list_is_refused(self) -> None:
         shutil.copytree(REVIEW_PRS / "design-gaps", self.root / "review-prs" / "design-gaps")
@@ -364,7 +378,7 @@ class LoaderTests(unittest.TestCase):
                 # Ignoring case, as the judge matches a finding's category.
                 spec["expectations"][0]["category"] = "INCONSISTENCY"
                 path.write_text(json.dumps(spec), encoding="utf-8")
-                self.assertEqual(1, len(skill_evals.load_scenarios(skill, root=self.root)))
+                self.assertEqual(1, len(skill_evals_scenarios.load_scenarios(skill, root=self.root)))
                 spec["expectations"][0]["category"] = "inconsistancy"
                 path.write_text(json.dumps(spec), encoding="utf-8")
                 with self.assertRaisesRegex(
@@ -372,7 +386,7 @@ class LoaderTests(unittest.TestCase):
                     'design-gaps: category "inconsistancy" is not one of the manifest\'s finding_categories: '
                     "requirement-gap, ",
                 ):
-                    skill_evals.load_scenarios(skill, root=self.root)
+                    skill_evals_scenarios.load_scenarios(skill, root=self.root)
 
     def test_unknown_expectation_kind_fails(self) -> None:
         self.assertIn('unknown expectation kind "vibes"', self.load_error(scenario_spec({"kind": "vibes"})))
@@ -401,7 +415,7 @@ class LoaderTests(unittest.TestCase):
     def test_re_review_scenario_loads_its_prior(self) -> None:
         directory = write_scenario(self.root, "again", scenario_spec(mode="re-review", prior="prior.json"))
         (directory / "prior.json").write_text("{}", encoding="utf-8")
-        (scenario,) = skill_evals.load_scenarios("demo", root=self.root)
+        (scenario,) = skill_evals_scenarios.load_scenarios("demo", root=self.root)
         self.assertEqual(directory / "prior.json", scenario.prior)
         self.assertEqual("re-review", scenario.mode)
 
@@ -414,30 +428,32 @@ class LoaderTests(unittest.TestCase):
         directory = write_scenario(self.root, "case", scenario_spec())
         (directory / "head").rmdir()
         with self.assertRaisesRegex(ScenarioError, "case: has no head/ tree"):
-            skill_evals.load_scenarios("demo", root=self.root)
+            skill_evals_scenarios.load_scenarios("demo", root=self.root)
 
     def test_pull_json_is_required(self) -> None:
         directory = write_scenario(self.root, "case", scenario_spec())
         (directory / "pull.json").unlink()
         with self.assertRaisesRegex(ScenarioError, "case: has no pull.json"):
-            skill_evals.load_scenarios("demo", root=self.root)
+            skill_evals_scenarios.load_scenarios("demo", root=self.root)
 
     def test_prepare_arguments_are_one_call_per_mode(self) -> None:
         initial = write_scenario(self.root, "first", scenario_spec())
         again = write_scenario(self.root, "again", scenario_spec(mode="re-review", prior="prior.json"))
         (again / "prior.json").write_text("{}", encoding="utf-8")
-        loaded = {scenario.name: scenario for scenario in skill_evals.load_scenarios("demo", root=self.root)}
-        self.assertEqual(["--canary", "--fixture", str(initial)], skill_evals.prepare_arguments(loaded["first"]))
+        loaded = {scenario.name: scenario for scenario in skill_evals_scenarios.load_scenarios("demo", root=self.root)}
+        self.assertEqual(
+            ["--canary", "--fixture", str(initial)], skill_evals_scenarios.prepare_arguments(loaded["first"])
+        )
         self.assertEqual(
             ["--canary", "--fixture", str(again), "--re-review", "--prior", str(again / "prior.json")],
-            skill_evals.prepare_arguments(loaded["again"]),
+            skill_evals_scenarios.prepare_arguments(loaded["again"]),
         )
 
     def test_unreadable_scenario_fails(self) -> None:
         directory = write_scenario(self.root, "case", scenario_spec())
         (directory / "scenario.json").write_text("{", encoding="utf-8")
         with self.assertRaisesRegex(ScenarioError, "case: cannot read scenario.json"):
-            skill_evals.load_scenarios("demo", root=self.root)
+            skill_evals_scenarios.load_scenarios("demo", root=self.root)
 
     def test_a_document_scenario_names_its_document_and_base_and_needs_no_fixture(self) -> None:
         shared = self.root / "other" / "shared" / "draft.md"
@@ -451,7 +467,7 @@ class LoaderTests(unittest.TestCase):
             directory.mkdir(parents=True)
             (directory / "draft.md").write_text("# Draft, edited\n", encoding="utf-8")
             (directory / "scenario.json").write_text(json.dumps(scenario_spec(**fields)), encoding="utf-8")
-        loaded = {scenario.name: scenario for scenario in skill_evals.load_scenarios("demo", root=self.root)}
+        loaded = {scenario.name: scenario for scenario in skill_evals_scenarios.load_scenarios("demo", root=self.root)}
         edited = (self.root / "demo" / "edit" / "draft.md").resolve()
         self.assertEqual((edited, shared.resolve()), (loaded["edit"].document, loaded["edit"].base))
         self.assertEqual((shared.resolve(), None), (loaded["whole"].document, loaded["whole"].base))
@@ -463,7 +479,7 @@ class LoaderTests(unittest.TestCase):
         ):
             directory = write_scenario(self.root, f"case{number}", scenario_spec(**fields))
             (directory / "draft.md").write_text("# Draft\n", encoding="utf-8")
-            (scenario,) = skill_evals.load_scenarios("demo", [f"case{number}"], root=self.root)
+            (scenario,) = skill_evals_scenarios.load_scenarios("demo", [f"case{number}"], root=self.root)
             self.assertEqual(stage, scenario.stage)
         for number, (fields, message) in enumerate(
             (
@@ -476,12 +492,12 @@ class LoaderTests(unittest.TestCase):
                 directory = write_scenario(self.root, f"case{number}", scenario_spec(**fields))
                 (directory / "draft.md").write_text("# Draft\n", encoding="utf-8")
                 with self.assertRaises(ScenarioError) as raised:
-                    skill_evals.load_scenarios("demo", [f"case{number}"], root=self.root)
+                    skill_evals_scenarios.load_scenarios("demo", [f"case{number}"], root=self.root)
                 self.assertIn(message, str(raised.exception))
 
     def test_a_fixture_scenario_names_no_document(self) -> None:
         write_scenario(self.root, "case", scenario_spec())
-        (scenario,) = skill_evals.load_scenarios("demo", root=self.root)
+        (scenario,) = skill_evals_scenarios.load_scenarios("demo", root=self.root)
         self.assertEqual((None, None), (scenario.document, scenario.base))
 
 
@@ -516,10 +532,12 @@ class FindingTests(unittest.TestCase):
         self.assertEqual("no finding at least SHOULD_FIX on those lines; findings on store.go: none", failure)
 
     def test_label(self) -> None:
-        self.assertEqual("finding store.go:44,45 SHOULD_FIX", skill_evals.expectation(self.spec, "initial").label)
+        self.assertEqual(
+            "finding store.go:44,45 SHOULD_FIX", skill_evals_scenarios.expectation(self.spec, "initial").label
+        )
         categorized = {**self.spec, "category": "Risk"}
         self.assertEqual(
-            "finding store.go:44,45 SHOULD_FIX Risk", skill_evals.expectation(categorized, "initial").label
+            "finding store.go:44,45 SHOULD_FIX Risk", skill_evals_scenarios.expectation(categorized, "initial").label
         )
 
     def test_a_category_matches_ignoring_case_and_any_category_passes_without_one(self) -> None:
@@ -546,14 +564,16 @@ class NoFindingAboveTests(unittest.TestCase):
         )
         failure = check(spec, record([finding("labels.go", 3, "SHOULD_FIX")]))
         self.assertEqual("found SHOULD_FIX at labels.go:3", failure)
-        self.assertEqual("no_finding_above SUGGESTION labels.go", skill_evals.expectation(spec, "initial").label)
+        self.assertEqual(
+            "no_finding_above SUGGESTION labels.go", skill_evals_scenarios.expectation(spec, "initial").label
+        )
 
     def test_on_every_path_when_none_are_listed(self) -> None:
         spec = {"kind": "no_finding_above", "severity": "SUGGESTION"}
         self.assertIsNone(check(spec, record([finding("a.go", 1, "SUGGESTION")])))
         failure = check(spec, record([finding("a.go", 1, "MUST_FIX"), finding("b.go", 2, "SHOULD_FIX")]))
         self.assertEqual("found MUST_FIX at a.go:1, SHOULD_FIX at b.go:2", failure)
-        self.assertEqual("no_finding_above SUGGESTION *", skill_evals.expectation(spec, "initial").label)
+        self.assertEqual("no_finding_above SUGGESTION *", skill_evals_scenarios.expectation(spec, "initial").label)
 
     def test_on_listed_lines_of_one_path(self) -> None:
         spec = {"kind": "no_finding_above", "severity": "SUGGESTION", "paths": ["draft.md"], "lines": [9, 4]}
@@ -565,12 +585,16 @@ class NoFindingAboveTests(unittest.TestCase):
         self.assertIsNone(check(spec, record(passing)))
         failure = check(spec, record([finding("draft.md", 9, "SHOULD_FIX"), finding("draft.md", 5, "MUST_FIX")]))
         self.assertEqual("found SHOULD_FIX at draft.md:9", failure)
-        self.assertEqual("no_finding_above SUGGESTION draft.md:4,9", skill_evals.expectation(spec, "initial").label)
+        self.assertEqual(
+            "no_finding_above SUGGESTION draft.md:4,9", skill_evals_scenarios.expectation(spec, "initial").label
+        )
         for fields in ({"lines": [4]}, {"paths": ["a.md", "b.md"], "lines": [4]}):
             with self.subTest(fields=fields), self.assertRaisesRegex(ScenarioError, "give exactly one path in paths"):
-                skill_evals.expectation({"kind": "no_finding_above", "severity": "SUGGESTION", **fields}, "initial")
+                skill_evals_scenarios.expectation(
+                    {"kind": "no_finding_above", "severity": "SUGGESTION", **fields}, "initial"
+                )
         with self.assertRaisesRegex(ScenarioError, "lines must be distinct positive line numbers"):
-            skill_evals.expectation({**spec, "lines": [0]}, "initial")
+            skill_evals_scenarios.expectation({**spec, "lines": [0]}, "initial")
 
 
 class OnlyAtTests(unittest.TestCase):
@@ -587,7 +611,7 @@ class OnlyAtTests(unittest.TestCase):
         )
 
     def test_label_and_fields(self) -> None:
-        self.assertEqual("only_at draft.md:17", skill_evals.expectation(self.spec, "initial").label)
+        self.assertEqual("only_at draft.md:17", skill_evals_scenarios.expectation(self.spec, "initial").label)
         self.assertIn("only_at expectation does not take severity", refusal({**self.spec, "severity": "MUST_FIX"}, "x"))
         self.assertIn("distinct positive line", refusal({**self.spec, "lines": []}, "initial"))
 
@@ -597,7 +621,7 @@ class VerdictTests(unittest.TestCase):
         spec = {"kind": "verdict", "verdict": "CHANGES_REQUESTED"}
         self.assertIsNone(check(spec, record(verdict="CHANGES_REQUESTED")))
         self.assertEqual("verdict is APPROVED", check(spec, record(verdict="APPROVED")))
-        self.assertEqual("verdict CHANGES_REQUESTED", skill_evals.expectation(spec, "initial").label)
+        self.assertEqual("verdict CHANGES_REQUESTED", skill_evals_scenarios.expectation(spec, "initial").label)
 
 
 class LedgerTests(unittest.TestCase):
@@ -613,7 +637,9 @@ class LedgerTests(unittest.TestCase):
     def test_counts_this_reviews_judgments(self) -> None:
         spec = {"kind": "ledger", "addressed": 2, "still_present": 2}
         self.assertIsNone(check(spec, record(version=2, ledger=self.ledger)))
-        self.assertEqual("ledger addressed=2 still_present=2", skill_evals.expectation(spec, "re-review").label)
+        self.assertEqual(
+            "ledger addressed=2 still_present=2", skill_evals_scenarios.expectation(spec, "re-review").label
+        )
 
     def test_counts_must_match_exactly(self) -> None:
         spec = {"kind": "ledger", "addressed": 1, "still_present": 2}
@@ -635,7 +661,7 @@ class DispositionTests(unittest.TestCase):
     def test_disposition(self) -> None:
         spec = {"kind": "disposition", "entry": "v1:F002", "disposition": "addressed"}
         self.assertIsNone(check(spec, record(version=2, ledger=self.ledger)))
-        self.assertEqual("disposition v1:F002 addressed", skill_evals.expectation(spec, "re-review").label)
+        self.assertEqual("disposition v1:F002 addressed", skill_evals_scenarios.expectation(spec, "re-review").label)
 
     def test_another_disposition_fails(self) -> None:
         spec = {"kind": "disposition", "entry": "v1:F001", "disposition": "addressed"}
@@ -664,7 +690,9 @@ class RepeatsTests(unittest.TestCase):
             finding("store.go", 70, "MUST_FIX", "F002"),
         ]
         self.assertIsNone(check(self.spec, self.reviewed(found)))
-        self.assertEqual("repeats store.go:44,45 v1:F001", skill_evals.expectation(self.spec, "re-review").label)
+        self.assertEqual(
+            "repeats store.go:44,45 v1:F001", skill_evals_scenarios.expectation(self.spec, "re-review").label
+        )
 
     def test_raising_nothing_there_passes(self) -> None:
         self.assertIsNone(check(self.spec, self.reviewed([finding("labels.go", 44, "SUGGESTION")])))
@@ -738,7 +766,7 @@ class JudgeTests(unittest.TestCase):
         return path
 
     def test_every_expectation_passes(self) -> None:
-        for model, model_id in skill_evals.MODELS.items():
+        for model, model_id in skill_evals_records.MODELS.items():
             self.write_record(model, contract_record([finding("a.go", 3, "MUST_FIX")], model_id))
         status, lines = run_main(["demo", "--records", str(self.records)], self.scenarios)
         self.assertEqual(0, status)
@@ -895,15 +923,15 @@ class JudgeTests(unittest.TestCase):
         self.assertEqual(2, raised.exception.code)
 
     def test_judge_takes_any_record_source(self) -> None:
-        def source(scenario: Scenario, model: str, index: skill_evals.Index) -> dict[str, Any]:
+        def source(scenario: Scenario, model: str, index: skill_evals_records.Index) -> dict[str, Any]:
             if model == "sonnet":
                 raise RecordError("the run failed")
             if model == "opus":
-                raise RecordError("the record is another model's", skill_evals.RECORD)
+                raise RecordError("the record is another model's", skill_evals_records.RECORD)
             return record(verdict="CHANGES_REQUESTED")
 
-        scenarios = skill_evals.load_scenarios("demo", root=self.scenarios)
-        outcomes = skill_evals.judge(scenarios, ["haiku", "sonnet", "opus"], source)
+        scenarios = skill_evals_scenarios.load_scenarios("demo", root=self.scenarios)
+        outcomes = skill_evals_judging.judge(scenarios, ["haiku", "sonnet", "opus"], source)
         self.assertEqual(
             [
                 Outcome(
@@ -927,14 +955,14 @@ class JudgeTests(unittest.TestCase):
                 "| --- | --- | --- | --- |",
                 "| defects | 1/2 | 0/2 | 0/2 |",
             ],
-            skill_evals.table(scenarios, ["haiku", "sonnet", "opus"], outcomes),
+            skill_evals_judging.table(scenarios, ["haiku", "sonnet", "opus"], outcomes),
         )
         self.assertEqual(
             [
                 'NOT_COUNTED defects sonnet run "the run failed"',
                 'NOT_COUNTED defects opus record "the record is another model\'s"',
             ],
-            skill_evals.not_counted(outcomes),
+            skill_evals_judging.not_counted(outcomes),
         )
 
     def test_each_of_several_runs_reads_its_own_record_and_the_runs_that_passed_are_counted(self) -> None:
@@ -989,13 +1017,13 @@ class JudgeTests(unittest.TestCase):
             scenario_spec({"kind": "ledger", "addressed": 1, "still_present": 0}, mode="re-review", prior="prior.json"),
         )
         (again / "prior.json").write_text("{}", encoding="utf-8")
-        scenarios = skill_evals.load_scenarios("demo", ["again"], self.scenarios)
-        outcomes = skill_evals.judge(scenarios, ["haiku"], lambda _scenario, _model, _index: record())
+        scenarios = skill_evals_scenarios.load_scenarios("demo", ["again"], self.scenarios)
+        outcomes = skill_evals_judging.judge(scenarios, ["haiku"], lambda _scenario, _model, _index: record())
         self.assertEqual(
             [Outcome("again", "haiku", "ledger addressed=1 still_present=0", "the record has no ledger", "judgment")],
             outcomes,
         )
-        self.assertEqual([], skill_evals.not_counted(outcomes))
+        self.assertEqual([], skill_evals_judging.not_counted(outcomes))
 
 
 def lines_of(path: Path) -> list[str]:
@@ -1008,7 +1036,7 @@ def prior_of(scenario: Scenario) -> Any:
     return json.loads(scenario.prior.read_text(encoding="utf-8"))
 
 
-def constant(value: dict[str, Any]) -> skill_evals.RecordSource:
+def constant(value: dict[str, Any]) -> skill_evals_runs.RecordSource:
     """A record source that returns the same record for every run."""
     return lambda _scenario, _model, _index: value
 
@@ -1017,7 +1045,7 @@ class ReviewPrsScenarioTests(unittest.TestCase):
     """The shipped scenarios load, point at lines that changed, and an ideal run of each passes."""
 
     def setUp(self) -> None:
-        self.scenarios = {scenario.name: scenario for scenario in skill_evals.load_scenarios("review-prs")}
+        self.scenarios = {scenario.name: scenario for scenario in skill_evals_scenarios.load_scenarios("review-prs")}
         self.specs = {
             name: json.loads((scenario.directory / "scenario.json").read_text(encoding="utf-8"))
             for name, scenario in self.scenarios.items()
@@ -1076,7 +1104,7 @@ class ReviewPrsScenarioTests(unittest.TestCase):
         planted = [
             item["severity"] for item in self.specs["planted-defects"]["expectations"] if item["kind"] == "finding"
         ]
-        self.assertEqual(sorted(skill_evals.SEVERITIES), sorted(planted))
+        self.assertEqual(sorted(skill_evals_scenarios.SEVERITIES), sorted(planted))
 
     def test_the_re_review_changes_only_the_fixed_defect(self) -> None:
         first, again = self.scenarios["planted-defects"].directory, self.scenarios["re-review"].directory
@@ -1152,7 +1180,7 @@ class ReviewPrsScenarioTests(unittest.TestCase):
         for name, scenario in self.scenarios.items():
             with self.subTest(scenario=name):
                 ideal = self.ideal(name)
-                outcomes = skill_evals.judge([scenario], ["opus"], constant(ideal))
+                outcomes = skill_evals_judging.judge([scenario], ["opus"], constant(ideal))
                 self.assertEqual([], [outcome for outcome in outcomes if outcome.failure is not None])
 
 
@@ -1179,7 +1207,9 @@ class ReviewDocumentScenarioTests(unittest.TestCase):
     edit of the clean one, and the gaps document written as a Word draft and as a PDF; an ideal run of each passes."""
 
     def setUp(self) -> None:
-        self.scenarios = {scenario.name: scenario for scenario in skill_evals.load_scenarios("review-document")}
+        self.scenarios = {
+            scenario.name: scenario for scenario in skill_evals_scenarios.load_scenarios("review-document")
+        }
         self.specs = {
             name: json.loads((scenario.directory / "scenario.json").read_text(encoding="utf-8"))
             for name, scenario in self.scenarios.items()
@@ -1299,7 +1329,7 @@ class ReviewDocumentScenarioTests(unittest.TestCase):
             ]
             verdict = next(item["verdict"] for item in expectations if item["kind"] == "verdict")
             with self.subTest(scenario=name):
-                outcomes = skill_evals.judge([scenario], ["opus"], constant(record(found, verdict)))
+                outcomes = skill_evals_judging.judge([scenario], ["opus"], constant(record(found, verdict)))
                 self.assertEqual([], [outcome for outcome in outcomes if outcome.failure is not None])
 
 
@@ -1311,12 +1341,14 @@ class DocumentStagingTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.root = temporary_root(self)
-        self.scenarios = {scenario.name: scenario for scenario in skill_evals.load_scenarios("review-document")}
+        self.scenarios = {
+            scenario.name: scenario for scenario in skill_evals_scenarios.load_scenarios("review-document")
+        }
         self.git = GitClient()
 
     def test_a_whole_document_is_staged_alone_outside_any_checkout(self) -> None:
         scenario = self.scenarios["design-gaps"]
-        staged = skill_evals.stage_document(scenario, self.root / "document", self.git)
+        staged = skill_evals_scenarios.stage_document(scenario, self.root / "document", self.git)
         self.assertEqual(self.root / "document" / "export-retention.md", staged)
         self.assertEqual(document_of(scenario).read_bytes(), staged.read_bytes())
         self.assertEqual(["export-retention.md"], [path.name for path in staged.parent.iterdir()])
@@ -1324,7 +1356,7 @@ class DocumentStagingTests(unittest.TestCase):
 
     def test_an_edit_is_staged_uncommitted_over_its_base_committed_in_a_new_checkout(self) -> None:
         scenario = self.scenarios["committed-edit"]
-        staged = skill_evals.stage_document(scenario, self.root / "document", self.git)
+        staged = skill_evals_scenarios.stage_document(scenario, self.root / "document", self.git)
         folder = staged.parent
         self.assertEqual(self.root / "document" / "export-download-links.md", staged)
         self.assertEqual(document_of(scenario).read_bytes(), staged.read_bytes())
@@ -1365,14 +1397,14 @@ class DocumentStagingTests(unittest.TestCase):
         control.mkdir()
         self.git.output(["init", "--quiet"], directory=control)
         self.git.output(
-            [*skill_evals.COMMIT, "commit", "--quiet", "--no-verify", "--allow-empty", "-m", "Control"],
+            [*skill_evals_scenarios.COMMIT, "commit", "--quiet", "--no-verify", "--allow-empty", "-m", "Control"],
             directory=control,
         )
         effects = self.root / "hook-effects"
         self.assertEqual(["prepare-commit-msg", "post-commit"], effects.read_text(encoding="utf-8").splitlines())
         effects.unlink()
 
-        staged = skill_evals.stage_document(scenario, self.root / "document", self.git)
+        staged = skill_evals_scenarios.stage_document(scenario, self.root / "document", self.git)
         self.assertFalse(effects.exists(), "the evaluation base commit ran a user hook")
         self.assertEqual(document_of(scenario).read_bytes(), staged.read_bytes())
         self.assertEqual(
@@ -1392,19 +1424,22 @@ class DocumentStagingTests(unittest.TestCase):
 
     def test_the_skill_starts_on_the_staged_document_and_a_fixture_scenario_on_its_fixture(self) -> None:
         run = self.root / "run"
-        arguments = skill_evals.skill_arguments(self.scenarios["design-clean"], run, self.git)
+        arguments = skill_evals_scenarios.skill_arguments(self.scenarios["design-clean"], run, self.git)
         self.assertEqual([str(run / "document" / "export-download-links.md")], arguments)
-        self.assertEqual(f'/review-document "{arguments[0]}"', skill_evals.prompt("review-document", arguments))
-        arguments = skill_evals.skill_arguments(self.scenarios["design-draft"], self.root / "draft run", self.git)
+        self.assertEqual(f'/review-document "{arguments[0]}"', skill_evals_runs.prompt("review-document", arguments))
+        arguments = skill_evals_scenarios.skill_arguments(
+            self.scenarios["design-draft"], self.root / "draft run", self.git
+        )
         self.assertEqual(
             [str(self.root / "draft run" / "document" / "export-sharing.md"), "--stage", "draft"], arguments
         )
         self.assertEqual(
-            f'/review-document "{arguments[0]}" --stage "draft"', skill_evals.prompt("review-document", arguments)
+            f'/review-document "{arguments[0]}" --stage "draft"', skill_evals_runs.prompt("review-document", arguments)
         )
         fixture = scenario_of("initial")
         self.assertEqual(
-            skill_evals.prepare_arguments(fixture), skill_evals.skill_arguments(fixture, self.root / "other", self.git)
+            skill_evals_scenarios.prepare_arguments(fixture),
+            skill_evals_scenarios.skill_arguments(fixture, self.root / "other", self.git),
         )
         self.assertFalse((self.root / "other").exists())
 
@@ -1440,18 +1475,18 @@ class ReviewerScenarioTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def refusal(self, skill: str = "review-repository", checkout: Path = skill_evals.REPOSITORY_ROOT) -> str:
+    def refusal(self, skill: str = "review-repository", checkout: Path = skill_evals_scenarios.REPOSITORY_ROOT) -> str:
         with self.assertRaises(ScenarioError) as raised:
-            skill_evals.load_scenarios(skill, root=self.root, checkout=checkout)
+            skill_evals_scenarios.load_scenarios(skill, root=self.root, checkout=checkout)
         return str(raised.exception)
 
     def test_review_repository_s_scenarios_start_review_prs_with_the_checkout_s_reviewer(self) -> None:
-        scenarios = skill_evals.load_scenarios("review-repository")
+        scenarios = skill_evals_scenarios.load_scenarios("review-repository")
         self.assertEqual(list(REVIEW_REPOSITORY_SCENARIOS), [scenario.name for scenario in scenarios])
         for scenario in scenarios:
             with self.subTest(scenario=scenario.name):
                 self.assertEqual(
-                    ("review-prs", "review-repository", skill_evals.REPOSITORY_ROOT),
+                    ("review-prs", "review-repository", skill_evals_scenarios.REPOSITORY_ROOT),
                     (scenario.skill, scenario.reviewer, scenario.checkout),
                 )
                 self.assertLessEqual(set(REVIEW_REPOSITORY_PLACED), set(scenario.placed))
@@ -1468,59 +1503,64 @@ class ReviewerScenarioTests(unittest.TestCase):
         for skill in ("review-repository", "review-prs"):
             with (
                 self.subTest(skill=skill),
-                mock.patch.object(skill_evals, "_fixture", wraps=skill_evals._fixture) as checked,
+                mock.patch.object(skill_evals_scenarios, "_fixture", wraps=skill_evals_scenarios._fixture) as checked,
             ):
-                scenarios = skill_evals.load_scenarios(skill)
+                scenarios = skill_evals_scenarios.load_scenarios(skill)
             self.assertEqual(
                 sorted(scenario.directory for scenario in scenarios),
                 sorted(call.args[0] for call in checked.call_args_list),
             )
 
     def test_the_copy_holds_the_checkout_s_files_in_both_trees_and_is_removed_after_the_run(self) -> None:
-        (scenario,) = skill_evals.load_scenarios("review-repository", ["untested-change"])
+        (scenario,) = skill_evals_scenarios.load_scenarios("review-repository", ["untested-change"])
         before = tree_bytes(scenario.directory)
-        with skill_evals.reviewed_fixture(scenario) as fixture:
+        with skill_evals_scenarios.reviewed_fixture(scenario) as fixture:
             self.assertEqual(self.copies, fixture.parent.parent)
             self.assertEqual("untested-change", fixture.name)
             copied = tree_bytes(fixture)
             for tree in ("base", "head"):
                 for path in REVIEW_REPOSITORY_PLACED:
                     with self.subTest(tree=tree, path=path):
-                        self.assertEqual((skill_evals.REPOSITORY_ROOT / path).read_bytes(), copied[f"{tree}/{path}"])
+                        self.assertEqual(
+                            (skill_evals_scenarios.REPOSITORY_ROOT / path).read_bytes(), copied[f"{tree}/{path}"]
+                        )
                 for path in REVIEW_REPOSITORY_UNPLACED:
                     self.assertEqual(before.get(f"{tree}/{path}"), copied.get(f"{tree}/{path}"), "the fixture's own")
             self.assertEqual(before, {path: copied[path] for path in before}, "the fixture's own files, unchanged")
             self.assertEqual(
                 ["--canary", "--fixture", str(fixture)],
-                skill_evals.skill_arguments(scenario, self.root / "run", GitClient(), fixture),
+                skill_evals_scenarios.skill_arguments(scenario, self.root / "run", GitClient(), fixture),
             )
         self.assertEqual([], list(self.copies.iterdir()))
         self.assertEqual(before, tree_bytes(scenario.directory))
 
     def test_the_copy_is_removed_when_the_run_fails(self) -> None:
-        (scenario,) = skill_evals.load_scenarios("review-repository", ["drifted-guide"])
-        with self.assertRaisesRegex(RuntimeError, "the session broke"), skill_evals.reviewed_fixture(scenario):
+        (scenario,) = skill_evals_scenarios.load_scenarios("review-repository", ["drifted-guide"])
+        with (
+            self.assertRaisesRegex(RuntimeError, "the session broke"),
+            skill_evals_scenarios.reviewed_fixture(scenario),
+        ):
             self.assertEqual(1, len(list(self.copies.iterdir())))
             raise RuntimeError("the session broke")
         self.assertEqual([], list(self.copies.iterdir()))
 
     def test_the_copy_is_removed_when_a_file_cannot_be_placed(self) -> None:
-        (scenario,) = skill_evals.load_scenarios("review-repository", ["drifted-guide"])
+        (scenario,) = skill_evals_scenarios.load_scenarios("review-repository", ["drifted-guide"])
         missing = dataclasses.replace(scenario, placed=(*scenario.placed, "docs/no-such-file.md"))
-        with self.assertRaises(FileNotFoundError), skill_evals.reviewed_fixture(missing):
+        with self.assertRaises(FileNotFoundError), skill_evals_scenarios.reviewed_fixture(missing):
             self.fail("the run started without its reviewer's files")
         self.assertEqual([], list(self.copies.iterdir()))
 
     def test_any_other_scenario_is_reviewed_in_place(self) -> None:
-        for scenario in skill_evals.load_scenarios("review-prs"):
-            with self.subTest(scenario=scenario.name), skill_evals.reviewed_fixture(scenario) as fixture:
+        for scenario in skill_evals_scenarios.load_scenarios("review-prs"):
+            with self.subTest(scenario=scenario.name), skill_evals_scenarios.reviewed_fixture(scenario) as fixture:
                 self.assertEqual((REVIEW_PRS / scenario.name, None, ()), (fixture, scenario.reviewer, scenario.placed))
                 self.assertEqual(
-                    skill_evals.prepare_arguments(scenario),
-                    skill_evals.skill_arguments(scenario, self.root / "run", GitClient(), fixture),
+                    skill_evals_scenarios.prepare_arguments(scenario),
+                    skill_evals_scenarios.skill_arguments(scenario, self.root / "run", GitClient(), fixture),
                 )
-                self.assertEqual("--fixture", skill_evals.prepare_arguments(scenario)[1])
-                self.assertEqual(str(REVIEW_PRS / scenario.name), skill_evals.prepare_arguments(scenario)[2])
+                self.assertEqual("--fixture", skill_evals_scenarios.prepare_arguments(scenario)[1])
+                self.assertEqual(str(REVIEW_PRS / scenario.name), skill_evals_scenarios.prepare_arguments(scenario)[2])
         self.assertEqual([], list(self.copies.iterdir()))
 
     def test_a_reviewer_that_does_not_exist_is_refused(self) -> None:
@@ -1542,7 +1582,7 @@ class ReviewerScenarioTests(unittest.TestCase):
 
     def test_a_file_the_reviewer_declares_that_the_checkout_lacks_is_refused(self) -> None:
         checkout = self.root / "checkout"
-        shutil.copytree(skill_evals.REPOSITORY_ROOT / REVIEWER_FOLDER, checkout / REVIEWER_FOLDER)
+        shutil.copytree(skill_evals_scenarios.REPOSITORY_ROOT / REVIEWER_FOLDER, checkout / REVIEWER_FOLDER)
         write_reviewer_scenario(self.root, reviewer_spec())
         self.assertEqual(
             "case: review-repository declares docs/design.md, which the checkout lacks",
@@ -1582,22 +1622,26 @@ class ReviewerScenarioTests(unittest.TestCase):
         spec = reviewer_spec()
         spec["expectations"] = [{**listed, "category": "test coverage"}]
         write_reviewer_scenario(self.root, spec)
-        self.assertEqual(1, len(skill_evals.load_scenarios("review-repository", root=self.root)))
+        self.assertEqual(1, len(skill_evals_scenarios.load_scenarios("review-repository", root=self.root)))
         spec["expectations"] = [{**listed, "category": "Tset coverage"}]
         write_reviewer_scenario(self.root, spec)
         self.assertIn('case: category "Tset coverage" is not one of the manifest\'s finding_categories', self.refusal())
 
     def test_a_held_file_is_restored_in_the_copy_and_kept_in_the_fixture(self) -> None:
-        (scenario,) = skill_evals.load_scenarios("review-repository", ["write-before-refusal"])
-        held = [f"{tree}/{path}{skill_evals.HELD}" for tree in ("base", "head") for path in WRITE_BEFORE_REFUSAL_HELD]
+        (scenario,) = skill_evals_scenarios.load_scenarios("review-repository", ["write-before-refusal"])
+        held = [
+            f"{tree}/{path}{skill_evals_scenarios.HELD}"
+            for tree in ("base", "head")
+            for path in WRITE_BEFORE_REFUSAL_HELD
+        ]
         self.assertEqual(sorted(held), sorted(scenario.held))
         before = tree_bytes(scenario.directory)
-        with skill_evals.reviewed_fixture(scenario) as fixture:
+        with skill_evals_scenarios.reviewed_fixture(scenario) as fixture:
             copied = tree_bytes(fixture)
             for path in held:
                 with self.subTest(path=path):
-                    self.assertEqual(before[path], copied[path.removesuffix(skill_evals.HELD)])
-            self.assertEqual([], [path for path in copied if path.endswith(skill_evals.HELD)])
+                    self.assertEqual(before[path], copied[path.removesuffix(skill_evals_scenarios.HELD)])
+            self.assertEqual([], [path for path in copied if path.endswith(skill_evals_scenarios.HELD)])
         self.assertEqual(before, tree_bytes(scenario.directory))
         self.assertEqual([], list(self.copies.iterdir()))
 
@@ -1767,22 +1811,24 @@ class FixtureCanaryRunTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.config = self.root / "config.json"
-        write_config(skill_evals.review_config(self.root), self.config)
+        write_config(skill_evals_runs.review_config(self.root), self.config)
         self.pipeline = Pipeline(self, self.config)
 
     def test_every_scenario_runs_as_a_fixture_canary_and_its_record_passes_the_checker(self) -> None:
-        for scenario in skill_evals.load_scenarios("review-prs"):
+        for scenario in skill_evals_scenarios.load_scenarios("review-prs"):
             with self.subTest(scenario=scenario.name):
-                written = self.pipeline.review(skill_evals.prepare_arguments(scenario), spec_of(scenario))
+                written = self.pipeline.review(skill_evals_scenarios.prepare_arguments(scenario), spec_of(scenario))
                 written_record = json.loads(written.read_text(encoding="utf-8"))
                 self.assertEqual(scenario.mode, written_record["review"]["mode"])
-                outcomes = skill_evals.judge([scenario], ["opus"], constant(written_record))
+                outcomes = skill_evals_judging.judge([scenario], ["opus"], constant(written_record))
                 self.assertEqual([], [outcome for outcome in outcomes if outcome.failure is not None])
         self.assertEqual([], self.pipeline.github.calls)
 
     def test_a_design_scenario_is_reviewed_by_the_suites_design_specialist_from_its_base_commit(self) -> None:
-        scenario = next(item for item in skill_evals.load_scenarios("review-prs") if item.name == "design-gaps")
-        reviewed = self.pipeline.review(skill_evals.prepare_arguments(scenario), spec_of(scenario))
+        scenario = next(
+            item for item in skill_evals_scenarios.load_scenarios("review-prs") if item.name == "design-gaps"
+        )
+        reviewed = self.pipeline.review(skill_evals_scenarios.prepare_arguments(scenario), spec_of(scenario))
         written = json.loads(reviewed.read_text(encoding="utf-8"))
         adapter = written["review"]["adapter"]
         self.assertEqual(
@@ -1807,9 +1853,9 @@ class FixtureCanaryRunTests(unittest.TestCase):
             "design-draft": "BASE none the file is outside any git checkout",
             "design-final": "BASE none the file is outside any git checkout",
         }
-        for scenario in skill_evals.load_scenarios("review-document"):
+        for scenario in skill_evals_scenarios.load_scenarios("review-document"):
             with self.subTest(scenario=scenario.name):
-                staged, *stage = skill_evals.skill_arguments(scenario, self.root / scenario.name, GitClient())
+                staged, *stage = skill_evals_scenarios.skill_arguments(scenario, self.root / scenario.name, GitClient())
                 self.assertEqual([] if scenario.stage is None else ["--stage", scenario.stage], stage)
                 built = build_document(Path(staged), scenario.stage)
                 self.assertEqual(f"DOCUMENT {Path(staged).name}", built[0])
@@ -1826,7 +1872,7 @@ class FixtureCanaryRunTests(unittest.TestCase):
                 prepare = ["--canary", "--fixture", str(fixture)]
                 written = json.loads(self.pipeline.review(prepare, spec_of(scenario)).read_text(encoding="utf-8"))
                 self.assertEqual(["design-review"], [reviewer["id"] for reviewer in written["review"]["reviewers"]])
-                outcomes = skill_evals.judge([scenario], ["opus"], constant(written))
+                outcomes = skill_evals_judging.judge([scenario], ["opus"], constant(written))
                 self.assertEqual([], [outcome for outcome in outcomes if outcome.failure is not None])
         self.assertEqual([], self.pipeline.github.calls)
 
@@ -1837,7 +1883,7 @@ def assistant(model: str, subagent: bool = False) -> str:
     return json.dumps({**message, "parent_tool_use_id": "toolu_1" if subagent else None})
 
 
-REVIEWER_AGENT_SOURCE = skill_evals.REPOSITORY_ROOT / "agents" / "code-review-reviewer.md"
+REVIEWER_AGENT_SOURCE = skill_evals_scenarios.REPOSITORY_ROOT / "agents" / "code-review-reviewer.md"
 
 
 def fake_deploy(home: Path, _source: Path) -> tuple[int, str]:
@@ -1861,7 +1907,7 @@ def reviewer_of(arguments: Sequence[str]) -> dict[str, Any]:
 
 
 def scenario_of(mode: str) -> Scenario:
-    return next(item for item in skill_evals.load_scenarios("review-prs") if item.mode == mode)
+    return next(item for item in skill_evals_scenarios.load_scenarios("review-prs") if item.mode == mode)
 
 
 class RunPieceTests(unittest.TestCase):
@@ -1871,7 +1917,7 @@ class RunPieceTests(unittest.TestCase):
 
     def test_the_prompt_starts_the_skill_with_the_prepare_arguments_quoted(self) -> None:
         def prompt(scenario: Scenario) -> str:
-            return skill_evals.prompt(scenario.skill, skill_evals.prepare_arguments(scenario))
+            return skill_evals_runs.prompt(scenario.skill, skill_evals_scenarios.prepare_arguments(scenario))
 
         self.assertEqual(f'/review-prs --canary --fixture "{self.initial.directory}"', prompt(self.initial))
         self.assertEqual(
@@ -1881,7 +1927,7 @@ class RunPieceTests(unittest.TestCase):
 
     def test_the_command_pins_the_session_and_isolates_the_run(self) -> None:
         home = self.root / "haiku"
-        command = skill_evals.claude_command("claude.exe", '/review-prs "fixture"', home, "review-prs")
+        command = skill_evals_runs.claude_command("claude.exe", '/review-prs "fixture"', home, "review-prs")
         self.assertEqual(["claude.exe", "-p", '/review-prs "fixture"'], command[:3])
         pairs = {command[index]: command[index + 1] for index in range(3, len(command) - 1)}
         self.assertEqual("claude-opus-5-5", pairs["--model"])
@@ -1916,7 +1962,7 @@ class RunPieceTests(unittest.TestCase):
         # The home holds a space, as a profile folder may. The commands are the ones the pipeline writes into a role's
         # prompt, for the script spelled as the session started it and as its resolved path.
         home = self.root / "sonnet"
-        grants = skill_evals.reviewer_grants(home, "review-document")
+        grants = skill_evals_runs.reviewer_grants(home, "review-document")
         bash = [pattern for tool, pattern in skill_inventory.allowed_entries(grants) if tool == "Bash" and pattern]
         run, role = self.root / "run", "generic-review"
         core = home / ".claude" / "skills" / "code-review-core" / "scripts"
@@ -1948,7 +1994,7 @@ class RunPieceTests(unittest.TestCase):
 
     def test_a_home_whose_path_holds_a_star_is_refused_before_anything_is_deployed(self) -> None:
         home = self.root / "a*b" / "haiku"
-        reason = skill_evals.prepare_home(home, "haiku", fake_deploy)
+        reason = skill_evals_runs.prepare_home(home, "haiku", fake_deploy)
         self.assertEqual(
             f"the home's path {home.as_posix()} holds a *, which a reviewer's grant would read as any text", reason
         )
@@ -1956,9 +2002,10 @@ class RunPieceTests(unittest.TestCase):
 
     def test_the_session_model_is_the_strongest_and_one_of_the_models(self) -> None:
         self.assertEqual(
-            {"haiku": "claude-haiku-5-5", "sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5"}, skill_evals.MODELS
+            {"haiku": "claude-haiku-5-5", "sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5"},
+            skill_evals_records.MODELS,
         )
-        self.assertEqual("opus", skill_evals.SESSION_MODEL)
+        self.assertEqual("opus", skill_evals_runs.SESSION_MODEL)
 
     def test_the_environment_keeps_the_users_and_gives_the_run_its_own_files(self) -> None:
         run, config = self.root / "run", self.root / "config.json"
@@ -1970,36 +2017,36 @@ class RunPieceTests(unittest.TestCase):
                 "CODE_REVIEW_STATE": str(run / "state.json"),
                 "CODE_REVIEW_FLAGS": str(run / "flags.json"),
             },
-            skill_evals.run_environment({"PATH": "kept"}, run, config),
+            skill_evals_runs.run_environment({"PATH": "kept"}, run, config),
         )
 
     def test_the_configuration_is_one_the_core_accepts(self) -> None:
-        written = write_config(skill_evals.review_config(self.root), self.root / "config.json")
+        written = write_config(skill_evals_runs.review_config(self.root), self.root / "config.json")
         self.assertEqual("claude-code", written["runtime"])
         self.assertEqual(["MUST_FIX"], written["verdict_policy"]["request_changes_for"])
 
     def test_the_reviewer_agent_gets_the_model_and_nothing_else_changes(self) -> None:
         fake_deploy(self.root, self.root)
         # The deployed agent, which names Python as rendered, before and after its model is set.
-        before = (self.root / skill_evals.REVIEWER_AGENT).read_text(encoding="utf-8").splitlines()
-        self.assertIsNone(skill_evals.set_reviewer_model(self.root, "haiku"))
-        after = (self.root / skill_evals.REVIEWER_AGENT).read_text(encoding="utf-8").splitlines()
+        before = (self.root / skill_evals_runs.REVIEWER_AGENT).read_text(encoding="utf-8").splitlines()
+        self.assertIsNone(skill_evals_runs.set_reviewer_model(self.root, "haiku"))
+        after = (self.root / skill_evals_runs.REVIEWER_AGENT).read_text(encoding="utf-8").splitlines()
         self.assertEqual(len(before), len(after))
         self.assertEqual(
             [("model: inherit", "model: claude-haiku-5-5")],
             [pair for pair in zip(before, after, strict=True) if pair[0] != pair[1]],
         )
         self.assertIn(
-            "has no frontmatter line `model: inherit`", skill_evals.set_reviewer_model(self.root, "opus") or ""
+            "has no frontmatter line `model: inherit`", skill_evals_runs.set_reviewer_model(self.root, "opus") or ""
         )
 
     def test_a_missing_reviewer_agent_is_a_reason(self) -> None:
-        self.assertIn("has no frontmatter line", skill_evals.set_reviewer_model(self.root, "haiku") or "")
+        self.assertIn("has no frontmatter line", skill_evals_runs.set_reviewer_model(self.root, "haiku") or "")
 
     def test_the_session_gets_the_deployed_agent_with_its_hook_on_the_homes_guard(self) -> None:
         fake_deploy(self.root, self.root)
-        self.assertIsNone(skill_evals.set_reviewer_model(self.root, "haiku"))
-        agents = skill_evals.reviewer_agents(self.root)
+        self.assertIsNone(skill_evals_runs.set_reviewer_model(self.root, "haiku"))
+        agents = skill_evals_runs.reviewer_agents(self.root)
         self.assertEqual(["code-review-reviewer"], list(agents))
         definition = agents["code-review-reviewer"]
         self.assertEqual({"description", "prompt", "tools", "model", "omitClaudeMd", "hooks"}, set(definition))
@@ -2029,10 +2076,10 @@ class RunPieceTests(unittest.TestCase):
         self.assertIsNotNone(bash, "Git Bash is required")
         self.assertIn(" ", str(self.root))
         fake_deploy(self.root, self.root)
-        hook = skill_evals.reviewer_agents(self.root)["code-review-reviewer"]["hooks"]["PreToolUse"][0]["hooks"][0]
+        hook = skill_evals_runs.reviewer_agents(self.root)["code-review-reviewer"]["hooks"]["PreToolUse"][0]["hooks"][0]
         ran = platform_support.run_tool([str(bash), "-c", hook["command"]])
         self.assertEqual(0, ran.returncode, ran.output)
-        self.assertEqual(f"GUARD {(self.root / skill_evals.GUARD).as_posix()}", ran.output.strip())
+        self.assertEqual(f"GUARD {(self.root / skill_evals_runs.GUARD).as_posix()}", ran.output.strip())
 
     def test_an_agent_the_definition_cannot_carry_is_refused(self) -> None:
         source = REVIEWER_AGENT_SOURCE.read_text(encoding="utf-8")
@@ -2058,19 +2105,19 @@ class RunPieceTests(unittest.TestCase):
             with self.subTest(reason=reason):
                 home = self.root / str(number)
                 fake_deploy(home, home)
-                (home / skill_evals.REVIEWER_AGENT).write_text(text, encoding="utf-8")
-                with self.assertRaisesRegex(skill_evals.AgentError, re.escape(reason)):
-                    skill_evals.reviewer_agents(home)
+                (home / skill_evals_runs.REVIEWER_AGENT).write_text(text, encoding="utf-8")
+                with self.assertRaisesRegex(skill_evals_runs.AgentError, re.escape(reason)):
+                    skill_evals_runs.reviewer_agents(home)
 
     def test_a_home_without_the_guard_or_with_an_unquotable_path_is_refused(self) -> None:
         fake_deploy(self.root, self.root)
-        (self.root / skill_evals.GUARD).unlink()
-        with self.assertRaisesRegex(skill_evals.AgentError, "the home has no .claude/skills/code-review-core/"):
-            skill_evals.reviewer_agents(self.root)
+        (self.root / skill_evals_runs.GUARD).unlink()
+        with self.assertRaisesRegex(skill_evals_runs.AgentError, "the home has no .claude/skills/code-review-core/"):
+            skill_evals_runs.reviewer_agents(self.root)
         home = self.root / "it's"
         fake_deploy(home, home)
-        with self.assertRaisesRegex(skill_evals.AgentError, "its hook cannot quote the home's path"):
-            skill_evals.reviewer_agents(home)
+        with self.assertRaisesRegex(skill_evals_runs.AgentError, "its hook cannot quote the home's path"):
+            skill_evals_runs.reviewer_agents(home)
 
     def test_a_record_a_reviewer_no_guard_held_is_told(self) -> None:
         def reviewed(*reviewers: Any) -> dict[str, Any]:
@@ -2079,13 +2126,15 @@ class RunPieceTests(unittest.TestCase):
             return value
 
         held = {"id": "generic-review", "files_read": 0, "bytes_read": 0}
-        self.assertIsNone(skill_evals.unguarded(reviewed(held, {**held, "id": "security", "files_read": 3})))
+        self.assertIsNone(skill_evals_records.unguarded(reviewed(held, {**held, "id": "security", "files_read": 3})))
         self.assertEqual(
             "no reviewer guard held generic-review, security: its files_read is null",
-            skill_evals.unguarded(reviewed({**held, "files_read": None}, {"id": "security"}, {**held, "id": "tests"})),
+            skill_evals_records.unguarded(
+                reviewed({**held, "files_read": None}, {"id": "security"}, {**held, "id": "tests"})
+            ),
         )
-        self.assertEqual("the record names no reviewer", skill_evals.unguarded(reviewed()))
-        self.assertEqual("the record names no reviewer", skill_evals.unguarded(record()))
+        self.assertEqual("the record names no reviewer", skill_evals_records.unguarded(reviewed()))
+        self.assertEqual("the record names no reviewer", skill_evals_records.unguarded(record()))
 
     def test_stream_models_tells_the_session_from_its_subagents(self) -> None:
         output = "\n".join(
@@ -2099,42 +2148,44 @@ class RunPieceTests(unittest.TestCase):
         )
         self.assertEqual(
             (frozenset({"claude-opus-5-5"}), frozenset({"claude-haiku-4-5-20251001"})),
-            skill_evals.stream_models(output),
+            skill_evals_runs.stream_models(output),
         )
 
     def test_only_a_pull_requests_record_in_a_canary_root_is_the_runs(self) -> None:
         # A record anywhere else, or a file in the pull request's folder that is not one of its records, is none.
         (self.root / "elsewhere.json").write_text(json.dumps(record(version=1)), encoding="utf-8")
         with self.assertRaisesRegex(RecordError, "^the run recorded no review$"):
-            skill_evals.find_record(self.root, 1)
+            skill_evals_runs.find_record(self.root, 1)
         pulls = self.root / "code-review-canary-abc" / "example" / "inventory" / "pulls" / "1"
         pulls.mkdir(parents=True)
         (pulls / "v1.json").write_text(json.dumps(record(version=1)), encoding="utf-8")
         with self.assertRaisesRegex(RecordError, "^the run recorded no review version 1; it holds no record$"):
-            skill_evals.find_record(self.root, 1)
+            skill_evals_runs.find_record(self.root, 1)
 
     def test_why_a_run_counts_for_nothing(self) -> None:
-        completed = skill_evals.Completed
+        completed = runtime_canary.Completed
         reviewed = completed(0, f"{assistant('claude-opus-5-5')}\n{assistant('claude-haiku-5-5', subagent=True)}", "")
-        self.assertIsNone(skill_evals.run_failure("haiku", reviewed, 60, "review-prs", None))
+        self.assertIsNone(skill_evals_runs.run_failure("haiku", reviewed, 60, "review-prs", None))
         self.assertEqual(
             "reviewers ran on claude-haiku-5-5, not claude-sonnet-5-5",
-            skill_evals.run_failure("sonnet", reviewed, 60, "review-prs", None),
+            skill_evals_runs.run_failure("sonnet", reviewed, 60, "review-prs", None),
         )
         # Another generation of the family is another model, and an alias may resolve to it.
         older = completed(0, f"{assistant('claude-opus-5-5')}\n{assistant('claude-haiku-4-5-20251001', True)}", "")
         self.assertEqual(
             "reviewers ran on claude-haiku-4-5-20251001, not claude-haiku-5-5",
-            skill_evals.run_failure("haiku", older, 60, "review-prs", None),
+            skill_evals_runs.run_failure("haiku", older, 60, "review-prs", None),
         )
         elsewhere = completed(0, f"{assistant('claude-sonnet-5-5')}\n{assistant('claude-haiku-5-5', True)}", "")
         self.assertEqual(
             "the session ran on claude-sonnet-5-5, not claude-opus-5-5",
-            skill_evals.run_failure("haiku", elsewhere, 60, "review-prs", None),
+            skill_evals_runs.run_failure("haiku", elsewhere, 60, "review-prs", None),
         )
         self.assertEqual(
             "no reviewer subagent ran, so the record is not the model's",
-            skill_evals.run_failure("haiku", completed(0, assistant("claude-opus-5-5"), ""), 60, "review-prs", None),
+            skill_evals_runs.run_failure(
+                "haiku", completed(0, assistant("claude-opus-5-5"), ""), 60, "review-prs", None
+            ),
         )
         init = json.dumps({"type": "system", "subtype": "init", "skills": ["other"]})
         denied = json.dumps(
@@ -2143,22 +2194,22 @@ class RunPieceTests(unittest.TestCase):
         missing = "the run recorded no review"
         self.assertEqual(
             f"{missing}; timed out after 60 seconds; Claude Code did not list review-prs; denied: Bash: rm x",
-            skill_evals.run_failure(
+            skill_evals_runs.run_failure(
                 "haiku", completed(-1, f"{init}\n{denied}", "", timed_out=True), 60, "review-prs", missing
             ),
         )
         self.assertEqual(
             f"{missing}; Claude Code exited with code 3",
-            skill_evals.run_failure("haiku", completed(3, "", ""), 60, "review-prs", missing),
+            skill_evals_runs.run_failure("haiku", completed(3, "", ""), 60, "review-prs", missing),
         )
         unstarted = completed(-1, "", "", error="cannot run C:/bin/claude.exe: The system cannot find the file")
         self.assertEqual(
             f"{missing}; cannot run C:/bin/claude.exe: The system cannot find the file",
-            skill_evals.run_failure("haiku", unstarted, 60, "review-prs", missing),
+            skill_evals_runs.run_failure("haiku", unstarted, 60, "review-prs", missing),
         )
 
     def test_the_reason_the_results_file_records_names_no_path(self) -> None:
-        completed = skill_evals.Completed
+        completed = runtime_canary.Completed
         home = "D:/scratch/skill-evals-x1/haiku"
         command = f'python -B "{home}/.claude/skills/code-review-core/scripts/review_pipeline.py" prepare'
         denials = [{"tool_name": "Bash", "tool_input": {"command": command}}] * 2
@@ -2174,15 +2225,15 @@ class RunPieceTests(unittest.TestCase):
         ]
         for run, phrase in cases:
             with self.subTest(phrase=phrase):
-                self.assertIn(home, skill_evals.run_failure("haiku", run, 60, "review-prs", missing) or "")
-                self.assertEqual(phrase, skill_evals.run_failure("haiku", run, 60, "review-prs", missing, True))
+                self.assertIn(home, skill_evals_runs.run_failure("haiku", run, 60, "review-prs", missing) or "")
+                self.assertEqual(phrase, skill_evals_runs.run_failure("haiku", run, 60, "review-prs", missing, True))
         one = json.dumps({"type": "result", "permission_denials": denials[:1]})
         self.assertEqual(
             "the run recorded no review; denied 1 command",
-            skill_evals.run_failure("haiku", completed(0, one, ""), 60, "review-prs", missing, recorded=True),
+            skill_evals_runs.run_failure("haiku", completed(0, one, ""), 60, "review-prs", missing, recorded=True),
         )
         reviewed = completed(0, f"{assistant('claude-opus-5-5')}\n{assistant('claude-haiku-5-5', subagent=True)}", "")
-        self.assertIsNone(skill_evals.run_failure("haiku", reviewed, 60, "review-prs", None, recorded=True))
+        self.assertIsNone(skill_evals_runs.run_failure("haiku", reviewed, 60, "review-prs", None, recorded=True))
 
 
 def outcome(scenario: str, model: str, failure: str | None = None) -> Outcome:
@@ -2193,12 +2244,12 @@ RESULTS_TEXT = "\n".join(
     [
         "# Skill evaluations",
         "",
-        skill_evals.RESULTS_BEGIN,
-        *skill_evals.RESULTS_HEADER,
+        skill_evals_results.RESULTS_BEGIN,
+        *skill_evals_results.RESULTS_HEADER,
         "| alpha | opus | claude-opus-5-5 | 1/1 | 1 | one 1/1 | claude-opus-5-5 | 2.1.0 | 2026-01-01 |",
         "| review-prs | opus | old | 0/1 | 1 | old | old | 2.0.0 | 2026-01-01 |",
         "| zeta | opus | claude-opus-5-5 | 1/1 | 1 | one 1/1 | claude-opus-5-5 | 2.1.0 | 2026-01-01 |",
-        skill_evals.RESULTS_END,
+        skill_evals_results.RESULTS_END,
         "",
         "Written by hand after the table.",
         "",
@@ -2213,17 +2264,19 @@ class CitationTests(unittest.TestCase):
         root = Path(temporary.name)
         write_scenario(root, "clean", scenario_spec())
         write_scenario(root, "defects", scenario_spec({"kind": "verdict", "verdict": "CHANGES_REQUESTED"}))
-        self.scenarios = skill_evals.load_scenarios("demo", root=root)
+        self.scenarios = skill_evals_scenarios.load_scenarios("demo", root=root)
 
     def test_the_block_cites_the_run_and_each_judgment_and_no_path_of_the_machine(self) -> None:
         held = contract_record(model="claude-sonnet-5-5")
-        runs: dict[skill_evals.RunKey, skill_evals.Run] = {
-            ("clean", "sonnet", None): skill_evals.Run(held, None, frozenset({"claude-sonnet-5-5"}), frozenset()),
-            ("defects", "sonnet", None): skill_evals.Run(held, None, frozenset({"claude-sonnet-5-5"}), frozenset()),
-            ("clean", "haiku", None): skill_evals.Run(
+        runs: dict[skill_evals_runs.RunKey, skill_evals_runs.Run] = {
+            ("clean", "sonnet", None): skill_evals_runs.Run(held, None, frozenset({"claude-sonnet-5-5"}), frozenset()),
+            ("defects", "sonnet", None): skill_evals_runs.Run(
+                held, None, frozenset({"claude-sonnet-5-5"}), frozenset()
+            ),
+            ("clean", "haiku", None): skill_evals_runs.Run(
                 None, "C:/home/x: timed out", frozenset(), frozenset(), "the run recorded no review", "run"
             ),
-            ("defects", "haiku", None): skill_evals.Run(
+            ("defects", "haiku", None): skill_evals_runs.Run(
                 None, "reviewers ran on claude-opus-5-5", frozenset({"claude-opus-5-5"}), frozenset(), "same", "record"
             ),
         }
@@ -2268,11 +2321,11 @@ class ResultsTests(unittest.TestCase):
             Scenario(skill="review-prs", name=name, directory=Path(name), mode="initial", prior=None, expectations=())
             for name in ("a", "b")
         ]
-        run = skill_evals.Run
+        run = skill_evals_runs.Run
         session = frozenset({"claude-opus-5-5"})
         # The reason a run failed may name the machine's paths; the row takes the phrase recorded for it.
         failed = "the run recorded no review; denied: Bash: D:/scratch/home/script.py | here"
-        runs: dict[skill_evals.RunKey, skill_evals.Run] = {
+        runs: dict[skill_evals_runs.RunKey, skill_evals_runs.Run] = {
             ("a", "haiku", None): run({}, None, frozenset({"claude-haiku-4"}), session),
             ("b", "haiku", None): run(None, "x", frozenset({"claude-haiku-4"}), session, "x"),
             ("a", "sonnet", None): run(None, failed, frozenset(), frozenset(), "no such model | here"),
@@ -2284,7 +2337,7 @@ class ResultsTests(unittest.TestCase):
             outcome("a", "sonnet", failed),
             outcome("b", "sonnet", "no such model"),
         ]
-        rows = skill_evals.result_rows(
+        rows = skill_evals_results.result_rows(
             "review-prs", scenarios, ["haiku", "sonnet"], outcomes, runs, "2.1.291", datetime.date(2026, 10, 8)
         )
         self.assertEqual(
@@ -2303,10 +2356,10 @@ class ResultsTests(unittest.TestCase):
             )
             for name in ("a", "b", "c")
         ]
-        run = skill_evals.Run
+        run = skill_evals_runs.Run
         session = frozenset({"claude-opus-5-5"})
         reviewer = frozenset({"claude-haiku-5-5"})
-        runs: dict[skill_evals.RunKey, skill_evals.Run] = {
+        runs: dict[skill_evals_runs.RunKey, skill_evals_runs.Run] = {
             ("a", "haiku", None): run({}, None, reviewer, session),
             # The session refused before any reviewer started, as an unsupported PDF parser makes it.
             ("b", "haiku", None): run(None, "the run recorded no review", frozenset(), session),
@@ -2320,7 +2373,7 @@ class ResultsTests(unittest.TestCase):
             outcome("b", "haiku", "the run recorded no review"),
             outcome("c", "haiku", "the run recorded no review; timed out"),
         ]
-        rows = skill_evals.result_rows(
+        rows = skill_evals_results.result_rows(
             "review-document", scenarios, ["haiku"], outcomes, runs, "2.1.291", datetime.date(2026, 10, 8)
         )
         self.assertEqual(
@@ -2336,10 +2389,10 @@ class ResultsTests(unittest.TestCase):
             Scenario(skill="review-prs", name=name, directory=Path(name), mode="initial", prior=None, expectations=())
             for name in ("a", "b", "c", "d")
         ]
-        run = skill_evals.Run
+        run = skill_evals_runs.Run
         reviewer, session = frozenset({"claude-haiku-5-5"}), frozenset({"claude-opus-5-5"})
         unreviewed = run(None, "the run recorded no review", frozenset(), session, "the run recorded no review", "run")
-        runs: dict[skill_evals.RunKey, skill_evals.Run] = {
+        runs: dict[skill_evals_runs.RunKey, skill_evals_runs.Run] = {
             (name, "haiku", index): run({}, None, reviewer, session) for name in "abc" for index in (1, 2, 3)
         }
         # No reviewer ran on c's third run, nor on any of d's: they hold no judgment of the model.
@@ -2350,7 +2403,7 @@ class ResultsTests(unittest.TestCase):
             for name in "abcd"
             for index in (1, 2, 3)
         ]
-        rows = skill_evals.result_rows(
+        rows = skill_evals_results.result_rows(
             "review-prs", scenarios, ["haiku"], outcomes, runs, "2.1.291", datetime.date(2026, 10, 8)
         )
         self.assertEqual(
@@ -2364,9 +2417,11 @@ class ResultsTests(unittest.TestCase):
     def test_the_skills_rows_are_replaced_and_every_other_kept(self) -> None:
         rows = ["| review-prs | haiku | h | 1/1 | 1 | a 1/1 | s | 2.1.291 | 2026-10-08 |"]
         original = RESULTS_TEXT.split("\n")
-        written = skill_evals.replace_results(RESULTS_TEXT, "review-prs", rows).split("\n")
-        begin, end = written.index(skill_evals.RESULTS_BEGIN), written.index(skill_evals.RESULTS_END)
-        self.assertEqual([*skill_evals.RESULTS_HEADER, original[5], rows[0], original[7]], written[begin + 1 : end])
+        written = skill_evals_results.replace_results(RESULTS_TEXT, "review-prs", rows).split("\n")
+        begin, end = written.index(skill_evals_results.RESULTS_BEGIN), written.index(skill_evals_results.RESULTS_END)
+        self.assertEqual(
+            [*skill_evals_results.RESULTS_HEADER, original[5], rows[0], original[7]], written[begin + 1 : end]
+        )
         self.assertEqual(original[:begin], written[:begin])
         self.assertEqual(["", "Written by hand after the table.", ""], written[end + 1 :])
 
@@ -2380,21 +2435,23 @@ class ResultsTests(unittest.TestCase):
         )
         text = "\n".join(lines)
         rows = ["| review-prs | haiku | h | 1/1 | 1 | a 1/1 | s | 2.1.291 | 2026-10-08 |"]
-        written = skill_evals.replace_results(text, "review-prs", rows).split("\n")
-        begin, end = written.index(skill_evals.RESULTS_BEGIN), written.index(skill_evals.RESULTS_END)
-        self.assertEqual([*skill_evals.RESULTS_HEADER, lines[5], lines[6], rows[0], lines[8]], written[begin + 1 : end])
+        written = skill_evals_results.replace_results(text, "review-prs", rows).split("\n")
+        begin, end = written.index(skill_evals_results.RESULTS_BEGIN), written.index(skill_evals_results.RESULTS_END)
+        self.assertEqual(
+            [*skill_evals_results.RESULTS_HEADER, lines[5], lines[6], rows[0], lines[8]], written[begin + 1 : end]
+        )
 
     def test_a_table_it_cannot_read_is_refused(self) -> None:
-        empty = "\n".join([skill_evals.RESULTS_BEGIN, skill_evals.RESULTS_END])
+        empty = "\n".join([skill_evals_results.RESULTS_BEGIN, skill_evals_results.RESULTS_END])
         with self.assertRaisesRegex(ScenarioError, "must start with the header"):
-            skill_evals.results_table(empty)
+            skill_evals_results.results_table(empty)
 
     def test_the_shipped_results_file_has_its_table(self) -> None:
         text = skill_evals.RESULTS.read_text(encoding="utf-8")
-        begin, end, _ = skill_evals.results_table(text)
+        begin, end, _ = skill_evals_results.results_table(text)
         lines = text.split("\n")
-        self.assertEqual(list(skill_evals.RESULTS_HEADER), lines[begin + 1 : begin + 3])
-        columns = len(skill_evals.RESULTS_HEADER[0].split("|"))
+        self.assertEqual(list(skill_evals_results.RESULTS_HEADER), lines[begin + 1 : begin + 3])
+        columns = len(skill_evals_results.RESULTS_HEADER[0].split("|"))
         for row in lines[begin + 3 : end]:
             self.assertEqual(columns, len(row.replace("\\|", "").split("|")), row)
 
@@ -2437,14 +2494,14 @@ class StubClaude:
     def __call__(self, arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Any:
         self.calls.append((arguments, cwd, environment))
         if arguments[1:] == ["--version"]:
-            return skill_evals.Completed(0, "2.1.291 (Claude Code)\n", "")
+            return runtime_canary.Completed(0, "2.1.291 (Claude Code)\n", "")
         model = reviewer_of(arguments)["model"]
-        self.test.assertEqual(model, frontmatter_model(cwd / skill_evals.REVIEWER_AGENT))
+        self.test.assertEqual(model, frontmatter_model(cwd / skill_evals_runs.REVIEWER_AGENT))
         if self.review:
             words = [quoted or bare for quoted, bare in re.findall(r'"([^"]*)"|(\S+)', arguments[2])]
             skill, prepare = words[0].removeprefix("/"), words[1:]
             run = Path(environment["TMPDIR"]).parent
-            scenario = skill_evals.SCENARIO_ROOT / skill / run.name / "scenario.json"
+            scenario = skill_evals_scenarios.SCENARIO_ROOT / skill / run.name / "scenario.json"
             if skill != "review-document":
                 fixture = Path(prepare[prepare.index("--fixture") + 1])
                 self.fixtures[f"{run.name} {model}"] = (fixture, tree_bytes(fixture))
@@ -2465,11 +2522,11 @@ class StubClaude:
                 self.after(written)
         reviewer = self.reviewer or model
         forwarded = [assistant(reviewer, subagent=True)] if self.subagent else []
-        return skill_evals.Completed(0, "\n".join([assistant(self.session), *forwarded]), "")
+        return runtime_canary.Completed(0, "\n".join([assistant(self.session), *forwarded]), "")
 
 
 def forward(path: Path) -> str:
-    return skill_evals.quote(str(path).replace(os.sep, "/"))
+    return skill_evals_scenarios.quote(str(path).replace(os.sep, "/"))
 
 
 class EvaluateTests(unittest.TestCase):
@@ -2519,12 +2576,12 @@ class EvaluateTests(unittest.TestCase):
         status, lines = self.evaluate(["--write", "--jobs", "1"], self.seams(claude))
         self.assertEqual(0, status, lines)
         self.assertEqual(f"HOME {forward(self.homes)}", lines[0])
-        source = skill_evals.runtime_canary.source_id(skill_evals.REPOSITORY_ROOT)
-        self.assertEqual([f"DEPLOYED {model} {source}" for model in skill_evals.MODELS], lines[1:4])
+        source = runtime_canary.source_id(skill_evals_scenarios.REPOSITORY_ROOT)
+        self.assertEqual([f"DEPLOYED {model} {source}" for model in skill_evals_records.MODELS], lines[1:4])
         self.assertEqual("RUNTIME claude 2.1.291", lines[4])
         ended = [line.split(" ")[1:3] for line in lines if line.startswith("TRANSCRIPT ")]
         scenarios = ["clean-change", "design-clean", "design-gaps", "planted-defects", "re-review"]
-        self.assertEqual([[scenario, model] for scenario in scenarios for model in skill_evals.MODELS], ended)
+        self.assertEqual([[scenario, model] for scenario in scenarios for model in skill_evals_records.MODELS], ended)
         # A design scenario's manifest routes its one changed document to the suite's design specialist alone.
         role = {"design-clean": "design-review", "design-gaps": "design-review"}
         self.assertIn("REVIEWER haiku claude-haiku-5-5", lines)
@@ -2533,7 +2590,7 @@ class EvaluateTests(unittest.TestCase):
             [
                 f"GUARDED {scenario} {model} {role.get(scenario, 'generic-review')} files_read=0"
                 for scenario in scenarios
-                for model in skill_evals.MODELS
+                for model in skill_evals_records.MODELS
             ],
             guarded,
         )
@@ -2576,9 +2633,9 @@ class EvaluateTests(unittest.TestCase):
             if arguments[1:] != ["--version"]:
                 self.assertEqual(self.homes, cwd.parent)
                 self.assertEqual("kept", environment["PATH"])
-                self.assertTrue(Path(environment["TMPDIR"]).is_relative_to(cwd / skill_evals.STATE))
+                self.assertTrue(Path(environment["TMPDIR"]).is_relative_to(cwd / skill_evals_runs.STATE))
                 agents = arguments[arguments.index("--agents") + 1]
-                self.assertEqual(str(cwd / skill_evals.STATE / "agents.json"), agents)
+                self.assertEqual(str(cwd / skill_evals_runs.STATE / "agents.json"), agents)
 
     def test_claude_code_sees_no_repository_selecting_variable_the_shell_exported(self) -> None:
         # Written out here rather than read from skill-core; a lower-case name is the same variable on Windows.
@@ -2616,10 +2673,10 @@ class EvaluateTests(unittest.TestCase):
         prompts = [arguments[2] for arguments, _, _ in claude.calls if arguments[1:] != ["--version"]]
         self.assertEqual(
             [
-                f'/review-document "{self.homes / model / skill_evals.STATE / scenario / "document" / name}"'
+                f'/review-document "{self.homes / model / skill_evals_runs.STATE / scenario / "document" / name}"'
                 + stages.get(scenario, "")
                 for scenario, name in scenarios.items()
-                for model in skill_evals.MODELS
+                for model in skill_evals_records.MODELS
             ],
             prompts,
         )
@@ -2628,7 +2685,7 @@ class EvaluateTests(unittest.TestCase):
             {
                 f"{scenario} {model}": "committed" if scenario == "committed-edit" else "none"
                 for scenario in scenarios
-                for model in skill_evals.MODELS.values()
+                for model in skill_evals_records.MODELS.values()
             },
             {key: built[1].split(" ")[1] for key, built in claude.built.items()},
         )
@@ -2637,7 +2694,7 @@ class EvaluateTests(unittest.TestCase):
             [
                 f"GUARDED {scenario} {model} design-review files_read=0"
                 for scenario in scenarios
-                for model in skill_evals.MODELS
+                for model in skill_evals_records.MODELS
             ],
             guarded,
         )
@@ -2768,7 +2825,7 @@ class EvaluateTests(unittest.TestCase):
     def test_an_agent_that_cannot_be_passed_stops_the_run(self) -> None:
         def no_guard(home: Path, source: Path) -> tuple[int, str]:
             fake_deploy(home, source)
-            (home / skill_evals.GUARD).unlink()
+            (home / skill_evals_runs.GUARD).unlink()
             return 0, ""
 
         claude = StubClaude(self)
@@ -2807,13 +2864,13 @@ class EvaluateTests(unittest.TestCase):
     def test_a_model_that_did_not_run_is_recorded_without_the_machine_s_paths(self) -> None:
         def denied(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Any:
             if arguments[1:] == ["--version"]:
-                return skill_evals.Completed(0, "2.1.291 (Claude Code)\n", "")
+                return runtime_canary.Completed(0, "2.1.291 (Claude Code)\n", "")
             command = f'python -B "{cwd}/.claude/skills/code-review-core/scripts/review_pipeline.py" prepare'
             refused = {
                 "type": "result",
                 "permission_denials": [{"tool_name": "Bash", "tool_input": {"command": command}}],
             }
-            return skill_evals.Completed(1, f"{assistant('claude-opus-5-5')}\n{json.dumps(refused)}", "")
+            return runtime_canary.Completed(1, f"{assistant('claude-opus-5-5')}\n{json.dumps(refused)}", "")
 
         status, lines = self.evaluate(["--write"], self.seams(denied))
         self.assertEqual(1, status)
@@ -2919,7 +2976,7 @@ class EvaluateTests(unittest.TestCase):
         status, lines = self.evaluate([], self.seams(claude, deploy=lambda *_: (1, "broken\n")))
         self.assertEqual(1, status)
         self.assertTrue(lines[-1].startswith('DEPLOY_FAILED haiku "the deployment failed; its log is '), lines)
-        log = self.homes / "haiku" / skill_evals.STATE / "deploy.log"
+        log = self.homes / "haiku" / skill_evals_runs.STATE / "deploy.log"
         self.assertEqual("broken\n", log.read_text(encoding="utf-8"))
         self.assertEqual([], claude.calls)
 
@@ -2933,9 +2990,9 @@ class EvaluateTests(unittest.TestCase):
         with mock.patch.object(tempfile, "tempdir", str(copies)):
             status, lines = self.evaluate(["--write", "--jobs", "1"], self.seams(claude), "review-repository")
         self.assertEqual(0, status, lines)
-        runs = [(scenario, model) for scenario in REVIEW_REPOSITORY_SCENARIOS for model in skill_evals.MODELS]
+        runs = [(scenario, model) for scenario in REVIEW_REPOSITORY_SCENARIOS for model in skill_evals_records.MODELS]
         prompts = [arguments[2] for arguments, _, _ in claude.calls if arguments[1:] != ["--version"]]
-        fixtures = [claude.fixtures[f"{scenario} {skill_evals.MODELS[model]}"][0] for scenario, model in runs]
+        fixtures = [claude.fixtures[f"{scenario} {skill_evals_records.MODELS[model]}"][0] for scenario, model in runs]
         self.assertEqual([f'/review-prs --canary --fixture "{fixture}"' for fixture in fixtures], prompts)
         self.assertEqual([(scenario, copies) for scenario, _ in runs], [(f.name, f.parent.parent) for f in fixtures])
         for key, (_, files) in claude.fixtures.items():
@@ -2943,14 +3000,16 @@ class EvaluateTests(unittest.TestCase):
             for tree in ("base", "head"):
                 for path in REVIEW_REPOSITORY_PLACED:
                     with self.subTest(run=key, tree=tree, path=path):
-                        self.assertEqual((skill_evals.REPOSITORY_ROOT / path).read_bytes(), files[f"{tree}/{path}"])
+                        self.assertEqual(
+                            (skill_evals_scenarios.REPOSITORY_ROOT / path).read_bytes(), files[f"{tree}/{path}"]
+                        )
             own = {
-                path[len(scenario) + 1 :].removesuffix(skill_evals.HELD): content
+                path[len(scenario) + 1 :].removesuffix(skill_evals_scenarios.HELD): content
                 for path, content in before.items()
                 if path.startswith(f"{scenario}/")
             }
             self.assertEqual(own, {path: files[path] for path in own})
-            self.assertEqual([], [path for path in files if path.endswith(skill_evals.HELD)])
+            self.assertEqual([], [path for path in files if path.endswith(skill_evals_scenarios.HELD)])
         self.assertEqual([], list(copies.iterdir()), "every copy is removed")
         self.assertEqual(before, tree_bytes(REVIEW_REPOSITORY), "the fixtures are untouched")
         # Each route's condition opens on the copy as on the fixture, with the reviewer's files beside it, and each
@@ -2988,7 +3047,7 @@ class EvaluateTests(unittest.TestCase):
             lines,
         )
         written = self.results.read_text(encoding="utf-8")
-        for model, identifier in skill_evals.MODELS.items():
+        for model, identifier in skill_evals_records.MODELS.items():
             self.assertIn(
                 f"| review-repository | {model} | {identifier} | 11/11 | 1 | branch-name-command 1/1, build-grant 1/1, "
                 "drifted-guide 2/2, misstated-exit-status 1/1, tested-change 1/1, text-read-policy 1/1, "
@@ -3005,7 +3064,7 @@ class EvaluateTests(unittest.TestCase):
 
         def broken(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Any:
             if arguments[1:] == ["--version"]:
-                return skill_evals.Completed(0, "2.1.291 (Claude Code)\n", "")
+                return runtime_canary.Completed(0, "2.1.291 (Claude Code)\n", "")
             self.assertEqual(1, len(list(copies.iterdir())))
             raise RuntimeError("the session broke")
 
@@ -3018,7 +3077,7 @@ class EvaluateTests(unittest.TestCase):
                 lines,
             )
             self.assertEqual([], list(copies.iterdir()))
-        skill_evals.fsops.remove(self.homes)
+        fsops.remove(self.homes)
         with mock.patch.object(tempfile, "tempdir", str(copies)), self.assertRaisesRegex(RuntimeError, "broke"):
             self.evaluate(argv, self.seams(broken), "review-repository")
         self.assertEqual([], list(copies.iterdir()))
@@ -3036,7 +3095,7 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(1, status, lines)
         ended = [line.split(" ")[1:4] for line in lines if line.startswith("TRANSCRIPT ")]
         self.assertEqual([["planted-defects", "haiku", f"run={index}"] for index in (1, 2, 3)], ended)
-        transcript = self.homes / "haiku" / skill_evals.STATE / "2" / "planted-defects" / "transcript.jsonl"
+        transcript = self.homes / "haiku" / skill_evals_runs.STATE / "2" / "planted-defects" / "transcript.jsonl"
         self.assertIn(f"TRANSCRIPT planted-defects haiku run=2 {forward(transcript)}", lines)
         self.assertEqual(
             [f"GUARDED planted-defects haiku run={index} generic-review files_read=0" for index in (1, 2, 3)],
@@ -3069,7 +3128,7 @@ class EvaluateTests(unittest.TestCase):
         self.assertTrue(self.homes.exists())
 
     def test_a_trigger_scenario_judges_whether_each_request_started_the_skill_and_records_it(self) -> None:
-        scenario = skill_evals.load_scenarios("analyze-skill-cost", ["description"])[0]
+        scenario = skill_evals_scenarios.load_scenarios("analyze-skill-cost", ["description"])[0]
         first, second, third = scenario.requests
         near, other = scenario.near_misses
         # The third request starts nothing, and the second near miss starts the skill: two judgments fail.
@@ -3085,9 +3144,9 @@ class EvaluateTests(unittest.TestCase):
         status, lines = self.evaluate(["--write", "--jobs", "1"], self.seams(claude), "analyze-skill-cost")
         self.assertEqual(1, status, lines)
         ended = [line.split(" ")[1:3] for line in lines if line.startswith("TRANSCRIPT ")]
-        self.assertEqual([["description", model] for model in skill_evals.MODELS for _ in range(5)], ended)
+        self.assertEqual([["description", model] for model in skill_evals_records.MODELS for _ in range(5)], ended)
         self.assertEqual(
-            [f"REVIEWER {model} {model_id}" for model, model_id in skill_evals.MODELS.items()],
+            [f"REVIEWER {model} {model_id}" for model, model_id in skill_evals_records.MODELS.items()],
             [line for line in lines if line.startswith("REVIEWER ")],
         )
         self.assertEqual([], [line for line in lines if line.startswith(("GUARDED ", "NOT_COUNTED "))])
@@ -3106,7 +3165,7 @@ class EvaluateTests(unittest.TestCase):
         )
         self.assertIn("| description | 3/5 | 3/5 | 3/5 |", self.cited)
         record = json.loads(
-            (self.homes / "haiku" / skill_evals.STATE / "description" / "trigger.json").read_text(encoding="utf-8")
+            (self.homes / "haiku" / skill_evals_runs.STATE / "description" / "trigger.json").read_text(encoding="utf-8")
         )
         self.assertEqual(
             {
@@ -3127,7 +3186,7 @@ class EvaluateTests(unittest.TestCase):
             self.results.read_text(encoding="utf-8"),
         )
         for arguments, cwd, _ in claude.calls[1:]:
-            self.assertEqual(skill_evals.trigger_command("claude.exe", arguments[2], cwd.name), arguments)
+            self.assertEqual(skill_evals_runs.trigger_command("claude.exe", arguments[2], cwd.name), arguments)
 
     def test_a_trigger_session_that_does_not_count_makes_its_run_count_for_nothing(self) -> None:
         cases = {
@@ -3300,7 +3359,7 @@ def test_a_document_is_a_file_among_the_scenarios_and_reviewed_once(
     (directory / "draft.md").write_text("# Draft\n", encoding="utf-8")
     (directory / "prior.json").write_text("{}", encoding="utf-8")
     with CHECK.assertRaises(ScenarioError) as raised:
-        skill_evals.load_scenarios("demo", ["case"], root=tmp_path)
+        skill_evals_scenarios.load_scenarios("demo", ["case"], root=tmp_path)
     CHECK.assertIn(message, str(raised.exception))
 
 
@@ -3316,7 +3375,7 @@ def test_a_document_is_a_file_among_the_scenarios_and_reviewed_once(
     ],
 )
 def test_a_model_is_named_by_its_id_with_or_without_a_dated_suffix(reported: str, expected: bool) -> None:
-    CHECK.assertIs(expected, skill_evals.names_model(reported, "claude-haiku-5-5"), reported)
+    CHECK.assertIs(expected, skill_evals_records.names_model(reported, "claude-haiku-5-5"), reported)
 
 
 RESULTS_LINES = RESULTS_TEXT.split("\n")
@@ -3345,19 +3404,19 @@ RESULTS_LINES = RESULTS_TEXT.split("\n")
 def test_a_table_it_cannot_read_is_refused(reason: str, index: int, line: str) -> None:
     text = "\n".join([*RESULTS_LINES[:index], line, *RESULTS_LINES[index + 1 :]])
     with CHECK.assertRaisesRegex(ScenarioError, reason):
-        skill_evals.results_table(text)
+        skill_evals_results.results_table(text)
     with CHECK.assertRaisesRegex(ScenarioError, reason):
-        skill_evals.replace_results(text, "review-prs", [])
+        skill_evals_results.replace_results(text, "review-prs", [])
 
 
 @pytest.mark.parametrize(
     "text",
-    ["no markers", f"{skill_evals.RESULTS_END}\n{skill_evals.RESULTS_BEGIN}", RESULTS_TEXT * 2],
+    ["no markers", f"{skill_evals_results.RESULTS_END}\n{skill_evals_results.RESULTS_BEGIN}", RESULTS_TEXT * 2],
     ids=["no markers", "out of order", "twice each"],
 )
 def test_the_markers_are_required_once_each_in_order(text: str) -> None:
     with CHECK.assertRaises(ScenarioError):
-        skill_evals.results_table(text)
+        skill_evals_results.results_table(text)
 
 
 class StubTrigger:
@@ -3375,8 +3434,8 @@ class StubTrigger:
     def __call__(self, arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Any:
         self.calls.append((arguments, cwd, environment))
         if arguments[1:] == ["--version"]:
-            return skill_evals.Completed(0, "2.1.291 (Claude Code)\n", "")
-        self.test.assertTrue(Path(environment["TMPDIR"]).is_relative_to(cwd / skill_evals.STATE))
+            return runtime_canary.Completed(0, "2.1.291 (Claude Code)\n", "")
+        self.test.assertTrue(Path(environment["TMPDIR"]).is_relative_to(cwd / skill_evals_runs.STATE))
         request, model = arguments[2], arguments[arguments.index("--model") + 1]
         skills = ["audit-ai-config", *(["analyze-skill-cost"] if self.listed else [])]
         content: list[dict[str, Any]] = [{"type": "text", "text": "On it."}]
@@ -3392,14 +3451,14 @@ class StubTrigger:
                 "parent_tool_use_id": None,
             },
         ]
-        return skill_evals.Completed(0, "\n".join(json.dumps(event) for event in events), "")
+        return runtime_canary.Completed(0, "\n".join(json.dumps(event) for event in events), "")
 
 
 def trigger_scenario(root: Path, spec: dict[str, Any], checkout: Path) -> Scenario:
     folder = root / "demo" / "triggers"
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "scenario.json").write_text(json.dumps(spec), encoding="utf-8")
-    return skill_evals.load_scenario("demo", folder, checkout)
+    return skill_evals_scenarios.load_scenario("demo", folder, checkout)
 
 
 def demo_checkout(root: Path, frontmatter: str = "") -> Path:
@@ -3416,7 +3475,7 @@ TRIGGER_SPEC = {"skill": "demo", "mode": "trigger", "requests": ["Run the demo."
 def test_a_trigger_scenario_expects_each_request_to_start_its_skill_and_each_near_miss_not_to(tmp_path: Path) -> None:
     spec = {**TRIGGER_SPEC, "requests": ["Run the demo.", "Show the demo."]}
     scenario = trigger_scenario(tmp_path, spec, demo_checkout(tmp_path))
-    CHECK.assertEqual(skill_evals.TRIGGER, scenario.mode)
+    CHECK.assertEqual(skill_evals_scenarios.TRIGGER, scenario.mode)
     CHECK.assertEqual(("Run the demo.", "Show the demo."), scenario.requests)
     CHECK.assertEqual(("Run a test.",), scenario.near_misses)
     CHECK.assertEqual(
@@ -3483,10 +3542,10 @@ def test_a_trigger_scenario_s_skill_is_a_shipped_one_the_model_may_start(tmp_pat
 
 
 def test_the_worked_trigger_scenario_draws_on_its_description_and_a_neighbour_s() -> None:
-    scenario = skill_evals.load_scenarios("analyze-skill-cost")[0]
-    CHECK.assertEqual(("description", skill_evals.TRIGGER), (scenario.name, scenario.mode))
-    description = frontmatter.read(skill_evals.REPOSITORY_ROOT / "skills" / "analyze-skill-cost" / "SKILL.md")
-    neighbour = frontmatter.read(skill_evals.REPOSITORY_ROOT / "skills" / "audit-ai-config" / "SKILL.md")
+    scenario = skill_evals_scenarios.load_scenarios("analyze-skill-cost")[0]
+    CHECK.assertEqual(("description", skill_evals_scenarios.TRIGGER), (scenario.name, scenario.mode))
+    description = frontmatter.read(skill_evals_scenarios.REPOSITORY_ROOT / "skills" / "analyze-skill-cost" / "SKILL.md")
+    neighbour = frontmatter.read(skill_evals_scenarios.REPOSITORY_ROOT / "skills" / "audit-ai-config" / "SKILL.md")
     # The requests ask what the description's "Use it when" sentence names, and the near misses what the neighbour's.
     CHECK.assertIn(
         "Use it when asked what a skill costs, why it is slow or expensive, or to check one before shipping it.",
@@ -3516,13 +3575,13 @@ def test_only_the_session_s_own_skill_tool_call_is_a_start() -> None:
             assistant_with([skill, {**skill, "input": {"skill": "/other"}}, skill]),
         ]
     )
-    CHECK.assertEqual(["demo", "other"], skill_evals.skills_in_stream(output))
+    CHECK.assertEqual(["demo", "other"], skill_evals_runs.skills_in_stream(output))
 
 
 def test_a_trigger_session_runs_on_the_judged_model_with_a_turn_limit_and_no_grant() -> None:
-    command = skill_evals.trigger_command("claude", "Run the demo.", "haiku")
+    command = skill_evals_runs.trigger_command("claude", "Run the demo.", "haiku")
     CHECK.assertEqual(["claude", "-p", "Run the demo.", "--model", "claude-haiku-5-5"], command[:5])
-    CHECK.assertEqual(str(skill_evals.TRIGGER_TURNS), command[command.index("--max-turns") + 1])
+    CHECK.assertEqual(str(skill_evals_runs.TRIGGER_TURNS), command[command.index("--max-turns") + 1])
     CHECK.assertEqual("project,local", command[command.index("--setting-sources") + 1])
     for absent in ("--allowedTools", "--agents", "--permission-mode"):
         CHECK.assertNotIn(absent, command)
@@ -3537,7 +3596,7 @@ def test_records_hold_a_trigger_record_to_its_scenario_and_model(tmp_path: Path)
     records = tmp_path / "records" / "triggers"
     records.mkdir(parents=True)
     (records / "haiku-2.json").write_text(json.dumps(good), encoding="utf-8")
-    source = skill_evals.records_in(tmp_path / "records")
+    source = skill_evals_judging.records_in(tmp_path / "records")
     CHECK.assertEqual(good, source(scenario, "haiku", 2))
     refused = {
         "another model": {**good, "models": ["claude-opus-5-5"]},
@@ -3551,4 +3610,4 @@ def test_records_hold_a_trigger_record_to_its_scenario_and_model(tmp_path: Path)
         (records / "haiku.json").write_text(json.dumps(value), encoding="utf-8")
         with CHECK.assertRaises(RecordError, msg=name) as raised:
             source(scenario, "haiku", None)
-        CHECK.assertEqual(skill_evals.RECORD, raised.exception.kind, name)
+        CHECK.assertEqual(skill_evals_records.RECORD, raised.exception.kind, name)
