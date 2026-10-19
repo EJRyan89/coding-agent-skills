@@ -57,7 +57,8 @@ BASH_MISSING = (
 WINDOWS_INSTALL_HINTS = {
     "Git Bash": "winget install --id Git.Git",
     "ShellCheck": "winget install --id koalaman.shellcheck",
-    "PowerShell": "winget install --id Microsoft.PowerShell",
+    # The MSI build: winget's default is the packaged one, whose pwsh is an app execution alias (see below).
+    "PowerShell": "winget install --id Microsoft.PowerShell --installer-type wix",
     # A validation-only dependency, installed into the interpreter that runs validation, which is python here.
     "ruff": "python -m pip install -r requirements-dev.txt",
     "mypy": "python -m pip install -r requirements-dev.txt",
@@ -318,6 +319,21 @@ APP_EXECUTION_ALIAS_REMEDY = (
     "turn off the python.exe and python3.exe aliases under Settings > Apps > Advanced app settings > "
     "App execution aliases"
 )
+# The packaged (MSIX) PowerShell, winget's default for Microsoft.PowerShell, puts pwsh on PATH only as an app
+# execution alias, and Codex CLI runs every command through the pwsh it finds, so its MSI build replaces it.
+POWERSHELL_ALIAS_REMEDY = (
+    "replace the packaged PowerShell with its MSI build: winget uninstall --id Microsoft.PowerShell, then "
+    "winget install --id Microsoft.PowerShell --installer-type wix"
+)
+
+
+# The mode for a throwaway folder a runtime's sandbox must read, such as the runtime canary's home. On Windows,
+# os.mkdir applies a mode of 0o700, which tempfile.mkdtemp passes, as an access control list for the current user and
+# administrators alone, with nothing inherited (Python 3.12.4 and 3.13 onward), so Codex CLI's unelevated sandbox,
+# whose entries on the temporary directory that list drops, cannot read the folder; any other mode is ignored there
+# and the folder inherits the temporary directory's entries, the user's own and the sandbox's. Elsewhere 0o700 keeps
+# the folder the user's alone, and Codex's sandbox runs as that user.
+SANDBOX_READABLE_DIRECTORY_MODE = 0o777 if WINDOWS else 0o700
 
 
 def is_app_execution_alias(program: str | os.PathLike[str]) -> bool:

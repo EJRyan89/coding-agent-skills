@@ -16,6 +16,7 @@ CHECK_ACTIONS = ("MISSING", "OUTDATED", "UNUSABLE", "FOUND", "OPTIONAL")
 NEEDED_TO_DEPLOY = "needed to deploy"
 CODEX_SANDBOX_SECTION = '"Windows sandbox mode" in docs/codex-support.md'
 PYTHON_ALIAS_SECTION = '"Python app execution aliases" in docs/codex-support.md'
+POWERSHELL_ALIAS_SECTION = '"PowerShell app execution alias" in docs/codex-support.md'
 # What check asks for when a tool needed to deploy is missing, outdated, or both, keyed by (missing, outdated).
 BLOCKED_LEADS = {
     (True, False): "Install the missing tools",
@@ -82,10 +83,14 @@ def _skill_lines(src: source.Source, owned: manifest.Ownership) -> list[ReportLi
 
 def _setting_lines() -> list[ReportLine]:
     """The machine settings a runtime needs before it can run a skill's scripts, where this platform has them: what
-    the skills' Python command runs, and, when Codex CLI is installed and meets its floor, the sandbox it would use."""
+    the skills' Python command runs, what pwsh runs where there is one, and, when Codex CLI is installed and meets its
+    floor, the sandbox it would use."""
     lines: list[ReportLine] = []
     if platform_support.HAS_APP_EXECUTION_ALIASES:
         lines.append(_python_command_line())
+        pwsh = platform_support.find_executable("pwsh")
+        if pwsh is not None:
+            lines.append(_pwsh_command_line(pwsh))
     if platform_support.CODEX_NEEDS_SANDBOX_SETTING:
         codex = tools.probe(tools.CODEX)
         if codex.path is not None and not codex.outdated:
@@ -104,6 +109,21 @@ def _python_command_line() -> ReportLine:
             "UNUSABLE",
             f"runs the app execution alias {platform_support.normalize(program)}, which Codex CLI cannot start; "
             f"{platform_support.APP_EXECUTION_ALIAS_REMEDY}; see {PYTHON_ALIAS_SECTION}",
+        )
+    return ReportLine(label, "FOUND", f"runs {platform_support.normalize(program)}, not an app execution alias")
+
+
+def _pwsh_command_line(program: str) -> ReportLine:
+    """Codex CLI runs every command through the pwsh it finds, and Windows PowerShell only when there is none, so a
+    pwsh that is an app execution alias, the packaged PowerShell's, stops every command; with no pwsh, nothing does."""
+    label = "pwsh command"
+    if platform_support.is_app_execution_alias(program):
+        return ReportLine(
+            label,
+            "UNUSABLE",
+            f"runs the app execution alias {platform_support.normalize(program)}, the packaged PowerShell, which "
+            f"Codex CLI runs every command through and cannot start; {platform_support.POWERSHELL_ALIAS_REMEDY}; "
+            f"see {POWERSHELL_ALIAS_SECTION}",
         )
     return ReportLine(label, "FOUND", f"runs {platform_support.normalize(program)}, not an app execution alias")
 

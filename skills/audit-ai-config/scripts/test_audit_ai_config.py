@@ -2023,17 +2023,38 @@ class CodeReviewSourceTests(unittest.TestCase):
             if f.check == "layering" and f.message.startswith("Code review:")
         ]
 
-    def test_copilot_instructions_are_an_effective_source(self) -> None:
+    def test_claude_md_and_copilot_instructions_are_effective_sources(self) -> None:
         self.assertEqual(
-            [("INFO", "Code review: effective sources: .github/copilot-instructions.md")],
+            [("INFO", "Code review: effective sources: CLAUDE.md, .github/copilot-instructions.md")],
             self._review_findings(),
         )
 
-    def test_redirect_only_agents_md_gives_code_review_nothing(self) -> None:
+    def test_a_redirect_only_agents_md_leaves_code_review_the_claude_md_it_names(self) -> None:
         (self.root / ".github/copilot-instructions.md").unlink()
-        findings = self._review_findings()
-        self.assertEqual(["ERROR"], [severity for severity, _ in findings])
-        self.assertIn("only redirects to CLAUDE.md", findings[0][1])
+        self.assertEqual([("INFO", "Code review: effective sources: CLAUDE.md")], self._review_findings())
+
+    def test_gemini_md_and_review_md_are_effective_sources(self) -> None:
+        (self.root / ".github/copilot-instructions.md").unlink()
+        (self.root / "GEMINI.md").write_text("# Rules\n", encoding="utf-8")
+        (self.root / "REVIEW.md").write_text("# Review\n", encoding="utf-8")
+        self.assertEqual(
+            [("INFO", "Code review: effective sources: CLAUDE.md, GEMINI.md, REVIEW.md")], self._review_findings()
+        )
+
+    def test_a_redirect_only_agents_md_with_nothing_it_names_gives_code_review_nothing(self) -> None:
+        (self.root / ".github/copilot-instructions.md").unlink()
+        (self.root / "CLAUDE.md").unlink()
+        layering = audit.check_instruction_layering(self.root, {"surfaces": ["code_review"]})
+        self.assertEqual(
+            [
+                (
+                    "ERROR",
+                    "Code review: no project instructions it can read — no CLAUDE.md, GEMINI.md, REVIEW.md, or "
+                    "Copilot instructions, and AGENTS.md only redirects to CLAUDE.md",
+                )
+            ],
+            [(f.severity, f.message) for f in layering if f.message.startswith("Code review:")],
+        )
 
     def test_path_specific_and_user_agents_md_count(self) -> None:
         (self.root / ".github/copilot-instructions.md").unlink()
@@ -2042,7 +2063,7 @@ class CodeReviewSourceTests(unittest.TestCase):
         instructions.parent.mkdir(parents=True)
         instructions.write_text("Prefer async.\n", encoding="utf-8")
         self.assertEqual(
-            [("INFO", "Code review: effective sources: AGENTS.md, .github/instructions")],
+            [("INFO", "Code review: effective sources: AGENTS.md, CLAUDE.md, .github/instructions")],
             self._review_findings(),
         )
 
@@ -2296,7 +2317,12 @@ LAYERING_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
             "sub/AGENTS.md",
             "Nested AGENTS.md supersedes root adapter for cloud agent sessions in this subtree",
         ),
-        ("INFO", "layering", None, "Code review: effective sources: .github/copilot-instructions.md"),
+        (
+            "INFO",
+            "layering",
+            None,
+            "Code review: effective sources: CLAUDE.md, GEMINI.md, .github/copilot-instructions.md",
+        ),
         ("WARNING", "layering", None, "Code-review custom-instructions enablement cannot be verified statically"),
         (
             "WARNING",
@@ -2351,13 +2377,7 @@ LAYERING_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
             "sub/AGENTS.md",
             "Nested AGENTS.md supersedes root adapter for cloud agent sessions in this subtree",
         ),
-        (
-            "ERROR",
-            "layering",
-            None,
-            "Code review: no project instructions it can read — it "
-            "ignores CLAUDE.md, and AGENTS.md only redirects to CLAUDE.md",
-        ),
+        ("INFO", "layering", None, "Code review: effective sources: CLAUDE.md"),
         ("WARNING", "layering", None, "Code-review custom-instructions enablement cannot be verified statically"),
         (
             "WARNING",
@@ -2458,12 +2478,7 @@ LAYERING_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
             "instructions — JetBrains cannot load CLAUDE.md directly",
         ),
         ("INFO", "layering", None, "Cloud agent: no AGENTS.md, CLAUDE.md selected directly"),
-        (
-            "ERROR",
-            "layering",
-            None,
-            "Code review: no project instructions it can read — it ignores CLAUDE.md, and AGENTS.md is absent",
-        ),
+        ("INFO", "layering", None, "Code review: effective sources: CLAUDE.md"),
         ("WARNING", "layering", None, "Code-review custom-instructions enablement cannot be verified statically"),
         (
             "WARNING",
@@ -2510,12 +2525,7 @@ LAYERING_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
             "instructions — JetBrains cannot load CLAUDE.md directly",
         ),
         ("INFO", "layering", None, "Cloud agent: no AGENTS.md or CLAUDE.md, GEMINI.md selected as alternative"),
-        (
-            "ERROR",
-            "layering",
-            None,
-            "Code review: no project instructions it can read — it ignores CLAUDE.md, and AGENTS.md is absent",
-        ),
+        ("INFO", "layering", None, "Code review: effective sources: GEMINI.md"),
         ("WARNING", "layering", None, "Code-review custom-instructions enablement cannot be verified statically"),
         (
             "WARNING",
@@ -2566,7 +2576,8 @@ LAYERING_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
             "ERROR",
             "layering",
             None,
-            "Code review: no project instructions it can read — it ignores CLAUDE.md, and AGENTS.md is absent",
+            "Code review: no project instructions it can read — no CLAUDE.md, GEMINI.md, REVIEW.md, or Copilot "
+            "instructions, and AGENTS.md is absent",
         ),
         ("WARNING", "layering", None, "Code-review custom-instructions enablement cannot be verified statically"),
         (
