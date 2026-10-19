@@ -46,7 +46,7 @@ CEILING_CODES = frozenset({"C901", "PLR0915"})
 TYPE_CHECK_ROOTS = ("deployer", "tools", "deploy.py", "tests", "conftest.py")
 # The areas mypy checks in strict mode, which pyproject.toml's [tool.validation] mypy-strict lists. Areas join in stages
 # and none leaves, so each one here must stay listed there; a pull request that makes an area strict adds it to both.
-STRICT_TYPE_CHECK_AREAS = ("skills/ejryan89-skill-core/scripts",)
+STRICT_TYPE_CHECK_AREAS = ("skills/ejryan89-skill-core/scripts", "deployer", "deploy.py")
 # The folders mypy passes over when it collects the files under a root it is given, by their names, which no setting
 # changes: a file in one is type-checked by nothing.
 MYPY_SKIPPED_FOLDERS = frozenset({"__pycache__", "site-packages", "node_modules"})
@@ -327,12 +327,12 @@ def strict_type_check_areas(root: Path) -> list[str] | None:
 
 
 def strict_area_problems(root: Path, pinned: tuple[str, ...] = STRICT_TYPE_CHECK_AREAS) -> list[str]:
-    """The strict list must be a list of directories validation type-checks in a run of their own, and hold every
-    pinned area, since an area joins the list and never leaves it."""
+    """The strict list must be a list of type-check roots, each a skill's scripts/ directory or one of
+    TYPE_CHECK_ROOTS, and hold every pinned area, since an area joins the list and never leaves it."""
     areas = strict_type_check_areas(root)
     if areas is None:
         return ["pyproject.toml: [tool.validation] mypy-strict must be a list of paths from the repository root"]
-    own_runs = {scripts.relative_to(root).as_posix() for scripts in type_check_skill_roots(root)}
+    roots = {scripts.relative_to(root).as_posix() for scripts in type_check_skill_roots(root)} | set(TYPE_CHECK_ROOTS)
     problems = [
         f"pyproject.toml: [tool.validation] mypy-strict lacks {area}, which is checked in strict mode; an area "
         "joins the list and never leaves it, so fix the errors strict mode reports instead"
@@ -340,10 +340,9 @@ def strict_area_problems(root: Path, pinned: tuple[str, ...] = STRICT_TYPE_CHECK
         if area not in areas
     ]
     problems += [
-        f"pyproject.toml: [tool.validation] mypy-strict names {area}, which validation does not type-check in a run "
-        "of its own"
+        f"pyproject.toml: [tool.validation] mypy-strict names {area}, which is no root validation type-checks"
         for area in areas
-        if area not in own_runs
+        if area not in roots
     ]
     problems += [
         f"pyproject.toml: [tool.validation] mypy-strict names {area} more than once"
@@ -414,7 +413,14 @@ def type_check_jobs() -> list[Job]:
             functools.partial(mypy_type_check, REPOSITORY_ROOT, list(TYPE_CHECK_ROOTS), configuration, strict=False),
         )
     ]
-    # A job keeps its name in strict mode, so the seconds recorded for it still weigh it.
+    # The roots checked together stay in that run, which reads a strict one's modules anyway through the imports of
+    # the others; a strict one also gets a run of its own, which adds --strict.
+    for top in TYPE_CHECK_ROOTS:
+        if top in strict:
+            name = f"static type check (mypy --strict {top})"
+            check = functools.partial(mypy_type_check, REPOSITORY_ROOT, [top], configuration, strict=True)
+            jobs.append(Job(name, name, UNSPLIT_SUITE_WEIGHT, check))
+    # A skill's job keeps its name in strict mode, so the seconds recorded for it still weigh it.
     for root in type_check_skill_roots():
         name = f"static type check (mypy {relative(root)})"
         check = functools.partial(mypy_type_check, root, ["."], configuration, strict=relative(root) in strict)

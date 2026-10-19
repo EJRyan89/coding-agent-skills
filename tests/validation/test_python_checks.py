@@ -231,6 +231,18 @@ class PythonChecksFixtures(unittest.TestCase):
             check.assert_called_once_with(
                 REPOSITORY_ROOT, ["deployer", "tools", "deploy.py", "tests", "conftest.py"], configuration, strict=False
             )
+            # A strict root of those also runs alone in strict mode, from the repository root, and the run above is
+            # kept as it was. The strict roots are pinned as literals.
+            strict_roots = ("deployer", "deploy.py")
+            self.assertEqual(
+                {f"static type check (mypy --strict {top})" for top in strict_roots},
+                {name for name in jobs if name.startswith("static type check (mypy --strict ")},
+            )
+            for top in strict_roots:
+                with self.subTest(root=top):
+                    check.reset_mock()
+                    jobs[f"static type check (mypy --strict {top})"].run()
+                    check.assert_called_once_with(REPOSITORY_ROOT, [top], configuration, strict=True)
             # Each skill whose scripts/ holds a module is its own root, checked from inside it as the skill imports.
             roots = type_check_skill_roots()
             self.assertIn(SKILLS_ROOT / "ejryan89-code-review-core" / "scripts", roots)
@@ -261,9 +273,12 @@ class PythonChecksFixtures(unittest.TestCase):
                 return strict_area_problems(root, pinned)
 
         self.assertEqual([], problems('[tool.validation]\nmypy-strict = ["skills/alpha/scripts"]\n'))
-        # An area added beside the pinned one passes.
+        # An area added beside the pinned one passes, a skill's scripts or a root the others are checked with.
         self.assertEqual(
             [], problems('[tool.validation]\nmypy-strict = ["skills/alpha/scripts", "skills/beta/scripts"]\n')
+        )
+        self.assertEqual(
+            [], problems('[tool.validation]\nmypy-strict = ["skills/alpha/scripts", "deployer", "deploy.py"]\n')
         )
         # An area removed fails, however the rest of the list is left.
         removed = (
@@ -282,17 +297,18 @@ class PythonChecksFixtures(unittest.TestCase):
         ):
             with self.subTest(table=table):
                 self.assertEqual(malformed, problems(table))
-        # An area no run checks on its own could not be checked in strict mode, and an area is named once.
+        # An area that is no type-check root could not be checked in strict mode, such as a folder below a root or a
+        # skill with no scripts, and an area is named once.
         self.assertEqual(
             [
-                "pyproject.toml: [tool.validation] mypy-strict names deployer, which validation does not type-check "
-                "in a run of its own",
-                "pyproject.toml: [tool.validation] mypy-strict names skills/gamma/scripts, which validation does not "
-                "type-check in a run of its own",
+                "pyproject.toml: [tool.validation] mypy-strict names deployer/sub, which is no root validation "
+                "type-checks",
+                "pyproject.toml: [tool.validation] mypy-strict names skills/gamma/scripts, which is no root "
+                "validation type-checks",
                 "pyproject.toml: [tool.validation] mypy-strict names skills/alpha/scripts more than once",
             ],
             problems(
-                '[tool.validation]\nmypy-strict = ["skills/alpha/scripts", "deployer", "skills/gamma/scripts", '
+                '[tool.validation]\nmypy-strict = ["skills/alpha/scripts", "deployer/sub", "skills/gamma/scripts", '
                 '"skills/alpha/scripts"]\n'
             ),
         )

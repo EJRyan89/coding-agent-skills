@@ -2,8 +2,12 @@
 
 # Keep this module importable by a Python 3 older than the floor, so it reaches the version check below: nothing
 # from the deployer package until the check passes. ejryan89-skill-core's console module, imported first for the runner
-# every entry point shares, and the flat_text module it imports need only Python 3.7.
+# every entry point shares, and the flat_text module it imports need only Python 3.7. The annotations are never
+# evaluated, so no annotation fails on such a Python before the check either.
+from __future__ import annotations
+
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -13,7 +17,7 @@ from console import run_main
 MINIMUM_PYTHON = (3, 11, 4)
 
 
-def require_supported_python(version_info=sys.version_info):
+def require_supported_python(version_info: Sequence[int | str] = sys.version_info) -> None:
     if tuple(version_info[:3]) < MINIMUM_PYTHON:
         sys.stderr.write(
             f"\nERROR: Python {'.'.join(map(str, MINIMUM_PYTHON))} or newer "
@@ -23,7 +27,7 @@ def require_supported_python(version_info=sys.version_info):
         raise SystemExit(1)
 
 
-def main():
+def main() -> int:
     require_supported_python()
     from deployer import cli, platform_support
     from deployer.paths import Paths
@@ -32,7 +36,7 @@ def main():
     return cli.main(sys.argv[1:], Paths(Path(__file__).resolve().parent, home))
 
 
-def traceback_requested():
+def traceback_requested() -> bool:
     """Whether a failure no command handled shows its traceback after the FAILED line: --debug, or DEPLOYER_DEBUG.
 
     Asked only once main has failed past the version check. The variable is read first, so it still shows the traceback
