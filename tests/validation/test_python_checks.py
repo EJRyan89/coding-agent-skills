@@ -233,7 +233,7 @@ class PythonChecksFixtures(unittest.TestCase):
             )
             # A strict root of those also runs alone in strict mode, from the repository root, and the run above is
             # kept as it was. The strict roots are pinned as literals.
-            strict_roots = ("deployer", "deploy.py")
+            strict_roots = ("deployer", "tools", "deploy.py")
             self.assertEqual(
                 {f"static type check (mypy --strict {top})" for top in strict_roots},
                 {name for name in jobs if name.startswith("static type check (mypy --strict ")},

@@ -26,6 +26,7 @@ checks for quoting. Where they differ is a limit stated here and pinned there:
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 # Characters that end an unquoted word.
@@ -937,7 +938,7 @@ def refuse_array(token: Token) -> None:
         raise BashSyntaxError("an array assignment where Bash reads no assignment")
 
 
-COMPOUND_READERS = {
+COMPOUND_READERS: dict[str, Callable[[Parser], Command]] = {
     "{": Parser.group,
     "if": Parser.if_clause,
     "while": lambda parser: parser.while_clause("while"),

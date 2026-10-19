@@ -121,7 +121,7 @@ def open_shared(path: Path) -> IO[bytes]:
     import msvcrt
     from ctypes import wintypes
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]  # Windows only
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateFileW.restype = wintypes.HANDLE
     kernel32.CreateFileW.argtypes = [
         wintypes.LPCWSTR,
@@ -138,10 +138,10 @@ def open_shared(path: Path) -> IO[bytes]:
     normal = 0x80
     handle = kernel32.CreateFileW(str(path), generic_read, share_read_write_delete, None, open_existing, normal, None)
     if handle is None or handle == wintypes.HANDLE(-1).value:
-        code = ctypes.get_last_error()  # type: ignore[attr-defined]  # Windows only
-        raise OSError(None, ctypes.FormatError(code), str(path), code)  # type: ignore[attr-defined]  # Windows only
+        code = ctypes.get_last_error()
+        raise OSError(None, ctypes.FormatError(code), str(path), code)
     try:
-        descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY)  # type: ignore[attr-defined]  # Windows only
+        descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY)
     except OSError:
         kernel32.CloseHandle(wintypes.HANDLE(handle))
         raise

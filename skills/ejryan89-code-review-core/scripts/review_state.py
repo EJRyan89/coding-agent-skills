@@ -82,7 +82,7 @@ def validate_state(value: Any) -> dict[str, Any]:
                 READ.string(entry[field], f"{path}.{field}", empty=True)
         if "merged_since" in entry:
             watermark_date(identity, entry["merged_since"])
-    return value
+    return state
 
 
 def empty_state() -> dict[str, Any]:

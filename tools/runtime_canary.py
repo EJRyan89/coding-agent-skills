@@ -120,6 +120,7 @@ import tempfile
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -389,7 +390,7 @@ def inside(path: str, directory: Path) -> bool:
     return candidate != root and os.path.commonpath([candidate, root]) == root
 
 
-def read_records(path: Path) -> list[dict]:
+def read_records(path: Path) -> list[dict[str, Any]]:
     """The JSON objects in a JSON Lines file, skipping any line a crashed writer left incomplete."""
     records = []
     if path.is_file():
@@ -707,11 +708,11 @@ def discovery_lines(
     return lines
 
 
-def recorded_scripts(started: list[dict]) -> list[tuple[str, str, int | None]]:
+def recorded_scripts(started: list[dict[str, Any]]) -> list[tuple[str, str, int | None]]:
     """Each script file the recorders saw start, with its directory and the status it exited with, if recorded.
     A command string, a module run with -m, and standard input name no script file, so none counts."""
 
-    def key(record: dict) -> str:
+    def key(record: dict[str, Any]) -> str:
         return json.dumps([record.get("argv"), record.get("cwd"), record.get("pid")])
 
     exits = {
@@ -742,8 +743,8 @@ def verdict(
     skill: str,
     home: Path,
     *,
-    probes: list[dict],
-    started: list[dict],
+    probes: list[dict[str, Any]],
+    started: list[dict[str, Any]],
     completed: Completed,
     denials: list[str],
     timeout: float,
@@ -796,7 +797,7 @@ def verdict(
     return f"FAILED {quote(reason)}"
 
 
-def marked(probes: list[dict], run: str) -> list[dict]:
+def marked(probes: list[dict[str, Any]], run: str) -> list[dict[str, Any]]:
     """The probe records that carry the run's identifier, which the fixture's probe reads from the home it ran in."""
     return [record for record in probes if record.get("run") == run]
 

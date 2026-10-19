@@ -45,15 +45,17 @@ Index = int | None
 
 
 def review(record: Record) -> Review:
-    return record["review"]
+    found: Review = record["review"]
+    return found
 
 
 def findings(record: Record) -> list[Finding]:
-    return record["findings"]
+    found: list[Finding] = record["findings"]
+    return found
 
 
 def ledger_entries(record: Record) -> list[LedgerEntry]:
-    ledger = record.get("ledger")
+    ledger: list[LedgerEntry] | None = record.get("ledger")
     if ledger is None:
         raise RecordError("the record has no ledger")
     return ledger

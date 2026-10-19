@@ -34,6 +34,7 @@ from review_io import PersistenceError, atomic_write_bytes, atomic_write_json, a
 from review_records import (
     TITLE_MAXIMUM_LENGTH,
     RecordError,
+    is_suite_profile,
     joined_source,
     read_analyzer,
     read_model,
@@ -51,7 +52,6 @@ from review_runtime import (
     SNAPSHOT_FETCHABLE,
     RuntimeContractError,
     declared_reviewer_files,
-    is_suite_profile,
     require_snapshot_source,
     suite_profile_path,
     suite_profiles,
@@ -1730,7 +1730,8 @@ def _role_dispositions(name: str, dispositions: Any, key: str, ids: list[str], l
         )
     except RecordError as exc:
         raise SpecialistError(f"{name}: {exc}") from exc
-    return dispositions
+    validated: list[dict[str, Any]] = dispositions
+    return validated
 
 
 def _load(plan: dict[str, Any], role: dict[str, Any]) -> dict[str, Any]:

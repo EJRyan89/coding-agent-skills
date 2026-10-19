@@ -149,7 +149,7 @@ mypy_path = [
 # this list and adds --strict to each listed area's own run, with the [tool.mypy] configuration above. Areas join in
 # stages and none leaves: tests/validation/python_checks.py fails when an area it pins is missing here.
 [tool.validation]
-mypy-strict = ["skills/ejryan89-skill-core/scripts", "deployer", "deploy.py"]
+mypy-strict = ["skills/ejryan89-skill-core/scripts", "deployer", "deploy.py", "tools"]
 
 # mutmut reads its configuration from the working directory; tools/mutation_gate.py makes its mutants from this root
 # and chooses the modules itself, so this names only where they may come from.
