@@ -959,8 +959,9 @@ def graph_edges(graph: Graph, projects: list[Project]) -> tuple[Nodes, list[tupl
             if child is not None:
                 edges.append((source, add(f"project:{same_path(child.file.path)}", graph.label(child), "project")))
         for target in project.targets:
-            for direct in target.direct:
-                edges.append((source, add(*package_key(target, direct.id, direct.version), "package")))
+            edges.extend(
+                (source, add(*package_key(target, direct.id, direct.version), "package")) for direct in target.direct
+            )
             for node in target.nodes.values():
                 owner = add(*package_key(target, node.id, node.version), "package")
                 for dependency, wanted in node.dependencies.items():

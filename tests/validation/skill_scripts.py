@@ -1333,11 +1333,11 @@ def optional_tool_placement_problems(root: Path, always_optional: set[str]) -> l
     problems: list[str] = []
     for metadata in sorted((root / "deploy-meta").glob("*.json")):
         document = json.loads(metadata.read_text(encoding="utf-8"))
-        for name in sorted(set(document.get("tools", [])) & always_optional):
-            problems.append(
-                f"skill {metadata.stem} lists {name} under tools, which the catalogue makes optional for every "
-                f"skill; declare it in optional_tools; see {COMMANDS_DOC}"
-            )
+        problems.extend(
+            f"skill {metadata.stem} lists {name} under tools, which the catalogue makes optional for every "
+            f"skill; declare it in optional_tools; see {COMMANDS_DOC}"
+            for name in sorted(set(document.get("tools", [])) & always_optional)
+        )
     return problems
 
 
@@ -1666,14 +1666,14 @@ def _contract_breaches(tree: ast.Module) -> list[tuple[int, str]]:
         node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name in {"main", "_main"}
     ]
     for entry_point in entry_points:
-        for node in ast.walk(entry_point):
-            if (
-                isinstance(node, ast.Return)
-                and isinstance(node.value, ast.Constant)
-                and type(node.value.value) is int
-                and node.value.value not in CONTRACT_EXIT_CODES
-            ):
-                breaches.append((node.lineno, f"exits {node.value.value}; scripts exit only 0, 1, or 2"))
+        breaches.extend(
+            (node.lineno, f"exits {node.value.value}; scripts exit only 0, 1, or 2")
+            for node in ast.walk(entry_point)
+            if isinstance(node, ast.Return)
+            and isinstance(node.value, ast.Constant)
+            and type(node.value.value) is int
+            and node.value.value not in CONTRACT_EXIT_CODES
+        )
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             breaches += [
@@ -1697,12 +1697,12 @@ def secret_named_function_problems(root: Path) -> list[str]:
         (path for path in files if path.is_file() and not is_test_script(path)), key=lambda p: p.as_posix()
     )
     for _, name, tree in python_trees(ordered, root, problems):
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and CODEQL_SECRET_NAME.search(node.name):
-                problems.append(
-                    f"{name}:{node.lineno}: function {node.name} is named so CodeQL treats its result as a secret "
-                    "and flags printing it; name it for what it returns"
-                )
+        problems.extend(
+            f"{name}:{node.lineno}: function {node.name} is named so CodeQL treats its result as a secret "
+            "and flags printing it; name it for what it returns"
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and CODEQL_SECRET_NAME.search(node.name)
+        )
     return problems
 
 

@@ -1695,17 +1695,17 @@ class SpecialistFixture:
         self.manifest = materialize_source_snapshot(checkout, "example/one", head, snapshot)
         self.head = head
         self.request_path = self.root / "request.json"
-        self.request_args: dict[str, Any] = dict(
-            repository="example/one",
-            pull_number=7,
-            base_ref="main",
-            base_sha=trusted,
-            head_sha=head,
-            title="Fixture",
-            url="https://github.com/example/one/pull/7",
-            diff_path=diff,
-            source_snapshot_root=snapshot,
-        )
+        self.request_args: dict[str, Any] = {
+            "repository": "example/one",
+            "pull_number": 7,
+            "base_ref": "main",
+            "base_sha": trusted,
+            "head_sha": head,
+            "title": "Fixture",
+            "url": "https://github.com/example/one/pull/7",
+            "diff_path": diff,
+            "source_snapshot_root": snapshot,
+        }
 
     def tearDown(self) -> None:
         self.temporary.cleanup()

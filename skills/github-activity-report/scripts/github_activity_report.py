@@ -490,8 +490,8 @@ def collect_activity(client: GitHubSearchClient, org: str, user: str, months: in
         "Commits",
         capped,
     )
-    prs_reviewed = {label: 0 for label in labels}
-    reviews_submitted = {label: 0 for label in labels}
+    prs_reviewed = dict.fromkeys(labels, 0)
+    reviews_submitted = dict.fromkeys(labels, 0)
     reviewed_in_window: set[str] = set()
     for node_id, dates in _review_dates(client, org, user, window, today, capped).items():
         months_touched: set[str] = set()

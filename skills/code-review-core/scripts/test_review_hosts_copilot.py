@@ -1080,7 +1080,7 @@ class CopilotProcessTests(unittest.TestCase):
     def test_a_given_base_environment_loses_its_repository_selecting_variables_in_any_case(self) -> None:
         base = {
             **BASE_ENVIRONMENT,
-            **{name: "elsewhere" for name in REPOSITORY_SELECTING},
+            **dict.fromkeys(REPOSITORY_SELECTING, "elsewhere"),
             **{name.lower(): "elsewhere" for name in REPOSITORY_SELECTING},
             "GIT_SSH_COMMAND": "ssh -o BatchMode=yes",
         }

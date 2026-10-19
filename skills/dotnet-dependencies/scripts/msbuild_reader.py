@@ -271,9 +271,11 @@ def read_redirects(path: Path) -> list[Redirect]:
         name = identity.get("name") if identity is not None else None
         if not name:
             continue
-        for redirect in dependent:
-            if local_name(redirect) == "bindingRedirect":
-                found.append(Redirect(path, name, redirect.get("oldVersion") or "", redirect.get("newVersion") or ""))
+        found.extend(
+            Redirect(path, name, redirect.get("oldVersion") or "", redirect.get("newVersion") or "")
+            for redirect in dependent
+            if local_name(redirect) == "bindingRedirect"
+        )
     return found
 
 

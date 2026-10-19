@@ -973,8 +973,7 @@ def inventory(directory: Path) -> list[str]:
         if text is not None:
             texts[posix(relative)] = (kind, text)
             flags.extend(structure_flags(kind, text, posix(relative)))
-    for kind in CATEGORIES:
-        lines.append(f"TOTAL {kind} {totals[kind][0]} {totals[kind][1]} {totals[kind][2]}")
+    lines.extend(f"TOTAL {kind} {totals[kind][0]} {totals[kind][1]} {totals[kind][2]}" for kind in CATEGORIES)
     lines.append("TOTAL all " + " ".join(str(sum(totals[kind][i] for kind in CATEGORIES)) for i in range(3)))
     if not totals["main"][0]:
         flags.insert(0, "NO_MAIN")

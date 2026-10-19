@@ -331,38 +331,38 @@ def validate_manifest_vocabulary(manifest: dict[str, Any]) -> list[Finding]:
     findings: list[Finding] = []
     runtimes = manifest.get("runtimes", [])
     if isinstance(runtimes, list):
-        for r in runtimes:
-            if isinstance(r, str) and r not in VALID_RUNTIMES:
-                findings.append(
-                    Finding(
-                        severity="ERROR",
-                        check="vocabulary",
-                        path=".github/ai-config-manifest.json",
-                        message=f"Unknown runtime in manifest: '{r}'",
-                    )
-                )
+        findings.extend(
+            Finding(
+                severity="ERROR",
+                check="vocabulary",
+                path=".github/ai-config-manifest.json",
+                message=f"Unknown runtime in manifest: '{r}'",
+            )
+            for r in runtimes
+            if isinstance(r, str) and r not in VALID_RUNTIMES
+        )
     surfaces = manifest.get("surfaces", [])
     if isinstance(surfaces, list):
-        for s in surfaces:
-            if isinstance(s, str) and s not in VALID_SURFACES:
-                findings.append(
-                    Finding(
-                        severity="ERROR",
-                        check="vocabulary",
-                        path=".github/ai-config-manifest.json",
-                        message=f"Unknown surface in manifest: '{s}'",
-                    )
-                )
-    for t in manifest_mcp_targets(manifest):
-        if isinstance(t, str) and t not in VALID_MCP_TARGETS:
-            findings.append(
-                Finding(
-                    severity="ERROR",
-                    check="vocabulary",
-                    path=".github/ai-config-manifest.json",
-                    message=f"Unknown MCP target in manifest: '{t}'",
-                )
+        findings.extend(
+            Finding(
+                severity="ERROR",
+                check="vocabulary",
+                path=".github/ai-config-manifest.json",
+                message=f"Unknown surface in manifest: '{s}'",
             )
+            for s in surfaces
+            if isinstance(s, str) and s not in VALID_SURFACES
+        )
+    findings.extend(
+        Finding(
+            severity="ERROR",
+            check="vocabulary",
+            path=".github/ai-config-manifest.json",
+            message=f"Unknown MCP target in manifest: '{t}'",
+        )
+        for t in manifest_mcp_targets(manifest)
+        if isinstance(t, str) and t not in VALID_MCP_TARGETS
+    )
     return findings
 
 
@@ -820,9 +820,11 @@ def _validate_agent(path: Path, root: Path) -> list[Finding]:
         findings.append(Finding("ERROR", "copilot-agent", rel, message="Agent frontmatter requires description"))
     if "target" in values and _text(values, "target") not in {"vscode", "github-copilot"}:
         findings.append(Finding("ERROR", "copilot-agent", rel, message="target must be 'vscode' or 'github-copilot'"))
-    for key in ("include-custom-instructions", "infer", "disable-model-invocation", "user-invocable"):
-        if key in values and _text(values, key) not in {"true", "false"}:
-            findings.append(Finding("ERROR", "copilot-agent", rel, message=f"{key} must be a boolean"))
+    findings.extend(
+        Finding("ERROR", "copilot-agent", rel, message=f"{key} must be a boolean")
+        for key in ("include-custom-instructions", "infer", "disable-model-invocation", "user-invocable")
+        if key in values and _text(values, key) not in {"true", "false"}
+    )
     # GitHub's custom-agents reference: an unset tools enables every tool and an empty list disables every tool. An
     # empty value says neither: YAML reads it as unset, so it enables every tool its author may have meant to remove.
     tools = values.get("tools")
