@@ -585,7 +585,8 @@ def _section_lines(section: str, members: list[Row], summary: str, home: set[str
         lines += ["| Requestor | PR | AI Result | Findings | AI Review |", "| :--- | :--- | :--- | :--- | :--- |"]
 
         def name(r: Row) -> str:
-            return (r.item["author_name"] or r.item["author"]).strip()
+            author: str = r.item["author_name"] or r.item["author"]
+            return author.strip()
 
         previous = None
         for row in sorted(members, key=lambda r: (name(r).casefold(), r.item["repository"], r.item["number"])):

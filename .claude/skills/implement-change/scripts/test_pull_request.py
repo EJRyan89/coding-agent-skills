@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from types import MappingProxyType
 
@@ -59,7 +59,7 @@ AWKWARD_TITLE = (
 
 
 def remove_tree(path: Path) -> None:
-    def writable(function, target, *_):
+    def writable(function: Callable[..., object], target: str, *_: object) -> None:
         Path(target).chmod(stat.S_IWRITE)
         function(target)
 

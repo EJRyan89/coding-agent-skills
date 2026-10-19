@@ -663,7 +663,8 @@ class ResolveTests(unittest.TestCase):
         def open_project(path: Path, *arguments: Any, **options: Any) -> IO[Any]:
             if path.name == "Lib.csproj":
                 raise denied
-            return opened(path, *arguments, **options)
+            handle: IO[Any] = opened(path, *arguments, **options)
+            return handle
 
         with mock.patch.object(Path, "open", open_project):
             failure = self.failed()

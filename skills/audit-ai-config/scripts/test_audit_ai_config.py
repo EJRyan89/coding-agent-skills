@@ -14,15 +14,18 @@ import re
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
 import audit_ai_config as audit
+import check_provenance
 import markdown_literal
 import pytest
+from folder_walk import SKIPPED_FOLDERS
 
 OWNERSHIP = audit.OWNERSHIP_MARKER
 
@@ -485,7 +488,7 @@ class McpTests(unittest.TestCase):
         (self.root / ".codex/config.toml").write_text("", encoding="utf-8")
 
         with mock.patch.object(
-            audit.tomllib,
+            tomllib,
             "load",
             side_effect=OSError("access denied"),
         ):
@@ -994,7 +997,7 @@ class BehavioralConstraintTests(unittest.TestCase):
             "## Maintaining AI Agent Config\n\nRun the generator.\n"
         )
 
-        def workaround_warnings() -> list:
+        def workaround_warnings() -> list[audit.Finding]:
             return [
                 f for f in audit.audit(self.root).findings if f.check == "behavioral" and "workarounds" in f.message
             ]
@@ -1022,7 +1025,7 @@ class BehavioralConstraintTests(unittest.TestCase):
     def test_quality_gate_requires_an_actual_gate(self) -> None:
         base = "# CLAUDE.md\n\n## Maintaining AI Agent Config\n\nRun the generator.\n\nNever disable anything.\n\n"
 
-        def gate_warnings(text: str) -> list:
+        def gate_warnings(text: str) -> list[audit.Finding]:
             (self.root / "CLAUDE.md").write_text(base + text + "\n", encoding="utf-8")
             return [
                 f
@@ -1098,7 +1101,8 @@ class CopilotConfigurationTests(unittest.TestCase):
 
     def _manifest(self) -> dict[str, Any]:
         path = self.root / ".github/ai-config-manifest.json"
-        return json.loads(path.read_text(encoding="utf-8"))
+        manifest: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+        return manifest
 
     def _write_manifest(self, manifest: dict[str, object]) -> None:
         (self.root / ".github/ai-config-manifest.json").write_text(
@@ -2137,7 +2141,7 @@ EVERY_SURFACE = ["copilot_cli", "jetbrains", "cloud_agent", "code_review", "vsco
 # Exception text varies by Python version, so a parse failure is compared by its prefix.
 PARSE_PREFIXES = ("Could not read or parse:", "Invalid TOML:")
 
-MCP_SCENARIOS: dict[str, tuple[dict[str, str], dict]] = {
+MCP_SCENARIOS: dict[str, tuple[dict[str, str], dict[str, Any]]] = {
     "every_source": (
         {
             ".mcp.json": '{"mcpServers": {"alpha": {"command": "a", "tools": ["read"]}, "beta": "text", "gamma": {}}}',
@@ -2173,7 +2177,7 @@ MCP_SCENARIOS: dict[str, tuple[dict[str, str], dict]] = {
     "nothing": ({}, {}),
 }
 
-LAYERING_SCENARIOS: dict[str, tuple[dict[str, str], dict]] = {
+LAYERING_SCENARIOS: dict[str, tuple[dict[str, str], dict[str, Any]]] = {
     "everything": (
         {
             "CLAUDE.md": "# CLAUDE.md\n",
@@ -2625,7 +2629,7 @@ LAYERING_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
 
 
 def sequence_rows(
-    check: Callable[[Path, dict[str, Any]], list[audit.Finding]], files: dict[str, str], manifest: dict
+    check: Callable[[Path, dict[str, Any]], list[audit.Finding]], files: dict[str, str], manifest: dict[str, Any]
 ) -> list[tuple[str, str, str | None, str]]:
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
@@ -2670,7 +2674,7 @@ GENERATOR_NAMING_CLAUDE = "SOURCE = 'CLAUDE.md'\n"
 PARITY_WORKFLOW = "steps:\n  - run: python .github/scripts/ai_config.py --check\n"
 
 
-def _manifest(**overrides) -> str:
+def _manifest(**overrides: Any) -> str:
     manifest = {
         "generatedBy": "ai_config.py",
         "schemaVersion": 1,
@@ -2767,7 +2771,7 @@ MATCHING_SHIM = (
 )
 MARKED = f"# {OWNERSHIP}\n"
 
-PARITY_SCENARIOS: dict[str, tuple[dict[str, str | bytes], dict]] = {
+PARITY_SCENARIOS: dict[str, tuple[dict[str, str | bytes], dict[str, Any]]] = {
     "every_artifact_matches": (
         {
             "CLAUDE.md": PARITY_CLAUDE,
@@ -3111,7 +3115,7 @@ def _write_fixture(root: Path, files: dict[str, str | bytes]) -> None:
             path.write_text(content.replace("<repo>", root.name), encoding="utf-8")
 
 
-def _finding_rows(findings) -> list[tuple[str, str, str | None, str]]:
+def _finding_rows(findings: list[audit.Finding]) -> list[tuple[str, str, str | None, str]]:
     return [(f.severity, f.check, f.path, f.message) for f in findings]
 
 
@@ -3131,7 +3135,7 @@ def authority_result(files: dict[str, str | bytes]) -> tuple[str, str, list[tupl
         return classification, returned, _finding_rows(findings)
 
 
-def parity_rows(files: dict[str, str | bytes], manifest: dict) -> list[tuple[str, str, str | None, str]]:
+def parity_rows(files: dict[str, str | bytes], manifest: dict[str, Any]) -> list[tuple[str, str, str | None, str]]:
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         _write_fixture(root, files)
@@ -3798,7 +3802,7 @@ class RepositoryWalkTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_nested_files_below_skipped_directories_are_not_reported(self) -> None:
-        for directory in ("src", *sorted(audit.SKIPPED_FOLDERS), "src/node_modules/pkg", "lib/.venv", "vendor/clone"):
+        for directory in ("src", *sorted(SKIPPED_FOLDERS), "src/node_modules/pkg", "lib/.venv", "vendor/clone"):
             for name in ("AGENTS.md", "AGENTS.override.md", ".mcp.json"):
                 path = self.root / directory / name
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -3827,7 +3831,7 @@ class RepositoryWalkTests(unittest.TestCase):
                 "obj",
                 ".vs",
             },
-            audit.SKIPPED_FOLDERS,
+            SKIPPED_FOLDERS,
         )
 
 
@@ -3913,7 +3917,8 @@ class MarkdownCellTests(unittest.TestCase):
 
     def test_every_repository_controlled_cell_is_skill_cores_markdown_line(self) -> None:
         self.assertFalse(hasattr(audit, "_cell"))
-        self.assertIs(markdown_literal.markdown_line, audit.markdown_line)
+        # The module imports markdown_line and exports none, so its own binding is read from its namespace.
+        self.assertIs(markdown_literal.markdown_line, vars(audit)["markdown_line"])
         text = "x`*_[a](b)<i>&|\\"
         line = markdown_literal.markdown_line(text)
         self.assertEqual(f"| ERROR | mcp | {line} | 3 | {line} |", markdown_row(text, text))
@@ -4031,7 +4036,7 @@ class UnlistableDirectoryTests(unittest.TestCase):
     def test_a_permission_error_listing_agents_is_an_error_at_the_directory(self) -> None:
         listed = Path.iterdir
 
-        def iterdir(path: Path):
+        def iterdir(path: Path) -> Iterator[Path]:
             # The audit resolves its root, which can spell the temporary directory differently from self.root.
             if path.parts[-2:] == (".github", "agents"):
                 raise PermissionError(13, "Access is denied", str(path))
@@ -4161,7 +4166,8 @@ class UnreadInputTests(unittest.TestCase):
         self.temp.cleanup()
 
     def _manifest(self) -> dict[str, Any]:
-        return json.loads((self.root / MANIFEST_PATH).read_text(encoding="utf-8"))
+        manifest: dict[str, Any] = json.loads((self.root / MANIFEST_PATH).read_text(encoding="utf-8"))
+        return manifest
 
     def _unread(self, result: audit.AuditResult) -> list[str | None]:
         return [f.path for f in result.findings if f.severity == "ERROR" and f.message.startswith(self.UNREAD)]
@@ -4476,7 +4482,7 @@ class ProvenanceTests(unittest.TestCase):
         entries = json.loads(self.PROVENANCE.read_text(encoding="utf-8"))["checks"]
         self.assertEqual([], sorted(audit.CHECKS - set(entries)), "checks without an entry")
         self.assertEqual([], sorted(set(entries) - audit.CHECKS), "entries without a check")
-        self.assertEqual(sorted(audit.CHECKS), sorted(audit.check_provenance.load(self.PROVENANCE, audit.CHECKS)))
+        self.assertEqual(sorted(audit.CHECKS), sorted(check_provenance.load(self.PROVENANCE, audit.CHECKS)))
 
     def test_every_check_the_policy_describes_is_a_check(self) -> None:
         policy = (self.PROVENANCE.parent / "audit-policy.md").read_text(encoding="utf-8")

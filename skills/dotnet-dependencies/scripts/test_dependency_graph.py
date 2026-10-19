@@ -22,9 +22,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import dependency_graph
 import dotnet_solution
 import msbuild_reader
-from dependency_graph import Services, main
+from dependency_graph import main
 from dotnet_solution import same_path
-from sdk_why import Completed
+from sdk_why import DEFAULT_TIMEOUT_SECONDS, Completed, SdkPath, Services
 
 SCRIPT = Path(__file__).resolve().parent / "dependency_graph.py"
 CSHARP = "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}"
@@ -356,7 +356,7 @@ class GraphTests(Fixture):
             ),
             (
                 lambda arguments, timeout: Completed(-1, "", timed_out=True),
-                f"dotnet nuget why did not finish within {dependency_graph.DEFAULT_TIMEOUT_SECONDS} seconds",
+                f"dotnet nuget why did not finish within {DEFAULT_TIMEOUT_SECONDS} seconds",
             ),
         ):
             with self.subTest(reason=reason):
@@ -1305,7 +1305,7 @@ class FrameworkAndAssemblyTests(Fixture):
 
     def test_a_route_the_walk_finds_at_two_other_versions_names_both_after_graph(self) -> None:
         # Two walked chains along the SDK's route reach the package at versions apart from the SDK's and each other.
-        printed = dependency_graph.SdkPath("Harbor.Host", "net8.0", (("Harbor.Data", ""), ("Lantern.Json", "13.0.1")))
+        printed = SdkPath("Harbor.Host", "net8.0", (("Harbor.Data", ""), ("Lantern.Json", "13.0.1")))
         walked: list[tuple[dependency_graph.Hop, ...]] = [
             (("project", "Harbor.Data", ""), ("package", "Lantern.Json", version))
             for version in ("12.0.3", "13.0.1", "11.0.0", "12.0.3")
@@ -2309,7 +2309,7 @@ class ProjectSearchTests(Fixture):
                 raise PermissionError(13, "Access is denied")
             return listing(path)
 
-        with mock.patch.object(dependency_graph.os, "scandir", scandir):
+        with mock.patch.object(os, "scandir", scandir):
             code, rows = self.run_main("why", "Lib.Pkg", "--root", str(self.root / "search"))
             self.assertEqual(
                 (1, [["Locked", "the folder cannot be listed: Access is denied"]]),

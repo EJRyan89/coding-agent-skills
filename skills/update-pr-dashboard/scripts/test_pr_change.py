@@ -11,7 +11,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from github_client import CommandResult, GitHubErrorKind
+from github_client import CommandResult, GitHubError, GitHubErrorKind
 from pr_change import (
     CHANGED,
     COMPARE_FILE_LIMIT,
@@ -24,22 +24,22 @@ from pr_change import (
     tree_modes,
     with_modes,
 )
-from review_github import GitHubClient, GitHubError
+from review_github import GitHubClient
 
 REVIEWED = "a" * 40
 HEAD = "d" * 40
 
 
-def changed(filename: str, content: str, status: str = "modified", **extra: str) -> dict:
+def changed(filename: str, content: str, status: str = "modified", **extra: str) -> dict[str, Any]:
     return {"filename": filename, "status": status, "sha": content, "patch": "@@ -1 +1 @@", **extra}
 
 
-def comparison(*files: object) -> dict:
+def comparison(*files: object) -> dict[str, Any]:
     """A comparison listing the files; a malformed one may list anything."""
     return {"status": "ahead", "files": list(files)}
 
 
-def tree(comparison_value: object, modes: dict[str, str] | None = None, truncated: bool = False) -> dict:
+def tree(comparison_value: object, modes: dict[str, str] | None = None, truncated: bool = False) -> dict[str, Any]:
     """A complete recursive tree containing every non-removed file of a comparison."""
     files = comparison_value.get("files", []) if isinstance(comparison_value, dict) else []
     paths = [f["filename"] for f in files if isinstance(f, dict) and f.get("status") != "removed" and "filename" in f]

@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -577,7 +578,7 @@ class LeftoverTests(Fixture):
         (stale / "locked.txt").write_text("in use\n", encoding="utf-8")
         _, applied = self.clean()
         self.assertEqual(1, len(facts(applied, "ORPHAN")), applied)
-        with mock.patch.object(rc.shutil, "rmtree", side_effect=PermissionError(13, "Permission denied")):
+        with mock.patch.object(shutil, "rmtree", side_effect=PermissionError(13, "Permission denied")):
             code, lines = self.invoke("remove-directory", "--plan", str(self.plan_file), "--path", str(stale))
         self.assertEqual(1, code, lines)
         self.preserved(lines, (stale, "could not delete it: [Errno 13] Permission denied"))

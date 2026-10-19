@@ -15,7 +15,8 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
-from review_github import READ, GitHubClient, GitHubError
+from github_client import GitHubError
+from review_github import READ, GitHubClient
 from review_io import NETWORK_WORKERS, map_in_order
 from typed_fields import FieldError
 

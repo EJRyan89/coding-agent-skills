@@ -13,6 +13,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import pytest
@@ -265,7 +266,7 @@ class HandshakeTests(unittest.TestCase):
         # Force the race CI hit: the server exits before initialize is written, so the write itself fails.
         original = mcp_handshake.Session.send
 
-        def send_after_exit(session: mcp_handshake.Session, message: dict) -> None:
+        def send_after_exit(session: mcp_handshake.Session, message: dict[str, Any]) -> None:
             session.running.wait()
             original(session, message)
 
@@ -294,7 +295,7 @@ class HandshakeTests(unittest.TestCase):
         process = mock.MagicMock(spec=subprocess.Popen)
         process.stdin, process.stdout = mock.MagicMock(), None
         with (
-            mock.patch.object(bounded_process.subprocess, "Popen", return_value=process),
+            mock.patch.object(subprocess, "Popen", return_value=process),
             self.assertRaisesRegex(RuntimeError, r"^could not start: the command started without its pipes$"),
         ):
             mcp_handshake.handshake(self.root, self._stdio("ok"), 5)

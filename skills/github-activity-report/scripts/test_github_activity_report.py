@@ -32,7 +32,7 @@ from github_activity_report import (
     months_window,
     render_report,
 )
-from github_client import BACKOFF, CommandResult, GitHubError
+from github_client import BACKOFF, CommandResult, GitHubError, subprocess_runner
 
 SPAN = re.compile(r"(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})")
 SECONDARY_LIMIT = "gh: You have exceeded a secondary rate limit. (HTTP 403)"
@@ -383,7 +383,7 @@ class RetryTests(unittest.TestCase):
             mock.patch("github_client.run_bounded", side_effect=FileNotFoundError("gh")),
             self.assertRaises(GitHubError) as context,
         ):
-            report.subprocess_runner(["gh", "api", "user"])
+            subprocess_runner(["gh", "api", "user"])
         self.assertEqual("prerequisite", context.exception.kind)
 
 

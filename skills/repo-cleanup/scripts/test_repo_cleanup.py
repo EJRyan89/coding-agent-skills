@@ -61,7 +61,7 @@ class CleanupTestCase(unittest.TestCase):
 
 
 def remove_tree(path: Path) -> None:
-    def writable(function, target, *_):
+    def writable(function: Callable[..., object], target: str, *_: object) -> None:
         Path(target).chmod(stat.S_IWRITE)
         function(target)
 
@@ -127,7 +127,7 @@ def facts(lines: list[str], kind: str) -> list[list[str]]:
     return [line.split("\t")[1:] for line in lines if line.split("\t")[0] == kind]
 
 
-def plan_lines(plan: dict, path: Path) -> list[str]:
+def plan_lines(plan: dict[str, Any], path: Path) -> list[str]:
     """A plan's decisions as fact lines, so tests read what it decided the way they read every other step."""
     lines = [
         ["BRANCH", branch["name"], branch["category"], branch["pr"], branch["sha"], branch["action"], branch["detail"]]
@@ -161,7 +161,7 @@ class FakeGitHub:
     the pull request commits query as `gh api --paginate --slurp` prints it, from `git rev-list --parents` lines."""
 
     def __init__(self) -> None:
-        self.pulls: dict[str, list[dict]] = {}
+        self.pulls: dict[str, list[dict[str, Any]]] = {}
         self.commits: dict[int, str] = {}
         self.failing: set[str] = set()
         self.authenticated = True

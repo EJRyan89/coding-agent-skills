@@ -26,6 +26,7 @@ import review_insights as ri
 import review_synthesis as rs
 from review_archive import commit_record, current_ledger
 from review_flags import add_flag, load_store, resolve_flag
+from review_io import PersistenceError
 from review_records import build_record, write_record_pair
 from test_review_insights import DECIDED_AT, LINE_BREAKS, InsightFixture, covered, record
 
@@ -85,7 +86,8 @@ class SynthesisFixture(InsightFixture):
         add_flag(self.flags, category="elsewhere", body="Another repository.", repository="owner/elsewhere")
 
     def unlinked_flag(self, category: str, body: str) -> str:
-        return add_flag(self.flags, category=category, body=body, repository="owner/repo")["id"]
+        identifier: str = add_flag(self.flags, category=category, body=body, repository="owner/repo")["id"]
+        return identifier
 
     def re_review(self, repository: str, number: int, dispositions: list[tuple[str, str]]) -> None:
         head = "9" * 40
@@ -198,7 +200,7 @@ class SynthesisFixture(InsightFixture):
 
     def runs(self) -> list[Path]:
         """The synthesis runs in this test's temporary directory."""
-        return sorted(self.temporary.glob(f"{rs.RUN_PREFIX}*"))
+        return sorted(self.temporary.glob(f"{review_guard.RUN_PREFIX}*"))
 
     def write_result(self, json_path: Path, result: Any) -> Path:
         path = Path(self.synthesis(json_path)["result"])
@@ -875,9 +877,11 @@ class RenderTests(SynthesisFixture):
 class StageTests(unittest.TestCase):
     """The synthesis stage's own choices, without a report around them."""
 
-    def pair(self, index: int, body: str, severity: str = "SUGGESTION") -> tuple[dict, dict, tuple]:
+    def pair(
+        self, index: int, body: str, severity: str = "SUGGESTION"
+    ) -> tuple[dict[str, Any], dict[str, Any], tuple[str, int, int, str]]:
         record = {"repository": "owner/repo", "pull_request": {"number": 1}, "review": {"version": 1}}
-        finding = {
+        finding: dict[str, Any] = {
             "id": f"F{index:03d}",
             "category": "Style",
             "severity": severity,
@@ -961,7 +965,7 @@ class StageTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         directory = Path(temporary.name)
-        with mock.patch.object(rs, "MAXIMUM_BYTES", 10), self.assertRaises(rs.PersistenceError) as raised:
+        with mock.patch.object(rs, "MAXIMUM_BYTES", 10), self.assertRaises(PersistenceError) as raised:
             rs.staged_inputs(directory, [{"kind": "totals"}], {"refs": ["owner/repo#1 v1 F001"]})
         self.assertIn("would exceed 10 bytes", str(raised.exception))
         self.assertEqual([], list(directory.iterdir()))
