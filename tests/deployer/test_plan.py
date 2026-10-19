@@ -13,7 +13,7 @@ import unittest
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 from unittest import mock
 
 import pytest
@@ -311,7 +311,7 @@ class PlanHome(Deployment):
         return captured[0], output
 
     def entry(self, entries: list[plan.PlanEntry], kind: Kind) -> plan.PlanEntry:
-        matches = [entry for entry in entries if entry.name == kind.name and entry.kind == kind.label]
+        matches = [entry for entry in entries if entry.name == kind.name and entry.kind.label == kind.label]
         assert len(matches) == 1, entries
         return matches[0]
 
@@ -702,3 +702,9 @@ class ContextStepTests(unittest.TestCase):
         context.manifest.save()
         with self.assertRaisesRegex(DeployError, "Migration source 'old/source' is not present in the manifest"):
             migrate.migrate(context, "old/source")
+
+
+def test_the_planned_actions_are_the_labelled_ones_in_report_order() -> None:
+    actions = ("SKIP", "PRESERVE", "REPLACE", "REMOVE", "UPDATE", "INSTALL", "ADOPT", "DROP", "KEEP", "UNCHANGED")
+    assert get_args(report.Action) == actions
+    assert tuple(report.ACTION_LABELS) == actions

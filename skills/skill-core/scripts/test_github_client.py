@@ -11,7 +11,7 @@ import unittest
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 from unittest import mock
 
 import pytest
@@ -847,3 +847,26 @@ def test_json_body_is_the_one_parse_a_callers_own_parse_reuses(stdout: str) -> N
         github_client.json_body(github_client.CommandResult(0, stdout, ""))
     assert (context.value.kind, context.value.retryable) == ("malformed", False)
     assert str(context.value).startswith("GitHub returned malformed JSON: ")
+
+
+def test_a_github_error_names_the_clients_classes_and_those_callers_raise() -> None:
+    assert get_args(github_client.GitHubErrorKind) == (
+        "api",
+        "prerequisite",
+        "execution",
+        "timeout",
+        "rate_limit",
+        "authentication",
+        "search_cap",
+        "forbidden",
+        "not_found",
+        "network",
+        "malformed",
+        "sso_partial",
+        "unknown_outcome",
+        "not_file",
+        "input",
+        "ineligible",
+        "incomplete",
+        "refused",
+    )

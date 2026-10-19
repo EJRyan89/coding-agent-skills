@@ -10,11 +10,18 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import get_args
 from unittest import mock
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
+import folder_walk
+import git_client
+import github_client
+import pdf_tool
 import python_checks
 from job_selection import all_jobs
 from python_checks import (
@@ -35,7 +42,28 @@ from python_checks import (
 from toolchain import PREREQUISITES, find_mypy, missing_prerequisites
 from validation_support import REPOSITORY_ROOT, SKILLS_ROOT, relative, write_fixture_tree
 
-from deployer import platform_support
+from deployer import journal, platform_support, report
+
+# Each closed vocabulary, a member of it and a misspelling of that member, and a site that takes one, as a program the
+# type check reads writes it.
+VOCABULARIES = (
+    (git_client.GitErrorKind, "not_repository", "not_a_repository", 'GitError("failed", kind={})'),
+    (github_client.GitHubErrorKind, "rate_limit", "rate_limited", 'GitHubError("failed", kind={})'),
+    (folder_walk.NotEnteredKind, "nested-checkout", "nested_checkout", 'NotEntered(Path("folder"), {}, "why")'),
+    (pdf_tool.PdfProvider, "Poppler", "poppler", "PdfIdentity({}, (26, 10, 0))"),
+    (report.Action, "INSTALL", "INSTAL", 'PlanEntry("alpha", SKILL, "absent", {})'),
+    (journal.Op, "preserve", "restore", "op: journal.Op = {}"),
+)
+VOCABULARY_IMPORTS = (
+    "from pathlib import Path",
+    "from deployer import journal",
+    "from deployer.kinds import SKILL",
+    "from deployer.plan import PlanEntry",
+    "from folder_walk import NotEntered",
+    "from git_client import GitError",
+    "from github_client import GitHubError",
+    "from pdf_tool import PdfIdentity",
+)
 
 
 class PythonChecksFixtures(unittest.TestCase):
@@ -461,3 +489,19 @@ class PythonChecksFixtures(unittest.TestCase):
                 ],
                 mypy_path_problems(root, sorted(root.rglob("*"))),
             )
+
+
+def test_the_type_check_refuses_a_misspelled_member_of_each_closed_vocabulary() -> None:
+    lines = list(VOCABULARY_IMPORTS)
+    misspelled = []
+    for vocabulary, member, misspelling, site in VOCABULARIES:
+        assert member in get_args(vocabulary)
+        assert misspelling not in get_args(vocabulary)
+        lines.append(site.format(repr(member)))
+        lines.append(site.format(repr(misspelling)))
+        misspelled.append(len(lines))
+    with pytest.raises(AssertionError) as raised:
+        mypy_type_check(REPOSITORY_ROOT, ["-c", "\n".join(lines)], REPOSITORY_ROOT / "pyproject.toml")
+    # mypy names a program given with -c as <string>, and ends its lines with CRLF on Windows.
+    errors = re.findall(r"(?m)^(.*?):(\d+): error: .*?\r?$", str(raised.value))
+    assert [("<string>", line) for line in misspelled] == [(path, int(line)) for path, line in errors]

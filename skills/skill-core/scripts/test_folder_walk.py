@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import get_args
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -253,3 +254,9 @@ class FailureTests(WalkTestCase):
             [NotEntered(self.root / "broken.txt", UNEXAMINED, "the entry cannot be examined: Input/output error")],
             walk.not_entered,
         )
+
+
+def test_each_kind_the_walk_reports_is_named_once() -> None:
+    kinds = ("linked", "loop", "nested-checkout", "unlistable", "unexamined")
+    assert get_args(folder_walk.NotEnteredKind) == kinds
+    assert kinds == (LINKED, LOOP, NESTED_CHECKOUT, UNLISTABLE, UNEXAMINED)

@@ -40,13 +40,16 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Protocol, TypeVar
+from typing import IO, Literal, Protocol, TypeVar
 
 from bounded_process import Streaming, run_bounded, streaming
 from executable_locator import Found, located_command
 from job_tree import TreeNotEnded, process_tree
 
 T = TypeVar("T")
+
+# Each class of failure a GitError names, as `GitError` describes them.
+GitErrorKind = Literal["git", "prerequisite", "execution", "timeout", "not_repository"]
 
 DEFAULT_TIMEOUT_SECONDS = 300.0
 NOT_REPOSITORY_MARKERS = ("not a git repository",)
@@ -111,9 +114,9 @@ class GitError(RuntimeError):
     for any other failure.
     """
 
-    def __init__(self, message: str, *, kind: str = "git", returncode: int | None = None) -> None:
+    def __init__(self, message: str, *, kind: GitErrorKind = "git", returncode: int | None = None) -> None:
         super().__init__(message)
-        self.kind = kind
+        self.kind: GitErrorKind = kind
         self.returncode = returncode  # git's exit code, when git ran and failed
 
 
@@ -181,7 +184,7 @@ def _not_ended(command: Sequence[str], error: TreeNotEnded) -> str:
     return f"{' '.join(str(part) for part in command)} left programs it started that could not be ended: {error}"
 
 
-def classify_failure(stderr: str) -> str:
+def classify_failure(stderr: str) -> GitErrorKind:
     """The class of a git command that exited nonzero, from its stderr."""
     lowered = stderr.casefold()
     if any(marker in lowered for marker in NOT_REPOSITORY_MARKERS):
@@ -217,7 +220,7 @@ def transient_failure(result: GitResult) -> bool:
 
 def transient_wait(retry: int) -> float:
     """The wait before transient retry `retry`, counted from 0, doubling from `TRANSIENT_BASE_SECONDS`."""
-    return TRANSIENT_BASE_SECONDS * 2**retry
+    return TRANSIENT_BASE_SECONDS * 2.0**retry
 
 
 def _gave_up(result: GitResult, retries: int, why: str = "") -> GitResult:

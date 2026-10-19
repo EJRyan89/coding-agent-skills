@@ -28,6 +28,7 @@ import stat
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Final, Literal
 
 from link_probe import is_link_or_junction
 
@@ -36,11 +37,13 @@ SKIPPED_FOLDERS = frozenset(
 )
 CHECKOUT_MARKER = ".git"
 
-LINKED = "linked"
-LOOP = "loop"
-NESTED_CHECKOUT = "nested-checkout"
-UNLISTABLE = "unlistable"
-UNEXAMINED = "unexamined"
+# Why the walk did not enter a folder or an entry, as the contract above names each kind.
+NotEnteredKind = Literal["linked", "loop", "nested-checkout", "unlistable", "unexamined"]
+LINKED: Final = "linked"
+LOOP: Final = "loop"
+NESTED_CHECKOUT: Final = "nested-checkout"
+UNLISTABLE: Final = "unlistable"
+UNEXAMINED: Final = "unexamined"
 
 LINKED_REASON = "the folder is a junction or a symbolic link, which the search does not follow"
 LOOP_REASON = "the folder is a link back into a folder the search is inside, which it does not enter again"
@@ -52,7 +55,7 @@ class NotEntered:
     """A folder or entry the walk did not search: its path, one of the kinds above, and why, as a phrase."""
 
     path: Path
-    kind: str
+    kind: NotEnteredKind
     reason: str
 
 
