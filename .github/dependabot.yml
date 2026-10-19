@@ -11,7 +11,8 @@ updates:
       actions-security:
         applies-to: security-updates
         patterns: ["*"]
-  # requirements-dev.txt, the pinned development dependencies, and requirements-mutation.txt, the mutation gate's tools.
+  # requirements-dev.in, the pinned development dependencies, and requirements-mutation.in, the mutation gate's tools,
+  # with the hash-locked requirements-dev.txt and requirements-mutation.txt that pip-compile builds from them.
   - package-ecosystem: pip
     directory: /
     schedule:

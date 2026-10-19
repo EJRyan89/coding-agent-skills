@@ -290,7 +290,7 @@ LINUX = (
     "      - run: |\n          sudo apt-get update\n          sudo apt-get install --yes shellcheck\n"
     "      - shell: pwsh\n"
     "        run: Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION -Force\n"
-    "      - run: python -m pip install -r requirements-dev.txt\n"
+    "      - run: python -m pip install --require-hashes -r requirements-dev.txt\n"
     "      - name: Run\n        shell: pwsh\n        run: |\n"
     "          $arguments = @('-B', 'tests/run_validation.py', '-v')\n"
     "          if ($env:GITHUB_EVENT_NAME -ne 'pull_request') { $arguments += '--full' }\n"
@@ -339,9 +339,14 @@ class LinuxJobFixtures(unittest.TestCase):
             id="an unpinned analyzer",
         ),
         pytest.param(
-            LINUX.replace("      - run: python -m pip install -r requirements-dev.txt\n", ""),
+            LINUX.replace("      - run: python -m pip install --require-hashes -r requirements-dev.txt\n", ""),
             "requirements-dev",
             id="no development dependencies",
+        ),
+        pytest.param(
+            LINUX.replace(" --require-hashes -r requirements-dev.txt", " -r requirements-dev.txt"),
+            "requirements-dev",
+            id="no hash checking",
         ),
         pytest.param(
             LINUX.replace("        shell: pwsh\n        run: |", "        shell: bash\n        run: |"),
@@ -806,8 +811,8 @@ MUTATION = (
     "jobs:\n  mutation:\n    name: Mutation gate\n    runs-on: ubuntu-latest\n    timeout-minutes: 60\n    steps:\n"
     "      - uses: actions/checkout@abc\n        with:\n          fetch-depth: 0\n"
     "      - uses: actions/setup-python@abc\n        with:\n          python-version: '3.11'\n          cache: pip\n"
-    "          cache-dependency-path: |\n            requirements-dev.txt\n            requirements-mutation.txt\n"
-    "      - name: Install\n        run: python -m pip install -r requirements-dev.txt -r requirements-mutation.txt\n"
+    "          cache-dependency-path: requirements-mutation.txt\n"
+    "      - name: Install\n        run: python -m pip install --require-hashes -r requirements-mutation.txt\n"
     "      - name: Gate\n        run: python -B tools/mutation_gate.py\n"
 )
 
@@ -828,9 +833,14 @@ def test_the_mutation_job_runs_the_gate_on_linux_outside_the_required_check() ->
         pytest.param(MUTATION.replace("timeout-minutes: 60", "timeout-minutes: 600"), "time limit", id="a long limit"),
         pytest.param(MUTATION.replace("fetch-depth: 0", "fetch-depth: 1"), "whole history", id="a shallow checkout"),
         pytest.param(
-            MUTATION.replace("            requirements-mutation.txt\n", ""), "sets up Python", id="half the cache key"
+            MUTATION.replace("path: requirements-mutation.txt", "path: requirements-dev.txt"),
+            "sets up Python",
+            id="the cache keyed on another file",
         ),
-        pytest.param(MUTATION.replace(" -r requirements-mutation.txt", ""), "runs", id="no mutation tools"),
+        pytest.param(
+            MUTATION.replace("-r requirements-mutation.txt", "-r requirements-dev.txt"), "runs", id="no mutation tools"
+        ),
+        pytest.param(MUTATION.replace(" --require-hashes", ""), "runs", id="no hash checking"),
         pytest.param(
             MUTATION.replace("python -B tools/mutation_gate.py", "python -B tools/mutation_gate.py || true"),
             "runs",

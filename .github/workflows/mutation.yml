@@ -34,12 +34,10 @@ jobs:
         with:
           python-version: '3.11'
           cache: pip
-          cache-dependency-path: |
-            requirements-dev.txt
-            requirements-mutation.txt
+          cache-dependency-path: requirements-mutation.txt
 
       - name: Install the mutation tools
-        run: python -m pip install -r requirements-dev.txt -r requirements-mutation.txt
+        run: python -m pip install --require-hashes -r requirements-mutation.txt
 
       # It calls no model and reads no secret; GITHUB_BASE_REF names the base it diffs against.
       - name: Run the mutation gate

@@ -9,6 +9,7 @@ import sysconfig
 import tempfile
 import unittest
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -173,18 +174,43 @@ DEVELOPMENT_PACKAGES = ("ruff", "mypy", "pytest")
 # The packages only the mutation gate's workflow installs, from requirements-mutation.txt, beside those: mutmut, which
 # makes the mutants, and coverage.py, which measures which suites reach each line.
 MUTATION_PACKAGES = ("mutmut", "coverage")
-REQUIREMENT_PIN = re.compile(r"(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)==[0-9][0-9A-Za-z.+!-]*")
+REQUIREMENT_PIN = re.compile(r"(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)==(?P<version>[0-9][0-9A-Za-z.+!-]*)")
+# Each set's hand-edited input, and the lock pip-tools compiles from it, which pins every package the set installs,
+# transitive ones included, each with the sha256 hash of every file PyPI holds for its version. CI installs a lock
+# with --require-hashes, so nothing it does not pin, and no file whose hash it does not hold, is installed. The
+# mutation input takes the development input whole and the development lock as a constraint, so its lock is the
+# mutation job's one install, and a package both locks hold is pinned alike in each.
+DEVELOPMENT_INPUT = "requirements-dev.in"
+DEVELOPMENT_LOCK = "requirements-dev.txt"
+MUTATION_INPUT = "requirements-mutation.in"
+MUTATION_LOCK = "requirements-mutation.txt"
+MUTATION_INCLUDES = (f"-r {DEVELOPMENT_INPUT}", f"-c {DEVELOPMENT_LOCK}")
+LOCK_HASH = re.compile(r"--hash=sha256:[0-9a-f]{64}")
+HASH_CHECKED_INSTALL = "--require-hashes"
 
 
-def requirements_problems(text: str, packages: tuple[str, ...]) -> list[str]:
-    """Every line of a requirements file that is not a comment, a blank line, or `name==version` for one of `packages`,
-    so an unpinned package, another index, an included file, or an install from a repository fails, and every package
-    it does not pin exactly once."""
+@dataclass(frozen=True)
+class Locked:
+    """One package a lock pins: its version and the hashes pip accepts for it."""
+
+    version: str
+    hashes: frozenset[str]
+
+
+def package_name(name: str) -> str:
+    """A package's name as PyPI compares it, so `Typing_Extensions` and `typing-extensions` are one package."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def requirements_problems(text: str, packages: tuple[str, ...], includes: tuple[str, ...] = ()) -> list[str]:
+    """Every line of a requirements input that is not a comment, a blank line, one of `includes` as written, or
+    `name==version` for one of `packages`, so an unpinned package, another index, another included file, or an
+    install from a repository fails, and every package it does not pin exactly once."""
     problems: list[str] = []
     pinned: list[str] = []
     for number, line in enumerate(text.splitlines(), start=1):
         content = line.strip()
-        if not content or content.startswith("#"):
+        if not content or content.startswith("#") or content in includes:
             continue
         match = REQUIREMENT_PIN.fullmatch(content)
         if match is None or match.group("name") not in packages:
@@ -196,6 +222,79 @@ def requirements_problems(text: str, packages: tuple[str, ...]) -> list[str]:
         for package in packages
         if pinned.count(package) != 1
     ]
+    return problems
+
+
+def locked_requirements(text: str) -> tuple[dict[str, Locked], list[str]]:
+    """Each package a lock pins, by name, and every requirement in it that is not `name==version` with sha256 hashes
+    and nothing else: an unhashed or unpinned package, a marker, an option, an included file, or an install from a URL
+    fails, and so does a package pinned twice. A requirement continues across lines that end in a backslash; a comment
+    line, such as pip-tools' `# via` lines between two requirements, is skipped."""
+    requirements: list[str] = []
+    parts: list[str] = []
+    for line in text.splitlines():
+        content = line.strip()
+        if not content or content.startswith("#"):
+            continue
+        parts.append(content.removesuffix("\\").strip())
+        if not content.endswith("\\"):
+            requirements.append(" ".join(parts))
+            parts = []
+    if parts:
+        requirements.append(" ".join(parts))
+    locked: dict[str, Locked] = {}
+    problems: list[str] = []
+    for requirement in requirements:
+        pin, *options = requirement.split()
+        match = REQUIREMENT_PIN.fullmatch(pin)
+        if match is None or not options or not all(LOCK_HASH.fullmatch(option) for option in options):
+            problems.append(f"{requirement!r} is not name==version with sha256 hashes and nothing else")
+            continue
+        name = package_name(match.group("name"))
+        if name in locked:
+            problems.append(f"{name} is locked more than once")
+        locked[name] = Locked(match.group("version"), frozenset(options))
+    return locked, problems
+
+
+def lock_problems(lock: str, inputs: str, shared: Mapping[str, Locked] | None = None) -> list[str]:
+    """Report a lock that holds a requirement locked_requirements refuses, that pins a package its inputs pin at
+    another version or not at all, or that pins a package `shared` locks at another version or with other hashes."""
+    locked, problems = locked_requirements(lock)
+    for line in inputs.splitlines():
+        match = REQUIREMENT_PIN.fullmatch(line.strip())
+        if match is None:
+            continue
+        name, version = package_name(match.group("name")), match.group("version")
+        if name not in locked:
+            problems.append(f"the input pins {name}=={version}, which the lock does not hold")
+        elif locked[name].version != version:
+            problems.append(f"the input pins {name}=={version}, which the lock pins at {locked[name].version}")
+    for name, entry in (shared or {}).items():
+        if locked.get(name) != entry:
+            problems.append(f"{name} is not locked as the development lock locks it, at {entry.version} and its hashes")
+    return problems
+
+
+def hash_install_problems(workflow: str, locks: tuple[str, ...]) -> list[str]:
+    """Report each line of a workflow whose pip install does not check hashes or installs anything but a lock: it
+    must read `pip install --require-hashes` followed only by `-r <lock>` for one of `locks`."""
+    problems: list[str] = []
+    for number, line in enumerate(workflow.splitlines(), start=1):
+        if "pip install" not in line:
+            continue
+        words = line.split("pip install", 1)[1].split()
+        files = words[1:]
+        pairs = list(zip(files[::2], files[1::2], strict=False))
+        if (
+            words[:1] != [HASH_CHECKED_INSTALL]
+            or not pairs
+            or len(files) % 2
+            or any(flag != "-r" or path not in locks for flag, path in pairs)
+        ):
+            problems.append(
+                f"line {number} does not install only {list(locks)} with {HASH_CHECKED_INSTALL}: {line.strip()!r}"
+            )
     return problems
 
 
@@ -290,15 +389,37 @@ class ToolchainPolicies(unittest.TestCase):
                 self.assertIn(row, document)
 
     def test_the_mutation_gate_installs_its_pinned_tools_and_nothing_else(self) -> None:
-        requirements = (REPOSITORY_ROOT / "requirements-mutation.txt").read_text(encoding="utf-8")
+        requirements = (REPOSITORY_ROOT / MUTATION_INPUT).read_text(encoding="utf-8")
         self.assertEqual(
             ["mutmut==3.8.0", "coverage==7.16.2"], [line for line in requirements.splitlines() if "==" in line]
         )
         self.assertEqual(("mutmut", "coverage"), MUTATION_PACKAGES)
-        self.assertEqual([], requirements_problems(requirements, MUTATION_PACKAGES))
+        self.assertEqual(("-r requirements-dev.in", "-c requirements-dev.txt"), MUTATION_INCLUDES)
+        self.assertEqual([], requirements_problems(requirements, MUTATION_PACKAGES, MUTATION_INCLUDES))
         document = (REPOSITORY_ROOT / DEPENDENCY_DOC).read_text(encoding="utf-8")
-        self.assertIn("| mutmut | 3.8.0 | `requirements-mutation.txt` |", document)
-        self.assertIn("| coverage.py | 7.16.2 | `requirements-mutation.txt` |", document)
+        self.assertIn("| mutmut | 3.8.0 | `requirements-mutation.in` |", document)
+        self.assertIn("| coverage.py | 7.16.2 | `requirements-mutation.in` |", document)
+
+    def test_every_package_installed_is_locked_with_hashes_and_installed_with_hash_checking(self) -> None:
+        self.assertEqual(
+            ("requirements-dev.in", "requirements-dev.txt", "requirements-mutation.in", "requirements-mutation.txt"),
+            (DEVELOPMENT_INPUT, DEVELOPMENT_LOCK, MUTATION_INPUT, MUTATION_LOCK),
+        )
+        development = (REPOSITORY_ROOT / DEVELOPMENT_INPUT).read_text(encoding="utf-8")
+        development_lock = (REPOSITORY_ROOT / DEVELOPMENT_LOCK).read_text(encoding="utf-8")
+        self.assertEqual([], lock_problems(development_lock, development))
+        locked, _ = locked_requirements(development_lock)
+        mutation = (REPOSITORY_ROOT / MUTATION_INPUT).read_text(encoding="utf-8")
+        mutation_lock = (REPOSITORY_ROOT / MUTATION_LOCK).read_text(encoding="utf-8")
+        self.assertEqual([], lock_problems(mutation_lock, development + mutation, locked))
+        for workflow, locks, installs in (
+            ("validate.yml", ("requirements-dev.txt",), 2),
+            ("mutation.yml", ("requirements-mutation.txt",), 1),
+        ):
+            with self.subTest(workflow=workflow):
+                text = (REPOSITORY_ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+                self.assertEqual(installs, text.count("pip install"))
+                self.assertEqual([], hash_install_problems(text, locks))
 
     def test_ci_exercises_each_floor(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
@@ -320,9 +441,9 @@ class ToolchainPolicies(unittest.TestCase):
         self.assertIn("if: github.event_name == 'schedule' && matrix.python-version == '3.x'", workflow)
         # Both matrix entries install the pinned development dependencies, so ruff, mypy, and pytest run at their
         # floors.
-        self.assertIn("python -m pip install -r requirements-dev.txt", workflow)
+        self.assertIn("python -m pip install --require-hashes -r requirements-dev.txt", workflow)
         self.assertIn("python -m mypy --version", workflow)
-        requirements = (REPOSITORY_ROOT / "requirements-dev.txt").read_text(encoding="utf-8")
+        requirements = (REPOSITORY_ROOT / DEVELOPMENT_INPUT).read_text(encoding="utf-8")
         self.assertEqual(
             ["ruff==0.17.1", "mypy==2.4.0", "pytest==9.1.1"],
             [line for line in requirements.splitlines() if "==" in line],

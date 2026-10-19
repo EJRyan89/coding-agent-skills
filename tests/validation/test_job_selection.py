@@ -441,6 +441,7 @@ class ChangedSelectionFixtures(unittest.TestCase):
             "skills/skill-core/scripts/pdf_tool.py",
             "tests/validation/toolchain.py",
             "conftest.py",
+            "requirements-dev.in",
             "requirements-dev.txt",
         ]
         suites = [
