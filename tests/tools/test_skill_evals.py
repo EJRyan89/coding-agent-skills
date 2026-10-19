@@ -2002,8 +2002,8 @@ class RunPieceTests(unittest.TestCase):
         self.assertEqual(["code-review-reviewer"], list(agents))
         definition = agents["code-review-reviewer"]
         self.assertEqual({"description", "prompt", "tools", "model", "omitClaudeMd", "hooks"}, set(definition))
-        self.assertTrue(definition["description"].startswith("Internal to the code-review-core pipeline. Started"))
-        self.assertTrue(definition["prompt"].startswith("You run one reviewer role of a code review"))
+        self.assertTrue(definition["description"].startswith("Internal to the code-review skills. Started"))
+        self.assertTrue(definition["prompt"].startswith("You run one role a code-review script prepared"))
         self.assertTrue(REVIEWER_AGENT_SOURCE.read_text(encoding="utf-8").rstrip("\n").endswith(definition["prompt"]))
         self.assertEqual(["Read", "Grep", "Glob", "Write", "Edit", "Bash"], definition["tools"])
         self.assertEqual("claude-haiku-5-5", definition["model"])
