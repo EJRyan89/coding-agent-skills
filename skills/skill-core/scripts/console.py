@@ -76,7 +76,7 @@ def run_main(
         print(INTERRUPTED_LINE, flush=True)
         _print_requested_traceback(error, traceback_requested)
         raise SystemExit(INTERRUPTED_EXIT) from None
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - the last handler: any exception ends as one FAILED line
         print(failed_line(error), flush=True)
         _print_requested_traceback(error, traceback_requested)
         raise SystemExit(1) from None
@@ -92,7 +92,7 @@ def _print_requested_traceback(error: BaseException, requested: Callable[[], boo
         return
     try:
         wanted = requested()
-    except Exception:
+    except Exception:  # noqa: BLE001 - a request that fails to answer shows no traceback
         return
     if wanted:
         # The three-argument form, which Python 3.7 reads; see the module docstring.

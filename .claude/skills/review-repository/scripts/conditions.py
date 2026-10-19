@@ -56,7 +56,7 @@ def run_condition(run: Callable[[], int]) -> int:
     since the exit status 1 run_main would give it closes the route rather than failing the review."""
     try:
         return run()
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - a condition reports any failure as its FAILED line and FAILURE_STATUS
         print(failed_line(error))
         return FAILURE_STATUS
 

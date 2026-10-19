@@ -431,7 +431,7 @@ def _execute(
             return fail(exc, debug, "check the source checkout")
         try:
             recovered = journal.recover_incomplete(paths)
-        except (Exception, KeyboardInterrupt) as exc:
+        except (Exception, KeyboardInterrupt) as exc:  # noqa: BLE001 - any failure while recovering ends in the one stopped-recovery report
             return _stopped_recovery(exc, debug, paths)
         if not recovered:
             _report_failed_recovery()
@@ -446,7 +446,7 @@ def _execute(
             # Selection cancellation and usage checks happen before staging or any destination change.
             print_error(exc, debug)
             return exc.exit_code
-        except (Exception, KeyboardInterrupt) as exc:
+        except (Exception, KeyboardInterrupt) as exc:  # noqa: BLE001 - any failure after the lock is taken is recovered from before the run ends
             return _recover_from_failure(exc, debug, paths, held)
 
 
@@ -584,7 +584,7 @@ def _recover_from_failure(exc: BaseException, debug: bool, paths: Paths, held: l
     print(f"Deployment {outcome}; reconciling the current journal before exit...", file=sys.stderr)
     try:
         recovered = journal.recover_incomplete(paths)
-    except (Exception, KeyboardInterrupt) as recovery_error:
+    except (Exception, KeyboardInterrupt) as recovery_error:  # noqa: BLE001 - any failure while recovering ends in the one stopped-recovery report
         return _stopped_recovery(recovery_error, debug, paths)
     if not recovered:
         held.retain()

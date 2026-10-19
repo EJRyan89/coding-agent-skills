@@ -216,7 +216,7 @@ def _attempt(job: Job) -> Failure | Terminated | None:
         return Failure(job, str(exc), timed_out=True)
     except AssertionError as exc:
         return Failure(job, str(exc))
-    except (Exception, SystemExit) as exc:  # Any other exception, a job's sys.exit included, fails only the job.
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 - any other exception, a job's sys.exit included, fails only the job
         return Failure(job, "".join(traceback.format_exception(exc)), raised=True)
     return None
 
