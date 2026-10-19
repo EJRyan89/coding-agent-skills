@@ -9,11 +9,11 @@ import shutil
 import stat
 import sys
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Any, NotRequired, TypedDict, cast
+from typing import Any, NotRequired, TypedDict, TypeVar, get_origin, get_type_hints
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
@@ -31,7 +31,7 @@ from review_hosts import subprocess_runner as copilot_subprocess_runner
 from review_io import PersistenceError, atomic_write_json, read_json
 from review_operation import ReviewOperationError
 from review_process import start_detached
-from review_records import RecordError, Scope
+from review_records import DISPATCH_MODES, RE_REVIEW_SCOPES, SCOPE_FIELDS, RecordError, Scope
 from review_runtime import (
     MODEL_ALIAS_RUNTIMES,
     NATIVE_EFFORT_RUNTIMES,
@@ -41,7 +41,9 @@ from review_runtime import (
 )
 from review_specialists import SpecialistError
 from review_state import StateError, utc_today
-from typed_fields import FieldError, FieldReader
+from typed_fields import FieldError, FieldReader, describe
+
+T = TypeVar("T")
 
 # The pipeline's command line, which a role's prompt names and the Copilot CLI host is started as.
 PIPELINE_SCRIPT = Path(__file__).resolve().parent / "review_pipeline.py"
@@ -128,8 +130,9 @@ class RunState(TypedDict):
     """A prepared run's run.json, as prepare writes it and every later step reads and updates it.
 
     A run prepared before a field was recorded lacks it: its dispatch, the roles' dispatch times, the snapshot, its
-    repository and stamp, the read counts, the changed documents, and an inline run's seal. The reviewer adapter,
-    a fixture canary's paths, the patches, the archive base, and the snapshot stay open mappings.
+    repository and stamp, the read counts, the archive base, which finalize then refuses to record without, the
+    changed documents, and an inline run's seal. The reviewer adapter, a fixture canary's paths, the patches, the
+    archive base, and the snapshot stay open mappings, which the steps that use them read.
     """
 
     schema_version: int
@@ -157,9 +160,21 @@ class RunState(TypedDict):
     patches: dict[str, dict[str, Any]]
     scope: Scope | None
     uncovered_files: list[str]
-    archive_base: dict[str, Any]
+    archive_base: NotRequired[dict[str, Any]]
     documents: NotRequired[dict[str, list[str]]]
     seal: NotRequired[Seal]
+
+
+def _fields(shape: type) -> tuple[frozenset[str], frozenset[str]]:
+    """A TypedDict's required and optional fields, read from its annotations, which this module's postponed
+    evaluation leaves as text its `__optional_keys__` does not see."""
+    hints = get_type_hints(shape, include_extras=True)
+    optional = frozenset(name for name, hint in hints.items() if get_origin(hint) is NotRequired)
+    return frozenset(hints) - optional, optional
+
+
+RUN_FIELDS, RUN_OPTIONAL_FIELDS = _fields(RunState)
+ROLE_FIELDS, ROLE_OPTIONAL_FIELDS = _fields(RunRole)
 
 
 class PipelineError(ValueError):
@@ -256,12 +271,139 @@ def _starts_at_given_effort(runtime: str, dispatch: str) -> bool:
 
 
 def load_run(run: Path) -> RunState:
-    """A prepared run's state. Only its schema version is checked: prepare wrote the rest, and each step reads what it
-    needs as prepare wrote it."""
+    """A prepared run's state, read field by field once its schema version is one this pipeline prepares: a field
+    missing, unknown, or of the wrong kind or shape fails with a PipelineFieldError naming the first such field.
+
+    A run prepared before an optional field was recorded loads without it, as each step that reads the field expects.
+    """
     state = READ.json_object(read_json(run / RUN_FILE), "run")
     if READ.integer(state.get("schema_version"), "run.schema_version") != RUN_SCHEMA_VERSION:
         raise PipelineError(f"{run} is not a prepared review run")
-    return cast(RunState, state)
+    return _read_run(READ.json_object(state, "run", required=RUN_FIELDS, optional=RUN_OPTIONAL_FIELDS))
+
+
+def _read_run(state: dict[str, Any]) -> RunState:
+    roles = READ.array(state["roles"], "run.roles", _read_role)
+    identities: set[str] = set()
+    for index, role in enumerate(roles):
+        if role["id"] in identities:
+            raise READ.fail(f"run.roles[{index}].id", "a role id no earlier role has", describe(role["id"]))
+        identities.add(role["id"])
+    read: RunState = {
+        "schema_version": state["schema_version"],
+        "selector": READ.string(state["selector"], "run.selector", single_line=True),
+        "mode": READ.one_of(state["mode"], "run.mode", ("initial", "re-review")),
+        "canary": READ.boolean(state["canary"], "run.canary"),
+        "fixture": READ.optional(READ.json_object, state["fixture"], "run.fixture"),
+        "config_path": READ.string(state["config_path"], "run.config_path"),
+        "host": READ.optional(READ.string, state["host"], "run.host"),
+        "runtime": READ.string(state["runtime"], "run.runtime"),
+        "kind": READ.one_of(state["kind"], "run.kind", ("entrypoint", "generic", "specialists")),
+        "request_path": READ.string(state["request_path"], "run.request_path"),
+        "reviewer_root": READ.optional(READ.string, state["reviewer_root"], "run.reviewer_root"),
+        "result_path": READ.string(state["result_path"], "run.result_path"),
+        "adapter": READ.json_object(state["adapter"], "run.adapter"),
+        "roles": roles,
+        "attempts": _by_role(state["attempts"], "run.attempts", identities, _attempt_count, every=True),
+        "notes": READ.array(state["notes"], "run.notes", READ.string),
+        "patches": _object_of(state["patches"], "run.patches", READ.json_object),
+        "scope": READ.optional(_read_scope, state["scope"], "run.scope"),
+        "uncovered_files": READ.array(state["uncovered_files"], "run.uncovered_files", READ.string),
+    }
+    _read_optional(state, read, identities)
+    return read
+
+
+def _read_optional(state: dict[str, Any], read: RunState, identities: set[str]) -> None:
+    """Add to `read` each field a run prepared before it was recorded may lack, read as its kind when it is there."""
+    if "dispatch" in state:
+        read["dispatch"] = READ.one_of(state["dispatch"], "run.dispatch", DISPATCH_MODES)
+    if "dispatched_at" in state:
+        read["dispatched_at"] = _by_role(state["dispatched_at"], "run.dispatched_at", identities, READ.number)
+    if "snapshot" in state:
+        read["snapshot"] = READ.json_object(state["snapshot"], "run.snapshot")
+    if "source_repository" in state:
+        read["source_repository"] = READ.optional(READ.string, state["source_repository"], "run.source_repository")
+    if "snapshot_stamp" in state:
+        read["snapshot_stamp"] = READ.optional(READ.string, state["snapshot_stamp"], "run.snapshot_stamp")
+    if "reads" in state:
+        read["reads"] = _by_role(state["reads"], "run.reads", identities, _read_count)
+    if "archive_base" in state:
+        read["archive_base"] = READ.json_object(state["archive_base"], "run.archive_base")
+    if "documents" in state:
+        read["documents"] = _object_of(state["documents"], "run.documents", _document_places)
+    if "seal" in state:
+        read["seal"] = _read_seal(state["seal"], "run.seal", identities)
+
+
+def _read_role(value: object, path: str) -> RunRole:
+    entry = READ.json_object(value, path, required=ROLE_FIELDS, optional=ROLE_OPTIONAL_FIELDS)
+    role: RunRole = {
+        "id": READ.string(entry["id"], f"{path}.id", single_line=True, trimmed=True),
+        "prompt_file": READ.string(entry["prompt_file"], f"{path}.prompt_file"),
+        "result_file": READ.string(entry["result_file"], f"{path}.result_file"),
+    }
+    if "model" in entry:
+        role["model"] = READ.optional(READ.string, entry["model"], f"{path}.model")
+    if "effort" in entry:
+        role["effort"] = READ.optional(READ.string, entry["effort"], f"{path}.effort")
+    return role
+
+
+def _object_of(value: object, path: str, read: Callable[[object, str], T]) -> dict[str, T]:
+    """An object whose every value `read` reads at `path.<key>`."""
+    return {key: read(entry, f"{path}.{key}") for key, entry in READ.json_object(value, path).items()}
+
+
+def _by_role(
+    value: object, path: str, roles: Collection[str], read: Callable[[object, str], T], *, every: bool = False
+) -> dict[str, T]:
+    """An object keyed by the run's roles, every one of them when `every`, whose every value `read` reads."""
+    return _object_of(READ.json_object(value, path, required=roles if every else (), optional=roles), path, read)
+
+
+def _attempt_count(value: object, path: str) -> int:
+    return READ.integer(value, path, minimum=0)
+
+
+def _read_count(value: object, path: str) -> ReadCount:
+    count = READ.json_object(value, path, required=("files", "bytes"))
+    return {
+        "files": READ.integer(count["files"], f"{path}.files", minimum=0),
+        "bytes": READ.integer(count["bytes"], f"{path}.bytes", minimum=0),
+    }
+
+
+def _document_places(value: object, path: str) -> list[str]:
+    """A changed document's place of each line, blank for a line that has none."""
+    return READ.array(value, path, lambda place, at: READ.string(place, at, empty=True))
+
+
+def _sha256_digest(value: object, path: str) -> str:
+    return READ.hex_digest(value, path, 64)
+
+
+def _read_seal(value: object, path: str, roles: Collection[str]) -> Seal:
+    seal = READ.json_object(value, path, required=("files", "results"))
+    return {
+        "files": _object_of(seal["files"], f"{path}.files", _sha256_digest),
+        "results": _by_role(seal["results"], f"{path}.results", roles, _sha256_digest),
+    }
+
+
+def _read_scope(value: object, path: str) -> Scope:
+    """A re-review's scope as its record will hold it; the record's own validation checks the counts agree."""
+    scope = READ.json_object(value, path, required=SCOPE_FIELDS)
+    return {
+        "requested": READ.one_of(scope["requested"], f"{path}.requested", RE_REVIEW_SCOPES),
+        "used": READ.one_of(scope["used"], f"{path}.used", ("full", "incremental")),
+        "reason": READ.string(scope["reason"], f"{path}.reason"),
+        "since_version": READ.integer(scope["since_version"], f"{path}.since_version"),
+        "files_changed": READ.optional(READ.integer, scope["files_changed"], f"{path}.files_changed", minimum=0),
+        "files_total": READ.integer(scope["files_total"], f"{path}.files_total", minimum=0),
+        "lines_changed": READ.optional(READ.integer, scope["lines_changed"], f"{path}.lines_changed", minimum=0),
+        "lines_total": READ.integer(scope["lines_total"], f"{path}.lines_total", minimum=0),
+    }
 
 
 def mark_dispatched(run: Path) -> None:

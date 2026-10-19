@@ -37,6 +37,7 @@ from review_records import RecordError
 from review_runtime import RuntimeContractError
 from review_specialists import SpecialistError
 from review_state import StateError
+from test_review_run import prepared_state
 
 Call = tuple[tuple[Any, ...], dict[str, Any]]
 
@@ -1435,7 +1436,7 @@ class RunListCommandTests(RunListCase):
                 run = self.directory / dispatch
                 run.mkdir()
                 (run / review_run.RUN_FILE).write_text(
-                    json.dumps({"schema_version": review_run.RUN_SCHEMA_VERSION, "dispatch": dispatch}),
+                    json.dumps(prepared_state(dispatch=dispatch)),
                     encoding="utf-8",
                 )
                 self.assertIs(expected, review_batches.worked_by_subagents(run))
