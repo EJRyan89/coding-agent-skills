@@ -24,6 +24,7 @@ from review_records import RecordError, validate_record
 from review_state import StateError, StateFieldError, empty_state, load_state, update_state, validate_state
 from test_review_canary import PULL, write_fixture
 from test_review_record_validation import _record
+from test_review_run import prepared_state
 from typed_fields import FieldError
 
 
@@ -151,7 +152,7 @@ class VersionBoundaryTests(unittest.TestCase):
                 self.assertEqual(1, result)
                 self.assertEqual(f"FAILED {self.root} {message}\n", stdout.getvalue())
                 self.assertEqual("", stderr.getvalue())
-        value = {"schema_version": review_run.RUN_SCHEMA_VERSION}
+        value = prepared_state()
         path.write_text(json.dumps(value), encoding="utf-8")
         self.assertEqual(value, review_run.load_run(self.root))
 
