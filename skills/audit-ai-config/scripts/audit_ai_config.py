@@ -2086,12 +2086,16 @@ def _layering_cloud_agent(root: Path, sources: InstructionSources) -> list[Findi
 
 
 def _layering_code_review(root: Path, sources: InstructionSources) -> list[Finding]:
-    """Code review reads AGENTS.md, copilot-instructions, and path-specific instructions, but never CLAUDE.md or
-    GEMINI.md, so a redirect-only AGENTS.md adds nothing."""
+    """Code review reads a root AGENTS.md, CLAUDE.md, GEMINI.md, REVIEW.md, copilot-instructions, and path-specific
+    instructions from the pull request's head branch, so a redirect-only AGENTS.md adds nothing of its own but the
+    CLAUDE.md it names is read directly."""
     review_sources = [
         name
         for name, present in (
             ("AGENTS.md", sources.agents_md and not sources.agents_redirects),
+            ("CLAUDE.md", sources.claude_md),
+            ("GEMINI.md", sources.gemini_md),
+            ("REVIEW.md", (root / "REVIEW.md").is_file()),
             (".github/copilot-instructions.md", sources.copilot_instructions),
             (".github/instructions", sources.path_instructions),
         )
@@ -2107,8 +2111,9 @@ def _layering_code_review(root: Path, sources: InstructionSources) -> list[Findi
         first = Finding(
             severity="ERROR",
             check="layering",
-            message="Code review: no project instructions it can read — it ignores "
-            "CLAUDE.md, and AGENTS.md " + ("only redirects to CLAUDE.md" if sources.agents_md else "is absent"),
+            message="Code review: no project instructions it can read — no CLAUDE.md, GEMINI.md, REVIEW.md, "
+            "or Copilot instructions, and AGENTS.md "
+            + ("only redirects to CLAUDE.md" if sources.agents_md else "is absent"),
         )
     findings = [
         first,

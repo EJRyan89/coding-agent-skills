@@ -55,7 +55,7 @@ class ToolchainFixtures(unittest.TestCase):
         self.assertEqual(
             [
                 "  - Git Bash: winget install --id Git.Git",
-                "  - PowerShell 7 (pwsh): winget install --id Microsoft.PowerShell",
+                "  - PowerShell 7 (pwsh): winget install --id Microsoft.PowerShell --installer-type wix",
             ],
             missing_prerequisites(
                 (
@@ -117,7 +117,7 @@ class ToolchainFixtures(unittest.TestCase):
                 "  - ShellCheck 0.8.0 is older than the floor 0.9.0 in docs/dependency-updates.md: "
                 "winget install --id koalaman.shellcheck",
                 "  - PowerShell 7 (pwsh): its version could not be read; the floor is 7.0 in "
-                "docs/dependency-updates.md: winget install --id Microsoft.PowerShell",
+                "docs/dependency-updates.md: winget install --id Microsoft.PowerShell --installer-type wix",
                 "  - ruff 0.17.0 is older than the floor 0.17.1 in docs/dependency-updates.md: "
                 "python -m pip install -r requirements-dev.txt",
             ],

@@ -587,6 +587,16 @@ class SkillLayoutFixtures(unittest.TestCase):
                     "codex": {"level": "partial", "needs": ["sandbox-network"], "reason": "No network."},
                 },
             },
+            # So does a Bash script's git subcommand that reaches a remote, a command substitution's included, though
+            # git is never declared as a tool; a local git command and a test suite's fetch do not.
+            "fetches": {"runtime_support": full},
+            "fetches-in-a-substitution": {
+                "runtime_support": {
+                    **full,
+                    "codex": {"level": "partial", "needs": ["sandbox-network"], "reason": "No network."},
+                },
+            },
+            "reads-git-locally": {"runtime_support": full},
         }
         user_only_md = "---\nname: {0}\ndescription: d\ndisable-model-invocation: true\n---\n"
         plain_md = "---\nname: {0}\ndescription: d\n---\n"
@@ -608,6 +618,12 @@ class SkillLayoutFixtures(unittest.TestCase):
                     **{f"deploy-meta/{name}.json": json.dumps(value) for name, value in metadata.items()},
                     **{f"skills/{name}/SKILL.md": bodies.get(name, plain_md).format(name) for name in metadata},
                     "agents/guarded-reviewer.md": hooked_agent,
+                    "skills/fetches/scripts/update.sh": 'git -C "$CLONE" fetch --quiet origin\n',
+                    "skills/fetches-in-a-substitution/scripts/sync.sh": (
+                        "if ! OUTPUT=$(git -c core.quotepath=off ls-remote --tags \\\n  origin 2>&1); then exit 1; fi\n"
+                    ),
+                    "skills/reads-git-locally/scripts/status.sh": 'git -C "$CLONE" status --porcelain  # fetch later\n',
+                    "skills/reads-git-locally/scripts/test_status.sh": 'git -C "$CLONE" fetch origin\n',
                 },
             )
             doc = '"Metadata" in docs/adding-a-skill.md'
@@ -616,6 +632,8 @@ class SkillLayoutFixtures(unittest.TestCase):
                 [
                     "deploy-meta/delegates.json declares copilot-cli needs agent-delegation, "
                     f"but copilot-cli lacks workflow; see {doc}",
+                    "deploy-meta/fetches.json declares codex full, but codex lacks sandbox-network, "
+                    f"so it is partial or none; see {doc}",
                     "deploy-meta/guarded.json declares codex full, but codex lacks fail-closed-agent-hooks, "
                     f"so it is partial or none; see {doc}",
                     f"deploy-meta/hidden-full.json declares claude-code full, {hidden_rule}",

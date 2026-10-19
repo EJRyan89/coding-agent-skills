@@ -68,6 +68,8 @@ STATUSES = {"C:/tools/pdftotext.exe": 99}
 GIT = "C:/tools/git.exe"
 PYTHON_COMMAND = "C:/Python/python.exe"
 STORE_ALIAS = "C:/Profile/Local/Microsoft/WindowsApps/python.exe"
+MSI_PWSH = "C:/Program Files/PowerShell/7/pwsh.exe"
+PACKAGED_PWSH = "C:/Profile/Local/Microsoft/WindowsApps/pwsh.exe"
 
 
 def prompt_input(mode: str) -> str:
@@ -101,13 +103,16 @@ class Machine:
         python: tuple[int, ...] = (3, 12, 1),
         settings: bool = False,
         python_command: str | None = PYTHON_COMMAND,
+        pwsh_command: str | None = None,
         codex_probe: tuple[int, str] = (0, prompt_input("workspace-write")),
     ) -> None:
         # describe is what git describe prints for the deployed commit; None makes it fail, as for an unknown commit.
         # settings says whether this machine's platform has the machine settings check reports, as Windows does: then
-        # python_command is what the skills' Python command runs, and codex_probe what Codex's sandbox probe prints.
+        # python_command is what the skills' Python command runs, pwsh_command what pwsh runs, and codex_probe what
+        # Codex's sandbox probe prints.
         self.settings = settings
         self.python_command = python_command
+        self.pwsh_command = pwsh_command
         self.codex_probe = codex_probe
         self.git = None if "git" in missing else GIT
         self.describe = describe
@@ -133,7 +138,9 @@ class Machine:
             stack.enter_context(mock.patch.object(platform_support, flag, self.settings))
         stack.enter_context(
             mock.patch.object(
-                platform_support, "is_app_execution_alias", side_effect=lambda program: program == STORE_ALIAS
+                platform_support,
+                "is_app_execution_alias",
+                side_effect=lambda program: program in (STORE_ALIAS, PACKAGED_PWSH),
             )
         )
         stack.enter_context(
@@ -159,6 +166,8 @@ class Machine:
             return self.git
         if name == platform_support.PYTHON:
             return self.python_command
+        if name == "pwsh":
+            return self.pwsh_command
         return self.installed.get(name, (None,))[0]
 
     def probe_pdftotext(self, path: str) -> PdfIdentity:
@@ -262,6 +271,30 @@ class CheckCommandTests(DeployerTestCase):
             unusable,
         )
         self.assertIn("Ready to deploy. Skills cannot use a missing, outdated, or unusable tool\n", result.output)
+
+    def test_a_pwsh_that_is_the_packaged_powershells_alias_is_unusable_and_its_msi_build_found(self) -> None:
+        unusable = self.report_groups(self.check(Machine(settings=True, pwsh_command=PACKAGED_PWSH)).output, "CHECK")
+        self.assertEqual(
+            [
+                f"pwsh command (runs the app execution alias {PACKAGED_PWSH}, the packaged PowerShell, which Codex "
+                "CLI runs every command through and cannot start; replace the packaged PowerShell with its MSI build: "
+                "winget uninstall --id Microsoft.PowerShell, then winget install --id Microsoft.PowerShell "
+                '--installer-type wix; see "PowerShell app execution alias" in docs/codex-support.md)'
+            ],
+            [" ".join(line.split()) for line in unusable["UNUSABLE"]],
+        )
+        found = self.report_groups(self.check(Machine(settings=True, pwsh_command=MSI_PWSH)).output, "CHECK")
+        self.assertIn(
+            f"pwsh command (runs {MSI_PWSH}, not an app execution alias)",
+            [" ".join(line.split()) for line in found["FOUND"]],
+        )
+        self.assertNotIn("UNUSABLE", found)
+
+    def test_no_pwsh_line_without_a_pwsh_nor_off_windows(self) -> None:
+        # Codex CLI then runs its commands through Windows PowerShell, which its sandbox starts.
+        for machine in (Machine(settings=True), Machine(settings=False, pwsh_command=PACKAGED_PWSH)):
+            with self.subTest(settings=machine.settings):
+                self.assertNotIn("pwsh command", self.check(machine).output)
 
     def test_a_sandbox_mode_codex_does_not_name_is_unusable_and_no_python_command_is_missing(self) -> None:
         for status, output in ((0, "no permissions here\n"), (1, prompt_input("workspace-write"))):
@@ -766,7 +799,7 @@ class InstallationGuideTests(unittest.TestCase):
     def test_the_sections_the_setting_lines_name_exist(self) -> None:
         guide = (REPOSITORY_ROOT / "docs" / "codex-support.md").read_text(encoding="utf-8")
         headings = re.findall(r"^## (.+)$", guide, re.MULTILINE)
-        for section in ("Windows sandbox mode", "Python app execution aliases"):
+        for section in ("Windows sandbox mode", "Python app execution aliases", "PowerShell app execution alias"):
             with self.subTest(section=section):
                 self.assertIn(section, headings)
 

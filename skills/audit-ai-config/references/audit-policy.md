@@ -100,7 +100,7 @@ Each targeted surface is resolved with its own algorithm:
 | Codex | Per directory from root to cwd, the first that exists of `AGENTS.override.md`, `AGENTS.md`, and the names `project_doc_fallback_filenames` gives in `.codex/config.toml`, skipped when it holds only whitespace; `CLAUDE.md` only as such a name | No root `AGENTS.override.md`, `AGENTS.md`, or `CLAUDE.md` exists, the root file Codex chooses is empty, or a root `AGENTS.override.md` masks `CLAUDE.md` or the generated adapter |
 | Copilot CLI/app | `CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`, `GEMINI.md`, path-specific instructions, combined | No source exists |
 | Cloud agent | Nearest `AGENTS.md`; without one, root `CLAUDE.md`, then `GEMINI.md` | None of them exists |
-| Code review | A non-redirecting `AGENTS.md`, `.github/copilot-instructions.md`, path-specific instructions; never `CLAUDE.md` or `GEMINI.md` | None of them exists, including when `AGENTS.md` only redirects to `CLAUDE.md` |
+| Code review | From the pull request's head branch: a non-redirecting root `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `REVIEW.md`, `.github/copilot-instructions.md`, path-specific instructions | None of them exists; an `AGENTS.md` that only redirects to `CLAUDE.md` counts only through the `CLAUDE.md` it names |
 | JetBrains | `.github/copilot-instructions.md` and path-specific instructions only | Neither exists |
 | VS Code | All sources, each gated by a setting | Never; a `WARNING` says the settings are unverifiable |
 

@@ -62,7 +62,7 @@ Which runtimes run each skill. **Full** means every step runs there as it does i
 | [`review-document`](#review-document) | Full | Partial | Partial |
 | [`review-insights`](#review-insights) | Full | Partial | Partial |
 | [`review-prs`](#review-prs) | Full | Partial | Partial |
-| [`update-coding-agent-skills`](#update-coding-agent-skills) | Full | Full | Partial |
+| [`update-coding-agent-skills`](#update-coding-agent-skills) | Full | Partial | Partial |
 | [`update-pr-dashboard`](#update-pr-dashboard) | Full | Partial | Partial |
 
 - `dotnet-format` on Codex CLI: partial, lacking `sandbox-network`. Finding a pull request's base with gh needs network access, which Codex's default sandbox turns off: unless [sandbox_workspace_write] network_access is true, an interactive session asks to approve each gh call and codex exec fails it.
@@ -75,6 +75,7 @@ Which runtimes run each skill. **Full** means every step runs there as it does i
 - `review-insights` on Copilot CLI: partial, lacking `fail-closed-agent-hooks`. The synthesis starts as a general-purpose subagent without the reviewer agent's guard, so its prompt is its only boundary.
 - `review-prs` on Codex CLI: partial, lacking `workflow`, `fail-closed-agent-hooks`, and `sandbox-network`. Reviewers start as native subagents without the reviewer agent's guard, since a Codex hook lets a tool call through when it fails, so their prompts are their only boundary, at the configured reviewer effort but on the session's model; its gh calls need network access, which Codex's default sandbox turns off.
 - `review-prs` on Copilot CLI: partial, lacking `workflow` and `fail-closed-agent-hooks`. The generic reviewer and delegation-free specialists run inline, without the reviewer agent's guard, since a Copilot CLI hook lets a tool call through when it times out; a specialists manifest that keeps agent-delegation fails.
+- `update-coding-agent-skills` on Codex CLI: partial, lacking `sandbox-network`. Its git calls to the source checkout's remote, a tag check and the fetch, need network access, which Codex's default sandbox turns off: unless [sandbox_workspace_write] network_access is true, an interactive session asks to approve each and codex exec fails them.
 - `update-coding-agent-skills` on Copilot CLI: partial, lacking `user-only-start`. A headless copilot -p session cannot start it; start it from an interactive session.
 - `update-pr-dashboard` on Codex CLI: partial, lacking `workflow`, `fail-closed-agent-hooks`, and `sandbox-network`. The reviews it starts run through review-prs, whose reviewers here start without the reviewer agent's guard, since a Codex hook lets a tool call through when it fails, and on the session's model; its gh calls need network access, which Codex's default sandbox turns off.
 - `update-pr-dashboard` on Copilot CLI: partial, lacking `workflow` and `fail-closed-agent-hooks`. The reviews it starts run through review-prs, which here runs the generic reviewer and delegation-free specialists inline, without the reviewer agent's guard, since a Copilot CLI hook lets a tool call through when it times out, and fails a specialists manifest that keeps agent-delegation.

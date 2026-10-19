@@ -43,11 +43,13 @@ Use whichever installer your machine allows. [winget](https://learn.microsoft.co
 | Python | `Python.Python.3.13` | `python` | `python` | [python.org](https://www.python.org/downloads/windows/) |
 | Git for Windows | `Git.Git` | `git` | `git` | [git-scm.com](https://git-scm.com/downloads/win) |
 | ShellCheck | `koalaman.shellcheck` | `shellcheck` | `shellcheck` | [GitHub releases](https://github.com/koalaman/shellcheck/releases) |
-| PowerShell 7 | `Microsoft.PowerShell` | `pwsh` | `pwsh` | [GitHub releases](https://github.com/PowerShell/PowerShell/releases) |
+| PowerShell 7 | `Microsoft.PowerShell --installer-type wix` | `pwsh` | `pwsh` | [GitHub releases](https://github.com/PowerShell/PowerShell/releases), the `.msi` |
 | GitHub CLI | `GitHub.cli` | `gh` | `gh` | [cli.github.com](https://cli.github.com/) |
 | Claude Code | none | none | none | `npm install -g @anthropic-ai/claude-code` with Node.js |
 | Codex CLI | none | none | none | `npm install -g @openai/codex` with Node.js, or [GitHub releases](https://github.com/openai/codex/releases) |
 | GitHub Copilot CLI | `GitHub.Copilot` | `github-copilot-cli` (community-maintained) | `copilot-cli` | `npm install -g @github/copilot` with Node.js 22 or newer, or [GitHub releases](https://github.com/github/copilot-cli/releases); the code-review host needs WinGet's or the release's program ([Copilot support](copilot-support.md#bounded-code-review-host)) |
+
+Install PowerShell 7's MSI build, as the table's `--installer-type wix` does: WinGet's default is now the packaged (MSIX) PowerShell, whose `pwsh` is an app execution alias that Codex CLI's sandbox cannot start, which stops every command Codex runs ([PowerShell app execution alias](codex-support.md#powershell-app-execution-alias)).
 
 The deployer finds Git Bash in `C:\Program Files\Git`, or next to the `git` on your `PATH`, which covers Scoop and per-user Git installs. It never uses another `bash`, such as WSL's. If Git isn't on your `PATH`, set `GIT_BASH` to its `bin\bash.exe`.
 
@@ -81,7 +83,7 @@ Codex CLI on Windows needs two machine settings before it can run a skill's scri
 - add a Windows sandbox setting to `~/.codex/config.toml`: MXC, which OpenAI recommends, where the machine offers it, and the elevated sandbox as its fallback, whose one-time setup an administrator approves, as [Windows sandbox mode](codex-support.md#windows-sandbox-mode) shows; and
 - turn off the `python.exe` and `python3.exe` app execution aliases.
 
-`python deploy.py check` reports both on Windows: a `python command` line, `UNUSABLE` while `python` runs an app execution alias, and, when Codex CLI is installed, a `codex sandbox` line, `UNUSABLE` while Codex would run skill scripts in a read-only sandbox. Each names the section to read, and both are `FOUND` once the settings are in place. The `codex sandbox` line reports the configured mode, not whether the sandbox starts a command; [Windows sandbox mode](codex-support.md#windows-sandbox-mode) gives the command that confirms it without starting a model.
+`python deploy.py check` reports both on Windows: a `python command` line, `UNUSABLE` while `python` runs an app execution alias, and, when Codex CLI is installed, a `codex sandbox` line, `UNUSABLE` while Codex would run skill scripts in a read-only sandbox. Each names the section to read, and both are `FOUND` once the settings are in place. Where `pwsh` is on `PATH`, a `pwsh command` line is `UNUSABLE` while it is the packaged PowerShell's alias, which stops every command Codex runs, as [PowerShell app execution alias](codex-support.md#powershell-app-execution-alias) shows. The `codex sandbox` line reports the configured mode, not whether the sandbox starts a command; [Windows sandbox mode](codex-support.md#windows-sandbox-mode) gives the command that confirms it without starting a model.
 
 On every platform, Codex's sandbox gives commands no network by default, so a skill that calls GitHub through `gh` or fetches with Git needs approval for each such command in an interactive session, and fails in `codex exec`, until `~/.codex/config.toml` turns network access on, as [Network access](codex-support.md#network-access) shows.
 

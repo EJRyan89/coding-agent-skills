@@ -55,6 +55,15 @@ CODEX_REJECTION = (
     'message: "Rejected(\\"`\\\\\\"C:\\\\\\\\pwsh.exe\\\\\\" -Command \\\\\\"Get-Content -LiteralPath '
     '\'C:\\\\\\\\x\\\\\\\\SKILL.md\'\\\\\\"` rejected: blocked by policy\\")" }\n'
 )
+# The lines Codex 0.163 wrote to stderr when its Windows sandbox could start no process at all: the unelevated sandbox
+# starting a packaged pwsh, and the elevated one with credentials from another machine.
+CODEX_UNSTARTED = (
+    "2026-10-18T09:12:44.000000Z ERROR codex_core::tools::router: error=exec_command failed: CreateProcess { "
+    'message: "Rejected(\\"Failed to create unified exec process: CreateProcessAsUserW failed: 5 (Access is denied.) '
+    '| cwd=C:\\\\x | cmd=C:\\\\WindowsApps\\\\pwsh.exe -Command 1+1\\")" }\n'
+    "2026-10-18T09:12:45.000000Z ERROR codex_core::tools::router: error=exec_command failed: CreateProcess { "
+    'message: "Rejected(\\"Failed to create unified exec process: CryptUnprotectData failed: 2148073483\\")" }\n'
+)
 
 
 def forward(path: Path | str) -> str:
@@ -562,6 +571,30 @@ class RemoveHomeTests(unittest.TestCase):
         self.assertEqual((0, f'REMOVED "{home.as_posix()}"\n'), (code, output))
         self.assertFalse(home.exists())
 
+    def test_a_home_is_made_under_the_temporary_directory_with_a_mode_every_codex_sandbox_reads(self) -> None:
+        # On Windows os.mkdir turns 0o700, tempfile.mkdtemp's mode, into an access control list Codex's unelevated
+        # sandbox cannot read, and ignores any other mode; elsewhere 0o700 is mkdtemp's own.
+        mode = 0o777 if sys.platform == "win32" else 0o700
+        self.assertEqual(mode, platform_support.SANDBOX_READABLE_DIRECTORY_MODE)
+        made: list[tuple[Path, int]] = []
+
+        def mkdir(path: Path, given: int) -> None:
+            made.append((Path(path), given))
+            if len(made) == 1:
+                raise FileExistsError(17, "File exists", os.fspath(path))
+            real_mkdir(path, given)
+
+        real_mkdir = os.mkdir
+        with mock.patch.object(runtime_canary.os, "mkdir", side_effect=mkdir):
+            home = runtime_canary.create_home()
+        self.addCleanup(shutil.rmtree, home, ignore_errors=True)
+        # A name already taken is passed over for a new one.
+        self.assertEqual([mode, mode], [given for _, given in made])
+        self.assertNotEqual(made[0][0], made[1][0])
+        self.assertEqual(Path(tempfile.gettempdir()).resolve(), home.parent)
+        self.assertTrue(home.name.startswith("runtime-canary-"))
+        self.assertEqual([], list(home.iterdir()))
+
     def test_any_other_directory_is_refused_and_kept(self) -> None:
         with tempfile.TemporaryDirectory(prefix="runtime-canary-") as directory:
             root = Path(directory)
@@ -884,6 +917,26 @@ class RunTests(RuntimeCanaryTestCase):
                 timeout=60,
                 rejected=["blocked by policy"],
             ).startswith("RAN ")
+        )
+
+    @mock.patch.object(runtime_canary, "CODEX_HAS_WINDOWS_SANDBOX", True)
+    def test_a_sandbox_that_starts_no_process_is_blocked_with_its_own_message(self) -> None:
+        runner = FakeRuntimes()
+        runner.actions["codex"] = lambda *_: Completed(0, "", CODEX_UNSTARTED)
+        self.assertIn(
+            f'RUNTIME codex {FIXTURE} BLOCKED "its sandbox could not start a process: CreateProcessAsUserW failed: 5 '
+            "(Access is denied.); the runtime refused 2 commands before any script ran; Codex ran with "
+            "windows.sandbox=elevated, so its Windows sandbox likely did not start; see "
+            f'docs/codex-support.md#windows-sandbox-mode" {self.kept("codex")}',
+            self.canary(runner),
+        )
+        self.assertEqual(
+            [
+                "its sandbox could not start a process: CreateProcessAsUserW failed: 5 (Access is denied.)",
+                "its sandbox could not start a process: CryptUnprotectData failed: 2148073483",
+                "blocked by policy",
+            ],
+            runtime_canary.rejections("codex", Completed(0, "", CODEX_UNSTARTED + CODEX_REJECTION)),
         )
 
     def test_the_canary_creates_each_record_file_empty_before_the_run_appends_to_it(self) -> None:

@@ -98,3 +98,20 @@ Program 'python.exe' failed to run: The file cannot be accessed by the system
 Turn off those two aliases under **Settings > Apps > Advanced app settings > App execution aliases**, so that `python` resolves to a real executable: the install manager's launcher in `%LOCALAPPDATA%\Python\bin`, or the `python.exe` the classic installer put on your `PATH`. With the install manager, keep its `py` and `pymanager` aliases on. Check the result with `python deploy.py check` in a new terminal: its `python command` line is `FOUND` with the program `python` runs, your Python installation, and `UNUSABLE` while that is an alias in `WindowsApps`, naming the alias and this section.
 
 Moving your Python installation ahead of `WindowsApps` in your user `PATH` is not always enough. Some installers also add `WindowsApps` to the system `PATH`, which Windows searches before the user `PATH`, so the aliases still win. Turning the aliases off works regardless of `PATH` order.
+
+## PowerShell app execution alias
+
+On Windows, Codex CLI runs every shell command through `pwsh` when it finds one on `PATH`, and through Windows PowerShell (`powershell.exe`) otherwise. WinGet's `Microsoft.PowerShell` package now installs the packaged (MSIX) PowerShell by default, and its `pwsh` is an app execution alias in `%LOCALAPPDATA%\Microsoft\WindowsApps`. No Codex sandbox can start a packaged app, so every command fails before it starts, even the one that reads a skill:
+
+```text
+windows sandbox failed: CreateProcessAsUserW failed: 5 (Access is denied.)
+```
+
+Unlike Python's aliases, turning this one off leaves no `pwsh` at all, so replace the packaged PowerShell with its MSI build:
+
+```powershell
+winget uninstall --id Microsoft.PowerShell
+winget install --id Microsoft.PowerShell --installer-type wix
+```
+
+Then open a new terminal and run `python deploy.py check`: its `pwsh command` line is `FOUND` with the `pwsh` in `C:\Program Files\PowerShell\7`, and `UNUSABLE` while `pwsh` is the alias, naming this section. With no `pwsh` on `PATH`, `check` prints no such line, since Codex then uses Windows PowerShell, which its sandbox starts; the validation suite still needs PowerShell 7.

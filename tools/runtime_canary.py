@@ -649,13 +649,23 @@ def denied(entry: object) -> str:
     return f"{denial.get('tool_name', '?')}: {detail}"
 
 
-# Codex logs each command its execution policy refuses: "`<command>` rejected: blocked by policy".
-CODEX_REJECTED = re.compile(r"` rejected: ([a-z][a-z ]*[a-z])")
+# Codex logs each command its execution policy refuses: "`<command>` rejected: blocked by policy", and each its
+# sandbox could not start at all in the same CreateProcess error, as `Rejected(\"Failed to create unified exec process:
+# <message> | cwd=<dir> | cmd=<command>\")`, whose message alone is kept.
+CODEX_REJECTED = re.compile(
+    r"` rejected: (?P<policy>[a-z][a-z ]*[a-z])"
+    r'|Rejected\(\\?"Failed to create unified exec process: (?P<unstarted>.+?)(?: \| .*?)?\\?"\)'
+)
 
 
 def rejections(runtime: str, completed: Completed) -> list[str]:
-    """The reasons the runtime's own policy gave for refusing commands, before any model judgment."""
-    return CODEX_REJECTED.findall(completed.stderr) if runtime == "codex" else []
+    """The reasons the runtime's own policy or sandbox gave for refusing commands, before any model judgment."""
+    if runtime != "codex":
+        return []
+    return [
+        match["policy"] or f"its sandbox could not start a process: {match['unstarted']}"
+        for match in CODEX_REJECTED.finditer(completed.stderr)
+    ]
 
 
 def blocked_cause(runtime: str, codex_sandbox: str) -> str:
@@ -1152,7 +1162,19 @@ def changed_since(ref: str | None, root: Path = REPOSITORY_ROOT, client: GitClie
 
 
 def create_home() -> Path:
-    return Path(tempfile.mkdtemp(prefix=HOME_PREFIX)).resolve()
+    """A new, empty folder under the temporary directory, named like tempfile.mkdtemp's but made with the mode
+    platform_support.SANDBOX_READABLE_DIRECTORY_MODE gives, so every Codex sandbox the canary may choose can read it.
+    mkdtemp's own 0o700 gives the folder, on Windows, an access control list that Codex's unelevated sandbox cannot
+    read, though MXC's can; elsewhere the mode is mkdtemp's."""
+    parent = Path(tempfile.gettempdir())
+    for _ in range(tempfile.TMP_MAX):
+        home = parent / f"{HOME_PREFIX}{secrets.token_hex(6)}"
+        try:
+            home.mkdir(platform_support.SANDBOX_READABLE_DIRECTORY_MODE)
+        except FileExistsError:
+            continue
+        return home.resolve()
+    raise FileExistsError(f"no unused name for a canary home under {parent}")
 
 
 def claim_home(home: Path) -> None:

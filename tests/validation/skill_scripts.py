@@ -15,6 +15,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
+import git_client
 from duplication import SKILL_CORE, SKILL_CORE_SCRIPTS
 from markdown_sections import SHELL_FENCES
 from toolchain import powershell_json
@@ -210,17 +211,18 @@ def _wrapped_programs(words: list[str]) -> set[str]:
     return found
 
 
-def shell_commands(script: str) -> set[str]:
+def shell_commands(script: str, commands: list[list[str]] | None = None) -> set[str]:
     """Literal command names a Bash script runs, ignoring keywords, case patterns, and its own functions: each command
     word, each program a wrapper, find's -exec, eval, or a shell's -c script runs, and every command of a command
-    substitution, quoted or not. A program a wrapper runs that no literal names is recorded as UNREAD_PROGRAM."""
+    substitution, quoted or not. A program a wrapper runs that no literal names is recorded as UNREAD_PROGRAM. Given
+    `commands`, it also appends the words of each simple command it reads there, a substitution's included."""
     lexer = shlex.shlex(script.replace("\\\n", " "), posix=True, punctuation_chars=";&|()<>\n")
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
     tokens = [part for token in lexer for part in _split_operators(token)]
     functions = {tokens[i] for i in range(len(tokens) - 1) if tokens[i + 1] == "()"}
     functions |= {tokens[i + 1] for i in range(len(tokens) - 1) if tokens[i] == "function"}
-    found: set[str] = {name for inner in _substitutions(script) for name in shell_commands(inner)}
+    found: set[str] = {name for inner in _substitutions(script) for name in shell_commands(inner, commands)}
     state = "command"
     words: list[str] = []
     for word in [*tokens, "\n"]:
@@ -241,10 +243,24 @@ def shell_commands(script: str) -> set[str]:
                 found.add(word)
         elif word in COMMAND_SEPARATORS:
             found |= _wrapped_programs(words)
+            if commands is not None and words:
+                commands.append(words)
             words, state = [], "command"
         else:
             words.append(word)
     return found - functions
+
+
+def shell_git_subcommands(script: str) -> set[str]:
+    """The subcommand of each git command a Bash script runs by name, a command substitution's included, read past
+    git's own options as skill-core's git client reads them."""
+    commands: list[list[str]] = []
+    shell_commands(script, commands)
+    return {
+        subcommand
+        for words in commands
+        if words[0] == "git" and (subcommand := git_client.subcommand(words[1:])) is not None
+    }
 
 
 # The contexts deployer/render.py gives a fence of commands for a command shell: a POSIX shell's, fish's, and cmd's.
