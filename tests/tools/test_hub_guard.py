@@ -701,10 +701,9 @@ class CommandReadingTests(GuardTestCase):
         command = "a=($(git switch x)) b+=(1); OPTIONS=(--all) git commit; declare -a c=(`git add .`)"
         self.assertEqual(self.at(self.hub, "switch", "commit", "add"), self.read(command, tool="Bash"))
         self.assertEqual([], self.unread)
-        # The reader's documented limit, pinned against Bash in its own suite: a subscript's array stays unread.
-        reading = hub_guard.read_command("Bash", "a[1]=(x) git commit", self.hub, self.environment)
-        self.assertEqual(([], 1), (reading.calls, len(reading.unread)))
-        self.assertIn("array assignment", reading.unread[0])
+        command = "a[1]=($(git switch x)) b[k]+=(1) git commit; a[2]=(x); declare -a c[1]=(`git add .`)"
+        self.assertEqual(self.at(self.hub, "switch", "commit", "add"), self.read(command, tool="Bash"))
+        self.assertEqual([], self.unread)
 
     def test_bash_applies_location_variables_from_every_source_like_a_command_local_one(self) -> None:
         tree = f'"{self.tree}"'
@@ -1108,6 +1107,32 @@ class ContractTests(GuardTestCase):
                 self.assertEqual("deny", self.bash(command, self.hub))
                 self.assertIn(WRITES.format(subcommand), self.reason)
         self.assertIsNone(self.bash("command -v git", self.hub))
+
+    def test_a_git_call_after_any_assignment_bash_reads_before_it_is_judged_as_the_bare_call(self) -> None:
+        tree = f'"{self.tree}"'
+        for prefix in (
+            "a[1]=x",
+            "a[1]+=x",
+            "x=1 a[1]=y b+=z c[k]+=w",
+            'a[1]="v w"',
+            "a[x y]=v",
+            'a["k]"]=v',
+            "a[1]=(x)",
+            # Bash refuses an element's assignment before a command, sets nothing for it, and runs the command.
+            f"GIT_WORK_TREE[0]={tree}",
+            "env 'a[1]=x'",
+            "env 'x y=1'",
+        ):
+            command = f"{prefix} git commit -m x"
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn(WRITES.format("commit"), self.reason)
+                self.assertIsNone(self.bash(command, self.tree))
+                self.assertIsNone(self.bash(f"{prefix} git status", self.hub))
+        # On its own an element's assignment makes the variable an array, whose value the guard does not settle.
+        command = f"export GIT_WORK_TREE={tree}; GIT_WORK_TREE[0]={tree}; git commit -m x"
+        self.assertEqual("deny", self.bash(command, self.tree))
+        self.assertIn(UNPLACED.format("commit"), self.reason)
 
     def test_a_directory_change_that_runs_only_on_some_paths_leaves_the_directory_unknown(self) -> None:
         for command in (

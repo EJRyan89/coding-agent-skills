@@ -963,16 +963,12 @@ def word_value(word: bash_syntax.Word, shell: Shell, assignment: bool = False) -
     return "".join(pieces)
 
 
-def assignment_of(word: bash_syntax.Word, shell: Shell) -> tuple[str, Word] | None:
-    """NAME=value or NAME+=value at the start of a simple command, with the value Bash assigns."""
-    if not word.parts or word.parts[0].kind != "text" or word.parts[0].quoted:
+def assigned_value(assignment: bash_syntax.Assignment, shell: Shell) -> Word:
+    """The value a simple command's assignment gives its variable: unsettled when it appends, or when it names an
+    element and so makes the variable an array."""
+    if assignment.appends or assignment.element:
         return None
-    match = ASSIGNMENT.match(word.parts[0].text)
-    if match is None:
-        return None
-    rest = bash_syntax.Part("text", word.parts[0].text[match.end() :], quoted=True)
-    value = word_value(bash_syntax.Word(word.raw, (rest, *word.parts[1:])), shell, assignment=True)
-    return match.group(1), None if match.group(2) else value
+    return word_value(bash_syntax.Word("", assignment.value), shell, assignment=True)
 
 
 class BashReader:
@@ -1100,14 +1096,20 @@ class BashReader:
         words = node.words
         if words and words[0].literal == "[[":
             return certain(shell)
-        index, local = 0, {}
-        while index < len(words) and (assigned := assignment_of(words[index], shell)) is not None:
-            local[assigned[0]] = assigned[1]
+        index = 0
+        while index < len(words) and words[index].assignment is not None:
             index += 1
+        assignments = [word.assignment for word in words[:index] if word.assignment is not None]
         if index == len(words):
-            for name, value in local.items():
+            assigned = [(assignment.name, assigned_value(assignment, shell)) for assignment in assignments]
+            for name, value in assigned:
                 shell.assign(name, value, export=name in shell.exported)
             return certain(shell)
+        # Before a command's name Bash refuses an element's assignment, NAME[SUBSCRIPT]=, sets nothing for it, and
+        # runs the command all the same.
+        local = {
+            assignment.name: assigned_value(assignment, shell) for assignment in assignments if not assignment.element
+        }
         values = [word_value(word, shell) for word in words[index:]]
         return self.run_words(values, node.redirects, shell, local)
 
@@ -1169,7 +1171,8 @@ class BashReader:
             self.reading.cannot_read(f"could not read the option {first_unread_env_option(arguments)} passed to env")
             return
         index, cwd, given = read
-        while index < len(arguments) and ASSIGNMENT.match(arguments[index] or ""):
+        # env takes every word holding `=` before its command as NAME=value, whatever the name: a[1]=x and `x y=1` too.
+        while index < len(arguments) and "=" in (arguments[index] or ""):
             name, _, assigned = (arguments[index] or "").partition("=")
             given[name] = assigned
             index += 1

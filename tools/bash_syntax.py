@@ -3,13 +3,15 @@
 `parse` splits a command into words and operators by Bash's quoting rules (single and double quotes, `$'...'`,
 backslash escapes and line continuations, comments, and here-documents, whose bodies are data and never commands)
 and builds the tree Bash runs: lists, `&&` and `||`, pipelines, subshells, groups, `if`, `while`, `until`, `for`,
-`select`, `case`, `[[ ]]`, function definitions, and simple commands with their redirections and their array
-assignments, NAME=( ) and NAME+=( ), where Bash reads one: before a command's name and among a declaration builtin's
-arguments. A word keeps its parts
-apart, so a reader can tell literal text from a `$NAME` it must look up and from what only running the command
-settles: a command or process substitution, arithmetic, a special parameter, a glob, or a brace expansion. The text
-of every command and process substitution, and of each one in an unquoted here-document's body, is kept for a reader
-to read as the subshell Bash runs it in.
+`select`, `case`, `[[ ]]`, function definitions, and simple commands with their redirections and the assignments
+before their name. Every assignment Bash reads there is one: NAME=value and NAME+=value, an element's,
+NAME[SUBSCRIPT]=value and NAME[SUBSCRIPT]+=value, whose subscript is read whole, blanks, quotes, and nested brackets
+and all, as Bash reads it where an assignment may stand, and an array's, NAME=( ), NAME+=( ), and the same to a
+subscript, which Bash also reads among a declaration builtin's arguments. A word keeps its parts apart, so a reader
+can tell literal text from a `$NAME` it must look up and from what only running the command settles: a command or
+process substitution, arithmetic, a special parameter, a glob, or a brace expansion. The text of every command and
+process substitution, and of each one in an unquoted here-document's body, is kept for a reader to read as the
+subshell Bash runs it in.
 
 Nothing here runs or judges anything. Text Bash itself would refuse, or that this grammar does not cover, raises
 BashSyntaxError; the guard refuses such a command when it names git.
@@ -17,8 +19,6 @@ BashSyntaxError; the guard refuses such a command when it names git.
 tests/tools/test_bash_syntax.py holds the reader to Bash's own syntax check, `bash -n`, on every fixture, as the hub
 guard's suite does on every Bash command it reads and the deployer's rendering suite on every rendered fragment it
 checks for quoting. Where they differ is a limit stated here and pinned there:
-- An array assignment to a subscript, NAME[SUBSCRIPT]=( ), raises BashSyntaxError though Bash reads it. Nothing the
-  repository renders writes one, and before a command's name Bash runs the command whatever the subscript.
 - Inside `[[ ]]` the expression's own grammar is not read, so text Bash refuses there, such as `[[ -n ]]`, is read;
   Bash runs none of a command it refuses.
 """
@@ -68,10 +68,10 @@ RESERVED = frozenset(
     | {"esac", "in", "function", "time", "[["}
 )
 NAME = re.compile(r"[A-Za-z_]\w*", re.ASCII)
-# A word's unquoted start that makes it an assignment, which Bash reads before a command's name.
-ASSIGNMENT = re.compile(r"[A-Za-z_]\w*(\[[^]]*\])?\+?=", re.ASCII)
-# What a word must be, all of it so far, for a `(` after it to open an array: NAME=( ) or NAME+=( ).
-ARRAY_ASSIGNMENT = re.compile(r"[A-Za-z_]\w*\+?=", re.ASCII)
+# A subscript after a name where Bash reads no assignment, whose `[ ]` holds only plain characters of one word.
+PLAIN_SUBSCRIPT = re.compile(r"\[[^]\s|&;()<>'\"\\$`]*\]")
+# The reserved words after which the next word starts a command, where Bash reads an assignment.
+COMMAND_OPENERS = frozenset({"!", "{", "if", "then", "elif", "else", "while", "until", "do", "time"})
 # The builtins whose arguments Bash reads as assignments, so NAME=( ) among them is an array.
 DECLARATION_BUILTINS = frozenset({"alias", "declare", "eval", "export", "let", "local", "readonly", "typeset"})
 # What may follow a function's name and `()`: a compound command, as Bash requires of a function's body.
@@ -96,13 +96,27 @@ class Part:
 
 
 @dataclass(frozen=True)
+class Assignment:
+    """What a word that starts as an assignment assigns: the variable's name, whether it names one element,
+    NAME[SUBSCRIPT]=, whether it appends, +=, and the parts of its value."""
+
+    name: str
+    element: bool
+    appends: bool
+    value: tuple[Part, ...]
+
+
+@dataclass(frozen=True)
 class Word:
     raw: str
     parts: tuple[Part, ...]
     # The text of each command or process substitution in the word, which Bash runs before the command.
     substitutions: tuple[str, ...] = ()
-    # Whether the word is NAME=( ) or NAME+=( ), an array assignment, whose value is its "dynamic" part.
+    # Whether the word is an array assignment, NAME=( ) or NAME+=( ), to a subscript or not, whose value is its
+    # "dynamic" part.
     array: bool = False
+    # What the word assigns when it starts as an assignment does, which Bash reads as one before a command's name.
+    assignment: Assignment | None = None
 
     @property
     def literal(self) -> str | None:
@@ -221,6 +235,11 @@ class Lexer:
         self.nested = nested
         self.tokens: list[Token] = []
         self.pending: list[HereDocument] = []
+        # Whether the next word is where Bash reads an assignment: a command's first word, or one after its
+        # assignments and redirections; and whether it is a redirection's target, which leaves that as it was.
+        self.command_start = True
+        self.redirecting = False
+        self.naming_function = False
 
     def peek(self, offset: int = 0) -> str:
         position = self.index + offset
@@ -246,18 +265,35 @@ class Lexer:
                 depth += {"(": 1, ")": -1}.get(operator, 0)
                 self.index += len(operator)
                 self.tokens.append(Operator(operator))
+                if operator in REDIRECTIONS:
+                    self.redirecting = operator not in HERE_DOCUMENTS
+                else:
+                    self.command_start = operator not in CASE_ENDS
                 if operator == "\n":
                     self.read_here_documents()
                 elif operator in HERE_DOCUMENTS:
                     self.open_here_document(operator)
             else:
-                word = self.word()
+                word = self.word(subscripts=self.command_start and not self.redirecting)
                 if not (self.peek() and self.peek() in "<>" and DESCRIPTOR.fullmatch(word.raw)):
+                    self.follow_word(word)
                     self.tokens.append(word)
         if self.nested:
             raise BashSyntaxError("a command substitution is not closed")
         self.read_here_documents()
         return self.tokens
+
+    def follow_word(self, word: Word) -> None:
+        """Whether the word after this one starts a command: after an assignment, a reserved word that opens one,
+        `time -p`, or a function's name, where the word itself started one."""
+        if self.redirecting:
+            self.redirecting = False
+            return
+        after_time = bool(self.tokens) and isinstance(self.tokens[-1], Word) and self.tokens[-1].literal == "time"
+        opens = word.assignment is not None or word.literal in COMMAND_OPENERS or (after_time and word.literal == "-p")
+        started, naming = self.command_start, self.naming_function
+        self.command_start = naming or (started and opens)
+        self.naming_function = started and not naming and word.literal == "function"
 
     def open_here_document(self, operator: str) -> None:
         while self.peek() in (" ", "\t"):
@@ -292,21 +328,25 @@ class Lexer:
                 document.substitutions = tuple(expansion_substitutions(document.body))
         self.pending = []
 
-    def word(self) -> Word:
+    def word(self, subscripts: bool = False) -> Word:
+        """One word; with subscripts set it stands where Bash reads an assignment, so a subscript after a name at its
+        start is read whole."""
         start = self.index
         parts: list[Part] = []
         substitutions: list[str] = []
         array = False
         if self.peek() == "~":
             self.tilde(parts)
+        head = None if parts else self.assignment_head(subscripts, substitutions)
+        value_start = self.index
+        if head is None and self.index > start and not parts:
+            parts.append(Part("text", self.text[start : self.index]))  # a subscript Bash reads whole, with no = after
         while self.index < len(self.text):
             character = self.peek()
-            if character == "(" and ARRAY_ASSIGNMENT.fullmatch(self.text[start : self.index]):
+            if character == "(" and head is not None and self.index == value_start:
                 self.array_elements(substitutions)
                 parts.append(Part("dynamic"))
                 array = True
-            elif character == "(" and ASSIGNMENT.fullmatch(self.text[start : self.index]):
-                raise BashSyntaxError("an array assignment to a subscript, which this grammar does not read")
             elif character in "<>" and self.peek(1) == "(":
                 substitutions.append(self.balanced(self.index + 2))
                 parts.append(Part("dynamic"))
@@ -327,7 +367,69 @@ class Lexer:
             else:
                 add_text(parts, character, quoted=False)
                 self.index += 1
-        return Word(self.text[start : self.index], tuple(parts), tuple(substitutions), array)
+        raw = self.text[start : self.index]
+        if head is None:
+            return Word(raw, tuple(parts), tuple(substitutions), array)
+        whole = [Part("text", self.text[start:value_start])]
+        for part in parts:
+            if part.kind == "text" and len(whole) == 1:
+                add_text(whole, part.text, part.quoted)
+            else:
+                whole.append(part)
+        return Word(raw, tuple(whole), tuple(substitutions), array, Assignment(*head, tuple(parts)))
+
+    def assignment_head(self, subscripts: bool, substitutions: list[str]) -> tuple[str, bool, bool] | None:
+        """Reads the start of an assignment, NAME or NAME[SUBSCRIPT] and the = or += after it, and returns the name,
+        whether it names an element, and whether it appends; else None, having read only a subscript Bash reads
+        whole where an assignment may stand, as Bash reads it there whatever follows."""
+        start = self.index
+        name = NAME.match(self.text, start)
+        if name is None:
+            return None
+        self.index = name.end()
+        element = self.peek() == "["
+        if element and subscripts:
+            self.subscript(substitutions)
+        elif element:
+            plain = PLAIN_SUBSCRIPT.match(self.text, self.index)
+            if plain is None:
+                self.index = start
+                return None
+            self.index = plain.end()
+        appends = self.text.startswith("+=", self.index)
+        if appends or self.peek() == "=":
+            self.index += 2 if appends else 1
+            return name.group(), element, appends
+        if not (element and subscripts):
+            self.index = start
+        return None
+
+    def subscript(self, substitutions: list[str]) -> None:
+        """The `[ ]` after a name where Bash reads an assignment, up to the `]` that closes it; blanks and operators
+        inside are its own, and quotes, expansions, and nested brackets are read as Bash reads them."""
+        depth = 0
+        self.index += 1
+        while True:
+            character = self.peek()
+            if not character:
+                raise BashSyntaxError("an array subscript is not closed")
+            if character == "\\":
+                self.index += 2
+            elif character == "'":
+                self.single_quoted(self.index + 1)
+            elif character == '"':
+                self.index += 1
+                self.double_quoted([], substitutions)
+            elif character == "$":
+                self.dollar([], substitutions, quoted=False)
+            elif character == "`":
+                substitutions.append(self.backquoted())
+            elif character == "]" and depth == 0:
+                self.index += 1
+                return
+            else:
+                depth += {"[": 1, "]": -1}.get(character, 0)
+                self.index += 1
 
     def array_elements(self, substitutions: list[str]) -> None:
         """The ( ) of an array assignment: words apart by blanks, newlines, and comments, up to its close."""
@@ -672,7 +774,8 @@ class Parser:
         words: list[Word] = []
         redirects: list[Redirect] = []
         conditional = self.at_reserved("[[")
-        # Bash reads NAME=( ) among the assignments before a command's name, and after a declaration builtin's.
+        # Bash reads NAME=( ) among the assignments before a command's name, and among a declaration builtin's
+        # arguments.
         prefix, declaration = True, False
         while True:
             token = self.peek()
@@ -690,7 +793,7 @@ class Parser:
                 break
             if isinstance(token, HereDocument):
                 raise BashSyntaxError("a here-document has no operator")
-            if prefix and not ASSIGNMENT.match(token.raw):
+            if prefix and token.assignment is None:
                 prefix, declaration = False, token.literal in DECLARATION_BUILTINS
             if not (prefix or declaration):
                 refuse_array(token)
