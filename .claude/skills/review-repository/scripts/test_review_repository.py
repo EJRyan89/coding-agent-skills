@@ -210,7 +210,7 @@ class ManifestTests(unittest.TestCase):
             "tests/run_validation.py": {"validation-policy", *script},
             "pyproject.toml": {"validation-policy"},
             "docs/code-review-operations-contract.md": {"trust-boundary", "documentation", "upgrade-notes"},
-            **{path: trusted for path in TRUST_BOUNDARY_MODULES},
+            **dict.fromkeys(TRUST_BOUNDARY_MODULES, trusted),
             f"{SKILL_CORE}/pdf_tool.py": {"upgrade-notes", *trusted},
             f"{PIPELINE_SCRIPTS}/test_adversarial_inputs.py": {"trust-boundary", *script},
             "skills/code-review-core/references/review-adapter.schema.json": {"upgrade-notes"},

@@ -67,7 +67,7 @@ GIT_VARIABLES_PROGRAM = (
 
 def selecting_environment() -> dict[str, str]:
     """This process's environment with every repository-selecting variable set, in two cases, and CONFIGURING."""
-    selecting = {name: "C:/elsewhere/.git" for name in REPOSITORY_SELECTING}
+    selecting = dict.fromkeys(REPOSITORY_SELECTING, "C:/elsewhere/.git")
     if sys.platform != "win32":  # Windows holds one variable per name whatever its case
         selecting.update({name.lower(): "another repository" for name in REPOSITORY_SELECTING})
     return {**os.environ, **selecting, **CONFIGURING}
@@ -320,7 +320,7 @@ class BoundedProcessTests(unittest.TestCase):
 
     def test_the_default_environment_leaves_out_every_repository_selecting_variable_in_any_case(self) -> None:
         kept = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "a.b", "GIT_CONFIG_VALUE_0": "c", "GIT_SSH_COMMAND": "ssh"}
-        selecting = {name: "elsewhere" for name in bounded_process.REPOSITORY_VARIABLES}
+        selecting = dict.fromkeys(bounded_process.REPOSITORY_VARIABLES, "elsewhere")
         with mock.patch.dict(os.environ, {**selecting, **kept}):
             environment = bounded_process.non_interactive_environment()
         self.assertEqual(set(), set(selecting) & set(environment))
@@ -331,7 +331,7 @@ class BoundedProcessTests(unittest.TestCase):
 
     def test_the_one_builder_leaves_out_exactly_the_repository_selecting_variables_in_any_case(self) -> None:
         given = {
-            **{name: "elsewhere" for name in REPOSITORY_SELECTING},
+            **dict.fromkeys(REPOSITORY_SELECTING, "elsewhere"),
             **{name.lower(): "elsewhere" for name in REPOSITORY_SELECTING},
             **{name.title(): "elsewhere" for name in REPOSITORY_SELECTING},
             **CONFIGURING,

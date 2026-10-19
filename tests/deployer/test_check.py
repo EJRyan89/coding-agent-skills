@@ -119,7 +119,7 @@ class Machine:
         self.python = python
         self.git_calls: list[list[str]] = []
         self.installed = {name: entry for name, entry in INSTALLED.items() if name not in missing}
-        self.versions = {path: output for path, output in self.installed.values()}
+        self.versions = dict(self.installed.values())
         for name, output in (versions or {}).items():
             self.versions[self.installed[name][0]] = output
         self.bash = None if "git-bash" in missing else "C:/Program Files/Git/bin/bash.exe"

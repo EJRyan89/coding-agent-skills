@@ -38,6 +38,9 @@ line-ending = "auto"
 # unittest test cases where rewriting it buys nothing, and a test case checks with its own assertion methods, so those
 # two would flag every check such a class makes. A test function and its helpers assert, which S101's exemption below
 # and the suite-shape policy's refusal of a module-level TestCase hold instead.
+# RET, PIE, C4, PERF, and A select every stable rule of the return, idiom, comprehension, performance, and builtins
+# families: a value is returned without a throwaway name, a list a loop only appends to is a comprehension or an
+# extend, a dictionary of one value is dict.fromkeys, and no name shadows a builtin.
 [tool.ruff.lint]
 select = [
     "E",
@@ -82,6 +85,11 @@ select = [
     "PT026",
     "PT028",
     "PT03",
+    "RET",
+    "PIE",
+    "C4",
+    "PERF",
+    "A",
 ]
 
 # S101 refuses a bare `assert` because `python -O` strips it, which never happens to a regression suite: validation

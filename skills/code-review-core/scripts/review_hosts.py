@@ -331,8 +331,7 @@ def materialized_reviewer_entrypoint(materialized_root: Path) -> Path:
     actual_files = _snapshot_files(materialized_root)
     if actual_files != expected_files:
         raise RuntimeContractError("Copilot reviewer materialization file set does not match its hashes")
-    entrypoint = materialized_root.joinpath(*relative.parts).resolve(strict=True)
-    return entrypoint
+    return materialized_root.joinpath(*relative.parts).resolve(strict=True)
 
 
 def copilot_command(

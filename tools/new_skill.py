@@ -395,7 +395,7 @@ def main(argv: list[str] | None = None) -> int:
             allowed,
             arguments.skill_dep,
         )
-    except (OSError, ScaffoldError, skill_reference.ReferenceError) as exc:
+    except (OSError, ScaffoldError, skill_reference.SkillReferenceError) as exc:
         print(f"FAILED {exc}", file=sys.stderr)
         return 2
     print(f"CREATED skills/{arguments.name}/SKILL.md")
@@ -417,7 +417,7 @@ def _main_repository(arguments: argparse.Namespace, allowed: list[str] | None) -
         written = scaffold_repository(
             arguments.root, arguments.name, arguments.description, arguments.argument_hint, arguments.user_only, allowed
         )
-    except (OSError, ScaffoldError, skill_reference.ReferenceError) as exc:
+    except (OSError, ScaffoldError, skill_reference.SkillReferenceError) as exc:
         print(f"FAILED {exc}", file=sys.stderr)
         return 2
     for path in written:

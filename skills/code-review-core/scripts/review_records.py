@@ -856,7 +856,7 @@ def ledger_summary(ledger: Iterable[LedgerEntry], version: int) -> dict[str, Any
     """Open entries by severity, entries addressed, the earliest version an open entry dates from, and the version
     whose ledger this is. For a record written before ledgers, pass the ledger `ledger_history` computes: such a
     re-review's counts cover only the findings it raised, not a prior one it judged still present."""
-    opened = {severity: 0 for severity in sorted(SEVERITIES)}
+    opened = dict.fromkeys(sorted(SEVERITIES), 0)
     addressed = 0
     since: int | None = None
     for entry in ledger:

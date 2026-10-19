@@ -794,8 +794,7 @@ class PlanApplyTests(Fixture):
         self.assertNotIn("PR status unverified:    1", summary)
         self.assertEqual(
             {"release/1.0", "release/old"},
-            {branch for branch in git(self.clone, "branch", "-r", "--format=%(refname:lstrip=3)").split("\n")}
-            - {"main", "HEAD"},
+            set(git(self.clone, "branch", "-r", "--format=%(refname:lstrip=3)").split("\n")) - {"main", "HEAD"},
             "the release branches stay on the remote; no local branch of them was made",
         )
 

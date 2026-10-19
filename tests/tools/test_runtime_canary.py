@@ -479,7 +479,7 @@ class EnvironmentTests(unittest.TestCase):
     def test_a_runtime_sees_no_repository_selecting_variable_the_shell_exported(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary)
-            base = {**os.environ, **{name: "C:/elsewhere/.git" for name in REPOSITORY_SELECTING}}
+            base = {**os.environ, **dict.fromkeys(REPOSITORY_SELECTING, "C:/elsewhere/.git")}
             base.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "fixture.scope", "GIT_CONFIG_VALUE_0": "on"})
             environment = runtime_canary.environment(base, home / "scripts.jsonl", home)
             program = "import json, os; print(json.dumps(sorted(name.upper() for name in os.environ)))"
@@ -945,8 +945,10 @@ class RunTests(RuntimeCanaryTestCase):
         found: list[tuple[str, int]] = []
 
         def inspect(command: list[str], cwd: Path, environment: dict[str, str]) -> Completed:
-            for path in (state / "probe.jsonl", Path(environment["RUNTIME_CANARY_SCRIPT_LOG"])):
-                found.append((path.name, path.stat().st_size))
+            found.extend(
+                (path.name, path.stat().st_size)
+                for path in (state / "probe.jsonl", Path(environment["RUNTIME_CANARY_SCRIPT_LOG"]))
+            )
             return run_python(f"{self.skill_dir()}/scripts/canary_probe.py", "--help")(command, cwd, environment)
 
         runner = FakeRuntimes()

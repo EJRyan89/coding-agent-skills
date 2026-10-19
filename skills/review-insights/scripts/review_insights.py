@@ -541,17 +541,16 @@ def _render_recommendation(item: dict[str, Any], heading: str, report: dict[str,
                 "| --- | --- | --- | --- | --- | --- |",
             ]
         )
-        for row in item["reviewers"]:
-            lines.append(
-                f"| {_cell(row['reviewer'])} | {_cell(row['model'])} | {row['findings']} | "
-                f"{row['flagged_findings']} | {_outcome(row['addressed'])} | "
-                f"{_outcome(row['still_present'])} |"
-            )
+        lines.extend(
+            f"| {_cell(row['reviewer'])} | {_cell(row['model'])} | {row['findings']} | "
+            f"{row['flagged_findings']} | {_outcome(row['addressed'])} | "
+            f"{_outcome(row['still_present'])} |"
+            for row in item["reviewers"]
+        )
         lines.append("")
     if item["kind"] == "analyzer":
         lines.extend(["Findings:", ""])
-        for entry in item["evidence"][:EVIDENCE_RENDERED]:
-            lines.append(f"- {_example(entry)}")
+        lines.extend(f"- {_example(entry)}" for entry in item["evidence"][:EVIDENCE_RENDERED])
         if len(item["evidence"]) > EVIDENCE_RENDERED:
             lines.append(f"- and {len(item['evidence']) - EVIDENCE_RENDERED} more")
         lines.append("")
@@ -612,8 +611,7 @@ def render(report: dict[str, Any]) -> str:
     for item in analyzers:
         lines.extend(_render_recommendation(item, f"{item['coverage']}: {item['rule']} ({item['tool']})", report))
     lines.extend(["## Evidence", ""])
-    for record in report["records"]:
-        lines.append(f"- `{record['path']}` — payload `{record['payload_sha256']}`")
+    lines.extend(f"- `{record['path']}` — payload `{record['payload_sha256']}`" for record in report["records"])
     lines.append("")
     return "\n".join(lines)
 

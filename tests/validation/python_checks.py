@@ -80,9 +80,11 @@ def noqa_without_reason(root: Path, files: list[Path]) -> list[str]:
     for path in sorted(files):
         if path.suffix != ".py":
             continue
-        for token in file_comments(root, path, found):
-            if NOQA.search(token.string) and not NOQA_WITH_REASON.search(token.string):
-                found.append(f"{path.relative_to(root).as_posix()}:{token.start[0]}")
+        found.extend(
+            f"{path.relative_to(root).as_posix()}:{token.start[0]}"
+            for token in file_comments(root, path, found)
+            if NOQA.search(token.string) and not NOQA_WITH_REASON.search(token.string)
+        )
     return found
 
 
@@ -189,9 +191,11 @@ def type_ignore_without_reason(root: Path, files: list[Path]) -> list[str]:
     for path in sorted(files):
         if path.suffix != ".py":
             continue
-        for token in file_comments(root, path, found):
-            if TYPE_IGNORE.search(token.string) and not TYPE_IGNORE_WITH_REASON.search(token.string):
-                found.append(f"{path.relative_to(root).as_posix()}:{token.start[0]}")
+        found.extend(
+            f"{path.relative_to(root).as_posix()}:{token.start[0]}"
+            for token in file_comments(root, path, found)
+            if TYPE_IGNORE.search(token.string) and not TYPE_IGNORE_WITH_REASON.search(token.string)
+        )
     return found
 
 
@@ -395,6 +399,7 @@ class PythonChecksPolicies(unittest.TestCase):
                 *("S1", "S2", "S3", "S5", "S601", "S602", "S604", "S605", "S606", "S608", "S609", "S61", "S7"),
                 *("PT001", "PT002", "PT003", "PT006", "PT007", "PT008", "PT01", "PT020", "PT021", "PT022"),
                 *("PT023", "PT024", "PT025", "PT026", "PT028", "PT03"),
+                *("RET", "PIE", "C4", "PERF", "A"),
             ],
             lint["select"],
         )

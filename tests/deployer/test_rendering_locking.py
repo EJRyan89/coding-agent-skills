@@ -366,9 +366,11 @@ class RenderedExecutableTests(DeployerTestCase):
 
         def record(arguments: list[str], environment: dict[str, str] | None = None):
             tool = Path(arguments[0]).stem.casefold()
-            for argument in arguments[1:]:
-                if argument.endswith(".sh") and "blocks" in argument:
-                    checked.append((tool, Path(argument).read_text(encoding="utf-8")))
+            checked.extend(
+                (tool, Path(argument).read_text(encoding="utf-8"))
+                for argument in arguments[1:]
+                if argument.endswith(".sh") and "blocks" in argument
+            )
             return real(arguments, environment)
 
         with mock.patch("deployer.platform_support.run_tool", side_effect=record):
