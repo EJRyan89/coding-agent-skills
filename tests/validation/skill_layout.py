@@ -1,5 +1,6 @@
 """Layout policies: where a skill's files live, how long its fences are, how it names its own and its siblings'
-files, its metadata and variables, its script languages, and the fixture sources beside it.
+files, its metadata and variables, its script languages, the fixture sources beside it, and the trigger scenario
+that judges the description of each skill the model may start.
 """
 
 from __future__ import annotations
@@ -484,6 +485,56 @@ def fixture_source_problems(root: Path) -> list[str]:
     return found
 
 
+TRIGGER_SCENARIO_DOC = '"Skill evaluations" in docs/skill-evaluations.md'
+# The requests a trigger scenario holds at least: a description's "Use it when" sentence names several ways a user
+# asks for the skill, and one request samples one of them.
+MINIMUM_TRIGGER_REQUESTS = 3
+
+
+def trigger_scenario_problems(root: Path) -> list[str]:
+    """Report a shipped skill the model may start with no trigger scenario of at least MINIMUM_TRIGGER_REQUESTS
+    requests, and a trigger scenario the evaluation's own loader refuses, such as one whose skill is not its folder's,
+    is not shipped, or is user-only, or whose requests or near misses are empty.
+
+    Only a run that calls models judges whether a description starts its skill, so validation never runs one; it
+    holds that every description the model reads has a scenario to be judged by.
+    """
+    from tools import runtime_canary, skill_evals_scenarios
+
+    scenarios = root / skill_evals_scenarios.SCENARIO_ROOT.relative_to(skill_evals_scenarios.REPOSITORY_ROOT)
+    problems: list[str] = []
+    covered: set[str] = set()
+    for spec_file in sorted(scenarios.glob("*/*/scenario.json")):
+        label = spec_file.parent.relative_to(root).as_posix()
+        try:
+            spec = json.loads(spec_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            problems.append(f"{label}/scenario.json cannot be read: {exc}")
+            continue
+        if not isinstance(spec, dict) or spec.get("mode") != skill_evals_scenarios.TRIGGER:
+            continue
+        skill = spec_file.parent.parent.name
+        try:
+            scenario = skill_evals_scenarios.load_scenario(skill, spec_file.parent, root)
+        except skill_evals_scenarios.ScenarioError as exc:
+            problems.append(f"{label} is refused: {exc}; see {TRIGGER_SCENARIO_DOC}")
+            continue
+        if len(scenario.requests) < MINIMUM_TRIGGER_REQUESTS:
+            problems.append(
+                f"{label} holds {len(scenario.requests)} requests, fewer than {MINIMUM_TRIGGER_REQUESTS}; "
+                f"see {TRIGGER_SCENARIO_DOC}"
+            )
+            continue
+        covered.add(skill)
+    for directory in skill_directories(root):
+        if directory.name not in covered and not runtime_canary.starts_only_by_user(directory / "SKILL.md"):
+            problems.append(
+                f"skills/{directory.name} may be started by the model and has no trigger scenario under "
+                f"{scenarios.relative_to(root).as_posix()}/{directory.name}/; see {TRIGGER_SCENARIO_DOC}"
+            )
+    return problems
+
+
 def _starts_with_a_shebang(path: Path) -> bool:
     with path.open("rb") as handle:
         return handle.read(2) == b"#!"
@@ -681,6 +732,9 @@ class SkillLayoutPolicies(unittest.TestCase):
     def test_fixture_sources_never_ship_or_collide_with_what_ships(self) -> None:
         self.assertTrue(list((REPOSITORY_ROOT / "tests" / "fixtures").glob("*/source.json")))
         self.assertEqual([], fixture_source_problems(REPOSITORY_ROOT))
+
+    def test_every_skill_the_model_may_start_has_a_trigger_scenario(self) -> None:
+        self.assertEqual([], trigger_scenario_problems(REPOSITORY_ROOT))
 
     def test_skill_scripts_are_bash_python_or_powershell(self) -> None:
         # Pinned here, not read back from the constants: a new script language is a decision for the skill contract,

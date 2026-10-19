@@ -1,0 +1,14 @@
+{
+  "skill": "review-insights",
+  "mode": "trigger",
+  "requests": [
+    "What have our code reviews kept flagging between 2026-07-01 and 2026-09-30?",
+    "Which review findings were accepted and which were rejected last quarter in octo-org/widgets?",
+    "From the review findings since July, what should we change in our review guidance?"
+  ],
+  "near_misses": [
+    "That review finding about logging was noise; record it.",
+    "Review pull request octo-org/widgets#42.",
+    "Count the TODO comments in this repository."
+  ]
+}

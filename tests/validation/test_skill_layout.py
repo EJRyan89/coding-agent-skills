@@ -9,7 +9,11 @@ import json
 import sys
 import tempfile
 import unittest
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
@@ -34,6 +38,7 @@ from skill_layout import (
     sibling_path_problems,
     skill_path_problems,
     skill_tree_problems,
+    trigger_scenario_problems,
     unsupported_script_problems,
 )
 from validation_support import REPOSITORY_SKILLS, SKILL_GUIDE, write_fixture_tree
@@ -752,3 +757,95 @@ class SkillLayoutFixtures(unittest.TestCase):
                 ],
                 sibling_path_problems(root),
             )
+
+
+TRIGGER_DOC = 'see "Skill evaluations" in docs/skill-evaluations.md'
+MISSING_ALPHA = (
+    "skills/alpha may be started by the model and has no trigger scenario under tests/fixtures/skill-evals/alpha/; "
+    + TRIGGER_DOC
+)
+
+
+def trigger_spec(skill: str, requests: int = 3) -> dict[str, Any]:
+    return {
+        "skill": skill,
+        "mode": "trigger",
+        "requests": [f"Do the {skill} task, phrasing {number}." for number in range(1, requests + 1)],
+        "near_misses": ["Do another task."],
+    }
+
+
+def trigger_tree(root: Path, scenarios: Mapping[str, object]) -> None:
+    """A source tree with alpha, which the model may start, and beta, which only the user may, and these scenarios."""
+    write_fixture_tree(
+        root,
+        {
+            "skills/alpha/SKILL.md": "---\nname: alpha\ndescription: Alpha. Use it when asked.\n---\n",
+            "skills/beta/SKILL.md": "---\nname: beta\ndescription: Beta.\ndisable-model-invocation: true\n---\n",
+            **{
+                f"tests/fixtures/skill-evals/{folder}/scenario.json": json.dumps(spec)
+                for folder, spec in scenarios.items()
+            },
+        },
+    )
+
+
+def test_trigger_scenario_policy_passes_each_skill_the_model_may_start_holding_one(tmp_path: Path) -> None:
+    # A review scenario is the evaluation's own to load, and a user-only skill needs no trigger scenario.
+    trigger_tree(tmp_path, {"alpha/description": trigger_spec("alpha"), "alpha/review": {"mode": "initial"}})
+    assert trigger_scenario_problems(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("scenarios", "problems"),
+    [
+        pytest.param({}, [MISSING_ALPHA], id="no scenario"),
+        pytest.param(
+            {"alpha/description": trigger_spec("alpha", requests=0)},
+            [
+                "tests/fixtures/skill-evals/alpha/description is refused: description: requests must be a non-empty "
+                f"list of requests; {TRIGGER_DOC}",
+                MISSING_ALPHA,
+            ],
+            id="no requests",
+        ),
+        pytest.param(
+            {"alpha/description": trigger_spec("alpha", requests=2)},
+            [
+                f"tests/fixtures/skill-evals/alpha/description holds 2 requests, fewer than 3; {TRIGGER_DOC}",
+                MISSING_ALPHA,
+            ],
+            id="too few requests",
+        ),
+        pytest.param(
+            {"alpha/description": trigger_spec("alpha"), "ghost/description": trigger_spec("ghost")},
+            [
+                "tests/fixtures/skill-evals/ghost/description is refused: description: a trigger scenario's skill is "
+                f"a shipped one, and the checkout has no skills/ghost; {TRIGGER_DOC}"
+            ],
+            id="no such skill",
+        ),
+        pytest.param(
+            {"alpha/description": trigger_spec("alpha"), "beta/description": trigger_spec("beta")},
+            [
+                "tests/fixtures/skill-evals/beta/description is refused: description: beta sets "
+                f"disable-model-invocation, so no request can start it; {TRIGGER_DOC}"
+            ],
+            id="user-only skill",
+        ),
+        pytest.param(
+            {"alpha/description": trigger_spec("beta")},
+            [
+                "tests/fixtures/skill-evals/alpha/description is refused: description: scenario.json names skill "
+                f'"beta", not alpha; {TRIGGER_DOC}',
+                MISSING_ALPHA,
+            ],
+            id="another folder's skill",
+        ),
+    ],
+)
+def test_trigger_scenario_policy_refuses_a_missing_or_unloadable_scenario(
+    scenarios: Mapping[str, object], problems: list[str], tmp_path: Path
+) -> None:
+    trigger_tree(tmp_path, scenarios)
+    assert trigger_scenario_problems(tmp_path) == problems

@@ -3557,6 +3557,33 @@ def test_the_worked_trigger_scenario_draws_on_its_description_and_a_neighbour_s(
     assert all("repository" in request for request in scenario.near_misses), scenario.near_misses
 
 
+# Every committed trigger scenario's folder: validation holds that each skill the model may start has one.
+COMMITTED_TRIGGERS = sorted(
+    path.parent
+    for path in skill_evals_scenarios.SCENARIO_ROOT.glob("*/*/scenario.json")
+    if json.loads(path.read_text(encoding="utf-8")).get("mode") == skill_evals_scenarios.TRIGGER
+)
+
+
+@pytest.mark.parametrize("folder", COMMITTED_TRIGGERS, ids=lambda folder: f"{folder.parent.name}/{folder.name}")
+def test_every_committed_trigger_scenario_loads_and_judges_a_stub_record_each_way(folder: Path) -> None:
+    skill = folder.parent.name
+    scenario = skill_evals_scenarios.load_scenario(skill, folder)
+    # A request that leaves the skill's name out is started by the description alone.
+    assert any(skill not in request for request in scenario.requests), scenario.requests
+
+    def record(requested: list[str], missed: list[str]) -> dict[str, Any]:
+        sessions = [{"request": item, "started": requested} for item in scenario.requests]
+        sessions += [{"request": item, "started": missed} for item in scenario.near_misses]
+        return {"requests": sessions, "models": ["claude-haiku-5-5"]}
+
+    expected = len(scenario.requests) + len(scenario.near_misses)
+    ideal = skill_evals_judging.judge([scenario], ["haiku"], constant(record([skill, "other"], ["other"])))
+    assert [outcome.failure for outcome in ideal] == [None] * expected
+    inverted = skill_evals_judging.judge([scenario], ["haiku"], constant(record([], [skill])))
+    assert [outcome.kind for outcome in inverted] == [skill_evals_records.JUDGMENT] * expected
+
+
 def test_only_the_session_s_own_skill_tool_call_is_a_start() -> None:
     def assistant_with(content: list[Any], subagent: bool = False) -> str:
         event = {"type": "assistant", "message": {"model": "claude-haiku-5-5", "content": content}}

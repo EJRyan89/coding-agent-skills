@@ -1,0 +1,14 @@
+{
+  "skill": "dotnet-format",
+  "mode": "trigger",
+  "requests": [
+    "Format the C# files I changed on this branch before I commit.",
+    "Style-check my C# changes before I open the pull request.",
+    "Check my changed C# code for whitespace and analyzer problems and fix them."
+  ],
+  "near_misses": [
+    "Why is Serilog referenced in this C# solution?",
+    "Reformat the Python files in this folder with ruff.",
+    "Rename the OrderService class to OrderManager."
+  ]
+}
