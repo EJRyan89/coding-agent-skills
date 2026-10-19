@@ -47,6 +47,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 import git_client
 import git_worktrees
 import pr_status
+from atomic_file import replace_text
 from console import run_main
 from flat_text import single_line
 from git_client import GitClient, GitResult
@@ -729,17 +730,7 @@ def default_status(services: Services, root: str, default: str) -> str:
 def save_plan(path: str | Path, plan: dict[str, Any]) -> None:
     """Write the plan, or another JSON document such as a sweep record, in one step: a reader sees the old or the
     new one, never part of either."""
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(dir=target.parent, prefix=".repo-cleanup-", suffix=".tmp")
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-            json.dump(plan, handle, indent=2)
-            handle.write("\n")
-        Path(temporary).replace(target)
-    except BaseException:
-        Path(temporary).unlink(missing_ok=True)
-        raise
+    replace_text(Path(path), json.dumps(plan, indent=2) + "\n")
 
 
 def load_plan(path: str | Path) -> dict[str, Any]:

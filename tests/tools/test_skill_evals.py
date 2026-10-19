@@ -2232,8 +2232,10 @@ class CitationTests(unittest.TestCase):
             Outcome("defects", "sonnet", "verdict CHANGES_REQUESTED", "verdict is ```APPROVED```", "judgment"),
             Outcome("defects", "haiku", "verdict CHANGES_REQUESTED", "reviewers ran on claude-opus-5-5", "record"),
         ]
-        options = skill_evals.parser().parse_args(
-            ["demo", "--model", "sonnet", "--model", "haiku", "--model", "sonnet", "--timeout", "90", "--jobs", "5"]
+        options = skill_evals.Options.parsed(
+            skill_evals.parser().parse_args(
+                ["demo", "--model", "sonnet", "--model", "haiku", "--model", "sonnet", "--timeout", "90", "--jobs", "5"]
+            )
         )
         self.assertEqual(
             [
@@ -2261,7 +2263,10 @@ class CitationTests(unittest.TestCase):
 
 class ResultsTests(unittest.TestCase):
     def test_rows_name_the_models_and_a_model_that_never_ran(self) -> None:
-        scenarios = [Scenario("review-prs", name, Path(name), "initial", None, ()) for name in ("a", "b")]
+        scenarios = [
+            Scenario(skill="review-prs", name=name, directory=Path(name), mode="initial", prior=None, expectations=())
+            for name in ("a", "b")
+        ]
         run = skill_evals.Run
         session = frozenset({"claude-opus-5-5"})
         # The reason a run failed may name the machine's paths; the row takes the phrase recorded for it.
@@ -2291,7 +2296,12 @@ class ResultsTests(unittest.TestCase):
         )
 
     def test_a_scenario_no_reviewer_ran_on_is_not_run_and_left_out_of_the_count(self) -> None:
-        scenarios = [Scenario("review-document", name, Path(name), "initial", None, ()) for name in ("a", "b", "c")]
+        scenarios = [
+            Scenario(
+                skill="review-document", name=name, directory=Path(name), mode="initial", prior=None, expectations=()
+            )
+            for name in ("a", "b", "c")
+        ]
         run = skill_evals.Run
         session = frozenset({"claude-opus-5-5"})
         reviewer = frozenset({"claude-haiku-5-5"})
@@ -2321,7 +2331,10 @@ class ResultsTests(unittest.TestCase):
         )
 
     def test_over_several_runs_each_scenario_counts_the_runs_that_passed_every_expectation(self) -> None:
-        scenarios = [Scenario("review-prs", name, Path(name), "initial", None, ()) for name in ("a", "b", "c", "d")]
+        scenarios = [
+            Scenario(skill="review-prs", name=name, directory=Path(name), mode="initial", prior=None, expectations=())
+            for name in ("a", "b", "c", "d")
+        ]
         run = skill_evals.Run
         reviewer, session = frozenset({"claude-haiku-5-5"}), frozenset({"claude-opus-5-5"})
         unreviewed = run(None, "the run recorded no review", frozenset(), session, "the run recorded no review", "run")

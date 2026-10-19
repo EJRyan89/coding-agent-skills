@@ -349,7 +349,7 @@ class Expectation:
     check: Callable[[Record], str | None]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class Scenario:
     skill: str
     name: str
@@ -846,7 +846,14 @@ def load_trigger(skill: str, directory: Path, spec: Mapping[str, Any], checkout:
     expectations = [trigger_expectation(skill, item, True) for item in requests]
     expectations += [trigger_expectation(skill, item, False) for item in near_misses]
     return Scenario(
-        skill, directory.name, directory, TRIGGER, None, tuple(expectations), requests=requests, near_misses=near_misses
+        skill=skill,
+        name=directory.name,
+        directory=directory,
+        mode=TRIGGER,
+        prior=None,
+        expectations=tuple(expectations),
+        requests=requests,
+        near_misses=near_misses,
     )
 
 
@@ -903,19 +910,19 @@ def review_scenario(skill: str, directory: Path, spec: Mapping[str, Any], mode: 
     expectations = tuple(expectation(item, mode) for item in spec["expectations"])
     _listed_categories(spec["expectations"], finding_categories(spec, directory, checkout))
     return Scenario(
-        str(spec["skill"]),
-        directory.name,
-        directory,
-        mode,
-        prior,
-        expectations,
-        document,
-        base,
-        reviewer,
-        checkout if reviewer else None,
-        placed,
-        stage,
-        held,
+        skill=str(spec["skill"]),
+        name=directory.name,
+        directory=directory,
+        mode=mode,
+        prior=prior,
+        expectations=expectations,
+        document=document,
+        base=base,
+        reviewer=reviewer,
+        checkout=checkout if reviewer else None,
+        placed=placed,
+        stage=stage,
+        held=held,
     )
 
 
@@ -1909,11 +1916,43 @@ def report(skill: str, outcomes: Sequence[Outcome]) -> bool:
     return any(outcome.failure is not None for outcome in outcomes)
 
 
-def command_line(options: argparse.Namespace) -> str:
+@dataclass(frozen=True, kw_only=True)
+class Options:
+    """The command line, read once from the parsed arguments."""
+
+    skill: str
+    records: Path | None
+    # The --scenario and --model names in the order given, repeats included; no --model is every model.
+    scenarios: tuple[str, ...]
+    models: tuple[str, ...]
+    write: bool
+    timeout: float
+    jobs: int
+    runs: int
+
+    @classmethod
+    def parsed(cls, namespace: argparse.Namespace) -> Options:
+        return cls(
+            skill=namespace.skill,
+            records=namespace.records,
+            scenarios=tuple(namespace.scenario),
+            models=tuple(namespace.model or ()),
+            write=namespace.write,
+            timeout=namespace.timeout,
+            jobs=namespace.jobs,
+            runs=namespace.runs,
+        )
+
+    def judged_models(self) -> list[str]:
+        """The models a run judges: each given once, in the order given, or every model."""
+        return list(dict.fromkeys(self.models or MODELS))
+
+
+def command_line(options: Options) -> str:
     """The command that made the run, without --jobs, which changes no result."""
     words = ["python", "-B", "tools/skill_evals.py", options.skill]
-    words += [word for name in dict.fromkeys(options.scenario) for word in ("--scenario", name)]
-    words += [word for name in dict.fromkeys(options.model or []) for word in ("--model", name)]
+    words += [word for name in dict.fromkeys(options.scenarios) for word in ("--scenario", name)]
+    words += [word for name in dict.fromkeys(options.models) for word in ("--model", name)]
     if options.runs != 1:
         words += ["--runs", str(options.runs)]
     if options.timeout != DEFAULT_TIMEOUT:
@@ -1923,7 +1962,7 @@ def command_line(options: argparse.Namespace) -> str:
 
 def citation(
     skill: str,
-    options: argparse.Namespace,
+    options: Options,
     version: str,
     scenarios: Sequence[Scenario],
     models: Sequence[str],
@@ -1987,9 +2026,9 @@ def preflight(write: bool, seams: Seams) -> tuple[str, str | None]:
     return executable, text
 
 
-def evaluate(skill: str, scenarios: Sequence[Scenario], options: argparse.Namespace, seams: Seams) -> int:
+def evaluate(skill: str, scenarios: Sequence[Scenario], options: Options, seams: Seams) -> int:
     """Run every scenario on every model from throwaway homes, judge the records, and print the result."""
-    models = list(dict.fromkeys(options.model or MODELS))
+    models = options.judged_models()
     # Without git's repository-selecting variables, so neither the version probe nor a session, nor anything the
     # session starts, reads the repository a shell's `GIT_DIR` names rather than the throwaway home.
     base = without_repository_variables(os.environ if seams.environment is None else seams.environment)
@@ -2070,17 +2109,17 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str], root: Path = SCENARIO_ROOT, seams: Seams | None = None) -> int:
     command = parser()
-    options = command.parse_args(argv)
-    if options.write and (options.records or options.scenario or options.model):
+    options = Options.parsed(command.parse_args(argv))
+    if options.write and (options.records or options.scenarios or options.models):
         command.error("--write records a full run: every scenario on every model, with no --records")
     try:
-        scenarios = load_scenarios(options.skill, options.scenario, root)
+        scenarios = load_scenarios(options.skill, list(options.scenarios), root)
     except ScenarioError as exc:
         print(f"FAILED {quote(str(exc))}")
         return 1
     if options.records is None:
         return evaluate(options.skill, scenarios, options, seams or Seams())
-    models = list(dict.fromkeys(options.model or MODELS))
+    models = options.judged_models()
     outcomes = judge(scenarios, models, records_in(options.records), options.runs)
     failed = report(options.skill, outcomes)
     for line in table(scenarios, models, outcomes):

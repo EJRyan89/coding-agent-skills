@@ -19,6 +19,7 @@ from typing import IO, Any, TypeVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+from atomic_file import UnfinishedCopyError, replace_bytes
 from process_identity import ProcessStatus, process_status
 from review_process import same_process
 from skill_roots import skills_directory_holding
@@ -167,36 +168,14 @@ def atomic_write_text(path: Path, content: str, *, mode: int = 0o600) -> None:
 
 
 def atomic_write_bytes(path: Path, data: bytes, *, mode: int = 0o600) -> None:
-    """Replace `path` with `data` through a synced copy beside it; on any failure, including a folder that cannot be
-    made, `path` is untouched, the copy is removed, and the error is a PersistenceError, which names the copy when it
-    cannot be removed.
-
-    The copy's descriptor is never handed to a stream: this function alone closes it, once, whatever fails. A stream
-    that closed it first would free its number for another thread's open, and a second close would close that file.
-    """
-    temporary: Path | None = None
+    """Replace `path` with `data` as skill-core's replace_bytes does; on any failure `path` is untouched and the copy
+    is removed, and an OSError is a PersistenceError, which names the copy when it cannot be removed."""
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-        temporary = Path(temporary_name)
-        try:
-            temporary.chmod(mode)
-            view = memoryview(data)
-            while view:
-                view = view[os.write(descriptor, view) :]
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        temporary.replace(path)
-        temporary = None
+        replace_bytes(path, data, mode=mode)
+    except UnfinishedCopyError as exc:
+        raise PersistenceError(str(exc)) from exc
     except OSError as exc:
         raise PersistenceError(f"Cannot atomically replace {path}: {exc}") from exc
-    finally:
-        if temporary is not None:
-            try:
-                temporary.unlink(missing_ok=True)
-            except OSError as exc:
-                raise PersistenceError(f"Cannot remove {temporary}, the unfinished copy of {path}: {exc}") from exc
 
 
 def atomic_write_json(

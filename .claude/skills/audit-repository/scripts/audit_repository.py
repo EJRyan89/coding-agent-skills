@@ -70,6 +70,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-core" / "scripts"))
 
+from atomic_file import UnfinishedCopyError, replace_text
 from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError, classify_failure
@@ -408,18 +409,10 @@ def write_record(path: Path, entries: list[Entry]) -> None:
     """Replace the record with `entries` through a copy written beside it, so a write that fails leaves the record as
     it was and removes the copy. Raises OSError, naming the copy too when it cannot be removed."""
     document = {"audits": [{"date": entry.date, "tag": entry.tag, "area": entry.area} for entry in entries]}
-    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-    copy = Path(name)
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
-            stream.write(json.dumps(document, indent=2) + "\n")
-        copy.replace(path)
-    except OSError as exc:
-        try:
-            copy.unlink(missing_ok=True)
-        except OSError as left:
-            raise OSError(f"{exc}; the unfinished copy {copy.as_posix()} remains: {left}") from exc
-        raise
+        replace_text(path, json.dumps(document, indent=2) + "\n")
+    except UnfinishedCopyError as exc:
+        raise OSError(f"{exc.failure}; the unfinished copy {exc.copy.as_posix()} remains: {exc.removal}") from exc
 
 
 # --- briefs ---------------------------------------------------------------------------------------

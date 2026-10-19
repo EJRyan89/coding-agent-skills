@@ -1315,6 +1315,35 @@ class FsopsPlatformFixtures(unittest.TestCase):
                 filesystem_write_problems(root),
             )
 
+    def test_filesystem_write_policy_counts_skill_cores_atomic_replace(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deployer/replaced.py": "import atomic_file\n"
+                    "from atomic_file import replace_text\n"  # 2
+                    "\n"
+                    "\n"
+                    "def run(path):\n"
+                    '    atomic_file.replace_bytes(path, b"")\n'  # 6
+                    '    replace_text(path, "")\n'  # 7
+                    "    return atomic_file.UnfinishedCopyError\n",
+                    "deployer/writer.py": "import atomic_file\n\n\ndef run(work):\n    work(atomic_file)\n",  # 5
+                    "tools/elsewhere.py": 'from atomic_file import replace_text\nreplace_text(PATH, "")\n',
+                },
+            )
+            route = "; route it through deployer/fsops.py"
+            self.assertEqual(
+                [
+                    f"deployer/replaced.py:2 writes with atomic_file.replace_text{route}",
+                    f"deployer/replaced.py:6 writes with atomic_file.replace_bytes{route}",
+                    f"deployer/replaced.py:7 writes with atomic_file.replace_text{route}",
+                    f"deployer/writer.py:5 writes with atomic_file{route}",
+                ],
+                filesystem_write_problems(root),
+            )
+
     def test_an_allowed_write_callable_passed_as_a_value_may_write_anywhere(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
