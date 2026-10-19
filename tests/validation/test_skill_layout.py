@@ -29,6 +29,7 @@ from skill_layout import (
     fixture_source_problems,
     metadata_format_problems,
     output_placeholder_problems,
+    plugin_tree_problems,
     repository_skill_name_problems,
     runtime_support_problems,
     script_dependency_problems,
@@ -865,3 +866,61 @@ def test_trigger_scenario_policy_refuses_a_missing_or_unloadable_scenario(
 ) -> None:
     trigger_tree(tmp_path, scenarios)
     assert trigger_scenario_problems(tmp_path) == problems
+
+
+PLUGIN_SOURCES = {
+    "skills/alpha/SKILL.md": "---\nname: alpha\n---\n\nRun {{PYTHON}} -B it.\n",
+    "skills/alpha/scripts/tool.py": "print('tool')\n",
+    "skills/alpha/scripts/test_tool.py": "def test_tool():\n    pass\n",
+    "agents/helper.md": "---\nname: helper\n---\n\nHelp.\n",
+}
+
+
+def plugin_files(root: Path) -> dict[str, bytes]:
+    """The files a conforming plugin of the PLUGIN_SOURCES tree holds."""
+    return {
+        path: (root / path).read_bytes().replace(b"{{PYTHON}}", b"python")
+        for path in PLUGIN_SOURCES
+        if not path.endswith("test_tool.py")
+    }
+
+
+def test_plugin_policy_passes_a_plugin_that_holds_its_sources_with_the_pinned_answers(tmp_path: Path) -> None:
+    write_fixture_tree(tmp_path, PLUGIN_SOURCES)
+    files = plugin_files(tmp_path)
+    assert b"Run python -B it." in files["skills/alpha/SKILL.md"]
+    assert plugin_tree_problems(tmp_path, {"suite": files}) == []
+
+
+@pytest.mark.parametrize(
+    ("change", "problem"),
+    [
+        ({"extra.txt": b"x"}, "plugin suite: extra.txt comes from no skill file or agent a deployment ships"),
+        ({"tests/fixtures/x/SKILL.md": b"x"}, "plugin suite: tests/fixtures/x/SKILL.md comes from no skill file"),
+        ({"skills/alpha/scripts/test_tool.py": b"x"}, "plugin suite: skills/alpha/scripts/test_tool.py comes from no"),
+        ({"skills/beta/SKILL.md": b"x"}, "plugin suite: skills/beta/SKILL.md has no source file"),
+        ({"skills/alpha/scripts/tool.py": b"print('other')\n"}, "plugin suite: skills/alpha/scripts/tool.py differs"),
+        ({"agents/helper.md": b"Help {{HOME}}.\n"}, "plugin suite: agents/helper.md keeps a template token"),
+        ({"skills/alpha/scripts/tool.py": None}, "plugin suite: leaves out skills/alpha/scripts/tool.py"),
+    ],
+)
+def test_plugin_policy_refuses_what_its_sources_do_not_hold(
+    change: Mapping[str, bytes | None], problem: str, tmp_path: Path
+) -> None:
+    write_fixture_tree(tmp_path, PLUGIN_SOURCES)
+    files = plugin_files(tmp_path)
+    for path, content in change.items():
+        if content is None:
+            del files[path]
+        else:
+            files[path] = content
+    problems = plugin_tree_problems(tmp_path, {"suite": files})
+    assert len(problems) == 1
+    assert problems[0].startswith(problem)
+
+
+def test_plugin_policy_refuses_a_token_the_source_left_with_no_pinned_answer(tmp_path: Path) -> None:
+    write_fixture_tree(tmp_path, {**PLUGIN_SOURCES, "skills/alpha/SKILL.md": "Root {{REPOS_ROOT}}.\n"})
+    assert plugin_tree_problems(tmp_path, {"suite": plugin_files(tmp_path)}) == [
+        "plugin suite: skills/alpha/SKILL.md keeps a template token"
+    ]
