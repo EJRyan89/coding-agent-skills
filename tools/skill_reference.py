@@ -34,6 +34,7 @@ from deployer.config import CONFIGURED_VARIABLES
 from deployer.errors import DeployError
 from deployer.paths import Paths
 from deployer.tools import SKILL_TOOLS
+from tools import plugin_build
 from tools.checkout import ROOT_HELP, checkout_root
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -69,6 +70,9 @@ class Entry:
     opt_in: bool
     needs: list[str]
     support: dict[str, runtime_support.Support] | None = None
+    # The Claude Code plugins that carry the skill, which tools/plugin_build.py decides; none for a skill only
+    # the deployer installs.
+    plugins: tuple[str, ...] = ()
 
 
 def begin_marker(block: str) -> str:
@@ -114,6 +118,7 @@ def load_source(root: Path) -> deploy_source.Source:
 def entries(source: deploy_source.Source) -> list[Entry]:
     """One entry per selectable skill, in name order."""
     result = []
+    closures, _ = plugin_build.plan(source)
     for name in sorted(source.skills):
         skill = source.skills[name]
         if not skill.selectable:
@@ -134,6 +139,7 @@ def entries(source: deploy_source.Source) -> list[Entry]:
                 opt_in=deploy_source.is_opt_in(source, bundle or name),
                 needs=_needs(source, name),
                 support=skill.runtime_support,
+                plugins=tuple(plugin for plugin, carried in closures.items() if name in carried),
             )
         )
     return result
@@ -159,6 +165,10 @@ def _installed_sentence(entry: Entry) -> str:
     return "Installed by default."
 
 
+def _plugin_cell(entry: Entry) -> str:
+    return ", ".join(f"`{plugin}`" for plugin in entry.plugins) or "Deployer only"
+
+
 def _join(items: list[str]) -> str:
     if len(items) <= 2:
         return " and ".join(items)
@@ -167,11 +177,11 @@ def _join(items: list[str]) -> str:
 
 def summary_block(skills: list[Entry]) -> str:
     rows = [
-        "| Skill | Started by | Installed | Needs |",
-        "|---|---|---|---|",
+        "| Skill | Started by | Installed | Plugin | Needs |",
+        "|---|---|---|---|---|",
         *(
             f"| [`{entry.name}`](#{entry.name}) | {_started_by(entry).capitalize()} | "
-            f"{_installed_cell(entry)} | {', '.join(entry.needs) or 'Nothing extra'} |"
+            f"{_installed_cell(entry)} | {_plugin_cell(entry)} | {', '.join(entry.needs) or 'Nothing extra'} |"
             for entry in skills
         ),
     ]

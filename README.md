@@ -1,6 +1,6 @@
 # Coding Agent Skills
 
-Portable agent skills for Claude Code, Codex, and GitHub Copilot CLI, with a guarded deployer that renders machine-specific configuration into immutable templates. Skill instructions are authoritative in Claude format; Codex and Copilot read them through generated adapters that map tools and models with the shared `runtime-compatibility.md`.
+Portable agent skills for Claude Code, Codex, and GitHub Copilot CLI, with a guarded deployer that renders machine-specific configuration into immutable templates, and, for Claude Code alone, a plugin built from the same skills. Skill instructions are authoritative in Claude format; Codex and Copilot read them through generated adapters that map tools and models with the shared `runtime-compatibility.md`.
 
 ## Included skills
 
@@ -56,6 +56,17 @@ On Linux, run them as `python3`. `check` reports missing tools, `configure` asks
 
 If you use Codex CLI, make its two [Windows settings](docs/installation.md#codex-cli-settings) before starting a skill. If you use Codex or Copilot CLI, `python deploy.py verify` checks that each finds the deployed skills.
 
+### In Claude Code, as a plugin
+
+If your organization lets you install Claude Code plugins, you can install the skills as one instead, with no clone:
+
+```text
+/plugin marketplace add EJRyan89/coding-agent-skills
+/plugin install coding-agent-skills@ejryan89
+```
+
+A skill then starts as `/coding-agent-skills:<skill>`, and `coding-agent-skills-dotnet@ejryan89` adds the `dotnet` bundle. The plugin serves Claude Code alone, follows releases, and carries every skill but `repo-cleanup` and `update-coding-agent-skills`. It gives none of the deployer's rollback, ownership manifest, or backups, and the code-review reviewer's guard runs as a hook on every tool call of every session while the plugin is enabled. [Choosing a route](docs/installation.md#choosing-a-route) compares the two routes, and [The Claude Code plugin](docs/installation.md#the-claude-code-plugin) covers updating and what the plugin needs.
+
 ## Updating and uninstalling
 
 Start `update-coding-agent-skills` from any runtime: it deploys the latest release, since fixes land on `main` and reach you at the next tag, and it follows `main` itself only when you opt in with `UPDATE_CHANNEL=main` in `configure`. To follow `main` by hand, use `git pull --ff-only` and the same dry run and deployment as above. To uninstall, run `python deploy.py --uninstall`; locally modified copies are kept. [Installation](docs/installation.md#updating) covers both.
@@ -72,6 +83,8 @@ The deployer:
 - preserves modified destinations unless replacement is explicitly authorized.
 
 When it stops because it needs you to decide, its message names a section of [Recovery](docs/recovery.md).
+
+A plugin install has none of this; Claude Code installs and replaces the plugin's copy itself, as [The Claude Code plugin](docs/installation.md#the-claude-code-plugin) explains.
 
 ## Documentation
 

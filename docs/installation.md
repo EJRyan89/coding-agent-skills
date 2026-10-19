@@ -1,6 +1,22 @@
 # Installation
 
-What the deployer needs, how to install it, and how to deploy, update, and uninstall the skills. The [README](../README.md#quick-start) has the short version, and [Setting up a machine](setting-up-a-machine.md) walks a new Windows machine through these tools, the runtimes, and the ones only validation needs, in order.
+The two routes the skills install by, the deployer and a Claude Code plugin; what the deployer needs, how to install it, and how to deploy, update, and uninstall the skills; and how to install, update, and remove the plugin. The [README](../README.md#quick-start) has the short version, and [Setting up a machine](setting-up-a-machine.md) walks a new Windows machine through these tools, the runtimes, and the ones only validation needs, in order.
+
+## Choosing a route
+
+The same skills install by either route, and both are supported for the long term. Each serves people the other does not.
+
+| | The deployer | The Claude Code plugin |
+|---|---|---|
+| For | Managed machines, Codex and GitHub Copilot CLI, and anyone who wants files they can read | Claude Code users whose organization lets them install a plugin |
+| Runtimes | Claude Code, Codex, and Copilot CLI | Claude Code only |
+| Installs | Into `~/.claude/skills`, with runtime adapters under `~/.agents/skills` | Into Claude Code's plugin cache, under `~/.claude/plugins` |
+| Starts a skill as | `/<skill>` | `/coding-agent-skills:<skill>` |
+| Follows | Releases, or `main` on request | Releases only |
+| Gives | Journaled rollback and recovery, an ownership manifest that refuses to replace another source's skill, a permanent backup of a skill you changed, configured values checked against an allowlist, `check` and `verify` | One install command and Claude Code's own updates, and a namespace that lets suites with skills of the same names coexist |
+| Carries | Every skill | Every skill but `repo-cleanup` and `update-coding-agent-skills`; the **Plugin** column of the [summary](skills.md#summary) says which plugin carries each |
+
+Some organizations block plugin installation or restrict marketplaces; the deployer is the route there. [The Claude Code plugin](#the-claude-code-plugin) describes the plugin route, and the rest of this page the deployer's.
 
 ## Requirements
 
@@ -161,6 +177,28 @@ Deploy from the same clone each time: the manifest records it, and a deployment 
 If an updated skill requires a new configuration value, the deployer stops and asks you to run `python deploy.py configure` first.
 
 To deploy a release or an earlier commit instead of the clone's working tree, without moving the clone off `main`, add `--at` with a tag, branch, or commit the clone holds, as in `python deploy.py --all --at <tag>`; see [Deploying an earlier commit](recovery.md#deploying-an-earlier-commit). The installation then stays pinned: a deployment without `--at` refuses before it changes anything until you pass `--unpin`, and `update-coding-agent-skills` stops with `PINNED <ref> <commit>` and deploys nothing until you start it with `--unpin`, unless your pin is already at the release it would deploy. The skill's own deployment of a release is a pin too, made with the tag's full name, `--at refs/tags/<tag>`, which the skill moves to each later release and the main channel replaces. That run moves the installation to what its channel deploys, and `python deploy.py --all --unpin` back to the clone's `HEAD`; each reports that it replaced the pinned deployment.
+
+## The Claude Code plugin
+
+The repository is a Claude Code marketplace, `ejryan89`, offering two plugins, built from each release's skills: `coding-agent-skills`, every skill the deployer installs by default that a plugin can carry, and `coding-agent-skills-dotnet`, the opt-in `dotnet` bundle. In Claude Code:
+
+```text
+/plugin marketplace add EJRyan89/coding-agent-skills
+/plugin install coding-agent-skills@ejryan89
+```
+
+From a shell, `claude plugin marketplace add EJRyan89/coding-agent-skills` and `claude plugin install coding-agent-skills@ejryan89` do the same; install `coding-agent-skills-dotnet@ejryan89` the same way. Start a skill with the plugin's name first, such as `/coding-agent-skills:review-prs`, which keeps it apart from a same-named skill of another suite. The plugin's skills run `python` by that name on every platform, so `python` must start a Python as new as [Requirements](#requirements) names (on Linux, through a package such as `python-is-python3`), and each skill needs the tools its row of the [summary](skills.md#summary) lists, installed as [Installing the tools](#installing-the-tools) says.
+
+Update with `claude plugin update coding-agent-skills@ejryan89`, or from `/plugin`; Claude Code updates a plugin from this marketplace by itself only when you turn on its auto-update. Each release's plugin carries that release's version, so an update brings the next release, and its notes are in [Upgrade notes](upgrade-notes.md). Remove it with `claude plugin uninstall coding-agent-skills@ejryan89`. `update-coding-agent-skills` updates a deployer's clone and does nothing for a plugin install, which is why the plugin does not carry it.
+
+What a plugin install does not give:
+
+- **The reviewer guard runs in every session.** The code-review skills' reviewer runs under a hook that keeps it to its own review run. Claude Code ignores a plugin agent's own hooks, so the plugin's hooks file runs the guard on every Read, Grep, Glob, Write, Edit, and Bash call of every session while the plugin is enabled, and the guard passes every call but the reviewer's. That costs a Python start per call. A missing or broken `python` blocks those calls until the plugin is disabled, as the guard fails closed. An organization setting that admits only managed hooks turns the guard off, and the reviewers then run without it.
+- **The deployer's guarantees.** There is no journal, recovery, ownership manifest, or permanent backup: Claude Code replaces the plugin's copy at each update, and a change made inside that copy is lost. `deploy.py check` and `verify` do not see a plugin install.
+- **The skills a plugin cannot carry yet.** `repo-cleanup` needs a repositories root the plugin cannot set yet, and `update-coding-agent-skills` needs a deployer's clone; both come only through the deployer.
+- **Other runtimes and `main`.** A plugin serves Claude Code alone and follows releases only.
+
+A machine may hold both routes. The plugin's copy lives in Claude Code's plugin cache, which the deployer never reads or writes, so neither route refuses the other, and Claude Code lists both copies, `/review-prs` and `/coding-agent-skills:review-prs`, each with its own reviewer agent. For Claude Code, choose one route per machine unless you want both.
 
 ## Uninstalling
 

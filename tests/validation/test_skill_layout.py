@@ -27,6 +27,7 @@ from skill_layout import (
     embedded_program_problems,
     find_executable_fences,
     fixture_source_problems,
+    marketplace_problems,
     metadata_format_problems,
     output_placeholder_problems,
     plugin_tree_problems,
@@ -1002,4 +1003,86 @@ def test_plugin_policy_refuses_a_checkout_that_holds_a_plugin_manifest(tmp_path:
     write_plugin_sources(tmp_path, {**PLUGIN_SOURCES, ".claude-plugin/plugin.json": "{}"})
     assert plugin_tree_problems(tmp_path, {"suite": plugin_files()}) == [
         ".claude-plugin/plugin.json makes the checkout's skills read as a plugin's"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("readme", "problems"),
+    [
+        (b"# Suite\n", []),
+        (b"# Other\n", ["plugin suite: README.md is not .claude-plugin/README.md"]),
+        (None, ["plugin suite: README.md is not .claude-plugin/README.md"]),
+    ],
+)
+def test_plugin_policy_holds_each_plugins_readme_to_the_sources(
+    readme: bytes | None, problems: list[str], tmp_path: Path
+) -> None:
+    write_plugin_sources(tmp_path, {**PLUGIN_SOURCES, ".claude-plugin/README.md": "# Suite\n"})
+    files = plugin_files()
+    if readme is not None:
+        files["README.md"] = readme
+    assert plugin_tree_problems(tmp_path, {"suite": files}) == problems
+
+
+def test_plugin_policy_refuses_a_readme_the_sources_do_not_hold(tmp_path: Path) -> None:
+    write_plugin_sources(tmp_path, PLUGIN_SOURCES)
+    files = {**plugin_files(), "README.md": b"# Suite\n"}
+    assert plugin_tree_problems(tmp_path, {"suite": files}) == [
+        "plugin suite: README.md comes from no skill file or agent a deployment ships"
+    ]
+
+
+REPOSITORY = "https://github.com/owner/suite"
+
+
+def entry(name: str, **source: object) -> dict[str, object]:
+    url = f"{REPOSITORY}/releases/download/v1.2.3/{name}.zip"
+    return {"name": name, "repository": REPOSITORY, "source": {"source": "archive", "url": url, **source}}
+
+
+def marketplace(tmp_path: Path, *entries: dict[str, object]) -> Path:
+    (tmp_path / ".claude-plugin").mkdir()
+    (tmp_path / ".claude-plugin" / "marketplace.json").write_text(
+        json.dumps({"name": "m", "plugins": list(entries)}), encoding="utf-8"
+    )
+    return tmp_path
+
+
+def test_marketplace_policy_passes_each_plugins_own_asset_of_one_release_pinned_or_not(tmp_path: Path) -> None:
+    root = marketplace(tmp_path, entry("suite", sha256="a" * 64), entry("suite-extra"))
+    assert marketplace_problems(root) == []
+
+
+@pytest.mark.parametrize(
+    ("changed", "problem"),
+    [
+        ({"source": "./suite"}, "marketplace entry suite: its source is not an archive at a release asset"),
+        ({"source": {"source": "github", "repo": "owner/suite"}}, "is not an archive at a release asset"),
+        (
+            {"source": {"source": "archive", "url": f"{REPOSITORY}/releases/download/v1.2/suite.zip"}},
+            "is not an archive at a release asset",
+        ),
+        (
+            {"source": {"source": "archive", "url": f"{REPOSITORY}/releases/download/v1.2.3/other.zip"}},
+            "its asset is not its own under its repository",
+        ),
+        ({"repository": "https://github.com/owner/other"}, "its asset is not its own under its repository"),
+        ({"source": entry("suite", sha256="ABC")["source"]}, "its sha256 is not a digest"),
+        ({"source": entry("suite", headers={"x": "y"})["source"]}, "holds more than an archive's url and sha256"),
+    ],
+)
+def test_marketplace_policy_refuses_a_source_that_is_not_the_plugins_release_asset(
+    changed: dict[str, object], problem: str, tmp_path: Path
+) -> None:
+    root = marketplace(tmp_path, {**entry("suite"), **changed})
+    problems = marketplace_problems(root)
+    assert len(problems) == 1, problems
+    assert problem in problems[0]
+
+
+def test_marketplace_policy_refuses_assets_of_two_releases(tmp_path: Path) -> None:
+    other = entry("suite-extra")
+    other["source"] = {"source": "archive", "url": f"{REPOSITORY}/releases/download/v1.2.4/suite-extra.zip"}
+    assert marketplace_problems(marketplace(tmp_path, entry("suite"), other)) == [
+        "the marketplace names assets of more than one release: v1.2.3, v1.2.4"
     ]
