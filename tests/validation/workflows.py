@@ -610,6 +610,20 @@ def deployable_linux_problems(workflow: str) -> list[str]:
     return problems
 
 
+def copilot_auto_update_problems(workflow: str) -> list[str]:
+    """Report each deployable.yml job whose env does not set COPILOT_AUTO_UPDATE to false.
+
+    Copilot CLI otherwise runs the newest package it has downloaded rather than the one the job installed, so a later
+    step could run a version other than the one the job checked and the README's fresh-runner column records.
+    """
+    jobs = _mapping(read_workflow(workflow), "jobs")
+    return [
+        f"the {job} job's env does not set COPILOT_AUTO_UPDATE: 'false'"
+        for job in ("deployable", "deployable-linux")
+        if _mapping(jobs, job, "env").get("COPILOT_AUTO_UPDATE") != "false"
+    ]
+
+
 LINUX_VERIFY = re.compile(r"python3\s+(?:deploy\.py|tools/deployable_report\.py)\s+verify(?:\s|$)")
 
 
@@ -788,6 +802,10 @@ class WorkflowsPolicies(unittest.TestCase):
     def test_deployable_workflow_runs_the_windows_job_again_on_a_fresh_linux_runner(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
         self.assertEqual([], deployable_linux_problems(workflow))
+
+    def test_deployable_workflow_keeps_copilot_on_the_version_it_installed_in_both_jobs(self) -> None:
+        workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
+        self.assertEqual([], copilot_auto_update_problems(workflow))
 
     def test_every_workflow_file_is_known_pinned_read_only_and_runs_on_its_own_events(self) -> None:
         workflows = REPOSITORY_ROOT / WORKFLOWS_DIRECTORY

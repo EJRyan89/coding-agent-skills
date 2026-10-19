@@ -2,7 +2,7 @@
 
 ## Supported surfaces
 
-Codex CLI finds each deployed public skill through its generated adapter under `~/.agents/skills/<name>`, which points to the authoritative skill under `~/.claude/skills/<name>`. Start a skill explicitly with `$<skill>`, or let Codex choose it when a request matches its description. See [Skills](skills.md) for each skill's arguments.
+Codex CLI finds each deployed public skill through its generated adapter under `~/.agents/skills/<name>`, which points to the authoritative skill under `~/.claude/skills/<name>`. The adapter carries the skill's description, a user-only skill's included, and, for a user-only skill, an `agents/openai.yaml` that turns off implicit invocation. Start a skill explicitly with `$<skill>`, or let Codex choose it when a request matches its description. See [Skills](skills.md) for each skill's arguments.
 
 ## Checking discovery
 

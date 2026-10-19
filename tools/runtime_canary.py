@@ -157,6 +157,9 @@ RUN_ID = "run-id"
 DEFAULT_TIMEOUT = 600
 # The limit on the `--version` call that reads each runtime's version for the record.
 VERSION_TIMEOUT = 60
+# Set for every runtime the canary starts; only Copilot CLI reads it. Copilot otherwise runs the newest package it has
+# downloaded rather than the installed one, so the version the record names could differ from the one the runs used.
+PINNED_VERSION = {"COPILOT_AUTO_UPDATE": "false"}
 # The line kinds the record holds, besides each runtime's VERSION: what a pull request's Validation section needs to
 # show what each runtime found and ran. HOME, DEPLOYED, and TRANSCRIPT name only this machine's throwaway files.
 RECORDED = (
@@ -511,9 +514,9 @@ def unchecked(runtime: str, lines: Sequence[str], discovery_only: bool) -> str:
 
 
 def environment(base: Mapping[str, str], script_log: Path, home: Path) -> dict[str, str]:
-    """The runtime's own environment, sign-in included, plus the Python and Bash recorders, without git's
-    repository-selecting variables, so the runtime and the skill it runs read the canary home, not the repository a
-    shell's `GIT_DIR` names."""
+    """The runtime's own environment, sign-in included, plus the Python and Bash recorders and PINNED_VERSION, without
+    git's repository-selecting variables, so the runtime and the skill it runs read the canary home, not the
+    repository a shell's `GIT_DIR` names."""
     recorder = home / STATE / "recorder"
     existing = base.get("PYTHONPATH")
     return {
@@ -521,6 +524,7 @@ def environment(base: Mapping[str, str], script_log: Path, home: Path) -> dict[s
         "PYTHONPATH": f"{recorder}{os.pathsep}{existing}" if existing else str(recorder),
         "BASH_ENV": forward(recorder / "bash_env.sh"),
         SCRIPT_LOG: str(script_log),
+        **PINNED_VERSION,
     }
 
 
@@ -1010,7 +1014,8 @@ def checked(
 
 def runtime_version(executable: str, runner: Runner, base: Mapping[str, str], home: Path) -> str:
     """The version the runtime's `--version` prints, read as `deploy.py check` reads it, or `unknown`."""
-    completed = runner([executable, "--version"], home, without_repository_variables(base), VERSION_TIMEOUT)
+    environment = {**without_repository_variables(base), **PINNED_VERSION}
+    completed = runner([executable, "--version"], home, environment, VERSION_TIMEOUT)
     version = parse_version(completed.stdout) if completed.returncode == 0 and not completed.error else None
     return format_version(version) if version else "unknown"
 
