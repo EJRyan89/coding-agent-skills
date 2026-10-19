@@ -99,8 +99,9 @@ class FakeRuntimes:
         self.listings: dict[str, list[tuple[str, str, bool]]] = {}
         self.actions: dict[str, Callable[[list[str], Path, dict[str, str]], Completed]] = {}
         self.calls: list[tuple[str, list[str], Path, Mapping[str, str]]] = []
-        # Each runtime asked for its version, which the fake answers apart from its runs.
+        # Each runtime asked for its version, which the fake answers apart from its runs, and the environment it got.
         self.versions: list[str] = []
+        self.version_environments: list[Mapping[str, str]] = []
 
     def talk(
         self,
@@ -124,6 +125,7 @@ class FakeRuntimes:
         runtime = Path(arguments[0]).name
         if arguments[1:] == ["--version"]:
             self.versions.append(runtime)
+            self.version_environments.append(environment)
             return Completed(0, f"{VERSIONS[Path(runtime).stem]}\n", "")
         self.calls.append(("run", arguments, cwd, environment))
         action = self.actions.get(runtime)
@@ -1275,6 +1277,22 @@ class BashTests(RuntimeCanaryTestCase):
                 "x",
                 env={**environment, runtime_canary.SCRIPT_LOG: str(self.home / ".runtime-canary" / "scripts")},
             ),
+        )
+
+
+class CopilotVersionTests(RuntimeCanaryTestCase):
+    def test_every_copilot_start_turns_auto_update_off_so_the_recorded_version_is_the_one_that_ran(self) -> None:
+        runner = FakeRuntimes()
+        self.canary(runner, runtimes=("copilot",), environment={**os.environ, "COPILOT_AUTO_UPDATE": "true"})
+        starts = [kind for kind, arguments, _, _ in runner.calls if Path(arguments[0]).name == "copilot"]
+        self.assertEqual(["listing", "run"], starts)
+        self.assertEqual(["copilot"], [Path(runtime).stem for runtime in runner.versions])
+        self.assertEqual(
+            ["false", "false", "false"],
+            [
+                environment.get("COPILOT_AUTO_UPDATE")
+                for environment in [*runner.version_environments, *(call[3] for call in runner.calls)]
+            ],
         )
 
 

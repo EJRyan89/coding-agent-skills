@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 
 from workflows import (
     WorkflowSyntaxError,
+    copilot_auto_update_problems,
     deployable_linux_problems,
     leg_problems,
     linux_job_problems,
@@ -545,6 +546,21 @@ class DeployableLinuxFixtures(unittest.TestCase):
             with self.subTest(problem=problem):
                 problems = deployable_linux_problems(drifted)
                 self.assertTrue(any(problem in found for found in problems), problems)
+
+    def test_each_job_that_does_not_turn_copilots_auto_update_off_fails(self) -> None:
+        pinned = DEPLOYABLE_JOBS.replace("    env:\n", "    env:\n      COPILOT_AUTO_UPDATE: 'false'\n")
+        self.assertEqual([], copilot_auto_update_problems(pinned))
+        linux = pinned.index("  deployable-linux:")
+        for drifted, jobs in (
+            (DEPLOYABLE_JOBS, ["deployable", "deployable-linux"]),
+            (pinned[:linux] + pinned[linux:].replace("'false'", "'true'"), ["deployable-linux"]),
+            (pinned.replace("      COPILOT_AUTO_UPDATE: 'false'\n", "", 1), ["deployable"]),
+        ):
+            with self.subTest(jobs=jobs):
+                self.assertEqual(
+                    [f"the {job} job's env does not set COPILOT_AUTO_UPDATE: 'false'" for job in jobs],
+                    copilot_auto_update_problems(drifted),
+                )
 
 
 LINUX_VERIFY_LOGS = (
