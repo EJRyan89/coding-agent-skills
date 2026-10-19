@@ -234,7 +234,11 @@ class CheckCommandTests(DeployerTestCase):
         result = self.check(Machine(settings=True))
         self.assertEqual(0, result.code, result.output)
         found = self.report_groups(result.output, "CHECK")["FOUND"]
-        self.assertIn("codex sandbox (workspace-write, so Codex CLI can run skill scripts)", found)
+        self.assertIn(
+            "codex sandbox (workspace-write configured; confirm its sandbox starts a command as "
+            '"Windows sandbox mode" in docs/codex-support.md shows)',
+            [" ".join(line.split()) for line in found],
+        )
         self.assertIn(
             f"{platform_support.PYTHON} command (runs {PYTHON_COMMAND}, not an app execution alias)",
             [" ".join(line.split()) for line in found],
@@ -249,8 +253,8 @@ class CheckCommandTests(DeployerTestCase):
         unusable = [" ".join(line.split()) for line in self.report_groups(result.output, "CHECK")["UNUSABLE"]]
         self.assertEqual(
             [
-                "codex sandbox (read-only, so Codex CLI blocks every skill script; set [windows] sandbox in "
-                '~/.codex/config.toml; see "Windows sandbox mode" in docs/codex-support.md)',
+                "codex sandbox (read-only, so Codex CLI blocks every skill script; set [features] prefer_mxc or "
+                '[windows] sandbox in ~/.codex/config.toml; see "Windows sandbox mode" in docs/codex-support.md)',
                 f"{platform_support.PYTHON} command (runs the app execution alias {STORE_ALIAS}, which Codex CLI "
                 "cannot start; turn off the python.exe and python3.exe aliases under Settings > Apps > Advanced app "
                 'settings > App execution aliases; see "Python app execution aliases" in docs/codex-support.md)',
@@ -267,8 +271,8 @@ class CheckCommandTests(DeployerTestCase):
                     "CHECK",
                 )
                 self.assertIn(
-                    "codex sandbox (codex debug prompt-input named no sandbox mode; set [windows] sandbox in "
-                    '~/.codex/config.toml; see "Windows sandbox mode" in docs/codex-support.md)',
+                    "codex sandbox (codex debug prompt-input named no sandbox mode; set [features] prefer_mxc or "
+                    '[windows] sandbox in ~/.codex/config.toml; see "Windows sandbox mode" in docs/codex-support.md)',
                     [" ".join(line.split()) for line in groups["UNUSABLE"]],
                 )
                 self.assertIn(
