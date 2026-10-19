@@ -751,7 +751,8 @@ class UntestedChangesTests(unittest.TestCase):
             for alias in node.names
         }
         self.assertIn("is_suite_name", imported)
-        self.assertIs(suite_names.is_suite_name, conditions.is_suite_name)
+        # conditions imports the name and exports none, so its namespace is read for it.
+        self.assertIs(suite_names.is_suite_name, vars(conditions)["is_suite_name"])
         self.assertEqual({".py", ".ps1", ".sh"}, set(conditions.SCRIPT_SUFFIXES))
         self.assertEqual(suite_names.SUITE_EXTENSIONS, set(conditions.SCRIPT_SUFFIXES))
 

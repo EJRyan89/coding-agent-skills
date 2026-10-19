@@ -46,7 +46,27 @@ CEILING_CODES = frozenset({"C901", "PLR0915"})
 TYPE_CHECK_ROOTS = ("deployer", "tools", "deploy.py", "tests", "conftest.py")
 # The areas mypy checks in strict mode, which pyproject.toml's [tool.validation] mypy-strict lists. Areas join in stages
 # and none leaves, so each one here must stay listed there; a pull request that makes an area strict adds it to both.
-STRICT_TYPE_CHECK_AREAS = ("skills/ejryan89-skill-core/scripts", "deployer", "deploy.py", "tools")
+STRICT_TYPE_CHECK_AREAS = (
+    "skills/ejryan89-skill-core/scripts",
+    "deployer",
+    "deploy.py",
+    "tools",
+    "skills/audit-ai-config/scripts",
+    "skills/audit-skill/scripts",
+    "skills/curate-agent-memory/scripts",
+    "skills/dotnet-dependencies/scripts",
+    "skills/dotnet-format/scripts",
+    "skills/flag-review-finding/scripts",
+    "skills/github-activity-report/scripts",
+    "skills/repo-cleanup/scripts",
+    "skills/review-insights/scripts",
+    "skills/update-pr-dashboard/scripts",
+    ".claude/skills/audit-repository/scripts",
+    ".claude/skills/change-skill/scripts",
+    ".claude/skills/implement-change/scripts",
+    ".claude/skills/review-repository/scripts",
+    ".claude/skills/shepherd-pull-requests/scripts",
+)
 # The folders mypy passes over when it collects the files under a root it is given, by their names, which no setting
 # changes: a file in one is type-checked by nothing.
 MYPY_SKIPPED_FOLDERS = frozenset({"__pycache__", "site-packages", "node_modules"})

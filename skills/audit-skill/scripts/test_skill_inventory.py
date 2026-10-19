@@ -19,6 +19,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import check_provenance
 import skill_inventory
 from git_client import GitClient, GitError, GitResult
 
@@ -1795,9 +1796,7 @@ def test_every_check_has_a_provenance_entry_and_every_entry_names_a_check() -> N
     entries = json.loads(PROVENANCE.read_text(encoding="utf-8"))["checks"]
     assert sorted(skill_inventory.CHECKS - set(entries)) == [], "checks without an entry"
     assert sorted(set(entries) - skill_inventory.CHECKS) == [], "entries without a check"
-    assert sorted(skill_inventory.CHECKS) == sorted(
-        skill_inventory.check_provenance.load(PROVENANCE, skill_inventory.CHECKS)
-    )
+    assert sorted(skill_inventory.CHECKS) == sorted(check_provenance.load(PROVENANCE, skill_inventory.CHECKS))
 
 
 def test_provenance_names_each_source_of_a_check_and_refuses_a_measurement() -> None:

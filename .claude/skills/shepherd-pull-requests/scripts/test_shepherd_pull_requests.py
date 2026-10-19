@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan8
 
 import shepherd_pull_requests as shepherd
 from git_client import GitClient
+from git_worktrees import list_worktrees
 from github_client import Backoff, CommandResult, GitHubClient
 
 GIT_CONFIG: Mapping[str, str] = MappingProxyType({"init.defaultBranch": "main"})
@@ -896,7 +897,7 @@ class LogTest(unittest.TestCase):
 
 class MergedTest(FixtureTestCase):
     def test_the_worktrees_are_read_through_skill_core(self) -> None:
-        with mock.patch.object(shepherd, "list_worktrees", wraps=shepherd.list_worktrees) as listed:
+        with mock.patch.object(shepherd, "list_worktrees", wraps=list_worktrees) as listed:
             status, _ = self.tick(StubGh(), dry_run=True)
         self.assertEqual(0, status)
         listed.assert_called_once()

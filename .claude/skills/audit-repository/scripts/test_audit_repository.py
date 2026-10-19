@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import date
 from pathlib import Path
 from types import MappingProxyType
@@ -117,7 +117,7 @@ class StubGitHub:
 
 
 def remove_tree(path: Path) -> None:
-    def writable(function, target, *_):
+    def writable(function: Callable[..., object], target: str, *_: object) -> None:
         Path(target).chmod(stat.S_IWRITE)
         function(target)
 
@@ -480,7 +480,9 @@ class ReleaseTests(Fixture):
         for subcommand, stderr, expected in cases:
             with self.subTest(subcommand=subcommand, stderr=stderr):
 
-                def runner(command: Sequence[str], timeout: float, failing: str = subcommand, said: str = stderr):
+                def runner(
+                    command: Sequence[str], timeout: float, failing: str = subcommand, said: str = stderr
+                ) -> GitResult:
                     if failing in command:
                         return GitResult(128, "", said + "\n")
                     return subprocess_runner(command, timeout)

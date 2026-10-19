@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 import doc_passages
+from conditions import read_files
 
 SCRIPT = Path(__file__).resolve().parent / "doc_passages.py"
 
@@ -56,7 +57,7 @@ class ConditionTests(unittest.TestCase):
 
     def names(self, diff: str) -> list[doc_passages.Name]:
         """The names the condition looks for in a diff whose paths all stay in the snapshot."""
-        files, refused = doc_passages.read_files(diff, self.root)
+        files, refused = read_files(diff, self.root)
         self.assertEqual([], refused)
         return doc_passages.names_to_find(files)
 

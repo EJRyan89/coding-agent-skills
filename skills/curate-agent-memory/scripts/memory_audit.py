@@ -92,6 +92,7 @@ import time
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
@@ -482,7 +483,7 @@ def audit(
     instructions: list[Path] | None = None,
     now: float | None = None,
     user_dir: Path | None = None,
-) -> dict:
+) -> dict[str, Any]:
     now = time.time() if now is None else now
     index_path = memory_dir / INDEX_NAME
     entries, index_lines = parse_index(index_path)
@@ -560,7 +561,7 @@ def index_line(title: str, file: str, hook: str, *, original_target: str | None 
     return f"- [{title}]({target})" + (f" — {hook}" if hook else "")
 
 
-def reindex(memory_dir: Path) -> dict:
+def reindex(memory_dir: Path) -> dict[str, Any]:
     """Rebuild MEMORY.md in memory without writing it; see the module docstring for the rules."""
     index_path = memory_dir / INDEX_NAME
     current = index_path.read_text(encoding="utf-8", errors="replace") if index_path.is_file() else ""
@@ -765,7 +766,7 @@ def config_directory(home: Path, environment: dict[str, str]) -> Path:
     return Path(environment["CLAUDE_CONFIG_DIR"]) if environment.get("CLAUDE_CONFIG_DIR") else home / ".claude"
 
 
-def resolve(repo: Path, home: Path, environment: dict[str, str], managed: Path) -> dict:
+def resolve(repo: Path, home: Path, environment: dict[str, str], managed: Path) -> dict[str, Any]:
     """Locate the auto-memory directory for repo, with the memory directories found when none exists there."""
     config_dir = config_directory(home, environment)
     result = locate(repo, home, environment, managed, config_dir)
@@ -796,11 +797,11 @@ class UnreadableSettings(Exception):
     """A settings file that exists but holds no readable JSON."""
 
 
-def unresolved(notes: list[str]) -> dict:
+def unresolved(notes: list[str]) -> dict[str, Any]:
     return {"memory_dir": None, "source": None, "exists": False, "notes": notes}
 
 
-def read_settings(path: Path) -> dict:
+def read_settings(path: Path) -> dict[str, Any]:
     """A settings file's top-level object, empty when the file is absent or holds another value."""
     if not path.is_file():
         return {}
@@ -842,7 +843,7 @@ def blocking_scope(scopes: tuple[tuple[str, Path], ...]) -> str | None:
     return None
 
 
-def locate(repo: Path, home: Path, environment: dict[str, str], managed: Path, config_dir: Path) -> dict:
+def locate(repo: Path, home: Path, environment: dict[str, str], managed: Path, config_dir: Path) -> dict[str, Any]:
     """The auto-memory directory Claude Code uses for repo, following its documented order."""
     notes = [SETTINGS_NOTE]
     # Claude Code reads autoMemoryDirectory from every settings scope, in their precedence order, and honors a
@@ -885,7 +886,7 @@ def locate(repo: Path, home: Path, environment: dict[str, str], managed: Path, c
 
 def chosen_directory(
     repo: Path, home: Path, scopes: tuple[tuple[str, Path], ...], chosen: tuple[str, Path, object], notes: list[str]
-) -> dict:
+) -> dict[str, Any]:
     """The directory autoMemoryDirectory names in the first scope that sets it, unless Claude Code would not use it.
 
     Raises UnreadableSettings when a repository's choice needs every scope read for the block on outside reads.
@@ -966,7 +967,7 @@ def store_refusal(memory_dir: Path) -> str | None:
     return None
 
 
-def resolve_lines(repo: Path, result: dict) -> list[str]:
+def resolve_lines(repo: Path, result: dict[str, Any]) -> list[str]:
     """One fact per line: the repository, the directory and where it came from, candidates, then notes.
 
     The repository, the directory, and each candidate are paths a later command takes, so `resolve` refuses one that

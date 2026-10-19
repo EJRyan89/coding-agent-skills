@@ -252,8 +252,25 @@ class PythonChecksFixtures(unittest.TestCase):
                 with self.subTest(root=name):
                     check.reset_mock()
                     jobs[name].run()
-                    # The first strict area, pinned as a literal, runs in strict mode under the name it always had.
-                    strict = relative(root) == "skills/ejryan89-skill-core/scripts"
+                    # The strict skills, pinned as literals, run in strict mode under the names they always had.
+                    strict = relative(root) in {
+                        "skills/ejryan89-skill-core/scripts",
+                        "skills/audit-ai-config/scripts",
+                        "skills/audit-skill/scripts",
+                        "skills/curate-agent-memory/scripts",
+                        "skills/dotnet-dependencies/scripts",
+                        "skills/dotnet-format/scripts",
+                        "skills/flag-review-finding/scripts",
+                        "skills/github-activity-report/scripts",
+                        "skills/repo-cleanup/scripts",
+                        "skills/review-insights/scripts",
+                        "skills/update-pr-dashboard/scripts",
+                        ".claude/skills/audit-repository/scripts",
+                        ".claude/skills/change-skill/scripts",
+                        ".claude/skills/implement-change/scripts",
+                        ".claude/skills/review-repository/scripts",
+                        ".claude/skills/shepherd-pull-requests/scripts",
+                    }
                     check.assert_called_once_with(root, ["."], configuration, strict=strict)
 
     def test_the_strict_list_only_grows_and_names_areas_checked_on_their_own(self) -> None:

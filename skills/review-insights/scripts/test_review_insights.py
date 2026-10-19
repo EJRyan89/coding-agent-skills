@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -31,8 +31,9 @@ import review_synthesis
 import skill_roots
 from review_archive import commit_record, current_ledger, pull_records
 from review_config import write_config
-from review_flags import add_flag, load_store, resolve_flag
-from review_records import ReviewRecord, build_record, carried_findings, validate_adapter_result
+from review_flags import FlagError, add_flag, load_store, resolve_flag
+from review_io import PersistenceError, ResourceLock
+from review_records import LedgerEntry, ReviewRecord, build_record, carried_findings, validate_adapter_result
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
@@ -42,7 +43,7 @@ DECIDED_AT = datetime(2026, 2, 3, 9, 30, tzinfo=UTC)
 LINE_BREAKS = ("\u2028", "\u2029", "\x85", "\r", "\n")
 
 
-def reviewer(identifier: str, model: str | None = None) -> dict:
+def reviewer(identifier: str, model: str | None = None) -> dict[str, Any]:
     """A `review.reviewers` entry as `finalize` records it; a repository entrypoint reviewer names no model."""
     entry = {
         "id": identifier,
@@ -55,7 +56,7 @@ def reviewer(identifier: str, model: str | None = None) -> dict:
     return entry if model is None else {**entry, "model": model}
 
 
-def covered(coverage: str, tool: str, rule: str) -> tuple[str, str, dict]:
+def covered(coverage: str, tool: str, rule: str) -> tuple[str, str, dict[str, str]]:
     """A Correctness finding from source `fixture` that an analyzer rule could catch."""
     return "Correctness", "fixture", {"coverage": coverage, "tool": tool, "rule": rule}
 
@@ -63,12 +64,12 @@ def covered(coverage: str, tool: str, rule: str) -> tuple[str, str, dict]:
 def record(
     repository: str,
     number: int,
-    categories: list[str | tuple],
+    categories: list[str | tuple[str, str] | tuple[str, str, dict[str, str]]],
     *,
     version: int = 1,
     reviewed_at: str = "2026-01-15T12:00:00+00:00",
-    reviewers: list[dict] | None = None,
-    adapter: dict | None = None,
+    reviewers: list[dict[str, Any]] | None = None,
+    adapter: dict[str, Any] | None = None,
 ) -> ReviewRecord:
     """A record whose findings have these categories, each from source `fixture`, a (category, source) pair, or a
     (category, source, analyzer) triple; a finding with analyzer coverage also has a headline. The adapter is the
@@ -170,7 +171,13 @@ class InsightFixture(unittest.TestCase):
         )
         self.services = ri.Services(now=lambda: DECIDED_AT, flags_path=lambda: self.flags)
 
-    def commit(self, repository: str, number: int, categories: list[str | tuple], **options: Any) -> None:
+    def commit(
+        self,
+        repository: str,
+        number: int,
+        categories: list[str | tuple[str, str] | tuple[str, str, dict[str, str]]],
+        **options: Any,
+    ) -> None:
         version = options.get("version", 1)
         commit_record(
             self.archive,
@@ -189,7 +196,7 @@ class InsightFixture(unittest.TestCase):
         version: int | None = 1,
         finding: str | None = "F001",
     ) -> str:
-        return add_flag(
+        identifier: str = add_flag(
             self.flags,
             category=category,
             body="Observation.",
@@ -198,6 +205,7 @@ class InsightFixture(unittest.TestCase):
             review_version=version,
             finding_id=finding,
         )["id"]
+        return identifier
 
     def run_main(self, *arguments: str) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
@@ -352,7 +360,7 @@ class ReportTests(InsightFixture):
     def test_later_dispositions_count_findings_addressed_and_still_present_by_reviewer_and_category(self) -> None:
         policy = {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3}
         reviewers = [reviewer("security", "claude-opus-5-5"), reviewer("style", "claude-haiku-4-5")]
-        ledger: list = []
+        ledger: list[LedgerEntry] = []
         # Version 1 is in range; the re-reviews that judged its findings come after it and are read all the same.
         for version, reviewed_at, findings, dispositions in (
             (
@@ -546,7 +554,7 @@ class ReportTests(InsightFixture):
         self.commit_repeats(judged_after=True)
         self.commit("owner/other", 3, ["Style"])
         with (
-            mock.patch.object(ri, "validate_record_pair", wraps=ri.validate_record_pair) as pair,
+            mock.patch.object(ri, "validate_record_pair", wraps=review_records.validate_record_pair) as pair,
             mock.patch.object(review_records, "validate_record", wraps=review_records.validate_record) as record,
         ):
             self.report()
@@ -605,7 +613,7 @@ class ReportTests(InsightFixture):
         stored_json = json_path.read_bytes()
         markdown_path = json_path.with_suffix(".md")
         stored_markdown = markdown_path.read_bytes()
-        cases = {
+        cases: dict[str, Callable[[], int]] = {
             "Markdown changed since its hash": lambda: markdown_path.write_bytes(stored_markdown + b"\nEdited.\n"),
             "an unsupported schema version": lambda: json_path.write_text(
                 json.dumps({**json.loads(stored_json), "schema_version": 99}), encoding="utf-8"
@@ -1354,6 +1362,7 @@ class AnalyzerTests(InsightFixture):
         self.commit_covered()
         json_path, _ = self.report()
         original = json.loads(json_path.read_text(encoding="utf-8"))
+        change: Callable[[dict[str, Any]], object]
         for change, message in (
             (lambda item: item.update(tool="Style Cop"), "REC-003 has an invalid analyzer subject"),
             (lambda item: item.update(repositories=[]), "REC-003 has an invalid analyzer subject"),
@@ -1404,7 +1413,7 @@ class RecordingTests(InsightFixture):
 
     @contextlib.contextmanager
     def competing_resolution(self, flag_id: str) -> Iterator[list[dict[str, Any]]]:
-        resolve = ri.resolve_flag
+        resolve = resolve_flag
         winners: list[dict[str, Any]] = []
 
         def before_resolve(path: Path, identifier: str, resolution: str) -> dict[str, Any]:
@@ -1467,12 +1476,12 @@ class RecordingTests(InsightFixture):
         self.commit("owner/repo", 7, ["Correctness"])
         first, second = self.flag("guideline"), self.flag("noise")
         json_path, _ = self.report()
-        resolve = ri.resolve_flag
+        resolve = resolve_flag
         winners: list[dict[str, Any]] = []
 
         def before_resolve(path: Path, flag_id: str, resolution: str) -> dict[str, Any]:
             if flag_id == second:
-                raise ri.FlagError(f"Flag is already resolved: {second}")
+                raise FlagError(f"Flag is already resolved: {second}")
             winners.append(resolve(path, flag_id, "Resolved elsewhere"))
             return resolve(path, flag_id, resolution)
 
@@ -1495,11 +1504,11 @@ class RecordingTests(InsightFixture):
         self.commit("owner/repo", 7, ["Correctness"])
         first, second = self.flag("guideline"), self.flag("noise")
         json_path, _ = self.report()
-        resolve = ri.resolve_flag
+        resolve = resolve_flag
 
         def fail_on_second(path: Path, flag_id: str, resolution: str) -> dict[str, Any]:
             if flag_id == second:
-                raise ri.PersistenceError("the store is locked by another process")
+                raise PersistenceError("the store is locked by another process")
             return resolve(path, flag_id, resolution)
 
         with mock.patch.object(ri, "resolve_flag", fail_on_second):
@@ -1526,7 +1535,7 @@ class RecordingTests(InsightFixture):
         self.commit("owner/repo", 7, ["Correctness"])
         flag = self.flag("guideline")
         json_path, _ = self.report()
-        resolve = ri.resolve_flag
+        resolve = resolve_flag
         seen: list[list[str]] = []
 
         def record_then_resolve(path: Path, flag_id: str, resolution: str) -> dict[str, Any]:
@@ -1544,7 +1553,7 @@ class RecordingTests(InsightFixture):
         self.commit("owner/repo", 7, ["Correctness", "Style"])
         json_path, _ = self.report()
         lock = ri.Services().report_lock(json_path)
-        self.assertIsInstance(lock, ri.ResourceLock)
+        self.assertIsInstance(lock, ResourceLock)
         self.assertEqual(json_path.parent / ".locks" / "insights.lock", getattr(lock, "directory", None))
         services = self.services
 

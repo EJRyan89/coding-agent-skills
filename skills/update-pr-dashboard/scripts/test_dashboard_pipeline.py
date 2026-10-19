@@ -23,12 +23,14 @@ sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 import dashboard_pipeline as tp
 import review_archive
 import test_review_fixture as review_fixture
-from github_client import CommandResult, GitHubErrorKind
+from github_client import CommandResult, GitHubError, GitHubErrorKind
+from pr_change import ChangeDetector
 from review_archive import commit_record
 from review_config import load_config, write_config
 from review_flags import add_flag
-from review_github import GitHubClient, GitHubError
-from review_records import ReviewRecord, build_record, validate_adapter_result
+from review_github import GitHubClient
+from review_records import ReviewRecord, build_record, validate_adapter_result, validate_record_pair
+from update_pr_dashboard import update_dashboard_rows
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
@@ -635,7 +637,7 @@ class UpdateTests(TrackerPipelineFixture):
     def test_collect_reads_each_record_once(self) -> None:
         review_fixture.commit_fixture(self.archive)
         reviews = [{"state": "COMMENTED", "commit": {"oid": review_fixture.HEADS[1]}}]
-        validate = review_archive.validate_record_pair
+        validate = validate_record_pair
         with mock.patch.object(review_archive, "validate_record_pair", wraps=validate) as read:
             item, _ = self.collect_fixture(reviews)
         self.assertEqual(3, read.call_count, "three versions, each validated once")
@@ -862,8 +864,8 @@ class UpdateTests(TrackerPipelineFixture):
                 self.assertEqual(review_fixture.HEADS[3], item["reviewed_head_sha"])
                 self.assertEqual(verdict.replace(" ", "_"), item["ai_review"]["verdict"])
                 self.assertIn(f"| {label} | 1M open | [AI Review]", row)
-                rows = tp.update_dashboard_rows(
-                    self.input, self.dashboard, "reviewer", detector=tp.ChangeDetector(self.services.github)
+                rows = update_dashboard_rows(
+                    self.input, self.dashboard, "reviewer", detector=ChangeDetector(self.services.github)
                 )
                 self.assertEqual(["current"], [row.ai_review for row in rows])
 
@@ -1122,7 +1124,7 @@ class OverrideTests(TrackerPipelineFixture):
     """`override` lists, sets, and clears `dashboard.status_overrides` without GitHub, validating the whole file."""
 
     def written(self) -> dict[str, Any]:
-        value = json.loads(self.config_path.read_text(encoding="utf-8"))
+        value: dict[str, Any] = json.loads(self.config_path.read_text(encoding="utf-8"))
         self.assertIsInstance(value, dict)
         return value
 
