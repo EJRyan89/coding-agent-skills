@@ -180,11 +180,16 @@ def stub_program(directory: Path, name: str) -> Path:
 
 def launcher(directory: Path) -> tuple[list[str], Path]:
     """A runtime that starts a child and waits for it, as a launcher script starts the runtime proper, and the file
-    the child writes its process ID to before it sleeps for a minute, outliving any limit a case sets."""
+    the child writes its process ID to before it sleeps for a minute, outliving any limit a case sets. The child writes
+    the ID beside the file and renames it into place, so the file never exists without the whole ID."""
     started = directory / "child.pid"
     child = directory / "child.py"
     child.write_text(
-        f"import os, pathlib, time\npathlib.Path({str(started)!r}).write_text(str(os.getpid()))\ntime.sleep(60)\n",
+        "import os, pathlib, time\n"
+        f"pending = pathlib.Path({str(started) + '.pending'!r})\n"
+        "pending.write_text(str(os.getpid()))\n"
+        f"os.replace(pending, {str(started)!r})\n"
+        "time.sleep(60)\n",
         encoding="utf-8",
     )
     program = directory / "launcher.py"
@@ -194,8 +199,25 @@ def launcher(directory: Path) -> tuple[list[str], Path]:
     return [sys.executable, "-B", str(program)], started
 
 
+# How long a case waits for the launcher's child to write its process ID.
+PID_WAIT_SECONDS = 30.0
+
+
+def child_pid(pid_file: Path, wait: float = PID_WAIT_SECONDS) -> int:
+    """The process ID the launcher's child wrote, once the file exists and holds it, or an AssertionError naming the
+    wait when it holds none within `wait` seconds."""
+    deadline = time.monotonic() + wait
+    while True:
+        written = pid_file.read_text(encoding="utf-8").strip() if pid_file.is_file() else ""
+        if written:
+            return int(written)
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"the launcher's child wrote no process ID to {pid_file} within {wait:g}s")
+        time.sleep(0.05)
+
+
 def running(pid_file: Path) -> bool:
-    return platform_support.process_status(int(pid_file.read_text(encoding="utf-8"))).alive
+    return platform_support.process_status(child_pid(pid_file)).alive
 
 
 class RuntimeCanaryTestCase(unittest.TestCase):
@@ -500,6 +522,15 @@ class RunProcessTests(unittest.TestCase):
         # The launcher went with it, so it is reported gone at once.
         self.assertEqual(1, len(interrupted_runs))
         real_wait(interrupted_runs[0], timeout=1)
+
+    def test_an_empty_pid_file_is_a_named_wait_rather_than_a_parse_error(self) -> None:
+        # The file a child has created and not yet written, which a non-atomic write leaves for a moment.
+        started = self.root / "child.pid"
+        started.write_text("", encoding="utf-8")
+        began = time.monotonic()
+        with self.assertRaisesRegex(AssertionError, r"^the launcher's child wrote no process ID to .+ within 0\.2s$"):
+            child_pid(started, 0.2)
+        self.assertGreaterEqual(time.monotonic() - began, 0.2, "the read did not wait for the ID")
 
     def test_a_program_that_cannot_start_is_a_run_that_says_why(self) -> None:
         missing = self.root / "bin" / "copilot.exe"
