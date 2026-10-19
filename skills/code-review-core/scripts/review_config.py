@@ -10,6 +10,7 @@ import posixpath
 import re
 import sys
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 from console import run_main
 from github_logins import is_login
 from review_io import PersistenceError, atomic_write_json, read_json
+from review_vocabularies import SEVERITIES, Severity
 from typed_fields import FieldError, FieldReader, describe
 
 SCHEMA_VERSION = 1
@@ -413,6 +415,21 @@ def _validate_re_review_scope(value: Any) -> dict[str, Any]:
     return scope
 
 
+@dataclass(frozen=True)
+class VerdictPolicy:
+    """When a review's open findings request changes: one open finding of a severity in `request_changes_for`, or
+    `should_fix_threshold` open SHOULD_FIX findings. `verdict_policy` reads one, its defaults filled."""
+
+    request_changes_for: frozenset[Severity]
+    should_fix_threshold: int
+
+
+def verdict_policy(value: Any) -> VerdictPolicy:
+    """The policy a configuration's `verdict_policy` gives, read and checked as `validate_config` reads it."""
+    policy = _validate_verdict_policy(value)
+    return VerdictPolicy(frozenset(policy["request_changes_for"]), policy["should_fix_threshold"])
+
+
 def _validate_verdict_policy(value: Any) -> dict[str, Any]:
     """Both policy fields, defaults filled; request_changes_for is the given list itself."""
     policy = READ.json_object(value, "config.verdict_policy", optional={"request_changes_for", "should_fix_threshold"})
@@ -420,7 +437,7 @@ def _validate_verdict_policy(value: Any) -> dict[str, Any]:
     READ.array(
         request_changes_for,
         "config.verdict_policy.request_changes_for",
-        lambda item, path: READ.one_of(item, path, ("MUST_FIX", "SHOULD_FIX", "SUGGESTION")),
+        lambda item, path: READ.one_of(item, path, SEVERITIES),
         nonempty=True,
     )
     threshold = READ.integer(

@@ -50,12 +50,11 @@ from review_guidance import Guidance, is_prose
 from review_io import PersistenceError, atomic_write_text, read_json
 from review_records import (
     ANALYZER_COVERAGES,
-    SEVERITIES,
-    SEVERITY_RANK,
     ReviewRecord,
     finding_reference,
     valid_analyzer,
 )
+from review_vocabularies import SEVERITIES, SEVERITY_RANK
 
 RESULT_SCHEMA_VERSION = 1
 INPUT_NAME = "synthesis-input.jsonl"
@@ -870,7 +869,10 @@ class _Checker:
         ):
             self.problem(where, "must be a list of non-blank text")
         elif kind == "severity" and (
-            not isinstance(value, dict) or not value or set(value) - SEVERITIES or not all(map(_count, value.values()))
+            not isinstance(value, dict)
+            or not value
+            or set(value) - set(SEVERITIES)
+            or not all(map(_count, value.values()))
         ):
             self.problem(where, f"must map severities ({', '.join(sorted(SEVERITIES))}) to positive counts")
 

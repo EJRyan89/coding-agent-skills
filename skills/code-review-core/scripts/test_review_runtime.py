@@ -26,7 +26,7 @@ import github_client
 import review_runtime
 from executable_locator import located_command
 from git_client import GitError, GitResult, GitStream
-from review_config import is_unreviewed_suffix
+from review_config import is_unreviewed_suffix, verdict_policy
 from review_records import calculate_verdict
 from review_runtime import (
     SOURCE_SNAPSHOT_MANIFEST,
@@ -527,7 +527,7 @@ class RuntimeContractTests(unittest.TestCase):
                     encoding="utf-8",
                 )
                 self.assertEqual(unavailable, review_runtime.unavailable_sources(diff, metadata), changed)
-                self.assertEqual(verdict, calculate_verdict([], {}, unavailable), changed)
+                self.assertEqual(verdict, calculate_verdict([], verdict_policy({}), unavailable), changed)
             # git quotes the name with octal escapes, which the diff parser decodes with one U+FFFD for the whole
             # truncated sequence, not one per byte; the two forms still match.
             octal = "".join(f"{chr(92)}{byte:o}" for byte in bytes([0xE2, 0x82]))
@@ -539,7 +539,7 @@ class RuntimeContractTests(unittest.TestCase):
             )
             unavailable = review_runtime.unavailable_sources(diff, metadata)
             self.assertEqual([f"src/bad{chr(0xFFFD)}.py"], unavailable)
-            self.assertEqual("INCOMPLETE", calculate_verdict([], {}, unavailable))
+            self.assertEqual("INCOMPLETE", calculate_verdict([], verdict_policy({}), unavailable))
 
     def test_source_snapshot_excludes_links_and_writes_nothing_for_a_submodule(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -633,7 +633,7 @@ class RuntimeContractTests(unittest.TestCase):
                 },
                 coverage,
             )
-            self.assertEqual("INCOMPLETE", calculate_verdict([], {}, coverage["unavailable_sources"]))
+            self.assertEqual("INCOMPLETE", calculate_verdict([], verdict_policy({}), coverage["unavailable_sources"]))
             # The repository's own suffix makes the last binary unreviewed too, and the review ends on its findings.
             coverage = review_runtime.review_coverage(diff, metadata, [".bin", ".dat"])
             self.assertEqual([], coverage["unavailable_sources"])
@@ -641,7 +641,7 @@ class RuntimeContractTests(unittest.TestCase):
                 {"assets/logo.png": ".png", "data/blob.bin": ".bin", "dist/Setup.MSI": ".msi"},
                 coverage["unreviewed_files"],
             )
-            self.assertEqual("APPROVED", calculate_verdict([], {}, coverage["unavailable_sources"]))
+            self.assertEqual("APPROVED", calculate_verdict([], verdict_policy({}), coverage["unavailable_sources"]))
             self.assertEqual([], review_runtime.unavailable_sources(diff, metadata, [".bin"]))
 
     def test_a_gap_reason_of_a_name_merged_with_a_binary_one_keeps_it_a_gap(self) -> None:

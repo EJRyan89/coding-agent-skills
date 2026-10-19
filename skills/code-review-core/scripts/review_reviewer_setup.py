@@ -52,9 +52,10 @@ from review_specialists import (
     uncovered,
     unreviewed,
 )
+from review_vocabularies import DispatchMode
 
 
-def _generic_reviewer(runtime: str, inline: bool, source: str) -> tuple[str, dict[str, Any], None, None, str]:
+def _generic_reviewer(runtime: str, inline: bool, source: str) -> tuple[str, dict[str, Any], None, None, DispatchMode]:
     """The suite's generic reviewer, as `_materialize_reviewer` returns it: `source` is `generic` when the repository
     is configured with it, and `generic-fallback` when it reviews in place of a repository reviewer."""
     dispatch = choose_dispatch(runtime, "generic", inline=inline)
@@ -166,7 +167,7 @@ def _materialize_reviewer(
     repository: str,
     services: Services,
     notes: list[str],
-) -> tuple[str, dict[str, Any], Path | None, str | None, str]:
+) -> tuple[str, dict[str, Any], Path | None, str | None, DispatchMode]:
     """The reviewer's kind, the adapter the record names, the root its trusted files were materialized under, its
     entrypoint, and how its roles are dispatched. The suite's generic reviewer has no root and no entrypoint, and
     neither has a specialists manifest."""

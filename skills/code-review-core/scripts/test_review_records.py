@@ -14,6 +14,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+from review_config import verdict_policy
 from review_records import (
     READ,
     TITLE_MAXIMUM_LENGTH,
@@ -583,7 +584,7 @@ class RecordTests(unittest.TestCase):
 
     def test_verdict_policy_is_centralized(self) -> None:
         ledger: Any = [{"severity": "SHOULD_FIX", "state": "open"}] * 2
-        policy = {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3}
+        policy = verdict_policy({"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3})
         self.assertEqual("APPROVED", calculate_verdict(ledger, policy))
         ledger.append({"severity": "SHOULD_FIX", "state": "open"})
         self.assertEqual("CHANGES_REQUESTED", calculate_verdict(ledger, policy))

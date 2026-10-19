@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import test_review_fixture as review_fixture
 from review_archive import archive_head, commit_record, current_ledger, pull_directory, pull_records, record_paths
+from review_config import verdict_policy
 from review_operation import archive_base, commit_adapter_result, reviewed_head
 from review_records import (
     AdapterResult,
@@ -40,10 +41,12 @@ from review_records import (
     validate_adapter_result,
     validate_record,
 )
+from review_vocabularies import Disposition, LedgerState, Severity
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
 POLICY = {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3}
+VERDICT_POLICY = verdict_policy(POLICY)
 ADAPTER: dict[str, Any] = {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}}
 NO_OPEN = {"MUST_FIX": 0, "SHOULD_FIX": 0, "SUGGESTION": 0}
 
@@ -76,7 +79,7 @@ def reviewed_ledger(archive: Path) -> dict[str, Any]:
     return head["ledger"]
 
 
-def disposition(identifier: str, value: str) -> PriorDisposition:
+def disposition(identifier: str, value: Disposition) -> PriorDisposition:
     return {"finding_id": identifier, "disposition": value, "rationale": "Checked against the current code."}
 
 
@@ -123,10 +126,10 @@ def validate(result: object, prior: Sequence[dict] = ()) -> AdapterResult:
 def entry(
     version: int,
     identifier: str,
-    severity: str,
-    state: str,
+    severity: Severity,
+    state: LedgerState,
     judged_in: int,
-    dispositions: Sequence[tuple[int, str]] = (),
+    dispositions: Sequence[tuple[int, Disposition]] = (),
     repeats: Sequence[tuple[int, str]] = (),
 ) -> LedgerEntry:
     return {
@@ -384,23 +387,27 @@ class RepeatTests(unittest.TestCase):
 
     def test_the_verdict_counts_open_ledger_entries(self) -> None:
         should = [entry(1, f"F00{n}", "SHOULD_FIX", "open", 1) for n in (1, 2)]
-        self.assertEqual("APPROVED", calculate_verdict(should, POLICY))
+        self.assertEqual("APPROVED", calculate_verdict(should, VERDICT_POLICY))
         self.assertEqual(
             "APPROVED",
-            calculate_verdict([*should, entry(1, "F003", "SHOULD_FIX", "closed", 2, [(2, "addressed")])], POLICY),
+            calculate_verdict(
+                [*should, entry(1, "F003", "SHOULD_FIX", "closed", 2, [(2, "addressed")])], VERDICT_POLICY
+            ),
         )
         self.assertEqual(
-            "CHANGES_REQUESTED", calculate_verdict([*should, entry(1, "F003", "SHOULD_FIX", "open", 1)], POLICY)
+            "CHANGES_REQUESTED", calculate_verdict([*should, entry(1, "F003", "SHOULD_FIX", "open", 1)], VERDICT_POLICY)
         )
         self.assertEqual(
             "APPROVED",
-            calculate_verdict([entry(1, "F001", "MUST_FIX", "unverified", 2, [(2, "unable_to_verify")])], POLICY),
+            calculate_verdict(
+                [entry(1, "F001", "MUST_FIX", "unverified", 2, [(2, "unable_to_verify")])], VERDICT_POLICY
+            ),
         )
         self.assertEqual(
             "CHANGES_REQUESTED",
-            calculate_verdict([entry(1, "F001", "MUST_FIX", "open", 2, [(2, "partially_addressed")])], POLICY),
+            calculate_verdict([entry(1, "F001", "MUST_FIX", "open", 2, [(2, "partially_addressed")])], VERDICT_POLICY),
         )
-        self.assertEqual("INCOMPLETE", calculate_verdict(should, POLICY, ["src/large.cs"]))
+        self.assertEqual("INCOMPLETE", calculate_verdict(should, VERDICT_POLICY, ["src/large.cs"]))
 
     def test_invalid_repeats_fail_result_validation(self) -> None:
         prior = [{"id": "v1:F001", "severity": "SHOULD_FIX"}, {"id": "v1:F002", "severity": "SUGGESTION"}]

@@ -32,7 +32,6 @@ from review_config import safe_repository_path
 from review_documents import LINE_UNSAFE
 from review_io import PersistenceError, atomic_write_bytes, atomic_write_json, atomic_write_text, read_diff, read_json
 from review_records import (
-    SEVERITY_RANK,
     TITLE_MAXIMUM_LENGTH,
     RecordError,
     joined_source,
@@ -59,6 +58,7 @@ from review_runtime import (
     validate_adapter_manifest,
     verify_source_snapshot,
 )
+from review_vocabularies import SEVERITIES, SEVERITY_RANK, Severity
 from typed_fields import FieldError, FieldReader
 
 # The condition protocol's variables, which a repository's condition script names on its side of the protocol.
@@ -85,12 +85,9 @@ CONDITION_OUTPUT_VARIABLE = "CODE_REVIEW_CONDITION_OUTPUT"
 # author's diff and head, such as the passages of documents that name a changed file, and a reviewer that reads it
 # carries it on every later turn, so it is cut here rather than left to fill the reviewer's context.
 CONDITION_FILE_BYTES = 32 * 1024
-SEVERITY = {
-    "MUST_FIX": "MUST_FIX",
-    "MUST FIX": "MUST_FIX",
-    "SHOULD_FIX": "SHOULD_FIX",
-    "SHOULD FIX": "SHOULD_FIX",
-    "SUGGESTION": "SUGGESTION",
+# Each way a role may write a severity, as the record spells it or in words, as in MUST FIX, and the severity it is.
+SEVERITY: dict[str, Severity] = {
+    spelling: severity for severity in SEVERITIES for spelling in (severity, severity.replace("_", " "))
 }
 # The fields OUTPUT gives a result and each of its findings; a result with any other is invalid.
 RESULT_FIELDS = {"model", "summary", "findings", "prior_dispositions", "comment_dispositions"}
