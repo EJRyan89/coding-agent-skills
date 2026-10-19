@@ -263,7 +263,7 @@ def add_flag(
 
 
 def _stored_flag(store: dict[str, Any], flag_id: str) -> dict[str, Any]:
-    matching = [item for item in store["flags"] if item["id"] == flag_id]
+    matching: list[dict[str, Any]] = [item for item in store["flags"] if item["id"] == flag_id]
     if len(matching) != 1:
         raise FlagError(f"Unknown flag ID: {flag_id}")
     return matching[0]

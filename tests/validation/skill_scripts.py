@@ -16,8 +16,9 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import git_client
-from duplication import SKILL_CORE, SKILL_CORE_SCRIPTS
+from duplication import SKILL_CORE_SCRIPTS
 from markdown_sections import SHELL_FENCES
+from skill_roots import SKILL_CORE
 from toolchain import powershell_json
 from validation_support import (
     COMPUTED_NAME,

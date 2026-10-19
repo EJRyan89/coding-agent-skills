@@ -36,7 +36,7 @@ import re
 import shutil
 import tempfile
 from collections import Counter
-from collections.abc import Container, Mapping, Sequence
+from collections.abc import Callable, Container, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -1286,7 +1286,7 @@ def category_facts(report: dict[str, Any], identifier: str, entry: dict[str, Any
     return flat
 
 
-def render(report: dict[str, Any], decision_history: Any) -> list[str]:
+def render(report: dict[str, Any], decision_history: Callable[[dict[str, Any]], list[str]]) -> list[str]:
     """The synthesis section of the Markdown report: its recommendations by priority, cheapest fix first within one,
     then its analysis."""
     synthesis = report.get("synthesis")
@@ -1319,7 +1319,7 @@ def render(report: dict[str, Any], decision_history: Any) -> list[str]:
     return lines
 
 
-def _render_item(item: dict[str, Any], decision_history: Any) -> list[str]:
+def _render_item(item: dict[str, Any], decision_history: Callable[[dict[str, Any]], list[str]]) -> list[str]:
     lines = [
         f"#### {item['id']} — {item['title']}",
         "",

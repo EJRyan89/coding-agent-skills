@@ -27,9 +27,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 from bounded_process import run_bounded, without_repository_variables
 from executable_locator import find_executables
 from job_tree import JobRefused, process_tree
+from process_identity import ProcessStatus
 from review_config import REVIEWER_EFFORTS
 from review_io import ResourceLock, atomic_write_json, atomic_write_text, read_diff, read_json
-from review_process import ProcessStatus, same_process, shell_script
+from review_process import same_process, shell_script
 from review_runtime import (
     READ,
     SOURCE_SNAPSHOT_MANIFEST,

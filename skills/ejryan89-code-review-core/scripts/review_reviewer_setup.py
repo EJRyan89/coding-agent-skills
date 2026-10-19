@@ -252,7 +252,7 @@ def _configured_entry(
         raise PipelineError("A canary is an initial review and cannot be forced")
     if re_review != (scope is not None) or scope not in (None, *RE_REVIEW_SCOPES):
         raise PipelineError(f"A re-review, and only a re-review, takes a scope: {', '.join(RE_REVIEW_SCOPES)}")
-    entry = config["repositories"].get(repository)
+    entry: dict[str, Any] | None = config["repositories"].get(repository)
     if entry is None:
         raise PipelineError(f"{repository} is not a configured repository")
     return entry

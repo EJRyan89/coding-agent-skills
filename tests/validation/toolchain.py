@@ -102,7 +102,8 @@ def find_ruff() -> str | None:
     try:
         from ruff.__main__ import find_ruff_bin  # type: ignore[import-untyped]  # ruff ships no type information
 
-        return find_ruff_bin()
+        found: str = find_ruff_bin()
+        return found
     except (ImportError, FileNotFoundError):
         return platform_support.find_executable("ruff")
 

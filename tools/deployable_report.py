@@ -46,6 +46,7 @@ import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -251,7 +252,7 @@ def tool_versions(find: Find | None = None, run: RunVersion = _run_version) -> l
     return versions
 
 
-def render_summary(passes: list[dict], versions: list[tuple[str, str]], notes: list[str]) -> str:
+def render_summary(passes: list[dict[str, Any]], versions: list[tuple[str, str]], notes: list[str]) -> str:
     lines = [
         f"## Deployability on a fresh {platform_support.PLATFORM_NAME} runner",
         "",
@@ -275,7 +276,7 @@ def render_summary(passes: list[dict], versions: list[tuple[str, str]], notes: l
     return "\n".join(lines) + "\n"
 
 
-def _read_results(path: Path) -> list[dict]:
+def _read_results(path: Path) -> list[dict[str, Any]]:
     """The recorded passes, none when the file is absent; a file that cannot be read as a JSON array is an input
     error, which leaves the file as it is."""
     try:
@@ -289,7 +290,7 @@ def _read_results(path: Path) -> list[dict]:
     return data
 
 
-def _write_results(path: Path, passes: list[dict]) -> None:
+def _write_results(path: Path, passes: list[dict[str, Any]]) -> None:
     try:
         path.write_text(json.dumps(passes, indent=2) + "\n", encoding="utf-8")
     except OSError as exc:

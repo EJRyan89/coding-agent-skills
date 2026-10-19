@@ -501,6 +501,11 @@ def path_of(units: int, *, folder: int = 0) -> str:
 
 
 class PathLengthTests(AdversarialFixture):
+    def test_long_paths_are_enabled_only_where_windows_answers_for_them(self) -> None:
+        # Off Windows no ntdll is asked, and the shorter limits hold, as they do where Windows refuses long paths.
+        with mock.patch.object(sys, "platform", "linux"):
+            self.assertIs(False, review_runtime._long_paths_enabled())
+
     def test_the_limits_are_windows_path_limits_with_and_without_long_paths(self) -> None:
         for enabled, limits in ((False, (259, 247)), (True, (32_507, 32_507))):
             with self.subTest(long_paths=enabled), mock.patch.object(review_runtime, "_long_paths_enabled") as query:
