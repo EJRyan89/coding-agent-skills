@@ -298,6 +298,14 @@ ACCEPTED: list[tuple[str, Callable[[], dict[str, Any]], Mutation]] = [
         _set((*REVIEW, "snapshot"), {**SNAPSHOT, "excluded": {"agent-instruction": 3, "configured": 1_200}}),
     ),
     ("snapshot that excluded nothing", _record, _set((*REVIEW, "snapshot"), {**SNAPSHOT, "excluded": {}})),
+    *(
+        (
+            f"diff over the diff endpoint's limit, read from {source}",
+            _record,
+            _set((*REVIEW, "snapshot"), {**SNAPSHOT, "diff": {"source": source, "limit": limit}}),
+        )
+        for source, limit in (("files-api", "300 files"), ("checkout", "20000 lines"))
+    ),
     ("reads counted", _record, _set((*REVIEW, "reviewers"), [{**REVIEWER, "files_read": 0, "bytes_read": 0}])),
     ("reads unknown", _record, _set((*REVIEW, "reviewers"), [{**REVIEWER, "files_read": None, "bytes_read": None}])),
     ("reads not recorded", _record, _set((*REVIEW, "reviewers"), [REVIEWER])),
@@ -748,6 +756,33 @@ REJECTED: list[tuple[str, Mutation, type[Exception], str]] = [
         F,
         _wrong("record.review.snapshot.source", SNAPSHOT_SOURCE_KIND, "archive"),
     ),
+    (
+        "snapshot diff null",
+        _set((*REVIEW, "snapshot"), {**SNAPSHOT, "diff": None}),
+        F,
+        "record.review.snapshot.diff must be an object, found null",
+    ),
+    (
+        "snapshot diff without its limit",
+        _set((*REVIEW, "snapshot"), {**SNAPSHOT, "diff": {"source": "checkout"}}),
+        F,
+        _missing("record.review.snapshot.diff", "limit"),
+    ),
+    (
+        "snapshot diff source unknown",
+        _set((*REVIEW, "snapshot"), {**SNAPSHOT, "diff": {"source": "github", "limit": "300 files"}}),
+        F,
+        _wrong("record.review.snapshot.diff.source", 'one of "checkout", "files-api"', "github"),
+    ),
+    *[
+        (
+            f"snapshot diff limit {limit!r}",
+            _set((*REVIEW, "snapshot"), {**SNAPSHOT, "diff": {"source": "files-api", "limit": limit}}),
+            R,
+            "Review snapshot diff limit must be a count and what it counts, as in 300 files",
+        )
+        for limit in ("300", "files", "0 files", "300 Files", "300 files\n", "-1 files")
+    ],
     *[
         (
             f"snapshot {field} {value!r}",
@@ -1194,6 +1229,24 @@ STAGES: list[tuple[str, Mutation, type[Exception], str]] = [
         _set((*REVIEW, "snapshot"), {**SNAPSHOT, "source": "x"}),
         F,
         _wrong("record.review.snapshot.source", SNAPSHOT_SOURCE_KIND, "x"),
+    ),
+    (
+        "snapshot diff",
+        _set((*REVIEW, "snapshot"), {**SNAPSHOT, "diff": []}),
+        F,
+        "record.review.snapshot.diff must be an object, found an array",
+    ),
+    (
+        "snapshot diff source",
+        _set((*REVIEW, "snapshot"), {**SNAPSHOT, "diff": {"source": "x", "limit": "300 files"}}),
+        F,
+        _wrong("record.review.snapshot.diff.source", 'one of "checkout", "files-api"', "x"),
+    ),
+    (
+        "snapshot diff limit",
+        _set((*REVIEW, "snapshot"), {**SNAPSHOT, "diff": {"source": "checkout", "limit": "300"}}),
+        R,
+        "Review snapshot diff limit must be a count and what it counts, as in 300 files",
     ),
     (
         "snapshot files",

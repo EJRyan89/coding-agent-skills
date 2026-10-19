@@ -5,7 +5,7 @@ it holds a byte outside printable ASCII, a double quote, or a backslash: then it
 included, between double quotes, each such byte escaped as `\\a`, `\\b`, `\\t`, `\\n`, `\\v`, `\\f`, `\\r`, `\\"`,
 `\\\\`, or three octal digits. A `---` or `+++` path that holds a space ends with a tab, quoted or not, so the name's
 end is plain however it ends. A script that reads those lines decodes the path here, so every reader drops the same tab
-and undoes the same quoting.
+and undoes the same quoting, and one that writes them, as from a listing of changed files, quotes it here.
 
 A decoded path is the pull request author's to choose, and pathlib on Windows reads a backslash in it as a separator,
 so a script that reads the file a diff names finds it through `snapshot_path`, which holds it inside the snapshot.
@@ -59,6 +59,30 @@ def unquote(value: str) -> str:
         else:
             raise DiffPathError(f"Malformed quoted diff path: {value!r}")
     return raw.decode("utf-8", "replace")
+
+
+def quote(value: str) -> str:
+    """`value` as git writes a path with core.quotePath on, its default: as given when every byte of its UTF-8 is
+    printable ASCII other than a double quote or a backslash, and otherwise between double quotes, each such byte
+    escaped by a letter or by itself where git does that and in three octal digits elsewhere. `unquote` undoes it."""
+    data = value.encode("utf-8", "surrogateescape")
+    if all(0x20 <= byte < 0x7F and byte not in (0x22, 0x5C) for byte in data):
+        return value
+    letters = {byte: f"\\{letter}" for letter, byte in ESCAPED_BYTES.items()}
+    return (
+        '"'
+        + "".join(letters.get(byte) or (chr(byte) if 0x20 <= byte < 0x7F else f"\\{byte:03o}") for byte in data)
+        + '"'
+    )
+
+
+def header_text(value: str | None) -> str:
+    """What git writes after `--- ` or `+++ ` for a path given with its `a/` or `b/` prefix, or None for the side an
+    added or a deleted file has no file on: the path quoted as `quote` does, and a tab after a name holding a space.
+    `header_path` reads it back."""
+    if value is None:
+        return "/dev/null"
+    return quote(value) + ("\t" if " " in value else "")
 
 
 def header_path(value: str) -> str | None:

@@ -36,7 +36,7 @@ from link_probe import is_link_or_junction
 from review_config import ConfigurationError, validate_repository_identity
 from review_io import PersistenceError, read_json
 from review_records import RecordError, ReviewRecord, validate_record
-from review_runtime import DOCUMENT_STAGES, RuntimeContractError, _safe_relative_path
+from review_runtime import DOCUMENT_STAGES, GIT_DIFF_OPTIONS, RuntimeContractError, _safe_relative_path
 from typed_fields import FieldError, FieldReader
 
 FIXTURE_SCHEMA_VERSION = 1
@@ -240,19 +240,7 @@ def fixture_change(directory: Path, runner: Runner) -> Iterator[FixtureChange]:
         store.git("remote", "add", "origin", f"https://github.com/{pull['repository']}.git")
         base = store.commit(directory / "base", "base")
         head = store.commit(directory / "head", "head", parent=base)
-        # The options a user's configuration could otherwise change, so the diff is git's default, as GitHub's is.
-        raw = store.git(
-            "diff",
-            "--no-color",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--find-renames",
-            "--unified=3",
-            "--src-prefix=a/",
-            "--dst-prefix=b/",
-            base,
-            head,
-        )
+        raw = store.git("diff", *GIT_DIFF_OPTIONS, base, head)
         diff, undecodable = replace_undecodable(raw)
         yield FixtureChange(
             name=pull["repository"],

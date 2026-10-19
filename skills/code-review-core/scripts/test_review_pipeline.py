@@ -260,6 +260,7 @@ class FakeGitHub:
         self.listing: list[dict[str, Any]] | None = None
         self.after_diff: dict[str, Any] | None = None  # a push that lands right after the diff is served
         self.diff_error: Exception | None = None  # raised by the runner instead of serving the diff
+        self.diff_refusal: str | None = None  # gh's stderr when GitHub's diff endpoint refuses the diff
 
     def __call__(self, arguments: Sequence[str]) -> CommandResult:
         arguments = list(arguments)
@@ -275,11 +276,17 @@ class FakeGitHub:
             listed = [pull for pull in self.listing if state in {"all", pull["state"]}]
             # Every listing fits one page: a paginated one arrives slurped, a closed walk's first page as it is.
             return CommandResult(0, json.dumps([listed] if "--paginate" in arguments else listed), "")
+        if endpoint.startswith(f"repos/{REPOSITORY}/compare/"):
+            base, head = endpoint.rsplit("/", 1)[1].removesuffix("?per_page=1").split("...")
+            merge_base = subprocess_runner(["git", "-C", str(self.checkout), "merge-base", base, head])
+            return CommandResult(0, json.dumps({"merge_base_commit": {"sha": merge_base.stdout.strip()}}), "")
         number = int(endpoint.rsplit("/", 1)[1])
         pull = self.pulls[number]
         if "-H" in arguments:
             if self.diff_error is not None:
                 raise self.diff_error
+            if self.diff_refusal is not None:
+                return CommandResult(1, "", self.diff_refusal)
             # Through the real runner, so a committed byte that is not UTF-8 arrives as it would from gh.
             diff = subprocess_runner(
                 [
@@ -3511,6 +3518,22 @@ class ProfileModelTests(PipelineFixture):
         code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
         self.assertEqual(0, code, err)
         self.assertIn("ROUTE python-review files=1 model=haiku", out.splitlines())
+
+    def test_validate_reviewer_reads_a_change_over_the_diff_limit_from_the_checkout_as_prepare_does(self) -> None:
+        self.trusted_profile("model: haiku\n")
+        within = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")[1].splitlines()
+        self.github.diff_refusal = "gh: Sorry, the diff exceeded the maximum number of files (300). (HTTP 406)"
+        self.github.calls.clear()
+        code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
+        self.assertEqual((0, ""), (code, err))
+        note = (
+            "NOTE GitHub's diff endpoint refuses a diff over 300 files, so the diff was read from git's diff in the "
+            "checkout."
+        )
+        lines = out.splitlines()
+        self.assertEqual(1, lines.count(note))
+        self.assertEqual(within, [line for line in lines if line != note], "every other line as below the limit")
+        self.assertTrue(any("/compare/" in call[-1] for call in self.github.calls), "the merge base is GitHub's")
 
 
 class ReviewerSourceTests(PipelineFixture):
