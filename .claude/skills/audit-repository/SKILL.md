@@ -1,22 +1,23 @@
 ---
 name: audit-repository
 description: >-
-  Run this repository's two audits per release: the release audit of the diff since the last tag, before tagging,
-  and the rotation audit of one area read whole, after it. Writes the briefs for read-only readers, then files what
-  they confirm.
-argument-hint: "release [--since REF] | rotation [--record TAG]"
+  Run this repository's audits per release: the release audit of the diff since the last tag, before tagging, and
+  after it the rotation audit of one area read whole and the guidance audit of each runtime's published guidance.
+  Writes the briefs for read-only readers, then files what they confirm.
+argument-hint: "release [--since REF] | rotation [--record TAG] | guidance [--record TAG]"
 disable-model-invocation: true
 allowed-tools: ["Bash(python -B .claude/skills/audit-repository/scripts/audit_repository.py *)", "PowerShell(python -B .claude/skills/audit-repository/scripts/audit_repository.py *)"]
 ---
 
 # Audit the repository
 
-Each release is audited twice, as "Before tagging" and "After tagging" in `docs/releasing.md` require. `.claude/skills/audit-repository/scripts/audit_repository.py` does every deterministic step: it sorts files into four areas (`deployer`, `code-review`, `other-skills`, `infrastructure`), reads the rotation record, splits an area too large for one reader, writes one brief per reader to a new temporary directory, looks up the milestone each finding is filed into and the issues the next milestone carries, searches the open issues, and removes the briefs. It prints one fact per line, and its docstring lists every line. Your part is starting the readers, confirming what they report, and filing it once the user agrees.
+Each release is audited before its tag and after it, as "Before tagging" and "After tagging" in `docs/releasing.md` require. `.claude/skills/audit-repository/scripts/audit_repository.py` does every deterministic step: it sorts files into four areas (`deployer`, `code-review`, `other-skills`, `infrastructure`), reads the rotation record and the guidance record, splits an area too large for one reader, writes one brief per reader to a new temporary directory, looks up the milestone each finding is filed into and the issues the next milestone carries, searches the open issues, and removes the briefs. It prints one fact per line, and its docstring lists every line. Your part is starting the readers, confirming what they report, and filing it once the user agrees.
 
 ## 1. Choose the audit
 
 - **release**, before tagging: every file changed since the last release, the highest `vX.Y.Z` tag `HEAD` holds; a nearer pre-release or other tag does not move it. It holds the release.
 - **rotation**, after tagging: the one area the rotation record shows read whole least recently, with the issues the next milestone carries. It holds nothing and feeds the next milestone.
+- **guidance**, after tagging: the published guidance of each runtime the deployer supports, and of Python, page by page as `.claude/skills/audit-repository/references/guidance.json` lists them, against the files that state facts about that runtime, the provenance files of `analyze-skill-cost` and `audit-ai-config` among them. It holds nothing and feeds the next milestone.
 
 ## 2. Run the script
 
@@ -25,6 +26,7 @@ From a checkout of the commit being audited, run the mode you chose:
 ```bash
 python -B .claude/skills/audit-repository/scripts/audit_repository.py release
 python -B .claude/skills/audit-repository/scripts/audit_repository.py rotation
+python -B .claude/skills/audit-repository/scripts/audit_repository.py guidance
 ```
 
 Add `--since '<ref>'` to `release` to start from another base. Keep these lines for the later steps:
@@ -33,12 +35,13 @@ Add `--since '<ref>'` to `release` to start from another base. Keep these lines 
 - `PROVENANCE "<sentence>"`: the sentence each filed issue's body opens with.
 - `CARRIED <number> "<title>"`: an open issue the next milestone carries; every rotation brief names them too.
 - `BRIEFS "<directory>"`, then one `BRIEF <name> "<file>"` per reader, each its whole prompt; `READERS` counts an area's.
+- `SUBJECT <subject> <pages> <tag>`: guidance's runtimes and Python, each with its pages and the oldest of their last reads, or `never`.
 
-A `FAILED` line is the last line and names what stopped the run, such as no release tag reachable from `HEAD` or gh's own reason. A run that fails while writing the briefs prints no `BRIEFS` line and leaves its directory in place: the folder holding the file its `FAILED` line names. Once you have diagnosed the failure, remove that folder as step 6 says; a failure writing the marker, `.audit-repository-briefs.json`, leaves a folder `remove-briefs` refuses, so delete it yourself.
+A `FAILED` line is the last line and names what stopped the run, such as no release tag reachable from `HEAD`, a guidance record naming no page for a runtime the deployer supports, or gh's own reason. A run that fails while writing the briefs prints no `BRIEFS` line and leaves its directory in place: the folder holding the file its `FAILED` line names. Once you have diagnosed the failure, remove that folder as step 6 says; a failure writing the marker, `.audit-repository-briefs.json`, leaves a folder `remove-briefs` refuses, so delete it yourself.
 
 ## 3. Start one reader per brief
 
-Start one read-only reader per `BRIEF` line, all at once: in Claude Code a subagent that cannot edit, such as the `Plan` type; elsewhere a separate read-only session. Give each this prompt: `Read <file> and follow it.`
+Start one read-only reader per `BRIEF` line, all at once: in Claude Code a subagent that cannot edit, such as the `Plan` type, which can also fetch the pages a guidance brief names; elsewhere a separate read-only session. Give each this prompt: `Read <file> and follow it.`
 
 ## 4. Confirm before filing
 
@@ -68,6 +71,12 @@ python -B .claude/skills/audit-repository/scripts/audit_repository.py rotation -
 ```
 
 `RECORDED <tag> <area> <date>` confirms the entry it appended to `.claude/skills/audit-repository/references/rotation.json`. If the write fails, the `FAILED` line says the record is unchanged and names any copy left beside it to delete; fix the cause and run the command again.
+
+After a guidance audit, record the tag the same way, in the same kind of pull request, which also gives each moved page its new address in `.claude/skills/audit-repository/references/guidance.json`; `RECORDED_PAGES <tag> <count>` confirms the pages the tag was appended to:
+
+```bash
+python -B .claude/skills/audit-repository/scripts/audit_repository.py guidance --record '<tag>'
+```
 
 When each audit's findings are filed, delete its briefs directory, the one its `BRIEFS` line named. `REMOVED "<directory>"` confirms it; the script deletes nothing but a briefs directory holding the marker its run wrote there:
 
