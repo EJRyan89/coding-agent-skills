@@ -12,6 +12,11 @@ BACKUP_SUFFIX = ".deploying-bak"
 TEMPORARY_INFIX = ".tmp."
 
 
+def transient_name(item: str) -> str:
+    """The name of item's transient backup, beside it while a deployment replaces it."""
+    return f"{item}{BACKUP_SUFFIX}"
+
+
 def safe_name_problem(name: str, context: str) -> str | None:
     """Return why a name is not a safe single-level filename, or None when it is."""
     if not name:

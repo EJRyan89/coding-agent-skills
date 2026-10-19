@@ -492,7 +492,14 @@ class ValidateSharedAssetsTests(unittest.TestCase):
     ) -> Context:
         src = Source(OWN_SOURCE, shared_assets=assets)
         for name, shared in skills.items():
-            src.skills[name] = Skill(name, self.paths.skills_src / name, [], shared, [], True)
+            src.skills[name] = Skill(
+                name=name,
+                directory=self.paths.skills_src / name,
+                required_vars=[],
+                shared_deps=shared,
+                skill_deps=[],
+                selectable=True,
+            )
         data = manifest.Manifest(self.paths.manifest_file, {"sources": sources or {}})
         data.owners["shared"].update(owners or {})
         return Context(self.paths, Options(), src, {}, data, data.ownership(OWN_SOURCE), io.StringIO())
@@ -638,7 +645,14 @@ class ContextStepTests(unittest.TestCase):
     def context(self, skills: dict[str, list[str]], config: dict[str, str] | None = None) -> Context:
         src = Source(OWN_SOURCE)
         for name, required in skills.items():
-            src.skills[name] = Skill(name, self.paths.skills_src / name, required, [], [], True)
+            src.skills[name] = Skill(
+                name=name,
+                directory=self.paths.skills_src / name,
+                required_vars=required,
+                shared_deps=[],
+                skill_deps=[],
+                selectable=True,
+            )
         data = manifest.Manifest(self.paths.manifest_file, {"sources": {}})
         return Context(self.paths, Options(), src, config or {}, data, data.ownership(OWN_SOURCE), io.StringIO())
 
