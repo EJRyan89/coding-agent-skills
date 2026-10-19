@@ -82,7 +82,7 @@ class FieldReader:
 
     def string(
         self,
-        value: Any,
+        value: object,
         path: str,
         *,
         empty: bool = False,
@@ -109,7 +109,7 @@ class FieldReader:
             raise self.fail(path, expected, _string_of(len(value)))
         return value
 
-    def integer(self, value: Any, path: str, *, minimum: int | None = None, maximum: int | None = None) -> int:
+    def integer(self, value: object, path: str, *, minimum: int | None = None, maximum: int | None = None) -> int:
         """An integer, never a boolean or a float, from `minimum` to `maximum` when they are given."""
         expected = "an integer"
         if minimum is not None and maximum is not None:
@@ -124,19 +124,19 @@ class FieldReader:
             raise self.fail(path, expected, describe(value))
         return value
 
-    def number(self, value: Any, path: str) -> int | float:
+    def number(self, value: object, path: str) -> int | float:
         """A finite number, an integer or a float but never a boolean, nor an integer too large for a float to hold,
         which JSON reads intact."""
-        if type(value) not in {int, float} or not _finite(value):
-            raise self.fail(path, "a finite number", describe(value))
-        return value  # type: ignore[no-any-return]  # value is an int or a float, checked above
+        if (type(value) is int or type(value) is float) and _finite(value):
+            return value
+        raise self.fail(path, "a finite number", describe(value))
 
-    def boolean(self, value: Any, path: str) -> bool:
+    def boolean(self, value: object, path: str) -> bool:
         if not isinstance(value, bool):
             raise self.fail(path, "a boolean", describe(value))
         return value
 
-    def hex_digest(self, value: Any, path: str, *lengths: int) -> str:
+    def hex_digest(self, value: object, path: str, *lengths: int) -> str:
         """A lowercase hexadecimal digest of one of `lengths` characters, such as 64 for SHA-256."""
         if not lengths:
             raise ValueError("a hex digest needs at least one length")
@@ -151,7 +151,7 @@ class FieldReader:
             raise self.fail(path, expected, found)
         return value
 
-    def one_of(self, value: Any, path: str, allowed: Collection[T]) -> T:
+    def one_of(self, value: object, path: str, allowed: Collection[T]) -> T:
         """One of `allowed`, of the same type as the value it equals, so `true` never passes for `1`."""
         for option in allowed:
             if type(value) is type(option) and value == option:
@@ -160,15 +160,15 @@ class FieldReader:
 
     @overload
     def array(
-        self, value: Any, path: str, item: None = None, *, nonempty: bool = False, maximum: int | None = None
+        self, value: object, path: str, item: None = None, *, nonempty: bool = False, maximum: int | None = None
     ) -> list[Any]: ...
 
     @overload
     def array(
         self,
-        value: Any,
+        value: object,
         path: str,
-        item: Callable[[Any, str], T],
+        item: Callable[[object, str], T],
         *,
         nonempty: bool = False,
         maximum: int | None = None,
@@ -176,9 +176,9 @@ class FieldReader:
 
     def array(
         self,
-        value: Any,
+        value: object,
         path: str,
-        item: Callable[[Any, str], Any] | None = None,
+        item: Callable[[object, str], object] | None = None,
         *,
         nonempty: bool = False,
         maximum: int | None = None,
@@ -198,7 +198,7 @@ class FieldReader:
 
     def json_object(
         self,
-        value: Any,
+        value: object,
         path: str,
         *,
         required: Collection[str] | None = None,
@@ -225,7 +225,12 @@ class FieldReader:
             raise self.fail(path, "an object of known fields", f"{_plural(unknown, 'unknown field')} {_names(unknown)}")
 
     def optional(
-        self, read: Callable[Concatenate[Any, str, P], T], value: Any, path: str, *args: P.args, **kwargs: P.kwargs
+        self,
+        read: Callable[Concatenate[object, str, P], T],
+        value: object,
+        path: str,
+        *args: P.args,
+        **kwargs: P.kwargs,
     ) -> T | None:
         """Null, or the value `read` reads; an error then expects the kind or null, except an object's missing or
         unknown fields, which are faults of an object that is there."""
@@ -238,7 +243,7 @@ class FieldReader:
                 raise
             raise self.fail(path, f"{exc.expected} or null", exc.found) from None
 
-    def either(self, value: Any, path: str, *reads: Callable[[Any, str], Any]) -> Any:
+    def either(self, value: object, path: str, *reads: Callable[[object, str], T]) -> T:
         """The value the first of `reads` that accepts it reads; an error expects any of their kinds and names what
         the value is."""
         expected = []

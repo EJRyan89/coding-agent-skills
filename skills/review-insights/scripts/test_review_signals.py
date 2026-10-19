@@ -65,7 +65,7 @@ class SignalFixture(InsightFixture):
         reviewers: list[dict[str, Any]] | None = None,
     ) -> None:
         """Commit one review of owner/repo; a re-review carries the prior ledger, as `finalize` assembles it."""
-        result = {
+        result: Any = {
             "protocol_version": 1,
             "repository": "owner/repo",
             "pull_number": number,

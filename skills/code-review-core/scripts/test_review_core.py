@@ -89,8 +89,10 @@ from review_process import ProcessStatus
 from review_records import (
     READ,
     TITLE_MAXIMUM_LENGTH,
+    AdapterResult,
     RecordError,
     RecordFieldError,
+    ReviewRecord,
     build_record,
     calculate_verdict,
     read_title,
@@ -241,7 +243,7 @@ def valid_request(repository: str = "example/one", number: int = 12) -> dict:
     }
 
 
-def valid_adapter_result(repository: str = "example/one", number: int = 12) -> dict:
+def valid_adapter_result(repository: str = "example/one", number: int = 12) -> Any:
     return {
         "protocol_version": 1,
         "repository": repository,
@@ -1084,7 +1086,7 @@ class RecordTests(unittest.TestCase):
                 self.assertEqual(f"record.findings[0].title must be {expected}, found {found}", str(raised.exception))
 
     def test_finding_title_is_optional_but_validated_in_results_and_records(self) -> None:
-        def validate(result: dict) -> dict:
+        def validate(result: object) -> AdapterResult:
             return validate_adapter_result(
                 result, expected_repository="example/one", expected_number=12, expected_head_sha="b" * 40
             )
@@ -1114,7 +1116,7 @@ class RecordTests(unittest.TestCase):
                 validate_record(tampered)
 
     def test_a_finding_location_comes_from_the_suite_never_a_reviewer_and_is_validated_in_records(self) -> None:
-        def validate(result: dict) -> dict:
+        def validate(result: object) -> AdapterResult:
             return validate_adapter_result(
                 result, expected_repository="example/one", expected_number=12, expected_head_sha="b" * 40
             )
@@ -1187,7 +1189,7 @@ class RecordTests(unittest.TestCase):
         self.assertFalse(valid_analyzer({"coverage": ["known"], "tool": "x", "rule": "y"}))
         self.assertFalse(valid_analyzer("known"))
 
-        def validate(result: dict) -> dict:
+        def validate(result: object) -> AdapterResult:
             return validate_adapter_result(
                 result, expected_repository="example/one", expected_number=12, expected_head_sha="b" * 40
             )
@@ -1295,7 +1297,7 @@ class RecordTests(unittest.TestCase):
             render_markdown(record, record_payload_hash="0" * 64),
         )
         uncompared = copy.deepcopy(record)
-        uncompared["review"]["scope"].update(used="full", files_changed=None, lines_changed=None)
+        uncompared["review"]["scope"].update({"used": "full", "files_changed": None, "lines_changed": None})
         validate_record(uncompared)
         self.assertIn("full&#44; could not compare with v1", render_markdown(uncompared, record_payload_hash="0" * 64))
         for mutate, message in (
@@ -1375,7 +1377,7 @@ class RecordTests(unittest.TestCase):
                 }
             ],
         }
-        result = {
+        result: Any = {
             **valid_adapter_result(),
             "comment_dispositions": [{"comment_id": "C1", "disposition": "still_present", "rationale": "Unchanged."}],
         }
@@ -1432,7 +1434,7 @@ class RecordTests(unittest.TestCase):
             with self.subTest(message=message), self.assertRaisesRegex(RecordError, message):
                 validate_record(broken)
         timed = copy.deepcopy(record)
-        timed["review"]["reviewers"][0].update(seconds=0, model="claude-sonnet-5")
+        timed["review"]["reviewers"][0].update({"seconds": 0, "model": "claude-sonnet-5"})
         validate_record(timed)  # a reviewer's time is optional and may be zero
         without = build_record(valid_request(), valid_adapter_result(), version=1, policy={})
         self.assertNotIn("github_comments", without)
@@ -1496,7 +1498,7 @@ class RecordTests(unittest.TestCase):
             ("verdict", ["APPROVED"], 'one of "APPROVED", "CHANGES_REQUESTED", "INCOMPLETE"', "an array"),
             ("mode", {"initial": 1}, 'one of "initial", "re-review"', "an object"),
         ):
-            broken = copy.deepcopy(record)
+            broken: Any = copy.deepcopy(record)
             broken["review"][field] = value
             with (
                 self.subTest(field=field),
@@ -1548,7 +1550,7 @@ class RecordTests(unittest.TestCase):
             )
 
     def test_verdict_policy_is_centralized(self) -> None:
-        ledger = [{"severity": "SHOULD_FIX", "state": "open"}] * 2
+        ledger: Any = [{"severity": "SHOULD_FIX", "state": "open"}] * 2
         policy = {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3}
         self.assertEqual("APPROVED", calculate_verdict(ledger, policy))
         ledger.append({"severity": "SHOULD_FIX", "state": "open"})
@@ -1721,13 +1723,13 @@ class RecordTests(unittest.TestCase):
         for characters, given in faults:
             with self.subTest(characters=characters, given=given):
                 broken = copy.deepcopy(older)
-                broken["pull_request"].update(body_characters=characters, body_given=given)
+                broken["pull_request"].update({"body_characters": characters, "body_given": given})
                 with self.assertRaisesRegex(RecordError, "body_"):
                     validate_record(broken)
 
 
 class ArchiveTests(unittest.TestCase):
-    def _record(self, repository: str, number: int, version: int) -> dict:
+    def _record(self, repository: str, number: int, version: int) -> ReviewRecord:
         request = valid_request(repository, number)
         result = validate_adapter_result(
             valid_adapter_result(repository, number),

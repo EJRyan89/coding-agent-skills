@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from review_archive import commit_record, current_ledger, pull_records
-from review_records import build_record, carried_findings, validate_adapter_result
+from review_records import ReviewRecord, build_record, carried_findings, validate_adapter_result
 
 REPOSITORY = "example/one"
 NUMBER = 12
@@ -139,7 +139,7 @@ VERSIONS: tuple[dict[str, Any], ...] = (
 
 def commit_fixture(
     archive: Path, *, versions: int = 3, model_names: dict[str, str] | None = None, flags: Iterable[dict[str, Any]] = ()
-) -> list[dict[str, Any]]:
+) -> list[ReviewRecord]:
     """Commit the first `versions` reviews of example/one#12 to `archive` and return the persisted records."""
     flags = list(flags)
     persisted = []

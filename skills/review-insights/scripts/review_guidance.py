@@ -135,7 +135,9 @@ class Guidance:
     unreadable: list[str] = field(default_factory=list)
 
 
-def reviewer_sources(repositories: list[str], records: dict[Path, dict[str, Any]]) -> dict[str, dict[str, Source]]:
+def reviewer_sources(
+    repositories: list[str], records: Mapping[Path, Mapping[str, Any]]
+) -> dict[str, dict[str, Source]]:
     """Each repository's repository-scoped reviewers, each with the latest record it wrote, anywhere in the archive.
     `records` holds every validated record of the repositories by its path."""
     latest: dict[str, dict[str, Source]] = {repository.lower(): {} for repository in repositories}
@@ -152,7 +154,7 @@ def reviewer_sources(repositories: list[str], records: dict[Path, dict[str, Any]
     return latest
 
 
-def guidance_files(repositories: list[str], records: dict[Path, dict[str, Any]]) -> dict[str, list[str]]:
+def guidance_files(repositories: list[str], records: Mapping[Path, Mapping[str, Any]]) -> dict[str, list[str]]:
     """Each repository's guidance files: the source files of the latest record each repository-scoped reviewer
     wrote. A profile the suite ships is recorded beside them under its `suite:<name>` reference, but it is no file of
     the repository, which cannot change it, so it is left out."""
@@ -224,7 +226,7 @@ def _file_versions(by_name: dict[str, Source]) -> dict[VersionKey, list[tuple[st
 
 def read_guidance(
     repositories: list[str],
-    records: dict[Path, dict[str, Any]],
+    records: Mapping[Path, Mapping[str, Any]],
     checkouts: Mapping[str, Path | None],
     reader: Reader | None = None,
 ) -> Guidance:

@@ -20,7 +20,15 @@ from review_archive import (
 )
 from review_config import validate_repository_identity
 from review_io import PersistenceError, read_json
-from review_records import build_record, ledger_history, ledger_summary, payload_hash, validate_adapter_result
+from review_records import (
+    LedgerEntry,
+    ReviewRecord,
+    build_record,
+    ledger_history,
+    ledger_summary,
+    payload_hash,
+    validate_adapter_result,
+)
 from review_state import utc_date, watermark_date
 from typed_fields import FieldError, FieldReader
 
@@ -216,7 +224,7 @@ def _ids(items: Any, path: str) -> list[str]:
     )
 
 
-def archive_base(current: int | None, ledger: list[dict[str, Any]]) -> dict[str, Any]:
+def archive_base(current: int | None, ledger: list[LedgerEntry]) -> dict[str, Any]:
     """The archive state a review is judged against, as prepare records it in run.json: its latest version (None
     without one) and the SHA-256 of that version's ledger."""
     return {"version": current, "ledger_sha256": ledger_digest(ledger)}
@@ -226,7 +234,7 @@ def _version_name(version: Any) -> str:
     return "no review" if version is None else f"version {version}"
 
 
-def check_archive_base(base: Any, current: int | None, ledger: list[dict[str, Any]]) -> None:
+def check_archive_base(base: object, current: int | None, ledger: list[LedgerEntry]) -> None:
     """Fail unless the archive still holds the version and ledger a review was judged against.
 
     A review's dispositions are judged against the version prepare saw, so recording them on top of a later one
@@ -234,19 +242,19 @@ def check_archive_base(base: Any, current: int | None, ledger: list[dict[str, An
     version under the pull request's lock while it writes.
     """
     try:
-        READ.json_object(base, "run.base", required={"version", "ledger_sha256"})
+        recorded = READ.json_object(base, "run.base", required={"version", "ledger_sha256"})
     except FieldError as exc:
         raise ReviewOperationError(
             "The run does not record the archive version it was prepared against; nothing was recorded. "
             "Prepare the review again"
         ) from exc
-    version = READ.optional(READ.integer, base["version"], "run.base.version", minimum=1)
+    version = READ.optional(READ.integer, recorded["version"], "run.base.version", minimum=1)
     if version != current:
         raise ReviewOperationError(
             f"The archive moved since prepare: the review was judged against {_version_name(version)}, "
             f"and the archive now holds {_version_name(current)}; nothing was recorded. Prepare the review again"
         )
-    if READ.hex_digest(base["ledger_sha256"], "run.base.ledger_sha256", 64) != ledger_digest(ledger):
+    if READ.hex_digest(recorded["ledger_sha256"], "run.base.ledger_sha256", 64) != ledger_digest(ledger):
         raise ReviewOperationError(
             f"The ledger of {_version_name(current)} changed since prepare; nothing was recorded. "
             "Prepare the review again"
@@ -272,7 +280,7 @@ def commit_adapter_result(
     dispatch: str | None = None,
     snapshot: dict[str, Any] | None = None,
     documents: dict[str, list[str]] | None = None,
-) -> tuple[Path, Path, dict[str, Any]]:
+) -> tuple[Path, Path, ReviewRecord]:
     """Archive a validated reviewer result as the pull request's next review record. `documents` holds, for each
     changed document whose extracted text the reviewers read, each line's place in the document, which a finding on
     that line records as its `location`."""
@@ -410,7 +418,7 @@ def legacy_counts(report: Path) -> dict[str, int] | None:
 
 
 def reviewed_head(
-    archive_root: Path, repository: str, number: int, *, records: list[dict[str, Any]] | None = None
+    archive_root: Path, repository: str, number: int, *, records: list[ReviewRecord] | None = None
 ) -> dict[str, Any] | None:
     """The latest reviewed head: a validated review record, else a migrated legacy review.
 
@@ -426,7 +434,7 @@ def reviewed_head(
         record = latest_record(archive_root, repository, number)
     if record is not None:
         review = record["review"]
-        coverage = review.get("coverage") or {}
+        coverage = review.get("coverage")
         if "ledger" in record:
             ledger = record["ledger"]
         elif records is None:
@@ -438,7 +446,7 @@ def reviewed_head(
             "head_sha": record["pull_request"]["head_sha"],
             "source": "record",
             "version": review["version"],
-            "incomplete": bool(coverage.get("unavailable_sources")),
+            "incomplete": bool(coverage and coverage["unavailable_sources"]),
             "verdict": review["verdict"],
             "counts": dict(review["counts"]),
             "ledger": ledger_summary(ledger, review["version"]),

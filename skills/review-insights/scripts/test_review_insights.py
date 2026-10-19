@@ -32,7 +32,7 @@ import skill_roots
 from review_archive import commit_record, current_ledger, pull_records
 from review_config import write_config
 from review_flags import add_flag, load_store, resolve_flag
-from review_records import build_record, carried_findings, validate_adapter_result
+from review_records import ReviewRecord, build_record, carried_findings, validate_adapter_result
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
@@ -69,7 +69,7 @@ def record(
     reviewed_at: str = "2026-01-15T12:00:00+00:00",
     reviewers: list[dict] | None = None,
     adapter: dict | None = None,
-) -> dict:
+) -> ReviewRecord:
     """A record whose findings have these categories, each from source `fixture`, a (category, source) pair, or a
     (category, source, analyzer) triple; a finding with analyzer coverage also has a headline. The adapter is the
     generic reviewer unless one is given."""
@@ -382,7 +382,7 @@ class ReportTests(InsightFixture):
                 "reviewers": reviewers,
                 "adapter": {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}},
             }
-            result = {
+            result: Any = {
                 "protocol_version": 1,
                 "repository": "owner/repo",
                 "pull_number": 7,

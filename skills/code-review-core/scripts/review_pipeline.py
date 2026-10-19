@@ -120,6 +120,9 @@ from review_process import start_detached
 from review_records import (
     RE_REVIEW_SCOPES,
     RecordError,
+    Review,
+    ReviewRecord,
+    Scope,
     carried_findings,
     describe_scope,
     ledger_history,
@@ -339,12 +342,12 @@ def ensure_local_commit(checkout: Path, commit: str, refspec: str, git: Runner) 
 
 def choose_scope(
     requested: str,
-    previous: dict[str, Any],
+    previous: ReviewRecord,
     patches: dict[str, dict[str, Any]],
     *,
     thresholds: dict[str, Any],
     entrypoint: bool,
-) -> tuple[dict[str, Any], set[str] | None]:
+) -> tuple[Scope, set[str] | None]:
     """How much of a pull request a re-review covers: the record's scope, and the files to review in full for
     an incremental pass (None for a full one).
 
@@ -358,18 +361,12 @@ def choose_scope(
     changed = (
         None
         if earlier is None
-        else {path for path, patch in patches.items() if (earlier.get(path) or {}).get("sha256") != patch["sha256"]}
+        else {
+            path for path, patch in patches.items() if path not in earlier or earlier[path]["sha256"] != patch["sha256"]
+        }
     )
     lines_total = sum(patch["lines"] for patch in patches.values())
     lines_changed = None if changed is None else sum(patches[path]["lines"] for path in changed)
-    scope = {
-        "requested": requested,
-        "since_version": previous["review"]["version"],
-        "files_changed": None if changed is None else len(changed),
-        "files_total": len(patches),
-        "lines_changed": lines_changed,
-        "lines_total": lines_total,
-    }
     if requested == "full":
         used, reason = "full", "a full re-review was requested"
     elif changed is None:
@@ -386,10 +383,21 @@ def choose_scope(
             used, reason = "full", f"at least {thresholds['full_lines']} changed lines differ"
         else:
             used, reason = "incremental", "the change since then is under the full-review thresholds"
+    scope: Scope = {
+        "requested": requested,
+        "since_version": previous["review"]["version"],
+        "files_changed": None if changed is None else len(changed),
+        "files_total": len(patches),
+        "lines_changed": lines_changed,
+        "lines_total": lines_total,
+        "used": used,
+        "reason": reason,
+    }
     if used != "incremental" or changed is None:
-        return {**scope, "used": used, "reason": reason}, None
-    unseen = (previous["review"].get("coverage") or {}).get("uncovered_files", [])
-    return {**scope, "used": used, "reason": reason}, changed | {path for path in unseen if path in patches}
+        return scope, None
+    coverage = previous["review"].get("coverage")
+    unseen = coverage.get("uncovered_files", []) if coverage else []
+    return scope, changed | {path for path in unseen if path in patches}
 
 
 def _skip(selector: str, reason: str) -> dict[str, Any]:
@@ -412,7 +420,7 @@ def _review_history(
     re_review: bool,
     force: bool,
     notes: list[str],
-) -> tuple[str, dict[str, Any] | None, list[dict[str, Any]]] | None:
+) -> tuple[str, ReviewRecord | None, list[dict[str, Any]]] | None:
     """What the archive says a review of `head` starts from: its mode, the previous record, and the prior findings.
     None when that head is already reviewed and the review is not forced."""
     selector = f"{repository}#{number}"
@@ -1093,7 +1101,7 @@ class _Review:
     number: int
     pull: dict[str, Any]  # validated by validate_canary_pull
     mode: str
-    previous: dict[str, Any] | None  # the record a re-review starts from
+    previous: ReviewRecord | None  # the record a re-review starts from
     prior: list[dict[str, Any]]  # the findings it carries
     base: dict[str, Any]  # the archive state finalize must still find
     reviewer: dict[str, Any]
@@ -1105,7 +1113,7 @@ class _Review:
     ]
     canary: bool
     fixture: dict[str, Any] | None = None  # run.json's record of a fixture canary
-    prior_record: dict[str, Any] | None = None  # a fixture re-review's prior record, which finalize archives first
+    prior_record: ReviewRecord | None = None  # a fixture re-review's prior record, which finalize archives first
     # Whether `source` is a throwaway repository prepare moves into the run, as a fixture's is, so that a lazy
     # snapshot's reviewers can fetch from it until finalize removes the run.
     adopt_source: bool = False
@@ -1173,7 +1181,7 @@ def prepare(
     head = pull["headRefOid"]
     mode = "re-review" if re_review else "initial"
     prior: list[dict[str, Any]] = []
-    previous: dict[str, Any] | None = None
+    previous: ReviewRecord | None = None
     notes: list[str] = []
     # A canary records under a new, empty archive root.
     base = archive_base(None, [])
@@ -1371,7 +1379,7 @@ def _prepare_run(
             else None
         )
         review_files: set[str] | None = None
-        scope_record: dict[str, Any] | None = None
+        scope_record: Scope | None = None
         if review.previous is not None and scope is not None:  # a re-review, which always names its scope
             scope_record, review_files = choose_scope(
                 scope, review.previous, patches, thresholds=config["re_review_scope"], entrypoint=kind == "entrypoint"
@@ -2577,7 +2585,7 @@ def _count_or_unknown(value: int | None) -> str:
     return "unknown" if value is None else str(value)
 
 
-def stats_lines(review: dict[str, Any]) -> list[str]:
+def stats_lines(review: Review) -> list[str]:
     """A canary's snapshot and read counts, as finalize prints them after `STATS <selector> `: the numbers its record
     holds, and none for a field the record leaves out."""
     lines = []

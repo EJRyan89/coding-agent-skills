@@ -18,8 +18,12 @@ import test_review_fixture as review_fixture
 from review_archive import archive_head, commit_record, current_ledger, pull_directory, pull_records, record_paths
 from review_operation import archive_base, commit_adapter_result, reviewed_head
 from review_records import (
+    AdapterResult,
+    LedgerEntry,
+    PriorDisposition,
     RecordError,
     RecordFieldError,
+    ReviewRecord,
     build_record,
     calculate_verdict,
     carried_findings,
@@ -72,11 +76,11 @@ def reviewed_ledger(archive: Path) -> dict[str, Any]:
     return head["ledger"]
 
 
-def disposition(identifier: str, value: str) -> dict:
+def disposition(identifier: str, value: str) -> PriorDisposition:
     return {"finding_id": identifier, "disposition": value, "rationale": "Checked against the current code."}
 
 
-def adapter_result(findings: Sequence[dict] = (), dispositions: Sequence[dict] = ()) -> dict:
+def adapter_result(findings: Sequence[Any] = (), dispositions: Sequence[PriorDisposition] = ()) -> Any:
     return {
         "protocol_version": 1,
         "repository": "example/one",
@@ -105,7 +109,7 @@ def record_request(mode: str = "initial") -> dict:
     }
 
 
-def validate(result: dict, prior: Sequence[dict] = ()) -> dict:
+def validate(result: object, prior: Sequence[dict] = ()) -> AdapterResult:
     return validate_adapter_result(
         result,
         expected_repository="example/one",
@@ -124,7 +128,7 @@ def entry(
     judged_in: int,
     dispositions: Sequence[tuple[int, str]] = (),
     repeats: Sequence[tuple[int, str]] = (),
-) -> dict:
+) -> LedgerEntry:
     return {
         "version": version,
         "id": identifier,
@@ -151,11 +155,11 @@ class ArchiveFixture:
     def commit(
         self,
         findings: Sequence[dict] = (),
-        dispositions: Sequence[dict] = (),
+        dispositions: Sequence[PriorDisposition] = (),
         *,
         mode: str = "re-review",
         used: str = "incremental",
-    ) -> dict:
+    ) -> ReviewRecord:
         self.count += 1
         prior = self.prior() if mode == "re-review" else []
         request = {
@@ -761,8 +765,11 @@ class LedgerReportTests(unittest.TestCase):
 
     def test_an_initial_report_changes_only_its_finding_ids(self) -> None:
         first = review_fixture.commit_fixture(self.archive, versions=1)[0]
+        artifacts = first.get("artifacts")
+        if artifacts is None:
+            raise AssertionError("a committed record has its artifact hashes")
         self.assertEqual(
-            FIXTURE_V1_REPORT.replace("{payload}", first["artifacts"]["payload_sha256"]),
+            FIXTURE_V1_REPORT.replace("{payload}", artifacts["payload_sha256"]),
             fixture_report(self.archive, 1),
         )
 
@@ -841,8 +848,8 @@ class LedgerReportTests(unittest.TestCase):
             "seconds": {"fetch": 6.0, "materialize": 33.2, "prompts": 0.4},
         }
         generic, style = review["review"]["reviewers"]
-        generic.update(files_read=14, bytes_read=52_000)
-        style.update(files_read=None, bytes_read=None)
+        generic.update({"files_read": 14, "bytes_read": 52_000})
+        style.update({"files_read": None, "bytes_read": None})
         report = render_markdown(review, record_payload_hash="0" * 64, prior_records=[first, second])
         self.assertIn(
             "| **Snapshot** | tarball: 12,700 files, 204.0 MiB; fetch 6.0s, materialize 33.2s, prompts 0.4s |\n",
@@ -864,7 +871,7 @@ class LedgerReportTests(unittest.TestCase):
             render_markdown(review, record_payload_hash="0" * 64, prior_records=[first, second]),
         )
         del review["review"]["snapshot"]["excluded"]
-        generic.update(files_read=0, bytes_read=0)
+        generic.update({"files_read": 0, "bytes_read": 0})
         report = render_markdown(review, record_payload_hash="0" * 64, prior_records=[first, second])
         self.assertIn(" | 0 | 40s | 0 (0 B) |\n", report)
 
@@ -891,7 +898,7 @@ class LedgerReportTests(unittest.TestCase):
             ),
         ):
             with self.subTest(source):
-                adapter.update(scope=scope, source=source, source_commit=source_commit)
+                adapter.update({"scope": scope, "source": source, "source_commit": source_commit})
                 self.assertIs(review, validate_record(review))
                 report = render_markdown(review, record_payload_hash="0" * 64, prior_records=[first, second])
                 self.assertIn(f"| **Adapter** | `generic` ({scope}) |\n| **Reviewer source** | {line} |\n", report)

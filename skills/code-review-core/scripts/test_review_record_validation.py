@@ -94,7 +94,7 @@ SNAPSHOT_SECONDS = "Review snapshot seconds must give fetch, materialize, prompt
 SNAPSHOT_EXCLUDED = "Review snapshot excluded must give a positive count for each exclusion reason"
 
 
-def _record() -> dict[str, Any]:
+def _record() -> Any:
     """The smallest valid record: an initial review with one finding and none of the optional parts."""
     return {
         "schema_version": 1,
@@ -130,7 +130,7 @@ def _record() -> dict[str, Any]:
     }
 
 
-def _full_record() -> dict[str, Any]:
+def _full_record() -> Any:
     """A valid version 2 re-review using every optional part: a finding that repeats an earlier one, with its ledger,
     and a file of a type the review does not read."""
     record = _record()
@@ -1629,8 +1629,11 @@ class ArtifactPairValidationTests(unittest.TestCase):
             json_path = Path(temporary) / "review.json"
             markdown_path = Path(temporary) / "review.md"
             persisted = write_record_pair(json_path, markdown_path, _record())
-            for field in ("payload_sha256", "markdown_sha256"):
-                self.assertRegex(persisted["artifacts"][field], r"\A[0-9a-f]{64}\Z")
+            artifacts = persisted.get("artifacts")
+            if artifacts is None:
+                raise AssertionError("a written record has its artifact hashes")
+            self.assertRegex(artifacts["payload_sha256"], r"\A[0-9a-f]{64}\Z")
+            self.assertRegex(artifacts["markdown_sha256"], r"\A[0-9a-f]{64}\Z")
             self.assertEqual(persisted, validate_record_pair(json_path, markdown_path))
 
     def test_a_short_artifact_hash_is_refused_before_reading_the_report(self) -> None:

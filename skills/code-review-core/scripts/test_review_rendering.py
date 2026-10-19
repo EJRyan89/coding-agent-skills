@@ -31,7 +31,7 @@ LITERAL_PROSE = (
 )
 
 
-def validated_result() -> dict:
+def validated_result() -> records.AdapterResult:
     result = valid_adapter_result()
     result["summary"] = PROSE
     result["reviewer"] = MARKUP
@@ -311,7 +311,7 @@ class LiteralReportTests(unittest.TestCase):
             "url": "https://example.invalid/1",
         }
         long = {**comment, "id": "C2", "body": "word " * 40}
-        result = {
+        result: records.AdapterResult = {
             **validated_result(),
             "comment_dispositions": [
                 {"comment_id": "C1", "disposition": "still_present", "rationale": "Unchanged."},

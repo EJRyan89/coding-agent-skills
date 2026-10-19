@@ -12,7 +12,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 from review_config import validate_repository_identity
 from review_io import PersistenceError, ResourceLock
-from review_records import canonical_json, ledger_history, sha256_text, validate_record_pair, write_record_pair
+from review_records import (
+    LedgerEntry,
+    ReviewRecord,
+    canonical_json,
+    ledger_history,
+    sha256_text,
+    validate_record_pair,
+    write_record_pair,
+)
 from typed_fields import FieldError, FieldReader
 
 
@@ -69,7 +77,7 @@ def record_paths(directory: Path, version: int) -> tuple[Path, Path]:
     return directory / f"review-v{version}.json", directory / f"review-v{version}.md"
 
 
-def latest_record(root: Path, repository: str, pull_number: int) -> dict[str, Any] | None:
+def latest_record(root: Path, repository: str, pull_number: int) -> ReviewRecord | None:
     directory = pull_directory(root, repository, pull_number)
     versions = list_versions(directory)
     if not versions:
@@ -78,13 +86,13 @@ def latest_record(root: Path, repository: str, pull_number: int) -> dict[str, An
     return validate_record_pair(json_path, markdown_path)
 
 
-def pull_records(root: Path, repository: str, pull_number: int) -> list[dict[str, Any]]:
+def pull_records(root: Path, repository: str, pull_number: int) -> list[ReviewRecord]:
     """Every validated review record of a pull request, oldest first."""
     directory = pull_directory(root, repository, pull_number)
     return [validate_record_pair(*record_paths(directory, version)) for version in list_versions(directory)]
 
 
-def archive_head(root: Path, repository: str, pull_number: int) -> tuple[int | None, list[dict[str, Any]]]:
+def archive_head(root: Path, repository: str, pull_number: int) -> tuple[int | None, list[LedgerEntry]]:
     """A pull request's latest review version (None without one) and that version's finding ledger, from one read.
 
     The ledger is computed from the earlier records when the latest was written before ledgers, and is empty when the
@@ -96,12 +104,12 @@ def archive_head(root: Path, repository: str, pull_number: int) -> tuple[int | N
     return (versions[-1] if versions else None), (history[max(history)] if history else [])
 
 
-def current_ledger(root: Path, repository: str, pull_number: int) -> list[dict[str, Any]]:
+def current_ledger(root: Path, repository: str, pull_number: int) -> list[LedgerEntry]:
     """The latest record's finding ledger; empty when the pull request has no review."""
     return archive_head(root, repository, pull_number)[1]
 
 
-def ledger_digest(ledger: list[dict[str, Any]]) -> str:
+def ledger_digest(ledger: list[LedgerEntry]) -> str:
     """The SHA-256 of a ledger's canonical JSON, which prepare records so finalize can tell that it changed."""
     return sha256_text(canonical_json(ledger))
 
@@ -110,12 +118,12 @@ def commit_record(
     root: Path,
     repository: str,
     pull_number: int,
-    record: dict[str, Any],
+    record: ReviewRecord,
     *,
     expected_latest_version: int | None,
     model_names: dict[str, str] | None = None,
     flags: Iterable[dict[str, Any]] = (),
-) -> tuple[Path, Path, dict[str, Any]]:
+) -> tuple[Path, Path, ReviewRecord]:
     """Archive the next review version. A re-review's report shows findings raised by earlier versions, so it is
     rendered from the records already archived here."""
     directory = pull_directory(root, repository, pull_number)
@@ -129,7 +137,7 @@ def commit_record(
                 f"Review version changed concurrently: expected {expected_latest_version}, found {current}"
             )
         version = 1 if current is None else current + 1
-        if record.get("review", {}).get("version") != version:
+        if record["review"]["version"] != version:
             raise ArchiveError(f"Record version must be {version}")
         json_path, markdown_path = record_paths(directory, version)
         if json_path.exists() or markdown_path.exists():
