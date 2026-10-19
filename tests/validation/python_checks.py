@@ -344,12 +344,21 @@ class PythonChecksPolicies(unittest.TestCase):
             [
                 *("E", "F", "W", "I", "UP", "B", "SIM", "C901", "PLR0915", "PTH", "RUF"),
                 *("S1", "S2", "S3", "S5", "S601", "S602", "S604", "S605", "S606", "S608", "S609", "S61", "S7"),
+                *("PT001", "PT002", "PT003", "PT006", "PT007", "PT008", "PT01", "PT020", "PT021", "PT022"),
+                *("PT023", "PT024", "PT025", "PT026", "PT028", "PT03"),
             ],
             lint["select"],
         )
-        # Every bandit rule but these two is selected; "Python checks" in CONTRIBUTING.md says why.
-        for unselected in ("S603", "S607"):
+        # Every bandit rule but S603 and S607, and every stable pytest-style rule but PT009 and PT027, is selected;
+        # "Python checks" in CONTRIBUTING.md says why.
+        for unselected in ("S603", "S607", "PT009", "PT027"):
             self.assertEqual([], [prefix for prefix in lint["select"] if unselected.startswith(prefix)], unselected)
+        for selected in (
+            *("PT001", "PT002", "PT003", "PT006", "PT007", "PT008", "PT010", "PT011", "PT012", "PT013"),
+            *("PT014", "PT015", "PT016", "PT017", "PT018", "PT019", "PT020", "PT021", "PT022", "PT023"),
+            *("PT024", "PT025", "PT026", "PT028", "PT030", "PT031"),
+        ):
+            self.assertTrue(any(selected.startswith(prefix) for prefix in lint["select"]), selected)
         # A finding is fixed, or suppressed on its line with the reason beside it; no rule or file is exempt but S101
         # in the regression suites, which pytest runs and never under -O, and which no deployment ships.
         self.assertEqual(["mccabe", "per-file-ignores", "pylint", "select"], sorted(lint))

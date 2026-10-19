@@ -32,6 +32,11 @@ line-ending = "auto"
 # subprocess call here runs a declared tool as an argument list found on PATH, which skill_command_problems, the tools
 # catalogue in deployer/tools.py, and the shell-token policy already hold, so those two would flag the design itself on
 # every call. Leaving them unselected exempts no finding of a selected rule.
+# The PT prefixes select every stable flake8-pytest-style rule except PT009 (a unittest assertion method) and PT027
+# (unittest's assertRaises); ruff has removed PT004 and PT005, and PT029 is preview-only. A suite stays a set of
+# unittest test cases where rewriting it buys nothing, and a test case checks with its own assertion methods, so those
+# two would flag every check such a class makes. A test function and its helpers assert, which S101's exemption below
+# and the suite-shape policy's refusal of a module-level TestCase hold instead.
 [tool.ruff.lint]
 select = [
     "E",
@@ -58,6 +63,22 @@ select = [
     "S609",
     "S61",
     "S7",
+    "PT001",
+    "PT002",
+    "PT003",
+    "PT006",
+    "PT007",
+    "PT008",
+    "PT01",
+    "PT020",
+    "PT021",
+    "PT022",
+    "PT023",
+    "PT024",
+    "PT025",
+    "PT026",
+    "PT028",
+    "PT03",
 ]
 
 # S101 refuses a bare `assert` because `python -O` strips it, which never happens to a regression suite: validation

@@ -880,11 +880,14 @@ def test_sso_partial_results_fail_closed(request_kind: str) -> None:
     header = "X-Github-Sso: partial-results; organizations=21955855\r\n"
     payload = search_page(rows(1)) if request_kind == "search" else {"data": {"node": {}}}
     client, sleeper = client_for(scripted(ok(payload, header))[0])
-    with pytest.raises(GitHubError) as context:
+
+    def request() -> object:
         if request_kind == "search":
-            fetch(client)
-        else:
-            client.graphql("query", {"id": "PR_1"})
+            return fetch(client)
+        return client.graphql("query", {"id": "PR_1"})
+
+    with pytest.raises(GitHubError) as context:
+        request()
     assert context.value.kind == "sso_partial"
     assert "21955855" in str(context.value)
     assert sleeper.waits == []

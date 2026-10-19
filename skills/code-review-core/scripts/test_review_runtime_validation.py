@@ -996,12 +996,12 @@ class SnapshotLinkTests(unittest.TestCase):
     def test_a_folder_that_resolves_outside_the_root_is_refused_when_no_reparse_point_is_seen(self) -> None:
         # The escape check stands on its own: with the reparse check blinded, resolving each folder still refuses it.
         self.link_src_outside()
-        with mock.patch.object(review_runtime, "is_link_or_junction", lambda path, metadata=None: False):
+        with mock.patch.object(review_runtime, "is_link_or_junction", return_value=False):
             self.assert_refused(f"Source snapshot path escapes its root: {self.root / 'src' / 'app.py'}")
 
     def test_an_unlisted_folder_that_resolves_outside_the_root_is_refused_when_no_reparse_point_is_seen(self) -> None:
         directory_link(self.root / "linked", self.outside)
-        with mock.patch.object(review_runtime, "is_link_or_junction", lambda path, metadata=None: False):
+        with mock.patch.object(review_runtime, "is_link_or_junction", return_value=False):
             self.assert_refused(f"Source snapshot path escapes its root: {self.root / 'linked'}")
 
     def test_a_listed_path_the_walk_never_visited_is_missing(self) -> None:
