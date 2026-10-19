@@ -1,18 +1,18 @@
 using namespace System.Management.Automation.Language
 
-# The hub guard's PowerShell reader. tools/worktrees.py starts it to read one command with PowerShell's own parser
+# The hub guard's PowerShell reader. tools/hub_guard.py starts it to read one command with PowerShell's own parser
 # and prints what the guard needs, in the order PowerShell would run it. It judges nothing: every decision is made
-# in worktrees.py, where tests/tools/test_worktrees.py drives it.
+# in hub_guard.py, where tests/tools/test_hub_guard.py drives it.
 #
 # Input: base64-encoded UTF-8 of a JSON object on stdin, so no console code page can alter it: "command", the text,
-# and "limit", how deep Invoke-Expression and pwsh -Command are followed, which worktrees.py passes from its own
+# and "limit", how deep Invoke-Expression and pwsh -Command are followed, which hub_guard.py passes from its own
 # nesting limit.
 # Output: one JSON object. {"error": message} when PowerShell would refuse to parse the command, and so would run
 # none of it; otherwise {"events": [...]}, each one of:
 #   {"kind": "command", "words": [{"text", "dynamic"}],  a command, its name first; dynamic means the text does
 #    "parameters": {name: [{"text", "dynamic"}]},       not settle the word's value, unless the word names the
 #    "failed": bool, "whatIf": bool}                     variables it holds, as "variable" or "expansions", for
-#                                                        worktrees.py to read in the session. parameters are the
+#                                                        hub_guard.py to read in the session. parameters are the
 #                                                        words PowerShell's own binder gives each parameter, by
 #                                                        the name the command declares, an array's elements
 #                                                        apart; failed means the binder refused the command and
@@ -32,7 +32,7 @@ using namespace System.Management.Automation.Language
 #   {"kind": "unread", "text": text}                     a command another one runs that could not be read
 #   {"kind": "note", "text": text}                       a nested command that does not parse, so runs nothing
 #
-# worktrees.py starts it with -Command rather than -File, so no execution policy applies to it.
+# hub_guard.py starts it with -Command rather than -File, so no execution policy applies to it.
 
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
@@ -42,7 +42,7 @@ function ConvertTo-Word([string] $Text, [bool] $Dynamic = $false) {
 }
 
 # The words one command element passes. `-Name:value` passes two. A variable's value is the session's, which the
-# command's own assignments change, so a word that holds variables is dynamic here and names them for worktrees.py:
+# command's own assignments change, so a word that holds variables is dynamic here and names them for hub_guard.py:
 # "variable", the path of the one it is, or "expansions", each {"token", "variable"} its text holds.
 function Get-ElementWord([CommandElementAst] $Element) {
     $words = [Collections.Generic.List[object]]::new()
