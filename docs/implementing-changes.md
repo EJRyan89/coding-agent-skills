@@ -51,9 +51,21 @@ static checks that read the kinds of file changed (for Python, the format, lint,
 change reaches: a changed suite, a suite that imports a changed module directly or through others, one that names a
 changed file or such an importer, one in the `scripts/` of the skill a changed file sits in, and the suites
 `CHANGE_REACHES` in `tests/validation/job_selection.py` adds, such as the deployer's rendering suite for a change under
-`skills/` and the suites that read the floors for a change to a tool floor. Add `--pr-body <file>` and
+`skills/` and the suites that read the floors for a change to a tool floor. A reach no file name or import shows goes
+in that table, never in a list a contributor keeps. Add `--pr-body <file>` and
 `--pr-title <file>` once the body and the title are written. `-k <pattern>` instead runs only the policies and suites
 whose name or path matches, as when rerunning one suite, and a pattern that matches nothing is refused.
+
+The runner decides what a documentation-only change needs. When every file changed since `origin/main` (the pull
+request's base in continuous integration), uncommitted or untracked, is under `docs/` or `.github/ISSUE_TEMPLATE/`, or
+is the top-level `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `CLAUDE.md`, `AGENTS.md`, or
+`.github/pull_request_template.md`, it runs the policy checks and only the suites that name a changed file, and, when
+any changed file is Markdown, the PowerShell analyzer and the ShellCheck check of Markdown Bash fences, since those read
+the fences a documentation change can break. The Python format, lint, and type checks and the shell checks of skill
+scripts do not run, since no documentation file reaches them. Any other change, or one it cannot determine, runs every
+suite, and so does `--full`, which the workflow passes on a push. Markdown under `skills/`, `agents/`, and `.claude/` is
+skill and agent behavior, not documentation. `DOCUMENTATION_FILES` and `DOCUMENTATION_DIRECTORIES` in
+`tests/run_validation.py` name only files no suite executes.
 
 Run the suite in full locally only when the change's reach warrants it, such as a validation policy or the runner.
 When a leg fails in continuous integration, reproduce that leg with
@@ -154,7 +166,7 @@ Each fact has one owner; update the owner in the same change.
 
 | Document | Owns |
 |---|---|
-| `CLAUDE.md` | Architecture, safety rules, validation and pull request rules for every agent runtime. |
+| `CLAUDE.md` | Architecture, safety rules, validation and pull request rules for every agent runtime, each stated once with a pointer to the section that holds how it is enforced. |
 | `docs/design.md` | Why the repository is built as it is: the trust model, the invariants, and each decision with its reason, date, and source, and what was declined. |
 | `docs/skills.md` | Each skill's reference. Generated blocks come from `python tools/skill_reference.py --write`. |
 | `README.md` | The "Included skills" table and the front-door summary. |
