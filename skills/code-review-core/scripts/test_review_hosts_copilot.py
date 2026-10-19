@@ -89,6 +89,7 @@ class Copilot:
     review: Response = REVIEWED
     writes: bytes | None = RESULT  # what Copilot writes to the staging file during its review
     promotes: bool = True
+    effort: str | None = None  # the reasoning effort the run recorded, which the review command carries
 
 
 Mutation = Callable[[Copilot], Copilot]
@@ -635,6 +636,8 @@ class CopilotHostTests(unittest.TestCase):
             del arguments["staging_path"]
         if copilot.stamp:
             arguments["snapshot_stamp"] = self.stamps[paths["source"]]
+        if copilot.effort is not None:
+            arguments["effort"] = copilot.effort
         for name, mode in copilot.arguments.items():
             arguments[name] = {
                 "missing": paths["root"] / "missing",
@@ -693,6 +696,23 @@ class CopilotHostTests(unittest.TestCase):
         self.assertEqual(
             ["copilot-home", "home", "workspace"], sorted(path.name for path in paths["isolation"].iterdir())
         )
+
+    def test_a_recorded_effort_is_the_last_argument_of_the_review_command(self) -> None:
+        copilot = Copilot(effort="xhigh")
+        paths = self.materialize(copilot)
+        events, error = self.call(copilot, paths)
+        self.assertIsNone(error)
+        self.assertEqual([*_command(paths), "--reasoning-effort=xhigh"], events[1][1])
+        self.assertEqual(RESULT, paths["result"].read_bytes())
+
+    def test_an_effort_outside_the_reviewer_efforts_is_refused_before_copilot_starts(self) -> None:
+        copilot = Copilot(effort="ultra")
+        paths = self.materialize(copilot)
+        events, error = self.call(copilot, paths)
+        self.assertIsInstance(error, RuntimeContractError)
+        self.assertEqual("Copilot reasoning effort must be one of high, low, max, medium, xhigh", str(error))
+        self.assertEqual(["run"], [event[0] for event in events], "only the version ran")
+        self.assertFalse(paths["result"].exists())
 
     def test_promotion_is_required_before_any_host_work(self) -> None:
         paths = self.materialize(Copilot())

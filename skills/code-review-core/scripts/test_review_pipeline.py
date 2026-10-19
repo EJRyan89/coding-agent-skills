@@ -2624,7 +2624,7 @@ class ReadCountTests(PipelineFixture):
 
 
 class InlineReviewTests(PipelineFixture):
-    """The orchestrating session works each role itself, one at a time, where it cannot start subagents."""
+    """The orchestrating session works each role itself, one at a time, where reviewers do not start as subagents."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -2892,6 +2892,7 @@ class CopilotHostTests(PipelineFixture):
         self.alive: dict[int, int] = {}  # PID -> start time of each fake host still running
         self.launched: list[list[str]] = []
         self.copilot_calls = 0
+        self.review_commands: list[list[str]] = []  # each review command the fake Copilot CLI was started with
         self.review = "valid"  # what the fake Copilot CLI does: valid, partial, failed, or unheld (no job holds it)
         self.during_review = lambda: None
         self.services.resolve_runtime = lambda configured, host: "copilot-cli"
@@ -2920,6 +2921,7 @@ class CopilotHostTests(PipelineFixture):
         if "--version" in arguments:
             return ProcessResult(0, "GitHub Copilot CLI 1.2.3\n", "")
         self.copilot_calls += 1
+        self.review_commands.append(list(arguments))
         allowed = next(argument for argument in arguments if argument.startswith("--allow-tool=write("))
         staging = Path(allowed.removeprefix("--allow-tool=write(").removesuffix(")"))
         self.during_review()
@@ -2988,6 +2990,23 @@ class CopilotHostTests(PipelineFixture):
         self.assertTrue((self.run_directory / "copilot-isolation-1").is_dir())
         self.assertTrue((self.run_directory / "copilot-diagnostic-1.jsonl").is_file())
         self.assertEqual((0, f"ALL_VALID {SELECTOR}\n"), self.run_main("check", "--run", self.run_path)[:2])
+
+    def test_the_host_reviews_at_the_configured_effort_and_without_one_at_the_sessions(self) -> None:
+        self.assertEqual(0, self.run_main("dispatch", "--run", self.run_path)[0])
+        self.assertEqual(0, self.run_host()[0])
+        self.assertEqual([], [a for a in self.review_commands[0] if a.startswith("--reasoning-effort")])
+        config = json.loads(self.config_path.read_text(encoding="utf-8"))
+        write_config({**config, "reviewer_effort": "max"}, self.config_path)
+        code, out, err = self.run_main("prepare", "--pull", SELECTOR, "--force")
+        self.assertEqual(0, code, err)
+        self.run_directory = Path(out.splitlines()[0].removeprefix(f"RUN {SELECTOR} "))
+        self.run_path = str(self.run_directory)
+        self.assertEqual(f"HOST copilot-cli {self.run_directory}", out.splitlines()[1], "no EFFORT line for a host")
+        state = json.loads((self.run_directory / rp.RUN_FILE).read_text(encoding="utf-8"))
+        self.assertEqual("max", state["roles"][0]["effort"])
+        self.assertEqual(0, self.run_main("dispatch", "--run", self.run_path)[0])
+        self.assertEqual(0, self.run_host()[0])
+        self.assertEqual("--reasoning-effort=max", self.review_commands[1][-1])
 
     def test_wait_reports_a_running_host_after_its_timeout_and_never_longer(self) -> None:
         self.run_main("dispatch", "--run", self.run_path)
@@ -3249,6 +3268,56 @@ class ProfileModelTests(PipelineFixture):
         self.assertEqual(0, code, err)
         self.assertIn("ROUTE python-review files=1 model=sonnet effort=high", out.splitlines())
         self.assertNotIn("None", out)
+
+    def test_a_codex_session_starts_each_reviewer_at_its_effort_and_retries_carry_it(self) -> None:
+        # Codex's spawn_agent takes a reasoning_effort, so each role's EFFORT line names the one its subagent starts
+        # at: the specialist's own, else the configured reviewer_effort. The model stays the session's.
+        self.services.resolve_runtime = lambda configured, host: "codex"
+        self.trusted_profile("model: sonnet\n", model=None, effort="low")
+        config = json.loads(self.config_path.read_text(encoding="utf-8"))
+        write_config({**config, "reviewer_effort": "high"}, self.config_path)
+        code, out, err = self.run_main("prepare", "--pull", SELECTOR)
+        self.assertEqual(0, code, err)
+        lines = out.splitlines()
+        python = lines.index(next(line for line in lines if line.startswith("ROLE python-review ")))
+        generic = lines.index(next(line for line in lines if line.startswith("ROLE generic-review ")))
+        self.assertEqual(f"EFFORT {SELECTOR} python-review low", lines[python + 1])
+        self.assertEqual(f"EFFORT {SELECTOR} generic-review high", lines[generic + 1])
+        self.assertEqual([], [line for line in lines if line.startswith("MODEL ")])
+        run = Path(lines[0].removeprefix(f"RUN {SELECTOR} "))
+        state = json.loads((run / rp.RUN_FILE).read_text(encoding="utf-8"))
+        self.assertEqual(
+            [("python-review", None, "low"), ("generic-review", None, "high")],
+            [(role["id"], role["model"], role["effort"]) for role in state["roles"]],
+        )
+        python_role, generic_role = state["roles"]
+        self.write_role_result(python_role, findings=[self.finding(line=1)])
+        self.write_role_result(generic_role)
+        code, out, _ = self.run_main("check", "--run", str(run))
+        self.assertEqual(1, code)
+        lines = out.splitlines()
+        self.assertTrue(lines[0].startswith(f"RETRY {SELECTOR} python-review "), out)
+        self.assertEqual(f"EFFORT {SELECTOR} python-review low", lines[1])
+
+    def test_a_codex_session_without_an_effort_names_none(self) -> None:
+        self.services.resolve_runtime = lambda configured, host: "codex"
+        self.trusted_profile("", model=None, effort=None)
+        code, out, err = self.run_main("prepare", "--pull", SELECTOR)
+        self.assertEqual(0, code, err)
+        self.assertNotIn("EFFORT ", out)
+
+    def test_a_claude_code_session_prints_no_effort_line(self) -> None:
+        # Claude Code's reviewers take an effort through the Workflow tool, which reads it from the run.
+        self.services.resolve_runtime = lambda configured, host: "claude-code"
+        self.trusted_profile("", model=None, effort="low")
+        config = json.loads(self.config_path.read_text(encoding="utf-8"))
+        write_config({**config, "reviewer_effort": "high"}, self.config_path)
+        code, out, err = self.run_main("prepare", "--pull", SELECTOR)
+        self.assertEqual(0, code, err)
+        self.assertNotIn("EFFORT ", out)
+        run = Path(out.splitlines()[0].removeprefix(f"RUN {SELECTOR} "))
+        state = json.loads((run / rp.RUN_FILE).read_text(encoding="utf-8"))
+        self.assertEqual(["low", None], [role["effort"] for role in state["roles"]])
 
     def test_null_model_with_no_profile_model_uses_the_session_model(self) -> None:
         self.trusted_profile("", model=None, effort=None)

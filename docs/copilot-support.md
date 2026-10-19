@@ -44,9 +44,22 @@ The tested Copilot CLI versions are in the supported-runtimes table of the [READ
 
 The [runtime canary](../tools/runtime_canary.py) reaches Copilot only through `copilot -p`, so for a user-only skill it prints `RUNTIME copilot <skill> UNSUPPORTED` and runs no model. After a Copilot CLI upgrade, run a user-only skill headless by hand; once `-p` starts it, remove `USER_ONLY_UNSUPPORTED` from the canary.
 
+## Subagents and hooks
+
+Copilot CLI starts subagents: a custom agent's work runs in a subagent with its own context, which the model picks by its description, the user names, or `copilot --agent <name>` starts, `--fleet` runs subagents in parallel, and built-in `task`, `explore`, and general-purpose agents need no definition. A custom agent's definition takes a `model` and a reasoning effort, and the command line takes `--model` and `--reasoning-effort`. A skill that starts a general-purpose subagent, such as the `review-insights` synthesis, therefore runs as it does in Claude Code.
+
+Copilot CLI also runs hooks, a custom agent's own among them, and a `preToolUse` hook denies a call by exiting with code 2. A hook that times out lets the call through, though. The reviewer guard is a `PreToolUse` hook, and Claude Code's reviewer agent blocks the call when its guard fails or times out, so a reviewer there makes no call its guard has not allowed. Under Copilot CLI the guard would hold only while it runs, which is not the guard the [code-review contract](code-review-operations-contract.md#threat-model) promises. So the code reviews keep their reviewers inline here, under the seal below, until Copilot CLI blocks a call when its hook fails; [Runtime support](skills.md#runtime-support) names the capability they lack as `fail-closed-agent-hooks`, and the decision is in [Design](design.md).
+
+These are the pages this was read from:
+
+- [Creating and using custom agents for GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/create-custom-agents-for-cli)
+- [Custom agents configuration](https://docs.github.com/en/copilot/reference/custom-agents-configuration)
+- [GitHub Copilot CLI programmatic reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-programmatic-reference)
+- [The Copilot CLI changelog](https://github.com/github/copilot-cli/blob/main/changelog.md), for subagents, hooks inside them, agent-scoped hooks, a `preToolUse` hook's exit code 2, and tool calls that continue when a hook times out
+
 ## Inline code reviews
 
-Copilot CLI cannot start subagents, so a review whose reviewer is the suite's generic reviewer or a specialists manifest runs inline: `prepare` prints `INLINE <run directory>`, and the session works each reviewer role itself, one at a time, as `next-role` hands it out, writing each result file through the same result contract and self-check a subagent uses. `check` and `finalize` validate the results exactly as they do for subagents, and the record's `review.dispatch` is `inline`. A specialists manifest that lists `agent-delegation` in `required_capabilities` asks for subagents only, so it fails on Copilot CLI as before; drop it from the list to let its specialists run inline.
+The generic reviewer and the specialists of a manifest run inline, for the reason above: `prepare` prints `INLINE <run directory>`, and the session works each reviewer role itself, one at a time, as `next-role` hands it out, writing each result file through the same result contract and self-check a subagent uses. `check` and `finalize` validate the results exactly as they do for subagents, and the record's `review.dispatch` is `inline`. A specialists manifest that lists `agent-delegation` in `required_capabilities` asks for subagents only, so it fails on Copilot CLI as before; drop it from the list to let its specialists run inline.
 
 An inline reviewer has no reviewer agent and no `PreToolUse` guard: it is the session, with that session's tools, permissions, and context. `next-role`, `check`, and `finalize` fail the pull request if a role changes another run file, such as an earlier role's result or the request, and the core still validates every result and computes the verdict. Run inline reviews from a directory outside the repository's checkout, in a session allowed nothing beyond what the pipeline's commands need; the [threat model](code-review-operations-contract.md#threat-model) lists what remains.
 
@@ -54,6 +67,7 @@ An inline reviewer has no reviewer agent and no `PreToolUse` guard: it is the se
 
 The bounded host runs a repository entrypoint reviewer. It requires GitHub Copilot CLI 1.0.88 or newer, installed from WinGet or the GitHub release: it runs Copilot CLI's own program, the first on `PATH` or else WinGet's, and passes over a shell script such as the `copilot.cmd` an npm install puts on `PATH`, wherever it stands there, since Windows starts one through `cmd.exe`. With only a shell script on `PATH` and no WinGet program, it refuses and names each script it passed over. On Linux it runs the first `copilot` on `PATH`, npm's included: the kernel starts a script by its `#!` line with its arguments as they are, so no shell parses its command line, and its isolated `HOME` is the profile Copilot reads there. The host has not yet run a review against a signed-in Copilot CLI on Linux. It:
 
+- reviews at the configuration's `reviewer_effort` through `--reasoning-effort` when one is set, and otherwise at Copilot CLI's default, on Copilot CLI's default model, since a reviewer profile names a Claude alias that Copilot CLI does not take;
 - runs from a new isolated workspace with isolated `HOME`, `USERPROFILE`, and `COPILOT_HOME` values, and with `COPILOT_AUTO_UPDATE=false`, so the Copilot CLI whose version the host checked is the one that reviews;
 - gives Copilot its prompt on standard input, so no review text is part of its command line;
 - disables custom instructions, built-in MCP servers, remote delegation, interactive questions, shell, URL, and memory tools;

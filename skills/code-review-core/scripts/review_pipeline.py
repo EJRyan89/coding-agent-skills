@@ -140,6 +140,7 @@ from review_runtime import (
     MAX_CHANGED_FILE_BYTES,
     MAX_SOURCE_SNAPSHOT_BYTES,
     MODEL_ALIAS_RUNTIMES,
+    NATIVE_EFFORT_RUNTIMES,
     PULL_REQUEST_BODY_CHARACTERS,
     PULL_REQUEST_BODY_FILE,
     RUNTIME_CAPABILITIES,
@@ -1048,14 +1049,19 @@ def _write_roles(
 
 def _write_run(run: Path, state: dict[str, Any]) -> None:
     """Write a prepared run's run.json. A run that cannot start a role on the model it asks for first notes that model
-    in place of its `MODEL` line, so the role runs on the session's model; an inline run then seals every file
-    prepare wrote."""
+    in place of its `MODEL` line, so the role runs on the session's model; a run whose reviewers start at an effort
+    they are given records each role's, its specialist's else the configuration's; an inline run then seals every
+    file prepare wrote."""
     reason = _unapplied_model_reason(state["runtime"], state["dispatch"])
     if reason is not None:
         for role in state["roles"]:
             if role.get("model"):
                 state["notes"].append(f"{role['id']} asks for model {role['model']}; {reason}")
                 role["model"] = None
+    if _starts_at_given_effort(state["runtime"], state["dispatch"]):
+        default_effort = load_config(Path(state["config_path"])).get("reviewer_effort")
+        for role in state["roles"]:
+            role["effort"] = role.get("effort") or default_effort
     if state["dispatch"] == "inline":
         state["seal"] = {"files": sealed_files(run, state), "results": {}}
     atomic_write_json(run / RUN_FILE, state)
@@ -1069,6 +1075,13 @@ def _unapplied_model_reason(runtime: str, dispatch: str) -> str | None:
     if runtime not in MODEL_ALIAS_RUNTIMES:
         return f"{runtime} starts every reviewer on this session's model"
     return None
+
+
+def _starts_at_given_effort(runtime: str, dispatch: str) -> bool:
+    """Whether a run's reviewers start at a reasoning effort the pipeline gives them: a native subagent of a runtime in
+    NATIVE_EFFORT_RUNTIMES, from its `EFFORT` line, or the Copilot CLI host, from its command. The Workflow tool reads
+    the configured effort when its script is written, and an inline role works at the session's."""
+    return dispatch == "copilot-host" or (dispatch == "subagents" and runtime in NATIVE_EFFORT_RUNTIMES)
 
 
 @dataclass
@@ -1148,7 +1161,7 @@ def prepare(
 
     A re-review names its `scope` (`auto`, `full`, or `incremental`); nothing picks one for it. `host` is the
     runtime the orchestrating session says it runs in, which decides an `auto` runtime. `inline` has the orchestrating
-    session work every role itself, as it does wherever the runtime cannot start subagents.
+    session work every role itself, as it does on a runtime whose reviewers do not start as subagents.
     """
     services = services or Services()
     config_path = (config_path or default_config_path()).resolve()
@@ -2067,6 +2080,7 @@ def check_run(run: Path, services: Services | None = None) -> dict[str, Any]:
                 "retry": [],
                 "failed": {},
                 "running": {state["roles"][0]["id"]: host.elapsed},
+                "runtime": state["runtime"],
             }
         return _check_roles(run, state)
 
@@ -2095,7 +2109,14 @@ def _check_roles(run: Path, state: dict[str, Any]) -> dict[str, Any]:
         else:
             failed[identity] = errors[identity]
     atomic_write_json(run / RUN_FILE, state)
-    return {"selector": state["selector"], "errors": errors, "retry": retry, "failed": failed, "running": {}}
+    return {
+        "selector": state["selector"],
+        "errors": errors,
+        "retry": retry,
+        "failed": failed,
+        "running": {},
+        "runtime": state["runtime"],
+    }
 
 
 def validate_result(run: Path, role: str) -> str | None:
@@ -2249,6 +2270,7 @@ def run_host(run: Path, token: str, services: Services) -> str:
             result_path=Path(state["result_path"]),
             staging_path=staging_path(run, attempt),
             snapshot_stamp=state.get("snapshot_stamp"),  # a run prepared before stamps has none
+            effort=state["roles"][0].get("effort"),  # a run prepared before efforts reached the host has none
             promote=promote,
             diagnostic_path=run / f"copilot-diagnostic-{attempt}.jsonl",
             isolation_root=run / f"copilot-isolation-{attempt}",
@@ -2817,7 +2839,7 @@ def _print_ready(result: dict[str, Any]) -> None:
         return
     for role in result["roles"]:
         print(f"ROLE {role['id']} {role['prompt_file']}")
-        _print_model(result["selector"], role)
+        _print_settings(result["selector"], role, result["runtime"])
 
 
 def _first_duplicate(selectors: list[str]) -> str | None:
@@ -2834,10 +2856,13 @@ def _first_duplicate(selectors: list[str]) -> str | None:
     return None
 
 
-def _print_model(selector: str, role: dict[str, Any]) -> None:
-    """The model a role's trusted profile asks for; the orchestrator starts that role's subagent with it."""
+def _print_settings(selector: str, role: dict[str, Any], runtime: str) -> None:
+    """The model a role's trusted profile asks for, and on a runtime whose native delegation takes one, the effort the
+    run recorded for it; the orchestrator starts that role's subagent with them."""
     if role.get("model"):
         print(f"MODEL {selector} {role['id']} {role['model']}")
+    if role.get("effort") and runtime in NATIVE_EFFORT_RUNTIMES:
+        print(f"EFFORT {selector} {role['id']} {role['effort']}")
 
 
 def _add_runs(parser: argparse.ArgumentParser) -> None:
@@ -3270,7 +3295,7 @@ def _run_check(args: argparse.Namespace, services: Services | None) -> int:
         selector = outcome["selector"]
         for role in outcome["retry"]:
             print(f"RETRY {selector} {role['id']} {role['prompt_file']} {outcome['errors'][role['id']]}")
-            _print_model(selector, role)
+            _print_settings(selector, role, outcome["runtime"])
         for identity, error in outcome["failed"].items():
             print(f"FAILED {selector} {identity} {error}")
         for identity, elapsed in outcome["running"].items():
