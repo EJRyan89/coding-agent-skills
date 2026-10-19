@@ -189,6 +189,7 @@ def _environment(paths: dict[str, Path]) -> dict[str, str]:
         "HOME": str(paths["isolation"] / "home"),
         "USERPROFILE": str(paths["isolation"] / "home"),
         "COPILOT_HOME": str(paths["isolation"] / "copilot-home"),
+        "COPILOT_AUTO_UPDATE": "false",
     }
 
 
@@ -1073,6 +1074,7 @@ class CopilotProcessTests(unittest.TestCase):
                 "HOME": str(isolation / "home"),
                 "USERPROFILE": str(isolation / "home"),
                 "COPILOT_HOME": str(isolation / "copilot-home"),
+                "COPILOT_AUTO_UPDATE": "false",
             },
             environment,
         )

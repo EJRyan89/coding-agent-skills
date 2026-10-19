@@ -4933,6 +4933,7 @@ class RuntimeHostTests(unittest.TestCase):
             self.assertEqual(str(isolation / "home"), environment["HOME"])
             self.assertEqual(str(isolation / "home"), environment["USERPROFILE"])
             self.assertEqual(str(isolation / "copilot-home"), environment["COPILOT_HOME"])
+            self.assertEqual("false", environment["COPILOT_AUTO_UPDATE"], "the checked version is the one that runs")
             self.assertEqual("test-token", environment["GH_TOKEN"])
             self.assertIn(f"REVIEWER_ROOT={materialized.resolve()}", prompt)
             self.assertIn(f"Follow REVIEWER_ROOT/{entrypoint.relative_to(materialized).as_posix()}", prompt)

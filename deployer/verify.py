@@ -11,10 +11,11 @@ from pathlib import Path
 
 from . import discovery, manifest, platform_support, tools
 from .arguments import PROG, VERIFY_COMMAND, parse_command
-from .discovery import Listed, Listing, ListingError
+from .discovery import Listed, Listing, ListingError, Refused
 from .errors import DeployError, debug_requested, fail
 from .kinds import ADAPTER_KIND
 from .paths import Paths
+from .render import CODEX_METADATA
 from .report import ReportLine, print_report
 
 # Filesystem writes that tests/run_validation.py allows outside deployer/fsops.py, with the reason.
@@ -23,7 +24,9 @@ FSOPS_ALLOWED = {
     "outside every managed root; the read-only command changes no deployed state",
     "shutil.rmtree": "verify removes only the empty working directory it created with tempfile.mkdtemp",
 }
-VERIFY_ACTIONS = ("NOT FOUND", "DISABLED", "SHADOWED", "FOUND")
+VERIFY_ACTIONS = ("NOT FOUND", "DISABLED", "SHADOWED", "EXPOSED", "FOUND")
+# What an adapter only the user may start is, where Codex offers it to the model anyway.
+EXPOSED_DETAIL = f"Codex offers it to the model, though only the user starts it; check its {CODEX_METADATA}"
 SUPPORT = {"codex": "docs/codex-support.md", "copilot": "docs/copilot-support.md"}
 # The line that names each runtime verify failed for, which the deployable workflow's report reads back.
 FAILED_FOR = "Verification failed for "
@@ -56,21 +59,40 @@ def _same(directory: str, expected: Path) -> bool:
     return platform_support.same_directory(Path(directory), expected)
 
 
-def adapter_line(name: str, copies: list[Listed], expected: Path) -> ReportLine:
-    """FOUND only when the runtime lists the adapter, enabled, and no other enabled copy of its name."""
+def adapter_line(name: str, copies: list[Listed], expected: Path, refused: tuple[Refused, ...] = ()) -> ReportLine:
+    """FOUND only when the runtime lists the adapter, enabled, and no other enabled copy of its name; NOT FOUND names
+    the runtime's reason when it found the adapter but could not load it."""
     ours = [copy for copy in copies if _same(copy.directory, expected)]
     others = [copy.directory for copy in copies if copy.enabled and copy not in ours]
     if others:
         return ReportLine(name, "SHADOWED", f"also {', '.join(others)}")
     if not ours:
-        return ReportLine(name, "NOT FOUND")
+        reasons = [refusal.reason for refusal in refused if _same(refusal.directory, expected)]
+        return ReportLine(name, "NOT FOUND", f"could not load it: {'; '.join(reasons)}" if reasons else "")
     if not any(copy.enabled for copy in ours):
         return ReportLine(name, "DISABLED", "turned off in the runtime's settings")
     return ReportLine(name, "FOUND")
 
 
-def runtime_lines(names: list[str], listing: Listing, adapters: Path) -> list[ReportLine]:
-    return [adapter_line(name, listing.get(name, []), adapters / name) for name in names]
+def runtime_lines(
+    names: list[str], listing: Listing, adapters: Path, refused: tuple[Refused, ...] = ()
+) -> list[ReportLine]:
+    return [adapter_line(name, listing.get(name, []), adapters / name, refused) for name in names]
+
+
+def user_only(names: list[str], adapters: Path) -> list[str]:
+    """The adapters whose agents/openai.yaml, which the deployer writes only for a skill the user alone starts, keeps
+    Codex from offering the skill to the model."""
+    return [name for name in names if (adapters / name / CODEX_METADATA).is_file()]
+
+
+def expose(lines: list[ReportLine], hidden: list[str], catalog: Listing, adapters: Path) -> list[ReportLine]:
+    """The lines with each FOUND adapter of `hidden` that the model's catalog offers from its directory EXPOSED."""
+    exposed = {name for name in hidden if any(_same(copy.directory, adapters / name) for copy in catalog.get(name, []))}
+    return [
+        ReportLine(line.name, "EXPOSED", EXPOSED_DETAIL) if line.action == "FOUND" and line.name in exposed else line
+        for line in lines
+    ]
 
 
 def run(arguments: list[str], paths: Paths, environment: Mapping[str, str] | None = None) -> int:
@@ -117,12 +139,16 @@ def _verify(names: list[str], paths: Paths, environment: dict[str, str]) -> int:
                 problems.append(runtime)
                 continue
             try:
-                listing = discovery.list_skills(runtime, probe.path, workdir, environment)
+                discovered = discovery.discover(runtime, probe.path, workdir, environment)
+                lines = runtime_lines(names, discovered.listing, adapters, discovered.refused)
+                hidden = user_only(names, adapters) if runtime == "codex" else []
+                if hidden:
+                    catalog = discovery.codex_catalog(probe.path, workdir, environment)
+                    lines = expose(lines, hidden, catalog, adapters)
             except ListingError as exc:
                 _section(label, f"Cannot list its skills: {exc}")
                 problems.append(runtime)
                 continue
-            lines = runtime_lines(names, listing, adapters)
             print_report(label.upper(), VERIFY_ACTIONS, lines)
             (verified if all(line.action == "FOUND" for line in lines) else problems).append(runtime)
     finally:

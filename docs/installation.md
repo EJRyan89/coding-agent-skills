@@ -78,10 +78,12 @@ On a release whose `python3` is older than the deployer's floor, `check` says so
 
 Codex CLI on Windows needs two machine settings before it can run a skill's scripts; on Linux it needs neither. Until both are in place, every skill script fails in Codex, with `blocked by policy` or `The file cannot be accessed by the system`:
 
-- add a `[windows]` sandbox setting to `~/.codex/config.toml`, as [Windows sandbox mode](codex-support.md#windows-sandbox-mode) shows; and
+- add a Windows sandbox setting to `~/.codex/config.toml`: MXC, which OpenAI recommends, where the machine offers it, and the elevated sandbox as its fallback, whose one-time setup an administrator approves, as [Windows sandbox mode](codex-support.md#windows-sandbox-mode) shows; and
 - turn off the `python.exe` and `python3.exe` app execution aliases.
 
-`python deploy.py check` reports both on Windows: a `python command` line, `UNUSABLE` while `python` runs an app execution alias, and, when Codex CLI is installed, a `codex sandbox` line, `UNUSABLE` while Codex would run skill scripts in a read-only sandbox. Each names the section to read, and both are `FOUND` once the settings are in place.
+`python deploy.py check` reports both on Windows: a `python command` line, `UNUSABLE` while `python` runs an app execution alias, and, when Codex CLI is installed, a `codex sandbox` line, `UNUSABLE` while Codex would run skill scripts in a read-only sandbox. Each names the section to read, and both are `FOUND` once the settings are in place. The `codex sandbox` line reports the configured mode, not whether the sandbox starts a command; [Windows sandbox mode](codex-support.md#windows-sandbox-mode) gives the command that confirms it without starting a model.
+
+On every platform, Codex's sandbox gives commands no network by default, so a skill that calls GitHub through `gh` or fetches with Git needs approval for each such command in an interactive session, and fails in `codex exec`, until `~/.codex/config.toml` turns network access on, as [Network access](codex-support.md#network-access) shows.
 
 Windows registers `python.exe` and `python3.exe` as app execution aliases in `%LOCALAPPDATA%\Microsoft\WindowsApps`: every Windows install has them as Microsoft Store stubs, and the Python install manager registers its own. Codex CLI's sandbox cannot start those aliases, so turn them off under **Settings > Apps > Advanced app settings > App execution aliases** whichever Python installer you used, and keep `py` and `pymanager` on if they are listed. Reordering your user `PATH` is not always enough, because `WindowsApps` can also be on the system `PATH`, which Windows searches first. See [Python app execution aliases](codex-support.md#python-app-execution-aliases).
 
@@ -114,7 +116,7 @@ If you use Codex CLI or Copilot CLI, check that each one finds the deployed skil
 python deploy.py verify
 ```
 
-It reports each adapter as `FOUND`, `NOT FOUND`, `DISABLED`, or `SHADOWED` for every installed runtime, and skips a runtime that is not installed. With neither installed it verifies nothing and exits 1. A runtime may spell a directory differently from the deployer, such as by its 8.3 short name (`RUNNER~1` for `runneradmin`); `verify` compares the directories the paths resolve to, not their text. A same-named skill can shadow an adapter: Copilot CLI gives personal skills under `~/.copilot/skills/` precedence over the generated adapters, and Codex offers both copies. The deployer reports Copilot shadows when it deploys but never modifies the user-managed Copilot directory. See [Copilot support](copilot-support.md) and [Codex support](codex-support.md).
+It reports each adapter as `FOUND`, `NOT FOUND` (with the runtime's reason when it found the adapter but could not load it), `DISABLED`, or `SHADOWED` for every installed runtime, or `EXPOSED` for a user-only adapter Codex offers the model anyway. It skips a runtime that is not installed. With neither installed it verifies nothing and exits 1. A runtime may spell a directory differently from the deployer, such as by its 8.3 short name (`RUNNER~1` for `runneradmin`); `verify` compares the directories the paths resolve to, not their text. A same-named skill can shadow an adapter: Copilot CLI gives personal skills under `~/.copilot/skills/` precedence over the generated adapters, and Codex offers both copies. The deployer reports Copilot shadows when it deploys but never modifies the user-managed Copilot directory. See [Copilot support](copilot-support.md) and [Codex support](codex-support.md).
 
 ### Skipped items
 

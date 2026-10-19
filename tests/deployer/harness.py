@@ -306,12 +306,15 @@ class Deployment:
         agent_deps: tuple[str, ...] | list[str] = (),
         description: str | None = None,
         user_only: bool = False,
+        argument_hint: str | None = None,
     ) -> Path:
-        """A skill whose description is the raw YAML scalar given; only the user may start it when user_only."""
+        """A skill whose description and argument hint are the raw YAML scalars given; user-only when user_only."""
         directory = self.source / "skills" / name
         directory.mkdir(parents=True, exist_ok=True)
         description = description or f'"Test skill {name}"'
-        flags = "disable-model-invocation: true\n" if user_only else ""
+        flags = (f"argument-hint: {argument_hint}\n" if argument_hint else "") + (
+            "disable-model-invocation: true\n" if user_only else ""
+        )
         (directory / "SKILL.md").write_bytes(
             (
                 f"---\nname: {name}\ndescription: {description}\nallowed-tools: {ALLOWED_TOOLS}\n{flags}---\n\n"
