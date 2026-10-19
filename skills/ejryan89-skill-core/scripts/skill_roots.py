@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+# This skill's own folder name, which every dependent's fixed sys.path line and every check of that line names.
+SKILL_CORE = "ejryan89-skill-core"
 # The skills directory holding ejryan89-skill-core, and so every skill that imports it: the source tree's skills/, or
 # the deployed ~/.claude/skills.
 SKILLS_ROOT = Path(__file__).resolve().parents[2]

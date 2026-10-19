@@ -985,7 +985,7 @@ class CommandReader:
         return named + self._shell_scripts(call)
 
     def starts_process(self) -> bool:
-        """Whether the module calls a command runner or a ejryan89-skill-core client, even with a dynamic command.
+        """Whether the module calls a command runner or an ejryan89-skill-core client, even with a dynamic command.
 
         An import, command lookup, or command list alone starts nothing. This does not say whether the process
         runs code from the target repository; that is the script's RUNS_REPOSITORY_CODE declaration.
@@ -1048,7 +1048,7 @@ class CommandReader:
         return problems
 
     def commands(self, known: set[str]) -> set[str]:
-        """Every program the module runs through a runner or a ejryan89-skill-core client, or looks up with which, and
+        """Every program the module runs through a runner or an ejryan89-skill-core client, or looks up with which, and
         every known tool a list or tuple begins with, since a module may hand that command to a function of its own."""
         key = frozenset(known)
         if key not in self._commands:
@@ -1388,7 +1388,6 @@ def gh_filter_problems(root: Path) -> list[str]:
     return problems
 
 
-CONSOLE_CORE = "ejryan89-skill-core"
 CONSOLE_RUNNER = "run_main"
 CONSOLE_FUNCTION = f"console.{CONSOLE_RUNNER}"
 CONSOLE_DOC = '"Script results" in docs/adding-a-skill.md'
@@ -1400,7 +1399,7 @@ def console_entry_points(root: Path) -> list[Path]:
     files = [
         path
         for scripts in skill_script_directories(root)
-        if scripts.parent.name != CONSOLE_CORE
+        if scripts.parent.name != SKILL_CORE
         for path in scripts.glob("*.py")
     ]
     files += [root / "deploy.py", *(root / "deployer").rglob("*.py"), *(root / "tools").rglob("*.py")]
@@ -1545,19 +1544,19 @@ def console_setup_problems(root: Path) -> list[str]:
     for _, name, tree in python_trees(console_entry_points(root), root, problems):
         aliases = import_aliases(tree)
         problems += [
-            f"{name}:{line} reconfigures a stream itself; call {CONSOLE_RUNNER}() from {CONSOLE_CORE} instead; "
+            f"{name}:{line} reconfigures a stream itself; call {CONSOLE_RUNNER}() from {SKILL_CORE} instead; "
             f"see {CONSOLE_DOC}"
             for line in _stream_change_lines(tree, aliases)
         ]
         for node in main_blocks(tree):
             if not _runs_through_the_runner(node.body[0], aliases):
                 problems.append(
-                    f"{name}:{node.lineno} does not call {CONSOLE_CORE}'s {CONSOLE_RUNNER}() first in its __main__ "
+                    f"{name}:{node.lineno} does not call {SKILL_CORE}'s {CONSOLE_RUNNER}() first in its __main__ "
                     f"block; see {CONSOLE_DOC}"
                 )
         problems += [
             f'{name}:{line} runs main outside an `if __name__ == "__main__":` block, so importing it runs it; run '
-            f"{CONSOLE_CORE}'s {CONSOLE_RUNNER}(main) first in that block instead; see {CONSOLE_DOC}"
+            f"{SKILL_CORE}'s {CONSOLE_RUNNER}(main) first in that block instead; see {CONSOLE_DOC}"
             for line in _unguarded_main_lines(tree, aliases)
         ]
     return problems

@@ -10,6 +10,7 @@ import unittest
 from collections.abc import Iterator
 from pathlib import Path
 
+from skill_roots import SKILL_CORE
 from validation_support import (
     MODULE_LOADERS,
     REPOSITORY_ROOT,
@@ -193,8 +194,7 @@ def duplicated_definition_problems(root: Path) -> list[str]:
 # skills/ejryan89-skill-core/scripts is the one home of the repository's shared modules: skill scripts, the deployer,
 # and tools/ import them from there. deployer/__init__.py puts the directory on sys.path for every deployer module,
 # since a package runs its __init__.py before any of its modules; a tools module states the same path statement itself,
-# above its imports, because ruff sorts a ejryan89-skill-core import above the deployer's.
-SKILL_CORE = "ejryan89-skill-core"
+# above its imports, because ruff sorts an ejryan89-skill-core import above the deployer's.
 SKILL_CORE_SCRIPTS = f"skills/{SKILL_CORE}/scripts"
 SKILL_CORE_DOC = VALIDATION_DOC
 DEPLOYER_PACKAGE = "deployer/__init__.py"
@@ -206,8 +206,8 @@ def skill_core_modules(root: Path) -> set[str]:
 
 
 def skill_core_copy_problems(root: Path) -> list[str]:
-    """Report a module outside ejryan89-skill-core with the name of a ejryan89-skill-core module: another copy of shared
-    code.
+    """Report a module outside ejryan89-skill-core with the name of an ejryan89-skill-core module: another copy of
+    shared code.
 
     A renamed copy is caught by the duplication policy, which sanctions no whole module, and a same-named one here
     even after it drifts, as the frontmatter reader's deployer copy would have.

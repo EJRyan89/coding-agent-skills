@@ -322,6 +322,11 @@ class RenderedExecutableTests(DeployerTestCase):
         core = self.root / "ejryan89-skill-core"
         shutil.move(repository / "skills" / "ejryan89-skill-core", core)
         metadata = {path: path.read_bytes() for path in (repository / "deploy-meta").glob("*.json")}
+        # The source then has no core for source.json's renamed to name, so the record leaves its old name out too.
+        source_json = (repository / "source.json").read_bytes()
+        document = json.loads(source_json)
+        del document["renamed"]["skill-core"]
+        (repository / "source.json").write_text(json.dumps(document), encoding="utf-8")
         (repository / "deploy-meta" / "ejryan89-skill-core.json").unlink()
         for path, text in metadata.items():
             document = json.loads(text)
@@ -331,6 +336,7 @@ class RenderedExecutableTests(DeployerTestCase):
         self.deploy_from(repository, "--all", "--include", "dotnet")
         self.assertFalse((self.skills_dir / "ejryan89-skill-core").exists())
         shutil.move(core, repository / "skills" / "ejryan89-skill-core")
+        (repository / "source.json").write_bytes(source_json)
         for path, text in metadata.items():
             path.write_bytes(text)
         groups = self.report_groups(self.deploy_from(repository, "--all", "--dry-run").output, "DRY RUN")

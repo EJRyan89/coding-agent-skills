@@ -125,7 +125,7 @@ explicit_package_bases = true
 # audit-skill inventory tools/new_skill.py and the validation runner import, the review-document and
 # review-insights scripts tools/runtime_prompts.py imports, the review-document scripts the skill-evals suite imports,
 # the review-insights and update-pr-dashboard scripts the format-contract suite imports, the update-pr-dashboard
-# scripts a ejryan89-code-review-core suite imports, and the dotnet-format scripts the check suite imports. Then
+# scripts an ejryan89-code-review-core suite imports, and the dotnet-format scripts the check suite imports. Then
 # tests/deployer, whose suites import harness from beside them, tests/tools, whose hub guard and worktrees suites
 # import worktree_fixture from beside them, and tests/validation, whose policy modules and their suites import one
 # another by bare name, as tests/run_validation.py does. Their imports then resolve as they do at run time. Validation

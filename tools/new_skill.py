@@ -49,7 +49,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from console import run_main
-from skill_roots import sibling_scripts
+from skill_roots import SKILL_CORE, sibling_scripts
 
 from deployer import runtime_support
 from deployer import source as deploy_source
@@ -77,7 +77,6 @@ def default_allowed_tools(name: str) -> list[str]:
 
 # A script finds ejryan89-skill-core by this one fixed line, and every other sibling through ejryan89-skill-core's
 # lookup.
-SKILL_CORE = "ejryan89-skill-core"
 SKILL_CORE_LINE = f'sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "{SKILL_CORE}" / "scripts"))'
 
 

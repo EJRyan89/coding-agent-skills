@@ -13,6 +13,7 @@ from pathlib import Path
 
 import frontmatter
 from markdown_sections import EXECUTABLE_FENCES
+from skill_roots import SKILL_CORE
 from skill_scripts import shell_git_subcommands
 from validation_support import (
     CODE_SPAN,
@@ -406,8 +407,6 @@ def script_dependency_problems(root: Path) -> list[str]:
     return problems
 
 
-# The skill whose scripts every module reaches by its own fixed sys.path line, which skill_roots needs to be found.
-BOOTSTRAP_SKILL = "ejryan89-skill-core"
 SIBLING_PATH_ROOTS = ("skills", REPOSITORY_SKILLS, "tools", "tests", "deployer")
 SIBLING_LOOKUP_DOC = VALIDATION_DOC
 
@@ -438,14 +437,14 @@ def sibling_path_problems(root: Path) -> list[str]:
                     f"{where} passes {SIBLING_LOOKUP} a name it cannot read; pass the skill's name as one string "
                     f"literal; see {SIBLING_LOOKUP_DOC}"
                 )
-            elif entry.hand_written and entry.name not in {BOOTSTRAP_SKILL, own}:
+            elif entry.hand_written and entry.name not in {SKILL_CORE, own}:
                 problems.append(
                     f"{where} puts {entry.name}'s scripts on sys.path by a hand-written path; put {SIBLING_LOOKUP}(\""
                     f'{entry.name}") from skill_roots there instead; see {SIBLING_LOOKUP_DOC}'
                 )
-            elif not entry.hand_written and entry.name == BOOTSTRAP_SKILL:
+            elif not entry.hand_written and entry.name == SKILL_CORE:
                 problems.append(
-                    f"{where} looks up {BOOTSTRAP_SKILL} through {SIBLING_LOOKUP}; the line that puts it on sys.path "
+                    f"{where} looks up {SKILL_CORE} through {SIBLING_LOOKUP}; the line that puts it on sys.path "
                     f"already does; see {SIBLING_LOOKUP_DOC}"
                 )
     return problems

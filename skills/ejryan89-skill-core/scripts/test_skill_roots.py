@@ -21,6 +21,10 @@ class DeployedSkillRootsTests(unittest.TestCase):
         with mock.patch("pathlib.Path.home", return_value=home):
             self.assertEqual((home / ".claude" / "skills", home / ".agents" / "skills"), deployed_skill_roots())
 
+    def test_the_core_is_named_for_the_folder_it_is_deployed_in(self) -> None:
+        self.assertEqual("ejryan89-skill-core", skill_roots.SKILL_CORE)
+        self.assertEqual(skill_roots.SKILL_CORE, Path(skill_roots.__file__).resolve().parents[1].name)
+
     def test_the_running_skills_directory_is_the_one_holding_skill_core(self) -> None:
         self.assertEqual(Path(__file__).resolve().parents[2], skill_roots.SKILLS_ROOT)
         self.assertTrue((skill_roots.SKILLS_ROOT / "ejryan89-skill-core" / "scripts" / "skill_roots.py").is_file())
