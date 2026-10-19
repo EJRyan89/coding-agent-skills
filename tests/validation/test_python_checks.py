@@ -5,6 +5,7 @@ Each policy fails on a violating input and passes on a conforming one.
 
 from __future__ import annotations
 
+import copy
 import re
 import sys
 import tempfile
@@ -30,7 +31,10 @@ import python_checks
 import review_vocabularies
 from job_selection import all_jobs
 from python_checks import (
+    BLIND_EXCEPT_CEILING,
+    CEILINGS,
     FORMAT_ROOTS,
+    blind_except_noqa,
     ceiling_noqa,
     comments,
     issue_numbers_in_comments,
@@ -38,6 +42,7 @@ from python_checks import (
     mypy_type_check,
     noqa_without_reason,
     python_suppression_problems,
+    ratchet_problems,
     ruff_format_check,
     ruff_lint_check,
     type_check_skill_roots,
@@ -332,6 +337,56 @@ class PythonChecksFixtures(unittest.TestCase):
                 ],
                 ceiling_noqa(root, [root / "module.py"]),
             )
+
+    def test_blind_except_scan_names_each_noqa_that_keeps_one(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            marker = "# no" + "qa"
+            (root / "module.py").write_text(
+                "\n".join(
+                    [
+                        f"KEPT = 1  {marker}: BLE001 - the last handler",
+                        f"BOTH = 2  {marker}: S110, ble001 - lower case beside another code still counts",
+                        f"import sys  {marker}: F401 - imported for its effect",
+                        f'TEXT = "{marker}: BLE001 - in a string"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (root / "notes.md").write_text(f"{marker}: BLE001 - not Python\n", encoding="utf-8")
+            self.assertEqual(
+                ["module.py:1", "module.py:2"], blind_except_noqa(root, [root / "module.py", root / "notes.md"])
+            )
+
+    def test_ratchets_hold_each_ceiling_and_the_blind_excepts_at_their_literals_or_lower(self) -> None:
+        held = [f"module.py:{line}" for line in range(1, BLIND_EXCEPT_CEILING + 1)]
+        self.assertEqual([], ratchet_problems(copy.deepcopy(CEILINGS), held))
+        lowered = {table: {key: ceiling - 1 for key, ceiling in keys.items()} for table, keys in CEILINGS.items()}
+        self.assertEqual([], ratchet_problems(lowered, held[1:]))
+        raised = copy.deepcopy(CEILINGS)
+        raised["mccabe"]["max-complexity"] += 1
+        raised["pylint"]["max-args"] = True
+        del raised["pylint"]["max-statements"]
+        self.assertEqual(
+            [
+                f"[tool.ruff.lint.mccabe] max-complexity is {CEILINGS['mccabe']['max-complexity'] + 1}; the ratchet "
+                f"holds it at {CEILINGS['mccabe']['max-complexity']} or lower, so split the function instead",
+                f"[tool.ruff.lint.pylint] max-statements is None; the ratchet holds it at "
+                f"{CEILINGS['pylint']['max-statements']} or lower, so split the function instead",
+                f"[tool.ruff.lint.pylint] max-args is True; the ratchet holds it at {CEILINGS['pylint']['max-args']} "
+                "or lower, so split the function instead",
+            ],
+            ratchet_problems(raised, held),
+        )
+        another = [*held, "other.py:9"]
+        self.assertEqual(
+            [
+                f"{BLIND_EXCEPT_CEILING + 1} noqa comments keep a blind except, past the ratchet's "
+                f"{BLIND_EXCEPT_CEILING}; catch the exceptions the code expects instead: {', '.join(another)}"
+            ],
+            ratchet_problems(copy.deepcopy(CEILINGS), another),
+        )
 
     def test_a_python_file_in_a_folder_mypy_passes_over_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
