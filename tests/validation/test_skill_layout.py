@@ -783,7 +783,9 @@ def trigger_tree(root: Path, scenarios: Mapping[str, object]) -> None:
             "skills/alpha/SKILL.md": "---\nname: alpha\ndescription: Alpha. Use it when asked.\n---\n",
             "skills/beta/SKILL.md": "---\nname: beta\ndescription: Beta.\ndisable-model-invocation: true\n---\n",
             **{
-                f"tests/fixtures/skill-evals/{folder}/scenario.json": json.dumps(spec)
+                f"tests/fixtures/skill-evals/{folder}/scenario.json": spec
+                if isinstance(spec, str)
+                else json.dumps(spec)
                 for folder, spec in scenarios.items()
             },
         },
@@ -803,8 +805,7 @@ def test_trigger_scenario_policy_passes_each_skill_the_model_may_start_holding_o
         pytest.param(
             {"alpha/description": trigger_spec("alpha", requests=0)},
             [
-                "tests/fixtures/skill-evals/alpha/description is refused: description: requests must be a non-empty "
-                f"list of requests; {TRIGGER_DOC}",
+                f"tests/fixtures/skill-evals/alpha/description holds 0 requests, fewer than 3; {TRIGGER_DOC}",
                 MISSING_ALPHA,
             ],
             id="no requests",
@@ -820,27 +821,40 @@ def test_trigger_scenario_policy_passes_each_skill_the_model_may_start_holding_o
         pytest.param(
             {"alpha/description": trigger_spec("alpha"), "ghost/description": trigger_spec("ghost")},
             [
-                "tests/fixtures/skill-evals/ghost/description is refused: description: a trigger scenario's skill is "
-                f"a shipped one, and the checkout has no skills/ghost; {TRIGGER_DOC}"
+                "tests/fixtures/skill-evals/ghost/description names ghost, which is no skill under skills/; "
+                + TRIGGER_DOC
             ],
             id="no such skill",
         ),
         pytest.param(
             {"alpha/description": trigger_spec("alpha"), "beta/description": trigger_spec("beta")},
             [
-                "tests/fixtures/skill-evals/beta/description is refused: description: beta sets "
-                f"disable-model-invocation, so no request can start it; {TRIGGER_DOC}"
+                "tests/fixtures/skill-evals/beta/description names beta, which sets disable-model-invocation, so no "
+                f"request can start it; {TRIGGER_DOC}"
             ],
             id="user-only skill",
         ),
         pytest.param(
             {"alpha/description": trigger_spec("beta")},
             [
-                "tests/fixtures/skill-evals/alpha/description is refused: description: scenario.json names skill "
-                f'"beta", not alpha; {TRIGGER_DOC}',
+                'tests/fixtures/skill-evals/alpha/description names skill "beta", not its folder\'s, alpha; '
+                + TRIGGER_DOC,
                 MISSING_ALPHA,
             ],
             id="another folder's skill",
+        ),
+        pytest.param(
+            {"alpha/description": {**trigger_spec("alpha"), "near_misses": []}},
+            [f"tests/fixtures/skill-evals/alpha/description holds no near miss; {TRIGGER_DOC}", MISSING_ALPHA],
+            id="no near miss",
+        ),
+        pytest.param(
+            {"alpha/description": trigger_spec("alpha"), "alpha/broken": "{not json"},
+            [
+                "tests/fixtures/skill-evals/alpha/broken/scenario.json cannot be read: Expecting property name "
+                "enclosed in double quotes: line 1 column 2 (char 1)"
+            ],
+            id="unreadable scenario",
         ),
     ],
 )
