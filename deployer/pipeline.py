@@ -100,7 +100,9 @@ def _commit_manifest(context: Context, entries: list[PlanEntry], run_id: str, co
         match entry.action:
             case "REMOVE" | "DROP":  # the action ends this source's ownership of the item
                 recorded[kind.key].pop(entry.name, None)
-            case "INSTALL" | "UPDATE" | "UNCHANGED" | "ADOPT" | "REPLACE":  # it records the rendered copy
+            case "INSTALL" | "UPDATE" | "UNCHANGED" | "ADOPT" | "REPLACE" | "RENAME":  # it records the rendered copy
+                # A rename's rendered copy takes the place of the old name's, whose ownership ends.
+                recorded[kind.key].pop(entry.previous, None)
                 details: ItemEntry = {"hash": entry.staged}
                 if kind is SKILL:
                     details[SKILL.dependency_key] = sorted(context.source.skills[entry.name].skill_deps)

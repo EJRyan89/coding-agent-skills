@@ -280,12 +280,14 @@ class Deployment:
         source_id: str = SOURCE_ID,
         shared_assets: dict[str, str] | None = None,
         bundles: dict[str, Any] | None = None,
+        renamed: dict[str, str] | None = None,
     ) -> None:
         document = {
             "id": source_id,
             "name": "Test Skills",
             "shared_assets": shared_assets or {},
             "bundles": bundles or {},
+            **({"renamed": renamed} if renamed is not None else {}),
         }
         (self.source / "source.json").write_text(json.dumps(document, indent=4), encoding="utf-8")
 

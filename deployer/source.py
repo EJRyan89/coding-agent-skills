@@ -54,6 +54,8 @@ class Source:
     opt_in_bundles: set[str] = field(default_factory=set)
     shared_assets: dict[str, str] = field(default_factory=dict)
     agents: dict[str, Path] = field(default_factory=dict)
+    # source.json's renamed: each name a skill had in an earlier release, mapped to the skill's name now
+    renamed: dict[str, str] = field(default_factory=dict)
 
 
 def _load_json(path: Path) -> object:
@@ -337,6 +339,29 @@ def _load_bundles(document: dict[str, object], source: Source) -> None:
         source.bundles[bundle] = list(members)
 
 
+def _load_renamed(document: dict[str, object], source: Source) -> None:
+    """source.json's renamed: each old name a skill of this source had, mapped to the name it has now.
+
+    The deployer carries an owned item under an old name to its new one, so an old name must be a valid name the
+    source no longer uses, and its new name one of the source's skills that is no old name itself.
+    """
+    renamed = document.get("renamed", {})
+    if not isinstance(renamed, dict):
+        raise DeployError("ERROR: source.json renamed must be an object mapping each old skill name to its new name")
+    for old in sorted(renamed):
+        new = renamed[old]
+        if not is_valid_name(old):
+            raise DeployError(f"ERROR: source.json renamed names an invalid old name '{old}'", NAME_RULES)
+        if old in source.skills or old in source.bundles:
+            raise DeployError(f"ERROR: source.json renames '{old}', which is still a skill or bundle of this source")
+        if not isinstance(new, str) or new not in source.skills:
+            raise DeployError(
+                f"ERROR: source.json renames '{old}' to {json.dumps(new)}, which is no skill of this source"
+            )
+    for old, new in sorted(renamed.items()):
+        source.renamed[old] = new
+
+
 def _validate_dependencies(source: Source) -> None:
     for name in sorted(source.skills):
         seen: set[str] = set()
@@ -400,6 +425,7 @@ def _discover(paths: Paths, source_id: str) -> Source:
     document = document if isinstance(document, dict) else {}
     source.name = _source_name(document)
     _load_bundles(document, source)
+    _load_renamed(document, source)
     _validate_dependencies(source)
     source.agents = _discover_agents(paths)
     for name in sorted(source.skills):
