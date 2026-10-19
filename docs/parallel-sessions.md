@@ -199,7 +199,7 @@ With the guard enabled:
 - **Both shell tools.** The same commands are refused, with the same allowances, whether they run through the
   `Bash` tool or the `PowerShell` tool, or as a `Monitor` tool's command, which runs in the `Bash` tool's shell.
 
-Runtimes other than Claude Code do not run the hook, so for them the `CLAUDE.md` rules are the guard.
+Codex and Copilot CLI run hooks of their own but not this one, which lives in Claude Code's settings, so for them the `CLAUDE.md` rules are the guard.
 
 ### The guard's contract
 

@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 from bounded_process import run_bounded, without_repository_variables
 from executable_locator import find_executables
 from job_tree import JobRefused, process_tree
+from review_config import REVIEWER_EFFORTS
 from review_io import ResourceLock, atomic_write_json, atomic_write_text, read_diff, read_json
 from review_process import ProcessStatus, same_process, shell_script
 from review_runtime import (
@@ -340,8 +341,12 @@ def copilot_command(
     run_directory: Path,
     materialized_root: Path,
     result_path: Path,
+    effort: str | None = None,
 ) -> list[str]:
+    """The Copilot CLI command that reviews one run, at `effort` when one is given, else at the session's default."""
     negotiate_capabilities("copilot-cli", ["isolated-added-root", "read-diff", "write-result"])
+    if effort is not None and effort not in REVIEWER_EFFORTS:
+        raise RuntimeContractError(f"Copilot reasoning effort must be one of {', '.join(sorted(REVIEWER_EFFORTS))}")
     if not materialized_root.is_absolute() or not materialized_root.is_dir():
         raise RuntimeContractError("Copilot materialized root must be an existing absolute directory")
     if not run_directory.is_absolute() or not run_directory.is_dir():
@@ -379,6 +384,9 @@ def copilot_command(
         "--deny-tool=url",
         "--deny-tool=memory",
         "--deny-tool=ask_user",
+        # Copilot CLI's --reasoning-effort takes every value REVIEWER_EFFORTS names; one the model does not offer it
+        # reports and leaves unapplied.
+        *([f"--reasoning-effort={effort}"] if effort is not None else []),
     ]
 
 
@@ -393,6 +401,7 @@ def run_copilot(
     promote: Promote,
     staging_path: Path | None = None,
     snapshot_stamp: str | None = None,
+    effort: str | None = None,
     runner: Runner = subprocess_runner,
     executable: str | None = None,
     base_environment: Mapping[str, str] | None = None,
@@ -401,7 +410,8 @@ def run_copilot(
     `promote` callback checks the caller's claim and renames it to the result path, so a reader sees the whole
     result or none. A refused promotion is HostSuperseded. `snapshot_stamp` is the stamp `prepare` took of the
     source snapshot, so the snapshot is re-read
-    before Copilot starts only as far as something can have changed since (see `verify_stamped_snapshot`)."""
+    before Copilot starts only as far as something can have changed since (see `verify_stamped_snapshot`). `effort`,
+    when given, is the reasoning effort Copilot reviews at."""
     staging_path = staging_path or result_path.with_name(f"{result_path.stem}.staging{result_path.suffix}")
     materialized_resolved, entrypoint_resolved = _copilot_reviewer(
         run_directory, materialized_root, request_path, result_path, staging_path, diagnostic_path
@@ -421,6 +431,7 @@ def run_copilot(
             run_directory=run_directory,
             materialized_root=materialized_root,
             result_path=staging_path,
+            effort=effort,
         ),
         execution_directory,
         environment,

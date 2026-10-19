@@ -286,9 +286,11 @@ class CrossSkillContractTests(unittest.TestCase):
             with self.subTest(path=path.name):
                 self.assertNotIn("skill_evals", path.read_text(encoding="utf-8"))
 
-    def test_the_runtime_support_matrix_agrees_with_the_review_pipeline_on_agent_delegation(self) -> None:
+    def test_the_review_pipeline_delegates_reviewers_only_where_the_matrix_offers_delegation(self) -> None:
         # The matrix says which runtimes start subagents; the review pipeline decides how reviewers run from its own
-        # table. When one changes, review-prs's declared support has to change with it.
+        # table. It starts reviewers as subagents only on a runtime that can, and keeps Copilot CLI's inline although
+        # Copilot CLI starts subagents, because there no hook blocks a tool call when it fails: the seal of an inline
+        # review stands in for the guard. When either changes, review-prs's declared support has to change with it.
         from deployer import runtime_support
 
         pipeline = literal_assignment(
@@ -299,13 +301,27 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertEqual(set(runtime_support.RUNTIMES), set(pipeline))
         for runtime in runtime_support.RUNTIMES:
             with self.subTest(runtime=runtime):
-                self.assertEqual(
+                self.assertLessEqual(
                     "agent-delegation" in pipeline[runtime],
                     "agent-delegation" in runtime_support.RUNTIME_CAPABILITIES[runtime],
                 )
         self.assertEqual(
             {"claude-code": True, "codex": True, "copilot-cli": False},
             {runtime: "agent-delegation" in pipeline[runtime] for runtime in runtime_support.RUNTIMES},
+        )
+        self.assertEqual(
+            {"claude-code": True, "codex": True, "copilot-cli": True},
+            {
+                runtime: "agent-delegation" in runtime_support.RUNTIME_CAPABILITIES[runtime]
+                for runtime in runtime_support.RUNTIMES
+            },
+        )
+        self.assertEqual(
+            {"claude-code": True, "codex": False, "copilot-cli": False},
+            {
+                runtime: "fail-closed-agent-hooks" in runtime_support.RUNTIME_CAPABILITIES[runtime]
+                for runtime in runtime_support.RUNTIMES
+            },
         )
 
     def test_no_skill_pins_a_model(self) -> None:
@@ -634,9 +650,11 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertIn(f"with exactly this prompt and nothing else: `{task}`", skill)
         self.assertIn(f'REVIEWER_TASK = "{task.replace("<prompt file>", "{prompt}")}"', pipeline)
         self.assertIn("Workflow", allowed_tools(skill), "the Workflow path needs the tool allowed")
-        # Both paths start a role on the model its trusted profile names, and otherwise name none.
+        # Both paths start a role on the model its trusted profile names, and otherwise name none, and a native
+        # subagent on a runtime that takes one starts at the effort its EFFORT line names.
         self.assertIn("When a `MODEL` line names that role, start its subagent on that model", skill)
-        self.assertIn("on the model of any `MODEL` line that follows it", skill)
+        self.assertIn("When an `EFFORT` line names that role, start its subagent at that reasoning effort", skill)
+        self.assertIn("on the model and effort of any `MODEL` and `EFFORT` lines that follow it", skill)
         self.assertIn("...(role.model ? {{ model: role.model }} : {{}})", pipeline)
 
     def test_the_tracker_and_the_contract_name_the_computed_states_the_configuration_refuses(self) -> None:
@@ -824,7 +842,7 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertEqual((0, "ALL_FINALIZED\n"), (code, stdout.getvalue()))
 
     def test_review_prs_works_an_inline_run_through_next_role_and_states_its_boundary(self) -> None:
-        # Copilot CLI cannot start subagents, so the orchestrating session works each role itself.
+        # On Copilot CLI, or when asked, the orchestrating session works each role itself.
         skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")
         _, body = frontmatter_and_body(skill)
         self.assertIn("Add `--inline` when this session cannot start subagents", body)

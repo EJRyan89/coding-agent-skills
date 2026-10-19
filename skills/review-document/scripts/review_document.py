@@ -306,7 +306,7 @@ def repository_name(location: Location) -> str:
 
 def specialists_manifest(relative: str) -> dict[str, Any]:
     """A manifest that routes exactly the document to the suite's design-review specialist. It asks for no
-    agent-delegation, so a runtime that cannot start subagents reviews it inline."""
+    agent-delegation, so a runtime whose reviewers stay inline reviews it inline."""
     return {
         "schema_version": 2,
         "id": "review-document",

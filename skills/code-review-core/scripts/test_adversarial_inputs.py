@@ -1851,7 +1851,7 @@ class ReviewerBoundaryTests(unittest.TestCase):
 
 class InlineReviewerTests(AdversarialFixture):
     def prepare_inline(self) -> dict[str, Any]:
-        """Prepare as a Copilot CLI session does: it cannot start subagents, so it works the role itself, unguarded."""
+        """Prepare as a Copilot CLI session does: its reviewers stay inline, so it works the role itself, unguarded."""
         code, out, _ = self.main("prepare", "--pull", SELECTOR, "--host", "copilot-cli")
         self.assertEqual(0, code, out)
         run = Path(out.splitlines()[-1].removeprefix("INLINE "))
