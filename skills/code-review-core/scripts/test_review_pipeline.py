@@ -14,7 +14,7 @@ import threading
 import time
 import unittest
 import zipfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -579,7 +579,7 @@ class PipelineFixture(unittest.TestCase):
 
     @staticmethod
     def write_role_result(
-        role: dict[str, Any],
+        role: Mapping[str, Any],
         *,
         findings: list[dict[str, Any]] | None = None,
         dispositions: list[dict[str, Any]] | None = None,
@@ -2676,7 +2676,7 @@ class InlineReviewTests(PipelineFixture):
         return code, out
 
     @staticmethod
-    def role(run: Path, identity: str) -> dict[str, Any]:
+    def role(run: Path, identity: str) -> review_run.RunRole:
         return next(role for role in review_run.load_run(run)["roles"] if role["id"] == identity)
 
     def work_inline(self, run: Path) -> list[str]:
@@ -4552,7 +4552,7 @@ class FixtureCanaryTests(PipelineFixture):
         written = next(line.split(" ", 2)[2] for line in lines if line.startswith("SHA256 ") and line.endswith(".json"))
         return root, json.loads(Path(written).read_text(encoding="utf-8"))
 
-    def prepare_fixture_run(self, *arguments: str) -> dict[str, Any]:
+    def prepare_fixture_run(self, *arguments: str) -> Any:
         code, lines = self.fixture_main("prepare", "--host", "claude-code", "--canary", *arguments)
         self.assertEqual(0, code, lines)
         return review_run.load_run(Path(next(line for line in lines if line.startswith("RUN ")).split(" ", 2)[2]))

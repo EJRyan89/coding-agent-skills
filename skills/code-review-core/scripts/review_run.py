@@ -9,11 +9,11 @@ import shutil
 import stat
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, NotRequired, TypedDict, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
@@ -30,7 +30,7 @@ from review_hosts import subprocess_runner as copilot_subprocess_runner
 from review_io import PersistenceError, atomic_write_json, read_json
 from review_operation import ReviewOperationError
 from review_process import start_detached
-from review_records import RecordError
+from review_records import RecordError, Scope
 from review_runtime import (
     MODEL_ALIAS_RUNTIMES,
     NATIVE_EFFORT_RUNTIMES,
@@ -98,6 +98,69 @@ def self_check_command(run: Path, role: str) -> str:
     return SELF_CHECK_COMMAND.format(script=command_script("review_pipeline.py"), run=run, role=role)
 
 
+class RunRole(TypedDict):
+    """One reviewer role of a run: its prompt, where its result goes, and, for a specialist, the model and effort it
+    starts on, either of which prepare may set to None."""
+
+    id: str
+    prompt_file: str
+    result_file: str
+    model: NotRequired[str | None]
+    effort: NotRequired[str | None]
+
+
+class ReadCount(TypedDict):
+    """The distinct snapshot files a role read, and their bytes."""
+
+    files: int
+    bytes: int
+
+
+class Seal(TypedDict):
+    """An inline run's sealed files by path relative to the run, and each result next-role sealed by its role."""
+
+    files: dict[str, str]
+    results: dict[str, str]
+
+
+class RunState(TypedDict):
+    """A prepared run's run.json, as prepare writes it and every later step reads and updates it.
+
+    A run prepared before a field was recorded lacks it: its dispatch, the roles' dispatch times, the snapshot, its
+    repository and stamp, the read counts, the changed documents, and an inline run's seal. The reviewer adapter,
+    a fixture canary's paths, the patches, the archive base, and the snapshot stay open mappings.
+    """
+
+    schema_version: int
+    selector: str
+    mode: str
+    canary: bool
+    fixture: dict[str, Any] | None
+    config_path: str
+    host: str | None
+    runtime: str
+    dispatch: NotRequired[str]
+    kind: str
+    request_path: str
+    reviewer_root: str | None
+    result_path: str
+    adapter: dict[str, Any]
+    roles: list[RunRole]
+    attempts: dict[str, int]
+    dispatched_at: NotRequired[dict[str, float]]
+    snapshot: NotRequired[dict[str, Any]]
+    source_repository: NotRequired[str | None]
+    snapshot_stamp: NotRequired[str | None]
+    reads: NotRequired[dict[str, ReadCount]]
+    notes: list[str]
+    patches: dict[str, dict[str, Any]]
+    scope: Scope | None
+    uncovered_files: list[str]
+    archive_base: dict[str, Any]
+    documents: NotRequired[dict[str, list[str]]]
+    seal: NotRequired[Seal]
+
+
 class PipelineError(ValueError):
     pass
 
@@ -154,7 +217,7 @@ def _inside(path: Path, root: Path) -> bool:
         return False
 
 
-def _write_run(run: Path, state: dict[str, Any]) -> None:
+def _write_run(run: Path, state: RunState) -> None:
     """Write a prepared run's run.json. A run that cannot start a role on the model it asks for first notes that model
     in place of its `MODEL` line, so the role runs on the session's model; a run whose reviewers start at an effort
     they are given records each role's, its specialist's else the configuration's; an inline run then seals every
@@ -191,11 +254,13 @@ def _starts_at_given_effort(runtime: str, dispatch: str) -> bool:
     return dispatch == "copilot-host" or (dispatch == "subagents" and runtime in NATIVE_EFFORT_RUNTIMES)
 
 
-def load_run(run: Path) -> dict[str, Any]:
+def load_run(run: Path) -> RunState:
+    """A prepared run's state. Only its schema version is checked: prepare wrote the rest, and each step reads what it
+    needs as prepare wrote it."""
     state = READ.json_object(read_json(run / RUN_FILE), "run")
     if READ.integer(state.get("schema_version"), "run.schema_version") != RUN_SCHEMA_VERSION:
         raise PipelineError(f"{run} is not a prepared review run")
-    return state
+    return cast(RunState, state)
 
 
 def mark_dispatched(run: Path) -> None:
@@ -209,7 +274,7 @@ def mark_dispatched(run: Path) -> None:
     atomic_write_json(run / RUN_FILE, state)
 
 
-def run_dispatch(state: dict[str, Any]) -> str:
+def run_dispatch(state: Mapping[str, object]) -> str:
     """How a run's roles are worked. A run prepared before the dispatch was recorded was dispatched as its runtime
     and reviewer kind decided then: a Copilot CLI entrypoint on its host, everything else as subagents."""
     if "dispatch" in state:
@@ -217,15 +282,15 @@ def run_dispatch(state: dict[str, Any]) -> str:
     return "copilot-host" if state["runtime"] == "copilot-cli" and state["kind"] == "entrypoint" else "subagents"
 
 
-def _is_copilot_host_run(state: dict[str, Any]) -> bool:
+def _is_copilot_host_run(state: RunState) -> bool:
     return run_dispatch(state) == "copilot-host"
 
 
-def _inline_only(state: dict[str, Any]) -> PipelineError:
+def _inline_only(state: RunState) -> PipelineError:
     return PipelineError(f"{state['selector']} is reviewed inline; work its roles with next-role")
 
 
-def sealed_files(run: Path, state: dict[str, Any]) -> dict[str, str]:
+def sealed_files(run: Path, state: RunState) -> dict[str, str]:
     """The SHA-256 of each file of an inline run its reviewers must not change, by path relative to the run.
 
     That is every file prepare wrote but run.json, which the pipeline itself updates; the source snapshot, which its
@@ -249,7 +314,7 @@ def sealed_files(run: Path, state: dict[str, Any]) -> dict[str, str]:
     return digests
 
 
-def verify_seal(run: Path, state: dict[str, Any]) -> None:
+def verify_seal(run: Path, state: RunState) -> None:
     """Fail an inline run if a file it sealed changed or went missing.
 
     An inline reviewer is the orchestrating session, which no hook confines to its role, so this is what keeps a later

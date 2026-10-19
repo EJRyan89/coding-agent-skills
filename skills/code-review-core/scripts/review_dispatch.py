@@ -8,7 +8,7 @@ import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
@@ -36,6 +36,8 @@ from review_run import (
     RECORDED_FILE,
     RUN_FILE,
     PipelineError,
+    RunRole,
+    RunState,
     Services,
     _inline_only,
     _inside,
@@ -50,7 +52,7 @@ from review_runtime import SOURCE_SNAPSHOT_MANIFEST
 from review_specialists import check, parse_unified_diff
 
 
-def role_errors(run: Path, state: dict[str, Any]) -> dict[str, str]:
+def role_errors(run: Path, state: RunState) -> dict[str, str]:
     """Each role whose result is missing or invalid, with the reason."""
     if state["kind"] != "entrypoint":
         return check(read_json(run / "work" / "plan.json", maximum_bytes=64 * 1024 * 1024))
@@ -83,7 +85,7 @@ def role_errors(run: Path, state: dict[str, Any]) -> dict[str, str]:
     return {}
 
 
-def count_reads(run: Path, state: dict[str, Any], roles: Sequence[str]) -> bool:
+def count_reads(run: Path, state: RunState, roles: Sequence[str]) -> bool:
     """Reduce each named role's read log, which the reviewer guard writes, to the distinct snapshot files it names and
     their bytes, add them to the role's counts in run.json's `reads`, and delete the log, so no path outlives this
     step. Returns whether any log was counted. A role without a log had no guard and stays uncounted, and a run
@@ -113,7 +115,7 @@ def count_reads(run: Path, state: dict[str, Any], roles: Sequence[str]) -> bool:
     return counted
 
 
-def reviewer_seconds(state: dict[str, Any]) -> dict[str, int]:
+def reviewer_seconds(state: RunState) -> dict[str, int]:
     """Whole seconds from each role's dispatch to the last write of its result; untimed roles are left out.
 
     Windows dates a file from a coarser clock than the one dispatch reads, so a result written at once can carry an
@@ -131,7 +133,7 @@ def reviewer_seconds(state: dict[str, Any]) -> dict[str, int]:
     return seconds
 
 
-def next_role(run: Path, services: Services) -> tuple[str, dict[str, Any] | None]:
+def next_role(run: Path, services: Services) -> tuple[str, RunRole | None]:
     """An inline run's selector and the next role its orchestrating session works, or None once every role has a
     result.
 
@@ -184,9 +186,9 @@ def check_run(run: Path, services: Services | None = None) -> dict[str, Any]:
         return _check_roles(run, state)
 
 
-def _check_roles(run: Path, state: dict[str, Any]) -> dict[str, Any]:
+def _check_roles(run: Path, state: RunState) -> dict[str, Any]:
     errors = role_errors(run, state)
-    retry: list[dict[str, Any]] = []
+    retry: list[RunRole] = []
     failed: dict[str, str] = {}
     seal = state.get("seal")  # an inline run's
     # An accepted role's reads are counted now; a role set aside keeps its log, which its rerun adds to.
@@ -315,7 +317,7 @@ WAIT_POLL_SECONDS = 2
 MAX_WAIT_SECONDS = 300
 
 
-def _copilot_run(run: Path) -> tuple[Path, dict[str, Any], str]:
+def _copilot_run(run: Path) -> tuple[Path, RunState, str]:
     """A Copilot CLI host run, its state, and its one reviewer, whose name every host failure carries."""
     run = run.resolve()
     state = load_run(run)
@@ -374,7 +376,8 @@ def run_host(run: Path, token: str, services: Services) -> str:
     try:
         run_copilot(
             run_directory=run,
-            materialized_root=Path(state["reviewer_root"]),
+            # A host run's reviewer is an entrypoint, which prepare materialized, so its root is recorded.
+            materialized_root=Path(cast(str, state["reviewer_root"])),
             request_path=Path(state["request_path"]),
             result_path=Path(state["result_path"]),
             staging_path=staging_path(run, attempt),
@@ -419,7 +422,7 @@ def wait_for_host(run: Path, timeout: int, services: Services) -> tuple[Path | N
 REVIEWER_LIMIT_SECONDS = 3600
 
 
-def reviewer_progress(run: Path, state: dict[str, Any], now: float) -> dict[str, tuple[str, int]]:
+def reviewer_progress(run: Path, state: RunState, now: float) -> dict[str, tuple[str, int]]:
     """Each role's state, `ready`, `running`, or `overdue`, and its whole seconds since it was handed out.
 
     It only reads, as validate-result does. An invalid result may be one its reviewer is still fixing, so it counts as
@@ -449,7 +452,7 @@ def wait_for_reviewers(
     skill's tool grants last only for the turn that invoked it, and check and finalize must run in that turn.
     Returns each run's selector and role progress, in the given order, and the reason for each run that cannot be read.
     """
-    loaded: list[tuple[Path, dict[str, Any]]] = []
+    loaded: list[tuple[Path, RunState]] = []
     failures: dict[Path, str] = {}
     for run in runs:
         try:

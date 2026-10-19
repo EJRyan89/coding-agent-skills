@@ -9,6 +9,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from review_records import Review, source_parts
+from review_run import ReadCount
 from review_runtime import NATIVE_EFFORT_RUNTIMES
 
 
@@ -20,7 +21,7 @@ def reviewer_summaries(
     single: bool,
     seconds: dict[str, int] | None = None,
     models: dict[str, str] | None = None,
-    reads: dict[str, dict[str, int]] | None = None,
+    reads: dict[str, ReadCount] | None = None,
 ) -> list[dict[str, Any]]:
     """Which reviewers ran, the files each covered, the findings it raised, how often it was rerun, its time, and the
     snapshot files it read.

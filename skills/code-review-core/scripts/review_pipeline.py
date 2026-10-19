@@ -122,6 +122,8 @@ from review_run import (
     RUN_SCHEMA_VERSION,
     SOURCE_REPOSITORY,
     PipelineError,
+    RunRole,
+    RunState,
     Services,
     _inside,
     _sha256,
@@ -318,7 +320,7 @@ def _write_roles(
     notes: list[str],
     lazy: bool = False,
     document_stage: str | None = None,
-) -> tuple[list[dict[str, Any]], list[str]]:
+) -> tuple[list[RunRole], list[str]]:
     """Each reviewer role with its prompt written: an entrypoint's one, or the specialists plan's. Returns the roles
     and the changed files the plan leaves unreviewed. A `lazy` snapshot's prompts name its source commands, and a
     `document_stage` reaches the design-review specialist's."""
@@ -354,7 +356,7 @@ def _write_roles(
         source_commands=(lambda identity: source_commands(run, identity, script=script)) if lazy else None,
         document_stage=document_stage,
     )
-    roles = [
+    roles: list[RunRole] = [
         {
             "id": role["id"],
             "prompt_file": role["prompt_file"],
@@ -678,7 +680,7 @@ def _prepare_run(
             document_stage=review.document_stage,
         )
         snapshot["seconds"] = snapshot_seconds({**snapshot["seconds"], "prompts": services.timer() - writing})
-        state = {
+        state: RunState = {
             "schema_version": RUN_SCHEMA_VERSION,
             "selector": review.selector,
             "mode": review.mode,

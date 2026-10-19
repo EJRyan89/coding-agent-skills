@@ -1280,7 +1280,7 @@ class PdfSnapshotTests(unittest.TestCase):
 
         self.assertEqual([f"SOURCE_FILE {run / 'source' / 'source-snapshot-text' / 'docs' / 'spec.pdf.txt'}"], lines)
         self.assertEqual([json.dumps(HELD)], log.read_text(encoding="utf-8").splitlines())
-        counted: dict[str, Any] = {"reads": {}}
+        counted: Any = {"reads": {}}
         self.assertTrue(review_dispatch.count_reads(run, counted, ["generic-review"]))
         self.assertEqual({"generic-review": {"files": 1, "bytes": len(HEAD_PDF_LINES)}}, counted["reads"])
 
