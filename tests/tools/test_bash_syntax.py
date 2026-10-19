@@ -102,12 +102,80 @@ class ArrayAssignmentTests(unittest.TestCase):
             simple_commands(tree),
         )
 
+    def test_an_array_assignment_to_a_subscript_is_read_where_bash_reads_an_array(self) -> None:
+        tree = parse("a[1]=(x) b[k]+=($(git am)) git status; a[1]=(x); declare -a c[1]=(y)")
+        self.assertEqual(
+            [["a[1]=(x)", "b[k]+=($(git am))", "git", "status"], ["a[1]=(x)"], ["declare", "-a", "c[1]=(y)"]],
+            simple_commands(tree),
+        )
+        words = [word for command in bash_agreement.simple_commands(tree) for word in command.words]
+        self.assertEqual([True, True, False, False, True, False, False, True], [word.array for word in words])
+        self.assertEqual(("git am",), words[1].substitutions)
 
-@pytest.mark.parametrize("text", ["a[1]=(x)", "a[1]+=(x) git commit"])
-def test_a_documented_limit_an_array_assignment_to_a_subscript_is_refused_though_bash_reads_it(text: str) -> None:
-    assert bash_agreement.bash_verdicts([text])[text][0]
-    with pytest.raises(BashSyntaxError):
-        bash_syntax.parse(text)
+
+# Each assignment before git as (name, whether it names an element, whether it appends).
+@pytest.mark.parametrize(
+    ("text", "assignments"),
+    [
+        ("a=x git push", [("a", False, False)]),
+        ("a+=x git push", [("a", False, True)]),
+        ("a[1]=x git push", [("a", True, False)]),
+        ("a[1]+=x git push", [("a", True, True)]),
+        (
+            'x=1 a[1]="v w" b+=z c[k]+=w git push',
+            [("x", False, False), ("a", True, False), ("b", False, True), ("c", True, True)],
+        ),
+        ("a[x y]=v git push", [("a", True, False)]),
+        ('a["x]"]=v git push', [("a", True, False)]),
+        ("a[$(echo ']')]=v git push", [("a", True, False)]),
+        ("a[b[1]]=v git push", [("a", True, False)]),
+        ("a[x;y|z]=v git push", [("a", True, False)]),
+        ("a[]=v git push", [("a", True, False)]),
+        ("a[1]=(x) git push", [("a", True, False)]),
+        ("a[1]+=(x y) git push", [("a", True, True)]),
+        ("x=1 >out a[x y]=v git push", [("x", False, False), ("a", True, False)]),
+        ("if a[x y]=v git push; then :; fi", [("a", True, False)]),
+        ("! a[x y]=v git push", [("a", True, False)]),
+        ("time -p a[x y]=v git push", [("a", True, False)]),
+        ("true && a[x y]=v git push", [("a", True, False)]),
+        ("function f { a[x y]=v git push; }", [("a", True, False)]),
+        ("f() { a[x y]=v git push; }", [("a", True, False)]),
+        ("case x in x) a[y z]=1 git push;; esac", [("a", True, False)]),
+    ],
+)
+def test_every_assignment_bash_reads_before_a_command_is_one_and_the_command_after_it_is_placed(
+    text: str, assignments: list[tuple[str, bool, bool]]
+) -> None:
+    [command] = [command for command in bash_agreement.simple_commands(parse(text)) if command.words[-1].raw == "push"]
+    read = [
+        None if word.assignment is None else (word.assignment.name, word.assignment.element, word.assignment.appends)
+        for word in command.words
+    ]
+    assert [*assignments, None, None] == read
+    assert [word.raw for word in command.words[-2:]] == ["git", "push"]
+
+
+def test_an_element_assignment_keeps_its_value_apart_from_its_subscript() -> None:
+    [word] = first_simple('a[$(git am) "k"]="v w"').words
+    assert word.assignment is not None
+    assert tuple((part.kind, part.text, part.quoted) for part in word.assignment.value) == (("text", "v w", True),)
+    assert word.substitutions == ("git am",)
+
+
+@pytest.mark.parametrize(
+    ("text", "words"),
+    [
+        # Where Bash reads no assignment a subscript is ordinary text, and a blank in it ends the word.
+        ("echo a[x y]=v", ["echo", "a[x", "y]=v"]),
+        ("x=1 echo a[1]=v", ["x=1", "echo", "a[1]=v"]),
+        # Where Bash reads one it reads the subscript whole, = or not, and a word that is not one is the command's name.
+        ("a[x y] echo", ["a[x y]", "echo"]),
+        ("a[x]y]=v echo", ["a[x]y]=v", "echo"]),
+    ],
+)
+def test_a_subscript_is_read_whole_only_where_bash_reads_an_assignment(text: str, words: list[str]) -> None:
+    command = first_simple(text)
+    assert words == [word.raw for word in command.words]
 
 
 @pytest.mark.parametrize("text", ["[[ ]]", "[[ -n ]]", "[[ a && ]]"])
@@ -187,6 +255,9 @@ def test_reserved_words_and_prefixes_start_compound_commands_not_programs(text: 
         "a=( ( 1 ) )",
         "a=(1",
         "cat <<EOF; a=(1\n2)\nbody\nEOF",
+        "a[1=v git push",
+        "git a[1]=(x)",
+        "echo a[x y]=(1)",
     ],
 )
 def test_text_bash_would_refuse_is_an_error(text: str) -> None:

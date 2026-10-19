@@ -239,15 +239,21 @@ refused while a guarded hub is in view, and what they do not see at all is named
   escapes and line continuations, comments, and here-documents, whose bodies are data and never commands; and the
   command tree of lists, `&&` and `||`, pipelines, `( )` subshells, `{ }` groups, `if`, `while`, `until`, `for`,
   `select`, `case`, `[[ ]]`, `!`, `time`, and function definitions, with redirections and array assignments,
-  whose substitutions it reads and whose value it leaves unsettled. A word's value comes from its
+  whose substitutions it reads and whose value it leaves unsettled. Before a command's name it reads every
+  assignment Bash reads there, and places the command after them: `NAME=value`, `NAME+=value`, an element's
+  `NAME[SUBSCRIPT]=value` and `NAME[SUBSCRIPT]+=value`, whose subscript it reads whole as Bash does, blanks, quotes,
+  and nested brackets included, and an array's, `NAME=( )` and `NAME+=( )`, to a subscript or not. Bash refuses an
+  element's assignment before a command, sets nothing for it, and runs the command all the same, and the guard reads
+  it so; on its own an element's assignment makes the variable an array, whose value it leaves unsettled. No form of
+  assignment Bash reads before a command stays outside what the guard sees. A word's value comes from its
   literal text, `~`, and each `$NAME` the command sets or the environment holds, and `$PWD` is where the shell is; a
   substitution, arithmetic, a special parameter, a glob, a brace expansion, or a value that would split leaves the
   word unsettled. The guard follows `cd` (with `--`; bare goes home, `cd -` and a `CDPATH` search leave the
   directory unknown), `pushd`, `popd`, and `env -C`, and runs a function's body where a command calls it.
   Commands after `exec`, `command`, `builtin`, `nohup`, `nice`, `timeout`, `stdbuf`, and `env` are read as the
-  commands they start, and `eval` of fixed words is read as part of the shell. Every command or process
-  substitution runs, as Bash runs it, in a subshell before the command that holds it, and so does one in an
-  unquoted here-document's body.
+  commands they start, `env`'s after every word holding `=`, which it takes as an assignment whatever the name, and
+  `eval` of fixed words is read as part of the shell. Every command or process substitution runs, as Bash runs it,
+  in a subshell before the command that holds it, and so does one in an unquoted here-document's body.
 - **PowerShell, by its parser.** A PowerShell command is read by PowerShell's own parser, not by a second
   hand-written grammar, and each command's arguments by the parameters PowerShell's binder gives them, so a
   parameter abbreviated, aliased, or left positional, and each path of an array, is read; a command the binder
