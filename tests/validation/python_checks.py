@@ -44,6 +44,9 @@ CEILING_CODES = frozenset({"C901", "PLR0915"})
 # mypy checks these as one root from the repository root, and each skill's scripts/ directory from inside it, where
 # the deployed skill's own imports resolve. pyproject.toml's [tool.mypy] holds the configuration; it excludes nothing.
 TYPE_CHECK_ROOTS = ("deployer", "tools", "deploy.py", "tests", "conftest.py")
+# The areas mypy checks in strict mode, which pyproject.toml's [tool.validation] mypy-strict lists. Areas join in stages
+# and none leaves, so each one here must stay listed there; a pull request that makes an area strict adds it to both.
+STRICT_TYPE_CHECK_AREAS = ("skills/ejryan89-skill-core/scripts",)
 # The folders mypy passes over when it collects the files under a root it is given, by their names, which no setting
 # changes: a file in one is type-checked by nothing.
 MYPY_SKIPPED_FOLDERS = frozenset({"__pycache__", "site-packages", "node_modules"})
@@ -314,6 +317,41 @@ def mypy_path_problems(root: Path, files: list[Path]) -> list[str]:
     return problems
 
 
+def strict_type_check_areas(root: Path) -> list[str] | None:
+    """The areas pyproject.toml's [tool.validation] mypy-strict lists, or None when it holds no list of paths."""
+    configured = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    areas = configured.get("tool", {}).get("validation", {}).get("mypy-strict")
+    if not isinstance(areas, list) or not all(isinstance(area, str) for area in areas):
+        return None
+    return areas
+
+
+def strict_area_problems(root: Path, pinned: tuple[str, ...] = STRICT_TYPE_CHECK_AREAS) -> list[str]:
+    """The strict list must be a list of directories validation type-checks in a run of their own, and hold every
+    pinned area, since an area joins the list and never leaves it."""
+    areas = strict_type_check_areas(root)
+    if areas is None:
+        return ["pyproject.toml: [tool.validation] mypy-strict must be a list of paths from the repository root"]
+    own_runs = {scripts.relative_to(root).as_posix() for scripts in type_check_skill_roots(root)}
+    problems = [
+        f"pyproject.toml: [tool.validation] mypy-strict lacks {area}, which is checked in strict mode; an area "
+        "joins the list and never leaves it, so fix the errors strict mode reports instead"
+        for area in pinned
+        if area not in areas
+    ]
+    problems += [
+        f"pyproject.toml: [tool.validation] mypy-strict names {area}, which validation does not type-check in a run "
+        "of its own"
+        for area in areas
+        if area not in own_runs
+    ]
+    problems += [
+        f"pyproject.toml: [tool.validation] mypy-strict names {area} more than once"
+        for area in sorted({area for area in areas if areas.count(area) > 1})
+    ]
+    return problems
+
+
 def ruff_format_check(root: Path, targets: list[str]) -> None:
     """Fail, naming each file, when ruff format would change any Python file under the targets in root."""
     ruff = find_ruff()
@@ -341,14 +379,16 @@ def ruff_lint_check(root: Path, targets: list[str]) -> None:
         ) from exc
 
 
-def mypy_type_check(cwd: Path, targets: list[str], configuration: Path) -> None:
-    """Fail, naming each error, when mypy finds a type error under the targets, checked from cwd."""
+def mypy_type_check(cwd: Path, targets: list[str], configuration: Path, *, strict: bool = False) -> None:
+    """Fail, naming each error, when mypy finds a type error under the targets, checked from cwd, in strict mode when
+    `strict` is set."""
     mypy = find_mypy()
     if mypy is None:
         raise AssertionError(f"mypy was not found: {platform_support.install_hint('mypy')}")
     # The null device as the cache directory keeps mypy from writing a cache into the tree.
+    command = [mypy, "--config-file", str(configuration), "--cache-dir", os.devnull, *(["--strict"] if strict else [])]
     try:
-        run_process([mypy, "--config-file", str(configuration), "--cache-dir", os.devnull, *targets], cwd=cwd)
+        run_process([*command, *targets], cwd=cwd)
     except AssertionError as exc:
         raise AssertionError(
             f"{exc}\nFix each error named above; a `# type: ignore[<code>]` that must stay states its reason in a "
@@ -363,20 +403,22 @@ def type_check_skill_roots(root: Path = REPOSITORY_ROOT) -> list[Path]:
 
 def type_check_jobs() -> list[Job]:
     configuration = REPOSITORY_ROOT / "pyproject.toml"
+    # A list strict_area_problems refuses checks no area in strict mode until it is fixed.
+    strict = set(strict_type_check_areas(REPOSITORY_ROOT) or ())
     core = f"static type check (mypy {', '.join(TYPE_CHECK_ROOTS)})"
     jobs = [
         Job(
             core,
             core,
             UNSPLIT_SUITE_WEIGHT,
-            functools.partial(mypy_type_check, REPOSITORY_ROOT, list(TYPE_CHECK_ROOTS), configuration),
+            functools.partial(mypy_type_check, REPOSITORY_ROOT, list(TYPE_CHECK_ROOTS), configuration, strict=False),
         )
     ]
+    # A job keeps its name in strict mode, so the seconds recorded for it still weigh it.
     for root in type_check_skill_roots():
         name = f"static type check (mypy {relative(root)})"
-        jobs.append(
-            Job(name, name, UNSPLIT_SUITE_WEIGHT, functools.partial(mypy_type_check, root, ["."], configuration))
-        )
+        check = functools.partial(mypy_type_check, root, ["."], configuration, strict=relative(root) in strict)
+        jobs.append(Job(name, name, UNSPLIT_SUITE_WEIGHT, check))
     return jobs
 
 
@@ -434,9 +476,16 @@ class PythonChecksPolicies(unittest.TestCase):
         configuration = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["mypy"]
         self.assertEqual("3.11", configuration["python_version"])
         self.assertIs(True, configuration["explicit_package_bases"])
-        # Default strictness, and no module, suite, or import is exempt. No platform: each host checks the code as it
-        # runs there, so every platform's branches are checked on the platform that runs them.
+        # Default strictness, and no module, suite, or import is exempt; the areas [tool.validation] lists are checked
+        # with --strict besides. No platform: each host checks the code as it runs there, so every platform's branches
+        # are checked on the platform that runs them.
         self.assertEqual(["explicit_package_bases", "mypy_path", "python_version"], sorted(configuration))
+
+    def test_strict_type_check_areas_only_grow(self) -> None:
+        # A pull request that makes an area strict adds it to STRICT_TYPE_CHECK_AREAS and to pyproject.toml together.
+        configuration = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]
+        self.assertEqual(["mypy-strict"], sorted(configuration["validation"]))
+        self.assertEqual([], strict_area_problems(REPOSITORY_ROOT))
 
     def test_mypy_reads_every_python_file_under_its_roots(self) -> None:
         self.assertEqual([], type_check_skipped_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))

@@ -14,7 +14,6 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import link_probe
 from link_probe import is_link_or_junction, is_plain_directory, is_plain_file
 
 # The value Windows gives a reparse point's attribute, written out so the rule is held to it, not to the constant.
@@ -95,7 +94,7 @@ class LinkProbeTests(unittest.TestCase):
         def refused(path: Any) -> os.stat_result:
             raise PermissionError(13, "Permission denied", str(path))
 
-        with mock.patch.object(link_probe.os, "lstat", refused):
+        with mock.patch.object(os, "lstat", refused):
             with self.assertRaises(PermissionError):
                 is_link_or_junction(self.folder)
             self.assertFalse(is_plain_directory(self.folder))

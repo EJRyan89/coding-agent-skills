@@ -243,13 +243,13 @@ class PathProgramsTests(unittest.TestCase):
 
 class LinkFoldersTests(LocatorTestCase):
     def test_windows_links_the_folder_winget_installs_portable_commands_into(self) -> None:
-        with mock.patch.object(executable_locator.sys, "platform", "win32"):
+        with mock.patch.object(sys, "platform", "win32"):
             self.assertEqual([self.local / "Microsoft" / "WinGet" / "Links"], link_folders())
 
     def test_another_platform_has_no_link_folder_yet(self) -> None:
         self.program(self.links)
         with (
-            mock.patch.object(executable_locator.sys, "platform", "linux"),
+            mock.patch.object(sys, "platform", "linux"),
             mock.patch.dict(os.environ, {"PATH": str(self.path_folder)}),
         ):
             self.assertEqual([], link_folders())

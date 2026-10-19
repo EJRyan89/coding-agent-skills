@@ -300,7 +300,7 @@ class BoundedProcessTests(unittest.TestCase):
     def test_a_tree_starts_the_command_and_is_left_once_it_has_finished(self) -> None:
         tree = RecordingTree({"close_fds": True})
         popen = subprocess.Popen
-        with mock.patch.object(bounded_process.subprocess, "Popen", side_effect=popen) as started:
+        with mock.patch.object(subprocess, "Popen", side_effect=popen) as started:
             finished = run_bounded([sys.executable, "-c", "print('done')"], 60, tree=tree)
         self.assertEqual(0, finished.returncode)
         self.assertIs(True, started.call_args.kwargs["close_fds"])
@@ -476,7 +476,7 @@ class StreamingTests(unittest.TestCase):
         tree = RecordingTree({"close_fds": True})
         popen = subprocess.Popen
         with (
-            mock.patch.object(bounded_process.subprocess, "Popen", side_effect=popen) as started,
+            mock.patch.object(subprocess, "Popen", side_effect=popen) as started,
             bounded_process.streaming(
                 [sys.executable, "-c", "pass"], idle_timeout=STARTUP_SECONDS, tree=tree
             ) as running,
@@ -517,7 +517,7 @@ class StreamingTests(unittest.TestCase):
                 yield
 
         with (
-            mock.patch.object(bounded_process.subprocess, "Popen", side_effect=recorded),
+            mock.patch.object(subprocess, "Popen", side_effect=recorded),
             self.assertRaisesRegex(job_tree.JobRefused, "could not join"),
             bounded_process.streaming(SLEEPING, idle_timeout=STARTUP_SECONDS, tree=Refusing({})),
         ):
@@ -632,7 +632,8 @@ class StreamingTests(unittest.TestCase):
         )
 
     def test_job_tree_waits_for_a_killed_process_as_long_as_this_module(self) -> None:
-        self.assertIs(bounded_process.KILL_WAIT_SECONDS, job_tree.KILL_WAIT_SECONDS)
+        # job_tree imports the wait and does not export it, so its namespace is read for it.
+        self.assertIs(bounded_process.KILL_WAIT_SECONDS, vars(job_tree)["KILL_WAIT_SECONDS"])
 
     def assert_nothing_left_behind(self, running: bounded_process.Streaming) -> None:
         """Once the released program exits, the reader sees stdout end, closes it, and ends."""
@@ -647,7 +648,7 @@ class StreamingTests(unittest.TestCase):
                 process.stdin = None if missing == "stdin" else mock.MagicMock()
                 process.stdout = None if missing == "stdout" else mock.MagicMock()
                 with (
-                    mock.patch.object(bounded_process.subprocess, "Popen", return_value=process),
+                    mock.patch.object(subprocess, "Popen", return_value=process),
                     self.assertRaisesRegex(OSError, r"^the command started without its pipes$"),
                     bounded_process.streaming(["any"], idle_timeout=1),
                 ):
