@@ -1,24 +1,24 @@
 ---
 name: evaluate-skill
 description: >-
-  Run a skill's fixed scenarios once per reviewer model from throwaway homes and judge each review record by script.
-  Use it before a pull request that changes a skill's prompt, model guidance, or reviewer instructions. Each run
-  calls models.
-argument-hint: "SKILL [--scenario NAME ...] [--model NAME ...]"
+  Run a skill's fixed scenarios on each model from throwaway homes, once or several times, and judge each record by
+  script: a review's, or whether a request started the skill. Use it before a pull request that changes a skill's
+  prompt, description, model guidance, or reviewer instructions. Each run calls models.
+argument-hint: "SKILL [--runs N] [--scenario NAME ...] [--model NAME ...]"
 allowed-tools: ["Bash(python -B tools/skill_evals.py *)", "PowerShell(python -B tools/skill_evals.py *)"]
 ---
 
 # Evaluate a skill
 
-`tools/skill_evals.py` runs a skill's scenarios, the folders under `tests/fixtures/skill-evals/<skill>/`, once per reviewer model, each in a headless Claude Code session started in a throwaway home where this checkout is deployed, and checks every expectation against the record the run wrote. The script does every deterministic step: the deployment, the runs, the checks, each failure's kind, the table, the pull request's citation, and the results file. Your part is choosing what to run and saying what a failure means. Its docstring lists every output line and what still comes from the user's own setup.
+`tools/skill_evals.py` runs a skill's scenarios, the folders under `tests/fixtures/skill-evals/<skill>/`, on each model, each in a headless Claude Code session started in a throwaway home where this checkout is deployed, and checks every expectation against the record the run wrote. A review scenario varies the reviewers' model; a trigger scenario gives each of its requests, and each near miss, to a session of its own on the model and checks whether the session started the skill. The script does every deterministic step: the deployment, the runs, the checks, each failure's kind, the table, the pull request's citation, and the results file. Your part is choosing what to run and saying what a failure means. Its docstring lists every output line and what still comes from the user's own setup.
 
-It is a manual gate, never part of `tests/run_validation.py`. A full run is one session per scenario per model, each calling models. After deploying the homes, the script runs up to `--jobs` sessions concurrently and stops each at `--timeout` seconds.
+It is a manual gate, never part of `tests/run_validation.py`. A full run is one session per scenario per model per run, and one per request of a trigger scenario, each calling models. After deploying the homes, the script runs up to `--jobs` sessions concurrently and stops each at `--timeout` seconds.
 
 ## 1. Choose the run
 
 Run `python -B tools/skill_evals.py --help` for the accepted model names and the concurrency and timeout defaults. The script's `MODELS` constant is the authoritative list of reviewer models.
 
-For a pull request, run every scenario on every model: only that run may record its result. Add `--scenario <name>` or `--model <model>` (each repeatable) only to rerun a failure, and leave out `--write`, which a narrowed run refuses. A skill without a folder under `tests/fixtures/skill-evals/` has no scenarios, and the run says so with `FAILED`.
+For a pull request, run every scenario on every model: only that run may record its result. One run is one sample, so for a change to a reviewer's model, effort, or guidance, where the comparison decides, add `--runs 3`. Add `--scenario <name>` or `--model <model>` (each repeatable) only to rerun a failure, and leave out `--write`, which a narrowed run refuses. A skill without a folder under `tests/fixtures/skill-evals/` has no scenarios, and the run says so with `FAILED`.
 
 ## 2. Run it
 
@@ -34,8 +34,10 @@ The first line is `HOME "<dir>"`. A `FAILED` or `DEPLOY_FAILED` line instead mea
 
 A `NOT_COUNTED` line names each run whose record counts for nothing, and every `FAIL` line names its kind before its reason. Explain each before anyone changes the skill:
 
-- **`judgment`**: the evaluation's result for that model. One run is one sample, so rerun that scenario on that model once before calling it a regression, and report both runs.
+- **`judgment`**: the evaluation's result for that model. With `--runs`, read the scenario's `RUNS` line before calling it anything: `all` is a steady pass, `none` a steady failure, and `some` an inconsistent result, neither a regression nor a pass, which you report as such. After a single run, one failure is one sample: rerun that scenario on that model with `--runs 3` before calling it a regression.
 - **`run`** or **`record`**: the run recorded no review, or its record does not show the model judged, so it is not a judgment of the model. Say what the reason shows went wrong.
+
+For a trigger scenario, a `starts` failure means the description did not lead that model to the skill, and a `does_not_start` failure that it took a near miss; say which words of the description the request or near miss shares.
 
 When a reason is not enough, search the run's `TRANSCRIPT` file, which is stream-json, for the failing step, for `permission_denials`, or for a reviewer's `hook_response` events, which say whether the guard ran, rather than reading it whole.
 

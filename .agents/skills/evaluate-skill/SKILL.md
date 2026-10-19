@@ -1,10 +1,10 @@
 ---
 name: evaluate-skill
 description: >-
-  Run a skill's fixed scenarios once per reviewer model from throwaway homes and judge each review record by script.
-  Use it before a pull request that changes a skill's prompt, model guidance, or reviewer instructions. Each run
-  calls models.
-argument-hint: "SKILL [--scenario NAME ...] [--model NAME ...]"
+  Run a skill's fixed scenarios on each model from throwaway homes, once or several times, and judge each record by
+  script: a review's, or whether a request started the skill. Use it before a pull request that changes a skill's
+  prompt, description, model guidance, or reviewer instructions. Each run calls models.
+argument-hint: "SKILL [--runs N] [--scenario NAME ...] [--model NAME ...]"
 allowed-tools: ["Bash(python -B tools/skill_evals.py *)", "PowerShell(python -B tools/skill_evals.py *)"]
 ---
 

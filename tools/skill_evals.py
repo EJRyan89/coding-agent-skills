@@ -1,13 +1,14 @@
 """Run a skill's fixed scenarios, model by model, and judge the review record each run wrote.
 
 Usage:
-  python -B tools/skill_evals.py SKILL [--write] [--timeout SECONDS] [--jobs N]
-  python -B tools/skill_evals.py SKILL [--scenario NAME ...] [--model NAME ...] [--records DIR]
+  python -B tools/skill_evals.py SKILL [--write] [--runs N] [--timeout SECONDS] [--jobs N]
+  python -B tools/skill_evals.py SKILL [--scenario NAME ...] [--model NAME ...] [--runs N] [--records DIR]
 
 SKILL is one skill's name, a folder of scenarios under tests/fixtures/skill-evals/; a name that is not a skill's is a
 usage error, and a skill with no scenario there fails the run. Repeated --scenario and --model names count once, in
 first-occurrence order. Without --scenario, every scenario is selected in name order. --timeout is a positive number
-of seconds.
+of seconds. --runs, a positive count and 1 unless given, runs each scenario that many times on each model and judges
+every run, since one run is one sample of what a model does.
 
 A scenario is a directory tests/fixtures/skill-evals/<skill>/<scenario>/, which never ships, holding a scenario.json.
 A fixture scenario is a code-review fixture, which `review_pipeline.py prepare --canary --fixture <scenario>` reviews
@@ -47,6 +48,27 @@ The scenario.json:
 A document or base path leads from the scenario's folder to a file, which may be another scenario's under the same
 scenarios root, so a document serves several skills' scenarios without a copy.
 
+A trigger scenario judges a skill's description rather than its work: whether a session given only a request a user
+might type starts the skill, as its description says it should, and whether one given a near miss, such as a request
+a neighbouring skill's description names, leaves it alone. Its scenario.json holds no expectations, since each
+request is one:
+
+  {"skill": "<skill>", "mode": "trigger", "requests": ["<request>", ...], "near_misses": ["<request>", ...]}
+
+The skill is a shipped one under skills/, which the deployment puts in each home, and the model may start it: one that
+sets disable-model-invocation fails the load. Each list holds at least one request; a request is one line of text,
+given once in the scenario, that starts with neither `-` nor `/`, which Claude Code would read as an option or a
+command. Its expectations are `starts "<request>"` for each request and `does_not_start "<request>"` for each near
+miss, in that order. A run gives each request, then each near miss, to a headless session of its own in the model's
+home, on that model, since the session's model is the one that decides whether to start a skill, with no grant and
+at most TRIGGER_TURNS turns, so a session that starts a skill stops soon after. A session started the skill when one
+of its own messages, not a subagent's, calls the Skill tool naming it. The run writes, in its folder, its trigger
+record: {"requests": [{"request": "<request>", "started": ["<skill>", ...]}, ...], "models": ["<model ID>", ...]},
+each request's session with the skills it started, and the model IDs the sessions' messages named. A session counts
+for nothing when Claude Code could not start, timed out, or did not list the skill in its init event, which are `run`
+failures, or when its messages named no model or another one, a `record` failure; its exit code is not read, since
+the turn limit is the evaluation's own. The first such session makes the whole run count for nothing.
+
 Each expectation is a statement over the record, checked here by script and never by reading the report. Severities
 rank SUGGESTION < SHOULD_FIX < MUST_FIX; `lines` lists the head lines a finding may be anchored at, any of them:
 
@@ -74,12 +96,14 @@ An unknown kind, a field a kind does not take, or a `category` the scenario's ma
 fails the whole run before anything is judged. The manifest is the one the fixture's pull.json names in its base tree,
 the checkout's for a repository reviewer's scenario, or review-document's design manifest for a document scenario.
 
-Records come from a record source, a function of a scenario and a model that returns the record that run wrote.
---records DIR reads DIR/<scenario>/<model>.json, the record JSON a run finalized, and holds it to what a run's record
-is held to: code-review-core's record contract (validate_record), the review version of the scenario's mode, a guard
-that held every reviewer, and every reviewer's `model` naming that model's ID. The model is the one each reviewer's
-result reports, which is weaker than a run's check of the transcript. A missing or unreadable record, or one any of
-those refuses, fails every expectation of its scenario and model.
+Records come from a record source, a function of a scenario, a model, and which run, that returns the record that
+run wrote. --records DIR reads DIR/<scenario>/<model>.json, or with --runs N above 1, DIR/<scenario>/<model>-<run>.json
+for each run from 1 to N: the record JSON a run finalized, or a trigger scenario's trigger record. It holds a review
+record to what a run's record is held to: code-review-core's record contract (validate_record), the review version
+of the scenario's mode, a guard that held every reviewer, and every reviewer's `model` naming that model's ID. The
+model is the one each reviewer's result reports, which is weaker than a run's check of the transcript. A trigger
+record must name each of the scenario's requests once, and every model ID in it must be that model's. A missing or
+unreadable record, or one any of those refuses, fails every expectation of its scenario, model, and run.
 
 Without --records, it runs the scenarios. For each model it makes a fresh home under one throwaway directory,
 deploys this checkout into it with `deploy.py --canary-home`, as tools/runtime_canary.py does, and sets the model's
@@ -91,7 +115,8 @@ Claude Code runs a project agent's hooks only in a folder whose workspace trust 
 never is, so loaded from the home the reviewer guard would never run. The definition is the home's agent file, its
 frontmatter and body, with one change: its hook runs the home's review_guard.py in place of the profile folder's,
 so the guard checks the home's prompts against the home's copy of the pipeline that wrote them.
-Then, for each scenario and model, up to --jobs at once, it starts Claude Code headless with the model's home as
+Then, for each run of each scenario on each model, up to --jobs at once, every scenario on every model queued for one
+run before any for the next, it starts Claude Code headless with the model's home as
 its working directory, so the deployed skills and agent load as project ones, and the prompt
 `/<skill> <prepare_arguments>`, on a repository reviewer's scenario's copy, or `/<skill> "<document>"` with the path
 of a document scenario's document, staged in the run's folder; a document or a copy that cannot be staged fails the
@@ -105,8 +130,9 @@ was not the one judged.
 Edits are accepted, standing in for the user who approves each reviewer's result file, which the reviewers write
 inside the home, and the reviewers' self-check and source commands are allowed, each by the quoted path of the home's
 deployed script as the pipeline's prompts give it, in both shells, with no wildcard in the path; the skill's
-allowed-tools grant the rest. Each run's temporary directory is its own folder in the home, through TMPDIR, which
-Python reads first on every system, so the pipeline's run folders and the canary root that finalize writes land there.
+allowed-tools grant the rest. Each run's own folder is <home>/.skill-evals/<scenario>, or with --runs above 1
+<home>/.skill-evals/<run>/<scenario>, and its temporary directory is a folder there, through TMPDIR, which Python
+reads first on every system, so the pipeline's run folders and the canary root that finalize writes land there.
 The record judged is the latest record of the pull request recorded there, read and validated by code-review-core's
 archive, and it must be version 2 for a re-review, whose canary root first holds the prior record as version 1, and
 version 1 otherwise: a run whose latest record is another version, or cannot be read, recorded no review of its own,
@@ -118,14 +144,17 @@ only 0, and null means the boundary was never exercised.
 What still comes from the user's own setup: their sign-in, user CLAUDE.md and auto-memory, as for the runtime
 canary.
 
-Output, one fact per line:
+Output, one fact per line. With --runs above 1, every line about one run, a TRANSCRIPT, GUARDED, NOT_COUNTED, PASS, or
+FAIL line, names it as ` run=<run>` after its model, and the lines are otherwise as they are for one run:
   HOME "<dir>"                                    the throwaway directory, one home per model inside it
   DEPLOYED <model> <source id>                    or DEPLOY_FAILED <model> "<reason>", which stops the run, also
                                                   when the home's reviewer agent cannot be passed with --agents, or
                                                   the home's path holds a *, which a grant would read as any text
   RUNTIME claude <version>
-  TRANSCRIPT <scenario> <model> "<path>"          a run finished; its stream-json output, in the order runs end
-  REVIEWER <model> <model ID>[,<model ID>]        the models the reviewers ran on, or `none`
+  TRANSCRIPT <scenario> <model> "<path>"          a run finished; its stream-json output, in the order runs end, one
+                                                  line for each session of a trigger scenario's run
+  REVIEWER <model> <model ID>[,<model ID>]        the models the reviewers ran on, and a trigger scenario's sessions,
+                                                  or `none`
   GUARDED <scenario> <model> <role> files_read=<n>
                                                   a reviewer of a run that counts, which the guard held, and the
                                                   snapshot files the guard counted it reading
@@ -135,29 +164,39 @@ Output, one fact per line:
                                                   run recorded no review of its own, because the session ended
                                                   before finalize, timed out, could not start, did not list the
                                                   skill, had a command denied, or its fixture or document could not
-                                                  be staged, or, with --records, no record file can be read; `record`
+                                                  be staged, a trigger scenario's session as above, or, with
+                                                  --records, no record file can be read; `record`
                                                   when a record does not show the model judged: no reviewer subagent
                                                   ran, reviewers or the session ran on another model, a reviewer no
-                                                  guard held, or a record the record contract or the scenario's
-                                                  review version refuses
+                                                  guard held, a record the record contract or the scenario's
+                                                  review version refuses, or a trigger record of another model's
   PASS <skill> <scenario> <model> <expectation>
   FAIL <skill> <scenario> <model> <expectation> <kind> "<reason>"
                                                   <kind> is `judgment` for what the record shows, or the `run` or
                                                   `record` of its NOT_COUNTED line
+  RUNS <scenario> <model> <passed>/<runs> all|some|none
+                                                  with --runs above 1, after the outcomes, one per scenario and model:
+                                                  the runs that passed every expectation of theirs, of the runs, and
+                                                  whether that is every run (all, the pass^k of k runs), some, which
+                                                  is an inconsistent result, or none
   FAILED "<reason>"                               nothing was run or judged: the scenarios could not be loaded,
                                                   Claude Code is missing, or --write's existing results file
                                                   cannot be read or its table cannot be read
 A run then prints, between a `CITATION BEGIN` and a `CITATION END` line, the Markdown a pull request's Validation
 section cites it with: the command, a table with one row per scenario and one column per model, each cell the
-expectations passed of those checked, and in a text fence the RUNTIME, REVIEWER, and GUARDED lines, each NOT_COUNTED
-line with its reason as the results file records it, and each judgment's FAIL line, so the block names no path of the
-machine. With --records, the table alone follows the outcomes. Then `WROTE <file>` when --write replaced the skill's
+expectations passed of those checked over every run, followed over several runs by `(<passed>/<runs> runs)`, the
+RUNS line's count, and in a text fence the RUNTIME, REVIEWER, and GUARDED lines, each NOT_COUNTED line with its
+reason as the results file records it, and each judgment's FAIL line, so the block names no path of the machine. With
+--records, the table alone follows the outcomes. Then `WROTE <file>` when --write replaced the skill's
 rows in docs/skill-evaluations.md, and `REMOVED "<dir>"` when nothing failed and the home is gone; otherwise the home
 stays for its transcripts. A model none of whose reviewers ran is written in the results file as not run with a fixed
 phrase for its first reason, such as `timed out after 1800 seconds` or `denied 2 commands`, which names no path of the
 machine; the FAIL lines and the transcript keep the whole reason. --write reads the results table strictly before any
 run: the header, its separator, then rows of the header's columns, each naming a skill, and nothing else between the
-markers. Every other skill's row is written back as it was.
+markers. Every other skill's row is written back as it was. A row's Runs cell is the runs of each scenario, and with
+more than one, each scenario's counts in By scenario end with the runs that passed every expectation, of the runs
+judged, as the citation's cells do; a run none of whose judged part ran, reviewers or a trigger scenario's sessions,
+is left out of both counts, as a scenario none of whose runs held a judgment is `not run`.
 It exits 1 on any FAIL, FAILED, or DEPLOY_FAILED line, 0 otherwise, and 2 on a usage error.
 
 It records pass or fail, the model identifiers, the runtime version, and the date, and nothing else: no tokens,
@@ -247,8 +286,8 @@ STATE = ".skill-evals"
 RESULTS_BEGIN = "<!-- skill-evals:begin -->"
 RESULTS_END = "<!-- skill-evals:end -->"
 RESULTS_HEADER = (
-    "| Skill | Model | Model ID | Passed | By scenario | Session model | Claude Code | Date |",
-    "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    "| Skill | Model | Model ID | Passed | Runs | By scenario | Session model | Claude Code | Date |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
 )
 # A results table's cell border, a pipe its cell does not escape, and a separator cell, aligned or not.
 CELL_BORDER = re.compile(r"(?<!\\)\|")
@@ -264,8 +303,16 @@ JUDGMENT, RUN, RECORD = "judgment", "run", "record"
 SEVERITIES = tuple(sorted(SEVERITY_RANK, key=SEVERITY_RANK.__getitem__))
 VERDICTS = ("APPROVED", "CHANGES_REQUESTED", "INCOMPLETE")
 DISPOSITIONS = tuple(sorted(RECORD_DISPOSITIONS))
-MODES = ("initial", "re-review")
+TRIGGER = "trigger"
+MODES = ("initial", "re-review", TRIGGER)
 SCENARIO_FIELDS = frozenset({"skill", "mode", "expectations"})
+# A trigger scenario's fields, where its shipped skills are, the record each of its runs writes in its folder, and the
+# turns a request's session may take: enough to read a file before choosing, few enough that a session which starts a
+# skill stops soon after, since the start is all that is judged.
+TRIGGER_FIELDS = frozenset({"skill", "mode", "requests", "near_misses"})
+SHIPPED_SKILLS = "skills"
+TRIGGER_RECORD = "trigger.json"
+TRIGGER_TURNS = 2
 # The folder in a run's own folder where a document scenario's document is written for the skill to review.
 DOCUMENT_FOLDER = "document"
 # A repository reviewer's scenario: the skill that runs a reviewer manifest on a fixture, where this repository's own
@@ -322,6 +369,14 @@ class Scenario:
     stage: str | None = None
     # A repository reviewer's fixture's held files, each by its path in the fixture, which the copy restores.
     held: tuple[str, ...] = ()
+    # A trigger scenario's requests that should start its skill, and its near misses, which should not.
+    requests: tuple[str, ...] = ()
+    near_misses: tuple[str, ...] = ()
+
+
+# Which of a scenario's runs on a model: None when each runs once, or its number from 1 when it runs several times.
+Index = int | None
+RunKey = tuple[str, str, Index]
 
 
 @dataclass(frozen=True)
@@ -332,9 +387,20 @@ class Outcome:
     failure: str | None
     # JUDGMENT, RUN, or RECORD for a failure; None when the expectation passed.
     kind: str | None = None
+    run: Index = None
 
 
-RecordSource = Callable[[Scenario, str], Record]
+RecordSource = Callable[[Scenario, str, Index], Record]
+
+
+def indexes(runs: int) -> list[Index]:
+    """The runs of each scenario on each model: one with no number, or several numbered from 1."""
+    return [None] if runs == 1 else list(range(1, runs + 1))
+
+
+def run_token(index: Index) -> str:
+    """What a line about one run adds after its model: nothing for a single run, else which run it is."""
+    return "" if index is None else f" run={index}"
 
 
 def quote(value: str) -> str:
@@ -725,6 +791,65 @@ def _reviewer(
     return skill, placed, _held(directory, placed)
 
 
+def _requests(value: Any, what: str) -> tuple[str, ...]:
+    """A trigger scenario's list of requests, each one line of text a user might type, given once."""
+    if not isinstance(value, list) or not value or any(not isinstance(item, str) for item in value):
+        raise ScenarioError(f"{what} must be a non-empty list of requests")
+    for item in value:
+        if not item.strip() or item != item.strip() or not item.isprintable():
+            raise ScenarioError(f"each of {what} must be one line of text, not {quote(item)}")
+        if item.startswith(("-", "/")):
+            raise ScenarioError(
+                f"{quote(item)} starts with {item[0]}, which Claude Code reads as an option or a command"
+            )
+    if len(set(value)) != len(value):
+        raise ScenarioError(f"{what} name a request twice")
+    return tuple(value)
+
+
+def skills_started(record: Record, request: str) -> list[str]:
+    """The skills a trigger record shows the session of this request starting."""
+    entry = next((item for item in record["requests"] if item["request"] == request), None)
+    if entry is None:
+        raise RecordError(f"the record has no session of {quote(request)}")
+    return list(entry["started"])
+
+
+def trigger_expectation(skill: str, request: str, starts: bool) -> Expectation:
+    """That the session given only this request starts the skill, or, for a near miss, does not."""
+
+    def check(record: Record) -> str | None:
+        found = skills_started(record, request)
+        return None if (skill in found) == starts else f"the session started {', '.join(found) or 'no skill'}"
+
+    return Expectation(f"{'starts' if starts else 'does_not_start'} {quote(request)}", check)
+
+
+def load_trigger(skill: str, directory: Path, spec: Mapping[str, Any], checkout: Path) -> Scenario:
+    """A trigger scenario: requests that should start a shipped, model-invocable skill and near misses that should
+    not, one expectation each."""
+    if set(spec) != TRIGGER_FIELDS:
+        raise ScenarioError(f"a trigger scenario.json must have exactly {', '.join(sorted(TRIGGER_FIELDS))}")
+    if spec["skill"] != skill:
+        raise ScenarioError(f"scenario.json names skill {quote(str(spec['skill']))}, not {skill}")
+    skill_file = checkout / SHIPPED_SKILLS / skill / "SKILL.md"
+    if not skill_file.is_file():
+        raise ScenarioError(
+            f"a trigger scenario's skill is a shipped one, and the checkout has no {SHIPPED_SKILLS}/{skill}"
+        )
+    if runtime_canary.starts_only_by_user(skill_file):
+        raise ScenarioError(f"{skill} sets disable-model-invocation, so no request can start it")
+    requests, near_misses = _requests(spec["requests"], "requests"), _requests(spec["near_misses"], "near_misses")
+    both = [item for item in requests if item in near_misses]
+    if both:
+        raise ScenarioError(f"{quote(both[0])} is both a request and a near miss")
+    expectations = [trigger_expectation(skill, item, True) for item in requests]
+    expectations += [trigger_expectation(skill, item, False) for item in near_misses]
+    return Scenario(
+        skill, directory.name, directory, TRIGGER, None, tuple(expectations), requests=requests, near_misses=near_misses
+    )
+
+
 def load_scenario(skill: str, directory: Path, checkout: Path = REPOSITORY_ROOT) -> Scenario:
     try:
         spec = json.loads((directory / "scenario.json").read_text(encoding="utf-8"))
@@ -734,44 +859,49 @@ def load_scenario(skill: str, directory: Path, checkout: Path = REPOSITORY_ROOT)
         if not isinstance(spec, dict):
             raise ScenarioError("scenario.json must hold an object")
         mode = _choice(spec.get("mode"), MODES, "mode")
-        allowed = SCENARIO_FIELDS | ({"prior"} if mode == "re-review" else set())
-        if "document" in spec:
-            allowed |= (
-                {"document"} | ({"base"} if "base" in spec else set()) | ({"stage"} if "stage" in spec else set())
-            )
-        if "reviewer" in spec:
-            allowed |= {"reviewer"}
-        if set(spec) != allowed:
-            raise ScenarioError(f"scenario.json must have exactly {', '.join(sorted(allowed))}")
-        reviewer: str | None = None
-        placed: tuple[str, ...] = ()
-        held: tuple[str, ...] = ()
-        if "reviewer" in spec:
-            reviewer, placed, held = _reviewer(spec, skill, directory, checkout)
-        elif spec["skill"] != skill:
-            raise ScenarioError(f"scenario.json names skill {quote(str(spec['skill']))}, not {skill}")
-        document: Path | None = None
-        base: Path | None = None
-        stage: str | None = None
-        if "document" in spec:
-            if mode != "initial":
-                raise ScenarioError("a document scenario is an initial review: its mode is initial")
-            document = _document(directory, spec["document"], "document")
-            base = _document(directory, spec["base"], "base") if "base" in spec else None
-            stage = _choice(spec["stage"], tuple(DOCUMENT_STAGES), "stage") if "stage" in spec else None
-        elif reviewer is None:
-            _fixture_in_place(directory)  # a reviewer's scenario had its fixture checked in _reviewer
-        prior = None
-        if mode == "re-review":
-            prior = directory / _path(spec["prior"])
-            if not prior.is_file():
-                raise ScenarioError(f"prior record {spec['prior']} is missing")
-        if not isinstance(spec["expectations"], list) or not spec["expectations"]:
-            raise ScenarioError("expectations must be a non-empty list")
-        expectations = tuple(expectation(item, mode) for item in spec["expectations"])
-        _listed_categories(spec["expectations"], finding_categories(spec, directory, checkout))
+        if mode == TRIGGER:
+            return load_trigger(skill, directory, spec, checkout)
+        return review_scenario(skill, directory, spec, mode, checkout)
     except ScenarioError as exc:
         raise ScenarioError(f"{directory.name}: {exc}") from exc
+
+
+def review_scenario(skill: str, directory: Path, spec: Mapping[str, Any], mode: str, checkout: Path) -> Scenario:
+    """A scenario of a review: a fixture, a document, or a repository reviewer's fixture, and its expectations."""
+    allowed = SCENARIO_FIELDS | ({"prior"} if mode == "re-review" else set())
+    if "document" in spec:
+        allowed |= {"document"} | ({"base"} if "base" in spec else set()) | ({"stage"} if "stage" in spec else set())
+    if "reviewer" in spec:
+        allowed |= {"reviewer"}
+    if set(spec) != allowed:
+        raise ScenarioError(f"scenario.json must have exactly {', '.join(sorted(allowed))}")
+    reviewer: str | None = None
+    placed: tuple[str, ...] = ()
+    held: tuple[str, ...] = ()
+    if "reviewer" in spec:
+        reviewer, placed, held = _reviewer(spec, skill, directory, checkout)
+    elif spec["skill"] != skill:
+        raise ScenarioError(f"scenario.json names skill {quote(str(spec['skill']))}, not {skill}")
+    document: Path | None = None
+    base: Path | None = None
+    stage: str | None = None
+    if "document" in spec:
+        if mode != "initial":
+            raise ScenarioError("a document scenario is an initial review: its mode is initial")
+        document = _document(directory, spec["document"], "document")
+        base = _document(directory, spec["base"], "base") if "base" in spec else None
+        stage = _choice(spec["stage"], tuple(DOCUMENT_STAGES), "stage") if "stage" in spec else None
+    elif reviewer is None:
+        _fixture_in_place(directory)  # a reviewer's scenario had its fixture checked in _reviewer
+    prior = None
+    if mode == "re-review":
+        prior = directory / _path(spec["prior"])
+        if not prior.is_file():
+            raise ScenarioError(f"prior record {spec['prior']} is missing")
+    if not isinstance(spec["expectations"], list) or not spec["expectations"]:
+        raise ScenarioError("expectations must be a non-empty list")
+    expectations = tuple(expectation(item, mode) for item in spec["expectations"])
+    _listed_categories(spec["expectations"], finding_categories(spec, directory, checkout))
     return Scenario(
         str(spec["skill"]),
         directory.name,
@@ -911,19 +1041,54 @@ def judgments(record: Record) -> dict[tuple[int, str], str]:
     return judged
 
 
-def records_in(directory: Path) -> RecordSource:
-    """A record source reading DIR/<scenario>/<model>.json, holding each record to what a run's is held to: the
-    record contract, the scenario's review version, a guard that held every reviewer, and each reviewer's reported
-    model."""
+def trigger_record_problem(record: Any, scenario: Scenario, model: str) -> str | None:
+    """Why a trigger record is not one of this scenario on this model, or None: an object of the session of each of
+    the scenario's requests, once each, with the skills it started, and the model IDs the sessions ran on, every one
+    the model's."""
+    if not isinstance(record, dict) or set(record) != {"requests", "models"}:
+        return "it is not a trigger record, an object of requests and models"
+    entries, models = record["requests"], record["models"]
+    if not isinstance(entries, list) or any(
+        not isinstance(entry, dict)
+        or set(entry) != {"request", "started"}
+        or not isinstance(entry["request"], str)
+        or not isinstance(entry["started"], list)
+        or any(not isinstance(name, str) for name in entry["started"])
+        for entry in entries
+    ):
+        return "each of its requests must be an object of the request and the skills its session started"
+    if sorted(entry["request"] for entry in entries) != sorted([*scenario.requests, *scenario.near_misses]):
+        return "its requests are not the scenario's, each once"
+    if not isinstance(models, list) or not models or any(not isinstance(name, str) for name in models):
+        return "its models must be the model IDs its sessions ran on"
+    other = sorted(name for name in models if not names_model(name, MODELS[model]))
+    return f"its sessions ran on {', '.join(other)}, not {MODELS[model]}" if other else None
 
-    def source(scenario: Scenario, model: str) -> Record:
-        path = directory / scenario.name / f"{model}.json"
+
+def record_name(model: str, index: Index) -> str:
+    """A record's file name under --records: the model's, and with several runs, the run's number after it."""
+    return f"{model}.json" if index is None else f"{model}-{index}.json"
+
+
+def records_in(directory: Path) -> RecordSource:
+    """A record source reading DIR/<scenario>/<model>.json, or DIR/<scenario>/<model>-<run>.json for each of several
+    runs, holding each record to what a run's is held to: for a trigger scenario, trigger_record_problem; for any
+    other, the record contract, the scenario's review version, a guard that held every reviewer, and each reviewer's
+    reported model."""
+
+    def source(scenario: Scenario, model: str, index: Index) -> Record:
+        path = directory / scenario.name / record_name(model, index)
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError as exc:
             raise RecordError(f"no record at {path}") from exc
         except (OSError, ValueError) as exc:
             raise RecordError(f"cannot read {path}: {exc}") from exc
+        if scenario.mode == TRIGGER:
+            problem = trigger_record_problem(record, scenario, model)
+            if problem:
+                raise RecordError(f"{path} counts for nothing: {problem}", RECORD)
+            return record
         try:
             validate_record(record)
         except ValueError as exc:
@@ -947,7 +1112,8 @@ def records_in(directory: Path) -> RecordSource:
 @dataclass(frozen=True)
 class Run:
     """One scenario run on one model: the record it wrote, or why it counts for nothing, and the models it used.
-    `recorded` is that reason as the results file records it, in fixed phrases that name no path of the machine."""
+    `recorded` is that reason as the results file records it, in fixed phrases that name no path of the machine.
+    `reviewers` are the models of the part judged: the reviewers, or a trigger scenario's sessions."""
 
     record: Record | None
     failure: str | None
@@ -1040,6 +1206,49 @@ def claude_command(executable: str, request: str, home: Path, skill: str) -> lis
         "--allowedTools",
         *reviewer_grants(home, skill),
     ]
+
+
+def trigger_command(executable: str, request: str, model: str) -> list[str]:
+    # The request alone, as a user would type it, on the judged model, since the session's model is the one that
+    # decides whether to start a skill; project settings only, so only the home's skills are listed; and a turn limit,
+    # so a session that starts one stops soon after. Nothing is granted, so a command the skill would run is denied.
+    return [
+        executable,
+        "-p",
+        request,
+        "--model",
+        MODELS[model],
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--setting-sources",
+        "project,local",
+        "--strict-mcp-config",
+        "--no-session-persistence",
+        "--max-turns",
+        str(TRIGGER_TURNS),
+    ]
+
+
+def skills_in_stream(output: str) -> list[str]:
+    """The skills the session's own messages started with the Skill tool, each once, in the order first started; a
+    subagent's start is not the session's."""
+    found: list[str] = []
+    for line in output.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or event.get("type") != "assistant" or event.get("parent_tool_use_id"):
+            continue
+        message = event.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        for block in content if isinstance(content, list) else []:
+            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "Skill":
+                name = block.get("input", {}).get("skill") if isinstance(block.get("input"), dict) else None
+                if isinstance(name, str) and name.strip():
+                    found.append(name.strip().removeprefix("/"))
+    return list(dict.fromkeys(found))
 
 
 def run_environment(base: Mapping[str, str], run: Path, config: Path) -> dict[str, str]:
@@ -1280,10 +1489,75 @@ class Session:
     git: GitClient
 
 
-def run_scenario(scenario: Scenario, model: str, home: Path, session: Session) -> tuple[Run, Path]:
-    """Run the scenario once in the model's home; return what it gave and its transcript."""
-    run = home / STATE / scenario.name
+def run_folder(home: Path, scenario: str, index: Index) -> Path:
+    """A run's own folder in the model's home: the scenario's, under the run's number when it runs several times."""
+    return home / STATE / scenario if index is None else home / STATE / str(index) / scenario
+
+
+def run_scenario(
+    scenario: Scenario, model: str, home: Path, session: Session, index: Index = None
+) -> tuple[Run, list[Path]]:
+    """Run the scenario once in the model's home; return what it gave and its transcripts, one per session."""
+    run = run_folder(home, scenario.name, index)
     (run / "tmp").mkdir(parents=True)
+    if scenario.mode == TRIGGER:
+        return run_trigger(scenario, model, home, session, run)
+    result, transcript = review_run(scenario, model, home, session, run)
+    return result, [transcript]
+
+
+def trigger_failure(model: str, completed: Completed, timeout: float, skill: str) -> tuple[str, str, str] | None:
+    """Why a trigger session counts for nothing, as the FAIL lines and as the results file record it, and its kind;
+    or None. Its exit code is not read, since the turn limit that stops a session after it starts a skill is the
+    evaluation's own."""
+    listed, _ = runtime_canary.claude_stream(completed.stdout)
+    if completed.error:
+        return completed.error, "Claude Code could not start", RUN
+    if completed.timed_out:
+        return f"timed out after {timeout:g} seconds", f"timed out after {timeout:g} seconds", RUN
+    if listed is None or skill not in listed:
+        return f"Claude Code did not list {skill}", f"Claude Code did not list {skill}", RUN
+    session, _ = stream_models(completed.stdout)
+    other = sorted(name for name in session if not names_model(name, MODELS[model]))
+    if not session or other:
+        reason = f"the session ran on {', '.join(other) or 'no model it named'}, not {MODELS[model]}"
+        return reason, reason, RECORD
+    return None
+
+
+def run_trigger(scenario: Scenario, model: str, home: Path, session: Session, run: Path) -> tuple[Run, list[Path]]:
+    """Give each of a trigger scenario's requests, then each near miss, to a session of its own in the model's home,
+    keep each transcript, and write the trigger record of the skills each session started in the run's folder. The
+    first session that counts for nothing makes the run count for nothing."""
+    environment = {**session.base, "TMPDIR": str(run / "tmp")}
+    entries: list[dict[str, Any]] = []
+    models: set[str] = set()
+    transcripts: list[Path] = []
+    failure: tuple[str, str, str] | None = None
+    for number, request in enumerate([*scenario.requests, *scenario.near_misses], 1):
+        completed = session.runner(
+            trigger_command(session.executable, request, model), home, environment, session.timeout
+        )
+        transcript = run / f"request-{number}.jsonl"
+        transcript.write_text(completed.stdout, encoding="utf-8")
+        if completed.stderr:
+            transcript.with_suffix(".stderr.txt").write_text(completed.stderr, encoding="utf-8")
+        transcripts.append(transcript)
+        models |= stream_models(completed.stdout)[0]
+        entries.append({"request": request, "started": skills_in_stream(completed.stdout)})
+        problem = trigger_failure(model, completed, session.timeout, scenario.skill)
+        if failure is None and problem is not None:
+            failure = (f"request {number}: {problem[0]}", f"request {number}: {problem[1]}", problem[2])
+    record = {"requests": entries, "models": sorted(models)}
+    (run / TRIGGER_RECORD).write_text(json.dumps(record, indent=2), encoding="utf-8")
+    judged = frozenset(models)
+    if failure is not None:
+        return Run(None, failure[0], judged, judged, failure[1], failure[2]), transcripts
+    return Run(record, None, judged, judged), transcripts
+
+
+def review_run(scenario: Scenario, model: str, home: Path, session: Session, run: Path) -> tuple[Run, Path]:
+    """Run a review scenario once in its run's folder; return what it gave and its transcript."""
     transcript = run / "transcript.jsonl"
     with contextlib.ExitStack() as copies:
         try:
@@ -1324,24 +1598,37 @@ def _session_run(
     return Run(None if failure else record, failure, reviewers, orchestrators, recorded, kind), transcript
 
 
-def run_lines(scenarios: Sequence[Scenario], models: Sequence[str], runs: Mapping[tuple[str, str], Run]) -> list[str]:
+def run_keys(scenarios: Sequence[Scenario], models: Sequence[str], runs: Mapping[RunKey, Run]) -> list[RunKey]:
+    """The key of each finished run, by scenario, then model, then run, whatever order the runs ended in."""
+    numbers = sorted({key[2] for key in runs}, key=lambda index: index or 0)
+    return [
+        (scenario.name, model, index)
+        for scenario in scenarios
+        for model in models
+        for index in numbers
+        if (scenario.name, model, index) in runs
+    ]
+
+
+def run_lines(scenarios: Sequence[Scenario], models: Sequence[str], runs: Mapping[RunKey, Run]) -> list[str]:
     """The REVIEWER line of each model, then the GUARDED lines of each run."""
+    keys = run_keys(scenarios, models, runs)
     lines = []
     for model in models:
-        used = sorted({name for scenario in scenarios for name in runs[(scenario.name, model)].reviewers})
+        used = sorted({name for key in keys if key[1] == model for name in runs[key].reviewers})
         lines.append(f"REVIEWER {model} {','.join(used) or 'none'}")
-    for scenario in scenarios:
-        for model in models:
-            lines += guarded_lines(scenario.name, model, runs[(scenario.name, model)])
+    for key in keys:
+        lines += guarded_lines(*key, runs[key])
     return lines
 
 
-def guarded_lines(scenario: str, model: str, run: Run) -> list[str]:
-    """One line per reviewer of a run that counts, which `unguarded` found the guard held, with its count."""
-    if run.record is None:
+def guarded_lines(scenario: str, model: str, index: Index, run: Run) -> list[str]:
+    """One line per reviewer of a run that counts, which `unguarded` found the guard held, with its count. A trigger
+    scenario's record has no reviewers."""
+    if run.record is None or "review" not in run.record:
         return []
     return [
-        f"GUARDED {scenario} {model} {reviewer['id']} files_read={reviewer['files_read']}"
+        f"GUARDED {scenario} {model}{run_token(index)} {reviewer['id']} files_read={reviewer['files_read']}"
         for reviewer in review(run.record)["reviewers"]
     ]
 
@@ -1374,36 +1661,44 @@ def prepare_home(home: Path, model: str, deploy: Callable[[Path, Path], tuple[in
 
 
 def run_all(
-    scenarios: Sequence[Scenario], homes: Mapping[str, Path], session: Session, jobs: int
-) -> dict[tuple[str, str], Run]:
-    """Every scenario on every model with a home, up to `jobs` at once, printing each transcript as its run ends. One
-    job runs in this thread, in order."""
-    runs: dict[tuple[str, str], Run] = {}
-    pairs = [(scenario, model, home) for scenario in scenarios for model, home in homes.items()]
+    scenarios: Sequence[Scenario], homes: Mapping[str, Path], session: Session, jobs: int, runs: int = 1
+) -> dict[RunKey, Run]:
+    """Every scenario on every model with a home, `runs` times, up to `jobs` at once, printing each transcript as its
+    run ends. Each round of every scenario on every model is queued before the next. One job runs in this thread, in
+    order."""
+    results: dict[RunKey, Run] = {}
+    queued = [
+        (scenario, model, home, index)
+        for index in indexes(runs)
+        for scenario in scenarios
+        for model, home in homes.items()
+    ]
 
-    def ended(scenario: Scenario, model: str, result: tuple[Run, Path]) -> None:
-        runs[(scenario.name, model)] = result[0]
-        print(f"TRANSCRIPT {scenario.name} {model} {quote(runtime_canary.forward(result[1]))}", flush=True)
+    def ended(scenario: Scenario, model: str, index: Index, result: tuple[Run, list[Path]]) -> None:
+        results[(scenario.name, model, index)] = result[0]
+        for transcript in result[1]:
+            path = quote(runtime_canary.forward(transcript))
+            print(f"TRANSCRIPT {scenario.name} {model}{run_token(index)} {path}", flush=True)
 
     if jobs == 1:
-        for scenario, model, home in pairs:
-            ended(scenario, model, run_scenario(scenario, model, home, session))
-        return runs
+        for scenario, model, home, index in queued:
+            ended(scenario, model, index, run_scenario(scenario, model, home, session, index))
+        return results
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
         pending = {
-            pool.submit(run_scenario, scenario, model, home, session): (scenario, model)
-            for scenario, model, home in pairs
+            pool.submit(run_scenario, scenario, model, home, session, index): (scenario, model, index)
+            for scenario, model, home, index in queued
         }
         for future in concurrent.futures.as_completed(pending):
             ended(*pending[future], future.result())
-    return runs
+    return results
 
 
-def runs_source(runs: Mapping[tuple[str, str], Run]) -> RecordSource:
+def runs_source(runs: Mapping[RunKey, Run]) -> RecordSource:
     """A record source over finished runs."""
 
-    def source(scenario: Scenario, model: str) -> Record:
-        run = runs[(scenario.name, model)]
+    def source(scenario: Scenario, model: str, index: Index) -> Record:
+        run = runs[(scenario.name, model, index)]
         if run.record is None:
             raise RecordError(run.failure or NO_REVIEW, run.kind or RUN)
         return run.record
@@ -1424,46 +1719,52 @@ def _cell(text: str) -> str:
     return text.replace("|", "\\|").replace("\n", " ")
 
 
+def counts(outcomes: Sequence[Outcome]) -> str:
+    """The expectations passed of those checked, and over several runs, the runs that passed every expectation of
+    theirs, of the runs judged: `3/3 (1/1 runs)` reads as every run passing, the pass^k of k runs."""
+    passed = f"{sum(1 for outcome in outcomes if outcome.failure is None)}/{len(outcomes)}"
+    numbered = {outcome.run for outcome in outcomes if outcome.run is not None}
+    if not numbered:
+        return passed
+    failed = {outcome.run for outcome in outcomes if outcome.failure is not None}
+    return f"{passed} ({len(numbered - failed)}/{len(numbered)} runs)"
+
+
 def result_rows(
     skill: str,
     scenarios: Sequence[Scenario],
     models: Sequence[str],
     outcomes: Sequence[Outcome],
-    runs: Mapping[tuple[str, str], Run],
+    runs: Mapping[RunKey, Run],
     version: str,
     today: datetime.date,
 ) -> list[str]:
-    """One row per model: the model IDs its reviewers ran on, its expectations passed, and the run's versions; a
-    model none of whose reviewers ran is recorded as not run, with its first run's reason as the results file records
-    it, which names no path of the machine. A scenario none of whose
-    reviewers ran on a model, such as one the session refused before starting any, holds no judgment of that model,
-    so its cell says `not run` and its expectations are left out of the model's count."""
+    """One row per model: the model IDs the part judged ran on, its expectations passed, the runs of each scenario,
+    each scenario's counts, and the run's versions; a model none of whose judged part ran is recorded as not run, with
+    its first run's reason as the results file records it, which names no path of the machine. A run none of whose
+    reviewers ran on a model, such as one the session refused before starting any, holds no judgment of that model, so
+    its expectations are left out of the model's count, and a scenario none of whose runs holds one says `not run`."""
     rows = []
+    numbers = {key[2] for key in runs}
     for model in models:
-        mine = [runs[(scenario.name, model)] for scenario in scenarios if (scenario.name, model) in runs]
-        reviewers = sorted({name for run in mine for name in run.reviewers})
-        session = ", ".join(sorted({name for run in mine for name in run.session})) or "unknown"
+        mine = [(key, runs[key]) for key in run_keys(scenarios, [model], runs)]
+        reviewers = sorted({name for _, run in mine for name in run.reviewers})
+        session = ", ".join(sorted({name for _, run in mine for name in run.session})) or "unknown"
         theirs = [outcome for outcome in outcomes if outcome.model == model]
         if reviewers:
-            unreviewed = {
-                scenario.name
-                for scenario in scenarios
-                if (scenario.name, model) in runs and not runs[(scenario.name, model)].reviewers
-            }
-            theirs = [outcome for outcome in theirs if outcome.scenario not in unreviewed]
+            unreviewed = {(key[0], key[2]) for key, run in mine if not run.reviewers}
+            theirs = [outcome for outcome in theirs if (outcome.scenario, outcome.run) not in unreviewed]
             identifier = ", ".join(reviewers)
             detail = ", ".join(
-                f"{scenario.name} not run"
-                if scenario.name in unreviewed
-                else f"{scenario.name} {sum(1 for o in theirs if o.scenario == scenario.name and o.failure is None)}"
-                f"/{sum(1 for o in theirs if o.scenario == scenario.name)}"
+                f"{scenario.name} {counts(judged)}" if judged else f"{scenario.name} not run"
                 for scenario in scenarios
+                for judged in [[outcome for outcome in theirs if outcome.scenario == scenario.name]]
             )
         else:
             identifier = "not run"
-            detail = next((run.recorded for run in mine if run.recorded), "no run")
+            detail = next((run.recorded for _, run in mine if run.recorded), "no run")
         passed = f"{sum(1 for outcome in theirs if outcome.failure is None)}/{len(theirs)}"
-        cells = [skill, model, identifier, passed, detail, session, version, today.isoformat()]
+        cells = [skill, model, identifier, passed, str(len(numbers)), detail, session, version, today.isoformat()]
         rows.append(f"| {' | '.join(_cell(cell) for cell in cells)} |")
     return rows
 
@@ -1522,64 +1823,88 @@ def replace_results(text: str, skill: str, rows: Sequence[str]) -> str:
 # Judging and reporting
 
 
-def judge(scenarios: Sequence[Scenario], models: Sequence[str], source: RecordSource) -> list[Outcome]:
-    """Every expectation of every scenario on every model. A record the source could not give fails each of its
-    expectations with the source's reason and kind; an expectation the record fails is a judgment."""
+def judge(scenarios: Sequence[Scenario], models: Sequence[str], source: RecordSource, runs: int = 1) -> list[Outcome]:
+    """Every expectation of every run of every scenario on every model. A record the source could not give fails each
+    of its expectations with the source's reason and kind; an expectation the record fails is a judgment."""
     outcomes = []
     for scenario in scenarios:
         for model in models:
-            try:
-                record: Record | None = source(scenario, model)
-                missing, kind = None, None
-            except RecordError as exc:
-                record, missing, kind = None, str(exc), exc.kind
-            for item in scenario.expectations:
-                failure = missing
-                if record is not None:
-                    try:
-                        failure = item.check(record)
-                    except RecordError as exc:
-                        failure = str(exc)
-                    kind = None if failure is None else JUDGMENT
-                outcomes.append(Outcome(scenario.name, model, item.label, failure, kind))
+            for index in indexes(runs):
+                try:
+                    record: Record | None = source(scenario, model, index)
+                    missing, kind = None, None
+                except RecordError as exc:
+                    record, missing, kind = None, str(exc), exc.kind
+                for item in scenario.expectations:
+                    failure = missing
+                    if record is not None:
+                        try:
+                            failure = item.check(record)
+                        except RecordError as exc:
+                            failure = str(exc)
+                        kind = None if failure is None else JUDGMENT
+                    outcomes.append(Outcome(scenario.name, model, item.label, failure, kind, index))
     return outcomes
 
 
 def outcome_line(skill: str, outcome: Outcome) -> str:
-    fact = f"{skill} {outcome.scenario} {outcome.model} {outcome.label}"
+    fact = f"{skill} {outcome.scenario} {outcome.model}{run_token(outcome.run)} {outcome.label}"
     return f"PASS {fact}" if outcome.failure is None else f"FAIL {fact} {outcome.kind} {quote(outcome.failure)}"
 
 
-def not_counted_line(scenario: str, model: str, kind: str, reason: str) -> str:
-    return f"NOT_COUNTED {scenario} {model} {kind} {quote(reason)}"
+def not_counted_line(scenario: str, model: str, kind: str, reason: str, index: Index = None) -> str:
+    return f"NOT_COUNTED {scenario} {model}{run_token(index)} {kind} {quote(reason)}"
 
 
 def not_counted(outcomes: Sequence[Outcome]) -> list[str]:
-    """One line per scenario and model whose record counts for nothing, with the reason each of its expectations
-    failed with, in the order judged."""
+    """One line per run of a scenario on a model whose record counts for nothing, with the reason each of its
+    expectations failed with, in the order judged."""
     lines = {
-        (outcome.scenario, outcome.model): not_counted_line(outcome.scenario, outcome.model, outcome.kind, failure)
+        (outcome.scenario, outcome.model, outcome.run): not_counted_line(
+            outcome.scenario, outcome.model, outcome.kind, failure, outcome.run
+        )
         for outcome in outcomes
         if (failure := outcome.failure) is not None and outcome.kind in (RUN, RECORD)
     }
     return list(lines.values())
 
 
+def runs_lines(outcomes: Sequence[Outcome]) -> list[str]:
+    """Over several runs, one line per scenario and model, in the order judged: the runs that passed every
+    expectation of theirs, of the runs, and whether that is all of them, some, or none."""
+    passed: dict[tuple[str, str], dict[Index, bool]] = {}
+    for outcome in outcomes:
+        if outcome.run is not None:
+            mine = passed.setdefault((outcome.scenario, outcome.model), {})
+            mine[outcome.run] = mine.get(outcome.run, True) and outcome.failure is None
+    lines = []
+    for (scenario, model), by_run in passed.items():
+        count = sum(by_run.values())
+        every = "all" if count == len(by_run) else "none" if count == 0 else "some"
+        lines.append(f"RUNS {scenario} {model} {count}/{len(by_run)} {every}")
+    return lines
+
+
 def table(scenarios: Sequence[Scenario], models: Sequence[str], outcomes: Sequence[Outcome]) -> list[str]:
-    """A Markdown table: one row per scenario, one column per model, each cell passed of checked."""
+    """A Markdown table: one row per scenario, one column per model, each cell its counts."""
     lines = [f"| Scenario | {' | '.join(models)} |", f"| --- |{' --- |' * len(models)}"]
     for scenario in scenarios:
-        cells = []
-        for model in models:
-            mine = [outcome for outcome in outcomes if outcome.scenario == scenario.name and outcome.model == model]
-            cells.append(f"{sum(1 for outcome in mine if outcome.failure is None)}/{len(mine)}")
+        cells = [
+            counts([outcome for outcome in outcomes if outcome.scenario == scenario.name and outcome.model == model])
+            for model in models
+        ]
         lines.append(f"| {scenario.name} | {' | '.join(cells)} |")
     return lines
 
 
 def report(skill: str, outcomes: Sequence[Outcome]) -> bool:
-    """Print each record that counts for nothing, then every outcome; return whether any expectation failed."""
-    for line in [*not_counted(outcomes), *(outcome_line(skill, outcome) for outcome in outcomes)]:
+    """Print each record that counts for nothing, then every outcome, then over several runs each scenario's runs
+    passed on each model; return whether any expectation failed."""
+    for line in [
+        *not_counted(outcomes),
+        *(outcome_line(skill, outcome) for outcome in outcomes),
+        *runs_lines(outcomes),
+    ]:
         print(line)
     return any(outcome.failure is not None for outcome in outcomes)
 
@@ -1589,6 +1914,8 @@ def command_line(options: argparse.Namespace) -> str:
     words = ["python", "-B", "tools/skill_evals.py", options.skill]
     words += [word for name in dict.fromkeys(options.scenario) for word in ("--scenario", name)]
     words += [word for name in dict.fromkeys(options.model or []) for word in ("--model", name)]
+    if options.runs != 1:
+        words += ["--runs", str(options.runs)]
     if options.timeout != DEFAULT_TIMEOUT:
         words += ["--timeout", f"{options.timeout:g}"]
     return " ".join([*words, *(["--write"] if options.write else [])])
@@ -1600,19 +1927,18 @@ def citation(
     version: str,
     scenarios: Sequence[Scenario],
     models: Sequence[str],
-    runs: Mapping[tuple[str, str], Run],
+    runs: Mapping[RunKey, Run],
     outcomes: Sequence[Outcome],
 ) -> list[str]:
     """The Markdown a pull request's Validation section cites the run with: the command, the table, and in a text
-    fence the runtime, the models the reviewers ran on, each guarded reviewer, each run that counts for nothing with
+    fence the runtime, the models the judged part ran on, each guarded reviewer, each run that counts for nothing with
     its reason as the results file records it, and each judgment that failed, none of which names a path of the
     machine."""
     facts = [f"RUNTIME claude {version}", *run_lines(scenarios, models, runs)]
     facts += [
-        not_counted_line(scenario.name, model, run.kind or RUN, run.recorded or NO_REVIEW)
-        for scenario in scenarios
-        for model in models
-        if (run := runs[(scenario.name, model)]).record is None
+        not_counted_line(key[0], key[1], run.kind or RUN, run.recorded or NO_REVIEW, key[2])
+        for key in run_keys(scenarios, models, runs)
+        if (run := runs[key]).record is None
     ]
     facts += [outcome_line(skill, outcome) for outcome in outcomes if outcome.kind == JUDGMENT]
     fence = "`" * max([3, *(len(run) + 1 for fact in facts for run in re.findall("`+", fact))])
@@ -1684,10 +2010,10 @@ def evaluate(skill: str, scenarios: Sequence[Scenario], options: argparse.Namesp
     version = claude_version(executable, seams.runner, base, root)
     print(f"RUNTIME claude {version}", flush=True)
     session = Session(executable, base, seams.runner, options.timeout, seams.git)
-    runs = run_all(scenarios, homes, session, options.jobs)
+    runs = run_all(scenarios, homes, session, options.jobs, options.runs)
     for line in run_lines(scenarios, models, runs):
         print(line)
-    outcomes = judge(scenarios, models, runs_source(runs))
+    outcomes = judge(scenarios, models, runs_source(runs), options.runs)
     failed = report(skill, outcomes)
     print("CITATION BEGIN")
     for line in citation(skill, options, version, scenarios, models, runs, outcomes):
@@ -1736,6 +2062,9 @@ def parser() -> argparse.ArgumentParser:
         "--timeout", type=seconds, default=DEFAULT_TIMEOUT, help=f"seconds for each run (default {DEFAULT_TIMEOUT})"
     )
     result.add_argument("--jobs", type=positive, default=DEFAULT_JOBS, help=f"runs at once (default {DEFAULT_JOBS})")
+    result.add_argument(
+        "--runs", type=positive, default=1, help="runs of each scenario on each model, each judged (default 1)"
+    )
     return result
 
 
@@ -1752,7 +2081,7 @@ def main(argv: Sequence[str], root: Path = SCENARIO_ROOT, seams: Seams | None = 
     if options.records is None:
         return evaluate(options.skill, scenarios, options, seams or Seams())
     models = list(dict.fromkeys(options.model or MODELS))
-    outcomes = judge(scenarios, models, records_in(options.records))
+    outcomes = judge(scenarios, models, records_in(options.records), options.runs)
     failed = report(options.skill, outcomes)
     for line in table(scenarios, models, outcomes):
         print(line)
