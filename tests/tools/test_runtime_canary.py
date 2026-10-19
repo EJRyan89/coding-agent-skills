@@ -1078,6 +1078,8 @@ class RunTests(RuntimeCanaryTestCase):
                 "--sandbox",
                 "workspace-write",
                 "-c",
+                "approval_policy=never",
+                "-c",
                 "windows.sandbox=elevated",
                 "--json",
                 "-C",
@@ -1109,7 +1111,7 @@ class RunTests(RuntimeCanaryTestCase):
     # Codex is given a Windows sandbox mode only on Windows; the case holds on every platform as Windows runs it.
     @mock.patch.object(runtime_canary, "CODEX_HAS_WINDOWS_SANDBOX", True)
     def test_codex_is_given_the_windows_sandbox_mode_its_ignored_configuration_would_set(self) -> None:
-        for sandbox in ("elevated", "unelevated"):
+        for sandbox in ("mxc", "elevated", "unelevated"):
             with self.subTest(sandbox=sandbox):
                 runner = FakeRuntimes()
                 runner.actions["codex"] = lambda *_: Completed(0, "", CODEX_REJECTION)
@@ -1126,7 +1128,8 @@ class RunTests(RuntimeCanaryTestCase):
                     for kind, arguments, _, _ in runner.calls
                     if kind == "run" and Path(arguments[0]).name == "codex"
                 )
-                self.assertEqual(["-c", f"windows.sandbox={sandbox}"], codex[codex.index("-c") : codex.index("-c") + 2])
+                setting = codex.index(f"windows.sandbox={sandbox}")
+                self.assertEqual("-c", codex[setting - 1])
                 self.assertIn(
                     f"Codex ran with windows.sandbox={sandbox}, so",
                     next(line for line in lines if line.startswith("RUNTIME codex ")),
@@ -1140,11 +1143,18 @@ class RunTests(RuntimeCanaryTestCase):
         self.assertEqual([], runtime_canary.supplied("codex", "elevated"))
         self.assertEqual("", runtime_canary.blocked_cause("codex", "elevated"))
         codex = runtime_canary.run_command("codex", "codex", FIXTURE, self.home, "elevated")
-        self.assertNotIn("-c", codex)
+        # The approval policy is set on every platform, as a non-interactive run should.
+        self.assertEqual(
+            ["approval_policy=never"], [codex[index + 1] for index, word in enumerate(codex) if word == "-c"]
+        )
         self.assertFalse([word for word in codex if "windows.sandbox" in word])
 
     def test_the_codex_sandbox_option_defaults_to_elevated_and_takes_only_known_modes(self) -> None:
-        for arguments, expected in (([], "elevated"), (["--codex-sandbox", "unelevated"], "unelevated")):
+        for arguments, expected in (
+            ([], "elevated"),
+            (["--codex-sandbox", "unelevated"], "unelevated"),
+            (["--codex-sandbox", "mxc"], "mxc"),
+        ):
             with (
                 self.subTest(arguments=arguments),
                 mock.patch.object(runtime_canary, "create_home", return_value=self.home),
@@ -1165,6 +1175,8 @@ class RunTests(RuntimeCanaryTestCase):
             runtime_canary.INSTRUCTION,
             *runtime_canary.supplied("codex", "elevated"),
             *runtime_canary.supplied("codex", "unelevated"),
+            *runtime_canary.supplied("codex", "mxc"),
+            runtime_canary.CODEX_APPROVAL_POLICY,
         ):
             self.assertFalse(set('"%&<>^|!()\r\n') & set(text), text)
         self.assertIn("--help", runtime_canary.INSTRUCTION)

@@ -47,6 +47,19 @@ def codex_answer(*skills: tuple[str, str, bool], errors: list | None = None) -> 
     )
 
 
+def catalog_answer(*skills: tuple[str, str]) -> str:
+    """`codex debug prompt-input`: the messages Codex would send, whose skills message names each skill offered to
+    the model by a short path under a numbered root."""
+    roots = sorted({str(Path(path).parent.parent) for _, path in skills})
+    alias = {root: f"r{index}" for index, root in enumerate(roots)}
+    text = "## Skills\n### Skill roots\n" + "".join(f"- `{alias[root]}` = `{root}`\n" for root in roots)
+    text += "### Available skills\n" + "".join(
+        f"- {name}: Does things (and more). (file: {alias[str(Path(path).parent.parent)]}/{name}/SKILL.md)\n"
+        for name, path in skills
+    )
+    return json.dumps([{"type": "message", "role": "developer", "content": [{"type": "input_text", "text": text}]}])
+
+
 def copilot_answer(*skills: tuple[str, str, bool]) -> str:
     """`copilot skill list --json`, which names each skill by its directory."""
     return json.dumps(
@@ -75,6 +88,8 @@ class Runtimes:
         timeout: float,
     ) -> list[str]:
         runtime = "codex" if arguments[0] == EXECUTABLES["codex"] else "copilot"
+        if runtime == "codex" and arguments[1:] == list(discovery.CODEX_CATALOG):
+            runtime = "codex-catalog"
         self.calls.append((arguments, cwd, environment, requests, answered is not None))
         self.cwd_was_empty.append(cwd.is_dir() and not any(cwd.iterdir()))
         answer = self.answers[runtime]
@@ -104,6 +119,47 @@ class AdapterLineTests(unittest.TestCase):
 
 
 class ParsingTests(unittest.TestCase):
+    def test_codex_refusals_name_each_skill_directory_it_could_not_load_with_its_reason(self) -> None:
+        lines = [
+            codex_answer(
+                ("alpha", "C:/home/.agents/skills/alpha/SKILL.md", True),
+                errors=[
+                    {"path": "C:/home/.agents/skills/beta/SKILL.md", "message": "missing field `description`"},
+                    {"path": "C:/home/.agents/skills/gamma/SKILL.md"},
+                    {"message": "no path"},
+                ],
+            )
+        ]
+        self.assertEqual(
+            (
+                discovery.Refused(forward(Path("C:/home/.agents/skills/beta")), "missing field `description`"),
+                discovery.Refused(forward(Path("C:/home/.agents/skills/gamma")), "no reason given"),
+            ),
+            discovery.parse_codex_refusals(lines),
+        )
+        self.assertEqual(["alpha"], list(discovery.parse_codex(lines)))
+
+    def test_the_codex_catalog_resolves_each_short_path_through_its_root(self) -> None:
+        home = (
+            Path("C:/Users/YourName/a dir/.agents/skills") if platform_support.WINDOWS else Path("/home/a dir/.agents")
+        )
+        found = discovery.parse_codex_catalog(
+            catalog_answer(
+                ("alpha", str(home / "alpha" / "SKILL.md")), ("beta", "/elsewhere/skills/beta/SKILL.md")
+            ).splitlines()
+        )
+        self.assertEqual(
+            {
+                "alpha": [Listed(forward(home / "alpha"), True)],
+                "beta": [Listed(forward(Path("/elsewhere/skills/beta")), True)],
+            },
+            found,
+        )
+
+    def test_a_codex_catalog_that_is_not_json_is_a_listing_error(self) -> None:
+        with self.assertRaisesRegex(ListingError, "its prompt input is not JSON"):
+            discovery.parse_codex_catalog(["Error: something"])
+
     if platform_support.WINDOWS:
 
         def test_copilot_paths_are_skill_directories_with_forward_slashes(self) -> None:
@@ -550,6 +606,61 @@ class VerifyCommandTests(DeployerTestCase):
             ),
             result.output,
         )
+
+    def test_an_adapter_codex_could_not_load_is_not_found_with_its_reason(self) -> None:
+        self.answer(codex=[("alpha", self.adapter("alpha"), True)])
+        refusal = {"path": f"{self.adapter('beta')}/SKILL.md", "message": "invalid YAML: mapping values"}
+        other = {"path": "C:/elsewhere/gamma/SKILL.md", "message": "not ours"}
+        self.runtimes.answers["codex"] = [
+            codex_answer(("alpha", f"{self.adapter('alpha')}/SKILL.md", True), errors=[refusal, other])
+        ]
+        result = self.verify()
+        self.assertEqual(1, result.code, result.output)
+        self.assertEqual(
+            {"FOUND": ["alpha"], "NOT FOUND": ["beta (could not load it: invalid YAML: mapping values)"]},
+            self.groups(result.output, "CODEX CLI"),
+        )
+
+    def test_a_user_only_adapter_codex_offers_the_model_is_exposed_and_fails(self) -> None:
+        self.make_skill("gamma", "Gamma", user_only=True)
+        self.deploy_ok("--all")
+        everything = [(name, self.adapter(name), True) for name in ("alpha", "beta", "gamma")]
+        self.answer(codex=everything, copilot=everything)
+        offered = [(name, f"{self.adapter(name)}/SKILL.md") for name in ("alpha", "beta", "gamma")]
+        self.runtimes.answers["codex-catalog"] = [catalog_answer(*offered)]
+        result = self.verify()
+        self.assertEqual(1, result.code, result.output)
+        self.assertEqual(
+            {
+                "EXPOSED": [
+                    "gamma (Codex offers it to the model, though only the user starts it; check its agents/openai.yaml)"
+                ],
+                "FOUND": ["alpha", "beta"],
+            },
+            self.groups(result.output, "CODEX CLI"),
+        )
+        self.assertEqual({"FOUND": ["alpha", "beta", "gamma"]}, self.groups(result.output, "COPILOT CLI"))
+
+        # Kept out of the model's catalog, as its agents/openai.yaml asks, it passes; a same-named skill elsewhere
+        # in the catalog is not the adapter.
+        self.runtimes.answers["codex-catalog"] = [
+            catalog_answer(*offered[:2], ("gamma", "C:/elsewhere/skills/gamma/SKILL.md"))
+        ]
+        result = self.verify()
+        self.assertEqual(0, result.code, result.output)
+        self.assertEqual({"FOUND": ["alpha", "beta", "gamma"]}, self.groups(result.output, "CODEX CLI"))
+        catalog_calls = [call for call in self.runtimes.calls if call[0][1:] == list(discovery.CODEX_CATALOG)]
+        self.assertEqual(2, len(catalog_calls))
+
+    def test_a_codex_catalog_that_cannot_be_read_fails_codex(self) -> None:
+        self.make_skill("gamma", "Gamma", user_only=True)
+        self.deploy_ok("--all")
+        everything = [(name, self.adapter(name), True) for name in ("alpha", "beta", "gamma")]
+        self.answer(codex=everything, copilot=everything)
+        self.runtimes.answers["codex-catalog"] = ListingError("it failed with exit code 1")
+        result = self.verify()
+        self.assertEqual(1, result.code, result.output)
+        self.assertIn("\n=== CODEX CLI ===\n\nCannot list its skills: it failed with exit code 1\n\n", result.output)
 
     def test_copilot_listing_another_copy_in_place_of_the_adapter_is_shadowed(self) -> None:
         personal = forward(self.home / ".copilot" / "skills" / "alpha")
