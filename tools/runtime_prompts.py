@@ -36,9 +36,11 @@ sys.path.insert(0, str(sibling_scripts("code-review-core")))
 sys.path.insert(0, str(sibling_scripts("review-document")))
 sys.path.insert(0, str(sibling_scripts("review-insights")))
 
+import review_dispatch
 import review_document
 import review_hosts
 import review_pipeline
+import review_run
 import review_synthesis
 from console import run_main
 from executable_locator import PYTHON
@@ -74,7 +76,7 @@ def _prepared_prompts(fixture: Path, directory: Path) -> dict[str, str]:
         return {role["id"]: Path(role["prompt_file"]).read_text(encoding="utf-8") for role in prepared["roles"]}
     finally:
         if run.exists():
-            review_pipeline.remove_run(run)
+            review_run.remove_run(run)
 
 
 def review_prs(directory: Path) -> dict[str, str]:
@@ -141,10 +143,10 @@ def copilot_entrypoint(directory: Path) -> str:
 
     try:
         prepared = review_pipeline.prepare_fixture(fixture, host="copilot-cli", config_path=config, run_directory=run)
-        services = review_pipeline.Services(copilot_runner=runner, copilot_executable="copilot")
+        services = review_run.Services(copilot_runner=runner, copilot_executable="copilot")
         with review_hosts.host_lock(run):
             claim = review_hosts.new_claim(run, generation=0, now=services.clock())
-        review_pipeline.run_host(run, claim["token"], services)
+        review_dispatch.run_host(run, claim["token"], services)
         host = review_hosts.host_state(run, probe=services.probe, now=services.clock())
         if host.outcome != "dispatched":
             raise RenderError(f"Copilot prompt fixture host {host.status}/{host.outcome}: {host.reason}")
@@ -153,7 +155,7 @@ def copilot_entrypoint(directory: Path) -> str:
         return prompts[0].replace(pull["base_sha"], "<base-commit>").replace(pull["head_sha"], "<head-commit>")
     finally:
         if run.exists():
-            review_pipeline.remove_run(run)
+            review_run.remove_run(run)
 
 
 def review_document_prompts(directory: Path) -> dict[str, str]:

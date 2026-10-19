@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 import review_guard as guard
 import review_pipeline as rp
+import review_run
 from review_source import source_commands
 from test_review_runtime_validation import directory_link
 
@@ -243,7 +244,7 @@ class LocalPathTests(GuardFixture):
             ("Glob", {"pattern": "*.cs", "path": path}),
             ("Write", {"file_path": path}),
             ("Edit", {"file_path": path}),
-            ("Bash", {"command": rp.self_check_command(Path(path), "csharp-review")}),
+            ("Bash", {"command": review_run.self_check_command(Path(path), "csharp-review")}),
         ]
 
     def test_network_and_device_paths_are_denied_by_their_text(self) -> None:
@@ -298,7 +299,9 @@ class LocalPathTests(GuardFixture):
         self.assertIsNone(self.decide("Read", file_path=str(guard.REFERENCES / "generic-reviewer.md")))
         self.assertIsNone(self.decide("Grep", pattern="class", path=str(self.run_directory / "source")))
         self.assertIsNone(self.decide("Write", file_path=self.result()))
-        self.assertIsNone(self.decide("Bash", command=rp.self_check_command(self.run_directory, "csharp-review")))
+        self.assertIsNone(
+            self.decide("Bash", command=review_run.self_check_command(self.run_directory, "csharp-review"))
+        )
         event = {"tool_name": "Read", "tool_input": {"file_path": "app/Service.cs"}, "agent_id": AGENT}
         self.assertIsNone(guard.decide({**event, "cwd": str(self.run_directory / "source")}))
         # Inside the roots, the resolved path is still held to the claimed run.
@@ -412,7 +415,7 @@ class WriteTests(GuardFixture):
 class BashTests(GuardFixture):
     def test_smart_double_quotes_are_rejected_in_every_interpolated_value(self) -> None:
         self.claim()
-        check = rp.self_check_command(self.run_directory, "csharp-review")
+        check = review_run.self_check_command(self.run_directory, "csharp-review")
         fetch, search = source_commands(self.run_directory, "csharp-review")
         for quote in ("\u201c", "\u201d", "\u201e"):
             for command, script in (
@@ -431,7 +434,7 @@ class BashTests(GuardFixture):
                             self.assert_denied(self.decide("Bash", command=bad))
 
     def test_bash_runs_only_the_self_check_of_its_own_role_and_run_with_every_value_kept_in_quotes(self) -> None:
-        command = rp.self_check_command(self.run_directory, "csharp-review")
+        command = review_run.self_check_command(self.run_directory, "csharp-review")
         self.assert_denied(self.decide("Bash", command=command), "read the prompt file your task names first")
         self.claim()
         self.assertIsNone(self.decide("Bash", command=command))
@@ -448,11 +451,11 @@ class BashTests(GuardFixture):
             f"{command}; rm -rf /",
             command.replace("validate-result", "finalize"),
             command.replace(script, str(self.root / "review_pipeline.py")),
-            rp.self_check_command(self.checkout, "csharp-review"),
-            rp.self_check_command(self.run_directory / "work", "csharp-review"),
+            review_run.self_check_command(self.checkout, "csharp-review"),
+            review_run.self_check_command(self.run_directory / "work", "csharp-review"),
             command.replace('"csharp-review"', '"$(whoami)"'),
-            rp.self_check_command(self.run_directory, "sql-review"),
-            rp.self_check_command(self.other_run, "csharp-review"),
+            review_run.self_check_command(self.run_directory, "sql-review"),
+            review_run.self_check_command(self.other_run, "csharp-review"),
         ):
             with self.subTest(command=bad):
                 self.assert_denied(self.decide("Bash", command=bad))
@@ -475,14 +478,16 @@ class BashTests(GuardFixture):
         for bad in (
             f"{check}; whoami",
             check.replace(" --check", ""),
-            rp.self_check_command(run, "synthesis"),  # the reviewer forms are not the declared role's
+            review_run.self_check_command(run, "synthesis"),  # the reviewer forms are not the declared role's
             "git status",
         ):
             with self.subTest(command=bad):
                 self.assert_denied(self.decide("Bash", agent=OTHER_AGENT, command=bad))
         # A reviewer role declares none, so it keeps its own self-check and never runs another role's command.
         self.claim()
-        self.assertIsNone(self.decide("Bash", command=rp.self_check_command(self.run_directory, "csharp-review")))
+        self.assertIsNone(
+            self.decide("Bash", command=review_run.self_check_command(self.run_directory, "csharp-review"))
+        )
         self.assert_denied(self.decide("Bash", command=check))
 
     def test_bash_runs_the_source_commands_of_its_own_role_and_run_with_a_path_or_pattern_kept_in_quotes(
@@ -584,7 +589,7 @@ class ClaimTests(GuardFixture):
         for nested in planted:
             with self.subTest(nested=nested, claimed=True):
                 self.assert_denied(self.decide("Write", file_path=str(chosen)), "write only your own result file")
-                command = rp.self_check_command(nested, "csharp-review")
+                command = review_run.self_check_command(nested, "csharp-review")
                 self.assert_denied(self.decide("Bash", command=command), "sits inside the review run")
 
     def test_a_run_is_found_only_under_the_temporary_directory(self) -> None:
@@ -608,7 +613,7 @@ class ClaimTests(GuardFixture):
                 self.assert_denied(guard.decide(event), "agent ID")
                 for tool, tool_input in (
                     ("Write", {"file_path": self.result()}),
-                    ("Bash", {"command": rp.self_check_command(self.run_directory, "csharp-review")}),
+                    ("Bash", {"command": review_run.self_check_command(self.run_directory, "csharp-review")}),
                 ):
                     self.assert_denied(guard.decide({**event, "tool_name": tool, "tool_input": tool_input}))
         self.assertFalse(self.claims.exists())
@@ -688,7 +693,7 @@ class FieldKindTests(GuardFixture):
             ("Grep", {"pattern": "x", "path": 5}, path),
             ("Bash", {"command": 5}, command),
             ("Bash", {"command": None}, command),
-            ("Bash", {"command": [rp.self_check_command(self.run_directory, "csharp-review")]}, command),
+            ("Bash", {"command": [review_run.self_check_command(self.run_directory, "csharp-review")]}, command),
             ("Write", {"file_path": {"path": self.result()}}, path),
         ]
         for tool, tool_input, reason in cases:
