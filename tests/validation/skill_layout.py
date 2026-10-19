@@ -1,5 +1,6 @@
 """Layout policies: where a skill's files live, how long its fences are, how it names its own and its siblings'
-files, its metadata and variables, its script languages, and the fixture sources beside it.
+files, its metadata and variables, its script languages, the fixture sources beside it, and the trigger scenario
+that judges the description of each skill the model may start.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
+import frontmatter
 from markdown_sections import EXECUTABLE_FENCES
 from skill_scripts import shell_git_subcommands
 from validation_support import (
@@ -158,9 +160,12 @@ INVOKED_SKILL = re.compile(r"`([a-z0-9-]+)[` ]")
 
 def hooked_agents(root: Path) -> set[str]:
     """The agents under agents/ whose definition declares hooks, such as the code-review reviewer's guard."""
-    import frontmatter
-
     return {path.stem for path in (root / "agents").glob("*.md") if "hooks" in frontmatter.read(path)}
+
+
+def user_only(document: frontmatter.Frontmatter) -> bool:
+    """Whether a SKILL.md's frontmatter lets only the user start the skill."""
+    return (document.string("disable-model-invocation") or "").casefold() == "true"
 
 
 def derived_needs(root: Path, name: str, seen: frozenset[str] = frozenset()) -> set[str]:
@@ -172,8 +177,6 @@ def derived_needs(root: Path, name: str, seen: frozenset[str] = frozenset()) -> 
     a SKILL.md line that says "invoke", the rule tests/ai-config/test_cross_skill_contracts.py applies; its limits
     reach the step that invokes it.
     """
-    import frontmatter
-
     from deployer import runtime_support
 
     skills = skills_by_name(root)
@@ -183,7 +186,6 @@ def derived_needs(root: Path, name: str, seen: frozenset[str] = frozenset()) -> 
     text = skill_md.read_text(encoding="utf-8-sig")
     document = frontmatter.read(skill_md)
     granted = document.value("allowed-tools") or []
-    user_only = (document.string("disable-model-invocation") or "").casefold() == "true"
     starts_hooked = any(f"`{agent}`" in text for agent in hooked_agents(root))
     metadata = root / "deploy-meta" / f"{name}.json"
     declared = json.loads(metadata.read_text(encoding="utf-8")) if metadata.is_file() else {}
@@ -196,7 +198,7 @@ def derived_needs(root: Path, name: str, seen: frozenset[str] = frozenset()) -> 
         for subcommand in shell_git_subcommands(script.read_text(encoding="utf-8"))
     )
     needs = runtime_support.frontmatter_needs(
-        granted if isinstance(granted, list) else [granted], user_only, starts_hooked, tools, git_subcommands
+        granted if isinstance(granted, list) else [granted], user_only(document), starts_hooked, tools, git_subcommands
     )
     invoked = {
         match
@@ -484,6 +486,68 @@ def fixture_source_problems(root: Path) -> list[str]:
     return found
 
 
+TRIGGER_SCENARIO_DOC = '"Skill evaluations" in docs/skill-evaluations.md'
+# The mode of a scenario that judges whether a description starts its skill, and the requests one holds at least: a
+# description's "Use it when" sentence names several ways a user asks for the skill, and one request samples one.
+TRIGGER_MODE = "trigger"
+MINIMUM_TRIGGER_REQUESTS = 3
+
+
+def _trigger_problem(spec: dict[str, object], skill: str, shipped: dict[str, bool]) -> str | None:
+    """Why a trigger scenario under the skill's folder cannot judge that skill's description, or None; `shipped` says
+    of each shipped skill whether only the user may start it."""
+    named, requests, near_misses = spec.get("skill"), spec.get("requests"), spec.get("near_misses")
+    if named != skill:
+        return f"names skill {json.dumps(named)}, not its folder's, {skill}"
+    if skill not in shipped:
+        return f"names {skill}, which is no skill under skills/"
+    if shipped[skill]:
+        return f"names {skill}, which sets disable-model-invocation, so no request can start it"
+    if not isinstance(requests, list) or len(requests) < MINIMUM_TRIGGER_REQUESTS:
+        held = len(requests) if isinstance(requests, list) else 0
+        return f"holds {held} requests, fewer than {MINIMUM_TRIGGER_REQUESTS}"
+    if not isinstance(near_misses, list) or not near_misses:
+        return "holds no near miss"
+    return None
+
+
+def trigger_scenario_problems(root: Path) -> list[str]:
+    """Report a shipped skill the model may start with no trigger scenario, and a trigger scenario that cannot judge
+    its skill: one naming another folder's skill, a skill not under skills/, or a user-only one, or holding fewer than
+    MINIMUM_TRIGGER_REQUESTS requests or no near miss.
+
+    Only a run that calls models judges whether a description starts its skill, so validation never imports or starts
+    the evaluation; it holds that every description the model reads has a scenario to be judged by, and the
+    evaluation's suite loads each committed one as a run does.
+    """
+    shipped = {name: user_only(frontmatter.read(path / "SKILL.md")) for name, path in skills_by_name(root).items()}
+    scenarios = root / "tests" / "fixtures" / "skill-evals"
+    problems: list[str] = []
+    covered: set[str] = set()
+    for spec_file in sorted(scenarios.glob("*/*/scenario.json")):
+        label = spec_file.parent.relative_to(root).as_posix()
+        try:
+            spec = json.loads(spec_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            problems.append(f"{label}/scenario.json cannot be read: {exc}")
+            continue
+        if not isinstance(spec, dict) or spec.get("mode") != TRIGGER_MODE:
+            continue
+        skill = spec_file.parent.parent.name
+        problem = _trigger_problem(spec, skill, shipped)
+        if problem is None:
+            covered.add(skill)
+        else:
+            problems.append(f"{label} {problem}; see {TRIGGER_SCENARIO_DOC}")
+    for name, only_by_user in sorted(shipped.items()):
+        if name not in covered and not only_by_user:
+            problems.append(
+                f"skills/{name} may be started by the model and has no trigger scenario under "
+                f"{scenarios.relative_to(root).as_posix()}/{name}/; see {TRIGGER_SCENARIO_DOC}"
+            )
+    return problems
+
+
 def _starts_with_a_shebang(path: Path) -> bool:
     with path.open("rb") as handle:
         return handle.read(2) == b"#!"
@@ -601,8 +665,6 @@ def repository_skill_name_problems(root: Path) -> list[str]:
     A runtime lists a skill by its frontmatter name and the shim, the cost audit, and validation find it by its
     folder, so the two must agree; tools/new_skill.py --repository refuses the same names when it scaffolds one.
     """
-    import frontmatter
-
     from deployer import source as deploy_source
 
     problems: list[str] = []
@@ -681,6 +743,9 @@ class SkillLayoutPolicies(unittest.TestCase):
     def test_fixture_sources_never_ship_or_collide_with_what_ships(self) -> None:
         self.assertTrue(list((REPOSITORY_ROOT / "tests" / "fixtures").glob("*/source.json")))
         self.assertEqual([], fixture_source_problems(REPOSITORY_ROOT))
+
+    def test_every_skill_the_model_may_start_has_a_trigger_scenario(self) -> None:
+        self.assertEqual([], trigger_scenario_problems(REPOSITORY_ROOT))
 
     def test_skill_scripts_are_bash_python_or_powershell(self) -> None:
         # Pinned here, not read back from the constants: a new script language is a decision for the skill contract,

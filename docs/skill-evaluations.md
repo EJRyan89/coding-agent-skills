@@ -32,6 +32,13 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   when one of its own messages calls the Skill tool naming it. The run writes a trigger record of the skills each
   session started; a session that could not start, timed out, did not list the skill, or ran on another model makes
   the run count for nothing. `analyze-skill-cost`'s `description` scenario is the worked example.
+- **Every shipped skill the model may start** has a trigger scenario, its `description` scenario, and validation
+  fails without one ("Validation" in [adding-a-skill.md](adding-a-skill.md#validation)). Its requests are several
+  ways a user would ask for what the "Use it when" sentence names, at least one of them without the skill's name, so
+  the description rather than the name is what is judged. Its near misses are requests a neighbouring skill's
+  sentence names, such as a pull request review beside a document review, and a request no skill serves. The
+  `change-skill` repository skill owes the run whenever a description is new or changed. Repository skills have none,
+  since `--canary-home` deploys none of them for a session to start.
 - **Several runs:** one run is one sample of what a model does, so `--runs N` runs each scenario N times on each
   model and judges every run. Each line about one run names it as `run=<run>`, and a `RUNS` line per scenario and
   model gives the runs that passed every expectation, of the runs, and whether that is all of them (the pass^k of k
@@ -77,6 +84,11 @@ is "not run" when none of its reviewers ran, with the first reason in place of t
 name no path of the machine; the run's `FAIL` lines keep the whole reason. A run with `--write` refuses, before it
 starts, a table between the markers that holds anything but the header, its separator, and rows of its columns. A
 pull request that changes a skill's prompt, description, model guidance, or reviewer instructions cites this run.
+
+A trigger scenario's result is a row like any other. Its Model ID and Session model are both the judged model, since
+its sessions run on that model, and By scenario gives its expectations passed, one per request and near miss. A skill
+with review scenarios too lists its trigger scenario among them, and its Session model names both the reviews'
+session model and the judged one. A skill with no row has not been run since its scenarios were written.
 
 <!-- skill-evals:begin -->
 | Skill | Model | Model ID | Passed | Runs | By scenario | Session model | Claude Code | Date |

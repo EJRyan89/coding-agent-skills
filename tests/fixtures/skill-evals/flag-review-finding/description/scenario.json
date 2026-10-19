@@ -1,0 +1,14 @@
+{
+  "skill": "flag-review-finding",
+  "mode": "trigger",
+  "requests": [
+    "That review finding about the null check was wrong; record it so the reviewer learns.",
+    "The last review's naming finding was just noise. Flag it.",
+    "The review missed the SQL injection in the export endpoint; log that as a flag."
+  ],
+  "near_misses": [
+    "What have our code reviews kept flagging over the last three months?",
+    "Review pull request octo-org/widgets#42.",
+    "Fix the null check the reviewer pointed out in parser.py."
+  ]
+}

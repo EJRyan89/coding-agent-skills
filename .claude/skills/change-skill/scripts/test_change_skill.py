@@ -213,15 +213,46 @@ class GateTests(unittest.TestCase):
             ["GATE analyze-skill-cost alpha"], self.gates(uncommitted={"skills/alpha/scripts/test_alpha.py": "pass\n"})
         )
 
-    def test_a_description_change_owes_the_reference_and_the_canary(self) -> None:
+    def test_a_description_change_owes_the_reference_the_canary_and_the_trigger_run(self) -> None:
         changed = skill_text("Alpha does another thing. Use it when asked.")
         self.assertEqual(
             [
                 "REGENERATE python tools/skill_reference.py --write",
                 "GATE analyze-skill-cost alpha",
                 "GATE runtime-canary alpha",
+                "GATE evaluate-skill alpha trigger",
             ],
             self.gates(uncommitted={"skills/alpha/SKILL.md": changed}),
+        )
+
+    def test_a_skill_with_only_a_trigger_scenario_owes_its_run_for_a_description_change_alone(self) -> None:
+        scenario = {"tests/fixtures/skill-evals/alpha/description/scenario.json": '{"mode": "trigger"}\n'}
+        body = skill_text("Alpha does a thing. Use it when asked.", body="Run it twice.\n")
+        self.assertEqual(
+            ["GATE analyze-skill-cost alpha"], self.gates(committed={**scenario, "skills/alpha/SKILL.md": body})
+        )
+        changed = skill_text("Alpha does another thing. Use it when asked.", body="Run it twice.\n")
+        self.assertEqual(
+            "GATE evaluate-skill alpha trigger", self.gates(uncommitted={"skills/alpha/SKILL.md": changed})[-1]
+        )
+
+    def test_an_unreadable_scenario_counts_as_a_review_scenario(self) -> None:
+        scenario = {"tests/fixtures/skill-evals/alpha/broken/scenario.json": "{not json\n"}
+        self.assertIn(
+            "GATE evaluate-skill alpha if-prompt",
+            self.gates(committed=scenario, uncommitted={"skills/alpha/scripts/alpha.py": "print('more')\n"}),
+        )
+
+    def test_a_user_only_skills_description_owes_no_trigger_run(self) -> None:
+        text = "---\nname: zeta\ndescription: Zeta deploys.\ndisable-model-invocation: true\n---\n\n# Zeta\n"
+        new = {"skills/zeta/SKILL.md": text, "deploy-meta/zeta.json": "{}\n"}
+        self.assertEqual(
+            [
+                "REGENERATE python tools/skill_reference.py --write",
+                "GATE analyze-skill-cost zeta",
+                "GATE runtime-canary zeta",
+            ],
+            self.gates(uncommitted=new),
         )
 
     def test_a_grant_change_owes_the_canary(self) -> None:
@@ -295,6 +326,7 @@ class GateTests(unittest.TestCase):
                 "REGENERATE python tools/skill_reference.py --write",
                 "GATE analyze-skill-cost delta",
                 "GATE runtime-canary delta",
+                "GATE evaluate-skill delta trigger",
             ],
             self.gates(uncommitted=new),
         )

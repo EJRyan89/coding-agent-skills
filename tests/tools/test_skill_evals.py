@@ -67,6 +67,15 @@ from tools.skill_evals_scenarios import Scenario, ScenarioError
 REVIEW_PRS = skill_evals_scenarios.SCENARIO_ROOT / "review-prs"
 REVIEW_DOCUMENT = skill_evals_scenarios.SCENARIO_ROOT / "review-document"
 REVIEW_REPOSITORY = skill_evals_scenarios.SCENARIO_ROOT / "review-repository"
+
+
+def review_scenarios(*arguments: Any, **options: Any) -> list[Scenario]:
+    """A skill's scenarios as load_scenarios gives them, leaving out its trigger scenarios when it has a review scenario
+    too: the review runs these tests judge are the reviews, and the trigger run is judged on analyze-skill-cost's."""
+    loaded = skill_evals_scenarios.load_scenarios(*arguments, **options)
+    return [scenario for scenario in loaded if scenario.mode != skill_evals_scenarios.TRIGGER] or loaded
+
+
 REVIEW_REPOSITORY_SCENARIOS = (
     "branch-name-command",
     "build-grant",
@@ -1042,7 +1051,7 @@ class ReviewPrsScenarioTests(unittest.TestCase):
     """The shipped scenarios load, point at lines that changed, and an ideal run of each passes."""
 
     def setUp(self) -> None:
-        self.scenarios = {scenario.name: scenario for scenario in skill_evals_scenarios.load_scenarios("review-prs")}
+        self.scenarios = {scenario.name: scenario for scenario in review_scenarios("review-prs")}
         self.specs = {
             name: json.loads((scenario.directory / "scenario.json").read_text(encoding="utf-8"))
             for name, scenario in self.scenarios.items()
@@ -1204,9 +1213,7 @@ class ReviewDocumentScenarioTests(unittest.TestCase):
     edit of the clean one, and the gaps document written as a Word draft and as a PDF; an ideal run of each passes."""
 
     def setUp(self) -> None:
-        self.scenarios = {
-            scenario.name: scenario for scenario in skill_evals_scenarios.load_scenarios("review-document")
-        }
+        self.scenarios = {scenario.name: scenario for scenario in review_scenarios("review-document")}
         self.specs = {
             name: json.loads((scenario.directory / "scenario.json").read_text(encoding="utf-8"))
             for name, scenario in self.scenarios.items()
@@ -1338,9 +1345,7 @@ class DocumentStagingTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.root = temporary_root(self)
-        self.scenarios = {
-            scenario.name: scenario for scenario in skill_evals_scenarios.load_scenarios("review-document")
-        }
+        self.scenarios = {scenario.name: scenario for scenario in review_scenarios("review-document")}
         self.git = GitClient()
 
     def test_a_whole_document_is_staged_alone_outside_any_checkout(self) -> None:
@@ -1502,7 +1507,7 @@ class ReviewerScenarioTests(unittest.TestCase):
                 self.subTest(skill=skill),
                 mock.patch.object(skill_evals_scenarios, "_fixture", wraps=skill_evals_scenarios._fixture) as checked,
             ):
-                scenarios = skill_evals_scenarios.load_scenarios(skill)
+                scenarios = review_scenarios(skill)
             self.assertEqual(
                 sorted(scenario.directory for scenario in scenarios),
                 sorted(call.args[0] for call in checked.call_args_list),
@@ -1549,7 +1554,7 @@ class ReviewerScenarioTests(unittest.TestCase):
         self.assertEqual([], list(self.copies.iterdir()))
 
     def test_any_other_scenario_is_reviewed_in_place(self) -> None:
-        for scenario in skill_evals_scenarios.load_scenarios("review-prs"):
+        for scenario in review_scenarios("review-prs"):
             with self.subTest(scenario=scenario.name), skill_evals_scenarios.reviewed_fixture(scenario) as fixture:
                 self.assertEqual((REVIEW_PRS / scenario.name, None, ()), (fixture, scenario.reviewer, scenario.placed))
                 self.assertEqual(
@@ -1812,7 +1817,7 @@ class FixtureCanaryRunTests(unittest.TestCase):
         self.pipeline = Pipeline(self, self.config)
 
     def test_every_scenario_runs_as_a_fixture_canary_and_its_record_passes_the_checker(self) -> None:
-        for scenario in skill_evals_scenarios.load_scenarios("review-prs"):
+        for scenario in review_scenarios("review-prs"):
             with self.subTest(scenario=scenario.name):
                 written = self.pipeline.review(skill_evals_scenarios.prepare_arguments(scenario), spec_of(scenario))
                 written_record = json.loads(written.read_text(encoding="utf-8"))
@@ -1822,9 +1827,7 @@ class FixtureCanaryRunTests(unittest.TestCase):
         self.assertEqual([], self.pipeline.github.calls)
 
     def test_a_design_scenario_is_reviewed_by_the_suites_design_specialist_from_its_base_commit(self) -> None:
-        scenario = next(
-            item for item in skill_evals_scenarios.load_scenarios("review-prs") if item.name == "design-gaps"
-        )
+        scenario = next(item for item in review_scenarios("review-prs") if item.name == "design-gaps")
         reviewed = self.pipeline.review(skill_evals_scenarios.prepare_arguments(scenario), spec_of(scenario))
         written = json.loads(reviewed.read_text(encoding="utf-8"))
         adapter = written["review"]["adapter"]
@@ -1850,7 +1853,7 @@ class FixtureCanaryRunTests(unittest.TestCase):
             "design-draft": "BASE none the file is outside any git checkout",
             "design-final": "BASE none the file is outside any git checkout",
         }
-        for scenario in skill_evals_scenarios.load_scenarios("review-document"):
+        for scenario in review_scenarios("review-document"):
             with self.subTest(scenario=scenario.name):
                 staged, *stage = skill_evals_scenarios.skill_arguments(scenario, self.root / scenario.name, GitClient())
                 self.assertEqual([] if scenario.stage is None else ["--stage", scenario.stage], stage)
@@ -1904,7 +1907,7 @@ def reviewer_of(arguments: Sequence[str]) -> dict[str, Any]:
 
 
 def scenario_of(mode: str) -> Scenario:
-    return next(item for item in skill_evals_scenarios.load_scenarios("review-prs") if item.mode == mode)
+    return next(item for item in review_scenarios("review-prs") if item.mode == mode)
 
 
 class RunPieceTests(unittest.TestCase):
@@ -2558,7 +2561,7 @@ class EvaluateTests(unittest.TestCase):
         """The run's status and its output lines but the citation block, which `self.output` keeps with the rest and
         `self.cited` alone, between its BEGIN and END lines."""
         output = io.StringIO()
-        with contextlib.redirect_stdout(output):
+        with contextlib.redirect_stdout(output), mock.patch.object(skill_evals, "load_scenarios", review_scenarios):
             status = skill_evals.main([skill, *argv], seams=seams)
         self.output = output.getvalue().splitlines()
         self.cited: list[str] = []
@@ -3555,6 +3558,33 @@ def test_the_worked_trigger_scenario_draws_on_its_description_and_a_neighbour_s(
     assert len(scenario.requests) == 3
     assert all("skill" in request for request in scenario.requests), scenario.requests
     assert all("repository" in request for request in scenario.near_misses), scenario.near_misses
+
+
+# Every committed trigger scenario's folder: validation holds that each skill the model may start has one.
+COMMITTED_TRIGGERS = sorted(
+    path.parent
+    for path in skill_evals_scenarios.SCENARIO_ROOT.glob("*/*/scenario.json")
+    if json.loads(path.read_text(encoding="utf-8")).get("mode") == skill_evals_scenarios.TRIGGER
+)
+
+
+@pytest.mark.parametrize("folder", COMMITTED_TRIGGERS, ids=lambda folder: f"{folder.parent.name}/{folder.name}")
+def test_every_committed_trigger_scenario_loads_and_judges_a_stub_record_each_way(folder: Path) -> None:
+    skill = folder.parent.name
+    scenario = skill_evals_scenarios.load_scenario(skill, folder)
+    # A request that leaves the skill's name out is started by the description alone.
+    assert any(skill not in request for request in scenario.requests), scenario.requests
+
+    def record(requested: list[str], missed: list[str]) -> dict[str, Any]:
+        sessions = [{"request": item, "started": requested} for item in scenario.requests]
+        sessions += [{"request": item, "started": missed} for item in scenario.near_misses]
+        return {"requests": sessions, "models": ["claude-haiku-5-5"]}
+
+    expected = len(scenario.requests) + len(scenario.near_misses)
+    ideal = skill_evals_judging.judge([scenario], ["haiku"], constant(record([skill, "other"], ["other"])))
+    assert [outcome.failure for outcome in ideal] == [None] * expected
+    inverted = skill_evals_judging.judge([scenario], ["haiku"], constant(record([], [skill])))
+    assert [outcome.kind for outcome in inverted] == [skill_evals_records.JUDGMENT] * expected
 
 
 def test_only_the_session_s_own_skill_tool_call_is_a_start() -> None:

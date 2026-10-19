@@ -1,0 +1,15 @@
+{
+  "skill": "dotnet-dependencies",
+  "mode": "trigger",
+  "requests": [
+    "Why is Newtonsoft.Json referenced in this C# solution?",
+    "Which projects in this solution use the System.Net.Http assembly?",
+    "Do any package versions or binding redirects disagree across this solution's projects?",
+    "What pulls Microsoft.Extensions.Logging into the Api project?"
+  ],
+  "near_misses": [
+    "Format the C# files I changed on this branch before I commit.",
+    "Upgrade Newtonsoft.Json to its latest version in every project.",
+    "Build the solution and run its unit tests."
+  ]
+}
