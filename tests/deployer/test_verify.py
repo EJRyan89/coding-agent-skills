@@ -141,7 +141,9 @@ class ParsingTests(unittest.TestCase):
 
     def test_the_codex_catalog_resolves_each_short_path_through_its_root(self) -> None:
         home = (
-            Path("C:/Users/YourName/a dir/.agents/skills") if platform_support.WINDOWS else Path("/home/a dir/.agents")
+            Path("D:/Profiles/YourName/a dir/.agents/skills")
+            if platform_support.WINDOWS
+            else Path("/home/a dir/.agents")
         )
         found = discovery.parse_codex_catalog(
             catalog_answer(
