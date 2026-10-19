@@ -15,9 +15,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from diff_paths import HUNK_HEADER, DiffPathError, header_path, snapshot_path, unquote
 from git_client import GitClient
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 SPACED = "tools/report age.py"
 ACCENTED = "tools/résumé.py"
 
@@ -197,16 +194,16 @@ class UnresolvableSnapshotPathTests(unittest.TestCase):
 )
 def test_a_hunk_header_gives_its_new_side_s_first_line_with_or_without_a_count(line: str, first: str) -> None:
     match = HUNK_HEADER.match(line)
-    CHECK.assertIsNotNone(match)
-    CHECK.assertEqual(first, match.group(1) if match else None)
+    assert match is not None
+    assert first == (match.group(1) if match else None)
 
 
 @pytest.mark.parametrize("line", ["+@@ -1 +1 @@", "@@ +1 -1 @@", "@@@ -1 -1 +1 @@@", "@@ -a +1 @@"])
 def test_a_line_that_is_not_a_hunk_header_does_not_match(line: str) -> None:
-    CHECK.assertIsNone(HUNK_HEADER.match(line))
+    assert HUNK_HEADER.match(line) is None
 
 
 @pytest.mark.parametrize("value", ['"b/a.py', '"', '"a"b"', '"a\\"', '"a\\q"', '"a\\12"', '"a\\400"', '"a\\08x"'])
 def test_a_quoted_value_git_does_not_write_is_refused(value: str) -> None:
-    with CHECK.assertRaisesRegex(DiffPathError, "^Malformed quoted diff path: "):
+    with pytest.raises(DiffPathError, match=r"^Malformed quoted diff path: "):
         unquote(value)

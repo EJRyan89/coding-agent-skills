@@ -17,9 +17,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 
 from repository_hygiene import hub_guard_matcher_problems, private_references, tracked_settings_problems
 
-# Runs no test of its own; the test functions below check through its assertions, as the class does.
-CHECK = unittest.TestCase()
-
 # Pinned here as literals, not read back from the policy's constants.
 SCHEMA = "https://json.schemastore.org/claude-code-settings.json"
 ATTRIBUTION_OFF = {"commit": "", "pr": "", "sessionUrl": False}
@@ -123,4 +120,4 @@ def test_tracked_settings_with_any_other_attribution_fail(attribution: dict[str,
     settings: dict[str, object] = {"hooks": {}}
     if attribution is not None:
         settings["attribution"] = attribution
-    CHECK.assertEqual([f"attribution is {attribution!r}, not {ATTRIBUTION_OFF!r}"], tracked_settings_problems(settings))
+    assert [f"attribution is {attribution!r}, not {ATTRIBUTION_OFF!r}"] == tracked_settings_problems(settings)

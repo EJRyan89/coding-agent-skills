@@ -32,9 +32,6 @@ from workflows import (
     workflow_guard_problems,
 )
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 
 class WorkflowsFixtures(unittest.TestCase):
     def test_workflow_guard_reports_each_drift(self) -> None:
@@ -193,7 +190,7 @@ class WorkflowsFixtures(unittest.TestCase):
 def test_the_allowed_github_fields_and_other_contexts_pass(expression: str) -> None:
     clean = "on:\n  push:\n\npermissions:\n  contents: read\n\njobs:\n  run:\n    steps:\n"
     workflow = clean + f"      - run: echo '${{{{ {expression} }}}}'\n"
-    CHECK.assertEqual([], workflow_guard_problems(workflow, ["push"], set()))
+    assert workflow_guard_problems(workflow, ["push"], set()) == []
 
 
 LEGS = (
@@ -251,7 +248,7 @@ class LegFixtures(unittest.TestCase):
 def test_a_leg_misnamed_or_off_its_own_shard_fails(drifted: str, problem: str) -> None:
     count = 3 if problem.startswith("expected") else 2
     problems = leg_problems(drifted, count)
-    CHECK.assertTrue(any(problem in found for found in problems), problems)
+    assert any(problem in found for found in problems), problems
 
 
 @pytest.mark.parametrize(
@@ -278,7 +275,7 @@ def test_a_leg_misnamed_or_off_its_own_shard_fails(drifted: str, problem: str) -
 )
 def test_a_tool_cache_off_its_workflow_pin_fails(drifted: str, problem: str) -> None:
     problems = tool_cache_problems(drifted, CACHES)
-    CHECK.assertTrue(any(problem in found for found in problems), problems)
+    assert any(problem in found for found in problems), problems
 
 
 LINUX = (
@@ -367,7 +364,7 @@ class LinuxJobFixtures(unittest.TestCase):
 )
 def test_a_linux_job_that_runs_less_than_the_whole_run_or_is_misnamed_fails(drifted: str, problem: str) -> None:
     problems = linux_job_problems(drifted)
-    CHECK.assertTrue(any(problem in found for found in problems), problems)
+    assert any(problem in found for found in problems), problems
 
 
 REQUIRED_CHECK = (
@@ -430,7 +427,7 @@ class RequiredCheckFixtures(unittest.TestCase):
 )
 def test_a_required_check_that_passes_without_every_platform_fails(drifted: str, problem: str) -> None:
     problems = required_check_problems(drifted, ("suite", "linux"))
-    CHECK.assertTrue(any(problem in found for found in problems), problems)
+    assert any(problem in found for found in problems), problems
 
 
 VERIFY_LOGS = (
@@ -802,7 +799,7 @@ class WorkflowReaderFixtures(unittest.TestCase):
     ],
 )
 def test_yaml_outside_the_subset_is_refused(text: str, reason: str) -> None:
-    with CHECK.assertRaisesRegex(WorkflowSyntaxError, reason):
+    with pytest.raises(WorkflowSyntaxError, match=reason):
         read_workflow(text)
 
 
@@ -818,7 +815,7 @@ MUTATION = (
 
 
 def test_the_mutation_job_runs_the_gate_on_linux_outside_the_required_check() -> None:
-    CHECK.assertEqual([], mutation_job_problems(MUTATION))
+    assert mutation_job_problems(MUTATION) == []
 
 
 @pytest.mark.parametrize(
@@ -852,4 +849,4 @@ def test_the_mutation_job_runs_the_gate_on_linux_outside_the_required_check() ->
 )
 def test_a_mutation_job_off_its_shape_fails(drifted: str, problem: str) -> None:
     problems = mutation_job_problems(drifted)
-    CHECK.assertTrue(any(problem in found for found in problems), problems)
+    assert any(problem in found for found in problems), problems

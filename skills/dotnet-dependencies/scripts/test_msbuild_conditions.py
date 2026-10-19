@@ -12,9 +12,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from msbuild_conditions import UNKNOWN, FileSystem, Value, condition_value, expanded
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 # The file system as a condition sees it in these tests: `here.props` exists, and `Directory.Build.props` is in `/repo`.
 FILES = FileSystem(
     "/repo/src/App",
@@ -109,7 +106,7 @@ class ExpansionTests(unittest.TestCase):
 def test_conditions_are_evaluated_only_in_the_forms_the_reader_knows(
     expected: bool | None, text: str, framework: str
 ) -> None:
-    CHECK.assertIs(expected, holds(text, framework))
+    assert expected is holds(text, framework)
 
 
 DEBUG = "'$(Configuration)'=='Debug'"
@@ -148,7 +145,7 @@ FRAMEWORK = "'$(TargetFramework)'=='net472'"
 def test_one_operand_decides_whatever_its_place_and_a_malformed_condition_is_never_evaluated(
     expected: bool | None, text: str, framework: str
 ) -> None:
-    CHECK.assertIs(expected, holds(text, framework))
+    assert expected is holds(text, framework)
 
 
 @pytest.mark.parametrize(
@@ -186,7 +183,7 @@ def test_one_operand_decides_whatever_its_place_and_a_malformed_condition_is_nev
 )
 def test_the_operators_and_functions_the_reader_reads(expected: bool | None, text: str) -> None:
     known = {"a": "a", "flag": "True", "version": "4.5", "dir": "src/"}
-    CHECK.assertIs(expected, holds(text, **known))
+    assert expected is holds(text, **known)
 
 
 @pytest.mark.parametrize(
@@ -201,4 +198,4 @@ def test_the_operators_and_functions_the_reader_reads(expected: bool | None, tex
     ],
 )
 def test_a_reference_the_reader_cannot_settle_leaves_the_text_unsettled(text: str) -> None:
-    CHECK.assertEqual(UNKNOWN, expand(text, a="a"))
+    assert expand(text, a="a") == UNKNOWN

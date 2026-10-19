@@ -11,7 +11,6 @@ import io
 import json
 import runpy
 import sys
-import unittest
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -25,9 +24,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 from github_client import CommandResult, GitHubClient
 
 from tools import project_release_sync
-
-# Runs no test of its own; the test functions below check through its assertions.
-CHECK = unittest.TestCase()
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 OPTIONS = ["v0.1.0", "v0.2.0", "v0.9.0", "v0.10.0", "v1.0.0"]
@@ -63,7 +59,7 @@ class FakeBoard:
 
     def __call__(self, command: Sequence[str], **_: object) -> CommandResult:
         # The default runner takes the time limit as a keyword, which the entry-point test passes through.
-        CHECK.assertEqual(["gh", "api", "graphql"], list(command[:3]))
+        assert list(command[:3]) == ["gh", "api", "graphql"]
         fields = dict(value.split("=", 1) for value in command[4::2])
         if fields["query"].startswith("mutation"):
             if self.failures:
@@ -110,25 +106,23 @@ def test_each_item_takes_its_milestone_and_one_without_a_milestone_is_cleared() 
             [node(4, "v1.0.0", "v0.1.0"), node(5, None, None), node(None, None, "v0.1.0")],
         ]
     )
-    CHECK.assertEqual((0, "SYNCED\nupdated 2, cleared 2\n", ""), run(board))
-    CHECK.assertEqual(
-        {"ITEM_1": "OPT_v0.10.0", "ITEM_4": "OPT_v1.0.0", "ITEM_3": None, "ITEM_None": None}, changes(board)
-    )
+    assert run(board) == (0, "SYNCED\nupdated 2, cleared 2\n", "")
+    assert changes(board) == {"ITEM_1": "OPT_v0.10.0", "ITEM_4": "OPT_v1.0.0", "ITEM_3": None, "ITEM_None": None}
 
 
 def test_every_page_is_read_from_the_cursor_before_it() -> None:
     board = FakeBoard([[node(1, "v0.1.0", "v0.1.0")], [node(2, "v0.1.0", "v0.1.0")], []])
-    CHECK.assertEqual((0, "IN_SYNC\n", ""), run(board, "--check"))
-    CHECK.assertEqual([None, "CURSOR_0", "CURSOR_1"], [read.get("after") for read in board.reads])
-    CHECK.assertEqual({"{owner}"}, {read["owner"] for read in board.reads})
-    CHECK.assertEqual({("1", "Release")}, {(read["number"], read["field"]) for read in board.reads})
+    assert run(board, "--check") == (0, "IN_SYNC\n", "")
+    assert [read.get("after") for read in board.reads] == [None, "CURSOR_0", "CURSOR_1"]
+    assert {"{owner}"} == {read["owner"] for read in board.reads}
+    assert {("1", "Release")} == {(read["number"], read["field"]) for read in board.reads}
 
 
 def test_check_changes_nothing_and_names_each_item_that_does_not_match() -> None:
     board = FakeBoard([[node(7, "v0.10.0", "v0.1.0"), node(8, None, "v0.9.0"), node(9, "v0.2.0", "v0.2.0")]])
     expected = "DRIFTED\n- #7: Release is v0.1.0, milestone is v0.10.0\n- #8: Release is v0.9.0, milestone is none\n"
-    CHECK.assertEqual((1, expected, ""), run(board, "--check"))
-    CHECK.assertEqual([], board.mutations)
+    assert (1, expected, "") == run(board, "--check")
+    assert board.mutations == []
 
 
 def test_a_milestone_with_no_option_is_left_unset_and_reported() -> None:
@@ -138,8 +132,8 @@ def test_a_milestone_with_no_option_is_left_unset_and_reported() -> None:
         "- milestone v0.11.0 has no Release option (2 items)\n"
         "- milestone v0.12.0 has no Release option (1 item)\n"
     )
-    CHECK.assertEqual((1, expected, ""), run(board))
-    CHECK.assertEqual([], board.mutations)
+    assert (1, expected, "") == run(board)
+    assert board.mutations == []
 
 
 @pytest.mark.parametrize(
@@ -153,60 +147,60 @@ def test_options_out_of_version_order_are_drift(options: list[str]) -> None:
     board = FakeBoard([[node(1, options[0], options[0])]], options)
     ordered = ", ".join(sorted(options, key=lambda name: [int(part) for part in name[1:].split(".")]))
     expected = f"DRIFTED\n- the Release options are not in version order: {', '.join(options)} (expected {ordered})\n"
-    CHECK.assertEqual((1, expected, ""), run(board, "--check"))
+    assert (1, expected, "") == run(board, "--check")
 
 
 def test_options_in_version_order_with_a_name_that_is_no_version_hold() -> None:
     board = FakeBoard([[node(1, "v0.9.0", "v0.9.0")]], ["Backlog", "v0.9.0", "v0.10.0", "v1.0.0"])
-    CHECK.assertEqual((0, "IN_SYNC\n", ""), run(board, "--check"))
+    assert run(board, "--check") == (0, "IN_SYNC\n", "")
 
 
 def test_an_item_this_reader_cannot_see_is_left_alone() -> None:
     hidden = {"id": "HIDDEN", "content": None, "release": {"name": "v0.1.0"}}
     board = FakeBoard([[hidden, node(1, "v0.2.0", "v0.2.0")]])
-    CHECK.assertEqual((0, "SYNCED\nupdated 0, cleared 0\n", ""), run(board))
-    CHECK.assertEqual([], board.mutations)
+    assert run(board) == (0, "SYNCED\nupdated 0, cleared 0\n", "")
+    assert board.mutations == []
 
 
 def test_changes_go_in_batches_with_their_values_as_variables() -> None:
     board = FakeBoard([[node(number, "v0.10.0", None) for number in range(25)]])
-    CHECK.assertEqual((0, "SYNCED\nupdated 25, cleared 0\n", ""), run(board))
-    CHECK.assertEqual([20, 5], [sum(key.startswith("item") for key in fields) for fields in board.mutations])
+    assert run(board) == (0, "SYNCED\nupdated 25, cleared 0\n", "")
+    assert [sum(key.startswith("item") for key in fields) for fields in board.mutations] == [20, 5]
     first = board.mutations[0]
-    CHECK.assertEqual(("PROJECT", "FIELD"), (first["project"], first["field"]))
-    CHECK.assertIn("singleSelectOptionId: $option0", first["query"])
-    CHECK.assertNotIn("ITEM_", first["query"])
-    CHECK.assertEqual({f"ITEM_{number}" for number in range(25)}, set(changes(board)))
+    assert (first["project"], first["field"]) == ("PROJECT", "FIELD")
+    assert "singleSelectOptionId: $option0" in first["query"]
+    assert "ITEM_" not in first["query"]
+    assert {f"ITEM_{number}" for number in range(25)} == set(changes(board))
 
 
 def test_a_clear_uses_the_clear_mutation() -> None:
     board = FakeBoard([[node(1, None, "v0.1.0")]])
     run(board)
-    CHECK.assertIn("clearProjectV2ItemFieldValue", board.mutations[0]["query"])
-    CHECK.assertNotIn("updateProjectV2ItemFieldValue", board.mutations[0]["query"])
+    assert "clearProjectV2ItemFieldValue" in board.mutations[0]["query"]
+    assert "updateProjectV2ItemFieldValue" not in board.mutations[0]["query"]
 
 
 def test_a_batch_whose_answer_is_lost_is_sent_again() -> None:
     lost = CommandResult(1, "", "gh: HTTP 502")
     board = FakeBoard([[node(1, "v0.10.0", None)]], failures=[lost, lost])
-    CHECK.assertEqual((0, "SYNCED\nupdated 1, cleared 0\n", ""), run(board))
-    CHECK.assertEqual({"ITEM_1": "OPT_v0.10.0"}, changes(board))
+    assert run(board) == (0, "SYNCED\nupdated 1, cleared 0\n", "")
+    assert changes(board) == {"ITEM_1": "OPT_v0.10.0"}
 
 
 def test_a_batch_lost_every_time_fails_without_a_traceback() -> None:
     lost = CommandResult(1, "", "gh: HTTP 502")
     board = FakeBoard([[node(1, "v0.10.0", None)]], failures=[lost, lost, lost])
     code, stdout, stderr = run(board)
-    CHECK.assertEqual((2, ""), (code, stdout))
-    CHECK.assertTrue(stderr.startswith("ERROR: gh: HTTP 502"), stderr)
-    CHECK.assertIn("outcome of this POST request is unknown", stderr)
+    assert (code, stdout) == (2, "")
+    assert stderr.startswith("ERROR: gh: HTTP 502"), stderr
+    assert "outcome of this POST request is unknown" in stderr
 
 
 def test_a_refused_mutation_is_not_sent_again() -> None:
     refused = CommandResult(1, "", "gh: Resource not accessible by integration (HTTP 403)")
     board = FakeBoard([[node(1, "v0.10.0", None)]], failures=[refused, refused])
-    CHECK.assertEqual(2, run(board)[0])
-    CHECK.assertEqual(1, len(board.failures))
+    assert run(board)[0] == 2
+    assert len(board.failures) == 1
 
 
 @pytest.mark.parametrize(
@@ -225,7 +219,7 @@ def test_a_refused_mutation_is_not_sent_again() -> None:
     ],
 )
 def test_a_board_without_the_project_or_field_is_an_error(board: FakeBoard, message: str) -> None:
-    CHECK.assertEqual((2, "", message), run(board, "--check"))
+    assert (2, "", message) == run(board, "--check")
 
 
 def test_a_read_without_the_project_scope_is_an_error() -> None:
@@ -235,10 +229,8 @@ def test_a_read_without_the_project_scope_is_an_error() -> None:
     stderr = io.StringIO()
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
         code = project_release_sync.main(["--check"], client=GitHubClient(runner=runner, sleeper=lambda _: None))
-    CHECK.assertEqual(2, code)
-    CHECK.assertEqual(
-        "ERROR: error: your authentication token is missing required scopes [read:project]\n", stderr.getvalue()
-    )
+    assert code == 2
+    assert stderr.getvalue() == "ERROR: error: your authentication token is missing required scopes [read:project]\n"
 
 
 @pytest.mark.parametrize(
@@ -257,27 +249,26 @@ def test_cli_entry_point_has_the_exact_status_output_and_process_exit_code(
         mock.patch("github_client.subprocess_runner", side_effect=board),
         mock.patch.object(sys, "argv", ["project_release_sync.py", *arguments]),
         contextlib.redirect_stdout(stdout),
-        CHECK.assertRaises(SystemExit) as raised,
+        pytest.raises(SystemExit) as raised,
     ):
         runpy.run_path(str(REPOSITORY_ROOT / "tools" / "project_release_sync.py"), run_name="__main__")
-    CHECK.assertEqual(expected, (raised.exception.code, stdout.getvalue()))
+    assert expected == (raised.value.code, stdout.getvalue())
 
 
 def test_contributing_runs_the_sync_after_filing_an_issue() -> None:
     text = (REPOSITORY_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
     section = text.split("\n## Issues and pull requests\n", 1)[1].split("\n## ", 1)[0]
     for phrase in ("Release", "python tools/project_release_sync.py", "version order"):
-        with CHECK.subTest(phrase=phrase):
-            CHECK.assertIn(phrase, section)
-    CHECK.assertNotIn("grouped by milestone", section)
+        assert phrase in section
+    assert "grouped by milestone" not in section
 
 
 def test_the_release_procedure_adds_the_option_and_checks_the_board() -> None:
     text = (REPOSITORY_ROOT / "docs" / "releasing.md").read_text(encoding="utf-8")
     milestones = text.split("\n## Milestones\n", 1)[1].split("\n## ", 1)[0]
     before_tagging = text.split("\n## Before tagging\n", 1)[1].split("\n## ", 1)[0]
-    CHECK.assertIn("Release", milestones)
-    CHECK.assertIn("python tools/project_release_sync.py --check", before_tagging)
+    assert "Release" in milestones
+    assert "python tools/project_release_sync.py --check" in before_tagging
 
 
 def test_after_tagging_closes_the_milestone_and_syncs_the_next_one() -> None:
@@ -285,8 +276,7 @@ def test_after_tagging_closes_the_milestone_and_syncs_the_next_one() -> None:
     after_tagging = text.split("\n## After tagging\n", 1)[1].split("\n## ", 1)[0]
     step = next(line for line in after_tagging.splitlines() if "**Milestones.**" in line)
     for phrase in ("Close the released milestone", "tag date", "python tools/project_release_sync.py", "`SYNCED`"):
-        with CHECK.subTest(phrase=phrase):
-            CHECK.assertIn(phrase, step)
-    CHECK.assertNotIn("--check", step)
+        assert phrase in step
+    assert "--check" not in step
     # The step comes before the rotation audit, which files its findings into the next milestone.
-    CHECK.assertLess(after_tagging.index("**Milestones.**"), after_tagging.index("**Rotation audit.**"))
+    assert after_tagging.index("**Milestones.**") < after_tagging.index("**Rotation audit.**")

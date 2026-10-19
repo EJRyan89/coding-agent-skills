@@ -144,8 +144,6 @@ NAMED_ELSEWHERE = {
     "deploy.py": "the deployer route; the threat model names `deploy.py check`, which reports pdf_tool.py's floors",
     "review_config.py": "named as a script a grant must not reach, which the skill-scripts route reviews",
 }
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
 
 
 def tracked_files() -> list[str]:
@@ -892,8 +890,8 @@ def test_a_path_reaches_the_same_reviewers_however_its_folders_are_cased(
     # A checkout on a case-insensitive file system puts `Skills/<name>/SKILL.md` in the skills folder and
     # `Deployer/<module>.py` among the deployer's modules, so each reaches the reviewer its folder has.
     variant = cased(path)
-    CHECK.assertEqual(reached([path])[path], reached([variant])[variant])
-    CHECK.assertEqual(len(uncovered(MANIFEST, [path])), len(uncovered(MANIFEST, [variant])))
+    assert reached([path])[path] == reached([variant])[variant]
+    assert len(uncovered(MANIFEST, [path])) == len(uncovered(MANIFEST, [variant]))
 
 
 @pytest.mark.parametrize(
@@ -906,27 +904,27 @@ def test_a_path_reaches_the_same_reviewers_however_its_folders_are_cased(
     ],
 )
 def test_every_pattern_matches_without_regard_to_case(pattern: str) -> None:
-    CHECK.assertTrue(pattern.startswith("(?i)"))
+    assert pattern.startswith("(?i)")
 
 
 @pytest.mark.parametrize("name", ["SKILL.md", "references/upgrade-notes.md"])
 def test_entry_validation_and_reviewer_judgment_are_distinct_on_both_surfaces(name: str) -> None:
     text = " ".join((REPOSITORY / SKILL / name).read_text(encoding="utf-8").split())
-    CHECK.assertIn("non-empty `Level`, `Contract`, and `User action` fields", text)
-    CHECK.assertRegex(text, r"`Level` whose first word is .*Versioning")
-    CHECK.assertIn("a `Contract` naming backticked items or `none`", text)
-    CHECK.assertIn("syntactic checks", text)
-    CHECK.assertIn("level and user action fit the actual change and migration", text)
-    CHECK.assertIn("contract with no file", text)
-    CHECK.assertNotIn("holds only that the body names", text)
-    CHECK.assertNotIn("reads neither an entry's level nor its user action", text)
+    assert "non-empty `Level`, `Contract`, and `User action` fields" in text
+    assert re.search(r"`Level` whose first word is .*Versioning", text)
+    assert "a `Contract` naming backticked items or `none`" in text
+    assert "syntactic checks" in text
+    assert "level and user action fit the actual change and migration" in text
+    assert "contract with no file" in text
+    assert "holds only that the body names" not in text
+    assert "reads neither an entry's level nor its user action" not in text
 
 
 @pytest.mark.parametrize("specialist", [pytest.param(item, id=item["id"]) for item in MANIFEST["specialists"]])
 def test_each_profile_names_only_categories_the_manifest_lists(specialist: dict[str, Any]) -> None:
     profile = (REPOSITORY / specialist["profile"]).read_text(encoding="utf-8")
     line = next(line for line in profile.splitlines() if line.startswith("Categories:"))
-    CHECK.assertLessEqual(set(re.findall(r"`([^`]+)`", line)), set(MANIFEST["finding_categories"]))
+    assert set(re.findall(r"`([^`]+)`", line)) <= set(MANIFEST["finding_categories"])
 
 
 @pytest.mark.parametrize(
@@ -934,7 +932,7 @@ def test_each_profile_names_only_categories_the_manifest_lists(specialist: dict[
 )
 def test_the_drift_profile_reads_the_condition_file_and_anchors_on_added_lines(phrase: str) -> None:
     profile = " ".join((REPOSITORY / SKILL / "references" / "documentation-drift.md").read_text("utf-8").split())
-    CHECK.assertIn(phrase, profile)
+    assert phrase in profile
 
 
 @pytest.mark.parametrize(
@@ -950,4 +948,4 @@ def test_the_drift_profile_reads_the_condition_file_and_anchors_on_added_lines(p
 )
 def test_the_untested_profile_reads_the_condition_file_and_the_body_and_anchors_on_added_lines(phrase: str) -> None:
     profile = " ".join((REPOSITORY / SKILL / "references" / "untested-changes.md").read_text("utf-8").split())
-    CHECK.assertIn(phrase, profile)
+    assert phrase in profile

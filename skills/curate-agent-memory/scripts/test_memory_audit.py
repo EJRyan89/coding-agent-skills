@@ -22,9 +22,6 @@ import skill_roots
 from flat_text import flat_text
 from git_client import MISSING_GIT, GitError, GitResult
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 
 def temporary_store_folds_case() -> bool:
     """Whether the file system holding the temporary directory, where every fixture store lives, compares names
@@ -1827,9 +1824,8 @@ class SkillSourceTests(unittest.TestCase):
 def test_a_missing_memory_directory_is_a_failed_line(tmp_path: Path, arguments: list[str]) -> None:
     absent = tmp_path / "absent dir"
     command, *rest = arguments
-    CHECK.assertEqual(
-        (1, f"FAILED memory directory not found: {absent}\n", ""),
-        run_main(command, "--memory-dir", str(absent), *rest),
+    assert (1, f"FAILED memory directory not found: {absent}\n", "") == run_main(
+        command, "--memory-dir", str(absent), *rest
     )
 
 
@@ -1856,7 +1852,7 @@ def test_a_missing_memory_directory_is_a_failed_line(tmp_path: Path, arguments: 
 def test_frontmatter_the_shared_reader_would_refuse_is_read_leniently(
     text: str, values: dict[str, str], body: str
 ) -> None:
-    CHECK.assertEqual((values, body), memory_audit.parse_frontmatter(text))
+    assert (values, body) == memory_audit.parse_frontmatter(text)
 
 
 @pytest.mark.parametrize(
@@ -1886,7 +1882,7 @@ def test_frontmatter_the_shared_reader_would_refuse_is_read_leniently(
     ],
 )
 def test_block_scalars_fold_or_keep_lines_as_their_style_says(text: str, values: dict[str, str]) -> None:
-    CHECK.assertEqual(values, memory_audit.parse_frontmatter(text)[0])
+    assert values == memory_audit.parse_frontmatter(text)[0]
 
 
 @pytest.mark.parametrize(
@@ -1907,5 +1903,5 @@ def test_hooks_use_shared_flattening_before_exact_character_and_word_cutoffs(
     text: str, limit: int, expected: str
 ) -> None:
     with mock.patch.object(memory_audit, "flat_text", wraps=flat_text) as flatten:
-        CHECK.assertEqual(expected, memory_audit.one_line(text, limit))
+        assert expected == memory_audit.one_line(text, limit)
     flatten.assert_called_once_with(text)

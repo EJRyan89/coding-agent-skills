@@ -20,9 +20,6 @@ from github_client import CommandResult, GitHubClient
 
 from tools import record_job_seconds
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 LEG_1 = "Windows shard 1/4, Python 3.11\tRun repository validation\t2026-10-10T06:17:04.4226827Z "
 LEG_2 = "Windows shard 2/4, Python 3.11\tUNKNOWN STEP\t2026-10-10T06:17:05.0000000Z "
 LEG_3 = "Windows shard 3/4, Python 3.11\tRun repository validation\t2026-10-10T06:17:07.0000000Z "
@@ -361,7 +358,7 @@ class MainTests(unittest.TestCase):
 )
 def test_a_near_miss_of_either_shape_the_workflow_gave_its_legs_is_no_leg(job: str) -> None:
     # Only the two shapes the workflow gave its legs: a near miss is no leg.
-    CHECK.assertIsNone(record_job_seconds.leg_of(job))
+    assert record_job_seconds.leg_of(job) is None
 
 
 @pytest.mark.parametrize(
@@ -377,12 +374,12 @@ def test_a_near_miss_of_either_shape_the_workflow_gave_its_legs_is_no_leg(job: s
 )
 def test_a_run_whose_log_names_no_leg_by_either_name_is_refused_for_that_cause(log: str, tmp_path: Path) -> None:
     code, _, errors, table = run_record(["8"], runs_stub({8: log}), tmp_path)
-    CHECK.assertEqual((2, False), (code, table.exists()))
-    CHECK.assertIn("run 8's log names no job as a leg", errors)
+    assert (code, table.exists()) == (2, False)
+    assert "run 8's log names no job as a leg" in errors
     # The message names the shapes it looked for, and blames no missing -v.
-    CHECK.assertIn("`Windows shard <n>/<count>, Python <version>`", errors)
-    CHECK.assertIn("`Shard <n>/<count> on Python <version>`", errors)
-    CHECK.assertNotIn("-v", errors)
+    assert "`Windows shard <n>/<count>, Python <version>`" in errors
+    assert "`Shard <n>/<count> on Python <version>`" in errors
+    assert "-v" not in errors
 
 
 @pytest.mark.parametrize(
@@ -405,7 +402,7 @@ def test_a_run_that_did_not_pass_or_is_another_workflow_is_refused_and_the_table
 ) -> None:
     stub = Stub({"gh run view 9 --json": json.dumps(state)})
     code, _, errors, table = run_record(["9"], stub, tmp_path)
-    CHECK.assertEqual(2, code)
-    CHECK.assertIn("record from completed, successful Validation runs", errors)
-    CHECK.assertFalse(table.exists())
-    CHECK.assertFalse(any("--log" in command for command in stub.commands))
+    assert code == 2
+    assert "record from completed, successful Validation runs" in errors
+    assert not table.exists()
+    assert not any("--log" in command for command in stub.commands)

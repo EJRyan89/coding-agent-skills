@@ -19,9 +19,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 from validation_support import write_fixture_tree
 from workarounds import later_comment_problems, skip_problems
 
-# Runs no test of its own; the test functions below check through its assertions, as the class does.
-CHECK = unittest.TestCase()
-
 SUITE = "tests/test_fixture.py"
 
 
@@ -79,9 +76,9 @@ def fixture_skips(source: str) -> list[str]:
 )
 def test_each_skip_and_expected_failure_fails_through_the_module_imports(source: str, marker: str) -> None:
     problems = fixture_skips(source)
-    CHECK.assertEqual(1, len(problems), problems)
-    CHECK.assertIn(f"with {marker}, so its suite passes without it", problems[0])
-    CHECK.assertTrue(problems[0].startswith(f"{SUITE}:"), problems[0])
+    assert len(problems) == 1, problems
+    assert f"with {marker}, so its suite passes without it" in problems[0]
+    assert problems[0].startswith(f"{SUITE}:"), problems[0]
 
 
 @pytest.mark.parametrize(
@@ -99,12 +96,12 @@ def test_a_skip_on_a_platform_alone_passes(condition: str) -> None:
         "import os, platform, sys, unittest\nclass C(unittest.TestCase):\n"
         f"    @unittest.skipIf({condition}, 'not on this platform')\n    def test_a(self): ...\n"
     )
-    CHECK.assertEqual([], fixture_skips(source))
+    assert fixture_skips(source) == []
     pytest_source = (
         "import os, platform, sys\nimport pytest\n"
         f"@pytest.mark.skipif({condition}, reason='not on this platform')\ndef test_a(): ...\n"
     )
-    CHECK.assertEqual([], fixture_skips(pytest_source))
+    assert fixture_skips(pytest_source) == []
 
 
 @pytest.mark.parametrize(
@@ -115,11 +112,11 @@ def test_a_skip_on_any_other_condition_fails(condition: str) -> None:
         "import os, sys, unittest\nclass C(unittest.TestCase):\n"
         f"    @unittest.skipUnless({condition}, 'not here')\n    def test_a(self): ...\n"
     )
-    CHECK.assertEqual(1, len(fixture_skips(source)))
+    assert len(fixture_skips(source)) == 1
     pytest_source = (
         f"import os, sys\nfrom pytest import mark\n@mark.skipif({condition}, reason='not here')\ndef test_a(): ...\n"
     )
-    CHECK.assertEqual(1, len(fixture_skips(pytest_source)))
+    assert len(fixture_skips(pytest_source)) == 1
 
 
 class WorkaroundFixtures(unittest.TestCase):

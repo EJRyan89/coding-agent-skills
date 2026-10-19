@@ -34,9 +34,6 @@ from pr_status import (
     fetched_bases,
 )
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 TIP = "a" * 40
 OLD = "b" * 40
 BASE = "c" * 40
@@ -319,9 +316,9 @@ def outcome(
 
 def refusal(run: Recorder, repository: str = "owner/repo", head: str = TIP, upstream: str | None = None) -> str:
     """The exact message classify refuses with."""
-    with CHECK.assertRaises(QueryError) as caught:
+    with pytest.raises(QueryError) as caught:
         classify(repository, "topic", head, upstream, runner=run, bases=main_only(), default_base="main")
-    return str(caught.exception)
+    return str(caught.value)
 
 
 # A merged pull request whose head was updated after the tip, and one squash-merged at an older tip.
@@ -1133,7 +1130,7 @@ class TrackingBaseClassificationTests(SquashFixture):
     ],
 )
 def test_any_open_pull_request_makes_the_branch_active(pulls: tuple[dict, ...]) -> None:
-    CHECK.assertEqual("OPEN", state_of(*pulls))
+    assert state_of(*pulls) == "OPEN"
 
 
 @pytest.mark.parametrize(
@@ -1150,7 +1147,7 @@ def test_any_open_pull_request_makes_the_branch_active(pulls: tuple[dict, ...]) 
     ],
 )
 def test_query_problems_fail_closed(message: str, run: Recorder) -> None:
-    with CHECK.assertRaisesRegex(QueryError, message):
+    with pytest.raises(QueryError, match=message):
         classify("owner/repo", "topic", TIP, runner=run)
 
 
@@ -1166,9 +1163,9 @@ def test_query_problems_fail_closed(message: str, run: Recorder) -> None:
 )
 def test_invalid_arguments_fail_before_querying(repository: str, sha: str, upstream: str | None, message: str) -> None:
     run = responder("[]")
-    with CHECK.assertRaisesRegex(QueryError, message):
+    with pytest.raises(QueryError, match=message):
         classify(repository, "topic", sha, upstream, runner=run)
-    CHECK.assertEqual([], run.calls)
+    assert run.calls == []
 
 
 def commit_query_problems() -> list[Any]:
@@ -1211,7 +1208,7 @@ def commit_query_problems() -> list[Any]:
 
 @pytest.mark.parametrize(("message", "run"), commit_query_problems())
 def test_commit_query_problems_fail_closed(message: str, run: Recorder) -> None:
-    with CHECK.assertRaisesRegex(QueryError, message):
+    with pytest.raises(QueryError, match=message):
         classify("owner/repo", "topic", TIP, runner=run, bases=main_only(), default_base="main")
 
 
@@ -1252,8 +1249,8 @@ def test_commit_query_problems_fail_closed(message: str, run: Recorder) -> None:
 )
 def test_identities_are_refused_in_order_before_any_query(arguments: dict[str, str], message: str) -> None:
     run = responder(listing())
-    CHECK.assertEqual(message, refusal(run, **arguments))
-    CHECK.assertEqual([], run.calls)
+    assert message == refusal(run, **arguments)
+    assert run.calls == []
 
 
 @pytest.mark.parametrize(
@@ -1295,8 +1292,8 @@ def test_identities_are_refused_in_order_before_any_query(arguments: dict[str, s
     ],
 )
 def test_listing_problems_are_refused_with_their_exact_message(run: Recorder, message: str) -> None:
-    CHECK.assertEqual(message, refusal(run))
-    CHECK.assertEqual([LIST_CALL], run.calls)
+    assert message == refusal(run)
+    assert run.calls == [LIST_CALL]
 
 
 @pytest.mark.parametrize(
@@ -1333,7 +1330,7 @@ def test_listing_problems_are_refused_with_their_exact_message(run: Recorder, me
     ],
 )
 def test_each_outcome_with_its_calls(expected: str, pulls: tuple[dict, ...], arguments: dict[str, Any]) -> None:
-    CHECK.assertEqual((expected, [LIST_CALL]), outcome(*pulls, **arguments))
+    assert (expected, [LIST_CALL]) == outcome(*pulls, **arguments)
 
 
 @pytest.mark.parametrize(
@@ -1361,7 +1358,7 @@ def test_a_merged_pull_request_updated_after_the_tip_is_queried_only_when_it_qua
     expected: str, pulls: tuple[dict, ...], arguments: dict[str, Any], calls: list[list[str]]
 ) -> None:
     options: dict[str, Any] = {"bases": main_only(), "commits": {7: UPDATED}, **arguments}
-    CHECK.assertEqual((expected, calls), outcome(*pulls, **options))
+    assert (expected, calls) == outcome(*pulls, **options)
 
 
 @pytest.mark.parametrize(
@@ -1438,8 +1435,8 @@ def test_a_merge_commit_whose_change_is_the_branches_proves_a_rewritten_tip_merg
         return (tip, merge_commit) == (TIP, SQUASH)
 
     options: dict[str, Any] = {"bases": main_only(same_change), "commits": {7: history((OLD, BASE))}, **arguments}
-    CHECK.assertEqual((expected, calls), outcome(*pulls, **options))
-    CHECK.assertEqual(compared, asked)
+    assert (expected, calls) == outcome(*pulls, **options)
+    assert compared == asked
 
 
 def recording_bases(asked: list[str]) -> Bases:
@@ -1456,17 +1453,16 @@ def recording_bases(asked: list[str]) -> Bases:
 def test_a_pull_request_without_a_usable_base_name_is_judged_against_the_default(name: object) -> None:
     asked: list[str] = []
     tests = recording_bases(asked)
-    CHECK.assertEqual(
-        ("MERGED", [LIST_CALL, commits_call(7)]),
-        outcome(dict(SQUASHED, baseRefName=name), bases=tests, commits={7: history((OLD, BASE))}),
+    assert ("MERGED", [LIST_CALL, commits_call(7)]) == outcome(
+        dict(SQUASHED, baseRefName=name), bases=tests, commits={7: history((OLD, BASE))}
     )
-    CHECK.assertEqual(["main"], asked)
+    assert asked == ["main"]
     asked.clear()
-    CHECK.assertEqual(
-        ("UNMATCHED", [LIST_CALL]),
-        outcome(dict(SQUASHED, baseRefName=name), bases=tests, commits={}, default_base=None),
+    assert outcome(dict(SQUASHED, baseRefName=name), bases=tests, commits={}, default_base=None) == (
+        "UNMATCHED",
+        [LIST_CALL],
     )
-    CHECK.assertEqual([], asked)
+    assert asked == []
 
 
 # A pull request's own base name is looked up as given, in any shape git accepts.
@@ -1474,7 +1470,7 @@ def test_a_pull_request_without_a_usable_base_name_is_judged_against_the_default
 def test_a_pull_requests_own_base_name_is_looked_up_as_given(name: str) -> None:
     asked: list[str] = []
     outcome(dict(SQUASHED, baseRefName=name), bases=recording_bases(asked), commits={7: history((OLD, BASE))})
-    CHECK.assertEqual([name], asked)
+    assert [name] == asked
 
 
 @pytest.mark.parametrize(
@@ -1518,7 +1514,7 @@ def test_an_upstream_the_pull_requests_base_holds_blocks_no_proof(
         "release/1.0": BaseTests(in_release, lambda tip, merge_commit: True),
     }.get
     commits = {7: UPDATED}
-    CHECK.assertEqual((expected, calls), outcome(*pulls, upstream=upstream, bases=bases, commits=commits))
+    assert (expected, calls) == outcome(*pulls, upstream=upstream, bases=bases, commits=commits)
 
 
 @pytest.mark.parametrize(
@@ -1533,7 +1529,7 @@ def test_an_upstream_the_pull_requests_base_holds_blocks_no_proof(
     ids=["the content before", "the content after", "the mode", "the path", "a file left out"],
 )
 def test_every_file_with_its_content_before_and_after_counts_and_only_their_order_is_left_out(changed: bytes) -> None:
-    CHECK.assertNotEqual(change_identity(DEMO_ENTRY + NOTES_ENTRY), change_identity(changed))
+    assert change_identity(DEMO_ENTRY + NOTES_ENTRY) != change_identity(changed)
 
 
 @pytest.mark.parametrize(
@@ -1548,5 +1544,5 @@ def test_every_file_with_its_content_before_and_after_counts_and_only_their_orde
     ids=["no closing NUL", "stray bytes after an entry", "an empty path", "a short object name", "a patch"],
 )
 def test_a_listing_in_any_other_shape_fails_closed(listed: bytes) -> None:
-    with CHECK.assertRaisesRegex(QueryError, "unexpected shape"):
+    with pytest.raises(QueryError, match="unexpected shape"):
         change_identity(listed)

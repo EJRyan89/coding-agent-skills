@@ -42,9 +42,6 @@ from job_selection import (
 from suite_discovery import regression_suites
 from validation_support import REPOSITORY_ROOT, relative
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 
 def fixture_job(label: str, weight: float) -> Job:
     return Job(label, label.split(" [")[0], weight, lambda: None)
@@ -206,7 +203,7 @@ class JobSecondsFixtures(unittest.TestCase):
 def test_a_malformed_table_is_refused(tmp_path: Path, text: str) -> None:
     path = tmp_path / "job_seconds.json"
     path.write_text(text, encoding="utf-8")
-    with CHECK.assertRaisesRegex(ValueError, "job_seconds.json"):
+    with pytest.raises(ValueError, match=r"job_seconds.json"):
         job_seconds(path)
 
 

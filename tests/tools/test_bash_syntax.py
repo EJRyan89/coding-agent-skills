@@ -15,9 +15,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 from tools import bash_syntax
 from tools.bash_syntax import BashSyntaxError, parse
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 
 def children(item: object) -> list[object]:
     """The nodes a tree node holds, in the order the text holds them."""
@@ -126,7 +123,7 @@ class TreeTests(unittest.TestCase):
     ],
 )
 def test_reserved_words_and_prefixes_start_compound_commands_not_programs(text: str, expected: list[list[str]]) -> None:
-    CHECK.assertEqual(expected, simple_commands(parse(text)))
+    assert expected == simple_commands(parse(text))
 
 
 @pytest.mark.parametrize(
@@ -141,5 +138,5 @@ def test_reserved_words_and_prefixes_start_compound_commands_not_programs(text: 
     ],
 )
 def test_text_bash_would_refuse_is_an_error(text: str) -> None:
-    with CHECK.assertRaises(BashSyntaxError):
+    with pytest.raises(BashSyntaxError):
         parse(text)

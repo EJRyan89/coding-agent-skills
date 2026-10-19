@@ -29,9 +29,6 @@ from github_client import CommandResult, GitHubClient, GitHubError
 
 from tools import branch_protection
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 # The shape and values `gh api` returned for main on 2026-10-07, trimmed to the fields the check reads, with the
@@ -148,7 +145,7 @@ def run_main(answers: dict[str, tuple[int, str]], issue_error: GitHubError | Non
     stdout, stderr = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
         code = branch_protection.main([], client=GitHubClient(runner=runner, sleeper=lambda _: None))
-    CHECK.assertTrue(all(call[:2] == ["gh", "api"] and len(call) == 3 for call in calls), calls)
+    assert all(call[:2] == ["gh", "api"] and len(call) == 3 for call in calls), calls
     return code, stdout.getvalue(), stderr.getvalue()
 
 
@@ -360,8 +357,8 @@ class DocumentationTests(unittest.TestCase):
 @pytest.mark.parametrize(("path", "value", "document", "name"), DRIFTS, ids=[name for *_, name in DRIFTS])
 def test_each_drift_is_reported_by_name(path: tuple[str, ...], value: object, document: str, name: str) -> None:
     problems = drifted(path, value, document)
-    CHECK.assertEqual(1, len(problems), problems)
-    CHECK.assertIn(name, problems[0])
+    assert len(problems) == 1, problems
+    assert name in problems[0]
 
 
 @pytest.mark.parametrize(
@@ -386,8 +383,8 @@ def test_an_issue_configuration_that_does_not_turn_blank_issues_off_is_drift_not
 ) -> None:
     # GitHub offers a blank issue unless config.yml sets blank_issues_enabled to false.
     found = problems({**DOCUMENTS, "issue_config": document})
-    CHECK.assertEqual(1, len(found), found)
-    CHECK.assertIn("blank issues are enabled", found[0])
+    assert len(found) == 1, found
+    assert "blank issues are enabled" in found[0]
 
 
 @pytest.mark.parametrize(
@@ -400,27 +397,26 @@ def test_an_issue_configuration_that_does_not_turn_blank_issues_off_is_drift_not
     ids=["two spaces", "tab and CRLF", "capitalised with a true in the comment"],
 )
 def test_a_trailing_comment_on_false_is_protected_with_exit_zero(text: str) -> None:
-    CHECK.assertEqual(
-        (0, "PROTECTED\n" + SECURITY_OUTPUT, ""),
-        run_main(answers(issue_config=(0, json.dumps(issue_config(text))))),
+    assert run_main(answers(issue_config=(0, json.dumps(issue_config(text))))) == (
+        0,
+        "PROTECTED\n" + SECURITY_OUTPUT,
+        "",
     )
 
 
 @pytest.mark.parametrize("endpoint", ENDPOINTS)
 def test_a_gh_failure_is_reported_without_a_traceback(endpoint: str) -> None:
     message = "HTTP 403: Resource not accessible by integration"
-    CHECK.assertEqual(
-        (2, "", f"ERROR: gh api {ENDPOINTS[endpoint]} failed: {message}\n"),
-        run_main(answers(**{endpoint: (1, message)})),
+    assert (2, "", f"ERROR: gh api {ENDPOINTS[endpoint]} failed: {message}\n") == run_main(
+        answers(**{endpoint: (1, message)})
     )
 
 
 @pytest.mark.parametrize("endpoint", [endpoint for endpoint in ENDPOINTS if endpoint != "issue_config"])
 def test_not_found_is_an_error_for_every_other_endpoint(endpoint: str) -> None:
     message = "HTTP 404: Not Found"
-    CHECK.assertEqual(
-        (2, "", f"ERROR: gh api {ENDPOINTS[endpoint]} failed: {message}\n"),
-        run_main(answers(**{endpoint: (1, message)})),
+    assert (2, "", f"ERROR: gh api {ENDPOINTS[endpoint]} failed: {message}\n") == run_main(
+        answers(**{endpoint: (1, message)})
     )
 
 
@@ -434,9 +430,8 @@ def test_not_found_is_an_error_for_every_other_endpoint(endpoint: str) -> None:
     ],
 )
 def test_real_issue_configuration_read_failures_keep_their_diagnostics_and_exit_two(message: str) -> None:
-    CHECK.assertEqual(
-        (2, "", f"ERROR: gh api {ENDPOINTS['issue_config']} failed: {message}\n"),
-        run_main(answers(issue_config=(1, message))),
+    assert (2, "", f"ERROR: gh api {ENDPOINTS['issue_config']} failed: {message}\n") == run_main(
+        answers(issue_config=(1, message))
     )
 
 
@@ -450,17 +445,15 @@ def test_real_issue_configuration_read_failures_keep_their_diagnostics_and_exit_
     ids=["prerequisite", "execution", "timeout"],
 )
 def test_client_execution_failures_are_not_mistaken_for_missing_configuration(kind: str, message: str) -> None:
-    CHECK.assertEqual(
-        (2, "", f"ERROR: gh api {ENDPOINTS['issue_config']} failed: {message}\n"),
-        run_main(answers(), issue_error=GitHubError(message, kind=kind)),
+    assert (2, "", f"ERROR: gh api {ENDPOINTS['issue_config']} failed: {message}\n") == run_main(
+        answers(), issue_error=GitHubError(message, kind=kind)
     )
 
 
 @pytest.mark.parametrize("output", ["[]", "null"])
 def test_malformed_issue_configuration_responses_remain_errors_with_exit_two(output: str) -> None:
-    CHECK.assertEqual(
-        (2, "", f"ERROR: gh api {ENDPOINTS['issue_config']} did not return a JSON object\n"),
-        run_main(answers(issue_config=(0, output))),
+    assert (2, "", f"ERROR: gh api {ENDPOINTS['issue_config']} did not return a JSON object\n") == run_main(
+        answers(issue_config=(0, output))
     )
 
 
@@ -508,11 +501,10 @@ def test_cli_entry_point_has_the_exact_status_output_and_process_exit_code(
         mock.patch.object(sys, "argv", ["branch_protection.py"]),
         contextlib.redirect_stdout(stdout),
         contextlib.redirect_stderr(stderr),
-        CHECK.assertRaises(SystemExit) as raised,
+        pytest.raises(SystemExit) as raised,
     ):
         runpy.run_path(str(REPOSITORY_ROOT / "tools" / "branch_protection.py"), run_name="__main__")
-    CHECK.assertEqual(expected, (raised.exception.code, stdout.getvalue(), stderr.getvalue()))
-    CHECK.assertEqual(
-        [["gh", "api", endpoint] for endpoint in ENDPOINTS.values()],
-        [call.args[0] for call in runner.call_args_list],
-    )
+    assert expected == (raised.value.code, stdout.getvalue(), stderr.getvalue())
+    assert [["gh", "api", endpoint] for endpoint in ENDPOINTS.values()] == [
+        call.args[0] for call in runner.call_args_list
+    ]

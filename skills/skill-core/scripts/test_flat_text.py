@@ -12,9 +12,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from flat_text import flat_text, single_line
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 
 def code_points(text: str) -> str:
     """A test ID naming each character of `text` by its code point, since most are invisible."""
@@ -43,8 +40,8 @@ class SingleLineTests(unittest.TestCase):
     "separator", ["\n", "\r", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"], ids=code_points
 )
 def test_every_line_separator_splitlines_breaks_on_is_flattened(separator: str) -> None:
-    CHECK.assertEqual(["a", "b"], f"a{separator}b".splitlines())
-    CHECK.assertEqual("a b", flat_text(f"a{separator}b"))
+    assert f"a{separator}b".splitlines() == ["a", "b"]
+    assert flat_text(f"a{separator}b") == "a b"
 
 
 @pytest.mark.parametrize(
@@ -58,7 +55,7 @@ def test_every_line_separator_splitlines_breaks_on_is_flattened(separator: str) 
     ],
 )
 def test_a_control_character_never_reaches_the_terminal(text: str, expected: str) -> None:
-    CHECK.assertEqual(expected, flat_text(text))
+    assert expected == flat_text(text)
 
 
 @pytest.mark.parametrize(
@@ -72,4 +69,4 @@ def test_a_control_character_never_reaches_the_terminal(text: str, expected: str
     ],
 )
 def test_each_run_of_line_breaks_and_controls_becomes_one_space(text: str, expected: str) -> None:
-    CHECK.assertEqual(expected, single_line(text))
+    assert expected == single_line(text)

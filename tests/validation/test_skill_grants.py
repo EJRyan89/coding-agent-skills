@@ -29,9 +29,6 @@ from skill_grants import (
 )
 from validation_support import write_fixture_tree
 
-# Runs no test of its own; the test functions below check through its assertions, as the class does.
-CHECK = unittest.TestCase()
-
 # The allowance a script that starts the command a repository configures states, since its program is not the
 # script's to name.
 CONFIGURED = '{"<module>": "starts the command the repository configures"}'
@@ -645,15 +642,12 @@ def test_repository_code_declarations_accept_process_routes_but_refuse_their_gra
             f'---\nname: {skill}\nallowed-tools: {grants}\n---\n\n```bash\n{own}audit.py" --check\n{command}\n```\n'
         )
     write_fixture_tree(tmp_path, files)
-    CHECK.assertEqual([], repository_code_declaration_problems(tmp_path))
-    CHECK.assertEqual(
-        [
-            f"skills/wide/SKILL.md:8 a {tool} grant pre-approves {command}, which runs code from the "
-            f"target repository; see {GRANTS_DOC}"
-            for tool in ("Bash", "PowerShell")
-        ],
-        skill_grant_problems(tmp_path),
-    )
+    assert repository_code_declaration_problems(tmp_path) == []
+    assert [
+        f"skills/wide/SKILL.md:8 a {tool} grant pre-approves {command}, which runs code from the "
+        f"target repository; see {GRANTS_DOC}"
+        for tool in ("Bash", "PowerShell")
+    ] == skill_grant_problems(tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -679,7 +673,6 @@ def test_repository_code_declarations_refuse_imports_lookups_and_shadowed_calls_
 ) -> None:
     name = ".claude/skills/a/scripts/stale.py"
     write_fixture_tree(tmp_path, {name: 'RUNS_REPOSITORY_CODE = "starts servers"\n' + source})
-    CHECK.assertEqual(
-        [f"{name}: declares RUNS_REPOSITORY_CODE but starts no process; remove the declaration"],
-        repository_code_declaration_problems(tmp_path),
-    )
+    assert [
+        f"{name}: declares RUNS_REPOSITORY_CODE but starts no process; remove the declaration"
+    ] == repository_code_declaration_problems(tmp_path)

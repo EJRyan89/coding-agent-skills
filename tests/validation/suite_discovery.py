@@ -15,7 +15,7 @@ import re
 import sys
 import tomllib
 import unittest
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import TypeGuard
 
@@ -373,6 +373,45 @@ def suite_shape_problems(root: Path) -> list[str]:
             "pytest, so remove it"
             for node in module_statements(tree.body)
             if isinstance(node, ast.If) and is_main_guard(node.test)
+        ]
+    return problems
+
+
+def suite_python_modules(root: Path) -> list[Path]:
+    """The Python the regression suites run: the root conftest.py, every module under tests/ outside tests/fixtures/,
+    and each Python suite under a skill's scripts/."""
+    found = {root / CONFTEST} if (root / CONFTEST).is_file() else set()
+    tests = root / "tests"
+    if tests.is_dir():
+        found |= {
+            path for path in tests.rglob("*.py") if path.is_file() and not path.is_relative_to(root / FIXTURE_ROOT)
+        }
+    found |= {path for path in regression_suites(root) if path.suffix.casefold() == ".py"}
+    return sorted(found, key=lambda path: path.relative_to(root).as_posix().casefold())
+
+
+def _assertion_holders(node: ast.AST, aliases: dict[str, str]) -> Iterator[int]:
+    """The line of each call that makes a unittest.TestCase itself, outside every class body."""
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, ast.ClassDef):
+            continue
+        if isinstance(child, ast.Call) and qualified_name(child.func, aliases) == "unittest.TestCase":
+            yield child.lineno
+        yield from _assertion_holders(child, aliases)
+
+
+def assertion_holder_problems(root: Path) -> list[str]:
+    """Report a test module that makes a unittest.TestCase outside a class, as a holder of assertion methods.
+
+    The lint rule set lets the suites assert, and pytest rewrites a plain assert to show both sides, so a function
+    checks with assert, and a unittest test case with its own assertion methods.
+    """
+    problems: list[str] = []
+    for _, name, tree in python_trees(suite_python_modules(root), root, problems):
+        problems += [
+            f"{name}:{line} makes a unittest.TestCase to check through; check with a plain assert, which pytest "
+            "rewrites to show both sides"
+            for line in _assertion_holders(tree, import_aliases(tree))
         ]
     return problems
 
@@ -905,6 +944,9 @@ class SuiteDiscoveryPolicies(unittest.TestCase):
     def test_python_suites_define_tests_and_run_only_through_pytest(self) -> None:
         self.assertTrue([path for path in regression_suites() if path.suffix.casefold() == ".py"])
         self.assertEqual([], suite_shape_problems(REPOSITORY_ROOT))
+
+    def test_no_test_module_makes_a_test_case_to_check_through(self) -> None:
+        self.assertEqual([], assertion_holder_problems(REPOSITORY_ROOT))
 
     def test_the_pytest_configuration_selects_and_skips_nothing(self) -> None:
         self.assertEqual([], pytest_configuration_problems(REPOSITORY_ROOT))

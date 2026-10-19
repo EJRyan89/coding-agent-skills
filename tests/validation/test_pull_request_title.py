@@ -22,9 +22,6 @@ import pull_request_title
 from git_client import GitResult
 from pull_request_title import head_branch, title_problems, title_types_problems
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 
 def git(repository: Path, *arguments: str) -> None:
     subprocess.run(["git", "-C", str(repository), *arguments], capture_output=True, check=True)
@@ -59,7 +56,7 @@ class PullRequestTitlePolicy(unittest.TestCase):
     ],
 )
 def test_a_typed_title_passes_with_or_without_a_scope(title: str) -> None:
-    CHECK.assertEqual([], title_problems(title, None))
+    assert title_problems(title, None) == []
 
 
 @pytest.mark.parametrize(
@@ -75,24 +72,24 @@ def test_a_typed_title_passes_with_or_without_a_scope(title: str) -> None:
 )
 def test_a_title_without_a_type_fails(title: str) -> None:
     problems = title_problems(title, None)
-    CHECK.assertEqual(1, len(problems))
-    CHECK.assertIn("does not open with a type", problems[0])
+    assert len(problems) == 1
+    assert "does not open with a type" in problems[0]
 
 
 @pytest.mark.parametrize("title", ["style: sort the imports", "Fix: capitalized", "feature(deployer): spelled out"])
 def test_an_unknown_type_fails_and_names_the_types(title: str) -> None:
     problems = title_problems(title, None)
-    CHECK.assertEqual(1, len(problems))
-    CHECK.assertIn("is not a known type", problems[0])
-    CHECK.assertIn("`feat`, `fix`, `docs`, `test`, `refactor`, `chore`, `ci`, or `build`", problems[0])
+    assert len(problems) == 1
+    assert "is not a known type" in problems[0]
+    assert "`feat`, `fix`, `docs`, `test`, `refactor`, `chore`, `ci`, or `build`" in problems[0]
 
 
 @pytest.mark.parametrize("title", ["feat!: drop the old flag", "feat(deployer)!: drop the old flag"])
 def test_a_breaking_change_mark_fails(title: str) -> None:
     problems = title_problems(title, None)
-    CHECK.assertEqual(1, len(problems))
-    CHECK.assertIn("`!`", problems[0])
-    CHECK.assertIn("## Upgrade note", problems[0])
+    assert len(problems) == 1
+    assert "`!`" in problems[0]
+    assert "## Upgrade note" in problems[0]
 
 
 # A branch whose first segment names no type, or that has none, constrains nothing.
@@ -100,7 +97,7 @@ def test_a_breaking_change_mark_fails(title: str) -> None:
     "branch", ["inv/flaky-suite", "claude/conventions-1a2b3c", "main", "fix", pytest.param("", id="empty")]
 )
 def test_a_branch_that_names_no_type_constrains_nothing(branch: str) -> None:
-    CHECK.assertEqual([], title_problems("docs: anything", branch))
+    assert title_problems("docs: anything", branch) == []
 
 
 class HeadBranch(unittest.TestCase):

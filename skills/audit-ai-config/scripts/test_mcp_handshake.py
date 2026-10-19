@@ -23,9 +23,6 @@ import audit_ai_config
 import bounded_process
 import mcp_handshake
 
-# Runs no test of its own; the test function below checks through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 # The launcher test's --timeout, and how far past --timeout and the stop allowance a loaded machine may end the run.
 LAUNCHER_TIMEOUT_SECONDS = 2.0
 MARGIN_SECONDS = 10.0
@@ -719,6 +716,6 @@ def test_each_file_shape_reads_the_same_to_the_audit_and_the_handshake(tmp_path:
         code = mcp_handshake.main(["--root", str(root), "--timeout", "5"])
     lines = output.getvalue().splitlines()
     config = [tuple(line.split(f" {rel} ", 1)) for line in lines if line.startswith("CONFIG_")]
-    CHECK.assertEqual(audited, config)
+    assert audited == config
     failed = any(severity == "CONFIG_ERROR" for severity, _ in audited)
-    CHECK.assertEqual(1 if failed else 0, code, lines)
+    assert (1 if failed else 0) == code, lines

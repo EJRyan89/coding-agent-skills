@@ -15,7 +15,6 @@ from __future__ import annotations
 import io
 import json
 import sys
-import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -29,9 +28,6 @@ sys.path.insert(0, str(sibling_scripts("analyze-skill-cost")))
 
 import skill_inventory
 
-# Runs no test of its own; the test functions below check through its assertions.
-CHECK = unittest.TestCase()
-
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "analyze-skill-cost"
 CORPUS = json.loads((FIXTURES / "corpus.json").read_text(encoding="utf-8"))
 PROSE_CUES = {name for name, _ in skill_inventory.PROSE_CUES}
@@ -41,7 +37,7 @@ def scan(*paths: Path) -> list[str]:
     output = io.StringIO()
     with redirect_stdout(output):
         code = skill_inventory.main(["scan", *(str(path) for path in paths)])
-    CHECK.assertEqual(0, code, output.getvalue())
+    assert code == 0, output.getvalue()
     return output.getvalue().splitlines()
 
 
@@ -52,21 +48,21 @@ def prose_cues(path: Path) -> set[str]:
 @pytest.mark.parametrize("skill", sorted(CORPUS["deterministic-prose"]))
 def test_each_cue_fires_on_the_prose_its_pull_request_moved_into_a_script(skill: str) -> None:
     folder = FIXTURES / "deterministic-prose" / skill
-    CHECK.assertEqual(set(CORPUS["deterministic-prose"][skill]["cues"]), prose_cues(folder / "before.md"))
+    assert set(CORPUS["deterministic-prose"][skill]["cues"]) == prose_cues(folder / "before.md")
 
 
 @pytest.mark.parametrize("skill", sorted(CORPUS["deterministic-prose"]))
 def test_no_cue_fires_once_the_pull_request_moved_the_prose(skill: str) -> None:
-    CHECK.assertEqual(set(), prose_cues(FIXTURES / "deterministic-prose" / skill / "after.md"))
+    assert set() == prose_cues(FIXTURES / "deterministic-prose" / skill / "after.md")
 
 
 def test_the_corpus_holds_every_cue_and_a_text_on_each_side_of_each_fix() -> None:
     named = {cue for entry in CORPUS["deterministic-prose"].values() for cue in entry["cues"]}
-    CHECK.assertEqual(PROSE_CUES, named)
+    assert named == PROSE_CUES
     folders = {path.name for path in (FIXTURES / "deterministic-prose").iterdir()}
-    CHECK.assertEqual(set(CORPUS["deterministic-prose"]), folders)
+    assert set(CORPUS["deterministic-prose"]) == folders
     for folder in (FIXTURES / "deterministic-prose").iterdir():
-        CHECK.assertEqual(["after.md", "before.md"], sorted(path.name for path in folder.iterdir()))
+        assert sorted(path.name for path in folder.iterdir()) == ["after.md", "before.md"]
 
 
 @pytest.mark.parametrize("skill", sorted(CORPUS["status-lines"]))
@@ -85,10 +81,9 @@ def test_the_lines_a_documentation_fix_explained_are_unexplained_before_it_only(
         (root / script).write_text((fixture / f"{script.name}.txt").read_text(encoding="utf-8"), encoding="utf-8")
         lines = scan(skill_md.parent)
         found[side] = {line.split()[3] for line in lines if line.startswith("UNEXPLAINED ")}
-        CHECK.assertLessEqual(
-            {line.split()[1] for line in lines if line.startswith("UNEXPLAINED ")},
-            {(root / script).resolve().as_posix()},
-        )
+        assert {line.split()[1] for line in lines if line.startswith("UNEXPLAINED ")} <= {
+            (root / script).resolve().as_posix()
+        }
     explained = set(entry["unexplained"])
-    CHECK.assertLessEqual(explained, found["before"])
-    CHECK.assertEqual(set(), explained & found["after"])
+    assert explained <= found["before"]
+    assert set() == explained & found["after"]

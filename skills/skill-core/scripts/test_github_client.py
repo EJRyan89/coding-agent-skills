@@ -31,9 +31,6 @@ from github_client import (
     split_response,
 )
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 SECONDARY_LIMIT = "gh: You have exceeded a secondary rate limit. (HTTP 403)"
 USER_NOT_FOUND = json.dumps({"errors": [{"type": "NOT_FOUND", "message": "Could not resolve to a User."}]})
 
@@ -629,7 +626,7 @@ def command_id(value: object) -> str | None:
     ],
 )
 def test_every_failure_class_from_literal_gh_stderr(stderr: str, kind: str) -> None:
-    CHECK.assertEqual(kind, classify_failure(stderr))
+    assert kind == classify_failure(stderr)
 
 
 @pytest.mark.parametrize(
@@ -645,9 +642,9 @@ def test_every_failure_class_from_literal_gh_stderr(stderr: str, kind: str) -> N
 def test_graphql_body_errors_are_classified_by_type(errors: object, kind: str, retryable: bool) -> None:
     error = graphql_failure({"errors": errors})
     if error is None:
-        CHECK.fail("each case is a GraphQL failure")
-    CHECK.assertEqual((kind, retryable), (error.kind, error.retryable))
-    CHECK.assertTrue(str(error).startswith("GraphQL request failed"), str(error))
+        raise AssertionError("each case is a GraphQL failure")
+    assert (kind, retryable) == (error.kind, error.retryable)
+    assert str(error).startswith("GraphQL request failed"), str(error)
 
 
 @pytest.mark.parametrize(
@@ -655,9 +652,9 @@ def test_graphql_body_errors_are_classified_by_type(errors: object, kind: str, r
 )
 def test_only_a_rate_limit_is_retryable(stderr: str) -> None:
     client, _ = client_for(scripted(failed(stderr))[0])
-    with CHECK.assertRaises(GitHubError) as context:
+    with pytest.raises(GitHubError) as context:
         client.run(["api", "user"], retry=False)
-    CHECK.assertEqual(stderr.startswith("gh: HTTP 429"), context.exception.retryable)
+    assert stderr.startswith("gh: HTTP 429") == context.value.retryable
 
 
 @pytest.mark.parametrize(
@@ -673,9 +670,9 @@ def test_only_a_rate_limit_is_retryable(stderr: str) -> None:
 )
 def test_a_reason_gh_already_printed_or_a_body_without_reasons_adds_nothing(stdout: str) -> None:
     client, _ = client_for(scripted(failed("gh: Could not resolve to a User.\n", stdout))[0])
-    with CHECK.assertRaises(GitHubError) as context:
+    with pytest.raises(GitHubError) as context:
         client.run(["api", "graphql"])
-    CHECK.assertEqual("gh: Could not resolve to a User.", str(context.exception))
+    assert str(context.value) == "gh: Could not resolve to a User."
 
 
 @pytest.mark.parametrize(
@@ -737,9 +734,9 @@ def test_transient_failures_from_literal_gh_stderr_and_status(
     stderr: str, stdout: str, headers: bool, transient: bool
 ) -> None:
     client, _ = client_for(scripted(failed(stderr, stdout))[0])
-    with CHECK.assertRaises(GitHubError) as context:
+    with pytest.raises(GitHubError) as context:
         client.run(["api", "user"], retry=False, headers=headers)
-    CHECK.assertEqual(transient, context.exception.transient)
+    assert transient == context.value.transient
 
 
 @pytest.mark.parametrize(
@@ -754,10 +751,10 @@ def test_transient_failures_from_literal_gh_stderr_and_status(
 def test_a_permanent_read_failure_is_not_retried(stderr: str, kind: str) -> None:
     run, calls = scripted(failed(stderr))
     client, sleeper = client_for(run)
-    with CHECK.assertRaises(GitHubError) as context:
+    with pytest.raises(GitHubError) as context:
         client.run(["api", "repos/o/r"])
-    CHECK.assertEqual((kind, stderr), (context.exception.kind, str(context.exception)))
-    CHECK.assertEqual(([], 1), (sleeper.waits, len(calls)))
+    assert (kind, stderr) == (context.value.kind, str(context.value))
+    assert (sleeper.waits, len(calls)) == ([], 1)
 
 
 @pytest.mark.parametrize("retry", [True, False])
@@ -776,15 +773,12 @@ def test_a_transient_failure_on_a_change_is_an_unknown_outcome_never_retried(
 ) -> None:
     run, calls = scripted(failed(BAD_GATEWAY))
     client, sleeper = client_for(run)
-    with CHECK.assertRaises(GitHubError) as context:
+    with pytest.raises(GitHubError) as context:
         client.run(arguments, retry=retry)
-    CHECK.assertEqual("unknown_outcome", context.exception.kind)
-    CHECK.assertEqual(
-        f"{BAD_GATEWAY} (the outcome of this {change} request is unknown: {UNKNOWN_OUTCOME})",
-        str(context.exception),
-    )
-    CHECK.assertEqual((False, True), (context.exception.retryable, context.exception.transient))
-    CHECK.assertEqual(([], 1), (sleeper.waits, len(calls)))
+    assert context.value.kind == "unknown_outcome"
+    assert f"{BAD_GATEWAY} (the outcome of this {change} request is unknown: {UNKNOWN_OUTCOME})" == str(context.value)
+    assert (context.value.retryable, context.value.transient) == (False, True)
+    assert (sleeper.waits, len(calls)) == ([], 1)
 
 
 @pytest.mark.parametrize(
@@ -828,7 +822,7 @@ def test_a_transient_failure_on_a_change_is_an_unknown_outcome_never_retried(
     ids=command_id,
 )
 def test_reads_are_recognized_and_everything_else_is_a_change(arguments: list[str], change: str | None) -> None:
-    CHECK.assertEqual(change, github_client.change_of(arguments))
+    assert change == github_client.change_of(arguments)
 
 
 @pytest.mark.parametrize(
@@ -841,15 +835,15 @@ def test_reads_are_recognized_and_everything_else_is_a_change(arguments: list[st
     ],
 )
 def test_undecodable_bytes_are_replaced_and_counted(data: bytes, text: str, count: int) -> None:
-    CHECK.assertEqual((text, count), replace_undecodable(undecodable(data)))
+    assert (text, count) == replace_undecodable(undecodable(data))
     client, _ = client_for(scripted(CommandResult(0, undecodable(data), undecodable(b"warn \xff")))[0])
     result = client.run(["api", "user"])
-    CHECK.assertEqual((text, count, "warn \ufffd"), (result.stdout, result.replaced, result.stderr))
+    assert (text, count, "warn \ufffd") == (result.stdout, result.replaced, result.stderr)
 
 
 @pytest.mark.parametrize("stdout", [pytest.param("", id="empty"), "not-json", "{"])
 def test_json_body_is_the_one_parse_a_callers_own_parse_reuses(stdout: str) -> None:
-    with CHECK.assertRaises(GitHubError) as context:
+    with pytest.raises(GitHubError) as context:
         github_client.json_body(github_client.CommandResult(0, stdout, ""))
-    CHECK.assertEqual(("malformed", False), (context.exception.kind, context.exception.retryable))
-    CHECK.assertTrue(str(context.exception).startswith("GitHub returned malformed JSON: "))
+    assert (context.value.kind, context.value.retryable) == ("malformed", False)
+    assert str(context.value).startswith("GitHub returned malformed JSON: ")

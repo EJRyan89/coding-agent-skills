@@ -25,9 +25,6 @@ from git_client import GitClient, GitError, GitResult, classify_failure
 from job_tree import GroupTree, JobTree, TreeNotEnded
 from process_identity import process_status
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 NOT_A_REPOSITORY = "fatal: not a git repository (or any of the parent directories): .git\n"
 
 
@@ -871,15 +868,15 @@ def command_id(value: object) -> str | None:
 )
 def test_every_transport_message_is_transient_for_fetch_and_ls_remote(arguments: list[str], stderr: str) -> None:
     client, sleeper, calls = retrying(GitResult(128, "", stderr), GitResult(0, "answer\n", ""))
-    CHECK.assertEqual(GitResult(0, "answer\n", ""), client.run(arguments))
-    CHECK.assertEqual(([2.0], 2), (sleeper.waits, len(calls)))
+    assert GitResult(0, "answer\n", "") == client.run(arguments)
+    assert (sleeper.waits, len(calls)) == ([2.0], 2)
 
 
 @pytest.mark.parametrize("stderr", [pytest.param(stderr, id=name) for name, stderr in PERMANENT.items()])
 def test_a_permanent_failure_is_not_retried(stderr: str) -> None:
     client, sleeper, calls = retrying(GitResult(128, "", stderr))
-    CHECK.assertEqual(GitResult(128, "", stderr), client.run(["fetch", "origin", "x"]))
-    CHECK.assertEqual(([], 1), (sleeper.waits, len(calls)))
+    assert GitResult(128, "", stderr) == client.run(["fetch", "origin", "x"])
+    assert (sleeper.waits, len(calls)) == ([], 1)
 
 
 @pytest.mark.parametrize(
@@ -898,8 +895,8 @@ def test_a_permanent_failure_is_not_retried(stderr: str) -> None:
 )
 def test_push_and_every_other_subcommand_are_never_retried(arguments: list[str]) -> None:
     client, sleeper, calls = retrying(GitResult(128, "", EARLY_EOF))
-    CHECK.assertEqual(GitResult(128, "", EARLY_EOF), client.run(arguments))
-    CHECK.assertEqual(([], 1), (sleeper.waits, len(calls)))
+    assert GitResult(128, "", EARLY_EOF) == client.run(arguments)
+    assert (sleeper.waits, len(calls)) == ([], 1)
 
 
 @pytest.mark.parametrize(
@@ -913,5 +910,5 @@ def test_push_and_every_other_subcommand_are_never_retried(arguments: list[str])
 )
 def test_the_subcommand_is_found_after_git_options(arguments: list[str]) -> None:
     client, sleeper, _calls = retrying(GitResult(128, "", UNRESOLVED), GitResult(0, "", ""))
-    CHECK.assertEqual(0, client.run(arguments).returncode)
-    CHECK.assertEqual([2.0], sleeper.waits)
+    assert client.run(arguments).returncode == 0
+    assert sleeper.waits == [2.0]

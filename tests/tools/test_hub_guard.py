@@ -25,9 +25,6 @@ from worktree_fixture import GUARD_SCRIPT, REPOSITORY_ROOT, HubTestCase, isolate
 from deployer import platform_support
 from tools import hub_guard, worktrees
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 
 class GuardTestCase(HubTestCase):
     """A test that hands the hook one event, as Claude Code does, and reads the guard's decision."""
@@ -1485,7 +1482,7 @@ class GuardGitTests(unittest.TestCase):
     ids=" ".join,
 )
 def test_upstream_and_tracking_values_are_not_rename_options(arguments: list[str]) -> None:
-    CHECK.assertFalse(hub_guard.renames_a_branch(arguments))
+    assert not hub_guard.renames_a_branch(arguments)
 
 
 @pytest.mark.parametrize(
@@ -1513,7 +1510,7 @@ def test_upstream_and_tracking_values_are_not_rename_options(arguments: list[str
     ids=" ".join,
 )
 def test_rename_options_before_or_after_values_are_still_detected(arguments: list[str]) -> None:
-    CHECK.assertTrue(hub_guard.renames_a_branch(arguments))
+    assert hub_guard.renames_a_branch(arguments)
 
 
 @pytest.mark.parametrize(
@@ -1528,4 +1525,4 @@ def test_rename_options_before_or_after_values_are_still_detected(arguments: lis
     ],
 )
 def test_a_command_is_named_lower_cased_without_its_directory_or_exe(word: str, expected: str) -> None:
-    CHECK.assertEqual(expected, hub_guard.command_name(word))
+    assert expected == hub_guard.command_name(word)

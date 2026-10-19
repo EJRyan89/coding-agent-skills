@@ -17,9 +17,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 import sdk_why
 from sdk_why import Completed, SdkPath, Services, parse_why, run_why, why_command
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 CYAN = "\x1b[38;5;14m"
 RESET = "\x1b[0m"
 # Two projects' blocks as the SDK prints them for a solution, with the heading wrapped at the console width, the
@@ -203,15 +200,15 @@ LOCALIZED_TEXT = f'\r\n  {CYAN}Projekt "Harbor.Core" weist keine Abh\u00e4ngigke
 def test_failures_name_the_reason_and_leave_the_project_unanswered(text: str, code: int, reason: str) -> None:
     runs = Runs({"Harbor.Core.csproj": Completed(code, text)})
     answer = run_why([Path("Harbor.Core.csproj")], "Lantern.Json", Services(run=runs), 30)
-    CHECK.assertEqual({Path("Harbor.Core.csproj"): f"dotnet nuget why answered nothing {reason}"}, answer.failures)
-    CHECK.assertEqual(set(), answer.answered)
+    assert {Path("Harbor.Core.csproj"): f"dotnet nuget why answered nothing {reason}"} == answer.failures
+    assert set() == answer.answered
 
 
 def test_a_run_that_timed_out_after_printing_part_of_an_answer_is_not_taken_as_an_answer() -> None:
     runs = Runs({"Harbor.Core.csproj": Completed(-1, CORE_TEXT, timed_out=True)})
     answer = run_why([Path("Harbor.Core.csproj")], "Lantern.Json", Services(run=runs), 7)
-    CHECK.assertEqual({Path("Harbor.Core.csproj"): "dotnet nuget why did not finish within 7 seconds"}, answer.failures)
-    CHECK.assertEqual(({}, set()), (answer.paths, answer.answered))
+    assert {Path("Harbor.Core.csproj"): "dotnet nuget why did not finish within 7 seconds"} == answer.failures
+    assert ({}, set()) == (answer.paths, answer.answered)
 
 
 PARTIAL_TEXT = CORE_TEXT[: CORE_TEXT.index("  [net472]")]
@@ -231,8 +228,7 @@ PARTIAL_TEXT = CORE_TEXT[: CORE_TEXT.index("  [net472]")]
 def test_a_run_that_exits_nonzero_after_printing_a_heading_is_a_failure_not_an_answer(text: str, code: int) -> None:
     runs = Runs({"Harbor.Core.csproj": Completed(code, text)})
     answer = run_why([Path("Harbor.Core.csproj")], "Lantern.Json", Services(run=runs), 30)
-    CHECK.assertEqual(
-        {Path("Harbor.Core.csproj"): f"dotnet nuget why exited with code {code} after printing part of an answer"},
-        answer.failures,
-    )
-    CHECK.assertEqual(({}, set()), (answer.paths, answer.answered))
+    assert {
+        Path("Harbor.Core.csproj"): f"dotnet nuget why exited with code {code} after printing part of an answer"
+    } == answer.failures
+    assert ({}, set()) == (answer.paths, answer.answered)

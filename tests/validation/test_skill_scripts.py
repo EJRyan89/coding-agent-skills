@@ -42,9 +42,6 @@ from validation_support import REPOSITORY_ROOT, write_fixture_tree
 
 from deployer import platform_support
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 
 def mark_skills(root: Path) -> Path:
     """Give each skills/<name> folder with a scripts/ directory the SKILL.md that makes it a skill, and return root."""
@@ -1403,7 +1400,7 @@ def test_process_detection_uses_every_command_runner_and_client_with_dynamic_arg
     arguments = ", ".join([*(["mode"] * position), "command"])
     tree = ast.parse(f"{header}start = process.{function}\nstart({arguments})\n")
     reader = CommandReader(tree)
-    CHECK.assertTrue(reader.starts_process())
+    assert reader.starts_process()
     # A runner given a command the module never binds reports it; a client's argument is not a command.
     line = header.count("\n") + 2
     expected = (
@@ -1411,9 +1408,9 @@ def test_process_detection_uses_every_command_runner_and_client_with_dynamic_arg
         if callable_name in COMMAND_RUNNERS
         else []
     )
-    CHECK.assertEqual(expected, reader.problems("start.py"))
+    assert expected == reader.problems("start.py")
     if not loop:
-        CHECK.assertFalse(CommandReader(ast.parse(f"from {module} import {function}\n")).starts_process())
+        assert not CommandReader(ast.parse(f"from {module} import {function}\n")).starts_process()
 
 
 @pytest.mark.parametrize(
@@ -1429,12 +1426,12 @@ def test_command_reader_keeps_only_the_f_strings_initial_literal_arguments(expre
     tree = ast.parse(expression)
     statement = tree.body[0]
     if not isinstance(statement, ast.Expr):
-        CHECK.fail("Expected an f-string expression")
+        raise AssertionError("Expected an f-string expression")
     literals = CommandReader(tree).program_literals(statement.value)
     constants = [node for node in literals if isinstance(node, ast.Constant)]
-    CHECK.assertEqual(literals, constants)
-    CHECK.assertEqual([prefix], [node.value for node in constants])
-    CHECK.assertEqual([1], [node.lineno for node in constants])
+    assert literals == constants
+    assert [prefix] == [node.value for node in constants]
+    assert [node.lineno for node in constants] == [1]
 
 
 def test_optional_tool_placement_policy_reports_a_tool_optional_for_every_skill_listed_as_required(
@@ -1443,15 +1440,12 @@ def test_optional_tool_placement_policy_reports_a_tool_optional_for_every_skill_
     (tmp_path / "deploy-meta").mkdir()
     metadata = tmp_path / "deploy-meta" / "review.json"
     metadata.write_text(json.dumps({"tools": ["copilot", "gh"], "optional_tools": ["pdftotext"]}), encoding="utf-8")
-    CHECK.assertEqual(
-        [
-            "skill review lists copilot under tools, which the catalogue makes optional for every skill; declare it "
-            'in optional_tools; see "Commands skills may run" in docs/adding-a-skill.md'
-        ],
-        optional_tool_placement_problems(tmp_path, {"copilot"}),
-    )
+    assert optional_tool_placement_problems(tmp_path, {"copilot"}) == [
+        "skill review lists copilot under tools, which the catalogue makes optional for every skill; declare it "
+        'in optional_tools; see "Commands skills may run" in docs/adding-a-skill.md'
+    ]
     metadata.write_text(json.dumps({"tools": ["gh"], "optional_tools": ["copilot", "pdftotext"]}), encoding="utf-8")
-    CHECK.assertEqual([], optional_tool_placement_problems(tmp_path, {"copilot"}))
+    assert optional_tool_placement_problems(tmp_path, {"copilot"}) == []
 
 
 @pytest.mark.parametrize(
@@ -1480,8 +1474,8 @@ def test_command_policies_report_f_strings_without_a_readable_literal_prefix(tmp
         },
     )
     expected = [unreadable("skills/alpha/scripts/tool.py", 3, "f-string command without a literal program prefix")]
-    CHECK.assertEqual(expected, client_command_problems(tmp_path))
-    CHECK.assertEqual(expected, skill_command_problems(tmp_path, {"gh"}, {"git", "python"}))
+    assert expected == client_command_problems(tmp_path)
+    assert expected == skill_command_problems(tmp_path, {"gh"}, {"git", "python"})
 
 
 @pytest.mark.parametrize(
@@ -1512,9 +1506,9 @@ def test_command_policies_read_pty_startfile_an_event_loop_and_asyncio_subproces
     label: str, source: str
 ) -> None:
     reader = CommandReader(ast.parse(source))
-    CHECK.assertTrue(reader.starts_process())
-    CHECK.assertEqual({"ruby", "jq"} if label == "loop" else {"ruby"}, reader.commands(set()))
-    CHECK.assertEqual([], reader.problems("tool.py"))
+    assert reader.starts_process()
+    assert ({"ruby", "jq"} if label == "loop" else {"ruby"}) == reader.commands(set())
+    assert reader.problems("tool.py") == []
 
 
 @pytest.mark.parametrize(
@@ -1540,9 +1534,9 @@ def test_command_policies_read_pty_startfile_an_event_loop_and_asyncio_subproces
 )
 def test_command_policies_read_a_runner_from_a_module_looked_up_by_a_literal_name(source: str) -> None:
     reader = CommandReader(ast.parse(source))
-    CHECK.assertTrue(reader.starts_process())
-    CHECK.assertEqual({"ruby"}, reader.commands(set()))
-    CHECK.assertEqual([], reader.problems("tool.py"))
+    assert reader.starts_process()
+    assert {"ruby"} == reader.commands(set())
+    assert reader.problems("tool.py") == []
 
 
 @pytest.mark.parametrize(
@@ -1566,9 +1560,9 @@ def test_command_policies_read_a_runner_from_a_module_looked_up_by_a_literal_nam
 )
 def test_command_reader_follows_runners_bound_by_assignment_expressions_unpacking_and_defaults(source: str) -> None:
     reader = CommandReader(ast.parse(source))
-    CHECK.assertTrue(reader.starts_process())
-    CHECK.assertEqual({"git"}, reader.commands(set()))
-    CHECK.assertEqual([], reader.problems("tool.py"))
+    assert reader.starts_process()
+    assert {"git"} == reader.commands(set())
+    assert reader.problems("tool.py") == []
 
 
 SCRIPT_RESULTS_DOC = '"Script results" in docs/adding-a-skill.md'
@@ -1631,7 +1625,7 @@ def test_script_contract_policy_reads_each_report_through_the_module_s_names(
 ) -> None:
     write_fixture_tree(tmp_path, {"skills/alpha/scripts/run.py": source})
     problems = script_contract_problems(mark_skills(tmp_path))
-    CHECK.assertEqual([breach], [problem.split(" ", 1)[1] for problem in problems])
+    assert [breach] == [problem.split(" ", 1)[1] for problem in problems]
 
 
 @pytest.mark.parametrize(
@@ -1652,13 +1646,13 @@ def test_script_contract_policy_reads_each_report_through_the_module_s_names(
     ],
 )
 def test_shell_command_extraction_reads_the_program_every_wrapper_and_substitution_runs(script: str) -> None:
-    CHECK.assertIn("rg", shell_commands(script))
+    assert "rg" in shell_commands(script)
 
 
 # A lookup, a substitution in single quotes or a comment, and arithmetic run nothing.
 @pytest.mark.parametrize("script", ["command -v rg", "echo '$(rg foo)'", "# run `rg foo` here", "echo $((1 + 2))"])
 def test_shell_command_extraction_finds_no_program_where_nothing_runs(script: str) -> None:
-    CHECK.assertNotIn("rg", shell_commands(script))
+    assert "rg" not in shell_commands(script)
 
 
 @pytest.mark.parametrize("label", ["zsh", "console", "dash", "fish", "cmd", "bat"])
@@ -1670,9 +1664,8 @@ def test_skill_command_policy_reads_every_command_shell_fence(tmp_path: Path, la
             "skills/alpha/SKILL.md": f"# alpha\n\n```{label}\nrg foo\n```\n",
         },
     )
-    CHECK.assertEqual(
-        [f"skill alpha runs rg, which a standard install lacks; see {COMMANDS_DOC}"],
-        skill_command_problems(tmp_path, set(), set()),
+    assert [f"skill alpha runs rg, which a standard install lacks; see {COMMANDS_DOC}"] == skill_command_problems(
+        tmp_path, set(), set()
     )
 
 

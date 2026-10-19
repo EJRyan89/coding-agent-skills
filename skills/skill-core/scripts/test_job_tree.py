@@ -25,9 +25,6 @@ from bounded_process import run_bounded
 from job_tree import GroupTree, JobRefused, JobTree, TreeNotEnded
 from process_identity import process_status
 
-# Runs no test of its own; the test function below checks through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 # Seconds a started program gets to come up on a loaded machine, and a held file to be let go once its holder ends.
 STARTUP_SECONDS = 60.0
 RELEASE_SECONDS = 10.0
@@ -705,5 +702,5 @@ def test_windows_holds_a_command_in_a_job_and_every_other_platform_in_a_process_
 ) -> None:
     with mock.patch.object(job_tree.sys, "platform", platform):
         tree = job_tree.process_tree(hidden_window=True)
-        CHECK.assertIs(kind, type(tree))
-        CHECK.assertTrue(tree.hidden_window)
+        assert kind is type(tree)
+        assert tree.hidden_window

@@ -25,9 +25,6 @@ from duplication import (
 )
 from validation_support import write_fixture_tree
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 
 class DuplicatedDefinitionPolicy(unittest.TestCase):
     SHARED = "def shared(value):\n    total = value + 1\n    total *= 2\n    return total\n"
@@ -514,4 +511,4 @@ def test_the_deployer_states_the_path_first_and_relative_to_itself(tmp_path: Pat
     write_fixture_tree(
         tmp_path, {**SkillCoreHomePolicy.CORE, "deployer/__init__.py": SkillCoreHomePolicy.HEADER + statement}
     )
-    CHECK.assertEqual(expected, skill_core_import_problems(tmp_path))
+    assert expected == skill_core_import_problems(tmp_path)

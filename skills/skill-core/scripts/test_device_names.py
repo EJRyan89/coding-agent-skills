@@ -12,9 +12,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from device_names import RESERVED_DEVICE_NAMES, is_reserved_device_name
 
-# Runs no test of its own; the test functions below check through its assertions, as the class does.
-CHECK = unittest.TestCase()
-
 
 class DeviceNameTests(unittest.TestCase):
     def test_the_list_is_the_consoles_the_printer_the_null_device_and_every_port(self) -> None:
@@ -73,11 +70,11 @@ class DeviceNameTests(unittest.TestCase):
     ],
 )
 def test_a_device_name_in_any_case_alone_or_before_an_extension_is_reserved(name: str) -> None:
-    CHECK.assertTrue(is_reserved_device_name(name))
+    assert is_reserved_device_name(name)
 
 
 @pytest.mark.parametrize(
     "name", ["console", "con-alpha", "nul-check", "com", "com10", "lpt10", "aux2", ".con", " con", "con_.md"]
 )
 def test_a_name_that_only_starts_like_one_is_not(name: str) -> None:
-    CHECK.assertFalse(is_reserved_device_name(name))
+    assert not is_reserved_device_name(name)

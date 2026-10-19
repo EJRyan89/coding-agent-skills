@@ -14,7 +14,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 from harness import (
-    CHECK,
     DEPLOY_COMMAND,
     DeployerTestCase,
     Deployment,
@@ -1002,7 +1001,7 @@ def test_a_name_the_deployer_reserves_for_its_own_files_is_refused(
             f"ERROR: shared asset name '{asset}' {reason}, which the deployer reserves for its own files"
         ),
     )
-    CHECK.assertFalse(deployer.manifest_file.exists())
+    assert not deployer.manifest_file.exists()
 
 
 @pytest.mark.parametrize(
@@ -1016,7 +1015,7 @@ def test_a_name_the_deployer_reserves_for_its_own_files_is_refused(
 )
 def test_every_reader_of_item_names_refuses_a_reserved_name(name: str, reason: str) -> None:
     expected = f"ERROR: item '{name}' {reason}, which the deployer reserves for its own files"
-    CHECK.assertEqual(expected, names.safe_name_problem(name, "item"))
+    assert expected == names.safe_name_problem(name, "item")
 
 
 @pytest.mark.parametrize(
@@ -1033,7 +1032,7 @@ def test_every_reader_of_item_names_refuses_a_reserved_name(name: str, reason: s
     ],
 )
 def test_a_safe_item_name_is_accepted(name: str) -> None:
-    CHECK.assertIsNone(names.safe_name_problem(name, "item"))
+    assert names.safe_name_problem(name, "item") is None
 
 
 @pytest.mark.parametrize(
@@ -1051,25 +1050,25 @@ def test_a_safe_item_name_is_accepted(name: str) -> None:
     ],
 )
 def test_each_unsafe_item_name_is_refused_with_its_own_line(name: str, reason: str) -> None:
-    CHECK.assertEqual(f"ERROR: item '{name}' {reason}", names.safe_name_problem(name, "item"))
+    assert f"ERROR: item '{name}' {reason}" == names.safe_name_problem(name, "item")
 
 
 def test_an_empty_item_name_is_refused() -> None:
-    CHECK.assertEqual("ERROR: Empty item", names.safe_name_problem("", "item"))
+    assert names.safe_name_problem("", "item") == "ERROR: Empty item"
 
 
 @pytest.mark.parametrize("name", ["con", "PRN", "Aux", "nul", "com1", "COM9", "lpt1", "LPT9"])
 def test_item_and_skill_names_refuse_the_same_windows_device_names(name: str) -> None:
     for item in (name, f"{name}.md", f"{name}.tar.gz"):
-        CHECK.assertEqual(f"ERROR: item '{item}' is a Windows reserved name", names.safe_name_problem(item, "item"))
-    CHECK.assertFalse(source.is_valid_name(name.lower()))
+        assert f"ERROR: item '{item}' is a Windows reserved name" == names.safe_name_problem(item, "item")
+    assert not source.is_valid_name(name.lower())
 
 
 @pytest.mark.parametrize("name", ["console", "con-alpha", "nul-check", "com", "lpt10", "aux2"])
 def test_a_name_that_only_starts_like_a_device_is_accepted(name: str) -> None:
-    CHECK.assertIsNone(names.safe_name_problem(name, "item"))
-    CHECK.assertIsNone(names.safe_name_problem(f"{name}.md", "item"))
-    CHECK.assertTrue(source.is_valid_name(name))
+    assert names.safe_name_problem(name, "item") is None
+    assert names.safe_name_problem(f"{name}.md", "item") is None
+    assert source.is_valid_name(name)
 
 
 class ContractValueTests(unittest.TestCase):

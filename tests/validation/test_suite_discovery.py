@@ -24,6 +24,7 @@ from suite_discovery import (
     MAXIMUM_SHARDS,
     PYTEST_CONFIGURATION,
     TESTS_PER_SHARD,
+    assertion_holder_problems,
     defined_tests,
     git_isolation_problems,
     pool_shared_state_problems,
@@ -41,9 +42,6 @@ from suite_discovery import (
     untested_module_problems,
 )
 from validation_support import REPOSITORY_ROOT, SUITE_NAME_PATTERNS, is_test_script, write_fixture_tree
-
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
 
 
 def run_pytest(suite: Path, *options: str) -> subprocess.CompletedProcess[str]:
@@ -98,6 +96,44 @@ class SuiteDiscoveryFixtures(unittest.TestCase):
                     f"tests/test_reversed.py:9 {main_block}",
                 ],
                 suite_shape_problems(root),
+            )
+
+    def test_assertion_holder_policy_refuses_a_test_case_made_outside_a_class(self) -> None:
+        holder = "CHECK = unittest.TestCase()\n"
+        suite = f"import unittest\n\n{holder}\n\ndef test_it():\n    pass\n"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "conftest.py": f"import unittest\n\n{holder}",
+                    "tests/test_module.py": suite,
+                    "tests/deployer/harness.py": "from unittest import TestCase as Case\n\nCHECK = Case()\n",
+                    "tests/test_function.py": (
+                        "import unittest\n\n\ndef test_it():\n    unittest.TestCase().assertTrue(True)\n"
+                    ),
+                    "skills/alpha/SKILL.md": "---\nname: alpha\n---\n",
+                    "skills/alpha/scripts/test_alpha.py": suite,
+                    # A subclass made in a test, a holder a class body makes, a plain assert, a module a skill
+                    # deploys, and a fixture tree are none of them.
+                    "tests/test_clean.py": (
+                        "import unittest\n\n\nclass Case(unittest.TestCase):\n    HOLDER = unittest.TestCase()\n\n"
+                        "    def test_it(self):\n        Case('test_it')\n\n\ndef test_plain():\n    assert True\n"
+                    ),
+                    "skills/alpha/scripts/alpha.py": f"import unittest\n\n{holder}",
+                    "tests/fixtures/review/test_other.py": suite,
+                },
+            )
+            problem = "makes a unittest.TestCase to check through; check with a plain assert, which pytest rewrites"
+            self.assertEqual(
+                [
+                    f"conftest.py:3 {problem} to show both sides",
+                    f"skills/alpha/scripts/test_alpha.py:3 {problem} to show both sides",
+                    f"tests/deployer/harness.py:3 {problem} to show both sides",
+                    f"tests/test_function.py:5 {problem} to show both sides",
+                    f"tests/test_module.py:3 {problem} to show both sides",
+                ],
+                assertion_holder_problems(root),
             )
 
     def test_shards_run_each_test_once_with_its_fixtures(self) -> None:
@@ -385,14 +421,14 @@ class SuiteDiscoveryFixtures(unittest.TestCase):
     ],
 )
 def test_a_name_a_pattern_matches_is_a_suite(name: str) -> None:
-    CHECK.assertTrue(is_test_script(Path(name)))
+    assert is_test_script(Path(name))
 
 
 @pytest.mark.parametrize(
     "name", ["a.py", "testa.py", "atest.py", "test_a.txt", "a_tests.py", "contest.py", "a.tests.py", "test_a.js"]
 )
 def test_a_name_no_pattern_matches_is_no_suite(name: str) -> None:
-    CHECK.assertFalse(is_test_script(Path(name)))
+    assert not is_test_script(Path(name))
 
 
 class SkillSuiteFixtures(unittest.TestCase):

@@ -21,9 +21,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 import run_dotnet_format as formatter
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 INSTALL_HINT = "dotnet-format is not installed; install it with: dotnet tool install -g dotnet-format"
 SDK_INSTALL_HINT = (
     "dotnet is not installed; the solution is a .slnx solution, or a .sln of SDK-style projects, which the .NET SDK's"
@@ -873,17 +870,13 @@ def test_a_name_starting_with_at_or_dash_is_passed_as_a_path_to_either_formatter
     names = ["@Program.cs", "-Option.cs", "src/@Kept.cs", "src/-Kept.cs", "A@B.cs", "Plain.cs"]
     included = ["./@Program.cs", "./-Option.cs", "src/@Kept.cs", "src/-Kept.cs", "A@B.cs", "Plain.cs"]
     arguments = formatter.command(tool, mode, solution, names, "warn")
-    CHECK.assertEqual(included, arguments[arguments.index("--include") + 1 :])
-    CHECK.assertEqual(
-        formatter.command(tool, mode, solution, [], "warn"),
-        arguments[: arguments.index("--include") + 1],
-    )
-    CHECK.assertFalse(
-        [argument for argument in arguments[1:] if argument.startswith("@")],
-        "no argument is read as a response file",
+    assert included == arguments[arguments.index("--include") + 1 :]
+    assert formatter.command(tool, mode, solution, [], "warn") == arguments[: arguments.index("--include") + 1]
+    assert not [argument for argument in arguments[1:] if argument.startswith("@")], (
+        "no argument is read as a response file"
     )
     options = [argument for argument in arguments if argument.startswith("-")]
-    CHECK.assertEqual(options, [argument for argument in options if argument.startswith("--")])
+    assert options == [argument for argument in options if argument.startswith("--")]
 
 
 @pytest.mark.parametrize(
@@ -907,10 +900,10 @@ def test_usage_errors_exit_2_with_usage_on_stderr(arguments: list[str]) -> None:
     with (
         contextlib.redirect_stdout(output),
         contextlib.redirect_stderr(errors),
-        CHECK.assertRaises(SystemExit) as raised,
+        pytest.raises(SystemExit) as raised,
     ):
         formatter.main(arguments, formatter.Services(run=runner, which=lambda name: name))
-    CHECK.assertEqual(2, raised.exception.code)
-    CHECK.assertEqual("", output.getvalue())
-    CHECK.assertIn("usage:", errors.getvalue())
-    CHECK.assertEqual([], runner.calls)
+    assert raised.value.code == 2
+    assert output.getvalue() == ""
+    assert "usage:" in errors.getvalue()
+    assert runner.calls == []

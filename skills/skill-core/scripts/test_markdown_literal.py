@@ -13,9 +13,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from markdown_literal import markdown_line, markdown_literal, navigation_url
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 
 def code_points(text: str) -> str:
     """A test ID naming each character of `text` by its code point, since most are invisible."""
@@ -59,11 +56,11 @@ class NavigationUrlTests(unittest.TestCase):
     "separator", ["\r", "\n", "\r\n", "\u0085", "\u2028", "\u2029", "\x0b", "\x0c", "\x1c"], ids=code_points
 )
 def test_line_breaks_are_kept_by_the_literal_and_flattened_by_the_line(separator: str) -> None:
-    CHECK.assertEqual("a b", markdown_line(f" a{separator}b "))
+    assert markdown_line(f" a{separator}b ") == "a b"
 
 
 @pytest.mark.parametrize(
     "url", ["http://github.com/o/r", "javascript:alert(1)", "https://host/a b", "//host/a", "https://h_st/"]
 )
 def test_any_other_url_is_refused(url: str) -> None:
-    CHECK.assertIsNone(navigation_url(url))
+    assert navigation_url(url) is None

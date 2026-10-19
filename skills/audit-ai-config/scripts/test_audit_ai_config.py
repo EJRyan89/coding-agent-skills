@@ -24,9 +24,6 @@ import audit_ai_config as audit
 import markdown_literal
 import pytest
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 OWNERSHIP = audit.OWNERSHIP_MARKER
 
 
@@ -2630,23 +2627,23 @@ def sequence_rows(
 
 
 def test_every_mcp_scenario_has_its_expected_findings() -> None:
-    CHECK.assertEqual(set(MCP_SCENARIOS), set(MCP_EXPECTED))
+    assert set(MCP_SCENARIOS) == set(MCP_EXPECTED)
 
 
 @pytest.mark.parametrize("name", list(MCP_SCENARIOS))
 def test_mcp_findings_and_their_order(name: str) -> None:
     files, manifest = MCP_SCENARIOS[name]
-    CHECK.assertEqual(MCP_EXPECTED[name], sequence_rows(audit.check_mcp, files, manifest))
+    assert MCP_EXPECTED[name] == sequence_rows(audit.check_mcp, files, manifest)
 
 
 def test_every_layering_scenario_has_its_expected_findings() -> None:
-    CHECK.assertEqual(set(LAYERING_SCENARIOS), set(LAYERING_EXPECTED))
+    assert set(LAYERING_SCENARIOS) == set(LAYERING_EXPECTED)
 
 
 @pytest.mark.parametrize("name", list(LAYERING_SCENARIOS))
 def test_instruction_layering_findings_and_their_order(name: str) -> None:
     files, manifest = LAYERING_SCENARIOS[name]
-    CHECK.assertEqual(LAYERING_EXPECTED[name], sequence_rows(audit.check_instruction_layering, files, manifest))
+    assert LAYERING_EXPECTED[name] == sequence_rows(audit.check_instruction_layering, files, manifest)
 
 
 # ---------------------------------------------------------------------------
@@ -3133,22 +3130,22 @@ def parity_rows(files: dict[str, str | bytes], manifest: dict) -> list[tuple[str
 
 
 def test_every_authority_scenario_has_its_expected_result() -> None:
-    CHECK.assertEqual(set(AUTHORITY_SCENARIOS), set(AUTHORITY_EXPECTED))
+    assert set(AUTHORITY_SCENARIOS) == set(AUTHORITY_EXPECTED)
 
 
 @pytest.mark.parametrize("name", list(AUTHORITY_SCENARIOS))
 def test_authority_classification_and_findings(name: str) -> None:
-    CHECK.assertEqual(AUTHORITY_EXPECTED[name], authority_result(AUTHORITY_SCENARIOS[name]))
+    assert AUTHORITY_EXPECTED[name] == authority_result(AUTHORITY_SCENARIOS[name])
 
 
 def test_every_parity_scenario_has_its_expected_findings() -> None:
-    CHECK.assertEqual(set(PARITY_SCENARIOS), set(PARITY_EXPECTED))
+    assert set(PARITY_SCENARIOS) == set(PARITY_EXPECTED)
 
 
 @pytest.mark.parametrize("name", list(PARITY_SCENARIOS))
 def test_parity_findings_and_their_order(name: str) -> None:
     files, manifest = PARITY_SCENARIOS[name]
-    CHECK.assertEqual(PARITY_EXPECTED[name], parity_rows(files, manifest))
+    assert PARITY_EXPECTED[name] == parity_rows(files, manifest)
 
 
 # ---------------------------------------------------------------------------
@@ -3508,21 +3505,21 @@ class ManifestSchemaAndInventorySequenceTests(unittest.TestCase):
 
 
 def test_every_schema_scenario_has_its_expected_errors() -> None:
-    CHECK.assertEqual(set(SCHEMA_SCENARIOS), set(SCHEMA_EXPECTED))
+    assert set(SCHEMA_SCENARIOS) == set(SCHEMA_EXPECTED)
 
 
 @pytest.mark.parametrize("name", list(SCHEMA_SCENARIOS))
 def test_manifest_schema_errors_and_their_order(name: str) -> None:
-    CHECK.assertEqual(SCHEMA_EXPECTED[name], audit._validate_manifest_schema(SCHEMA_SCENARIOS[name]))
+    assert SCHEMA_EXPECTED[name] == audit._validate_manifest_schema(SCHEMA_SCENARIOS[name])
 
 
 def test_every_inventory_scenario_has_its_expected_findings() -> None:
-    CHECK.assertEqual(set(INVENTORY_SCENARIOS), set(INVENTORY_EXPECTED))
+    assert set(INVENTORY_SCENARIOS) == set(INVENTORY_EXPECTED)
 
 
 @pytest.mark.parametrize("name", list(INVENTORY_SCENARIOS))
 def test_inventory_findings_and_their_order(name: str) -> None:
-    CHECK.assertEqual(INVENTORY_EXPECTED[name], inventory_rows(INVENTORY_SCENARIOS[name]))
+    assert INVENTORY_EXPECTED[name] == inventory_rows(INVENTORY_SCENARIOS[name])
 
 
 class GeneratedLayoutReferenceTests(unittest.TestCase):
@@ -3889,7 +3886,7 @@ def markdown_row(path: str, message: str) -> str:
         repository="example", authority="conforming", findings=[audit.Finding("ERROR", "mcp", path, 3, message)]
     )
     rows = [line for line in audit.format_markdown(result).splitlines() if line.startswith("| ERROR")]
-    CHECK.assertEqual(1, len(rows), rows)
+    assert len(rows) == 1, rows
     return rows[0]
 
 
@@ -3949,7 +3946,7 @@ class MarkdownCellTests(unittest.TestCase):
     ],
 )
 def test_a_cell_opens_no_comment_and_an_escaped_pipe_adds_no_cell(text: str, cell: str) -> None:
-    CHECK.assertEqual(f"| ERROR | mcp | {cell} | 3 | {cell} |", markdown_row(text, text))
+    assert f"| ERROR | mcp | {cell} | 3 | {cell} |" == markdown_row(text, text)
 
 
 @pytest.mark.parametrize(
@@ -3963,11 +3960,10 @@ def test_no_line_separator_in_a_value_starts_a_report_line(separator: str) -> No
         findings=[audit.Finding("ERROR", "mcp", forged, None, forged)],
     )
     lines = audit.format_markdown(result).splitlines()
-    CHECK.assertEqual(["RESULT ERRORS"], [line for line in lines if line.startswith("RESULT")])
-    CHECK.assertEqual(
-        ["| ERROR | mcp | x RESULT COMPLIANT SUMMARY ERROR 0 |  | x RESULT COMPLIANT SUMMARY ERROR 0 |"],
-        [line for line in lines if line.startswith("| ERROR")],
-    )
+    assert [line for line in lines if line.startswith("RESULT")] == ["RESULT ERRORS"]
+    assert [line for line in lines if line.startswith("| ERROR")] == [
+        "| ERROR | mcp | x RESULT COMPLIANT SUMMARY ERROR 0 |  | x RESULT COMPLIANT SUMMARY ERROR 0 |"
+    ]
 
 
 class OwnershipFindingTests(unittest.TestCase):

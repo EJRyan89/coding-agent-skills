@@ -17,9 +17,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from git_client import GitClient
 from release_tags import highest_release, is_release_tag, last_release, main
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 
 class ReleaseTagTests(unittest.TestCase):
     def test_releases_are_ordered_by_their_numbers_not_their_text(self) -> None:
@@ -108,4 +105,4 @@ class LastReleaseTests(unittest.TestCase):
     ],
 )
 def test_a_release_tag_is_three_ascii_numbers_and_nothing_after_them(name: str, released: bool) -> None:
-    CHECK.assertIs(released, is_release_tag(name))
+    assert released is is_release_tag(name)

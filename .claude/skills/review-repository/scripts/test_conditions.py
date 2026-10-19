@@ -15,9 +15,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-c
 
 import conditions
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 
 class FailureTests(unittest.TestCase):
     def test_a_failure_prints_its_failed_line_and_exits_2_since_1_closes_the_route(self) -> None:
@@ -116,11 +113,11 @@ class ReadFilesTests(unittest.TestCase):
     ],
 )
 def test_a_suite_is_named_as_validation_names_one_ignoring_case(path: str) -> None:
-    CHECK.assertTrue(conditions.is_suite(path))
+    assert conditions.is_suite(path)
 
 
 @pytest.mark.parametrize(
     "path", ["tests/harness.py", "tests/test_a.txt", "tests/contest.py", "tests/a.tests.py", "test_a.js"]
 )
 def test_a_file_named_otherwise_is_not_a_suite(path: str) -> None:
-    CHECK.assertFalse(conditions.is_suite(path))
+    assert not conditions.is_suite(path)

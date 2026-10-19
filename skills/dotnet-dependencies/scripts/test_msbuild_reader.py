@@ -36,9 +36,6 @@ from msbuild_reader import (
     same_framework,
 )
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 PACKAGES_CONFIG = """<?xml version="1.0" encoding="utf-8"?>
 <packages>
   <package id="Lantern.Core" version="2.0.0" targetFramework="net472" />
@@ -442,9 +439,9 @@ class PathBoundTests(unittest.TestCase):
     ],
 )
 def test_a_framework_is_one_framework_whichever_form_names_it(expected: bool, first: str, second: str) -> None:
-    CHECK.assertIs(expected, same_framework(first, second))
-    CHECK.assertIs(expected, same_framework(second, first))
+    assert expected is same_framework(first, second)
+    assert expected is same_framework(second, first)
 
 
 def test_a_framework_key_is_the_name_case_folded() -> None:
-    CHECK.assertEqual(".netfoo,version=v1.0", framework_key(".NETFoo,Version=v1.0"))
+    assert framework_key(".NETFoo,Version=v1.0") == ".netfoo,version=v1.0"
