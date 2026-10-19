@@ -53,6 +53,7 @@ from review_specialists import (
     split_unified_diff,
     symbolic_links,
 )
+from review_vocabularies import DispatchMode
 
 
 def _has_commit(checkout: Path, commit: str, git: Runner) -> bool:
@@ -390,7 +391,7 @@ def lazy_upfront(reads: Sequence[str]) -> Callable[[str], bool]:
 
 def _snapshot_reads(
     snapshot: dict[str, Any],
-    dispatch: str,
+    dispatch: DispatchMode,
     kind: str,
     reviewer_root: Path | None,
     changed: list[str],
@@ -412,7 +413,10 @@ def _snapshot_reads(
 
 
 def _route_reads(
-    dispatch: str | None, manifest: dict[str, Any] | None, changed: list[str], renamed: Mapping[str, Sequence[str]]
+    dispatch: DispatchMode | None,
+    manifest: dict[str, Any] | None,
+    changed: list[str],
+    renamed: Mapping[str, Sequence[str]],
 ) -> list[str] | None:
     """The route a checkout's snapshot takes for a run dispatched as `dispatch` (None when it is not the Copilot CLI
     host) whose reviewer's `manifest` (None for the generic reviewer) sees these changed files, with the earlier paths

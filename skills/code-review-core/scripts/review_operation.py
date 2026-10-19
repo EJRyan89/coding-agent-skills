@@ -31,7 +31,7 @@ from review_records import (
     validate_adapter_result,
 )
 from review_state import utc_date, watermark_date
-from review_vocabularies import SEVERITIES, SEVERITY_SECTIONS, Severity
+from review_vocabularies import SEVERITIES, SEVERITY_SECTIONS, DispatchMode, Severity
 from typed_fields import FieldError, FieldReader
 
 
@@ -173,7 +173,7 @@ def request_to_record_input(
     patches: dict[str, Any] | None = None,
     scope: Scope | None = None,
     uncovered_files: list[str] | None = None,
-    dispatch: str | None = None,
+    dispatch: DispatchMode | None = None,
     snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     pull = READ.json_object(request.get("pull_request"), "request.pull_request")
@@ -279,7 +279,7 @@ def commit_adapter_result(
     uncovered_files: list[str] | None = None,
     model_names: dict[str, str] | None = None,
     flags: list[dict[str, Any]] | None = None,
-    dispatch: str | None = None,
+    dispatch: DispatchMode | None = None,
     snapshot: dict[str, Any] | None = None,
     documents: dict[str, list[str]] | None = None,
 ) -> tuple[Path, Path, ReviewRecord]:
