@@ -209,9 +209,8 @@ class NewSkillTestCase(FixtureRepositoryTestCase):
                 },
                 "copilot-cli": {
                     "level": "partial",
-                    "needs": ["agent-delegation", "workflow"],
-                    "reason": "It starts subagents, which this runtime cannot. "
-                    "It uses Claude Code's Workflow tool, which this runtime lacks.",
+                    "needs": ["workflow"],
+                    "reason": "It uses Claude Code's Workflow tool, which this runtime lacks.",
                 },
             },
             json.loads((self.root / "deploy-meta" / "fan-out.json").read_text(encoding="utf-8"))["runtime_support"],

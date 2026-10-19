@@ -650,9 +650,11 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertIn(f"with exactly this prompt and nothing else: `{task}`", skill)
         self.assertIn(f'REVIEWER_TASK = "{task.replace("<prompt file>", "{prompt}")}"', pipeline)
         self.assertIn("Workflow", allowed_tools(skill), "the Workflow path needs the tool allowed")
-        # Both paths start a role on the model its trusted profile names, and otherwise name none.
+        # Both paths start a role on the model its trusted profile names, and otherwise name none, and a native
+        # subagent on a runtime that takes one starts at the effort its EFFORT line names.
         self.assertIn("When a `MODEL` line names that role, start its subagent on that model", skill)
-        self.assertIn("on the model of any `MODEL` line that follows it", skill)
+        self.assertIn("When an `EFFORT` line names that role, start its subagent at that reasoning effort", skill)
+        self.assertIn("on the model and effort of any `MODEL` and `EFFORT` lines that follow it", skill)
         self.assertIn("...(role.model ? {{ model: role.model }} : {{}})", pipeline)
 
     def test_the_tracker_and_the_contract_name_the_computed_states_the_configuration_refuses(self) -> None:
