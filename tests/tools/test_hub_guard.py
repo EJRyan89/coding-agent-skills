@@ -16,7 +16,7 @@ from unittest import mock
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import bash_agreement
 import git_client
@@ -73,8 +73,8 @@ class GuardTestCase(HubTestCase):
 
 
 class PowerShellReaderStartTests(unittest.TestCase):
-    """pwsh starts as every process a repository tool starts does: through skill-core's run_bounded, without git's
-    repository-selecting variables, in a process tree, and with its output bounded."""
+    """pwsh starts as every process a repository tool starts does: through ejryan89-skill-core's run_bounded, without
+    git's repository-selecting variables, in a process tree, and with its output bounded."""
 
     def test_pwsh_starts_bounded_and_without_the_hooks_repository_variables(self) -> None:
         environment = isolated_environment() | {

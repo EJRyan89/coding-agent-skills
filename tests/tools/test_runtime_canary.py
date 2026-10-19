@@ -28,7 +28,7 @@ from unittest import mock
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 
 from deployer import discovery, platform_support, runtime_support
@@ -252,7 +252,7 @@ class RuntimeCanaryTestCase(unittest.TestCase):
         """A source whose alpha runs its own scripts/tool.py, whose beta runs alpha's, declared in skill_deps, and
         whose gamma runs its own scripts/tool.sh with Bash. Each declares the runtime support its frontmatter implies.
         With hidden, alpha also declares core, a hidden dependency that declares none for every runtime, as
-        code-review-core does, so the deployer gives it no adapter.
+        ejryan89-code-review-core does, so the deployer gives it no adapter.
         """
         support = runtime_support.declaration({"user-only-start"} if user_only else set())
         source = self.root / "source"
@@ -399,9 +399,9 @@ class DeploymentTests(RuntimeCanaryTestCase):
         # The hidden dependencies are deployed with no adapter, and they are the skills the canary asks no runtime
         # to list; every other skill has its adapter.
         unadapted = runtime_canary.without_adapter(self.home)
-        self.assertLessEqual({"code-review-core", "skill-core"}, set(unadapted))
+        self.assertLessEqual({"ejryan89-code-review-core", "ejryan89-skill-core"}, set(unadapted))
         self.assertEqual({NO_ADAPTER}, set(unadapted.values()))
-        for name in ("code-review-core", "skill-core"):
+        for name in ("ejryan89-code-review-core", "ejryan89-skill-core"):
             self.assertTrue((self.home / ".claude" / "skills" / name / "SKILL.md").is_file())
             self.assertFalse((self.home / ".agents" / "skills" / name).exists())
         for name in ("review-prs", "dotnet-format", FIXTURE):
@@ -450,13 +450,13 @@ class DeploymentTests(RuntimeCanaryTestCase):
 
 class LookupTests(unittest.TestCase):
     def test_a_runtime_is_looked_up_where_check_and_verify_look_for_it(self) -> None:
-        # skill-core's locator through the deployer, so a runtime only in WinGet's Links folder is checked too.
+        # ejryan89-skill-core's locator through the deployer, so a runtime only in WinGet's Links folder is checked too.
         self.assertIs(
             platform_support.find_executable, inspect.signature(runtime_canary.canary).parameters["which"].default
         )
 
 
-# git's repository-selecting variables, written out here rather than read from skill-core.
+# git's repository-selecting variables, written out here rather than read from ejryan89-skill-core.
 REPOSITORY_SELECTING = (
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_COMMON_DIR",

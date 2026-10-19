@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import get_args
+from typing import ClassVar, get_args
 from unittest import mock
 
 from harness import (
@@ -2001,7 +2001,7 @@ class RenameMigrationTests(RecoveryTestCase):
     """A source that renames its skills, recording each old name in source.json's renamed, carries an installation
     under the old names to the new ones on its next deployment."""
 
-    RENAMED = {"cost": "audit", "extra": "extended", "core": "owner-core"}
+    RENAMED: ClassVar[dict[str, str]] = {"cost": "audit", "extra": "extended", "core": "owner-core"}
 
     def old_layout(self) -> None:
         """Deploy the old names: a skill, an opt-in skill requested on its own, and the hidden core both depend on,

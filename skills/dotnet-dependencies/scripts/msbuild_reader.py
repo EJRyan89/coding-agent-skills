@@ -1,10 +1,10 @@
 """Readers for the files a .NET solution's dependency graph is built from, each into a plain record.
 
-Every XML file goes through skill-core's `xml_reader`, which refuses a DOCTYPE or an entity before parsing, and the
-project.assets.json a restore writes through the json module. A file a reader cannot read raises `Unreadable`, which
+Every XML file goes through ejryan89-skill-core's `xml_reader`, which refuses a DOCTYPE or an entity before parsing, and
+the project.assets.json a restore writes through the json module. A file a reader cannot read raises `Unreadable`, which
 names the file and the reason, so the caller prints one UNREADABLE line and goes on: a bad file costs its own facts,
-never the whole answer. Element names are matched without their namespace (skill-core's `msbuild_xml`), because an
-old-style project carries the MSBuild 2003 namespace, a nuspec one of several, and a binding redirect the
+never the whole answer. Element names are matched without their namespace (ejryan89-skill-core's `msbuild_xml`), because
+an old-style project carries the MSBuild 2003 namespace, a nuspec one of several, and a binding redirect the
 assembly-binding one.
 
 A project file and the files it imports are evaluated as MSBuild evaluates them by `msbuild_evaluation`, which reads
@@ -13,10 +13,11 @@ name, such as `.NETCoreApp,Version=v8.0`, matches the project's `net8.0`, and ev
 names through `matching_framework`, which prefers the name spelled alike.
 
 The readers read only what the examined tree holds and only so much of it. A path a file names, a solution's entry, a
-ProjectReference, or a project a restore recorded, is made absolute without reaching the file system (skill-core's
-`project_path`), and the caller asks skill-core's `refusal` before anything opens or looks it up: one outside the tree
-(`examined_tree`), or in a device or network form, is refused unread. A read opens only a regular file and refuses one
-holding more than skill-core's `READ_LIMIT_BYTES` in `dotnet_solution.py`, the one bound (`read_bounded`).
+ProjectReference, or a project a restore recorded, is made absolute without reaching the file system
+(ejryan89-skill-core's `project_path`), and the caller asks ejryan89-skill-core's `refusal` before anything opens or
+looks it up: one outside the tree (`examined_tree`), or in a device or network form, is refused unread. A read opens
+only a regular file and refuses one holding more than ejryan89-skill-core's `READ_LIMIT_BYTES` in `dotnet_solution.py`,
+the one bound (`read_bounded`).
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ from pathlib import Path
 from typing import Any
 from xml.etree.ElementTree import Element
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import dotnet_solution
 from dotnet_solution import FileRefused, decode_text, lexical_absolute, listed_projects, project_path
@@ -122,8 +123,8 @@ def children(element: Element, name: str) -> list[Element]:
 
 
 def read_bounded(path: Path) -> bytes:
-    """The bytes of the regular file at `path`, read by skill-core's `read_bounded`, or `Unreadable` with its reason
-    when it refuses the file: it cannot be read, is not a regular file, or holds more than `READ_LIMIT_BYTES`."""
+    """The bytes of the regular file at `path`, read by ejryan89-skill-core's `read_bounded`, or `Unreadable` with its
+    reason when it refuses the file: it cannot be read, is not a regular file, or holds more than `READ_LIMIT_BYTES`."""
     try:
         return dotnet_solution.read_bounded(path)
     except FileRefused as error:

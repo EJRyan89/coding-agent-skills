@@ -89,8 +89,8 @@ LINUX_INSTALL_HELP = (
     "docs/installation.md.",
 )
 INSTALL_HELP = WINDOWS_INSTALL_HELP if WINDOWS else LINUX_INSTALL_HELP
-# The command that runs Python here, which every shipped skill's fences and grants render from {{PYTHON}}: skill-core's,
-# which the skills' scripts write into the commands they hand an agent, so the two always agree.
+# The command that runs Python here, which every shipped skill's fences and grants render from {{PYTHON}}:
+# ejryan89-skill-core's, which the skills' scripts write into the commands they hand an agent, so the two always agree.
 PYTHON = executable_locator.PYTHON
 # Commands this platform provides beyond the portable ones in tools.STANDARD_COMMANDS: Python by the name above, and on
 # Windows Windows PowerShell and cygpath, which Git for Windows bundles.
@@ -232,8 +232,8 @@ def _asked_folds_case(directory: Path) -> bool | None:
 
 
 # The device names Windows reserves in every directory, alone or before an extension: con and con.md each open the
-# console. Every platform refuses them, so a name deployed on one deploys on each. skill-core holds the one list,
-# since a review snapshot refuses the same names.
+# console. Every platform refuses them, so a name deployed on one deploys on each. ejryan89-skill-core holds the one
+# list, since a review snapshot refuses the same names.
 is_reserved_device_name = device_names.is_reserved_device_name
 
 
@@ -286,9 +286,9 @@ def refuse_existing_destination(destination: Path) -> None:
 
 
 def is_link_or_junction(path: str | os.PathLike[str]) -> bool:
-    """Whether a path is a symbolic link, a junction, or another reparse point, as skill-core's link_probe judges every
-    link a skill must never follow. A missing path is none. A path whose metadata cannot be read raises its OSError,
-    so a caller that would refuse a link refuses a path it cannot judge, rather than following it."""
+    """Whether a path is a symbolic link, a junction, or another reparse point, as ejryan89-skill-core's link_probe
+    judges every link a skill must never follow. A missing path is none. A path whose metadata cannot be read raises its
+    OSError, so a caller that would refuse a link refuses a path it cannot judge, rather than following it."""
     metadata = _own_metadata(path)
     return metadata is not None and link_probe.is_link_or_junction(path, metadata)
 
@@ -351,13 +351,14 @@ def is_app_execution_alias(program: str | os.PathLike[str]) -> bool:
 
 
 def find_executable(name: str) -> str | None:
-    """The program `name` runs, by skill-core's locator, so a tool `check` finds is the one a skill's script finds."""
+    """The program `name` runs, by ejryan89-skill-core's locator, so a tool `check` finds is the one a skill's script
+    finds."""
     return executable_locator.find_executable(name)
 
 
 def find_executables(name: str) -> list[str]:
-    """Every program `name` may run, in skill-core's locator's search order, for a tool whose probe passes over one
-    it does not support, as the skills' own lookup does."""
+    """Every program `name` may run, in ejryan89-skill-core's locator's search order, for a tool whose probe passes over
+    one it does not support, as the skills' own lookup does."""
     return executable_locator.find_executables(name)
 
 
@@ -399,8 +400,9 @@ def find_powershell() -> str | None:
 
 
 def find_on_path(name: str, search_path: str) -> str | None:
-    """The first program `name` runs on exactly this PATH value, by skill-core's walk of PATH: never the caller's own
-    PATH, no link folder, and never the working directory, which `shutil.which` searches first on Windows."""
+    """The first program `name` runs on exactly this PATH value, by ejryan89-skill-core's walk of PATH: never the
+    caller's own PATH, no link folder, and never the working directory, which `shutil.which` searches first on
+    Windows."""
     return next(iter(executable_locator.path_programs(name, search_path)), None) if search_path else None
 
 
@@ -463,9 +465,9 @@ def command_line_length(arguments: list[str]) -> int:
 
 
 def process_tree() -> ProcessTree:
-    """A tree for one command and every process it starts, which ends them all when it is left: skill-core's, a job
-    object on Windows and a process group elsewhere. A caller that starts the command itself starts it with the tree's
-    start_options."""
+    """A tree for one command and every process it starts, which ends them all when it is left: ejryan89-skill-core's, a
+    job object on Windows and a process group elsewhere. A caller that starts the command itself starts it with the
+    tree's start_options."""
     return job_tree.process_tree()
 
 
@@ -519,8 +521,8 @@ def run_tool(
         return ToolResult(finished.returncode, captured.read().decode("utf-8", "replace"))
 
 
-# Whether a process is running and when it started, which the lock judges a holder by: skill-core's one probe, which
-# the code-review pipeline also uses, and which reports a process it cannot read as running.
+# Whether a process is running and when it started, which the lock judges a holder by: ejryan89-skill-core's one probe,
+# which the code-review pipeline also uses, and which reports a process it cannot read as running.
 ProcessStatus = process_identity.ProcessStatus
 
 

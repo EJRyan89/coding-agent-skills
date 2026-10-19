@@ -16,7 +16,7 @@ from unittest import mock
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import bounded_process
 import dotnet_format_targets as targets
@@ -808,8 +808,8 @@ class ResolveTests(unittest.TestCase):
         )
 
     def test_a_solution_above_the_read_bound_or_not_a_regular_file_fails_with_the_reason(self) -> None:
-        # Every read opens only a regular file within skill-core's one bound, so a very large solution, or a device a
-        # solution's name points at, never holds the run or exhausts its memory.
+        # Every read opens only a regular file within ejryan89-skill-core's one bound, so a very large solution, or a
+        # device a solution's name points at, never holds the run or exhausts its memory.
         repo = self.repository
         repo.write("Lib/Lib.csproj", SDK_PROJECT)
         repo.write("Lib/Code.cs")
@@ -918,8 +918,8 @@ def install(folder: Path, name: str) -> Path:
 
 
 class LocatedToolsTests(unittest.TestCase):
-    """gh and the .NET SDK are found by skill-core's locator, as `deploy.py check` finds them, and gh runs at that
-    absolute path. The environment is sanitized: PATH is one empty folder and the local application data folder a
+    """gh and the .NET SDK are found by ejryan89-skill-core's locator, as `deploy.py check` finds them, and gh runs at
+    that absolute path. The environment is sanitized: PATH is one empty folder and the local application data folder a
     fresh one, so the only programs found are the ones a test puts there."""
 
     def setUp(self) -> None:

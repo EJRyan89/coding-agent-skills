@@ -1,15 +1,15 @@
 """Review one document from its file path, or each document a pull request changes, as one-file fixture canaries of
-code-review-core.
+ejryan89-code-review-core.
 
 Every command prints one fact per line:
-  build   Writes a fixture directory (see review_canary.py in code-review-core) that holds the document as one change,
-          and prints DOCUMENT <path in the fixture>, BASE committed <commit> | BASE none <reason>,
+  build   Writes a fixture directory (see review_canary.py in ejryan89-code-review-core) that holds the document as
+          one change, and prints DOCUMENT <path in the fixture>, BASE committed <commit> | BASE none <reason>,
           ROUTE design-review | ROUTE generic, FIXTURE <fixture directory>, and OUTPUT <output directory>. Given a
           pull request, it first prints PULL <owner/repo#number> base <commit> head <commit>, then that block for each
           document it reviews, each in its own fixture, and SKIPPED <path> <reason> for a changed document it cannot.
           Its last line is PREPARE_ARGUMENTS --canary --fixture "<fixture directory>" ..., one --fixture for each
-          fixture in the order of the FIXTURE lines, each path in forward-slash form: the arguments code-review-core's
-          prepare takes after --host, passed as printed.
+          fixture in the order of the FIXTURE lines, each path in forward-slash form: the arguments
+          ejryan89-code-review-core's prepare takes after --host, passed as printed.
   report  Copies the report `finalize` recorded into the output directory, never over a file already there, once its
           record names the review of the fixture's document, and prints REPORT <copy> and RECORD <the record JSON
           beside the original>.
@@ -22,12 +22,12 @@ has no such file and the whole document is reviewed. A failure git reports readi
 build with git's reason.
 
 A pull request is named as owner/repo#number or by its URL, and validated as review-prs validates its --pull
-selectors. Its changed files are read from GitHub, through code-review-core's GitHubClient and with no checkout, and
-those the design reviewer reviews (DESIGN_SUFFIXES, or a document format) are kept, or the one `--document` names. Each
-one's head is its blob at the pull request's head commit, and its base its blob at the merge base GitHub diffs the pull
-request against, under its old path when it was renamed; a document the pull request adds has no base, and one GitHub
-answers as a symbolic link or a submodule is skipped. The fixture's pull.json names the real pull request, so the
-record's URL is its URL, and the commits; the pull request's title,
+selectors. Its changed files are read from GitHub, through ejryan89-code-review-core's GitHubClient and with no
+checkout, and those the design reviewer reviews (DESIGN_SUFFIXES, or a document format) are kept, or the one
+`--document` names. Each one's head is its blob at the pull request's head commit, and its base its blob at the merge
+base GitHub diffs the pull request against, under its old path when it was renamed; a document the pull request adds has
+no base, and one GitHub answers as a symbolic link or a submodule is skipped. The fixture's pull.json names the real
+pull request, so the record's URL is its URL, and the commits; the pull request's title,
 description, branch names, and comments are never read into it, so the only text from GitHub a reviewer reads is the
 documents' own. Nothing is written to GitHub.
 
@@ -35,8 +35,8 @@ A Word document or a PDF, a format `review_documents.document_format` names, is 
 bytes, so the fixture canary's snapshot extracts its text as it does a pull request's; one whose text would not be
 extracted, or whose lines of text the change leaves as they were, labels aside, is refused here first. A Markdown,
 plain-text, Word, or PDF document goes to the suite's design-review specialist, through a specialists manifest in the
-fixture's base tree, and pull.json records its `--stage`, one of code-review-core's DOCUMENT_STAGES and review by
-default, whose fixed sentence prepare puts in that specialist's prompt; any other text file goes to the generic
+fixture's base tree, and pull.json records its `--stage`, one of ejryan89-code-review-core's DOCUMENT_STAGES and review
+by default, whose fixed sentence prepare puts in that specialist's prompt; any other text file goes to the generic
 reviewer, and a stage given for one is refused. Nothing is written to a checkout, and `--output`
 must name a new or empty directory, so nothing already there is mixed with the review's files or replaced.
 """
@@ -55,11 +55,11 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 from skill_roots import sibling_scripts
 
-sys.path.insert(0, str(sibling_scripts("code-review-core")))
+sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 from console import run_main
 from flat_text import flat_text

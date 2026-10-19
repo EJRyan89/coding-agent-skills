@@ -12,7 +12,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import job_tree
 from harness import (
@@ -312,7 +312,7 @@ class ParsingTests(unittest.TestCase):
         )
 
 
-# git's repository-selecting variables, written out here rather than read from skill-core.
+# git's repository-selecting variables, written out here rather than read from ejryan89-skill-core.
 REPOSITORY_SELECTING = (
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_COMMON_DIR",

@@ -15,9 +15,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple, TypeVar
 
-# skill-core's bounded runner is imported before validation_support, which puts skill-core on sys.path too, so this
-# module states the path itself.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+# ejryan89-skill-core's bounded runner is imported before validation_support, which puts ejryan89-skill-core on sys.path
+# too, so this module states the path itself.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from bounded_process import run_bounded
 from validation_support import REPOSITORY_ROOT
@@ -112,10 +112,10 @@ def run_process(arguments: list[str], environment: dict[str, str] | None = None,
     """Run a job's program and raise AssertionError, with its output, when it fails, Terminated when it was ended
     before its first line of output, and TimedOut when it runs past COMMAND_TIMEOUT_SECONDS.
 
-    It runs through skill-core's bounded runner in this platform's process tree, so the time limit, and the end of a
-    run that passes or fails, ends every process the program started that stays in its tree, such as a git, PowerShell,
-    or Python a suite left holding its temporary home, and its output goes to real files, since MSYS tools can reject
-    inherited anonymous pipes with a spurious "failed to set file descriptor text/binary mode" error.
+    It runs through ejryan89-skill-core's bounded runner in this platform's process tree, so the time limit, and the end
+    of a run that passes or fails, ends every process the program started that stays in its tree, such as a git,
+    PowerShell, or Python a suite left holding its temporary home, and its output goes to real files, since MSYS tools
+    can reject inherited anonymous pipes with a spurious "failed to set file descriptor text/binary mode" error.
     """
     merged = dict(os.environ)
     if environment:

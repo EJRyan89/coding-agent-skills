@@ -15,7 +15,7 @@ from unittest import mock
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from git_client import GitClient
 
@@ -56,15 +56,15 @@ from tools.mutation_gate import (
         ("deployer/names.py", True),
         ("deployer/__init__.py", True),
         ("tools/worktrees.py", True),
-        ("skills/skill-core/scripts/console.py", True),
-        ("skills/code-review-core/scripts/hosts/copilot.py", True),
+        ("skills/ejryan89-skill-core/scripts/console.py", True),
+        ("skills/ejryan89-code-review-core/scripts/hosts/copilot.py", True),
         (".claude/skills/implement-change/scripts/pull_request.py", True),
-        ("skills/skill-core/scripts/test_console.py", False),
+        ("skills/ejryan89-skill-core/scripts/test_console.py", False),
         ("tools/conftest.py", False),
         ("tests/validation/job_selection.py", False),
         ("tests/fixtures/repo/tools/calc.py", False),
-        ("skills/skill-core/SKILL.md", False),
-        ("skills/skill-core/helper.py", False),
+        ("skills/ejryan89-skill-core/SKILL.md", False),
+        ("skills/ejryan89-skill-core/helper.py", False),
         ("deploy.py", False),
         ("conftest.py", False),
         ("tools/worktrees-powershell.ps1", False),

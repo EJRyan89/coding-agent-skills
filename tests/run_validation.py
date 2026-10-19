@@ -56,7 +56,7 @@ from typing import Any, NamedTuple, NoReturn, TextIO
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "validation"))
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import duplication
 import fsops_platform
@@ -428,7 +428,7 @@ def main(
 
 
 if __name__ == "__main__":
-    # skill-core's runner writes UTF-8, so a report quoting what a suite printed, its replacement characters included,
-    # ends with its closing line and its step summary on any console, and a crash of the runner itself ends in a FAILED
-    # line after its traceback.
+    # ejryan89-skill-core's runner writes UTF-8, so a report quoting what a suite printed, its replacement characters
+    # included, ends with its closing line and its step summary on any console, and a crash of the runner itself ends in
+    # a FAILED line after its traceback.
     run_main(main, errors="backslashreplace", traceback_requested=lambda: True)

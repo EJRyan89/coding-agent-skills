@@ -1,0 +1,266 @@
+"""A fixture canary's pull request, read from a local directory instead of GitHub.
+
+A fixture directory holds a change as two trees and the pull request around them:
+
+    base/       the tree the pull request starts from
+    head/       the tree it proposes
+    pull.json   the pull request, validated by `validate_fixture_pull`
+
+The suite's generic reviewer reviews a fixture, unless pull.json names a `manifest_path`: a specialists manifest in
+the base tree, which `prepare` reads from the base commit as it reads a configured repository's `manifest_path`.
+
+A fixture is trusted input, as the configuration is: it lives in the suite's source repository, outside anything that
+ships, and no pull request's author writes it. It still takes the real path from the commits on. `fixture_change`
+commits both trees, byte for byte, to a throwaway repository whose origin names the fixture's repository, so `prepare`
+snapshots the head from that repository's objects as it snapshots a checkout's, with the same exclusions, and reads the
+diff git computes between the two commits as GitHub would serve it. Nothing here calls GitHub.
+"""
+
+from __future__ import annotations
+
+import os
+import stat
+import sys
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
+
+from git_client import GitClient, GitError, Runner
+from github_client import replace_undecodable
+from link_probe import is_link_or_junction
+from review_config import ConfigurationError, validate_repository_identity
+from review_io import PersistenceError, read_json
+from review_records import RecordError, ReviewRecord, validate_record
+from review_runtime import DOCUMENT_STAGES, GIT_DIFF_OPTIONS, RuntimeContractError, _safe_relative_path
+from typed_fields import FieldError, FieldReader
+
+FIXTURE_SCHEMA_VERSION = 1
+PULL_FILE = "pull.json"
+PULL_FIELDS = frozenset({"schema_version", "repository", "number", "title", "base_ref", "head_ref", "threads"})
+# A reviewer manifest in the base tree, so a fixture can exercise specialists as a configured repository does, and
+# the pull request's description, which reviewers are given as they are a real one's, and the stage of a design
+# document, one of review_runtime.DOCUMENT_STAGES, which the design-review specialist's prompt names.
+OPTIONAL_PULL_FIELDS = frozenset({"manifest_path", "body", "document_stage"})
+THREAD_FIELDS = frozenset({"author", "path", "line", "outdated", "body", "url"})
+# Who commits the fixture's trees; nothing reads it.
+IDENTITY = ("-c", "user.name=code-review fixture", "-c", "user.email=fixture@example.invalid")
+
+
+class FixtureError(ValueError):
+    pass
+
+
+class FixtureFieldError(FieldError, FixtureError):
+    """A fixture pull request field of the wrong kind."""
+
+
+READ = FieldReader(FixtureFieldError)
+
+
+@dataclass(frozen=True)
+class FixtureChange:
+    """A fixture's pull request as `prepare` reads one from GitHub, and the repository its commits are in."""
+
+    name: str  # the owner/repo the fixture names
+    repository: Path
+    pull: dict[str, Any]  # the fields review_operation.PULL_FIELDS names, and the description, `body`
+    diff: str
+    undecodable: int  # bytes of the diff that were not UTF-8 and became U+FFFD
+    comments: list[dict[str, Any]]  # as the request's github_comments
+    manifest_path: str | None = None  # the reviewer manifest in the base tree, or None for the generic reviewer
+    document_stage: str | None = None  # the stage pull.json names, or None
+
+
+def _thread(value: Any, path: str) -> dict[str, Any]:
+    thread = READ.json_object(value, path, required=THREAD_FIELDS)
+    for name in ("author", "path", "body", "url"):
+        READ.string(thread[name], f"{path}.{name}")
+    READ.optional(READ.integer, thread["line"], f"{path}.line", minimum=1)
+    READ.boolean(thread["outdated"], f"{path}.outdated")
+    return thread
+
+
+def validate_fixture_pull(value: Any) -> dict[str, Any]:
+    """A fixture's pull.json, its repository normalized as a configured one is."""
+    given = READ.json_object(value, "fixture-pull", required=PULL_FIELDS, optional=OPTIONAL_PULL_FIELDS)
+    if READ.integer(given["schema_version"], "fixture-pull.schema_version") != FIXTURE_SCHEMA_VERSION:
+        raise FixtureError(f"{PULL_FILE} schema_version must be {FIXTURE_SCHEMA_VERSION}")
+    try:
+        repository = validate_repository_identity(READ.string(given["repository"], "fixture-pull.repository"))
+    except ConfigurationError as exc:
+        raise FixtureError(f"{PULL_FILE} repository: {exc}") from exc
+    READ.integer(given["number"], "fixture-pull.number", minimum=1)
+    for name in ("title", "base_ref", "head_ref"):
+        READ.string(given[name], f"fixture-pull.{name}")
+    threads = READ.array(given["threads"], "fixture-pull.threads", _thread)
+    READ.string(given.get("body", ""), "fixture-pull.body", empty=True)
+    if "document_stage" in given:
+        READ.one_of(given["document_stage"], "fixture-pull.document_stage", tuple(DOCUMENT_STAGES))
+    pull = {**given, "repository": repository, "threads": threads}
+    if "manifest_path" in given:
+        try:
+            pull["manifest_path"] = _safe_relative_path(given["manifest_path"], "fixture-pull.manifest_path", READ)
+        except RuntimeContractError as exc:
+            raise FixtureError(str(exc)) from exc
+    return pull
+
+
+def validate_prior_record(value: object, *, repository: str, number: int) -> ReviewRecord:
+    """The review a fixture re-review starts from: a valid first review of the same pull request."""
+    try:
+        record = validate_record(value)
+    except RecordError as exc:
+        raise FixtureError(f"The prior record is invalid: {exc}") from exc
+    if (record["repository"], record["pull_request"]["number"]) != (repository, number):
+        raise FixtureError(
+            f"The prior record reviews {record['repository']}#{record['pull_request']['number']}, "
+            f"not {repository}#{number}"
+        )
+    if record["review"]["version"] != 1:
+        raise FixtureError("The prior record must be the pull request's first review, version 1")
+    return record
+
+
+def _tree_files(root: Path) -> list[tuple[str, Path]]:
+    """Each file under `root` as (its POSIX path, its path), sorted. A link or another entry that is not a regular
+    file or folder has no place in a fixture and is refused.
+
+    Each entry is judged from the metadata its folder's listing already holds, reparse flag included, so the walk
+    makes no file-system call per entry, and the POSIX path is built as a string rather than through pathlib."""
+    if not root.is_dir() or is_link_or_junction(root):
+        raise FixtureError(f"The fixture has no {root.name}/ tree")
+    files: list[tuple[str, Path]] = []
+    folders = [("", str(root))]
+    while folders:
+        prefix, folder = folders.pop()
+        with os.scandir(folder) as entries:
+            for entry in entries:
+                relative = prefix + entry.name
+                path, metadata = Path(entry.path), entry.stat(follow_symlinks=False)
+                if is_link_or_junction(path, metadata):
+                    raise FixtureError(f"The fixture holds a link or special file: {relative}")
+                if stat.S_ISDIR(metadata.st_mode):
+                    folders.append((relative + "/", entry.path))
+                elif stat.S_ISREG(metadata.st_mode):
+                    files.append((relative, path))
+                else:
+                    raise FixtureError(f"The fixture holds a link or special file: {relative}")
+    return sorted(files)
+
+
+def _blob_stream(files: list[tuple[str, Path]]) -> bytes:
+    """A fast-import stream of each file's bytes as a blob, asking for its id after each one."""
+    blobs = [b"feature get-mark\n"]
+    for number, (relative, path) in enumerate(files, start=1):
+        try:
+            content = path.read_bytes()
+        except OSError as exc:
+            raise FixtureError(f"Cannot read the fixture file {relative}: {exc}") from exc
+        blobs.append(b"blob\nmark :%d\ndata %d\n%s\nget-mark :%d\n" % (number, len(content), content, number))
+    return b"".join(blobs)
+
+
+def _index_path(relative: str) -> bytes:
+    """`relative` as update-index reads it on stdin, which carries only Unicode text."""
+    try:
+        return relative.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise FixtureError(f"The fixture holds a path that is not Unicode: {relative!r}") from exc
+
+
+class _Repository:
+    def __init__(self, path: Path, runner: Runner) -> None:
+        self.path = path
+        self.client = GitClient(runner)
+
+    def git(self, *arguments: str, input_bytes: bytes | None = None) -> str:
+        try:
+            return self.client.output(arguments, directory=self.path, input_bytes=input_bytes)
+        except GitError as exc:
+            raise FixtureError(f"git {arguments[0]} failed for the fixture: {exc}") from exc
+
+    def commit(self, tree: Path, message: str, parent: str | None = None) -> str:
+        """A commit of exactly the files under `tree`, each as its bytes on disk: fast-import stores a blob as given,
+        with no attribute, line-ending setting, or filter. Every file is a regular, non-executable one.
+
+        Two git commands take the whole tree on stdin. fast-import writes every blob into one pack, since thousands
+        of loose objects take minutes to write and to remove on Windows. update-index --index-info then places each
+        blob at its path; it skips a path git refuses, such as one inside `.git`, and still succeeds, so `--verbose`
+        lists each path it adds and a path missing from that list is refused here."""
+        files = _tree_files(tree)
+        paths = [_index_path(relative) for relative, _ in files]
+        stream = _blob_stream(files)
+        self.git("read-tree", "--empty")
+        blobs = self.git("fast-import", "--quiet", "--cat-blob-fd=1", input_bytes=stream).split()
+        if len(blobs) != len(files):
+            raise FixtureError("git fast-import printed an unexpected listing")
+        entries = b"".join(
+            b"100644 blob %s\t%s\0" % (blob.encode("ascii"), path) for path, blob in zip(paths, blobs, strict=True)
+        )
+        added = self.git("update-index", "--verbose", "-z", "--add", "--index-info", input_bytes=entries)
+        if added != "".join(f"add '{relative}'\n" for relative, _ in files):
+            listed = set(added.splitlines())
+            refused = next((relative for relative, _ in files if f"add '{relative}'" not in listed), None)
+            if refused is None:
+                raise FixtureError("git update-index printed an unexpected listing")
+            raise FixtureError(f"git update-index refused the fixture path {refused}")
+        tree_id = self.git("write-tree").strip()
+        parents = ("-p", parent) if parent else ()
+        return self.git(*IDENTITY, "commit-tree", "--no-gpg-sign", tree_id, *parents, "-m", message).strip()
+
+
+def _comments(threads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The threads as the request's review comments, numbered C1, C2, ... in order, as the GitHub client numbers
+    the open threads a person started."""
+    return [{"id": f"C{index}", **thread} for index, thread in enumerate(threads, start=1)]
+
+
+@contextmanager
+def fixture_change(directory: Path, runner: Runner) -> Iterator[FixtureChange]:
+    """The fixture's pull request, its commits in a throwaway repository that exists until the block ends, unless the
+    caller moves it elsewhere first."""
+    directory = directory.resolve()
+    try:
+        pull = validate_fixture_pull(read_json(directory / PULL_FILE))
+    except PersistenceError as exc:
+        raise FixtureError(str(exc)) from exc
+    # TemporaryDirectory's cleanup also removes the object files git leaves read-only, which Windows will not delete.
+    with tempfile.TemporaryDirectory(prefix="code-review-fixture-", ignore_cleanup_errors=True) as temporary:
+        # A folder of its own, so prepare can move the repository into the run, where a lazy snapshot's reviewers
+        # fetch from it until finalize removes the run.
+        repository = Path(temporary).resolve() / "repository"
+        repository.mkdir()
+        store = _Repository(repository, runner)
+        store.git("init", "--quiet")
+        store.git("remote", "add", "origin", f"https://github.com/{pull['repository']}.git")
+        base = store.commit(directory / "base", "base")
+        head = store.commit(directory / "head", "head", parent=base)
+        raw = store.git("diff", *GIT_DIFF_OPTIONS, base, head)
+        diff, undecodable = replace_undecodable(raw)
+        yield FixtureChange(
+            name=pull["repository"],
+            repository=repository,
+            pull={
+                "number": pull["number"],
+                "title": pull["title"],
+                "url": f"https://github.com/{pull['repository']}/pull/{pull['number']}",
+                "state": "OPEN",
+                "isDraft": False,
+                "baseRefName": pull["base_ref"],
+                "baseRefOid": base,
+                "headRefOid": head,
+                "headRefName": pull["head_ref"],
+                "mergedAt": None,
+                "body": pull.get("body", ""),
+            },
+            diff=diff,
+            undecodable=undecodable,
+            comments=_comments(pull["threads"]),
+            manifest_path=pull.get("manifest_path"),
+            document_stage=pull.get("document_stage"),
+        )

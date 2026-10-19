@@ -24,7 +24,7 @@ from deployer import fsops, hashing, render
 from deployer.errors import DeployError
 from deployer.paths import validate_managed_roots
 
-SKILL_ROOTS = Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts" / "skill_roots.py"
+SKILL_ROOTS = Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts" / "skill_roots.py"
 
 
 class RemovalTests(DeployerTestCase):
@@ -217,8 +217,8 @@ class RemovalTests(DeployerTestCase):
         self.make_shared_asset("shared.md", "Shared")
         self.make_agent("reviewer")
         self.write(core / "scripts" / "support.py", 'VALUE = "dependency ready"\n')
-        # core plays skill-core: it holds the real sibling lookup, which run.py reaches middle through once deployed,
-        # where the manifest's recorded skill_deps keep middle installed beside a skipped or preserved public.
+        # core plays ejryan89-skill-core: it holds the real sibling lookup, which run.py reaches middle through once
+        # deployed, where the manifest's recorded skill_deps keep middle installed beside a skipped or preserved public.
         self.write(core / "scripts" / "skill_roots.py", SKILL_ROOTS.read_text(encoding="utf-8"))
         self.write(
             middle / "scripts" / "bridge.py",

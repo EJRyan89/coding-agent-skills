@@ -16,12 +16,12 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from skill_roots import sibling_scripts
 
 # The extraction the code-review skills run, which must find the pdftotext check reports.
-sys.path.insert(0, str(sibling_scripts("code-review-core")))
+sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 # The formatter skill, which must find and run the dotnet and dotnet-format check reports.
 sys.path.insert(0, str(sibling_scripts("dotnet-format")))
 
@@ -997,12 +997,12 @@ class VersionTests(unittest.TestCase):
         entry.require_supported_python(sys.version_info)
 
     def test_deploy_py_and_its_console_setup_parse_as_python_3_7(self) -> None:
-        # deploy.py imports skill-core's console module, and the module imports flat_text, before its version check,
-        # so an older Python reaches the check only while these files keep to a grammar it reads.
+        # deploy.py imports ejryan89-skill-core's console module, and the module imports flat_text, before its version
+        # check, so an older Python reaches the check only while these files keep to a grammar it reads.
         for path in (
             REPOSITORY_ROOT / "deploy.py",
-            REPOSITORY_ROOT / "skills" / "skill-core" / "scripts" / "console.py",
-            REPOSITORY_ROOT / "skills" / "skill-core" / "scripts" / "flat_text.py",
+            REPOSITORY_ROOT / "skills" / "ejryan89-skill-core" / "scripts" / "console.py",
+            REPOSITORY_ROOT / "skills" / "ejryan89-skill-core" / "scripts" / "flat_text.py",
         ):
             with self.subTest(path=path.name):
                 ast.parse(path.read_text(encoding="utf-8"), feature_version=(3, 7))

@@ -9,11 +9,11 @@ from pathlib import Path
 from typing import TypeVar, cast
 from urllib.parse import quote
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 from skill_roots import sibling_scripts
 
-sys.path.insert(0, str(sibling_scripts("code-review-core")))
+sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 from review_github import READ, GitHubClient, GitHubError
 from review_io import NETWORK_WORKERS, map_in_order

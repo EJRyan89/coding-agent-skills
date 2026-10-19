@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import silent_reverts
 from silent_reverts import Revert, declarations, find_reverts, silent_revert_problems
@@ -30,8 +30,8 @@ UNDONE = "3915bc7deb83c80b8f5b8dbbdf26df6b1c6d774c"
 UNDOING = "f8330dc129a59fa33c78106c1755cdca31e1a946"
 UNDONE_FILES = [
     "docs/code-review-operations.md",
-    "skills/code-review-core/scripts/review_github.py",
-    "skills/code-review-core/scripts/test_review_core.py",
+    "skills/ejryan89-code-review-core/scripts/review_github.py",
+    "skills/ejryan89-code-review-core/scripts/test_review_core.py",
     "skills/review-document/scripts/review_document.py",
     "skills/review-document/scripts/test_review_document.py",
 ]

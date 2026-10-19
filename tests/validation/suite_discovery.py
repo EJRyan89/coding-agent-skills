@@ -66,7 +66,7 @@ MAXIMUM_SHARDS = 8
 # can fail once a suite outgrows MAXIMUM_SHARDS. Measured on 2026-10-08 on a 24-CPU Windows machine, each test run
 # alone.
 RECORDED_TEST_SECONDS: dict[str, dict[str, float]] = {
-    "skills/code-review-core/scripts/test_adversarial_inputs.py": {
+    "skills/ejryan89-code-review-core/scripts/test_adversarial_inputs.py": {
         # Writes and reads back a path at this machine's limit, which with long paths enabled is 32,507 units.
         (
             "PathLengthTests::test_a_path_at_this_machines_limit_is_written_and_one_unit_longer_is_an_unsafe_path_"
@@ -935,7 +935,7 @@ class SuiteDiscoveryPolicies(unittest.TestCase):
             "tests/tools/test_worktrees.py",
             "tests/ai-config/test_cross_skill_contracts.py",
             "skills/update-coding-agent-skills/scripts/test_update.sh",
-            "skills/code-review-core/scripts/test_review_pipeline.py",
+            "skills/ejryan89-code-review-core/scripts/test_review_pipeline.py",
         ):
             self.assertIn(expected, suites)
         self.assertNotIn("tests/deployer/harness.py", suites)

@@ -19,7 +19,7 @@ from unittest import mock
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import audit_repository as audit
 from git_client import GitClient, GitError, GitResult, subprocess_runner
@@ -27,7 +27,7 @@ from github_client import Backoff, CommandResult, GitHubClient
 
 SCRIPT = Path(__file__).resolve().parent / "audit_repository.py"
 REPOSITORY = Path(__file__).resolve().parents[4]
-SKILL_CORE = REPOSITORY / "skills" / "skill-core" / "scripts"
+SKILL_CORE = REPOSITORY / "skills" / "ejryan89-skill-core" / "scripts"
 # What a run of the script as a program starts with, so it reads no milestone or issue from GitHub.
 OFFLINE = (
     f"sys.path.insert(0, {str(SKILL_CORE)!r})\nfrom unittest.mock import patch\n"
@@ -226,7 +226,7 @@ class ClassificationTests(AuditTestCase):
             "deploy-meta/review-prs.json": "deployer",
             "agents/code-review-reviewer.md": "deployer",
             "source.json": "deployer",
-            "skills/code-review-core/scripts/review_pipeline.py": "code-review",
+            "skills/ejryan89-code-review-core/scripts/review_pipeline.py": "code-review",
             "skills/review-prs/SKILL.md": "code-review",
             "skills/flag-review-finding/SKILL.md": "code-review",
             "tools/skill_evals.py": "code-review",
@@ -954,8 +954,8 @@ class CommandLineTests(Fixture):
                 self.assertEqual("", git(self.root, "status", "--porcelain"))
 
     def test_programmer_errors_end_with_the_runners_failed_line_not_an_expected_failure(self) -> None:
-        # main reports only an AuditError as its own FAILED line; anything else reaches skill-core's runner, whose
-        # line names the exception's type.
+        # main reports only an AuditError as its own FAILED line; anything else reaches ejryan89-skill-core's runner,
+        # whose line names the exception's type.
         for target in ("tempfile.mkdtemp", "pathlib.Path.write_text"):
             with self.subTest(target=target):
                 directory = self.temporary / target
@@ -1071,7 +1071,7 @@ def test_a_usage_error_exits_2(arguments: list[str]) -> None:
 GUIDANCE = ".claude/skills/audit-repository/references/guidance.json"
 CATALOGUE = 'RUNTIMES = ("alpha", "beta")\nRUNTIME_TITLES = {"alpha": "Alpha CLI", "beta": "Beta"}\n'
 PROVENANCE_FILES = (
-    "skills/analyze-skill-cost/references/provenance.json",
+    "skills/audit-skill/references/provenance.json",
     "skills/audit-ai-config/references/provenance.json",
 )
 
@@ -1155,8 +1155,7 @@ class GuidanceTests(Fixture):
                 "reasons.",
                 '- `"deploy-meta/"`: each skill\'s runtime_support declaration for the runtime.',
                 '- `"README.md"`: the supported-runtimes table.',
-                '- `"skills/analyze-skill-cost/references/provenance.json"`: each check whose source is one of these '
-                "pages.",
+                '- `"skills/audit-skill/references/provenance.json"`: each check whose source is one of these pages.',
                 '- `"skills/audit-ai-config/references/provenance.json"`: each check whose source is one of these '
                 "pages.",
             ],

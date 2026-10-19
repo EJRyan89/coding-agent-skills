@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import harness  # noqa: F401 - imported for its effect: it puts the repository root on sys.path for deployer
 from markdown_sections import EXECUTABLE_FENCES, FENCE_LANGUAGES, find_fences
@@ -108,7 +108,8 @@ class SubstitutionContextTests(unittest.TestCase):
 
 
 class FenceTests(unittest.TestCase):
-    """skill-core's fence reader as rendering and ShellCheck extraction read it: its forms, and each fence's context."""
+    """ejryan89-skill-core's fence reader as rendering and ShellCheck extraction read it: its forms, and each fence's
+    context."""
 
     def fences(self, text: str) -> list[tuple[int, int | None, str, str]]:
         return [

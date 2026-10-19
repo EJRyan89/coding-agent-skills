@@ -25,7 +25,7 @@ Choosing either skill installs both, and once chosen the bundle stays installed 
 
 ## Which projects the skills see
 
-Both skills read a solution's project list through one reader, `dotnet_solution.py` in skill-core, so they list a
+Both skills read a solution's project list through one reader, `dotnet_solution.py` in ejryan89-skill-core, so they list a
 solution the same way and judge its entries by one rule:
 
 - A solution is a `.sln`, whose `Project(...)` lines name the projects, or a `.slnx`, whose `Project` elements do,

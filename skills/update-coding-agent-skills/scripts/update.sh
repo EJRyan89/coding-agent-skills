@@ -116,7 +116,7 @@ fi
 # git's repository-selecting variables, which a git hook exports and a shell may pass on, would point every
 # `git -C "$CLONE"` below at another repository, index, or object store: those git clears itself before it works in
 # another repository, but for the command-scope settings in its list, and GIT_NAMESPACE. Each is unset in any case, as
-# Windows reads a name, so git there takes git_dir as GIT_DIR. skill-core's bounded_process.py leaves the same out of
+# Windows reads a name, so git there takes git_dir as GIT_DIR. ejryan89-skill-core's bounded_process.py leaves the same out of
 # every command a skill's Python starts. awk's ENVIRON names each exported variable in the case it was given.
 for NAME in $(git rev-parse --local-env-vars 2>/dev/null | awk '
   { sub(/\r$/, ""); wanted[$0] = 1 }
@@ -151,11 +151,11 @@ if [ -n "$DIRTY" ]; then
 fi
 
 # The highest release tag reachable from a commit, or nothing when there is none; when it cannot be read, a FAILED line
-# naming the second argument, and status 1. What a release tag is, and their order, is skill-core's release_tags.py in
+# naming the second argument, and status 1. What a release tag is, and their order, is ejryan89-skill-core's release_tags.py in
 # the clone, the one definition the release notes and the upgrade-notes check read too, run with the Python that runs
 # the clone's deployer: vMAJOR.MINOR.PATCH and nothing after it, so a pre-release such as v1.0.0-rc.1 and every other
 # tag are not releases.
-RELEASE_TAGS="$CLONE/skills/skill-core/scripts/release_tags.py"
+RELEASE_TAGS="$CLONE/skills/ejryan89-skill-core/scripts/release_tags.py"
 release_of() {
   local answer
   answer=$("$PYTHON" "$RELEASE_TAGS" "$CLONE" "$1" </dev/null 2>&1 | tr -d '\r')

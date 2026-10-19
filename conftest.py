@@ -48,7 +48,7 @@ from typing import Any
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "skills" / "ejryan89-skill-core" / "scripts"))
 # Appended rather than put first, so no policy module's name shadows a module a suite imports.
 sys.path.append(str(Path(__file__).resolve().parent / "tests" / "validation"))
 

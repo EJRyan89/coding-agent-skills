@@ -25,11 +25,11 @@ from urllib.parse import unquote
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 from skill_roots import sibling_scripts
 
-sys.path.insert(0, str(sibling_scripts("code-review-core")))
+sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 import review_document
 import review_pipeline as rp
@@ -478,7 +478,8 @@ class LooseFileTests(DocumentTestCase):
             self.assertTrue(review_runtime.is_binary(document.read_bytes()))
 
     def test_a_document_over_the_changed_file_size_limit_is_refused_before_any_fixture(self) -> None:
-        # The snapshot leaves a changed file over 16 MiB out, written here rather than read from code-review-core.
+        # The snapshot leaves a changed file over 16 MiB out, written here rather than read from
+        # ejryan89-code-review-core.
         limit = 16 * 1024 * 1024
         over = self.root / "over.md"
         over.write_bytes(b"a\n" * (limit // 2) + b"a")
@@ -838,7 +839,7 @@ class ExtractedDocumentTests(PipelineTestCase):
 LIMITS = b"# Limits\n\nTen exports a day.\n"
 QUEUE_PLAN = b"# Queue plan\n\nOne queue per tenant.\n"
 EDITED = COMMITTED.replace(b"30 days", b"90 days")
-# The reasons code-review-core's unsafe-path rules give, written here rather than read from it.
+# The reasons ejryan89-code-review-core's unsafe-path rules give, written here rather than read from it.
 RESERVED_CHARACTER = (
     'a reserved character (< > : " | ? *) or a control character in a segment: Windows refuses it in a name'
 )
@@ -1538,7 +1539,7 @@ class PullRequestTests(PipelineTestCase):
 
 
 # The opening words of the sentence prepare gives the design reviewer for each stage, written here rather than read
-# from code-review-core, whose own suite pins the whole sentences.
+# from ejryan89-code-review-core, whose own suite pins the whole sentences.
 STAGE_SENTENCES = {
     "draft": "Document stage: draft. The author marks this document an early iteration, so hold it to the draft bar",
     "review": "Document stage: review. The document is meant to be built from as written, so hold it to the review bar",
@@ -1613,7 +1614,7 @@ class OutputTests(DocumentTestCase):
         home = self.root / "home"
         targets = [
             SKILLS_ROOT / "review-document" / "out",  # beside SKILL.md
-            SKILLS_ROOT / "code-review-core" / "out",
+            SKILLS_ROOT / "ejryan89-code-review-core" / "out",
             home / ".claude" / "skills" / "review-document" / "out",
             home / ".agents" / "skills" / "review-document" / "out",
         ]

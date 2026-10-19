@@ -1186,7 +1186,8 @@ class CopilotConfigurationTests(unittest.TestCase):
         self.assertEqual([], audit._validate_agent(agent, self.root))
 
     def test_frontmatter_the_shared_reader_would_accept_or_refuse_is_judged_line_by_line(self) -> None:
-        # Pinned while _frontmatter keeps its own line walk beside skill-core's reader; see the comment above it.
+        # Pinned while _frontmatter keeps its own line walk beside ejryan89-skill-core's reader; see the comment above
+        # it.
         unreadable = "Frontmatter must use key: value entries, block scalars, block lists, or nested mappings"
         mismatch = "Skill name must be lowercase hyphenated and match its directory"
         cases = {

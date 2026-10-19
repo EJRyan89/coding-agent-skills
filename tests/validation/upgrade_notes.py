@@ -11,9 +11,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-# release_levels is imported before validation_support, which puts skill-core on sys.path too, so this module
+# release_levels is imported before validation_support, which puts ejryan89-skill-core on sys.path too, so this module
 # states the path itself.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from release_levels import RELEASING_DOC, VERSION, VERSIONING_HEADING, level_word, versioning_levels
 from validation_support import (
@@ -54,9 +54,9 @@ TOOLS_MODULE = "deployer/tools.py"
 # The class deployer/tools.py declares each tool with, and its fields that hold a version floor.
 TOOL_CLASS = "Tool"
 TOOL_FLOOR_FIELDS = frozenset({"minimum", "provider_minimum"})
-PDF_POLICY_MODULE = "skills/skill-core/scripts/pdf_tool.py"
+PDF_POLICY_MODULE = "skills/ejryan89-skill-core/scripts/pdf_tool.py"
 DEPLOY_META = re.compile(r"deploy-meta/[^/]+\.json")
-REVIEW_SCHEMA = re.compile(r"skills/code-review-core/references/.+\.schema\.json")
+REVIEW_SCHEMA = re.compile(r"skills/ejryan89-code-review-core/references/.+\.schema\.json")
 FORMATS_DOC = OPERATIONS_CONTRACT
 FORMATS_HEADING = "## Formats"
 NOTES_FIELDS = ("Level", "Contract", "User action")
@@ -77,8 +77,8 @@ class Snapshot:
 
 
 def last_release_tag(root: Path) -> tuple[str | None, str | None]:
-    """The last release on origin/main, as skill-core's release_tags reads it, and a problem; no release tag reachable
-    means nothing has been released yet."""
+    """The last release on origin/main, as ejryan89-skill-core's release_tags reads it, and a problem; no release tag
+    reachable means nothing has been released yet."""
     if git(root, "rev-parse", "--verify", "--quiet", f"{RELEASE_BRANCH}^{{commit}}").returncode != 0:
         return None, (
             f"{RELEASE_BRANCH} is missing, so the upgrade-notes check cannot find the last tag; "
@@ -225,7 +225,7 @@ def _skill_directories(snapshot: Snapshot) -> dict[str, object]:
 CONTRACT_READERS: tuple[tuple[str, str, Callable[[Snapshot], dict[str, object]]], ...] = (
     (" or ".join(MANIFEST_CONTRACT_NAMES), MANIFEST_MODULE, _manifest_versions),
     ("the required_vars list", "deploy-meta/", _required_variables),
-    ("the schema", "skills/code-review-core/references/", _review_schemas),
+    ("the schema", "skills/ejryan89-code-review-core/references/", _review_schemas),
     (f"a format table under {FORMATS_HEADING}", FORMATS_DOC, _format_tables),
     ("a skill directory name", "skills/", _skill_directories),
     ("a tool floor", TOOLS_MODULE, _tool_floors),
@@ -295,8 +295,8 @@ def notes_layout_problems(notes: str | None) -> list[str]:
 def upgrade_notes_problems(root: Path, body: str | None = None) -> list[str]:
     """Report each contract item changed since the last tag that no upgrade note since then names.
 
-    The last tag is the highest release tag reachable from origin/main, as skill-core's release_tags defines one; with
-    none reachable, nothing has been released and every change is free. The notes are the entries
+    The last tag is the highest release tag reachable from origin/main, as ejryan89-skill-core's release_tags defines
+    one; with none reachable, nothing has been released and every change is free. The notes are the entries
     tools/release_notes.py reads from the commits since the tag and, given a pull request body, from its
     `## Upgrade note`. With a body, the commits are origin/main's,
     because the body, not the branch's own commit messages, becomes the squash commit's message; without one, they

@@ -27,10 +27,10 @@ from validation_support import (
 
 from deployer import render
 
-# The analyze-skill-cost inventory owns the grant rules, so the audit and this policy cannot disagree. It stays in that
-# skill rather than skill-core because it is the audit program the deployed skill runs, and the rules are its subject;
-# the path is set once here, at import, so no policy changes sys.path while another policy module is importing.
-sys.path.insert(0, str(sibling_scripts("analyze-skill-cost")))
+# The audit-skill inventory owns the grant rules, so the audit and this policy cannot disagree. It stays in that
+# skill rather than ejryan89-skill-core because it is the audit program the deployed skill runs, and the rules are its
+# subject; the path is set once here, at import, so no policy changes sys.path while another policy module is importing.
+sys.path.insert(0, str(sibling_scripts("audit-skill")))
 import skill_inventory
 
 GRANTS_DOC = '"Granting tools" in docs/adding-a-skill.md'
@@ -71,7 +71,7 @@ def skill_grant_problems(
     grant in a hidden skill, which no turn starts. A command is read from every fence Markdown allows and from each
     code span outside one that runs a script.
 
-    The rules are the analyze-skill-cost inventory's, so the audit and this policy cannot disagree. A shipped skill's
+    The rules are the audit-skill inventory's, so the audit and this policy cannot disagree. A shipped skill's
     own scripts run through ${CLAUDE_SKILL_DIR}; a repository skill's are the repository's tools and tests.
     """
     problems: list[str] = []
@@ -340,7 +340,7 @@ class SkillGrantsPolicies(unittest.TestCase):
         self.assertEqual([], skill_reference.problems(REPOSITORY_ROOT))
 
     def test_runtime_prompt_samples_match_what_the_skills_render(self) -> None:
-        # analyze-skill-cost measures the prompt a skill's script writes for a subagent from its rendered sample, so a
+        # audit-skill measures the prompt a skill's script writes for a subagent from its rendered sample, so a
         # prompt change that does not rerun tools/runtime_prompts.py --write has the audit measure a prompt no run sees.
         from tools import runtime_prompts
 

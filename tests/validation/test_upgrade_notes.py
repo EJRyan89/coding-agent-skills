@@ -21,7 +21,7 @@ from unittest import mock
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import upgrade_notes
 from upgrade_notes import Snapshot, changed_contract_items, contract_list_problems, upgrade_notes_problems
@@ -124,10 +124,10 @@ class UpgradeNotesPolicy(unittest.TestCase):
     RELEASED: ClassVar[dict[str, str]] = {
         "deployer/manifest.py": "MANIFEST_VERSION = 7\nOLDEST_READABLE_VERSION = 6\n",
         "deployer/tools.py": 'MINIMUM_PYTHON = (3, 11)\nGH = Tool("gh", "gh", find, minimum=(2, 48, 0))\n',
-        "skills/skill-core/scripts/pdf_tool.py": 'MINIMUMS = {"Xpdf": (4, 6), "Poppler": (26, 10, 0)}\n',
+        "skills/ejryan89-skill-core/scripts/pdf_tool.py": 'MINIMUMS = {"Xpdf": (4, 6), "Poppler": (26, 10, 0)}\n',
         "deploy-meta/alpha.json": '{"required_vars": ["ALPHA"], "tools": []}\n',
         "skills/alpha/SKILL.md": "alpha\n",
-        "skills/code-review-core/references/record.schema.json": '{"type": "object"}\n',
+        "skills/ejryan89-code-review-core/references/record.schema.json": '{"type": "object"}\n',
         "docs/code-review-operations-contract.md": "# Contract\n\n## Behavior\n\n| Skill | Output |\n| --- | --- |\n"
         "| a | b |\n\n## Formats\n\n### Record\n\n| Field | Type |\n| --- | --- |\n| `id` | string |\n",
         "docs/releasing.md": RELEASING,
@@ -137,8 +137,8 @@ class UpgradeNotesPolicy(unittest.TestCase):
     CONTRACT_CHANGES: ClassVar[dict[str, dict[str, str]]] = {
         "deployer/manifest.py": {"deployer/manifest.py": "MANIFEST_VERSION = 8\nOLDEST_READABLE_VERSION = 6\n"},
         "deploy-meta/alpha.json": {"deploy-meta/alpha.json": '{"required_vars": ["ALPHA", "BETA"], "tools": []}\n'},
-        "skills/code-review-core/references/record.schema.json": {
-            "skills/code-review-core/references/record.schema.json": '{"type": "array"}\n'
+        "skills/ejryan89-code-review-core/references/record.schema.json": {
+            "skills/ejryan89-code-review-core/references/record.schema.json": '{"type": "array"}\n'
         },
         "docs/code-review-operations-contract.md": {
             "docs/code-review-operations-contract.md": RELEASED["docs/code-review-operations-contract.md"]
@@ -148,15 +148,15 @@ class UpgradeNotesPolicy(unittest.TestCase):
         "deployer/tools.py": {
             "deployer/tools.py": 'MINIMUM_PYTHON = (3, 12)\nGH = Tool("gh", "gh", find, minimum=(2, 48, 0))\n'
         },
-        "skills/skill-core/scripts/pdf_tool.py": {
-            "skills/skill-core/scripts/pdf_tool.py": 'MINIMUMS = {"Xpdf": (4, 7), "Poppler": (26, 10, 0)}\n'
+        "skills/ejryan89-skill-core/scripts/pdf_tool.py": {
+            "skills/ejryan89-skill-core/scripts/pdf_tool.py": 'MINIMUMS = {"Xpdf": (4, 7), "Poppler": (26, 10, 0)}\n'
         },
     }
     MANIFEST_CHANGE = CONTRACT_CHANGES["deployer/manifest.py"]
 
     def test_each_shared_pdf_provider_floor_needs_its_own_upgrade_note(self) -> None:
         self.release()
-        item = "skills/skill-core/scripts/pdf_tool.py"
+        item = "skills/ejryan89-skill-core/scripts/pdf_tool.py"
         changed = {item: 'MINIMUMS = {"Xpdf": (4, 6), "Poppler": (26, 11, 0)}\n'}
         self.assertEqual([item], [problem.split(":", 1)[0] for problem in self.problems(changed)])
         self.assertEqual([], self.problems(changed, self.body(self.entry(f"`{item}`"))))
@@ -368,8 +368,8 @@ class UpgradeNotesPolicy(unittest.TestCase):
                     "deploy-meta/alpha.json": '{"required_vars": ["ALPHA"], "tools": ["gh"]}\n',
                     "deploy-meta/gamma.json": '{"required_vars": [], "tools": []}\n',
                     "skills/alpha/scripts/run.py": "pass\n",
-                    "skills/code-review-core/references/record.schema.json": '{\n  "type": "object"\n}\n',
-                    "skills/code-review-core/references/template.md": "a template\n",
+                    "skills/ejryan89-code-review-core/references/record.schema.json": '{\n  "type": "object"\n}\n',
+                    "skills/ejryan89-code-review-core/references/template.md": "a template\n",
                     "docs/code-review-operations-contract.md": contract.replace("| a | b |", "| a | c |").replace(
                         "| `id` | string |", "| `id`   |   string |"
                     ),
@@ -600,10 +600,10 @@ class ContractListPolicy(unittest.TestCase):
     NAMED = (
         "`deployer/manifest.py`",
         "`deploy-meta/`",
-        "`skills/code-review-core/references/`",
+        "`skills/ejryan89-code-review-core/references/`",
         "`docs/code-review-operations-contract.md`",
         "`skills/`",
-        "`skills/skill-core/scripts/pdf_tool.py`",
+        "`skills/ejryan89-skill-core/scripts/pdf_tool.py`",
         "`deployer/tools.py`",
     )
 

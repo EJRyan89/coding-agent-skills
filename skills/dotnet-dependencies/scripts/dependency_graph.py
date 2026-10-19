@@ -63,8 +63,8 @@ apart, a split `conflicts` reports; the walk adds every chain the SDK cannot see
 or one through a packages.config project; for every other project it answers alone. So whether dotnet is installed
 changes which source a route names and which version leads where the two differ, never which routes are printed.
 A path a solution or project names is read only inside the examined tree, the checkout holding the solution or
-directory searched, and every read only of a regular file within skill-core's READ_LIMIT_BYTES (msbuild_reader's
-docstring).
+directory searched, and every read only of a regular file within ejryan89-skill-core's READ_LIMIT_BYTES
+(msbuild_reader's docstring).
 The script changes nothing on disk but the graph file, runs no restore or build, and exits 1 when it printed a
 CONFLICT, REDIRECT_STALE, or UNREADABLE line, else 0; a FAILED <reason> line and exit 1 when the root cannot be
 resolved, and a usage error exits 2.
@@ -83,7 +83,7 @@ from dataclasses import dataclass, field
 from itertools import combinations
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from console import run_main
@@ -231,8 +231,8 @@ class Emitter:
 
 
 def find_projects(directory: Path, unreadable: list[tuple[Path, str]]) -> list[Path]:
-    """Every .csproj under the directory, in skill-core's folder walk's order, each folder's projects before its
-    subfolders', outside the folders the .NET search skips (`dotnet_solution.SEARCH_SKIPPED_FOLDERS`). A folder the
+    """Every .csproj under the directory, in ejryan89-skill-core's folder walk's order, each folder's projects before
+    its subfolders', outside the folders the .NET search skips (`dotnet_solution.SEARCH_SKIPPED_FOLDERS`). A folder the
     walk does not enter, a junction or a symbolic link, which may lead outside the directory or back into it, a nested
     checkout, or one that cannot be listed, is reported, and costs only the projects it holds."""
     walk = walk_files(directory, lambda name: name.casefold().endswith(PROJECT_SUFFIX), skipped=SEARCH_SKIPPED_FOLDERS)

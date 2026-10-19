@@ -6,7 +6,7 @@ description: >-
   it up on a machine, check it, or tune it from canary reviews.
 argument-hint: "[PULL_NUMBER ...]"
 disable-model-invocation: true
-allowed-tools: ["Bash(python -B skills/code-review-core/scripts/review_pipeline.py validate-reviewer *)", "PowerShell(python -B skills/code-review-core/scripts/review_pipeline.py validate-reviewer *)"]
+allowed-tools: ["Bash(python -B skills/ejryan89-code-review-core/scripts/review_pipeline.py validate-reviewer *)", "PowerShell(python -B skills/ejryan89-code-review-core/scripts/review_pipeline.py validate-reviewer *)"]
 ---
 
 # This repository's reviewer
@@ -19,7 +19,7 @@ allowed-tools: ["Bash(python -B skills/code-review-core/scripts/review_pipeline.
 | `skill-contract` | skills' `SKILL.md`, `agents/`, `deploy-meta/`, `source.json`, repository skills and shims | Grants that match what runs, script over prose, metadata, cost |
 | `skill-scripts` | skills' and repository skills' scripts but their suites, beside the reviewers above, with the `skill-contract` profile | Grants that still match what a changed script runs |
 | `validation-policy` | `tests/validation/`, the runner, `pyproject.toml` | Each policy holds the sentence that cites it, with a fixture, read through `ast` |
-| `trust-boundary` | the code-review contract, the review modules for documents, the guard, hosts, records, process starts, GitHub reads, analyzers, canaries, reviewer resolution, the pipeline, the runtime, source commands, and specialists, `test_adversarial_inputs.py`, `review_document.py`, and skill-core's process, program-lookup, git, GitHub, remote, diff-path, flattening, Markdown-escaping, field-reader, XML, and PDF modules | A threat-model row and its adversarial test for what an author reaches |
+| `trust-boundary` | the code-review contract, the review modules for documents, the guard, hosts, records, process starts, GitHub reads, analyzers, canaries, reviewer resolution, the pipeline, the runtime, source commands, and specialists, `test_adversarial_inputs.py`, `review_document.py`, and ejryan89-skill-core's process, program-lookup, git, GitHub, remote, diff-path, flattening, Markdown-escaping, field-reader, XML, and PDF modules | A threat-model row and its adversarial test for what an author reaches |
 | `documentation` | `docs/`, top-level Markdown, the templates | Each sentence true of the code and of its owner |
 | `documentation-drift` | scripts, beside the reviewers above, when a document names what changed | Each passage that names changed code still true of it |
 | `untested-changes` | scripts, beside the reviewers above, when a changed function, method, or class has no test naming it | A test for each changed definition, or the body's reason none applies |
@@ -47,11 +47,11 @@ The configuration stays on each machine and never in the repository. Add this en
 Check the reviewer against each pull request given, or a recent merged one of each route:
 
 ```bash
-python -B skills/code-review-core/scripts/review_pipeline.py validate-reviewer --repository EJRyan89/coding-agent-skills --pull '<number>'
+python -B skills/ejryan89-code-review-core/scripts/review_pipeline.py validate-reviewer --repository EJRyan89/coding-agent-skills --pull '<number>'
 ```
 
 Expect, in order: `REVIEWER` and `FILES`, with an `UNMATCHED` line for any include pattern that matches no file; then for each pull request `PULL <owner/repo#number> base=... head=... files=<n> reviewer=<source>`, `BODY` with how much of the body reviewers would be given, `SNAPSHOT ... source=checkout-lazy`, a `CONDITION <name> open|closed` line for each condition a matching specialist names (whether the drift and untested-changes routes would open), a `ROUTE` line per route that starts, an `UNCOVERED <path>` line for each changed file no specialist that does not share its files matches, and `GENERIC files=<n>` for the files the generic reviewer reviews; and last `VALID`. "Choosing and checking a repository reviewer" in `docs/code-review-operations.md` gives every line `validate-reviewer` prints. A base that predates the manifest fails: set `trusted_ref` to a commit that has it, for that check only.
 
 ## 3. Tune
 
-Tune from records, not from reading the profiles. Commit the change, set `trusted_ref` to that commit, and run `/review-prs --canary EJRyan89/coding-agent-skills#<number>` on merged pull requests that reach each route it changes. Compare each record's findings, by reviewer and category, with what the pull request later needed, then reset `trusted_ref` to `null`. A profile is what a reviewer reads on every turn, so keep each one short. Run `analyze-skill-cost` on this skill before the pull request, as for any repository skill.
+Tune from records, not from reading the profiles. Commit the change, set `trusted_ref` to that commit, and run `/review-prs --canary EJRyan89/coding-agent-skills#<number>` on merged pull requests that reach each route it changes. Compare each record's findings, by reviewer and category, with what the pull request later needed, then reset `trusted_ref` to `null`. A profile is what a reviewer reads on every turn, so keep each one short. Run `audit-skill` on this skill before the pull request, as for any repository skill.

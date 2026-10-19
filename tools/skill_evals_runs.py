@@ -16,11 +16,11 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from skill_roots import sibling_scripts
 
-sys.path.insert(0, str(sibling_scripts("code-review-core")))
+sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 import frontmatter
 from git_client import GitClient, GitError
@@ -41,7 +41,7 @@ SESSION_MODEL = list(MODELS)[-1]
 REVIEWER_AGENT = Path(".claude") / "agents" / "code-review-reviewer.md"
 # A home's deployed skills folder, and the core whose scripts a reviewer runs, by its folder's name there.
 SKILLS = Path(".claude") / "skills"
-CORE = "code-review-core"
+CORE = "ejryan89-code-review-core"
 GUARD = SKILLS / CORE / "scripts" / "review_guard.py"
 PROFILE_GUARD = f"~/{GUARD.as_posix()}"
 # The file in each home holding the reviewer definition the session gets with --agents, and the frontmatter keys
@@ -116,8 +116,8 @@ def prompt(skill: str, arguments: Sequence[str]) -> str:
 
 def reviewer_script_folders(home: Path, skill: str) -> list[str]:
     """Each spelling of the home's deployed core scripts folder a role's prompt may give, ending in its separator: the
-    started skill's ${CLAUDE_SKILL_DIR}/../code-review-core/scripts/ as Claude Code fills it in, which the pipeline
-    repeats from its start, and the folder's resolved path, which it gives when it cannot repeat the start."""
+    started skill's ${CLAUDE_SKILL_DIR}/../ejryan89-code-review-core/scripts/ as Claude Code fills it in, which the
+    pipeline repeats from its start, and the folder's resolved path, which it gives when it cannot repeat the start."""
     skills = home / SKILLS
     started = f"{runtime_canary.forward(skills / skill)}/../{CORE}/scripts/"
     return list(dict.fromkeys([started, f"{skills / CORE / 'scripts'}{os.sep}"]))
@@ -351,7 +351,7 @@ def stream_models(output: str) -> tuple[frozenset[str], frozenset[str]]:
 
 
 def latest_review(pull: Path, version: int) -> Record | str:
-    """A pull request folder's latest record, read and validated by code-review-core's archive, when it is this
+    """A pull request folder's latest record, read and validated by ejryan89-code-review-core's archive, when it is this
     review version, or else what its latest record is. The folder is <canary root>/<owner>/<name>/pulls/<number>."""
     latest = max(list_versions(pull), default=None)
     try:

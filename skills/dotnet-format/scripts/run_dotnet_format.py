@@ -44,7 +44,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from bounded_process import run_bounded
@@ -96,7 +96,7 @@ def subprocess_runner(arguments: Sequence[str], cwd: Path, timeout: float) -> Co
 
     Its stdout and stderr go together, in the order written, to a file rather than a pipe, so a build host it leaves
     running cannot hold the time limit, and what it wrote is kept when it does not finish. The program runs at the
-    path skill-core's locator finds, the one `deploy.py check` reports and `Services.which` found.
+    path ejryan89-skill-core's locator finds, the one `deploy.py check` reports and `Services.which` found.
     """
     with tempfile.TemporaryFile() as output:
         try:

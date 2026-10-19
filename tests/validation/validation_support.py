@@ -17,7 +17,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from markdown_sections import CODE_SPAN as CODE_SPAN
 from markdown_sections import COMMONMARK_CODE_SPAN as COMMONMARK_CODE_SPAN
@@ -31,8 +31,9 @@ from suite_names import is_suite_name
 
 from deployer import platform_support
 
-# Every git call the policies and the runner make goes through `git`, tools/release_notes.py's run through skill-core's
-# GitClient, so each reads the checkout it names whatever GIT_DIR or GIT_INDEX_FILE the shell or a git hook exported.
+# Every git call the policies and the runner make goes through `git`, tools/release_notes.py's run through
+# ejryan89-skill-core's GitClient, so each reads the checkout it names whatever GIT_DIR or GIT_INDEX_FILE the shell or a
+# git hook exported.
 from tools.release_notes import git as git
 
 # The paths a repository skill's script also names: it runs from the checkout without the deployer, which every module
@@ -708,7 +709,8 @@ def module_lookup(node: ast.expr, resolver: CallableResolver) -> str:
 def fence_holders(lines: list[str]) -> list[Fence | None]:
     """For each line, the fence holding it as its opener, body, or closer, or None outside every fence.
 
-    Every Markdown policy here reads fences through skill-core's find_fences, the reader the deployer renders with.
+    Every Markdown policy here reads fences through ejryan89-skill-core's find_fences, the reader the deployer renders
+    with.
     """
     holders: list[Fence | None] = [None] * len(lines)
     for fence in find_fences(lines):
@@ -733,8 +735,8 @@ def repository_files(root: Path) -> list[Path]:
     return [root / name for name in listed.stdout.split("\0") if name and (root / name).is_file()]
 
 
-# skill-core's lookup of a sibling skill's scripts directory, which a script puts on sys.path after the line that puts
-# skill-core there.
+# ejryan89-skill-core's lookup of a sibling skill's scripts directory, which a script puts on sys.path after the line
+# that puts ejryan89-skill-core there.
 SIBLING_LOOKUP = "sibling_scripts"
 
 
@@ -855,7 +857,8 @@ def is_shell_script(path: Path) -> bool:
 
 
 def is_test_script(path: PurePath) -> bool:
-    """Whether a file is a regression suite, by skill-core's rule for one, which the review conditions also read."""
+    """Whether a file is a regression suite, by ejryan89-skill-core's rule for one, which the review conditions also
+    read."""
     return is_suite_name(path.name)
 
 

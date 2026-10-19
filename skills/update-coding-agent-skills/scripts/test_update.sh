@@ -38,7 +38,7 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 SUBJECT="$SCRIPT_DIR/update.sh"
 FIXTURE=$(mktemp -d "${TMPDIR:-/tmp}/update-skills-test.XXXXXX")
 
-# Isolate git from the shell that started the suite, as skill-core's git_test_base.py does for the Python suites: a
+# Isolate git from the shell that started the suite, as ejryan89-skill-core's git_test_base.py does for the Python suites: a
 # home and global configuration of its own with the fixture identity, no hooks, and git's automatic maintenance off,
 # no system configuration or attributes, no prompt or editor, and none of the shell's other GIT_* variables. A name is
 # matched in any case, as update.sh unsets it, because Windows reads a name so: git there takes git_dir as GIT_DIR.
@@ -138,13 +138,13 @@ if code == 0:
 raise SystemExit(code)
 EOF
 printf '__pycache__/\n.fake-deployed\n' >"$SEED/.gitignore"
-# update.sh asks the clone's skill-core release_tags.py for each release it compares, so the upstream carries
-# skill-core's scripts where the repository keeps them.
-mkdir -p "$SEED/skills/skill-core/scripts"
-for MODULE in "$SCRIPT_DIR/../../skill-core/scripts/"*.py; do
+# update.sh asks the clone's ejryan89-skill-core release_tags.py for each release it compares, so the upstream carries
+# ejryan89-skill-core's scripts where the repository keeps them.
+mkdir -p "$SEED/skills/ejryan89-skill-core/scripts"
+for MODULE in "$SCRIPT_DIR/../../ejryan89-skill-core/scripts/"*.py; do
   case "${MODULE##*/}" in
     test_*) ;;
-    *) cp -- "$MODULE" "$SEED/skills/skill-core/scripts/" ;;
+    *) cp -- "$MODULE" "$SEED/skills/ejryan89-skill-core/scripts/" ;;
   esac
 done
 git_quiet -C "$SEED" add deploy.py .gitignore skills
@@ -679,7 +679,7 @@ expect_first_line "MAJOR_UPDATE v1.5.0..v2.0.0" "stable major"
 [ "$(head_of "$CLONE" HEAD)" = "$BEFORE" ] || fail "stable major: main moved"
 expect_not_deployed "stable major"
 
-# A pre-release is not a release, as skill-core's release_tags.py defines one: one of the next major does not stop the
+# A pre-release is not a release, as ejryan89-skill-core's release_tags.py defines one: one of the next major does not stop the
 # update, and its final release then stops it at the release before the pre-release.
 begin_case 'pre-release'
 run_subject "$CLONE" main --cross-major

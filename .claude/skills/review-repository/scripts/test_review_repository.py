@@ -16,11 +16,11 @@ from typing import Any
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from skill_roots import sibling_scripts
 
-sys.path.insert(0, str(sibling_scripts("code-review-core")))
+sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 import conditions
 import doc_passages
@@ -35,7 +35,7 @@ SKILL = ".claude/skills/review-repository"
 MANIFEST_PATH = f"{SKILL}/references/specialists.json"
 CONDITION = f"{SKILL}/scripts/doc_passages.py"
 UNTESTED = f"{SKILL}/scripts/untested_functions.py"
-SKILL_CORE = "skills/skill-core/scripts"
+SKILL_CORE = "skills/ejryan89-skill-core/scripts"
 SCENARIOS = REPOSITORY / "tests" / "fixtures" / "skill-evals" / "review-repository"
 MANIFEST = validate_adapter_manifest(json.loads((REPOSITORY / MANIFEST_PATH).read_text(encoding="utf-8")))
 # The ending an evaluation scenario holds a Python file under, which the evaluation's copy of the fixture drops.
@@ -53,7 +53,7 @@ SCENARIO_ROUTES = {
     "untested-change": {"untested-changes"},
     "write-before-refusal": {"deployer"},
 }
-PIPELINE_SCRIPTS = "skills/code-review-core/scripts"
+PIPELINE_SCRIPTS = "skills/ejryan89-code-review-core/scripts"
 # The trust-boundary route's modules by folder, as the route names them.
 TRUST_BOUNDARY_PIPELINE = (
     "analyzers",
@@ -213,7 +213,7 @@ class ManifestTests(unittest.TestCase):
             **dict.fromkeys(TRUST_BOUNDARY_MODULES, trusted),
             f"{SKILL_CORE}/pdf_tool.py": {"upgrade-notes", *trusted},
             f"{PIPELINE_SCRIPTS}/test_adversarial_inputs.py": {"trust-boundary", *script},
-            "skills/code-review-core/references/review-adapter.schema.json": {"upgrade-notes"},
+            "skills/ejryan89-code-review-core/references/review-adapter.schema.json": {"upgrade-notes"},
             "docs/upgrade-notes.md": {"documentation"},
             "docs/design.md": {"documentation"},
             "README.md": {"documentation"},
@@ -256,17 +256,17 @@ class ManifestTests(unittest.TestCase):
         others = [
             "tools/worktrees.py",
             "skills/repo-cleanup/scripts/repo_cleanup.py",
-            "skills/code-review-core/scripts/review_archive.py",
-            "skills/code-review-core/scripts/test_review_pipeline.py",
+            "skills/ejryan89-code-review-core/scripts/review_archive.py",
+            "skills/ejryan89-code-review-core/scripts/test_review_pipeline.py",
             "tests/deployer/test_plan.py",
             "tests/tools/test_skill_evals.py",
             ".github/workflows/validate.yml",
             f"{SKILL}/references/deployer.md",
             "tools/release_notes.py",
-            "skills/code-review-core/scripts/review_io.py",
-            "skills/code-review-core/scripts/test_review_hosts_copilot.py",
-            "skills/skill-core/scripts/git_test_base.py",
-            "skills/skill-core/scripts/test_pdf_tool.py",
+            "skills/ejryan89-code-review-core/scripts/review_io.py",
+            "skills/ejryan89-code-review-core/scripts/test_review_hosts_copilot.py",
+            "skills/ejryan89-skill-core/scripts/git_test_base.py",
+            "skills/ejryan89-skill-core/scripts/test_pdf_tool.py",
         ]
         self.assertEqual(others, uncovered(MANIFEST, others))
 
@@ -464,8 +464,8 @@ class DocumentationDriftTests(unittest.TestCase):
         self.assertEqual([], [path for path in naming if not any(matches(path) for matches in searched)])
 
     def test_each_condition_imports_only_the_standard_library_and_the_modules_the_manifest_declares(self) -> None:
-        # A review materializes only the files a manifest declares, so every module of this skill or skill-core a
-        # condition loads, through its imports and theirs, is a resource; anything else would be missing beside it.
+        # A review materializes only the files a manifest declares, so every module of this skill or ejryan89-skill-core
+        # a condition loads, through its imports and theirs, is a resource; anything else would be missing beside it.
         pending, needed = [REPOSITORY / CONDITION, REPOSITORY / UNTESTED], set()
         while pending:
             tree = ast.parse(pending.pop().read_text(encoding="utf-8"))
@@ -740,7 +740,7 @@ class UntestedChangesTests(unittest.TestCase):
         self.assertEqual(["tools/worktrees.py"], uncovered(MANIFEST, ["tools/worktrees.py"]))
 
     def test_the_condition_s_suites_are_validation_s(self) -> None:
-        # Both read skill-core's rule, so neither keeps a copy of it.
+        # Both read ejryan89-skill-core's rule, so neither keeps a copy of it.
         import suite_names
 
         support = ast.parse((REPOSITORY / "tests" / "validation" / "validation_support.py").read_text("utf-8"))

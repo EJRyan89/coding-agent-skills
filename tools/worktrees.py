@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import git_worktrees
 from console import run_main
@@ -52,10 +52,10 @@ class UsageError(Exception):
     pass
 
 
-# The one git this tool runs: skill-core's client, which starts git at the path the locator finds on this process's
-# PATH, never by its bare name, which Windows looks up in the working directory first, and never on the PATH a judged
-# command is given, which the guard only reads; without git's repository-selecting variables, which would point it at
-# another repository, index, or object store than the checkout's own; with no prompt; and within a time limit.
+# The one git this tool runs: ejryan89-skill-core's client, which starts git at the path the locator finds on this
+# process's PATH, never by its bare name, which Windows looks up in the working directory first, and never on the PATH a
+# judged command is given, which the guard only reads; without git's repository-selecting variables, which would point
+# it at another repository, index, or object store than the checkout's own; with no prompt; and within a time limit.
 CLIENT = GitClient()
 # Bounds each git call the hub guard makes through git(), so a git that hangs fails the call well inside the hook's own
 # 30-second timeout in .claude/settings.json. new and list run under the client's own limit, since adding a worktree

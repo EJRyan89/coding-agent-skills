@@ -13,7 +13,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, ClassVar
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from github_client import CommandResult

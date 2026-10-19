@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from markdown_links import THREAT_MODEL_DOC, THREAT_MODEL_SUITES, markdown_link_problems, threat_model_test_problems
 from validation_support import write_fixture_tree

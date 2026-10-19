@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import github_activity_report as report
 from bounded_process import Finished
@@ -741,7 +741,7 @@ class MainTests(unittest.TestCase):
         # A Windows pipe defaults to a legacy code page, and a failure quotes gh's stderr as it came. The child runs
         # the script as a program with gh replaced, so nothing reaches the network.
         script = str(Path(report.__file__).resolve())
-        core = str(Path(report.__file__).resolve().parents[2] / "skill-core" / "scripts")
+        core = str(Path(report.__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts")
         program = (
             "import runpy, sys\n"
             f"sys.path.insert(0, {core!r})\n"

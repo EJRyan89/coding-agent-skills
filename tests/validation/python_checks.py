@@ -281,7 +281,7 @@ def mypy_path_problems(root: Path, files: list[Path]) -> list[str]:
     """mypy_path must name exactly the directories that modules reach outside mypy's own module resolution.
 
     Those are the skills' scripts directories a module or suite puts on sys.path, as a skill reaches a skill_deps
-    sibling and the repository's tools reach analyze-skill-cost's inventory, and each directory outside a skill's
+    sibling and the repository's tools reach audit-skill's inventory, and each directory outside a skill's
     scripts/ whose modules import a module beside them by its bare name, as the deployer suites import harness. A
     skill's scripts/ is checked from inside it, where such imports already resolve.
     """

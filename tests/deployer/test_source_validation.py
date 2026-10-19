@@ -11,7 +11,7 @@ from unittest import mock
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from harness import (
     DEPLOY_COMMAND,
@@ -496,7 +496,7 @@ class RenamedValidationTests(DeployerTestCase):
             "still a skill": {"alpha": "alpha"},
             "still a skill or bundle": {"suite": "alpha"},
             "no skill of this source": {"beta": "gamma"},
-            'to 7, which is no skill': {"beta": 7},
+            "to 7, which is no skill": {"beta": 7},
         }
         for message, renamed in cases.items():
             with self.subTest(message=message):

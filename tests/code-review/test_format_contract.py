@@ -38,11 +38,11 @@ from pathlib import Path
 from typing import Any, ClassVar
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from skill_roots import sibling_scripts
 
-sys.path.insert(0, str(sibling_scripts("code-review-core")))
+sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 sys.path.insert(0, str(sibling_scripts("review-insights")))
 sys.path.insert(0, str(sibling_scripts("update-pr-dashboard")))
 
@@ -63,7 +63,7 @@ from update_pr_dashboard import validate_tracker_record
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 CONTRACT = REPOSITORY_ROOT / "docs" / "code-review-operations-contract.md"
-SCRIPTS = REPOSITORY_ROOT / "skills" / "code-review-core" / "scripts"
+SCRIPTS = REPOSITORY_ROOT / "skills" / "ejryan89-code-review-core" / "scripts"
 REFERENCES = SCRIPTS.parent / "references"
 
 JSON_TYPES = ("null", "boolean", "integer", "number", "string", "array", "object")

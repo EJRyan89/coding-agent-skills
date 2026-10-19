@@ -17,11 +17,11 @@ from unittest import mock
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from skill_roots import sibling_scripts
 
-sys.path.insert(0, str(sibling_scripts("code-review-core")))
+sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 import folder_walk
 import git_client
@@ -220,7 +220,7 @@ class PythonChecksFixtures(unittest.TestCase):
             )
             # Each skill whose scripts/ holds a module is its own root, checked from inside it as the skill imports.
             roots = type_check_skill_roots()
-            self.assertIn(SKILLS_ROOT / "code-review-core" / "scripts", roots)
+            self.assertIn(SKILLS_ROOT / "ejryan89-code-review-core" / "scripts", roots)
             self.assertNotIn(SKILLS_ROOT / "update-coding-agent-skills" / "scripts", roots)
             for root in roots:
                 name = f"static type check (mypy {relative(root)})"

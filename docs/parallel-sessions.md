@@ -44,7 +44,7 @@ The kind is a pull request title type, which the title check then holds the bran
 | ahead/behind | Relative to `main`. |
 | dirty | Number of paths with uncommitted changes, untracked files included and a rename counted once. |
 
-The survey reads each checkout as `repo-cleanup` does, through skill-core's `git_worktrees`, and never writes a
+The survey reads each checkout as `repo-cleanup` does, through ejryan89-skill-core's `git_worktrees`, and never writes a
 checkout's index, so it takes no lock a session committing there could meet. The hub row reads `off main` or `dirty`
 when the hub has drifted. Merged state is not reported: squash merges leave every branch looking unmerged, so a
 branch's pull request is the only reliable record.
@@ -156,7 +156,7 @@ pointed at another repository's setting or outranked: each reads only the reposi
 carry; the hook command unsets `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, and `GIT_CONFIG` for its call, each in
 any case, since Windows reads an environment name in any case; and `tools/hub_guard.py` runs its own git calls,
 and the `pwsh` that reads a PowerShell command, without any of git's repository-selecting variables, the set
-skill-core's `bounded_process.py` names, through its `run_bounded`, which ends every process `pwsh` starts with it.
+ejryan89-skill-core's `bounded_process.py` names, through its `run_bounded`, which ends every process `pwsh` starts with it.
 `tests/tools/test_hub_guard.py` runs the tracked command both ways.
 
 With the guard enabled:

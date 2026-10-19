@@ -110,7 +110,7 @@ class ConditionTests(unittest.TestCase):
         )
         self.document("README.md", "# Readme\n\nNothing about it.\n")
         diff = changed(
-            "skills/code-review-core/scripts/review_specialists.py",
+            "skills/ejryan89-code-review-core/scripts/review_specialists.py",
             (
                 "def evaluate_condition(reviewer_root: Path) -> bool:",
                 ["     path = 1", "-    return True", "+    return 0"],
@@ -120,7 +120,7 @@ class ConditionTests(unittest.TestCase):
         self.assertEqual((0, "PASSAGES 1 given=1\n"), (code, out))
         self.assertEqual(
             "PASSAGE docs/code-review-operations-contract.md:3 names evaluate_condition (function in "
-            "skills/code-review-core/scripts/review_specialists.py), hunk @@ -1,2 +1,2 @@ at new lines 1-2\n"
+            "skills/ejryan89-code-review-core/scripts/review_specialists.py), hunk @@ -1,2 +1,2 @@ at new lines 1-2\n"
             "| `when` | Run by `evaluate_condition`, which kills it at a limit. |\n",
             written,
         )

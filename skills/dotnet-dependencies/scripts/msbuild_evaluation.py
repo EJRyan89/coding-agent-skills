@@ -55,7 +55,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from xml.etree.ElementTree import Element
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 from dotnet_solution import project_path, refusal, same_path
 from msbuild_conditions import EMPTY, UNKNOWN, FileSystem, Value, condition_value, expanded, union

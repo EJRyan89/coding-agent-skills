@@ -9,7 +9,7 @@ manual gates a change to a skill owes, so the agent reads only what a step cites
 
 A section runs from its heading to the next heading of any level, so "Files" stops at its first subsection as
 "Granting tools" stops at the next. A heading-shaped line inside a fenced block is not a heading. A title matches a
-heading's text as written, or with its backticks removed, as in `analyze-skill-cost`.
+heading's text as written, or with its backticks removed, as in `audit-skill`.
 
 A skill is touched by a file in its folder or its metadata, and a shipped skill also by a change to an agent it
 declares. The reference is regenerated after a shipped skill's frontmatter or metadata changes, the shims after a
@@ -31,7 +31,7 @@ Every line is one fact:
     BASE <ref> <commit>                             gates: the merge base the change is read from
     CHANGED <count>                                 gates: the files changed since it
     REGENERATE <command>                            gates: a generated file the change may have left stale; run it
-    GATE analyze-skill-cost <skill>                 gates: a skill the change touches, shipped or repository
+    GATE audit-skill <skill>                 gates: a skill the change touches, shipped or repository
     GATE runtime-canary <skill> ...                 gates: the shipped skills whose discovery the change touches
     GATE evaluate-skill <skill> if-prompt           gates: a skill with a review scenario the change reaches, owed only
                                                     when it touches a prompt, model guidance, or reviewer instructions
@@ -54,7 +54,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import frontmatter
 from console import run_main
@@ -101,7 +101,7 @@ CANARY_METADATA = ("agent_deps", "shared_deps", "runtime_support", "selectable")
 # renders them over, and the tools themselves, the skill-evals command line among them with the modules it reads a
 # run's configuration from. The suite holds this list to that module's imports.
 RUNTIME_PROMPT_SOURCES = (
-    "skills/code-review-core/",
+    "skills/ejryan89-code-review-core/",
     "skills/review-document/",
     "skills/review-insights/",
     "tests/fixtures/skill-evals/review-prs/",
@@ -298,7 +298,7 @@ class Owed:
 
     def lines(self) -> list[str]:
         found = [f"REGENERATE {command}" for command in self.regenerate]
-        found += [f"GATE analyze-skill-cost {flat_text(name)}" for name in self.cost]
+        found += [f"GATE audit-skill {flat_text(name)}" for name in self.cost]
         if self.canary:
             found.append("GATE runtime-canary " + " ".join(flat_text(name) for name in self.canary))
         found += [f"GATE evaluate-skill {flat_text(name)} if-prompt" for name in self.evaluate]

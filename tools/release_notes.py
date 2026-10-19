@@ -12,12 +12,12 @@ already gave is the older text of that entry and is left out. An entry is read w
 item, or paragraph joined into one line, since a squash commit's message may be wrapped. Each entry keeps that text
 and gains `- Pull request: #N` from the commit's squash title when it names none.
 
---from defaults to the last release before --to, the highest release tag reachable from --to's parent as skill-core's
-release_tags.py defines a release tag (vMAJOR.MINOR.PATCH and nothing after it), and --to to HEAD, or to origin/main
-with --check. A version must be a release tag too. It prints the `## VERSION` section, or with --write inserts it into
-docs/upgrade-notes.md above the newest version's section, refusing a version the file already has. The section opens
-with the largest leading Level word of its entries, ordered by docs/releasing.md, or states that there are no
-upgrade-note entries.
+--from defaults to the last release before --to, the highest release tag reachable from --to's parent as
+ejryan89-skill-core's release_tags.py defines a release tag (vMAJOR.MINOR.PATCH and nothing after it), and --to to HEAD,
+or to origin/main with --check. A version must be a release tag too. It prints the `## VERSION` section, or with --write
+inserts it into docs/upgrade-notes.md above the newest version's section, refusing a version the file already has. The
+section opens with the largest leading Level word of its entries, ordered by docs/releasing.md, or states that there are
+no upgrade-note entries.
 
 --check compares the `## VERSION` section of docs/upgrade-notes.md as --to holds it with the entries the commits in
 the range carry, by heading, and fetches nothing. The release pull request is squash-merged, so the commit the
@@ -30,7 +30,7 @@ It exits 0 on success, 1 when --write is refused because the file already has th
 section lacks, and 2, with an `ERROR:` line naming what it could not read or write, when git cannot read the range or,
 without --from, no release reaches --to's parent, when docs/releasing.md or its documented levels or an entry's Level
 cannot be read, with --write when docs/upgrade-notes.md cannot be read as UTF-8 text or written, or with --check when
---to holds no `## VERSION` section. Git runs through skill-core's GitClient, which starts it without the
+--to holds no `## VERSION` section. Git runs through ejryan89-skill-core's GitClient, which starts it without the
 repository-selecting variables that would read another repository. The release procedure in docs/releasing.md runs it
 before tagging and again at the tag, and the upgrade-notes check in tests/validation reads the same entries through the
 same git.
@@ -45,7 +45,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from console import run_main
 from git_client import GitClient, GitError, GitResult
@@ -158,8 +158,8 @@ CLIENT = GitClient()
 
 
 def git(root: Path, *arguments: str) -> GitResult:
-    """git run on the checkout at root through skill-core's GitClient, so without the repository-selecting variables
-    that would read another one and at the path the locator finds, with its output read as UTF-8.
+    """git run on the checkout at root through ejryan89-skill-core's GitClient, so without the repository-selecting
+    variables that would read another one and at the path the locator finds, with its output read as UTF-8.
 
     Raises ReleaseNotesError when git cannot run or finish, or prints output that is not UTF-8.
     """
@@ -238,7 +238,8 @@ def version_section(version: str, entries: list[SourcedEntry], levels: list[str]
 
 
 def release_reaching(root: Path, ref: str) -> str | None:
-    """The last release ref holds, as skill-core's release_tags reads it, or None when no release tag reaches it.
+    """The last release ref holds, as ejryan89-skill-core's release_tags reads it, or None when no release tag reaches
+    it.
 
     Raises ReleaseNotesError when git cannot read the tags reaching it.
     """

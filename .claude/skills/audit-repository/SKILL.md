@@ -17,7 +17,7 @@ Each release is audited before its tag and after it, as "Before tagging" and "Af
 
 - **release**, before tagging: every file changed since the last release, the highest `vX.Y.Z` tag `HEAD` holds; a nearer pre-release or other tag does not move it. It holds the release.
 - **rotation**, after tagging: the one area the rotation record shows read whole least recently, with the issues the next milestone carries. It holds nothing and feeds the next milestone.
-- **guidance**, after tagging: the published guidance of each runtime the deployer supports, and of Python, page by page as `.claude/skills/audit-repository/references/guidance.json` lists them, against the files that state facts about that runtime, the provenance files of `analyze-skill-cost` and `audit-ai-config` among them. It holds nothing and feeds the next milestone.
+- **guidance**, after tagging: the published guidance of each runtime the deployer supports, and of Python, page by page as `.claude/skills/audit-repository/references/guidance.json` lists them, against the files that state facts about that runtime, the provenance files of `audit-skill` and `audit-ai-config` among them. It holds nothing and feeds the next milestone.
 
 ## 2. Run the script
 
