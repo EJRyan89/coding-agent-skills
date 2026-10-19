@@ -246,9 +246,11 @@ def problems(root: Path, renderers: Renderers | None = None) -> list[str]:
             found.append(f"{relative.as_posix()} does not exist; {WRITE_HINT}")
         elif _sample(root, relative) != text:
             found.append(f"{relative.as_posix()} is stale; {WRITE_HINT}")
-    for path in sorted((root / SAMPLES).rglob("*")) if (root / SAMPLES).is_dir() else []:
-        if path.is_file() and path.relative_to(root) not in expected:
-            found.append(f"{path.relative_to(root).as_posix()} is no rendered prompt; {WRITE_HINT}")
+    found.extend(
+        f"{path.relative_to(root).as_posix()} is no rendered prompt; {WRITE_HINT}"
+        for path in (sorted((root / SAMPLES).rglob("*")) if (root / SAMPLES).is_dir() else [])
+        if path.is_file() and path.relative_to(root) not in expected
+    )
     return found
 
 

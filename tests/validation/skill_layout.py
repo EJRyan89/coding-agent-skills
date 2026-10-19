@@ -71,13 +71,13 @@ def embedded_program_problems(root: Path, tree: str = "skills") -> list[str]:
     problems: list[str] = []
     for markdown in sorted((root / tree).rglob("*.md"), key=lambda path: path.relative_to(root).as_posix()):
         name = markdown.relative_to(root).as_posix()
-        for fence in find_executable_fences(markdown.read_text(encoding="utf-8").splitlines()):
-            if fence.body_line_count > MAXIMUM_INLINE_EXECUTABLE_LINES:
-                problems.append(
-                    f"{name}:{fence.line_number} contains a {fence.language} fence with {fence.body_line_count} "
-                    f"lines. Markdown may contain only short command examples of at most "
-                    f"{MAXIMUM_INLINE_EXECUTABLE_LINES} lines; move executable logic to the skill's scripts/ directory."
-                )
+        problems.extend(
+            f"{name}:{fence.line_number} contains a {fence.language} fence with {fence.body_line_count} "
+            f"lines. Markdown may contain only short command examples of at most "
+            f"{MAXIMUM_INLINE_EXECUTABLE_LINES} lines; move executable logic to the skill's scripts/ directory."
+            for fence in find_executable_fences(markdown.read_text(encoding="utf-8").splitlines())
+            if fence.body_line_count > MAXIMUM_INLINE_EXECUTABLE_LINES
+        )
     return problems
 
 
@@ -96,11 +96,10 @@ def deploy_variable_problems(
     derived: set[str],
 ) -> list[str]:
     """Report configured variables and template tokens that are not used consistently."""
-    problems: list[str] = []
-    for key in sorted(configured - prompted):
-        problems.append(f"configure never prompts for configured variable {key}")
-    for key in sorted(prompted - configured):
-        problems.append(f"configure prompts for unknown variable {key}")
+    problems: list[str] = [
+        f"configure never prompts for configured variable {key}" for key in sorted(configured - prompted)
+    ]
+    problems.extend(f"configure prompts for unknown variable {key}" for key in sorted(prompted - configured))
 
     required_anywhere: set[str] = set()
     used_anywhere: set[str] = set()
@@ -112,14 +111,18 @@ def deploy_variable_problems(
         directory = skills.get(skill)
         used = _template_tokens(directory) if directory is not None else set()
         used_anywhere |= used
-        for key in sorted(used - required):
-            problems.append(f"skill {skill} uses {{{{{key}}}}} without declaring it in required_vars")
-        for key in sorted(required - used):
-            problems.append(f"skill {skill} declares required variable {key} but never uses it")
-        for key in sorted(required - configured - derived):
-            problems.append(f"skill {skill} requires unknown variable {key}")
-    for key in sorted(configured - required_anywhere):
-        problems.append(f"configured variable {key} is not required by any skill")
+        problems.extend(
+            f"skill {skill} uses {{{{{key}}}}} without declaring it in required_vars" for key in sorted(used - required)
+        )
+        problems.extend(
+            f"skill {skill} declares required variable {key} but never uses it" for key in sorted(required - used)
+        )
+        problems.extend(
+            f"skill {skill} requires unknown variable {key}" for key in sorted(required - configured - derived)
+        )
+    problems.extend(
+        f"configured variable {key} is not required by any skill" for key in sorted(configured - required_anywhere)
+    )
 
     shared = json.loads((root / "source.json").read_text(encoding="utf-8")).get("shared_assets", {})
     for asset in sorted(shared):
@@ -127,11 +130,11 @@ def deploy_variable_problems(
         text = path.read_text(encoding="utf-8") if path.is_file() else ""
         tokens = set(TEMPLATE_TOKEN.findall(text))
         used_anywhere |= tokens
-        for key in sorted(tokens - derived):
-            problems.append(f"shared asset {asset} uses non-derived variable {key}")
+        problems.extend(f"shared asset {asset} uses non-derived variable {key}" for key in sorted(tokens - derived))
     # A derived value no template uses still has to pass the allowlist, so it could refuse a deployment for nothing.
-    for key in sorted(derived - used_anywhere):
-        problems.append(f"derived variable {key} is not used by any skill or shared asset")
+    problems.extend(
+        f"derived variable {key} is not used by any skill or shared asset" for key in sorted(derived - used_anywhere)
+    )
     return problems
 
 
@@ -328,17 +331,20 @@ def _line_path_problems(
     directory: Path | None,
 ) -> list[str]:
     """Install paths, bare script runs, $HOME in agents, undeclared siblings, and missing files, in that order."""
-    problems: list[str] = []
-    for match in INSTALL_PATH.finditer(line):
-        if match.group(1) in skills:
-            problems.append(f"{name}:{number} names skill {match.group(1)} by its install path; see {SKILL_PATHS_DOC}")
+    problems: list[str] = [
+        f"{name}:{number} names skill {match.group(1)} by its install path; see {SKILL_PATHS_DOC}"
+        for match in INSTALL_PATH.finditer(line)
+        if match.group(1) in skills
+    ]
     if in_shell_fence and BARE_SCRIPT_PATH.search(line):
         problems.append(f"{name}:{number} runs a script by a bare relative path; see {SKILL_PATHS_DOC}")
     if dependencies is None and HOME_VARIABLE.search(line):
         problems.append(f"{name}:{number} finds a file through $HOME; see {AGENTS_DOC}")
-    for match in SIBLING_PATH.finditer(line):
-        if dependencies is not None and match.group(1) not in dependencies:
-            problems.append(f"{name}:{number} reaches ../{match.group(1)} without declaring it in skill_deps")
+    problems.extend(
+        f"{name}:{number} reaches ../{match.group(1)} without declaring it in skill_deps"
+        for match in SIBLING_PATH.finditer(line)
+        if dependencies is not None and match.group(1) not in dependencies
+    )
     for match in SKILL_DIR_FILE.finditer(line) if directory is not None else ():
         named = match.group(1).rstrip(".")  # a path may end a sentence
         if directory is not None and not (directory / named).exists():
@@ -369,11 +375,11 @@ def output_placeholder_problems(root: Path, tree: str = "skills") -> list[str]:
                 and holder.language.casefold() in EXECUTABLE_FENCE_LANGUAGES
             )
             if in_command_fence:
-                for match in OUTPUT_PLACEHOLDER.finditer(line):
-                    problems.append(
-                        f"{name}:{number} leaves {match.group(1)} to the agent; let the script choose "
-                        f"and print the path; see {WORKING_FILES_DOC}"
-                    )
+                problems.extend(
+                    f"{name}:{number} leaves {match.group(1)} to the agent; let the script choose "
+                    f"and print the path; see {WORKING_FILES_DOC}"
+                    for match in OUTPUT_PLACEHOLDER.finditer(line)
+                )
     return problems
 
 
@@ -390,11 +396,11 @@ def script_dependency_problems(root: Path) -> list[str]:
         declared = set(json.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", []))
         scripts = sorted((skills[skill] / "scripts").glob("*.py")) if skill in skills else []
         for path, _, tree in python_trees([path for path in scripts if not is_test_script(path)], root, problems):
-            for name in sorted(set(scripts_put_on_path(tree)) - declared - {skill}):
-                problems.append(
-                    f"{path.relative_to(root).as_posix()} puts {name}'s scripts on sys.path without declaring "
-                    f"{name} in skill_deps; see {SKILL_PATHS_DOC}"
-                )
+            problems.extend(
+                f"{path.relative_to(root).as_posix()} puts {name}'s scripts on sys.path without declaring "
+                f"{name} in skill_deps; see {SKILL_PATHS_DOC}"
+                for name in sorted(set(scripts_put_on_path(tree)) - declared - {skill})
+            )
     return problems
 
 
@@ -457,9 +463,11 @@ def fixture_source_problems(root: Path) -> list[str]:
         label = fixture.relative_to(root).as_posix()
         if json.loads(source_file.read_text(encoding="utf-8")).get("id") == shipped.get("id"):
             found.append(f"{label}/source.json reuses the shipped source ID")
-        for metadata in sorted((fixture / "deploy-meta").glob("*.json")):
-            if metadata.stem in names:
-                found.append(f"{label} skill {metadata.stem} shares its name with a shipped skill or bundle")
+        found.extend(
+            f"{label} skill {metadata.stem} shares its name with a shipped skill or bundle"
+            for metadata in sorted((fixture / "deploy-meta").glob("*.json"))
+            if metadata.stem in names
+        )
         found += [f"{label}: {problem}" for problem in skill_path_problems(fixture)]
     shipped_files = [
         root / "source.json",

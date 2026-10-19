@@ -1104,7 +1104,7 @@ class GuidanceTests(Fixture):
                 "docs/alpha-support.md": "alpha\n",
                 "deploy-meta/demo.json": "{}\n",
                 "pyproject.toml": "[tool.ruff]\n",
-                **{path: "{}\n" for path in PROVENANCE_FILES},
+                **dict.fromkeys(PROVENANCE_FILES, "{}\n"),
                 GUIDANCE: guidance_text(FIXTURE_PAGES),
             },
         )

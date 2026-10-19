@@ -454,7 +454,7 @@ def without_adapter(home: Path) -> dict[str, str]:
     owned = manifest.load(Paths(REPOSITORY_ROOT, home).manifest_file)
     adapters = set(verify.adapter_names(owned))
     reason = "the deployer gave it no runtime adapter, so deploy.py verify expects no runtime to list it"
-    return {name: reason for name in sorted(set(owned.skill_owners) - adapters)}
+    return dict.fromkeys(sorted(set(owned.skill_owners) - adapters), reason)
 
 
 def declarations(sources: list[Path]) -> dict[str, dict[str, runtime_support.Support] | None]:

@@ -203,15 +203,15 @@ def suite_jobs(
         if count == 1:
             jobs.append(Job(label, label, cost, functools.partial(run_test_script, suite)))
             continue
-        for index in range(count):
-            jobs.append(
-                Job(
-                    f"{label} [shard {index + 1}/{count}]",
-                    label,
-                    cost / count,
-                    functools.partial(run_shard, suite, index, count, seconds),
-                )
+        jobs.extend(
+            Job(
+                f"{label} [shard {index + 1}/{count}]",
+                label,
+                cost / count,
+                functools.partial(run_shard, suite, index, count, seconds),
             )
+            for index in range(count)
+        )
     return jobs
 
 
@@ -347,12 +347,12 @@ def recorded_shard_problems(
         except UnreadablePython:
             continue
         shards = deal(defined, shard_count(path, seconds), seconds)
-        for test in sorted(set(seconds) & set(shards)):
-            if list(shards.values()).count(shards[test]) > 1:
-                problems.append(
-                    f"{name} deals {test} onto a shard beside other tests, since the suite fills its "
-                    f"{MAXIMUM_SHARDS} shards; raise MAXIMUM_SHARDS or split the suite"
-                )
+        problems.extend(
+            f"{name} deals {test} onto a shard beside other tests, since the suite fills its "
+            f"{MAXIMUM_SHARDS} shards; raise MAXIMUM_SHARDS or split the suite"
+            for test in sorted(set(seconds) & set(shards))
+            if list(shards.values()).count(shards[test]) > 1
+        )
     return problems
 
 

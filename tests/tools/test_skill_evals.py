@@ -2637,7 +2637,7 @@ class EvaluateTests(unittest.TestCase):
     def test_claude_code_sees_no_repository_selecting_variable_the_shell_exported(self) -> None:
         # Written out here rather than read from skill-core; a lower-case name is the same variable on Windows.
         selecting = {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY"}
-        exported = {name: "C:/elsewhere/.git" for name in selecting} | {"git_namespace": "elsewhere"}
+        exported = dict.fromkeys(selecting, "C:/elsewhere/.git") | {"git_namespace": "elsewhere"}
         configuring = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "fixture.scope", "GIT_CONFIG_VALUE_0": "on"}
         claude = StubClaude(self)
         seams = self.seams(claude, environment={"PATH": "kept", **exported, **configuring})

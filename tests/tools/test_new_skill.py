@@ -292,7 +292,7 @@ class NewSkillTestCase(FixtureRepositoryTestCase):
                     encoding="utf-8",
                 )
                 before = self.snapshot()
-                with self.assertRaisesRegex(skill_reference.ReferenceError, f"no {block} block"):
+                with self.assertRaisesRegex(skill_reference.SkillReferenceError, f"no {block} block"):
                     new_skill.scaffold(self.root, "fresh", "Fresh. Use it when testing.")
                 self.assertEqual(before, self.snapshot())
         reference.write_bytes(b"\xff\xfe not UTF-8\n")

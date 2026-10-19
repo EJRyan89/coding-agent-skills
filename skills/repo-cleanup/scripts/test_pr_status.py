@@ -639,9 +639,9 @@ class PatchMatchTests(SquashFixture):
         commands: list[tuple[str, ...]] = []
 
         def runner(command: Sequence[str], timeout: float, *, input_bytes: bytes | None = None) -> GitResult:
-            for verb in ("merge-base", "diff-tree"):
-                if verb in command:
-                    commands.append(tuple(command[command.index(verb) :]))
+            commands.extend(
+                tuple(command[command.index(verb) :]) for verb in ("merge-base", "diff-tree") if verb in command
+            )
             return subprocess_runner(command, timeout, input_bytes=input_bytes)
 
         same_change = change_match(str(self.clone), self.BASE_REF, GitClient(runner, input_runner=runner))

@@ -55,7 +55,7 @@ def says_when(description: str) -> bool:
     return WHEN_CLAUSE.search(description) is not None
 
 
-class ReferenceError(Exception):
+class SkillReferenceError(Exception):
     """The reference or a skill's frontmatter cannot be read in the shape this tool maintains."""
 
 
@@ -85,7 +85,7 @@ def read_frontmatter(skill_md: Path) -> dict[str, str]:
         document = frontmatter.read(skill_md)
         values = {key: document.string(key) for key in READ_KEYS}
     except frontmatter.FrontmatterError as exc:
-        raise ReferenceError(f"{skill_md}: {exc}") from exc
+        raise SkillReferenceError(f"{skill_md}: {exc}") from exc
     return {key: value for key, value in values.items() if value is not None}
 
 
@@ -108,7 +108,7 @@ def load_source(root: Path) -> deploy_source.Source:
     try:
         return deploy_source.discover(paths, deploy_source.load_source_id(paths))
     except DeployError as exc:
-        raise ReferenceError(str(exc)) from exc
+        raise SkillReferenceError(str(exc)) from exc
 
 
 def entries(source: deploy_source.Source) -> list[Entry]:
@@ -121,7 +121,7 @@ def entries(source: deploy_source.Source) -> list[Entry]:
         frontmatter = read_frontmatter(skill.directory / "SKILL.md")
         description = frontmatter.get("description", "").strip()
         if not description:
-            raise ReferenceError(f"skills/{name}/SKILL.md: no description")
+            raise SkillReferenceError(f"skills/{name}/SKILL.md: no description")
         hint = frontmatter.get("argument-hint", "").strip() or None
         bundle = source.skill_bundle.get(name)
         result.append(
@@ -254,7 +254,7 @@ def regenerate(document: str, skills: list[Entry]) -> str:
     for block, content in ((SUMMARY, summary_block(skills)), (RUNTIME_SUPPORT, runtime_support_block(skills))):
         replaced = _replace_block(preamble, block, content)
         if replaced is None:
-            raise ReferenceError(
+            raise SkillReferenceError(
                 f"{REFERENCE.as_posix()}: no {block} block; add {begin_marker(block)} and {end_marker(block)}"
             )
         preamble = replaced
@@ -333,23 +333,24 @@ def problems(root: Path) -> list[str]:
             found.append(f"{name}: the model may start it, so its description must {WHEN_RULE}")
     try:
         current = regenerate(document, skills)
-    except ReferenceError as exc:
+    except SkillReferenceError as exc:
         return [*found, str(exc)]
     names = {entry.name for entry in skills}
     _, sections = _split(document)
-    for section in sections:
-        if section.name not in names:
-            found.append(f"{REFERENCE.as_posix()}: section `{section.name}` names no selectable skill; remove it")
+    found.extend(
+        f"{REFERENCE.as_posix()}: section `{section.name}` names no selectable skill; remove it"
+        for section in sections
+        if section.name not in names
+    )
     present = {section.name for section in sections}
-    for entry in skills:
-        if entry.name not in present:
-            found.append(f"{REFERENCE.as_posix()}: no section for `{entry.name}`")
-    for section in sections:
-        if section.name in names and not _prose(section).strip():
-            found.append(
-                f"{REFERENCE.as_posix()}: section `{section.name}` has "
-                "no hand-written explanation after its generated block"
-            )
+    found.extend(
+        f"{REFERENCE.as_posix()}: no section for `{entry.name}`" for entry in skills if entry.name not in present
+    )
+    found.extend(
+        f"{REFERENCE.as_posix()}: section `{section.name}` has no hand-written explanation after its generated block"
+        for section in sections
+        if section.name in names and not _prose(section).strip()
+    )
     if current != document:
         found.append(f"{REFERENCE.as_posix()}: generated content is stale; run python tools/skill_reference.py --write")
     roots = sorted([*deploy_source.root_names(source), *source.bundles])
@@ -375,7 +376,7 @@ def main(argv: list[str] | None = None) -> int:
         if arguments.write:
             write(arguments.root)
         found = problems(arguments.root)
-    except (OSError, ReferenceError) as exc:
+    except (OSError, SkillReferenceError) as exc:
         print(f"FAILED {exc}", file=sys.stderr)
         return 2
     for problem in found:

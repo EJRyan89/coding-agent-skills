@@ -549,9 +549,8 @@ class InventoryTests(unittest.TestCase):
     def test_undecodable_or_missing_files(self) -> None:
         invalid = b"\x80 not utf-8\n"
         paths = self.write(
-            {
-                name: invalid
-                for name in (
+            dict.fromkeys(
+                (
                     ".editorconfig",
                     "a/App.csproj",
                     "b/team.globalconfig",
@@ -563,8 +562,9 @@ class InventoryTests(unittest.TestCase):
                     "h/tox.ini",
                     "i/pyproject.toml",
                     "j/package.json",
-                )
-            }
+                ),
+                invalid,
+            )
         )
         result = inventory(self.root, [*paths, "missing/.editorconfig", "missing/setup.cfg"])
         self.assertEqual(

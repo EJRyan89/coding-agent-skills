@@ -408,9 +408,11 @@ def leg_problems(workflow: str, legs: int) -> list[str]:
     runs = [step for step in _steps(suite) if "tests/run_validation.py" in str(step.get("run", ""))]
     if not runs:
         problems.append("no step runs tests/run_validation.py")
-    for step in runs:
-        if _mapping(step, "env").get("SHARD") != "${{ matrix.shard }}" or "$env:SHARD" not in str(step.get("run")):
-            problems.append(f"the step {step.get('name')} does not run its leg's --shard from matrix.shard")
+    problems.extend(
+        f"the step {step.get('name')} does not run its leg's --shard from matrix.shard"
+        for step in runs
+        if _mapping(step, "env").get("SHARD") != "${{ matrix.shard }}" or "$env:SHARD" not in str(step.get("run"))
+    )
     return problems
 
 
@@ -472,13 +474,15 @@ def linux_job_problems(workflow: str) -> list[str]:
     if python != [{"python-version": "3.11", "cache": "pip", "cache-dependency-path": "requirements-dev.txt"}]:
         problems.append(f"the linux job sets up Python as {python}, not 3.11 with pip's cache on requirements-dev.txt")
     scripts = [str(step.get("run", "")) for step in steps]
-    for install in (
-        "sudo apt-get install --yes shellcheck",
-        "Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION ",
-        "python -m pip install --require-hashes -r requirements-dev.txt",
-    ):
-        if not any(install in script for script in scripts):
-            problems.append(f"no step of the linux job runs {install!r}")
+    problems.extend(
+        f"no step of the linux job runs {install!r}"
+        for install in (
+            "sudo apt-get install --yes shellcheck",
+            "Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION ",
+            "python -m pip install --require-hashes -r requirements-dev.txt",
+        )
+        if not any(install in script for script in scripts)
+    )
     runs = [step for step in steps if "tests/run_validation.py" in str(step.get("run", ""))]
     if len(runs) != 1:
         problems.append(f"the linux job has {len(runs)} steps that run tests/run_validation.py, not one")
@@ -489,9 +493,11 @@ def linux_job_problems(workflow: str) -> list[str]:
         if "--shard" in script:
             problems.append(f"the step {step.get('name')} runs a shard, not the whole run")
         lines = {line.strip() for line in script.splitlines()}
-        for expected in LINUX_VALIDATION_LINES:
-            if expected not in lines:
-                problems.append(f"the step {step.get('name')} does not run {expected!r}")
+        problems.extend(
+            f"the step {step.get('name')} does not run {expected!r}"
+            for expected in LINUX_VALIDATION_LINES
+            if expected not in lines
+        )
     return problems
 
 
@@ -512,9 +518,11 @@ def tool_cache_problems(workflow: str, caches: dict[str, str]) -> list[str]:
     pins = _mapping(tree, "env")
     scripts = "\n".join(str(step.get("run", "")) for step in steps)
     for key, command in caches.items():
-        for name in re.findall(r"\$\{\{ env\.(\w+) \}\}", key):
-            if name not in pins:
-                problems.append(f"the cache key {key} reads {name}, which the workflow's env does not pin")
+        problems.extend(
+            f"the cache key {key} reads {name}, which the workflow's env does not pin"
+            for name in re.findall(r"\$\{\{ env\.(\w+) \}\}", key)
+            if name not in pins
+        )
         if command not in scripts:
             problems.append(f"no step runs {command!r} when the cache keyed {key} misses")
     python = [_mapping(step, "with") for step in steps if str(step.get("uses", "")).startswith("actions/setup-python@")]
@@ -598,9 +606,11 @@ def deployable_linux_problems(workflow: str) -> list[str]:
         problems.append(f"the deployable-linux job runs on {linux.get('runs-on')}, not ubuntu-latest")
     if _mapping(linux, "defaults", "run").get("shell") != "bash":
         problems.append("the deployable-linux job's steps do not run in bash")
-    for key in ("strategy", "env", "timeout-minutes"):
-        if linux.get(key) != windows.get(key):
-            problems.append(f"the deployable-linux job's {key} is not the deployable job's")
+    problems.extend(
+        f"the deployable-linux job's {key} is not the deployable job's"
+        for key in ("strategy", "env", "timeout-minutes")
+        if linux.get(key) != windows.get(key)
+    )
     expected = [
         str(step.get("name")) for step in _steps(windows) if step.get("name") not in WINDOWS_ONLY_DEPLOYABLE_STEPS
     ]
