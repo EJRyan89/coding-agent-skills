@@ -24,8 +24,9 @@ from itertools import pairwise
 from typing import Any
 
 from flat_text import flat_text
-from review_records import SEVERITIES, SEVERITY_RANK, finding_reference, source_parts
+from review_records import finding_reference, source_parts
 from review_synthesis import finding_ref, group_key, headline
+from review_vocabularies import SEVERITIES, SEVERITY_RANK
 from typed_fields import FieldReader
 
 ANCHOR_WINDOW = 3

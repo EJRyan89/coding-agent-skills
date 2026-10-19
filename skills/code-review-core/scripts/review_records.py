@@ -18,17 +18,36 @@ from flat_text import flat_text
 from markdown_literal import markdown_line as _text
 from markdown_literal import markdown_literal as _literal
 from markdown_literal import navigation_url as _navigation_url
-from review_config import is_unreviewed_suffix, safe_repository_path, validate_repository_identity
+from review_config import (
+    VerdictPolicy,
+    is_unreviewed_suffix,
+    safe_repository_path,
+    validate_repository_identity,
+    verdict_policy,
+)
 from review_io import atomic_write_json, atomic_write_text, read_json
+from review_vocabularies import (
+    DISPATCH_MODES,
+    DISPOSITIONS,
+    LEDGER_STATE_NAMES,
+    LEDGER_STATES,
+    OPEN_DISPOSITIONS,
+    SEVERITIES,
+    SEVERITY_RANK,
+    SEVERITY_SECTIONS,
+    VERDICTS,
+    DispatchMode,
+    Disposition,
+    LedgerState,
+    Severity,
+    Verdict,
+)
 from typed_fields import FieldError, FieldReader, describe
 
 RECORD_SCHEMA_VERSION = 2
 # The record versions a reader accepts. A version 1 record, written before unreviewed files were recorded, has no
 # `review.coverage.unreviewed_files`; a version 2 record may.
 READABLE_RECORD_VERSIONS = (1, RECORD_SCHEMA_VERSION)
-# How a review's reviewer roles were worked, as its record's `review.dispatch` says: as native subagents (or by a Claude
-# Code Workflow), by the bounded Copilot CLI host, or inline by the orchestrating session itself, one role at a time.
-DISPATCH_MODES = ("subagents", "copilot-host", "inline")
 # Where the reviewer that ran came from, as its record's `review.adapter.source` says, with each one's scope: the
 # suite's generic reviewer the repository is configured with; a repository reviewer read at its trusted ref, at the pull
 # request's base, or at the default branch's tip because the base predates its review skill; or the generic reviewer
@@ -46,14 +65,6 @@ ADAPTER_PROTOCOL_VERSION = 1
 # here, with the records, so the review that writes the key and a reader of records that must tell the two apart
 # share one rule without the reader importing the review runtime.
 SUITE_PROFILE_PREFIX = "suite:"
-SEVERITIES = {"MUST_FIX", "SHOULD_FIX", "SUGGESTION"}
-DISPOSITIONS = {
-    "addressed",
-    "partially_addressed",
-    "still_present",
-    "superseded",
-    "unable_to_verify",
-}
 FINDING_FIELDS = frozenset({"candidate_key", "severity", "category", "path", "line", "body", "evidence", "source"})
 OPTIONAL_FINDING_FIELDS = frozenset({"title", "analyzer", "repeats"})
 # A record's finding may also say where in a changed document its line is, which the suite adds and no reviewer gives.
@@ -62,20 +73,11 @@ MAX_LOCATION_CHARACTERS = 200
 # The finding ledger: one entry per problem raised on a pull request since its latest initial review, identified by
 # the version and finding ID where it first appeared. A repeat is linked to the finding it repeats, never counted
 # twice, so a repeat needs a target at least as severe. A disposition of a prior finding judges its entry.
-SEVERITY_RANK = {"SUGGESTION": 1, "SHOULD_FIX": 2, "MUST_FIX": 3}
 FINDING_ID = re.compile(r"F[0-9]{3,}")
 LEDGER_ID = re.compile(r"v([1-9][0-9]*):(F[0-9]{3,})")
 LEDGER_FIELDS = frozenset({"version", "id", "severity", "category", "state", "judged_in", "dispositions", "repeats"})
-OPEN_DISPOSITIONS = frozenset({"still_present", "partially_addressed"})
 # A ledger entry's key: the version and finding ID where the finding first appeared.
 LedgerKey = tuple[int, str]
-LEDGER_STATES = {
-    "still_present": "open",
-    "partially_addressed": "open",
-    "addressed": "closed",
-    "superseded": "closed",
-    "unable_to_verify": "unverified",
-}
 COMMENT_FIELDS = ("id", "author", "path", "line", "outdated", "body", "url")
 REVIEWER_FIELDS = frozenset({"id", "category", "files", "findings", "retries", "dispositions_only"})
 # Records written before reviewer timing, model reporting, or read counts existed, or by a reviewer that does not
@@ -131,7 +133,7 @@ class AdapterFinding(TypedDict):
     ID."""
 
     candidate_key: str
-    severity: str
+    severity: Severity
     category: str
     path: str
     line: int
@@ -150,7 +152,7 @@ class Finding(TypedDict):
 
     id: str
     candidate_key: str
-    severity: str
+    severity: Severity
     category: str
     path: str
     line: int
@@ -165,13 +167,13 @@ class Finding(TypedDict):
 
 class PriorDisposition(TypedDict):
     finding_id: str
-    disposition: str
+    disposition: Disposition
     rationale: str
 
 
 class CommentDisposition(TypedDict):
     comment_id: str
-    disposition: str
+    disposition: Disposition
     rationale: str
 
 
@@ -195,12 +197,12 @@ class LedgerDisposition(TypedDict):
     """A disposition as the ledger reads it: the ledger ID of the entry it judges, and how."""
 
     finding_id: str
-    disposition: str
+    disposition: Disposition
 
 
 class LedgerJudgment(TypedDict):
     version: int
-    disposition: str
+    disposition: Disposition
 
 
 class LedgerEntry(TypedDict):
@@ -209,9 +211,9 @@ class LedgerEntry(TypedDict):
 
     version: int
     id: str
-    severity: str
+    severity: Severity
     category: str
-    state: str
+    state: LedgerState
     judged_in: int
     dispositions: list[LedgerJudgment]
     repeats: list[FindingReference]
@@ -301,14 +303,14 @@ class Review(TypedDict):
     mode: str
     reviewed_at: str
     summary: str
-    verdict: str
-    counts: dict[str, int]
+    verdict: Verdict
+    counts: dict[Severity, int]
     adapter: Adapter
     coverage: NotRequired[Coverage]
     reviewers: NotRequired[list[ReviewerRun]]
     patches: NotRequired[dict[str, Patch]]
     scope: NotRequired[Scope]
-    dispatch: NotRequired[str]
+    dispatch: NotRequired[DispatchMode]
     snapshot: NotRequired[Snapshot]
 
 
@@ -718,7 +720,7 @@ def _entry_key(entry: LedgerEntry) -> tuple[int, int]:
     return entry["version"], int(entry["id"][1:])
 
 
-def entry_state(entry: LedgerEntry) -> tuple[str, int]:
+def entry_state(entry: LedgerEntry) -> tuple[LedgerState, int]:
     """An entry's state and the version that last judged it. Raising or repeating the finding judges it open;
     otherwise its latest disposition decides."""
     raised = [entry["version"], *(repeat["version"] for repeat in entry["repeats"])]
@@ -887,17 +889,15 @@ def flagged_entries(
 
 
 def calculate_verdict(
-    ledger: Iterable[LedgerEntry], policy: dict[str, Any], unavailable_sources: Iterable[str] = ()
-) -> str:
+    ledger: Iterable[LedgerEntry], policy: VerdictPolicy, unavailable_sources: Iterable[str] = ()
+) -> Verdict:
     """CHANGES_REQUESTED when the open ledger entries require it; else INCOMPLETE when changed source could not be
     reviewed in full; else APPROVED. A blocking finding is never hidden by a coverage gap. A finding carried from an
     earlier review counts until a review closes it, and a linked repeat counts once, as its entry."""
     severities = [entry["severity"] for entry in ledger if entry["state"] == "open"]
-    request_for = set(policy.get("request_changes_for", ["MUST_FIX"]))
-    if any(severity in request_for for severity in severities):
+    if any(severity in policy.request_changes_for for severity in severities):
         return "CHANGES_REQUESTED"
-    threshold = policy.get("should_fix_threshold", 3)
-    if severities.count("SHOULD_FIX") >= threshold:
+    if severities.count("SHOULD_FIX") >= policy.should_fix_threshold:
         return "CHANGES_REQUESTED"
     if list(unavailable_sources):
         return "INCOMPLETE"
@@ -955,7 +955,7 @@ def build_record(
             "mode": request["mode"],
             "reviewed_at": reviewed_at or datetime.now(UTC).isoformat(),
             "summary": adapter_result["summary"],
-            "verdict": calculate_verdict(ledger, policy, unavailable),
+            "verdict": calculate_verdict(ledger, verdict_policy(policy), unavailable),
             "counts": counts,
             "adapter": adapter,
         },
@@ -1277,7 +1277,7 @@ def _validate_ledger_entry(value: object, path: str, version: int) -> LedgerEntr
     # checked against what the rest gives.
     read = cast(LedgerEntry, entry)
     state, judged_in = entry_state(read)
-    if READ.one_of(entry["state"], f"{path}.state", tuple(dict.fromkeys(LEDGER_STATES.values()))) != state:
+    if READ.one_of(entry["state"], f"{path}.state", LEDGER_STATE_NAMES) != state:
         raise RecordError(f"Review ledger entry {label} state must be {state}")
     if READ.integer(entry["judged_in"], f"{path}.judged_in") != judged_in:
         raise RecordError(f"Review ledger entry {label} judged_in must be {judged_in}")
@@ -1384,7 +1384,7 @@ def _validate_repeat_link(
     return key
 
 
-def _same_review_target_severity(identifier: str, target_id: str, findings: dict[str, dict[str, Any]]) -> str:
+def _same_review_target_severity(identifier: str, target_id: str, findings: dict[str, dict[str, Any]]) -> Severity:
     """The severity of the finding of this review that `identifier` repeats: another finding, not itself a repeat."""
     if target_id == identifier:
         raise RecordError(f"Review finding {identifier} cannot repeat itself")
@@ -1393,12 +1393,13 @@ def _same_review_target_severity(identifier: str, target_id: str, findings: dict
         raise RecordError(f"Review finding {identifier} repeats an unknown finding: {target_id}")
     if "repeats" in other:
         raise RecordError(f"Review finding {identifier} repeats a repeat: {target_id}")
-    return other["severity"]
+    severity: Severity = other["severity"]
+    return severity
 
 
 def _earlier_target_severity(
     identifier: str, key: LedgerKey, entries: dict[LedgerKey, LedgerEntry], given: dict[str, str]
-) -> str:
+) -> Severity:
     """The severity of the earlier finding that `identifier` repeats: an entry this review judged still open."""
     entry = entries.get(key)
     if entry is None:
@@ -1503,7 +1504,7 @@ def _validate_review(review: dict[str, Any], version: int) -> None:
         _validate_reviewers(review["reviewers"])
     if "patches" in review:
         _validate_patches(review["patches"])
-    READ.one_of(review["verdict"], "record.review.verdict", ("APPROVED", "CHANGES_REQUESTED", "INCOMPLETE"))
+    READ.one_of(review["verdict"], "record.review.verdict", VERDICTS)
     _validate_coverage(review, version)
     READ.integer(review["version"], "record.review.version", minimum=1)
     READ.one_of(review["mode"], "record.review.mode", ("initial", "re-review"))
@@ -1640,8 +1641,7 @@ def payload_hash(record: ReviewRecord) -> str:
     return sha256_text(canonical_json(payload))
 
 
-SEVERITY_SECTIONS = (("MUST_FIX", "MUST FIX"), ("SHOULD_FIX", "SHOULD FIX"), ("SUGGESTION", "SUGGESTIONS"))
-DISPOSITION_PHRASES = {
+DISPOSITION_PHRASES: dict[Disposition, str] = {
     "still_present": "Still present",
     "partially_addressed": "Partially addressed",
     "addressed": "Addressed",

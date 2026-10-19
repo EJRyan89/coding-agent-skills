@@ -34,6 +34,7 @@ from review_documents import DOCUMENT_FORMATS, EXTRACTED_WHEN_TEXT, ExtractionRe
 from review_guard import ROLE_ID as SLUG
 from review_io import PersistenceError, atomic_write_json, read_diff
 from review_records import SUITE_PROFILE_PREFIX, is_suite_profile
+from review_vocabularies import DispatchMode
 from typed_fields import FieldError, FieldReader
 
 ADAPTER_PROTOCOL_VERSION = 1
@@ -597,7 +598,7 @@ def _normalized_entrypoint_manifest(value: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def negotiate_capabilities(runtime: str, required: Iterable[str], *, dispatch: str = "subagents") -> set[str]:
+def negotiate_capabilities(runtime: str, required: Iterable[str], *, dispatch: DispatchMode = "subagents") -> set[str]:
     """The capabilities a review dispatched this way on this runtime offers, once it offers every required one.
 
     An inline review offers only what its runtime and INLINE_CAPABILITIES both do. The runtime's own lack is named
@@ -618,7 +619,7 @@ def negotiate_capabilities(runtime: str, required: Iterable[str], *, dispatch: s
     return available & INLINE_CAPABILITIES
 
 
-def choose_dispatch(runtime: str, kind: str, *, inline: bool = False) -> str:
+def choose_dispatch(runtime: str, kind: str, *, inline: bool = False) -> DispatchMode:
     """How a run's roles are worked: inline when asked, or when the runtime cannot start the subagents the suite's
     own roles need; a Copilot CLI entrypoint reviewer on its bounded host; otherwise as subagents."""
     if inline:

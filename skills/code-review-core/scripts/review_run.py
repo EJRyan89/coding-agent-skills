@@ -13,7 +13,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Any, NotRequired, TypedDict, TypeVar, get_origin, get_type_hints
+from typing import Any, NotRequired, TypedDict, TypeVar, cast, get_origin, get_type_hints
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
@@ -31,7 +31,7 @@ from review_hosts import subprocess_runner as copilot_subprocess_runner
 from review_io import PersistenceError, atomic_write_json, read_json
 from review_operation import ReviewOperationError
 from review_process import start_detached
-from review_records import DISPATCH_MODES, RE_REVIEW_SCOPES, SCOPE_FIELDS, RecordError, Scope
+from review_records import RE_REVIEW_SCOPES, SCOPE_FIELDS, RecordError, Scope
 from review_runtime import (
     MODEL_ALIAS_RUNTIMES,
     NATIVE_EFFORT_RUNTIMES,
@@ -41,6 +41,7 @@ from review_runtime import (
 )
 from review_specialists import SpecialistError
 from review_state import StateError, utc_today
+from review_vocabularies import DISPATCH_MODES, DispatchMode
 from typed_fields import FieldError, FieldReader, describe
 
 T = TypeVar("T")
@@ -143,7 +144,7 @@ class RunState(TypedDict):
     config_path: str
     host: str | None
     runtime: str
-    dispatch: NotRequired[str]
+    dispatch: NotRequired[DispatchMode]
     kind: str
     request_path: str
     reviewer_root: str | None
@@ -253,7 +254,7 @@ def _write_run(run: Path, state: RunState) -> None:
     atomic_write_json(run / RUN_FILE, state)
 
 
-def _unapplied_model_reason(runtime: str, dispatch: str) -> str | None:
+def _unapplied_model_reason(runtime: str, dispatch: DispatchMode) -> str | None:
     """Why no role of a run dispatched this way on this runtime starts on a model alias, or None when every role can."""
     if dispatch == "inline":
         # The orchestrating session works every role on its own model; no subagent can be started on another.
@@ -263,7 +264,7 @@ def _unapplied_model_reason(runtime: str, dispatch: str) -> str | None:
     return None
 
 
-def _starts_at_given_effort(runtime: str, dispatch: str) -> bool:
+def _starts_at_given_effort(runtime: str, dispatch: DispatchMode) -> bool:
     """Whether a run's reviewers start at a reasoning effort the pipeline gives them: a native subagent of a runtime in
     NATIVE_EFFORT_RUNTIMES, from its `EFFORT` line, or the Copilot CLI host, from its command. The Workflow tool reads
     the configured effort when its script is written, and an inline role works at the session's."""
@@ -417,11 +418,11 @@ def mark_dispatched(run: Path) -> None:
     atomic_write_json(run / RUN_FILE, state)
 
 
-def run_dispatch(state: Mapping[str, object]) -> str:
+def run_dispatch(state: Mapping[str, object]) -> DispatchMode:
     """How a run's roles are worked. A run prepared before the dispatch was recorded was dispatched as its runtime
     and reviewer kind decided then: a Copilot CLI entrypoint on its host, everything else as subagents."""
     if "dispatch" in state:
-        return str(state["dispatch"])
+        return cast(DispatchMode, str(state["dispatch"]))  # prepare wrote it, and load_run reads it, as one
     return "copilot-host" if state["runtime"] == "copilot-cli" and state["kind"] == "entrypoint" else "subagents"
 
 

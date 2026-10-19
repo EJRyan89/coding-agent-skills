@@ -18,11 +18,16 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
+from skill_roots import sibling_scripts
+
+sys.path.insert(0, str(sibling_scripts("code-review-core")))
+
 import folder_walk
 import git_client
 import github_client
 import pdf_tool
 import python_checks
+import review_vocabularies
 from job_selection import all_jobs
 from python_checks import (
     FORMAT_ROOTS,
@@ -53,6 +58,16 @@ VOCABULARIES = (
     (pdf_tool.PdfProvider, "Poppler", "poppler", "PdfIdentity({}, (26, 10, 0))"),
     (report.Action, "INSTALL", "INSTAL", 'PlanEntry("alpha", SKILL, "absent", {})'),
     (journal.Op, "preserve", "restore", "op: journal.Op = {}"),
+    (review_vocabularies.Severity, "SHOULD_FIX", "SHOULD FIX", "SEVERITY_RANK[{}]"),
+    (review_vocabularies.Verdict, "CHANGES_REQUESTED", "CHANGES REQUESTED", "verdict: Verdict = {}"),
+    (review_vocabularies.Disposition, "unable_to_verify", "unverified", "LEDGER_STATES[{}]"),
+    (review_vocabularies.LedgerState, "unverified", "unable_to_verify", "state: LedgerState = {}"),
+    (
+        review_vocabularies.DispatchMode,
+        "copilot-host",
+        "copilot",
+        'negotiate_capabilities("claude-code", [], dispatch={})',
+    ),
 )
 VOCABULARY_IMPORTS = (
     "from pathlib import Path",
@@ -63,6 +78,8 @@ VOCABULARY_IMPORTS = (
     "from git_client import GitError",
     "from github_client import GitHubError",
     "from pdf_tool import PdfIdentity",
+    "from review_runtime import negotiate_capabilities",
+    "from review_vocabularies import LEDGER_STATES, SEVERITY_RANK, LedgerState, Verdict",
 )
 
 

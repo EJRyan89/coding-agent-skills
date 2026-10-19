@@ -31,6 +31,7 @@ from review_records import (
     validate_adapter_result,
 )
 from review_state import utc_date, watermark_date
+from review_vocabularies import SEVERITIES, SEVERITY_SECTIONS, DispatchMode, Severity
 from typed_fields import FieldError, FieldReader
 
 
@@ -172,7 +173,7 @@ def request_to_record_input(
     patches: dict[str, Any] | None = None,
     scope: Scope | None = None,
     uncovered_files: list[str] | None = None,
-    dispatch: str | None = None,
+    dispatch: DispatchMode | None = None,
     snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     pull = READ.json_object(request.get("pull_request"), "request.pull_request")
@@ -278,7 +279,7 @@ def commit_adapter_result(
     uncovered_files: list[str] | None = None,
     model_names: dict[str, str] | None = None,
     flags: list[dict[str, Any]] | None = None,
-    dispatch: str | None = None,
+    dispatch: DispatchMode | None = None,
     snapshot: dict[str, Any] | None = None,
     documents: dict[str, list[str]] | None = None,
 ) -> tuple[Path, Path, ReviewRecord]:
@@ -403,18 +404,22 @@ def legacy_index(archive_root: Path, repository: str, number: int) -> dict[str, 
     return index
 
 
-LEGACY_COUNT = re.compile(r"<summary><strong>(MUST FIX|SHOULD FIX|SUGGESTIONS) \((\d+)\)</strong></summary>")
+# Each severity by the title of its section, as a migrated legacy report's collapsible headings count it.
+LEGACY_SECTIONS: dict[str, Severity] = {title: severity for severity, title in SEVERITY_SECTIONS}
+LEGACY_COUNT = re.compile(
+    rf"<summary><strong>({'|'.join(map(re.escape, LEGACY_SECTIONS))}) \((\d+)\)</strong></summary>"
+)
 
 
-def legacy_counts(report: Path) -> dict[str, int] | None:
+def legacy_counts(report: Path) -> dict[Severity, int] | None:
     """Finding counts from a migrated legacy report's collapsible section headings, or None if unreadable."""
     try:
         text = report.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeError):
         return None
-    counts = {"MUST_FIX": 0, "SHOULD_FIX": 0, "SUGGESTION": 0}
+    counts = dict.fromkeys(SEVERITIES, 0)
     for label, value in LEGACY_COUNT.findall(text):
-        counts[{"MUST FIX": "MUST_FIX", "SHOULD FIX": "SHOULD_FIX", "SUGGESTIONS": "SUGGESTION"}[label]] += int(value)
+        counts[LEGACY_SECTIONS[label]] += int(value)
     return counts
 
 

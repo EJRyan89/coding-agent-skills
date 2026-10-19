@@ -23,9 +23,10 @@ sys.path.insert(0, str(sibling_scripts("review-document")))
 
 from git_client import GitClient
 from review_document import specialists_manifest
-from review_records import DISPOSITIONS as RECORD_DISPOSITIONS
-from review_records import LEDGER_ID, SEVERITY_RANK
+from review_records import LEDGER_ID
 from review_runtime import DOCUMENT_STAGES, RuntimeContractError, declared_reviewer_files, validate_adapter_manifest
+from review_vocabularies import DISPOSITIONS as RECORD_DISPOSITIONS
+from review_vocabularies import SEVERITY_RANK
 from suite_names import is_suite_name
 
 from deployer import fsops

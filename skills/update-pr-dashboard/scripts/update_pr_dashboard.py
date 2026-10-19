@@ -39,7 +39,7 @@ from review_config import (
 )
 from review_github import GitHubClient
 from review_io import atomic_write_json, atomic_write_text
-from review_records import SEVERITIES as SEVERITY_KEYS
+from review_vocabularies import SEVERITIES as SEVERITY_KEYS
 from typed_fields import FieldError, FieldReader
 
 START_MARKER = "<!-- code-review-pr-tracker:start -->"
