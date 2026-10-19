@@ -238,7 +238,8 @@ refused while a guarded hub is in view, and what they do not see at all is named
 - **Bash, by its grammar.** `tools/bash_syntax.py` reads Bash as Bash parses it: single and double quotes, `$'...'`,
   escapes and line continuations, comments, and here-documents, whose bodies are data and never commands; and the
   command tree of lists, `&&` and `||`, pipelines, `( )` subshells, `{ }` groups, `if`, `while`, `until`, `for`,
-  `select`, `case`, `[[ ]]`, `!`, `time`, and function definitions, with redirections. A word's value comes from its
+  `select`, `case`, `[[ ]]`, `!`, `time`, and function definitions, with redirections and array assignments,
+  whose substitutions it reads and whose value it leaves unsettled. A word's value comes from its
   literal text, `~`, and each `$NAME` the command sets or the environment holds, and `$PWD` is where the shell is; a
   substitution, arithmetic, a special parameter, a glob, a brace expansion, or a value that would split leaves the
   word unsettled. The guard follows `cd` (with `--`; bare goes home, `cd -` and a `CDPATH` search leave the
