@@ -19,24 +19,30 @@ CAPABILITIES = {
     "workflow": "Claude Code's Workflow tool, which starts subagents from a script with a per-call effort",
     "agent-hooks": "running a subagent under its agent definition's hooks, such as the code-review reviewer's guard",
     "user-only-start": "starting a user-only skill in a headless session as well as an interactive one",
+    "sandbox-network": "network access for a skill's commands in the runtime's default sandbox, which gh needs",
 }
 # The allowed-tools grant that shows a skill needs a capability; user-only-start follows from disable-model-invocation,
 # and agent-hooks from an Agent grant in a skill that starts an agent whose definition declares hooks.
 CAPABILITY_GRANTS = {"Agent": "agent-delegation", "Workflow": "workflow"}
+# The tools a skill may declare that reach a service over the network, so a skill declaring one, required or
+# optional, needs sandbox-network.
+NETWORK_TOOLS = frozenset({"gh", "copilot"})
 # What a skill loses where a runtime lacks the capability, until its author states it more precisely.
 DEFAULT_REASONS = {
     "agent-delegation": "It starts subagents, which this runtime cannot.",
     "workflow": "It uses Claude Code's Workflow tool, which this runtime lacks.",
     "agent-hooks": "Its subagent runs without its agent definition's hooks, so its prompt is its only boundary.",
     "user-only-start": "A headless copilot -p session cannot start it; start it from an interactive session.",
+    "sandbox-network": "Its network calls need network access, which this runtime's default sandbox turns off.",
 }
 # Copilot CLI starts no subagent, and its `copilot -p` neither expands /<skill> for a user-only skill nor lets the model
 # start one (Copilot CLI 1.0.91; see docs/copilot-support.md). Workflow is Claude Code's alone, and so are an agent
-# definition's hooks: a Codex subagent runs without them (docs/code-review-operations-contract.md).
+# definition's hooks: a Codex subagent runs without them (docs/code-review-operations-contract.md). Codex's default
+# sandbox gives commands no network until [sandbox_workspace_write] network_access is set (docs/codex-support.md).
 RUNTIME_CAPABILITIES = {
-    "claude-code": frozenset({"agent-delegation", "workflow", "agent-hooks", "user-only-start"}),
+    "claude-code": frozenset({"agent-delegation", "workflow", "agent-hooks", "user-only-start", "sandbox-network"}),
     "codex": frozenset({"agent-delegation", "user-only-start"}),
-    "copilot-cli": frozenset(),
+    "copilot-cli": frozenset({"sandbox-network"}),
 }
 FULL = "full"
 PARTIAL = "partial"
@@ -95,12 +101,17 @@ def parse(value: Any) -> dict[str, Support]:
     return {runtime: _support(runtime, value[runtime]) for runtime in RUNTIMES}
 
 
-def frontmatter_needs(allowed_tools: list[str], user_only: bool, starts_hooked_agent: bool = False) -> set[str]:
-    """The capabilities a skill's own frontmatter shows it needs: its allowed-tools grants, user-only start, and, for a
-    skill that grants Agent and starts an agent whose definition declares hooks, those hooks."""
+def frontmatter_needs(
+    allowed_tools: list[str], user_only: bool, starts_hooked_agent: bool = False, tools: frozenset[str] = frozenset()
+) -> set[str]:
+    """The capabilities a skill's frontmatter and metadata show it needs: its allowed-tools grants, user-only start,
+    for a skill that grants Agent and starts an agent whose definition declares hooks, those hooks, and, for a skill
+    that declares a network tool among its tools, required or optional, network access."""
     needs = {CAPABILITY_GRANTS[grant] for grant in allowed_tools if grant in CAPABILITY_GRANTS}
     if starts_hooked_agent and "agent-delegation" in needs:
         needs.add("agent-hooks")
+    if tools & NETWORK_TOOLS:
+        needs.add("sandbox-network")
     return needs | {"user-only-start"} if user_only else needs
 
 

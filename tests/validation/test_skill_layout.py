@@ -577,6 +577,15 @@ class SkillLayoutFixtures(unittest.TestCase):
             },
             # It names the guarded agent but starts no subagent, so the agent's hooks are not its need.
             "mentions-agent": {"runtime_support": full},
+            # A network tool, required or optional, needs network access, which Codex's default sandbox turns off.
+            "networked": {"tools": ["gh"], "runtime_support": full},
+            "optionally-networked": {
+                "optional_tools": ["copilot"],
+                "runtime_support": {
+                    **full,
+                    "codex": {"level": "partial", "needs": ["sandbox-network"], "reason": "No network."},
+                },
+            },
         }
         user_only_md = "---\nname: {0}\ndescription: d\ndisable-model-invocation: true\n---\n"
         plain_md = "---\nname: {0}\ndescription: d\n---\n"
@@ -616,6 +625,8 @@ class SkillLayoutFixtures(unittest.TestCase):
                     "deploy-meta/invoker.json declares copilot-cli full, but copilot-cli lacks agent-delegation, "
                     f"workflow, so it is partial or none; see {doc}",
                     f"deploy-meta/malformed.json: codex needs unknown capability 'telepathy'; see {doc}",
+                    "deploy-meta/networked.json declares codex full, but codex lacks sandbox-network, "
+                    f"so it is partial or none; see {doc}",
                     "deploy-meta/over-claims.json declares codex none, but codex offers everything the skill needs, "
                     f"so it is full; see {doc}",
                     f"deploy-meta/undeclared.json declares no runtime_support; see {doc}",

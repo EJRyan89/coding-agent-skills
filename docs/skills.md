@@ -46,7 +46,7 @@ The summary and the first block of each section below are generated from each sk
 
 ## Runtime support
 
-Which runtimes run each skill. **Full** means every step runs there as it does in Claude Code. **Partial** means the skill runs but loses what the note under the table names, because the runtime lacks a capability the skill uses: `agent-delegation` (starting a subagent), `workflow` (Claude Code's Workflow tool), `agent-hooks` (running a subagent under its agent definition's hooks, such as the code-review reviewer's guard), or `user-only-start` (starting a user-only skill from a headless `copilot -p` session as well as an interactive one). **None** means the runtime does not run it. Each skill declares its support in `deploy-meta/<name>.json`; validation holds the declaration to the capabilities its frontmatter shows it uses, and the [runtime canary](../tools/runtime_canary.py) fails when a runtime ran a skill otherwise than the table says.
+Which runtimes run each skill. **Full** means every step runs there as it does in Claude Code. **Partial** means the skill runs but loses what the note under the table names, because the runtime lacks a capability the skill uses: `agent-delegation` (starting a subagent), `workflow` (Claude Code's Workflow tool), `agent-hooks` (running a subagent under its agent definition's hooks, such as the code-review reviewer's guard), `user-only-start` (starting a user-only skill from a headless `copilot -p` session as well as an interactive one), or `sandbox-network` (network access for a skill's commands in the runtime's default sandbox, which `gh` needs; see [Network access](codex-support.md#network-access) for Codex). **None** means the runtime does not run it. Each skill declares its support in `deploy-meta/<name>.json`; validation holds the declaration to the capabilities its frontmatter shows it uses, and the [runtime canary](../tools/runtime_canary.py) fails when a runtime ran a skill otherwise than the table says.
 
 <!-- generated:runtime-support -->
 | Skill | Claude Code | Codex CLI | Copilot CLI |
@@ -55,24 +55,27 @@ Which runtimes run each skill. **Full** means every step runs there as it does i
 | [`audit-ai-config`](#audit-ai-config) | Full | Full | Full |
 | [`curate-agent-memory`](#curate-agent-memory) | Full | Full | Full |
 | [`dotnet-dependencies`](#dotnet-dependencies) | Full | Full | Full |
-| [`dotnet-format`](#dotnet-format) | Full | Full | Full |
+| [`dotnet-format`](#dotnet-format) | Full | Partial | Full |
 | [`flag-review-finding`](#flag-review-finding) | Full | Full | Full |
-| [`github-activity-report`](#github-activity-report) | Full | Full | Full |
-| [`repo-cleanup`](#repo-cleanup) | Full | Full | Partial |
+| [`github-activity-report`](#github-activity-report) | Full | Partial | Full |
+| [`repo-cleanup`](#repo-cleanup) | Full | Partial | Partial |
 | [`review-document`](#review-document) | Full | Partial | Partial |
 | [`review-insights`](#review-insights) | Full | Full | Partial |
 | [`review-prs`](#review-prs) | Full | Partial | Partial |
 | [`update-coding-agent-skills`](#update-coding-agent-skills) | Full | Full | Partial |
 | [`update-pr-dashboard`](#update-pr-dashboard) | Full | Partial | Partial |
 
+- `dotnet-format` on Codex CLI: partial, lacking `sandbox-network`. Finding a pull request's base with gh needs network access, which Codex's default sandbox turns off: unless [sandbox_workspace_write] network_access is true, an interactive session asks to approve each gh call and codex exec fails it.
+- `github-activity-report` on Codex CLI: partial, lacking `sandbox-network`. Its gh calls need network access, which Codex's default sandbox turns off: unless [sandbox_workspace_write] network_access is true, an interactive session asks to approve each gh call and codex exec fails it.
+- `repo-cleanup` on Codex CLI: partial, lacking `sandbox-network`. Its gh calls need network access, which Codex's default sandbox turns off: unless [sandbox_workspace_write] network_access is true, an interactive session asks to approve each gh call and codex exec fails it.
 - `repo-cleanup` on Copilot CLI: partial, lacking `user-only-start`. A headless copilot -p session cannot start it; start it from an interactive session.
-- `review-document` on Codex CLI: partial, lacking `agent-hooks`. The reviewer starts as a native subagent on the session's model, without the reviewer agent's guard, so its prompt is its only boundary and a reviewer model setting has no effect.
+- `review-document` on Codex CLI: partial, lacking `agent-hooks` and `sandbox-network`. The reviewer starts as a native subagent on the session's model, without the reviewer agent's guard, so its prompt is its only boundary and a reviewer model setting has no effect; a pull request's documents need network access for gh, which Codex's default sandbox turns off.
 - `review-document` on Copilot CLI: partial, lacking `agent-delegation` and `agent-hooks`. The reviewer role runs inline in the session, without the reviewer agent's guard.
 - `review-insights` on Copilot CLI: partial, lacking `agent-delegation`. The synthesis runs inline in the session instead of a subagent, so its whole input loads into the session's context.
-- `review-prs` on Codex CLI: partial, lacking `workflow` and `agent-hooks`. Reviewers start as native subagents on the session's model, without the reviewer agent's guard, so their prompts are their only boundary and a reviewer model or effort setting has no effect.
+- `review-prs` on Codex CLI: partial, lacking `workflow`, `agent-hooks`, and `sandbox-network`. Reviewers start as native subagents on the session's model, without the reviewer agent's guard, so their prompts are their only boundary and a reviewer model or effort setting has no effect; its gh calls need network access, which Codex's default sandbox turns off.
 - `review-prs` on Copilot CLI: partial, lacking `agent-delegation`, `workflow`, and `agent-hooks`. The generic reviewer and delegation-free specialists run inline, without the reviewer agent's guard; a specialists manifest that keeps agent-delegation fails.
 - `update-coding-agent-skills` on Copilot CLI: partial, lacking `user-only-start`. A headless copilot -p session cannot start it; start it from an interactive session.
-- `update-pr-dashboard` on Codex CLI: partial, lacking `workflow` and `agent-hooks`. The reviews it starts run through review-prs, whose reviewers here run without the reviewer agent's guard and lose reviewer model and effort settings.
+- `update-pr-dashboard` on Codex CLI: partial, lacking `workflow`, `agent-hooks`, and `sandbox-network`. The reviews it starts run through review-prs, whose reviewers here run without the reviewer agent's guard and lose reviewer model and effort settings; its gh calls need network access, which Codex's default sandbox turns off.
 - `update-pr-dashboard` on Copilot CLI: partial, lacking `agent-delegation`, `workflow`, and `agent-hooks`. The reviews it starts run through review-prs, which here runs the generic reviewer and delegation-free specialists inline, without the reviewer agent's guard, and fails a specialists manifest that keeps agent-delegation.
 <!-- /generated:runtime-support -->
 
@@ -284,7 +287,7 @@ The commands enforce these rules, whatever the agent is asked:
 - An unexpected failure in one repository is reported as that repository's `ERROR`, after the summary of what was done before it, and the sweep still reports every other repository. The sweep, `delete-local`, `force-delete`, and `remove-directory` exit 1 when Git refuses a deletion or removal, a branch Git refuses to delete after its worktree was removed included. `delete-local` and `remove-directory` also exit 1 when a confirmed worktree removal did not happen because its ignored files or the state above kept the worktree, which the sweep reports without failing, and `remove-directory` also when deleting a directory fails, it no longer resolves inside its area, which it checks before anything else, or Git now tracks a file in it. A confirmed branch, worktree, or directory that moved since the plan, or a detached worktree whose commit left the default and remote branches, is preserved with the reason and exit 0.
 - When a repository's fetch fails, nothing after the fetch runs for it, so its checkout is not switched. A multi-remote fetch may have updated some remote-tracking refs before failing.
 
-In Copilot CLI, start it from an interactive session: a headless `copilot -p` session cannot start a user-only skill ([Headless sessions](copilot-support.md#headless-sessions)). It runs fully in Claude Code and Codex.
+In Copilot CLI, start it from an interactive session: a headless `copilot -p` session cannot start a user-only skill ([Headless sessions](copilot-support.md#headless-sessions)). It runs fully in Claude Code. In Codex, its `gh` calls and fetches need network access, which Codex's default sandbox turns off ([Network access](codex-support.md#network-access)).
 
 ```text
 /repo-cleanup

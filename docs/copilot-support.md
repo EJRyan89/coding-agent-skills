@@ -4,7 +4,7 @@
 
 This repository currently supports:
 
-- personal skill discovery in GitHub Copilot CLI through generated `~/.agents/skills/<name>/SKILL.md` adapters;
+- personal skill discovery in GitHub Copilot CLI through generated `~/.agents/skills/<name>/SKILL.md` adapters, which carry each skill's description and argument hint for `/skills list` and the `/` picker, and `disable-model-invocation: true` for a user-only skill;
 - zero-AI verification of the effective discovered skill path with `python deploy.py verify`; and
 - code reviews with `review-prs`: the generic reviewer and specialists run inline in the session, and a repository entrypoint reviewer runs on a bounded, noninteractive Copilot CLI host. A specialists manifest that keeps `agent-delegation` in `required_capabilities` fails here.
 
@@ -34,7 +34,13 @@ The generated adapter sends Copilot to the authoritative skill under `~/.claude/
 copilot -p '<prompt>' --add-dir "$HOME/.claude/skills"
 ```
 
-A headless session cannot start a user-only skill, such as `update-coding-agent-skills`. In the Copilot CLI releases checked, `copilot -p` does not expand a prompt that begins with `/<skill>` into the skill, and the model's own `skill` tool reports a user-only skill as not found, even though `copilot skill list` lists it as enabled. Start user-only skills from an interactive session. The tested Copilot CLI versions are in the supported-runtimes table of the [README](../README.md#supported-platforms-and-runtimes), and the floor is in `deployer/tools.py`.
+A headless session cannot start a user-only skill, such as `update-coding-agent-skills`. In the Copilot CLI releases checked, `copilot -p` does not expand a prompt that begins with `/<skill>` into the skill, and the model's own `skill` tool reports a user-only skill as not found, even though `copilot skill list` lists it as enabled. Start user-only skills from an interactive session, either by typing `/<skill>` or by passing it as the session's first prompt:
+
+```bash
+copilot -i '/<skill> <arguments>'
+```
+
+The tested Copilot CLI versions are in the supported-runtimes table of the [README](../README.md#supported-platforms-and-runtimes), and the floor is in `deployer/tools.py`.
 
 The [runtime canary](../tools/runtime_canary.py) reaches Copilot only through `copilot -p`, so for a user-only skill it prints `RUNTIME copilot <skill> UNSUPPORTED` and runs no model. After a Copilot CLI upgrade, run a user-only skill headless by hand; once `-p` starts it, remove `USER_ONLY_UNSUPPORTED` from the canary.
 
@@ -48,7 +54,7 @@ An inline reviewer has no reviewer agent and no `PreToolUse` guard: it is the se
 
 The bounded host runs a repository entrypoint reviewer. It requires GitHub Copilot CLI 1.0.88 or newer, installed from WinGet or the GitHub release: it runs Copilot CLI's own program, the first on `PATH` or else WinGet's, and passes over a shell script such as the `copilot.cmd` an npm install puts on `PATH`, wherever it stands there, since Windows starts one through `cmd.exe`. With only a shell script on `PATH` and no WinGet program, it refuses and names each script it passed over. On Linux it runs the first `copilot` on `PATH`, npm's included: the kernel starts a script by its `#!` line with its arguments as they are, so no shell parses its command line, and its isolated `HOME` is the profile Copilot reads there. The host has not yet run a review against a signed-in Copilot CLI on Linux. It:
 
-- runs from a new isolated workspace with isolated `HOME`, `USERPROFILE`, and `COPILOT_HOME` values;
+- runs from a new isolated workspace with isolated `HOME`, `USERPROFILE`, and `COPILOT_HOME` values, and with `COPILOT_AUTO_UPDATE=false`, so the Copilot CLI whose version the host checked is the one that reviews;
 - gives Copilot its prompt on standard input, so no review text is part of its command line;
 - disables custom instructions, built-in MCP servers, remote delegation, interactive questions, shell, URL, and memory tools;
 - verifies the exact file set and SHA-256 hashes of the trusted materialized reviewer;

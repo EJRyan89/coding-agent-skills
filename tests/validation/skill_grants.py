@@ -322,7 +322,7 @@ def description_problems(root: Path, skill_files: list[Path]) -> list[str]:
     for skill_md in skill_files:
         name = skill_md.relative_to(root).as_posix()
         try:
-            description, user_only = render._adapter_frontmatter(skill_md.parent.name, skill_md.read_bytes())
+            description, _, user_only = render._adapter_frontmatter(skill_md.parent.name, skill_md.read_bytes())
         except DeployError as exc:
             problems.append(f"{name}: {exc.lines[0].removeprefix('ERROR: ')}")
             continue

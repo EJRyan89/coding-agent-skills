@@ -163,7 +163,8 @@ def derived_needs(root: Path, name: str, seen: frozenset[str] = frozenset()) -> 
     """The runtime capabilities a skill's frontmatter shows it needs, with those of each skill it invokes.
 
     A skill that grants Agent and names, in backticks, an agent whose definition declares hooks starts that agent
-    under them. An invoked skill is a backticked skill name on a SKILL.md line that says "invoke", the rule
+    under them, and one whose deploy-meta declares a network tool, required or optional, needs network access. An
+    invoked skill is a backticked skill name on a SKILL.md line that says "invoke", the rule
     tests/ai-config/test_cross_skill_contracts.py applies; its limits reach the step that invokes it.
     """
     import frontmatter
@@ -179,8 +180,11 @@ def derived_needs(root: Path, name: str, seen: frozenset[str] = frozenset()) -> 
     granted = document.value("allowed-tools") or []
     user_only = (document.string("disable-model-invocation") or "").casefold() == "true"
     starts_hooked = any(f"`{agent}`" in text for agent in hooked_agents(root))
+    metadata = root / "deploy-meta" / f"{name}.json"
+    declared = json.loads(metadata.read_text(encoding="utf-8")) if metadata.is_file() else {}
+    tools = frozenset([*declared.get("tools", []), *declared.get("optional_tools", [])])
     needs = runtime_support.frontmatter_needs(
-        granted if isinstance(granted, list) else [granted], user_only, starts_hooked
+        granted if isinstance(granted, list) else [granted], user_only, starts_hooked, tools
     )
     invoked = {
         match

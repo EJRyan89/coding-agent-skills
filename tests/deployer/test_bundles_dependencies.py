@@ -354,7 +354,18 @@ class BundleAndDependencyTests(DeployerTestCase):
         self.deploy_ok("--all")
         self.assertEqual(description, self.adapter("alpha").string("description"))
 
-    def test_user_only_adapter_cannot_be_selected_by_purpose_on_any_runtime(self) -> None:
+    def test_adapter_carries_the_argument_hint_exactly_and_none_when_the_skill_declares_none(self) -> None:
+        self.make_source_json()
+        hint = "[<repo name or path>] [--since REF] | list"
+        self.make_skill("alpha", "Alpha", argument_hint=json.dumps(hint))
+        self.make_skill("beta", "Beta")
+        self.make_config()
+        self.deploy_ok("--all")
+        self.assertEqual(hint, self.adapter("alpha").string("argument-hint"), "Copilot shows it in its / picker")
+        self.assertEqual(["name", "description", "argument-hint"], self.adapter("alpha").keys())
+        self.assertNotIn("argument-hint", self.adapter("beta"))
+
+    def test_user_only_adapter_keeps_its_description_and_sets_each_runtimes_explicit_only_switch(self) -> None:
         self.make_source_json()
         self.make_skill(
             "alpha", "Alpha", description='"Delete stale branches across every repository."', user_only=True
@@ -363,9 +374,11 @@ class BundleAndDependencyTests(DeployerTestCase):
         self.deploy_ok("--all")
         adapter = self.adapter("alpha")
         self.assertEqual(
-            "Runtime adapter for the authoritative alpha skill, which only the user starts.",
+            "Delete stale branches across every repository.",
             adapter.string("description"),
+            "Copilot's /skills list and / picker and Codex's /skills show it",
         )
+        self.assertEqual(["name", "description", "disable-model-invocation"], adapter.keys())
         self.assertEqual("true", adapter.string("disable-model-invocation"), "GitHub Copilot CLI's switch")
         self.assertEqual(
             "policy:\n  allow_implicit_invocation: false\n",
