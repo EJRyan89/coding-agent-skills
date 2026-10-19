@@ -1067,3 +1067,244 @@ def test_a_usage_error_exits_2(arguments: list[str]) -> None:
     result = subprocess.run([sys.executable, "-B", str(SCRIPT), *arguments], capture_output=True)
     CHECK.assertEqual(2, result.returncode)
     CHECK.assertEqual(b"", result.stdout)
+
+
+GUIDANCE = ".claude/skills/audit-repository/references/guidance.json"
+CATALOGUE = 'RUNTIMES = ("alpha", "beta")\nRUNTIME_TITLES = {"alpha": "Alpha CLI", "beta": "Beta"}\n'
+PROVENANCE_FILES = (
+    "skills/analyze-skill-cost/references/provenance.json",
+    "skills/audit-ai-config/references/provenance.json",
+)
+
+
+def guidance_text(pages: list[dict[str, object]]) -> str:
+    return json.dumps({"pages": pages}, indent=2) + "\n"
+
+
+def page(url: str, subject: str, read: list[str]) -> dict[str, object]:
+    return {"url": url, "subject": subject, "governs": f"what {url} governs", "read": read}
+
+
+FIXTURE_PAGES = [
+    page("https://example.com/alpha/skills", "alpha", ["v0.1.0"]),
+    page("https://example.com/alpha/hooks", "alpha", []),
+    page("https://example.com/beta/skills", "beta", ["v0.1.0"]),
+    page("https://example.com/python/typing", "python", ["v0.1.0"]),
+]
+
+
+class GuidanceTests(Fixture):
+    """A fixture whose deployer supports the runtimes alpha and beta, with a guidance record naming pages for both."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        write(
+            self.root,
+            {
+                "deployer/runtime_support.py": CATALOGUE,
+                "docs/alpha-support.md": "alpha\n",
+                "deploy-meta/demo.json": "{}\n",
+                "pyproject.toml": "[tool.ruff]\n",
+                **{path: "{}\n" for path in PROVENANCE_FILES},
+                GUIDANCE: guidance_text(FIXTURE_PAGES),
+            },
+        )
+        self.commit("the guidance record")
+
+    def test_writes_one_brief_per_subject_naming_its_pages_files_and_questions(self) -> None:
+        code, lines = self.run_main("guidance")
+        self.assertEqual(0, code, lines)
+        self.assertEqual(
+            [
+                f'GUIDANCE_RECORD "{GUIDANCE}"',
+                f"HEAD {git(self.root, 'rev-parse', 'HEAD')}",
+                "SUBJECT alpha 2 never",
+                "SUBJECT beta 1 v0.1.0",
+                "SUBJECT python 1 v0.1.0",
+                'MILESTONE defect "v0.3.0"',
+                'MILESTONE drift "v0.3.0"',
+                'MILESTONE polish "v0.3.0"',
+                'PROVENANCE "Found by the guidance audit after v0.2.0, read against commit '
+                f'{git(self.root, "rev-parse", "--short=7", "HEAD")}, on 2026-03-04."',
+                "DRIFT stale-fact a fact a file of this repository states about the runtime that the page no longer "
+                "supports",
+                "DRIFT stale-check a provenance passage the page no longer supports, naming the check it governs",
+                "DRIFT unused-guidance guidance the page gives that this repository could follow and does not",
+                "DRIFT moved-page a page that redirects or is gone, with the address it moved to",
+            ],
+            lines[:13],
+        )
+        briefs = self.briefs(lines)
+        self.assertEqual(["alpha", "beta", "python"], list(briefs))
+        alpha = briefs["alpha"]
+        self.assertTrue(alpha.startswith("# Guidance audit: Alpha CLI\n"))
+        self.assertIn(
+            "- https://example.com/alpha/skills: what https://example.com/alpha/skills governs. Last read at v0.1.0.\n",
+            alpha,
+        )
+        self.assertIn(
+            "- https://example.com/alpha/hooks: what https://example.com/alpha/hooks governs. Last read at "
+            "no release yet.\n",
+            alpha,
+        )
+        self.assertNotIn("example.com/beta", alpha)
+        facts = [line for line in alpha.splitlines() if line.startswith('- `"')]
+        self.assertEqual(
+            [
+                '- `"docs/alpha-support.md"`: the whole document.',
+                '- `"deployer/runtime_support.py"`: the runtime\'s capabilities and the comment that gives their '
+                "reasons.",
+                '- `"deploy-meta/"`: each skill\'s runtime_support declaration for the runtime.',
+                '- `"README.md"`: the supported-runtimes table.',
+                '- `"skills/analyze-skill-cost/references/provenance.json"`: each check whose source is one of these '
+                "pages.",
+                '- `"skills/audit-ai-config/references/provenance.json"`: each check whose source is one of these '
+                "pages.",
+            ],
+            facts,
+        )
+        self.assertNotIn("docs/beta-support.md", briefs["beta"])
+        self.assertIn('- `"skills/audit-ai-config/references/provenance.json"`', briefs["beta"])
+        self.assertEqual(
+            ['- `"pyproject.toml"`: the Python version and the ruff, mypy, and pytest settings.'],
+            [line for line in briefs["python"].splitlines() if line.startswith('- `"')],
+        )
+        for name, brief in briefs.items():
+            with self.subTest(brief=name):
+                for number, question in enumerate(audit.GUIDANCE_QUESTIONS, start=1):
+                    self.assertIn(f"{number}. {question}\n", brief)
+                self.assertIn("never from memory", brief)
+
+    def test_refuses_a_record_that_names_no_page_for_a_supported_runtime(self) -> None:
+        write(self.root, {GUIDANCE: guidance_text([FIXTURE_PAGES[0], FIXTURE_PAGES[3]])})
+        code, lines = self.run_main("guidance")
+        self.assertEqual(1, code)
+        self.assertEqual(
+            f"FAILED {GUIDANCE} names no page for beta, which deployer/runtime_support.py supports; add the "
+            "runtime's pages before the audit",
+            lines[-1],
+        )
+        self.assertFalse([line for line in lines if line.startswith("BRIEF")])
+
+    def test_a_record_without_python_pages_is_not_refused(self) -> None:
+        write(self.root, {GUIDANCE: guidance_text(FIXTURE_PAGES[:3])})
+        code, lines = self.run_main("guidance")
+        self.assertEqual(0, code)
+        self.assertEqual(["alpha", "beta"], list(self.briefs(lines)))
+
+    def test_record_appends_the_tag_to_every_page_and_writes_no_brief(self) -> None:
+        linked = self.linked_worktree()
+        github = StubGitHub()
+        code, lines = self.run_main("guidance", "--record", "v0.2.0", github=github, repository=linked)
+        self.assertEqual(0, code, lines)
+        self.assertEqual("RECORDED_PAGES v0.2.0 4", lines[-1])
+        self.assertFalse([line for line in lines if line.startswith(("BRIEF", "DRIFT", "MILESTONE"))])
+        self.assertEqual([], github.commands)
+        expected = json.loads(guidance_text(FIXTURE_PAGES))["pages"]
+        for item in expected:
+            item["read"].append("v0.2.0")
+        self.assertEqual(guidance_text(expected), (linked / GUIDANCE).read_bytes().decode("utf-8"))
+        _, lines = self.run_main("guidance", repository=linked)
+        self.assertIn("SUBJECT alpha 2 v0.2.0", lines)
+
+    def test_record_refuses_a_recorded_or_unknown_tag_and_the_main_checkout_and_leaves_the_record(self) -> None:
+        linked = self.linked_worktree()
+        cases = (
+            ("v0.1.0", linked, "v0.1.0 is already in the guidance record"),
+            ("v9.9.9", linked, "names no commit"),
+            ("v0.2.0", self.root, "is the main checkout; record the guidance audit from a worktree"),
+        )
+        for tag, repository, reason in cases:
+            with self.subTest(tag=tag):
+                before = (repository / GUIDANCE).read_bytes()
+                code, lines = self.run_main("guidance", "--record", tag, repository=repository)
+                self.assertEqual(1, code)
+                self.assertIn(reason, lines[-1])
+                self.assertEqual(before, (repository / GUIDANCE).read_bytes())
+
+    def test_a_catalogue_without_literal_runtimes_fails(self) -> None:
+        for text in ("RUNTIMES = tuple(load())\n", "RUNTIMES = ('alpha',)\nRUNTIME_TITLES = {}\n", "def (\n"):
+            with self.subTest(text=text):
+                write(self.root, {"deployer/runtime_support.py": text})
+                code, lines = self.run_main("guidance")
+                self.assertEqual(1, code)
+                self.assertTrue(lines[-1].startswith("FAILED "), lines)
+                self.assertIn("deployer/runtime_support.py", lines[-1])
+
+
+@pytest.mark.parametrize(
+    ("pages", "reason"),
+    [
+        pytest.param([], "$.pages must be a non-empty array", id="no-pages"),
+        pytest.param([{**page("https://example.com", "alpha", []), "extra": 1}], "unknown field", id="extra-field"),
+        pytest.param([page("http://example.com", "alpha", [])], "must be a URL starting https://", id="http"),
+        pytest.param([page("https://example.com/a b", "alpha", [])], "without whitespace", id="space"),
+        pytest.param([page("https://example.com", "gamma", [])], "$.pages[0].subject must be one of", id="subject"),
+        pytest.param([page("https://example.com", "alpha", ["v1", "v1"])], "a tag named twice", id="tag-twice"),
+        pytest.param([page("https://example.com", "alpha", [" "])], "$.pages[0].read[0] must be", id="blank-tag"),
+        pytest.param(
+            [page("https://example.com", "alpha", []), page("https://example.com", "python", [])],
+            "lists https://example.com more than once",
+            id="page-twice",
+        ),
+    ],
+)
+def test_a_malformed_guidance_record_fails_with_the_reason(
+    tmp_path: Path, pages: list[dict[str, object]], reason: str
+) -> None:
+    path = tmp_path / "guidance.json"
+    path.write_text(guidance_text(pages), encoding="utf-8")
+    with CHECK.assertRaises(audit.AuditError) as caught:
+        audit.read_guidance(path, ["alpha", "python"])
+    CHECK.assertIn(reason, str(caught.exception))
+
+
+def test_a_missing_or_unreadable_guidance_record_fails_with_the_reason(tmp_path: Path) -> None:
+    with CHECK.assertRaises(audit.AuditError) as missing:
+        audit.read_guidance(tmp_path / "missing.json", ["alpha"])
+    CHECK.assertIn("no guidance record at", str(missing.exception))
+    (tmp_path / "broken.json").write_text("{", encoding="utf-8")
+    with CHECK.assertRaises(audit.AuditError) as broken:
+        audit.read_guidance(tmp_path / "broken.json", ["alpha"])
+    CHECK.assertIn("cannot read the guidance record", str(broken.exception))
+
+
+def test_the_oldest_read_is_never_while_a_page_is_unread_and_otherwise_the_earliest_last_read() -> None:
+    def pages(*reads: tuple[str, ...]) -> list[audit.Page]:
+        return [audit.Page(f"https://example.com/{n}", "alpha", "x", read) for n, read in enumerate(reads)]
+
+    CHECK.assertEqual("never", audit.oldest_read(pages(("v1",), ())))
+    CHECK.assertEqual("v1", audit.oldest_read(pages(("v1", "v2"), ("v1",))))
+    CHECK.assertEqual("v2", audit.oldest_read(pages(("v1", "v2"), ("v2", "v3"))))
+
+
+class RepositoryGuidanceTests(unittest.TestCase):
+    """This repository's own guidance record."""
+
+    def pages(self) -> list[audit.Page]:
+        runtimes = audit.supported_runtimes(REPOSITORY)
+        return audit.read_guidance(REPOSITORY / GUIDANCE, [*runtimes, audit.PYTHON_SUBJECT])
+
+    def test_it_names_pages_for_every_supported_runtime_and_for_python(self) -> None:
+        subjects = {found.subject for found in self.pages()}
+        self.assertEqual({"claude-code", "codex", "copilot-cli", "python"}, subjects)
+        self.assertEqual([], audit.unread_runtimes(self.pages(), list(audit.supported_runtimes(REPOSITORY))))
+
+    def test_every_page_a_provenance_file_cites_is_in_the_record(self) -> None:
+        recorded = {found.url for found in self.pages()}
+        for name in PROVENANCE_FILES:
+            checks = json.loads((REPOSITORY / name).read_text(encoding="utf-8"))["checks"]
+            cited = {source["page"] for sources in checks.values() for source in sources if "page" in source}
+            with self.subTest(provenance=name):
+                self.assertTrue(cited)
+                self.assertEqual([], sorted(cited - recorded))
+
+    def test_every_file_a_brief_names_is_one_this_repository_holds(self) -> None:
+        tracked = set(git(REPOSITORY, "ls-files").splitlines())
+        for subject in (*audit.supported_runtimes(REPOSITORY), audit.PYTHON_SUBJECT):
+            facts = audit.PYTHON_FACTS if subject == audit.PYTHON_SUBJECT else audit.RUNTIME_FACTS
+            expected = [path for path, _ in facts if "{runtime}" not in path]
+            with self.subTest(subject=subject):
+                named = [path for path, _ in audit.subject_facts(subject, tracked)]
+                self.assertEqual([], [path for path in expected if path not in named])
+        self.assertIn("docs/codex-support.md", [path for path, _ in audit.subject_facts("codex", tracked)])

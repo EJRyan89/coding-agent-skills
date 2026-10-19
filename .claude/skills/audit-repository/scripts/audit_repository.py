@@ -1,5 +1,5 @@
-"""The deterministic parts of this repository's two audits per release, so the agent only starts the readers,
-confirms what they find, and files it.
+"""The deterministic parts of this repository's audits after each release and before it, so the agent only starts
+the readers, confirms what they find, and files it.
 
     release        group the files changed since the last release HEAD holds, the highest release tag reachable
                    from it as skill-core's release_tags.py defines one (or --since REF), into the four areas and write
@@ -10,6 +10,11 @@ confirms what they find, and files it.
                    repository and is refused in the main checkout, so it lands through a worktree's pull request: it
                    writes a copy beside the record and replaces the record with it, so a write that fails leaves the
                    record as it was
+    guidance       write one brief per runtime the deployer supports and for Python, naming the pages of its published
+                   guidance the guidance record lists, the files of this repository that state facts about it, and
+                   the questions a reader answers for each page, for the guidance audit after tagging; refused while
+                   the record names no page for a runtime deployer/runtime_support.py lists. With --record TAG,
+                   append TAG to every page's reads instead, from a worktree as rotation --record does
     duplicates     search the open issues for each QUERY, so a finding already filed is not filed twice
     remove-briefs  delete a briefs directory a release or rotation run printed as BRIEFS, and nothing else: one
                    holding the BRIEFS_MARKER file the run wrote before its first brief, naming the directory
@@ -30,17 +35,22 @@ Every line is one fact:
     NEXT <area>                        rotation: the area to read whole now
     FILES <count>                      rotation: the files in that area at HEAD
     RECORDED <tag> <area> <date>       rotation --record: the entry appended to the record
+    GUIDANCE_RECORD "<file>"           guidance: the guidance record read, from the top of the repository
+    SUBJECT <subject> <pages> <tag>    guidance: a runtime, or python, with its pages and the oldest of their last
+                                       reads, or never when a page has none
+    RECORDED_PAGES <tag> <count>       guidance --record: the pages the tag was appended to
     MILESTONE <severity> "<title>"     the milestone a finding of each severity is filed into, or none when no open
                                        milestone is that one
     CARRIED <number> "<title>"         rotation: an open issue of the next milestone, also named in every brief
     PROVENANCE "<sentence>"            the sentence that opens each filed issue's body: the audit, its scope, its date
-    DRIFT <kind> <what it is>          each kind of drift the briefs ask the readers to look for
+    DRIFT <kind> <what it is>          each kind of drift the briefs ask the readers to look for, which for guidance
+                                       are the guidance kinds
     TEMPLATE <field> <what it holds>   each field of a finding the briefs ask for
     SECTION <name> <what it holds>     each section of the report, in order
     READERS <area> <count>             the briefs, one per reader, an area's files are split into
     BRIEFS "<directory>"               the new directory holding the briefs
     BRIEF <name> "<file>"              one brief, the whole prompt for one read-only reader: <area> for a whole
-                                       area, <area>-<part> for one part of it
+                                       area, <area>-<part> for one part of it, <subject> for a guidance brief
     MATCHES <query> <count>            duplicates: how many open issues the query numbered <query>, from 1, found
     MATCH <query> <number> "<title>"   duplicates: one of them
     REMOVED "<directory>"              remove-briefs: the briefs directory deleted
@@ -49,13 +59,15 @@ A title is printed as a JSON string, flattened to one line. A git or gh command 
 reason; a ref is reported as naming no commit only when git finds none, and a repository with no release reachable
 from HEAD only when git lists no release tag reaching it.
 
-Exit status 0 means the briefs were written, the entry recorded, the search run, or the directory deleted; 1 a last
-line FAILED <reason>; 2 a usage error.
+Exit status 0 means the briefs were written, the entry or the reads recorded, the search run, or the directory
+deleted; 1 a last line FAILED <reason>; 2 a usage error.
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
+import contextlib
 import json
 import os
 import re
@@ -76,6 +88,7 @@ from flat_text import flat_text
 from git_client import GitClient, GitError, classify_failure
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from release_tags import last_release
+from typed_fields import FieldError, FieldReader
 
 # The rotation record, relative to the top of the repository it describes.
 RECORD_PATH = ".claude/skills/audit-repository/references/rotation.json"
@@ -89,6 +102,13 @@ BRIEFS_PREFIX = "audit-repository-"
 # The file a run writes in its briefs directory before any brief, naming the directory; remove-briefs deletes only a
 # directory holding it, so a directory another program named with the prefix is left alone.
 BRIEFS_MARKER = ".audit-repository-briefs.json"
+# The guidance record, relative to the top of the repository it describes.
+GUIDANCE_PATH = ".claude/skills/audit-repository/references/guidance.json"
+# Where the deployer catalogues the runtimes it supports, read as literals so the audit runs no deployer code.
+RUNTIME_CATALOGUE = "deployer/runtime_support.py"
+PYTHON_SUBJECT = "python"
+PYTHON_TITLE = "Python"
+PAGE_SCHEME = "https://"
 # The most open issues one duplicate search lists, and one milestone's open issues the rotation brief names.
 SEARCH_LIMIT = 30
 CARRIED_LIMIT = 1000
@@ -193,6 +213,47 @@ REPORT_SECTIONS = (
     ("findings", "each finding confirmed against both sides, as the TEMPLATE fields"),
     ("unconfirmed", "each suspicion not confirmed against both sides, and why"),
     ("coverage", "each file: read whole, skimmed, or not read"),
+)
+
+
+# What a reader compares a runtime's pages with: each file of this repository that states facts about the runtime,
+# and where in it. {runtime} is the runtime's name; a file the checkout does not hold is left out of the brief.
+RUNTIME_FACTS = (
+    ("docs/{runtime}-support.md", "the whole document"),
+    ("deployer/runtime_support.py", "the runtime's capabilities and the comment that gives their reasons"),
+    ("deploy-meta/", "each skill's runtime_support declaration for the runtime"),
+    ("deployer/render.py", "how the runtime adapter is rendered for the runtime"),
+    ("tools/runtime_canary.py", "the command line that starts the runtime"),
+    ("skills/code-review-core/scripts/review_hosts.py", "the command line the review host starts the runtime with"),
+    ("docs/code-review-operations-contract.md", "the Threat model rows that name the runtime"),
+    ("README.md", "the supported-runtimes table"),
+    ("skills/analyze-skill-cost/references/provenance.json", "each check whose source is one of these pages"),
+    ("skills/audit-ai-config/references/provenance.json", "each check whose source is one of these pages"),
+)
+PYTHON_FACTS = (
+    ("pyproject.toml", "the Python version and the ruff, mypy, and pytest settings"),
+    ("requirements-dev.txt", "the development dependencies and how they are pinned"),
+    ("deployer/tools.py", "the Python floor and its reason"),
+    ("CONTRIBUTING.md", "Python checks"),
+    ("docs/dependency-updates.md", "how the pins are kept current"),
+    ("conftest.py", "how the suites isolate git and their homes"),
+)
+# What a reader answers for each page of a guidance brief.
+GUIDANCE_QUESTIONS = (
+    "What does the page say now about what it governs? Fetch the live page and quote it; never answer from memory.",
+    "What do the files of this repository listed above state about the same thing? Quote each statement with its line.",
+    "Do they agree? A disagreement is a finding that names the file and line to change.",
+    "Does each provenance entry that cites the page still hold? A passage the page no longer supports is a finding "
+    "that names the check to change.",
+    "Does the page give guidance this repository could follow and does not, for what the page governs?",
+    "Has the page moved or gone? Give the address it moved to, which the guidance record takes when the audit is "
+    "recorded.",
+)
+GUIDANCE_KINDS = (
+    ("stale-fact", "a fact a file of this repository states about the runtime that the page no longer supports"),
+    ("stale-check", "a provenance passage the page no longer supports, naming the check it governs"),
+    ("unused-guidance", "guidance the page gives that this repository could follow and does not"),
+    ("moved-page", "a page that redirects or is gone, with the address it moved to"),
 )
 
 
@@ -408,11 +469,107 @@ def next_area(entries: list[Entry]) -> Area:
 def write_record(path: Path, entries: list[Entry]) -> None:
     """Replace the record with `entries` through a copy written beside it, so a write that fails leaves the record as
     it was and removes the copy. Raises OSError, naming the copy too when it cannot be removed."""
-    document = {"audits": [{"date": entry.date, "tag": entry.tag, "area": entry.area} for entry in entries]}
+    write_json(path, {"audits": [{"date": entry.date, "tag": entry.tag, "area": entry.area} for entry in entries]})
+
+
+def write_json(path: Path, document: object) -> None:
+    """Replace a record with `document` through a copy written beside it, as write_record describes."""
     try:
-        replace_text(path, json.dumps(document, indent=2) + "\n")
+        replace_text(path, json.dumps(document, indent=2, ensure_ascii=False) + "\n")
     except UnfinishedCopyError as exc:
         raise OSError(f"{exc.failure}; the unfinished copy {exc.copy.as_posix()} remains: {exc.removal}") from exc
+
+
+# --- the guidance record --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Page:
+    """One page of a runtime's, or Python's, published guidance, and the release tags at which it was read."""
+
+    url: str
+    subject: str
+    governs: str
+    read: tuple[str, ...]
+
+
+READ = FieldReader()
+
+
+def supported_runtimes(top: Path) -> dict[str, str]:
+    """The runtimes the deployer supports, with their titles, read as the literal RUNTIMES and RUNTIME_TITLES of its
+    catalogue in the checkout."""
+    path = top / RUNTIME_CATALOGUE
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, SyntaxError, ValueError) as exc:
+        raise AuditError(f"cannot read the runtime catalogue {path.as_posix()}: {exc}") from exc
+    values: dict[str, object] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            with contextlib.suppress(ValueError):
+                values[node.targets[0].id] = ast.literal_eval(node.value)
+    runtimes, titles = values.get("RUNTIMES"), values.get("RUNTIME_TITLES")
+    if (
+        not isinstance(runtimes, tuple)
+        or not runtimes
+        or not isinstance(titles, dict)
+        or not all(isinstance(runtime, str) and isinstance(titles.get(runtime), str) for runtime in runtimes)
+    ):
+        raise AuditError(f"{path.as_posix()} holds no literal RUNTIMES and RUNTIME_TITLES that title each runtime")
+    return {runtime: titles[runtime] for runtime in runtimes}
+
+
+def read_guidance(path: Path, subjects: Sequence[str]) -> list[Page]:
+    """The guidance record's pages, each about one of `subjects`, or AuditError naming what is wrong with it."""
+    name = path.as_posix()
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise AuditError(f"no guidance record at {name}") from exc
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise AuditError(f"cannot read the guidance record {name}: {exc}") from exc
+    try:
+        items = READ.json_object(document, "$", required={"pages"})["pages"]
+        pages = READ.array(items, "$.pages", partial(guidance_page, subjects=subjects), nonempty=True)
+    except FieldError as exc:
+        raise AuditError(f"{name}: {exc}") from exc
+    urls = [page.url for page in pages]
+    repeated = sorted({url for url in urls if urls.count(url) > 1})
+    if repeated:
+        raise AuditError(f"{name} lists {', '.join(repeated)} more than once")
+    return pages
+
+
+def guidance_page(value: object, path: str, subjects: Sequence[str]) -> Page:
+    fields = READ.json_object(value, path, required={"url", "subject", "governs", "read"})
+    url = READ.string(fields["url"], f"{path}.url", single_line=True, trimmed=True)
+    if not url.startswith(PAGE_SCHEME) or any(character.isspace() for character in url):
+        raise READ.fail(f"{path}.url", f"a URL starting {PAGE_SCHEME} without whitespace", json.dumps(url))
+    subject = READ.one_of(fields["subject"], f"{path}.subject", subjects)
+    governs = READ.string(fields["governs"], f"{path}.governs", single_line=True, trimmed=True)
+    read = READ.array(fields["read"], f"{path}.read", partial(READ.string, single_line=True, trimmed=True))
+    if len(set(read)) != len(read):
+        raise READ.fail(f"{path}.read", "tags each named once", "a tag named twice")
+    return Page(url, subject, governs, tuple(read))
+
+
+def write_guidance(path: Path, pages: Sequence[Page]) -> None:
+    pages_json = [{"url": p.url, "subject": p.subject, "governs": p.governs, "read": list(p.read)} for p in pages]
+    write_json(path, {"pages": pages_json})
+
+
+def unread_runtimes(pages: Sequence[Page], runtimes: Sequence[str]) -> list[str]:
+    """The supported runtimes the record names no page for."""
+    return [runtime for runtime in runtimes if not any(page.subject == runtime for page in pages)]
+
+
+def oldest_read(pages: Sequence[Page]) -> str:
+    """The least recent last read among pages, by the record's order of tags, or never when a page has none."""
+    if not pages or any(not page.read for page in pages):
+        return "never"
+    order = list(dict.fromkeys(tag for page in pages for tag in page.read))
+    return min((page.read[-1] for page in pages), key=order.index)
 
 
 # --- briefs ---------------------------------------------------------------------------------------
@@ -587,8 +744,66 @@ def write_briefs(briefs: list[tuple[str, str]]) -> list[str]:
     return lines
 
 
-def guidance_lines() -> list[str]:
-    lines = [f"DRIFT {kind} {what}" for kind, what in DRIFT_KINDS]
+def guidance_brief(subject: str, title: str, pages: Sequence[Page], facts: Sequence[tuple[str, str]], head: str) -> str:
+    """The brief for one reader of a runtime's, or Python's, published guidance."""
+    lines = [
+        f"# Guidance audit: {title}",
+        "",
+        "Audit this repository read-only against the published guidance below: do not edit, commit, deploy, or open "
+        "issues. Report what you find.",
+        "",
+        f"Read each page below live, as it is today, and never from memory, and cite its address in each finding. Then "
+        f"read the files of this repository listed after the pages as they are at {head}, and answer the questions "
+        f"for each page. A page that cannot be fetched goes under Coverage, never under Findings.",
+        "",
+        "## Pages",
+        "",
+        *(
+            f"- {page.url}: {page.governs}. Last read at {page.read[-1] if page.read else 'no release yet'}."
+            for page in pages
+        ),
+        "",
+        f"## What this repository states about {title}",
+        "",
+        QUOTING_NOTE,
+        "",
+        *(f"- {code_literal(path)}: {where}." for path, where in facts),
+        "",
+        "## Questions for each page",
+        "",
+        *(f"{number}. {question}" for number, question in enumerate(GUIDANCE_QUESTIONS, start=1)),
+        "",
+        "## Kinds of finding",
+        "",
+        *(f"- **{kind}**: {what}." for kind, what in GUIDANCE_KINDS),
+        "",
+        "## Report",
+        "",
+        "Report these sections in this order, where Coverage lists each page: read, or why it could not be:",
+        "",
+        *(f"- **{section.capitalize()}**: {what}." for section, what in REPORT_SECTIONS),
+        "",
+        "Give each finding these fields, its location being the page's address and the repository's path:line:",
+        "",
+        *(f"- **{field}**: {what}." for field, what in FINDING_FIELDS),
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def subject_facts(subject: str, tracked: set[str]) -> list[tuple[str, str]]:
+    """The files of the checkout that state facts about a subject, each with where to look, as the checkout holds
+    them: a file it tracks, or a folder holding one."""
+    facts = PYTHON_FACTS if subject == PYTHON_SUBJECT else RUNTIME_FACTS
+    found = []
+    for path, where in facts:
+        named = path.format(runtime=subject)
+        if named in tracked or (named.endswith("/") and any(file.startswith(named) for file in tracked)):
+            found.append((named, where))
+    return found
+
+
+def guidance_lines(kinds: Sequence[tuple[str, str]] = DRIFT_KINDS) -> list[str]:
+    lines = [f"DRIFT {kind} {what}" for kind, what in kinds]
     lines += [f"TEMPLATE {field} {what}" for field, what in FINDING_FIELDS]
     return lines + [f"SECTION {section} {what}" for section, what in REPORT_SECTIONS]
 
@@ -678,6 +893,59 @@ def rotation(
     return lines + write_briefs(briefs)
 
 
+def guidance(
+    git: GitClient, github: GitHubClient, repository: Path, record: str | None, today: Callable[[], date]
+) -> list[str]:
+    head = commit_of(git, repository, "HEAD")
+    top, main_checkout = checkout_top(git, repository)
+    runtimes = supported_runtimes(top)
+    titles = {**runtimes, PYTHON_SUBJECT: PYTHON_TITLE}
+    path = top / GUIDANCE_PATH
+    pages = read_guidance(path, list(titles))
+    unread = unread_runtimes(pages, list(runtimes))
+    if unread:
+        raise AuditError(
+            f"{GUIDANCE_PATH} names no page for {', '.join(unread)}, which {RUNTIME_CATALOGUE} supports; add the "
+            "runtime's pages before the audit"
+        )
+    lines = [f'GUIDANCE_RECORD "{GUIDANCE_PATH}"', f"HEAD {head}"]
+    by_subject = {subject: [page for page in pages if page.subject == subject] for subject in titles}
+    lines += [f"SUBJECT {subject} {len(found)} {oldest_read(found)}" for subject, found in by_subject.items() if found]
+    if record is not None:
+        if main_checkout:
+            raise AuditError(
+                f"{top.as_posix()} is the main checkout; record the guidance audit from a worktree, such as one "
+                "`python tools/worktrees.py new chore <name>` creates, and merge it through a pull request"
+            )
+        return [*lines, record_reads(git, repository, path, pages, record)]
+    released = released_tag(git, repository, head)
+    milestones = open_milestones_after(github, released)
+    following = milestones[0] if milestones else None
+    after = f" after {released}" if released is not None else ""
+    sentence = f"Found by the guidance audit{after}, read against commit {short(head)}, on {today()}."
+    lines += [*milestone_lines(following, following), f"PROVENANCE {json_text(sentence)}"]
+    lines += guidance_lines(GUIDANCE_KINDS)
+    tracked = set(tracked_files(git, repository, head))
+    briefs = [
+        (subject, guidance_brief(subject, titles[subject], found, subject_facts(subject, tracked), head))
+        for subject, found in by_subject.items()
+        if found
+    ]
+    return lines + write_briefs(briefs)
+
+
+def record_reads(git: GitClient, repository: Path, path: Path, pages: list[Page], tag: str) -> str:
+    """Append `tag` to every page's reads, refusing a tag a page already holds or that names no tag."""
+    if any(tag in page.read for page in pages):
+        raise AuditError(f"{tag} is already in the guidance record")
+    commit_of(git, repository, f"refs/tags/{tag}")
+    try:
+        write_guidance(path, [Page(page.url, page.subject, page.governs, (*page.read, tag)) for page in pages])
+    except OSError as exc:
+        raise AuditError(f"cannot write the guidance record {path.as_posix()}, which is unchanged: {exc}") from exc
+    return f"RECORDED_PAGES {tag} {len(pages)}"
+
+
 def append_entry(git: GitClient, repository: Path, path: Path, entries: list[Entry], entry: Entry) -> str:
     if any(existing.tag == entry.tag for existing in entries):
         raise AuditError(f"{entry.tag} is already in the rotation record")
@@ -746,12 +1014,16 @@ def names_directory(marker: Path, directory: Path) -> bool:
 def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--repository", type=Path, default=Path(), help="the checkout to audit (default: here)")
-    parser = argparse.ArgumentParser(description="Print the briefs for this repository's release and rotation audits.")
+    parser = argparse.ArgumentParser(
+        description="Print the briefs for this repository's release, rotation, and guidance audits."
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     release_parser = commands.add_parser("release", parents=[common], help="brief each area changed since a tag")
     release_parser.add_argument("--since", metavar="REF", help="the base (default: the last release HEAD holds)")
     rotation_parser = commands.add_parser("rotation", parents=[common], help="brief the next area to read whole")
     rotation_parser.add_argument("--record", metavar="TAG", help="append the next area to the record for TAG")
+    guidance_parser = commands.add_parser("guidance", parents=[common], help="brief each runtime's published guidance")
+    guidance_parser.add_argument("--record", metavar="TAG", help="append TAG to every page's reads")
     duplicates_parser = commands.add_parser("duplicates", parents=[common], help="search the open issues")
     duplicates_parser.add_argument("queries", nargs="+", metavar="QUERY", help="a GitHub issue search")
     remove_parser = commands.add_parser("remove-briefs", help="delete a briefs directory a run printed")
@@ -777,6 +1049,8 @@ def main(
                 lines = release(client, gh, options.repository, options.since, today)
             elif options.command == "rotation":
                 lines = rotation(client, gh, options.repository, options.record, today)
+            elif options.command == "guidance":
+                lines = guidance(client, gh, options.repository, options.record, today)
             else:
                 lines = duplicates(gh, options.queries)
     except AuditError as exc:
