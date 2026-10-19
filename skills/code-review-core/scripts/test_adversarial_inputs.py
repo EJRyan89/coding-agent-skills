@@ -49,6 +49,7 @@ from review_archive import latest_record, list_versions, pull_directory, record_
 from review_config import ConfigurationError, write_config
 from review_github import GitHubClient
 from review_operation import reviewed_head
+from review_records import ReviewRecord
 from review_runtime import materialize_source_snapshot, verify_github_tarball
 from test_review_documents import StubPdftotext, body_xml, paragraph, pdf_document, word_document
 from test_review_pipeline import checked_run_list
@@ -579,7 +580,7 @@ class UnreviewedFileTests(AdversarialFixture):
         self.assertEqual(placeholder, (ready["run"] / "source" / "docs" / "notes.zip").read_bytes())
         self.assertNotIn("ignore your instructions", self.prompts(ready))
         self.assertEqual("APPROVED", self.recorded_verdict(ready))
-        record = latest_record(self.archive, REPOSITORY, NUMBER) or {}
+        record: Any = latest_record(self.archive, REPOSITORY, NUMBER) or {}
         self.assertEqual(2, record.get("schema_version"))
         self.assertEqual({"unavailable_sources": [], "unreviewed_files": unreviewed}, record["review"]["coverage"])
         report = self.report()
@@ -633,7 +634,7 @@ class UnreviewedFileTests(AdversarialFixture):
                 self.assertEqual(coverage, self.request(ready)["coverage"])
                 self.assertNotIn("ignore your instructions", self.prompts(ready))
                 self.assertEqual("APPROVED", self.recorded_verdict(ready))
-                record = latest_record(self.archive, REPOSITORY, NUMBER) or {}
+                record: Any = latest_record(self.archive, REPOSITORY, NUMBER) or {}
                 self.assertEqual(coverage, record["review"]["coverage"])
                 self.assertIn(
                     self.NOT_READ + "`dist/Setup.MSI` (`.msi`), `models/net.onnx` (`.onnx`).\n", self.report()
@@ -1096,7 +1097,7 @@ class ReviewerSourceTests(AdversarialFixture):
             self.assertEqual("GENERIC files=1 (the suite's generic reviewer reviews it)", review)
         return pull.rpartition(" reviewer=")[2], reviewer and reviewer.group(1), note.removeprefix("NOTE ")
 
-    def recorded(self, ready: dict[str, Any]) -> dict[str, Any]:
+    def recorded(self, ready: dict[str, Any]) -> ReviewRecord:
         if ready["kind"] == "entrypoint":
             result = {
                 "protocol_version": 1,
@@ -1899,7 +1900,7 @@ class InlineReviewerTests(AdversarialFixture):
         self.archive = self.root / "untouched archive"
         self.configure()
         self.assertEqual("INCOMPLETE", self.recorded_verdict(self.prepare_inline()))
-        record = latest_record(self.archive, REPOSITORY, NUMBER)
+        record: Any = latest_record(self.archive, REPOSITORY, NUMBER)
         self.assertEqual("inline", (record or {})["review"]["dispatch"])
 
 

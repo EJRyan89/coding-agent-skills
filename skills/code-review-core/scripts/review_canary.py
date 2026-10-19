@@ -35,7 +35,7 @@ from github_client import replace_undecodable
 from link_probe import is_link_or_junction
 from review_config import ConfigurationError, validate_repository_identity
 from review_io import PersistenceError, read_json
-from review_records import RecordError, validate_record
+from review_records import RecordError, ReviewRecord, validate_record
 from review_runtime import DOCUMENT_STAGES, RuntimeContractError, _safe_relative_path
 from typed_fields import FieldError, FieldReader
 
@@ -110,7 +110,7 @@ def validate_fixture_pull(value: Any) -> dict[str, Any]:
     return pull
 
 
-def validate_prior_record(value: Any, *, repository: str, number: int) -> dict[str, Any]:
+def validate_prior_record(value: object, *, repository: str, number: int) -> ReviewRecord:
     """The review a fixture re-review starts from: a valid first review of the same pull request."""
     try:
         record = validate_record(value)

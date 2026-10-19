@@ -50,7 +50,15 @@ from review_flags import FlagError, default_flags_path, load_store
 from review_github import READ, GitHubClient, GitHubError
 from review_io import PersistenceError, atomic_write_json, map_in_order, read_json, working_path
 from review_operation import reviewed_head
-from review_records import RE_REVIEW_SCOPES, RecordError, flagged_entries, ledger_history, ledger_id
+from review_records import (
+    RE_REVIEW_SCOPES,
+    LedgerEntry,
+    RecordError,
+    ReviewRecord,
+    flagged_entries,
+    ledger_history,
+    ledger_id,
+)
 from typed_fields import FieldError
 from update_pr_dashboard import (
     CANDIDATE_STATES,
@@ -247,7 +255,7 @@ def tracker_item(
 
 
 def _baseline(
-    records: list[dict[str, Any]], user_review_sha: str | None, repository: str, ancestry: Ancestry
+    records: list[ReviewRecord], user_review_sha: str | None, repository: str, ancestry: Ancestry
 ) -> int | None:
     """The latest review version whose head is at or before the user's last review commit, 0 when every one is after
     it, or None when the user has not reviewed or GitHub cannot compare the commits. An exact head match needs no
@@ -267,7 +275,7 @@ def _baseline(
     return 0
 
 
-def _since_review(ledger: list[dict[str, Any]], baseline: int) -> dict[str, int]:
+def _since_review(ledger: list[LedgerEntry], baseline: int) -> dict[str, int]:
     """What moved after the baseline version: entries raised since and still open, and entries raised by then that a
     later review addressed. The two never share an entry."""
     new = sum(entry["state"] == "open" and entry["version"] > baseline for entry in ledger)

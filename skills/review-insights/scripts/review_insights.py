@@ -53,7 +53,7 @@ import json
 import re
 import sys
 from collections import Counter
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -84,7 +84,10 @@ from review_flags import FlagAlreadyResolved, FlagError, default_flags_path, loa
 from review_io import PersistenceError, ResourceLock, atomic_write_text, read_json
 from review_records import (
     ANALYZER_COVERAGES,
+    FindingReference,
     RecordError,
+    ReviewRecord,
+    artifact_hashes,
     finding_reference,
     ledger_history,
     source_parts,
@@ -127,7 +130,7 @@ BOUND_SEPARATOR = "\0"
 
 ReviewKey = tuple[str, int, int]
 FindingKey = tuple[str, int, int, str]
-Pair = tuple[dict[str, Any], dict[str, Any], FindingKey]  # (record, finding, its ledger entry)
+Pair = tuple[Mapping[str, Any], Mapping[str, Any], FindingKey]  # (record, finding, its ledger entry)
 
 
 class InsightError(ValueError):
@@ -221,9 +224,9 @@ class RecordPairs:
     """The review record pairs a report reads, each validated once by its JSON path however many stages read it."""
 
     def __init__(self) -> None:
-        self.validated: dict[Path, dict[str, Any]] = {}
+        self.validated: dict[Path, ReviewRecord] = {}
 
-    def read(self, json_path: Path) -> dict[str, Any]:
+    def read(self, json_path: Path) -> ReviewRecord:
         if json_path not in self.validated:
             self.validated[json_path] = validate_record_pair(json_path, json_path.with_suffix(".md"))
         return self.validated[json_path]
@@ -231,7 +234,7 @@ class RecordPairs:
 
 def collect_records(
     archive_root: Path, repositories: list[str], start: date, end: date, pairs: RecordPairs
-) -> list[tuple[Path, dict[str, Any]]]:
+) -> list[tuple[Path, ReviewRecord]]:
     """The records reviewed in the range. Every pair of the repositories is validated, in range or not, so `pairs`
     holds them all for the stages after this one."""
     if start > end:
@@ -239,7 +242,7 @@ def collect_records(
     normalized = [validate_repository_identity(value) for value in repositories]
     if not normalized or len(set(normalized)) != len(normalized):
         raise InsightError("Repositories must be a non-empty unique list")
-    records: list[tuple[Path, dict[str, Any]]] = []
+    records: list[tuple[Path, ReviewRecord]] = []
     for repository in normalized:
         for json_path in record_files(archive_root, repository):
             try:
@@ -252,11 +255,11 @@ def collect_records(
     return sorted(records, key=lambda item: str(item[0]).casefold())
 
 
-def _review_key(record: dict[str, Any]) -> ReviewKey:
+def _review_key(record: Mapping[str, Any]) -> ReviewKey:
     return record["repository"].lower(), record["pull_request"]["number"], record["review"]["version"]
 
 
-def _finding_key(record: dict[str, Any], finding: dict[str, Any]) -> FindingKey:
+def _finding_key(record: Mapping[str, Any], finding: Mapping[str, Any]) -> FindingKey:
     return (*_review_key(record), finding["id"])
 
 
@@ -272,7 +275,7 @@ def flags_by_entry(flags: list[dict[str, Any]], ledgers: Ledgers) -> dict[Findin
     return linked
 
 
-def raised_by(record: dict[str, Any], finding: dict[str, Any]) -> list[tuple[str, str]]:
+def raised_by(record: Mapping[str, Any], finding: Mapping[str, Any]) -> list[tuple[str, str]]:
     """The reviewers that raised a finding, each with the model it ran on.
 
     A record's sole reviewer raised every finding (a repository entrypoint reviewer's source is its own free text);
@@ -287,7 +290,7 @@ def raised_by(record: dict[str, Any], finding: dict[str, Any]) -> list[tuple[str
     return named or [(part, UNKNOWN_MODEL) for part in parts]
 
 
-def read_ledgers(archive_root: Path, records: list[tuple[Path, dict[str, Any]]], pairs: RecordPairs) -> Ledgers:
+def read_ledgers(archive_root: Path, records: list[tuple[Path, ReviewRecord]], pairs: RecordPairs) -> Ledgers:
     """The ledger entry of every finding of each analyzed pull request, and each entry's outcome, read from every
     review of it, in range or not. An entry is read from the ledger that ends its chain: the last review before the
     next initial review, which starts a new ledger. Its outcome is the latest disposition a review made after the
@@ -314,7 +317,7 @@ def read_ledgers(archive_root: Path, records: list[tuple[Path, dict[str, Any]]],
         for end in ends:
             for entry in by_version[end]:
                 key = (repository, number, entry["version"], entry["id"])
-                raised = [{"version": entry["version"], "id": entry["id"]}, *entry["repeats"]]
+                raised: list[FindingReference] = [{"version": entry["version"], "id": entry["id"]}, *entry["repeats"]]
                 for occurrence in raised:
                     ledgers.entries[(repository, number, occurrence["version"], occurrence["id"])] = key
                 last_raised = max(occurrence["version"] for occurrence in raised)
@@ -394,7 +397,7 @@ def _analyzer_recommendation(coverage: str, tool: str, rule: str, repositories: 
     )
 
 
-def _evidence(record: dict[str, Any], finding: dict[str, Any]) -> dict[str, Any]:
+def _evidence(record: Mapping[str, Any], finding: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "repository": record["repository"].lower(),
         "pull_number": record["pull_request"]["number"],
@@ -412,7 +415,7 @@ def next_rec_number(items: Iterable[dict[str, Any]]) -> int:
     return max(used, default=0) + 1
 
 
-def counted_pairs(records: list[tuple[Path, dict[str, Any]]], ledgers: Ledgers) -> list[Pair]:
+def counted_pairs(records: list[tuple[Path, ReviewRecord]], ledgers: Ledgers) -> list[Pair]:
     """Each analyzed finding once with its ledger entry: a finding and its repeats count once, from the earliest
     review in range that carries one."""
     counted: set[FindingKey] = set()
@@ -427,7 +430,7 @@ def counted_pairs(records: list[tuple[Path, dict[str, Any]]], ledgers: Ledgers) 
 
 
 def analyze(
-    records: list[tuple[Path, dict[str, Any]]],
+    records: list[tuple[Path, ReviewRecord]],
     *,
     flags: list[dict[str, Any]] | None = None,
     previous: dict[tuple[str, ...], dict[str, Any]] | None = None,
@@ -846,7 +849,7 @@ def create_report(
                     "repository": record["repository"],
                     "pull_number": record["pull_request"]["number"],
                     "review_version": record["review"]["version"],
-                    "payload_sha256": record["artifacts"]["payload_sha256"],
+                    "payload_sha256": artifact_hashes(record)["payload_sha256"],
                 }
                 for path, record in records
             ],

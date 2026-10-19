@@ -55,7 +55,7 @@ from review_canary import validate_fixture_pull
 from review_config import validate_config
 from review_flags import add_flag, load_store, validate_store
 from review_operation import legacy_index
-from review_records import build_record, carried_findings, validate_adapter_result, validate_record
+from review_records import ReviewRecord, build_record, carried_findings, validate_adapter_result, validate_record
 from review_runtime import build_adapter_request, validate_adapter_manifest
 from review_specialists import load_role_result
 from review_state import validate_state
@@ -446,7 +446,7 @@ def _finding(key: str, severity: str, line: int, **extra: Any) -> dict[str, Any]
     }
 
 
-def _disposition(identifier: str, value: str, key: str = "finding_id") -> dict[str, Any]:
+def _disposition(identifier: str, value: str, key: str = "finding_id") -> Any:
     return {key: identifier, "disposition": value, "rationale": "Checked against the current code."}
 
 
@@ -487,9 +487,7 @@ def _record_request(mode: str, **extra: Any) -> dict[str, Any]:
     }
 
 
-def _result(
-    findings: list[dict[str, Any]], dispositions: Sequence[dict[str, Any]] = (), **extra: Any
-) -> dict[str, Any]:
+def _result(findings: list[dict[str, Any]], dispositions: Sequence[dict[str, Any]] = (), **extra: Any) -> Any:
     return {
         "protocol_version": 1,
         "repository": "example/one",
@@ -505,7 +503,7 @@ def _result(
     }
 
 
-def record_fixtures() -> list[dict[str, Any]]:
+def record_fixtures() -> list[ReviewRecord]:
     """An initial review with every optional field; a re-review by a repository reviewer that judges each of its
     entries with a different disposition, and the same re-review when it could not compare with v1; and a
     re-review recorded before ledgers."""
@@ -630,7 +628,7 @@ def record_fixtures() -> list[dict[str, Any]]:
     )
     uncompared = copy.deepcopy(rereview)
     uncompared["review"]["scope"].update(
-        used="full", reason="v1 has no patch fingerprints", files_changed=None, lines_changed=None
+        {"used": "full", "reason": "v1 has no patch fingerprints", "files_changed": None, "lines_changed": None}
     )
     older = build_record(
         _record_request("initial"),
@@ -641,7 +639,7 @@ def record_fixtures() -> list[dict[str, Any]]:
     )
     del older["ledger"]
     older["schema_version"] = 1  # written before unreviewed files were recorded
-    older["review"].update(version=2, mode="re-review")
+    older["review"].update({"version": 2, "mode": "re-review"})
     older["prior_dispositions"] = [_disposition("F001", "addressed")]
     return [initial, rereview, uncompared, older]
 
@@ -936,7 +934,7 @@ def _insights_record(
     version's digit unless `head` names one."""
     head = request.pop("head", f"{version:x}" * 40)
     mode = request.pop("mode", "initial")
-    result = {**_result(findings, request.pop("dispositions", [])), "pull_number": number, "head_sha": head}
+    result: Any = {**_result(findings, request.pop("dispositions", [])), "pull_number": number, "head_sha": head}
     if mode == "initial":
         result = validate_adapter_result(
             result, expected_repository=INSIGHTS_REPOSITORY, expected_number=number, expected_head_sha=head

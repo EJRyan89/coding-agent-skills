@@ -100,7 +100,7 @@ class SynthesisFixture(InsightFixture):
             "mode": "re-review",
             "adapter": REPOSITORY_ADAPTER,
         }
-        result = {
+        result: Any = {
             "summary": "Fixture",
             "reviewer": "fixture",
             "status": "complete",

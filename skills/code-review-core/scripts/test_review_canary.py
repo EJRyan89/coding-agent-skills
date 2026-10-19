@@ -511,7 +511,7 @@ class PriorRecordTests(unittest.TestCase):
     def test_a_prior_fixture_with_a_short_artifact_hash_is_refused_with_its_reason(self) -> None:
         for field in ("payload_sha256", "markdown_sha256"):
             with self.subTest(field=field):
-                record = copy.deepcopy(self.first)
+                record: Any = copy.deepcopy(self.first)
                 record["artifacts"][field] = "a" * 40
                 with self.assertRaises(FixtureError) as caught:
                     validate_prior_record(record, repository=self.repository, number=self.number)
@@ -523,7 +523,7 @@ class PriorRecordTests(unittest.TestCase):
                 )
 
     def test_any_other_record_is_refused(self) -> None:
-        cases: dict[str, tuple[dict[str, Any], str, int, str]] = {
+        cases: dict[str, tuple[object, str, int, str]] = {
             "an invalid record": ({**self.first, "review": {}}, self.repository, self.number, "is invalid"),
             "another repository": (self.first, "example/two", self.number, "not example/two#12"),
             "another pull request": (self.first, self.repository, 13, "reviews example/one#12, not example/one#13"),

@@ -36,7 +36,7 @@ import re
 import shutil
 import tempfile
 from collections import Counter
-from collections.abc import Container
+from collections.abc import Container, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -48,7 +48,14 @@ from review_config import safe_repository_path
 from review_guard import RUN_FILE, RUN_PREFIX
 from review_guidance import Guidance, is_prose
 from review_io import PersistenceError, atomic_write_text, read_json
-from review_records import ANALYZER_COVERAGES, SEVERITIES, SEVERITY_RANK, finding_reference, valid_analyzer
+from review_records import (
+    ANALYZER_COVERAGES,
+    SEVERITIES,
+    SEVERITY_RANK,
+    ReviewRecord,
+    finding_reference,
+    valid_analyzer,
+)
 
 RESULT_SCHEMA_VERSION = 1
 INPUT_NAME = "synthesis-input.jsonl"
@@ -156,7 +163,7 @@ class SynthesisError(ValueError):
         self.problems = problems
 
 
-def finding_ref(record: dict[str, Any], finding: dict[str, Any]) -> str:
+def finding_ref(record: Mapping[str, Any], finding: Mapping[str, Any]) -> str:
     return finding_reference(
         record["repository"], record["pull_request"]["number"], record["review"]["version"], finding["id"]
     )
@@ -178,11 +185,11 @@ def _marked(match: re.Match[str]) -> str:
     return match[0] if match[0].isspace() else "?"
 
 
-def headline(finding: dict[str, Any]) -> str:
+def headline(finding: Mapping[str, Any]) -> str:
     return _line(finding.get("title") or finding["body"], HEADLINE)
 
 
-def group_key(record: dict[str, Any], finding: dict[str, Any]) -> tuple[str, str, str]:
+def group_key(record: Mapping[str, Any], finding: Mapping[str, Any]) -> tuple[str, str, str]:
     normalized = re.sub(r"[^a-z]+", " ", headline(finding).lower()).strip()
     return record["repository"].lower(), finding["category"], normalized
 
@@ -192,7 +199,7 @@ class _Group:
     repository: str
     category: str
     headline: str
-    pairs: list[tuple[dict[str, Any], dict[str, Any], Any]] = field(default_factory=list)
+    pairs: list[tuple[Mapping[str, Any], Mapping[str, Any], Any]] = field(default_factory=list)
 
     def rank(self, outcomes: dict[Any, str], flagged: set[Any]) -> tuple[int, int, int, int]:
         """Larger groups first, then those with more flagged findings, then more findings a later review judged
@@ -255,7 +262,7 @@ def _tail_lines(groups: list[_Group]) -> list[dict[str, Any]]:
 
 
 def group_findings(
-    pairs: list[tuple[dict[str, Any], dict[str, Any], Any]], outcomes: dict[Any, str], flagged: set[Any]
+    pairs: Sequence[tuple[Mapping[str, Any], Mapping[str, Any], Any]], outcomes: dict[Any, str], flagged: set[Any]
 ) -> list[dict[str, Any]]:
     """The input's finding lines: groups of findings with the same repository, category, and headline, the largest
     and most acted-on in full, then one line per repository and category for the rest."""
@@ -503,8 +510,8 @@ class Analyzed:
     """What `report` analyzed, as the synthesis input needs it."""
 
     report: dict[str, Any]
-    records: list[dict[str, Any]]
-    pairs: list[tuple[dict[str, Any], dict[str, Any], Any]]
+    records: list[ReviewRecord]
+    pairs: list[tuple[Mapping[str, Any], Mapping[str, Any], Any]]
     outcomes: dict[Any, str]
     flagged: set[Any]
     signal_lines: list[dict[str, Any]] = field(default_factory=list)
@@ -513,7 +520,7 @@ class Analyzed:
 def _category_lines(analyzed: Analyzed) -> list[dict[str, Any]]:
     """One line per analyzed category with its count; a small category also lists every finding in full, since the
     result must address each one."""
-    members: dict[str, list[tuple[dict[str, Any], dict[str, Any], Any]]] = {}
+    members: dict[str, list[tuple[Mapping[str, Any], Mapping[str, Any], Any]]] = {}
     for pair in analyzed.pairs:
         members.setdefault(pair[1]["category"], []).append(pair)
     lines = []

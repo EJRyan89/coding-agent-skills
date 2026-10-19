@@ -44,7 +44,7 @@ from git_client import GitClient, GitResult
 from review_config import write_config
 from review_documents import document_format, extract, locations, split_label
 from review_github import GitHubClient
-from review_records import build_record, validate_record
+from review_records import ReviewRecord, build_record, validate_record
 from review_runtime import validate_adapter_manifest
 from test_review_documents import StubPdftotext
 
@@ -176,7 +176,7 @@ def record(
 
 def contract_record(
     found: Sequence[dict[str, Any]] = (), model: str = "claude-haiku-5-5", files_read: int | None = 0
-) -> dict[str, Any]:
+) -> ReviewRecord:
     """An initial review's record as finalize writes it, which code-review-core's record contract accepts: each
     finding raised, by one reviewer that reports `model` and that the guard held, unless `files_read` is None."""
     request = {
@@ -203,7 +203,7 @@ def contract_record(
             }
         ],
     }
-    result = {
+    result: Any = {
         "summary": "Reviewed.",
         "reviewer": "generic",
         "status": "complete",

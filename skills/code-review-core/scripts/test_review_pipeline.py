@@ -45,6 +45,7 @@ from review_hosts import ProcessResult
 from review_io import PersistenceError
 from review_operation import ReviewOperationError
 from review_process import ProcessStatus
+from review_records import Coverage, ReviewRecord
 from review_runtime import RuntimeContractError, RuntimeContractFieldError, validate_adapter_manifest
 from review_state import load_state
 from test_job_tree import SHORT_LIMIT_SECONDS, SignalledTree, ended
@@ -148,7 +149,7 @@ def workflow_output(out: str) -> tuple[Path, str, list[dict[str, Any]]]:
     return script, text, roles
 
 
-def archived_record(archive: Path, pull_number: int) -> dict[str, Any]:
+def archived_record(archive: Path, pull_number: int) -> ReviewRecord:
     """The pull request's latest archived record, which the test expects to exist."""
     record = latest_record(archive, REPOSITORY, pull_number)
     if record is None:
@@ -1998,7 +1999,7 @@ class ReReviewTests(PipelineFixture):
     def test_the_scope_follows_the_request_and_the_auto_thresholds(self) -> None:
         patches = {"a.py": {"sha256": "a" * 64, "lines": 30}, "b.py": {"sha256": "b" * 64, "lines": 70}}
 
-        def previous(*changed: str, recorded: bool = True) -> dict[str, Any]:
+        def previous(*changed: str, recorded: bool = True) -> Any:
             earlier = {
                 path: {**patch, "sha256": "0" * 64} if path in changed else patch for path, patch in patches.items()
             }
@@ -2531,7 +2532,7 @@ class RepositoryReviewerTests(PipelineFixture):
                 self.assertEqual([], self.leftovers())
 
 
-def record_shape(record: dict[str, Any]) -> dict[str, Any]:
+def record_shape(record: ReviewRecord) -> dict[str, Any]:
     """The fields a record has, at every level a reviewer path fills, without their values."""
     review = record["review"]
     return {
@@ -3961,7 +3962,7 @@ class ReviewerSourceTests(PipelineFixture):
     def test_an_incremental_re_review_lists_a_never_reviewed_file_until_a_sharing_specialist_reviews_it(self) -> None:
         self.sharing_manifest(sharer_when="window", uncovered="ignore")
 
-        def review(scope: str | None) -> tuple[list[tuple[str, list[str], bool]], dict[str, Any] | None, str]:
+        def review(scope: str | None) -> tuple[list[tuple[str, list[str], bool]], Coverage | None, str]:
             """Prepare and finalize one version: its planned roles, its record's coverage, and its report."""
             arguments = ["--pull", SELECTOR] if scope is None else ["--re-review", SELECTOR, "--scope", scope]
             code, out, err = self.run_main("prepare", *arguments)
@@ -5851,5 +5852,5 @@ class StatsLineTests(unittest.TestCase):
             (None, ""),
         ):
             with self.subTest(excluded=excluded):
-                review = {"snapshot": snapshot if excluded is None else {**snapshot, "excluded": excluded}}
+                review: Any = {"snapshot": snapshot if excluded is None else {**snapshot, "excluded": excluded}}
                 self.assertEqual([f"snapshot source=tarball files=2 bytes=83{shown} {timing}"], rp.stats_lines(review))

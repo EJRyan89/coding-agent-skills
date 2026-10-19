@@ -19,7 +19,7 @@ references are kept in the order found, by reviewer, file, and line.
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from itertools import pairwise
 from typing import Any
 
@@ -45,7 +45,7 @@ SIGNALS = {
     "unsupplied_references": ("U", "guidance-unsupplied"),
 }
 
-Pair = tuple[dict[str, Any], dict[str, Any], Any]
+Pair = tuple[Mapping[str, Any], Mapping[str, Any], Any]
 FindingKey = tuple[str, int, int, str]
 Read = Callable[[Any, str], Any]
 READ = FieldReader()
@@ -167,19 +167,19 @@ def input_lines(signals: dict[str, Any]) -> list[dict[str, Any]]:
     return [{"kind": kind, **item} for name, (_, kind) in SIGNALS.items() for item in signals[name]]
 
 
-def _review_key(record: dict[str, Any]) -> tuple[str, int, int]:
+def _review_key(record: Mapping[str, Any]) -> tuple[str, int, int]:
     return record["repository"].lower(), record["pull_request"]["number"], record["review"]["version"]
 
 
-def _order(member: tuple[dict[str, Any], dict[str, Any]]) -> tuple[Any, ...]:
+def _order(member: tuple[Mapping[str, Any], Mapping[str, Any]]) -> tuple[Any, ...]:
     return *_review_key(member[0]), member[1]["id"]
 
 
-def _drift(basis: str, members: list[tuple[dict[str, Any], dict[str, Any]]]) -> dict[str, Any]:
+def _drift(basis: str, members: list[tuple[Mapping[str, Any], Mapping[str, Any]]]) -> dict[str, Any]:
     members = sorted(members, key=_order)
     record, first = members[0]
     # One example of each severity first, the most severe first, then the rest in review order.
-    chosen: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    chosen: list[tuple[Mapping[str, Any], Mapping[str, Any]]] = []
     for member in sorted(members, key=lambda item: -SEVERITY_RANK[item[1]["severity"]]):
         if member[1]["severity"] not in {finding["severity"] for _, finding in chosen}:
             chosen.append(member)
@@ -195,14 +195,14 @@ def _drift(basis: str, members: list[tuple[dict[str, Any], dict[str, Any]]]) -> 
 
 
 def severity_drift(
-    pairs: Iterable[Pair], records: Iterable[dict[str, Any]], entries: dict[FindingKey, FindingKey]
+    pairs: Iterable[Pair], records: Iterable[Mapping[str, Any]], entries: dict[FindingKey, FindingKey]
 ) -> list[dict[str, Any]]:
     """Every group of counted findings, and every ledger entry raised more than once in the range, that carries more
     than one severity: those with the most severities first, then the most findings."""
-    groups: dict[tuple[str, str, str], list[tuple[dict[str, Any], dict[str, Any]]]] = {}
+    groups: dict[tuple[str, str, str], list[tuple[Mapping[str, Any], Mapping[str, Any]]]] = {}
     for record, finding, _ in pairs:
         groups.setdefault(group_key(record, finding), []).append((record, finding))
-    occurrences: dict[FindingKey, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
+    occurrences: dict[FindingKey, list[tuple[Mapping[str, Any], Mapping[str, Any]]]] = {}
     for record in records:
         for finding in record["findings"]:
             key = (*_review_key(record), finding["id"])
@@ -224,7 +224,7 @@ def severity_drift(
     )
 
 
-def _held(record: dict[str, Any], by_version: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
+def _held(record: Mapping[str, Any], by_version: Mapping[int, Mapping[str, Any]]) -> list[dict[str, Any]]:
     """The findings a review held open: its ledger's open entries, each where it was last raised by then, or for a
     record written before ledgers, its own findings."""
     if "ledger" not in record:
@@ -248,7 +248,7 @@ def _held(record: dict[str, Any], by_version: dict[int, dict[str, Any]]) -> list
     return held
 
 
-def _holding(record: dict[str, Any], finding: dict[str, Any], entry: Any) -> dict[str, Any]:
+def _holding(record: Mapping[str, Any], finding: Mapping[str, Any], entry: Any) -> dict[str, Any]:
     ref = finding_ref(record, finding) if "id" in finding else ""
     return {
         "entry": entry,
@@ -297,7 +297,9 @@ def _difference(before: dict[str, Any] | None, after: dict[str, Any] | None) -> 
     return flat_text(f"{where} {severities[0]} -> {severities[1]} {refs}")
 
 
-def _flip(records: list[dict[str, Any]], before: dict[str, Any], after: dict[str, Any]) -> tuple[dict[str, Any], int]:
+def _flip(
+    records: list[Mapping[str, Any]], before: Mapping[str, Any], after: Mapping[str, Any]
+) -> tuple[dict[str, Any], int]:
     """The flip two reviews make, and how many findings differ between them before DIFFERENCES_KEPT cuts them."""
     by_version = {record["review"]["version"]: record for record in records}
     pairs, gone, added = _matched(_held(before, by_version), _held(after, by_version))
@@ -322,16 +324,16 @@ def flip_rank(flip: dict[str, Any], differences: int) -> tuple[Any, ...]:
     return not decisive, -differences, flip["repository"], flip["pull_number"], flip["versions"]
 
 
-def verdict_flips(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+def verdict_flips(records: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Each pair of consecutive reviews of a pull request at the same head commit whose verdicts differ, strongest
     first (see flip_rank)."""
-    pulls: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    pulls: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
     for record in records:
         pulls.setdefault(_review_key(record)[:2], []).append(record)
     found: list[tuple[dict[str, Any], int]] = []
     for _, history in sorted(pulls.items()):
         history.sort(key=lambda record: record["review"]["version"])
-        by_head: dict[str, list[dict[str, Any]]] = {}
+        by_head: dict[str, list[Mapping[str, Any]]] = {}
         for record in history:
             by_head.setdefault(record["pull_request"]["head_sha"], []).append(record)
         for runs in by_head.values():
@@ -343,15 +345,15 @@ def verdict_flips(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     return [flip for flip, _ in sorted(found, key=lambda item: flip_rank(*item))]
 
 
-def _reviewers(finding: dict[str, Any]) -> frozenset[str]:
+def _reviewers(finding: Mapping[str, Any]) -> frozenset[str]:
     return frozenset(source_parts(finding["source"]))
 
 
-def _disagree(first: dict[str, Any], second: dict[str, Any]) -> bool:
+def _disagree(first: Mapping[str, Any], second: Mapping[str, Any]) -> bool:
     return first["severity"] != second["severity"] and not _reviewers(first) & _reviewers(second)
 
 
-def _clusters(members: list[tuple[dict[str, Any], dict[str, Any]]]) -> list[list[int]]:
+def _clusters(members: list[tuple[Mapping[str, Any], Mapping[str, Any]]]) -> list[list[int]]:
     """The indexes of `members`, sorted by place, joined wherever two findings disagree: every pair is compared, so a
     finding near one end of a disagreement never hides it, and each cluster is reported once."""
     root = list(range(len(members)))
@@ -375,7 +377,7 @@ def _clusters(members: list[tuple[dict[str, Any], dict[str, Any]]]) -> list[list
     return [cluster for cluster in clusters.values() if len(cluster) > 1]
 
 
-def _reported(members: list[tuple[dict[str, Any], dict[str, Any]]], cluster: list[int]) -> list[int]:
+def _reported(members: list[tuple[Mapping[str, Any], Mapping[str, Any]]], cluster: list[int]) -> list[int]:
     """The REPORTS_KEPT findings of a cluster it reports, in place order: the first pair that disagrees, so the cut
     never hides what makes it a disagreement, then one of each other severity, then the rest from the first."""
     chosen = next(
@@ -391,16 +393,16 @@ def _reported(members: list[tuple[dict[str, Any], dict[str, Any]]], cluster: lis
     return sorted(chosen[:REPORTS_KEPT])
 
 
-def _spread(members: list[tuple[dict[str, Any], dict[str, Any]]], cluster: list[int]) -> int:
+def _spread(members: list[tuple[Mapping[str, Any], Mapping[str, Any]]], cluster: list[int]) -> int:
     ranks = [SEVERITY_RANK[members[index][1]["severity"]] for index in cluster]
     return max(ranks) - min(ranks)
 
 
-def reviewer_disagreements(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+def reviewer_disagreements(records: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Each place at one head commit of a pull request where reviewers that share no source gave findings within
     ANCHOR_WINDOW lines of each other different severities: the findings joined by such pairs, from the first. The
     widest spread of severities comes first, then the place with the most findings, then by place."""
-    heads: dict[tuple[str, int, str], list[tuple[dict[str, Any], dict[str, Any]]]] = {}
+    heads: dict[tuple[str, int, str], list[tuple[Mapping[str, Any], Mapping[str, Any]]]] = {}
     for record in records:
         key = (*_review_key(record)[:2], record["pull_request"]["head_sha"])
         heads.setdefault(key, []).extend((record, finding) for finding in record["findings"])

@@ -31,6 +31,7 @@ from review_config import (
     selected_repository_set,
     validate_config,
 )
+from review_records import ReviewRecord
 from review_runtime import RuntimeContractError, RuntimeContractFieldError
 from review_state import StateError
 from skill_roots import sibling_scripts
@@ -936,11 +937,11 @@ class CoverageTests(unittest.TestCase):
             )
         return request, root
 
-    def record(self, request: dict, findings: list[dict], uncovered: list[str] | None = None) -> dict:
+    def record(self, request: dict, findings: list[dict], uncovered: list[str] | None = None) -> ReviewRecord:
         from review_records import build_record
 
         adapter: dict[str, Any] = {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}}
-        result = {
+        result: Any = {
             "protocol_version": 1,
             "repository": "owner/repo",
             "pull_number": 3,

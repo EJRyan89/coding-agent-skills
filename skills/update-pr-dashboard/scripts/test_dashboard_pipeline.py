@@ -28,7 +28,7 @@ from review_archive import commit_record
 from review_config import load_config, write_config
 from review_flags import add_flag
 from review_github import GitHubClient, GitHubError
-from review_records import build_record, validate_adapter_result
+from review_records import ReviewRecord, build_record, validate_adapter_result
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
@@ -135,7 +135,7 @@ class FakeGitHub:
         return CommandResult(1, "", "HTTP 404: Not Found")
 
 
-def archived_record(head: str, number: int = 2) -> dict[str, Any]:
+def archived_record(head: str, number: int = 2) -> ReviewRecord:
     request = {
         "repository": "example/one",
         "pull_number": number,
@@ -688,7 +688,7 @@ class UpdateTests(TrackerPipelineFixture):
     def test_a_review_recorded_before_ledgers_renders_from_the_ledger_its_records_compute(self) -> None:
         heads = review_fixture.HEADS
 
-        def record(version: int, keys: list[tuple[str, str, int]]) -> dict[str, Any]:
+        def record(version: int, keys: list[tuple[str, str, int]]) -> ReviewRecord:
             mode = "initial" if version == 1 else "re-review"
             findings = [
                 {
