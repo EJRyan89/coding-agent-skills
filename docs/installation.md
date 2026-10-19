@@ -1,6 +1,6 @@
 # Installation
 
-What the deployer needs, how to install it, and how to deploy, update, and uninstall the skills. The [README](../README.md#quick-start) has the short version.
+What the deployer needs, how to install it, and how to deploy, update, and uninstall the skills. The [README](../README.md#quick-start) has the short version, and [Setting up a machine](setting-up-a-machine.md) walks a new Windows machine through these tools, the runtimes, and the ones only validation needs, in order.
 
 ## Requirements
 
