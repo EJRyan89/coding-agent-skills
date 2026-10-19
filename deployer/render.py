@@ -202,11 +202,12 @@ CODEX_METADATA = "agents/openai.yaml"
 CODEX_USER_ONLY = b"policy:\n  allow_implicit_invocation: false\n"
 
 
-def _adapter_frontmatter(skill: str, rendered: bytes) -> tuple[str, bool]:
-    """The adapter's description and whether only the user may start the skill, from its rendered SKILL.md."""
+def _adapter_frontmatter(skill: str, rendered: bytes) -> tuple[str, str | None, bool]:
+    """The adapter's description, argument hint, and user-only flag, from the skill's rendered SKILL.md."""
     try:
         document = frontmatter.parse(rendered.decode("utf-8-sig"))
         description = document.string("description")
+        hint = document.string("argument-hint")
         user_only = (document.string("disable-model-invocation") or "").casefold() == "true"
     except (UnicodeError, frontmatter.FrontmatterError) as exc:
         raise DeployError(f"ERROR: Skill '{skill}' frontmatter cannot be read: {exc}") from exc
@@ -222,15 +223,16 @@ def _adapter_frontmatter(skill: str, rendered: bytes) -> tuple[str, bool]:
         raise DeployError(
             f"ERROR: Skill '{skill}' description contains the XML tag '{tag}', {AGENT_SKILLS_RULE}", XML_TAG_REMEDY
         )
-    return description, user_only
+    return description, hint, user_only
 
 
 def _adapter(skill: str, home: str, guidance: list[str], rendered: bytes) -> dict[str, bytes]:
     """The adapter another runtime loads. Claude reads the authoritative skill directly and never sees it.
 
-    It carries the skill's description, which Codex and Copilot match requests against. A skill only the user
-    may start keeps a description that names only the skill, so no runtime can select it by purpose, and
-    also sets each runtime's own switch for explicit-only invocation. `allowed-tools` is not carried: Codex
+    It carries the skill's description, which Codex and Copilot match requests against and show in their skill
+    listings and pickers, and its `argument-hint`, which Copilot shows when the user starts the skill. A skill
+    only the user may start keeps its description too, since each runtime's own switch for explicit-only
+    invocation, which the adapter sets, keeps the model from selecting it. `allowed-tools` is not carried: Codex
     ignores it, and Copilot matches a shell grant by command name, so the closest grant to a skill's scripts
     would pre-approve every Python command ("Granting tools" in docs/adding-a-skill.md). Each runtime asks as
     it normally would.
@@ -241,15 +243,14 @@ def _adapter(skill: str, home: str, guidance: list[str], rendered: bytes) -> dic
     Skills name their own files through `${CLAUDE_SKILL_DIR}`, which Claude Code substitutes when it loads a
     skill. Other runtimes do not, and their base directory is this adapter's, so the adapter states the value.
     """
-    description, user_only = _adapter_frontmatter(skill, rendered)
-    if user_only:
-        description = f"Runtime adapter for the authoritative {skill} skill, which only the user starts."
+    description, hint, user_only = _adapter_frontmatter(skill, rendered)
     directory = f"{home}/.claude/skills/{skill}"
     authoritative = f"{directory}/SKILL.md"
     lines = [
         "---",
         f"name: {skill}",
         f"description: {json.dumps(description, ensure_ascii=False)}",
+        *([f"argument-hint: {json.dumps(hint, ensure_ascii=False)}"] if hint else []),
         *(["disable-model-invocation: true"] if user_only else []),
         "---",
         "",

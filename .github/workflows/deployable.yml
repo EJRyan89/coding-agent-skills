@@ -55,6 +55,8 @@ jobs:
       CLAUDE_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.claude-version || '2.1.302' }}
       CODEX_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.codex-version || '0.163.0' }}
       COPILOT_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.copilot-version || '1.0.98' }}
+      # Copilot CLI otherwise runs the newest package it has downloaded, not the one installed and checked here.
+      COPILOT_AUTO_UPDATE: 'false'
     defaults:
       run:
         shell: pwsh
@@ -269,6 +271,8 @@ jobs:
       CLAUDE_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.claude-version || '2.1.302' }}
       CODEX_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.codex-version || '0.163.0' }}
       COPILOT_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.copilot-version || '1.0.98' }}
+      # Copilot CLI otherwise runs the newest package it has downloaded, not the one installed and checked here.
+      COPILOT_AUTO_UPDATE: 'false'
     defaults:
       run:
         shell: bash
