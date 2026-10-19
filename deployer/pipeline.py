@@ -35,7 +35,8 @@ from . import selection as selection_module
 from .arguments import PROG, USAGE_ERROR, VERIFY_COMMAND_LINE, parse_command, usage_error
 from .context import Context, Options
 from .errors import Cancelled, DeployError, debug_requested, fail, print_error, print_traceback, see_recovery
-from .kinds import ADAPTER_KIND, AGENT_KIND, BY_LABEL, DEPENDENCY_KINDS, KINDS, SHARED, SKILL
+from .kinds import ADAPTER_KIND, AGENT_KIND, BY_LABEL, DEPENDENCY_KINDS, KINDS, SHARED, SKILL, KindKey
+from .manifest import ItemEntry, source_entry
 from .names import transient_name
 from .paths import Paths, canary_home, claim_canary_home, validate_managed_roots
 from .plan import INSTALLING, RELEASING, PlanEntry
@@ -86,7 +87,7 @@ def _apply(
 
 def _commit_manifest(context: Context, entries: list[PlanEntry], run_id: str, commit: str | None) -> None:
     owned, data = context.owned, context.manifest
-    recorded: dict[str, dict[str, dict]] = {
+    recorded: dict[KindKey, dict[str, ItemEntry]] = {
         kind.key: {name: {"hash": value} for name, value in owned.of(kind).items()} for kind in KINDS
     }
     for name, owned_entry in recorded[SKILL.key].items():
@@ -99,7 +100,7 @@ def _commit_manifest(context: Context, entries: list[PlanEntry], run_id: str, co
         if entry.action in RELEASING:
             recorded[kind.key].pop(entry.name, None)
         elif entry.action in INSTALLING:
-            details: dict[str, object] = {"hash": entry.staged}
+            details: ItemEntry = {"hash": entry.staged}
             if kind is SKILL:
                 details[SKILL.dependency_key] = sorted(context.source.skills[entry.name].skill_deps)
                 details[SHARED.dependency_key] = sorted(context.source.skills[entry.name].shared_deps)
@@ -109,16 +110,16 @@ def _commit_manifest(context: Context, entries: list[PlanEntry], run_id: str, co
             recorded[kind.key][entry.name] = details
     data.data["last_run_id"] = run_id
     # An entry written before selected_skills was dropped loses it here: nothing reads it.
-    data.sources[context.source_id] = {
-        "source_dir": platform_support.normalize(context.paths.source_dir),
-        **({"source_commit": commit} if commit is not None else {}),
-        **({"source_ref": context.pin.ref} if context.pin is not None else {}),
-        "deployed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "requested_bundles": list(context.selection.bundles),
-        "requested_bundle_members": {name: sorted(context.source.bundles[name]) for name in context.selection.bundles},
-        "requested_skills": list(context.selection.skills),
-        **{kind.key: dict(sorted(recorded[kind.key].items())) for kind in KINDS},
-    }
+    data.sources[context.source_id] = source_entry(
+        platform_support.normalize(context.paths.source_dir),
+        time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        commit=commit,
+        ref=context.pin.ref if context.pin is not None else None,
+        requested_bundles=context.selection.bundles,
+        requested_bundle_members={name: sorted(context.source.bundles[name]) for name in context.selection.bundles},
+        requested_skills=context.selection.skills,
+        items=recorded,
+    )
     data.save()
 
 
@@ -129,7 +130,7 @@ def _finalize(context: Context, record: journal.Journal, run_id: str) -> list[tu
     plan read it is kept like a modified item's, with a warning.
     """
     backups: list[tuple[str, str]] = []
-    unkept: list[dict] = []
+    unkept: list[journal.BackupEntry] = []
     for entry in list(record.entries):
         if entry["op"] != "backup":
             continue

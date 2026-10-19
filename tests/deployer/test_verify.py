@@ -139,6 +139,14 @@ class ParsingTests(unittest.TestCase):
         )
         self.assertEqual(["alpha"], list(discovery.parse_codex(lines)))
 
+    def test_a_codex_group_field_that_is_not_an_array_lists_nothing(self) -> None:
+        for value in (7, True, "skills", {"path": "C:/home/.agents/skills/alpha/SKILL.md"}):
+            with self.subTest(value=value):
+                group = {"cwd": "C:/work", "skills": value, "errors": value}
+                lines = [json.dumps({"id": discovery.CODEX_LIST_ID, "result": {"data": [group]}})]
+                self.assertEqual({}, discovery.parse_codex(lines))
+                self.assertEqual((), discovery.parse_codex_refusals(lines))
+
     def test_the_codex_catalog_resolves_each_short_path_through_its_root(self) -> None:
         home = (
             Path("D:/Profiles/YourName/a dir/.agents/skills")

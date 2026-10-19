@@ -260,7 +260,7 @@ def codex_requests(cwd: Path) -> list[str]:
     return [json.dumps(message) for message in messages]
 
 
-def _codex_message(line: str) -> dict | None:
+def _codex_message(line: str) -> dict[str, object] | None:
     try:
         message = json.loads(line)
     except json.JSONDecodeError:
@@ -273,7 +273,7 @@ def codex_answered(line: str) -> bool:
     return message is not None and message.get("id") == CODEX_LIST_ID
 
 
-def _codex_groups(lines: list[str]) -> list[dict]:
+def _codex_groups(lines: list[str]) -> list[dict[str, object]]:
     """The groups of the app server's answer to `skills/list`, one per working directory asked about."""
     answers = [message for line in lines if (message := _codex_message(line)) and message.get("id") == CODEX_LIST_ID]
     if not answers:
@@ -290,8 +290,12 @@ def _codex_groups(lines: list[str]) -> list[dict]:
     return [group for group in data if isinstance(group, dict)]
 
 
-def _entries(group: dict, field: str) -> list[dict]:
-    return [entry for entry in group.get(field) or [] if isinstance(entry, dict) and isinstance(entry.get("path"), str)]
+def _entries(group: dict[str, object], field: str) -> list[dict[str, object]]:
+    """The entries of a group's field that are objects naming a path, which is then a string."""
+    listed = group.get(field) or []
+    if not isinstance(listed, list):
+        listed = []
+    return [entry for entry in listed if isinstance(entry, dict) and isinstance(entry.get("path"), str)]
 
 
 def parse_codex(lines: list[str]) -> Listing:
@@ -299,16 +303,17 @@ def parse_codex(lines: list[str]) -> Listing:
     found: Listing = {}
     for group in _codex_groups(lines):
         for entry in _entries(group, "skills"):
-            if isinstance(entry.get("name"), str):
-                directory = _directory(str(Path(entry["path"]).parent))
-                found.setdefault(entry["name"], []).append(Listed(directory, entry.get("enabled") is True))
+            name = entry.get("name")
+            if isinstance(name, str):
+                directory = _directory(str(Path(str(entry["path"])).parent))
+                found.setdefault(name, []).append(Listed(directory, entry.get("enabled") is True))
     return found
 
 
 def parse_codex_refusals(lines: list[str]) -> tuple[Refused, ...]:
     """The skill files the app server's answer to `skills/list` says Codex could not load, with its reasons."""
     return tuple(
-        Refused(_directory(str(Path(entry["path"]).parent)), str(entry.get("message") or "no reason given"))
+        Refused(_directory(str(Path(str(entry["path"])).parent)), str(entry.get("message") or "no reason given"))
         for group in _codex_groups(lines)
         for entry in _entries(group, "errors")
     )

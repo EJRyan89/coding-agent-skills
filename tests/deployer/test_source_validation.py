@@ -1096,7 +1096,8 @@ class ContractValueTests(unittest.TestCase):
         self.assertEqual(8, manifest.SKILL_DEPS_VERSION)
         for version, upgraded in ((7, ["beta"]), (8, None)):
             with self.subTest(version=version):
-                data: dict[str, Any] = {
+                # Entries without hashes, which the upgrade never reads.
+                data: Any = {
                     "manifest_version": version,
                     "sources": {"t/s": {"skills": {"alpha": {}, "beta": {}}}},
                 }

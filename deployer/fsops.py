@@ -13,7 +13,6 @@ import tarfile
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 from . import platform_support
 
@@ -42,7 +41,7 @@ def make_directories(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def _retry_writable(function: Callable[[str], Any], name: str, error: BaseException) -> None:
+def _retry_writable(function: Callable[[str], object], name: str, error: BaseException) -> None:
     """Retry a deletion that failed on a read-only file once, after making it writable; re-raise anything else."""
     if not isinstance(error, PermissionError):
         raise error

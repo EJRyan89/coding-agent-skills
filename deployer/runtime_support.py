@@ -10,7 +10,6 @@ tools/runtime_canary.py checks it against what each runtime ran.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
 
 RUNTIMES = ("claude-code", "codex", "copilot-cli")
 RUNTIME_TITLES = {"claude-code": "Claude Code", "codex": "Codex CLI", "copilot-cli": "Copilot CLI"}
@@ -75,7 +74,7 @@ class Support:
     reason: str = ""
 
 
-def _support(runtime: str, value: Any) -> Support:
+def _support(runtime: str, value: object) -> Support:
     if value == FULL:
         return Support(FULL)
     if not isinstance(value, dict) or set(value) - {"level", "needs", "reason"}:
@@ -97,7 +96,7 @@ def _support(runtime: str, value: Any) -> Support:
     return Support(level, tuple(needs), reason.strip())
 
 
-def parse(value: Any) -> dict[str, Support]:
+def parse(value: object) -> dict[str, Support]:
     """Each runtime's support from a runtime_support value; raises RuntimeSupportError naming the first problem."""
     if not isinstance(value, dict):
         raise RuntimeSupportError("runtime_support must be an object keyed by runtime")

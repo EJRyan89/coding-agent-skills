@@ -9,7 +9,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Literal, NotRequired, TypedDict, TypeGuard
 
 from . import fsops, hashing, manifest, platform_support
 from .errors import DeployError, see_recovery
@@ -37,8 +37,33 @@ LEGACY_STAGING = {"agents": ("staging-adapters", "staging-wrappers"), "claude-ag
 # The skills root, which an entry for it leaves unrecorded, as every entry did before other roots were journaled.
 DEFAULT_ROOT = "claude"
 
+# Each line of a journal is one of these entries, told apart by its op. "from" is a keyword, so each is declared in the
+# functional form. An entry for the skills root may leave root out, and recovery reads a preserve entry without one,
+# though the deployer always writes it.
+BackupEntry = TypedDict(
+    "BackupEntry",
+    {
+        "op": Literal["backup"],
+        "root": NotRequired[str],
+        "item": str,
+        "from": str,
+        "to": str,
+        "retain": bool,
+        "backup_hash": str,
+        "backup_dest": NotRequired[str],
+    },
+)
+InstallEntry = TypedDict(
+    "InstallEntry",
+    {"op": Literal["install"], "root": NotRequired[str], "item": str, "from": str, "to": str, "staged_hash": str},
+)
+PreserveEntry = TypedDict(
+    "PreserveEntry", {"op": Literal["preserve"], "root": NotRequired[str], "item": str, "from": str, "to": str}
+)
+JournalEntry = BackupEntry | InstallEntry | PreserveEntry
 
-def entry_root(entry: dict[str, Any]) -> str:
+
+def entry_root(entry: JournalEntry) -> str:
     """The root an entry names, or the skills root for one that names none."""
     return entry.get("root", DEFAULT_ROOT)
 
@@ -51,47 +76,45 @@ def root_directory(paths: Paths, root: str) -> Path:
 class Journal:
     path: Path
     run_id: str
-    entries: list[dict[str, Any]] = field(default_factory=list)
+    entries: list[JournalEntry] = field(default_factory=list)
 
     def create(self) -> None:
         fsops.make_directories(self.path.parent)
         fsops.write_file(self.path, b"")
 
-    def write(self, entry: dict[str, Any]) -> None:
+    def write(self, entry: JournalEntry) -> None:
         fsops.append_line(self.path, json.dumps(entry, separators=(",", ":")))
         self.entries.append(entry)
 
     def backup(self, root: str, item: str, backup_hash: str, retain: bool) -> None:
         prefix = ROOT_PREFIXES[root][0]
-        entry: dict[str, Any] = {"op": "backup"}
-        if root != DEFAULT_ROOT:
-            entry["root"] = root
-        entry.update(
-            {
-                "item": item,
-                "from": f"{prefix}/{item}",
-                "to": f"{prefix}/{transient_name(item)}",
-                "retain": retain,
-                "backup_hash": backup_hash,
-            }
-        )
+        entry: BackupEntry = {
+            "op": "backup",
+            "root": root,
+            "item": item,
+            "from": f"{prefix}/{item}",
+            "to": f"{prefix}/{transient_name(item)}",
+            "retain": retain,
+            "backup_hash": backup_hash,
+        }
+        if root == DEFAULT_ROOT:
+            del entry["root"]
         if retain:
             entry["backup_dest"] = f".backups/{self.run_id}/{item}"
         self.write(entry)
 
     def install(self, root: str, item: str, staged_hash: str) -> None:
         destination, staging = ROOT_PREFIXES[root]
-        entry: dict[str, Any] = {"op": "install"}
-        if root != DEFAULT_ROOT:
-            entry["root"] = root
-        entry.update(
-            {
-                "item": item,
-                "from": f"{staging}/{item}",
-                "to": f"{destination}/{item}",
-                "staged_hash": staged_hash,
-            }
-        )
+        entry: InstallEntry = {
+            "op": "install",
+            "root": root,
+            "item": item,
+            "from": f"{staging}/{item}",
+            "to": f"{destination}/{item}",
+            "staged_hash": staged_hash,
+        }
+        if root == DEFAULT_ROOT:
+            del entry["root"]
         self.write(entry)
 
     def preserve(self, root: str, item: str) -> None:
@@ -107,10 +130,10 @@ class Journal:
         )
 
 
-def valid_entry(entry: Any, run_id: str) -> bool:
+def valid_entry(entry: object, run_id: str) -> TypeGuard[JournalEntry]:
     if not isinstance(entry, dict):
         return False
-    root = entry_root(entry)
+    root = entry.get("root", DEFAULT_ROOT)
     if root not in ROOT_PREFIXES:
         return False
     destination, staging = ROOT_PREFIXES[root]
@@ -219,11 +242,11 @@ def _guarded(run_id: str, path: Path, step: Callable[[], bool]) -> bool:
         return False
 
 
-def _item_path(paths: Paths, entry: dict[str, Any], suffix: str = "") -> Path:
+def _item_path(paths: Paths, entry: JournalEntry, suffix: str = "") -> Path:
     return root_directory(paths, entry_root(entry)) / f"{entry['item']}{suffix}"
 
 
-def _verify_install(paths: Paths, entry: dict[str, Any]) -> bool:
+def _verify_install(paths: Paths, entry: InstallEntry) -> bool:
     target = _item_path(paths, entry)
     actual = _hash_existing(target)
     if actual is None and not os.path.lexists(target):
@@ -235,7 +258,7 @@ def _verify_install(paths: Paths, entry: dict[str, Any]) -> bool:
     return True
 
 
-def backup_unchanged(paths: Paths, entry: dict[str, Any]) -> bool:
+def backup_unchanged(paths: Paths, entry: BackupEntry) -> bool:
     """Whether a backup entry's transient backup is gone or still matches the hash the plan recorded for it.
 
     Only then may a backup the run does not keep be deleted: one that differs was changed after the plan read it, such
@@ -244,7 +267,7 @@ def backup_unchanged(paths: Paths, entry: dict[str, Any]) -> bool:
     return _hash_existing(_item_path(paths, entry, BACKUP_SUFFIX)) in (None, entry["backup_hash"])
 
 
-def _finish_backup(paths: Paths, run_id: str, entry: dict[str, Any]) -> bool:
+def _finish_backup(paths: Paths, run_id: str, entry: BackupEntry) -> bool:
     """Delete an unchanged transient backup the committed run did not keep, or move it to permanent storage."""
     root = entry_root(entry)
     item = entry["item"]
@@ -283,7 +306,7 @@ def _finish_backup(paths: Paths, run_id: str, entry: dict[str, Any]) -> bool:
     return False
 
 
-def _complete_committed(paths: Paths, run_id: str, entries: list[dict[str, Any]]) -> bool:
+def _complete_committed(paths: Paths, run_id: str, entries: list[JournalEntry]) -> bool:
     print(f"Recovering committed run {run_id} (completing finalization)...")
     reconciled = True
     for entry in entries:
@@ -300,7 +323,7 @@ def _complete_committed(paths: Paths, run_id: str, entries: list[dict[str, Any]]
     return reconciled
 
 
-def _undo_install(paths: Paths, entry: dict[str, Any], backup_hash: str | None) -> bool:
+def _undo_install(paths: Paths, entry: InstallEntry, backup_hash: str | None) -> bool:
     """Remove what the run installed; backup_hash is the hash of the copy it replaced, if it replaced one."""
     target = _item_path(paths, entry)
     actual = _hash_existing(target)
@@ -319,7 +342,7 @@ def _undo_install(paths: Paths, entry: dict[str, Any], backup_hash: str | None) 
     return False
 
 
-def _restore_backup(paths: Paths, entry: dict[str, Any]) -> bool:
+def _restore_backup(paths: Paths, entry: BackupEntry) -> bool:
     item = entry["item"]
     target = _item_path(paths, entry)
     transient = _item_path(paths, entry, BACKUP_SUFFIX)
@@ -341,7 +364,7 @@ def _restore_backup(paths: Paths, entry: dict[str, Any]) -> bool:
     return True
 
 
-def _undo_preserve(paths: Paths, run_id: str, entry: dict[str, Any]) -> bool:
+def _undo_preserve(paths: Paths, run_id: str, entry: PreserveEntry) -> bool:
     """Move a backup the run had already preserved back beside its item, so the backup entry can restore it."""
     try:
         destination = prepare_backup_destination(paths, run_id, entry["item"], entry_root(entry))
@@ -354,7 +377,7 @@ def _undo_preserve(paths: Paths, run_id: str, entry: dict[str, Any]) -> bool:
     return True
 
 
-def _roll_back(paths: Paths, run_id: str, entries: list[dict[str, Any]]) -> bool:
+def _roll_back(paths: Paths, run_id: str, entries: list[JournalEntry]) -> bool:
     print(f"Recovering uncommitted run {run_id} (rolling back)...")
     reconciled = True
     replaced = {
@@ -410,7 +433,7 @@ class Entries:
     interruption before that change began, and dropping it loses nothing. Anywhere else, a bad line stops recovery.
     """
 
-    entries: list[dict[str, Any]]
+    entries: list[JournalEntry]
     malformed: str | None = None
     torn: str | None = None
 
@@ -418,10 +441,11 @@ class Entries:
 def _read_entries(journal_file: Path, run_id: str) -> Entries:
     lines = journal_file.read_text(encoding="utf-8", errors="replace").split("\n")
     torn = lines.pop()  # the text after the last newline, empty when the journal ends with one
-    entries: list[dict[str, Any]] = []
+    entries: list[JournalEntry] = []
     for line in lines:
         if not line:
             continue
+        entry: object
         try:
             entry = json.loads(line)
         except json.JSONDecodeError:

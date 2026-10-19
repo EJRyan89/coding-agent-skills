@@ -1553,13 +1553,14 @@ class MigrationTests(DeployerTestCase):
         """
         data = self.manifest()
         old_entry = data["sources"].pop(old)
-        data["sources"]["test/skills"] = {
+        entry: dict[str, object] = {
             "source_dir": platform_support.normalize(self.source),
             "deployed_at": None,
             "requested_bundles": [],
             "requested_skills": [name for name in old_entry["requested_skills"] if name in old_entry["skills"]],
             **{kind.key: old_entry[kind.key] for kind in KINDS},
         }
+        data["sources"]["test/skills"] = entry
         self.write_manifest(data)
 
     def kept_by_all(self, selected: str, kept: list[str]) -> None:

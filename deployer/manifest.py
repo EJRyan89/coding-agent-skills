@@ -6,12 +6,12 @@ import json
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import NotRequired, TypedDict, cast
 
 from . import fsops
 from .errors import DeployError, os_error
 from .hashing import HASH_PATTERN
-from .kinds import ADAPTER_KIND, AGENT_KIND, DEPENDENCY_KINDS, KINDS, SHARED, SKILL, ItemKind
+from .kinds import ADAPTER_KIND, AGENT_KIND, DEPENDENCY_KINDS, KINDS, SHARED, SKILL, ItemKind, KindKey
 from .names import safe_name_problem
 from .source import SOURCE_ID_MAX_LENGTH, SOURCE_ID_PATTERN, is_valid_name
 from .source_commit import COMMIT_PATTERN
@@ -34,6 +34,80 @@ SKILL_DEPS_VERSION = 8
 # Version 7 added agent ownership; a version 6 manifest has no agents. Optional agent_deps and source_ref came later:
 # an older entry without them records no agents for a preserved skill and no pinned ref, respectively.
 OLDEST_READABLE_VERSION = 6
+
+
+class ItemEntry(TypedDict):
+    """One item's ownership entry, under its kind's key in a source entry.
+
+    A shared asset's entry may record its role, and a skill's records the items of each kind it was deployed with,
+    though an entry an older deployer wrote may lack a skill's agent_deps; `load` fills in skill_deps for a manifest
+    older than SKILL_DEPS_VERSION.
+    """
+
+    hash: str
+    role: NotRequired[str]
+    skill_deps: NotRequired[list[str]]
+    shared_deps: NotRequired[list[str]]
+    agent_deps: NotRequired[list[str]]
+
+
+class SourceEntry(TypedDict):
+    """One source's entry under "sources", as `load` validates it and `source_entry` writes it.
+
+    An entry an older deployer wrote may lack any field. source_dir and deployed_at are not validated, since the
+    deployer only compares the one and never reads the other, so a reader checks source_dir is a string.
+    selected_skills is no longer written, and an older entry keeps it until its source next deploys.
+    """
+
+    source_dir: NotRequired[object]
+    source_commit: NotRequired[str]
+    source_ref: NotRequired[str]
+    deployed_at: NotRequired[object]
+    requested_bundles: NotRequired[list[str]]
+    requested_bundle_members: NotRequired[dict[str, list[str]]]
+    requested_skills: NotRequired[list[str]]
+    selected_skills: NotRequired[list[str]]
+    skills: NotRequired[dict[str, ItemEntry]]
+    shared: NotRequired[dict[str, ItemEntry]]
+    wrappers: NotRequired[dict[str, ItemEntry]]
+    agents: NotRequired[dict[str, ItemEntry]]
+
+
+class ManifestData(TypedDict):
+    """The manifest file's content; a field the deployer does not know is kept as it is."""
+
+    manifest_version: int
+    sources: dict[str, SourceEntry]
+    last_run_id: NotRequired[str]
+
+
+def source_entry(
+    source_dir: str,
+    deployed_at: str | None,
+    *,
+    commit: str | None = None,
+    ref: str | None = None,
+    requested_bundles: Collection[str] = (),
+    requested_bundle_members: Mapping[str, list[str]] | None = None,
+    requested_skills: Collection[str] = (),
+    items: Mapping[KindKey, Mapping[str, ItemEntry]] | None = None,
+) -> SourceEntry:
+    """A source's entry as a deployment or a migration writes it, in the order the manifest has always held its fields.
+
+    items maps each kind's key to its entries, written sorted by name; a kind it leaves out is written empty.
+    """
+    entry: SourceEntry = {"source_dir": source_dir}
+    if commit is not None:
+        entry["source_commit"] = commit
+    if ref is not None:
+        entry["source_ref"] = ref
+    entry["deployed_at"] = deployed_at
+    entry["requested_bundles"] = list(requested_bundles)
+    entry["requested_bundle_members"] = dict(requested_bundle_members or {})
+    entry["requested_skills"] = list(requested_skills)
+    for kind in KINDS:
+        entry[kind.key] = dict(sorted((items or {}).get(kind.key, {}).items()))
+    return entry
 
 
 def _by_kind() -> dict[str, dict[str, str]]:
@@ -109,7 +183,7 @@ class Ownership:
 @dataclass
 class Manifest:
     path: Path
-    data: dict[str, Any]
+    data: ManifestData
     owners: dict[str, dict[str, str]] = field(default_factory=_by_kind)  # kind key -> item name -> source ID
 
     def owners_of(self, kind: ItemKind) -> dict[str, str]:
@@ -124,25 +198,22 @@ class Manifest:
         return self.owners_of(SHARED)
 
     @property
-    def sources(self) -> dict[str, Any]:
+    def sources(self) -> dict[str, SourceEntry]:
         return self.data.setdefault("sources", {})
 
-    def source(self, source_id: str) -> dict[str, Any] | None:
-        entry = self.sources.get(source_id)
-        return entry if isinstance(entry, dict) else None
+    def source(self, source_id: str) -> SourceEntry | None:
+        return self.sources.get(source_id)
 
     def source_commit(self, source_id: str) -> str | None:
         """The commit this source was last deployed from, or None for an entry written before it was recorded."""
-        value = (self.source(source_id) or {}).get("source_commit")
-        return value if isinstance(value, str) else None
+        return (self.source(source_id) or {}).get("source_commit")
 
     def source_ref(self, source_id: str) -> str | None:
         """The ref a deployment made with --at named, or None when the source was last deployed as its checkout is."""
-        value = (self.source(source_id) or {}).get("source_ref")
-        return value if isinstance(value, str) else None
+        return (self.source(source_id) or {}).get("source_ref")
 
     def ownership(self, source_id: str) -> Ownership:
-        entry = self.source(source_id) or {}
+        entry: SourceEntry = self.source(source_id) or {}
         owned = Ownership()
         for kind in KINDS:
             for name, value in entry.get(kind.key, {}).items():
@@ -161,26 +232,25 @@ class Manifest:
         owned.bundle_members_recorded = "requested_bundle_members" in entry
         return owned
 
-    def entry(self, source_id: str, kind: str, name: str) -> dict[str, Any] | None:
-        value = (self.source(source_id) or {}).get(kind, {}).get(name)
+    def entry(self, source_id: str, kind: KindKey, name: str) -> ItemEntry | None:
+        entry: SourceEntry = self.source(source_id) or {}
+        value = entry.get(kind, {}).get(name)
         return value if isinstance(value, dict) else None
 
     def last_run_id(self) -> str:
-        value = self.data.get("last_run_id", "")
-        return value if isinstance(value, str) else ""
+        return self.data.get("last_run_id", "")
 
     def save(self) -> None:
         self.data["manifest_version"] = MANIFEST_VERSION
         fsops.write_atomic(self.path, (json.dumps(self.data, indent=2) + "\n").encode("utf-8"))
 
 
-def _hash_of(value: Any) -> str:
-    if isinstance(value, dict) and isinstance(value.get("hash"), str):
-        return value["hash"]
-    return ""
+def _hash_of(value: object) -> str:
+    recorded = value.get("hash") if isinstance(value, dict) else None
+    return recorded if isinstance(recorded, str) else ""
 
 
-def _is_agent_file(name: Any) -> bool:
+def _is_agent_file(name: object) -> bool:
     """An agent's deployed file name: a safe name that is a valid item name followed by .md."""
     return (
         isinstance(name, str)
@@ -190,7 +260,7 @@ def _is_agent_file(name: Any) -> bool:
     )
 
 
-def _valid_dependencies(values: Any, kind: ItemKind) -> bool:
+def _valid_dependencies(values: object, kind: ItemKind) -> bool:
     """A skill entry's list of the items of one kind it depends on, each a name that kind's items may have."""
     if not isinstance(values, list):
         return False
@@ -201,7 +271,7 @@ def _valid_dependencies(values: Any, kind: ItemKind) -> bool:
     return all(isinstance(value, str) and safe_name_problem(value, "shared dependency") is None for value in values)
 
 
-def _validate_source_commit(source_id: str, entry: dict[str, Any]) -> None:
+def _validate_source_commit(source_id: str, entry: dict[object, object]) -> None:
     """A recorded commit is a full object name; an entry written before it was recorded has none until it deploys.
 
     A deployment made with --at also records the ref it named, which is only ever printed, and only beside a commit.
@@ -216,12 +286,15 @@ def _validate_source_commit(source_id: str, entry: dict[str, Any]) -> None:
             raise DeployError(f"ERROR: Manifest source '{source_id}' source_ref is malformed")
 
 
-def _validate(data: dict[str, Any], path: Path) -> None:
-    """Reject any manifest value that could later be joined to a path or trusted as a hash."""
+def _validate(data: dict[object, object], sources: dict[object, object], version: int, path: Path) -> ManifestData:
+    """The manifest as its shape, once no value that could later be joined to a path or trusted as a hash is malformed.
+
+    sources and version are data's sources and manifest_version, which the caller has already read.
+    """
     run_id = data.get("last_run_id", "")
     if not isinstance(run_id, str) or (run_id and safe_name_problem(run_id, "run ID") is not None):
         raise DeployError(f"ERROR: Manifest last_run_id is malformed: {path}")
-    for source_id, entry in data["sources"].items():
+    for source_id, entry in sources.items():
         if (
             not isinstance(source_id, str)
             or len(source_id) > SOURCE_ID_MAX_LENGTH
@@ -269,9 +342,7 @@ def _validate(data: dict[str, Any], path: Path) -> None:
                             _valid_dependencies(
                                 value.get(
                                     dependency.dependency_key,
-                                    None
-                                    if dependency is SKILL and data["manifest_version"] >= SKILL_DEPS_VERSION
-                                    else [],
+                                    None if dependency is SKILL and version >= SKILL_DEPS_VERSION else [],
                                 ),
                                 dependency,
                             )
@@ -280,9 +351,12 @@ def _validate(data: dict[str, Any], path: Path) -> None:
                     )
                 ):
                     raise DeployError(f"ERROR: Manifest entry is malformed: source '{source_id}' {kind.key} {name!r}")
+    # Every field the shape gives a type was checked above; source_dir and deployed_at, which it types as object, and
+    # a field it does not name are kept as they are.
+    return cast(ManifestData, data)
 
 
-def _record_owners(data: dict[str, Any], kind: str, label: str, owners: dict[str, str]) -> None:
+def _record_owners(data: ManifestData, kind: KindKey, label: str, owners: dict[str, str]) -> None:
     for source_id, entry in data["sources"].items():
         for name in entry.get(kind, {}):
             if name in owners and owners[name] != source_id:
@@ -292,7 +366,7 @@ def _record_owners(data: dict[str, Any], kind: str, label: str, owners: dict[str
             owners[name] = source_id
 
 
-def _upgrade_dependencies(data: dict[str, Any]) -> None:
+def _upgrade_dependencies(data: ManifestData) -> None:
     """Prepare an older manifest's missing edges without guessing from metadata newer than its installed skills.
 
     Unknown historical edges conservatively retain the source's other owned skills. A successful deployment replaces
@@ -310,24 +384,25 @@ def _upgrade_dependencies(data: dict[str, Any]) -> None:
 def load(path: Path) -> Manifest:
     if not path.is_file():
         return Manifest(path, {"manifest_version": MANIFEST_VERSION, "sources": {}})
+    raw: object
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8"))
     except OSError as exc:
         # A file another process holds, or one this user may not read, is not malformed: say which it is.
         raise os_error(exc, "read the manifest") from exc
     except (UnicodeError, json.JSONDecodeError):
-        data = None
-    if not isinstance(data, dict) or not isinstance(data.get("sources", {}), dict):
+        raw = None
+    sources = raw.setdefault("sources", {}) if isinstance(raw, dict) else None
+    if not isinstance(raw, dict) or not isinstance(sources, dict):
         raise DeployError(f"ERROR: Manifest is malformed: {path}")
-    data.setdefault("sources", {})
-    version = data.get("manifest_version")
+    version = raw.get("manifest_version")
     if not isinstance(version, int) or isinstance(version, bool) or version < OLDEST_READABLE_VERSION:
         raise DeployError(f"ERROR: Manifest has unsupported schema version '{version}'")
     if version > MANIFEST_VERSION:
         raise DeployError(
             f"ERROR: Manifest schema version '{version}' is newer than supported version {MANIFEST_VERSION}"
         )
-    _validate(data, path)
+    data = _validate(raw, sources, version, path)
     _upgrade_dependencies(data)
     manifest = Manifest(path, data)
     for kind in KINDS:

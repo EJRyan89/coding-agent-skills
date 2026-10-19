@@ -511,7 +511,9 @@ class ValidateSharedAssetsTests(unittest.TestCase):
                 skill_deps=[],
                 selectable=True,
             )
-        data = manifest.Manifest(self.paths.manifest_file, {"sources": sources or {}})
+        data = manifest.Manifest(
+            self.paths.manifest_file, {"manifest_version": manifest.MANIFEST_VERSION, "sources": sources or {}}
+        )
         data.owners["shared"].update(owners or {})
         return Context(self.paths, Options(), src, {}, data, data.ownership(OWN_SOURCE), io.StringIO())
 
@@ -664,7 +666,9 @@ class ContextStepTests(unittest.TestCase):
                 skill_deps=[],
                 selectable=True,
             )
-        data = manifest.Manifest(self.paths.manifest_file, {"sources": {}})
+        data = manifest.Manifest(
+            self.paths.manifest_file, {"manifest_version": manifest.MANIFEST_VERSION, "sources": {}}
+        )
         return Context(self.paths, Options(), src, config or {}, data, data.ownership(OWN_SOURCE), io.StringIO())
 
     def test_a_selection_needing_unset_variables_names_each_one_and_the_skills_that_need_it(self) -> None:

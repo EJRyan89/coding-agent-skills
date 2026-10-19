@@ -8,6 +8,7 @@ from . import hashing, journal, platform_support, source
 from .context import Context
 from .errors import DeployError, see_recovery
 from .kinds import AGENT_KIND, KINDS, SHARED, SKILL, ItemKind
+from .manifest import SourceEntry, source_entry
 from .report import ReportLine, members_recorded, print_report, requested_members
 
 KINDS_ALLOWED = {
@@ -16,7 +17,7 @@ KINDS_ALLOWED = {
 }
 
 
-def _migration_candidates(context: Context, old_entry: dict, kind: ItemKind) -> list[str]:
+def _migration_candidates(context: Context, old_entry: SourceEntry, kind: ItemKind) -> list[str]:
     restore = (
         "Restore the copy the old source deployed, for example by deploying from that source again, "
         "then rerun --migrate-from.",
@@ -65,7 +66,9 @@ def _record_takeover(context: Context) -> None:
     print(f"Recorded this checkout, {platform_support.normalize(current)}, as the source of '{context.source_id}'.")
 
 
-def _carry_requests(context: Context, old: str, old_entry: dict, new_entry: dict, moved: set[str]) -> None:
+def _carry_requests(
+    context: Context, old: str, old_entry: SourceEntry, new_entry: SourceEntry, moved: set[str]
+) -> None:
     """Carry each moved skill's request, on its own or through a bundle, to the root this source gives the skill.
 
     --all keeps an opt-in item only when it is requested, so a request has to move with its skills, in this source's
@@ -122,17 +125,7 @@ def migrate(context: Context, old: str) -> None:
         _record_takeover(context)
         print("")
         return
-    new_entry = data.sources.setdefault(
-        context.source_id,
-        {
-            "source_dir": "",
-            "deployed_at": None,
-            "requested_bundles": [],
-            "requested_bundle_members": {},
-            "requested_skills": [],
-            **{kind.key: {} for kind in KINDS},
-        },
-    )
+    new_entry = data.sources.setdefault(context.source_id, source_entry("", None))
     new_entry["source_dir"] = platform_support.normalize(paths.source_dir)
     _carry_requests(context, old, old_entry, new_entry, set(candidates[SKILL.key]))
     for kind in KINDS:
