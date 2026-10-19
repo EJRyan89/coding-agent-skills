@@ -11,8 +11,10 @@ from pathlib import Path, PurePosixPath
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
 import process_identity
+from bash_agreement import assert_value_quoted, rendered_fragments
 from harness import (
     REPOSITORY_ROOT,
     TAKES_THE_LOCK,
@@ -49,6 +51,7 @@ class RenderedExecutableTests(DeployerTestCase):
                 self.deploy_ok("--all")
                 expected = "update channel " + channel
                 self.assertIn(f'"{expected}"', self.skill_text("alpha"))
+                assert_value_quoted(rendered_fragments(self.skills_dir / "alpha"), expected)
                 result = platform_support.run_tool([bash, forward(self.skills_dir / "alpha" / "run.sh")])
                 self.assertEqual(0, result.returncode, result.output)
                 self.assertEqual(expected, result.output.strip())
@@ -62,6 +65,7 @@ class RenderedExecutableTests(DeployerTestCase):
         repos = self.root / "Repos With Spaces"
         self.make_config(repos_root=repos)
         self.deploy_ok("--all")
+        assert_value_quoted(rendered_fragments(self.skills_dir / "alpha"), forward(repos))
         bash = platform_support.find_bash()
         if bash is None:
             self.fail("Git Bash is a validation prerequisite")
@@ -84,6 +88,7 @@ class RenderedExecutableTests(DeployerTestCase):
         lines = self.skill_text("alpha").split("\n")
         bodies = {fence.language: lines[fence.opener + 1] for fence in find_fences(lines)}
         self.assertEqual([*shells, *pythons], list(bodies))
+        assert_value_quoted(rendered_fragments(self.skills_dir / "alpha"), forward(repos))
         bash = platform_support.find_bash()
         if bash is None:
             self.fail("Git Bash is a validation prerequisite")
@@ -122,6 +127,7 @@ class RenderedExecutableTests(DeployerTestCase):
         python = "python" if platform_support.WINDOWS else "python3"
         rendered = f'{python} -c "import sys; print(sys.argv[1])" "{forward(repos)}"'
         self.assertIn(f"```bash\n{rendered}\n```\n\n```powershell\n{rendered}\n```", self.skill_text("alpha"))
+        assert_value_quoted(rendered_fragments(self.skills_dir / "alpha"), forward(repos))
         bash = platform_support.find_bash()
         pwsh = platform_support.find_pwsh(os.environ.get("PATH", ""))
         if bash is None or pwsh is None:
@@ -156,6 +162,7 @@ class RenderedExecutableTests(DeployerTestCase):
         clone = self.snapshot_source("Clone With Spaces (dev)")
         self.deploy_from(clone, "--all")
         self.assertIn(f'"{forward(clone)}"', self.skill_text("alpha"))
+        assert_value_quoted(rendered_fragments(self.skills_dir / "alpha"), forward(clone))
         bash = platform_support.find_bash()
         if bash is None:
             self.fail("Git Bash is a validation prerequisite")
@@ -196,6 +203,7 @@ class RenderedExecutableTests(DeployerTestCase):
         # Claude Code substitutes the native absolute path; Codex and Copilot use the one the adapter states.
         for value in (str(self.skills_dir / "alpha"), stated.group(1)):
             with self.subTest(value=value):
+                assert_value_quoted([command.replace("${CLAUDE_SKILL_DIR}", value)], value)
                 result = platform_support.run_tool([bash, "-c", command.replace("${CLAUDE_SKILL_DIR}", value)])
                 self.assertEqual(0, result.returncode, result.output)
                 self.assertEqual("alpha a b", result.output.strip())
