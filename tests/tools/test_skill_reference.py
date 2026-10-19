@@ -269,13 +269,13 @@ class SkillReferenceTestCase(unittest.TestCase):
         found = skill_reference.problems(self.root)
         self.assertEqual(1, len(found))
         self.assertIn("no summary block", found[0])
-        with self.assertRaisesRegex(skill_reference.ReferenceError, "no summary block"):
+        with self.assertRaisesRegex(skill_reference.SkillReferenceError, "no summary block"):
             skill_reference.write(self.root)
 
     def test_a_reference_without_a_runtime_support_block_is_reported(self) -> None:
         self.reference.write_text(INITIAL_REFERENCE.split("\n## Runtime support")[0], encoding="utf-8")
 
-        with self.assertRaisesRegex(skill_reference.ReferenceError, "no runtime-support block"):
+        with self.assertRaisesRegex(skill_reference.SkillReferenceError, "no runtime-support block"):
             skill_reference.write(self.root)
 
     def test_a_folded_description_is_read_as_one_line(self) -> None:
@@ -295,11 +295,11 @@ class SkillReferenceTestCase(unittest.TestCase):
         ):
             with self.subTest(frontmatter=frontmatter):
                 self.add_skill("alpha", frontmatter, {"required_vars": ["REPOS_ROOT"], "opt_in": True})
-                with self.assertRaisesRegex(skill_reference.ReferenceError, message):
+                with self.assertRaisesRegex(skill_reference.SkillReferenceError, message):
                     skill_reference.problems(self.root)
         skill_md = self.root / "skills" / "alpha" / "SKILL.md"
         skill_md.write_text("---\nname: alpha\ndescription: Open.\n", encoding="utf-8")
-        with self.assertRaisesRegex(skill_reference.ReferenceError, "not closed"):
+        with self.assertRaisesRegex(skill_reference.SkillReferenceError, "not closed"):
             skill_reference.read_frontmatter(skill_md)
 
     def test_a_root_outside_a_checkout_is_refused_and_the_reference_is_not_written(self) -> None:

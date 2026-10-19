@@ -1,0 +1,14 @@
+{
+  "skill": "curate-agent-memory",
+  "mode": "trigger",
+  "requests": [
+    "Review the auto-memory for this project and tell me which memories are stale.",
+    "Tidy up my Claude memories for this repo; some of them repeat each other.",
+    "Prune the project memories that no longer apply."
+  ],
+  "near_misses": [
+    "Check whether this repository's agent instructions are set up well for Codex too.",
+    "Remember that I prefer tabs over spaces in this project.",
+    "Explain what the regular expression ^[a-z]+$ matches."
+  ]
+}

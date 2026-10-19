@@ -77,12 +77,12 @@ def stats_lines(review: Review) -> list[str]:
             f"snapshot source={snapshot['source']} files={snapshot['files']} bytes={snapshot['bytes']}{excluded} "
             f"{seconds}"
         )
-    for reviewer in review.get("reviewers", []):
-        if "files_read" in reviewer:
-            lines.append(
-                f"reviewer {reviewer['id']} files_read={_count_or_unknown(reviewer['files_read'])} "
-                f"bytes_read={_count_or_unknown(reviewer['bytes_read'])}"
-            )
+    lines.extend(
+        f"reviewer {reviewer['id']} files_read={_count_or_unknown(reviewer['files_read'])} "
+        f"bytes_read={_count_or_unknown(reviewer['bytes_read'])}"
+        for reviewer in review.get("reviewers", [])
+        if "files_read" in reviewer
+    )
     return lines
 
 

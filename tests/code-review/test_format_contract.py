@@ -364,10 +364,11 @@ def _listed_probe_problems(
     label: str, name: str, listed: tuple[Any, ...], values: list[Any], removable: list[Instance]
 ) -> list[str]:
     """Listed values no fixture has and no validator accepts, then validators that accept an unlisted value."""
-    problems: list[str] = []
-    for value in listed:
-        if value not in values and not any(item.accepts(_set(name, value)) for item in removable):
-            problems.append(f"{label} lists {value!r}, which no fixture has or accepts")
+    problems: list[str] = [
+        f"{label} lists {value!r}, which no fixture has or accepts"
+        for value in listed
+        if value not in values and not any(item.accepts(_set(name, value)) for item in removable)
+    ]
     accepted = [item.fixture.name for item in removable if item.accepts(_set(name, UNDOCUMENTED_VALUE))]
     problems += [f"{label} accepts an unlisted value in {fixture}" for fixture in accepted]
     return problems

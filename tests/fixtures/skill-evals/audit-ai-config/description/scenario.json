@@ -1,0 +1,14 @@
+{
+  "skill": "audit-ai-config",
+  "mode": "trigger",
+  "requests": [
+    "Check whether this repository's agent instructions are set up well, without changing anything.",
+    "Is our CLAUDE.md and AGENTS.md setup any good for Claude Code, Codex, and Copilot?",
+    "Review the AI agent configuration in this repo and tell me what is wrong with it."
+  ],
+  "near_misses": [
+    "Write a CLAUDE.md for this repository.",
+    "Tidy up the auto-memory for this project.",
+    "Add a .gitignore entry for the build folder."
+  ]
+}

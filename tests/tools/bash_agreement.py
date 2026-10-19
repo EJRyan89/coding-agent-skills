@@ -114,9 +114,11 @@ def rendered_fragments(directory: Path) -> list[str]:
             fragments.append(path.read_text(encoding="utf-8"))
         elif suffix == ".md":
             lines = path.read_text(encoding="utf-8").split("\n")
-            for fence in find_fences(lines):
-                if render.fence_context(fence) == "shell":
-                    fragments.append("".join(f"{fence.text(lines[index])}\n" for index in fence.body()))
+            fragments.extend(
+                "".join(f"{fence.text(lines[index])}\n" for index in fence.body())
+                for fence in find_fences(lines)
+                if render.fence_context(fence) == "shell"
+            )
     return fragments
 
 

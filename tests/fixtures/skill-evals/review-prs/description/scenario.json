@@ -1,0 +1,14 @@
+{
+  "skill": "review-prs",
+  "mode": "trigger",
+  "requests": [
+    "Review pull request octo-org/widgets#42.",
+    "Re-review octo-org/widgets#42 now that the author has pushed fixes.",
+    "Review the open pull requests in my configured repositories."
+  ],
+  "near_misses": [
+    "Review the design document at docs/design/export.md.",
+    "Which pull requests need my attention?",
+    "Open a pull request for this branch."
+  ]
+}

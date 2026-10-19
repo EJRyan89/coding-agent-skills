@@ -55,6 +55,7 @@ Write the failing test, then make it pass:
 - A script's regression suite lives beside it under `scripts/`, named `test_*` or one of the other patterns in "Validation".
 - A `{{TOKEN}}` in Bash or PowerShell needs a rendered execution fixture in `tests/deployer/` whose values contain spaces and other allowed punctuation.
 - A contract between skills, such as one skill invoking another, belongs in `tests/ai-config/test_cross_skill_contracts.py`.
+- A shipped skill the model may start has a trigger scenario, `tests/fixtures/skill-evals/<name>/description/scenario.json`, in the shape `docs/skill-evaluations.md` describes: requests a user would type, drawn from its "Use it when" sentence, and near misses from its neighbours' sentences and from a request no skill serves. Validation fails without one.
 
 Keep `SKILL.md` to orchestration: the commands to run, what their output means, and what to ask the user.
 
@@ -85,6 +86,8 @@ Then read the whole diff once more for personal paths, organization names, and g
 Validation never starts a runtime. For a `GATE runtime-canary` line, also run the `runtime-canary` repository skill for the skills it names and record its result in the pull request.
 
 For a `GATE evaluate-skill <name> if-prompt` line, decide whether the change touches that skill's prompt, model guidance, or reviewer instructions; when it does, also run the `evaluate-skill` repository skill for it, and commit the result it writes to `docs/skill-evaluations.md`. It calls models, so validation never runs it.
+
+A `GATE evaluate-skill <name> trigger` line is owed whenever it appears: the skill's description, all the model reads when deciding whether to start it, is new or changed. Before the pull request, run the `evaluate-skill` repository skill for that skill, which runs its trigger scenario, and commit and cite its result the same way.
 
 ## 6. Audit the cost
 

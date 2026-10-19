@@ -55,9 +55,11 @@ def path_programs(name: str, search_path: str | None = None) -> list[str]:
         if not Path(folder).is_absolute() or os.path.normcase(folder) in seen:
             continue
         seen.add(os.path.normcase(folder))
-        for candidate in (Path(folder) / file for file in names):
-            if candidate.is_file() and os.access(candidate, os.X_OK):
-                found.append(str(candidate))
+        found.extend(
+            str(candidate)
+            for candidate in (Path(folder) / file for file in names)
+            if candidate.is_file() and os.access(candidate, os.X_OK)
+        )
     return found
 
 

@@ -17,8 +17,10 @@ repository skill's frontmatter changes, and the runtime prompt samples after a f
 The cost audit is owed for each touched skill still present; the runtime canary for each present shipped skill that
 is new, changes a frontmatter key its runtime adapter or grants read, changes the `${CLAUDE_SKILL_DIR}` paths it names
 its own files by, changes the metadata its agents, guidance, or declared runtime support come from or whether it
-is selectable, which decides whether it has a runtime adapter, or declares a changed agent; and the evaluation for
-each skill with scenarios whose skill_deps reach a touched skill.
+is selectable, which decides whether it has a runtime adapter, or declares a changed agent; the evaluation for each
+skill with a review scenario, any scenario but a trigger one, whose skill_deps reach a touched skill; and the trigger
+evaluation for each present shipped skill the model may start whose description is new or changed, since the
+description is all the model reads when deciding whether to start it.
 
 Every line is one fact:
 
@@ -31,8 +33,11 @@ Every line is one fact:
     REGENERATE <command>                            gates: a generated file the change may have left stale; run it
     GATE analyze-skill-cost <skill>                 gates: a skill the change touches, shipped or repository
     GATE runtime-canary <skill> ...                 gates: the shipped skills whose discovery the change touches
-    GATE evaluate-skill <skill> if-prompt           gates: a skill with scenarios the change reaches, owed only when it
-                                                    touches a prompt, model guidance, or reviewer instructions
+    GATE evaluate-skill <skill> if-prompt           gates: a skill with a review scenario the change reaches, owed only
+                                                    when it touches a prompt, model guidance, or reviewer instructions
+    GATE evaluate-skill <skill> trigger             gates: a shipped skill the model may start whose description is new
+                                                    or changed, owed always: its trigger scenario runs before the pull
+                                                    request
     OWED <count>                                    gates: the REGENERATE and GATE lines above
 
 Exit status 0 means the section or the gates were printed, "nothing owed" included; 1 a last line FAILED <reason>; 2 a
@@ -85,6 +90,8 @@ REPOSITORY = ".claude/skills"
 METADATA = "deploy-meta"
 AGENTS = "agents"
 SCENARIOS = "tests/fixtures/skill-evals"
+# The mode of a scenario that judges whether a skill's description starts it rather than what the skill does.
+TRIGGER_MODE = "trigger"
 # The frontmatter keys the runtime adapter carries or a runtime grants by, and the metadata the deployer installs a
 # skill's agents, guidance, and declared support from, and whether it is selectable, which decides whether the
 # deployer writes its adapter: a change to any of them changes what a runtime finds.
@@ -287,6 +294,7 @@ class Owed:
     cost: list[str]
     canary: list[str]
     evaluate: list[str]
+    trigger: list[str]
 
     def lines(self) -> list[str]:
         found = [f"REGENERATE {command}" for command in self.regenerate]
@@ -294,6 +302,7 @@ class Owed:
         if self.canary:
             found.append("GATE runtime-canary " + " ".join(flat_text(name) for name in self.canary))
         found += [f"GATE evaluate-skill {flat_text(name)} if-prompt" for name in self.evaluate]
+        found += [f"GATE evaluate-skill {flat_text(name)} trigger" for name in self.trigger]
         return found
 
 
@@ -337,6 +346,29 @@ def needs_canary(tree: Tree, name: str, paths: set[str]) -> bool:
     return False
 
 
+def reviews(root: Path, name: str) -> bool:
+    """Whether the skill has a review scenario: one whose scenario.json is not a trigger scenario's, an unreadable one
+    counted, so the gate is owed rather than lost."""
+    for path in (root / SCENARIOS / name).glob("*/scenario.json"):
+        found = metadata(path.read_text(encoding="utf-8-sig"))
+        if found is None or found.get("mode") != TRIGGER_MODE:
+            return True
+    return False
+
+
+def needs_trigger(tree: Tree, name: str, paths: set[str]) -> bool:
+    """Whether the shipped skill's description is new or changed while the model may start it, which only a trigger
+    run judges; frontmatter that cannot be read counts as both."""
+    skill_file = f"{SHIPPED}/{name}/SKILL.md"
+    if skill_file not in paths:
+        return False
+    head = tree.head(skill_file)
+    user_only = frontmatter_value(head, "disable-model-invocation")
+    if isinstance(user_only, str) and user_only.casefold() == "true":
+        return False
+    return frontmatter_value(tree.base(skill_file), "description") != frontmatter_value(head, "description")
+
+
 def owed(tree: Tree, changed: Iterable[str]) -> Owed:
     """What the changed paths owe, by the rules the module's docstring states."""
     paths = set(changed)
@@ -355,8 +387,9 @@ def owed(tree: Tree, changed: Iterable[str]) -> Owed:
         name for name in present if touched[name] == SHIPPED and (name in declaring or needs_canary(tree, name, paths))
     ]
     scenario_skills = sorted(path.name for path in (tree.root / SCENARIOS).glob("*") if path.is_dir())
-    evaluate = [name for name in scenario_skills if reach(name, meta) & set(touched)]
-    return Owed(regenerations(tree, touched, paths), present, canary, evaluate)
+    evaluate = [name for name in scenario_skills if reach(name, meta) & set(touched) and reviews(tree.root, name)]
+    trigger = [name for name in present if touched[name] == SHIPPED and needs_trigger(tree, name, paths)]
+    return Owed(regenerations(tree, touched, paths), present, canary, evaluate, trigger)
 
 
 def print_gates(root: Path, base: str, client: GitClient) -> int:

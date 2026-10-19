@@ -1888,7 +1888,7 @@ def guard(stream: str) -> int:
             refused = None if reason is None else f"{reason} {DENY_REASON}"
             for note in reading.notes:
                 print(f"worktrees guard could not judge part of the command: {note}", file=sys.stderr)
-    except Exception as exc:  # A broken guard must not block every tool; the regression suite pins its behavior.
+    except Exception as exc:  # noqa: BLE001 - a broken guard must not block every tool; the regression suite pins its behavior
         print(f"worktrees guard skipped: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 0
     if refused is not None:

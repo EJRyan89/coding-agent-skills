@@ -1,5 +1,6 @@
 """Layout policies: where a skill's files live, how long its fences are, how it names its own and its siblings'
-files, its metadata and variables, its script languages, and the fixture sources beside it.
+files, its metadata and variables, its script languages, the fixture sources beside it, and the trigger scenario
+that judges the description of each skill the model may start.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
+import frontmatter
 from markdown_sections import EXECUTABLE_FENCES
 from skill_scripts import shell_git_subcommands
 from validation_support import (
@@ -71,13 +73,13 @@ def embedded_program_problems(root: Path, tree: str = "skills") -> list[str]:
     problems: list[str] = []
     for markdown in sorted((root / tree).rglob("*.md"), key=lambda path: path.relative_to(root).as_posix()):
         name = markdown.relative_to(root).as_posix()
-        for fence in find_executable_fences(markdown.read_text(encoding="utf-8").splitlines()):
-            if fence.body_line_count > MAXIMUM_INLINE_EXECUTABLE_LINES:
-                problems.append(
-                    f"{name}:{fence.line_number} contains a {fence.language} fence with {fence.body_line_count} "
-                    f"lines. Markdown may contain only short command examples of at most "
-                    f"{MAXIMUM_INLINE_EXECUTABLE_LINES} lines; move executable logic to the skill's scripts/ directory."
-                )
+        problems.extend(
+            f"{name}:{fence.line_number} contains a {fence.language} fence with {fence.body_line_count} "
+            f"lines. Markdown may contain only short command examples of at most "
+            f"{MAXIMUM_INLINE_EXECUTABLE_LINES} lines; move executable logic to the skill's scripts/ directory."
+            for fence in find_executable_fences(markdown.read_text(encoding="utf-8").splitlines())
+            if fence.body_line_count > MAXIMUM_INLINE_EXECUTABLE_LINES
+        )
     return problems
 
 
@@ -96,11 +98,10 @@ def deploy_variable_problems(
     derived: set[str],
 ) -> list[str]:
     """Report configured variables and template tokens that are not used consistently."""
-    problems: list[str] = []
-    for key in sorted(configured - prompted):
-        problems.append(f"configure never prompts for configured variable {key}")
-    for key in sorted(prompted - configured):
-        problems.append(f"configure prompts for unknown variable {key}")
+    problems: list[str] = [
+        f"configure never prompts for configured variable {key}" for key in sorted(configured - prompted)
+    ]
+    problems.extend(f"configure prompts for unknown variable {key}" for key in sorted(prompted - configured))
 
     required_anywhere: set[str] = set()
     used_anywhere: set[str] = set()
@@ -112,14 +113,18 @@ def deploy_variable_problems(
         directory = skills.get(skill)
         used = _template_tokens(directory) if directory is not None else set()
         used_anywhere |= used
-        for key in sorted(used - required):
-            problems.append(f"skill {skill} uses {{{{{key}}}}} without declaring it in required_vars")
-        for key in sorted(required - used):
-            problems.append(f"skill {skill} declares required variable {key} but never uses it")
-        for key in sorted(required - configured - derived):
-            problems.append(f"skill {skill} requires unknown variable {key}")
-    for key in sorted(configured - required_anywhere):
-        problems.append(f"configured variable {key} is not required by any skill")
+        problems.extend(
+            f"skill {skill} uses {{{{{key}}}}} without declaring it in required_vars" for key in sorted(used - required)
+        )
+        problems.extend(
+            f"skill {skill} declares required variable {key} but never uses it" for key in sorted(required - used)
+        )
+        problems.extend(
+            f"skill {skill} requires unknown variable {key}" for key in sorted(required - configured - derived)
+        )
+    problems.extend(
+        f"configured variable {key} is not required by any skill" for key in sorted(configured - required_anywhere)
+    )
 
     shared = json.loads((root / "source.json").read_text(encoding="utf-8")).get("shared_assets", {})
     for asset in sorted(shared):
@@ -127,11 +132,11 @@ def deploy_variable_problems(
         text = path.read_text(encoding="utf-8") if path.is_file() else ""
         tokens = set(TEMPLATE_TOKEN.findall(text))
         used_anywhere |= tokens
-        for key in sorted(tokens - derived):
-            problems.append(f"shared asset {asset} uses non-derived variable {key}")
+        problems.extend(f"shared asset {asset} uses non-derived variable {key}" for key in sorted(tokens - derived))
     # A derived value no template uses still has to pass the allowlist, so it could refuse a deployment for nothing.
-    for key in sorted(derived - used_anywhere):
-        problems.append(f"derived variable {key} is not used by any skill or shared asset")
+    problems.extend(
+        f"derived variable {key} is not used by any skill or shared asset" for key in sorted(derived - used_anywhere)
+    )
     return problems
 
 
@@ -155,9 +160,12 @@ INVOKED_SKILL = re.compile(r"`([a-z0-9-]+)[` ]")
 
 def hooked_agents(root: Path) -> set[str]:
     """The agents under agents/ whose definition declares hooks, such as the code-review reviewer's guard."""
-    import frontmatter
-
     return {path.stem for path in (root / "agents").glob("*.md") if "hooks" in frontmatter.read(path)}
+
+
+def user_only(document: frontmatter.Frontmatter) -> bool:
+    """Whether a SKILL.md's frontmatter lets only the user start the skill."""
+    return (document.string("disable-model-invocation") or "").casefold() == "true"
 
 
 def derived_needs(root: Path, name: str, seen: frozenset[str] = frozenset()) -> set[str]:
@@ -169,8 +177,6 @@ def derived_needs(root: Path, name: str, seen: frozenset[str] = frozenset()) -> 
     a SKILL.md line that says "invoke", the rule tests/ai-config/test_cross_skill_contracts.py applies; its limits
     reach the step that invokes it.
     """
-    import frontmatter
-
     from deployer import runtime_support
 
     skills = skills_by_name(root)
@@ -180,7 +186,6 @@ def derived_needs(root: Path, name: str, seen: frozenset[str] = frozenset()) -> 
     text = skill_md.read_text(encoding="utf-8-sig")
     document = frontmatter.read(skill_md)
     granted = document.value("allowed-tools") or []
-    user_only = (document.string("disable-model-invocation") or "").casefold() == "true"
     starts_hooked = any(f"`{agent}`" in text for agent in hooked_agents(root))
     metadata = root / "deploy-meta" / f"{name}.json"
     declared = json.loads(metadata.read_text(encoding="utf-8")) if metadata.is_file() else {}
@@ -193,7 +198,7 @@ def derived_needs(root: Path, name: str, seen: frozenset[str] = frozenset()) -> 
         for subcommand in shell_git_subcommands(script.read_text(encoding="utf-8"))
     )
     needs = runtime_support.frontmatter_needs(
-        granted if isinstance(granted, list) else [granted], user_only, starts_hooked, tools, git_subcommands
+        granted if isinstance(granted, list) else [granted], user_only(document), starts_hooked, tools, git_subcommands
     )
     invoked = {
         match
@@ -328,17 +333,20 @@ def _line_path_problems(
     directory: Path | None,
 ) -> list[str]:
     """Install paths, bare script runs, $HOME in agents, undeclared siblings, and missing files, in that order."""
-    problems: list[str] = []
-    for match in INSTALL_PATH.finditer(line):
-        if match.group(1) in skills:
-            problems.append(f"{name}:{number} names skill {match.group(1)} by its install path; see {SKILL_PATHS_DOC}")
+    problems: list[str] = [
+        f"{name}:{number} names skill {match.group(1)} by its install path; see {SKILL_PATHS_DOC}"
+        for match in INSTALL_PATH.finditer(line)
+        if match.group(1) in skills
+    ]
     if in_shell_fence and BARE_SCRIPT_PATH.search(line):
         problems.append(f"{name}:{number} runs a script by a bare relative path; see {SKILL_PATHS_DOC}")
     if dependencies is None and HOME_VARIABLE.search(line):
         problems.append(f"{name}:{number} finds a file through $HOME; see {AGENTS_DOC}")
-    for match in SIBLING_PATH.finditer(line):
-        if dependencies is not None and match.group(1) not in dependencies:
-            problems.append(f"{name}:{number} reaches ../{match.group(1)} without declaring it in skill_deps")
+    problems.extend(
+        f"{name}:{number} reaches ../{match.group(1)} without declaring it in skill_deps"
+        for match in SIBLING_PATH.finditer(line)
+        if dependencies is not None and match.group(1) not in dependencies
+    )
     for match in SKILL_DIR_FILE.finditer(line) if directory is not None else ():
         named = match.group(1).rstrip(".")  # a path may end a sentence
         if directory is not None and not (directory / named).exists():
@@ -369,11 +377,11 @@ def output_placeholder_problems(root: Path, tree: str = "skills") -> list[str]:
                 and holder.language.casefold() in EXECUTABLE_FENCE_LANGUAGES
             )
             if in_command_fence:
-                for match in OUTPUT_PLACEHOLDER.finditer(line):
-                    problems.append(
-                        f"{name}:{number} leaves {match.group(1)} to the agent; let the script choose "
-                        f"and print the path; see {WORKING_FILES_DOC}"
-                    )
+                problems.extend(
+                    f"{name}:{number} leaves {match.group(1)} to the agent; let the script choose "
+                    f"and print the path; see {WORKING_FILES_DOC}"
+                    for match in OUTPUT_PLACEHOLDER.finditer(line)
+                )
     return problems
 
 
@@ -390,11 +398,11 @@ def script_dependency_problems(root: Path) -> list[str]:
         declared = set(json.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", []))
         scripts = sorted((skills[skill] / "scripts").glob("*.py")) if skill in skills else []
         for path, _, tree in python_trees([path for path in scripts if not is_test_script(path)], root, problems):
-            for name in sorted(set(scripts_put_on_path(tree)) - declared - {skill}):
-                problems.append(
-                    f"{path.relative_to(root).as_posix()} puts {name}'s scripts on sys.path without declaring "
-                    f"{name} in skill_deps; see {SKILL_PATHS_DOC}"
-                )
+            problems.extend(
+                f"{path.relative_to(root).as_posix()} puts {name}'s scripts on sys.path without declaring "
+                f"{name} in skill_deps; see {SKILL_PATHS_DOC}"
+                for name in sorted(set(scripts_put_on_path(tree)) - declared - {skill})
+            )
     return problems
 
 
@@ -457,9 +465,11 @@ def fixture_source_problems(root: Path) -> list[str]:
         label = fixture.relative_to(root).as_posix()
         if json.loads(source_file.read_text(encoding="utf-8")).get("id") == shipped.get("id"):
             found.append(f"{label}/source.json reuses the shipped source ID")
-        for metadata in sorted((fixture / "deploy-meta").glob("*.json")):
-            if metadata.stem in names:
-                found.append(f"{label} skill {metadata.stem} shares its name with a shipped skill or bundle")
+        found.extend(
+            f"{label} skill {metadata.stem} shares its name with a shipped skill or bundle"
+            for metadata in sorted((fixture / "deploy-meta").glob("*.json"))
+            if metadata.stem in names
+        )
         found += [f"{label}: {problem}" for problem in skill_path_problems(fixture)]
     shipped_files = [
         root / "source.json",
@@ -474,6 +484,68 @@ def fixture_source_problems(root: Path) -> list[str]:
         if "tests/fixtures" in path.read_text(encoding="utf-8", errors="replace").replace("\\", "/"):
             found.append(f"{path.relative_to(root).as_posix()} names tests/fixtures, which never ships")
     return found
+
+
+TRIGGER_SCENARIO_DOC = '"Skill evaluations" in docs/skill-evaluations.md'
+# The mode of a scenario that judges whether a description starts its skill, and the requests one holds at least: a
+# description's "Use it when" sentence names several ways a user asks for the skill, and one request samples one.
+TRIGGER_MODE = "trigger"
+MINIMUM_TRIGGER_REQUESTS = 3
+
+
+def _trigger_problem(spec: dict[str, object], skill: str, shipped: dict[str, bool]) -> str | None:
+    """Why a trigger scenario under the skill's folder cannot judge that skill's description, or None; `shipped` says
+    of each shipped skill whether only the user may start it."""
+    named, requests, near_misses = spec.get("skill"), spec.get("requests"), spec.get("near_misses")
+    if named != skill:
+        return f"names skill {json.dumps(named)}, not its folder's, {skill}"
+    if skill not in shipped:
+        return f"names {skill}, which is no skill under skills/"
+    if shipped[skill]:
+        return f"names {skill}, which sets disable-model-invocation, so no request can start it"
+    if not isinstance(requests, list) or len(requests) < MINIMUM_TRIGGER_REQUESTS:
+        held = len(requests) if isinstance(requests, list) else 0
+        return f"holds {held} requests, fewer than {MINIMUM_TRIGGER_REQUESTS}"
+    if not isinstance(near_misses, list) or not near_misses:
+        return "holds no near miss"
+    return None
+
+
+def trigger_scenario_problems(root: Path) -> list[str]:
+    """Report a shipped skill the model may start with no trigger scenario, and a trigger scenario that cannot judge
+    its skill: one naming another folder's skill, a skill not under skills/, or a user-only one, or holding fewer than
+    MINIMUM_TRIGGER_REQUESTS requests or no near miss.
+
+    Only a run that calls models judges whether a description starts its skill, so validation never imports or starts
+    the evaluation; it holds that every description the model reads has a scenario to be judged by, and the
+    evaluation's suite loads each committed one as a run does.
+    """
+    shipped = {name: user_only(frontmatter.read(path / "SKILL.md")) for name, path in skills_by_name(root).items()}
+    scenarios = root / "tests" / "fixtures" / "skill-evals"
+    problems: list[str] = []
+    covered: set[str] = set()
+    for spec_file in sorted(scenarios.glob("*/*/scenario.json")):
+        label = spec_file.parent.relative_to(root).as_posix()
+        try:
+            spec = json.loads(spec_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            problems.append(f"{label}/scenario.json cannot be read: {exc}")
+            continue
+        if not isinstance(spec, dict) or spec.get("mode") != TRIGGER_MODE:
+            continue
+        skill = spec_file.parent.parent.name
+        problem = _trigger_problem(spec, skill, shipped)
+        if problem is None:
+            covered.add(skill)
+        else:
+            problems.append(f"{label} {problem}; see {TRIGGER_SCENARIO_DOC}")
+    for name, only_by_user in sorted(shipped.items()):
+        if name not in covered and not only_by_user:
+            problems.append(
+                f"skills/{name} may be started by the model and has no trigger scenario under "
+                f"{scenarios.relative_to(root).as_posix()}/{name}/; see {TRIGGER_SCENARIO_DOC}"
+            )
+    return problems
 
 
 def _starts_with_a_shebang(path: Path) -> bool:
@@ -593,8 +665,6 @@ def repository_skill_name_problems(root: Path) -> list[str]:
     A runtime lists a skill by its frontmatter name and the shim, the cost audit, and validation find it by its
     folder, so the two must agree; tools/new_skill.py --repository refuses the same names when it scaffolds one.
     """
-    import frontmatter
-
     from deployer import source as deploy_source
 
     problems: list[str] = []
@@ -673,6 +743,9 @@ class SkillLayoutPolicies(unittest.TestCase):
     def test_fixture_sources_never_ship_or_collide_with_what_ships(self) -> None:
         self.assertTrue(list((REPOSITORY_ROOT / "tests" / "fixtures").glob("*/source.json")))
         self.assertEqual([], fixture_source_problems(REPOSITORY_ROOT))
+
+    def test_every_skill_the_model_may_start_has_a_trigger_scenario(self) -> None:
+        self.assertEqual([], trigger_scenario_problems(REPOSITORY_ROOT))
 
     def test_skill_scripts_are_bash_python_or_powershell(self) -> None:
         # Pinned here, not read back from the constants: a new script language is a decision for the skill contract,

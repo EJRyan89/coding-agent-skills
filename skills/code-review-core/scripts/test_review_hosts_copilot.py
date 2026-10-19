@@ -655,7 +655,7 @@ class CopilotHostTests(unittest.TestCase):
                     base_environment=BASE_ENVIRONMENT,
                 )
                 return events, None
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - the test inspects whichever exception the run raised
                 return events, exc
 
     def full_sequence(self, paths: dict[str, Path], executable: str = "copilot") -> list[tuple[Any, ...]]:
@@ -1080,7 +1080,7 @@ class CopilotProcessTests(unittest.TestCase):
     def test_a_given_base_environment_loses_its_repository_selecting_variables_in_any_case(self) -> None:
         base = {
             **BASE_ENVIRONMENT,
-            **{name: "elsewhere" for name in REPOSITORY_SELECTING},
+            **dict.fromkeys(REPOSITORY_SELECTING, "elsewhere"),
             **{name.lower(): "elsewhere" for name in REPOSITORY_SELECTING},
             "GIT_SSH_COMMAND": "ssh -o BatchMode=yes",
         }

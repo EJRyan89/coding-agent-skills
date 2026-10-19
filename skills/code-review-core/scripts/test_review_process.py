@@ -184,7 +184,7 @@ class StartDetachedTests(unittest.TestCase):
                 self.assertTrue(wait_until(lambda: opens_exclusively(log)), "the log is released within 20 seconds")
 
     def test_a_detached_host_sees_no_repository_selecting_variable_the_shell_exported(self) -> None:
-        exported = {name: "C:/elsewhere/.git" for name in REPOSITORY_SELECTING}
+        exported = dict.fromkeys(REPOSITORY_SELECTING, "C:/elsewhere/.git")
         exported.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "fixture.scope", "GIT_CONFIG_VALUE_0": "on"})
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "run with spaces"

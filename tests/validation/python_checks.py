@@ -12,6 +12,7 @@ import tokenize
 import tomllib
 import unittest
 from pathlib import Path
+from typing import Any
 
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
 from toolchain import find_mypy, find_ruff
@@ -79,9 +80,11 @@ def noqa_without_reason(root: Path, files: list[Path]) -> list[str]:
     for path in sorted(files):
         if path.suffix != ".py":
             continue
-        for token in file_comments(root, path, found):
-            if NOQA.search(token.string) and not NOQA_WITH_REASON.search(token.string):
-                found.append(f"{path.relative_to(root).as_posix()}:{token.start[0]}")
+        found.extend(
+            f"{path.relative_to(root).as_posix()}:{token.start[0]}"
+            for token in file_comments(root, path, found)
+            if NOQA.search(token.string) and not NOQA_WITH_REASON.search(token.string)
+        )
     return found
 
 
@@ -92,13 +95,61 @@ def ceiling_noqa(root: Path, files: list[Path]) -> list[str]:
         if path.suffix != ".py":
             continue
         for token in file_comments(root, path, found):
-            for match in NOQA_CODES.finditer(token.string):
-                named = sorted({code.upper() for code in re.split(r"[\s,]+", match.group(1)) if code} & CEILING_CODES)
-                if named:
-                    found.append(
-                        f"{path.relative_to(root).as_posix()}:{token.start[0]} suppresses {' and '.join(named)}; "
-                        "split the function instead"
-                    )
+            named = sorted(noqa_codes(token.string) & CEILING_CODES)
+            if named:
+                found.append(
+                    f"{path.relative_to(root).as_posix()}:{token.start[0]} suppresses {' and '.join(named)}; "
+                    "split the function instead"
+                )
+    return found
+
+
+def noqa_codes(comment: str) -> set[str]:
+    """The codes the noqa comments in a comment name, in upper case."""
+    return {
+        code.upper() for match in NOQA_CODES.finditer(comment) for code in re.split(r"[\s,]+", match.group(1)) if code
+    }
+
+
+# A ratchet only goes down. The ceilings pyproject.toml sets on a function's complexity, statements, and arguments,
+# and the number of blind excepts kept with a noqa, may fall as the code improves and never rise; a pull request that
+# lowers one lowers its literal here in the same change.
+CEILINGS = {"mccabe": {"max-complexity": 15}, "pylint": {"max-statements": 50, "max-args": 17}}
+BLIND_EXCEPT_CEILING = 14
+BLIND_EXCEPT = "BLE001"
+
+
+def blind_except_noqa(root: Path, files: list[Path]) -> list[str]:
+    """Each noqa comment that keeps a blind except, as path:line."""
+    found: list[str] = []
+    for path in sorted(files):
+        if path.suffix != ".py":
+            continue
+        found.extend(
+            f"{path.relative_to(root).as_posix()}:{token.start[0]}"
+            for token in file_comments(root, path, found)
+            if BLIND_EXCEPT in noqa_codes(token.string)
+        )
+    return found
+
+
+def ratchet_problems(lint: dict[str, Any], blind_excepts: list[str]) -> list[str]:
+    """Each ceiling of the lint configuration missing or raised past its literal, and the blind excepts kept with a
+    noqa when there are more of them than theirs."""
+    found = [
+        f"[tool.ruff.lint.{table}] {key} is {value!r}; the ratchet holds it at {ceiling} or lower, so split the "
+        "function instead"
+        for table, ceilings in CEILINGS.items()
+        for key, ceiling in ceilings.items()
+        if not (
+            isinstance(value := lint.get(table, {}).get(key), int) and not isinstance(value, bool) and value <= ceiling
+        )
+    ]
+    if len(blind_excepts) > BLIND_EXCEPT_CEILING:
+        found.append(
+            f"{len(blind_excepts)} noqa comments keep a blind except, past the ratchet's {BLIND_EXCEPT_CEILING}; "
+            f"catch the exceptions the code expects instead: {', '.join(blind_excepts)}"
+        )
     return found
 
 
@@ -140,9 +191,11 @@ def type_ignore_without_reason(root: Path, files: list[Path]) -> list[str]:
     for path in sorted(files):
         if path.suffix != ".py":
             continue
-        for token in file_comments(root, path, found):
-            if TYPE_IGNORE.search(token.string) and not TYPE_IGNORE_WITH_REASON.search(token.string):
-                found.append(f"{path.relative_to(root).as_posix()}:{token.start[0]}")
+        found.extend(
+            f"{path.relative_to(root).as_posix()}:{token.start[0]}"
+            for token in file_comments(root, path, found)
+            if TYPE_IGNORE.search(token.string) and not TYPE_IGNORE_WITH_REASON.search(token.string)
+        )
     return found
 
 
@@ -342,10 +395,11 @@ class PythonChecksPolicies(unittest.TestCase):
         lint = configuration["lint"]
         self.assertEqual(
             [
-                *("E", "F", "W", "I", "UP", "B", "SIM", "C901", "PLR0915", "PTH", "RUF"),
+                *("E", "F", "W", "I", "UP", "B", "SIM", "C901", "PLR0915", "PLR0913", "BLE001", "PTH", "RUF"),
                 *("S1", "S2", "S3", "S5", "S601", "S602", "S604", "S605", "S606", "S608", "S609", "S61", "S7"),
                 *("PT001", "PT002", "PT003", "PT006", "PT007", "PT008", "PT01", "PT020", "PT021", "PT022"),
                 *("PT023", "PT024", "PT025", "PT026", "PT028", "PT03"),
+                *("RET", "PIE", "C4", "PERF", "A"),
             ],
             lint["select"],
         )
@@ -371,7 +425,7 @@ class PythonChecksPolicies(unittest.TestCase):
             lint["per-file-ignores"],
         )
         self.assertEqual(["max-complexity"], sorted(lint["mccabe"]))
-        self.assertEqual(["max-statements"], sorted(lint["pylint"]))
+        self.assertEqual(["max-args", "max-statements"], sorted(lint["pylint"]))
         self.assertEqual(["exclude", "format", "line-length", "lint", "target-version"], sorted(configuration))
         # ruff's default exclusions are emptied, so every Python file under the roots is formatted and linted.
         self.assertEqual([], configuration["exclude"])
@@ -393,11 +447,11 @@ class PythonChecksPolicies(unittest.TestCase):
     def test_repository_has_no_type_ignore_without_a_reason(self) -> None:
         self.assertEqual([], type_ignore_without_reason(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
 
-    def test_complexity_and_statement_thresholds_only_go_down(self) -> None:
-        # A ratchet: a pull request may lower these literals with the thresholds, never raise them.
+    def test_ratchets_only_go_down(self) -> None:
+        # A pull request may lower a ceiling with its literal in CEILINGS or BLIND_EXCEPT_CEILING, never raise it.
         lint = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["ruff"]["lint"]
-        self.assertLessEqual(lint["mccabe"]["max-complexity"], 15)
-        self.assertLessEqual(lint["pylint"]["max-statements"], 50)
+        blind_excepts = blind_except_noqa(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT))
+        self.assertEqual([], ratchet_problems(lint, blind_excepts))
 
     def test_repository_has_no_noqa_without_a_reason(self) -> None:
         self.assertEqual([], noqa_without_reason(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))

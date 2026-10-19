@@ -152,13 +152,13 @@ class FenceTests(unittest.TestCase):
 
     def test_every_executable_label_takes_its_languages_context_and_no_other_label_does(self) -> None:
         expected = {
-            **{label: "shell" for label in ("bash", "sh", "shell", "console", "zsh", "ksh", "dash")},
-            **{label: "powershell" for label in ("powershell", "pwsh", "ps1")},
-            **{label: "python" for label in ("python", "python3", "py")},
+            **dict.fromkeys(("bash", "sh", "shell", "console", "zsh", "ksh", "dash"), "shell"),
+            **dict.fromkeys(("powershell", "pwsh", "ps1"), "powershell"),
+            **dict.fromkeys(("python", "python3", "py"), "python"),
             "fish": "fish",
-            **{label: "cmd" for label in ("cmd", "bat", "batch")},
-            **{label: "javascript" for label in ("javascript", "js", "node", "mjs", "cjs")},
-            **{label: "typescript" for label in ("typescript", "ts")},
+            **dict.fromkeys(("cmd", "bat", "batch"), "cmd"),
+            **dict.fromkeys(("javascript", "js", "node", "mjs", "cjs"), "javascript"),
+            **dict.fromkeys(("typescript", "ts"), "typescript"),
         }
         self.assertEqual(set(expected), set(EXECUTABLE_FENCES))
         for label, context in expected.items():

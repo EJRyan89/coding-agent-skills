@@ -1,0 +1,14 @@
+{
+  "skill": "github-activity-report",
+  "mode": "trigger",
+  "requests": [
+    "What has octocat contributed to the octo-org organization over the last six months?",
+    "Show me month by month how many pull requests mona authored, merged, and reviewed in octo-org.",
+    "How many reviews did hubot submit in octo-org recently?"
+  ],
+  "near_misses": [
+    "Which pull requests need my attention?",
+    "Review octocat's open pull request octo-org/widgets#7.",
+    "Show the commits in this repository from the last week."
+  ]
+}

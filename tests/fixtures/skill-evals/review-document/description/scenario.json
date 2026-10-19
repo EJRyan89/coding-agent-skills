@@ -1,0 +1,15 @@
+{
+  "skill": "review-document",
+  "mode": "trigger",
+  "requests": [
+    "Review the design document at docs/design/export.md.",
+    "Can you review my Word draft, proposal.docx, before I send it round?",
+    "Review my uncommitted edits to docs/architecture.md.",
+    "Review only the documents that pull request octo-org/widgets#42 changes, not its code."
+  ],
+  "near_misses": [
+    "Review pull request octo-org/widgets#42.",
+    "Fix the typos in README.md.",
+    "Summarize the PDF at specs/protocol.pdf in three bullet points."
+  ]
+}
