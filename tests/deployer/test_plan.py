@@ -311,7 +311,7 @@ class PlanHome(Deployment):
         return captured[0], output
 
     def entry(self, entries: list[plan.PlanEntry], kind: Kind) -> plan.PlanEntry:
-        matches = [entry for entry in entries if entry.name == kind.name and entry.kind == kind.label]
+        matches = [entry for entry in entries if entry.name == kind.name and entry.kind.label == kind.label]
         assert len(matches) == 1, entries
         return matches[0]
 
