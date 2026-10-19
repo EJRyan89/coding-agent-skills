@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from diff_paths import HUNK_HEADER, DiffPathError, header_path, snapshot_path, unquote
+from diff_paths import HUNK_HEADER, DiffPathError, header_path, header_text, quote, snapshot_path, unquote
 from git_client import GitClient
 
 SPACED = "tools/report age.py"
@@ -100,6 +100,23 @@ class DecoderTests(unittest.TestCase):
 
     def test_an_unquoted_value_is_as_given(self) -> None:
         self.assertEqual('a "b" \\c', unquote('a "b" \\c'))
+
+    def test_a_path_is_quoted_as_git_quotes_it_and_read_back_whole(self) -> None:
+        # Literals as git writes them, from RealDiffTests and git's quote_c_style.
+        self.assertEqual("a/x/a b.py", quote("a/x/a b.py"))
+        self.assertEqual('"a/tools/r\\303\\251sum\\303\\251.py"', quote(f"a/{ACCENTED}"))
+        self.assertEqual('"x\\a\\b\\t\\n\\v\\f\\r\\"\\\\\\001\\177"', quote('x\x07\x08\t\n\x0b\x0c\r"\\\x01\x7f'))
+        for path in ("x/a b.py", ACCENTED, 'x/"q"\\r\x01\x7f.py', "x/\ufffd.py"):
+            self.assertEqual(path, unquote(quote(path)))
+
+    def test_a_header_s_text_names_its_path_as_git_writes_it(self) -> None:
+        self.assertEqual("/dev/null", header_text(None))
+        self.assertEqual("a/tools/report age.py\t", header_text(f"a/{SPACED}"))
+        self.assertEqual('"b/tools/r\\303\\251sum\\303\\251 age.py"\t', header_text("b/tools/résumé age.py"))
+        self.assertEqual("b/x.py", header_text("b/x.py"))
+        for path in (f"a/{SPACED}", f"b/{ACCENTED}", "a/x/trailing "):
+            self.assertEqual(path[2:], header_path(header_text(path)))
+        self.assertIsNone(header_path(header_text(None)))
 
     def test_a_header_s_line_end_tab_and_prefix_are_left_off_and_a_trailing_space_is_kept(self) -> None:
         self.assertEqual("x/a b.py", header_path("b/x/a b.py\t\r\n"))

@@ -609,6 +609,7 @@ def record_fixtures() -> list[ReviewRecord]:
                 "files": 3,
                 "bytes": 96,
                 "seconds": {"fetch": 1, "materialize": 0, "prompts": 0},
+                "diff": {"source": "files-api", "limit": "300 files"},
             },
         ),
         _result(

@@ -709,6 +709,29 @@ class RecordTests(unittest.TestCase):
         self.assertNotIn("<details open>", markdown)
         self.assertNotIn("Prior Findings Status", markdown)
 
+    def test_a_review_of_a_change_over_the_diff_endpoint_s_limit_says_so_in_one_line(self) -> None:
+        snapshot = {
+            "source": "tarball",
+            "files": 2,
+            "bytes": 30,
+            "seconds": {"fetch": 1, "materialize": 0, "prompts": 0},
+        }
+        for source, words in (("files-api", "GitHub's files API"), ("checkout", "git's diff in the checkout")):
+            with self.subTest(source=source):
+                over = {**snapshot, "diff": {"source": source, "limit": "300 files"}}
+                record = build_record(
+                    {**valid_request(), "snapshot": over}, valid_adapter_result(), version=1, policy={}
+                )
+                self.assertEqual(over, validate_record(record)["review"]["snapshot"])
+                markdown = render_markdown(record, record_payload_hash="0" * 64)
+                note = (
+                    "> **Large change:** GitHub's diff endpoint refuses a diff over 300 files, so this review read the "
+                    f"diff from {words}.\n"
+                )
+                self.assertEqual(1, markdown.count(note))
+        within = build_record({**valid_request(), "snapshot": snapshot}, valid_adapter_result(), version=1, policy={})
+        self.assertNotIn("**Large change:**", render_markdown(within, record_payload_hash="0" * 64))
+
     def test_specialist_evidence_joins_the_line_and_the_head_branch_is_shown(self) -> None:
         request = {**valid_request(), "head_ref": "feature/zero-total"}
         result = valid_adapter_result()

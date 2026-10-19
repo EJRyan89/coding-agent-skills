@@ -63,6 +63,19 @@ MAX_MATCH_CHARACTERS = 300
 SNAPSHOT_WRITE_WORKERS = 8
 GIT_WRITER_SECONDS = 10  # how long the id writer gets to finish once git is gone
 MAX_CHANGED_FILE_BYTES = 16 * 1024 * 1024
+# The options of a diff git computes as GitHub's diff endpoint does, so a user's configuration cannot change it: no
+# color, external diff, or textconv, renames found, three lines of context, the a/ and b/ prefixes, and a submodule's
+# change as its commits.
+GIT_DIFF_OPTIONS = (
+    "--no-color",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--find-renames",
+    "--unified=3",
+    "--submodule=short",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+)
 SNAPSHOT_EXCLUSION_REASONS = {
     "agent-instruction",
     "binary",

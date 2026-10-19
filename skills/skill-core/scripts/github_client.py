@@ -36,7 +36,8 @@ T = TypeVar("T")
 # (`malformed`); a read single sign-on cut short (`sso_partial`); a change whose answer was lost (`unknown_outcome`);
 # and `api` for the rest. Then the classes callers raise for an answer they reject: a path that is not one file
 # (`not_file`), an argument of the wrong kind (`input`), a pull request a review cannot take (`ineligible`), results
-# GitHub left incomplete (`incomplete`), and a run a tool refuses to read (`refused`).
+# GitHub left incomplete (`incomplete`), a run a tool refuses to read (`refused`), and a diff GitHub's diff endpoint
+# refuses as over one of its limits (`diff_limit`).
 GitHubErrorKind = Literal[
     "api",
     "prerequisite",
@@ -56,6 +57,7 @@ GitHubErrorKind = Literal[
     "ineligible",
     "incomplete",
     "refused",
+    "diff_limit",
 ]
 
 # Checked in this order; the first class whose marker the lowered stderr contains wins, and `api` is the rest.

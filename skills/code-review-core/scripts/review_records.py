@@ -89,9 +89,16 @@ READ_COUNT_FIELDS = ("files_read", "bytes_read")
 # fetching the head, materializing the snapshot, and writing the request and every role's prompt.
 SNAPSHOT_SOURCES = ("checkout", "checkout-lazy", "tarball")
 SNAPSHOT_FIELDS = frozenset({"source", "files", "bytes", "seconds"})
-# How many head paths the snapshot left out, by the reason its manifest records; absent from older records.
-OPTIONAL_SNAPSHOT_FIELDS = frozenset({"excluded"})
+# How many head paths the snapshot left out, by the reason its manifest records, and, when GitHub's diff endpoint
+# refused the change over one of its limits, where the diff came from instead; each absent from older records.
+OPTIONAL_SNAPSHOT_FIELDS = frozenset({"excluded", "diff"})
 EXCLUSION_REASON = re.compile(r"[a-z][a-z-]{0,39}")
+# Where prepare takes a diff GitHub's diff endpoint refuses, in words: git in the configured checkout, else GitHub's
+# files API.
+DIFF_SOURCES = {"checkout": "git's diff in the checkout", "files-api": "GitHub's files API"}
+DIFF_FIELDS = frozenset({"source", "limit"})
+# The limit GitHub's diff endpoint names: a count and what it counts, as in `300 files`.
+DIFF_LIMIT = re.compile(r"[1-9][0-9]{0,9} [a-z]{1,20}")
 SNAPSHOT_PHASES = ("fetch", "materialize", "prompts")
 TITLE_MAXIMUM_LENGTH = 120
 MODEL_MAXIMUM_LENGTH = 200
@@ -245,12 +252,20 @@ class ReviewerRun(TypedDict):
     bytes_read: NotRequired[int | None]
 
 
+class DiffFallback(TypedDict):
+    """Where a diff came from when GitHub's diff endpoint refused it, and the limit it named, as in `300 files`."""
+
+    source: str  # a key of DIFF_SOURCES
+    limit: str
+
+
 class Snapshot(TypedDict):
     source: str
     files: int
     bytes: int
     seconds: dict[str, float]
     excluded: NotRequired[dict[str, int]]
+    diff: NotRequired[DiffFallback]
 
 
 class Patch(TypedDict):
@@ -1117,8 +1132,8 @@ def _validate_read_counts(reviewer: dict[str, Any], path: str) -> None:
 
 
 def _validate_snapshot(value: object) -> None:
-    """The source snapshot's origin, file count, byte total, exclusions by reason, and the seconds of each phase of
-    prepare."""
+    """The source snapshot's origin, file count, byte total, exclusions by reason, the seconds of each phase of
+    prepare, and where the diff came from when GitHub's diff endpoint refused it."""
     path = "record.review.snapshot"
     snapshot = READ.json_object(value, path, required=SNAPSHOT_FIELDS, optional=OPTIONAL_SNAPSHOT_FIELDS)
     excluded = READ.json_object(snapshot.get("excluded", {}), f"{path}.excluded")
@@ -1128,6 +1143,11 @@ def _validate_snapshot(value: object) -> None:
             raise RecordError("Review snapshot excluded must give a positive count for each exclusion reason")
         READ.integer(count, f"{path}.excluded.{reason}", minimum=1)
     READ.one_of(snapshot["source"], f"{path}.source", SNAPSHOT_SOURCES)
+    if "diff" in snapshot:
+        diff = READ.json_object(snapshot["diff"], f"{path}.diff", required=DIFF_FIELDS)
+        READ.one_of(diff["source"], f"{path}.diff.source", tuple(DIFF_SOURCES))
+        if not DIFF_LIMIT.fullmatch(READ.string(diff["limit"], f"{path}.diff.limit")):
+            raise RecordError("Review snapshot diff limit must be a count and what it counts, as in 300 files")
     READ.integer(snapshot["files"], f"{path}.files", minimum=0)
     READ.integer(snapshot["bytes"], f"{path}.bytes", minimum=0)
     seconds = READ.json_object(snapshot["seconds"], f"{path}.seconds", required=SNAPSHOT_PHASES)
@@ -1881,6 +1901,15 @@ def render_markdown(
         *([f"| **Scope** | {_prose(describe_scope(review['scope']), table=True)} |"] if "scope" in review else []),
         "",
     ]
+    fallback = review.get("snapshot", {}).get("diff")
+    if fallback is not None:
+        lines.extend(
+            [
+                f"> **Large change:** GitHub's diff endpoint refuses a diff over {_text(fallback['limit'])}, so this "
+                f"review read the diff from {DIFF_SOURCES[fallback['source']]}.",
+                "",
+            ]
+        )
     coverage: Coverage = review.get("coverage") or {"unavailable_sources": []}
     unavailable = coverage["unavailable_sources"]
     if unavailable:

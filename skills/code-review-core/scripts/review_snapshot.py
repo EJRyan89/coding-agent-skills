@@ -12,19 +12,24 @@ import threading
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
-from git_client import Runner
-from github_client import GitHubError
+from diff_paths import header_text, quote
+from git_client import GitClient, GitError, Runner
+from github_client import GitHubError, replace_undecodable
 from review_analyzers import reads_settings
 from review_documents import EXTRACTED_WHEN_TEXT, ExtractionRefused, document_diff, document_format, extract, locations
+from review_github import DiffOverLimit
 from review_io import atomic_write_text, read_diff
 from review_operation import validate_canary_pull
+from review_records import DIFF_SOURCES, DiffFallback
 from review_run import PipelineError, Services
 from review_runtime import (
+    GIT_DIFF_OPTIONS,
     MAX_CHANGED_FILE_BYTES,
+    MAX_SOURCE_SNAPSHOT_BYTES,
     SNAPSHOT_EXTRACTED,
     SNAPSHOT_FETCHABLE,
     RuntimeContractError,
@@ -81,36 +86,186 @@ def ensure_local_commit(checkout: Path, commit: str, refspec: str, git: Runner) 
         raise PipelineError(f"Commit {commit} is not available after fetching {refspec}")
 
 
+# The most diff prepare takes from the checkout or from GitHub's files API, which, unlike GitHub's diff endpoint, bound
+# no diff themselves: the most a snapshot writes, since the diff is written into the same run.
+MAX_DIFF_BYTES = MAX_SOURCE_SNAPSHOT_BYTES
+# The blob of an empty file, in a SHA-1 and a SHA-256 repository: an empty file's entry has no patch either.
+EMPTY_BLOBS = frozenset(
+    {
+        "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+        "473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813",
+    }
+)
+
+
+class PullDiff(NamedTuple):
+    """A pull request's diff, how many undecodable bytes in it became U+FFFD, where it came from when GitHub's diff
+    endpoint refused it, and the changed files whose patch GitHub's files API left out."""
+
+    text: str
+    undecodable: int
+    fallback: DiffFallback | None = None
+    omitted: tuple[str, ...] = ()
+
+
+class ChangeRead(NamedTuple):
+    """What prepare reads of a pull request's change: the parsed diff, its changed paths, the changed paths whose
+    change no reviewer can be given whole (each noted), their patch fingerprints, the open review comments, and where
+    the diff came from when GitHub's diff endpoint refused it."""
+
+    parsed: dict[str, dict[str, Any]]
+    changed: list[str]
+    gaps: list[str]
+    patches: dict[str, dict[str, Any]]
+    comments: list[dict[str, Any]]
+    fallback: DiffFallback | None
+
+
+def _moved(selector: str, head: str, now: str) -> PipelineError:
+    return PipelineError(
+        f"{selector} changed while it was being prepared (head {head[:12]} is now {now[:12]}); run prepare again"
+    )
+
+
+def read_pull_diff(
+    repository: str, number: int, pull: dict[str, Any], checkout: Path | None, services: Services
+) -> PullDiff:
+    """The pull request's diff from GitHub's diff endpoint, or, when the endpoint refuses it over one of its limits,
+    from git in the configured checkout, where the merge base and the head are local, or else from GitHub's files
+    API, every page of it. Neither is bounded by GitHub, so either fails past MAX_DIFF_BYTES, and the files API fails
+    for a change it does not list whole, naming the limit and the pull request."""
+    try:
+        return PullDiff(*services.github.get_pull_diff(repository, number))
+    except DiffOverLimit as refused:
+        limit = refused.limit
+    selector = f"{repository}#{number}"
+    over = f"{selector} is over GitHub's diff limit of {limit}"
+    if checkout is not None:
+        text, undecodable = _checkout_diff(checkout, repository, number, pull, services, over)
+        return PullDiff(text, undecodable, {"source": "checkout", "limit": limit})
+    listing = services.github.list_pull_files(repository, number)
+    if listing.head != pull["headRefOid"]:
+        raise _moved(selector, pull["headRefOid"], listing.head)
+    if len(listing.files) != listing.changed:
+        raise PipelineError(
+            f"{over}, and GitHub's files API lists {len(listing.files):,} of its {listing.changed:,} changed files; "
+            f"set checkout_path for {repository} so prepare reads its diff from the checkout"
+        )
+    text, omitted = files_diff(listing.files)
+    if len(text.encode("utf-8", "surrogateescape")) > MAX_DIFF_BYTES:
+        raise PipelineError(f"{over}, and its diff from GitHub's files API is over {MAX_DIFF_BYTES:,} bytes")
+    return PullDiff(text, 0, {"source": "files-api", "limit": limit}, omitted)
+
+
+def _checkout_diff(
+    checkout: Path, repository: str, number: int, pull: dict[str, Any], services: Services, over: str
+) -> tuple[str, int]:
+    """The pull request's diff as git computes it in the checkout from the merge base GitHub diffs against to the
+    head, fetching the head when it is not local, read through a pipe and refused past MAX_DIFF_BYTES."""
+    head = pull["headRefOid"]
+    verify_checkout_remote(checkout, repository, services.git)
+    ensure_local_commit(checkout, head, f"refs/pull/{number}/head", services.git)
+    # The merge base is an ancestor of the head, so it is local once the head is.
+    base = services.github.get_merge_base(repository, pull["baseRefOid"], head)
+    if not _has_commit(checkout, base, services.git):
+        raise PipelineError(f"{over}, and its merge base {base[:12]} is not in {checkout}")
+    try:
+        with GitClient().stream(["diff", *GIT_DIFF_OPTIONS, base, head], directory=checkout) as stream:
+            stream.stdin.close()
+            raw = stream.read(MAX_DIFF_BYTES + 1)
+            if len(raw) > MAX_DIFF_BYTES:
+                raise PipelineError(f"{over}, and its diff in {checkout} is over {MAX_DIFF_BYTES:,} bytes")
+            status = stream.wait()
+            if status != 0:
+                raise PipelineError(
+                    f"{over}, and git diff failed in {checkout}: {stream.stderr().strip() or f'exit code {status}'}"
+                )
+    except GitError as exc:
+        raise PipelineError(f"{over}, and git diff failed in {checkout}: {exc}") from exc
+    return replace_undecodable(raw.decode("utf-8", "surrogateescape"))
+
+
+def files_diff(files: Sequence[dict[str, Any]]) -> tuple[str, tuple[str, ...]]:
+    """A unified diff of the files GitHub's files API lists, as git writes one, and the files that change lines but
+    whose patch GitHub left out, as it does for a diff too large to show.
+
+    The listing names no file mode, so an added or a deleted file's block names 100644, and no base blob, so a
+    block names none. A file with no patch and no changed line is binary, an empty file, a rename, or a mode change:
+    its block is git's header alone, with git's binary line for an added, deleted, or modified file that is not empty.
+    """
+    blocks: list[str] = []
+    omitted: list[str] = []
+    for entry in files:
+        new, status, patch = entry["filename"], entry["status"], entry["patch"]
+        old = entry["previous_filename"] or new
+        before = None if status == "added" else f"a/{old}"
+        after = None if status == "removed" else f"b/{new}"
+        lines = [f"diff --git {quote(f'a/{old}')} {quote(f'b/{new}')}"]
+        if status in ("added", "removed"):
+            lines.append(f"{'new' if status == 'added' else 'deleted'} file mode 100644")
+        elif status in ("renamed", "copied"):
+            verb = "rename" if status == "renamed" else "copy"
+            lines.extend([f"{verb} from {quote(old)}", f"{verb} to {quote(new)}"])
+        if patch:
+            lines.extend(
+                [f"--- {header_text(before)}", f"+++ {header_text(after)}", *patch.removesuffix("\n").split("\n")]
+            )
+        elif entry["changes"]:
+            omitted.append(new)
+        elif status in ("added", "removed", "modified") and entry["sha"] not in EMPTY_BLOBS:
+            lines.append(f"Binary files {_binary_side(before)} and {_binary_side(after)} differ")
+        blocks.append("\n".join(lines) + "\n")
+    return "".join(blocks), tuple(omitted)
+
+
+def describe_fallback(fallback: DiffFallback) -> str:
+    """The note that names where a diff GitHub's diff endpoint refused came from instead, and the limit."""
+    return (
+        f"GitHub's diff endpoint refuses a diff over {fallback['limit']}, so the diff was read from "
+        f"{DIFF_SOURCES[fallback['source']]}."
+    )
+
+
+def _binary_side(value: str | None) -> str:
+    return "/dev/null" if value is None else quote(value)
+
+
 def _fetch_diff(
-    repository: str, number: int, pull: dict[str, Any], diff_path: Path, services: Services, notes: list[str]
-) -> tuple[dict[str, dict[str, Any]], list[str], list[str], dict[str, dict[str, Any]], list[dict[str, Any]]]:
-    """Write the pull request's diff to `diff_path` once the pull is confirmed unmoved. Returns what `_write_diff`
-    returns and the open review comments."""
+    repository: str,
+    number: int,
+    pull: dict[str, Any],
+    checkout: Path | None,
+    diff_path: Path,
+    services: Services,
+    notes: list[str],
+) -> ChangeRead:
+    """Write the pull request's diff to `diff_path` once the pull is confirmed unmoved, as `read_pull_diff` reads it.
+    Returns what prepare reads of the change."""
     selector = f"{repository}#{number}"
     head = pull["headRefOid"]
-    diff, undecodable = services.github.get_pull_diff(repository, number)
-    # GitHub serves the diff by pull number, which follows pushes. Confirm the pull did not move after its
-    # head was read, so a new diff is never archived under the old head SHA.
+    diff = read_pull_diff(repository, number, pull, checkout, services)
+    # GitHub serves the diff and the files by pull number, which follows pushes. Confirm the pull did not move after
+    # its head was read, so a new diff is never archived under the old head SHA.
     current = validate_canary_pull(services.github.get_pull(repository, number), repository=repository, number=number)
     if (current["headRefOid"], current["baseRefOid"]) != (head, pull["baseRefOid"]):
-        raise PipelineError(
-            f"{selector} changed while it was being prepared (head {head[:12]} is now "
-            f"{current['headRefOid'][:12]}); run prepare again"
-        )
-    parsed, changed, unsafe, patches = _write_diff(selector, diff, undecodable, diff_path, notes)
+        raise _moved(selector, head, current["headRefOid"])
+    parsed, changed, gaps, patches = _write_diff(selector, diff, diff_path, notes)
     comments = services.github.list_open_review_threads(repository, number)
-    return parsed, changed, unsafe, patches, comments
+    return ChangeRead(parsed, changed, gaps, patches, comments, diff.fallback)
 
 
 def _write_diff(
-    selector: str, diff: str, undecodable: int, diff_path: Path, notes: list[str]
+    selector: str, diff: PullDiff, diff_path: Path, notes: list[str]
 ) -> tuple[dict[str, dict[str, Any]], list[str], list[str], dict[str, dict[str, Any]]]:
-    """Write a pull request's diff to `diff_path`. Returns the parsed diff, its changed paths, the changed paths no
-    reviewer can be given (each noted), and their patch fingerprints."""
-    atomic_write_text(diff_path, diff)
-    if undecodable:
-        notes.append(f"{undecodable} undecodable bytes replaced in the diff")
-    parsed, unsafe = split_unified_diff(diff)
+    """Write a pull request's diff to `diff_path`. Returns the parsed diff, its changed paths, the changed paths whose
+    change no reviewer can be given whole, each noted: those whose path a reviewer cannot be given, and those whose
+    patch GitHub's files API left out; and their patch fingerprints."""
+    atomic_write_text(diff_path, diff.text)
+    if diff.fallback is not None:
+        notes.append(describe_fallback(diff.fallback))
+    if diff.undecodable:
+        notes.append(f"{diff.undecodable} undecodable bytes replaced in the diff")
+    parsed, unsafe = split_unified_diff(diff.text)
     changed = list(parsed)
     patches = patch_fingerprints(parsed)
     # Escaped, because each note is a line the orchestrator reads, and a raw path could add a line of its own.
@@ -125,7 +280,15 @@ def _write_diff(
             f"cannot carry safely (a control character, a backslash, or an absolute, empty, '.', or '..' segment), "
             f"recorded as unavailable sources: {named}."
         )
-    return parsed, changed, unsafe, patches
+    omitted = [path for path in diff.omitted if path in parsed]
+    if omitted:
+        notes.append(
+            f"Not reviewed in full: {len(omitted)} changed file{'s' if len(omitted) != 1 else ''} whose patch GitHub's "
+            "files API leaves out, as it does for a diff too large to show, recorded as unavailable sources: "
+            + ", ".join(json.dumps(path) for path in omitted)
+            + "."
+        )
+    return parsed, changed, [*unsafe, *omitted], patches
 
 
 def _snapshot(
@@ -140,12 +303,14 @@ def _snapshot(
     notes: list[str],
     exclude: Sequence[str] = (),
     unreviewed_suffixes: Sequence[str] = (),
+    fallback: DiffFallback | None = None,
 ) -> tuple[dict[str, tuple[int, str] | None], dict[str, Any], dict[str, Any]]:
     """Snapshot the head at `source`, from the checkout or else GitHub's tarball, leaving out what the repository's
     `exclude` globs match, probing a changed file over the size limit by the shipped suffixes and the repository's
     `unreviewed_suffixes`, and noting each changed document whose text it could not extract. Returns the symbolic
     links the snapshot leaves out that the pull request changes, each one noted, the snapshot's statistics: its
-    source, files, bytes, and exclusions by reason, and the seconds spent fetching the head and materializing it, and
+    source, files, bytes, and exclusions by reason, where the diff came from when GitHub's diff endpoint refused it
+    (`fallback`), and the seconds spent fetching the head and materializing it, and
     the manifest materializing it verified, which the request and the plan take in place of verifying the snapshot
     again.
 
@@ -205,6 +370,7 @@ def _snapshot(
         "bytes": snapshot_bytes(source, snapshot),
         "excluded": exclusion_counts(snapshot["excluded_paths"]),
         "seconds": {"fetch": fetched, "materialize": materialized},
+        **({} if fallback is None else {"diff": dict(fallback)}),
     }
     return links, stats, snapshot
 

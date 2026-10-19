@@ -41,7 +41,7 @@ from review_runtime import (
     resolve_reviewer_commit,
     verify_checkout_remote,
 )
-from review_snapshot import _route_reads, ensure_local_commit, lazy_upfront
+from review_snapshot import _route_reads, describe_fallback, ensure_local_commit, lazy_upfront, read_pull_diff
 from review_specialists import (
     condition_reads,
     evaluate_condition,
@@ -443,7 +443,7 @@ def validate_reviewer(
         for index, target in enumerate(targets):
             pull = target.pull
             diff_file = scratch / f"diff-{index}.patch"
-            changed, renamed, pull_lines = _pull_changes(repository, target, diff_file, services)
+            changed, renamed, pull_lines = _pull_changes(repository, checkout, target, diff_file, services)
             if target.commit is None or target.resolved is None:
                 # The suite's generic reviewer stands in, on the lazy snapshot prepare gives it.
                 lines.extend(pull_lines)
@@ -510,21 +510,23 @@ def validate_reviewer(
 
 
 def _pull_changes(
-    repository: str, target: _ValidationTarget, diff_file: Path, services: Services
+    repository: str, checkout: Path, target: _ValidationTarget, diff_file: Path, services: Services
 ) -> tuple[list[str], dict[str, list[str]], list[str]]:
     """The changed paths of the pull request a validation target reviews, the earlier paths its renames give them,
-    and its PULL, BODY, and NOTE lines, with its diff written to `diff_file`; none of them for a target without one."""
+    and its PULL, BODY, and NOTE lines, with its diff, read as prepare reads it on the checkout route, written to
+    `diff_file`; none of them for a target without one."""
     pull = target.pull
     if pull is None:
         return [], {}, []
-    diff_text = services.github.get_pull_diff(repository, pull["number"])[0]
-    parsed = parse_unified_diff(diff_text)
-    atomic_write_text(diff_file, diff_text)
+    diff = read_pull_diff(repository, pull["number"], pull, checkout, services)
+    parsed = parse_unified_diff(diff.text)
+    atomic_write_text(diff_file, diff.text)
     lines = [
         f"PULL {repository}#{pull['number']} base={pull['baseRefOid'][:12]} "
         f"head={pull['headRefOid'][:12]} files={len(parsed)} reviewer={target.source}",
         _body_line(pull.get("body", "")),
         *(f"NOTE {note}" for note in target.notes),
+        *([] if diff.fallback is None else [f"NOTE {describe_fallback(diff.fallback)}"]),
     ]
     return list(parsed), renamed_from(parsed), lines
 

@@ -45,11 +45,12 @@ import review_process
 import review_run
 import review_runtime
 import review_source
+import review_specialists
 from git_client import GitResult, subprocess_runner
 from github_client import CommandResult, replace_undecodable
 from review_archive import latest_record, list_versions, pull_directory, record_paths
 from review_config import ConfigurationError, write_config
-from review_github import GitHubClient
+from review_github import GitHubClient, PullFiles
 from review_operation import reviewed_head
 from review_records import ReviewRecord
 from review_runtime import materialize_source_snapshot, verify_github_tarball
@@ -126,9 +127,12 @@ class ScratchGitHub(GitHubClient):
         self.head_ref = "feature"
         self.body = ""
         self.threads: list[dict[str, Any]] = []  # the open review threads, as list_open_review_threads returns them
+        self.refusal: str | None = None  # gh's stderr when the diff endpoint refuses the diff, served in its place
+        self.files: PullFiles | None = None  # the files endpoint's listing, which the test writes as GitHub would
 
-    @staticmethod
-    def _refuse(arguments: Sequence[str]) -> CommandResult:
+    def _refuse(self, arguments: Sequence[str]) -> CommandResult:
+        if self.refusal is not None and "Accept: application/vnd.github.diff" in arguments:
+            return CommandResult(1, "", self.refusal)
         raise AssertionError(f"unexpected gh call: {list(arguments)}")
 
     def get_pull(self, repository: str, number: int) -> dict[str, Any]:
@@ -147,6 +151,8 @@ class ScratchGitHub(GitHubClient):
         }
 
     def get_pull_diff(self, repository: str, number: int) -> tuple[str, int]:
+        if self.refusal is not None:
+            return super().get_pull_diff(repository, number)
         if self.diff is not None:
             return self.diff, 0
         # No textconv or external diff a user configures: GitHub serves git's own diff.
@@ -165,6 +171,14 @@ class ScratchGitHub(GitHubClient):
 
     def list_open_review_threads(self, repository: str, number: int) -> list[dict[str, Any]]:
         return self.threads
+
+    def get_merge_base(self, repository: str, base: str, head: str) -> str:
+        return git_text(self.server, "merge-base", base, head).strip()
+
+    def list_pull_files(self, repository: str, number: int) -> PullFiles:
+        if self.files is None:
+            raise AssertionError("the files endpoint was not expected")
+        return self.files
 
 
 class AdversarialFixture(unittest.TestCase):
@@ -961,6 +975,76 @@ class TreeSizeTests(AdversarialFixture):
         manifest = json.loads((ready["run"] / "source" / "source-snapshot.json").read_text(encoding="utf-8"))
         self.assertEqual(sorted(path.decode() for path in self.LARGE), sorted(manifest["fetchable"]))
         self.assertEqual([], sorted((ready["run"] / "source").rglob("part*.py")))
+
+
+class ChangeSizeTests(AdversarialFixture):
+    """An author can push a change past the limits of GitHub's diff endpoint, which then refuses to serve its diff."""
+
+    REFUSAL = "gh: Sorry, the diff exceeded the maximum number of files (300). (HTTP 406)"
+    HEAD: ClassVar[Entries] = {
+        **BASE,
+        **files({"app/service.py": b"def total(items):\n    return 0\n", "app/extra.py": b"x = 1\n"}),
+    }
+
+    def files_listing(self, *, patched: bool, changed: int = 2) -> PullFiles:
+        """The change as GitHub's files endpoint lists it, each file with its patch, or with none, as GitHub gives
+        none for a diff too large to show."""
+        entries = (
+            ("app/extra.py", "added", 1, "@@ -0,0 +1 @@\n+x = 1"),
+            (
+                "app/service.py",
+                "modified",
+                2,
+                "@@ -1,2 +1,2 @@\n def total(items):\n-    return sum(items)\n+    return 0",
+            ),
+        )
+        listed = [
+            {"filename": name, "previous_filename": None, "status": status, "changes": changes, "sha": "a" * 40}
+            | {"patch": patch if patched else None}
+            for name, status, changes, patch in entries
+        ]
+        return PullFiles(listed, changed, self.github.head)
+
+    def test_a_change_over_the_diff_endpoint_s_limit_is_read_whole_from_another_source_or_fails(self) -> None:
+        _, head = self.pull_request(self.HEAD)
+        served = self.github.get_pull_diff(REPOSITORY, NUMBER)[0]
+        self.github.refusal = self.REFUSAL
+        # On the checkout route, git's diff from the merge base is the diff the endpoint would have served.
+        ready = self.prepare()
+        self.assertEqual(
+            {path: entry["added"] for path, entry in review_specialists.parse_unified_diff(served).items()},
+            {
+                path: entry["added"]
+                for path, entry in review_specialists.parse_unified_diff(
+                    (ready["run"] / "diff.patch").read_text(encoding="utf-8")
+                ).items()
+            },
+        )
+        self.assertEqual("APPROVED", self.recorded_verdict(ready))
+        record = latest_record(self.archive, REPOSITORY, NUMBER)
+        assert record is not None
+        self.assertEqual({"source": "checkout", "limit": "300 files"}, record["review"]["snapshot"]["diff"])
+        _, markdown = record_paths(pull_directory(self.archive, REPOSITORY, NUMBER), 1)
+        self.assertIn("> **Large change:** GitHub's diff endpoint refuses", markdown.read_text(encoding="utf-8"))
+        # On the tarball route, GitHub's files API lists the change; a file it gives no patch for is a coverage gap.
+        self.archive = self.root / "tarball archive"
+        self.configure(checkout=False)
+        self.services.fetch_tarball = self.github_archive(head)
+        self.github.files = self.files_listing(patched=False)
+        ready = self.prepare()
+        self.assertEqual(["app/extra.py", "app/service.py"], self.request(ready)["coverage"]["unavailable_sources"])
+        self.assertEqual("INCOMPLETE", self.recorded_verdict(ready))
+        # A change the files API does not list whole fails, naming the limit and the pull request.
+        self.archive = self.root / "short archive"
+        self.configure(checkout=False)
+        self.github.files = self.files_listing(patched=True, changed=3_000_001)
+        self.assert_prepare_fails(
+            re.escape(
+                f"{SELECTOR} is over GitHub's diff limit of 300 files, and GitHub's files API lists 2 of its "
+                f"3,000,001 changed files; set checkout_path for {REPOSITORY} so prepare reads its diff from the "
+                "checkout"
+            )
+        )
 
 
 class ConfiguredExclusionTests(AdversarialFixture):
