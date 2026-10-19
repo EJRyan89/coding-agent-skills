@@ -49,6 +49,7 @@ import sys
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -214,7 +215,7 @@ def install(session: Session, executable: str, plugins: list[plugin_build.Plugin
     yield f"PATHS {json.dumps(paths)}"
 
 
-def stream_events(output: str) -> Iterator[dict]:
+def stream_events(output: str) -> Iterator[dict[str, Any]]:
     for line in output.splitlines():
         try:
             event = json.loads(line)
