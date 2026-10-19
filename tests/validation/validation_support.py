@@ -12,6 +12,7 @@ import builtins
 import codecs
 import re
 import sys
+import unittest
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
@@ -946,3 +947,27 @@ def docstring_ids(tree: ast.Module) -> set[int]:
         and isinstance(node.body[0].value, ast.Constant)
         and isinstance(node.body[0].value.value, str)
     }
+
+
+@dataclass(frozen=True)
+class PullRequest:
+    """The pull request a run judges: the files tests/run_validation.py was given with --pr-body and --pr-title, each
+    None when it was not, as in a local run."""
+
+    body: Path | None = None
+    title: Path | None = None
+
+    def body_text(self) -> str | None:
+        return None if self.body is None else self.body.read_text(encoding="utf-8")
+
+    def title_text(self) -> str | None:
+        return None if self.title is None else self.title.read_text(encoding="utf-8")
+
+
+class PullRequestChecks(unittest.TestCase):
+    """Policy checks that judge the pull request. The runner constructs each with the one it was given; one constructed
+    with none judges no body and no title, as a local run without --pr-body and --pr-title does."""
+
+    def __init__(self, methodName: str = "runTest", pull_request: PullRequest | None = None) -> None:
+        super().__init__(methodName)
+        self.pull_request = PullRequest() if pull_request is None else pull_request

@@ -199,7 +199,6 @@ class SilentRevertFixture(unittest.TestCase):
             body_file.write_text(body, encoding="utf-8")
         output = io.StringIO()
         with (
-            mock.patch.object(silent_reverts, "pull_request_body", None),
             mock.patch.object(silent_reverts, "REPOSITORY_ROOT", self.root),
             mock.patch.object(run_validation, "tool_versions", return_value={}),
             mock.patch.object(run_validation, "report_prerequisite_problems", return_value=[]),

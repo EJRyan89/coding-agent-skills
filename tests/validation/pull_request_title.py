@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import os
 import re
-import unittest
-from pathlib import Path
 
-from validation_support import REPOSITORY_ROOT, git, listed, markdown_section
+from validation_support import REPOSITORY_ROOT, PullRequestChecks, git, listed, markdown_section
 
 # The squash commit takes the pull request's title, so main's history reads by these types, which tools/worktrees.py
 # also takes as a worktree's kind. A breaking-change `!` is refused: the Level in the body's `## Upgrade note` is the
@@ -80,16 +78,12 @@ def head_branch() -> str | None:
     return completed.stdout.strip() or None
 
 
-# The pull request title file tests/run_validation.py was given with --pr-title, read by the policy check below.
-pull_request_title: Path | None = None
-
-
-class PullRequestTitlePolicies(unittest.TestCase):
+class PullRequestTitlePolicies(PullRequestChecks):
     def test_the_pull_request_title_opens_with_a_known_type(self) -> None:
         # Without a title there is nothing to judge: a local run passes, as the upgrade-notes check does without a body.
-        if pull_request_title is None:
+        title = self.pull_request.title_text()
+        if title is None:
             return
-        title = pull_request_title.read_text(encoding="utf-8")
         self.assertEqual([], title_problems(title, head_branch()))
 
     def test_the_guides_name_every_title_type(self) -> None:

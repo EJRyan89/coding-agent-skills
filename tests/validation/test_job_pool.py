@@ -20,9 +20,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 import job_pool
-import pull_request_title
-import silent_reverts
-import upgrade_notes
 from job_pool import (
     OUTPUT_LOCK,
     Job,
@@ -365,9 +362,6 @@ class RunnerDefaultEnvironment(unittest.TestCase):
             variables = {"GITHUB_STEP_SUMMARY": str(summary), "GITHUB_BASE_REF": "release line", "VALIDATION_JOBS": "3"}
             with (
                 mock.patch.dict(os.environ, variables),
-                mock.patch.object(upgrade_notes, "pull_request_body", None),
-                mock.patch.object(silent_reverts, "pull_request_body", None),
-                mock.patch.object(pull_request_title, "pull_request_title", None),
                 mock.patch.object(run_validation, "tool_versions", return_value={}),
                 mock.patch.object(run_validation, "report_prerequisite_problems", return_value=False),
                 mock.patch.object(run_validation, "changed_paths", return_value=None) as changed,

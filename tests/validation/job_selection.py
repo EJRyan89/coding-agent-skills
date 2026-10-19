@@ -14,6 +14,7 @@ from collections import Counter
 from collections.abc import Iterable, Mapping
 from pathlib import Path, PurePosixPath
 
+from dealing import deal
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job
 from python_checks import static_format_check, static_lint_check, type_check_jobs
 from shell_targets import static_markdown_shell_check, static_powershell_check, static_shell_check
@@ -333,8 +334,6 @@ def leg_jobs(jobs: list[Job], index: int, count: int, seconds: Mapping[str, floa
     onto the leg with the least so far, by label on a tie, each weighed by leg_cost from `seconds` (JOB_SECONDS when
     None). The legs run every job exactly once between them, and each leg's share depends only on the jobs and the
     table, never on their order, so legs that select alike deal alike."""
-    from conftest import deal  # imported here, after the runner has found pytest, which conftest.py imports
-
     measured = recorded_job_seconds() if seconds is None else seconds
     shards = Counter(job.name for job in jobs)
     costs = {job.label: leg_cost(job, shards[job.name], measured) for job in jobs}
@@ -345,8 +344,6 @@ def leg_jobs(jobs: list[Job], index: int, count: int, seconds: Mapping[str, floa
 def leg_policies(policies: unittest.TestSuite, index: int, count: int) -> unittest.TestSuite:
     """The policy checks leg `index` (from 0) of `count` runs: one each to the legs in turn, by test ID. They run
     beside the pool rather than in it, so they are dealt apart from the jobs."""
-    from conftest import deal  # imported here, after the runner has found pytest, which conftest.py imports
-
     checks = list(flatten(policies))
     legs = deal([check.id() for check in checks], count, {})
     return unittest.TestSuite(check for check in checks if legs[check.id()] == index)

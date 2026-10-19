@@ -19,6 +19,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import TypeGuard
 
+from dealing import deal
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
 from shell_targets import run_git_bash, shell_quote
 from skill_scripts import STANDARD_STREAMS
@@ -336,8 +337,6 @@ def recorded_shard_problems(
     much. Below MAXIMUM_SHARDS a suite's shard count grows with its tests, so the others fit around a recorded test; at
     the cap a growing suite fills them, and the recorded test would lengthen a shared shard again.
     """
-    from conftest import deal  # imported here, after the runner has found pytest, which conftest.py imports
-
     problems: list[str] = []
     for name, seconds in recorded.items():
         path = root / name
