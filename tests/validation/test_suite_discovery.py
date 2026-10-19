@@ -139,7 +139,8 @@ class SuiteDiscoveryFixtures(unittest.TestCase):
                 with self.subTest(options=options):
                     refused = run_pytest(suite, *options)
                     self.assertEqual(4, refused.returncode, refused.stdout + refused.stderr)
-                    self.assertIn("--suite-shard expects <index>/<count>", refused.stderr)
+                    expected = f"--suite-shard expects <index>/<count> with 1 <= index <= count, found {options[1]!r}"
+                    self.assertIn(expected, refused.stderr)
 
     def test_the_runner_starts_a_python_suite_through_pytest_on_its_one_file(self) -> None:
         self.assertEqual(

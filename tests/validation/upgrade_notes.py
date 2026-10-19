@@ -7,7 +7,6 @@ import functools
 import json
 import re
 import sys
-import unittest
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -20,6 +19,7 @@ from release_levels import RELEASING_DOC, VERSION, VERSIONING_HEADING, level_wor
 from validation_support import (
     OPERATIONS_CONTRACT,
     REPOSITORY_ROOT,
+    PullRequestChecks,
     is_skill_file,
     listed,
     markdown_section,
@@ -335,14 +335,9 @@ def upgrade_notes_problems(root: Path, body: str | None = None) -> list[str]:
     return problems
 
 
-# The pull request body file tests/run_validation.py was given with --pr-body, read by the policy check below.
-pull_request_body: Path | None = None
-
-
-class UpgradeNotesPolicies(unittest.TestCase):
+class UpgradeNotesPolicies(PullRequestChecks):
     def test_the_repository_names_every_contract_change_since_its_last_tag(self) -> None:
-        body = None if pull_request_body is None else pull_request_body.read_text(encoding="utf-8")
-        self.assertEqual([], upgrade_notes_problems(REPOSITORY_ROOT, body))
+        self.assertEqual([], upgrade_notes_problems(REPOSITORY_ROOT, self.pull_request.body_text()))
 
     def test_the_contract_lists_name_every_file_the_check_reads(self) -> None:
         problems = [

@@ -49,8 +49,11 @@ from typing import Any
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "skills" / "skill-core" / "scripts"))
+# Appended rather than put first, so no policy module's name shadows a module a suite imports.
+sys.path.append(str(Path(__file__).resolve().parent / "tests" / "validation"))
 
 from bounded_process import REPOSITORY_VARIABLES
+from dealing import deal, shard_of
 
 # The operating-system names this module states on purpose, with the reason, which the platform policy reads.
 PLATFORM_ALLOWED = {
@@ -193,26 +196,6 @@ def git_home(request: pytest.FixtureRequest) -> Iterator[GitHome]:
         yield home
 
 
-def deal(names: list[str], count: int, seconds: Mapping[str, float]) -> dict[str, int]:
-    """Each test's shard: heaviest first onto the shard with the least so far, the lowest index on a tie, where a test
-    weighs its recorded seconds or else one. With nothing recorded that is round-robin in test-name order."""
-    loads = [0.0] * count
-    shards: dict[str, int] = {}
-    for name in sorted(names, key=lambda name: (-seconds.get(name, 1), name)):
-        shard = min(range(count), key=lambda candidate: (loads[candidate], candidate))
-        shards[name] = shard
-        loads[shard] += seconds.get(name, 1)
-    return shards
-
-
-def shard_of(text: str) -> tuple[int, int]:
-    """--suite-shard's `<index>/<count>`, the index counted from 1."""
-    match = re.fullmatch(r"([1-9]\d*)/([1-9]\d*)", text)
-    if match is None or int(match.group(1)) > int(match.group(2)):
-        raise pytest.UsageError(f"{SHARD_OPTION} expects <index>/<count> with 1 <= index <= count, found {text!r}")
-    return int(match.group(1)), int(match.group(2))
-
-
 def recorded_seconds(arguments: list[str]) -> dict[str, float]:
     """The --test-seconds `<test>=<seconds>` arguments, each test named as pytest names it within its suite."""
     seconds: dict[str, float] = {}
@@ -254,7 +237,10 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         if seconds:
             raise pytest.UsageError(f"{SECONDS_OPTION} needs {SHARD_OPTION}")
         return
-    index, count = shard_of(text)
+    try:
+        index, count = shard_of(text)
+    except ValueError as error:
+        raise pytest.UsageError(f"{SHARD_OPTION} expects {error}") from error
     names = {name_in_suite(item) for item in items}
     unknown = sorted(set(seconds) - names)
     if unknown:

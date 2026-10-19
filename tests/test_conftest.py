@@ -17,7 +17,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from conftest import GitHome, config_text, deal, git_settings, isolated_git, quoted
+from conftest import GitHome, config_text, git_settings, isolated_git, quoted
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 # What the shell that starts a suite may hold: command-scope configuration, a hook's repository variables, an
@@ -449,9 +449,3 @@ class AcceptanceTests(unittest.TestCase):
         self.assertEqual(0, run_child(self.suite, plugin=False, environment=unhooked))
         self.assertEqual(1, run_child(self.suite, plugin=False, environment={**self.command_scope, **unhooked}))
         self.assertEqual(1, run_child(self.suite, plugin=False, environment={"GIT_CONFIG_GLOBAL": str(self.hooked)}))
-
-
-class DealTests(unittest.TestCase):
-    def test_the_heaviest_goes_first_onto_the_lightest_shard_and_ties_go_to_the_lowest_index(self) -> None:
-        self.assertEqual({"a": 0, "b": 1, "c": 2, "d": 0}, deal(["d", "c", "b", "a"], 3, {}))
-        self.assertEqual({"a": 1, "b": 2, "c": 0, "d": 1}, deal(["a", "b", "c", "d"], 3, {"c": 5}))

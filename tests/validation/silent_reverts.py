@@ -10,13 +10,12 @@ with that commit and its pull request, unless the body declares the revert.
 from __future__ import annotations
 
 import re
-import unittest
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 from markdown_sections import HTML_COMMENT
-from validation_support import REPOSITORY_ROOT, git
+from validation_support import REPOSITORY_ROOT, PullRequestChecks, git
 
 from tools.release_notes import RELEASE_BRANCH, SQUASH_TITLE_NUMBER
 
@@ -195,11 +194,6 @@ def silent_revert_problems(root: Path, body: str | None = None) -> list[str]:
     return [revert.report() for revert in reverts if not is_declared(revert, declared)]
 
 
-# The pull request body file tests/run_validation.py was given with --pr-body, read by the policy check below.
-pull_request_body: Path | None = None
-
-
-class SilentRevertPolicies(unittest.TestCase):
+class SilentRevertPolicies(PullRequestChecks):
     def test_the_pull_request_returns_no_file_to_an_older_state_of_main_unless_its_body_declares_it(self) -> None:
-        body = None if pull_request_body is None else pull_request_body.read_text(encoding="utf-8")
-        self.assertEqual([], silent_revert_problems(REPOSITORY_ROOT, body))
+        self.assertEqual([], silent_revert_problems(REPOSITORY_ROOT, self.pull_request.body_text()))
