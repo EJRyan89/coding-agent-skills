@@ -471,9 +471,11 @@ class NewRepositorySkillTestCase(FixtureRepositoryTestCase):
             (self.root / ".claude/skills/widget-check/SKILL.md").read_text(encoding="utf-8"),
         )
         self.assertEqual(
-            frontmatter + "\nRead and follow `../../../.claude/skills/widget-check/SKILL.md` as the authoritative "
-            "workflow.\nResolve all relative paths and supporting resources from "
-            "`../../../.claude/skills/widget-check/`.\n",
+            frontmatter + "\nRead and follow `../../../.claude/skills/widget-check/SKILL.md`, a path relative to "
+            "this file, as the authoritative workflow.\nRun its commands from the repository root, the folder that "
+            "holds `.agents` and `.claude`, and resolve every relative path it names from there.\nA command that "
+            "writes a shim under `.agents` needs an approval to run outside Codex's sandbox, which keeps `.agents` "
+            "read-only.\n",
             (self.root / ".agents/skills/widget-check/SKILL.md").read_text(encoding="utf-8"),
         )
         self.assertEqual([], skill_shims.problems(self.root))

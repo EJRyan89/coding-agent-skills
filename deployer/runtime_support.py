@@ -17,20 +17,24 @@ RUNTIME_TITLES = {"claude-code": "Claude Code", "codex": "Codex CLI", "copilot-c
 CAPABILITIES = {
     "agent-delegation": "starting a subagent from the session",
     "workflow": "Claude Code's Workflow tool, which starts subagents from a script with a per-call effort",
+    "agent-hooks": "running a subagent under its agent definition's hooks, such as the code-review reviewer's guard",
     "user-only-start": "starting a user-only skill in a headless session as well as an interactive one",
 }
-# The allowed-tools grant that shows a skill needs a capability; user-only-start follows from disable-model-invocation.
+# The allowed-tools grant that shows a skill needs a capability; user-only-start follows from disable-model-invocation,
+# and agent-hooks from an Agent grant in a skill that starts an agent whose definition declares hooks.
 CAPABILITY_GRANTS = {"Agent": "agent-delegation", "Workflow": "workflow"}
 # What a skill loses where a runtime lacks the capability, until its author states it more precisely.
 DEFAULT_REASONS = {
     "agent-delegation": "It starts subagents, which this runtime cannot.",
     "workflow": "It uses Claude Code's Workflow tool, which this runtime lacks.",
+    "agent-hooks": "Its subagent runs without its agent definition's hooks, so its prompt is its only boundary.",
     "user-only-start": "A headless copilot -p session cannot start it; start it from an interactive session.",
 }
 # Copilot CLI starts no subagent, and its `copilot -p` neither expands /<skill> for a user-only skill nor lets the model
-# start one (Copilot CLI 1.0.91; see docs/copilot-support.md). Workflow is Claude Code's alone.
+# start one (Copilot CLI 1.0.91; see docs/copilot-support.md). Workflow is Claude Code's alone, and so are an agent
+# definition's hooks: a Codex subagent runs without them (docs/code-review-operations-contract.md).
 RUNTIME_CAPABILITIES = {
-    "claude-code": frozenset({"agent-delegation", "workflow", "user-only-start"}),
+    "claude-code": frozenset({"agent-delegation", "workflow", "agent-hooks", "user-only-start"}),
     "codex": frozenset({"agent-delegation", "user-only-start"}),
     "copilot-cli": frozenset(),
 }
@@ -91,9 +95,12 @@ def parse(value: Any) -> dict[str, Support]:
     return {runtime: _support(runtime, value[runtime]) for runtime in RUNTIMES}
 
 
-def frontmatter_needs(allowed_tools: list[str], user_only: bool) -> set[str]:
-    """The capabilities a skill's own frontmatter shows it needs: its allowed-tools grants, and user-only start."""
+def frontmatter_needs(allowed_tools: list[str], user_only: bool, starts_hooked_agent: bool = False) -> set[str]:
+    """The capabilities a skill's own frontmatter shows it needs: its allowed-tools grants, user-only start, and, for a
+    skill that grants Agent and starts an agent whose definition declares hooks, those hooks."""
     needs = {CAPABILITY_GRANTS[grant] for grant in allowed_tools if grant in CAPABILITY_GRANTS}
+    if starts_hooked_agent and "agent-delegation" in needs:
+        needs.add("agent-hooks")
     return needs | {"user-only-start"} if user_only else needs
 
 

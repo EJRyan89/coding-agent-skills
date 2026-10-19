@@ -47,8 +47,12 @@ class SkillGrantsFixtures(unittest.TestCase):
                 (root / relative).write_text(text, encoding="utf-8")
 
             pointer = (
-                "Read and follow `../../../.claude/skills/{0}/SKILL.md` as the authoritative workflow.\n"
-                "Resolve all relative paths and supporting resources from `../../../.claude/skills/{0}/`.\n"
+                "Read and follow `../../../.claude/skills/{0}/SKILL.md`, a path relative to this file, as the "
+                "authoritative workflow.\n"
+                "Run its commands from the repository root, the folder that holds `.agents` and `.claude`, and "
+                "resolve every relative path it names from there.\n"
+                "A command that writes a shim under `.agents` needs an approval to run outside Codex's sandbox, "
+                "which keeps `.agents` read-only.\n"
             )
             write(".claude/skills/good/SKILL.md", "---\nname: good\ndescription: Good.\n---\n\nBody.\n")
             write(
