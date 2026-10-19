@@ -28,10 +28,11 @@ from tests import run_validation
 # back as they were.
 UNDONE = "3915bc7deb83c80b8f5b8dbbdf26df6b1c6d774c"
 UNDOING = "f8330dc129a59fa33c78106c1755cdca31e1a946"
+# The paths as those commits named them, before the hidden cores took their prefix.
 UNDONE_FILES = [
     "docs/code-review-operations.md",
-    "skills/ejryan89-code-review-core/scripts/review_github.py",
-    "skills/ejryan89-code-review-core/scripts/test_review_core.py",
+    "skills/code-review-core/scripts/review_github.py",
+    "skills/code-review-core/scripts/test_review_core.py",
     "skills/review-document/scripts/review_document.py",
     "skills/review-document/scripts/test_review_document.py",
 ]
