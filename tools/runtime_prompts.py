@@ -46,7 +46,7 @@ from console import run_main
 from executable_locator import PYTHON
 from git_client import GitClient
 
-from tools import skill_evals
+from tools import skill_evals_runs
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SAMPLES = Path("docs") / "runtime-prompts"
@@ -69,7 +69,7 @@ def _prepared_prompts(fixture: Path, directory: Path) -> dict[str, str]:
     through the pipeline's own removal, since it holds the fixture repository whose object files git leaves
     read-only."""
     config = directory / "config.json"
-    config.write_text(json.dumps(skill_evals.review_config(directory), indent=2), encoding="utf-8")
+    config.write_text(json.dumps(skill_evals_runs.review_config(directory), indent=2), encoding="utf-8")
     run = directory / "run"
     try:
         prepared = review_pipeline.prepare_fixture(fixture, host="claude-code", config_path=config, run_directory=run)
@@ -126,7 +126,7 @@ def copilot_entrypoint(directory: Path) -> str:
     """Render the real bounded host's prompt through prepare and run_copilot, with a recording CLI and no model."""
     fixture = copilot_fixture(directory)
     config = directory / "config.json"
-    configuration = skill_evals.review_config(directory)
+    configuration = skill_evals_runs.review_config(directory)
     configuration["runtime"] = "copilot-cli"
     config.write_text(json.dumps(configuration), encoding="utf-8")
     run = directory / "run"
