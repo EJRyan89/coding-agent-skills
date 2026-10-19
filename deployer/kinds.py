@@ -4,12 +4,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from .render import ADAPTER_STAGING, AGENT_STAGING
 
 # Runtime adapters are recorded under "wrappers", their name before they were called adapters. Renaming the key
 # would need a manifest version and a migration, so it stays.
-ADAPTERS = "wrappers"
+ADAPTERS: Literal["wrappers"] = "wrappers"
+
+# The manifest's key for each kind's ownership entries, and the field of a skill's entry for each kind a skill depends
+# on, typed so a source entry and a skill's entry are read through a kind's key as the fields they are.
+KindKey = Literal["skills", "shared", "wrappers", "agents"]
+DependencyKey = Literal["skill_deps", "shared_deps", "agent_deps"]
 
 ADAPTER = "runtime adapter"
 SHARED_ASSET = "shared asset"
@@ -24,7 +30,7 @@ DIFFERS_FROM_SKILL = "unmanaged and differs from the rendered skill"
 class ItemKind:
     """Where one kind of item is recorded and deployed, how messages name it, and the reasons the plan gives."""
 
-    key: str  # the manifest's key for this kind's ownership entries
+    key: KindKey  # the manifest's key for this kind's ownership entries
     label: str  # how a report line names the kind; empty for skills, which reports name bare
     noun: str  # one item, as a count or a sentence names it
     title: str  # one item, as an error names it: "Skill 'alpha'"
@@ -35,8 +41,8 @@ class ItemKind:
     unmanaged_reason: str
     suffix: str = ""  # what the deployed file name adds to the item's own name
     # The field of a skill's manifest entry that lists the items of this kind it was deployed with, for the kinds a
-    # skill depends on; empty for the others.
-    dependency_key: str = ""
+    # skill depends on, which are DependencyKinds; None for the others.
+    dependency_key: DependencyKey | None = None
     # Whether each item is named for the skill it serves and stays with it: an item of this kind is kept while its
     # skill stays in the home, preserved or kept for another skill, and goes with it otherwise.
     follows_skill: bool = False
@@ -53,7 +59,14 @@ class ItemKind:
         return path.is_dir() if self.directory else path.is_file()
 
 
-SKILL = ItemKind(
+@dataclass(frozen=True, kw_only=True)
+class DependencyKind(ItemKind):
+    """A kind of item a skill depends on, which a skill's manifest entry lists under its dependency_key."""
+
+    dependency_key: DependencyKey
+
+
+SKILL = DependencyKind(
     key="skills",
     label="",
     noun="skill",
@@ -65,7 +78,7 @@ SKILL = ItemKind(
     unmanaged_reason=DIFFERS_FROM_SKILL,
     dependency_key="skill_deps",
 )
-SHARED = ItemKind(
+SHARED = DependencyKind(
     key="shared",
     label=SHARED_ASSET,
     noun=SHARED_ASSET,
@@ -89,7 +102,7 @@ ADAPTER_KIND = ItemKind(
     unmanaged_reason=DIFFERS,
     follows_skill=True,
 )
-AGENT_KIND = ItemKind(
+AGENT_KIND = DependencyKind(
     key="agents",
     label=AGENT,
     noun=AGENT,
@@ -106,4 +119,4 @@ AGENT_KIND = ItemKind(
 KINDS = (SKILL, SHARED, ADAPTER_KIND, AGENT_KIND)
 BY_LABEL = {kind.label: kind for kind in KINDS}
 # The kinds a skill depends on, which a skill left in place keeps.
-DEPENDENCY_KINDS = tuple(kind for kind in KINDS if kind.dependency_key)
+DEPENDENCY_KINDS = tuple(kind for kind in KINDS if isinstance(kind, DependencyKind))

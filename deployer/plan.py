@@ -366,7 +366,7 @@ def _check_dependency(context: Context, asset: str) -> None:
         raise DeployError(f"ERROR: Dependency '{asset}' has no owner in the manifest")
     if owner == context.source_id:
         raise DeployError(f"ERROR: Dependency '{asset}' is declared as both dependency and owned by this source")
-    entry = context.manifest.entry(owner, SHARED.key, asset) or {}
+    entry: Mapping[str, object] = context.manifest.entry(owner, SHARED.key, asset) or {}
     owner_role = entry.get("role", "")
     if owner_role != "owner":
         raise DeployError(

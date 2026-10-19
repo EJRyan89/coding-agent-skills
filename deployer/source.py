@@ -8,7 +8,6 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 import frontmatter
 
@@ -57,7 +56,7 @@ class Source:
     agents: dict[str, Path] = field(default_factory=dict)
 
 
-def _load_json(path: Path) -> Any:
+def _load_json(path: Path) -> object:
     """A JSON file's content, or None when it is not JSON; an OSError while reading is raised, never read as None."""
     try:
         return json.loads(path.read_text(encoding="utf-8-sig"))
@@ -65,7 +64,7 @@ def _load_json(path: Path) -> Any:
         return None
 
 
-def _load_source_document(paths: Paths) -> Any:
+def _load_source_document(paths: Paths) -> object:
     """source.json's content, as _load_json reads it, with a read failure reported as unreadable, not malformed."""
     try:
         return _load_json(paths.source_file)
@@ -115,7 +114,7 @@ def reject_linked_worktree(paths: Paths) -> None:
         )
 
 
-def _source_name(document: dict[str, Any]) -> str:
+def _source_name(document: dict[str, object]) -> str:
     name = document.get("name")
     return name.strip() if isinstance(name, str) and name.isprintable() else ""
 
@@ -193,7 +192,7 @@ def frontmatter_name(path: Path, owner: str) -> str:
         raise DeployError(f"ERROR: {owner} frontmatter cannot be read: {exc}") from exc
 
 
-def _string_list(value: Any) -> list[str] | None:
+def _string_list(value: object) -> list[str] | None:
     if value is None:
         return []
     if isinstance(value, list) and all(isinstance(item, str) for item in value):
@@ -288,7 +287,7 @@ def _load_skill(paths: Paths, name: str, directories: dict[str, Path]) -> Skill:
     )
 
 
-def _runtime_support(name: str, metadata: dict[str, Any]) -> dict[str, runtime_support.Support] | None:
+def _runtime_support(name: str, metadata: dict[str, object]) -> dict[str, runtime_support.Support] | None:
     if "runtime_support" not in metadata:
         return None
     try:
@@ -297,7 +296,7 @@ def _runtime_support(name: str, metadata: dict[str, Any]) -> dict[str, runtime_s
         raise DeployError(f"ERROR: deploy-meta/{name}.json: {exc}", runtime_support.SHAPE) from exc
 
 
-def _load_bundles(document: dict[str, Any], source: Source) -> None:
+def _load_bundles(document: dict[str, object], source: Source) -> None:
     bundles = document.get("bundles", {})
     if bundles is None:
         bundles = {}
@@ -411,7 +410,7 @@ def _discover(paths: Paths, source_id: str) -> Source:
     return source
 
 
-def _shared_assets(document: dict[str, Any]) -> dict[str, str]:
+def _shared_assets(document: dict[str, object]) -> dict[str, str]:
     """source.json's shared assets and their roles, refused when malformed rather than dropped or stringified."""
     shared = document.get("shared_assets", {})
     if not isinstance(shared, dict):

@@ -12,7 +12,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
-from typing import Any
 
 from . import fsops, platform_support
 from .errors import DeployError, see_recovery
@@ -90,7 +89,7 @@ def _write_metadata(paths: Paths, token: str, probe: ProcessProbe) -> None:
         raise
 
 
-def _read_info(lock_dir: Path) -> dict[str, Any]:
+def _read_info(lock_dir: Path) -> dict[str, object]:
     """A lock's metadata, or an empty mapping when it cannot be read."""
     try:
         info = json.loads((lock_dir / "info.json").read_text(encoding="utf-8"))
