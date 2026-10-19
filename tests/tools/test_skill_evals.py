@@ -33,6 +33,7 @@ sys.path.insert(0, str(sibling_scripts("code-review-core")))
 sys.path.insert(0, str(sibling_scripts("review-document")))
 sys.path.insert(0, str(sibling_scripts("analyze-skill-cost")))
 
+import frontmatter
 import review_document
 import review_guard
 import review_pipeline
@@ -893,7 +894,7 @@ class JudgeTests(unittest.TestCase):
         self.assertEqual(2, raised.exception.code)
 
     def test_judge_takes_any_record_source(self) -> None:
-        def source(scenario: Scenario, model: str) -> dict[str, Any]:
+        def source(scenario: Scenario, model: str, index: skill_evals.Index) -> dict[str, Any]:
             if model == "sonnet":
                 raise RecordError("the run failed")
             if model == "opus":
@@ -935,6 +936,51 @@ class JudgeTests(unittest.TestCase):
             skill_evals.not_counted(outcomes),
         )
 
+    def test_each_of_several_runs_reads_its_own_record_and_the_runs_that_passed_are_counted(self) -> None:
+        self.write_record("haiku-1", contract_record([finding("a.go", 3, "MUST_FIX")], "claude-haiku-5-5"))
+        self.write_record("haiku-2", contract_record([finding("a.go", 3, "SHOULD_FIX")], "claude-haiku-5-5"))
+        status, lines = run_main(
+            ["demo", "--records", str(self.records), "--model", "haiku", "--runs", "3"], self.scenarios
+        )
+        self.assertEqual(1, status)
+        missing = json.dumps(f"no record at {self.records / 'defects' / 'haiku-3.json'}")
+        self.assertEqual(
+            [
+                f"NOT_COUNTED defects haiku run=3 run {missing}",
+                "PASS demo defects haiku run=1 finding a.go:3 MUST_FIX",
+                "PASS demo defects haiku run=1 verdict CHANGES_REQUESTED",
+                "FAIL demo defects haiku run=2 finding a.go:3 MUST_FIX judgment "
+                '"no finding at least MUST_FIX on those lines; findings on a.go: SHOULD_FIX at line 3"',
+                'FAIL demo defects haiku run=2 verdict CHANGES_REQUESTED judgment "verdict is APPROVED"',
+                f"FAIL demo defects haiku run=3 finding a.go:3 MUST_FIX run {missing}",
+                f"FAIL demo defects haiku run=3 verdict CHANGES_REQUESTED run {missing}",
+                "RUNS defects haiku 1/3 some",
+                "| Scenario | haiku |",
+                "| --- | --- |",
+                "| defects | 2/6 (1/3 runs) |",
+            ],
+            lines,
+        )
+
+    def test_the_runs_line_tells_every_run_passing_from_none(self) -> None:
+        for index in (1, 2):
+            self.write_record(f"opus-{index}", contract_record([finding("a.go", 3, "MUST_FIX")], "claude-opus-5-5"))
+            self.write_record(f"haiku-{index}", contract_record([], "claude-haiku-5-5"))
+        argv = ["demo", "--records", str(self.records), "--model", "opus", "--model", "haiku", "--runs", "2"]
+        _, lines = run_main(argv, self.scenarios)
+        self.assertEqual(["RUNS defects opus 2/2 all", "RUNS defects haiku 0/2 none"], lines[-5:-3])
+        self.assertEqual("| defects | 4/4 (2/2 runs) | 0/4 (0/2 runs) |", lines[-1])
+
+    def test_runs_are_a_positive_count(self) -> None:
+        for value in ("0", "-1", "two"):
+            with (
+                self.subTest(value=value),
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                run_main(["demo", "--records", str(self.records), "--runs", value], self.scenarios)
+            self.assertEqual(2, raised.exception.code)
+
     def test_a_record_lacking_what_an_expectation_reads_is_a_judgment(self) -> None:
         again = write_scenario(
             self.scenarios,
@@ -943,7 +989,7 @@ class JudgeTests(unittest.TestCase):
         )
         (again / "prior.json").write_text("{}", encoding="utf-8")
         scenarios = skill_evals.load_scenarios("demo", ["again"], self.scenarios)
-        outcomes = skill_evals.judge(scenarios, ["haiku"], lambda _scenario, _model: record())
+        outcomes = skill_evals.judge(scenarios, ["haiku"], lambda _scenario, _model, _index: record())
         self.assertEqual(
             [Outcome("again", "haiku", "ledger addressed=1 still_present=0", "the record has no ledger", "judgment")],
             outcomes,
@@ -963,7 +1009,7 @@ def prior_of(scenario: Scenario) -> Any:
 
 def constant(value: dict[str, Any]) -> skill_evals.RecordSource:
     """A record source that returns the same record for every run."""
-    return lambda _scenario, _model: value
+    return lambda _scenario, _model, _index: value
 
 
 class ReviewPrsScenarioTests(unittest.TestCase):
@@ -2148,9 +2194,9 @@ RESULTS_TEXT = "\n".join(
         "",
         skill_evals.RESULTS_BEGIN,
         *skill_evals.RESULTS_HEADER,
-        "| alpha | opus | claude-opus-5-5 | 1/1 | one 1/1 | claude-opus-5-5 | 2.1.0 | 2026-01-01 |",
-        "| review-prs | opus | old | 0/1 | old | old | 2.0.0 | 2026-01-01 |",
-        "| zeta | opus | claude-opus-5-5 | 1/1 | one 1/1 | claude-opus-5-5 | 2.1.0 | 2026-01-01 |",
+        "| alpha | opus | claude-opus-5-5 | 1/1 | 1 | one 1/1 | claude-opus-5-5 | 2.1.0 | 2026-01-01 |",
+        "| review-prs | opus | old | 0/1 | 1 | old | old | 2.0.0 | 2026-01-01 |",
+        "| zeta | opus | claude-opus-5-5 | 1/1 | 1 | one 1/1 | claude-opus-5-5 | 2.1.0 | 2026-01-01 |",
         skill_evals.RESULTS_END,
         "",
         "Written by hand after the table.",
@@ -2170,13 +2216,13 @@ class CitationTests(unittest.TestCase):
 
     def test_the_block_cites_the_run_and_each_judgment_and_no_path_of_the_machine(self) -> None:
         held = contract_record(model="claude-sonnet-5-5")
-        runs = {
-            ("clean", "sonnet"): skill_evals.Run(held, None, frozenset({"claude-sonnet-5-5"}), frozenset()),
-            ("defects", "sonnet"): skill_evals.Run(held, None, frozenset({"claude-sonnet-5-5"}), frozenset()),
-            ("clean", "haiku"): skill_evals.Run(
+        runs: dict[skill_evals.RunKey, skill_evals.Run] = {
+            ("clean", "sonnet", None): skill_evals.Run(held, None, frozenset({"claude-sonnet-5-5"}), frozenset()),
+            ("defects", "sonnet", None): skill_evals.Run(held, None, frozenset({"claude-sonnet-5-5"}), frozenset()),
+            ("clean", "haiku", None): skill_evals.Run(
                 None, "C:/home/x: timed out", frozenset(), frozenset(), "the run recorded no review", "run"
             ),
-            ("defects", "haiku"): skill_evals.Run(
+            ("defects", "haiku", None): skill_evals.Run(
                 None, "reviewers ran on claude-opus-5-5", frozenset({"claude-opus-5-5"}), frozenset(), "same", "record"
             ),
         }
@@ -2220,11 +2266,11 @@ class ResultsTests(unittest.TestCase):
         session = frozenset({"claude-opus-5-5"})
         # The reason a run failed may name the machine's paths; the row takes the phrase recorded for it.
         failed = "the run recorded no review; denied: Bash: D:/scratch/home/script.py | here"
-        runs = {
-            ("a", "haiku"): run({}, None, frozenset({"claude-haiku-4"}), session),
-            ("b", "haiku"): run(None, "x", frozenset({"claude-haiku-4"}), session, "x"),
-            ("a", "sonnet"): run(None, failed, frozenset(), frozenset(), "no such model | here"),
-            ("b", "sonnet"): run(None, "no such model", frozenset(), frozenset(), "no such model"),
+        runs: dict[skill_evals.RunKey, skill_evals.Run] = {
+            ("a", "haiku", None): run({}, None, frozenset({"claude-haiku-4"}), session),
+            ("b", "haiku", None): run(None, "x", frozenset({"claude-haiku-4"}), session, "x"),
+            ("a", "sonnet", None): run(None, failed, frozenset(), frozenset(), "no such model | here"),
+            ("b", "sonnet", None): run(None, "no such model", frozenset(), frozenset(), "no such model"),
         }
         outcomes = [
             outcome("a", "haiku"),
@@ -2237,8 +2283,9 @@ class ResultsTests(unittest.TestCase):
         )
         self.assertEqual(
             [
-                "| review-prs | haiku | claude-haiku-4 | 1/2 | a 1/1, b 0/1 | claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
-                "| review-prs | sonnet | not run | 0/2 | no such model \\| here | unknown | 2.1.291 | 2026-10-08 |",
+                "| review-prs | haiku | claude-haiku-4 | 1/2 | 1 | a 1/1, b 0/1 | claude-opus-5-5 | 2.1.291 "
+                "| 2026-10-08 |",
+                "| review-prs | sonnet | not run | 0/2 | 1 | no such model \\| here | unknown | 2.1.291 | 2026-10-08 |",
             ],
             rows,
         )
@@ -2248,12 +2295,12 @@ class ResultsTests(unittest.TestCase):
         run = skill_evals.Run
         session = frozenset({"claude-opus-5-5"})
         reviewer = frozenset({"claude-haiku-5-5"})
-        runs = {
-            ("a", "haiku"): run({}, None, reviewer, session),
+        runs: dict[skill_evals.RunKey, skill_evals.Run] = {
+            ("a", "haiku", None): run({}, None, reviewer, session),
             # The session refused before any reviewer started, as an unsupported PDF parser makes it.
-            ("b", "haiku"): run(None, "the run recorded no review", frozenset(), session),
+            ("b", "haiku", None): run(None, "the run recorded no review", frozenset(), session),
             # A reviewer ran and the run still recorded nothing: that is the model's run, and it counts.
-            ("c", "haiku"): run(None, "the run recorded no review; timed out", reviewer, session),
+            ("c", "haiku", None): run(None, "the run recorded no review; timed out", reviewer, session),
         }
         outcomes = [
             outcome("a", "haiku"),
@@ -2267,14 +2314,41 @@ class ResultsTests(unittest.TestCase):
         )
         self.assertEqual(
             [
-                "| review-document | haiku | claude-haiku-5-5 | 1/3 | a 1/2, b not run, c 0/1 | claude-opus-5-5 "
+                "| review-document | haiku | claude-haiku-5-5 | 1/3 | 1 | a 1/2, b not run, c 0/1 | claude-opus-5-5 "
                 "| 2.1.291 | 2026-10-08 |"
             ],
             rows,
         )
 
+    def test_over_several_runs_each_scenario_counts_the_runs_that_passed_every_expectation(self) -> None:
+        scenarios = [Scenario("review-prs", name, Path(name), "initial", None, ()) for name in ("a", "b", "c", "d")]
+        run = skill_evals.Run
+        reviewer, session = frozenset({"claude-haiku-5-5"}), frozenset({"claude-opus-5-5"})
+        unreviewed = run(None, "the run recorded no review", frozenset(), session, "the run recorded no review", "run")
+        runs: dict[skill_evals.RunKey, skill_evals.Run] = {
+            (name, "haiku", index): run({}, None, reviewer, session) for name in "abc" for index in (1, 2, 3)
+        }
+        # No reviewer ran on c's third run, nor on any of d's: they hold no judgment of the model.
+        runs |= {("c", "haiku", 3): unreviewed, **{("d", "haiku", index): unreviewed for index in (1, 2, 3)}}
+        failed = {("b", 2), ("c", 3), ("d", 1), ("d", 2), ("d", 3)}
+        outcomes = [
+            Outcome(name, "haiku", "verdict APPROVED", "x" if (name, index) in failed else None, None, index)
+            for name in "abcd"
+            for index in (1, 2, 3)
+        ]
+        rows = skill_evals.result_rows(
+            "review-prs", scenarios, ["haiku"], outcomes, runs, "2.1.291", datetime.date(2026, 10, 8)
+        )
+        self.assertEqual(
+            [
+                "| review-prs | haiku | claude-haiku-5-5 | 7/8 | 3 | a 3/3 (3/3 runs), b 2/3 (2/3 runs), "
+                "c 2/2 (2/2 runs), d not run | claude-opus-5-5 | 2.1.291 | 2026-10-08 |"
+            ],
+            rows,
+        )
+
     def test_the_skills_rows_are_replaced_and_every_other_kept(self) -> None:
-        rows = ["| review-prs | haiku | h | 1/1 | a 1/1 | s | 2.1.291 | 2026-10-08 |"]
+        rows = ["| review-prs | haiku | h | 1/1 | 1 | a 1/1 | s | 2.1.291 | 2026-10-08 |"]
         original = RESULTS_TEXT.split("\n")
         written = skill_evals.replace_results(RESULTS_TEXT, "review-prs", rows).split("\n")
         begin, end = written.index(skill_evals.RESULTS_BEGIN), written.index(skill_evals.RESULTS_END)
@@ -2285,11 +2359,13 @@ class ResultsTests(unittest.TestCase):
     def test_another_skills_row_and_its_order_are_kept_as_written(self) -> None:
         lines = RESULTS_TEXT.split("\n")
         # A row written by hand without the spaces, an aligned separator, and two rows of one skill out of order.
-        lines[4] = "| :--- | --- | --- | ---: | --- | --- | --- | --- |"
-        lines[5] = "|alpha|sonnet|claude-sonnet-5-5|1/1|one 1/1|claude-opus-5-5|2.1.0|2026-01-01|"
-        lines.insert(6, "| alpha | haiku | claude-haiku-5-5 | 1/1 | one 1/1 | claude-opus-5-5 | 2.1.0 | 2026-01-01 |")
+        lines[4] = "| :--- | --- | --- | ---: | --- | --- | --- | --- | --- |"
+        lines[5] = "|alpha|sonnet|claude-sonnet-5-5|1/1|1|one 1/1|claude-opus-5-5|2.1.0|2026-01-01|"
+        lines.insert(
+            6, "| alpha | haiku | claude-haiku-5-5 | 1/1 | 1 | one 1/1 | claude-opus-5-5 | 2.1.0 | 2026-01-01 |"
+        )
         text = "\n".join(lines)
-        rows = ["| review-prs | haiku | h | 1/1 | a 1/1 | s | 2.1.291 | 2026-10-08 |"]
+        rows = ["| review-prs | haiku | h | 1/1 | 1 | a 1/1 | s | 2.1.291 | 2026-10-08 |"]
         written = skill_evals.replace_results(text, "review-prs", rows).split("\n")
         begin, end = written.index(skill_evals.RESULTS_BEGIN), written.index(skill_evals.RESULTS_END)
         self.assertEqual([*skill_evals.RESULTS_HEADER, lines[5], lines[6], rows[0], lines[8]], written[begin + 1 : end])
@@ -2321,7 +2397,9 @@ class StubClaude:
     role's read log started as the reviewer guard's claim starts it. Each reviewer does what the scenario the run's
     folder is named for expects. `after`, if given, is called with the record JSON finalize wrote, as what happened to
     the run's canary root after it. `session` names the model the session's own messages report, and without
-    `subagent` no subagent message is forwarded, as when the session works the roles itself."""
+    `subagent` no subagent message is forwarded, as when the session works the roles itself. `vary`, if given, is
+    called with the run's folder and the scenario, and its reviewers do what the scenario it returns expects instead,
+    as a model that does the task on some runs and not on others."""
 
     def __init__(
         self,
@@ -2333,9 +2411,10 @@ class StubClaude:
         after: Callable[[Path], None] | None = None,
         session: str = "claude-opus-5-5",
         subagent: bool = True,
+        vary: Callable[[Path, dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
         self.test, self.review, self.reviewer, self.guarded, self.after = test, review, reviewer, guarded, after
-        self.session, self.subagent = session, subagent
+        self.session, self.subagent, self.vary = session, subagent, vary
         self.calls: list[tuple[list[str], Path, dict[str, str]]] = []
         self.built: dict[str, list[str]] = {}
         # Each fixture run's fixture, by its scenario and model, and its files as the session found them.
@@ -2357,6 +2436,7 @@ class StubClaude:
                 self.fixtures[f"{run.name} {model}"] = (fixture, tree_bytes(fixture))
                 scenario = fixture / "scenario.json"
             spec = json.loads(scenario.read_text(encoding="utf-8"))
+            spec = spec if self.vary is None else self.vary(run, spec)
             files = {key: environment[key] for key in ("CODE_REVIEW_STATE", "CODE_REVIEW_FLAGS")}
             with mock.patch.object(tempfile, "tempdir", environment["TMPDIR"]), mock.patch.dict(os.environ, files):
                 if skill == "review-document":
@@ -2473,8 +2553,8 @@ class EvaluateTests(unittest.TestCase):
         self.assertFalse(self.homes.exists())
         written = self.results.read_text(encoding="utf-8")
         self.assertIn(
-            "| review-prs | haiku | claude-haiku-5-5 | 21/21 | clean-change 2/2, design-clean 2/2, design-gaps 5/5, "
-            "planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
+            "| review-prs | haiku | claude-haiku-5-5 | 21/21 | 1 | clean-change 2/2, design-clean 2/2, "
+            "design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
             written,
         )
         self.assertNotIn("| review-prs | opus | old |", written)
@@ -2929,6 +3009,136 @@ class EvaluateTests(unittest.TestCase):
             self.evaluate(argv, self.seams(broken), "review-repository")
         self.assertEqual([], list(copies.iterdir()))
 
+    def test_a_scenario_that_passes_two_of_three_runs_is_reported_as_such(self) -> None:
+        def second_run_misses_the_must_fix(run: Path, spec: dict[str, Any]) -> dict[str, Any]:
+            if run.parent.name != "2":
+                return spec
+            kept = [item for item in spec["expectations"] if item.get("severity") != "MUST_FIX"]
+            return {**spec, "expectations": kept}
+
+        claude = StubClaude(self, vary=second_run_misses_the_must_fix)
+        argv = ["--scenario", "planted-defects", "--model", "haiku", "--runs", "3", "--jobs", "1"]
+        status, lines = self.evaluate(argv, self.seams(claude))
+        self.assertEqual(1, status, lines)
+        ended = [line.split(" ")[1:4] for line in lines if line.startswith("TRANSCRIPT ")]
+        self.assertEqual([["planted-defects", "haiku", f"run={index}"] for index in (1, 2, 3)], ended)
+        transcript = self.homes / "haiku" / skill_evals.STATE / "2" / "planted-defects" / "transcript.jsonl"
+        self.assertIn(f"TRANSCRIPT planted-defects haiku run=2 {forward(transcript)}", lines)
+        self.assertEqual(
+            [f"GUARDED planted-defects haiku run={index} generic-review files_read=0" for index in (1, 2, 3)],
+            [line for line in lines if line.startswith("GUARDED ")],
+        )
+        failed = [line for line in lines if line.startswith("FAIL ")]
+        self.assertEqual(
+            [
+                "FAIL review-prs planted-defects haiku run=2 finding store.go:44,45 MUST_FIX judgment",
+                "FAIL review-prs planted-defects haiku run=2 verdict CHANGES_REQUESTED judgment",
+            ],
+            [line.split(' "')[0] for line in failed],
+        )
+        self.assertEqual(13, sum(1 for line in lines if line.startswith("PASS review-prs planted-defects haiku run=")))
+        self.assertIn("RUNS planted-defects haiku 2/3 some", lines)
+        self.assertEqual(
+            [
+                "`python -B tools/skill_evals.py review-prs --scenario planted-defects --model haiku --runs 3`",
+                "",
+                "| Scenario | haiku |",
+                "| --- | --- |",
+                "| planted-defects | 13/15 (2/3 runs) |",
+            ],
+            self.cited[:5],
+        )
+        self.assertEqual(
+            [line.removeprefix("FAIL ") for line in failed],
+            [line.removeprefix("FAIL ") for line in self.cited if line.startswith("FAIL ")],
+        )
+        self.assertTrue(self.homes.exists())
+
+    def test_a_trigger_scenario_judges_whether_each_request_started_the_skill_and_records_it(self) -> None:
+        scenario = skill_evals.load_scenarios("analyze-skill-cost", ["description"])[0]
+        first, second, third = scenario.requests
+        near, other = scenario.near_misses
+        # The third request starts nothing, and the second near miss starts the skill: two judgments fail.
+        claude = StubTrigger(
+            self,
+            {
+                first: "analyze-skill-cost",
+                second: "/analyze-skill-cost",
+                near: "audit-ai-config",
+                other: "analyze-skill-cost",
+            },
+        )
+        status, lines = self.evaluate(["--write", "--jobs", "1"], self.seams(claude), "analyze-skill-cost")
+        self.assertEqual(1, status, lines)
+        ended = [line.split(" ")[1:3] for line in lines if line.startswith("TRANSCRIPT ")]
+        self.assertEqual([["description", model] for model in skill_evals.MODELS for _ in range(5)], ended)
+        self.assertEqual(
+            [f"REVIEWER {model} {model_id}" for model, model_id in skill_evals.MODELS.items()],
+            [line for line in lines if line.startswith("REVIEWER ")],
+        )
+        self.assertEqual([], [line for line in lines if line.startswith(("GUARDED ", "NOT_COUNTED "))])
+        haiku = [line for line in lines if line.startswith(("PASS analyze-skill-cost description haiku", "FAIL "))]
+        self.assertEqual(
+            [
+                f"PASS analyze-skill-cost description haiku starts {json.dumps(first)}",
+                f"PASS analyze-skill-cost description haiku starts {json.dumps(second)}",
+                f'FAIL analyze-skill-cost description haiku starts {json.dumps(third)} judgment "the session started '
+                'no skill"',
+                f"PASS analyze-skill-cost description haiku does_not_start {json.dumps(near)}",
+                f"FAIL analyze-skill-cost description haiku does_not_start {json.dumps(other)} judgment "
+                '"the session started analyze-skill-cost"',
+            ],
+            haiku[:5],
+        )
+        self.assertIn("| description | 3/5 | 3/5 | 3/5 |", self.cited)
+        record = json.loads(
+            (self.homes / "haiku" / skill_evals.STATE / "description" / "trigger.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            {
+                "models": ["claude-haiku-5-5"],
+                "requests": [
+                    {"request": first, "started": ["analyze-skill-cost"]},
+                    {"request": second, "started": ["analyze-skill-cost"]},
+                    {"request": third, "started": []},
+                    {"request": near, "started": ["audit-ai-config"]},
+                    {"request": other, "started": ["analyze-skill-cost"]},
+                ],
+            },
+            record,
+        )
+        self.assertIn(
+            "| analyze-skill-cost | haiku | claude-haiku-5-5 | 3/5 | 1 | description 3/5 | claude-haiku-5-5 | 2.1.291 "
+            "| 2026-10-08 |",
+            self.results.read_text(encoding="utf-8"),
+        )
+        for arguments, cwd, _ in claude.calls[1:]:
+            self.assertEqual(skill_evals.trigger_command("claude.exe", arguments[2], cwd.name), arguments)
+
+    def test_a_trigger_session_that_does_not_count_makes_its_run_count_for_nothing(self) -> None:
+        cases = {
+            "unlisted": (
+                StubTrigger(self, {}, listed=False),
+                "run",
+                "request 1: Claude Code did not list analyze-skill-cost",
+            ),
+            "other model": (
+                StubTrigger(self, {}, session="claude-sonnet-5-5"),
+                "record",
+                "request 1: the session ran on claude-sonnet-5-5, not claude-haiku-5-5",
+            ),
+        }
+        for name, (claude, kind, reason) in cases.items():
+            with self.subTest(name):
+                shutil.rmtree(self.homes, ignore_errors=True)
+                argv = ["--model", "haiku", "--jobs", "1"]
+                status, lines = self.evaluate(argv, self.seams(claude), "analyze-skill-cost")
+                self.assertEqual(1, status, lines)
+                self.assertIn(f"NOT_COUNTED description haiku {kind} {json.dumps(reason)}", lines)
+                failed = [line for line in lines if line.startswith("FAIL ")]
+                self.assertEqual(5, len(failed))
+                self.assertTrue(all(line.endswith(f"{kind} {json.dumps(reason)}") for line in failed), failed)
+
     def test_write_records_only_a_full_run(self) -> None:
         for argv in (["--model", "haiku"], ["--scenario", "clean-change"], ["--records", str(self.root)]):
             with (
@@ -3134,3 +3344,197 @@ def test_a_table_it_cannot_read_is_refused(reason: str, index: int, line: str) -
 def test_the_markers_are_required_once_each_in_order(text: str) -> None:
     with CHECK.assertRaises(ScenarioError):
         skill_evals.results_table(text)
+
+
+class StubTrigger:
+    """Claude Code as a trigger run starts it: `--version`, or one request's session, whose init event lists the
+    skills a deployment of the worked example's two skills would, without the started skill when `listed` is false,
+    and whose one message, on the model given or `session`, calls the Skill tool on the skill `starts` maps its
+    request to, if any."""
+
+    def __init__(
+        self, test: unittest.TestCase, starts: dict[str, str], listed: bool = True, session: str | None = None
+    ) -> None:
+        self.test, self.starts, self.listed, self.session = test, starts, listed, session
+        self.calls: list[tuple[list[str], Path, dict[str, str]]] = []
+
+    def __call__(self, arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Any:
+        self.calls.append((arguments, cwd, environment))
+        if arguments[1:] == ["--version"]:
+            return skill_evals.Completed(0, "2.1.291 (Claude Code)\n", "")
+        self.test.assertTrue(Path(environment["TMPDIR"]).is_relative_to(cwd / skill_evals.STATE))
+        request, model = arguments[2], arguments[arguments.index("--model") + 1]
+        skills = ["audit-ai-config", *(["analyze-skill-cost"] if self.listed else [])]
+        content: list[dict[str, Any]] = [{"type": "text", "text": "On it."}]
+        if request in self.starts:
+            content.append(
+                {"type": "tool_use", "id": "toolu_1", "name": "Skill", "input": {"skill": self.starts[request]}}
+            )
+        events = [
+            {"type": "system", "subtype": "init", "skills": skills},
+            {
+                "type": "assistant",
+                "message": {"model": self.session or model, "content": content},
+                "parent_tool_use_id": None,
+            },
+        ]
+        return skill_evals.Completed(0, "\n".join(json.dumps(event) for event in events), "")
+
+
+def trigger_scenario(root: Path, spec: dict[str, Any], checkout: Path) -> Scenario:
+    folder = root / "demo" / "triggers"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "scenario.json").write_text(json.dumps(spec), encoding="utf-8")
+    return skill_evals.load_scenario("demo", folder, checkout)
+
+
+def demo_checkout(root: Path, frontmatter: str = "") -> Path:
+    """A checkout holding one shipped skill, demo, with the frontmatter lines given."""
+    skill = root / "checkout" / "skills" / "demo" / "SKILL.md"
+    skill.parent.mkdir(parents=True, exist_ok=True)
+    skill.write_text(f"---\nname: demo\ndescription: A demo.\n{frontmatter}---\n\nBody.\n", encoding="utf-8")
+    return root / "checkout"
+
+
+TRIGGER_SPEC = {"skill": "demo", "mode": "trigger", "requests": ["Run the demo."], "near_misses": ["Run a test."]}
+
+
+def test_a_trigger_scenario_expects_each_request_to_start_its_skill_and_each_near_miss_not_to(tmp_path: Path) -> None:
+    spec = {**TRIGGER_SPEC, "requests": ["Run the demo.", "Show the demo."]}
+    scenario = trigger_scenario(tmp_path, spec, demo_checkout(tmp_path))
+    CHECK.assertEqual(skill_evals.TRIGGER, scenario.mode)
+    CHECK.assertEqual(("Run the demo.", "Show the demo."), scenario.requests)
+    CHECK.assertEqual(("Run a test.",), scenario.near_misses)
+    CHECK.assertEqual(
+        ['starts "Run the demo."', 'starts "Show the demo."', 'does_not_start "Run a test."'],
+        [item.label for item in scenario.expectations],
+    )
+    record = {
+        "requests": [
+            {"request": "Run the demo.", "started": ["demo"]},
+            {"request": "Show the demo.", "started": ["other"]},
+            {"request": "Run a test.", "started": ["demo", "other"]},
+        ],
+        "models": ["claude-haiku-5-5"],
+    }
+    CHECK.assertEqual(
+        [None, "the session started other", "the session started demo, other"],
+        [item.check(record) for item in scenario.expectations],
+    )
+    with CHECK.assertRaisesRegex(RecordError, "no session of"):
+        scenario.expectations[0].check({"requests": [], "models": []})
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"expectations": []}, "must have exactly mode, near_misses, requests, skill"),
+        ({"near_misses": None}, "must have exactly"),
+        ({"skill": "other"}, 'names skill "other", not demo'),
+        ({"requests": []}, "requests must be a non-empty list"),
+        ({"near_misses": ["Run a test.", 3]}, "near_misses must be a non-empty list"),
+        ({"requests": ["Run the demo.", "Run the demo."]}, "requests name a request twice"),
+        ({"requests": ["Run the demo.\nNow."]}, "must be one line of text"),
+        ({"requests": [" Run the demo."]}, "must be one line of text"),
+        ({"requests": ["--help"]}, "starts with -"),
+        ({"requests": ["/demo"]}, "starts with /"),
+        ({"near_misses": ["Run the demo."]}, '"Run the demo." is both a request and a near miss'),
+    ],
+    ids=[
+        "expectations",
+        "a missing field",
+        "another skill",
+        "no request",
+        "a request not text",
+        "a request twice",
+        "two lines",
+        "a space around it",
+        "an option",
+        "a command",
+        "in both lists",
+    ],
+)
+def test_a_trigger_scenario_is_checked(changes: dict[str, Any], message: str, tmp_path: Path) -> None:
+    spec = {key: value for key, value in {**TRIGGER_SPEC, **changes}.items() if value is not None}
+    with CHECK.assertRaisesRegex(ScenarioError, re.escape(message)):
+        trigger_scenario(tmp_path, spec, demo_checkout(tmp_path))
+
+
+def test_a_trigger_scenario_s_skill_is_a_shipped_one_the_model_may_start(tmp_path: Path) -> None:
+    with CHECK.assertRaisesRegex(ScenarioError, "the checkout has no skills/demo"):
+        trigger_scenario(tmp_path, TRIGGER_SPEC, tmp_path / "empty")
+    user_only = demo_checkout(tmp_path, "disable-model-invocation: true\n")
+    with CHECK.assertRaisesRegex(ScenarioError, "demo sets disable-model-invocation"):
+        trigger_scenario(tmp_path, TRIGGER_SPEC, user_only)
+
+
+def test_the_worked_trigger_scenario_draws_on_its_description_and_a_neighbour_s() -> None:
+    scenario = skill_evals.load_scenarios("analyze-skill-cost")[0]
+    CHECK.assertEqual(("description", skill_evals.TRIGGER), (scenario.name, scenario.mode))
+    description = frontmatter.read(skill_evals.REPOSITORY_ROOT / "skills" / "analyze-skill-cost" / "SKILL.md")
+    neighbour = frontmatter.read(skill_evals.REPOSITORY_ROOT / "skills" / "audit-ai-config" / "SKILL.md")
+    # The requests ask what the description's "Use it when" sentence names, and the near misses what the neighbour's.
+    CHECK.assertIn(
+        "Use it when asked what a skill costs, why it is slow or expensive, or to check one before shipping it.",
+        description.string("description") or "",
+    )
+    CHECK.assertIn(
+        "Use it when asked to audit or check a repository's agent instructions or setup",
+        neighbour.string("description") or "",
+    )
+    CHECK.assertEqual(3, len(scenario.requests))
+    CHECK.assertTrue(all("skill" in request for request in scenario.requests), scenario.requests)
+    CHECK.assertTrue(all("repository" in request for request in scenario.near_misses), scenario.near_misses)
+
+
+def test_only_the_session_s_own_skill_tool_call_is_a_start() -> None:
+    def assistant_with(content: list[Any], subagent: bool = False) -> str:
+        event = {"type": "assistant", "message": {"model": "claude-haiku-5-5", "content": content}}
+        return json.dumps({**event, "parent_tool_use_id": "toolu_9" if subagent else None})
+
+    skill = {"type": "tool_use", "name": "Skill", "input": {"skill": "demo"}}
+    output = "\n".join(
+        [
+            "not json",
+            assistant_with([{"type": "tool_use", "name": "Read", "input": {"skill": "read"}}]),
+            assistant_with([{**skill, "input": {"skill": "from-subagent"}}], subagent=True),
+            assistant_with([{**skill, "input": "demo"}, {**skill, "input": {"skill": " "}}]),
+            assistant_with([skill, {**skill, "input": {"skill": "/other"}}, skill]),
+        ]
+    )
+    CHECK.assertEqual(["demo", "other"], skill_evals.skills_in_stream(output))
+
+
+def test_a_trigger_session_runs_on_the_judged_model_with_a_turn_limit_and_no_grant() -> None:
+    command = skill_evals.trigger_command("claude", "Run the demo.", "haiku")
+    CHECK.assertEqual(["claude", "-p", "Run the demo.", "--model", "claude-haiku-5-5"], command[:5])
+    CHECK.assertEqual(str(skill_evals.TRIGGER_TURNS), command[command.index("--max-turns") + 1])
+    CHECK.assertEqual("project,local", command[command.index("--setting-sources") + 1])
+    for absent in ("--allowedTools", "--agents", "--permission-mode"):
+        CHECK.assertNotIn(absent, command)
+
+
+def test_records_hold_a_trigger_record_to_its_scenario_and_model(tmp_path: Path) -> None:
+    scenario = trigger_scenario(tmp_path, TRIGGER_SPEC, demo_checkout(tmp_path))
+    good: dict[str, Any] = {
+        "requests": [{"request": "Run a test.", "started": []}, {"request": "Run the demo.", "started": ["demo"]}],
+        "models": ["claude-haiku-5-5-20261001"],
+    }
+    records = tmp_path / "records" / "triggers"
+    records.mkdir(parents=True)
+    (records / "haiku-2.json").write_text(json.dumps(good), encoding="utf-8")
+    source = skill_evals.records_in(tmp_path / "records")
+    CHECK.assertEqual(good, source(scenario, "haiku", 2))
+    refused = {
+        "another model": {**good, "models": ["claude-opus-5-5"]},
+        "no model": {**good, "models": []},
+        "a request missing": {**good, "requests": good["requests"][:1]},
+        "a request twice": {**good, "requests": [*good["requests"], good["requests"][0]]},
+        "a started skill not text": {**good, "requests": [{"request": "Run a test.", "started": [1]}]},
+        "a review record": contract_record(),
+    }
+    for name, value in refused.items():
+        (records / "haiku.json").write_text(json.dumps(value), encoding="utf-8")
+        with CHECK.assertRaises(RecordError, msg=name) as raised:
+            source(scenario, "haiku", None)
+        CHECK.assertEqual(skill_evals.RECORD, raised.exception.kind, name)

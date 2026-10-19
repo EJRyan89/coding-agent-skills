@@ -64,7 +64,7 @@ with its base needs no local rerun, since continuous integration runs on the res
 
 The gates that call a model never run in continuous integration, so they stay with the author: a change to skill
 paths, `allowed-tools`, runtime adapters, or agents runs the `runtime-canary` repository skill, a change to a skill's
-prompt, model guidance, or reviewer instructions runs `evaluate-skill` when the skill has scenarios, and a change to a
+prompt, description, model guidance, or reviewer instructions runs `evaluate-skill` when the skill has scenarios, and a change to a
 skill under `skills/` or `.claude/skills/` runs `analyze-skill-cost` on it. `CLAUDE.md` ("Required validation") holds
 the rules validation enforces.
 

@@ -1,8 +1,9 @@
 # Skill evaluations
 
-A skill evaluation runs a skill on fixed scenarios, once per reviewer model, and checks what each run recorded
-against the scenario's expectations, by script and never from the report. It answers whether a change to a skill's
-prompt, model guidance, or reviewer instructions still does the task, and on which models. It calls models, so it
+A skill evaluation runs a skill on fixed scenarios on each model, once or several times, and checks what each run
+recorded against the scenario's expectations, by script and never from the report. It answers whether a change to a
+skill's prompt, description, model guidance, or reviewer instructions still does the task, or still starts the skill
+when it should, and on which models. It calls models, so it
 is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKILL.md), never part of validation or CI.
 
 - **Scenarios** live under `tests/fixtures/skill-evals/<skill>/<scenario>/`, which never ships. Each is a
@@ -22,6 +23,19 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   throwaway folder and places the reviewer's files there from the checkout, in both trees: its `SKILL.md`,
   `references/`, `scripts/` but its regression suites, and every file its manifest declares. The fixtures hold no copy
   that could drift from the skill under test, the copy is removed when the run ends, and the rows are the reviewer's.
+- **A trigger scenario** judges a skill's description rather than its work. Its `scenario.json` names a shipped
+  skill the model may start, with `"mode": "trigger"`, a list of `requests` a user might type that should start it,
+  drawn from its description's "Use it when" sentence, and a list of `near_misses` that should not, such as a
+  neighbouring skill's requests. Each request and near miss is one expectation. A run gives each to a headless session
+  of its own in the model's home, on that model, since the session's model decides whether to start a skill, with no
+  grant and a short turn limit, so a session that starts the skill stops soon after. The session started the skill
+  when one of its own messages calls the Skill tool naming it. The run writes a trigger record of the skills each
+  session started; a session that could not start, timed out, did not list the skill, or ran on another model makes
+  the run count for nothing. `analyze-skill-cost`'s `description` scenario is the worked example.
+- **Several runs:** one run is one sample of what a model does, so `--runs N` runs each scenario N times on each
+  model and judges every run. Each line about one run names it as `run=<run>`, and a `RUNS` line per scenario and
+  model gives the runs that passed every expectation, of the runs, and whether that is all of them (the pass^k of k
+  runs), some, which is an inconsistent result, or none. `--records` judges `<model>-<run>.json` records the same way.
 - **A `repeats` expectation** names a ledger entry and the lines it was raised on, and holds when every finding the
   re-review raises there is linked to that entry, so a still-present problem counts once. It considers only findings
   at the entry's severity: restating the entry at that severity without the link fails, since that is the double
@@ -51,26 +65,28 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
 
 ## Latest result
 
-One row per skill and reviewer model, replaced by each full run with `--write`. "Passed" counts expectations over
-every scenario a reviewer ran on. A scenario is "not run" for a model when none of its reviewers started, such as
+One row per skill and model, replaced by each full run with `--write`. "Passed" counts expectations over every run
+of every scenario the judged part ran on: the reviewers, or a trigger scenario's sessions. "Runs" is the runs of each
+scenario; with more than one, each scenario's counts end with the runs that passed every expectation, as
+`7/9 (2/3 runs)`, and a run whose reviewers never started is left out of both counts. A scenario is "not run" for a model when none of its reviewers started, such as
 when the session refused before reviewing, since it holds no judgment of the model; the notes below say why. A model
 is "not run" when none of its reviewers ran, with the first reason in place of the scenarios, in fixed phrases that
 name no path of the machine; the run's `FAIL` lines keep the whole reason. A run with `--write` refuses, before it
 starts, a table between the markers that holds anything but the header, its separator, and rows of its columns. A
-pull request that changes a skill's prompt, model guidance, or reviewer instructions cites this run.
+pull request that changes a skill's prompt, description, model guidance, or reviewer instructions cites this run.
 
 <!-- skill-evals:begin -->
-| Skill | Model | Model ID | Passed | By scenario | Session model | Claude Code | Date |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| review-document | haiku | claude-haiku-5-5 | 19/20 | committed-edit 3/3, design-clean 1/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps not run, word-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
-| review-document | sonnet | claude-sonnet-5-5 | 20/20 | committed-edit 3/3, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps not run, word-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
-| review-document | opus | claude-opus-5-5 | 20/20 | committed-edit 3/3, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps not run, word-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
-| review-prs | haiku | claude-haiku-5-5 | 19/21 | clean-change 2/2, design-clean 1/2, design-gaps 5/5, planted-defects 4/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
-| review-prs | sonnet | claude-sonnet-5-5 | 21/21 | clean-change 2/2, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
-| review-prs | opus | claude-opus-5-5 | 21/21 | clean-change 2/2, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
-| review-repository | haiku | claude-haiku-5-5 | 5/5 | drifted-guide 2/2, tested-change 1/1, undocumented-change 1/1, untested-change 1/1 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
-| review-repository | sonnet | claude-sonnet-5-5 | 5/5 | drifted-guide 2/2, tested-change 1/1, undocumented-change 1/1, untested-change 1/1 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
-| review-repository | opus | claude-opus-5-5 | 5/5 | drifted-guide 2/2, tested-change 1/1, undocumented-change 1/1, untested-change 1/1 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
+| Skill | Model | Model ID | Passed | Runs | By scenario | Session model | Claude Code | Date |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| review-document | haiku | claude-haiku-5-5 | 19/20 | 1 | committed-edit 3/3, design-clean 1/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps not run, word-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
+| review-document | sonnet | claude-sonnet-5-5 | 20/20 | 1 | committed-edit 3/3, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps not run, word-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
+| review-document | opus | claude-opus-5-5 | 20/20 | 1 | committed-edit 3/3, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps not run, word-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
+| review-prs | haiku | claude-haiku-5-5 | 19/21 | 1 | clean-change 2/2, design-clean 1/2, design-gaps 5/5, planted-defects 4/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
+| review-prs | sonnet | claude-sonnet-5-5 | 21/21 | 1 | clean-change 2/2, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
+| review-prs | opus | claude-opus-5-5 | 21/21 | 1 | clean-change 2/2, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
+| review-repository | haiku | claude-haiku-5-5 | 5/5 | 1 | drifted-guide 2/2, tested-change 1/1, undocumented-change 1/1, untested-change 1/1 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
+| review-repository | sonnet | claude-sonnet-5-5 | 5/5 | 1 | drifted-guide 2/2, tested-change 1/1, undocumented-change 1/1, untested-change 1/1 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
+| review-repository | opus | claude-opus-5-5 | 5/5 | 1 | drifted-guide 2/2, tested-change 1/1, undocumented-change 1/1, untested-change 1/1 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
 <!-- skill-evals:end -->
 
 ### Notes

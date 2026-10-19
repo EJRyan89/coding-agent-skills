@@ -1,0 +1,13 @@
+{
+  "skill": "analyze-skill-cost",
+  "mode": "trigger",
+  "requests": [
+    "What does the dotnet-format skill cost to run?",
+    "Why is the review-insights skill so slow and expensive?",
+    "Check the github-activity-report skill before I ship it."
+  ],
+  "near_misses": [
+    "Audit this repository's agent instructions.",
+    "Check the AI agent setup of this repository."
+  ]
+}
