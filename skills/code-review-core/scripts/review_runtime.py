@@ -77,6 +77,9 @@ MAX_SEGMENT_UNITS = 255  # NTFS, ReFS, exFAT, and FAT32 all stop a name at 255 U
 MAX_PATH = 260  # a Windows path without long-path support, its terminating NUL included
 LONG_PATH_UNITS = 32_767  # an NT path with long-path support, counted with the volume's device name for the drive
 GIT_OBJECT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+# What each runtime gives a review, which is not everything it can do: Copilot CLI starts subagents, but its hooks let a
+# tool call through when they time out, so its reviewers stay inline under the seal rather than start as subagents
+# whose guard holds only when it runs (the fail-closed decision in docs/design.md).
 RUNTIME_CAPABILITIES = {
     "claude-code": {"agent-delegation", "read-diff", "write-result"},
     "codex": {"agent-delegation", "read-diff", "write-result"},
@@ -117,7 +120,8 @@ UNCOVERED_POLICIES = ("review", "ignore")
 SPECIALIST_KEYS = {"id", "category", "profile", "include", "exclude", "resources", "when"}
 # Optional per-specialist settings a manifest may give. `model` takes the aliases every way of starting a Claude
 # subagent accepts (the Agent tool takes no other value; on Bedrock a bare model name can be silently ignored), or
-# `inherit` to use the session's model whatever the profile says. `effort` reaches reviewers the Workflow tool starts.
+# `inherit` to use the session's model whatever the profile says. `effort` reaches reviewers the Workflow tool starts
+# and those a runtime in NATIVE_EFFORT_RUNTIMES starts.
 # Either may be null, which validates to an absent key, so a maintainer can keep both keys in the manifest and set or
 # clear them without removing them; the configuration's own `reviewer_effort` takes null the same way.
 # `shares_files`, when true, has the specialist review its matched files beside whoever else reviews them: its matches
@@ -127,6 +131,10 @@ MODEL_ALIASES = frozenset({"sonnet", "opus", "haiku", "fable"})
 # The runtimes whose native delegation starts a subagent on one of MODEL_ALIASES. Codex's takes only its own model
 # identifiers, so there a reviewer starts on the session's model.
 MODEL_ALIAS_RUNTIMES = frozenset({"claude-code"})
+# The runtimes whose native delegation starts a subagent at a reasoning effort it is given, in the values
+# REVIEWER_EFFORTS names: Codex's spawn_agent takes `reasoning_effort`. Claude Code's reviewers take theirs through
+# the Workflow tool, and the Copilot CLI host takes `--reasoning-effort`.
+NATIVE_EFFORT_RUNTIMES = frozenset({"codex"})
 GENERIC_SPECIALIST = "generic-review"
 # Profiles the suite ships, which a specialist names as `suite:<name>` in place of a repository path. Each is read from
 # this skill's references folder, never from the repository, and only the names here resolve, so a manifest can reach

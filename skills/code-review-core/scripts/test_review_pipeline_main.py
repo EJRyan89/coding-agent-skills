@@ -1078,9 +1078,10 @@ class RunListTests(MainCase):
                 {
                     Path("run a"): {
                         "selector": "example/app#3",
+                        "runtime": "codex",
                         "retry": [
-                            {"id": "generic-review", "prompt_file": "generic.md", "model": "opus"},
-                            {"id": "security", "prompt_file": "security.md"},
+                            {"id": "generic-review", "prompt_file": "generic.md", "model": "opus", "effort": None},
+                            {"id": "security", "prompt_file": "security.md", "effort": "low"},
                         ],
                         "errors": {"generic-review": "bad json", "security": "missing", "style": "gave up"},
                         "failed": {"style": "gave up"},
@@ -1103,6 +1104,7 @@ class RunListTests(MainCase):
                 "RETRY example/app#3 generic-review generic.md bad json\n"
                 "MODEL example/app#3 generic-review opus\n"
                 "RETRY example/app#3 security security.md missing\n"
+                "EFFORT example/app#3 security low\n"
                 "FAILED example/app#3 style gave up\n"
                 "RUNNING example/app#3 perf 15s\n"
                 "ALL_VALID example/app#5\n"
@@ -1132,7 +1134,7 @@ class RunListTests(MainCase):
         ]
         for outcome, (code, out) in cases:
             with self.subTest(outcome=outcome):
-                self.stub("check_run", {"selector": "example/app#3", **outcome})
+                self.stub("check_run", {"selector": "example/app#3", "runtime": "claude-code", **outcome})
                 self.assertEqual((code, out, ""), self.run_main("check", "--run", "run a"))
 
     def test_finalize(self) -> None:
@@ -1283,7 +1285,8 @@ class RunListCommandTests(RunListCase):
                     },
                     Path("run e"): {
                         "selector": "example/app#5",
-                        "retry": [{"id": "x", "prompt_file": "x.md"}],
+                        "runtime": "claude-code",
+                        "retry": [{"id": "x", "prompt_file": "x.md", "effort": "high"}],
                         "errors": {"x": "bad"},
                         "failed": {},
                         "running": {},

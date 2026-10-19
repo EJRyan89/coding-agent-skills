@@ -17,12 +17,15 @@ RUNTIME_TITLES = {"claude-code": "Claude Code", "codex": "Codex CLI", "copilot-c
 CAPABILITIES = {
     "agent-delegation": "starting a subagent from the session",
     "workflow": "Claude Code's Workflow tool, which starts subagents from a script with a per-call effort",
-    "agent-hooks": "running a subagent under its agent definition's hooks, such as the code-review reviewer's guard",
+    "fail-closed-agent-hooks": (
+        "running a subagent under its agent definition's hooks, with a tool call blocked when a hook fails or times "
+        "out, which the code-review reviewer's guard needs"
+    ),
     "user-only-start": "starting a user-only skill in a headless session as well as an interactive one",
     "sandbox-network": "network access for a skill's commands in the runtime's default sandbox, which gh needs",
 }
 # The allowed-tools grant that shows a skill needs a capability; user-only-start follows from disable-model-invocation,
-# and agent-hooks from an Agent grant in a skill that starts an agent whose definition declares hooks.
+# and fail-closed-agent-hooks from an Agent grant in a skill that starts an agent whose definition declares hooks.
 CAPABILITY_GRANTS = {"Agent": "agent-delegation", "Workflow": "workflow"}
 # The tools a skill may declare that reach a service over the network, so a skill declaring one, required or
 # optional, needs sandbox-network.
@@ -31,18 +34,24 @@ NETWORK_TOOLS = frozenset({"gh", "copilot"})
 DEFAULT_REASONS = {
     "agent-delegation": "It starts subagents, which this runtime cannot.",
     "workflow": "It uses Claude Code's Workflow tool, which this runtime lacks.",
-    "agent-hooks": "Its subagent runs without its agent definition's hooks, so its prompt is its only boundary.",
+    "fail-closed-agent-hooks": (
+        "This runtime lets a tool call through when a hook fails, so its subagent runs without its agent definition's "
+        "guard and its prompt is its only boundary."
+    ),
     "user-only-start": "A headless copilot -p session cannot start it; start it from an interactive session.",
     "sandbox-network": "Its network calls need network access, which this runtime's default sandbox turns off.",
 }
-# Copilot CLI starts no subagent, and its `copilot -p` neither expands /<skill> for a user-only skill nor lets the model
-# start one (Copilot CLI 1.0.91; see docs/copilot-support.md). Workflow is Claude Code's alone, and so are an agent
-# definition's hooks: a Codex subagent runs without them (docs/code-review-operations-contract.md). Codex's default
+# Copilot CLI starts subagents, but its `copilot -p` neither expands /<skill> for a user-only skill nor lets the model
+# start one (Copilot CLI 1.0.91; see docs/copilot-support.md). Workflow is Claude Code's alone. Codex and Copilot CLI
+# run hooks, but each lets a tool call through when a hook fails or times out, where Claude Code's agent definition
+# blocks it, so a guard there holds only when it runs (the fail-closed decision in docs/design.md). Codex's default
 # sandbox gives commands no network until [sandbox_workspace_write] network_access is set (docs/codex-support.md).
 RUNTIME_CAPABILITIES = {
-    "claude-code": frozenset({"agent-delegation", "workflow", "agent-hooks", "user-only-start", "sandbox-network"}),
+    "claude-code": frozenset(
+        {"agent-delegation", "workflow", "fail-closed-agent-hooks", "user-only-start", "sandbox-network"}
+    ),
     "codex": frozenset({"agent-delegation", "user-only-start"}),
-    "copilot-cli": frozenset({"sandbox-network"}),
+    "copilot-cli": frozenset({"agent-delegation", "sandbox-network"}),
 }
 FULL = "full"
 PARTIAL = "partial"
@@ -109,7 +118,7 @@ def frontmatter_needs(
     that declares a network tool among its tools, required or optional, network access."""
     needs = {CAPABILITY_GRANTS[grant] for grant in allowed_tools if grant in CAPABILITY_GRANTS}
     if starts_hooked_agent and "agent-delegation" in needs:
-        needs.add("agent-hooks")
+        needs.add("fail-closed-agent-hooks")
     if tools & NETWORK_TOOLS:
         needs.add("sandbox-network")
     return needs | {"user-only-start"} if user_only else needs

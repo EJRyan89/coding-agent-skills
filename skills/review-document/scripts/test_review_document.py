@@ -421,7 +421,7 @@ class LooseFileTests(DocumentTestCase):
         )
         specialist = manifest["specialists"][0]
         self.assertEqual(("suite:design-review", ["^Plan\\.MD$"]), (specialist["profile"], specialist["include"]))
-        # Without agent-delegation, a runtime that cannot start subagents runs the specialist inline.
+        # Without agent-delegation, a runtime whose reviewers stay inline runs the specialist inline.
         self.assertNotIn("agent-delegation", manifest["required_capabilities"])
         self.assertEqual(
             (fixture / "base" / ".review-document" / "specialists.json").read_bytes(),

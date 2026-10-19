@@ -567,12 +567,13 @@ class SkillLayoutFixtures(unittest.TestCase):
             "hidden-full": {"selectable": False, "runtime_support": full},
             # It invokes delegates, so the step that does inherits what delegates needs, though not its start.
             "invoker": {"runtime_support": full},
-            # It starts an agent whose definition declares hooks, which only Claude Code runs a subagent under.
+            # It starts an agent whose definition declares hooks, which only Claude Code blocks a tool call on when
+            # one fails.
             "guarded": {
                 "runtime_support": {
                     "claude-code": "full",
                     "codex": "full",
-                    "copilot-cli": {"level": "partial", "needs": ["agent-delegation", "agent-hooks"], "reason": "x"},
+                    "copilot-cli": {"level": "partial", "needs": ["fail-closed-agent-hooks"], "reason": "x"},
                 }
             },
             # It names the guarded agent but starts no subagent, so the agent's hooks are not its need.
@@ -614,16 +615,16 @@ class SkillLayoutFixtures(unittest.TestCase):
             self.assertEqual(
                 [
                     "deploy-meta/delegates.json declares copilot-cli needs agent-delegation, "
-                    f"but copilot-cli lacks agent-delegation, workflow; see {doc}",
-                    "deploy-meta/guarded.json declares codex full, but codex lacks agent-hooks, "
+                    f"but copilot-cli lacks workflow; see {doc}",
+                    "deploy-meta/guarded.json declares codex full, but codex lacks fail-closed-agent-hooks, "
                     f"so it is partial or none; see {doc}",
                     f"deploy-meta/hidden-full.json declares claude-code full, {hidden_rule}",
                     f"deploy-meta/hidden-full.json declares codex full, {hidden_rule}",
                     f"deploy-meta/hidden-full.json declares copilot-cli full, {hidden_rule}",
                     "deploy-meta/invoker.json declares codex full, but codex lacks workflow, so it is partial or none; "
                     f"see {doc}",
-                    "deploy-meta/invoker.json declares copilot-cli full, but copilot-cli lacks agent-delegation, "
-                    f"workflow, so it is partial or none; see {doc}",
+                    "deploy-meta/invoker.json declares copilot-cli full, but copilot-cli lacks workflow, "
+                    f"so it is partial or none; see {doc}",
                     f"deploy-meta/malformed.json: codex needs unknown capability 'telepathy'; see {doc}",
                     "deploy-meta/networked.json declares codex full, but codex lacks sandbox-network, "
                     f"so it is partial or none; see {doc}",
