@@ -25,8 +25,12 @@ SKILL = (
 SHIM = (
     "---\nname: widget-check\ndescription: >-\n  Check widgets in a repository with spaces. Use it when asked.\n"
     'allowed-tools: ["Bash(python -B tools/widgets.py*)", "PowerShell(python -B tools/widgets.py*)"]\n---\n\n'
-    "Read and follow `../../../.claude/skills/widget-check/SKILL.md` as the authoritative workflow.\n"
-    "Resolve all relative paths and supporting resources from `../../../.claude/skills/widget-check/`.\n"
+    "Read and follow `../../../.claude/skills/widget-check/SKILL.md`, a path relative to this file, as the "
+    "authoritative workflow.\n"
+    "Run its commands from the repository root, the folder that holds `.agents` and `.claude`, and resolve every "
+    "relative path it names from there.\n"
+    "A command that writes a shim under `.agents` needs an approval to run outside Codex's sandbox, which keeps "
+    "`.agents` read-only.\n"
 )
 SHIM_PATH = Path(".agents/skills/widget-check/SKILL.md")
 
@@ -56,6 +60,14 @@ class SkillShimsTestCase(unittest.TestCase):
         self.assertEqual((0, f"WROTE {SHIM_PATH.as_posix()}\n"), self.run_main("--write"))
         self.assertEqual(SHIM.encode("utf-8"), (self.root / SHIM_PATH).read_bytes())
         self.assertEqual((0, ""), self.run_main())
+
+    def test_the_shim_resolves_the_skills_paths_from_the_repository_root_not_its_folder(self) -> None:
+        # The skill's commands, such as python -B tools/widgets.py, name files from the repository root.
+        self.run_main("--write")
+        body = (self.root / SHIM_PATH).read_text(encoding="utf-8").split("---\n", 2)[2]
+        self.assertIn("Run its commands from the repository root", body)
+        self.assertNotIn("from `../../../.claude/skills/widget-check/`", body)
+        self.assertIn("needs an approval to run outside Codex's sandbox", body)
 
     def test_check_reports_a_missing_shim_and_writes_nothing(self) -> None:
         self.assertEqual(

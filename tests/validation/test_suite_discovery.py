@@ -291,6 +291,55 @@ class SuiteDiscoveryFixtures(unittest.TestCase):
                 recorded_cost_problems(root, {"tests/test_platforms.py": {"Case::test_on_windows": 4}}),
             )
 
+    def test_a_parametrized_test_is_never_recorded_since_the_sharded_run_collects_only_its_cases(self) -> None:
+        source = (
+            "import pytest\n\n\n@pytest.mark.parametrize('case', [1, 2])\ndef test_cases(case): pass\n\n\n"
+            "def test_plain(): pass\n\n\n@pytest.mark.parametrize('case', [1, 2])\nclass TestWhole:\n"
+            "    def test_each(self, case): pass\n\n\nclass TestMarked:\n"
+            "    pytestmark = pytest.mark.parametrize('case', [1, 2])\n\n    def test_each(self, case): pass\n\n\n"
+            "class TestOne:\n    @pytest.mark.parametrize('case', [1, 2])\n    def test_each(self, case): pass\n\n"
+            "    def test_plain(self): pass\n"
+        )
+        marked = (
+            "import pytest\n\npytestmark = [pytest.mark.parametrize('case', [1, 2])]\n\n\ndef test_any(case): pass\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(root, {"tests/test_cases.py": source, "tests/test_marked.py": marked})
+            self.assertEqual(
+                [],
+                recorded_cost_problems(root, {"tests/test_cases.py": {"test_plain": 4, "TestOne::test_plain": 4}}),
+            )
+            recorded = {
+                "tests/test_cases.py": {
+                    "test_cases": 4,
+                    "TestWhole::test_each": 4,
+                    "TestMarked::test_each": 4,
+                    "TestOne::test_each": 4,
+                },
+                "tests/test_marked.py": {"test_any": 4},
+            }
+            self.assertEqual(
+                [
+                    f"tests/test_cases.py records {test}, which parametrize expands into one test per case, each "
+                    f"collected as {test}[<id>]; record only a test that is not parametrized, or make the costly case "
+                    "a test of its own"
+                    for test in ("test_cases", "TestWhole::test_each", "TestMarked::test_each", "TestOne::test_each")
+                ]
+                + [
+                    "tests/test_marked.py records test_any, which parametrize expands into one test per case, each "
+                    "collected as test_any[<id>]; record only a test that is not parametrized, or make the costly "
+                    "case a test of its own"
+                ],
+                recorded_cost_problems(root, recorded),
+            )
+            # The sharded run the policy keeps it from: pytest collects test_cases[1] and test_cases[2], never the name.
+            refused = run_pytest(
+                root / "tests" / "test_cases.py", "--suite-shard", "1/2", "--test-seconds", "test_cases=4"
+            )
+            self.assertNotEqual(0, refused.returncode)
+            self.assertIn("the suite defines no test test_cases", refused.stdout + refused.stderr)
+
     def test_suite_discovery_documentation_policy_detects_each_missing_rule(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

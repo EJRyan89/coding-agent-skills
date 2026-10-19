@@ -5,14 +5,15 @@ Usage:
   python tools/skill_shims.py --write   write each missing or stale shim file from its skill's frontmatter
 
 Codex and Copilot CLI find this repository's own skills through .agents/skills/<name>/. A shim folder holds SKILL.md,
-which carries the skill's frontmatter unchanged, the part of SKILL.md a runtime reads before choosing the skill, and
-two lines pointing at the skill as the authoritative workflow. Codex reads a skill's invocation policy from
-agents/openai.yaml beside SKILL.md rather than from its frontmatter, so the shim of a skill only the user starts
-(disable-model-invocation: true) also holds that file with the policy the deployer writes into a user-only skill's
-runtime adapter, and Codex never starts the skill implicitly. This is the one writer of those shims: validation
-compares every file in each shim folder with what it would write, and reports any other file there, a folder with no
-SKILL.md, and anything else under .agents/skills. --write never removes a stray shim, whose skill was renamed or
-removed, or a stray file; it reports them, and a person deletes them.
+which carries the skill's frontmatter unchanged, the part of SKILL.md a runtime reads before choosing the skill, a
+line pointing at the skill as the authoritative workflow, a line saying its commands and paths resolve from the
+repository root, and a line saying a write under .agents needs an approval under Codex's sandbox. Codex reads a
+skill's invocation policy from agents/openai.yaml beside SKILL.md rather than from its frontmatter, so the shim of a
+skill only the user starts (disable-model-invocation: true) also holds that file with the policy the deployer writes
+into a user-only skill's runtime adapter, and Codex never starts the skill implicitly. This is the one writer of
+those shims: validation compares every file in each shim folder with what it would write, and reports any other file
+there, a folder with no SKILL.md, and anything else under .agents/skills. --write never removes a stray shim, whose
+skill was renamed or removed, or a stray file; it reports them, and a person deletes them.
 
 --root DIR works on another checkout of this repository, as the regression suite does. It refuses, as a usage
 error, a directory that does not hold source.json and .claude/skills, or that lies in a skills directory, such as
@@ -48,6 +49,16 @@ SKILLS = Path(".claude") / "skills"
 SHIMS = Path(".agents") / "skills"
 SKILL_FILE = "SKILL.md"
 WRITE_COMMAND = "python tools/skill_shims.py --write"
+# A repository skill writes its commands and paths from the repository root, never from its own folder.
+ROOT_RELATIVE = (
+    "Run its commands from the repository root, the folder that holds `.agents` and `.claude`, and resolve every "
+    "relative path it names from there."
+)
+# Codex keeps .agents read-only inside a workspace-write sandbox, and the shim writers write there.
+PROTECTED_WRITES = (
+    "A command that writes a shim under `.agents` needs an approval to run outside Codex's sandbox, which keeps "
+    "`.agents` read-only."
+)
 
 
 def shim_path(name: str) -> Path:
@@ -70,8 +81,9 @@ def shim_text(name: str, skill_text: str) -> str | None:
             *found[0],
             frontmatter.DELIMITER,
             "",
-            f"Read and follow `{skill}/SKILL.md` as the authoritative workflow.",
-            f"Resolve all relative paths and supporting resources from `{skill}/`.",
+            f"Read and follow `{skill}/SKILL.md`, a path relative to this file, as the authoritative workflow.",
+            ROOT_RELATIVE,
+            PROTECTED_WRITES,
             "",
         ]
     )

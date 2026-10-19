@@ -567,6 +567,16 @@ class SkillLayoutFixtures(unittest.TestCase):
             "hidden-full": {"selectable": False, "runtime_support": full},
             # It invokes delegates, so the step that does inherits what delegates needs, though not its start.
             "invoker": {"runtime_support": full},
+            # It starts an agent whose definition declares hooks, which only Claude Code runs a subagent under.
+            "guarded": {
+                "runtime_support": {
+                    "claude-code": "full",
+                    "codex": "full",
+                    "copilot-cli": {"level": "partial", "needs": ["agent-delegation", "agent-hooks"], "reason": "x"},
+                }
+            },
+            # It names the guarded agent but starts no subagent, so the agent's hooks are not its need.
+            "mentions-agent": {"runtime_support": full},
         }
         user_only_md = "---\nname: {0}\ndescription: d\ndisable-model-invocation: true\n---\n"
         plain_md = "---\nname: {0}\ndescription: d\n---\n"
@@ -576,7 +586,10 @@ class SkillLayoutFixtures(unittest.TestCase):
             "user-only-claimed-full": user_only_md,
             "delegates": delegating,
             "invoker": invoker_md,
+            "guarded": '---\nname: {0}\ndescription: d\nallowed-tools: ["Agent"]\n---\nStart `guarded-reviewer`.\n',
+            "mentions-agent": plain_md + "Never start `guarded-reviewer`.\n",
         }
+        hooked_agent = "---\nname: guarded-reviewer\ndescription: d\nhooks:\n  PreToolUse:\n    - matcher: Bash\n---\n"
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             write_fixture_tree(
@@ -584,6 +597,7 @@ class SkillLayoutFixtures(unittest.TestCase):
                 {
                     **{f"deploy-meta/{name}.json": json.dumps(value) for name, value in metadata.items()},
                     **{f"skills/{name}/SKILL.md": bodies.get(name, plain_md).format(name) for name in metadata},
+                    "agents/guarded-reviewer.md": hooked_agent,
                 },
             )
             doc = '"Metadata" in docs/adding-a-skill.md'
@@ -592,6 +606,8 @@ class SkillLayoutFixtures(unittest.TestCase):
                 [
                     "deploy-meta/delegates.json declares copilot-cli needs agent-delegation, "
                     f"but copilot-cli lacks agent-delegation, workflow; see {doc}",
+                    "deploy-meta/guarded.json declares codex full, but codex lacks agent-hooks, "
+                    f"so it is partial or none; see {doc}",
                     f"deploy-meta/hidden-full.json declares claude-code full, {hidden_rule}",
                     f"deploy-meta/hidden-full.json declares codex full, {hidden_rule}",
                     f"deploy-meta/hidden-full.json declares copilot-cli full, {hidden_rule}",

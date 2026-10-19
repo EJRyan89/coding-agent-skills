@@ -7,5 +7,6 @@ description: >-
 allowed-tools: ["Bash(python -B .claude/skills/implement-change/scripts/pull_request.py *)", "PowerShell(python -B .claude/skills/implement-change/scripts/pull_request.py *)"]
 ---
 
-Read and follow `../../../.claude/skills/implement-change/SKILL.md` as the authoritative workflow.
-Resolve all relative paths and supporting resources from `../../../.claude/skills/implement-change/`.
+Read and follow `../../../.claude/skills/implement-change/SKILL.md`, a path relative to this file, as the authoritative workflow.
+Run its commands from the repository root, the folder that holds `.agents` and `.claude`, and resolve every relative path it names from there.
+A command that writes a shim under `.agents` needs an approval to run outside Codex's sandbox, which keeps `.agents` read-only.
