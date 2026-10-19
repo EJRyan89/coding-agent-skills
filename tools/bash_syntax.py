@@ -3,7 +3,9 @@
 `parse` splits a command into words and operators by Bash's quoting rules (single and double quotes, `$'...'`,
 backslash escapes and line continuations, comments, and here-documents, whose bodies are data and never commands)
 and builds the tree Bash runs: lists, `&&` and `||`, pipelines, subshells, groups, `if`, `while`, `until`, `for`,
-`select`, `case`, `[[ ]]`, function definitions, and simple commands with their redirections. A word keeps its parts
+`select`, `case`, `[[ ]]`, function definitions, and simple commands with their redirections and their array
+assignments, NAME=( ) and NAME+=( ), where Bash reads one: before a command's name and among a declaration builtin's
+arguments. A word keeps its parts
 apart, so a reader can tell literal text from a `$NAME` it must look up and from what only running the command
 settles: a command or process substitution, arithmetic, a special parameter, a glob, or a brace expansion. The text
 of every command and process substitution, and of each one in an unquoted here-document's body, is kept for a reader
@@ -11,6 +13,14 @@ to read as the subshell Bash runs it in.
 
 Nothing here runs or judges anything. Text Bash itself would refuse, or that this grammar does not cover, raises
 BashSyntaxError; the guard refuses such a command when it names git.
+
+tests/tools/test_bash_syntax.py holds the reader to Bash's own syntax check, `bash -n`, on every fixture, as the hub
+guard's suite does on every Bash command it reads and the deployer's rendering suite on every rendered fragment it
+checks for quoting. Where they differ is a limit stated here and pinned there:
+- An array assignment to a subscript, NAME[SUBSCRIPT]=( ), raises BashSyntaxError though Bash reads it. Nothing the
+  repository renders writes one, and before a command's name Bash runs the command whatever the subscript.
+- Inside `[[ ]]` the expression's own grammar is not read, so text Bash refuses there, such as `[[ -n ]]`, is read;
+  Bash runs none of a command it refuses.
 """
 
 from __future__ import annotations
@@ -58,6 +68,14 @@ RESERVED = frozenset(
     | {"esac", "in", "function", "time", "[["}
 )
 NAME = re.compile(r"[A-Za-z_]\w*", re.ASCII)
+# A word's unquoted start that makes it an assignment, which Bash reads before a command's name.
+ASSIGNMENT = re.compile(r"[A-Za-z_]\w*(\[[^]]*\])?\+?=", re.ASCII)
+# What a word must be, all of it so far, for a `(` after it to open an array: NAME=( ) or NAME+=( ).
+ARRAY_ASSIGNMENT = re.compile(r"[A-Za-z_]\w*\+?=", re.ASCII)
+# The builtins whose arguments Bash reads as assignments, so NAME=( ) among them is an array.
+DECLARATION_BUILTINS = frozenset({"alias", "declare", "eval", "export", "let", "local", "readonly", "typeset"})
+# What may follow a function's name and `()`: a compound command, as Bash requires of a function's body.
+FUNCTION_BODIES = frozenset({"{", "if", "while", "until", "for", "select", "case", "[["})
 SPECIAL_PARAMETERS = frozenset("@*#?$!-0123456789")
 # What a double quote's backslash escapes; before any other character the backslash is kept.
 DOUBLE_QUOTED_ESCAPES = frozenset('$`"\\\n')
@@ -83,6 +101,8 @@ class Word:
     parts: tuple[Part, ...]
     # The text of each command or process substitution in the word, which Bash runs before the command.
     substitutions: tuple[str, ...] = ()
+    # Whether the word is NAME=( ) or NAME+=( ), an array assignment, whose value is its "dynamic" part.
+    array: bool = False
 
     @property
     def literal(self) -> str | None:
@@ -276,11 +296,18 @@ class Lexer:
         start = self.index
         parts: list[Part] = []
         substitutions: list[str] = []
+        array = False
         if self.peek() == "~":
             self.tilde(parts)
         while self.index < len(self.text):
             character = self.peek()
-            if character in "<>" and self.peek(1) == "(":
+            if character == "(" and ARRAY_ASSIGNMENT.fullmatch(self.text[start : self.index]):
+                self.array_elements(substitutions)
+                parts.append(Part("dynamic"))
+                array = True
+            elif character == "(" and ASSIGNMENT.fullmatch(self.text[start : self.index]):
+                raise BashSyntaxError("an array assignment to a subscript, which this grammar does not read")
+            elif character in "<>" and self.peek(1) == "(":
                 substitutions.append(self.balanced(self.index + 2))
                 parts.append(Part("dynamic"))
             elif character in METACHARACTERS:
@@ -300,7 +327,31 @@ class Lexer:
             else:
                 add_text(parts, character, quoted=False)
                 self.index += 1
-        return Word(self.text[start : self.index], tuple(parts), tuple(substitutions))
+        return Word(self.text[start : self.index], tuple(parts), tuple(substitutions), array)
+
+    def array_elements(self, substitutions: list[str]) -> None:
+        """The ( ) of an array assignment: words apart by blanks, newlines, and comments, up to its close."""
+        self.index += 1
+        while True:
+            character = self.peek()
+            if not character:
+                raise BashSyntaxError("an array assignment is not closed")
+            if character == "\\" and self.peek(1) == "\n":
+                self.index += 2
+            elif character in " \t\r\n":
+                self.index += 1
+                if character == "\n":
+                    self.read_here_documents()  # a body pending from before the array starts at its first newline
+            elif character == "#":
+                while self.peek() not in ("", "\n"):
+                    self.index += 1
+            elif character == ")":
+                self.index += 1
+                return
+            elif character in METACHARACTERS and not (character in "<>" and self.peek(1) == "("):
+                raise BashSyntaxError(f"`{character}` inside an array assignment")
+            else:
+                substitutions.extend(self.word().substitutions)
 
     def tilde(self, parts: list[Part]) -> None:
         end = self.index + 1
@@ -621,6 +672,8 @@ class Parser:
         words: list[Word] = []
         redirects: list[Redirect] = []
         conditional = self.at_reserved("[[")
+        # Bash reads NAME=( ) among the assignments before a command's name, and after a declaration builtin's.
+        prefix, declaration = True, False
         while True:
             token = self.peek()
             if token is None:
@@ -637,6 +690,10 @@ class Parser:
                 break
             if isinstance(token, HereDocument):
                 raise BashSyntaxError("a here-document has no operator")
+            if prefix and not ASSIGNMENT.match(token.raw):
+                prefix, declaration = False, token.literal in DECLARATION_BUILTINS
+            if not (prefix or declaration):
+                refuse_array(token)
             words.append(token)
             self.index += 1
             if conditional and token.literal == "]]":
@@ -648,6 +705,7 @@ class Parser:
         target = self.peek()
         if not isinstance(target, Word):
             raise BashSyntaxError(f"`{operator}` names nothing")
+        refuse_array(target)
         self.index += 1
         here = None
         if operator in HERE_DOCUMENTS:
@@ -669,8 +727,15 @@ class Parser:
         if not self.at_operator(")"):
             raise BashSyntaxError("a function definition is not closed")
         self.index += 1
+        return FunctionDefinition(name, self.function_body())
+
+    def function_body(self) -> Command:
         self.skip_newlines()
-        return FunctionDefinition(name, self.command())
+        token = self.peek()
+        opens = isinstance(token, Operator) and token.text == "("
+        if not opens and not (isinstance(token, Word) and token.literal in FUNCTION_BODIES):
+            raise BashSyntaxError("a function's body is not a compound command")
+        return self.command()
 
     def function_keyword(self) -> Command:
         token = self.advance()
@@ -678,8 +743,7 @@ class Parser:
             raise BashSyntaxError("function names nothing")
         if self.at_operator("("):
             return self.function_definition(token.literal)
-        self.skip_newlines()
-        return FunctionDefinition(token.literal, self.command())
+        return FunctionDefinition(token.literal, self.function_body())
 
     def group(self) -> Command:
         body = self.command_list(frozenset({"}"}))
@@ -728,6 +792,7 @@ class Parser:
             self.index += 1
             words = []
             while isinstance(token := self.peek(), Word):
+                refuse_array(token)
                 words.append(token)
                 self.index += 1
         return Loop(kind, None, name.literal, words, self.do_group(), self.redirects())
@@ -742,6 +807,7 @@ class Parser:
         word = self.advance()
         if not isinstance(word, Word):
             raise BashSyntaxError("case names no word")
+        refuse_array(word)
         self.skip_newlines()
         self.expect_reserved("in")
         branches: list[CommandList] = []
@@ -755,11 +821,17 @@ class Parser:
             while not self.at_operator(")"):
                 if self.peek() is None:
                     raise BashSyntaxError("a case pattern is not closed")
-                self.index += 1
+                refuse_array(self.advance())
             self.index += 1
             branches.append(self.command_list(frozenset({"esac"})))
             if self.at_operator(*CASE_ENDS):
                 self.index += 1
+
+
+def refuse_array(token: Token) -> None:
+    """Refuses NAME=( ) where Bash reads no assignment, as it refuses the `(` there."""
+    if isinstance(token, Word) and token.array:
+        raise BashSyntaxError("an array assignment where Bash reads no assignment")
 
 
 COMPOUND_READERS = {

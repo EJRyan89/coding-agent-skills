@@ -11,36 +11,22 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
+import bash_agreement
 
 from tools import bash_syntax
-from tools.bash_syntax import BashSyntaxError, parse
+from tools.bash_syntax import BashSyntaxError
 
 
-def children(item: object) -> list[object]:
-    """The nodes a tree node holds, in the order the text holds them."""
-    if isinstance(item, bash_syntax.CommandList):
-        return [and_or for and_or, _ in item.items]
-    if isinstance(item, bash_syntax.AndOr):
-        return [item.first, *(pipeline for _, pipeline in item.rest)]
-    if isinstance(item, bash_syntax.Pipeline):
-        return list(item.commands)
-    if isinstance(item, (bash_syntax.Subshell, bash_syntax.Group, bash_syntax.FunctionDefinition)):
-        return [item.body]
-    if isinstance(item, bash_syntax.If):
-        held: list[object] = [part for clause in item.clauses for part in clause]
-        return held if item.otherwise is None else [*held, item.otherwise]
-    if isinstance(item, bash_syntax.Loop):
-        return [item.body] if item.condition is None else [item.condition, item.body]
-    if isinstance(item, bash_syntax.Case):
-        return list(item.branches)
-    return []
+def parse(text: str) -> bash_syntax.CommandList:
+    """The reader's tree of text, once Bash's own syntax check has agreed with the reader on whether it reads it, so
+    every fixture here, well-formed or malformed, is held to Bash."""
+    bash_agreement.assert_reader_agrees([text])
+    return bash_syntax.parse(text)
 
 
 def simple_commands(node: object) -> list[list[str]]:
     """Every simple command in a tree, in the order the text holds them, as the raw text of its words."""
-    if isinstance(node, bash_syntax.Simple):
-        return [[word.raw for word in node.words]]
-    return [command for child in children(node) for command in simple_commands(child)]
+    return [[word.raw for word in command.words] for command in bash_agreement.simple_commands(node)]
 
 
 def first_simple(text: str) -> bash_syntax.Simple:
@@ -75,6 +61,59 @@ class WordTests(unittest.TestCase):
         command = first_simple("git switch main 2>&1 >/dev/null {fd}>out")
         self.assertEqual(["git", "switch", "main"], [word.raw for word in command.words])
         self.assertEqual([">&", ">", ">"], [redirect.operator for redirect in command.redirects])
+
+    def test_an_array_assignment_is_one_word_whose_value_only_running_settles_and_whose_substitutions_run(
+        self,
+    ) -> None:
+        word = first_simple('a=($(git am) # a comment\n `git switch x` <(git show a) [k]="v w") git status').words[0]
+        self.assertEqual((True, ["text", "dynamic"]), (word.array, [part.kind for part in word.parts]))
+        self.assertEqual(("git am", "git switch x", "git show a"), word.substitutions)
+
+
+class ArrayAssignmentTests(unittest.TestCase):
+    def test_the_update_scripts_option_array_is_read(self) -> None:
+        # skills/update-coding-agent-skills/scripts/update.sh builds the deployer's options this way.
+        text = (
+            "DEPLOY_OPTIONS=(--all)\n"
+            'if [ -n "$RELEASE_REF" ]; then\n'
+            '  DEPLOY_OPTIONS+=(--at "$RELEASE_REF")\n'
+            "fi\n"
+            '"$PYTHON" -B deploy.py "${DEPLOY_OPTIONS[@]}"'
+        )
+        self.assertEqual(
+            [
+                ["DEPLOY_OPTIONS=(--all)"],
+                ["[", "-n", '"$RELEASE_REF"', "]"],
+                ['DEPLOY_OPTIONS+=(--at "$RELEASE_REF")'],
+                ['"$PYTHON"', "-B", "deploy.py", '"${DEPLOY_OPTIONS[@]}"'],
+            ],
+            simple_commands(parse(text)),
+        )
+
+    def test_an_array_is_read_before_a_command_and_among_a_declaration_builtins_arguments(self) -> None:
+        tree = parse("a=() b+=(1) git status; x=1 declare -A m=([k]=v) && local -a l=(1) l2=(2); eval e=(1)")
+        self.assertEqual(
+            [
+                ["a=()", "b+=(1)", "git", "status"],
+                ["x=1", "declare", "-A", "m=([k]=v)"],
+                ["local", "-a", "l=(1)", "l2=(2)"],
+                ["eval", "e=(1)"],
+            ],
+            simple_commands(tree),
+        )
+
+
+@pytest.mark.parametrize("text", ["a[1]=(x)", "a[1]+=(x) git commit"])
+def test_a_documented_limit_an_array_assignment_to_a_subscript_is_refused_though_bash_reads_it(text: str) -> None:
+    assert bash_agreement.bash_verdicts([text])[text][0]
+    with pytest.raises(BashSyntaxError):
+        bash_syntax.parse(text)
+
+
+@pytest.mark.parametrize("text", ["[[ ]]", "[[ -n ]]", "[[ a && ]]"])
+def test_a_documented_limit_inside_double_brackets_text_bash_refuses_is_read(text: str) -> None:
+    assert not bash_agreement.bash_verdicts([text])[text][0]
+    bash_syntax.parse(text)
 
 
 class HereDocumentTests(unittest.TestCase):
@@ -135,6 +174,19 @@ def test_reserved_words_and_prefixes_start_compound_commands_not_programs(text: 
         "if true; then x",
         "fi",
         "echo `x",
+        "f() echo",
+        "function g git status",
+        "f() a=(1)",
+        "echo a=(1)",
+        "command declare c=(1)",
+        "for i in a=(1); do :; done",
+        "case a=(1) in *) ;; esac",
+        "cat > a=(1)",
+        "[[ a=(1) ]]",
+        "a=(x | y)",
+        "a=( ( 1 ) )",
+        "a=(1",
+        "cat <<EOF; a=(1\n2)\nbody\nEOF",
     ],
 )
 def test_text_bash_would_refuse_is_an_error(text: str) -> None:

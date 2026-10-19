@@ -18,6 +18,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
+import bash_agreement
 import git_client
 import git_worktrees
 from worktree_fixture import GUARD_SCRIPT, REPOSITORY_ROOT, HubTestCase, isolated_environment
@@ -32,6 +33,13 @@ class GuardTestCase(HubTestCase):
     script = GUARD_SCRIPT
 
     def decision(self, event: Mapping[str, object] | str, environment: dict[str, str] | None = None) -> str | None:
+        if (
+            not isinstance(event, str)
+            and hub_guard.SHELL_READERS.get(str(event.get("tool_name"))) is hub_guard.read_bash
+        ):
+            tool_input = event.get("tool_input")
+            if isinstance(tool_input, Mapping) and isinstance(tool_input.get("command"), str):
+                bash_agreement.assert_reader_agrees([tool_input["command"]])
         stdin = event if isinstance(event, str) else json.dumps(event)
         result = self.run_script([], cwd=self.root, stdin=stdin, environment=environment)
         self.assertEqual(0, result.returncode, result.stderr)
@@ -531,6 +539,8 @@ class CommandReadingTests(GuardTestCase):
     def reading(
         self, command: str, cwd: Path | None = None, tool: str = "PowerShell", environment: dict[str, str] | None = None
     ) -> hub_guard.Reading:
+        if hub_guard.SHELL_READERS.get(tool) is hub_guard.read_bash:
+            bash_agreement.assert_reader_agrees([command])
         reading = hub_guard.read_command(tool, command, cwd or self.hub, environment or self.environment)
         self.notes, self.unread = reading.notes, reading.unread
         return reading
@@ -686,6 +696,15 @@ class CommandReadingTests(GuardTestCase):
             ],
             self.read(command, tool="Bash"),
         )
+
+    def test_bash_reads_git_inside_and_after_an_array_assignment(self) -> None:
+        command = "a=($(git switch x)) b+=(1); OPTIONS=(--all) git commit; declare -a c=(`git add .`)"
+        self.assertEqual(self.at(self.hub, "switch", "commit", "add"), self.read(command, tool="Bash"))
+        self.assertEqual([], self.unread)
+        # The reader's documented limit, pinned against Bash in its own suite: a subscript's array stays unread.
+        reading = hub_guard.read_command("Bash", "a[1]=(x) git commit", self.hub, self.environment)
+        self.assertEqual(([], 1), (reading.calls, len(reading.unread)))
+        self.assertIn("array assignment", reading.unread[0])
 
     def test_bash_applies_location_variables_from_every_source_like_a_command_local_one(self) -> None:
         tree = f'"{self.tree}"'
