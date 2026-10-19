@@ -655,7 +655,7 @@ class CopilotHostTests(unittest.TestCase):
                     base_environment=BASE_ENVIRONMENT,
                 )
                 return events, None
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - the test inspects whichever exception the run raised
                 return events, exc
 
     def full_sequence(self, paths: dict[str, Path], executable: str = "copilot") -> list[tuple[Any, ...]]:

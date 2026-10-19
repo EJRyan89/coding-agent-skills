@@ -697,7 +697,7 @@ class PlanFixture(unittest.TestCase):
     def refused(self, reviewer: Path | None, **options: Any) -> tuple[type[BaseException], str]:
         try:
             rs.build_plan(self.request_path, reviewer, self.work, **options)
-        except Exception as exc:  # the test pins whichever class build_plan raises
+        except Exception as exc:  # noqa: BLE001 - the test pins whichever class build_plan raises
             return type(exc), self.normalize(str(exc))
         raise AssertionError("build_plan did not raise")
 

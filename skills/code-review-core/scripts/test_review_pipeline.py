@@ -5283,7 +5283,7 @@ class LocalCommitTests(unittest.TestCase):
         def fetch(checkout: Path) -> None:
             try:
                 review_snapshot.ensure_local_commit(checkout, "commit", "refs/pull/1/head", runner)
-            except BaseException as error:  # reported below
+            except BaseException as error:  # noqa: BLE001 - reported below, from the main thread
                 errors.append(error)
 
         base = Path(self.id().replace(".", "-")).resolve()

@@ -389,7 +389,7 @@ def main(stream: str) -> int:
         except FieldError:
             event = None
         reason = "the hook event could not be read" if event is None else decide(event)
-    except (Exception, KeyboardInterrupt) as exc:  # fail closed: an unevaluated call could read the wrong code
+    except (Exception, KeyboardInterrupt) as exc:  # noqa: BLE001 - fail closed: an unevaluated call could read the wrong code
         reason = f"Code-review reviewer boundary: the guard could not evaluate this call ({type(exc).__name__})."
     if reason:
         print(

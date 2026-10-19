@@ -25,8 +25,9 @@ line-ending = "auto"
 # S101 in the regression suites, under per-file-ignores below.
 # E501 stays on: the formatter wraps code, and a string, comment, or docstring it cannot wrap is split by hand.
 # A finding that must stay is suppressed on its line as `# noqa: <code> - <reason>`, which validation requires.
-# C901 and PLR0915 cap function complexity and length at the ceilings below, with no noqa for either;
-# tests/validation/python_checks.py refuses a raised ceiling.
+# C901, PLR0915, and PLR0913 cap a function's complexity, length, and arguments at the ceilings below, and C901 and
+# PLR0915 take no noqa. BLE001 refuses a blind except, and each one kept carries a noqa naming it, whose number is held
+# too. These are ratchets: tests/validation/python_checks.py refuses a raised ceiling and a noqa past the count.
 # The S prefixes select every stable bandit rule except S603 (a subprocess call without a shell) and S607 (a program
 # started by its PATH name); the S4 import rules are preview-only, which this configuration does not enable. Every
 # subprocess call here runs a declared tool as an argument list found on PATH, which skill_command_problems, the tools
@@ -48,6 +49,8 @@ select = [
     "SIM",
     "C901",
     "PLR0915",
+    "PLR0913",
+    "BLE001",
     "PTH",
     "RUF",
     "S1",
@@ -94,8 +97,10 @@ select = [
 [tool.ruff.lint.mccabe]
 max-complexity = 15
 
-# A ratchet: the longest function's statement count, lowered as each split lands. It only goes down, never up.
+# Ratchets: the longest function's statement count and the most arguments a function takes, each lowered as the
+# change that shortens the longest lands. Each only goes down, never up.
 [tool.ruff.lint.pylint]
+max-args = 17
 max-statements = 50
 
 # Validation runs mypy once per root: deployer/, tools/, deploy.py, and tests/ together from the repository root, and

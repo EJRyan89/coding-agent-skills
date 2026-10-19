@@ -1665,7 +1665,7 @@ def sweep_repository(
     except GitUnavailable as exc:
         emit("ERROR", exc)
         state = "git-failed"
-    except Exception as exc:  # a defect in one repository's run must not discard every other repository's report
+    except Exception as exc:  # noqa: BLE001 - a defect in one repository's run must not discard every other repository's report
         emit("ERROR", f"unexpected {type(exc).__name__}: {exc}")
         state = "error"
     finally:
