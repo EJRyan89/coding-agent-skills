@@ -20,7 +20,7 @@ DIFFERS = "unmanaged and differs"
 DIFFERS_FROM_SKILL = "unmanaged and differs from the rendered skill"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class ItemKind:
     """Where one kind of item is recorded and deployed, how messages name it, and the reasons the plan gives."""
 
@@ -54,52 +54,52 @@ class ItemKind:
 
 
 SKILL = ItemKind(
-    "skills",
-    "",
-    "skill",
-    "Skill",
-    "claude",
-    "",
-    True,
-    "deselected or absent from source",
-    DIFFERS_FROM_SKILL,
+    key="skills",
+    label="",
+    noun="skill",
+    title="Skill",
+    root="claude",
+    staging="",
+    directory=True,
+    removal_reason="deselected or absent from source",
+    unmanaged_reason=DIFFERS_FROM_SKILL,
     dependency_key="skill_deps",
 )
 SHARED = ItemKind(
-    "shared",
-    SHARED_ASSET,
-    SHARED_ASSET,
-    "Shared asset",
-    "claude",
-    "",
-    False,
-    "obsolete",
-    DIFFERS,
+    key="shared",
+    label=SHARED_ASSET,
+    noun=SHARED_ASSET,
+    title="Shared asset",
+    root="claude",
+    staging="",
+    directory=False,
+    removal_reason="obsolete",
+    unmanaged_reason=DIFFERS,
     dependency_key="shared_deps",
 )
 ADAPTER_KIND = ItemKind(
-    ADAPTERS,
-    ADAPTER,
-    ADAPTER,
-    "Runtime adapter",
-    "agents",
-    ADAPTER_STAGING,
-    True,
-    "obsolete",
-    DIFFERS,
+    key=ADAPTERS,
+    label=ADAPTER,
+    noun=ADAPTER,
+    title="Runtime adapter",
+    root="agents",
+    staging=ADAPTER_STAGING,
+    directory=True,
+    removal_reason="obsolete",
+    unmanaged_reason=DIFFERS,
     follows_skill=True,
 )
 AGENT_KIND = ItemKind(
-    "agents",
-    AGENT,
-    AGENT,
-    "Agent",
-    "claude-agents",
-    AGENT_STAGING,
-    False,
-    "no selected skill needs it",
-    DIFFERS,
-    ".md",
+    key="agents",
+    label=AGENT,
+    noun=AGENT,
+    title="Agent",
+    root="claude-agents",
+    staging=AGENT_STAGING,
+    directory=False,
+    removal_reason="no selected skill needs it",
+    unmanaged_reason=DIFFERS,
+    suffix=".md",
     dependency_key="agent_deps",
 )
 # In the manifest's order, which is also the order every pass over the kinds checks, writes, and reports them in.

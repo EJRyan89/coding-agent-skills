@@ -47,8 +47,11 @@ RETAINED = [
 ]
 
 
-class Held:
+class Held(lock.Lock):
+    """The deployer's lock, entered and exited as a run does, with its release recorded instead of done."""
+
     def __init__(self, calls: list[str]) -> None:
+        super().__init__(Paths(Path("source"), Path("home")), "token")
         self.calls = calls
 
     def release(self) -> None:
@@ -544,6 +547,11 @@ class ExecuteTests(unittest.TestCase):
                 recover_incomplete=[True, False],
             ),
         )
+
+    def test_an_exception_no_clause_names_still_releases_the_lock(self) -> None:
+        with self.assertRaises(SystemExit):
+            self.execute(Options(), stdin=self.stdin, _deploy=SystemExit(4))
+        self.assertEqual([*self.prepared(), *self.held(), *self.deployed(), "release"], self.calls)
 
     def stopped_recovery_cases(self) -> list[tuple[BaseException, int, list[str]]]:
         """Each way recovery stops, its exit code, and the lines that open its report."""

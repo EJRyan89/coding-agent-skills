@@ -13,7 +13,7 @@ from .errors import DeployError, os_error
 from .hashing import HASH_PATTERN
 from .kinds import ADAPTER_KIND, AGENT_KIND, DEPENDENCY_KINDS, KINDS, SHARED, SKILL, ItemKind
 from .names import safe_name_problem
-from .source import SOURCE_ID_PATTERN, is_valid_name
+from .source import SOURCE_ID_MAX_LENGTH, SOURCE_ID_PATTERN, is_valid_name
 from .source_commit import COMMIT_PATTERN
 from .source_ref import REF_PATTERN
 
@@ -26,6 +26,8 @@ KINDS_ALLOWED = {
 }
 
 MANIFEST_VERSION = 8
+# The first version that records each skill's skill_deps; an older manifest's are upgraded in memory.
+SKILL_DEPS_VERSION = 8
 # Version 8 records direct skill dependencies so a skill left in place keeps its transitive closure. Older deployers
 # refuse it rather than silently dropping those edges and removing dependencies. Versions 6/7 are upgraded in memory
 # on read; the next atomic manifest commit saves the upgrade with the deployment's journaled changes.
@@ -220,7 +222,11 @@ def _validate(data: dict[str, Any], path: Path) -> None:
     if not isinstance(run_id, str) or (run_id and safe_name_problem(run_id, "run ID") is not None):
         raise DeployError(f"ERROR: Manifest last_run_id is malformed: {path}")
     for source_id, entry in data["sources"].items():
-        if not isinstance(source_id, str) or len(source_id) > 128 or not SOURCE_ID_PATTERN.fullmatch(source_id):
+        if (
+            not isinstance(source_id, str)
+            or len(source_id) > SOURCE_ID_MAX_LENGTH
+            or not SOURCE_ID_PATTERN.fullmatch(source_id)
+        ):
             raise DeployError(f"ERROR: Manifest source ID is malformed: {source_id!r}")
         if not isinstance(entry, dict):
             raise DeployError(f"ERROR: Manifest source '{source_id}' is malformed")
@@ -263,7 +269,9 @@ def _validate(data: dict[str, Any], path: Path) -> None:
                             _valid_dependencies(
                                 value.get(
                                     dependency.dependency_key,
-                                    None if dependency is SKILL and data["manifest_version"] >= 8 else [],
+                                    None
+                                    if dependency is SKILL and data["manifest_version"] >= SKILL_DEPS_VERSION
+                                    else [],
                                 ),
                                 dependency,
                             )
@@ -291,7 +299,7 @@ def _upgrade_dependencies(data: dict[str, Any]) -> None:
     them with exact edges for each skill it installs; skipped and preserved skills keep the conservative graph.
     This changes only memory, so a dry run, a refusal, or a failed uncommitted deployment leaves the manifest intact.
     """
-    if data["manifest_version"] >= 8:
+    if data["manifest_version"] >= SKILL_DEPS_VERSION:
         return
     for entry in data["sources"].values():
         skills = entry.get(SKILL.key, {})
