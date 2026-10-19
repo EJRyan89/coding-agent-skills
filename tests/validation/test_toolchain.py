@@ -36,6 +36,11 @@ from toolchain import (
 
 from deployer import platform_support
 
+# The operating-system names this module states on purpose, with the reason, which the platform policy reads.
+PLATFORM_ALLOWED = {
+    ".exe": "names the PowerShell path a fake find_powershell returns, which run_script's fake runner compares with "
+    "the command it is given; nothing here finds or starts a program by it",
+}
 REQUIREMENT_PACKAGES = ("ruff", "mypy")
 CLEAN_REQUIREMENTS = "# Development dependencies.\n\nruff==0.16.10\n  # Indented comment.\nmypy==2.4.0\n"
 
