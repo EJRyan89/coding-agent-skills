@@ -147,6 +147,8 @@ from review_runtime import (
     write_adapter_request,
 )
 from review_snapshot import (
+    ChangeRead,
+    PullDiff,
     _base_reader,
     _document_diffs,
     _fetch_diff,
@@ -268,12 +270,12 @@ def _write_request(
     manifest: dict[str, Any],
     prior: list[dict[str, Any]],
     comments: list[dict[str, Any]],
-    unsafe: list[str],
+    gaps: list[str],
     unreviewed_suffixes: tuple[str, ...] = (),
 ) -> None:
-    """The adapter request, whose unavailable sources include every changed path no reviewer could be given, which
-    is then no unreviewed file, and beside it the file of the pull request's description, which is never prompt
-    text."""
+    """The adapter request, whose unavailable sources include every changed path whose change no reviewer could be
+    given whole, which is then no unreviewed file, and beside it the file of the pull request's description, which is
+    never prompt text."""
     body = pull.get("body", "")
     body_path = request_path.parent / PULL_REQUEST_BODY_FILE
     atomic_write_text(body_path, given_body(body))
@@ -297,9 +299,9 @@ def _write_request(
         unreviewed_suffixes=unreviewed_suffixes,
     )
     coverage = request["coverage"]
-    coverage["unavailable_sources"] = sorted({*coverage["unavailable_sources"], *unsafe})
+    coverage["unavailable_sources"] = sorted({*coverage["unavailable_sources"], *gaps})
     coverage["unreviewed_files"] = {
-        path: suffix for path, suffix in coverage["unreviewed_files"].items() if path not in unsafe
+        path: suffix for path, suffix in coverage["unreviewed_files"].items() if path not in gaps
     }
     write_adapter_request(request_path, request)
 
@@ -385,10 +387,8 @@ class _Review:
     reviewer: dict[str, Any]
     checkout: Path | None  # the configured checkout, which reviewers are kept out of
     source: Path | None  # the repository the head is snapshotted from; None for GitHub's tarball
-    # Writes the diff to the path it is given; returns _write_diff's values and the open review comments.
-    read_diff: Callable[
-        [Path], tuple[dict[str, dict[str, Any]], list[str], list[str], dict[str, dict[str, Any]], list[dict[str, Any]]]
-    ]
+    # Writes the diff to the path it is given and returns what prepare reads of the change.
+    read_diff: Callable[[Path], ChangeRead]
     canary: bool
     fixture: dict[str, Any] | None = None  # run.json's record of a fixture canary
     prior_record: ReviewRecord | None = None  # a fixture re-review's prior record, which finalize archives first
@@ -463,7 +463,7 @@ def prepare(
         reviewer=entry["reviewer"],
         checkout=checkout,
         source=checkout,
-        read_diff=lambda diff_path: _fetch_diff(repository, number, pull, diff_path, services, notes),
+        read_diff=lambda diff_path: _fetch_diff(repository, number, pull, checkout, diff_path, services, notes),
         canary=canary,
         snapshot_exclude=tuple(entry["snapshot_exclude"]),
         unreviewed_suffixes=tuple(entry["unreviewed_suffixes"]),
@@ -521,9 +521,10 @@ def prepare_fixture(
             reviewer=GENERIC_REVIEWER if change.manifest_path is None else fixture_reviewer(change.manifest_path),
             checkout=None,
             source=change.repository,
-            read_diff=lambda diff_path: (
-                *_write_diff(selector, change.diff, change.undecodable, diff_path, notes),
+            read_diff=lambda diff_path: ChangeRead(
+                *_write_diff(selector, PullDiff(change.diff, change.undecodable), diff_path, notes),
                 change.comments,
+                None,
             ),
             canary=True,
             fixture={"directory": str(directory.resolve()), "prior": None if prior is None else str(prior.resolve())},
@@ -575,7 +576,7 @@ def _prepare_run(
     try:
         run.mkdir(parents=True, exist_ok=True)
         diff_path = run / "diff.patch"
-        parsed, changed, unsafe, patches, comments = review.read_diff(diff_path)
+        parsed, changed, gaps, patches, comments, fallback = review.read_diff(diff_path)
         source = run / "source"
         head = pull["headRefOid"]
         repository_path = review.source
@@ -593,6 +594,7 @@ def _prepare_run(
             notes,
             review.snapshot_exclude,
             review.unreviewed_suffixes,
+            fallback,
         )
         kind, adapter, reviewer_root, entrypoint, dispatch = _materialize_reviewer(
             review.reviewer,
@@ -653,7 +655,7 @@ def _prepare_run(
             manifest=manifest,
             prior=review.prior,
             comments=comments,
-            unsafe=unsafe,
+            gaps=gaps,
             unreviewed_suffixes=review.unreviewed_suffixes,
         )
         fixture = review.fixture

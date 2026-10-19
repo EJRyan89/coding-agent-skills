@@ -379,6 +379,7 @@ class GitHubTests(unittest.TestCase):
             ("get_pull", ("example/one", True), {}, "pull number", number, "boolean true"),
             ("get_pull", ("example/one", 42.0), {}, "pull number", number, "number 42.0"),
             ("get_pull_diff", ("example/one", -1), {}, "pull number", number, "integer -1"),
+            ("list_pull_files", ("example/one", 0), {}, "pull number", number, "integer 0"),
             ("list_open_review_threads", ("example/one", 0), {}, "pull number", number, "integer 0"),
             (
                 "list_pulls",
@@ -490,6 +491,125 @@ class GitHubTests(unittest.TestCase):
                 value = undecodable(data)
                 client = GitHubClient(answering(CommandResult(0, value, "")))
                 self.assertEqual((text, count), client.get_pull_diff("example/one", 7))
+
+    def test_the_diff_endpoint_s_406_over_a_limit_names_the_limit_and_any_other_failure_stays_as_it_was(self) -> None:
+        # gh's stderr for the refusal, as a pull request over the file limit gets it.
+        files = (
+            "gh: Sorry, the diff exceeded the maximum number of files (300). Consider using 'List pull requests "
+            "files' API or locally cloning the repository instead. (HTTP 406)"
+        )
+        lines = "gh: Sorry, the diff exceeded the maximum number of lines (20000). (HTTP 406)"
+        for stderr, limit in ((files, "300 files"), (lines, "20000 lines")):
+            with self.subTest(limit=limit):
+                calls: list[list[str]] = []
+
+                def runner(arguments: Sequence[str], stderr: str = stderr, calls: list[list[str]] = calls) -> Any:
+                    calls.append(list(arguments))
+                    return CommandResult(1, "", stderr)
+
+                with self.assertRaises(review_github.DiffOverLimit) as context:
+                    GitHubClient(runner).get_pull_diff("example/one", 7)
+                self.assertEqual(limit, context.exception.limit)
+                self.assertEqual("diff_limit", context.exception.kind)
+                self.assertEqual(f"GitHub's diff endpoint refuses a diff over {limit}", str(context.exception))
+                self.assertEqual(1, len(calls), "a refusal is GitHub's answer, never retried")
+        for stderr in ("gh: Not Acceptable (HTTP 406)", files.replace("(HTTP 406)", "(HTTP 422)")):
+            with self.subTest(stderr=stderr), self.assertRaises(GitHubError) as other:
+                GitHubClient(answering(CommandResult(1, "", stderr))).get_pull_diff("example/one", 7)
+            self.assertNotIsInstance(other.exception, review_github.DiffOverLimit)
+            self.assertEqual(stderr, str(other.exception))
+
+    def test_the_files_listing_reads_the_count_and_head_then_every_page(self) -> None:
+        pull = {**self._api_pull(7), "changed_files": 3}
+        pages = [
+            [
+                {
+                    "filename": "a b.py",
+                    "status": "modified",
+                    "changes": 2,
+                    "sha": "c" * 40,
+                    "patch": "@@ -1 +1 @@\n-x\n+y",
+                    "additions": 1,
+                    "blob_url": "https://example.invalid/blob",
+                }
+            ],
+            [
+                {"filename": "new.py", "previous_filename": "old.py", "status": "renamed", "changes": 0, "sha": None},
+                {"filename": "logo.png", "status": "added", "changes": 0, "sha": "d" * 40},
+            ],
+        ]
+        calls: list[list[str]] = []
+
+        def runner(arguments: Sequence[str]) -> CommandResult:
+            calls.append(list(arguments))
+            return CommandResult(0, json.dumps(pages if "--paginate" in arguments else pull), "")
+
+        listing = GitHubClient(runner).list_pull_files("Example/One", 7)
+        self.assertEqual(
+            [
+                ["gh", "api", "repos/example/one/pulls/7"],
+                ["gh", "api", "--paginate", "--slurp", "repos/example/one/pulls/7/files?per_page=100"],
+            ],
+            calls,
+        )
+        self.assertEqual((3, "b" * 40), (listing.changed, listing.head))
+        self.assertEqual(
+            [
+                {
+                    "filename": "a b.py",
+                    "previous_filename": None,
+                    "status": "modified",
+                    "changes": 2,
+                    "sha": "c" * 40,
+                    "patch": "@@ -1 +1 @@\n-x\n+y",
+                },
+                {
+                    "filename": "new.py",
+                    "previous_filename": "old.py",
+                    "status": "renamed",
+                    "changes": 0,
+                    "sha": None,
+                    "patch": None,
+                },
+                {
+                    "filename": "logo.png",
+                    "previous_filename": None,
+                    "status": "added",
+                    "changes": 0,
+                    "sha": "d" * 40,
+                    "patch": None,
+                },
+            ],
+            listing.files,
+        )
+
+    def test_a_files_listing_entry_of_the_wrong_kind_is_a_malformed_response(self) -> None:
+        pull = {**self._api_pull(7), "changed_files": 1}
+        entry = {"filename": "a.py", "status": "modified", "changes": 1, "sha": "c" * 40, "patch": "@@ -1 +1 @@"}
+        cases = (
+            ({**entry, "status": "moved"}, "files[0].status"),
+            ({**entry, "changes": -1}, "files[0].changes"),
+            ({**entry, "filename": ""}, "files[0].filename"),
+            ({**entry, "sha": "main"}, "files[0].sha"),
+            ({**entry, "patch": 1}, "files[0].patch"),
+        )
+        for value, path in cases:
+            with self.subTest(path=path):
+
+                def runner(arguments: Sequence[str], value: dict[str, Any] = value) -> CommandResult:
+                    return CommandResult(0, json.dumps([[value]] if "--paginate" in arguments else pull), "")
+
+                with self.assertRaises(GitHubFieldError) as context:
+                    GitHubClient(runner).list_pull_files("example/one", 7)
+                self.assertIn(path, str(context.exception))
+                self.assertEqual("malformed", context.exception.kind)
+        for broken, path in (
+            ({**pull, "changed_files": "3"}, "pull.changed_files"),
+            ({**pull, "head": {}}, "pull.head.sha"),
+        ):
+            with self.subTest(path=path), self.assertRaises(GitHubFieldError) as context:
+                GitHubClient(answering(CommandResult(0, json.dumps(broken), ""))).list_pull_files("example/one", 7)
+            self.assertIn(path, str(context.exception))
 
     def test_json_and_errors_replace_undecodable_bytes(self) -> None:
         body = b'{"login": "caf\xe9"}'.decode("utf-8", "surrogateescape")

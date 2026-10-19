@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import re
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -24,6 +25,11 @@ PULL_PAGE_SIZE = 100  # the most GitHub's REST API returns per page
 # The entries GitHub's contents API answers as one object that is not a file, in words: a symbolic link whose target
 # is not a file in the repository, and a submodule.
 NOT_FILE_ENTRIES = {"symlink": "symbolic link", "submodule": "submodule"}
+# GitHub's diff endpoint refuses a pull request whose diff is over one of its limits with HTTP 406, naming the limit,
+# as in `the diff exceeded the maximum number of files (300)`.
+DIFF_LIMIT = re.compile(r"diff exceeded the maximum number of ([a-z]+) \((\d+)\)", re.IGNORECASE)
+# Each status GitHub's files endpoint gives a changed file.
+FILE_STATUSES = ("added", "removed", "modified", "renamed", "copied", "changed", "unchanged")
 
 
 class GitHubFieldError(FieldError, GitHubError):
@@ -53,10 +59,53 @@ class GitHubInputError(GitHubFieldError):
     kind_of_error: GitHubErrorKind = "input"
 
 
+class DiffOverLimit(GitHubError):
+    """GitHub's diff endpoint refused a pull request's diff as over one of its limits, which `limit` names, as in
+    `300 files`."""
+
+    def __init__(self, limit: str) -> None:
+        super().__init__(f"GitHub's diff endpoint refuses a diff over {limit}", kind="diff_limit")
+        self.limit = limit
+
+
 READ = FieldReader(GitHubFieldError)
 
 
 ARGUMENTS = FieldReader(GitHubInputError)
+
+
+@dataclass(frozen=True)
+class PullFiles:
+    """The files a pull request changes, as GitHub's files endpoint lists them, and how many GitHub counts, with the
+    head they were counted at: the endpoint lists at most 3,000, so a listing shorter than the count is not the whole
+    change."""
+
+    files: list[dict[str, Any]]
+    changed: int
+    head: str
+
+
+def _changed_file(value: Any, path: str) -> dict[str, Any]:
+    """One entry of GitHub's files listing: its path and earlier path, status, count of changed lines, head blob, and
+    patch, which GitHub leaves out of a binary file's entry and of one whose diff is too large."""
+    entry = READ.json_object(value, path)
+    return {
+        "filename": READ.string(entry.get("filename"), f"{path}.filename"),
+        "previous_filename": READ.optional(READ.string, entry.get("previous_filename"), f"{path}.previous_filename"),
+        "status": READ.one_of(entry.get("status"), f"{path}.status", FILE_STATUSES),
+        "changes": READ.integer(entry.get("changes"), f"{path}.changes", minimum=0),
+        "sha": READ.optional(READ.hex_digest, entry.get("sha"), f"{path}.sha", 40, 64),
+        "patch": READ.optional(READ.string, entry.get("patch"), f"{path}.patch", empty=True),
+    }
+
+
+def _diff_limit(error: GitHubError) -> str | None:
+    """The limit an HTTP 406 from GitHub's diff endpoint names, as in `300 files`, or None for any other failure."""
+    message = str(error)
+    match = DIFF_LIMIT.search(message)
+    if match is None or "http 406" not in message.casefold():
+        return None
+    return f"{int(match.group(2))} {match.group(1).lower()}"
 
 
 @dataclass(frozen=True)
@@ -197,7 +246,28 @@ class GitHubClient:
         bytes in it became U+FFFD."""
         repository = validate_repository_identity(repository)
         ARGUMENTS.integer(number, "pull number", minimum=1)
-        return self.api_text(f"repos/{repository}/pulls/{number}", accept="application/vnd.github.diff")
+        try:
+            return self.api_text(f"repos/{repository}/pulls/{number}", accept="application/vnd.github.diff")
+        except GitHubError as exc:
+            limit = _diff_limit(exc)
+            if limit is None:
+                raise
+            raise DiffOverLimit(limit) from exc
+
+    def list_pull_files(self, repository: str, number: int) -> PullFiles:
+        """Every file the pull request changes, through every page of GitHub's files endpoint, and how many it changes
+        as the pull request counts them, read before the pages with its head, so a caller that finds the head unmoved
+        after the pages knows they list that head's change."""
+        repository = validate_repository_identity(repository)
+        ARGUMENTS.integer(number, "pull number", minimum=1)
+        pull = READ.json_object(self.api_json(f"repos/{repository}/pulls/{number}"), "pull")
+        changed = READ.integer(pull.get("changed_files"), "pull.changed_files", minimum=0)
+        head = READ.hex_digest(READ.json_object(pull.get("head"), "pull.head").get("sha"), "pull.head.sha", 40, 64)
+        pages = self.api_json(f"repos/{repository}/pulls/{number}/files?per_page={PULL_PAGE_SIZE}", paginate=True)
+        listed = READ.array(pages, "file pages", lambda page, path: READ.array(page, path))
+        entries = [entry for page in listed for entry in page]
+        files = [_changed_file(entry, f"files[{index}]") for index, entry in enumerate(entries)]
+        return PullFiles(files, changed, head)
 
     def get_merge_base(self, repository: str, base: str, head: str) -> str:
         """The commit GitHub diffs a pull request's head against: the merge base of its base and head commits."""
