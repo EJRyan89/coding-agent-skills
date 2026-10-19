@@ -23,6 +23,9 @@ prompt describes. It reads the hook event as JSON on stdin and prints a deny dec
   fills in, which may hold no double quote (ASCII or PowerShell's smart variants), backtick, dollar sign, backslash,
   or line break. No quoted script or run in either may end in a backslash, which would escape its closing quote.
   The guarded reviewer exposes Bash, not PowerShell; its values conservatively exclude delimiters from either shell.
+- A role whose `run.json` entry declares its `self_check`, as the review-insights synthesis run does, runs that one
+  command, exactly as declared, and none of the reviewer commands above. The run's author is the script that made
+  the run, which the guard already trusts to name the one file the role may write.
 
 Parallel reviewers share one session, so the hook tells them apart by the `agent_id` Claude Code puts in the hook
 event of a subagent's tool call, and keeps each agent's claim in a file of its own under `CLAIMS`, which no
@@ -213,10 +216,13 @@ def _roles(run: Path) -> list[dict[str, str]]:
 
 
 def _role(value: Any, path: str) -> dict[str, str]:
-    """One role of a run: its ID, prompt file, and result file, each a non-empty string."""
+    """One role of a run: its ID, prompt file, and result file, each a non-empty string, and the self-check it
+    declares, when it declares one."""
     role = READ.json_object(value, path)
     for field in ("id", "prompt_file", "result_file"):
         READ.string(role.get(field), f"{path}.{field}")
+    if "self_check" in role:
+        READ.string(role["self_check"], f"{path}.self_check")
     return role
 
 
@@ -309,6 +315,11 @@ def _check_bash(tool_input: dict[str, Any], cwd: Path, claim: Claim) -> None:
         text = READ.string(tool_input.get("command"), "tool_input.command", empty=True).strip()
     except FieldError:
         text = ""  # no command, which no allowed form matches
+    declared = claim[1].get("self_check")
+    if declared is not None:
+        if text != declared:
+            raise Denied("run no command except the self-check the prompt gives, exactly as written")
+        return
     match = SELF_CHECK.match(text)
     if match is not None and _same(_path(match.group("script"), cwd), PIPELINE):
         _check_own_run(match, cwd, claim, "self-check")

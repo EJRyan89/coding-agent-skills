@@ -3,7 +3,7 @@
     scope       name the configured repository the working directory is in, and the default repository set, each
                 with the report arguments that choose it
     report      analyze the configured archive for a date range and repository scope; write insights.json and .md,
-                and the synthesis input, context, and prompt
+                the synthesis input and context beside them, and the run the synthesis agent works in
     synthesize  check or record an analyst agent's synthesis result in its report
     decide      record one recommendation's decision in a report; an accepted one resolves its linked flags
     decide-custom
@@ -764,16 +764,24 @@ def _given(report: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def write_report(json_path: Path, report: dict[str, Any], synthesis: synthesis_stage.Staged | None = None) -> Path:
-    """Write the report and its Markdown, after the synthesis files `synthesis` stages beside it. A report larger than
-    `load_report` reads is refused before anything is written, so the script never writes a report it would then
-    refuse, nor replaces the synthesis files an earlier report sealed."""
-    content = json.dumps(report, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
-    if len(content.encode("utf-8")) > synthesis_stage.MAXIMUM_BYTES:
-        raise InsightError(
-            f"The report would exceed {synthesis_stage.MAXIMUM_BYTES} bytes, more than it could be read back with; "
-            "report a shorter range"
-        )
-    markdown = render(report)
+    """Write the report and its Markdown, after the synthesis files `synthesis` stages beside it and the run its agent
+    works in, when the report takes that synthesis rather than keeping a recorded one. A report larger than
+    `load_report` reads is refused before anything is written beside it and with its run removed, so the script never
+    writes a report it would then refuse, nor replaces the synthesis files an earlier report sealed."""
+    if synthesis is not None and report["synthesis"] is synthesis.synthesis:
+        synthesis.stage_run()
+    try:
+        content = json.dumps(report, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+        if len(content.encode("utf-8")) > synthesis_stage.MAXIMUM_BYTES:
+            raise InsightError(
+                f"The report would exceed {synthesis_stage.MAXIMUM_BYTES} bytes, more than it could be read back "
+                "with; report a shorter range"
+            )
+        markdown = render(report)
+    except BaseException:
+        if synthesis is not None:
+            synthesis.discard_run()
+        raise
     json_path.parent.mkdir(parents=True, exist_ok=True)
     if synthesis is not None:
         synthesis.write()
@@ -874,7 +882,10 @@ def create_report(
             script=SCRIPT,
         )
         _carry_synthesis(report, staged.synthesis, earlier)
-        return json_path, write_report(json_path, report, staged), report
+        markdown_path = write_report(json_path, report, staged)
+        if prior_synthesis is not None and prior_synthesis["status"] == "pending":
+            synthesis_stage.remove_run(prior_synthesis)  # the fresh synthesis has a run of its own
+        return json_path, markdown_path, report
 
 
 def _carry_synthesis(report: dict[str, Any], fresh: dict[str, Any], earlier: dict[str, Any] | None) -> None:
@@ -979,6 +990,7 @@ def synthesize(
             }
         )
         write_report(report_path, report)
+        synthesis_stage.remove_run(synthesis)
         return added
 
 

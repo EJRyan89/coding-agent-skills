@@ -133,6 +133,12 @@ class InsightFixture(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve() / "insights root with spaces"
+        # The temporary directory the synthesis runs are made in, so each test's runs go with its folder.
+        self.temporary = Path(temporary.name).resolve() / "temporary"
+        self.temporary.mkdir()
+        patcher = mock.patch.object(tempfile, "tempdir", str(self.temporary))
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.archive = self.root / "archive"
         self.summary = self.root / "summary"
         self.flags = self.root / "flags" / "flags.json"

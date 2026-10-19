@@ -360,8 +360,8 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertEqual(
             [
                 "name: code-review-reviewer",
-                "description: Internal to the code-review-core pipeline. Started only by that pipeline, with a "
-                "prepared prompt file for one reviewer role. Do not use it for anything else.",
+                "description: Internal to the code-review skills. Started only by their scripts, with a prepared "
+                "prompt file for one reviewer role or the review-insights synthesis. Do not use it for anything else.",
                 "tools: Read, Grep, Glob, Write, Edit, Bash",
                 "model: inherit",
                 "omitClaudeMd: true",
@@ -404,6 +404,13 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertIn("start one fresh native subagent of type `code-review-reviewer`", skill)
         self.assertIn("If this session has no `code-review-reviewer` type", skill)
         self.assertIn("use a general-purpose subagent instead", skill)
+        # The review-insights synthesis reads finding and flag text, so it runs as the guarded agent too.
+        insights = (REPOSITORY_ROOT / "skills/review-insights/SKILL.md").read_text(encoding="utf-8-sig")
+        self.assertIn("Start one fresh subagent of type `code-review-reviewer`", insights)
+        self.assertIn("If this session has no `code-review-reviewer` type, use a general-purpose subagent", insights)
+        self.assertNotIn("general-purpose subagent with exactly this prompt", insights)
+        insights_meta = json.loads((REPOSITORY_ROOT / "deploy-meta/review-insights.json").read_text(encoding="utf-8"))
+        self.assertIn("code-review-core", insights_meta["skill_deps"], "the agent comes with code-review-core")
 
     def test_reviewer_read_guidance_names_only_the_guarded_roots(self) -> None:
         _, body = frontmatter_and_body((REPOSITORY_ROOT / "agents/code-review-reviewer.md").read_text(encoding="utf-8"))
