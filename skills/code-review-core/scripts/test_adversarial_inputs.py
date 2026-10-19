@@ -35,12 +35,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import review_canary
+import review_dispatch
 import review_documents
 import review_guard as guard
 import review_hosts
 import review_io
 import review_pipeline as rp
 import review_process
+import review_run
 import review_runtime
 import review_source
 from git_client import GitResult, subprocess_runner
@@ -178,7 +180,7 @@ class AdversarialFixture(unittest.TestCase):
         self.checkout = self.root / "checkout"
         init(self.checkout)
         self.github = ScratchGitHub(self.checkout)
-        self.services = rp.Services(
+        self.services = review_run.Services(
             github=self.github,
             resolve_runtime=lambda configured, host: "claude-code",
             today=lambda: date(2026, 3, 10),
@@ -466,7 +468,7 @@ class FileNameTests(AdversarialFixture):
         destination = self.root / "colliding"
         with self.assertRaisesRegex(review_runtime.RuntimeContractError, "collide") as raised:
             materialize_source_snapshot(self.checkout, REPOSITORY, commit, destination)
-        self.assertIsInstance(raised.exception, rp.EXPECTED_ERRORS, "prepare prints it as one FAILED line")
+        self.assertIsInstance(raised.exception, review_run.EXPECTED_ERRORS, "prepare prints it as one FAILED line")
         self.assertFalse(destination.exists())
         # A lazy snapshot, which reads neither blob, refuses the two names before writing anything.
         with self.assertRaisesRegex(review_runtime.RuntimeContractError, "collide"):
@@ -1609,7 +1611,7 @@ class CopilotCommandLineTests(AdversarialFixture):
         )
         with review_hosts.host_lock(run):
             claim = review_hosts.new_claim(run, generation=0, now=self.services.clock())
-        self.assertEqual("dispatched", rp.run_host(run, claim["token"], self.services))
+        self.assertEqual("dispatched", review_dispatch.run_host(run, claim["token"], self.services))
 
     def test_no_argument_of_the_copilot_command_carries_a_comment_body_a_prior_finding_or_a_diff_path(self) -> None:
         service = files({"app/service.py": b"def total(items):\n    return 0\n"})
@@ -1843,13 +1845,13 @@ class ReviewerBoundaryTests(unittest.TestCase):
                     reason = self.decide(tool, file_path=path)
                     self.assertIsNotNone(reason)
                     self.assertIn("Code-review reviewer boundary", reason or "")
-        check = rp.self_check_command(self.run_directory, "python-review")
+        check = review_run.self_check_command(self.run_directory, "python-review")
         self.assertIsNone(self.decide("Bash", command=check))
         for command in (
             f"{check} && echo approved > {result}",
             f"{check}; del {self.run_directory / 'run.json'}",
             f'{check} > "{self.run_directory / "work" / "sql-review.result.json"}"',
-            rp.self_check_command(self.run_directory, "sql-review"),
+            review_run.self_check_command(self.run_directory, "sql-review"),
             check.replace("validate-result", "finalize"),
         ):
             with self.subTest(command=command):
@@ -1862,7 +1864,7 @@ class InlineReviewerTests(AdversarialFixture):
         code, out, _ = self.main("prepare", "--pull", SELECTOR, "--host", "copilot-cli")
         self.assertEqual(0, code, out)
         run = Path(out.splitlines()[-1].removeprefix("INLINE "))
-        return {"run": run, "roles": rp.load_run(run)["roles"]}
+        return {"run": run, "roles": review_run.load_run(run)["roles"]}
 
     def test_an_inline_reviewer_cannot_clear_a_coverage_gap_or_rewrite_its_inputs_unnoticed(self) -> None:
         self.services.resolve_runtime = lambda configured, host: "copilot-cli"
@@ -1948,7 +1950,7 @@ class ConcurrentReviewTests(AdversarialFixture):
             try:
                 rp.finalize(ready["run"], self.services)
                 outcomes[name] = None
-            except rp.EXPECTED_ERRORS as exc:
+            except review_run.EXPECTED_ERRORS as exc:
                 outcomes[name] = exc
 
         threads = [threading.Thread(target=finalize, args=item) for item in (("first", first), ("second", second))]
@@ -1998,7 +2000,7 @@ class FixtureInputTests(AdversarialFixture):
             calls.append(["tarball", repository, commit])
             raise AssertionError("a fixture canary fetched a tarball")
 
-        self.services = rp.Services(
+        self.services = review_run.Services(
             github=GitHubClient(runner=no_github),
             fetch_tarball=no_tarball,
             resolve_runtime=lambda configured, host: "claude-code",
@@ -2038,7 +2040,7 @@ class FixtureInputTests(AdversarialFixture):
         self.assertEqual(dict.fromkeys(instructions, "agent-instruction"), snapshot["excluded_paths"])
         self.assertEqual(trees["head"]["app/service.py"], (source / "app" / "service.py").read_bytes())
         self.assertFalse((source / "CLAUDE.md").exists())
-        ready = rp.load_run(run)
+        ready = review_run.load_run(run)
         self.write_results({"roles": ready["roles"]})
         code, out, err = self.main("finalize", "--run", str(run))
         self.assertEqual((0, ""), (code, err), out)

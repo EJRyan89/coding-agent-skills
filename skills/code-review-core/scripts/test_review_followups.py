@@ -19,9 +19,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import github_client
+import review_batches
 import review_github
 import review_operation
 import review_pipeline
+import review_run
 import review_runtime
 from github_client import CommandResult, GitHubError
 from review_config import (
@@ -787,9 +789,9 @@ class EnumerateBatchTests(unittest.TestCase):
         return CommandResult(0, json.dumps(selected[start : start + 100]), "")
 
     def enumerate(self, *, force: bool = False) -> dict[str, Any]:
-        services = review_pipeline.Services(github=review_github.GitHubClient(self.runner), today=lambda: self.TODAY)
+        services = review_run.Services(github=review_github.GitHubClient(self.runner), today=lambda: self.TODAY)
         self.endpoints.clear()
-        batch = review_pipeline.enumerate_batch(
+        batch = review_batches.enumerate_batch(
             self.root / "batch.json", force=force, config_path=self.config, services=services
         )
         entry: dict[str, Any] = batch["repositories"][self.REPOSITORY]
@@ -809,7 +811,7 @@ class EnumerateBatchTests(unittest.TestCase):
         self.assertEqual({"scan": "full", "pages": 2, "pulls": 151, "read": 1}, entry["listing"])
         self.assertEqual([151], [pull["number"] for pull in entry["eligible"]])
 
-        review_pipeline.advance_watermarks(self.root / "batch.json", config_path=self.config)
+        review_batches.advance_watermarks(self.root / "batch.json", config_path=self.config)
         entry = self.enumerate()
         self.assertEqual(
             [
@@ -869,14 +871,14 @@ class EnumerateBatchTests(unittest.TestCase):
                 self.assertEqual([1, 2], [pull["number"] for pull in entry["eligible"]])
                 self.assertEqual(
                     {self.REPOSITORY: ("2026-03-01", "2026-03-04")},
-                    review_pipeline.advance_watermarks(self.root / "batch.json", config_path=self.config),
+                    review_batches.advance_watermarks(self.root / "batch.json", config_path=self.config),
                 )
                 state = json.loads(self.state_path.read_text(encoding="utf-8"))
                 self.assertEqual("2026-03-04", state["repositories"][self.REPOSITORY]["merged_since"])
         self.review(2, verdict="APPROVED")
         self.assertEqual(
             {self.REPOSITORY: ("2026-03-01", "2026-03-10")},
-            review_pipeline.advance_watermarks(self.root / "batch.json", config_path=self.config),
+            review_batches.advance_watermarks(self.root / "batch.json", config_path=self.config),
         )
 
     def test_a_missing_legacy_verdict_prints_pull_and_safe_watermark_statuses(self) -> None:
@@ -887,7 +889,7 @@ class EnumerateBatchTests(unittest.TestCase):
         index = json.loads(path.read_text(encoding="utf-8"))
         index.pop("verdict")
         path.write_text(json.dumps(index), encoding="utf-8")
-        services = review_pipeline.Services(github=review_github.GitHubClient(self.runner), today=lambda: self.TODAY)
+        services = review_run.Services(github=review_github.GitHubClient(self.runner), today=lambda: self.TODAY)
         batch_path = self.root / "batch.json"
         for command, arguments, expected in (
             ("enumerate", ["--output", str(batch_path)], "PULL owner/repo#2"),

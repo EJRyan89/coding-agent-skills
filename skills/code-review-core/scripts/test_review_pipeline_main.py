@@ -14,13 +14,17 @@ import threading
 import unittest
 from collections.abc import Callable
 from pathlib import Path
+from types import ModuleType
 from typing import Any, ClassVar
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+import review_batches
+import review_dispatch
 import review_pipeline as rp
+import review_run
 from review_archive import ArchiveError
 from review_canary import FixtureError
 from review_config import ConfigurationError
@@ -36,13 +40,13 @@ from review_state import StateError
 
 Call = tuple[tuple[Any, ...], dict[str, Any]]
 
-SERVICES_TYPE = rp.Services  # setUp replaces rp.Services, so the class is kept here
-UNFINALIZED_SELECTOR = rp.unfinalized_selector  # and these functions, which some tests run unstubbed
-WORKED_BY_SUBAGENTS = rp.worked_by_subagents
+SERVICES_TYPE = review_run.Services  # setUp replaces review_run.Services, so the class is kept here
+UNFINALIZED_SELECTOR = review_dispatch.unfinalized_selector  # and these functions, which some tests run unstubbed
+WORKED_BY_SUBAGENTS = review_batches.worked_by_subagents
 SERVICES = SERVICES_TYPE()
 CONFIG = "review config.json"
 EXPECTED = (
-    rp.PipelineError,
+    review_run.PipelineError,
     ConfigurationError,
     GitHubError,
     RuntimeContractError,
@@ -123,14 +127,17 @@ class MainCase(unittest.TestCase):
         for name in STUBBED:
             self.stub(name, effect=raising(AssertionError(f"main called {name} unexpectedly")))
 
-    def stub(self, name: str, result: Any = None, *, effect: Callable[..., Any] | None = None) -> Stub:
+    def stub(
+        self, name: str, result: Any = None, *, effect: Callable[..., Any] | None = None, module: ModuleType = rp
+    ) -> Stub:
+        """Replace `name` where `module`, the pipeline's command line unless given, looks it up."""
         stub = Stub(result, effect)
-        patcher = mock.patch.object(rp, name, stub)
+        patcher = mock.patch.object(module, name, stub)
         patcher.start()
         self.addCleanup(patcher.stop)
         return stub
 
-    def run_main(self, *arguments: str, services: rp.Services | None = SERVICES) -> tuple[int, str, str]:
+    def run_main(self, *arguments: str, services: review_run.Services | None = SERVICES) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = rp.main(list(arguments), services=services)
@@ -396,9 +403,9 @@ class RunListCase(MainCase):
 
     def write_list(self, runs: list[tuple[str, str]], pending: list[dict[str, str]] | None = None) -> None:
         """A run list naming each (run, status) pair as a run of example/app#<its place in the list>."""
-        options: dict[str, Any] = dict.fromkeys(rp.RUN_LIST_OPTIONS)
+        options: dict[str, Any] = dict.fromkeys(review_batches.RUN_LIST_OPTIONS)
         options.update(inline=False, force=False, canary=False)
-        value = rp.new_run_list(pending or [], options)
+        value = review_batches.new_run_list(pending or [], options)
         value["runs"] = [
             {"run": run, "selector": f"example/app#{index}", "status": status}
             for index, (run, status) in enumerate(runs, 1)
@@ -840,7 +847,7 @@ class PrepareTests(RunListCase):
 
     def test_a_run_list_inside_a_skills_directory_is_refused(self) -> None:
         self.write_list([])
-        holding = self.stub("skills_directory_holding", Path("skills root"))
+        holding = self.stub("skills_directory_holding", Path("skills root"), module=review_batches)
         self.assertEqual(
             (
                 1,
@@ -1298,7 +1305,7 @@ class RunListCommandTests(RunListCase):
                         "failed": {},
                         "running": {"x": 4},
                     },
-                    Path("run h"): rp.PipelineError("run h is not a prepared review run"),
+                    Path("run h"): review_run.PipelineError("run h is not a prepared review run"),
                 }
             ),
         )
@@ -1427,11 +1434,14 @@ class RunListCommandTests(RunListCase):
             with self.subTest(dispatch=dispatch):
                 run = self.directory / dispatch
                 run.mkdir()
-                (run / rp.RUN_FILE).write_text(
-                    json.dumps({"schema_version": rp.RUN_SCHEMA_VERSION, "dispatch": dispatch}), encoding="utf-8"
+                (run / review_run.RUN_FILE).write_text(
+                    json.dumps({"schema_version": review_run.RUN_SCHEMA_VERSION, "dispatch": dispatch}),
+                    encoding="utf-8",
                 )
-                self.assertIs(expected, rp.worked_by_subagents(run))
-        self.assertTrue(rp.worked_by_subagents(self.directory / "missing"), "the command it was listed for reports it")
+                self.assertIs(expected, review_batches.worked_by_subagents(run))
+        self.assertTrue(
+            review_batches.worked_by_subagents(self.directory / "missing"), "the command it was listed for reports it"
+        )
 
 
 class AdvanceTests(MainCase):
@@ -1482,7 +1492,7 @@ TOP_LEVEL: list[tuple[str, list[str], str, dict[str, Any]]] = [
 
 class ErrorTranslationTests(MainCase):
     def test_the_expected_errors_are_these(self) -> None:
-        self.assertEqual(EXPECTED, rp.EXPECTED_ERRORS)
+        self.assertEqual(EXPECTED, review_run.EXPECTED_ERRORS)
 
     def test_every_expected_error_becomes_one_failed_line(self) -> None:
         errors: list[BaseException] = [error_class("boom") for error_class in EXPECTED]

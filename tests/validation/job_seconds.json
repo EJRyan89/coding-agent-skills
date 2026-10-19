@@ -23,7 +23,6 @@
     "skills/code-review-core/scripts/test_review_canary.py": 15.6,
     "skills/code-review-core/scripts/test_review_config.py": 12.9,
     "skills/code-review-core/scripts/test_review_config_validation.py": 0.6,
-    "skills/code-review-core/scripts/test_review_core.py": 73.1,
     "skills/code-review-core/scripts/test_review_documents.py": 47.3,
     "skills/code-review-core/scripts/test_review_flags_validation.py": 0.3,
     "skills/code-review-core/scripts/test_review_followups.py": 10.6,

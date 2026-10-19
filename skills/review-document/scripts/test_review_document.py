@@ -33,6 +33,7 @@ sys.path.insert(0, str(sibling_scripts("code-review-core")))
 
 import review_document
 import review_pipeline as rp
+import review_run
 import review_runtime
 from flat_text import flat_text
 from git_client import GitClient, GitResult, subprocess_runner
@@ -601,7 +602,7 @@ class PipelineTestCase(DocumentTestCase):
         def no_github(command: object) -> CommandResult:
             raise AssertionError(f"a document review called gh: {command}")
 
-        services = rp.Services(
+        services = review_run.Services(
             github=GitHubClient(runner=no_github), resolve_runtime=lambda configured, host: "claude-code"
         )
         output, errors = io.StringIO(), io.StringIO()
@@ -616,7 +617,7 @@ class PipelineTestCase(DocumentTestCase):
         fixture = fixture or self.output / "fixture"
         prepared = self.pipeline("prepare", "--host", "claude-code", "--canary", "--fixture", str(fixture))
         run = Path(next(fact for fact in prepared if fact.startswith("RUN ")).split(" ", 2)[2])
-        roles = rp.load_run(run)["roles"]
+        roles = review_run.load_run(run)["roles"]
         self.assertEqual(["design-review"], [role["id"] for role in roles])
         self.prompt = Path(roles[0]["prompt_file"]).read_text(encoding="utf-8")
         diff = (run / "work" / "design-review.diff").read_text(encoding="utf-8")
@@ -634,7 +635,7 @@ class PipelineTestCase(DocumentTestCase):
         listed = next(fact for fact in prepared if fact.startswith("RUNS "))
         self.assertTrue(listed.endswith(" pending=0"), listed)
         runs = listed.removeprefix("RUNS ").removesuffix(" pending=0")
-        self.assertEqual([f"ALL_VALID {rp.load_run(run)['selector']}"], self.pipeline("check", "--runs", runs))
+        self.assertEqual([f"ALL_VALID {review_run.load_run(run)['selector']}"], self.pipeline("check", "--runs", runs))
         recorded = next(fact for fact in self.pipeline("finalize", "--runs", runs) if fact.startswith("RECORDED "))
         self.assertEqual(["ALL_FINALIZED"], self.pipeline("unfinalized", "--runs", runs))
         self.recorded = Path(recorded.split(" ", 4)[4])

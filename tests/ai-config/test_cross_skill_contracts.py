@@ -25,8 +25,10 @@ from skill_roots import sibling_scripts
 sys.path.insert(0, str(sibling_scripts("code-review-core")))
 
 import frontmatter as skill_frontmatter
+import review_batches
 import review_guard
 import review_pipeline
+import review_run
 import review_source
 from review_config import COMPUTED_DASHBOARD_STATES
 
@@ -54,6 +56,24 @@ def literal_assignment(path: Path, name: str) -> object:
         ):
             return ast.literal_eval(node.value)
     raise AssertionError(f"{name} is not a literal assignment in {path}")
+
+
+# The review pipeline's command line and the modules its steps are cut into, whose source a contract reads as one.
+PIPELINE_MODULES = (
+    "review_pipeline",
+    "review_run",
+    "review_batches",
+    "review_snapshot",
+    "review_reviewer_setup",
+    "review_dispatch",
+    "review_reporting",
+)
+
+
+def pipeline_source() -> str:
+    """The source of the review pipeline: its command line, then each module its steps are cut into."""
+    scripts = REPOSITORY_ROOT / "skills/code-review-core/scripts"
+    return "\n".join((scripts / f"{name}.py").read_text(encoding="utf-8") for name in PIPELINE_MODULES)
 
 
 def literal_int(path: Path, name: str) -> int:
@@ -398,8 +418,8 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertIn('WRITE_TOOLS = {"Write", "Edit"}', guard.read_text(encoding="utf-8"))
         meta = json.loads((REPOSITORY_ROOT / "deploy-meta/code-review-core.json").read_text(encoding="utf-8"))
         self.assertEqual(["code-review-reviewer"], meta["agent_deps"])
-        pipeline = (REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py").read_text(encoding="utf-8")
-        self.assertIn('REVIEWER_AGENT = "code-review-reviewer"', pipeline)
+        dispatch = (REPOSITORY_ROOT / "skills/code-review-core/scripts/review_dispatch.py").read_text(encoding="utf-8")
+        self.assertIn('REVIEWER_AGENT = "code-review-reviewer"', dispatch)
         skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")
         self.assertIn("start one fresh native subagent of type `code-review-reviewer`", skill)
         self.assertIn("If this session has no `code-review-reviewer` type", skill)
@@ -466,7 +486,7 @@ class CrossSkillContractTests(unittest.TestCase):
             pattern = "class [A-Z]+Service;|GetAssignments( |[(])"
             commands = [
                 (
-                    review_pipeline.SELF_CHECK_COMMAND.format(script=script.as_posix(), run=run.as_posix(), role=role),
+                    review_run.SELF_CHECK_COMMAND.format(script=script.as_posix(), run=run.as_posix(), role=role),
                     review_guard.SELF_CHECK,
                     ["validate-result", "--run", run.as_posix(), "--role", role],
                 ),
@@ -651,18 +671,18 @@ class CrossSkillContractTests(unittest.TestCase):
     def test_native_and_workflow_reviewers_get_the_same_task(self) -> None:
         task = "Read <prompt file> and follow it exactly. It is your complete task."
         skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")
-        pipeline = (REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py").read_text(
+        dispatch = (REPOSITORY_ROOT / "skills/code-review-core/scripts/review_dispatch.py").read_text(
             encoding="utf-8-sig"
         )
         self.assertIn(f"with exactly this prompt and nothing else: `{task}`", skill)
-        self.assertIn(f'REVIEWER_TASK = "{task.replace("<prompt file>", "{prompt}")}"', pipeline)
+        self.assertIn(f'REVIEWER_TASK = "{task.replace("<prompt file>", "{prompt}")}"', dispatch)
         self.assertIn("Workflow", allowed_tools(skill), "the Workflow path needs the tool allowed")
         # Both paths start a role on the model its trusted profile names, and otherwise name none, and a native
         # subagent on a runtime that takes one starts at the effort its EFFORT line names.
         self.assertIn("When a `MODEL` line names that role, start its subagent on that model", skill)
         self.assertIn("When an `EFFORT` line names that role, start its subagent at that reasoning effort", skill)
         self.assertIn("on the model and effort of any `MODEL` and `EFFORT` lines that follow it", skill)
-        self.assertIn("...(role.model ? {{ model: role.model }} : {{}})", pipeline)
+        self.assertIn("...(role.model ? {{ model: role.model }} : {{}})", dispatch)
 
     def test_the_tracker_and_the_contract_name_the_computed_states_the_configuration_refuses(self) -> None:
         # An override set to a computed state is refused, so the states a user is told to avoid must be those.
@@ -730,8 +750,8 @@ class CrossSkillContractTests(unittest.TestCase):
         timeout, command_minutes = (int(value) for value in waits[0])
         self.assertLessEqual(timeout, 100, "each wait fits well inside a 2-minute command limit")
         self.assertGreater(command_minutes * 60, timeout)
-        pipeline = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py"
-        self.assertLessEqual(timeout, literal_int(pipeline, "MAX_WAIT_SECONDS"))
+        dispatch = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_dispatch.py"
+        self.assertLessEqual(timeout, literal_int(dispatch, "MAX_WAIT_SECONDS"))
         self.assertIn("prints `STARTED <run directory>` at once", skill)
         self.assertIn("`RUNNING <selector> <id> <seconds>s` means that run's Copilot CLI host is still going", skill)
 
@@ -741,7 +761,6 @@ class CrossSkillContractTests(unittest.TestCase):
         # reported success.
         skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")
         _, body = frontmatter_and_body(skill)
-        pipeline = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py"
         self.assertIn(
             "Never end the turn, reply, or schedule a wakeup (ScheduleWakeup, CronCreate, `/loop`) while a "
             "prepared run is not finalized",
@@ -765,7 +784,10 @@ class CrossSkillContractTests(unittest.TestCase):
         timeout, command_minutes = int(timeouts[0]), int(minutes[0])
         self.assertLessEqual(timeout, 100, "each wait fits well inside a 2-minute command limit")
         self.assertGreater(command_minutes * 60, timeout)
-        self.assertLessEqual(timeout, literal_int(pipeline, "MAX_WAIT_SECONDS"))
+        self.assertLessEqual(
+            timeout,
+            literal_int(REPOSITORY_ROOT / "skills/code-review-core/scripts/review_dispatch.py", "MAX_WAIT_SECONDS"),
+        )
         self.assertIn("Its `READY` and `OVERDUE` lines mean what they mean in step 3.", workflow)
         # Every mode ends by listing the runs that never reached finalize, and a denied command is a failure.
         self.assertIn(
@@ -778,7 +800,7 @@ class CrossSkillContractTests(unittest.TestCase):
             "`RECORDED` line as failed, and never report the run as a success.",
             body,
         )
-        source = pipeline.read_text(encoding="utf-8")
+        source = pipeline_source()
         self.assertIn('wait_reviewers_parser = commands.add_parser("wait-reviewers")', source)
         self.assertIn('for name in ("check", "finalize", "unfinalized"):', source)
 
@@ -800,8 +822,8 @@ class CrossSkillContractTests(unittest.TestCase):
         timeout, command_minutes = (int(value) for value in waits[0])
         self.assertLessEqual(timeout, 100, "each wait fits well inside a 2-minute command limit")
         self.assertGreater(command_minutes * 60, timeout)
-        pipeline = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py"
-        self.assertLessEqual(timeout, literal_int(pipeline, "MAX_WAIT_SECONDS"))
+        dispatch = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_dispatch.py"
+        self.assertLessEqual(timeout, literal_int(dispatch, "MAX_WAIT_SECONDS"))
         self.assertIn("`READY <selector>` means every role of that run has a valid result.", review)
         self.assertIn(
             "`OVERDUE <selector> <id> <seconds>s` means that role ran past the reviewer limit; step 4 retries it.",
@@ -813,7 +835,7 @@ class CrossSkillContractTests(unittest.TestCase):
         )
         # Only runs that printed ROLE lines go to wait-reviewers: it refuses a host run and an inline run, and from a
         # run list it takes only the runs started as subagents.
-        source = pipeline.read_text(encoding="utf-8")
+        source = pipeline_source()
         self.assertIn("runs on the Copilot CLI host; wait for it with wait", source)
         self.assertIn("raise _inline_only(state)", source.split("def wait_for_reviewers(", 1)[1].split("\ndef ", 1)[0])
         self.assertIn(
@@ -841,9 +863,9 @@ class CrossSkillContractTests(unittest.TestCase):
         directory = Path(tempfile.mkdtemp(prefix="review-prs-contract-"))
         self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
         runs = directory / "runs.json"
-        options = dict.fromkeys(review_pipeline.RUN_LIST_OPTIONS)
+        options = dict.fromkeys(review_batches.RUN_LIST_OPTIONS)
         options.update(inline=False, force=False, canary=False)
-        runs.write_text(json.dumps(review_pipeline.new_run_list([], options)), encoding="utf-8")
+        runs.write_text(json.dumps(review_batches.new_run_list([], options)), encoding="utf-8")
         with contextlib.redirect_stdout(io.StringIO()) as stdout:
             code = review_pipeline.main(["unfinalized", "--runs", str(runs)])
         self.assertEqual((0, "ALL_FINALIZED\n"), (code, stdout.getvalue()))
@@ -867,7 +889,7 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertIn("or `WORKFLOW none` when no run printed `ROLE` lines.", body)
         pipeline = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py"
         self.assertIn("--inline", declared_options(pipeline, "prepare_parser"))
-        source = pipeline.read_text(encoding="utf-8")
+        source = pipeline_source()
         self.assertIn('commands.add_parser("next-role")', source)
         for line in ("f\"INLINE {result['run']}\"", 'f"INLINE_ROLE {selector} ', 'f"INLINE_DONE {selector}"'):
             self.assertIn(line, source)
@@ -904,9 +926,9 @@ class CrossSkillContractTests(unittest.TestCase):
         def commands(argv: list[str]) -> list[str]:
             with mock.patch.object(sys, "argv", argv):
                 fetch, search = review_source.source_commands(
-                    run, "generic-review", script=review_pipeline.command_script("review_source.py")
+                    run, "generic-review", script=review_run.command_script("review_source.py")
                 )
-                check = review_pipeline.self_check_command(run, "generic-review")
+                check = review_run.self_check_command(run, "generic-review")
             return [check, fetch.replace("<path>", "src/app.py"), search.replace("<pattern>", "def main")]
 
         pipeline = started.group(1).replace("${CLAUDE_SKILL_DIR}", str(skill))

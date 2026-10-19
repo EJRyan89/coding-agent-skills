@@ -183,7 +183,7 @@ class ArchiveFixture:
         request_path.write_text(json.dumps(request), encoding="utf-8")
         result_path.write_text(json.dumps(adapter_result(findings, dispositions)), encoding="utf-8")
         versions = pull_records(self.archive, "example/one", 12)
-        scope = None
+        scope: Any = None
         if mode == "re-review":
             scope = {
                 "requested": used,

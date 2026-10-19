@@ -37,6 +37,7 @@ import frontmatter
 import review_document
 import review_guard
 import review_pipeline
+import review_run
 import review_source
 import review_specialists
 import skill_inventory
@@ -1686,7 +1687,7 @@ class Pipeline:
 
     def __init__(self, test: unittest.TestCase, config: Path) -> None:
         self.test, self.config, self.github = test, config, NoGitHub()
-        self.services = review_pipeline.Services(
+        self.services = review_run.Services(
             github=GitHubClient(runner=self.github), fetch_tarball=no_tarball, resolve_runtime=lambda *_: "claude-code"
         )
 
@@ -1709,7 +1710,7 @@ class Pipeline:
         plan = run / "work" / "plan.json"
         planned = json.loads(plan.read_text(encoding="utf-8"))["roles"] if plan.is_file() else []
         files = {role["id"]: set(role["files"]) for role in planned}
-        for role in review_pipeline.load_run(run)["roles"]:
+        for role in review_run.load_run(run)["roles"]:
             if guarded:
                 review_guard.read_log(run, role["id"]).touch()
             result = stub_result(spec)
@@ -1924,7 +1925,7 @@ class RunPieceTests(unittest.TestCase):
             f"{core}{os.sep}",
         ):
             commands = [
-                review_pipeline.SELF_CHECK_COMMAND.format(script=f"{folder}review_pipeline.py", run=run, role=role),
+                review_run.SELF_CHECK_COMMAND.format(script=f"{folder}review_pipeline.py", run=run, role=role),
                 *(
                     command.replace("<path>", "src/a b.py").replace("<pattern>", "TODO")
                     for command in review_source.source_commands(run, role, script=f"{folder}review_source.py")
@@ -1933,7 +1934,7 @@ class RunPieceTests(unittest.TestCase):
             for command in commands:
                 with self.subTest(command=command):
                     self.assertTrue(any(skill_inventory.grants(pattern, command) for pattern in bash))
-        self_check = review_pipeline.SELF_CHECK_COMMAND
+        self_check = review_run.SELF_CHECK_COMMAND
         elsewhere = [
             # A file named like the script beside it, in the home, or through a path out of the core's folder.
             self_check.format(script=f"{core}{os.sep}x_review_pipeline.py", run=run, role=role),

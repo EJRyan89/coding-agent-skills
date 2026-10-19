@@ -14,8 +14,10 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+import review_batches
 import review_config
 import review_pipeline
+import review_run
 from review_flags import FlagError, FlagFieldError, add_flag, load_store, upgrade_store
 from review_io import atomic_write_json
 from review_records import RecordError, validate_record
@@ -134,14 +136,14 @@ class VersionBoundaryTests(unittest.TestCase):
         self.assertEqual(2, load_store(path)["schema_version"])
 
     def test_prepared_run_version_is_checked_before_any_run_field_is_read(self) -> None:
-        path = self.root / review_pipeline.RUN_FILE
+        path = self.root / review_run.RUN_FILE
         for version, found in ((True, "boolean true"), (1.0, "number 1.0")):
             message = f"run.schema_version must be an integer, found {found}"
             path.write_text(json.dumps({"schema_version": version}), encoding="utf-8")
             with self.subTest(version=version):
-                with self.assertRaises(review_pipeline.PipelineError) as caught:
-                    review_pipeline.load_run(self.root)
-                self.assertIs(review_pipeline.PipelineFieldError, type(caught.exception))
+                with self.assertRaises(review_run.PipelineError) as caught:
+                    review_run.load_run(self.root)
+                self.assertIs(review_run.PipelineFieldError, type(caught.exception))
                 self.assertEqual(message, str(caught.exception))
                 stdout, stderr = io.StringIO(), io.StringIO()
                 with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
@@ -149,9 +151,9 @@ class VersionBoundaryTests(unittest.TestCase):
                 self.assertEqual(1, result)
                 self.assertEqual(f"FAILED {self.root} {message}\n", stdout.getvalue())
                 self.assertEqual("", stderr.getvalue())
-        value = {"schema_version": review_pipeline.RUN_SCHEMA_VERSION}
+        value = {"schema_version": review_run.RUN_SCHEMA_VERSION}
         path.write_text(json.dumps(value), encoding="utf-8")
-        self.assertEqual(value, review_pipeline.load_run(self.root))
+        self.assertEqual(value, review_run.load_run(self.root))
 
     def test_batch_version_is_checked_before_configuration_or_watermarks(self) -> None:
         path = self.root / "batch.json"
@@ -160,7 +162,7 @@ class VersionBoundaryTests(unittest.TestCase):
             before = path.read_bytes()
             stdout, stderr = io.StringIO(), io.StringIO()
             with (
-                mock.patch.object(review_pipeline, "load_config") as load_config,
+                mock.patch.object(review_batches, "load_config") as load_config,
                 contextlib.redirect_stdout(stdout),
                 contextlib.redirect_stderr(stderr),
             ):
@@ -171,10 +173,10 @@ class VersionBoundaryTests(unittest.TestCase):
                 self.assertEqual("", stderr.getvalue())
                 self.assertEqual(before, path.read_bytes())
                 load_config.assert_not_called()
-        batch = {"schema_version": review_pipeline.BATCH_SCHEMA_VERSION, "today": "2026-10-11", "repositories": {}}
+        batch = {"schema_version": review_batches.BATCH_SCHEMA_VERSION, "today": "2026-10-11", "repositories": {}}
         path.write_text(json.dumps(batch), encoding="utf-8")
-        with mock.patch.object(review_pipeline, "load_config", return_value={"archive_root": str(self.root)}):
-            self.assertEqual({}, review_pipeline.advance_watermarks(path))
+        with mock.patch.object(review_batches, "load_config", return_value={"archive_root": str(self.root)}):
+            self.assertEqual({}, review_batches.advance_watermarks(path))
 
     def test_configuration_cli_reports_invalid_versions_without_writing(self) -> None:
         path = self.root / "config.json"
@@ -219,7 +221,7 @@ class VersionBoundaryTests(unittest.TestCase):
             ):
                 result = review_pipeline.main(
                     ["prepare", "--canary", "--fixture", str(fixture)],
-                    services=review_pipeline.Services(git=git),
+                    services=review_run.Services(git=git),
                 )
             with self.subTest(version=version):
                 self.assertEqual(1, result)
@@ -228,7 +230,7 @@ class VersionBoundaryTests(unittest.TestCase):
                     f"FAILED {fixture} fixture-pull.schema_version must be an integer, found {found}\n", failed
                 )
                 # The run list prepare closes with records no run, and nothing left to prepare.
-                runs = review_pipeline.load_run_list(Path(listed.removeprefix("RUNS ").removesuffix(" pending=0\n")))
+                runs = review_batches.load_run_list(Path(listed.removeprefix("RUNS ").removesuffix(" pending=0\n")))
                 self.assertEqual(([], []), (runs["runs"], runs["pending"]))
                 self.assertEqual("", stderr.getvalue())
                 git.assert_not_called()
@@ -238,7 +240,7 @@ class VersionBoundaryTests(unittest.TestCase):
                     [
                         path
                         for path in Path(temporary.name).iterdir()
-                        if not path.name.startswith(review_pipeline.RUN_LIST_PREFIX)
+                        if not path.name.startswith(review_batches.RUN_LIST_PREFIX)
                     ],
                 )
 

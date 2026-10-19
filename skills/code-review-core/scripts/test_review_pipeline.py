@@ -14,7 +14,7 @@ import threading
 import time
 import unittest
 import zipfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -23,9 +23,16 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+import review_batches
+import review_dispatch
+import review_documents
 import review_guard as guard
 import review_pipeline as rp
+import review_reporting
+import review_reviewer_setup
+import review_run
 import review_runtime
+import review_snapshot
 import review_source
 import review_state
 from git_client import GitError, GitResult
@@ -137,7 +144,7 @@ def workflow_output(out: str) -> tuple[Path, str, list[dict[str, Any]]]:
     if not header.startswith("WORKFLOW "):
         raise AssertionError(out)
     script = Path(header.removeprefix("WORKFLOW ").rsplit(" roles=", 1)[0])
-    begin, end = lines.index(rp.SCRIPT_BEGIN), lines.index(rp.SCRIPT_END)
+    begin, end = lines.index(review_dispatch.SCRIPT_BEGIN), lines.index(review_dispatch.SCRIPT_END)
     text = "\n".join(lines[begin + 1 : end]) + "\n"
     runs = json.loads(text.split("const RUNS = ", 1)[1].split("\nconst [BEFORE", 1)[0])
     before, after, sep = json.loads(text.split("const [BEFORE, AFTER, SEP] = ", 1)[1].split("\n", 1)[0])
@@ -232,7 +239,7 @@ def checked_run_list(case: unittest.TestCase, arguments: Sequence[str], out: str
     if "prepare" not in arguments or not lines or not lines[-1].startswith("RUNS "):
         return out
     path, pending = lines[-1].removeprefix("RUNS ").rstrip("\n").rsplit(" pending=", 1)
-    listed = rp.load_run_list(Path(path))
+    listed = review_batches.load_run_list(Path(path))
     published = [line.rstrip("\n").split(" ", 2)[2] for line in lines if line.startswith("RUN ")]
     # A call continuing a run list adds its runs after the ones earlier calls published.
     added = listed["runs"][len(listed["runs"]) - len(published) :] if "--runs" in arguments else listed["runs"]
@@ -364,7 +371,7 @@ class CommandScriptTests(unittest.TestCase):
 
     def spelled(self, started: str) -> str:
         with mock.patch.object(sys, "argv", [started, "prepare"]):
-            return rp.command_script("review_source.py")
+            return review_run.command_script("review_source.py")
 
     def test_an_absolute_start_of_the_pipeline_keeps_its_spelling(self) -> None:
         started = f"{self.scripts.parents[1] / 'review-prs'}/../code-review-core/scripts/review_pipeline.py"
@@ -419,7 +426,7 @@ class PipelineFixture(unittest.TestCase):
         self.base, self.head = copy_checkout(self.checkout)
         self.github = FakeGitHub(self.checkout)
         self.github.pulls[12] = rest_pull(12, self.head, self.base)
-        self.services = rp.Services(
+        self.services = review_run.Services(
             github=GitHubClient(runner=self.github),
             resolve_runtime=lambda configured, host: "claude-code",
             today=lambda: date(2026, 3, 10),
@@ -442,7 +449,9 @@ class PipelineFixture(unittest.TestCase):
     def leftovers(self) -> list[Path]:
         """What the temporary directory holds besides the run lists prepare writes, which outlive a failed prepare
         because the skill still reads them with unfinalized."""
-        return sorted(path for path in self.temporary.iterdir() if not path.name.startswith(rp.RUN_LIST_PREFIX))
+        return sorted(
+            path for path in self.temporary.iterdir() if not path.name.startswith(review_batches.RUN_LIST_PREFIX)
+        )
 
     def write(self, files: dict[str, str]) -> None:
         for relative, content in files.items():
@@ -570,7 +579,7 @@ class PipelineFixture(unittest.TestCase):
 
     @staticmethod
     def write_role_result(
-        role: dict[str, Any],
+        role: Mapping[str, Any],
         *,
         findings: list[dict[str, Any]] | None = None,
         dispositions: list[dict[str, Any]] | None = None,
@@ -599,7 +608,7 @@ class PipelineFixture(unittest.TestCase):
     @staticmethod
     def finish_after(run: Path, role: dict[str, Any], seconds: float) -> None:
         """Date a role's result file `seconds` after the pipeline dispatched that role."""
-        started = json.loads((Path(run) / rp.RUN_FILE).read_text(encoding="utf-8"))["dispatched_at"][role["id"]]
+        started = json.loads((Path(run) / review_run.RUN_FILE).read_text(encoding="utf-8"))["dispatched_at"][role["id"]]
         os.utime(role["result_file"], (started + seconds, started + seconds))
 
     def run_main(self, *arguments: str) -> tuple[int, str, str]:
@@ -622,7 +631,7 @@ class PreparePublicationTests(PipelineFixture):
         write_json = rp.atomic_write_json
 
         def fail_marking(path: Path, value: Any) -> None:
-            if path == failed_run / rp.RUN_FILE:
+            if path == failed_run / review_run.RUN_FILE:
                 raise PersistenceError("disk full")
             write_json(path, value)
 
@@ -634,7 +643,7 @@ class PreparePublicationTests(PipelineFixture):
         with (
             mock.patch.object(rp, "prepare", side_effect=lambda selector, **_: prepared[selector]),
             mock.patch.object(rp, "prepare_fixture", return_value=prepared[failed_selector]),
-            mock.patch.object(rp, "atomic_write_json", side_effect=fail_marking),
+            mock.patch.object(review_run, "atomic_write_json", side_effect=fail_marking),
         ):
             return self.run_main(*arguments)
 
@@ -663,10 +672,10 @@ class PreparePublicationTests(PipelineFixture):
                 self.assertFalse(self.archive.exists(), "publication never records a review")
                 for selector, ready in successful.items():
                     run = ready["run"]
-                    self.assertEqual(selector, rp.unfinalized_selector(run))
+                    self.assertEqual(selector, review_dispatch.unfinalized_selector(run))
                     self.write_role_result(ready["roles"][0])
                     self.assertEqual(0, self.run_main("finalize", "--run", str(run))[0])
-                    self.assertIsNone(rp.unfinalized_selector(run))
+                    self.assertIsNone(review_dispatch.unfinalized_selector(run))
                 self.assertFalse(pull_directory(self.archive, REPOSITORY, failed_number).exists())
                 self.assertEqual("", git(self.checkout, "status", "--porcelain"))
                 self.assertFalse(self.state_path.exists())
@@ -675,7 +684,7 @@ class PreparePublicationTests(PipelineFixture):
     def test_a_cleanup_failure_reports_both_errors_and_keeps_the_run_discoverable(self) -> None:
         prepared = self.prepared_pulls()
         failed_run = prepared[SELECTOR]["run"]
-        original = (failed_run / rp.RUN_FILE).read_bytes()
+        original = (failed_run / review_run.RUN_FILE).read_bytes()
         with mock.patch.object(rp, "remove_run", side_effect=OSError("file held")):
             code, out, err = self.publish(prepared, SELECTOR)
         self.assertEqual((1, ""), (code, err))
@@ -684,7 +693,9 @@ class PreparePublicationTests(PipelineFixture):
             "(file held); inspect or delete it.",
             out.splitlines()[0],
         )
-        self.assertEqual(original, (failed_run / rp.RUN_FILE).read_bytes(), "failed atomic writes keep the old state")
+        self.assertEqual(
+            original, (failed_run / review_run.RUN_FILE).read_bytes(), "failed atomic writes keep the old state"
+        )
         self.assertEqual(
             (1, f"UNFINALIZED {SELECTOR} {failed_run}\n", ""),
             self.run_main("unfinalized", "--run", str(failed_run)),
@@ -698,7 +709,7 @@ class PreparePublicationTests(PipelineFixture):
 
         def partial_removal(run: Path) -> None:
             self.assertEqual(failed_run, run)
-            (run / rp.RUN_FILE).unlink()
+            (run / review_run.RUN_FILE).unlink()
             raise OSError("file held")
 
         with mock.patch.object(rp, "remove_run", side_effect=partial_removal):
@@ -739,8 +750,8 @@ class GenericReviewTests(PipelineFixture):
         self.configure(checkout=False)
         self.github.pulls[12] = rest_pull(12, self.head, self.base)
         with mock.patch(
-            "review_pipeline.materialize_source_snapshot_from_github",
-            side_effect=lambda repository, head, source, **_: rp.materialize_source_snapshot(
+            "review_snapshot.materialize_source_snapshot_from_github",
+            side_effect=lambda repository, head, source, **_: review_runtime.materialize_source_snapshot(
                 self.checkout, repository, head, source
             ),
         ):
@@ -802,7 +813,7 @@ class GenericReviewTests(PipelineFixture):
         self.assertFalse((run / "source" / "CLAUDE.md").exists(), "PR-head agent instructions must be excluded")
         self.assertTrue((run / "source" / "app" / "service.py").is_file())
 
-        state = rp.load_run(run)
+        state = review_run.load_run(run)
         self.write_role_result(state["roles"][0], findings=[self.finding()])
         code, out, _ = self.run_main("check", "--run", str(run))
         self.assertEqual((0, f"ALL_VALID {SELECTOR}\n"), (code, out))
@@ -971,7 +982,7 @@ class GenericReviewTests(PipelineFixture):
         )
 
     def test_prepare_times_reviewers_from_when_it_prints_their_roles(self) -> None:
-        with mock.patch.object(rp, "mark_dispatched", wraps=rp.mark_dispatched) as marked:
+        with mock.patch.object(rp, "mark_dispatched", wraps=review_run.mark_dispatched) as marked:
             code, out, err = self.run_main("prepare", "--pull", SELECTOR)
         self.assertEqual(0, code, err)
         marked.assert_called_once_with(Path(out.splitlines()[0].removeprefix(f"RUN {SELECTOR} ")))
@@ -981,7 +992,7 @@ class GenericReviewTests(PipelineFixture):
             ready = self.prepare()
 
         def state() -> dict[str, Any]:
-            return json.loads((ready["run"] / rp.RUN_FILE).read_text(encoding="utf-8"))
+            return json.loads((ready["run"] / review_run.RUN_FILE).read_text(encoding="utf-8"))
 
         self.assertEqual({"generic-review": 1_000.0}, state()["dispatched_at"])
         with mock.patch("time.time", return_value=1_600.0):
@@ -996,7 +1007,7 @@ class GenericReviewTests(PipelineFixture):
                 if timed:
                     self.finish_after(ready["run"], ready["roles"][0], 45)
                 else:  # a run prepared before reviewer timing existed
-                    path = ready["run"] / rp.RUN_FILE
+                    path = ready["run"] / review_run.RUN_FILE
                     state = json.loads(path.read_text(encoding="utf-8"))
                     del state["dispatched_at"]
                     path.write_text(json.dumps(state), encoding="utf-8")
@@ -1020,14 +1031,16 @@ class GenericReviewTests(PipelineFixture):
 
     def test_prepare_failure_removes_its_run_directory(self) -> None:
         self.github.pulls[12] = rest_pull(12, self.base, self.base)
-        with self.assertRaisesRegex(rp.PipelineError, "changes no files"):
+        with self.assertRaisesRegex(review_run.PipelineError, "changes no files"):
             self.prepare()
         self.assertEqual([], self.leftovers())
 
     def test_a_push_during_prepare_fails_instead_of_mislabeling_the_diff(self) -> None:
         pushed = self.commit({"app/service.py": "def total(items):\n    return 0\n"})
         self.github.after_diff = rest_pull(12, pushed, self.base)
-        with self.assertRaisesRegex(rp.PipelineError, r"changed while it was being prepared .*run prepare again"):
+        with self.assertRaisesRegex(
+            review_run.PipelineError, r"changed while it was being prepared .*run prepare again"
+        ):
             self.prepare()
         self.assertEqual([], self.leftovers())
         self.github.after_diff = None
@@ -1037,9 +1050,9 @@ class GenericReviewTests(PipelineFixture):
         self.assertIn("return 0", (ready["run"] / "diff.patch").read_text(encoding="utf-8"))
 
     def test_unconfigured_repository_and_forced_canary_fail(self) -> None:
-        with self.assertRaisesRegex(rp.PipelineError, "not a configured repository"):
+        with self.assertRaisesRegex(review_run.PipelineError, "not a configured repository"):
             self.prepare("example/other#3")
-        with self.assertRaisesRegex(rp.PipelineError, "canary"):
+        with self.assertRaisesRegex(review_run.PipelineError, "canary"):
             self.prepare(canary=True, force=True)
         # A runtime failure is a FAILED line on stdout and exit 1; stderr carries only usage errors.
         code, out, err = self.run_main("prepare", "--pull", "example/other#3")
@@ -1147,7 +1160,7 @@ class SymbolicLinkTests(PipelineFixture):
             ],
         )
         self.assertFalse((run / "source" / "app" / "cache").exists())
-        state = json.loads((run / rp.RUN_FILE).read_text(encoding="utf-8"))
+        state = json.loads((run / review_run.RUN_FILE).read_text(encoding="utf-8"))
         [role] = state["roles"]
         prompt = Path(role["prompt_file"]).read_text(encoding="utf-8")
         self.assertIn(
@@ -1289,7 +1302,7 @@ class WorkflowTests(PipelineFixture):
         self.assertEqual(first["run"] / "reviewers.workflow.js", script, "finalize removes it with the run")
         # The Workflow tool refuses a script path in the system temp directory, so the script is passed inline.
         self.assertEqual(script.read_text(encoding="utf-8"), text, "the printed script is the saved one")
-        self.assertTrue(out.endswith(f"{rp.SCRIPT_END}\n"), out)
+        self.assertTrue(out.endswith(f"{review_dispatch.SCRIPT_END}\n"), out)
         self.assertTrue(text.startswith(self.META), "meta must stay a pure literal")
         self.assertNotIn("`", text, "no template literals, so Windows paths are never read as escapes")
         self.assertIn(" ", first["roles"][0]["prompt_file"], "fixture prompt paths must contain a space")
@@ -1415,7 +1428,7 @@ class WaitReviewersTests(PipelineFixture):
         (ready,) = self.start()
         role = ready["roles"][0]
         self.write_role_result(role, findings=[self.finding(line=1)])  # line 1 is unchanged context
-        run_file = ready["run"] / rp.RUN_FILE
+        run_file = ready["run"] / review_run.RUN_FILE
         before = run_file.read_bytes()
         self.assertEqual((0, f"RUNNING {SELECTOR} generic-review 10s\n", ""), self.wait(ready, timeout="10"))
         self.assertTrue(Path(role["result_file"]).exists(), "its reviewer may still be fixing it")
@@ -1445,7 +1458,7 @@ class WaitReviewersTests(PipelineFixture):
 
     def test_a_role_past_the_reviewer_limit_is_overdue_and_check_retries_it(self) -> None:
         # A backstop for a Workflow whose completion never reaches the session: the wait always ends.
-        self.assertEqual(3600, rp.REVIEWER_LIMIT_SECONDS)
+        self.assertEqual(3600, review_dispatch.REVIEWER_LIMIT_SECONDS)
         (ready,) = self.start()
         self.clock.now += 3600 - 5
         self.assertEqual((0, f"OVERDUE {SELECTOR} generic-review 3601s\n", ""), self.wait(ready))
@@ -1548,7 +1561,7 @@ class UnfinalizedTests(PipelineFixture):
                     "json": str(directory / "review.json"),
                     "markdown": str(directory / "review.md"),
                 },
-                json.loads((run / rp.RECORDED_FILE).read_text(encoding="utf-8")),
+                json.loads((run / review_run.RECORDED_FILE).read_text(encoding="utf-8")),
             )
             self.assertEqual((0, "ALL_FINALIZED\n", ""), self.run_main("unfinalized", "--run", str(run)))
             self.assertEqual(
@@ -1639,7 +1652,7 @@ class RetryTests(PipelineFixture):
         code, out, err = self.run_main("check", "--run", str(ready["run"]))  # the retry wrote nothing
         self.assertEqual((1, ""), (code, err))
         self.assertIn(f"FAILED {SELECTOR} generic-review", out)
-        with self.assertRaisesRegex(rp.PipelineError, "invalid"):
+        with self.assertRaisesRegex(review_run.PipelineError, "invalid"):
             rp.finalize(ready["run"])
         self.assertIsNone(latest_record(self.archive, REPOSITORY, 12))
         self.assertTrue(ready["run"].exists(), "a failed run is kept for inspection")
@@ -1713,7 +1726,7 @@ class ReReviewTests(PipelineFixture):
             ready["roles"][0],
             dispositions=[{"finding_id": "v1:F001", "disposition": "addressed", "rationale": "Now returns a float."}],
         )
-        run_file = ready["run"] / rp.RUN_FILE
+        run_file = ready["run"] / review_run.RUN_FILE
         prepared = json.loads(run_file.read_text(encoding="utf-8"))
         cases = {
             "prepared before the base was recorded": (
@@ -1873,7 +1886,7 @@ class ReReviewTests(PipelineFixture):
         )
         run = next(line.split(" ", 2)[2] for line in out.splitlines() if line.startswith("RUN "))
         self.assertEqual([("generic-review", ["CLAUDE.md"], False)], self.planned(run))
-        role = rp.load_run(Path(run))["roles"][0]
+        role = review_run.load_run(Path(run))["roles"][0]
         self.assertIn(
             '"id": "v1:F001"',
             Path(role["prompt_file"]).read_text(encoding="utf-8"),
@@ -1916,7 +1929,7 @@ class ReReviewTests(PipelineFixture):
             code, out, err = self.run_main("prepare", "--re-review", SELECTOR, "--scope", "incremental")
             self.assertEqual(0, code, err)
             run = next(line.split(" ", 2)[2] for line in out.splitlines() if line.startswith("RUN "))
-            role = rp.load_run(Path(run))["roles"][0]
+            role = review_run.load_run(Path(run))["roles"][0]
             # Version 2 reports no findings, so version 3 sees the finding only through the ledger.
             self.assertIn('"id": "v1:F001"', Path(role["prompt_file"]).read_text(encoding="utf-8"), version)
             self.write_role_result(
@@ -2066,7 +2079,7 @@ class ReReviewTests(PipelineFixture):
                 self.run_main("prepare", *arguments)
             self.assertEqual(2, raised.exception.code)
         for options in ({"re_review": True}, {"scope": "full"}, {"re_review": True, "scope": "most"}):
-            with self.subTest(options=options), self.assertRaisesRegex(rp.PipelineError, "takes a scope"):
+            with self.subTest(options=options), self.assertRaisesRegex(review_run.PipelineError, "takes a scope"):
                 self.prepare(**options)
         self.assertEqual([], self.github.calls, "nothing is fetched before the scope is settled")
 
@@ -2097,12 +2110,12 @@ class ReReviewTests(PipelineFixture):
         }
         self.assertEqual({"example/one#13": "initial", "example/one#12": "re-review"}, modes)
 
-        prior = rp.load_run(Path(runs["example/one#12"]))["roles"][0]
+        prior = review_run.load_run(Path(runs["example/one#12"]))["roles"][0]
         self.write_role_result(
             prior,
             dispositions=[{"finding_id": "v1:F001", "disposition": "addressed", "rationale": "Now returns a float."}],
         )
-        self.write_role_result(rp.load_run(Path(runs["example/one#13"]))["roles"][0])
+        self.write_role_result(review_run.load_run(Path(runs["example/one#13"]))["roles"][0])
         code, out, err = self.run_main("finalize", "--run", runs["example/one#13"], "--run", runs["example/one#12"])
         self.assertEqual(0, code, err)
         self.assertEqual(
@@ -2131,13 +2144,15 @@ class ReReviewTests(PipelineFixture):
         code, out, err = self.run_main("prepare", "--pull", SELECTOR, "--host", "codex")
         self.assertEqual(0, code, err)
         state = json.loads(
-            (Path(out.splitlines()[0].removeprefix(f"RUN {SELECTOR} ")) / rp.RUN_FILE).read_text(encoding="utf-8")
+            (Path(out.splitlines()[0].removeprefix(f"RUN {SELECTOR} ")) / review_run.RUN_FILE).read_text(
+                encoding="utf-8"
+            )
         )
         self.assertEqual([("auto", "codex")], asked)
         self.assertEqual(("codex", "codex"), (state["host"], state["runtime"]))
 
         asked.clear()
-        state = json.loads((self.prepare(force=True)["run"] / rp.RUN_FILE).read_text(encoding="utf-8"))
+        state = json.loads((self.prepare(force=True)["run"] / review_run.RUN_FILE).read_text(encoding="utf-8"))
         self.assertEqual([("auto", None)], asked, "without a host the PATH search decides")
         self.assertEqual((None, "codex"), (state["host"], state["runtime"]))
 
@@ -2159,7 +2174,7 @@ class ReReviewTests(PipelineFixture):
         self.assertEqual([], self.github.calls, "nothing is fetched for a refused command")
 
     def test_re_review_needs_an_earlier_review(self) -> None:
-        with self.assertRaisesRegex(rp.PipelineError, "review-prs --pull example/one#12"):
+        with self.assertRaisesRegex(review_run.PipelineError, "review-prs --pull example/one#12"):
             self.prepare(re_review=True, scope="full")
 
     def test_legacy_review_is_superseded_by_an_initial_review(self) -> None:
@@ -2377,14 +2392,14 @@ class RepositoryReviewerTests(PipelineFixture):
             "take the path from a `diff --git` header in DIFF_FILE"
         )
         role = ready["roles"][0]
-        self.assertEqual(reason, rp.validate_result(Path(ready["run"]), "fixture-review"))
+        self.assertEqual(reason, review_dispatch.validate_result(Path(ready["run"]), "fixture-review"))
         self.assertEqual(
             (1, f"RETRY {SELECTOR} fixture-review {role['prompt_file']} {reason}\n", ""),
             self.run_main("check", "--run", str(ready["run"])),
         )
         # check set the result aside for the retry; a reviewer that writes it again cannot have it recorded.
         Path(ready["result_path"]).write_text(json.dumps(result), encoding="utf-8")
-        with self.assertRaisesRegex(rp.PipelineError, "is not on a file the pull request changes"):
+        with self.assertRaisesRegex(review_run.PipelineError, "is not on a file the pull request changes"):
             rp.finalize(ready["run"])
         self.assertFalse(pull_directory(self.archive, REPOSITORY, 12).exists())
         # The same finding on a changed file is accepted and recorded.
@@ -2567,11 +2582,11 @@ class ReadCountTests(PipelineFixture):
         ready = self.prepare()
         run, role = Path(ready["run"]), ready["roles"][0]
         log = guard.read_log(run, role["id"])
-        self.assertEqual({}, rp.load_run(run)["reads"])
+        self.assertEqual({}, review_run.load_run(run)["reads"])
         self.guarded(role, "a71dab35ebc1b97eb", "app/service.py", "app/service.py")
         self.write_role_result(role, findings=[self.finding(line=1)])  # line 1 is not an added line: one retry
         self.assertEqual(1, self.run_main("check", "--run", str(run))[0])
-        self.assertEqual({}, rp.load_run(run)["reads"], "a role set aside keeps its log for its rerun")
+        self.assertEqual({}, review_run.load_run(run)["reads"], "a role set aside keeps its log for its rerun")
         self.assertTrue(log.is_file())
         # The rerun is a fresh reviewer of the same role: what both read counts once. It fetches review/rules.md,
         # which the lazy snapshot did not hold, and reads it.
@@ -2585,7 +2600,7 @@ class ReadCountTests(PipelineFixture):
         sizes = [(run / "source" / path).stat().st_size for path in ("app/service.py", "review/rules.md")]
         self.write_role_result(role, findings=[self.finding()])
         self.assertEqual((0, f"ALL_VALID {SELECTOR}\n", ""), self.run_main("check", "--run", str(run)))
-        self.assertEqual({role["id"]: {"files": 2, "bytes": sum(sizes)}}, rp.load_run(run)["reads"])
+        self.assertEqual({role["id"]: {"files": 2, "bytes": sum(sizes)}}, review_run.load_run(run)["reads"])
         self.assertFalse(log.exists(), "check keeps counts, never the paths")
 
         rp.finalize(run)
@@ -2605,7 +2620,7 @@ class ReadCountTests(PipelineFixture):
         self.write_role_result(role, findings=[self.finding()])
         self.assertEqual((0, f"ALL_VALID {SELECTOR}\n", ""), self.run_main("check", "--run", str(run)))
         size = (run / "source" / "app" / "service.py").stat().st_size
-        self.assertEqual({role["id"]: {"files": 1, "bytes": size}}, rp.load_run(run)["reads"])
+        self.assertEqual({role["id"]: {"files": 1, "bytes": size}}, review_run.load_run(run)["reads"])
 
     def test_finalize_counts_a_log_check_did_not_reach_and_a_reviewer_without_one_is_unknown(self) -> None:
         self.configure(self.repository_reviewer("review/specialists.json"))
@@ -2661,8 +2676,8 @@ class InlineReviewTests(PipelineFixture):
         return code, out
 
     @staticmethod
-    def role(run: Path, identity: str) -> dict[str, Any]:
-        return next(role for role in rp.load_run(run)["roles"] if role["id"] == identity)
+    def role(run: Path, identity: str) -> review_run.RunRole:
+        return next(role for role in review_run.load_run(run)["roles"] if role["id"] == identity)
 
     def work_inline(self, run: Path) -> list[str]:
         """Work every role as the orchestrating session does: ask next-role, write that role's result, repeat."""
@@ -2680,7 +2695,7 @@ class InlineReviewTests(PipelineFixture):
 
     def test_a_specialists_review_completes_inline_and_records_the_subagent_path_s_shape(self) -> None:
         run = self.prepare_inline()
-        self.assertEqual("inline", rp.load_run(run)["dispatch"])
+        self.assertEqual("inline", review_run.load_run(run)["dispatch"])
         self.assertEqual(["python-reviewer", "generic-review"], self.work_inline(run))
         self.assertEqual((0, f"ALL_VALID {SELECTOR}\n", ""), self.run_main("check", "--run", str(run)))
         code, out, err = self.run_main("finalize", "--run", str(run))
@@ -2697,7 +2712,7 @@ class InlineReviewTests(PipelineFixture):
         code, lines = self.prepare_lines("--host", "claude-code")
         self.assertEqual(0, code, lines)
         run = Path(lines[0].removeprefix(f"RUN {SELECTOR} "))
-        roles = rp.load_run(run)["roles"]
+        roles = review_run.load_run(run)["roles"]
         self.assertEqual([f"ROLE {role['id']} {role['prompt_file']}" for role in roles], lines[-2:])
         for role in roles:
             self.write_role_result(role, findings=[self.finding()] if role["id"] == "python-reviewer" else [])
@@ -2710,7 +2725,7 @@ class InlineReviewTests(PipelineFixture):
         # No guard holds the session that works an inline role, so nothing counts what it reads.
         run = self.prepare_inline()
         self.work_inline(run)
-        self.assertEqual({}, rp.load_run(run)["reads"])
+        self.assertEqual({}, review_run.load_run(run)["reads"])
         self.assertEqual(0, self.run_main("finalize", "--run", str(run))[0])
         review = archived_record(self.archive, 12)["review"]
         self.assertEqual(
@@ -2743,7 +2758,7 @@ class InlineReviewTests(PipelineFixture):
                     continue
                 self.assertEqual(0, code, lines)
                 run = Path(lines[0].removeprefix(f"RUN {SELECTOR} "))
-                self.assertEqual(expected, rp.load_run(run)["dispatch"])
+                self.assertEqual(expected, review_run.load_run(run)["dispatch"])
                 self.assertEqual(expected == "inline", lines[-1] == f"INLINE {run}")
                 shutil.rmtree(run)
 
@@ -2762,22 +2777,22 @@ class InlineReviewTests(PipelineFixture):
 
     def test_next_role_hands_out_one_role_at_a_time_and_times_each_from_then(self) -> None:
         run = self.prepare_inline()
-        self.assertEqual({}, rp.load_run(run)["dispatched_at"], "prepare hands out no role")
+        self.assertEqual({}, review_run.load_run(run)["dispatched_at"], "prepare hands out no role")
         prompt = self.role(run, "python-reviewer")["prompt_file"]
         self.assertEqual((0, f"INLINE_ROLE {SELECTOR} python-reviewer {prompt}\n"), self.next_role(run))
         self.clock.sleep(30)
         # Asked again before the role has a result, it hands out the same role and keeps its clock.
         self.assertEqual((0, f"INLINE_ROLE {SELECTOR} python-reviewer {prompt}\n"), self.next_role(run))
-        self.assertEqual({"python-reviewer": 10_000.0}, rp.load_run(run)["dispatched_at"])
+        self.assertEqual({"python-reviewer": 10_000.0}, review_run.load_run(run)["dispatched_at"])
         self.write_role_result(self.role(run, "python-reviewer"))
         prompt = self.role(run, "generic-review")["prompt_file"]
         self.assertEqual((0, f"INLINE_ROLE {SELECTOR} generic-review {prompt}\n"), self.next_role(run))
-        state = rp.load_run(run)
+        state = review_run.load_run(run)
         self.assertEqual({"python-reviewer": 10_000.0, "generic-review": 10_030.0}, state["dispatched_at"])
         self.assertEqual(["python-reviewer"], sorted(state["seal"]["results"]), "the finished role is sealed")
         self.write_role_result(self.role(run, "generic-review"))
         self.assertEqual((0, f"INLINE_DONE {SELECTOR}\n"), self.next_role(run))
-        self.assertEqual(["generic-review", "python-reviewer"], sorted(rp.load_run(run)["seal"]["results"]))
+        self.assertEqual(["generic-review", "python-reviewer"], sorted(review_run.load_run(run)["seal"]["results"]))
 
     def test_a_later_role_that_rewrites_an_earlier_result_fails_the_pull_request(self) -> None:
         run = self.prepare_inline()
@@ -2807,7 +2822,9 @@ class InlineReviewTests(PipelineFixture):
         code, out, _ = self.run_main("check", "--run", str(run))
         self.assertEqual(1, code)
         self.assertTrue(out.startswith(f"RETRY {SELECTOR} python-reviewer {invalid['prompt_file']} "), out)
-        self.assertNotIn("python-reviewer", rp.load_run(run)["seal"]["results"], "a set-aside result is unsealed")
+        self.assertNotIn(
+            "python-reviewer", review_run.load_run(run)["seal"]["results"], "a set-aside result is unsealed"
+        )
         self.assertEqual((0, f"INLINE_ROLE {SELECTOR} python-reviewer {invalid['prompt_file']}\n"), self.next_role(run))
         self.write_role_result(invalid)
         self.assertEqual((0, f"INLINE_DONE {SELECTOR}\n"), self.next_role(run))
@@ -2838,7 +2855,7 @@ class InlineReviewTests(PipelineFixture):
         self.assertEqual([], [line for line in lines if line.startswith("MODEL ")])
         # The run keeps no model either, so a retry that check hands back names none.
         run = Path(lines[0].removeprefix(f"RUN {SELECTOR} "))
-        roles = {role["id"]: role for role in rp.load_run(run)["roles"]}
+        roles = {role["id"]: role for role in review_run.load_run(run)["roles"]}
         self.assertIsNone(roles["python-reviewer"]["model"])
 
     def test_only_next_role_works_an_inline_run(self) -> None:
@@ -2867,7 +2884,7 @@ class InlineReviewTests(PipelineFixture):
             ("copilot-cli", "entrypoint", "copilot-host"),
         ):
             with self.subTest(runtime=runtime, kind=kind):
-                self.assertEqual(dispatch, rp.run_dispatch({"runtime": runtime, "kind": kind}))
+                self.assertEqual(dispatch, review_run.run_dispatch({"runtime": runtime, "kind": kind}))
 
 
 class FakeClock:
@@ -2964,7 +2981,7 @@ class CopilotHostTests(PipelineFixture):
         return json.loads((self.run_directory / "copilot-host.json").read_text(encoding="utf-8"))
 
     def attempts(self) -> dict[str, int]:
-        return json.loads((self.run_directory / rp.RUN_FILE).read_text(encoding="utf-8"))["attempts"]
+        return json.loads((self.run_directory / review_run.RUN_FILE).read_text(encoding="utf-8"))["attempts"]
 
     def test_dispatch_starts_the_host_detached_and_returns_at_once(self) -> None:
         with mock.patch("time.time", return_value=3_000.0):
@@ -2978,7 +2995,7 @@ class CopilotHostTests(PipelineFixture):
         )
 
         def started() -> dict[str, float]:
-            return json.loads((self.run_directory / rp.RUN_FILE).read_text(encoding="utf-8"))["dispatched_at"]
+            return json.loads((self.run_directory / review_run.RUN_FILE).read_text(encoding="utf-8"))["dispatched_at"]
 
         self.assertEqual({"fixture-copilot": 3_000.0}, started())
 
@@ -3003,7 +3020,7 @@ class CopilotHostTests(PipelineFixture):
         self.run_directory = Path(out.splitlines()[0].removeprefix(f"RUN {SELECTOR} "))
         self.run_path = str(self.run_directory)
         self.assertEqual(f"HOST copilot-cli {self.run_directory}", out.splitlines()[1], "no EFFORT line for a host")
-        state = json.loads((self.run_directory / rp.RUN_FILE).read_text(encoding="utf-8"))
+        state = json.loads((self.run_directory / review_run.RUN_FILE).read_text(encoding="utf-8"))
         self.assertEqual("max", state["roles"][0]["effort"])
         self.assertEqual(0, self.run_main("dispatch", "--run", self.run_path)[0])
         self.assertEqual(0, self.run_host()[0])
@@ -3099,7 +3116,7 @@ class CopilotHostTests(PipelineFixture):
             self.assertEqual((0, f"STARTED {self.run_path}\n", ""), self.run_main("dispatch", "--run", self.run_path))
         self.assertEqual(2, self.claim()["attempt"])
         self.assertEqual(4002, self.claim()["pid"])
-        dispatched = json.loads((self.run_directory / rp.RUN_FILE).read_text(encoding="utf-8"))["dispatched_at"]
+        dispatched = json.loads((self.run_directory / review_run.RUN_FILE).read_text(encoding="utf-8"))["dispatched_at"]
         self.assertNotEqual({"fixture-copilot": 4_000.0}, dispatched, "a rerun does not restart the reviewer's clock")
 
     def test_check_treats_a_running_host_as_not_ready(self) -> None:
@@ -3176,7 +3193,7 @@ class CopilotHostTests(PipelineFixture):
         empty = self.root / "no copilot"
         empty.mkdir()
         with mock.patch.dict(os.environ, {"PATH": str(Path(sys.executable).parent), "LOCALAPPDATA": str(empty)}):
-            self.services = rp.Services(
+            self.services = review_run.Services(
                 github=self.services.github, resolve_runtime=self.services.resolve_runtime, today=self.services.today
             )
             self.assertEqual((0, f"STARTED {self.run_path}\n", ""), self.run_main("dispatch", "--run", self.run_path))
@@ -3286,7 +3303,7 @@ class ProfileModelTests(PipelineFixture):
         self.assertEqual(f"EFFORT {SELECTOR} generic-review high", lines[generic + 1])
         self.assertEqual([], [line for line in lines if line.startswith("MODEL ")])
         run = Path(lines[0].removeprefix(f"RUN {SELECTOR} "))
-        state = json.loads((run / rp.RUN_FILE).read_text(encoding="utf-8"))
+        state = json.loads((run / review_run.RUN_FILE).read_text(encoding="utf-8"))
         self.assertEqual(
             [("python-review", None, "low"), ("generic-review", None, "high")],
             [(role["id"], role["model"], role["effort"]) for role in state["roles"]],
@@ -3317,7 +3334,7 @@ class ProfileModelTests(PipelineFixture):
         self.assertEqual(0, code, err)
         self.assertNotIn("EFFORT ", out)
         run = Path(out.splitlines()[0].removeprefix(f"RUN {SELECTOR} "))
-        state = json.loads((run / rp.RUN_FILE).read_text(encoding="utf-8"))
+        state = json.loads((run / review_run.RUN_FILE).read_text(encoding="utf-8"))
         self.assertEqual(["low", None], [role["effort"] for role in state["roles"]])
 
     def test_null_model_with_no_profile_model_uses_the_session_model(self) -> None:
@@ -3412,7 +3429,7 @@ class ProfileModelTests(PipelineFixture):
         _, _, roles = workflow_output(out)
         self.assertEqual("sonnet", roles[0]["model"])
         # An invalid result is retried on the same model.
-        state = json.loads((Path(run) / rp.RUN_FILE).read_text(encoding="utf-8"))
+        state = json.loads((Path(run) / review_run.RUN_FILE).read_text(encoding="utf-8"))
         self.write_role_result(state["roles"][0], findings=[self.finding(line=1)])
         code, out, _ = self.run_main("check", "--run", run)
         self.assertEqual(1, code)
@@ -3433,7 +3450,7 @@ class ProfileModelTests(PipelineFixture):
             lines,
         )
         run = lines[0].removeprefix(f"RUN {SELECTOR} ")
-        state = json.loads((Path(run) / rp.RUN_FILE).read_text(encoding="utf-8"))
+        state = json.loads((Path(run) / review_run.RUN_FILE).read_text(encoding="utf-8"))
         self.assertEqual([None, None], [role["model"] for role in state["roles"]])
         # A retry starts on the session's model too, and the record names the model the reviewer says it ran on.
         python, generic = state["roles"]
@@ -3889,7 +3906,7 @@ class ReviewerSourceTests(PipelineFixture):
             out.splitlines(),
         )
         run = Path(out.splitlines()[0].removeprefix(f"RUN {SELECTOR} "))
-        state = rp.load_run(run)
+        state = review_run.load_run(run)
         self.assertEqual(["python-reviewer"], [role["id"] for role in state["roles"]])
         self.write_role_result(state["roles"][0])
         code, out, err = self.run_main("finalize", "--run", str(run))
@@ -3949,7 +3966,7 @@ class ReviewerSourceTests(PipelineFixture):
             ([("python-reviewer", ["app/service.py"]), ("instructions-sharer", ["CLAUDE.md"])], []),
             ([(role["id"], role["files"]) for role in plan["roles"]], plan["uncovered_files"]),
         )
-        for role in rp.load_run(run)["roles"]:
+        for role in review_run.load_run(run)["roles"]:
             self.write_role_result(role)
         code, out, err = self.run_main("finalize", "--run", str(run))
         self.assertEqual(0, code, err)
@@ -3969,7 +3986,7 @@ class ReviewerSourceTests(PipelineFixture):
             self.assertEqual(0, code, err)
             run = next(line.split(" ", 2)[2] for line in out.splitlines() if line.startswith("RUN "))
             planned = self.planned(run)
-            for role in rp.load_run(Path(run))["roles"]:
+            for role in review_run.load_run(Path(run))["roles"]:
                 self.write_role_result(role)
             code, out, err = self.run_main("finalize", "--run", run)
             self.assertEqual(0, code, err)
@@ -4117,7 +4134,11 @@ class ValidateReviewerSequenceTests(PipelineFixture):
     def validate(self, **options: Any) -> tuple[list[str], list[tuple[Any, ...]], list[str]]:
         """The lines, the target calls in order, and the GitHub endpoints read in order."""
         events: list[tuple[Any, ...]] = []
-        ensure, resolve, default = rp.ensure_local_commit, rp.resolve_reviewer_commit, rp._reviewer_commit
+        ensure, resolve, default = (
+            review_snapshot.ensure_local_commit,
+            review_runtime.resolve_reviewer_commit,
+            review_reviewer_setup._reviewer_commit,
+        )
 
         def ensure_local_commit(checkout: Path, commit: str, refspec: str, git: Any) -> None:
             events.append(("ensure", commit, refspec))
@@ -4127,16 +4148,21 @@ class ValidateReviewerSequenceTests(PipelineFixture):
             events.append(("resolve", trusted_ref, head_sha))
             return resolve(checkout, trusted_ref, head_sha=head_sha, runner=runner)
 
-        def reviewer_commit(checkout: Path, reviewer: dict[str, Any], ref: str | None, services: rp.Services) -> str:
+        def reviewer_commit(
+            checkout: Path, reviewer: dict[str, Any], ref: str | None, services: review_run.Services
+        ) -> str:
             events.append(("default", ref))
             return default(checkout, reviewer, ref, services)
 
         with (
-            mock.patch.object(rp, "ensure_local_commit", ensure_local_commit),
-            mock.patch.object(rp, "resolve_reviewer_commit", resolve_reviewer_commit),
-            mock.patch.object(rp, "_reviewer_commit", reviewer_commit),
+            mock.patch.object(review_snapshot, "ensure_local_commit", ensure_local_commit),
+            mock.patch.object(review_reviewer_setup, "ensure_local_commit", ensure_local_commit),
+            mock.patch.object(review_reviewer_setup, "resolve_reviewer_commit", resolve_reviewer_commit),
+            mock.patch.object(review_reviewer_setup, "_reviewer_commit", reviewer_commit),
         ):
-            lines = rp.validate_reviewer(REPOSITORY, config_path=self.config_path, services=self.services, **options)
+            lines = review_reviewer_setup.validate_reviewer(
+                REPOSITORY, config_path=self.config_path, services=self.services, **options
+            )
         return lines, events, [call[-1] for call in self.github.calls]
 
     def reviewer_line(self) -> str:
@@ -4179,7 +4205,7 @@ class ValidateReviewerSequenceTests(PipelineFixture):
 
     def test_without_a_ref_or_a_trusted_ref_origin_s_default_branch_must_resolve(self) -> None:
         self.use()
-        with self.assertRaises(rp.PipelineError) as caught:
+        with self.assertRaises(review_run.PipelineError) as caught:
             self.validate()
         self.assertEqual(
             f"Cannot resolve refs/remotes/origin/HEAD in {self.checkout}; pass --ref: fatal: Needed a single revision",
@@ -4336,7 +4362,7 @@ class CanaryTests(PipelineFixture):
         runs = dict(line.removeprefix("RUN ").split(" ", 1) for line in out.splitlines() if line.startswith("RUN "))
         self.assertEqual(["example/one#12", "example/one#13", "example/one#14"], list(runs))
         for selector in ("example/one#12", "example/one#14"):
-            self.write_role_result(rp.load_run(Path(runs[selector]))["roles"][0])
+            self.write_role_result(review_run.load_run(Path(runs[selector]))["roles"][0])
         failing = runs["example/one#13"]  # its reviewer wrote no result
 
         code, out, err = self.run_main("finalize", *(argument for run in runs.values() for argument in ("--run", run)))
@@ -4435,7 +4461,7 @@ class DocumentBaseRefusalTests(PipelineFixture):
             [f'NOTE {SELECTOR} The base version of document "docs/design.docx" could not be extracted ({reason}).'],
             [line for line in output if line.startswith(f"NOTE {SELECTOR} The base version of document ")],
         )
-        state = rp.load_run(Path(next(line.split(" ", 2)[2] for line in output if line.startswith("RUN "))))
+        state = review_run.load_run(Path(next(line.split(" ", 2)[2] for line in output if line.startswith("RUN "))))
         request = json.loads(Path(state["request_path"]).read_text(encoding="utf-8"))
         source = Path(request["source_snapshot"]["root"])
         self.assertEqual(self.HEAD_TEXT, (source / "docs" / "design.docx").read_text(encoding="utf-8"))
@@ -4468,10 +4494,10 @@ class DocumentBaseRefusalTests(PipelineFixture):
     def test_prepare_notes_an_oversized_base_and_shows_every_head_line_as_added(self) -> None:
         buffer = io.BytesIO(word_document(paragraph("Scope", style="Titre1"), paragraph("Keep one queue.")))
         with zipfile.ZipFile(buffer, "a", zipfile.ZIP_STORED) as package:
-            package.writestr("padding.bin", b"\0" * rp.MAX_CHANGED_FILE_BYTES)
+            package.writestr("padding.bin", b"\0" * review_runtime.MAX_CHANGED_FILE_BYTES)
         base = buffer.getvalue()
-        self.assertGreater(len(base), rp.MAX_CHANGED_FILE_BYTES)
-        self.assertEqual(b"[P1] # Scope\n[P2] Keep one queue.\n", rp.extract("docx", base))
+        self.assertGreater(len(base), review_runtime.MAX_CHANGED_FILE_BYTES)
+        self.assertEqual(b"[P1] # Scope\n[P2] Keep one queue.\n", review_documents.extract("docx", base))
         blob = self.changed_document(base)
         original = self.services.git
         reads: list[list[str]] = []
@@ -4500,7 +4526,7 @@ class FixtureCanaryTests(PipelineFixture):
     def setUp(self) -> None:
         super().setUp()
         self.no_github = NoGitHub()
-        self.fixture_services = rp.Services(
+        self.fixture_services = review_run.Services(
             github=GitHubClient(runner=self.no_github),
             fetch_tarball=self.no_github.tarball,
             resolve_runtime=lambda configured, host: "claude-code",
@@ -4526,10 +4552,10 @@ class FixtureCanaryTests(PipelineFixture):
         written = next(line.split(" ", 2)[2] for line in lines if line.startswith("SHA256 ") and line.endswith(".json"))
         return root, json.loads(Path(written).read_text(encoding="utf-8"))
 
-    def prepare_fixture_run(self, *arguments: str) -> dict[str, Any]:
+    def prepare_fixture_run(self, *arguments: str) -> Any:
         code, lines = self.fixture_main("prepare", "--host", "claude-code", "--canary", *arguments)
         self.assertEqual(0, code, lines)
-        return rp.load_run(Path(next(line for line in lines if line.startswith("RUN ")).split(" ", 2)[2]))
+        return review_run.load_run(Path(next(line for line in lines if line.startswith("RUN ")).split(" ", 2)[2]))
 
     def finish(self, state: dict[str, Any], **result: Any) -> list[str]:
         """Write each role's stub result, then check and finalize the run as review-prs does."""
@@ -4899,16 +4925,18 @@ class FixtureCanaryTests(PipelineFixture):
             run = Path(state["request_path"]).parent
             prompt = Path(role["prompt_file"]).read_text(encoding="utf-8")
             expected = (
-                rp.SELF_CHECK_COMMAND.format(script=f"{spelled}review_pipeline.py", run=run, role=role["id"]),
+                review_run.SELF_CHECK_COMMAND.format(script=f"{spelled}review_pipeline.py", run=run, role=role["id"]),
                 *review_source.source_commands(run, role["id"], script=f"{spelled}review_source.py"),
             )
             for command in expected:
                 self.assertIn(f"{command}\n", prompt)
-            resolved = rp.SELF_CHECK_COMMAND.format(script=scripts / "review_pipeline.py", run=run, role=role["id"])
+            resolved = review_run.SELF_CHECK_COMMAND.format(
+                script=scripts / "review_pipeline.py", run=run, role=role["id"]
+            )
             self.assertNotIn(resolved, prompt)
         [role] = guarded["roles"]
         run = Path(guarded["request_path"]).parent
-        check = rp.SELF_CHECK_COMMAND.format(script=f"{spelled}review_pipeline.py", run=run, role=role["id"])
+        check = review_run.SELF_CHECK_COMMAND.format(script=f"{spelled}review_pipeline.py", run=run, role=role["id"])
         fetch, _ = review_source.source_commands(run, role["id"], script=f"{spelled}review_source.py")
         read = {"tool_name": "Read", "tool_input": {"file_path": role["prompt_file"]}, "cwd": str(self.root)}
         self.assertIsNone(guard.decide({**read, "agent_id": "a1"}))
@@ -5044,7 +5072,7 @@ class SnapshotSizeTests(PipelineFixture):
     def test_validate_reviewer_measures_at_a_path_as_long_as_the_source_folder_of_prepares_run(self) -> None:
         run = Path(tempfile.mkdtemp(prefix="code-review-run-")).resolve()
         self.addCleanup(run.rmdir)
-        self.assertEqual(len(str(run / "source")), len(str(rp.run_source_example())))
+        self.assertEqual(len(str(run / "source")), len(str(review_reviewer_setup.run_source_example())))
 
     def large_tree(self) -> tuple[str, str]:
         """An entrypoint reviewer, whose snapshot only the Copilot CLI host writes whole, and two commits after the
@@ -5117,8 +5145,12 @@ class SnapshotSizeTests(PipelineFixture):
         changed = ["big/changed.txt"]
         with mock.patch("review_runtime.MAX_SOURCE_FILE_BYTES", 2000):
             snapshot = self.root / "snapshot"
-            size = rp.measure_source_snapshot(self.checkout, head, destination=snapshot, changed_paths=changed)
-            metadata = rp.materialize_source_snapshot(self.checkout, REPOSITORY, head, snapshot, changed_paths=changed)
+            size = review_runtime.measure_source_snapshot(
+                self.checkout, head, destination=snapshot, changed_paths=changed
+            )
+            metadata = review_runtime.materialize_source_snapshot(
+                self.checkout, REPOSITORY, head, snapshot, changed_paths=changed
+            )
         written = [snapshot.joinpath(*relative.split("/")).stat().st_size for relative in metadata["source_hashes"]]
         self.assertEqual((len(written), sum(written)), (size.files, size.bytes))
         reasons = sorted(metadata["excluded_paths"].values())
@@ -5134,11 +5166,11 @@ class SnapshotSizeTests(PipelineFixture):
         changed = ["big/changed.txt"]
         with mock.patch("review_runtime.MAX_SOURCE_FILE_BYTES", 2000):
             snapshot = self.root / "snapshot"
-            upfront = rp.lazy_upfront(())
-            size = rp.measure_source_snapshot(
+            upfront = review_snapshot.lazy_upfront(())
+            size = review_runtime.measure_source_snapshot(
                 self.checkout, head, destination=snapshot, changed_paths=changed, upfront=upfront
             )
-            metadata = rp.materialize_source_snapshot(
+            metadata = review_runtime.materialize_source_snapshot(
                 self.checkout, REPOSITORY, head, snapshot, changed_paths=changed, upfront=upfront
             )
         written = [snapshot.joinpath(*relative.split("/")).stat().st_size for relative in metadata["source_hashes"]]
@@ -5169,15 +5201,15 @@ class LocalCommitTests(unittest.TestCase):
             present.add("fetched")
             return GitResult(0, "", "")
 
-        rp.ensure_local_commit(Path("C:/checkout"), "have", "refs/pull/1/head", runner)
+        review_snapshot.ensure_local_commit(Path("C:/checkout"), "have", "refs/pull/1/head", runner)
         self.assertFalse(any("fetch" in call for call in calls))
-        rp.ensure_local_commit(Path("C:/checkout"), "fetched", "refs/pull/1/head", runner)
+        review_snapshot.ensure_local_commit(Path("C:/checkout"), "fetched", "refs/pull/1/head", runner)
         self.assertIn(
             ["git", "-C", str(Path("C:/checkout")), "fetch", "--no-tags", "--quiet", "origin", "refs/pull/1/head"],
             calls,
         )
-        with self.assertRaisesRegex(rp.PipelineError, "not available after fetching"):
-            rp.ensure_local_commit(Path("C:/checkout"), "missing", "refs/pull/2/head", runner)
+        with self.assertRaisesRegex(review_run.PipelineError, "not available after fetching"):
+            review_snapshot.ensure_local_commit(Path("C:/checkout"), "missing", "refs/pull/2/head", runner)
 
     def test_fetches_into_one_checkout_are_serialized_and_not_repeated(self) -> None:
         present: set[str] = set()
@@ -5200,7 +5232,9 @@ class LocalCommitTests(unittest.TestCase):
 
         checkout = Path(self.id().replace(".", "-")).resolve()  # unique per test, so no other lock is shared
         threads = [
-            threading.Thread(target=rp.ensure_local_commit, args=(checkout, "shared", f"refs/pull/{n}/head", runner))
+            threading.Thread(
+                target=review_snapshot.ensure_local_commit, args=(checkout, "shared", f"refs/pull/{n}/head", runner)
+            )
             for n in (1, 2)
         ]
         for thread in threads:
@@ -5225,7 +5259,7 @@ class LocalCommitTests(unittest.TestCase):
 
         def fetch(checkout: Path) -> None:
             try:
-                rp.ensure_local_commit(checkout, "commit", "refs/pull/1/head", runner)
+                review_snapshot.ensure_local_commit(checkout, "commit", "refs/pull/1/head", runner)
             except BaseException as error:  # reported below
                 errors.append(error)
 
@@ -5248,8 +5282,10 @@ class LocalCommitTests(unittest.TestCase):
             raise GitError("git fetch did not finish within 300 seconds", kind="timeout")
 
         checkout = Path(self.id().replace(".", "-")).resolve()
-        with self.assertRaisesRegex(rp.RuntimeContractError, "git fetch failed in .*did not finish within 300 seconds"):
-            rp.ensure_local_commit(checkout, "missing", "refs/pull/3/head", runner)
+        with self.assertRaisesRegex(
+            review_runtime.RuntimeContractError, "git fetch failed in .*did not finish within 300 seconds"
+        ):
+            review_snapshot.ensure_local_commit(checkout, "missing", "refs/pull/3/head", runner)
         self.assertEqual([300.0], timeouts)
 
 
@@ -5304,7 +5340,7 @@ class BatchTests(PipelineFixture):
             state["repositories"][other] = {"merged_since": "2026-03-01", "updated_at": "2026-03-01"}
             return state
 
-        rp.update_state(self.state_path, concurrent_advance)
+        review_state.update_state(self.state_path, concurrent_advance)
         code, out, err = self.run_main("advance", "--batch", str(batch_path))
         self.assertEqual((0, ""), (code, err))
         self.assertIn("WATERMARK example/one 2026-03-01 -> 2026-03-10\n", out)
@@ -5322,7 +5358,7 @@ class BatchTests(PipelineFixture):
             state["repositories"][REPOSITORY] = same_day.copy()
             return state
 
-        rp.update_state(self.state_path, concurrent_advance)
+        review_state.update_state(self.state_path, concurrent_advance)
         code, out, err = self.run_main("advance", "--batch", str(batch_path))
         self.assertEqual((0, ""), (code, err))
         self.assertEqual("WATERMARK example/one 2026-03-01 -> 2026-03-10\n", out)
@@ -5459,7 +5495,7 @@ class BatchTests(PipelineFixture):
     def test_a_pull_merged_later_on_the_utc_day_of_an_empty_batch_stays_eligible(self) -> None:
         # The batch runs at 23:30 UTC on 10 March, when the local date east of UTC is already 11 March, finds nothing
         # pending, and advances; a pull request merged at 23:45 UTC that day must still be listed by the next run.
-        self.services = rp.Services(github=self.services.github, resolve_runtime=self.services.resolve_runtime)
+        self.services = review_run.Services(github=self.services.github, resolve_runtime=self.services.resolve_runtime)
         self.state_path.parent.mkdir(parents=True)
         self.state_path.write_text(
             json.dumps({"schema_version": 1, "repositories": {REPOSITORY: {"merged_since": "2026-03-01"}}}),
@@ -5577,7 +5613,7 @@ class BatchTests(PipelineFixture):
             encoding="utf-8",
         )
         state_before = self.state_path.read_bytes()
-        with mock.patch.object(rp, "latest_reviewed_heads") as heads:
+        with mock.patch.object(review_batches, "latest_reviewed_heads") as heads:
             code, out, err = self.run_main("advance", "--batch", str(batch_path))
         heads.assert_not_called()
         self.assertEqual((0, ""), (code, err))
@@ -5651,7 +5687,7 @@ class BatchTests(PipelineFixture):
         state = {"schema_version": 1, "repositories": {other: {"merged_since": "not-a-date"}}}
         self.github.listing = [rest_pull(12, self.head, self.base)]
         batch_path = self.root / "batch.json"
-        with mock.patch.object(rp, "load_state", return_value=state):
+        with mock.patch.object(review_batches, "load_state", return_value=state):
             code, out, err = self.run_main("enumerate", "--output", str(batch_path))
         self.assertEqual((1, ""), (code, err))
         lines = out.splitlines()
@@ -5679,8 +5715,8 @@ class BatchTests(PipelineFixture):
         self.assertEqual(["example/one#12", "example/one#13"], list(runs))
         self.assertEqual(2, sum(line.startswith("ROLE generic-review ") for line in out.splitlines()))
         first, second = runs["example/one#12"], runs["example/one#13"]
-        self.write_role_result(rp.load_run(Path(first))["roles"][0], findings=[self.finding()])
-        self.write_role_result(rp.load_run(Path(second))["roles"][0], findings=[self.finding(line=1)])
+        self.write_role_result(review_run.load_run(Path(first))["roles"][0], findings=[self.finding()])
+        self.write_role_result(review_run.load_run(Path(second))["roles"][0], findings=[self.finding(line=1)])
 
         code, out, _ = self.run_main("check", "--run", first, "--run", second)
         self.assertEqual(1, code, out)
@@ -5720,7 +5756,7 @@ class BatchTests(PipelineFixture):
                 code, rest, _ = self.run_main("prepare", "--runs", runs)
                 published = [line.split(" ", 2)[1] for line in rest.splitlines() if line.startswith("RUN ")]
                 self.assertEqual((0, [f"{REPOSITORY}#16"]), (code, published))
-                self.assertEqual(5, len(rp.load_run_list(Path(runs))["runs"]))
+                self.assertEqual(5, len(review_batches.load_run_list(Path(runs))["runs"]))
         four = five[:8]
         for arguments in (
             ["--canary", *four[:2], "--re-review", f"{REPOSITORY}#13"],
@@ -5809,31 +5845,33 @@ class RunAndBatchFieldTests(unittest.TestCase):
         for content, field, expected, found in self.CASES:
             with self.subTest(content=content):
                 path.write_text(json.dumps(content), encoding="utf-8")
-                with self.assertRaises(rp.PipelineError) as raised:
+                with self.assertRaises(review_run.PipelineError) as raised:
                     load()
-                self.assertIs(rp.PipelineFieldError, type(raised.exception))
+                self.assertIs(review_run.PipelineFieldError, type(raised.exception))
                 self.assertEqual(f"{name}{field} must be {expected}, found {found}", str(raised.exception))
 
     def test_a_run_file_of_the_wrong_kind_is_refused_by_field(self) -> None:
-        self.assert_each_wrong_kind_is_refused("run", self.root / rp.RUN_FILE, lambda: rp.load_run(self.root))
-        (self.root / rp.RUN_FILE).write_text(json.dumps({"schema_version": 2}), encoding="utf-8")
-        with self.assertRaises(rp.PipelineError) as raised:
-            rp.load_run(self.root)
-        self.assertIs(rp.PipelineError, type(raised.exception))
+        self.assert_each_wrong_kind_is_refused(
+            "run", self.root / review_run.RUN_FILE, lambda: review_run.load_run(self.root)
+        )
+        (self.root / review_run.RUN_FILE).write_text(json.dumps({"schema_version": 2}), encoding="utf-8")
+        with self.assertRaises(review_run.PipelineError) as raised:
+            review_run.load_run(self.root)
+        self.assertIs(review_run.PipelineError, type(raised.exception))
         self.assertEqual(f"{self.root} is not a prepared review run", str(raised.exception))
 
     def test_a_batch_file_of_the_wrong_kind_is_refused_by_field_before_the_configuration_is_read(self) -> None:
         batch = self.root / "batch.json"
         missing = self.root / "no-config.json"
         self.assert_each_wrong_kind_is_refused(
-            "batch", batch, lambda: rp.advance_watermarks(batch, config_path=missing)
+            "batch", batch, lambda: review_batches.advance_watermarks(batch, config_path=missing)
         )
         # Version 1 recorded no deferred pull requests, so it is refused like any other version.
         for version in (1, 3):
             batch.write_text(json.dumps({"schema_version": version}), encoding="utf-8")
-            with self.subTest(version=version), self.assertRaises(rp.PipelineError) as raised:
-                rp.advance_watermarks(batch, config_path=missing)
-            self.assertIs(rp.PipelineError, type(raised.exception))
+            with self.subTest(version=version), self.assertRaises(review_run.PipelineError) as raised:
+                review_batches.advance_watermarks(batch, config_path=missing)
+            self.assertIs(review_run.PipelineError, type(raised.exception))
             self.assertEqual(f"{batch} is not a review batch file", str(raised.exception))
 
 
@@ -5853,4 +5891,6 @@ class StatsLineTests(unittest.TestCase):
         ):
             with self.subTest(excluded=excluded):
                 review: Any = {"snapshot": snapshot if excluded is None else {**snapshot, "excluded": excluded}}
-                self.assertEqual([f"snapshot source=tarball files=2 bytes=83{shown} {timing}"], rp.stats_lines(review))
+                self.assertEqual(
+                    [f"snapshot source=tarball files=2 bytes=83{shown} {timing}"], review_reporting.stats_lines(review)
+                )

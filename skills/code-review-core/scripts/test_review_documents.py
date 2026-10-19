@@ -29,9 +29,11 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+import review_dispatch
 import review_documents as documents
-import review_pipeline as rp
+import review_run
 import review_runtime
+import review_snapshot
 import review_source
 from review_documents import ExtractionRefused, document_diff, document_format, extract, locations
 from review_guard import read_log
@@ -1159,16 +1161,18 @@ class SnapshotRouteTests(unittest.TestCase):
         def read(_path: str, _blob: str) -> bytes:
             return lzma_word_document()
 
-        self.assertEqual(("", "word/document.xml cannot be read"), rp._extracted_base("docx", "a.docx", "1" * 7, read))
+        self.assertEqual(
+            ("", "word/document.xml cannot be read"), review_snapshot._extracted_base("docx", "a.docx", "1" * 7, read)
+        )
         with mock.patch.object(documents, "extract_docx", side_effect=KeyError("quoted text")):
             self.assertEqual(
                 ("", "its text could not be read (KeyError)"),
-                rp._extracted_base("docx", "a.docx", "1" * 7, lambda _path, _blob: BASE_DOCUMENT),
+                review_snapshot._extracted_base("docx", "a.docx", "1" * 7, lambda _path, _blob: BASE_DOCUMENT),
             )
 
     def test_the_base_version_is_read_by_the_blob_the_diff_names(self) -> None:
         blob = git(self.checkout, "rev-parse", f"{self.base}:docs/design.docx")
-        read = rp._base_reader(self.checkout, REPOSITORY, {}, rp.Services())
+        read = review_snapshot._base_reader(self.checkout, REPOSITORY, {}, review_run.Services())
 
         self.assertEqual(BASE_DOCUMENT, read("docs/design.docx", blob[:7]))
         with self.assertRaises(RuntimeContractError):
@@ -1276,8 +1280,8 @@ class PdfSnapshotTests(unittest.TestCase):
 
         self.assertEqual([f"SOURCE_FILE {run / 'source' / 'source-snapshot-text' / 'docs' / 'spec.pdf.txt'}"], lines)
         self.assertEqual([json.dumps(HELD)], log.read_text(encoding="utf-8").splitlines())
-        counted: dict[str, Any] = {"reads": {}}
-        self.assertTrue(rp.count_reads(run, counted, ["generic-review"]))
+        counted: Any = {"reads": {}}
+        self.assertTrue(review_dispatch.count_reads(run, counted, ["generic-review"]))
         self.assertEqual({"generic-review": {"files": 1, "bytes": len(HEAD_PDF_LINES)}}, counted["reads"])
 
     def test_source_search_leaves_out_a_held_pdf_as_it_does_a_word_document(self) -> None:
@@ -1387,8 +1391,8 @@ class StubGitHub:
 class GitHubBaseTests(unittest.TestCase):
     PULL: ClassVar[dict[str, str]] = {"baseRefOid": "a" * 40, "headRefOid": "b" * 40}
 
-    def reader(self, github: StubGitHub) -> rp.BaseReader:
-        return rp._base_reader(None, REPOSITORY, self.PULL, rp.Services(github=github))  # type: ignore[arg-type]  # a stub of the two reads
+    def reader(self, github: StubGitHub) -> review_snapshot.BaseReader:
+        return review_snapshot._base_reader(None, REPOSITORY, self.PULL, review_run.Services(github=github))  # type: ignore[arg-type]  # a stub of the two reads
 
     def test_the_base_is_read_at_the_merge_base_and_checked_against_the_diffs_blob(self) -> None:
         blob = review_runtime._git_blob_id("sha1", len(BASE_DOCUMENT), [BASE_DOCUMENT])
