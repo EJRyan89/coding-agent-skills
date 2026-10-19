@@ -19,12 +19,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 from executable_locator import PYTHON
 from git_client import Runner, subprocess_runner
+from github_client import GitHubError
 from process_identity import ProcessStatus, process_status
 from review_archive import ArchiveError
 from review_canary import FixtureError
 from review_config import ConfigurationError, load_config
 from review_flags import FlagError
-from review_github import GitHubClient, GitHubError
+from review_github import GitHubClient
 from review_hosts import Runner as CopilotRunner
 from review_hosts import subprocess_runner as copilot_subprocess_runner
 from review_io import PersistenceError, atomic_write_json, read_json

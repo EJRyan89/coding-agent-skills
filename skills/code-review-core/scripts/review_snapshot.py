@@ -17,9 +17,9 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from git_client import Runner
+from github_client import GitHubError
 from review_analyzers import reads_settings
 from review_documents import EXTRACTED_WHEN_TEXT, ExtractionRefused, document_diff, document_format, extract, locations
-from review_github import GitHubError
 from review_io import atomic_write_text, read_diff
 from review_operation import validate_canary_pull
 from review_run import PipelineError, Services

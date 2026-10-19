@@ -9,9 +9,9 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+from github_client import GitHubError
 from review_archive import ArchiveError
 from review_config import load_config, resolve_repositories
-from review_github import GitHubError
 from review_io import PersistenceError, atomic_write_json, map_in_order, read_json
 from review_operation import (
     ReviewOperationError,
