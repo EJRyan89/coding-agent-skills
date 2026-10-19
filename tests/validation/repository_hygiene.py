@@ -64,10 +64,10 @@ def hub_guard_matcher_problems(settings: dict[str, object]) -> list[str]:
     guarded = [
         group
         for group in groups
-        if any(re.search(r"tools/worktrees\.py\"? guard$", hook.get("command", "")) for hook in group.get("hooks", []))
+        if any(re.search(r"tools/hub_guard\.py\"?$", hook.get("command", "")) for hook in group.get("hooks", []))
     ]
     if not guarded:
-        return ["no PreToolUse hook runs tools/worktrees.py guard"]
+        return ["no PreToolUse hook runs tools/hub_guard.py"]
     matched: set[str] = set()
     for group in guarded:
         matcher = group.get("matcher", "")

@@ -1,4 +1,4 @@
-"""Bash command text read by Bash's own grammar, for the hub guard in tools/worktrees.py.
+"""Bash command text read by Bash's own grammar, for the hub guard in tools/hub_guard.py.
 
 `parse` splits a command into words and operators by Bash's quoting rules (single and double quotes, `$'...'`,
 backslash escapes and line continuations, comments, and here-documents, whose bodies are data and never commands)

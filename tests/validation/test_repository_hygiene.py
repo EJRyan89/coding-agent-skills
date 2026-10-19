@@ -43,7 +43,7 @@ class RepositoryHygieneFixtures(unittest.TestCase):
         )
 
     def test_hub_guard_matcher_policy_detects_a_missing_tool_or_hook(self) -> None:
-        command = 'python -B "$CLAUDE_PROJECT_DIR/tools/worktrees.py" guard'
+        command = 'python -B "$CLAUDE_PROJECT_DIR/tools/hub_guard.py"'
 
         def settings(matcher: str, hook_command: str = command) -> dict[str, object]:
             group = {"matcher": matcher, "hooks": [{"type": "command", "command": hook_command}]}
@@ -70,14 +70,14 @@ class RepositoryHygieneFixtures(unittest.TestCase):
         )
         broken_settings: list[dict[str, object]] = [
             settings("Bash|PowerShell", "python -B tools/other.py guard"),
+            # The command from before the guard moved into its own module.
+            settings(every, 'python -B "$CLAUDE_PROJECT_DIR/tools/worktrees.py" guard'),
             {},
             {"hooks": {}},
         ]
         for broken in broken_settings:
             with self.subTest(settings=broken):
-                self.assertEqual(
-                    ["no PreToolUse hook runs tools/worktrees.py guard"], hub_guard_matcher_problems(broken)
-                )
+                self.assertEqual(["no PreToolUse hook runs tools/hub_guard.py"], hub_guard_matcher_problems(broken))
 
     def test_private_reference_scan_detects_each_pattern(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

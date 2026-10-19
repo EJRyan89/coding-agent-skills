@@ -134,8 +134,9 @@ Worktrees isolate files. These are still shared:
 
 ## The guard
 
-`.claude/settings.json` declares a Claude Code `PreToolUse` hook that runs `tools/worktrees.py guard`. A hook
-in that file can only deny an action; it never grants one.
+`.claude/settings.json` declares a Claude Code `PreToolUse` hook that runs `tools/hub_guard.py`. A hook in that
+file can only deny an action; it never grants one. `tools/worktrees.py guard`, the hook's command before the guard
+had a module of its own, runs the same guard, since a Claude Code session keeps the hook command it started with.
 
 The guard is **inert unless a clone opts in**:
 
@@ -149,14 +150,14 @@ the setting is not tracked, someone who clones the repository and works in a sin
 The hook command reads the setting itself, in Bash, and exits before starting Python when the clone has not opted
 in. Elsewhere the hook is inert and costs one `awk` and one `git config` call per tool call: `python` never runs, so
 a `python` that still resolves to the Microsoft Store alias cannot fail the hook. In an opted-in clone it runs
-`tools/worktrees.py guard` under `$CLAUDE_PROJECT_DIR`, which checks the same setting again. Neither read can be
+`tools/hub_guard.py` under `$CLAUDE_PROJECT_DIR`, which checks the same setting again. Neither read can be
 pointed at another repository's setting or outranked: each reads only the repository's own file, with
 `git config --local`, which passes over the command-line configuration `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT`
 carry; the hook command unsets `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, and `GIT_CONFIG` for its call, each in
-any case, since Windows reads an environment name in any case; and `tools/worktrees.py` runs its own git calls,
+any case, since Windows reads an environment name in any case; and `tools/hub_guard.py` runs its own git calls,
 and the `pwsh` that reads a PowerShell command, without any of git's repository-selecting variables, the set
 skill-core's `bounded_process.py` names, through its `run_bounded`, which ends every process `pwsh` starts with it.
-`tests/tools/test_worktrees.py` runs the tracked command both ways.
+`tests/tools/test_hub_guard.py` runs the tracked command both ways.
 
 With the guard enabled:
 
@@ -249,8 +250,8 @@ refused while a guarded hub is in view, and what they do not see at all is named
 - **PowerShell, by its parser.** A PowerShell command is read by PowerShell's own parser, not by a second
   hand-written grammar, and each command's arguments by the parameters PowerShell's binder gives them, so a
   parameter abbreviated, aliased, or left positional, and each path of an array, is read; a command the binder
-  refuses, or one given `-WhatIf`, runs nothing. `tools/worktrees-powershell.ps1` only reports what the parser and
-  binder found, in the order PowerShell would run it, and `tools/worktrees.py` makes every decision. The guard
+  refuses, or one given `-WhatIf`, runs nothing. `tools/hub_guard-powershell.ps1` only reports what the parser and
+  binder found, in the order PowerShell would run it, and `tools/hub_guard.py` makes every decision. The guard
   follows `cd`, `chdir`, `sl`, and `Set-Location` (bare goes home, a leading `~` means home, `cd -` and `cd +` leave
   the location unknown, and one on a provider other than the file system leaves it unknown),
   `Push-Location` and `Pop-Location` with their stack, `$env:NAME` and strings whose only expansions are
