@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from markdown_sections import EXECUTABLE_FENCES
+from skill_scripts import shell_git_subcommands
 from validation_support import (
     CODE_SPAN,
     EXECUTABLE_SCRIPT_EXTENSIONS,
@@ -163,9 +164,10 @@ def derived_needs(root: Path, name: str, seen: frozenset[str] = frozenset()) -> 
     """The runtime capabilities a skill's frontmatter shows it needs, with those of each skill it invokes.
 
     A skill that grants Agent and names, in backticks, an agent whose definition declares hooks starts that agent
-    under them, and one whose deploy-meta declares a network tool, required or optional, needs network access. An
-    invoked skill is a backticked skill name on a SKILL.md line that says "invoke", the rule
-    tests/ai-config/test_cross_skill_contracts.py applies; its limits reach the step that invokes it.
+    under them, and one whose deploy-meta declares a network tool, required or optional, or one of whose Bash scripts
+    runs a git subcommand that reaches a remote, needs network access. An invoked skill is a backticked skill name on
+    a SKILL.md line that says "invoke", the rule tests/ai-config/test_cross_skill_contracts.py applies; its limits
+    reach the step that invokes it.
     """
     import frontmatter
 
@@ -183,8 +185,15 @@ def derived_needs(root: Path, name: str, seen: frozenset[str] = frozenset()) -> 
     metadata = root / "deploy-meta" / f"{name}.json"
     declared = json.loads(metadata.read_text(encoding="utf-8")) if metadata.is_file() else {}
     tools = frozenset([*declared.get("tools", []), *declared.get("optional_tools", [])])
+    scripts = skills[name] / "scripts"
+    git_subcommands = frozenset(
+        subcommand
+        for script in (sorted(scripts.iterdir()) if scripts.is_dir() else [])
+        if script.suffix in (".sh", ".bash") and not is_test_script(script)
+        for subcommand in shell_git_subcommands(script.read_text(encoding="utf-8"))
+    )
     needs = runtime_support.frontmatter_needs(
-        granted if isinstance(granted, list) else [granted], user_only, starts_hooked, tools
+        granted if isinstance(granted, list) else [granted], user_only, starts_hooked, tools, git_subcommands
     )
     invoked = {
         match

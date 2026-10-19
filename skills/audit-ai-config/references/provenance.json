@@ -74,7 +74,7 @@
       },
       {
         "page": "https://docs.github.com/en/copilot/how-tos/copilot-on-github/use-copilot-agents/copilot-code-review",
-        "passage": "Copilot code review on GitHub reads custom instructions, CLAUDE.md, GEMINI.md, and REVIEW.md among them, and skills in .github/skills, from the pull request's head branch."
+        "passage": "Copilot code review on GitHub reads a root AGENTS.md, CLAUDE.md, GEMINI.md, REVIEW.md, .github/copilot-instructions.md, and path-specific instructions, and skills in .github/skills, from the pull request's head branch."
       },
       {
         "page": "https://docs.github.com/en/copilot/how-tos/configure-custom-instructions/add-repository-instructions",

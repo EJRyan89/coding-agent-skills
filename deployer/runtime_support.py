@@ -21,7 +21,9 @@ CAPABILITIES = {
         "out, which the code-review reviewer's guard needs"
     ),
     "user-only-start": "starting a user-only skill in a headless session as well as an interactive one",
-    "sandbox-network": "network access for a skill's commands in the runtime's default sandbox, which gh needs",
+    "sandbox-network": (
+        "network access for a skill's commands in the runtime's default sandbox, which gh and a git fetch need"
+    ),
 }
 # The allowed-tools grant that shows a skill needs a capability; user-only-start follows from disable-model-invocation,
 # and fail-closed-agent-hooks from an Agent grant in a skill that starts an agent whose definition declares hooks.
@@ -29,6 +31,9 @@ CAPABILITY_GRANTS = {"Agent": "agent-delegation", "Workflow": "workflow"}
 # The tools a skill may declare that reach a service over the network, so a skill declaring one, required or
 # optional, needs sandbox-network.
 NETWORK_TOOLS = frozenset({"gh", "copilot"})
+# The git subcommands that reach a remote. Every skill runs git, so git is never declared as a tool; a skill whose
+# script runs one of these needs sandbox-network as a network tool's does.
+NETWORK_GIT_SUBCOMMANDS = frozenset({"clone", "fetch", "ls-remote", "pull", "push"})
 # What a skill loses where a runtime lacks the capability, until its author states it more precisely.
 DEFAULT_REASONS = {
     "agent-delegation": "It starts subagents, which this runtime cannot.",
@@ -110,15 +115,20 @@ def parse(value: object) -> dict[str, Support]:
 
 
 def frontmatter_needs(
-    allowed_tools: list[str], user_only: bool, starts_hooked_agent: bool = False, tools: frozenset[str] = frozenset()
+    allowed_tools: list[str],
+    user_only: bool,
+    starts_hooked_agent: bool = False,
+    tools: frozenset[str] = frozenset(),
+    git_subcommands: frozenset[str] = frozenset(),
 ) -> set[str]:
-    """The capabilities a skill's frontmatter and metadata show it needs: its allowed-tools grants, user-only start,
-    for a skill that grants Agent and starts an agent whose definition declares hooks, those hooks, and, for a skill
-    that declares a network tool among its tools, required or optional, network access."""
+    """The capabilities a skill's frontmatter, metadata, and scripts show it needs: its allowed-tools grants,
+    user-only start, for a skill that grants Agent and starts an agent whose definition declares hooks, those hooks,
+    and, for a skill that declares a network tool among its tools, required or optional, or whose scripts run a git
+    subcommand that reaches a remote, network access."""
     needs = {CAPABILITY_GRANTS[grant] for grant in allowed_tools if grant in CAPABILITY_GRANTS}
     if starts_hooked_agent and "agent-delegation" in needs:
         needs.add("fail-closed-agent-hooks")
-    if tools & NETWORK_TOOLS:
+    if tools & NETWORK_TOOLS or git_subcommands & NETWORK_GIT_SUBCOMMANDS:
         needs.add("sandbox-network")
     return needs | {"user-only-start"} if user_only else needs
 

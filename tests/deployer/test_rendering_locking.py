@@ -455,7 +455,8 @@ class RenderedExecutableTests(DeployerTestCase):
         windows = (
             "  - Git Bash (checks rendered Bash syntax): winget install --id Git.Git",
             "  - ShellCheck (lints rendered Bash): winget install --id koalaman.shellcheck",
-            "  - PowerShell (parses rendered .ps1 files): winget install --id Microsoft.PowerShell",
+            "  - PowerShell (parses rendered .ps1 files): winget install --id Microsoft.PowerShell "
+            "--installer-type wix",
         )
         linux = (
             "  - Bash (checks rendered Bash syntax): sudo apt install bash",
