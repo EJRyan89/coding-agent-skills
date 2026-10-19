@@ -6,6 +6,7 @@ import shutil
 import sys
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import pytest
@@ -25,7 +26,7 @@ from harness import (
     tree_state,
 )
 
-from deployer import config, names, platform_support, source
+from deployer import config, journal, manifest, names, platform_support, source
 from deployer.errors import DeployError
 
 
@@ -1069,3 +1070,38 @@ def test_a_name_that_only_starts_like_a_device_is_accepted(name: str) -> None:
     CHECK.assertIsNone(names.safe_name_problem(name, "item"))
     CHECK.assertIsNone(names.safe_name_problem(f"{name}.md", "item"))
     CHECK.assertTrue(source.is_valid_name(name))
+
+
+class ContractValueTests(unittest.TestCase):
+    """Values a user's files or an older deployer read, each held against a literal written here, not the constant."""
+
+    def test_the_transient_backup_suffix_is_the_one_the_name_check_reserves_and_the_journal_records(self) -> None:
+        self.assertEqual(".deploying-bak", names.BACKUP_SUFFIX)
+        self.assertEqual("alpha.deploying-bak", names.transient_name("alpha"))
+        self.assertIn("ends in '.deploying-bak'", names.safe_name_problem("alpha.deploying-bak", "Skill") or "")
+        backup = {
+            "op": "backup",
+            "item": "alpha",
+            "from": "skills/alpha",
+            "to": "skills/alpha.deploying-bak",
+            "retain": False,
+            "backup_hash": "sha256:" + "0" * 64,
+        }
+        self.assertTrue(journal.valid_entry(backup, "run"))
+        self.assertFalse(journal.valid_entry({**backup, "to": "skills/alpha.other-bak"}, "run"))
+        preserve = {"op": "preserve", "item": "alpha", "from": "skills/alpha.deploying-bak", "to": ".backups/run/alpha"}
+        self.assertTrue(journal.valid_entry(preserve, "run"))
+
+    def test_skill_dependencies_are_recorded_from_manifest_version_8(self) -> None:
+        self.assertEqual(8, manifest.SKILL_DEPS_VERSION)
+        for version, upgraded in ((7, ["beta"]), (8, None)):
+            with self.subTest(version=version):
+                data: dict[str, Any] = {
+                    "manifest_version": version,
+                    "sources": {"t/s": {"skills": {"alpha": {}, "beta": {}}}},
+                }
+                manifest._upgrade_dependencies(data)
+                self.assertEqual(upgraded, data["sources"]["t/s"]["skills"]["alpha"].get("skill_deps"))
+
+    def test_a_source_id_is_at_most_128_characters(self) -> None:
+        self.assertEqual(128, source.SOURCE_ID_MAX_LENGTH)

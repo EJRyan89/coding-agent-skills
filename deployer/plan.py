@@ -16,7 +16,7 @@ from .arguments import PROG, usage_error
 from .context import Context
 from .errors import DeployError, see_recovery
 from .kinds import ADAPTER_KIND, AGENT_KIND, BY_LABEL, DEPENDENCY_KINDS, KINDS, MODIFIED, SHARED, SKILL, ItemKind
-from .names import require_safe_name
+from .names import require_safe_name, transient_name
 from .paths import Paths
 from .report import (
     ACTION_LABELS,
@@ -429,7 +429,7 @@ def _retained(context: Context, kind: ItemKind, survivors: list[str], staged: li
 
 
 def _ensure_transient_available(item: str, base: Path) -> None:
-    transient = base / f"{item}.deploying-bak"
+    transient = base / transient_name(item)
     if os.path.lexists(transient):
         raise DeployError(
             f"ERROR: Refusing to deploy '{item}': transient backup "
@@ -514,7 +514,7 @@ def _replace(
     destination = base / name
     if existing is not None:
         record.backup(root, name, existing, retain=retain)
-        fsops.move(destination, base / f"{name}.deploying-bak")
+        fsops.move(destination, base / transient_name(name))
     record.install(root, name, staged_hash)
     fsops.move(source_path, destination)
 
@@ -526,7 +526,7 @@ def carry_out(record: journal.Journal, paths: Paths, staging_dir: Path, entry: P
     base = journal.root_directory(paths, kind.root)
     if entry.action == "REMOVE":
         record.backup(kind.root, entry.name, entry.existing, retain=False)
-        fsops.move(base / entry.name, base / f"{entry.name}.deploying-bak")
+        fsops.move(base / entry.name, base / transient_name(entry.name))
     elif entry.action in MOVING:
         _replace(
             record,

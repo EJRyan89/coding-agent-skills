@@ -13,7 +13,7 @@ from typing import Any
 
 from . import fsops, hashing, manifest, platform_support
 from .errors import DeployError, see_recovery
-from .names import safe_name_problem
+from .names import BACKUP_SUFFIX, safe_name_problem, transient_name
 from .paths import Paths
 from .render import ADAPTER_STAGING, AGENT_STAGING
 
@@ -70,7 +70,7 @@ class Journal:
             {
                 "item": item,
                 "from": f"{prefix}/{item}",
-                "to": f"{prefix}/{item}.deploying-bak",
+                "to": f"{prefix}/{transient_name(item)}",
                 "retain": retain,
                 "backup_hash": backup_hash,
             }
@@ -101,7 +101,7 @@ class Journal:
                 "op": "preserve",
                 "root": root,
                 "item": item,
-                "from": f"{prefix}/{item}.deploying-bak",
+                "from": f"{prefix}/{transient_name(item)}",
                 "to": f".backups/{self.run_id}/{item}",
             }
         )
@@ -127,7 +127,9 @@ def valid_entry(entry: Any, run_id: str) -> bool:
             return False
         if retain and entry.get("backup_dest") != f".backups/{run_id}/{item}":
             return False
-        return entry.get("from") == f"{destination}/{item}" and entry.get("to") == f"{destination}/{item}.deploying-bak"
+        return (
+            entry.get("from") == f"{destination}/{item}" and entry.get("to") == f"{destination}/{transient_name(item)}"
+        )
     if op == "install":
         if not hashing.HASH_PATTERN.fullmatch(str(entry.get("staged_hash", ""))):
             return False
@@ -138,7 +140,7 @@ def valid_entry(entry: Any, run_id: str) -> bool:
         )
     if op == "preserve":
         return (
-            entry.get("from") == f"{destination}/{item}.deploying-bak"
+            entry.get("from") == f"{destination}/{transient_name(item)}"
             and entry.get("to") == f".backups/{run_id}/{item}"
         )
     return False
@@ -239,14 +241,14 @@ def backup_unchanged(paths: Paths, entry: dict[str, Any]) -> bool:
     Only then may a backup the run does not keep be deleted: one that differs was changed after the plan read it, such
     as by an edit just before the move, and is kept as a modified item would have been.
     """
-    return _hash_existing(_item_path(paths, entry, ".deploying-bak")) in (None, entry["backup_hash"])
+    return _hash_existing(_item_path(paths, entry, BACKUP_SUFFIX)) in (None, entry["backup_hash"])
 
 
 def _finish_backup(paths: Paths, run_id: str, entry: dict[str, Any]) -> bool:
     """Delete an unchanged transient backup the committed run did not keep, or move it to permanent storage."""
     root = entry_root(entry)
     item = entry["item"]
-    transient = _item_path(paths, entry, ".deploying-bak")
+    transient = _item_path(paths, entry, BACKUP_SUFFIX)
     kept_at = f".backups/{run_id}/{item}"
     if not entry["retain"]:
         if backup_unchanged(paths, entry):
@@ -294,7 +296,7 @@ def _complete_committed(paths: Paths, run_id: str, entries: list[dict[str, Any]]
     for entry in entries:
         if entry["op"] == "backup":
             step = functools.partial(_finish_backup, paths, run_id, entry)
-            reconciled = _guarded(run_id, _item_path(paths, entry, ".deploying-bak"), step) and reconciled
+            reconciled = _guarded(run_id, _item_path(paths, entry, BACKUP_SUFFIX), step) and reconciled
     return reconciled
 
 
@@ -310,7 +312,7 @@ def _undo_install(paths: Paths, entry: dict[str, Any], backup_hash: str | None) 
     if actual == entry["staged_hash"]:
         fsops.remove(target)
         return True
-    if actual == backup_hash and not os.path.lexists(_item_path(paths, entry, ".deploying-bak")):
+    if actual == backup_hash and not os.path.lexists(_item_path(paths, entry, BACKUP_SUFFIX)):
         # An earlier rollback that stopped partway already put the replaced copy back.
         return True
     _warn(f"Cannot rollback install of {entry['item']} (hash mismatch)")
@@ -320,7 +322,7 @@ def _undo_install(paths: Paths, entry: dict[str, Any], backup_hash: str | None) 
 def _restore_backup(paths: Paths, entry: dict[str, Any]) -> bool:
     item = entry["item"]
     target = _item_path(paths, entry)
-    transient = _item_path(paths, entry, ".deploying-bak")
+    transient = _item_path(paths, entry, BACKUP_SUFFIX)
     transient_exists = os.path.lexists(transient)
     target_exists = os.path.lexists(target)
     if transient_exists and not target_exists:
@@ -331,7 +333,7 @@ def _restore_backup(paths: Paths, entry: dict[str, Any]) -> bool:
         fsops.move(transient, target)
         return True
     if transient_exists and target_exists:
-        _warn(f"Both {item} and {item}.deploying-bak exist during rollback")
+        _warn(f"Both {item} and {transient_name(item)} exist during rollback")
         return False
     if not transient_exists and not target_exists:
         _warn(f"Both {item} and backup are missing during rollback")
@@ -346,7 +348,7 @@ def _undo_preserve(paths: Paths, run_id: str, entry: dict[str, Any]) -> bool:
     except DeployError as exc:
         _report(exc)
         return False
-    transient = _item_path(paths, entry, ".deploying-bak")
+    transient = _item_path(paths, entry, BACKUP_SUFFIX)
     if os.path.lexists(destination) and not os.path.lexists(transient):
         fsops.move(destination, transient)
     return True
@@ -376,12 +378,12 @@ def _print_manual_steps(run_dir: Path, run_id: str, committed: bool) -> None:
     keep = "keep the copies it installed" if committed else "put back the copies it replaced"
     print(
         f"  Run {run_id} was {'' if committed else 'not '}committed to the manifest, so {keep}. "
-        "A replaced copy sits beside its item as <name>.deploying-bak; a retained backup is under "
+        f"A replaced copy sits beside its item as {transient_name('<name>')}; a retained backup is under "
         f".backups/{run_id}/ in the same root.",
         file=sys.stderr,
     )
     print(
-        f"  When no .deploying-bak remains, delete {platform_support.normalize(run_dir)} and rerun with --dry-run. "
+        f"  When no {BACKUP_SUFFIX} remains, delete {platform_support.normalize(run_dir)} and rerun with --dry-run. "
         f"{see_recovery('When recovery fails')}",
         file=sys.stderr,
     )

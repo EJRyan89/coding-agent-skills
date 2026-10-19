@@ -9,8 +9,9 @@ import secrets
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from types import TracebackType
 from typing import Any
 
 from . import fsops, platform_support
@@ -23,8 +24,24 @@ LOCK = "The deployment lock"
 
 @dataclass
 class Lock:
+    """The lock a run holds, released when the run's `with` block ends however it ends, unless retained."""
+
     paths: Paths
     token: str
+    retained: bool = field(default=False, init=False)
+
+    def __enter__(self) -> Lock:
+        return self
+
+    def __exit__(
+        self, kind: type[BaseException] | None, error: BaseException | None, trace: TracebackType | None
+    ) -> None:
+        if not self.retained:
+            self.release()
+
+    def retain(self) -> None:
+        """Keep the lock past the run, beside the journal a failed recovery left, for the next run to reclaim."""
+        self.retained = True
 
     def release(self) -> None:
         token_file = self.paths.lock_dir / "token"

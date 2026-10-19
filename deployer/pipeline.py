@@ -36,6 +36,7 @@ from .arguments import PROG, USAGE_ERROR, VERIFY_COMMAND_LINE, parse_command, us
 from .context import Context, Options
 from .errors import Cancelled, DeployError, debug_requested, fail, print_error, print_traceback, see_recovery
 from .kinds import ADAPTER_KIND, AGENT_KIND, BY_LABEL, DEPENDENCY_KINDS, KINDS, SHARED, SKILL
+from .names import transient_name
 from .paths import Paths, canary_home, claim_canary_home, validate_managed_roots
 from .plan import INSTALLING, RELEASING, PlanEntry
 from .report import DEPLOY_ACTIONS, DEPLOYED
@@ -137,7 +138,7 @@ def _finalize(context: Context, record: journal.Journal, run_id: str) -> list[tu
             continue
         root = journal.entry_root(entry)
         item = entry["item"]
-        transient = journal.root_directory(context.paths, root) / f"{item}.deploying-bak"
+        transient = journal.root_directory(context.paths, root) / transient_name(item)
         try:
             destination = journal.prepare_backup_destination(context.paths, run_id, item, root)
         except DeployError as exc:
@@ -160,9 +161,7 @@ def _finalize(context: Context, record: journal.Journal, run_id: str) -> list[tu
                     file=sys.stderr,
                 )
     for entry in unkept:
-        fsops.remove(
-            journal.root_directory(context.paths, journal.entry_root(entry)) / f"{entry['item']}.deploying-bak"
-        )
+        fsops.remove(journal.root_directory(context.paths, journal.entry_root(entry)) / transient_name(entry["item"]))
     return backups
 
 
@@ -418,35 +417,31 @@ def _execute(
         values, held = _claim(paths, options, source_id, values, probe)
     except (DeployError, OSError, KeyboardInterrupt) as exc:
         return fail(exc, debug, "prepare the deployment")
-    try:
-        _reject_other_checkout(paths, source_id, options.take_over_source)
-    except (DeployError, OSError, KeyboardInterrupt) as exc:
-        code = fail(exc, debug, "check the source checkout")
-        held.release()
-        return code
-    try:
-        recovered = journal.recover_incomplete(paths)
-    except (Exception, KeyboardInterrupt) as exc:
-        return _stopped_recovery(exc, debug, paths, held)
-    if not recovered:
-        _report_failed_recovery()
-        held.release()
-        return 1
-    # UTC, like deployed_at, so run IDs sort in the order the runs started, across time zones and daylight saving.
-    run_id = f"{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}-{secrets.token_hex(2)}"
-    try:
-        code = _deploy(paths, options, src, values, stdin, run_id, pin)
-    except DeployError as exc:
-        if not isinstance(exc, Cancelled) and exc.exit_code != USAGE_ERROR:
+    # The one release point: every way out of this block releases the lock unless a failed recovery retained it.
+    with held:
+        try:
+            _reject_other_checkout(paths, source_id, options.take_over_source)
+        except (DeployError, OSError, KeyboardInterrupt) as exc:
+            return fail(exc, debug, "check the source checkout")
+        try:
+            recovered = journal.recover_incomplete(paths)
+        except (Exception, KeyboardInterrupt) as exc:
+            return _stopped_recovery(exc, debug, paths)
+        if not recovered:
+            _report_failed_recovery()
+            return 1
+        # UTC, like deployed_at, so run IDs sort in the order the runs started, across time zones and daylight saving.
+        run_id = f"{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}-{secrets.token_hex(2)}"
+        try:
+            return _deploy(paths, options, src, values, stdin, run_id, pin)
+        except DeployError as exc:
+            if not isinstance(exc, Cancelled) and exc.exit_code != USAGE_ERROR:
+                return _recover_from_failure(exc, debug, paths, held)
+            # Selection cancellation and usage checks happen before staging or any destination change.
+            print_error(exc, debug)
+            return exc.exit_code
+        except (Exception, KeyboardInterrupt) as exc:
             return _recover_from_failure(exc, debug, paths, held)
-        # Selection cancellation and usage checks happen before staging or any destination change.
-        print_error(exc, debug)
-        held.release()
-        return exc.exit_code
-    except (Exception, KeyboardInterrupt) as exc:
-        return _recover_from_failure(exc, debug, paths, held)
-    held.release()
-    return code
 
 
 def _prepare(namespace: argparse.Namespace, paths: Paths) -> tuple[Paths, str, Options, dict[str, str], source.Source]:
@@ -543,8 +538,8 @@ def _run_states(paths: Paths) -> list[str]:
     ]
 
 
-def _stopped_recovery(exc: BaseException, debug: bool, paths: Paths, held: lock.Lock) -> int:
-    """Report recovery stopped by Ctrl+C or an unexpected error, then release the lock.
+def _stopped_recovery(exc: BaseException, debug: bool, paths: Paths) -> int:
+    """Report recovery stopped by Ctrl+C or an unexpected error; the caller releases the lock.
 
     Recovery replays its journal, which stays on disk until a run is reconciled, so the next deployment finishes it.
     """
@@ -559,14 +554,14 @@ def _stopped_recovery(exc: BaseException, debug: bool, paths: Paths, held: lock.
         )
     error.__cause__ = exc
     print_error(error, debug)
-    held.release()
     return error.exit_code
 
 
 def _recover_from_failure(exc: BaseException, debug: bool, paths: Paths, held: lock.Lock) -> int:
     """Report a failed deployment, then recover its journal.
 
-    An exception during recovery releases the lock and keeps the journal; unreconciled entries keep both.
+    An exception during recovery keeps the journal; unreconciled entries keep both it and the lock, which this
+    retains so the caller's release leaves it.
     """
     outcome = "cancelled" if isinstance(exc, KeyboardInterrupt) else "failed"
     # An OSError, such as of a file another program holds open, ends as every command's does; Ctrl+C as a cancellation.
@@ -584,10 +579,9 @@ def _recover_from_failure(exc: BaseException, debug: bool, paths: Paths, held: l
     try:
         recovered = journal.recover_incomplete(paths)
     except (Exception, KeyboardInterrupt) as recovery_error:
-        return _stopped_recovery(recovery_error, debug, paths, held)
-    if recovered:
-        held.release()
-    else:
+        return _stopped_recovery(recovery_error, debug, paths)
+    if not recovered:
+        held.retain()
         print("ERROR: Immediate recovery failed; deployment evidence and lock were retained.", file=sys.stderr)
         print(
             "The next run reclaims the lock and retries recovery. If that fails too, "
