@@ -5,6 +5,7 @@ Each policy fails on a violating input and passes on a conforming one.
 
 from __future__ import annotations
 
+import re
 import sys
 import tempfile
 import unittest
@@ -80,6 +81,36 @@ class PythonChecksFixtures(unittest.TestCase):
             self.assertNotRegex(message, r"(?m)^clean\.py:")
             self.assertEqual([], sorted(path.name for path in root.iterdir() if path.name.startswith(".")))
             self.assertIn("python -m ruff check --fix", message)
+
+    def test_lint_lets_the_regression_suites_assert_and_no_shipped_module(self) -> None:
+        refused = [
+            "deploy.py",
+            "conftest.py",
+            "deployer/module.py",
+            "tools/module.py",
+            "skills/alpha/scripts/helper.py",
+            "skills/alpha/test_beside_scripts.py",
+            ".claude/skills/beta/scripts/helper.py",
+        ]
+        allowed = [
+            "tests/test_top.py",
+            "tests/validation/policy.py",
+            "tests/deployer/test_deep.py",
+            "skills/alpha/scripts/test_alpha.py",
+            ".claude/skills/beta/scripts/test_beta.py",
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            # The repository's own configuration, so the fixture holds the globs ruff reads, not a copy of them.
+            (root / "pyproject.toml").write_bytes((REPOSITORY_ROOT / "pyproject.toml").read_bytes())
+            for name in refused + allowed:
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text("def check(value: int) -> None:\n    assert value\n", encoding="utf-8")
+            ruff_lint_check(root, allowed)
+            with self.assertRaises(AssertionError) as raised:
+                ruff_lint_check(root, refused + allowed)
+            named = re.findall(r"(?m)^(\S+?):2:5: S101 ", str(raised.exception).replace("\\", "/"))
+            self.assertEqual(sorted(refused), sorted(named))
 
     def test_lint_check_covers_every_python_root(self) -> None:
         jobs = {job.name: job for job in all_jobs()}

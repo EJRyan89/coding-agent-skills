@@ -336,7 +336,7 @@ def static_lint_check() -> None:
 
 
 class PythonChecksPolicies(unittest.TestCase):
-    def test_lint_rule_set_is_pinned_and_ignores_nothing(self) -> None:
+    def test_lint_rule_set_is_pinned_and_exempts_only_assert_in_the_suites(self) -> None:
         configuration = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["ruff"]
         self.assertEqual(120, configuration["line-length"])
         lint = configuration["lint"]
@@ -350,8 +350,17 @@ class PythonChecksPolicies(unittest.TestCase):
         # Every bandit rule but these two is selected; "Python checks" in CONTRIBUTING.md says why.
         for unselected in ("S603", "S607"):
             self.assertEqual([], [prefix for prefix in lint["select"] if unselected.startswith(prefix)], unselected)
-        # A finding is fixed, or suppressed on its line with the reason beside it; no rule or file is exempt.
-        self.assertEqual(["mccabe", "pylint", "select"], sorted(lint))
+        # A finding is fixed, or suppressed on its line with the reason beside it; no rule or file is exempt but S101
+        # in the regression suites, which pytest runs and never under -O, and which no deployment ships.
+        self.assertEqual(["mccabe", "per-file-ignores", "pylint", "select"], sorted(lint))
+        self.assertEqual(
+            {
+                "tests/**/*.py": ["S101"],
+                "skills/*/scripts/test_*.py": ["S101"],
+                ".claude/skills/*/scripts/test_*.py": ["S101"],
+            },
+            lint["per-file-ignores"],
+        )
         self.assertEqual(["max-complexity"], sorted(lint["mccabe"]))
         self.assertEqual(["max-statements"], sorted(lint["pylint"]))
         self.assertEqual(["exclude", "format", "line-length", "lint", "target-version"], sorted(configuration))
