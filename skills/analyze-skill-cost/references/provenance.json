@@ -1,0 +1,292 @@
+{
+  "checks": {
+    "BODY_OVER_500_LINES": [
+      {
+        "page": "https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices",
+        "passage": "Keep the SKILL.md body under 500 lines for optimal performance, and split its content into separate files as it nears that limit."
+      }
+    ],
+    "DESCRIPTION": [
+      {
+        "page": "https://code.claude.com/docs/en/skills",
+        "passage": "Claude Code loads the description of every skill the model may start into context, so Claude knows what is available, and shortens a listing entry past its character budget."
+      },
+      {
+        "page": "https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices",
+        "passage": "The description says what the skill does and when to use it, in at most 1,024 characters, because Claude chooses a skill from its description among many."
+      }
+    ],
+    "DOC_NO_TOC": [
+      {
+        "page": "https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices",
+        "passage": "For reference files longer than 100 lines, include a table of contents at the top, so Claude sees the full scope even when it previews the file with a partial read."
+      }
+    ],
+    "DUPLICATE_BLOCK": [
+      {
+        "page": "https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices",
+        "passage": "Concise is key: the context window is shared with everything else Claude needs, so each piece of a skill must justify its token cost."
+      }
+    ],
+    "EXIT_MISMATCH": [
+      {
+        "decision": "A skill's Markdown keys on the lines its scripts print and states only the exit codes they use: the Script results contract in this source's docs/adding-a-skill.md."
+      }
+    ],
+    "EXPANDS": [
+      {
+        "decision": "Claude Code asks before it runs a command that expands a shell variable or a command substitution, whatever allowed-tools grants, as this source found and records under Granting tools in docs/adding-a-skill.md."
+      }
+    ],
+    "GRANTED_REPOSITORY_CODE": [
+      {
+        "decision": "A command that starts code the audited repository configures keeps prompting, so the user approves it, and the script that starts it declares RUNS_REPOSITORY_CODE: Granting tools in this source's docs/adding-a-skill.md."
+      }
+    ],
+    "HIDDEN_ALLOWED": [
+      {
+        "page": "https://code.claude.com/docs/en/skills",
+        "passage": "allowed-tools lets Claude use the listed tools without asking while the skill is active, and a skill neither Claude (disable-model-invocation: true) nor the user (user-invocable: false) can start is never active."
+      },
+      {
+        "decision": "A hidden skill grants nothing, and the skills that run its scripts grant them: Granting tools in this source's docs/adding-a-skill.md."
+      }
+    ],
+    "IDLE_ALLOWED": [
+      {
+        "page": "https://code.claude.com/docs/en/skills",
+        "passage": "allowed-tools lets Claude use the listed tools without asking while the skill is active."
+      },
+      {
+        "decision": "A skill grants a pattern only for a command its body shows, so a command it leaves to the repository it works in keeps prompting there: Granting tools in this source's docs/adding-a-skill.md."
+      }
+    ],
+    "INLINED_HELPER": [
+      {
+        "page": "https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices",
+        "passage": "Utility scripts are more reliable than generated code and save tokens, because Claude runs them without their code entering the context window; tell Claude to run a script rather than read it."
+      }
+    ],
+    "INTERNAL_LISTED": [
+      {
+        "page": "https://code.claude.com/docs/en/skills",
+        "passage": "disable-model-invocation: true keeps a skill's description out of Claude's context so that only the user starts it, and user-invocable: false also hides it from the user's menu."
+      }
+    ],
+    "INVOCATION": [
+      {
+        "page": "https://code.claude.com/docs/en/skills",
+        "passage": "Set disable-model-invocation: true on a workflow with side effects, such as a deployment or a commit, that should start only when the user asks for it."
+      },
+      {
+        "decision": "A skill another skill invokes by name keeps model invocation, which a contract test in this source holds: Files in docs/adding-a-skill.md."
+      }
+    ],
+    "MISSING_ALLOWED": [
+      {
+        "page": "https://code.claude.com/docs/en/skills",
+        "passage": "A tool the skill uses that allowed-tools does not list still runs, after the usual permission prompt."
+      }
+    ],
+    "MODEL": [
+      {
+        "page": "https://code.claude.com/docs/en/skills",
+        "passage": "A skill's model field sets the model Claude uses while the skill is active."
+      },
+      {
+        "decision": "A cheaper model is suggested only after comparing real runs, and never for a skill followed in the same turn by work that starts subagents, which inherit it: the decision that a skill pins no model in this source's docs/design.md."
+      }
+    ],
+    "NESTED_REFERENCE": [
+      {
+        "page": "https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices",
+        "passage": "Keep references one level deep from SKILL.md, because Claude may only preview a file that another reference file points to rather than read it whole."
+      }
+    ],
+    "NO_SCRIPT_ALLOWED": [
+      {
+        "page": "https://code.claude.com/docs/en/permissions",
+        "passage": "A Bash rule approves every command that starts with its pattern, with * standing for any text, so a pattern that ends at a program approves whatever follows it."
+      },
+      {
+        "decision": "A grant's text before its * names a script by its path or a git or gh subcommand: the grant decisions in this source's docs/design.md."
+      }
+    ],
+    "OPEN_PATH_ALLOWED": [
+      {
+        "page": "https://code.claude.com/docs/en/permissions",
+        "passage": "Bash permission patterns that try to constrain a command's arguments are fragile."
+      },
+      {
+        "decision": "Every grant ends a script's path at its closing quote, or at a space when unquoted, before any *, because no path in a shell grant is normalized: the grant decisions in this source's docs/design.md."
+      }
+    ],
+    "OUTSIDE_MISSING": [
+      {
+        "decision": "A skill reaches a file outside its folder only as a declared shared asset the deployer installs, so a path that resolves to nothing fails its read on every run: Shared assets in this source's docs/adding-a-skill.md."
+      }
+    ],
+    "OUTSIDE_READ": [
+      {
+        "page": "https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview",
+        "passage": "Skills load in levels: the metadata always, the SKILL.md body when the skill starts, and other files only when its instructions call for them."
+      },
+      {
+        "decision": "Runtime guidance such as a tool mapping is a shared asset the runtime adapters point to and SKILL.md never names, so Claude spends no read on it: Shared assets in this source's docs/adding-a-skill.md."
+      }
+    ],
+    "REPLY_BOUNDED": [
+      {
+        "page": "https://code.claude.com/docs/en/sub-agents",
+        "passage": "A subagent's final message returns to the main conversation as its result, so its length is context the main conversation keeps."
+      }
+    ],
+    "RUNTIME_PROMPT": [
+      {
+        "decision": "A prompt a skill's script writes for a subagent at runtime is audited from a rendered sample kept in the source tree as docs/runtime-prompts/<skill>/<role>.txt: the runtime prompt decision in this source's docs/design.md."
+      }
+    ],
+    "RUNTIME_PROMPT_UNSAMPLED": [
+      {
+        "decision": "A prompt a skill's script writes for a subagent at runtime is audited from a rendered sample kept in the source tree as docs/runtime-prompts/<skill>/<role>.txt: the runtime prompt decision in this source's docs/design.md."
+      }
+    ],
+    "SIBLING_FOLDER_ALLOWED": [
+      {
+        "page": "https://code.claude.com/docs/en/permissions",
+        "passage": "Bash permission patterns that try to constrain a command's arguments are fragile."
+      },
+      {
+        "decision": "A skill grants each sibling script it runs by name, never the sibling's folder, which matches every script there and every .. path out of it: the grant decisions in this source's docs/design.md."
+      }
+    ],
+    "UNEXPLAINED": [
+      {
+        "decision": "A script prints one fact per line for the agent to act on, so the skill's Markdown names each line a script it runs prints: Script results in this source's docs/adding-a-skill.md."
+      }
+    ],
+    "UNGRANTED": [
+      {
+        "page": "https://code.claude.com/docs/en/permissions",
+        "passage": "Claude Code matches each command of a compound command joined by &&, ||, ;, or | against the rules on its own, so a rule that approves one does not approve the others."
+      },
+      {
+        "decision": "A skill grants every script it runs, its own and its siblings', by name: Granting tools in this source's docs/adding-a-skill.md."
+      }
+    ],
+    "UNPAIRED_ALLOWED": [
+      {
+        "decision": "On Windows the model may run a fence's command through its PowerShell tool rather than Bash, so a skill grants each pattern to both shells: Granting tools in this source's docs/adding-a-skill.md."
+      }
+    ],
+    "UNPRINTED": [
+      {
+        "decision": "A skill's Markdown keys on the lines its scripts print, so a line it waits for must be one a script prints: Script results in this source's docs/adding-a-skill.md."
+      }
+    ],
+    "UNSCOPED_ALLOWED": [
+      {
+        "page": "https://code.claude.com/docs/en/permissions",
+        "passage": "A rule that names a tool with no specifier, such as Bash, matches every use of that tool."
+      }
+    ],
+    "UNUSED_ALLOWED": [
+      {
+        "page": "https://code.claude.com/docs/en/skills",
+        "passage": "allowed-tools lets Claude use the listed tools without asking while the skill is active."
+      },
+      {
+        "decision": "A skill lists only the tools a step uses, because each grant widens what runs unasked: Granting tools in this source's docs/adding-a-skill.md."
+      }
+    ],
+    "agent": [
+      {
+        "page": "https://code.claude.com/docs/en/sub-agents",
+        "passage": "Each subagent works in its own context window with its own system prompt, which keeps its work out of the main conversation at the cost of a context of its own."
+      }
+    ],
+    "assembled-arguments": [
+      {
+        "decision": "A skill's deterministic steps are tested scripts that print one fact per line, and its prose keeps judgment, delegation, and the user's questions: Tested scripts over prose in this source's docs/design.md."
+      }
+    ],
+    "carried-state": [
+      {
+        "decision": "A skill's deterministic steps are tested scripts that print one fact per line, and its prose keeps judgment, delegation, and the user's questions: Tested scripts over prose in this source's docs/design.md."
+      }
+    ],
+    "generated-code": [
+      {
+        "page": "https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices",
+        "passage": "Pre-made utility scripts are more reliable than code Claude generates, save tokens, and give the same result on every run."
+      },
+      {
+        "decision": "A skill's deterministic steps are tested scripts that print one fact per line, and its prose keeps judgment, delegation, and the user's questions: Tested scripts over prose in this source's docs/design.md."
+      }
+    ],
+    "hand-drafted": [
+      {
+        "decision": "A skill's deterministic steps are tested scripts that print one fact per line, and its prose keeps judgment, delegation, and the user's questions: Tested scripts over prose in this source's docs/design.md."
+      }
+    ],
+    "loop": [
+      {
+        "page": "https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices",
+        "passage": "Claude can make independent tool calls in parallel, and asking for parallel calls raises how often it does."
+      }
+    ],
+    "owed-by-rules": [
+      {
+        "decision": "A skill's deterministic steps are tested scripts that print one fact per line, and its prose keeps judgment, delegation, and the user's questions: Tested scripts over prose in this source's docs/design.md."
+      }
+    ],
+    "parsed-output": [
+      {
+        "decision": "A skill's deterministic steps are tested scripts that print one fact per line, and its prose keeps judgment, delegation, and the user's questions: Tested scripts over prose in this source's docs/design.md."
+      }
+    ],
+    "per-item-command": [
+      {
+        "page": "https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices",
+        "passage": "Claude can make independent tool calls in parallel, and asking for parallel calls raises how often it does."
+      },
+      {
+        "decision": "A command that takes several items covers a batch in one call, and a batch command names each item's failure on its own line: Script results in this source's docs/adding-a-skill.md."
+      }
+    ],
+    "read-then-search": [
+      {
+        "page": "https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents",
+        "passage": "An agent can keep lightweight references such as file paths and load only what it needs at runtime with tools such as grep, head, and tail, rather than loading whole files into context."
+      }
+    ],
+    "relayed-output": [
+      {
+        "decision": "A report the user reads is written to a file whose path a script prints, because output relayed as it is costs its length again in output tokens: Working files in this source's docs/adding-a-skill.md."
+      }
+    ],
+    "rule-based-work": [
+      {
+        "decision": "A skill's deterministic steps are tested scripts that print one fact per line, and its prose keeps judgment, delegation, and the user's questions: Tested scripts over prose in this source's docs/design.md."
+      }
+    ],
+    "shell-file-command": [
+      {
+        "page": "https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents",
+        "passage": "Tools should return token-efficient information and have clear, non-overlapping purposes, since everything a tool returns enters the context the agent works within."
+      }
+    ],
+    "subagent-reply": [
+      {
+        "page": "https://code.claude.com/docs/en/sub-agents",
+        "passage": "A subagent's final message returns to the main conversation as its result, so its length is context the main conversation keeps."
+      }
+    ],
+    "wide-glob": [
+      {
+        "page": "https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents",
+        "passage": "Tools should return token-efficient information and have clear, non-overlapping purposes, since everything a tool returns enters the context the agent works within."
+      }
+    ]
+  }
+}

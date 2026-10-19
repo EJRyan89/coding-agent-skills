@@ -1,0 +1,153 @@
+{
+  "checks": {
+    "authority": [
+      {
+        "decision": "A repository counts as generated from CLAUDE.md only on the signals check 2 of references/audit-policy.md names, the layout of this source's retired init-ai-config generator, so a repository that keeps its instructions another way is never reported as drifted."
+      }
+    ],
+    "behavioral": [
+      {
+        "page": "https://code.claude.com/docs/en/best-practices",
+        "passage": "Give Claude a way to verify its work, such as tests, a linter, or an expected output, because it does markedly better when it can check its own results."
+      },
+      {
+        "decision": "An agent's instructions forbid disabling, suppressing, or working around a failing check and state a quality gate, as this source's own CLAUDE.md does under Required validation."
+      }
+    ],
+    "collision": [
+      {
+        "decision": "A skill or custom agent named code-review collides with Copilot's built-in agent, and an unmarked AGENTS.md or copilot-instructions.md is one the generator refuses to overwrite: checks 8 and 11 of references/audit-policy.md."
+      }
+    ],
+    "copilot-agent": [
+      {
+        "page": "https://docs.github.com/en/copilot/reference/custom-agents-configuration",
+        "passage": "A custom agent is a .agent.md or .md file whose frontmatter requires a description, whose target is vscode or github-copilot, and whose tools list enables every tool when unset and none when empty."
+      }
+    ],
+    "copilot-config": [
+      {
+        "page": "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/create-skills",
+        "passage": "A skill is a SKILL.md file that starts with YAML frontmatter."
+      },
+      {
+        "page": "https://docs.github.com/en/copilot/reference/custom-agents-configuration",
+        "passage": "A custom agent's profile starts with YAML frontmatter that sets its properties."
+      }
+    ],
+    "copilot-skill": [
+      {
+        "page": "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/create-skills",
+        "passage": "A skill's frontmatter gives a name, lowercase with hyphens and matching its folder, and a description of what it does and when to use it."
+      },
+      {
+        "page": "https://docs.github.com/en/copilot/concepts/agents/about-agent-skills",
+        "passage": "Copilot reads a repository's skills from folders under .github/skills, .claude/skills, and .agents/skills, each holding a SKILL.md."
+      }
+    ],
+    "inventory": [
+      {
+        "page": "https://code.claude.com/docs/en/memory",
+        "passage": "Claude Code reads CLAUDE.md from the project root, or from .claude/CLAUDE.md, at the start of every session."
+      },
+      {
+        "page": "https://learn.chatgpt.com/docs/agent-configuration/agents-md",
+        "passage": "Codex reads AGENTS.override.md or AGENTS.md in each directory from the project root down to the working directory."
+      },
+      {
+        "page": "https://docs.github.com/en/copilot/reference/custom-instructions-support",
+        "passage": "Each Copilot surface reads its own set of instruction files: .github/copilot-instructions.md, .github/instructions/*.instructions.md, and agent instructions such as AGENTS.md, CLAUDE.md, and GEMINI.md."
+      }
+    ],
+    "layering": [
+      {
+        "page": "https://learn.chatgpt.com/docs/agent-configuration/agents-md",
+        "passage": "In each directory from the project root down to the working directory, Codex takes the first non-empty file of AGENTS.override.md, AGENTS.md, and the names project_doc_fallback_filenames lists, and stops adding content at project_doc_max_bytes, 32 KiB by default."
+      },
+      {
+        "page": "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-custom-instructions",
+        "passage": "Copilot CLI combines AGENTS.md, CLAUDE.md, .claude/CLAUDE.md, GEMINI.md, .github/copilot-instructions.md, and .github/instructions/*.instructions.md from the repository root, the working directory, and the directories between."
+      },
+      {
+        "page": "https://docs.github.com/en/copilot/reference/custom-instructions-support",
+        "passage": "The instruction files the cloud agent, code review, JetBrains, and VS Code read differ by surface, and VS Code reads several only when a setting enables them."
+      },
+      {
+        "page": "https://docs.github.com/en/copilot/how-tos/copilot-on-github/use-copilot-agents/copilot-code-review",
+        "passage": "Copilot code review on GitHub reads custom instructions, CLAUDE.md, GEMINI.md, and REVIEW.md among them, and skills in .github/skills, from the pull request's head branch."
+      },
+      {
+        "page": "https://docs.github.com/en/copilot/how-tos/configure-custom-instructions/add-repository-instructions",
+        "passage": "Repository-wide instructions live in .github/copilot-instructions.md, and path-specific ones in .github/instructions/NAME.instructions.md, whose applyTo frontmatter names the files they cover."
+      }
+    ],
+    "limitation": [
+      {
+        "decision": "The audit names each documented limitation a repository hits rather than passing it silently: references/known-limitations.md."
+      }
+    ],
+    "mcp": [
+      {
+        "page": "https://code.claude.com/docs/en/mcp",
+        "passage": "A project's shared MCP servers live in .mcp.json at the repository root, under mcpServers, each with a command for a stdio server or a url for a remote one."
+      },
+      {
+        "page": "https://learn.chatgpt.com/docs/config-file/config-reference",
+        "passage": "Codex reads MCP servers from mcp_servers tables in config.toml: a stdio server by its command, args, and env, and a streamable HTTP server by its url."
+      },
+      {
+        "decision": "The file shapes, the transport each target supports, and the precedence between .mcp.json and .github/mcp.json are this skill's record in check 6 of references/audit-policy.md."
+      }
+    ],
+    "orphan": [
+      {
+        "decision": "A shim whose canonical skill is gone, or a generated file the manifest no longer lists, carries stale instructions: check 5 of references/audit-policy.md and references/generated-layout.md."
+      }
+    ],
+    "ownership": [
+      {
+        "decision": "Every generated file carries the AUTO-GENERATED from CLAUDE.md marker or a manifest hash, so the generator never updates or deletes a file it does not own: check 10 of references/audit-policy.md."
+      }
+    ],
+    "parity": [
+      {
+        "decision": "Each generated file matches what the generator would write from CLAUDE.md, or its manifest hash: check 4 of references/audit-policy.md and references/generated-layout.md."
+      }
+    ],
+    "provenance": [
+      {
+        "decision": "A generated Copilot projection in .github/skills or .github/agents is one the manifest owns: check 8 of references/audit-policy.md."
+      }
+    ],
+    "runtime": [
+      {
+        "page": "https://docs.github.com/en/copilot/reference/custom-instructions-support",
+        "passage": "Whether a Copilot surface uses custom instructions depends on settings and policies outside the repository."
+      },
+      {
+        "decision": "Settings, policies, authentication, model availability, and enablement live outside the repository, so a static audit names them for checking by hand: check 7 of references/audit-policy.md."
+      }
+    ],
+    "runtime-role": [
+      {
+        "decision": "The manifest's runtimeRoles name each Copilot surface's role in the generated layout: check 8 of references/audit-policy.md and references/generated-layout.md."
+      }
+    ],
+    "scope": [
+      {
+        "decision": "The manifest is editable, so the scope it declares is compared with the literal targets of a recognized generator, read without running it: check 3 of references/audit-policy.md."
+      }
+    ],
+    "trust-boundary": [
+      {
+        "page": "https://docs.github.com/en/copilot/how-tos/copilot-on-github/use-copilot-agents/copilot-code-review",
+        "passage": "Copilot code review on GitHub reads custom instructions, CLAUDE.md, GEMINI.md, and REVIEW.md among them, and skills in .github/skills, from the pull request's head branch."
+      }
+    ],
+    "vocabulary": [
+      {
+        "decision": "Manifest runtimes, surfaces, and MCP targets use the canonical names of the generated layout: check 3 of references/audit-policy.md and references/generated-layout.md."
+      }
+    ]
+  }
+}

@@ -4424,3 +4424,110 @@ class GeneratorPathTests(unittest.TestCase):
             named = [candidate for candidate in audit.GENERATOR_CANDIDATES if f"`{candidate}`" in text]
             with self.subTest(reference=reference.name):
                 self.assertIn(named, ([], audit.GENERATOR_CANDIDATES))
+
+
+class ProvenanceTests(unittest.TestCase):
+    """Every check names the guidance it derives from, and the report names it when asked."""
+
+    SCRIPT = Path(audit.__file__).resolve()
+    PROVENANCE = SCRIPT.parents[1] / "references" / "provenance.json"
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name) / "repo with spaces"
+        (self.root / ".git").mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _main(self, *arguments: str) -> tuple[int, str]:
+        output = io.StringIO()
+        with (
+            contextlib.redirect_stdout(output),
+            mock.patch.object(sys, "argv", ["audit_ai_config.py", "--root", str(self.root), *arguments]),
+        ):
+            code = audit.main()
+        return code, output.getvalue()
+
+    def named_checks(self) -> list[object]:
+        """The check each Finding the engine builds names: its second argument, or its check keyword."""
+        checks: list[object] = []
+        for node in ast.walk(ast.parse(self.SCRIPT.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "Finding":
+                named = [keyword.value for keyword in node.keywords if keyword.arg == "check"]
+                argument = named[0] if named else node.args[1]
+                checks.append(argument.value if isinstance(argument, ast.Constant) else ast.unparse(argument))
+        return checks
+
+    def test_every_check_a_finding_can_name_is_a_literal_check(self) -> None:
+        checks = self.named_checks()
+        self.assertEqual([], [check for check in checks if check not in audit.CHECKS], "named, not in CHECKS")
+        self.assertEqual([], sorted(audit.CHECKS - set(checks)), "in CHECKS, named by no finding")
+
+    def test_every_check_has_a_provenance_entry_and_every_entry_names_a_check(self) -> None:
+        entries = json.loads(self.PROVENANCE.read_text(encoding="utf-8"))["checks"]
+        self.assertEqual([], sorted(audit.CHECKS - set(entries)), "checks without an entry")
+        self.assertEqual([], sorted(set(entries) - audit.CHECKS), "entries without a check")
+        self.assertEqual(sorted(audit.CHECKS), sorted(audit.check_provenance.load(self.PROVENANCE, audit.CHECKS)))
+
+    def test_every_check_the_policy_describes_is_a_check(self) -> None:
+        policy = (self.PROVENANCE.parent / "audit-policy.md").read_text(encoding="utf-8")
+        headings = re.findall(r"^### \d+\. .*\((.*)\)$", policy, re.MULTILINE)
+        described = {name for heading in headings for name in re.findall(r"`([a-z-]+)`", heading)}
+        self.assertEqual(sorted(audit.CHECKS), sorted(described))
+
+    def test_the_markdown_report_names_the_sources_of_the_checks_it_reports_only_when_asked(self) -> None:
+        code, plain = self._main()
+        self.assertEqual(1, code)
+        self.assertNotIn("### Sources", plain)
+        code, report = self._main("--provenance")
+        self.assertEqual(1, code)
+        self.assertEqual(plain, report[: len(plain)])
+        self.assertEqual(
+            "\n### Sources\n\n- `authority`: decision — A repository counts as generated from CLAUDE.md only on the "
+            "signals check 2 of references/audit-policy.md names, the layout of this source's retired init-ai-config "
+            "generator, so a repository that keeps its instructions another way is never reported as drifted.\n",
+            report[len(plain) :],
+        )
+
+    def test_a_page_source_names_its_url_and_passage(self) -> None:
+        _setup_conforming_repo(self.root)
+        _, report = self._main("--provenance")
+        self.assertIn(
+            "- `inventory`: https://code.claude.com/docs/en/memory — Claude Code reads CLAUDE.md from the project "
+            "root, or from .claude/CLAUDE.md, at the start of every session.\n",
+            report,
+        )
+        reported = {line.split("`")[1] for line in report.splitlines() if line.startswith("- `")}
+        findings = {line.split(" | ")[1] for line in report.splitlines() if line.startswith("| ") and " | " in line}
+        self.assertEqual(findings - {"Check", "---"}, reported)
+
+    def test_the_json_report_carries_the_sources_by_check_only_when_asked(self) -> None:
+        _, plain = self._main("--json")
+        self.assertNotIn("provenance", json.loads(plain))
+        _, report = self._main("--json", "--provenance")
+        data = json.loads(report)
+        self.assertEqual({check["check"] for check in data["findings"]}, set(data["provenance"]))
+        self.assertEqual(
+            [
+                {
+                    "decision": "A repository counts as generated from CLAUDE.md only on the signals check 2 of "
+                    "references/audit-policy.md names, the layout of this source's retired init-ai-config generator, "
+                    "so a repository that keeps its instructions another way is never reported as drifted."
+                }
+            ],
+            data["provenance"]["authority"],
+        )
+
+    def test_a_report_without_findings_says_no_check_has_a_source(self) -> None:
+        self.assertEqual(
+            ["", "### Sources", "", "No findings, so no check to name a source for."], audit.source_markdown({})
+        )
+
+    def test_a_provenance_file_that_leaves_a_check_out_fails_the_run(self) -> None:
+        broken = Path(self.temp.name) / "provenance.json"
+        broken.write_text(json.dumps({"checks": {"mcp": [{"decision": "A."}]}}), encoding="utf-8")
+        with mock.patch.object(audit, "PROVENANCE", broken):
+            code, output = self._main("--provenance")
+        self.assertEqual(1, code)
+        self.assertEqual([f"FAILED {broken.as_posix()}: no entry for authority, "], [output.split("behavioral")[0]])
