@@ -869,4 +869,5 @@ def test_a_github_error_names_the_clients_classes_and_those_callers_raise() -> N
         "ineligible",
         "incomplete",
         "refused",
+        "diff_limit",
     )
