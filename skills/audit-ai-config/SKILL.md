@@ -16,7 +16,7 @@ Confirm the target is a Git repository (`git rev-parse --show-toplevel`); if it 
 {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/audit_ai_config.py" --root "<repository root>"
 ```
 
-Add `--json` when the user wants machine-readable output.
+Add `--json` when the user wants machine-readable output, and `--provenance` when they ask why a finding holds or what guidance a check follows: the report then names, for each check its findings name, the published page and the passage the check rests on, or this source's decision where no page governs it. Cite that source beside the finding.
 
 The report states its result on one line, before the `SUMMARY` lines; report by that line, not the exit code:
 

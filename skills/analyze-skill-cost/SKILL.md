@@ -197,3 +197,13 @@ Group all findings into four buckets. Within each bucket, subdivide into MUST FI
 ## Top wins
 <2–4 bullets; highest-impact changes phrased as "before → after" with an estimated saving (tokens/invocation, or calls eliminated).>
 ```
+
+## Why a finding holds
+
+Only when the user asks why a finding holds or what guidance it follows, run, naming in one command every line word or cue of the findings asked about:
+
+```bash
+{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py" provenance "<check>"
+```
+
+Cite each `PAGE <check> <url> <passage>` line, the published page and the passage the check rests on, and each `DECISION <check> <sentence>` line, this source's decision where no page governs the check, beside its finding. `NOT_A_CHECK <name>` names a measurement, which rests on no guidance.

@@ -1729,3 +1729,106 @@ def test_a_usage_error_exits_2(arguments: tuple[str, ...]) -> None:
     CHECK.assertEqual(2, completed.returncode)
     CHECK.assertEqual("", completed.stdout)
     CHECK.assertIn("usage:", completed.stderr)
+
+
+# Every line skill_inventory.py prints that is a measurement or a location rather than a check, and so rests on no
+# guidance; a new line belongs here or among the checks.
+MEASUREMENT_LINES = frozenset(
+    {
+        "ALLOWED",
+        "AMBIGUOUS",
+        "AVAILABLE",
+        "CUE",
+        "DECLARED",
+        "DECLARED_UNREADABLE",
+        "FAILED",
+        "FILE",
+        "IMPLIED",
+        "NOT_A_CHECK",
+        "NOT_FOUND",
+        "NO_ALLOWED_TOOLS",
+        "NO_MAIN",
+        "REPO",
+        "REPOSITORY_CODE",
+        "RUNTIME_PROMPT_READ",
+        "RUNTIME_PROMPT_SAMPLE",
+        "SCOPE",
+        "SKILL_DIR",
+        "SKILL_FILE",
+        "STOP",
+        "TOTAL",
+        "UNREADABLE",
+        "USED",
+    }
+)
+PROVENANCE = SCRIPT.parents[1] / "references" / "provenance.json"
+
+
+def test_every_line_the_script_prints_is_a_check_or_a_measurement() -> None:
+    printed = set(skill_inventory.python_facts(SCRIPT.read_text(encoding="utf-8")).lines)
+    CHECK.assertEqual(set(), skill_inventory.CHECK_LINES & MEASUREMENT_LINES)
+    CHECK.assertEqual(sorted(printed), sorted(skill_inventory.CHECK_LINES | MEASUREMENT_LINES))
+
+
+def test_the_cues_are_the_ones_scan_names() -> None:
+    CHECK.assertEqual(
+        {
+            "agent",
+            "assembled-arguments",
+            "carried-state",
+            "generated-code",
+            "hand-drafted",
+            "loop",
+            "owed-by-rules",
+            "parsed-output",
+            "per-item-command",
+            "read-then-search",
+            "relayed-output",
+            "rule-based-work",
+            "shell-file-command",
+            "subagent-reply",
+            "wide-glob",
+        },
+        skill_inventory.CUE_NAMES,
+    )
+
+
+def test_every_check_has_a_provenance_entry_and_every_entry_names_a_check() -> None:
+    entries = json.loads(PROVENANCE.read_text(encoding="utf-8"))["checks"]
+    CHECK.assertEqual(sorted(skill_inventory.CHECKS - set(entries)), [], "checks without an entry")
+    CHECK.assertEqual(sorted(set(entries) - skill_inventory.CHECKS), [], "entries without a check")
+    CHECK.assertEqual(
+        sorted(skill_inventory.CHECKS),
+        sorted(skill_inventory.check_provenance.load(PROVENANCE, skill_inventory.CHECKS)),
+    )
+
+
+def test_provenance_names_each_source_of_a_check_and_refuses_a_measurement() -> None:
+    code, lines, _ = run("provenance", "DOC_NO_TOC", "FILE", "UNSCOPED_ALLOWED", "DOC_NO_TOC")
+    CHECK.assertEqual(1, code)
+    CHECK.assertEqual(
+        [
+            "PAGE DOC_NO_TOC https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices For "
+            "reference files longer than 100 lines, include a table of contents at the top, so Claude sees the full "
+            "scope even when it previews the file with a partial read.",
+            "NOT_A_CHECK FILE",
+            "PAGE UNSCOPED_ALLOWED https://code.claude.com/docs/en/permissions A rule that names a tool with no "
+            "specifier, such as Bash, matches every use of that tool.",
+        ],
+        lines,
+    )
+
+
+def test_provenance_of_checks_alone_exits_0_and_a_decision_is_one_line() -> None:
+    code, lines, _ = run("provenance", "UNPAIRED_ALLOWED")
+    CHECK.assertEqual(0, code)
+    CHECK.assertEqual(1, len(lines))
+    CHECK.assertTrue(lines[0].startswith("DECISION UNPAIRED_ALLOWED On Windows the model may run"))
+
+
+def test_provenance_fails_on_a_file_that_leaves_a_check_out() -> None:
+    with tempfile.TemporaryDirectory() as folder:
+        path = write(Path(folder) / "provenance.json", json.dumps({"checks": {"wide-glob": [{"decision": "A."}]}}))
+        with CHECK.assertRaises(skill_inventory.InputError) as caught:
+            skill_inventory.provenance(["wide-glob"], path)
+    CHECK.assertIn("provenance.json: no entry for BODY_OVER_500_LINES, ", str(caught.exception))

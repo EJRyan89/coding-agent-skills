@@ -6,6 +6,7 @@
                                             the skill reads from outside its folder
     tools FILE                              compare the tools a skill body references with its allowed-tools, and
                                             size the description every session loads
+    provenance CHECK...                     name the guidance each check derives from, for a finding's line or cue
     scan PATH...                            list lines with cost cues for the agent to judge, subagent prompts
                                             that a script writes at runtime, and the sample of each such prompt;
                                             a skill folder stands for its SKILL.md and then every other Markdown
@@ -78,6 +79,12 @@ saying so, and its command must keep prompting. A command that runs one, through
 REPOSITORY_CODE <tool> <line> <command> when no grant of that tool covers it, as intended, and
 GRANTED_REPOSITORY_CODE <tool> <line> <command> when one does; it is never UNGRANTED.
 
+Provenance: provenance prints, for each check it is given, a line per source references/provenance.json names for
+it: PAGE <check> <url> <passage> for a published page and the passage the check rests on, or DECISION <check> <sentence>
+for a decision of this source. A check is a line the audit judges, CHECK_LINES, or a cue; any other name prints
+NOT_A_CHECK <name>, and the command then exits 1. A provenance file without an entry for every check, or with one for
+no check, is a failure.
+
 Runtime prompts: RUNTIME_PROMPT <file> <line> <writer> is a subagent told to read a prompt file that the named script
 (or unknown) writes at runtime, which the skill's own files never show. A skill source tree keeps a rendered sample of
 each such prompt as docs/runtime-prompts/<skill>/<name>.txt, naming the throwaway folder it was rendered in as <temp>
@@ -121,6 +128,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+import check_provenance
 import frontmatter
 from console import run_main
 from git_client import GitClient
@@ -378,6 +386,49 @@ DECOMPOSED_VALUE = re.compile(r"`([^`\n]*\s[^`\n]*)`:\s([^.]*)")
 VALUE_PART = re.compile(r"`([^`\s<-][^`\s]*)`")
 # Inside code (fences and script files) only these cues apply; the rest describe prose.
 CODE_CUES = frozenset({"wide-glob", "generated-code"})
+# Cues scan names by a test of its own rather than by a pattern of CUES or PROSE_CUES.
+SHELL_FILE_CUE = "shell-file-command"
+AGENT_CUE = "agent"
+SUBAGENT_REPLY_CUE = "subagent-reply"
+CUE_NAMES = frozenset(
+    {*(name for name, _ in CUES), *(name for name, _ in PROSE_CUES), SHELL_FILE_CUE, AGENT_CUE, SUBAGENT_REPLY_CUE}
+)
+# The lines the audit judges, which with the cues are the checks references/provenance.json names the guidance of;
+# every other line a command prints is a measurement or a location, which rests on no guidance.
+CHECK_LINES = frozenset(
+    {
+        "BODY_OVER_500_LINES",
+        "DESCRIPTION",
+        "DOC_NO_TOC",
+        "DUPLICATE_BLOCK",
+        "EXIT_MISMATCH",
+        "EXPANDS",
+        "GRANTED_REPOSITORY_CODE",
+        "HIDDEN_ALLOWED",
+        "IDLE_ALLOWED",
+        "INLINED_HELPER",
+        "INTERNAL_LISTED",
+        "INVOCATION",
+        "MISSING_ALLOWED",
+        "MODEL",
+        "NESTED_REFERENCE",
+        "NO_SCRIPT_ALLOWED",
+        "OPEN_PATH_ALLOWED",
+        "OUTSIDE_MISSING",
+        "OUTSIDE_READ",
+        "REPLY_BOUNDED",
+        "RUNTIME_PROMPT",
+        "RUNTIME_PROMPT_UNSAMPLED",
+        "SIBLING_FOLDER_ALLOWED",
+        "UNEXPLAINED",
+        "UNGRANTED",
+        "UNPAIRED_ALLOWED",
+        "UNPRINTED",
+        "UNSCOPED_ALLOWED",
+        "UNUSED_ALLOWED",
+    }
+)
+CHECKS = CHECK_LINES | CUE_NAMES
 # A status word: the upper-case name a printed line starts with, such as FAILED or SKILL_FILE, of at least three
 # characters, so a word such as ID names no line.
 STATUS_WORD = r"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*"
@@ -736,7 +787,9 @@ def grant_findings(
                 )
                 if command in repository_code:
                     output.append(
-                        f"{'GRANTED_REPOSITORY_CODE' if covered else 'REPOSITORY_CODE'} {tool} {number} {command}"
+                        f"GRANTED_REPOSITORY_CODE {tool} {number} {command}"
+                        if covered
+                        else f"REPOSITORY_CODE {tool} {number} {command}"
                     )
                 elif patterns and not covered:
                     output.append(f"UNGRANTED {tool} {number} {command}")
@@ -1349,9 +1402,9 @@ def scan(given: list[Path]) -> list[str]:
                 else any(SPAN_SHELL_COMMAND.match(span.strip()) for span in CODE_SPAN.findall(line))
             )
             if shell:
-                cues.append("shell-file-command")
+                cues.append(SHELL_FILE_CUE)
             if language is None and (DELEGATION.search(line) or line_references(line, None, ["Agent", "Task"], [])):
-                cues.append("agent")
+                cues.append(AGENT_CUE)
             if "wide-glob" in cues and "head_limit" in line:
                 cues.remove("wide-glob")
             excerpt = text if len(text) <= 160 else text[:157] + "..."
@@ -1379,7 +1432,7 @@ def delegation_lines(path: Path, lines: list[str], languages: list[str | None], 
     if delegations and not any(REPLY_BOUND.search(lines[index]) for index in prose):
         text = lines[delegations[0]].strip()
         excerpt = text if len(text) <= 160 else text[:157] + "..."
-        output.append(f"CUE {posix(path)} {delegations[0] + 1} subagent-reply {excerpt}")
+        output.append(f"CUE {posix(path)} {delegations[0] + 1} {SUBAGENT_REPLY_CUE} {excerpt}")
     for index in prose:
         if not RUNTIME_PROMPT.search(lines[index]):
             continue
@@ -1702,6 +1755,24 @@ def status_lines(folder: Path) -> list[str]:
     return output + [f"UNEXPLAINED {path} {number} {word}" for path, number, word in sorted(unnamed)]
 
 
+# --- provenance -----------------------------------------------------------------------------------
+
+
+def provenance(names: list[str], path: Path | None = None) -> list[str]:
+    """What each named check rests on, from the skill's provenance file, and NOT_A_CHECK for a name that is a
+    measurement, a location, or no line at all."""
+    file = path if path is not None else Path(__file__).resolve().parents[1] / check_provenance.PROVENANCE_FILE
+    try:
+        sources = check_provenance.load(file, CHECKS)
+    except check_provenance.ProvenanceError as exc:
+        raise InputError(str(exc)) from exc
+    return [
+        line
+        for name in dict.fromkeys(names)
+        for line in (check_provenance.lines(sources, name) if name in CHECKS else [f"NOT_A_CHECK {name}"])
+    ]
+
+
 def main(arguments: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -1712,6 +1783,7 @@ def main(arguments: list[str] | None = None) -> int:
     commands.add_parser("inventory", help="size every file of a skill").add_argument("directory", type=Path)
     commands.add_parser("tools", help="compare referenced tools with allowed-tools").add_argument("file", type=Path)
     commands.add_parser("scan", help="list cost cues").add_argument("paths", type=Path, nargs="+")
+    commands.add_parser("provenance", help="name the guidance a check derives from").add_argument("checks", nargs="+")
     args = parser.parse_args(arguments)
     try:
         if args.command == "locate":
@@ -1721,6 +1793,8 @@ def main(arguments: list[str] | None = None) -> int:
             output = inventory(args.directory)
         elif args.command == "tools":
             output = tools(args.file)
+        elif args.command == "provenance":
+            output = provenance(args.checks)
         else:
             output = scan(args.paths)
     except InputError as exc:
@@ -1731,7 +1805,7 @@ def main(arguments: list[str] | None = None) -> int:
         print(f"FAILED cannot read{where}: {exc.strerror or exc}")
         return 1
     print("\n".join(output))
-    return 1 if any(line.startswith(("STOP ", "UNREADABLE ")) for line in output) else 0
+    return 1 if any(line.startswith(("STOP ", "UNREADABLE ", "NOT_A_CHECK ")) for line in output) else 0
 
 
 if __name__ == "__main__":

@@ -138,6 +138,12 @@ output has no summary; count its `findings` instead.
 }
 ```
 
+With `--provenance`, the JSON report adds `provenance`, an object keyed by each check its findings name, whose value
+lists what that check derives from, each a published page and the passage it rests on, `{"page": "<url>", "passage":
+"<sentence>"}`, or a decision of this source, `{"decision": "<sentence>"}`; the Markdown report ends with a `Sources`
+section holding the same, a line per source. Both come from `references/provenance.json`, which holds an entry for
+every check.
+
 ## Manual-Verification Warnings
 
 These are emitted per surface when static validation is insufficient:

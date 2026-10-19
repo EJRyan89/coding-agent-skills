@@ -6,6 +6,22 @@ Claude Code, GitHub Copilot, and Codex each reviewed these limitations against t
 The engine reports each limitation below that applies to the audited repository as an
 `INFO` finding with check `limitation`, when it can detect that it applies.
 
+## Contents
+
+- Scope integrity is conditional
+- Malformed manifests can produce conforming classification
+- Older manifests use default Copilot sections
+- Codex TOML and workflow YAML use marker-only parity
+- Instruction-layering analysis is incomplete
+- Copilot configuration is static, not operational
+- Frontmatter is read as simple YAML
+- Copilot projections are only provenance-checked
+- MCP validation gaps
+- Git repository check is CLI-only
+- Read-only contract
+- Behavioral checks are heuristics
+- The MCP handshake covers stdio servers only
+
 ## Scope integrity is conditional
 
 The audit now parses literal `TARGET_RUNTIMES`, `TARGET_SURFACES`, and

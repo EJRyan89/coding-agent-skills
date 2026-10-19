@@ -8,7 +8,10 @@ references/generated-layout.md where a repository's own ai_config.py generator
 produced one.
 
 Usage:
-    python audit_ai_config.py [--json] [--root <path>]
+    python audit_ai_config.py [--json] [--provenance] [--root <path>]
+
+With --provenance the report also names, for each check its findings name, the guidance the check derives from, read
+from references/provenance.json: a published page and the passage it rests on, or this source's decision.
 
 The Markdown report states its result on one line, before the SUMMARY lines:
 
@@ -41,7 +44,9 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+import check_provenance
 import folder_walk
+from check_provenance import Source
 from console import run_main
 from folder_walk import LINKED, SKIPPED_FOLDERS
 from frontmatter import COMMENT, NESTED_KEY, SEQUENCE_ITEM, Frontmatter, FrontmatterError
@@ -52,6 +57,32 @@ from markdown_literal import markdown_line
 # ---------------------------------------------------------------------------
 
 SEVERITY_ORDER = {"ERROR": 0, "WARNING": 1, "INFO": 2}
+
+# Every check a finding can name, each with an entry in references/provenance.json naming the guidance it derives from.
+CHECKS = frozenset(
+    {
+        "authority",
+        "behavioral",
+        "collision",
+        "copilot-agent",
+        "copilot-config",
+        "copilot-skill",
+        "inventory",
+        "layering",
+        "limitation",
+        "mcp",
+        "orphan",
+        "ownership",
+        "parity",
+        "provenance",
+        "runtime",
+        "runtime-role",
+        "scope",
+        "trust-boundary",
+        "vocabulary",
+    }
+)
+PROVENANCE = Path(__file__).resolve().parents[1] / check_provenance.PROVENANCE_FILE
 
 OWNERSHIP_MARKER = "AUTO-GENERATED from CLAUDE.md"
 
@@ -2434,7 +2465,25 @@ def _validated_scope_status(status: str) -> str:
     return status
 
 
-def format_markdown(result: AuditResult) -> str:
+def reported_sources(result: AuditResult, path: Path | None = None) -> dict[str, tuple[Source, ...]]:
+    """What each check the findings name derives from, by check name, read from `path` or the skill's own file."""
+    sources = check_provenance.load(PROVENANCE if path is None else path, CHECKS)
+    return {check: sources[check] for check in sorted({finding.check for finding in result.findings})}
+
+
+def source_markdown(sources: dict[str, tuple[Source, ...]]) -> list[str]:
+    """The report's Sources section: a line per source of each check the findings name."""
+    lines = ["", "### Sources", ""]
+    if not sources:
+        return [*lines, "No findings, so no check to name a source for."]
+    return lines + [
+        f"- `{check}`: {source.page} — {source.text}" if source.page else f"- `{check}`: decision — {source.text}"
+        for check, found in sources.items()
+        for source in found
+    ]
+
+
+def format_markdown(result: AuditResult, sources: dict[str, tuple[Source, ...]] | None = None) -> str:
     sorted_findings = result.sorted_findings()
     lines = [
         f"## AI Config Audit — {result.repository}",
@@ -2449,6 +2498,7 @@ def format_markdown(result: AuditResult) -> str:
 
     if not sorted_findings:
         lines.append("No findings.")
+        lines += [] if sources is None else source_markdown(sources)
         return "\n".join(lines) + "\n"
 
     lines.append("### Findings")
@@ -2461,17 +2511,23 @@ def format_markdown(result: AuditResult) -> str:
         lines.append(
             f"| {f.severity} | {f.check} | {markdown_line(f.path or '')} | {line} | {markdown_line(f.message)} |"
         )
+    lines += [] if sources is None else source_markdown(sources)
     return "\n".join(lines) + "\n"
 
 
-def format_json(result: AuditResult) -> str:
-    output = {
+def format_json(result: AuditResult, sources: dict[str, tuple[Source, ...]] | None = None) -> str:
+    output: dict[str, Any] = {
         "repository": result.repository,
         "authority": result.authority,
         "scopeStatus": _validated_scope_status(result.scope_status),
         "exitCode": result.exit_code,
         "findings": [asdict(f) for f in result.sorted_findings()],
     }
+    if sources is not None:
+        output["provenance"] = {
+            check: [{"page": s.page, "passage": s.text} if s.page else {"decision": s.text} for s in found]
+            for check, found in sources.items()
+        }
     return json.dumps(output, indent=2, ensure_ascii=False) + "\n"
 
 
@@ -2488,6 +2544,11 @@ def main() -> int:
         help="output JSON instead of Markdown",
     )
     parser.add_argument(
+        "--provenance",
+        action="store_true",
+        help="also name the guidance each reported check derives from",
+    )
+    parser.add_argument(
         "--root",
         type=Path,
         default=Path.cwd(),
@@ -2501,14 +2562,21 @@ def main() -> int:
         return 1
 
     result = audit(args.root)
+    sources = None
+    if args.provenance:
+        try:
+            sources = reported_sources(result)
+        except check_provenance.ProvenanceError as exc:
+            print(f"FAILED {exc}")
+            return 1
 
     if args.json:
         # The JSON report is the report the user asked for in another form, for CI, not data a later step of the
         # skill reads, so the skill contract's "A script prints no JSON" leaves it as the report it is. The script
         # declares no EXIT_CONTRACT_EXEMPT, which would also lift the exit-code checks it keeps to.
-        print(format_json(result), end="")
+        print(format_json(result, sources), end="")
     else:
-        print(format_markdown(result), end="")
+        print(format_markdown(result, sources), end="")
 
     return result.exit_code
 
