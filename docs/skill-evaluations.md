@@ -60,6 +60,9 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   running scenarios and when judging existing records with `--records`. Without `--scenario`, scenarios are selected
   in name order. `--records` holds each record to what a run's is held to: code-review-core's record contract, the
   version the run writes, the reviewer guard, and each reviewer's model, as the reviewer's result reports it.
+- **What it prints** is `PASS` or `FAIL` per expectation and model, then a table. The tool's `MODELS` constant is the
+  one place the models are named, and `tests/tools/test_skill_evals.py` covers the tool with a stub Claude Code and no
+  model.
 - **What is recorded** is pass or fail per expectation, the model identifiers the reviewers and the session ran
   on, the Claude Code version, and the date. Nothing else: no tokens, cost, or timings.
 
