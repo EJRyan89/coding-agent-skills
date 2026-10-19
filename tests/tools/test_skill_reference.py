@@ -18,9 +18,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 
 from tools import skill_reference
 
-# Runs no test of its own; the test functions below check through its assertions, as the class does.
-CHECK = unittest.TestCase()
-
 INITIAL_REFERENCE = (
     "# Skills\n\nIntro.\n\n<!-- generated:summary -->\n<!-- /generated:summary -->\n\n## Runtime support\n\n"
     "<!-- generated:runtime-support -->\n<!-- /generated:runtime-support -->\n"
@@ -350,4 +347,4 @@ class SkillReferenceTestCase(unittest.TestCase):
     ],
 )
 def test_a_model_invocable_description_must_say_when_to_use_the_skill(description: str, expected: bool) -> None:
-    CHECK.assertIs(expected, skill_reference.says_when(description))
+    assert expected is skill_reference.says_when(description)

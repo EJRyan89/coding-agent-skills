@@ -15,9 +15,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from typed_fields import FieldError, FieldReader, describe
 
-# Runs no test of its own; the test functions below check through its assertions, as the class does.
-CHECK = unittest.TestCase()
-
 READ = FieldReader()
 
 
@@ -290,7 +287,7 @@ class FieldReaderTests(unittest.TestCase):
     ],
 )
 def test_what_was_found_names_the_json_type_and_a_short_value(value: object, expected: str) -> None:
-    CHECK.assertEqual(expected, describe(value))
+    assert expected == describe(value)
 
 
 @pytest.mark.parametrize(
@@ -311,7 +308,7 @@ def test_what_was_found_names_the_json_type_and_a_short_value(value: object, exp
 )
 def test_a_reader_raises_the_error_class_it_was_built_with(read: Callable[[FieldReader], object]) -> None:
     reader = FieldReader(DomainFieldError)
-    with CHECK.assertRaises(DomainError) as caught:
+    with pytest.raises(DomainError) as caught:
         read(reader)
-    CHECK.assertIsInstance(caught.exception, DomainFieldError)
-    CHECK.assertTrue(str(caught.exception).startswith("f"))
+    assert isinstance(caught.value, DomainFieldError)
+    assert str(caught.value).startswith("f")

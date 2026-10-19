@@ -56,8 +56,6 @@ FILLED = (
 AWKWARD_TITLE = (
     'fix(skills): grant each skill\'s scripts by name, keep `$HOME` and "$(x)", and \u2018quote\u2019 \u201atwice\u201b'
 )
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
 
 
 def remove_tree(path: Path) -> None:
@@ -364,5 +362,5 @@ class EntryPointTests(unittest.TestCase):
 )
 def test_a_closing_line_must_name_one_issue_with_closes(line: str) -> None:
     body = FILLED.replace("Closes #34", line)
-    CHECK.assertEqual([f"CLOSES_LINE 2 {line}"], pull_request.body_problems(body, TEMPLATE))
-    CHECK.assertEqual([12], pull_request.closed_issues(body))
+    assert [f"CLOSES_LINE 2 {line}"] == pull_request.body_problems(body, TEMPLATE)
+    assert pull_request.closed_issues(body) == [12]

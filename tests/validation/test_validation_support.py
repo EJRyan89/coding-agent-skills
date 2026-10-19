@@ -52,9 +52,6 @@ from validation_support import (
     write_fixture_tree,
 )
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 SOURCE = (
     "import os.path\n"
     "import subprocess as sp, json\n"
@@ -226,13 +223,10 @@ def test_any_other_binding_invalidates_an_alias_and_its_dependents(change: str) 
     source = f'writer = open\nalias = writer\n{change}\nalias("x", "w")\n'
     tree = ast.parse(source)
     resolver = CallableResolver(tree)
-    CHECK.assertEqual(
-        [
-            f"fixture.py:{len(source.splitlines())} cannot resolve callable alias alias; "
-            "use a single binding to a known callable"
-        ],
-        resolver.problems("fixture.py"),
-    )
+    assert [
+        f"fixture.py:{len(source.splitlines())} cannot resolve callable alias alias; "
+        "use a single binding to a known callable"
+    ] == resolver.problems("fixture.py")
 
 
 @pytest.mark.parametrize(
@@ -246,13 +240,10 @@ def test_any_other_binding_invalidates_an_alias_and_its_dependents(change: str) 
 def test_unknown_cyclic_and_rebound_import_aliases_are_reported_at_the_call(prefix: str) -> None:
     source = prefix + 'writer("x", "w")\n'
     resolver = CallableResolver(ast.parse(source))
-    CHECK.assertEqual(
-        [
-            f"fixture.py:{len(source.splitlines())} cannot resolve callable alias writer; "
-            "use a single binding to a known callable"
-        ],
-        resolver.problems("fixture.py"),
-    )
+    assert [
+        f"fixture.py:{len(source.splitlines())} cannot resolve callable alias writer; "
+        "use a single binding to a known callable"
+    ] == resolver.problems("fixture.py")
 
 
 @pytest.mark.parametrize(
@@ -277,13 +268,10 @@ def test_unknown_cyclic_and_rebound_import_aliases_are_reported_at_the_call(pref
 )
 def test_global_and_nonlocal_rebindings_invalidate_the_original_alias(source: str) -> None:
     resolver = CallableResolver(ast.parse(source))
-    CHECK.assertEqual(
-        [
-            f"fixture.py:{len(source.splitlines())} cannot resolve callable alias writer; "
-            "use a single binding to a known callable"
-        ],
-        resolver.problems("fixture.py"),
-    )
+    assert [
+        f"fixture.py:{len(source.splitlines())} cannot resolve callable alias writer; "
+        "use a single binding to a known callable"
+    ] == resolver.problems("fixture.py")
 
 
 @pytest.mark.parametrize(
@@ -306,7 +294,7 @@ def test_global_and_nonlocal_rebindings_invalidate_the_original_alias(source: st
 )
 def test_a_module_looked_up_by_its_name_is_read_through_the_imports(source: str, expected: str) -> None:
     tree = ast.parse(source)
-    CHECK.assertEqual(expected, module_lookup(last_expression(tree), CallableResolver(tree)))
+    assert expected == module_lookup(last_expression(tree), CallableResolver(tree))
 
 
 @pytest.mark.parametrize(
@@ -331,8 +319,8 @@ def test_every_binding_to_a_name_or_attribute_is_followed_as_an_assignment_is(so
     tree = ast.parse(source)
     resolver = CallableResolver(tree)
     call = next(node for node in ast.walk(tree) if isinstance(node, ast.Call) and "writer" in ast.dump(node))
-    CHECK.assertEqual("open", resolver.name(call.func))
-    CHECK.assertEqual([], resolver.problems("fixture.py"))
+    assert resolver.name(call.func) == "open"
+    assert resolver.problems("fixture.py") == []
 
 
 @pytest.mark.parametrize(
@@ -351,13 +339,10 @@ def test_every_binding_to_a_name_or_attribute_is_followed_as_an_assignment_is(so
 )
 def test_a_name_bound_to_several_callables_or_to_an_unknown_one_is_reported_at_the_call(source: str) -> None:
     function = "writer.remove" if "remove" in source else "writer"
-    CHECK.assertEqual(
-        [
-            f"fixture.py:{len(source.splitlines())} cannot resolve callable alias {function}; "
-            "use a single binding to a known callable"
-        ],
-        CallableResolver(ast.parse(source)).problems("fixture.py"),
-    )
+    assert [
+        f"fixture.py:{len(source.splitlines())} cannot resolve callable alias {function}; "
+        "use a single binding to a known callable"
+    ] == CallableResolver(ast.parse(source)).problems("fixture.py")
 
 
 # A call's result, an item of anything but a literal, a starred list, a with target, a caught exception, a part of a
@@ -380,8 +365,8 @@ def test_a_value_built_any_other_way_stays_a_local_value(source: str) -> None:
     tree = ast.parse(source)
     resolver = CallableResolver(tree)
     call = next(node for node in ast.walk(tree) if isinstance(node, ast.Call) and "writer" in ast.dump(node))
-    CHECK.assertEqual("<local>.writer", resolver.name(call.func))
-    CHECK.assertEqual([], resolver.problems("fixture.py"))
+    assert resolver.name(call.func) == "<local>.writer"
+    assert resolver.problems("fixture.py") == []
 
 
 class SharedReaderFixtures(unittest.TestCase):
@@ -443,7 +428,7 @@ class SharedReaderFixtures(unittest.TestCase):
     "invalid", ["ALLOWED = {'a': ''}", "ALLOWED = {'a': 1}", "ALLOWED = ['a']", "ALLOWED = make()"]
 )
 def test_an_allowance_of_any_other_shape_is_unreadable(invalid: str) -> None:
-    CHECK.assertIsNone(module_allowance(ast.parse(invalid), "ALLOWED"))
+    assert module_allowance(ast.parse(invalid), "ALLOWED") is None
 
 
 def _call(source: str) -> ast.Call:
@@ -532,7 +517,7 @@ class ScopeAndGuardFixtures(unittest.TestCase):
     ],
 )
 def test_the_main_guard_is_read_either_way_round_and_nothing_else_is_one(test: str, expected: bool) -> None:
-    CHECK.assertEqual(expected, is_main_guard(ast.parse(test, mode="eval").body))
+    assert expected == is_main_guard(ast.parse(test, mode="eval").body)
 
 
 class PythonFileReaderFixtures(unittest.TestCase):
@@ -633,8 +618,8 @@ class ScriptsEntryFixtures(unittest.TestCase):
     ],
 )
 def test_each_way_a_lookup_reaches_sys_path_is_read(source: str) -> None:
-    CHECK.assertEqual(["dep"], [entry.name for entry in sys_path_entries(source)])
-    CHECK.assertFalse(sys_path_entries(source)[0].hand_written)
+    assert [entry.name for entry in sys_path_entries(source)] == ["dep"]
+    assert not sys_path_entries(source)[0].hand_written
 
 
 @pytest.mark.parametrize(
@@ -660,7 +645,7 @@ def test_each_way_a_lookup_reaches_sys_path_is_read(source: str) -> None:
 )
 def test_each_hand_written_path_to_a_sibling_is_read(source: str) -> None:
     entries = sys_path_entries(f"import sys\nimport os\nfrom pathlib import Path\n{source}")
-    CHECK.assertEqual([ScriptsEntry(3 + len(source.splitlines()), "repo-cleanup", True)], entries)
+    assert [ScriptsEntry(3 + len(source.splitlines()), "repo-cleanup", True)] == entries
 
 
 @pytest.mark.parametrize(
@@ -675,7 +660,7 @@ def test_each_hand_written_path_to_a_sibling_is_read(source: str) -> None:
     ],
 )
 def test_a_path_that_names_no_sibling_and_a_lookup_off_sys_path_are_not_entries(source: str) -> None:
-    CHECK.assertEqual([], sys_path_entries(source))
+    assert sys_path_entries(source) == []
 
 
 class RepositoryFilesFixtures(unittest.TestCase):

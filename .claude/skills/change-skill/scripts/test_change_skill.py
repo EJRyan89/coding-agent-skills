@@ -24,8 +24,6 @@ import change_skill
 SCRIPT = Path(__file__).resolve().parent / "change_skill.py"
 REPOSITORY = Path(__file__).resolve().parents[4]
 GIT_CONFIG: Mapping[str, str] = MappingProxyType({"init.defaultBranch": "main"})
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
 
 
 def skill_text(description: str, body: str = "Run it.\n", grants: str = '["Read"]') -> str:
@@ -352,5 +350,5 @@ class RuntimePromptSourceTests(unittest.TestCase):
 def test_every_section_the_skill_quotes_from_the_contract_is_one_heading_there(title: str) -> None:
     contract = (REPOSITORY / "docs" / "adding-a-skill.md").read_text(encoding="utf-8").splitlines()
     heading, body = change_skill.section(contract, title)
-    CHECK.assertEqual(title, heading.text)
-    CHECK.assertTrue(any(line.strip() for line in body))
+    assert title == heading.text
+    assert any(line.strip() for line in body)

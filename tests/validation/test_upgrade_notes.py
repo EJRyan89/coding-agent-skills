@@ -30,9 +30,6 @@ from validation_support import write_fixture_tree
 from tests import run_validation
 from tools import release_notes
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 
 def snapshot(files: Mapping[str, str]) -> Snapshot:
     return Snapshot(frozenset(files), lambda name: files[name])
@@ -113,7 +110,7 @@ TOOL = "@dataclass\nclass Tool:\n    name: str\n    label: str\n    locate: obje
 def test_a_floor_by_position_by_keyword_or_in_a_constant_and_an_annotated_or_nested_version_are_read(
     module: str, before: str, after: str
 ) -> None:
-    CHECK.assertEqual([module], changed(module, before, after))
+    assert [module] == changed(module, before, after)
 
 
 class UpgradeNotesPolicy(unittest.TestCase):

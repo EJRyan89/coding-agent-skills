@@ -49,8 +49,6 @@ from tools.mutation_gate import (
     try_mutant,
 )
 
-CHECK = unittest.TestCase()
-
 
 @pytest.mark.parametrize(
     ("path", "mutated"),
@@ -73,7 +71,7 @@ CHECK = unittest.TestCase()
     ],
 )
 def test_the_gate_mutates_modules_under_its_roots_and_never_a_suite(path: str, mutated: bool) -> None:
-    CHECK.assertEqual(mutated, is_gate_module(path))
+    assert mutated == is_gate_module(path)
 
 
 def mutant(line: int, module: str = "tools/calc.py", changed: bool = False) -> Mutant:
@@ -255,11 +253,11 @@ class TryMutantFixtures(unittest.TestCase):
 
 
 def test_the_cap_gives_the_reach_pass_half_and_each_module_an_equal_share_of_what_is_left() -> None:
-    CHECK.assertEqual(100.0 + 40 * 60, mutation_gate.run_deadline(100.0, 40))
-    CHECK.assertEqual(100.0 + 20 * 60, mutation_gate.reach_deadline(100.0, 100.0 + 40 * 60))
+    assert mutation_gate.run_deadline(100.0, 40) == 100.0 + 40 * 60
+    assert mutation_gate.reach_deadline(100.0, 100.0 + 40 * 60) == 100.0 + 20 * 60
     # Three modules left with 900 seconds to go: the first gets 300 of them, and the last whatever remains.
-    CHECK.assertEqual(1300.0, mutation_gate.module_deadline(1000.0, 1900.0, 3))
-    CHECK.assertEqual(1900.0, mutation_gate.module_deadline(1000.0, 1900.0, 1))
+    assert mutation_gate.module_deadline(1000.0, 1900.0, 3) == 1300.0
+    assert mutation_gate.module_deadline(1000.0, 1900.0, 1) == 1900.0
 
 
 class SummaryFixtures(unittest.TestCase):
@@ -417,8 +415,8 @@ class WholeRunFixtures(unittest.TestCase):
 
 
 def test_the_base_defaults_to_the_pull_requests_base_branch() -> None:
-    CHECK.assertEqual("origin/release", mutation_gate.parse_arguments([], {"GITHUB_BASE_REF": "release"}).base)
-    CHECK.assertEqual("origin/main", mutation_gate.parse_arguments([], {}).base)
-    CHECK.assertEqual(40, mutation_gate.parse_arguments([], {}).minutes)
+    assert mutation_gate.parse_arguments([], {"GITHUB_BASE_REF": "release"}).base == "origin/release"
+    assert mutation_gate.parse_arguments([], {}).base == "origin/main"
+    assert mutation_gate.parse_arguments([], {}).minutes == 40
     with pytest.raises(SystemExit):
         mutation_gate.parse_arguments(["--minutes", "0"], {})

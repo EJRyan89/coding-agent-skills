@@ -24,9 +24,6 @@ from markdown_sections import (
     prose_code_spans,
 )
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 
 class MarkdownSectionTests(unittest.TestCase):
     def test_first_exact_heading_allows_trailing_whitespace_but_not_a_prefix_or_indentation(self) -> None:
@@ -113,15 +110,15 @@ def fences(text: str) -> list[tuple[int, int | None, str, int, list[str]]]:
 def test_every_fence_form_markdown_allows_is_read(
     text: str, expected: list[tuple[int, int | None, str, int, list[str]]]
 ) -> None:
-    CHECK.assertEqual(expected, fences(text))
+    assert expected == fences(text)
 
 
 @pytest.mark.parametrize("marker", [">", "*"])
 def test_a_long_run_of_container_markers_is_read_in_linear_time(marker: str) -> None:
     # A run of whitespace could once be split between two markers in exponentially many ways before a mismatch.
     started = time.perf_counter()
-    CHECK.assertEqual([], find_fences([marker + f"\t\t{marker}" * 5000 + "x"]))
-    CHECK.assertLess(time.perf_counter() - started, 1.0)
+    assert find_fences([marker + f"\t\t{marker}" * 5000 + "x"]) == []
+    assert time.perf_counter() - started < 1.0
 
 
 @pytest.mark.parametrize(
@@ -145,4 +142,4 @@ def test_a_long_run_of_container_markers_is_read_in_linear_time(marker: str) -> 
 def test_a_fence_closes_only_on_its_own_run_inside_what_holds_it(
     text: str, expected: list[tuple[int, int | None, str, int, list[str]]]
 ) -> None:
-    CHECK.assertEqual(expected, fences(text))
+    assert expected == fences(text)

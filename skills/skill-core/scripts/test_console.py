@@ -18,9 +18,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import console
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
 
@@ -177,9 +174,9 @@ class RunMainTests(unittest.TestCase):
 )
 def test_a_program_prints_no_traceback_and_exits_with_the_contract_codes(body: str, code: int, line: str) -> None:
     result = child(f"def main():\n    {body}\nconsole.run_main(main)")
-    CHECK.assertEqual(code, result.returncode, result.stderr)
-    CHECK.assertEqual(line.encode(), result.stdout.replace(b"\r\n", b"\n"))
-    CHECK.assertEqual(b"", result.stderr)
+    assert code == result.returncode, result.stderr
+    assert line.encode() == result.stdout.replace(b"\r\n", b"\n")
+    assert result.stderr == b""
 
 
 @pytest.mark.parametrize(
@@ -193,12 +190,12 @@ def test_a_requested_traceback_follows_the_line_on_stderr_with_the_same_exit_cod
     body: str, code: int, line: str, last: str
 ) -> None:
     result = child(f"def main():\n    {body}\nconsole.run_main(main, traceback_requested=lambda: True)")
-    CHECK.assertEqual(code, result.returncode, result.stderr)
-    CHECK.assertEqual(line.encode(), result.stdout.replace(b"\r\n", b"\n"))
+    assert code == result.returncode, result.stderr
+    assert line.encode() == result.stdout.replace(b"\r\n", b"\n")
     errors = result.stderr.replace(b"\r\n", b"\n").decode()
-    CHECK.assertTrue(errors.startswith("Traceback (most recent call last):\n"), errors)
-    CHECK.assertIn("in main", errors)
-    CHECK.assertTrue(errors.endswith(f"{last}\n"), errors)
+    assert errors.startswith("Traceback (most recent call last):\n"), errors
+    assert "in main" in errors
+    assert errors.endswith(f"{last}\n"), errors
 
 
 def unanswerable() -> bool:
@@ -218,9 +215,7 @@ def test_a_traceback_is_shown_only_when_asked_and_its_question_answers(requested
     with (
         contextlib.redirect_stdout(output),
         contextlib.redirect_stderr(errors),
-        CHECK.assertRaises(SystemExit) as exited,
+        pytest.raises(SystemExit) as exited,
     ):
         console.run_main(raises(ValueError("boom")), traceback_requested=requested)
-    CHECK.assertEqual(
-        (1, "FAILED ValueError: boom\n", ""), (exited.exception.code, output.getvalue(), errors.getvalue())
-    )
+    assert (exited.value.code, output.getvalue(), errors.getvalue()) == (1, "FAILED ValueError: boom\n", "")

@@ -27,9 +27,6 @@ from deployer import discovery, manifest, platform_support
 from deployer.paths import Paths
 from tools import deployable_report as report
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 SOURCE_ID = "test/source"
 HASH = "sha256:" + "0" * 64
 ADAPTERS = ("alpha", "beta")
@@ -642,4 +639,4 @@ class DeployableReportTests(unittest.TestCase):
     ],
 )
 def test_only_a_request_to_sign_in_is_a_sign_in_problem(message: str, expected: bool) -> None:
-    CHECK.assertIs(expected, report.sign_in_problem(message))
+    assert expected is report.sign_in_problem(message)

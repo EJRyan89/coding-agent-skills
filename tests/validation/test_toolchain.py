@@ -36,9 +36,11 @@ from toolchain import (
 
 from deployer import platform_support
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
+# The operating-system names this module states on purpose, with the reason, which the platform policy reads.
+PLATFORM_ALLOWED = {
+    ".exe": "names the PowerShell path a fake find_powershell returns, which run_script's fake runner compares with "
+    "the command it is given; nothing here finds or starts a program by it",
+}
 REQUIREMENT_PACKAGES = ("ruff", "mypy")
 CLEAN_REQUIREMENTS = "# Development dependencies.\n\nruff==0.16.10\n  # Indented comment.\nmypy==2.4.0\n"
 
@@ -201,7 +203,7 @@ class ToolchainFixtures(unittest.TestCase):
 )
 def test_a_requirements_line_that_is_not_a_listed_pin_fails(added: str) -> None:
     problems = requirements_problems(CLEAN_REQUIREMENTS + added, REQUIREMENT_PACKAGES)
-    CHECK.assertTrue(any("line 6 is not name==version" in problem for problem in problems), problems)
+    assert any("line 6 is not name==version" in problem for problem in problems), problems
 
 
 # Two hashes in the form pip-tools writes them, and a lock of two packages in its layout: each pin continued onto its
@@ -217,15 +219,12 @@ LOCK = (
 
 def test_a_lock_names_each_package_with_its_version_and_hashes() -> None:
     locked, problems = locked_requirements(LOCK)
-    CHECK.assertEqual([], problems)
-    CHECK.assertEqual(
-        {
-            "mypy": toolchain.Locked("2.4.0", frozenset({FIRST_HASH, SECOND_HASH})),
-            "typing-extensions": toolchain.Locked("4.16.0", frozenset({FIRST_HASH})),
-        },
-        locked,
-    )
-    CHECK.assertEqual([], lock_problems(LOCK, "# The input.\nMypy==2.4.0\n-r other.in\n"))
+    assert problems == []
+    assert {
+        "mypy": toolchain.Locked("2.4.0", frozenset({FIRST_HASH, SECOND_HASH})),
+        "typing-extensions": toolchain.Locked("4.16.0", frozenset({FIRST_HASH})),
+    } == locked
+    assert lock_problems(LOCK, "# The input.\nMypy==2.4.0\n-r other.in\n") == []
 
 
 @pytest.mark.parametrize(
@@ -244,28 +243,23 @@ def test_a_lock_names_each_package_with_its_version_and_hashes() -> None:
 )
 def test_a_lock_requirement_that_is_not_a_hashed_pin_fails(requirement: str) -> None:
     _, problems = locked_requirements(LOCK + requirement)
-    CHECK.assertEqual(1, len(problems), problems)
+    assert len(problems) == 1, problems
 
 
 def test_a_lock_that_departs_from_its_input_or_the_development_lock_fails() -> None:
-    CHECK.assertEqual(
-        ["the input pins mypy==2.5.0, which the lock pins at 2.4.0"], lock_problems(LOCK, "mypy==2.5.0\n")
-    )
-    CHECK.assertEqual(
-        ["the input pins ruff==0.17.1, which the lock does not hold"], lock_problems(LOCK, "ruff==0.17.1\n")
-    )
+    assert lock_problems(LOCK, "mypy==2.5.0\n") == ["the input pins mypy==2.5.0, which the lock pins at 2.4.0"]
+    assert lock_problems(LOCK, "ruff==0.17.1\n") == ["the input pins ruff==0.17.1, which the lock does not hold"]
     shared = {"mypy": toolchain.Locked("2.4.0", frozenset({FIRST_HASH}))}
-    CHECK.assertEqual(
-        ["mypy is not locked as the development lock locks it, at 2.4.0 and its hashes"],
-        lock_problems(LOCK, "", shared),
-    )
+    assert lock_problems(LOCK, "", shared) == [
+        "mypy is not locked as the development lock locks it, at 2.4.0 and its hashes"
+    ]
     shared = {"pytest": toolchain.Locked("9.1.1", frozenset({FIRST_HASH}))}
-    CHECK.assertEqual(1, len(lock_problems(LOCK, "", shared)))
+    assert len(lock_problems(LOCK, "", shared)) == 1
 
 
 def test_a_workflow_installs_only_its_locks_with_hash_checking() -> None:
     clean = "      - run: python -m pip install --require-hashes -r requirements-dev.txt\n"
-    CHECK.assertEqual([], hash_install_problems(clean, ("requirements-dev.txt",)))
+    assert hash_install_problems(clean, ("requirements-dev.txt",)) == []
     for drifted in (
         "        run: python -m pip install -r requirements-dev.txt\n",
         "        run: python -m pip install -r requirements-dev.txt --require-hashes\n",
@@ -275,21 +269,16 @@ def test_a_workflow_installs_only_its_locks_with_hash_checking() -> None:
         "        run: python -m pip install --require-hashes\n",
         "        run: python -m pip install ruff==0.17.1\n",
     ):
-        with CHECK.subTest(drifted=drifted):
-            CHECK.assertEqual(
-                [
-                    "line 2 does not install only ['requirements-dev.txt'] with --require-hashes: "
-                    + repr(drifted.strip())
-                ],
-                hash_install_problems(clean + drifted, ("requirements-dev.txt",)),
-            )
+        assert [
+            "line 2 does not install only ['requirements-dev.txt'] with --require-hashes: " + repr(drifted.strip())
+        ] == hash_install_problems(clean + drifted, ("requirements-dev.txt",))
 
 
 def test_an_input_may_hold_its_includes_as_written_and_nothing_else_like_them() -> None:
     includes = ("-r requirements-dev.in", "-c requirements-dev.txt")
     text = "-r requirements-dev.in\n-c requirements-dev.txt\nruff==0.16.10\nmypy==2.4.0\n"
-    CHECK.assertEqual([], requirements_problems(text, REQUIREMENT_PACKAGES, includes))
-    CHECK.assertEqual(1, len(requirements_problems(text + "-r other.in\n", REQUIREMENT_PACKAGES, includes)))
+    assert requirements_problems(text, REQUIREMENT_PACKAGES, includes) == []
+    assert len(requirements_problems(text + "-r other.in\n", REQUIREMENT_PACKAGES, includes)) == 1
 
 
 def run_script(result: platform_support.ToolResult) -> tuple[list[object], list[dict[str, str]]]:
@@ -298,8 +287,8 @@ def run_script(result: platform_support.ToolResult) -> tuple[list[object], list[
 
     def fake(command: list[str], environment: dict[str, str]) -> platform_support.ToolResult:
         seen.append(environment)
-        CHECK.assertEqual(["C:/tools/pwsh.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command"], command[:5])
-        CHECK.assertEqual(["a", 1], json.loads(Path(environment["INPUTS"]).read_text(encoding="utf-8")))
+        assert command[:5] == ["C:/tools/pwsh.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]
+        assert json.loads(Path(environment["INPUTS"]).read_text(encoding="utf-8")) == ["a", 1]
         return result
 
     with (
@@ -333,9 +322,9 @@ class PowerShellJsonRunner(unittest.TestCase):
 def test_a_failed_exit_or_output_that_is_not_a_list_is_a_failure_naming_the_status(
     result: platform_support.ToolResult,
 ) -> None:
-    with CHECK.assertRaises(AssertionError) as raised:
+    with pytest.raises(AssertionError) as raised:
         run_script(result)
-    CHECK.assertTrue(str(raised.exception).startswith(f"Could not run (exit code {result.returncode}):\n"))
+    assert str(raised.value).startswith(f"Could not run (exit code {result.returncode}):\n")
 
 
 class PytestPrerequisiteFixtures(unittest.TestCase):

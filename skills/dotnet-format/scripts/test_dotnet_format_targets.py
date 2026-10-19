@@ -28,9 +28,6 @@ from git_client import GitClient, GitError, GitResult
 from github_client import CommandResult
 from github_client import Runner as GhRunner
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 SDK_PROJECT = '<Project Sdk="Microsoft.NET.Sdk"></Project>\n'
 WEB_PROJECT = '<Project Sdk="Microsoft.NET.Sdk.Web"></Project>\n'
 # A project in the format before SDK-style ones, as Visual Studio wrote it for .NET Framework.
@@ -981,9 +978,9 @@ def test_usage_errors_exit_2_on_stderr(arguments: list[str]) -> None:
     with (
         contextlib.redirect_stdout(output),
         contextlib.redirect_stderr(errors),
-        CHECK.assertRaises(SystemExit) as raised,
+        pytest.raises(SystemExit) as raised,
     ):
         targets.main(arguments, Services())
-    CHECK.assertEqual(2, raised.exception.code)
-    CHECK.assertEqual("", output.getvalue())
-    CHECK.assertIn("usage:", errors.getvalue())
+    assert raised.value.code == 2
+    assert output.getvalue() == ""
+    assert "usage:" in errors.getvalue()

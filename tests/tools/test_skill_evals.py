@@ -64,9 +64,6 @@ from tools.skill_evals_judging import Outcome
 from tools.skill_evals_records import RecordError
 from tools.skill_evals_scenarios import Scenario, ScenarioError
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 REVIEW_PRS = skill_evals_scenarios.SCENARIO_ROOT / "review-prs"
 REVIEW_DOCUMENT = skill_evals_scenarios.SCENARIO_ROOT / "review-document"
 REVIEW_REPOSITORY = skill_evals_scenarios.SCENARIO_ROOT / "review-repository"
@@ -3230,10 +3227,10 @@ class EvaluateTests(unittest.TestCase):
 )
 def test_a_skill_is_named_by_its_name_alone(name: str, tmp_path: Path) -> None:
     write_scenario(tmp_path, "one", scenario_spec())
-    with contextlib.redirect_stderr(io.StringIO()) as error, CHECK.assertRaises(SystemExit) as raised:
+    with contextlib.redirect_stderr(io.StringIO()) as error, pytest.raises(SystemExit) as raised:
         skill_evals.main([name, "--records", str(tmp_path / "records")], tmp_path)
-    CHECK.assertEqual(2, raised.exception.code)
-    CHECK.assertIn("must be a skill's name", error.getvalue())
+    assert raised.value.code == 2
+    assert "must be a skill's name" in error.getvalue()
 
 
 @pytest.mark.parametrize(
@@ -3283,7 +3280,7 @@ def test_a_skill_is_named_by_its_name_alone(name: str, tmp_path: Path) -> None:
     ],
 )
 def test_values_are_checked(spec: dict[str, Any], message: str) -> None:
-    CHECK.assertIn(message, refusal(spec, "initial"))
+    assert message in refusal(spec, "initial")
 
 
 @pytest.mark.parametrize(
@@ -3313,7 +3310,7 @@ def test_values_are_checked(spec: dict[str, Any], message: str) -> None:
     ],
 )
 def test_re_review_values_are_checked(spec: dict[str, Any], message: str) -> None:
-    CHECK.assertIn(message, refusal(spec, "re-review"))
+    assert message in refusal(spec, "re-review")
 
 
 @pytest.mark.parametrize(
@@ -3326,7 +3323,7 @@ def test_re_review_values_are_checked(spec: dict[str, Any], message: str) -> Non
     ids=["ledger", "disposition", "repeats"],
 )
 def test_re_review_kinds_need_a_re_review(spec: dict[str, Any]) -> None:
-    CHECK.assertIn("needs a re-review", refusal(spec, "initial"))
+    assert "needs a re-review" in refusal(spec, "initial")
 
 
 @pytest.mark.parametrize(
@@ -3358,9 +3355,9 @@ def test_a_document_is_a_file_among_the_scenarios_and_reviewed_once(
     directory = write_scenario(tmp_path, "case", scenario_spec(**fields))
     (directory / "draft.md").write_text("# Draft\n", encoding="utf-8")
     (directory / "prior.json").write_text("{}", encoding="utf-8")
-    with CHECK.assertRaises(ScenarioError) as raised:
+    with pytest.raises(ScenarioError) as raised:
         skill_evals_scenarios.load_scenarios("demo", ["case"], root=tmp_path)
-    CHECK.assertIn(message, str(raised.exception))
+    assert message in str(raised.value)
 
 
 @pytest.mark.parametrize(
@@ -3375,7 +3372,7 @@ def test_a_document_is_a_file_among_the_scenarios_and_reviewed_once(
     ],
 )
 def test_a_model_is_named_by_its_id_with_or_without_a_dated_suffix(reported: str, expected: bool) -> None:
-    CHECK.assertIs(expected, skill_evals_records.names_model(reported, "claude-haiku-5-5"), reported)
+    assert expected is skill_evals_records.names_model(reported, "claude-haiku-5-5"), reported
 
 
 RESULTS_LINES = RESULTS_TEXT.split("\n")
@@ -3403,9 +3400,9 @@ RESULTS_LINES = RESULTS_TEXT.split("\n")
 )
 def test_a_table_it_cannot_read_is_refused(reason: str, index: int, line: str) -> None:
     text = "\n".join([*RESULTS_LINES[:index], line, *RESULTS_LINES[index + 1 :]])
-    with CHECK.assertRaisesRegex(ScenarioError, reason):
+    with pytest.raises(ScenarioError, match=reason):
         skill_evals_results.results_table(text)
-    with CHECK.assertRaisesRegex(ScenarioError, reason):
+    with pytest.raises(ScenarioError, match=reason):
         skill_evals_results.replace_results(text, "review-prs", [])
 
 
@@ -3415,7 +3412,7 @@ def test_a_table_it_cannot_read_is_refused(reason: str, index: int, line: str) -
     ids=["no markers", "out of order", "twice each"],
 )
 def test_the_markers_are_required_once_each_in_order(text: str) -> None:
-    with CHECK.assertRaises(ScenarioError):
+    with pytest.raises(ScenarioError):
         skill_evals_results.results_table(text)
 
 
@@ -3475,13 +3472,14 @@ TRIGGER_SPEC = {"skill": "demo", "mode": "trigger", "requests": ["Run the demo."
 def test_a_trigger_scenario_expects_each_request_to_start_its_skill_and_each_near_miss_not_to(tmp_path: Path) -> None:
     spec = {**TRIGGER_SPEC, "requests": ["Run the demo.", "Show the demo."]}
     scenario = trigger_scenario(tmp_path, spec, demo_checkout(tmp_path))
-    CHECK.assertEqual(skill_evals_scenarios.TRIGGER, scenario.mode)
-    CHECK.assertEqual(("Run the demo.", "Show the demo."), scenario.requests)
-    CHECK.assertEqual(("Run a test.",), scenario.near_misses)
-    CHECK.assertEqual(
-        ['starts "Run the demo."', 'starts "Show the demo."', 'does_not_start "Run a test."'],
-        [item.label for item in scenario.expectations],
-    )
+    assert scenario.mode == skill_evals_scenarios.TRIGGER
+    assert scenario.requests == ("Run the demo.", "Show the demo.")
+    assert scenario.near_misses == ("Run a test.",)
+    assert [item.label for item in scenario.expectations] == [
+        'starts "Run the demo."',
+        'starts "Show the demo."',
+        'does_not_start "Run a test."',
+    ]
     record = {
         "requests": [
             {"request": "Run the demo.", "started": ["demo"]},
@@ -3490,11 +3488,12 @@ def test_a_trigger_scenario_expects_each_request_to_start_its_skill_and_each_nea
         ],
         "models": ["claude-haiku-5-5"],
     }
-    CHECK.assertEqual(
-        [None, "the session started other", "the session started demo, other"],
-        [item.check(record) for item in scenario.expectations],
-    )
-    with CHECK.assertRaisesRegex(RecordError, "no session of"):
+    assert [item.check(record) for item in scenario.expectations] == [
+        None,
+        "the session started other",
+        "the session started demo, other",
+    ]
+    with pytest.raises(RecordError, match="no session of"):
         scenario.expectations[0].check({"requests": [], "models": []})
 
 
@@ -3529,35 +3528,33 @@ def test_a_trigger_scenario_expects_each_request_to_start_its_skill_and_each_nea
 )
 def test_a_trigger_scenario_is_checked(changes: dict[str, Any], message: str, tmp_path: Path) -> None:
     spec = {key: value for key, value in {**TRIGGER_SPEC, **changes}.items() if value is not None}
-    with CHECK.assertRaisesRegex(ScenarioError, re.escape(message)):
+    with pytest.raises(ScenarioError, match=re.escape(message)):
         trigger_scenario(tmp_path, spec, demo_checkout(tmp_path))
 
 
 def test_a_trigger_scenario_s_skill_is_a_shipped_one_the_model_may_start(tmp_path: Path) -> None:
-    with CHECK.assertRaisesRegex(ScenarioError, "the checkout has no skills/demo"):
+    with pytest.raises(ScenarioError, match="the checkout has no skills/demo"):
         trigger_scenario(tmp_path, TRIGGER_SPEC, tmp_path / "empty")
     user_only = demo_checkout(tmp_path, "disable-model-invocation: true\n")
-    with CHECK.assertRaisesRegex(ScenarioError, "demo sets disable-model-invocation"):
+    with pytest.raises(ScenarioError, match="demo sets disable-model-invocation"):
         trigger_scenario(tmp_path, TRIGGER_SPEC, user_only)
 
 
 def test_the_worked_trigger_scenario_draws_on_its_description_and_a_neighbour_s() -> None:
     scenario = skill_evals_scenarios.load_scenarios("analyze-skill-cost")[0]
-    CHECK.assertEqual(("description", skill_evals_scenarios.TRIGGER), (scenario.name, scenario.mode))
+    assert (scenario.name, scenario.mode) == ("description", skill_evals_scenarios.TRIGGER)
     description = frontmatter.read(skill_evals_scenarios.REPOSITORY_ROOT / "skills" / "analyze-skill-cost" / "SKILL.md")
     neighbour = frontmatter.read(skill_evals_scenarios.REPOSITORY_ROOT / "skills" / "audit-ai-config" / "SKILL.md")
     # The requests ask what the description's "Use it when" sentence names, and the near misses what the neighbour's.
-    CHECK.assertIn(
-        "Use it when asked what a skill costs, why it is slow or expensive, or to check one before shipping it.",
-        description.string("description") or "",
+    assert "Use it when asked what a skill costs, why it is slow or expensive, or to check one before shipping it." in (
+        description.string("description") or ""
     )
-    CHECK.assertIn(
-        "Use it when asked to audit or check a repository's agent instructions or setup",
-        neighbour.string("description") or "",
+    assert "Use it when asked to audit or check a repository's agent instructions or setup" in (
+        neighbour.string("description") or ""
     )
-    CHECK.assertEqual(3, len(scenario.requests))
-    CHECK.assertTrue(all("skill" in request for request in scenario.requests), scenario.requests)
-    CHECK.assertTrue(all("repository" in request for request in scenario.near_misses), scenario.near_misses)
+    assert len(scenario.requests) == 3
+    assert all("skill" in request for request in scenario.requests), scenario.requests
+    assert all("repository" in request for request in scenario.near_misses), scenario.near_misses
 
 
 def test_only_the_session_s_own_skill_tool_call_is_a_start() -> None:
@@ -3575,16 +3572,16 @@ def test_only_the_session_s_own_skill_tool_call_is_a_start() -> None:
             assistant_with([skill, {**skill, "input": {"skill": "/other"}}, skill]),
         ]
     )
-    CHECK.assertEqual(["demo", "other"], skill_evals_runs.skills_in_stream(output))
+    assert skill_evals_runs.skills_in_stream(output) == ["demo", "other"]
 
 
 def test_a_trigger_session_runs_on_the_judged_model_with_a_turn_limit_and_no_grant() -> None:
     command = skill_evals_runs.trigger_command("claude", "Run the demo.", "haiku")
-    CHECK.assertEqual(["claude", "-p", "Run the demo.", "--model", "claude-haiku-5-5"], command[:5])
-    CHECK.assertEqual(str(skill_evals_runs.TRIGGER_TURNS), command[command.index("--max-turns") + 1])
-    CHECK.assertEqual("project,local", command[command.index("--setting-sources") + 1])
+    assert command[:5] == ["claude", "-p", "Run the demo.", "--model", "claude-haiku-5-5"]
+    assert str(skill_evals_runs.TRIGGER_TURNS) == command[command.index("--max-turns") + 1]
+    assert command[command.index("--setting-sources") + 1] == "project,local"
     for absent in ("--allowedTools", "--agents", "--permission-mode"):
-        CHECK.assertNotIn(absent, command)
+        assert absent not in command
 
 
 def test_records_hold_a_trigger_record_to_its_scenario_and_model(tmp_path: Path) -> None:
@@ -3597,7 +3594,7 @@ def test_records_hold_a_trigger_record_to_its_scenario_and_model(tmp_path: Path)
     records.mkdir(parents=True)
     (records / "haiku-2.json").write_text(json.dumps(good), encoding="utf-8")
     source = skill_evals_judging.records_in(tmp_path / "records")
-    CHECK.assertEqual(good, source(scenario, "haiku", 2))
+    assert good == source(scenario, "haiku", 2)
     refused = {
         "another model": {**good, "models": ["claude-opus-5-5"]},
         "no model": {**good, "models": []},
@@ -3608,6 +3605,6 @@ def test_records_hold_a_trigger_record_to_its_scenario_and_model(tmp_path: Path)
     }
     for name, value in refused.items():
         (records / "haiku.json").write_text(json.dumps(value), encoding="utf-8")
-        with CHECK.assertRaises(RecordError, msg=name) as raised:
+        with pytest.raises(RecordError) as raised:
             source(scenario, "haiku", None)
-        CHECK.assertEqual(skill_evals_records.RECORD, raised.exception.kind, name)
+        assert raised.value.kind == skill_evals_records.RECORD, name

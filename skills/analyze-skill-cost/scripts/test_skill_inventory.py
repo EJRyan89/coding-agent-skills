@@ -22,9 +22,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 import skill_inventory
 from git_client import GitClient, GitError, GitResult
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 SCRIPT = Path(__file__).resolve().parent / "skill_inventory.py"
 
 
@@ -1363,7 +1360,7 @@ PROSE_CUE_NAMES = {name for name, _ in skill_inventory.PROSE_CUES}
 def test_a_deterministic_prose_shape_is_its_cue(line: str, cue: str, tmp_path: Path) -> None:
     skill = write(tmp_path / "SKILL.md", line + "\n")
     _, lines, _ = run("scan", str(skill))
-    CHECK.assertIn(cue, [found.split()[3] for found in lines if found])
+    assert cue in [found.split()[3] for found in lines if found]
 
 
 @pytest.mark.parametrize(
@@ -1397,7 +1394,7 @@ def test_prose_a_script_already_does_or_the_user_decides_is_no_deterministic_pro
 ) -> None:
     skill = write(tmp_path / "SKILL.md", line + "\n")
     _, lines, _ = run("scan", str(skill))
-    CHECK.assertEqual([], [found for found in lines if found and found.split()[3] in PROSE_CUE_NAMES])
+    assert [found for found in lines if found and found.split()[3] in PROSE_CUE_NAMES] == []
 
 
 def test_deterministic_prose_cues_skip_fences_and_frontmatter(tmp_path: Path) -> None:
@@ -1406,7 +1403,7 @@ def test_deterministic_prose_cues_skip_fences_and_frontmatter(tmp_path: Path) ->
         "---\ndescription: Finish with how many were skipped.\n---\n```text\nFinish with how many were skipped.\n```\n",
     )
     code, lines, error = run("scan", str(skill))
-    CHECK.assertEqual((0, [], ""), (code, [line for line in lines if line], error))
+    assert (code, [line for line in lines if line], error) == (0, [], "")
 
 
 class StatusLineTests(TemporaryTestCase):
@@ -1687,7 +1684,7 @@ class ExitContractTests(TemporaryTestCase):
     ],
 )
 def test_grant_patterns_match_as_claude_code_does(pattern: str, command: str, expected: bool) -> None:
-    CHECK.assertEqual(expected, skill_inventory.grants(pattern, command))
+    assert expected == skill_inventory.grants(pattern, command)
 
 
 @pytest.mark.parametrize(
@@ -1706,14 +1703,18 @@ def test_grant_patterns_match_as_claude_code_does(pattern: str, command: str, ex
 def test_a_joined_command_is_granted_only_when_the_pattern_matches_each_command(
     pattern: str, command: str, expected: bool
 ) -> None:
-    CHECK.assertEqual(expected, skill_inventory.grants(pattern, command))
+    assert expected == skill_inventory.grants(pattern, command)
 
 
 def test_a_command_is_split_at_each_operator_outside_quotes_and_escapes() -> None:
-    CHECK.assertEqual(
-        ["a", "b", "c", "d", "e 'f; g' \"h | i\"", "j \\&& k"],
-        skill_inventory.command_parts("a && b || c; d | e 'f; g' \"h | i\" | j \\&& k"),
-    )
+    assert skill_inventory.command_parts("a && b || c; d | e 'f; g' \"h | i\" | j \\&& k") == [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e 'f; g' \"h | i\"",
+        "j \\&& k",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1726,9 +1727,9 @@ def test_a_command_is_split_at_each_operator_outside_quotes_and_escapes() -> Non
 )
 def test_a_usage_error_exits_2(arguments: tuple[str, ...]) -> None:
     completed = execute(*arguments)
-    CHECK.assertEqual(2, completed.returncode)
-    CHECK.assertEqual("", completed.stdout)
-    CHECK.assertIn("usage:", completed.stderr)
+    assert completed.returncode == 2
+    assert completed.stdout == ""
+    assert "usage:" in completed.stderr
 
 
 # Every line skill_inventory.py prints that is a measurement or a location rather than a check, and so rests on no
@@ -1766,69 +1767,62 @@ PROVENANCE = SCRIPT.parents[1] / "references" / "provenance.json"
 
 def test_every_line_the_script_prints_is_a_check_or_a_measurement() -> None:
     printed = set(skill_inventory.python_facts(SCRIPT.read_text(encoding="utf-8")).lines)
-    CHECK.assertEqual(set(), skill_inventory.CHECK_LINES & MEASUREMENT_LINES)
-    CHECK.assertEqual(sorted(printed), sorted(skill_inventory.CHECK_LINES | MEASUREMENT_LINES))
+    assert set() == skill_inventory.CHECK_LINES & MEASUREMENT_LINES
+    assert sorted(printed) == sorted(skill_inventory.CHECK_LINES | MEASUREMENT_LINES)
 
 
 def test_the_cues_are_the_ones_scan_names() -> None:
-    CHECK.assertEqual(
-        {
-            "agent",
-            "assembled-arguments",
-            "carried-state",
-            "generated-code",
-            "hand-drafted",
-            "loop",
-            "owed-by-rules",
-            "parsed-output",
-            "per-item-command",
-            "read-then-search",
-            "relayed-output",
-            "rule-based-work",
-            "shell-file-command",
-            "subagent-reply",
-            "wide-glob",
-        },
-        skill_inventory.CUE_NAMES,
-    )
+    assert {
+        "agent",
+        "assembled-arguments",
+        "carried-state",
+        "generated-code",
+        "hand-drafted",
+        "loop",
+        "owed-by-rules",
+        "parsed-output",
+        "per-item-command",
+        "read-then-search",
+        "relayed-output",
+        "rule-based-work",
+        "shell-file-command",
+        "subagent-reply",
+        "wide-glob",
+    } == skill_inventory.CUE_NAMES
 
 
 def test_every_check_has_a_provenance_entry_and_every_entry_names_a_check() -> None:
     entries = json.loads(PROVENANCE.read_text(encoding="utf-8"))["checks"]
-    CHECK.assertEqual(sorted(skill_inventory.CHECKS - set(entries)), [], "checks without an entry")
-    CHECK.assertEqual(sorted(set(entries) - skill_inventory.CHECKS), [], "entries without a check")
-    CHECK.assertEqual(
-        sorted(skill_inventory.CHECKS),
-        sorted(skill_inventory.check_provenance.load(PROVENANCE, skill_inventory.CHECKS)),
+    assert sorted(skill_inventory.CHECKS - set(entries)) == [], "checks without an entry"
+    assert sorted(set(entries) - skill_inventory.CHECKS) == [], "entries without a check"
+    assert sorted(skill_inventory.CHECKS) == sorted(
+        skill_inventory.check_provenance.load(PROVENANCE, skill_inventory.CHECKS)
     )
 
 
 def test_provenance_names_each_source_of_a_check_and_refuses_a_measurement() -> None:
     code, lines, _ = run("provenance", "DOC_NO_TOC", "FILE", "UNSCOPED_ALLOWED", "DOC_NO_TOC")
-    CHECK.assertEqual(1, code)
-    CHECK.assertEqual(
-        [
-            "PAGE DOC_NO_TOC https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices For "
-            "reference files longer than 100 lines, include a table of contents at the top, so Claude sees the full "
-            "scope even when it previews the file with a partial read.",
-            "NOT_A_CHECK FILE",
-            "PAGE UNSCOPED_ALLOWED https://code.claude.com/docs/en/permissions A rule that names a tool with no "
-            "specifier, such as Bash, matches every use of that tool.",
-        ],
-        lines,
-    )
+    assert code == 1
+    assert lines == [
+        "PAGE DOC_NO_TOC https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices For "
+        "reference files longer than 100 lines, include a table of contents at the top, so Claude sees the full "
+        "scope even when it previews the file with a partial read.",
+        "NOT_A_CHECK FILE",
+        "PAGE UNSCOPED_ALLOWED https://code.claude.com/docs/en/permissions A rule that names a tool with no "
+        "specifier, such as Bash, matches every use of that tool.",
+    ]
 
 
 def test_provenance_of_checks_alone_exits_0_and_a_decision_is_one_line() -> None:
     code, lines, _ = run("provenance", "UNPAIRED_ALLOWED")
-    CHECK.assertEqual(0, code)
-    CHECK.assertEqual(1, len(lines))
-    CHECK.assertTrue(lines[0].startswith("DECISION UNPAIRED_ALLOWED On Windows the model may run"))
+    assert code == 0
+    assert len(lines) == 1
+    assert lines[0].startswith("DECISION UNPAIRED_ALLOWED On Windows the model may run")
 
 
 def test_provenance_fails_on_a_file_that_leaves_a_check_out() -> None:
     with tempfile.TemporaryDirectory() as folder:
         path = write(Path(folder) / "provenance.json", json.dumps({"checks": {"wide-glob": [{"decision": "A."}]}}))
-        with CHECK.assertRaises(skill_inventory.InputError) as caught:
+        with pytest.raises(skill_inventory.InputError) as caught:
             skill_inventory.provenance(["wide-glob"], path)
-    CHECK.assertIn("provenance.json: no entry for BODY_OVER_500_LINES, ", str(caught.exception))
+    assert "provenance.json: no entry for BODY_OVER_500_LINES, " in str(caught.value)

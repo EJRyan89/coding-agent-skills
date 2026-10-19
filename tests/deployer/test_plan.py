@@ -20,7 +20,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
-from harness import ALLOWED_TOOLS, CHECK, DEPLOY_COMMAND, ZERO_HASH, DeployerTestCase, Deployment, forward
+from harness import ALLOWED_TOOLS, DEPLOY_COMMAND, ZERO_HASH, DeployerTestCase, Deployment, forward
 
 from deployer import hashing, manifest, migrate, plan, report, selection
 from deployer.context import Context, Options, Selection
@@ -307,12 +307,12 @@ class PlanHome(Deployment):
 
         with mock.patch.object(plan, "build", side_effect=spy):
             output = self.deploy_ok(*row.arguments, *extra, stdin=row.stdin).output
-        CHECK.assertEqual(1, len(captured), output)
+        assert len(captured) == 1, output
         return captured[0], output
 
     def entry(self, entries: list[plan.PlanEntry], kind: Kind) -> plan.PlanEntry:
         matches = [entry for entry in entries if entry.name == kind.name and entry.kind == kind.label]
-        CHECK.assertEqual(1, len(matches), entries)
+        assert len(matches) == 1, entries
         return matches[0]
 
     def assert_reported(self, output: str, title: str, label: str, kind: Kind, row: Row) -> None:
@@ -320,38 +320,38 @@ class PlanHome(Deployment):
         line = f"{kind.name} ({detail})" if detail else kind.name
         groups = self.report_groups(output, title)
         if row.shown:
-            CHECK.assertIn(line, groups.get(label, []), output)
+            assert line in groups.get(label, []), output
         else:
-            CHECK.assertFalse(any(line in group for group in groups.values()), output)
+            assert not any(line in group for group in groups.values()), output
 
     def assert_filesystem(self, kind: Kind, entry: plan.PlanEntry, before: str | None, owned: Any) -> None:
         path = self.path(kind)
         if entry.action in INSTALLS:
-            CHECK.assertEqual(entry.staged, hashing.hash_path(path))
-            CHECK.assertEqual(entry.staged, self.owned_entry(kind)["hash"])
+            assert entry.staged == hashing.hash_path(path)
+            assert entry.staged == self.owned_entry(kind)["hash"]
             backups = list((kind.root(self) / ".backups").glob(f"*/{kind.name}"))
             if entry.action == "REPLACE":
-                CHECK.assertEqual([before], [hashing.hash_path(backup) for backup in backups])
+                assert [before] == [hashing.hash_path(backup) for backup in backups]
             else:
-                CHECK.assertEqual([], backups)
+                assert backups == []
         elif entry.action in LEAVES:
-            CHECK.assertEqual(before, self.fingerprint(kind))
-            CHECK.assertEqual(owned, self.owned_entry(kind))
+            assert before == self.fingerprint(kind)
+            assert owned == self.owned_entry(kind)
         else:
-            CHECK.assertIn(entry.action, RELEASES)
-            CHECK.assertFalse(os.path.lexists(path))
-            CHECK.assertIsNone(self.owned_entry(kind))
+            assert entry.action in RELEASES
+            assert not os.path.lexists(path)
+            assert self.owned_entry(kind) is None
 
     def check(self, kind: Kind, row: Row) -> None:
         self.arrange(kind, row.state)
         dry_entries, dry_output = self.planned_run(row, "--dry-run")
         planned = self.entry(dry_entries, kind)
-        CHECK.assertEqual((row.dry, row.apply), report.ACTION_LABELS[planned.action])
-        CHECK.assertEqual(row.reason, planned.reason)
+        assert (row.dry, row.apply) == report.ACTION_LABELS[planned.action]
+        assert row.reason == planned.reason
         self.assert_reported(dry_output, "DRY RUN", row.dry, kind, row)
         before, owned = self.fingerprint(kind), self.owned_entry(kind)
         applied_entries, applied_output = self.planned_run(row)
-        CHECK.assertEqual(planned, self.entry(applied_entries, kind), "the deployment planned what the dry run showed")
+        assert planned == self.entry(applied_entries, kind), "the deployment planned what the dry run showed"
         self.assert_reported(applied_output, "DEPLOYED", row.apply, kind, row)
         self.assert_filesystem(kind, planned, before, owned)
 
@@ -386,21 +386,18 @@ def test_removal_state(plan_home: PlanHome, kind: Kind, row: Row) -> None:
 
 
 def test_every_action_has_one_label_in_each_report() -> None:
-    CHECK.assertEqual(
-        {
-            "INSTALL": ("FRESH INSTALL", "INSTALLED"),
-            "UPDATE": ("UPDATE", "UPDATED"),
-            "UNCHANGED": ("UNCHANGED", "UNCHANGED"),
-            "ADOPT": ("ADOPT", "ADOPTED"),
-            "REPLACE": ("REPLACE", "REPLACED"),
-            "SKIP": ("CONFLICT", "SKIPPED"),
-            "REMOVE": ("REMOVE", "REMOVED"),
-            "PRESERVE": ("PRESERVE", "PRESERVED"),
-            "DROP": ("DROP OWNERSHIP", "DROPPED OWNERSHIP"),
-            "KEEP": ("KEEP", "KEPT"),
-        },
-        report.ACTION_LABELS,
-    )
+    assert report.ACTION_LABELS == {
+        "INSTALL": ("FRESH INSTALL", "INSTALLED"),
+        "UPDATE": ("UPDATE", "UPDATED"),
+        "UNCHANGED": ("UNCHANGED", "UNCHANGED"),
+        "ADOPT": ("ADOPT", "ADOPTED"),
+        "REPLACE": ("REPLACE", "REPLACED"),
+        "SKIP": ("CONFLICT", "SKIPPED"),
+        "REMOVE": ("REMOVE", "REMOVED"),
+        "PRESERVE": ("PRESERVE", "PRESERVED"),
+        "DROP": ("DROP OWNERSHIP", "DROPPED OWNERSHIP"),
+        "KEEP": ("KEEP", "KEPT"),
+    }
 
 
 class UnmanagedDiffTests(DeployerTestCase):

@@ -71,8 +71,6 @@ FIRST_RELEASE = {
     "docs/old guide.md": "old\n",
     "README.md": "readme\n",
 }
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
 
 
 class AuditTestCase(unittest.TestCase):
@@ -1006,14 +1004,14 @@ class CommandLineTests(Fixture):
 )
 def test_a_code_literal_reads_back_exactly_and_stays_one_printable_code_span(value: str) -> None:
     literal = audit.code_literal(value)
-    CHECK.assertTrue(literal.startswith('`"') and literal.endswith('"`'), literal)
-    CHECK.assertNotIn("`", literal[1:-1])
-    CHECK.assertTrue(literal.isprintable(), literal)
-    CHECK.assertEqual(value, json.loads(literal[1:-1]))
+    assert literal.startswith('`"') and literal.endswith('"`'), literal
+    assert "`" not in literal[1:-1]
+    assert literal.isprintable(), literal
+    assert value == json.loads(literal[1:-1])
 
 
 def test_a_code_literal_of_a_printable_path_is_its_json_string_in_backticks() -> None:
-    CHECK.assertEqual('`"docs/π guide.md"`', audit.code_literal("docs/π guide.md"))
+    assert audit.code_literal("docs/π guide.md") == '`"docs/π guide.md"`'
 
 
 @pytest.mark.parametrize(
@@ -1044,15 +1042,15 @@ def test_a_code_literal_of_a_printable_path_is_its_json_string_in_backticks() ->
 def test_a_malformed_record_fails_with_the_reason(tmp_path: Path, text: str, reason: str) -> None:
     path = tmp_path / "rotation.json"
     path.write_text(text, encoding="utf-8")
-    with CHECK.assertRaises(audit.AuditError) as caught:
+    with pytest.raises(audit.AuditError) as caught:
         audit.read_record(path)
-    CHECK.assertIn(reason, str(caught.exception))
+    assert reason in str(caught.value)
 
 
 def test_a_missing_record_fails_with_the_reason(tmp_path: Path) -> None:
-    with CHECK.assertRaises(audit.AuditError) as caught:
+    with pytest.raises(audit.AuditError) as caught:
         audit.read_record(tmp_path / "missing.json")
-    CHECK.assertIn("no rotation record at", str(caught.exception))
+    assert "no rotation record at" in str(caught.value)
 
 
 @pytest.mark.parametrize(
@@ -1065,8 +1063,8 @@ def test_a_missing_record_fails_with_the_reason(tmp_path: Path) -> None:
 )
 def test_a_usage_error_exits_2(arguments: list[str]) -> None:
     result = subprocess.run([sys.executable, "-B", str(SCRIPT), *arguments], capture_output=True)
-    CHECK.assertEqual(2, result.returncode)
-    CHECK.assertEqual(b"", result.stdout)
+    assert result.returncode == 2
+    assert result.stdout == b""
 
 
 GUIDANCE = ".claude/skills/audit-repository/references/guidance.json"
@@ -1254,28 +1252,28 @@ def test_a_malformed_guidance_record_fails_with_the_reason(
 ) -> None:
     path = tmp_path / "guidance.json"
     path.write_text(guidance_text(pages), encoding="utf-8")
-    with CHECK.assertRaises(audit.AuditError) as caught:
+    with pytest.raises(audit.AuditError) as caught:
         audit.read_guidance(path, ["alpha", "python"])
-    CHECK.assertIn(reason, str(caught.exception))
+    assert reason in str(caught.value)
 
 
 def test_a_missing_or_unreadable_guidance_record_fails_with_the_reason(tmp_path: Path) -> None:
-    with CHECK.assertRaises(audit.AuditError) as missing:
+    with pytest.raises(audit.AuditError) as missing:
         audit.read_guidance(tmp_path / "missing.json", ["alpha"])
-    CHECK.assertIn("no guidance record at", str(missing.exception))
+    assert "no guidance record at" in str(missing.value)
     (tmp_path / "broken.json").write_text("{", encoding="utf-8")
-    with CHECK.assertRaises(audit.AuditError) as broken:
+    with pytest.raises(audit.AuditError) as broken:
         audit.read_guidance(tmp_path / "broken.json", ["alpha"])
-    CHECK.assertIn("cannot read the guidance record", str(broken.exception))
+    assert "cannot read the guidance record" in str(broken.value)
 
 
 def test_the_oldest_read_is_never_while_a_page_is_unread_and_otherwise_the_earliest_last_read() -> None:
     def pages(*reads: tuple[str, ...]) -> list[audit.Page]:
         return [audit.Page(f"https://example.com/{n}", "alpha", "x", read) for n, read in enumerate(reads)]
 
-    CHECK.assertEqual("never", audit.oldest_read(pages(("v1",), ())))
-    CHECK.assertEqual("v1", audit.oldest_read(pages(("v1", "v2"), ("v1",))))
-    CHECK.assertEqual("v2", audit.oldest_read(pages(("v1", "v2"), ("v2", "v3"))))
+    assert audit.oldest_read(pages(("v1",), ())) == "never"
+    assert audit.oldest_read(pages(("v1", "v2"), ("v1",))) == "v1"
+    assert audit.oldest_read(pages(("v1", "v2"), ("v2", "v3"))) == "v2"
 
 
 class RepositoryGuidanceTests(unittest.TestCase):

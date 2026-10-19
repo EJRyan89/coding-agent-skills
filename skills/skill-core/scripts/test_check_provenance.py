@@ -13,9 +13,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from check_provenance import PROVENANCE_FILE, ProvenanceError, Source, lines, load
 
-# Runs no test of its own; the test function below checks through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 PAGE = {"page": "https://example.com/docs/skills", "passage": "Keep the body short."}
 DECISION = {"decision": "This source grants each script by name (docs/design.md, Decisions)."}
 
@@ -115,4 +112,4 @@ class LinesTests(unittest.TestCase):
 
 
 def test_the_file_sits_in_the_skill_references() -> None:
-    CHECK.assertEqual("references/provenance.json", PROVENANCE_FILE.as_posix())
+    assert PROVENANCE_FILE.as_posix() == "references/provenance.json"

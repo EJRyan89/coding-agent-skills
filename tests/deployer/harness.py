@@ -219,11 +219,6 @@ class _Tee(io.StringIO):
         return super().write(text)
 
 
-# The assertions a Deployment checks a run with: a test case that runs no test of its own, so a check fails with
-# unittest's message whether a unittest test case or a pytest test function called it.
-CHECK = unittest.TestCase()
-
-
 class Deployment:
     """A fixture source, a throwaway home, and the commands that deploy between them, for one test: a pytest test takes
     one from the `deployer` fixture, and every DeployerTestCase is one."""
@@ -278,7 +273,7 @@ class Deployment:
         """Each line appears whole, so a message cannot be cut short or run into the next one."""
         printed = output.splitlines()
         for line in lines:
-            CHECK.assertIn(line, printed, output)
+            assert line in printed, output
 
     def make_source_json(
         self,
@@ -393,9 +388,9 @@ class Deployment:
         changes_home: str = "",
     ) -> None:
         """Every run preserves its source; a nonzero exit preserves its home unless it states why it changes it."""
-        CHECK.assertEqual(source_before, tree_state(source), f"the deployment changed its source:\n{result.output}")
+        assert source_before == tree_state(source), f"the deployment changed its source:\n{result.output}"
         if result.code != 0 and not changes_home:
-            CHECK.assertEqual(home_before, tree_state(home), f"the refusal changed the home:\n{result.output}")
+            assert home_before == tree_state(home), f"the refusal changed the home:\n{result.output}"
 
     def run_command(
         self,
@@ -528,7 +523,7 @@ class Deployment:
 
     def deploy_ok(self, *arguments: str, stdin: str = "", **options: Any) -> Result:
         result = self.deploy(*arguments, stdin=stdin, **options)
-        CHECK.assertEqual(0, result.code, result.output)
+        assert result.code == 0, result.output
         return result
 
     def deploy_fails(
@@ -550,8 +545,8 @@ class Deployment:
         comes after the deployment began, such as a recovery, a lock reclaim, or a run that fails partway.
         """
         result = self.deploy(*arguments, stdin=stdin, home=home, changes_home=changes_home, **options)
-        CHECK.assertEqual(code, result.code, result.output)
-        CHECK.assertRegex(result.output, pattern)
+        assert code == result.code, result.output
+        assert re.search(pattern, result.output), result.output
         return result
 
     def report_groups(self, output: str, title: str) -> dict[str, list[str]]:
@@ -578,7 +573,7 @@ class Deployment:
             else:
                 in_extra = True  # a diff or other detail printed under the previous item
         for action, items in groups.items():
-            CHECK.assertEqual(counts[action], len(items), f"{action} header count in:\n{output}")
+            assert counts[action] == len(items), f"{action} header count in:\n{output}"
         return groups
 
     def manifest(self) -> dict[str, Any]:
@@ -672,9 +667,9 @@ class Deployment:
         output = self.deploy("--dry-run", stdin="\n").output
         match = re.search(rf"^  \[[ *]\] ([0-9]+)\. {re.escape(name)}(?: \(([^)]*)\))?$", output, re.MULTILINE)
         if match is None:
-            CHECK.fail(output)
+            raise AssertionError(output)
         labels = (match.group(2) or "").split(", ")
-        CHECK.assertEqual(bundle, "bundle" in labels, output)
+        assert bundle == ("bundle" in labels), output
         return match.group(1)
 
 

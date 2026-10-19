@@ -12,9 +12,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from release_levels import VERSION, largest_level, level_word, versioning_levels
 
-# Runs no test of its own; the test functions below check through its assertions, as the class does.
-CHECK = unittest.TestCase()
-
 LEVELS = (
     "## Versioning \t\r\n**Levels**, from the stable release on:\r\n\r\n"
     "- **Patch.** Fixes.\r\n- **Minor.** Additions.\r\n  Continued.\r\n- **Major.** Migrations.\r\n\r\n"
@@ -35,7 +32,7 @@ class ReleaseLevelTests(unittest.TestCase):
 
 @pytest.mark.parametrize("value", ["0.5.0", "v1.2", "v1.2.3rc1", pytest.param("v1.2.3\n", id="v1.2.3-newline")])
 def test_version_matches_only_the_complete_tag_shape(value: str) -> None:
-    CHECK.assertIsNone(VERSION.fullmatch(value))
+    assert VERSION.fullmatch(value) is None
 
 
 @pytest.mark.parametrize(
@@ -54,7 +51,7 @@ def test_version_matches_only_the_complete_tag_shape(value: str) -> None:
 def test_a_level_word_keeps_its_original_case_and_does_not_guess_from_the_prose(
     value: str, expected: str | None
 ) -> None:
-    CHECK.assertEqual(expected, level_word(value))
+    assert expected == level_word(value)
 
 
 @pytest.mark.parametrize(
@@ -72,7 +69,7 @@ def test_a_level_word_keeps_its_original_case_and_does_not_guess_from_the_prose(
 def test_the_largest_level_uses_the_document_order_and_empty_entries_have_no_level(
     values: list[str], levels: list[str], expected: str | None
 ) -> None:
-    CHECK.assertEqual(expected, largest_level(values, levels))
+    assert expected == largest_level(values, levels)
 
 
 @pytest.mark.parametrize(
@@ -89,5 +86,5 @@ def test_the_largest_level_uses_the_document_order_and_empty_entries_have_no_lev
 def test_missing_unknown_or_malformed_levels_and_an_empty_or_duplicate_order_fail(
     values: list[str], levels: list[str], pattern: str
 ) -> None:
-    with CHECK.assertRaisesRegex(ValueError, pattern):
+    with pytest.raises(ValueError, match=pattern):
         largest_level(values, levels)

@@ -55,6 +55,10 @@ sys.path.append(str(Path(__file__).resolve().parent / "tests" / "validation"))
 from bounded_process import REPOSITORY_VARIABLES
 from dealing import deal, shard_of
 
+# The deployer suites check each run through the plain asserts in tests/deployer/harness.py, which they import by its
+# bare name; pytest rewrites an assert to show both sides only in a test module or one named to it before its import.
+pytest.register_assert_rewrite("harness")
+
 # The operating-system names this module states on purpose, with the reason, which the platform policy reads.
 PLATFORM_ALLOWED = {
     "GIT_BASH": "names the variable the isolation keeps as the shell gave it, so a suite finds the Git Bash the "

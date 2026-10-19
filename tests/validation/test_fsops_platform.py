@@ -19,9 +19,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 from fsops_platform import _platform_names, filesystem_write_problems, platform_code_problems
 from validation_support import write_fixture_tree
 
-# Runs no test of its own; the test functions below check through its assertions, as the class does.
-CHECK = unittest.TestCase()
-
 
 class FsopsPlatformFixtures(unittest.TestCase):
     def test_filesystem_write_policy_resolves_assigned_callables_in_their_own_scopes(self) -> None:
@@ -1778,10 +1775,7 @@ def test_filesystem_write_policy_reports_ambiguous_assigned_callables(tmp_path: 
     function = "writer.open" if prefix.startswith("import ") else "writer"
     source = prefix + f'{function}("x", "w")\n'
     write_fixture_tree(tmp_path, {"deployer/ambiguous.py": source})
-    CHECK.assertEqual(
-        [
-            f"deployer/ambiguous.py:{len(source.splitlines())} cannot resolve callable alias "
-            f"{function}; use a single binding to a known callable"
-        ],
-        filesystem_write_problems(tmp_path),
-    )
+    assert [
+        f"deployer/ambiguous.py:{len(source.splitlines())} cannot resolve callable alias "
+        f"{function}; use a single binding to a known callable"
+    ] == filesystem_write_problems(tmp_path)

@@ -34,9 +34,6 @@ from github_activity_report import (
 )
 from github_client import BACKOFF, CommandResult, GitHubError
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 SPAN = re.compile(r"(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})")
 SECONDARY_LIMIT = "gh: You have exceeded a secondary rate limit. (HTTP 403)"
 TODAY = date(2026, 5, 20)
@@ -694,7 +691,7 @@ def run_report(arguments: list[str], client: GitHubSearchClient | None = None) -
             code = main(arguments, client, TODAY)
         except SystemExit as exit_:
             if not isinstance(exit_.code, int):
-                CHECK.fail(f"exit code {exit_.code!r}")
+                raise AssertionError(f"exit code {exit_.code!r}") from exit_
             code = exit_.code
     return code, stdout.getvalue(), stderr.getvalue()
 
@@ -777,9 +774,9 @@ class MainTests(unittest.TestCase):
 )
 def test_malformed_search_responses_fail_closed(payload: object) -> None:
     client, _ = client_for(scripted(ok(payload))[0])
-    with CHECK.assertRaises(GitHubError) as context:
+    with pytest.raises(GitHubError) as context:
         client.search_all("search/issues", "q", KEY)
-    CHECK.assertEqual("malformed", context.exception.kind)
+    assert context.value.kind == "malformed"
 
 
 COUNTS_REFUSED = [
@@ -794,15 +791,15 @@ COUNTS_REFUSED = [
 @pytest.mark.parametrize("count", COUNTS_REFUSED)
 def test_a_search_count_must_be_a_non_negative_integer(count: object) -> None:
     client, _ = client_for(scripted(ok(search_page([], count)))[0])
-    with CHECK.assertRaises(GitHubError) as context:
+    with pytest.raises(GitHubError) as context:
         client.search_all("search/issues", "q", KEY)
-    CHECK.assertEqual("malformed", context.exception.kind)
-    CHECK.assertIn("response.total_count must be an integer of at least 0", str(context.exception))
+    assert context.value.kind == "malformed"
+    assert "response.total_count must be an integer of at least 0" in str(context.value)
 
 
 def test_a_search_count_that_is_a_non_negative_integer_is_read() -> None:
     client, _ = client_for(scripted(ok(search_page(rows(1), 1)))[0])
-    CHECK.assertEqual(1, fetch(client))
+    assert fetch(client) == 1
 
 
 def graphql_count_page(count: object) -> CommandResult:
@@ -813,16 +810,16 @@ def graphql_count_page(count: object) -> CommandResult:
 @pytest.mark.parametrize("count", COUNTS_REFUSED)
 def test_a_graphql_search_count_must_be_a_non_negative_integer(count: object) -> None:
     client, _ = client_for(scripted(graphql_count_page(count))[0])
-    with CHECK.assertRaises(GitHubError) as context:
+    with pytest.raises(GitHubError) as context:
         client.graphql_search_range("q {span}", "octo", date(2026, 1, 1), date(2026, 1, 31))
-    CHECK.assertEqual("malformed", context.exception.kind)
-    CHECK.assertIn("data.search.issueCount must be an integer of at least 0", str(context.exception))
+    assert context.value.kind == "malformed"
+    assert "data.search.issueCount must be an integer of at least 0" in str(context.value)
 
 
 def test_a_graphql_search_count_that_is_a_non_negative_integer_is_read() -> None:
     client, _ = client_for(scripted(graphql_count_page(1))[0])
     nodes, capped = client.graphql_search_range("q {span}", "octo", date(2026, 1, 1), date(2026, 1, 31))
-    CHECK.assertEqual((1, []), (len(nodes), capped))
+    assert (len(nodes), capped) == (1, [])
 
 
 @pytest.mark.parametrize(
@@ -837,19 +834,19 @@ def test_a_graphql_search_count_that_is_a_non_negative_integer_is_read() -> None
 )
 def test_malformed_graphql_search_responses_fail_closed(search: object) -> None:
     client, _ = client_for(scripted(ok({"data": {"search": search}}))[0])
-    with CHECK.assertRaises(GitHubError) as context:
+    with pytest.raises(GitHubError) as context:
         client.graphql_search_range("q {span}", "octo", date(2026, 1, 1), date(2026, 1, 31))
-    CHECK.assertEqual("malformed", context.exception.kind)
+    assert context.value.kind == "malformed"
 
 
 @pytest.mark.parametrize("value", ["true", 1, None])
 def test_incomplete_results_must_be_a_boolean(value: object) -> None:
     run, calls = scripted(ok(dict(search_page([], 0), incomplete_results=value)))
     client, sleeper = client_for(run)
-    with CHECK.assertRaises(GitHubError) as context:
+    with pytest.raises(GitHubError) as context:
         fetch(client)
-    CHECK.assertEqual(("malformed", 1, []), (context.exception.kind, len(calls), sleeper.waits))
-    CHECK.assertIn("response.incomplete_results must be a boolean", str(context.exception))
+    assert (context.value.kind, len(calls), sleeper.waits) == ("malformed", 1, [])
+    assert "response.incomplete_results must be a boolean" in str(context.value)
 
 
 @pytest.mark.parametrize(
@@ -872,10 +869,10 @@ def test_incomplete_results_must_be_a_boolean(value: object) -> None:
 )
 def test_failures_are_classified(stderr: str, kind: str) -> None:
     client, sleeper = client_for(scripted(failed(stderr))[0])
-    with CHECK.assertRaises(GitHubError) as context:
+    with pytest.raises(GitHubError) as context:
         fetch(client)
-    CHECK.assertEqual(kind, context.exception.kind)
-    CHECK.assertEqual([], sleeper.waits)
+    assert kind == context.value.kind
+    assert sleeper.waits == []
 
 
 @pytest.mark.parametrize("request_kind", ["search", "graphql"])
@@ -883,14 +880,14 @@ def test_sso_partial_results_fail_closed(request_kind: str) -> None:
     header = "X-Github-Sso: partial-results; organizations=21955855\r\n"
     payload = search_page(rows(1)) if request_kind == "search" else {"data": {"node": {}}}
     client, sleeper = client_for(scripted(ok(payload, header))[0])
-    with CHECK.assertRaises(GitHubError) as context:
+    with pytest.raises(GitHubError) as context:
         if request_kind == "search":
             fetch(client)
         else:
             client.graphql("query", {"id": "PR_1"})
-    CHECK.assertEqual("sso_partial", context.exception.kind)
-    CHECK.assertIn("21955855", str(context.exception))
-    CHECK.assertEqual([], sleeper.waits)
+    assert context.value.kind == "sso_partial"
+    assert "21955855" in str(context.value)
+    assert sleeper.waits == []
 
 
 @pytest.mark.parametrize(
@@ -906,10 +903,10 @@ def test_sso_partial_results_fail_closed(request_kind: str) -> None:
 )
 def test_review_page_info_must_be_typed_and_advance(message: str, page_info: dict[str, Any]) -> None:
     failure, calls = reviews_of(page_info, [])
-    CHECK.assertIsInstance(failure, GitHubError)
-    CHECK.assertEqual("malformed", failure.kind)
-    CHECK.assertIn(message, str(failure))
-    CHECK.assertLessEqual(len(calls), 2)
+    assert isinstance(failure, GitHubError)
+    assert failure.kind == "malformed"
+    assert message in str(failure)
+    assert len(calls) <= 2
 
 
 SUBMITTED = {"submittedAt": "2026-01-10T00:00:00Z"}
@@ -926,9 +923,9 @@ SUBMITTED = {"submittedAt": "2026-01-10T00:00:00Z"}
 )
 def test_a_review_must_be_an_object_with_a_state(message: str, nodes: list[Any]) -> None:
     failure, _ = reviews_of({"hasNextPage": False}, nodes)
-    CHECK.assertIsInstance(failure, GitHubError)
-    CHECK.assertEqual("malformed", failure.kind)
-    CHECK.assertIn(message, str(failure))
+    assert isinstance(failure, GitHubError)
+    assert failure.kind == "malformed"
+    assert message in str(failure)
 
 
 @pytest.mark.parametrize(
@@ -941,9 +938,9 @@ def test_a_review_must_be_an_object_with_a_state(message: str, nodes: list[Any])
 )
 def test_a_pull_request_author_must_be_an_object_with_a_login(author: object) -> None:
     failure, _ = reviews_of({"hasNextPage": False}, [], author)
-    CHECK.assertIsInstance(failure, GitHubError)
-    CHECK.assertEqual("malformed", failure.kind)
-    CHECK.assertIn("author", str(failure))
+    assert isinstance(failure, GitHubError)
+    assert failure.kind == "malformed"
+    assert "author" in str(failure)
 
 
 @pytest.mark.parametrize(
@@ -962,5 +959,5 @@ def test_a_pull_request_author_must_be_an_object_with_a_login(author: object) ->
 def test_invalid_arguments_are_rejected_before_querying(arguments: list[str]) -> None:
     run, calls = scripted()
     code, _, _ = run_report(arguments, GitHubSearchClient(run, Recorder()))
-    CHECK.assertEqual(2, code)
-    CHECK.assertEqual([], calls)
+    assert code == 2
+    assert calls == []

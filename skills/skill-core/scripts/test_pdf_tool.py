@@ -16,9 +16,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import pdf_tool
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 XPDF = "pdftotext version {version} [www.xpdfreader.com]\nCopyright 1996-2025 Glyph & Cog, LLC\n"
 POPPLER = (
     "pdftotext version {version}\nCopyright 2005-2026 The Poppler Developers - https://poppler.freedesktop.org\n"
@@ -252,8 +249,8 @@ def test_vendor_banners_have_separate_floors_and_expected_exit_statuses(
     banner: str, version: str, provider: str, status: int
 ) -> None:
     identified = pdf_tool.parse_banner(banner.format(version=version), status)
-    CHECK.assertEqual(provider, identified.provider)
-    CHECK.assertEqual(tuple(map(int, version.split("."))), identified.version)
+    assert provider == identified.provider
+    assert tuple(map(int, version.split("."))) == identified.version
 
 
 @pytest.mark.parametrize(
@@ -270,13 +267,13 @@ def test_vendor_banners_have_separate_floors_and_expected_exit_statuses(
 def test_old_versions_are_refused_using_the_identified_provider_not_a_generic_number(
     banner: str, version: str, provider: str, status: int
 ) -> None:
-    with CHECK.assertRaises(pdf_tool.PdfToolRefused) as raised:
+    with pytest.raises(pdf_tool.PdfToolRefused) as raised:
         pdf_tool.parse_banner(banner.format(version=version), status)
-    identity = raised.exception.identity
+    identity = raised.value.identity
     if identity is None:
-        CHECK.fail("an outdated vendor banner must retain its identified provider")
-    CHECK.assertEqual(provider, identity.provider)
-    CHECK.assertIn("older than", str(raised.exception))
+        raise AssertionError("an outdated vendor banner must retain its identified provider")
+    assert provider == identity.provider
+    assert "older than" in str(raised.value)
 
 
 @pytest.mark.parametrize(
@@ -297,5 +294,5 @@ def test_old_versions_are_refused_using_the_identified_provider_not_a_generic_nu
     ],
 )
 def test_unknown_ambiguous_malformed_and_failed_banners_are_refused(banner: str, status: int) -> None:
-    with CHECK.assertRaises(pdf_tool.PdfToolRefused):
+    with pytest.raises(pdf_tool.PdfToolRefused):
         pdf_tool.parse_banner(banner, status)

@@ -53,9 +53,6 @@ from test_review_documents import (
     word_document,
 )
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 SCRIPT = Path(review_document.__file__).resolve()
 SKILLS_ROOT = SCRIPT.parents[2]
 IDENTITY = ("-c", "user.name=Document Test", "-c", "user.email=document@example.invalid")
@@ -1775,5 +1772,5 @@ def test_failures_use_the_shared_flattener_after_converting_the_exception_to_tex
         mock.patch.object(review_document, "flat_text", wraps=flat_text) as flatten,
     ):
         code, lines = run_main(*arguments)
-    CHECK.assertEqual((1, [f"FAILED {expected}"]), (code, lines))
+    assert (1, [f"FAILED {expected}"]) == (code, lines)
     flatten.assert_called_once_with(str(error))

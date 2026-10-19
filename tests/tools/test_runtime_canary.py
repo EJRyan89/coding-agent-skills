@@ -37,9 +37,6 @@ from deployer.paths import Paths
 from tools import runtime_canary
 from tools.runtime_canary import Completed
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 # The real runner, kept before setUp replaces it, for the cases that start a stub program through it.
 RUN_PROCESS = runtime_canary.run_process
@@ -2294,14 +2291,11 @@ def test_a_folder_named_like_a_home_without_the_marker_naming_it_is_refused_and_
     (home / "notes.txt").write_text("someone's notes\n", encoding="utf-8")
     prepare(home)
     code, output = remove_home(str(home))
-    CHECK.assertEqual(
-        (
-            1,
-            f'FAILED "{home.as_posix()} holds no .runtime-canary/home.json naming it, so the canary did not make it"\n',
-        ),
-        (code, output),
-    )
-    CHECK.assertEqual("someone's notes\n", (home / "notes.txt").read_text(encoding="utf-8"))
+    assert (
+        1,
+        f'FAILED "{home.as_posix()} holds no .runtime-canary/home.json naming it, so the canary did not make it"\n',
+    ) == (code, output)
+    assert (home / "notes.txt").read_text(encoding="utf-8") == "someone's notes\n"
 
 
 @pytest.mark.parametrize(
@@ -2326,8 +2320,8 @@ def test_the_commands_that_make_no_home_take_no_skill_and_no_home_option(argumen
     with (
         mock.patch("tempfile.mkdtemp", side_effect=AssertionError("made a home")),
         contextlib.redirect_stderr(output),
-        CHECK.assertRaises(SystemExit) as raised,
+        pytest.raises(SystemExit) as raised,
     ):
         runtime_canary.main(arguments)
-    CHECK.assertEqual(2, raised.exception.code)
-    CHECK.assertIn(message, output.getvalue())
+    assert raised.value.code == 2
+    assert message in output.getvalue()

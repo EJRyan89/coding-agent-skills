@@ -19,9 +19,6 @@ import csharp_layout as layout
 import dotnet_solution
 from run_dotnet_format import Completed, Services
 
-# Runs no test of its own; the test functions below check through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 LINKED_FILE = "the file is a symbolic link or junction, which the script does not write through"
 
 
@@ -993,7 +990,7 @@ class ConfigTests(unittest.TestCase):
 @pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"], ids=["lf", "crlf", "cr"])
 def test_line_endings_are_counted_alike(newline: str) -> None:
     text = newline.join(("class C", "{", "    #region A", "", "    #endregion", "", "}", ""))
-    CHECK.assertEqual([(5, "endregion-brace-spacing")], rules(text))
+    assert rules(text) == [(5, "endregion-brace-spacing")]
 
 
 # Each literal holds braces or directive-like lines that would add events if lexed as code, and the brace after it is
@@ -1027,8 +1024,8 @@ EDGE_CASE_LITERALS: list[tuple[str, int, list[int]]] = [
 )
 def test_edge_case_literals_end_where_csharp_ends_them(text: str, line: int, continuation: list[int]) -> None:
     scan = layout.Lexer(text).lex()
-    CHECK.assertEqual([(line, "open")], [(event.line, event.kind) for event in scan.events])
-    CHECK.assertEqual(continuation, sorted(scan.continuation))
+    assert [(line, "open")] == [(event.line, event.kind) for event in scan.events]
+    assert continuation == sorted(scan.continuation)
 
 
 OUTSIDE_A_HOLE: list[tuple[str, Lexed]] = [
@@ -1053,7 +1050,7 @@ OUTSIDE_A_HOLE: list[tuple[str, Lexed]] = [
 
 @pytest.mark.parametrize(("text", "expected"), OUTSIDE_A_HOLE, ids=[text for text, _ in OUTSIDE_A_HOLE])
 def test_code_outside_a_hole_records_braces_and_directives_to_the_end(text: str, expected: Lexed) -> None:
-    CHECK.assertEqual(expected, lexed(text))
+    assert expected == lexed(text)
 
 
 HOLE_ENDS: list[tuple[str, int, Lexed]] = [
@@ -1071,7 +1068,7 @@ HOLE_ENDS: list[tuple[str, int, Lexed]] = [
 
 @pytest.mark.parametrize(("text", "hole", "expected"), HOLE_ENDS, ids=[text for text, _, _ in HOLE_ENDS])
 def test_a_hole_returns_after_its_closing_braces(text: str, hole: int, expected: Lexed) -> None:
-    CHECK.assertEqual(expected, lexed(text, hole))
+    assert expected == lexed(text, hole)
 
 
 FORMAT_CLAUSES: list[tuple[str, int, Lexed]] = [
@@ -1095,7 +1092,7 @@ FORMAT_CLAUSES: list[tuple[str, int, Lexed]] = [
 
 @pytest.mark.parametrize(("text", "hole", "expected"), FORMAT_CLAUSES, ids=[text for text, _, _ in FORMAT_CLAUSES])
 def test_a_colon_at_a_holes_top_level_starts_its_format_clause(text: str, hole: int, expected: Lexed) -> None:
-    CHECK.assertEqual(expected, lexed(text, hole))
+    assert expected == lexed(text, hole)
 
 
 @pytest.mark.parametrize(
@@ -1114,12 +1111,12 @@ def test_usage_errors_exit_2_with_usage_on_stderr(arguments: list[str]) -> None:
     with (
         contextlib.redirect_stdout(output),
         contextlib.redirect_stderr(errors),
-        CHECK.assertRaises(SystemExit) as raised,
+        pytest.raises(SystemExit) as raised,
     ):
         layout.main(arguments)
-    CHECK.assertEqual(2, raised.exception.code)
-    CHECK.assertEqual("", output.getvalue())
-    CHECK.assertIn("usage:", errors.getvalue())
+    assert raised.value.code == 2
+    assert output.getvalue() == ""
+    assert "usage:" in errors.getvalue()
 
 
 @pytest.mark.parametrize(
@@ -1175,7 +1172,7 @@ def test_usage_errors_exit_2_with_usage_on_stderr(arguments: list[str]) -> None:
     ],
 )
 def test_section_matching_follows_the_editorconfig_glob_specification(section: str, path: str, expected: bool) -> None:
-    CHECK.assertEqual(expected, layout.section_matches(section, path))
+    assert expected == layout.section_matches(section, path)
 
 
 @pytest.mark.parametrize(
@@ -1214,4 +1211,4 @@ def test_section_matching_follows_the_editorconfig_glob_specification(section: s
     ],
 )
 def test_double_star_and_negated_bracket_globs(section: str, path: str, expected: bool) -> None:
-    CHECK.assertEqual(expected, layout.section_matches(section, path))
+    assert expected == layout.section_matches(section, path)

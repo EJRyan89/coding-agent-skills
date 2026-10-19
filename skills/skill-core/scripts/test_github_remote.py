@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import sys
-import unittest
 from pathlib import Path
 
 import pytest
@@ -11,9 +10,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from github_remote import github_repository
-
-# Runs no test of its own; the test functions below check through its assertions, as unittest classes do.
-CHECK = unittest.TestCase()
 
 
 @pytest.mark.parametrize(
@@ -33,7 +29,7 @@ CHECK = unittest.TestCase()
     ],
 )
 def test_each_github_com_form_names_its_repository_as_written(url: str, expected: str) -> None:
-    CHECK.assertEqual(expected, github_repository(url))
+    assert expected == github_repository(url)
 
 
 @pytest.mark.parametrize(
@@ -55,4 +51,4 @@ def test_each_github_com_form_names_its_repository_as_written(url: str, expected
     ],
 )
 def test_a_url_on_another_host_or_in_another_shape_is_refused(url: str) -> None:
-    CHECK.assertIsNone(github_repository(url))
+    assert github_repository(url) is None

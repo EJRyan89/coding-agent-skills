@@ -12,9 +12,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from xml_reader import XmlRefused, read_xml
 
-# Runs no test of its own; the test function below checks through its assertions, as the classes do.
-CHECK = unittest.TestCase()
-
 DOCTYPE_REFUSED = "the document declares a DOCTYPE, which could expand entities without bound"
 ENTITY_REFUSED = "the document declares an ENTITY, which could expand without bound"
 NOT_WELL_FORMED = "the document is not well-formed XML: "
@@ -106,4 +103,4 @@ class ParseTests(ReaderTestCase):
 @pytest.mark.parametrize("encoding", ["windows-1252", "utf-16", "iso-8859-1"])
 def test_a_declaration_naming_another_encoding_never_overrides_the_decoded_text(encoding: str) -> None:
     root = read_xml(f'  <?xml version="1.0" encoding="{encoding}"?>\n<NoWarn>CS1591;\u00e9</NoWarn>')
-    CHECK.assertEqual("CS1591;\u00e9", root.text)
+    assert root.text == "CS1591;\u00e9"
