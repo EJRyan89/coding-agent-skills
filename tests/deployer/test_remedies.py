@@ -108,7 +108,7 @@ class SourceRemedyTests(RemedyTestCase):
             "runtime_support, where present, must name each of claude-code, codex, and copilot-cli once: either "
             '"full", or an object {"level": "partial" or "none", "needs": [capabilities], "reason": "<one line>"}, '
             "where a partial names at least one need. Known capabilities: agent-delegation, workflow, "
-            'user-only-start. See "Metadata" in docs/adding-a-skill.md.',
+            'agent-hooks, user-only-start, sandbox-network. See "Metadata" in docs/adding-a-skill.md.',
         )
 
 

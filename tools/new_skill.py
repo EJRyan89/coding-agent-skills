@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -343,11 +344,17 @@ def scaffold_repository(
     if (root / shim.parent).exists():
         raise ScaffoldError(f"{shim.parent.as_posix()} already exists")
 
-    (root / skill_md.parent).mkdir(parents=True)
-    (root / skill_md).write_text(
-        skill_markdown(name, description, argument_hint, user_only, allowed), encoding="utf-8", newline="\n"
-    )
-    return [skill_md, *skill_shims.write(root, [name])]
+    try:
+        (root / skill_md.parent).mkdir(parents=True)
+        (root / skill_md).write_text(
+            skill_markdown(name, description, argument_hint, user_only, allowed), encoding="utf-8", newline="\n"
+        )
+        return [skill_md, *skill_shims.write(root, [name])]
+    except BaseException:
+        # Neither folder existed before the checks above, so each holds only what this scaffold wrote.
+        for folder in (root / skill_md.parent, root / shim.parent):
+            shutil.rmtree(folder, ignore_errors=True)
+        raise
 
 
 def main(argv: list[str] | None = None) -> int:

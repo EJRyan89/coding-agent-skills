@@ -2,8 +2,10 @@
 
 Copilot CLI prints its skills with `copilot skill list --json`, one entry per name: the copy it will use. Codex CLI
 has no listing command; its app server answers a `skills/list` request, a JSON-RPC message on stdin, with every copy
-it finds, user-only skills included, and needs no sign-in to do so. `codex debug prompt-input` is no substitute: it
-lists only the skills the model may choose for itself, so it leaves user-only skills out.
+it finds, user-only skills included, and those it could not load with its reasons, and needs no sign-in to do so. The
+app server is experimental, so a Codex release may change that answer. `codex debug prompt-input` is no substitute: it
+lists only the skills the model may choose for itself, so it leaves user-only skills out, which is what makes it the
+check that a user-only skill stays out of the model's catalog.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ import contextlib
 import json
 import os
 import queue
+import re
 import subprocess
 import tempfile
 import threading
@@ -37,6 +40,10 @@ DEFAULT_TIMEOUT = 120
 # How long a program may take to exit once its stdin closes, before it is killed.
 CLOSE_GRACE = 5
 CODEX_LIST_ID = 1
+# The model-free view of the skills Codex offers the model, which leaves out a skill only the user may start.
+CODEX_CATALOG = ("debug", "prompt-input")
+CODEX_CATALOG_ROOT = re.compile(r"^- `(r\d+)` = `([^`]+)`$", re.MULTILINE)
+CODEX_CATALOG_SKILL = re.compile(r"^- ([\w.-]+): .*\(file: ([^)\s]+)\)$", re.MULTILINE)
 # Filesystem writes that tests/run_validation.py allows outside deployer/fsops.py, with the reason.
 FSOPS_ALLOWED = {
     "tempfile.TemporaryFile": "a runtime's stderr is captured in an unnamed file under the system temporary directory, "
@@ -53,6 +60,22 @@ class Listed:
 
 
 Listing = dict[str, list[Listed]]
+
+
+@dataclass(frozen=True)
+class Refused:
+    """A skill a runtime found but could not load: its directory, with forward slashes, and the runtime's reason."""
+
+    directory: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class Discovered:
+    """What a runtime lists, and the skills it found but could not load."""
+
+    listing: Listing
+    refused: tuple[Refused, ...] = ()
 
 
 class ListingError(Exception):
@@ -250,8 +273,8 @@ def codex_answered(line: str) -> bool:
     return message is not None and message.get("id") == CODEX_LIST_ID
 
 
-def parse_codex(lines: list[str]) -> Listing:
-    """The skills in the app server's answer to `skills/list`, whose paths are SKILL.md files."""
+def _codex_groups(lines: list[str]) -> list[dict]:
+    """The groups of the app server's answer to `skills/list`, one per working directory asked about."""
     answers = [message for line in lines if (message := _codex_message(line)) and message.get("id") == CODEX_LIST_ID]
     if not answers:
         raise ListingError("it did not answer the skills/list request")
@@ -264,13 +287,58 @@ def parse_codex(lines: list[str]) -> Listing:
     data = result.get("data") if isinstance(result, dict) else None
     if not isinstance(data, list):
         raise ListingError("its skills/list answer has no data")
+    return [group for group in data if isinstance(group, dict)]
+
+
+def _entries(group: dict, field: str) -> list[dict]:
+    return [entry for entry in group.get(field) or [] if isinstance(entry, dict) and isinstance(entry.get("path"), str)]
+
+
+def parse_codex(lines: list[str]) -> Listing:
+    """The skills in the app server's answer to `skills/list`, whose paths are SKILL.md files."""
     found: Listing = {}
-    for group in data:
-        for entry in (group.get("skills") or []) if isinstance(group, dict) else []:
-            if isinstance(entry, dict) and isinstance(entry.get("name"), str) and isinstance(entry.get("path"), str):
+    for group in _codex_groups(lines):
+        for entry in _entries(group, "skills"):
+            if isinstance(entry.get("name"), str):
                 directory = _directory(str(Path(entry["path"]).parent))
                 found.setdefault(entry["name"], []).append(Listed(directory, entry.get("enabled") is True))
     return found
+
+
+def parse_codex_refusals(lines: list[str]) -> tuple[Refused, ...]:
+    """The skill files the app server's answer to `skills/list` says Codex could not load, with its reasons."""
+    return tuple(
+        Refused(_directory(str(Path(entry["path"]).parent)), str(entry.get("message") or "no reason given"))
+        for group in _codex_groups(lines)
+        for entry in _entries(group, "errors")
+    )
+
+
+def parse_codex_catalog(lines: list[str]) -> Listing:
+    """The skills `codex debug prompt-input` offers the model, by the directories of their SKILL.md files.
+
+    Its output is a JSON list of the messages Codex would send. The skills message names each root as
+    "- `r0` = `<directory>`" and each skill as "- <name>: <description> (file: r0/<name>/SKILL.md)".
+    """
+    try:
+        messages = json.loads("\n".join(lines))
+    except json.JSONDecodeError as exc:
+        raise ListingError(f"its prompt input is not JSON: {exc}") from None
+    found: Listing = {}
+    for text in _strings(messages):
+        roots = dict(CODEX_CATALOG_ROOT.findall(text))
+        for name, file in CODEX_CATALOG_SKILL.findall(text):
+            alias, _, rest = file.partition("/")
+            path = f"{roots[alias]}/{rest}" if alias in roots else file
+            found.setdefault(name, []).append(Listed(_directory(str(Path(path).parent)), True))
+    return found
+
+
+def _strings(node: object) -> list[str]:
+    if isinstance(node, str):
+        return [node]
+    values = node.values() if isinstance(node, dict) else node if isinstance(node, list) else []
+    return [text for value in values for text in _strings(value)]
 
 
 def list_skills(
@@ -282,13 +350,38 @@ def list_skills(
     talk: Converse | None = None,
 ) -> Listing:
     """The skills `runtime` finds when started in `cwd`; raise ListingError when it cannot say."""
+    return discover(runtime, executable, cwd, environment, timeout, talk).listing
+
+
+def discover(
+    runtime: str,
+    executable: str,
+    cwd: Path,
+    environment: Mapping[str, str],
+    timeout: float = DEFAULT_TIMEOUT,
+    talk: Converse | None = None,
+) -> Discovered:
+    """The skills `runtime` finds when started in `cwd`, with those it could not load where it says so (Codex);
+    raise ListingError when it cannot say."""
     talk = talk or converse
     if runtime == "codex":
-        return parse_codex(
-            talk([executable, "app-server"], cwd, environment, codex_requests(cwd), codex_answered, timeout)
-        )
+        lines = talk([executable, "app-server"], cwd, environment, codex_requests(cwd), codex_answered, timeout)
+        return Discovered(parse_codex(lines), parse_codex_refusals(lines))
     if runtime == "copilot":
-        return parse_copilot(
-            "\n".join(talk([executable, "skill", "list", "--json"], cwd, environment, [], None, timeout))
+        return Discovered(
+            parse_copilot("\n".join(talk([executable, "skill", "list", "--json"], cwd, environment, [], None, timeout)))
         )
     raise ValueError(f"no skill listing for {runtime}")
+
+
+def codex_catalog(
+    executable: str,
+    cwd: Path,
+    environment: Mapping[str, str],
+    timeout: float = DEFAULT_TIMEOUT,
+    talk: Converse | None = None,
+) -> Listing:
+    """The skills Codex offers the model when started in `cwd`, from `codex debug prompt-input`, which starts no
+    model; raise ListingError when it cannot say."""
+    talk = talk or converse
+    return parse_codex_catalog(talk([executable, *CODEX_CATALOG], cwd, environment, [], None, timeout))

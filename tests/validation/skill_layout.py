@@ -152,10 +152,19 @@ def metadata_format_problems(root: Path) -> list[str]:
 INVOKED_SKILL = re.compile(r"`([a-z0-9-]+)[` ]")
 
 
+def hooked_agents(root: Path) -> set[str]:
+    """The agents under agents/ whose definition declares hooks, such as the code-review reviewer's guard."""
+    import frontmatter
+
+    return {path.stem for path in (root / "agents").glob("*.md") if "hooks" in frontmatter.read(path)}
+
+
 def derived_needs(root: Path, name: str, seen: frozenset[str] = frozenset()) -> set[str]:
     """The runtime capabilities a skill's frontmatter shows it needs, with those of each skill it invokes.
 
-    An invoked skill is a backticked skill name on a SKILL.md line that says "invoke", the rule
+    A skill that grants Agent and names, in backticks, an agent whose definition declares hooks starts that agent
+    under them, and one whose deploy-meta declares a network tool, required or optional, needs network access. An
+    invoked skill is a backticked skill name on a SKILL.md line that says "invoke", the rule
     tests/ai-config/test_cross_skill_contracts.py applies; its limits reach the step that invokes it.
     """
     import frontmatter
@@ -166,13 +175,20 @@ def derived_needs(root: Path, name: str, seen: frozenset[str] = frozenset()) -> 
     if name not in skills:
         return set()
     skill_md = skills[name] / "SKILL.md"
+    text = skill_md.read_text(encoding="utf-8-sig")
     document = frontmatter.read(skill_md)
     granted = document.value("allowed-tools") or []
     user_only = (document.string("disable-model-invocation") or "").casefold() == "true"
-    needs = runtime_support.frontmatter_needs(granted if isinstance(granted, list) else [granted], user_only)
+    starts_hooked = any(f"`{agent}`" in text for agent in hooked_agents(root))
+    metadata = root / "deploy-meta" / f"{name}.json"
+    declared = json.loads(metadata.read_text(encoding="utf-8")) if metadata.is_file() else {}
+    tools = frozenset([*declared.get("tools", []), *declared.get("optional_tools", [])])
+    needs = runtime_support.frontmatter_needs(
+        granted if isinstance(granted, list) else [granted], user_only, starts_hooked, tools
+    )
     invoked = {
         match
-        for line in skill_md.read_text(encoding="utf-8-sig").splitlines()
+        for line in text.splitlines()
         if "invoke" in line
         for match in INVOKED_SKILL.findall(line)
         if match != name and match not in seen and match in skills

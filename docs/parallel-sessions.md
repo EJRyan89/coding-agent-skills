@@ -153,8 +153,9 @@ a `python` that still resolves to the Microsoft Store alias cannot fail the hook
 pointed at another repository's setting or outranked: each reads only the repository's own file, with
 `git config --local`, which passes over the command-line configuration `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT`
 carry; the hook command unsets `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, and `GIT_CONFIG` for its call, each in
-any case, since Windows reads an environment name in any case; and `tools/worktrees.py` runs its own git calls
-without any of git's repository-selecting variables, the set skill-core's `bounded_process.py` names.
+any case, since Windows reads an environment name in any case; and `tools/worktrees.py` runs its own git calls,
+and the `pwsh` that reads a PowerShell command, without any of git's repository-selecting variables, the set
+skill-core's `bounded_process.py` names, through its `run_bounded`, which ends every process `pwsh` starts with it.
 `tests/tools/test_worktrees.py` runs the tracked command both ways.
 
 With the guard enabled:

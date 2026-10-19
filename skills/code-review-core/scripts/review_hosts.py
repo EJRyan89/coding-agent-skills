@@ -270,7 +270,9 @@ def isolated_copilot_environment(
 ) -> tuple[Path, dict[str, str]]:
     """Make the isolation root's home, Copilot home, and workspace, and return the workspace and Copilot CLI's
     environment: `base_environment`, or this process's, without git's repository-selecting variables, so neither
-    Copilot nor a git it runs reads the repository a shell's `GIT_DIR` names, with both homes in the isolation root."""
+    Copilot nor a git it runs reads the repository a shell's `GIT_DIR` names, with both homes in the isolation root
+    and Copilot's auto-update off, so the Copilot CLI whose version the host checks is the one that reviews, not a
+    newer package it has downloaded."""
     if not isolation_root.is_absolute():
         raise RuntimeContractError("Copilot isolation root must be absolute")
     if isolation_root.exists() and not isolation_root.is_dir():
@@ -286,6 +288,7 @@ def isolated_copilot_environment(
     environment["HOME"] = str(home)
     environment["USERPROFILE"] = str(home)
     environment["COPILOT_HOME"] = str(copilot_home)
+    environment["COPILOT_AUTO_UPDATE"] = "false"
     return workspace, environment
 
 

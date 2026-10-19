@@ -4,11 +4,13 @@ suites with a stub generator and reach, since mutmut and coverage.py are install
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -134,6 +136,56 @@ class ReachFixtures(unittest.TestCase):
             {"tools/calc.py": {1, 2, 5}, "deployer/a.py": {3}, "tools/unrun.py": set()},
             {module: set(found) for module, found in lines.items()},
         )
+
+
+class CoverageReachFixtures(unittest.TestCase):
+    """The reach of a suite through a stub coverage.py in the tree, which `python -m coverage` finds first there."""
+
+    STUB = (
+        "import json, pathlib, sys, time\n"
+        "step = sys.argv[1]\n"
+        "action = json.loads(pathlib.Path('stub-actions.json').read_text()).get(step, 'ok')\n"
+        "if action == 'sleep':\n"
+        "    time.sleep(60)\n"
+        "if action.startswith('fail '):\n"
+        "    _, code, message = action.split(' ', 2)\n"
+        "    print(message, file=sys.stderr)\n"
+        "    sys.exit(int(code))\n"
+        "if step == 'json' and action == 'ok':\n"
+        "    pathlib.Path(sys.argv[sys.argv.index('-o') + 1]).write_text(json.dumps({'files': {}}))\n"
+    )
+
+    def reach(self, actions: dict[str, str]) -> Reach | str:
+        with tempfile.TemporaryDirectory() as temporary:
+            tree = Path(temporary) / "tree with spaces"
+            tree.mkdir()
+            (tree / "coverage.py").write_text(self.STUB, encoding="utf-8")
+            (tree / "stub-actions.json").write_text(json.dumps(actions), encoding="utf-8")
+            with mock.patch.object(mutation_gate, "MINIMUM_SUITE_SECONDS", 2.0):
+                return mutation_gate.coverage_reach(tree, "tests/test_calc.py", ["tools/calc.py"], 60.0)
+
+    def test_a_suite_whose_coverage_data_is_combined_and_reported_is_measured(self) -> None:
+        result = self.reach({})
+        if not isinstance(result, Reach):
+            self.fail(f"the reach was not measured: {result}")
+        self.assertEqual({"tools/calc.py": frozenset()}, dict(result.lines))
+
+    def test_a_failed_or_timed_out_coverage_step_names_the_step_and_its_output(self) -> None:
+        for actions, expected in (
+            (
+                {"combine": "fail 3 Can't combine: the data file is damaged"},
+                "failed in `coverage combine` with exit code 3: `Can't combine: the data file is damaged`",
+            ),
+            ({"json": "fail 1 No data to report."}, "failed in `coverage json` with exit code 1: `No data to report.`"),
+            ({"combine": "sleep"}, "timed out in `coverage combine`"),
+            ({"json": "sleep"}, "timed out in `coverage json`"),
+            ({"json": "write nothing"}, "failed in `coverage json`, which wrote no report"),
+        ):
+            with self.subTest(actions=actions):
+                self.assertEqual(expected, self.reach(actions))
+
+    def test_a_suite_failed_unmutated_is_still_reported_by_its_exit_code(self) -> None:
+        self.assertEqual("failed unmutated with exit code 4", self.reach({"run": "fail 4 a test failed"}))
 
 
 class TryMutantFixtures(unittest.TestCase):

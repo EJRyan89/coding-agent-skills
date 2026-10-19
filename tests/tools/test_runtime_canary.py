@@ -99,8 +99,9 @@ class FakeRuntimes:
         self.listings: dict[str, list[tuple[str, str, bool]]] = {}
         self.actions: dict[str, Callable[[list[str], Path, dict[str, str]], Completed]] = {}
         self.calls: list[tuple[str, list[str], Path, Mapping[str, str]]] = []
-        # Each runtime asked for its version, which the fake answers apart from its runs.
+        # Each runtime asked for its version, which the fake answers apart from its runs, and the environment it got.
         self.versions: list[str] = []
+        self.version_environments: list[Mapping[str, str]] = []
 
     def talk(
         self,
@@ -124,6 +125,7 @@ class FakeRuntimes:
         runtime = Path(arguments[0]).name
         if arguments[1:] == ["--version"]:
             self.versions.append(runtime)
+            self.version_environments.append(environment)
             return Completed(0, f"{VERSIONS[Path(runtime).stem]}\n", "")
         self.calls.append(("run", arguments, cwd, environment))
         action = self.actions.get(runtime)
@@ -1078,6 +1080,8 @@ class RunTests(RuntimeCanaryTestCase):
                 "--sandbox",
                 "workspace-write",
                 "-c",
+                "approval_policy=never",
+                "-c",
                 "windows.sandbox=elevated",
                 "--json",
                 "-C",
@@ -1109,7 +1113,7 @@ class RunTests(RuntimeCanaryTestCase):
     # Codex is given a Windows sandbox mode only on Windows; the case holds on every platform as Windows runs it.
     @mock.patch.object(runtime_canary, "CODEX_HAS_WINDOWS_SANDBOX", True)
     def test_codex_is_given_the_windows_sandbox_mode_its_ignored_configuration_would_set(self) -> None:
-        for sandbox in ("elevated", "unelevated"):
+        for sandbox in ("mxc", "elevated", "unelevated"):
             with self.subTest(sandbox=sandbox):
                 runner = FakeRuntimes()
                 runner.actions["codex"] = lambda *_: Completed(0, "", CODEX_REJECTION)
@@ -1126,7 +1130,8 @@ class RunTests(RuntimeCanaryTestCase):
                     for kind, arguments, _, _ in runner.calls
                     if kind == "run" and Path(arguments[0]).name == "codex"
                 )
-                self.assertEqual(["-c", f"windows.sandbox={sandbox}"], codex[codex.index("-c") : codex.index("-c") + 2])
+                setting = codex.index(f"windows.sandbox={sandbox}")
+                self.assertEqual("-c", codex[setting - 1])
                 self.assertIn(
                     f"Codex ran with windows.sandbox={sandbox}, so",
                     next(line for line in lines if line.startswith("RUNTIME codex ")),
@@ -1140,11 +1145,18 @@ class RunTests(RuntimeCanaryTestCase):
         self.assertEqual([], runtime_canary.supplied("codex", "elevated"))
         self.assertEqual("", runtime_canary.blocked_cause("codex", "elevated"))
         codex = runtime_canary.run_command("codex", "codex", FIXTURE, self.home, "elevated")
-        self.assertNotIn("-c", codex)
+        # The approval policy is set on every platform, as a non-interactive run should.
+        self.assertEqual(
+            ["approval_policy=never"], [codex[index + 1] for index, word in enumerate(codex) if word == "-c"]
+        )
         self.assertFalse([word for word in codex if "windows.sandbox" in word])
 
     def test_the_codex_sandbox_option_defaults_to_elevated_and_takes_only_known_modes(self) -> None:
-        for arguments, expected in (([], "elevated"), (["--codex-sandbox", "unelevated"], "unelevated")):
+        for arguments, expected in (
+            ([], "elevated"),
+            (["--codex-sandbox", "unelevated"], "unelevated"),
+            (["--codex-sandbox", "mxc"], "mxc"),
+        ):
             with (
                 self.subTest(arguments=arguments),
                 mock.patch.object(runtime_canary, "create_home", return_value=self.home),
@@ -1165,6 +1177,8 @@ class RunTests(RuntimeCanaryTestCase):
             runtime_canary.INSTRUCTION,
             *runtime_canary.supplied("codex", "elevated"),
             *runtime_canary.supplied("codex", "unelevated"),
+            *runtime_canary.supplied("codex", "mxc"),
+            runtime_canary.CODEX_APPROVAL_POLICY,
         ):
             self.assertFalse(set('"%&<>^|!()\r\n') & set(text), text)
         self.assertIn("--help", runtime_canary.INSTRUCTION)
@@ -1275,6 +1289,22 @@ class BashTests(RuntimeCanaryTestCase):
                 "x",
                 env={**environment, runtime_canary.SCRIPT_LOG: str(self.home / ".runtime-canary" / "scripts")},
             ),
+        )
+
+
+class CopilotVersionTests(RuntimeCanaryTestCase):
+    def test_every_copilot_start_turns_auto_update_off_so_the_recorded_version_is_the_one_that_ran(self) -> None:
+        runner = FakeRuntimes()
+        self.canary(runner, runtimes=("copilot",), environment={**os.environ, "COPILOT_AUTO_UPDATE": "true"})
+        starts = [kind for kind, arguments, _, _ in runner.calls if Path(arguments[0]).name == "copilot"]
+        self.assertEqual(["listing", "run"], starts)
+        self.assertEqual(["copilot"], [Path(runtime).stem for runtime in runner.versions])
+        self.assertEqual(
+            ["false", "false", "false"],
+            [
+                environment.get("COPILOT_AUTO_UPDATE")
+                for environment in [*runner.version_environments, *(call[3] for call in runner.calls)]
+            ],
         )
 
 

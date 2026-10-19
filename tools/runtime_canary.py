@@ -2,7 +2,7 @@
 
 Usage:
   python tools/runtime_canary.py [SKILL ...] [--runtime NAME ...] [--discovery-only] [--timeout SECONDS]
-                                 [--codex-sandbox elevated|unelevated] [--keep-home]
+                                 [--codex-sandbox mxc|elevated|unelevated] [--keep-home]
   python tools/runtime_canary.py --changed-since [REF]
   python tools/runtime_canary.py --remove-home DIR
 
@@ -63,8 +63,9 @@ The isolation is of configuration, not of credentials: each runtime keeps its re
 its sign-in, and the canary switches off what each runtime lets it: Claude Code's user settings, skills, and MCP
 servers; Codex's config.toml and rules; Copilot's custom instructions and built-in MCP servers. KEPT names what
 still loads. Codex on Windows refuses every command without a Windows sandbox mode, which it would otherwise read
-from config.toml, so the canary supplies that one value itself (--codex-sandbox, default elevated) and prints it
-as SUPPLIED. Every prompt carries RUNTIME_CANARY_MARKER, so a session the runtime saves can be found later.
+from config.toml, so the canary supplies that one value itself (--codex-sandbox mxc, elevated, or unelevated; default
+elevated) and prints it as SUPPLIED. It also sets Codex's approval policy to never, as a non-interactive run should.
+Every prompt carries RUNTIME_CANARY_MARKER, so a session the runtime saves can be found later.
 
 The canary judges nothing from a transcript. The fixture's script writes a marker from its own location, carrying
 the identifier the canary writes into the home before each run, a sitecustomize.py on PYTHONPATH records every
@@ -157,6 +158,9 @@ RUN_ID = "run-id"
 DEFAULT_TIMEOUT = 600
 # The limit on the `--version` call that reads each runtime's version for the record.
 VERSION_TIMEOUT = 60
+# Set for every runtime the canary starts; only Copilot CLI reads it. Copilot otherwise runs the newest package it has
+# downloaded rather than the installed one, so the version the record names could differ from the one the runs used.
+PINNED_VERSION = {"COPILOT_AUTO_UPDATE": "false"}
 # The line kinds the record holds, besides each runtime's VERSION: what a pull request's Validation section needs to
 # show what each runtime found and ran. HOME, DEPLOYED, and TRANSCRIPT name only this machine's throwaway files.
 RECORDED = (
@@ -197,9 +201,13 @@ INSTRUCTION = (
 )
 # Without a [windows] sandbox value, which --ignore-user-config leaves out, Codex on Windows runs read-only even
 # under --sandbox workspace-write and refuses every command. A -c override still applies beside that flag. The
-# value is left bare, which Codex reads as a string, so cmd.exe never sees a quote. See docs/codex-support.md.
-CODEX_SANDBOXES = ("elevated", "unelevated")
+# value is left bare, which Codex reads as a string, so cmd.exe never sees a quote. mxc is the implementation OpenAI
+# recommends where Windows offers it, elevated its fallback. See docs/codex-support.md.
+CODEX_SANDBOXES = ("mxc", "elevated", "unelevated")
 DEFAULT_CODEX_SANDBOX = "elevated"
+# codex exec asks for no approval, but the canary says so itself, beside the sandbox, as OpenAI asks of a
+# non-interactive run, so a changed default cannot make a run wait for an answer or skip the sandbox.
+CODEX_APPROVAL_POLICY = "approval_policy=never"
 CODEX_SUPPORT = "docs/codex-support.md#windows-sandbox-mode"
 # Whether Codex here has a Windows sandbox mode to be given: on Windows only.
 CODEX_HAS_WINDOWS_SANDBOX = platform_support.WINDOWS
@@ -511,9 +519,9 @@ def unchecked(runtime: str, lines: Sequence[str], discovery_only: bool) -> str:
 
 
 def environment(base: Mapping[str, str], script_log: Path, home: Path) -> dict[str, str]:
-    """The runtime's own environment, sign-in included, plus the Python and Bash recorders, without git's
-    repository-selecting variables, so the runtime and the skill it runs read the canary home, not the repository a
-    shell's `GIT_DIR` names."""
+    """The runtime's own environment, sign-in included, plus the Python and Bash recorders and PINNED_VERSION, without
+    git's repository-selecting variables, so the runtime and the skill it runs read the canary home, not the
+    repository a shell's `GIT_DIR` names."""
     recorder = home / STATE / "recorder"
     existing = base.get("PYTHONPATH")
     return {
@@ -521,6 +529,7 @@ def environment(base: Mapping[str, str], script_log: Path, home: Path) -> dict[s
         "PYTHONPATH": f"{recorder}{os.pathsep}{existing}" if existing else str(recorder),
         "BASH_ENV": forward(recorder / "bash_env.sh"),
         SCRIPT_LOG: str(script_log),
+        **PINNED_VERSION,
     }
 
 
@@ -583,6 +592,8 @@ def run_command(
             "--ephemeral",
             "--sandbox",
             "workspace-write",
+            "-c",
+            CODEX_APPROVAL_POLICY,
             *overrides,
             "--json",
             "-C",
@@ -1010,7 +1021,8 @@ def checked(
 
 def runtime_version(executable: str, runner: Runner, base: Mapping[str, str], home: Path) -> str:
     """The version the runtime's `--version` prints, read as `deploy.py check` reads it, or `unknown`."""
-    completed = runner([executable, "--version"], home, without_repository_variables(base), VERSION_TIMEOUT)
+    environment = {**without_repository_variables(base), **PINNED_VERSION}
+    completed = runner([executable, "--version"], home, environment, VERSION_TIMEOUT)
     version = parse_version(completed.stdout) if completed.returncode == 0 and not completed.error else None
     return format_version(version) if version else "unknown"
 

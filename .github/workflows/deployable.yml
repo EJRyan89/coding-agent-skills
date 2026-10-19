@@ -55,6 +55,8 @@ jobs:
       CLAUDE_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.claude-version || '2.1.302' }}
       CODEX_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.codex-version || '0.163.0' }}
       COPILOT_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.copilot-version || '1.0.98' }}
+      # Copilot CLI otherwise runs the newest package it has downloaded, not the one installed and checked here.
+      COPILOT_AUTO_UPDATE: 'false'
     defaults:
       run:
         shell: pwsh
@@ -132,8 +134,9 @@ jobs:
 
       # Codex CLI on Windows needs two machine settings before it can run a skill's scripts (docs/codex-support.md).
       # Neither changes what `verify` sees, because discovery runs no script. This step writes the sandbox setting, so
-      # the runner is set up the way a user's machine must be, and records where the Python app execution aliases
-      # stand, since no supported command turns them off.
+      # the runner is configured as a user's machine must be, though not provisioned: the elevated sandbox's
+      # administrator-approved setup never runs here, since nothing here runs a command in the sandbox. It also records
+      # where the Python app execution aliases stand, since no supported command turns them off.
       - name: Make the Codex sandbox setting and record the Python aliases
         run: |
           $directory = Join-Path $env:USERPROFILE '.codex'
@@ -268,6 +271,8 @@ jobs:
       CLAUDE_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.claude-version || '2.1.302' }}
       CODEX_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.codex-version || '0.163.0' }}
       COPILOT_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.copilot-version || '1.0.98' }}
+      # Copilot CLI otherwise runs the newest package it has downloaded, not the one installed and checked here.
+      COPILOT_AUTO_UPDATE: 'false'
     defaults:
       run:
         shell: bash

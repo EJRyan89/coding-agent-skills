@@ -172,6 +172,35 @@ class WorktreesTestCase(unittest.TestCase):
         return self.decision(event, environment)
 
 
+class PowerShellReaderStartTests(unittest.TestCase):
+    """pwsh starts as every process a repository tool starts does: through skill-core's run_bounded, without git's
+    repository-selecting variables, in a process tree, and with its output bounded."""
+
+    def test_pwsh_starts_bounded_and_without_the_hooks_repository_variables(self) -> None:
+        environment = isolated_environment() | {
+            "GIT_DIR": str(Path("elsewhere") / ".git"),
+            "GIT_WORK_TREE": "elsewhere",
+            "GIT_INDEX_FILE": "elsewhere-index",
+        }
+        reading = worktrees.Reading(environment, text="git commit -m x")
+        with (
+            mock.patch.object(subprocess, "Popen", wraps=subprocess.Popen) as start,
+            mock.patch.object(worktrees, "run_bounded", wraps=worktrees.run_bounded) as bounded,
+        ):
+            events = worktrees.powershell_events("git commit -m x", reading, 0)
+        self.assertEqual([], reading.unread)
+        self.assertTrue(events, "pwsh read the command")
+        [started] = start.call_args_list
+        self.assertTrue(Path(started.args[0][0]).stem.lower().startswith("pwsh"))
+        handed = {name.upper() for name in started.kwargs["env"]}
+        self.assertFalse(handed & {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"}, handed)
+        self.assertEqual("elsewhere", environment["GIT_WORK_TREE"], "the hook's own environment is left as it was")
+        [call] = bounded.call_args_list
+        self.assertEqual(20, call.args[1])
+        self.assertIsNotNone(call.kwargs["tree"])
+        self.assertEqual(4 * 1024 * 1024, call.kwargs["output_limit"])
+
+
 class FixtureTemplateTests(unittest.TestCase):
     def test_a_copied_hub_matches_a_freshly_built_one_and_its_worktree_is_its_own(self) -> None:
         def shape(root: Path, environment: dict[str, str]) -> dict[str, str]:

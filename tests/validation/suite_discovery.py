@@ -15,7 +15,7 @@ import re
 import sys
 import tomllib
 import unittest
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import TypeGuard
 
@@ -58,11 +58,12 @@ CONFTEST = "conftest.py"
 TESTS_PER_SHARD = 6
 MAXIMUM_SHARDS = 8
 # The seconds a test takes run alone, recorded for a test that costs many times a typical one, by suite and then by
-# the test's name within the suite as pytest names it, `Class::test`; any other test counts as one. The suite gets
-# shards for its total, and conftest.py deals the heaviest test first onto the lightest shard, so a recorded test runs
-# on a shard of its own instead of lengthening a shared one, as long as the suite's other tests fit on its other
-# shards; recorded_shard_problems holds that, which can fail once a suite outgrows MAXIMUM_SHARDS. Measured on
-# 2026-10-08 on a 24-CPU Windows machine, each test run alone.
+# the test's name within the suite as pytest names it, `Class::test`, never a test `parametrize` expands, which pytest
+# collects only as its cases; any other test counts as one. The suite gets shards for its total, and conftest.py deals
+# the heaviest test first onto the lightest shard, so a recorded test runs on a shard of its own instead of lengthening
+# a shared one, as long as the suite's other tests fit on its other shards; recorded_shard_problems holds that, which
+# can fail once a suite outgrows MAXIMUM_SHARDS. Measured on 2026-10-08 on a 24-CPU Windows machine, each test run
+# alone.
 RECORDED_TEST_SECONDS: dict[str, dict[str, float]] = {
     "skills/code-review-core/scripts/test_adversarial_inputs.py": {
         # Writes and reads back a path at this machine's limit, which with long paths enabled is 32,507 units.
@@ -232,6 +233,52 @@ def _class_tests(tree: ast.Module) -> list[tuple[str, bool]]:
     return methods + functions
 
 
+def _marks_parametrize(expressions: Iterable[ast.expr]) -> bool:
+    """Whether a decorator list or a `pytestmark` value applies `parametrize`, which pytest expands into one test per
+    case, each named `test[id]`."""
+    return any(
+        (isinstance(node, ast.Attribute) and node.attr == "parametrize")
+        or (isinstance(node, ast.Name) and node.id == "parametrize")
+        for expression in expressions
+        for node in ast.walk(expression)
+    )
+
+
+def _pytestmarks(body: list[ast.stmt]) -> list[ast.expr]:
+    """The values a body assigns to `pytestmark`, which marks every test the body defines."""
+    return [
+        statement.value
+        for statement in module_statements(body)
+        if isinstance(statement, ast.Assign | ast.AnnAssign)
+        and statement.value is not None
+        and any(
+            isinstance(target, ast.Name) and target.id == "pytestmark"
+            for target in (statement.targets if isinstance(statement, ast.Assign) else [statement.target])
+        )
+    ]
+
+
+def parametrized_tests(tree: ast.Module) -> set[str]:
+    """Each test, named as _class_tests names it, that `parametrize` expands: by its own decorator, its class's, or a
+    `pytestmark` of its class or module. pytest collects it only as its cases, `test[id]`, never by the name alone."""
+    everything = _marks_parametrize(_pytestmarks(tree.body))
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            whole = everything or _marks_parametrize([*node.decorator_list, *_pytestmarks(node.body)])
+            found.update(
+                f"{node.name}::{item.name}"
+                for item in module_statements(node.body)
+                if _is_test(item) and (whole or _marks_parametrize(item.decorator_list))
+            )
+    found.update(
+        node.name
+        for node in module_statements(tree.body)
+        if _is_test(node) and (everything or _marks_parametrize(node.decorator_list))
+    )
+    return found
+
+
 def defined_tests(tree: ast.Module) -> list[str]:
     """Each test the module defines, as _class_tests names it, one in an if, try, or with block included: the one
     reader of a suite's tests, for its cost, its shards, the tests its recorded seconds name, and whether it has any.
@@ -243,7 +290,8 @@ def recorded_cost_problems(
     root: Path, recorded: Mapping[str, Mapping[str, float]] = RECORDED_TEST_SECONDS
 ) -> list[str]:
     """Report a recorded test cost that names no Python regression suite, a test the suite does not define, a test it
-    defines on some platforms only, which conftest.py's --test-seconds refuses where pytest does not collect it, or a
+    defines on some platforms only, which conftest.py's --test-seconds refuses where pytest does not collect it, a test
+    `parametrize` expands, which pytest collects only as its cases and so by no name the suite's source gives, or a
     cost no heavier than a typical test."""
     problems: list[str] = []
     for name, tests in recorded.items():
@@ -252,10 +300,12 @@ def recorded_cost_problems(
             problems.append(f"{name} records test costs but is not a regression suite")
             continue
         try:
-            found = _class_tests(parse_python(path))
+            tree = parse_python(path)
         except UnreadablePython as error:
             problems.append(f"{name} {error}")
             continue
+        found = _class_tests(tree)
+        parametrized = parametrized_tests(tree)
         defined = {test for test, _ in found}
         conditional = {test for test, held in found if held}
         for test, seconds in tests.items():
@@ -265,6 +315,12 @@ def recorded_cost_problems(
                 problems.append(
                     f"{name} records {test}, which a block of its suite holds, so pytest collects it on some "
                     "platforms only; record only a test every platform runs"
+                )
+            elif test in parametrized:
+                problems.append(
+                    f"{name} records {test}, which parametrize expands into one test per case, each collected as "
+                    f"{test}[<id>]; record only a test that is not parametrized, or make the costly case a test of "
+                    "its own"
                 )
             elif seconds <= 1:
                 problems.append(f"{name} records {test} at {seconds} seconds; record only tests that cost more than 1")
