@@ -10,12 +10,13 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import assert_never
 
 from . import fsops, hashing, journal, platform_support, render, source
 from .arguments import PROG, usage_error
 from .context import Context
 from .errors import DeployError, see_recovery
-from .kinds import ADAPTER_KIND, AGENT_KIND, BY_LABEL, DEPENDENCY_KINDS, KINDS, MODIFIED, SHARED, SKILL, ItemKind
+from .kinds import ADAPTER_KIND, AGENT_KIND, DEPENDENCY_KINDS, KINDS, MODIFIED, SHARED, SKILL, ItemKind
 from .names import require_safe_name, transient_name
 from .paths import Paths
 from .report import (
@@ -24,6 +25,7 @@ from .report import (
     DRY_RUN_ACTIONS,
     KEPT_WITH_SKILL,
     SKIPPED_WITH_SKILL,
+    Action,
     ReportLine,
     print_report,
 )
@@ -39,13 +41,6 @@ KINDS_ALLOWED = {
     "since two sources never own one agent; skill dependencies follow the recorded transitive graph",
 }
 
-# Actions that record the rendered copy as this source's, and actions that end this source's ownership of an item.
-INSTALLING = frozenset({"INSTALL", "UPDATE", "UNCHANGED", "ADOPT", "REPLACE"})
-# The installing actions that move the rendered copy into place. An unchanged item already holds it, so it is left as
-# it is: never renamed, so a directory a terminal or an editor holds open cannot fail the run, and never journaled,
-# since nothing of it needs rolling back, and the bytecode caches its scripts made stay.
-MOVING = INSTALLING - {"UNCHANGED"}
-RELEASING = frozenset({"REMOVE", "DROP"})
 DIFF_LINES_REPORTED = 40
 
 
@@ -59,9 +54,9 @@ class PlanEntry:
     """
 
     name: str
-    kind: str
+    kind: ItemKind
     state: str
-    action: str
+    action: Action
     reason: str = ""
     existing: str = ""  # the current copy's hash, when the destination has the expected type
     staged: str = ""  # the rendered copy's hash, for an item this run selects
@@ -71,7 +66,7 @@ class PlanEntry:
         dry = title == DRY_RUN
         label = ACTION_LABELS[self.action][0 if dry else 1]
         return ReportLine(
-            self.name, label, self.reason, self.diff if dry else self.diff[:DIFF_LINES_REPORTED], self.kind
+            self.name, label, self.reason, self.diff if dry else self.diff[:DIFF_LINES_REPORTED], self.kind.label
         )
 
 
@@ -110,15 +105,13 @@ def _plan_selected(
     """Plan an item this run installs, with --force and --force-item applied."""
     destination = journal.root_directory(context.paths, kind.root) / name
     if not os.path.lexists(destination):
-        return PlanEntry(name, kind.label, "absent", "INSTALL", staged=staged_hash)
+        return PlanEntry(name, kind, "absent", "INSTALL", staged=staged_hash)
     if not kind.has_expected_type(destination):
-        return PlanEntry(
-            name, kind.label, "wrong type", "SKIP", f"destination is not {kind.type_name}", staged=staged_hash
-        )
+        return PlanEntry(name, kind, "wrong type", "SKIP", f"destination is not {kind.type_name}", staged=staged_hash)
     existing = hashing.hash_path(destination)
 
-    def found(state: str, action: str, reason: str = "", diff: list[str] | None = None) -> PlanEntry:
-        return PlanEntry(name, kind.label, state, action, reason, existing, staged_hash, tuple(diff or ()))
+    def found(state: str, action: Action, reason: str = "", diff: list[str] | None = None) -> PlanEntry:
+        return PlanEntry(name, kind, state, action, reason, existing, staged_hash, tuple(diff or ()))
 
     forced = context.forced(kind, name)
     if owned_hash is not None:
@@ -156,16 +149,16 @@ def _plan_unselected(context: Context, kind: ItemKind, name: str, owned_hash: st
     for _, existing, owner in _claims(context, kind, name):
         if owner != context.source_id:
             reason = f"the same file as '{existing}', owned by source '{owner}'"
-            return PlanEntry(name, kind.label, "owned by another source", "DROP", reason)
+            return PlanEntry(name, kind, "owned by another source", "DROP", reason)
     destination = journal.root_directory(context.paths, kind.root) / name
     if kind.has_expected_type(destination):
         existing = hashing.hash_path(destination)
         if existing == owned_hash:
-            return PlanEntry(name, kind.label, "unmodified", "REMOVE", kind.removal_reason, existing)
-        return PlanEntry(name, kind.label, "modified", "PRESERVE", MODIFIED, existing)
+            return PlanEntry(name, kind, "unmodified", "REMOVE", kind.removal_reason, existing)
+        return PlanEntry(name, kind, "modified", "PRESERVE", MODIFIED, existing)
     if os.path.lexists(destination):
-        return PlanEntry(name, kind.label, "wrong type", "PRESERVE", f"destination is not {kind.type_name}")
-    return PlanEntry(name, kind.label, "absent", "DROP", "already absent")
+        return PlanEntry(name, kind, "wrong type", "PRESERVE", f"destination is not {kind.type_name}")
+    return PlanEntry(name, kind, "absent", "DROP", "already absent")
 
 
 def _plan_owned(context: Context, kind: ItemKind, name: str, owned_hash: str, staying: set[str]) -> PlanEntry:
@@ -245,7 +238,7 @@ def build(context: Context, wanted: Mapping[ItemKind, list[str]], staged: render
     return [
         *unselected_skills,
         *(
-            PlanEntry(name, kind.label, "still needed", "KEEP", f"needed by {reason}")
+            PlanEntry(name, kind, "still needed", "KEEP", f"needed by {reason}")
             for kind, items in retained.items()
             for name, reason in items.items()
         ),
@@ -522,19 +515,29 @@ def _replace(
 def carry_out(record: journal.Journal, paths: Paths, staging_dir: Path, entry: PlanEntry) -> None:
     """Make the one filesystem change the plan entry names; unchanged, skipped, preserved, kept, and dropped items
     need none."""
-    kind = BY_LABEL[entry.kind]
+    kind = entry.kind
     base = journal.root_directory(paths, kind.root)
-    if entry.action == "REMOVE":
-        record.backup(kind.root, entry.name, entry.existing, retain=False)
-        fsops.move(base / entry.name, base / transient_name(entry.name))
-    elif entry.action in MOVING:
-        _replace(
-            record,
-            kind.root,
-            base,
-            staging_dir / kind.staging / entry.name,
-            entry.name,
-            entry.staged,
-            entry.existing or None,
-            entry.action == "REPLACE",
-        )
+    match entry.action:
+        case "REMOVE":
+            record.backup(kind.root, entry.name, entry.existing, retain=False)
+            fsops.move(base / entry.name, base / transient_name(entry.name))
+        case "INSTALL" | "UPDATE" | "ADOPT" | "REPLACE":
+            _replace(
+                record,
+                kind.root,
+                base,
+                staging_dir / kind.staging / entry.name,
+                entry.name,
+                entry.staged,
+                entry.existing or None,
+                entry.action == "REPLACE",
+            )
+        case "UNCHANGED":
+            # An unchanged item already holds the rendered copy, so it is left as it is: never renamed, so a directory
+            # a terminal or an editor holds open cannot fail the run, and never journaled, since nothing of it needs
+            # rolling back, and the bytecode caches its scripts made stay.
+            pass
+        case "SKIP" | "PRESERVE" | "KEEP" | "DROP":
+            pass
+        case _:
+            assert_never(entry.action)

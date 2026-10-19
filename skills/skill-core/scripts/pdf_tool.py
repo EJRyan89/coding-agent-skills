@@ -16,11 +16,14 @@ import sys
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, assert_never
 
 from bounded_process import streaming
 
+# The vendors whose pdftotext the probe accepts.
+PdfProvider = Literal["Xpdf", "Poppler"]
 # Vendor evidence and the support-policy rationale are recorded in docs/design.md.
-MINIMUMS = {"Xpdf": (4, 6), "Poppler": (26, 10, 0)}
+MINIMUMS: dict[PdfProvider, tuple[int, ...]] = {"Xpdf": (4, 6), "Poppler": (26, 10, 0)}
 VERSION_ARGUMENTS = ("-v",)
 PROBE_SECONDS = 5.0
 MAX_PROBE_BYTES = 16 * 1024
@@ -28,10 +31,16 @@ BANNER = re.compile(r"pdftotext version ([0-9]{1,4}\.[0-9]{1,4}(?:\.[0-9]{1,4})?
 COPYRIGHT = re.compile(r"Copyright [0-9, -]+ (Glyph & Cog, LLC|The Poppler Developers)(?: - https?://\S+)?")
 
 
-def version_text(provider: str, version: tuple[int, ...]) -> str:
+def version_text(provider: PdfProvider, version: tuple[int, ...]) -> str:
     """A version as its vendor numbers it: Xpdf's minor and Poppler's month, since its year-numbered releases, in two
     digits, as in Xpdf 4.06 and Poppler 26.09.0; the comparison stays numeric."""
-    two_digit_minor = provider == "Xpdf" or (provider == "Poppler" and version[0] >= 20)
+    match provider:
+        case "Xpdf":
+            two_digit_minor = True
+        case "Poppler":
+            two_digit_minor = version[0] >= 20
+        case _:
+            assert_never(provider)
     parts = [str(part) for part in version]
     if two_digit_minor and len(version) > 1:
         parts[1] = f"{version[1]:02d}"
@@ -63,7 +72,7 @@ def install_text() -> str:
 
 @dataclass(frozen=True)
 class PdfIdentity:
-    provider: str
+    provider: PdfProvider
     version: tuple[int, ...]
 
     @property
@@ -102,7 +111,7 @@ def parse_banner(text: str, status: int) -> PdfIdentity:
     poppler = "The Poppler Developers" in vendors
     if poppler and banner.group(2):
         raise PdfToolRefused("provider/version is ambiguous")
-    provider = "Poppler" if poppler else "Xpdf"
+    provider: PdfProvider = "Poppler" if poppler else "Xpdf"
     version = tuple(map(int, banner.group(1).split(".")))
     if provider == "Poppler" and (len(version) != 3 or (version[0] >= 20 and not 1 <= version[1] <= 12)):
         raise PdfToolRefused("provider/version is malformed")

@@ -50,4 +50,3 @@ class PipelineLayoutTests(unittest.TestCase):
             ],
             [(kind.key, kind.label, kind.noun, kind.title, kind.root, kind.directory) for kind in kinds.KINDS],
         )
-        self.assertEqual({kind.label: kind for kind in kinds.KINDS}, kinds.BY_LABEL)

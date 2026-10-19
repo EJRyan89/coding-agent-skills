@@ -23,13 +23,40 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import IO, Any, NamedTuple, Protocol, TypeVar
+from typing import IO, Any, Literal, NamedTuple, Protocol, TypeVar
 
 from bounded_process import Finished, run_bounded
 from executable_locator import located_command
 from flat_text import flat_text
 
 T = TypeVar("T")
+
+# Each class of failure a GitHubError names. The client's own: gh missing (`prerequisite`), unable to start
+# (`execution`), or out of time (`timeout`); a class the markers below name; a response it could not parse
+# (`malformed`); a read single sign-on cut short (`sso_partial`); a change whose answer was lost (`unknown_outcome`);
+# and `api` for the rest. Then the classes callers raise for an answer they reject: a path that is not one file
+# (`not_file`), an argument of the wrong kind (`input`), a pull request a review cannot take (`ineligible`), results
+# GitHub left incomplete (`incomplete`), and a run a tool refuses to read (`refused`).
+GitHubErrorKind = Literal[
+    "api",
+    "prerequisite",
+    "execution",
+    "timeout",
+    "rate_limit",
+    "authentication",
+    "search_cap",
+    "forbidden",
+    "not_found",
+    "network",
+    "malformed",
+    "sso_partial",
+    "unknown_outcome",
+    "not_file",
+    "input",
+    "ineligible",
+    "incomplete",
+    "refused",
+]
 
 # Checked in this order; the first class whose marker the lowered stderr contains wins, and `api` is the rest.
 RATE_LIMIT_MARKERS = ("rate limit", "http 429")
@@ -48,6 +75,14 @@ NETWORK_MARKERS = (
     "tls handshake timeout",
     "network is unreachable",
 )
+FAILURE_MARKERS: tuple[tuple[GitHubErrorKind, tuple[str, ...]], ...] = (
+    ("rate_limit", RATE_LIMIT_MARKERS),
+    ("authentication", AUTHENTICATION_MARKERS),
+    ("search_cap", SEARCH_CAP_MARKERS),
+    ("forbidden", FORBIDDEN_MARKERS),
+    ("not_found", NOT_FOUND_MARKERS),
+    ("network", NETWORK_MARKERS),
+)
 # Statuses and stderr markers of a failure that may clear on its own within seconds: a gateway or service briefly
 # down, or a connection that broke after it was made. gh prints a status as `(HTTP 502)` or `HTTP 502:`. A DNS
 # failure (gh's `error connecting to`), a refused connection, and an unreachable network are left out: each means
@@ -64,7 +99,7 @@ TRANSIENT_MARKERS = (
     "server sent goaway",
 )
 # Only these classes can be transient: a rate limit has its own backoff, and every other class is GitHub's answer.
-TRANSIENT_KINDS = frozenset({"api", "network"})
+TRANSIENT_KINDS: frozenset[GitHubErrorKind] = frozenset({"api", "network"})
 # `gh <noun> <verb>` commands that only read, besides `gh search`; any other command counts as a change.
 READ_VERBS = frozenset({"view", "list", "status", "diff", "checks"})
 # The `gh api` options that take a value, so a value that looks like an option is never read as one. gh's output
@@ -93,8 +128,12 @@ READ_METHODS = frozenset({"GET", "HEAD"})
 # Any mention of `mutation` makes a GraphQL document a change; a field so named costs only its retries.
 GRAPHQL_MUTATION = re.compile(r"\bmutation\b")
 UNKNOWN_OUTCOME = "GitHub may have applied it, so check before repeating it"
-GRAPHQL_KINDS = {"RATE_LIMITED": "rate_limit", "NOT_FOUND": "not_found", "FORBIDDEN": "forbidden"}
-RETRYABLE_KINDS = frozenset({"rate_limit"})
+GRAPHQL_KINDS: dict[str, GitHubErrorKind] = {
+    "RATE_LIMITED": "rate_limit",
+    "NOT_FOUND": "not_found",
+    "FORBIDDEN": "forbidden",
+}
+RETRYABLE_KINDS: frozenset[GitHubErrorKind] = frozenset({"rate_limit"})
 DEFAULT_TIMEOUT_SECONDS = 300.0
 MISSING_CLI = "GitHub CLI executable 'gh' was not found; install GitHub CLI and authenticate first"
 
@@ -111,13 +150,13 @@ class GitHubError(RuntimeError):
         self,
         message: str,
         *,
-        kind: str = "api",
+        kind: GitHubErrorKind = "api",
         retryable: bool = False,
         returncode: int | None = None,
         transient: bool = False,
     ) -> None:
         super().__init__(message)
-        self.kind = kind
+        self.kind: GitHubErrorKind = kind
         self.retryable = retryable
         self.returncode = returncode  # gh's exit code, when gh ran and failed
         self.transient = transient
@@ -205,20 +244,15 @@ def replace_undecodable(text: str) -> tuple[str, int]:
     return _UNDECODABLE.subn("\ufffd", text)
 
 
-def classify_failure(stderr: str, status: int | None = None, headers: Mapping[str, str] | None = None) -> str:
+def classify_failure(
+    stderr: str, status: int | None = None, headers: Mapping[str, str] | None = None
+) -> GitHubErrorKind:
     """The class of a failed gh command, from its stderr and, for `gh api -i`, the response status and headers."""
     lowered = stderr.casefold()
     headers = headers or {}
     if status == 429 or (status == 403 and headers.get("x-ratelimit-remaining") == "0"):
         return "rate_limit"
-    for kind, markers in (
-        ("rate_limit", RATE_LIMIT_MARKERS),
-        ("authentication", AUTHENTICATION_MARKERS),
-        ("search_cap", SEARCH_CAP_MARKERS),
-        ("forbidden", FORBIDDEN_MARKERS),
-        ("not_found", NOT_FOUND_MARKERS),
-        ("network", NETWORK_MARKERS),
-    ):
+    for kind, markers in FAILURE_MARKERS:
         if any(marker in lowered for marker in markers):
             return kind
     return "api"
@@ -293,7 +327,7 @@ def graphql_failure(payload: Any) -> GitHubError | None:
     messages = "; ".join(
         str(error.get("message", error)) if isinstance(error, dict) else str(error) for error in errors
     )
-    kind = next((GRAPHQL_KINDS[name] for name in GRAPHQL_KINDS if name in types), "api")
+    kind: GitHubErrorKind = next((GRAPHQL_KINDS[name] for name in GRAPHQL_KINDS if name in types), "api")
     return GitHubError(
         f"GraphQL request failed ({', '.join(types) or 'unknown'}): {messages}",
         kind=kind,
@@ -359,7 +393,7 @@ class Backoff:
 
     def transient_wait(self, attempt: int) -> float:
         """The wait before transient retry `attempt`, counted from 0, doubling from `transient_base`."""
-        return self.transient_base * 2**attempt
+        return self.transient_base * 2.0**attempt
 
     def wait(self, attempt: int, headers: Mapping[str, str], now: float) -> float:
         """GitHub's Retry-After, else the quota's reset time when it is spent, else exponential from `base`.

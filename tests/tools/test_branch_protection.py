@@ -25,7 +25,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
-from github_client import CommandResult, GitHubClient, GitHubError
+from github_client import CommandResult, GitHubClient, GitHubError, GitHubErrorKind
 
 from tools import branch_protection
 
@@ -444,7 +444,9 @@ def test_real_issue_configuration_read_failures_keep_their_diagnostics_and_exit_
     ],
     ids=["prerequisite", "execution", "timeout"],
 )
-def test_client_execution_failures_are_not_mistaken_for_missing_configuration(kind: str, message: str) -> None:
+def test_client_execution_failures_are_not_mistaken_for_missing_configuration(
+    kind: GitHubErrorKind, message: str
+) -> None:
     assert (2, "", f"ERROR: gh api {ENDPOINTS['issue_config']} failed: {message}\n") == run_main(
         answers(), issue_error=GitHubError(message, kind=kind)
     )

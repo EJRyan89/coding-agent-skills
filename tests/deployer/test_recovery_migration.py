@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import get_args
 from unittest import mock
 
 from harness import (
@@ -2050,3 +2051,9 @@ class ManifestStateTests(RecoveryTestCase):
         self.assertNotIn("old/source", sources)
         self.assertEqual(["alpha"], sources["new/source"]["requested_skills"])
         self.assertNotIn("selected_skills", sources["new/source"])
+
+
+def test_each_journal_op_tags_one_entry_shape() -> None:
+    assert get_args(journal.Op) == ("backup", "install", "preserve")
+    shapes = (journal.BackupEntry, journal.InstallEntry, journal.PreserveEntry)
+    assert [get_args(shape.__annotations__["op"]) for shape in shapes] == [("backup",), ("install",), ("preserve",)]

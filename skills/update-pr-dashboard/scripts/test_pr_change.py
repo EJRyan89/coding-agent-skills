@@ -11,7 +11,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from github_client import CommandResult
+from github_client import CommandResult, GitHubErrorKind
 from pr_change import (
     CHANGED,
     COMPARE_FILE_LIMIT,
@@ -69,9 +69,16 @@ class FakeClient(GitHubClient):
 
 
 # Failures that say nothing about one pull request's commits, so they stop the run.
-RUN_LEVEL_KINDS = ("prerequisite", "execution", "authentication", "rate_limit", "network", "timeout")
+RUN_LEVEL_KINDS: tuple[GitHubErrorKind, ...] = (
+    "prerequisite",
+    "execution",
+    "authentication",
+    "rate_limit",
+    "network",
+    "timeout",
+)
 # Failures of one call that are not a missing commit, so its pull request's comparison fails.
-CALL_LEVEL_KINDS = ("forbidden", "sso_partial", "api", "malformed")
+CALL_LEVEL_KINDS: tuple[GitHubErrorKind, ...] = ("forbidden", "sso_partial", "api", "malformed")
 
 
 def detect(before: object, after: object, trees: Mapping[str, object] | None = None) -> str:

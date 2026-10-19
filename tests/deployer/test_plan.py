@@ -13,7 +13,7 @@ import unittest
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 from unittest import mock
 
 import pytest
@@ -702,3 +702,9 @@ class ContextStepTests(unittest.TestCase):
         context.manifest.save()
         with self.assertRaisesRegex(DeployError, "Migration source 'old/source' is not present in the manifest"):
             migrate.migrate(context, "old/source")
+
+
+def test_the_planned_actions_are_the_labelled_ones_in_report_order() -> None:
+    actions = ("SKIP", "PRESERVE", "REPLACE", "REMOVE", "UPDATE", "INSTALL", "ADOPT", "DROP", "KEEP", "UNCHANGED")
+    assert get_args(report.Action) == actions
+    assert tuple(report.ACTION_LABELS) == actions

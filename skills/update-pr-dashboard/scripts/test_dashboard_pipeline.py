@@ -23,7 +23,7 @@ sys.path.insert(0, str(sibling_scripts("code-review-core")))
 import dashboard_pipeline as tp
 import review_archive
 import test_review_fixture as review_fixture
-from github_client import CommandResult
+from github_client import CommandResult, GitHubErrorKind
 from review_archive import commit_record
 from review_config import load_config, write_config
 from review_flags import add_flag
@@ -486,12 +486,13 @@ class CollectTests(TrackerPipelineFixture):
         reviews = [{"state": "COMMENTED", "commit": {"oid": USER_REVIEWED}}]  # not a review's head, so compared
         node = pull_node(12, headRefOid=review_fixture.HEADS[3], reviews={"nodes": reviews})
         self.github.pages = {"example/one": [page([node])], "example/two": [page([])]}
-        for kind, expected in (
+        cases: tuple[tuple[GitHubErrorKind, list[str]], ...] = (
             ("api", ["REPOSITORY_FAILED example/one HTTP 502: Bad Gateway", "REPOSITORY example/two pulls=0"]),
             ("forbidden", ["REPOSITORY_FAILED example/one HTTP 502: Bad Gateway", "REPOSITORY example/two pulls=0"]),
             ("network", []),  # stops the collection at once
             ("timeout", []),
-        ):
+        )
+        for kind, expected in cases:
             with self.subTest(kind=kind):
                 self.github.ancestry_failure = GitHubError("HTTP 502: Bad Gateway", kind=kind)
                 code, out, err = self.run_main("collect", "--output", str(self.input))

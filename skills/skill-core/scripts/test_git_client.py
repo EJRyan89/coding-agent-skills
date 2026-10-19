@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 from unittest import mock
 
 import pytest
@@ -912,3 +912,7 @@ def test_the_subcommand_is_found_after_git_options(arguments: list[str]) -> None
     client, sleeper, _calls = retrying(GitResult(128, "", UNRESOLVED), GitResult(0, "", ""))
     assert client.run(arguments).returncode == 0
     assert sleeper.waits == [2.0]
+
+
+def test_a_git_error_names_one_of_the_classes_its_documentation_gives() -> None:
+    assert get_args(git_client.GitErrorKind) == ("git", "prerequisite", "execution", "timeout", "not_repository")

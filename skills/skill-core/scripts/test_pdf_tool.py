@@ -7,7 +7,7 @@ import sys
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 from unittest import mock
 
 import pytest
@@ -296,3 +296,8 @@ def test_old_versions_are_refused_using_the_identified_provider_not_a_generic_nu
 def test_unknown_ambiguous_malformed_and_failed_banners_are_refused(banner: str, status: int) -> None:
     with pytest.raises(pdf_tool.PdfToolRefused):
         pdf_tool.parse_banner(banner, status)
+
+
+def test_each_provider_the_probe_accepts_has_a_floor() -> None:
+    assert get_args(pdf_tool.PdfProvider) == ("Xpdf", "Poppler")
+    assert tuple(pdf_tool.MINIMUMS) == ("Xpdf", "Poppler")

@@ -13,7 +13,7 @@ import secrets
 import sys
 import time
 from pathlib import Path
-from typing import TextIO
+from typing import TextIO, assert_never
 
 from . import (
     config,
@@ -35,11 +35,11 @@ from . import selection as selection_module
 from .arguments import PROG, USAGE_ERROR, VERIFY_COMMAND_LINE, parse_command, usage_error
 from .context import Context, Options
 from .errors import Cancelled, DeployError, debug_requested, fail, print_error, print_traceback, see_recovery
-from .kinds import ADAPTER_KIND, AGENT_KIND, BY_LABEL, DEPENDENCY_KINDS, KINDS, SHARED, SKILL, KindKey
+from .kinds import ADAPTER_KIND, AGENT_KIND, DEPENDENCY_KINDS, KINDS, SHARED, SKILL, KindKey
 from .manifest import ItemEntry, source_entry
 from .names import transient_name
 from .paths import Paths, canary_home, claim_canary_home, validate_managed_roots
-from .plan import INSTALLING, RELEASING, PlanEntry
+from .plan import PlanEntry
 from .report import DEPLOY_ACTIONS, DEPLOYED
 
 KINDS_ALLOWED = {
@@ -96,18 +96,23 @@ def _commit_manifest(context: Context, entries: list[PlanEntry], run_id: str, co
     for name, owned_entry in recorded[SHARED.key].items():
         owned_entry["role"] = owned.shared_roles.get(name, "owner")
     for entry in entries:
-        kind = BY_LABEL[entry.kind]
-        if entry.action in RELEASING:
-            recorded[kind.key].pop(entry.name, None)
-        elif entry.action in INSTALLING:
-            details: ItemEntry = {"hash": entry.staged}
-            if kind is SKILL:
-                details[SKILL.dependency_key] = sorted(context.source.skills[entry.name].skill_deps)
-                details[SHARED.dependency_key] = sorted(context.source.skills[entry.name].shared_deps)
-                details[AGENT_KIND.dependency_key] = source.agent_closure(context.source, [entry.name])
-            elif kind is SHARED:
-                details["role"] = "owner"
-            recorded[kind.key][entry.name] = details
+        kind = entry.kind
+        match entry.action:
+            case "REMOVE" | "DROP":  # the action ends this source's ownership of the item
+                recorded[kind.key].pop(entry.name, None)
+            case "INSTALL" | "UPDATE" | "UNCHANGED" | "ADOPT" | "REPLACE":  # it records the rendered copy
+                details: ItemEntry = {"hash": entry.staged}
+                if kind is SKILL:
+                    details[SKILL.dependency_key] = sorted(context.source.skills[entry.name].skill_deps)
+                    details[SHARED.dependency_key] = sorted(context.source.skills[entry.name].shared_deps)
+                    details[AGENT_KIND.dependency_key] = source.agent_closure(context.source, [entry.name])
+                elif kind is SHARED:
+                    details["role"] = "owner"
+                recorded[kind.key][entry.name] = details
+            case "SKIP" | "PRESERVE" | "KEEP":  # the item keeps what the manifest recorded for it
+                pass
+            case _:
+                assert_never(entry.action)
     data.data["last_run_id"] = run_id
     # An entry written before selected_skills was dropped loses it here: nothing reads it.
     data.sources[context.source_id] = source_entry(

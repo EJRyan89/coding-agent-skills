@@ -15,7 +15,7 @@ from urllib.parse import quote
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import github_client
-from github_client import Clock, GitHubError, Runner, Sleeper, subprocess_runner
+from github_client import Clock, GitHubError, GitHubErrorKind, Runner, Sleeper, subprocess_runner
 from review_config import validate_repository_identity
 from review_state import utc_date
 from typed_fields import FieldError, FieldReader
@@ -29,7 +29,7 @@ NOT_FILE_ENTRIES = {"symlink": "symbolic link", "submodule": "submodule"}
 class GitHubFieldError(FieldError, GitHubError):
     """A GitHub response field of the wrong kind: a malformed response."""
 
-    kind_of_error = "malformed"
+    kind_of_error: GitHubErrorKind = "malformed"
 
     def __init__(self, path: str, expected: str, found: str) -> None:
         super().__init__(path, expected, found)
@@ -50,7 +50,7 @@ class NotOneFile(GitHubError):
 class GitHubInputError(GitHubFieldError):
     """An argument of the wrong kind, given to a read before anything is asked of GitHub."""
 
-    kind_of_error = "input"
+    kind_of_error: GitHubErrorKind = "input"
 
 
 READ = FieldReader(GitHubFieldError)

@@ -7,7 +7,16 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from pdf_tool import MINIMUMS, PdfIdentity, PdfToolRefused, Skipped, install_text, probe_pdftotext, select_pdftotext
+from pdf_tool import (
+    MINIMUMS,
+    PdfIdentity,
+    PdfProvider,
+    PdfToolRefused,
+    Skipped,
+    install_text,
+    probe_pdftotext,
+    select_pdftotext,
+)
 
 from . import platform_support
 
@@ -30,7 +39,7 @@ class Tool:
     # The PDF parser floors, by provider, for a tool pdf_tool probes; it owns the probe, its arguments, and the exit
     # statuses each provider is allowed, so such a tool sets nothing else about its version. It chooses among every
     # program the locator finds by the tool's name, as the extraction does, so `locate` only says one is installed.
-    provider_minimum: dict[str, tuple[int, ...]] | None = None
+    provider_minimum: dict[PdfProvider, tuple[int, ...]] | None = None
     # What `deploy.py check` adds when the tool is not installed, as each refusal of it does: what to install on this
     # platform, or None.
     install_hint: str | None = None

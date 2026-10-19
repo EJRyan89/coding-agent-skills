@@ -9,7 +9,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, NotRequired, TypedDict, TypeGuard
+from typing import Literal, NotRequired, TypedDict, TypeGuard, assert_never
 
 from . import fsops, hashing, manifest, platform_support
 from .errors import DeployError, see_recovery
@@ -61,6 +61,8 @@ PreserveEntry = TypedDict(
     "PreserveEntry", {"op": Literal["preserve"], "root": NotRequired[str], "item": str, "from": str, "to": str}
 )
 JournalEntry = BackupEntry | InstallEntry | PreserveEntry
+# The op that tells the entries apart.
+Op = Literal["backup", "install", "preserve"]
 
 
 def entry_root(entry: JournalEntry) -> str:
@@ -142,31 +144,35 @@ def valid_entry(entry: object, run_id: str) -> TypeGuard[JournalEntry]:
         return False
     if safe_name_problem(item, "journal item") is not None:
         return False
-    if op == "backup":
-        retain = entry.get("retain")
-        if not isinstance(retain, bool):
+    # The op is read from the file, so an op no entry has is a malformed entry, not a missing handler.
+    match op:
+        case "backup":
+            retain = entry.get("retain")
+            if not isinstance(retain, bool):
+                return False
+            if not hashing.HASH_PATTERN.fullmatch(str(entry.get("backup_hash", ""))):
+                return False
+            if retain and entry.get("backup_dest") != f".backups/{run_id}/{item}":
+                return False
+            return (
+                entry.get("from") == f"{destination}/{item}"
+                and entry.get("to") == f"{destination}/{transient_name(item)}"
+            )
+        case "install":
+            if not hashing.HASH_PATTERN.fullmatch(str(entry.get("staged_hash", ""))):
+                return False
+            stagings = (staging, *LEGACY_STAGING.get(root, ()))
+            return (
+                entry.get("from") in {f"{label}/{item}" for label in stagings}
+                and entry.get("to") == f"{destination}/{item}"
+            )
+        case "preserve":
+            return (
+                entry.get("from") == f"{destination}/{transient_name(item)}"
+                and entry.get("to") == f".backups/{run_id}/{item}"
+            )
+        case _:
             return False
-        if not hashing.HASH_PATTERN.fullmatch(str(entry.get("backup_hash", ""))):
-            return False
-        if retain and entry.get("backup_dest") != f".backups/{run_id}/{item}":
-            return False
-        return (
-            entry.get("from") == f"{destination}/{item}" and entry.get("to") == f"{destination}/{transient_name(item)}"
-        )
-    if op == "install":
-        if not hashing.HASH_PATTERN.fullmatch(str(entry.get("staged_hash", ""))):
-            return False
-        stagings = (staging, *LEGACY_STAGING.get(root, ()))
-        return (
-            entry.get("from") in {f"{label}/{item}" for label in stagings}
-            and entry.get("to") == f"{destination}/{item}"
-        )
-    if op == "preserve":
-        return (
-            entry.get("from") == f"{destination}/{transient_name(item)}"
-            and entry.get("to") == f".backups/{run_id}/{item}"
-        )
-    return False
 
 
 def prepare_backup_destination(paths: Paths, run_id: str, item: str, root: str) -> Path:
@@ -385,13 +391,16 @@ def _roll_back(paths: Paths, run_id: str, entries: list[JournalEntry]) -> bool:
     }
     for entry in reversed(entries):
         step: Callable[[], bool]
-        if entry["op"] == "install":
-            backup_hash = replaced.get((entry_root(entry), entry["item"]))
-            step = functools.partial(_undo_install, paths, entry, backup_hash)
-        elif entry["op"] == "backup":
-            step = functools.partial(_restore_backup, paths, entry)
-        else:
-            step = functools.partial(_undo_preserve, paths, run_id, entry)
+        match entry["op"]:
+            case "install":
+                backup_hash = replaced.get((entry_root(entry), entry["item"]))
+                step = functools.partial(_undo_install, paths, entry, backup_hash)
+            case "backup":
+                step = functools.partial(_restore_backup, paths, entry)
+            case "preserve":
+                step = functools.partial(_undo_preserve, paths, run_id, entry)
+            case _:
+                assert_never(entry["op"])
         reconciled = _guarded(run_id, _item_path(paths, entry), step) and reconciled
     return reconciled
 

@@ -117,6 +117,5 @@ AGENT_KIND = DependencyKind(
 )
 # In the manifest's order, which is also the order every pass over the kinds checks, writes, and reports them in.
 KINDS = (SKILL, SHARED, ADAPTER_KIND, AGENT_KIND)
-BY_LABEL = {kind.label: kind for kind in KINDS}
 # The kinds a skill depends on, which a skill left in place keeps.
 DEPENDENCY_KINDS = tuple(kind for kind in KINDS if isinstance(kind, DependencyKind))

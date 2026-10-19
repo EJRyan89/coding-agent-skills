@@ -6,6 +6,7 @@ import sys
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from . import manifest, platform_support, source
 from .kinds import ADAPTER, DIFFERS, DIFFERS_FROM_SKILL, KINDS, MODIFIED
@@ -43,8 +44,10 @@ KEPT_WITH_SKILL = "its skill stays"
 
 DRY_RUN = "DRY RUN"
 DEPLOYED = "DEPLOYED"
+# What the plan does to one item, which plan.PlanEntry holds.
+Action = Literal["SKIP", "PRESERVE", "REPLACE", "REMOVE", "UPDATE", "INSTALL", "ADOPT", "DROP", "KEEP", "UNCHANGED"]
 # Each planned action, in report order with attention first, and its label in the dry run and the deployment report.
-ACTION_LABELS = {
+ACTION_LABELS: dict[Action, tuple[str, str]] = {
     "SKIP": ("CONFLICT", "SKIPPED"),
     "PRESERVE": ("PRESERVE", "PRESERVED"),
     "REPLACE": ("REPLACE", "REPLACED"),
@@ -65,7 +68,9 @@ FORCE_HINTS = {
     DEPLOYED: "Replace skipped items with --force-item NAME or --force (backups are kept).",
 }
 
-ATTENTION_ACTIONS = frozenset(label for action in ("SKIP", "PRESERVE", "REPLACE") for label in ACTION_LABELS[action])
+ATTENTION_ACTIONS = frozenset(
+    label for action, labels in ACTION_LABELS.items() if action in ("SKIP", "PRESERVE", "REPLACE") for label in labels
+)
 
 
 def _fold_adapters(lines: list[ReportLine]) -> list[ReportLine]:
