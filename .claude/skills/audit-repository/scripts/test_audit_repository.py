@@ -1004,7 +1004,8 @@ class CommandLineTests(Fixture):
 )
 def test_a_code_literal_reads_back_exactly_and_stays_one_printable_code_span(value: str) -> None:
     literal = audit.code_literal(value)
-    assert literal.startswith('`"') and literal.endswith('"`'), literal
+    assert literal.startswith('`"'), literal
+    assert literal.endswith('"`'), literal
     assert "`" not in literal[1:-1]
     assert literal.isprintable(), literal
     assert value == json.loads(literal[1:-1])
