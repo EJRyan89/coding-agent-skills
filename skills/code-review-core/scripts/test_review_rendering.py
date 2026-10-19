@@ -16,8 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 import review_records as records
 from review_documents import extract, locations
 from review_operation import archive_base, commit_adapter_result
-from test_review_core import valid_adapter_result, valid_request
 from test_review_documents import paragraph, word_document
+from test_review_records import valid_adapter_result, valid_request
 
 MARKUP = "![image](https://example.invalid/a) <img src=x> `code` | &amp;"
 LITERAL = (
