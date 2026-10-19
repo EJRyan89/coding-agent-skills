@@ -21,7 +21,8 @@ quote-style = "double"
 indent-style = "space"
 line-ending = "auto"
 
-# Validation runs `ruff check` with these rule sets on the same roots it formats, and no rule or file is exempt.
+# Validation runs `ruff check` with these rule sets on the same roots it formats, and no rule or file is exempt but
+# S101 in the regression suites, under per-file-ignores below.
 # E501 stays on: the formatter wraps code, and a string, comment, or docstring it cannot wrap is split by hand.
 # A finding that must stay is suppressed on its line as `# noqa: <code> - <reason>`, which validation requires.
 # C901 and PLR0915 cap function complexity and length at the ceilings below, with no noqa for either;
@@ -58,6 +59,15 @@ select = [
     "S61",
     "S7",
 ]
+
+# S101 refuses a bare `assert` because `python -O` strips it, which never happens to a regression suite: validation
+# starts every suite as `python -B -m pytest`, whose assertion rewriting shows both sides of a failed `assert`. So S101
+# is off for tests/ and each skill's scripts/test_*.py suite, none of which a deployment ships, and stays on for every
+# module a deployment runs; tests/validation/python_checks.py pins these paths and that one rule.
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101"]
+"skills/*/scripts/test_*.py" = ["S101"]
+".claude/skills/*/scripts/test_*.py" = ["S101"]
 
 # A ratchet: the most complex function's score, lowered as each split lands. The number only goes down, never up.
 [tool.ruff.lint.mccabe]
