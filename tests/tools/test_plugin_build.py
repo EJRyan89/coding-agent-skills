@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 from skill_roots import SKILLS_ROOT
 
-from tools import plugin_build
+from tools import plugin_agents, plugin_build
 
 AGENT = "---\nname: {name}\ndescription: An agent.\ntools: Read\n{extra}---\n\nRun {{{{PYTHON}}}} -B it.\n"
 
@@ -30,15 +30,29 @@ class Source:
         for folder in ("skills", "deploy-meta", "agents"):
             (self.root / folder).mkdir(parents=True)
         self.document: dict[str, object] = {"id": "test/fixture-skills", "bundles": {}}
+        self.plugins = ["fixture-skills"]
         self.save()
 
     def save(self) -> None:
         (self.root / "source.json").write_text(json.dumps(self.document), encoding="utf-8", newline="\n")
+        self.market(*self.plugins)
+
+    def market(self, *names: str) -> None:
+        """Write the marketplace file, listing these plugins."""
+        entries = [
+            {"name": name, "description": f"The {name} plugin.", "source": {"source": "archive"}} for name in names
+        ]
+        (self.root / ".claude-plugin").mkdir(exist_ok=True)
+        (self.root / ".claude-plugin" / "marketplace.json").write_text(
+            json.dumps({"name": "fixture", "plugins": entries}), encoding="utf-8", newline="\n"
+        )
 
     def bundle(self, name: str, members: list[str], *, opt_in: bool = False) -> None:
         bundles = self.document["bundles"]
         assert isinstance(bundles, dict)
         bundles[name] = {"members": members, **({"opt_in": True} if opt_in else {})}
+        if opt_in:
+            self.plugins.append(f"fixture-skills-{name}")
         self.save()
 
     def skill(self, name: str, body: str = "Body.\n", **metadata: object) -> Path:
@@ -51,6 +65,9 @@ class Source:
         )
         meta = {"required_vars": [], "shared_deps": [], **metadata}
         (self.root / "deploy-meta" / f"{name}.json").write_text(json.dumps(meta), encoding="utf-8", newline="\n")
+        if metadata.get("opt_in"):
+            self.plugins.append(f"fixture-skills-{name}")
+            self.save()
         return directory
 
     def agent(self, name: str, extra: str = "") -> None:
@@ -64,8 +81,10 @@ def source(tmp_path: Path) -> Source:
     return Source(tmp_path)
 
 
-def assembled(source: Source) -> plugin_build.Assembly:
-    return plugin_build.assemble(plugin_build.load_source(source.root))
+def assembled(source: Source, version: str = plugin_build.DEVELOPMENT_VERSION) -> plugin_build.Assembly:
+    return plugin_build.assemble(
+        plugin_build.load_source(source.root), plugin_build.load_catalogue(source.root), version
+    )
 
 
 def by_name(assembly: plugin_build.Assembly) -> dict[str, plugin_build.Plugin]:
@@ -102,7 +121,12 @@ def test_a_skill_ships_without_its_suites_and_with_python_answered_where_it_decl
     (directory / "scripts" / "test_tool.py").write_text("def test_it():\n    pass\n", encoding="utf-8", newline="\n")
     (directory / "scripts" / "data.bin").write_bytes(b"\xff\x00{{")
     files = by_name(assembled(source))["fixture-skills"].files
-    assert sorted(files) == ["skills/alpha/SKILL.md", "skills/alpha/scripts/data.bin", "skills/alpha/scripts/tool.py"]
+    assert sorted(files) == [
+        ".claude-plugin/plugin.json",
+        "skills/alpha/SKILL.md",
+        "skills/alpha/scripts/data.bin",
+        "skills/alpha/scripts/tool.py",
+    ]
     assert files["skills/alpha/SKILL.md"].endswith(b"Run python -B tool.\n")
     assert files["skills/alpha/scripts/tool.py"] == b"print('python')\n"
     assert files["skills/alpha/scripts/data.bin"] == b"\xff\x00{{"
@@ -123,18 +147,110 @@ def test_an_item_needing_a_value_with_no_plugin_answer_is_left_out_with_its_depe
     assert assembly.left_out == {"alpha": "rooted takes {{REPOS_ROOT}}, which a plugin has no value for"}
 
 
-def test_an_agent_without_hooks_ships_answered_and_one_with_hooks_keeps_its_bundle_out(source: Source) -> None:
+GUARD_HOOK = (
+    "hooks:\n"
+    "  PreToolUse:\n"
+    '    - matcher: "Read|Bash"\n'
+    "      hooks:\n"
+    "        - type: command\n"
+    "          command: >-\n"
+    '            {{PYTHON}} -I -c "import os, runpy;\n'
+    "            runpy.run_path(os.path.expanduser('~/.claude/skills/core/scripts/guard.py'))\"\n"
+    "          timeout: 30\n"
+    "          onFailure: block\n"
+)
+
+
+def test_an_agent_ships_answered_and_namespaced_where_a_skill_names_it(source: Source) -> None:
     source.agent("plain")
-    source.agent("guarded", extra="hooks:\n  PreToolUse:\n    - matcher: Read\n")
-    source.skill("alpha", agent_deps=["plain"])
+    source.skill("alpha", body="Start a subagent of type `plain`, not plain.\n", agent_deps=["plain"])
+    plugin = by_name(assembled(source))["fixture-skills"]
+    assert plugin.agents == ["plain"]
+    assert plugin.files["agents/plain.md"].endswith(b"Run python -B it.\n")
+    assert plugin.files["skills/alpha/SKILL.md"].endswith(
+        b"Start a subagent of type `fixture-skills:plain`, not plain.\n"
+    )
+    assert plugin_build.HOOKS not in plugin.files
+
+
+def test_an_agents_hooks_move_into_the_plugins_hooks_file_with_its_scripts_under_the_plugin(source: Source) -> None:
+    source.agent("guarded", extra=GUARD_HOOK)
     source.skill("beta", agent_deps=["guarded"])
     source.bundle("reviews", ["beta"])
     assembly = assembled(source)
+    assert assembly.left_out == {}
     plugin = by_name(assembly)["fixture-skills"]
-    assert plugin.skills == ["alpha"]
-    assert plugin.agents == ["plain"]
-    assert plugin.files["agents/plain.md"].endswith(b"Run python -B it.\n")
-    assert assembly.left_out == {"reviews": "agent guarded declares hooks, which a plugin agent ignores"}
+    agent = plugin.files["agents/guarded.md"].decode()
+    assert agent == "---\nname: guarded\ndescription: An agent.\ntools: Read\n---\n\nRun python -B it.\n"
+    command = (
+        'python -I -c "import os, runpy; runpy.run_path(os.path.join(os.environ['
+        "'CLAUDE_PLUGIN_ROOT'], 'skills', 'core', 'scripts', 'guard.py'))\""
+    )
+    assert json.loads(plugin.files[plugin_build.HOOKS]) == {
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "Read|Bash",
+                    "hooks": [{"type": "command", "command": command, "timeout": 30, "onFailure": "block"}],
+                }
+            ]
+        }
+    }
+
+
+@pytest.mark.parametrize(
+    ("hook", "problem"),
+    [
+        (GUARD_HOOK.replace("os.path.expanduser('~/.claude/skills/", "('~/.claude/skills/"), "home's Claude folder"),
+        ("hooks: none\n", "not a block mapping of event names"),
+        ("hooks:\n  PreToolUse: {matcher: Read}\n", "agent guarded: hooks:"),
+        ("hooks:\n  PreToolUse:\n    - matcher: Read\n    matcher: Bash\n", "share an indentation"),
+    ],
+)
+def test_hooks_a_plugin_cannot_carry_as_written_are_refused(source: Source, hook: str, problem: str) -> None:
+    source.agent("guarded", extra=hook)
+    source.skill("beta", agent_deps=["guarded"])
+    with pytest.raises(plugin_build.BuildError, match=problem):
+        assembled(source)
+
+
+def test_the_manifest_is_the_marketplace_entry_with_the_name_and_version_and_no_source(source: Source) -> None:
+    source.skill("alpha")
+    manifest = json.loads(by_name(assembled(source, "1.2.3"))["fixture-skills"].files[plugin_build.MANIFEST])
+    assert manifest == {"name": "fixture-skills", "version": "1.2.3", "description": "The fixture-skills plugin."}
+    default = json.loads(by_name(assembled(source))["fixture-skills"].files[plugin_build.MANIFEST])
+    assert default["version"] == "0.0.0-dev"
+
+
+@pytest.mark.parametrize(
+    ("listed", "problem"),
+    [
+        ((), "the marketplace lists no plugin, but the source makes fixture-skills"),
+        (("fixture-skills", "other"), "lists fixture-skills, other, but the source makes fixture-skills"),
+    ],
+)
+def test_the_marketplace_must_name_exactly_the_plugins_the_source_makes(
+    source: Source, listed: tuple[str, ...], problem: str
+) -> None:
+    source.skill("alpha")
+    source.market(*listed)
+    with pytest.raises(plugin_build.BuildError, match=problem):
+        assembled(source)
+
+
+@pytest.mark.parametrize(
+    "document", ['{"plugins": [{"name": "a"}, {"name": "a"}]}', '{"plugins": [{}]}', '{"plugins": {}}', "[]", "{"]
+)
+def test_a_marketplace_that_lists_no_plugin_once_by_name_is_refused(source: Source, document: str) -> None:
+    (source.root / ".claude-plugin" / "marketplace.json").write_text(document, encoding="utf-8")
+    with pytest.raises(plugin_build.BuildError, match=r"marketplace.json (must list|cannot be read)"):
+        plugin_build.load_catalogue(source.root)
+
+
+def test_a_source_tree_holding_a_plugin_manifest_is_refused(source: Source) -> None:
+    (source.root / ".claude-plugin" / "plugin.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(plugin_build.BuildError, match="a source tree is never a plugin itself"):
+        plugin_build.load_catalogue(source.root)
 
 
 def test_a_source_the_deployer_refuses_is_a_build_error(source: Source) -> None:
@@ -205,7 +321,8 @@ def test_main_writes_each_plugin_tree_and_reports_what_it_carries_and_left_out(s
     ]
     assert (tree / "skills" / "alpha" / "SKILL.md").read_bytes().endswith(b"Run python it.\n")
     assert sorted(path.relative_to(tree).as_posix() for path in tree.rglob("*") if path.is_file()) == [
-        "skills/alpha/SKILL.md"
+        ".claude-plugin/plugin.json",
+        "skills/alpha/SKILL.md",
     ]
 
 
@@ -216,8 +333,9 @@ def test_main_writes_reproducible_archives_with_their_digests(source: Source, tm
     archive = (tmp_path / "out").resolve() / "fixture-skills.zip"
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     assert lines[1] == f'ARCHIVE fixture-skills "{archive}" {digest}'
-    files = {"skills/alpha/SKILL.md": (source.root / "skills" / "alpha" / "SKILL.md").read_bytes()}
-    assert archive.read_bytes() == plugin_build.archive_bytes(files)
+    with zipfile.ZipFile(archive) as opened:
+        assert opened.namelist() == [".claude-plugin/plugin.json", "skills/alpha/SKILL.md"]
+    assert archive.read_bytes() == plugin_build.archive_bytes(by_name(assembled(source))["fixture-skills"].files)
 
 
 def test_main_reports_a_failure_on_one_line_and_writes_nothing(source: Source, tmp_path: Path) -> None:
@@ -227,3 +345,22 @@ def test_main_reports_a_failure_on_one_line_and_writes_nothing(source: Source, t
     assert len(lines) == 1
     assert lines[0].startswith("FAILED plugin fixture-skills keeps template tokens:")
     assert not (tmp_path / "out").exists()
+
+
+def test_an_agent_without_hooks_and_a_body_mentioning_hooks_is_kept_byte_for_byte() -> None:
+    text = "---\nname: plain\ntools: Read\n---\n\nhooks: are not frontmatter here.\n"
+    assert plugin_agents.plugin_agent(text) == (text, {})
+
+
+def test_an_agents_hooks_with_two_events_and_a_plain_command_keep_their_order_and_values() -> None:
+    text = (
+        "---\nname: two\nhooks:\n  PreToolUse:\n    - matcher: Read\n      hooks:\n        - type: command\n"
+        "          command: echo one\n  Stop:\n    - hooks:\n        - type: command\n          command: 'echo two'\n"
+        "model: inherit\n---\n\nBody.\n"
+    )
+    definition, hooks = plugin_agents.plugin_agent(text)
+    assert definition == "---\nname: two\nmodel: inherit\n---\n\nBody.\n"
+    assert hooks == {
+        "PreToolUse": [{"matcher": "Read", "hooks": [{"type": "command", "command": "echo one"}]}],
+        "Stop": [{"hooks": [{"type": "command", "command": "echo two"}]}],
+    }

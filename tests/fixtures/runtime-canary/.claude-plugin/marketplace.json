@@ -1,0 +1,17 @@
+{
+  "name": "runtime-canary-fixture",
+  "description": "The runtime canary's fixture plugin.",
+  "owner": {
+    "name": "Runtime canary fixture"
+  },
+  "plugins": [
+    {
+      "name": "runtime-canary",
+      "description": "The runtime canary's probe skill, for a throwaway install only.",
+      "author": {
+        "name": "Runtime canary fixture"
+      },
+      "source": "./runtime-canary"
+    }
+  ]
+}

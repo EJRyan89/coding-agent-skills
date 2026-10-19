@@ -1,7 +1,9 @@
 """Where skills live: a sibling skill's scripts, and the skills directories a script must not write inside.
 
 A script reaches a skill_deps sibling's modules through `sibling_scripts`, after the one line that puts
-ejryan89-skill-core on sys.path, so the layout is known here once, in the checkout and in the deployed home alike.
+ejryan89-skill-core on sys.path, so the layout is known here once, in the checkout, the deployed home, and a Claude Code
+plugin alike: each holds its skills in one flat directory. `plugin_name` tells a plugin apart, for what a plugin names
+otherwise, such as its agents, which Claude Code namespaces under the plugin's name.
 
 A file left inside a skill directory makes the deployer see that skill as modified and stop updating it, so a
 script refuses an explicit output path inside its own skills directory or one the deployer owns.
@@ -9,13 +11,17 @@ script refuses an explicit output path inside its own skills directory or one th
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 # This skill's own folder name, which every dependent's fixed sys.path line and every check of that line names.
 SKILL_CORE = "ejryan89-skill-core"
-# The skills directory holding ejryan89-skill-core, and so every skill that imports it: the source tree's skills/, or
-# the deployed ~/.claude/skills.
+# The skills directory holding ejryan89-skill-core, and so every skill that imports it: the source tree's skills/, the
+# deployed ~/.claude/skills, or a plugin's skills/.
 SKILLS_ROOT = Path(__file__).resolve().parents[2]
+# A Claude Code plugin's manifest, beside the plugin's skills directory; neither the checkout nor the deployed home has
+# one there.
+PLUGIN_MANIFEST = Path(".claude-plugin") / "plugin.json"
 # The prefixes of Windows' extended-length spellings: `\\?\C:\x` names `C:\x`, and `\\?\UNC\host\share\x` names
 # `\\host\share\x`. `Path.resolve` keeps either, and gives a volume's GUID path or a `\\.\` path back with the first,
 # so a path and a root are compared without them. pathlib reads each as part of a path's drive, which a path has only
@@ -40,15 +46,36 @@ class MissingSibling(SystemExit):
 def sibling_scripts(name: str) -> Path:
     """The scripts directory of the sibling skill `name`, for a script to put on sys.path.
 
-    The skills directory is flat in the checkout and the deployed home alike, so the sibling is SKILLS_ROOT/<name>,
-    beside ejryan89-skill-core.
+    The skills directory is flat in the checkout, the deployed home, and a plugin alike, so the sibling is
+    SKILLS_ROOT/<name>, beside ejryan89-skill-core.
     """
     scripts = SKILLS_ROOT / name / "scripts"
     if scripts.is_dir():
         return scripts
-    raise MissingSibling(
-        name, f"skill {name} has no scripts under {SKILLS_ROOT}; deploy the skills that declare it in skill_deps again"
+    plugin = plugin_name()
+    remedy = (
+        f"update or reinstall the plugin {plugin}"
+        if plugin is not None
+        else "deploy the skills that declare it in skill_deps again"
     )
+    raise MissingSibling(name, f"skill {name} has no scripts under {SKILLS_ROOT}; {remedy}")
+
+
+def plugin_name() -> str | None:
+    """The name of the Claude Code plugin these skills run from, or None in the checkout and the deployed home.
+
+    A plugin holds its manifest beside its skills directory, and Claude Code namespaces every component the plugin
+    carries under the manifest's name, so an agent `reviewer` of plugin `suite` is `suite:reviewer`. A manifest that
+    names no plugin raises ValueError: the skills run from a plugin whose name cannot be known.
+    """
+    manifest = SKILLS_ROOT.parent / PLUGIN_MANIFEST
+    if not manifest.is_file():
+        return None
+    document: object = json.loads(manifest.read_text(encoding="utf-8"))
+    name = document.get("name") if isinstance(document, dict) else None
+    if not isinstance(name, str) or not name:
+        raise ValueError(f"{manifest} names no plugin")
+    return name
 
 
 def deployed_skill_roots() -> tuple[Path, ...]:

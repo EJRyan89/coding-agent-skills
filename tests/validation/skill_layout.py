@@ -44,6 +44,8 @@ from validation_support import (
 )
 
 from deployer import platform_support
+from tools.plugin_build import HOOKS as PLUGIN_HOOKS
+from tools.plugin_build import MANIFEST as PLUGIN_MANIFEST
 
 MAXIMUM_INLINE_EXECUTABLE_LINES = 5
 
@@ -488,9 +490,16 @@ def fixture_source_problems(root: Path) -> list[str]:
 
 
 PLUGIN_DOC = '"Validation" in docs/adding-a-skill.md'
-# What a template token becomes in a plugin, pinned here rather than read from tools/plugin_build.py, so a change to
-# the tool's answers fails this policy until it is made here too.
+# What a template token becomes in a plugin, and where a hook finds the script the deployed agent's hook names under
+# the home, pinned here rather than read from tools/plugin_build.py, so a change to the tool's answers fails this
+# policy until it is made here too.
 PLUGIN_ANSWERS = {b"{{PYTHON}}": b"python"}
+PLUGIN_HOOK_PATHS = {
+    "os.path.expanduser('~/.claude/skills/ejryan89-code-review-core/scripts/review_guard.py')": (
+        "os.path.join(os.environ['CLAUDE_PLUGIN_ROOT'], 'skills', 'ejryan89-code-review-core', 'scripts', "
+        "'review_guard.py')"
+    ),
+}
 PLUGIN_TOKEN = re.compile(rb"\{\{[A-Z_][A-Z0-9_]*\}\}")
 
 
@@ -505,27 +514,99 @@ def _plugin_source(root: Path, path: str) -> tuple[Path, str] | str:
     return "comes from no skill file or agent a deployment ships"
 
 
+def _answered(content: bytes) -> bytes:
+    for token, answer in PLUGIN_ANSWERS.items():
+        content = content.replace(token, answer)
+    return content
+
+
+def _without_hooks(text: str) -> tuple[str, str]:
+    """An agent definition without its frontmatter's top-level hooks key, and that key's lines, on one line each."""
+    lines = text.split("\n")
+    closing = lines.index("---", 1) if lines[:1] == ["---"] and "---" in lines[1:] else 0
+    start = next((index for index in range(1, closing) if lines[index].startswith("hooks:")), None)
+    if start is None:
+        return text, ""
+    end = next((index for index in range(start + 1, closing) if lines[index][:1] not in ("", " ")), closing)
+    return "\n".join(lines[:start] + lines[end:]), " ".join(" ".join(lines[start:end]).split())
+
+
+def _hook_problems(name: str, hooks: bytes, declared: str) -> list[str]:
+    """What a plugin's hooks file holds that its agents' declared hooks, with the pinned paths, do not."""
+    try:
+        document = json.loads(hooks)
+        entries = [entry for event in document["hooks"].values() for entry in event]
+        handlers = [(entry["matcher"], handler) for entry in entries for handler in entry["hooks"]]
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return [f"plugin {name}: {PLUGIN_HOOKS} is not a hooks file of matchers and handlers"]
+    expected = _answered(declared.encode()).decode()
+    for deployed, plugin in PLUGIN_HOOK_PATHS.items():
+        expected = expected.replace(deployed, plugin)
+    found = []
+    for matcher, handler in handlers:
+        command = " ".join(str(handler.get("command", "")).split())
+        fields = [f'matcher: "{matcher}"', f"command: >- {command}"]
+        fields += [f"{key}: {handler[key]}" for key in ("type", "timeout", "onFailure") if key in handler]
+        found += [
+            f"plugin {name}: {PLUGIN_HOOKS} holds {field[:60]}, which no agent declares"
+            for field in fields
+            if field not in expected
+        ]
+    return found
+
+
+def _manifest_problems(root: Path, name: str, manifest: bytes) -> list[str]:
+    """What a plugin's manifest holds but its marketplace entry, its name, and a version do not."""
+    catalogue = json.loads((root / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
+    entry = next((entry for entry in catalogue.get("plugins", []) if entry.get("name") == name), None)
+    try:
+        document = json.loads(manifest)
+    except ValueError:
+        document = None
+    if entry is None or not isinstance(document, dict) or not isinstance(document.get("version"), str):
+        return [f"plugin {name}: {PLUGIN_MANIFEST} is no manifest of a plugin the marketplace lists"]
+    expected = {**{key: value for key, value in entry.items() if key != "source"}, "version": document["version"]}
+    return [] if document == expected else [f"plugin {name}: {PLUGIN_MANIFEST} differs from its marketplace entry"]
+
+
 def plugin_tree_problems(root: Path, plugins: Mapping[str, Mapping[str, bytes]]) -> list[str]:
     """Report what an assembled plugin holds that its sources do not: a file no skill or agent ships, bytes that
-    differ from the source's but for the pinned token answers, a template token left, or a file of a carried skill
-    the plugin leaves out. `plugins` maps each plugin's name to its files, by path in the plugin."""
+    differ from the source's but for the pinned token answers, an agent's hooks, which move to the plugin's hooks
+    file, and each backticked mention of an agent the plugin carries, which names it as `<plugin>:<agent>`; a template
+    token left; a file of a carried skill the plugin leaves out; a manifest that is not its marketplace entry; and a
+    hooks file that is not its agents' hooks. `plugins` maps each plugin's name to its files, by path in the plugin."""
+    if (root / PLUGIN_MANIFEST).exists():
+        return [f"{PLUGIN_MANIFEST} makes the checkout's skills read as a plugin's"]
     found: list[str] = []
     for name, files in sorted(plugins.items()):
         carried: set[str] = set()
+        agents = [path[len("agents/") : -len(".md")] for path in files if path.startswith("agents/")]
+        declared = ""
         for path, content in sorted(files.items()):
+            if path in (PLUGIN_MANIFEST, PLUGIN_HOOKS):
+                continue
             origin = _plugin_source(root, path)
             if isinstance(origin, str) or not origin[0].is_file():
                 found.append(f"plugin {name}: {path} {origin if isinstance(origin, str) else 'has no source file'}")
                 continue
             source, skill = origin
             carried.add(skill)
-            expected = source.read_bytes()
-            for token, answer in PLUGIN_ANSWERS.items():
-                expected = expected.replace(token, answer)
+            expected = _answered(source.read_bytes())
+            if not skill:
+                kept, hooks = _without_hooks(expected.decode("utf-8"))
+                expected, declared = kept.encode("utf-8"), f"{declared} {hooks}"
+            elif path.endswith("/SKILL.md"):
+                for agent in agents:
+                    expected = expected.replace(f"`{agent}`".encode(), f"`{name}:{agent}`".encode())
             if PLUGIN_TOKEN.search(content):
                 found.append(f"plugin {name}: {path} keeps a template token")
             elif content != expected:
                 found.append(f"plugin {name}: {path} differs from {source.relative_to(root).as_posix()}")
+        found += _manifest_problems(root, name, files.get(PLUGIN_MANIFEST, b""))
+        if PLUGIN_HOOKS in files:
+            found += _hook_problems(name, files[PLUGIN_HOOKS], declared)
+        elif declared.strip():
+            found.append(f"plugin {name}: its agents declare hooks, but it has no {PLUGIN_HOOKS}")
         for skill in sorted(carried - {""}):
             directory = root / "skills" / skill
             shipped = {
@@ -799,15 +880,17 @@ class SkillLayoutPolicies(unittest.TestCase):
         from tools import plugin_build
 
         # The answers are pinned against the policy's own literals, and the clone-bound update skill against a name:
-        # a plugin install has no clone, so no plugin may carry the skill that updates one.
+        # a plugin install has no clone, so no plugin may carry the skill that updates one. The code-review skills
+        # are carried with their reviewer, whose guard the plugin's hooks file runs.
         self.assertEqual({"PYTHON": "python"}, plugin_build.PLUGIN_VALUES)
-        assembly = plugin_build.assemble(plugin_build.load_source(REPOSITORY_ROOT))
-        self.assertTrue(assembly.plugins)
-        self.assertNotIn(
-            "update-coding-agent-skills", {skill for plugin in assembly.plugins for skill in plugin.skills}
-        )
+        source = plugin_build.load_source(REPOSITORY_ROOT)
+        assembly = plugin_build.assemble(source, plugin_build.load_catalogue(REPOSITORY_ROOT))
+        carried = {skill for plugin in assembly.plugins for skill in plugin.skills}
+        self.assertNotIn("update-coding-agent-skills", carried)
         self.assertIn("update-coding-agent-skills", assembly.left_out)
+        self.assertLessEqual({"review-prs", "ejryan89-code-review-core"}, carried)
         plugins = {plugin.name: plugin.files for plugin in assembly.plugins}
+        self.assertIn(PLUGIN_HOOKS, plugins["coding-agent-skills"])
         self.assertEqual([], plugin_tree_problems(REPOSITORY_ROOT, plugins), PLUGIN_DOC)
 
     def test_every_skill_the_model_may_start_has_a_trigger_scenario(self) -> None:

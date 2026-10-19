@@ -1,7 +1,7 @@
 """Assemble the Claude Code plugins from the skills, their agents, and their metadata, which stay the one source.
 
 Usage:
-  python tools/plugin_build.py [--source DIR] [--output DIR] [--archive]
+  python tools/plugin_build.py [--source DIR] [--output DIR] [--archive] [--version VERSION]
 
 It reads a source tree (source.json, deploy-meta/, skills/, and agents/; this checkout by default) as the deployer
 does, and writes each plugin as a tree into a new folder under the system temporary directory, or into --output, which
@@ -15,8 +15,14 @@ each agent the skills declare. The source's default selection, every menu item b
 named for the source's repository, the part of its ID after the slash; each opt-in bundle or skill is a plugin of its
 own, `<plugin>-<item>`, so it stays opt-in. A plugin has no deployer, so each template value a skill carries takes the
 fixed text PLUGIN_VALUES gives it, and a menu item is left out of every plugin when a skill it needs takes a value
-with no plugin answer, or an agent it needs declares hooks, which a plugin agent ignores: a plugin carries nothing it
-cannot run as the deployer would.
+with no plugin answer: a plugin carries nothing it cannot run as the deployer would.
+
+Each plugin is described by its entry in the source's marketplace file, .claude-plugin/marketplace.json, which names
+every plugin the source makes and nothing else. Its manifest, .claude-plugin/plugin.json, is that entry without its
+source, with the plugin's name and --version (0.0.0-dev unless given; a release passes its tag without the `v`).
+Claude Code namespaces a plugin's agents under its name, so a skill's backticked mention of an agent the plugin
+carries names it as `<plugin>:<agent>`. A plugin agent's own hooks are ignored, so each agent's hooks move into the
+plugin's hooks/hooks.json, as tools/plugin_agents.py describes.
 
 It prints one fact per line:
 
@@ -34,6 +40,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import io
+import json
 import re
 import sys
 import tempfile
@@ -45,7 +52,6 @@ from pathlib import Path, PurePosixPath
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
-import frontmatter
 from console import run_main
 from flat_text import flat_text
 from skill_roots import skills_directory_holding
@@ -54,6 +60,7 @@ from deployer import source as deploy_source
 from deployer.errors import DeployError
 from deployer.paths import Paths
 from deployer.render import SUFFIX_CONTEXT, TOKEN, shipped_files
+from tools.plugin_agents import AgentError, Node, plugin_agent
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 # What each template value becomes in a plugin, which has no deployer to render it. A plugin is one tree for every
@@ -64,7 +71,10 @@ PLUGIN_VALUES: dict[str, str] = {"PYTHON": "python"}
 ARCHIVE_TIME = (1980, 1, 1, 0, 0, 0)
 ARCHIVE_MODE = 0o100644 << 16
 NO_VALUE = "{skill} takes {{{{{variable}}}}}, which a plugin has no value for"
-AGENT_HOOKS = "agent {agent} declares hooks, which a plugin agent ignores"
+MARKETPLACE = Path(".claude-plugin") / "marketplace.json"
+MANIFEST = ".claude-plugin/plugin.json"
+HOOKS = "hooks/hooks.json"
+DEVELOPMENT_VERSION = "0.0.0-dev"
 
 
 class BuildError(Exception):
@@ -106,16 +116,31 @@ def _members(source: deploy_source.Source, item: str) -> list[str]:
     return source.bundles.get(item, [item])
 
 
+def load_catalogue(directory: Path) -> dict[str, dict[str, object]]:
+    """The source's marketplace entries by plugin name. A source tree holds no plugin manifest of its own, which
+    would make the skills in its checkout read as a plugin's."""
+    if (directory / MANIFEST).exists():
+        raise BuildError(f"{directory / MANIFEST} exists; a source tree is never a plugin itself")
+    try:
+        document = json.loads((directory / MARKETPLACE).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise BuildError(f"{directory / MARKETPLACE} cannot be read: {exc}") from exc
+    plugins = document.get("plugins") if isinstance(document, dict) else None
+    entries: dict[str, dict[str, object]] = {}
+    for entry in plugins if isinstance(plugins, list) else [None]:
+        name = entry.get("name") if isinstance(entry, dict) else None
+        if not isinstance(entry, dict) or not isinstance(name, str) or name in entries:
+            raise BuildError(f"{directory / MARKETPLACE} must list each plugin once, as an object with a name")
+        entries[name] = entry
+    return entries
+
+
 def _blocker(source: deploy_source.Source, closure: list[str]) -> str | None:
     """Why a plugin cannot carry a menu item with this closure, or None when it can."""
     for name in closure:
         for variable in source.skills[name].required_vars:
             if variable not in PLUGIN_VALUES:
                 return NO_VALUE.format(skill=name, variable=variable)
-    for agent in deploy_source.agent_closure(source, closure):
-        name = agent.removesuffix(".md")
-        if "hooks" in frontmatter.read(source.agents[name]):
-            return AGENT_HOOKS.format(agent=name)
     return None
 
 
@@ -145,24 +170,57 @@ def leftover_tokens(files: Mapping[str, bytes]) -> list[str]:
     return found
 
 
-def _plugin(source: deploy_source.Source, name: str, closure: list[str]) -> Plugin:
+def namespaced(content: bytes, plugin: str, agents: list[str]) -> bytes:
+    """A skill's SKILL.md with each backticked mention of an agent the plugin carries namespaced, as Claude Code names
+    a plugin's agents."""
+    for agent in agents:
+        content = content.replace(f"`{agent}`".encode(), f"`{plugin}:{agent}`".encode())
+    return content
+
+
+def _agents(source: deploy_source.Source, plugin: Plugin, closure: list[str]) -> None:
+    """Add each agent the closure needs, without its hooks, and the plugin's hooks file holding them."""
+    hooks: dict[str, list[Node]] = {}
+    for agent in deploy_source.agent_closure(source, closure):
+        name = agent.removesuffix(".md")
+        plugin.agents.append(name)
+        text = render(agent, source.agents[name].read_bytes(), list(PLUGIN_VALUES)).decode("utf-8")
+        try:
+            definition, declared = plugin_agent(text)
+        except AgentError as exc:
+            raise BuildError(f"agent {name}: {exc}") from exc
+        plugin.files[f"agents/{agent}"] = definition.encode("utf-8")
+        for event, entries in declared.items():
+            hooks.setdefault(event, []).extend(entries if isinstance(entries, list) else [entries])
+    if hooks:
+        plugin.files[HOOKS] = (json.dumps({"hooks": hooks}, indent=2) + "\n").encode("utf-8")
+
+
+def _plugin(
+    source: deploy_source.Source, name: str, closure: list[str], entry: dict[str, object], version: str
+) -> Plugin:
     plugin = Plugin(name, skills=sorted(closure))
+    _agents(source, plugin, closure)
     for skill in plugin.skills:
         variables = [variable for variable in source.skills[skill].required_vars if variable in PLUGIN_VALUES]
         for relative, content in shipped_files(source.skills[skill].directory).items():
-            plugin.files[f"skills/{skill}/{relative}"] = render(f"{skill}/{relative}", content, variables)
-    for agent in deploy_source.agent_closure(source, closure):
-        plugin.agents.append(agent.removesuffix(".md"))
-        content = source.agents[agent.removesuffix(".md")].read_bytes()
-        plugin.files[f"agents/{agent}"] = render(agent, content, list(PLUGIN_VALUES))
+            rendered = render(f"{skill}/{relative}", content, variables)
+            if relative == "SKILL.md":
+                rendered = namespaced(rendered, name, plugin.agents)
+            plugin.files[f"skills/{skill}/{relative}"] = rendered
+    manifest = {"name": name, "version": version, **{key: value for key, value in entry.items() if key != "source"}}
+    plugin.files[MANIFEST] = (json.dumps(manifest, indent=2) + "\n").encode("utf-8")
     leftover = leftover_tokens(plugin.files)
     if leftover:
         raise BuildError(f"plugin {name} keeps template tokens: {'; '.join(leftover)}")
     return plugin
 
 
-def assemble(source: deploy_source.Source) -> Assembly:
-    """The plugins a source makes, in memory: the default selection's, then one per opt-in menu item."""
+def assemble(
+    source: deploy_source.Source, catalogue: dict[str, dict[str, object]], version: str = DEVELOPMENT_VERSION
+) -> Assembly:
+    """The plugins a source makes, in memory: the default selection's, then one per opt-in menu item, each described
+    by its catalogue entry, which must name exactly the plugins made."""
     assembly = Assembly()
     default: list[str] = []
     opt_in: list[str] = []
@@ -176,11 +234,15 @@ def assemble(source: deploy_source.Source) -> Assembly:
         else:
             default.extend(name for name in closure if name not in default)
     name = plugin_name(source.source_id)
-    if default:
-        assembly.plugins.append(_plugin(source, name, default))
-    for item in opt_in:
-        closure = deploy_source.expand(source, [], _members(source, item))
-        assembly.plugins.append(_plugin(source, f"{name}-{item}", closure))
+    closures = {name: default} if default else {}
+    closures.update({f"{name}-{item}": deploy_source.expand(source, [], _members(source, item)) for item in opt_in})
+    if set(closures) != set(catalogue):
+        raise BuildError(
+            f"the marketplace lists {', '.join(sorted(catalogue)) or 'no plugin'}, but the source makes "
+            f"{', '.join(closures) or 'none'}"
+        )
+    for plugin, closure in closures.items():
+        assembly.plugins.append(_plugin(source, plugin, closure, catalogue[plugin], version))
     return assembly
 
 
@@ -242,9 +304,10 @@ def main(arguments: list[str] | None = None) -> int:
     parser.add_argument("--source", type=Path, default=REPOSITORY_ROOT, help="the source tree (default: this checkout)")
     parser.add_argument("--output", type=Path, help="an absent or empty folder outside the source tree to write into")
     parser.add_argument("--archive", action="store_true", help="write each plugin as a reproducible zip")
+    parser.add_argument("--version", default=DEVELOPMENT_VERSION, help="the version each manifest carries")
     options = parser.parse_args(arguments)
     try:
-        assembly = assemble(load_source(options.source))
+        assembly = assemble(load_source(options.source), load_catalogue(options.source), options.version)
         lines = write(assembly, output_directory(options.output, options.source), archive=options.archive)
     except (BuildError, OSError) as exc:
         print(f"FAILED {flat_text(str(exc))}")

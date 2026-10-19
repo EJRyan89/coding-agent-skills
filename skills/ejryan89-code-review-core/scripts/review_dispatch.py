@@ -13,7 +13,7 @@ from typing import Any, cast
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 from review_config import ConfigurationError, load_config
-from review_guard import read_log
+from review_guard import PLUGIN, read_log, reviewer_agent_type
 from review_hosts import (
     HostSuperseded,
     claim_holds,
@@ -233,9 +233,9 @@ def validate_result(run: Path, role: str) -> str | None:
 REVIEWER_TASK = "Read {prompt} and follow it exactly. It is your complete task."
 
 
-# The subagent type that runs each role, deployed from agents/ with ejryan89-code-review-core. Its hook runs
-# review_guard.py.
-REVIEWER_AGENT = "code-review-reviewer"
+# The subagent type that runs each role, deployed from agents/ with ejryan89-code-review-core, or namespaced by the
+# plugin these scripts run from. Its hook, or the plugin's, runs review_guard.py.
+REVIEWER_AGENT = reviewer_agent_type(PLUGIN)
 
 
 WORKFLOW_SCRIPT = """export const meta = {{
