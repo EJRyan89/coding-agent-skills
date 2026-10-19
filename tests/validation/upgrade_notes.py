@@ -32,6 +32,7 @@ from tools.release_notes import (
     BODY_HEADING,
     RELEASE_BRANCH,
     UPGRADE_NOTES,
+    ReleaseNotesError,
     SourcedEntry,
     body_entries,
     git,
@@ -90,7 +91,7 @@ def last_release_tag(root: Path) -> tuple[str | None, str | None]:
         )
     try:
         return release_reaching(root, RELEASE_BRANCH), None
-    except ValueError as error:
+    except ReleaseNotesError as error:
         return None, f"the upgrade-notes check {error}"
 
 
@@ -314,7 +315,7 @@ def upgrade_notes_problems(root: Path, body: str | None = None) -> list[str]:
         return [f"{RELEASING_DOC} has no **Levels** list under {VERSIONING_HEADING} for upgrade-notes entries to use"]
     try:
         sourced = range_entries(root, tag, RELEASE_BRANCH if body is not None else "HEAD")
-    except ValueError as error:
+    except ReleaseNotesError as error:
         return [*problems, f"the upgrade-notes check cannot read the commits since {tag}: {error}"]
     if body is not None:
         sourced += [

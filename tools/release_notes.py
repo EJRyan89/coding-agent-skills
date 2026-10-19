@@ -147,6 +147,12 @@ def unreleased_entries(notes: str | None) -> list[NotesEntry]:
     return notes_entries(markdown_section((notes or "").replace("\r\n", "\n"), UNRELEASED_HEADING))
 
 
+class ReleaseNotesError(Exception):
+    """A failure these notes expect and report on an `ERROR:` line: git that cannot read the range, a file that cannot
+    be read or written, or an entry or section that is malformed or missing. Anything else, such as a ValueError from
+    a defect in this module, reaches run_main and ends as its `FAILED` line."""
+
+
 # The one git these notes and the validation runner in tests/validation run.
 CLIENT = GitClient()
 
@@ -155,21 +161,21 @@ def git(root: Path, *arguments: str) -> GitResult:
     """git run on the checkout at root through skill-core's GitClient, so without the repository-selecting variables
     that would read another one and at the path the locator finds, with its output read as UTF-8.
 
-    Raises ValueError when git cannot run or finish, or prints output that is not UTF-8.
+    Raises ReleaseNotesError when git cannot run or finish, or prints output that is not UTF-8.
     """
     try:
         result = CLIENT.run(arguments, directory=root)
         return GitResult(result.returncode, result.output_bytes().decode("utf-8"), result.stderr)
     except GitError as error:
-        raise ValueError(str(error)) from error
+        raise ReleaseNotesError(str(error)) from error
     except UnicodeDecodeError as error:
-        raise ValueError(f"git {' '.join(arguments)} printed output that is not UTF-8: {error}") from error
+        raise ReleaseNotesError(f"git {' '.join(arguments)} printed output that is not UTF-8: {error}") from error
 
 
 def _git_output(root: Path, *arguments: str) -> str:
     completed = git(root, *arguments)
     if completed.returncode != 0:
-        raise ValueError(f"git {' '.join(arguments)} failed: {completed.stderr.strip()}")
+        raise ReleaseNotesError(f"git {' '.join(arguments)} failed: {completed.stderr.strip()}")
     return completed.stdout
 
 
@@ -223,7 +229,10 @@ def range_entries(root: Path, start: str, end: str) -> list[SourcedEntry]:
 
 
 def version_section(version: str, entries: list[SourcedEntry], levels: list[str]) -> str:
-    level = largest_level((item.entry.fields.get("Level", "") for item in entries), levels)
+    try:
+        level = largest_level((item.entry.fields.get("Level", "") for item in entries), levels)
+    except ValueError as error:
+        raise ReleaseNotesError(str(error)) from error
     summary = f"Level: {level}." if level is not None else "Level: none (no upgrade-note entries)."
     return "\n\n".join([f"## {version}", summary, *(item.rendered() for item in entries)]) + "\n"
 
@@ -231,27 +240,27 @@ def version_section(version: str, entries: list[SourcedEntry], levels: list[str]
 def release_reaching(root: Path, ref: str) -> str | None:
     """The last release ref holds, as skill-core's release_tags reads it, or None when no release tag reaches it.
 
-    Raises ValueError when git cannot read the tags reaching it.
+    Raises ReleaseNotesError when git cannot read the tags reaching it.
     """
     try:
         return last_release(CLIENT, root, ref)
     except GitError as error:
-        raise ValueError(f"cannot read the release tags reaching {ref}: {error}") from error
+        raise ReleaseNotesError(f"cannot read the release tags reaching {ref}: {error}") from error
 
 
 def last_release_before(root: Path, ref: str) -> str:
     """The last release before ref: the one its parent holds, so a ref that is itself a release starts after the one
-    before it. Raises ValueError when there is none or git cannot read the tags."""
+    before it. Raises ReleaseNotesError when there is none or git cannot read the tags."""
     found = release_reaching(root, f"{ref}^")
     if found is None:
-        raise ValueError(f"no release tag reaches {ref}^; name the previous release with --from")
+        raise ReleaseNotesError(f"no release tag reaches {ref}^; name the previous release with --from")
     return found
 
 
 def insert_section(notes: str, version: str, section: str) -> str:
     """The notes with the section above the newest version's section, or at the end when there is none."""
     if re.search(rf"^## {re.escape(version)}[ \t]*$", notes, re.MULTILINE):
-        raise ValueError(f"{UPGRADE_NOTES} already has a ## {version} section")
+        raise ReleaseNotesError(f"{UPGRADE_NOTES} already has a ## {version} section")
     newest = VERSION_HEADING.search(notes)
     if newest is None:
         return notes.rstrip("\n") + "\n\n" + section
@@ -263,7 +272,7 @@ def missing_entries(root: Path, version: str, start: str, end: str) -> list[Sour
     heading, newest first."""
     section = markdown_section(_notes_at(root, end) or "", f"## {version}")
     if section is None:
-        raise ValueError(f"{UPGRADE_NOTES} at {end} has no ## {version} section; write it with --write first")
+        raise ReleaseNotesError(f"{UPGRADE_NOTES} at {end} has no ## {version} section; write it with --write first")
     held = {entry.heading for entry in notes_entries(section)}
     return [item for item in range_entries(root, start, end) if item.entry.heading not in held]
 
@@ -271,7 +280,7 @@ def missing_entries(root: Path, version: str, start: str, end: str) -> list[Sour
 def _check(root: Path, version: str, start: str, end: str) -> int:
     try:
         missing = missing_entries(root, version, start, end)
-    except ValueError as error:
+    except ReleaseNotesError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
     if not missing:
@@ -291,7 +300,7 @@ def _read_releasing(root: Path) -> str:
     try:
         return (root / RELEASING_DOC).read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
-        raise ValueError(f"cannot read {RELEASING_DOC}: {error}") from error
+        raise ReleaseNotesError(f"cannot read {RELEASING_DOC}: {error}") from error
 
 
 def main(argv: list[str] | None = None, root: Path = REPOSITORY_ROOT) -> int:
@@ -314,7 +323,7 @@ def main(argv: list[str] | None = None, root: Path = REPOSITORY_ROOT) -> int:
     options.end = options.end or (RELEASE_BRANCH if options.check else "HEAD")
     try:
         start = options.start or last_release_before(root, options.end)
-    except ValueError as error:
+    except ReleaseNotesError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
     if options.check:
@@ -322,7 +331,7 @@ def main(argv: list[str] | None = None, root: Path = REPOSITORY_ROOT) -> int:
     try:
         levels = versioning_levels(_read_releasing(root))
         section = version_section(options.version, range_entries(root, start, options.end), levels)
-    except (OSError, ValueError) as error:
+    except (OSError, ReleaseNotesError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
     if not options.write:
@@ -336,7 +345,7 @@ def main(argv: list[str] | None = None, root: Path = REPOSITORY_ROOT) -> int:
         return 2
     try:
         updated = insert_section(notes, options.version, section)
-    except ValueError as error:
+    except ReleaseNotesError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
     try:

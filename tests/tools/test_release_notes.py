@@ -366,6 +366,32 @@ class MainTests(FixtureRepository):
 LATE_ENTRY = "### Merged late\n\n- Level: patch. A fix.\n- Contract: none\n- User action: none\n"
 
 
+class DefectTests(FixtureRepository):
+    """A ValueError the module did not raise as its own failure is a defect: it reaches run_main, never an ERROR line
+    that reads as a fault of the repository."""
+
+    def test_a_value_error_from_a_defect_is_not_reported_as_an_error_line(self) -> None:
+        self.history()
+        defect = ValueError("not enough values to unpack (expected 3, got 1)")
+        for arguments, failing in (
+            (["v0.2.0"], "commits"),
+            (["v0.2.0", "--write"], "commits"),
+            (["v0.2.0", "--check", "--to", "HEAD"], "missing_entries"),
+            (["v0.2.0"], "last_release_before"),
+        ):
+            with (
+                self.subTest(arguments=arguments, failing=failing),
+                mock.patch.object(release_notes, failing, side_effect=defect),
+                self.assertRaisesRegex(ValueError, "not enough values to unpack"),
+            ):
+                self.run_main(*arguments)
+
+    def test_a_level_release_levels_refuses_stays_an_error_line(self) -> None:
+        self.history()
+        with mock.patch.object(release_notes, "largest_level", side_effect=ValueError("no Level")):
+            self.assertEqual((2, "", "ERROR: no Level\n"), self.run_main("v0.2.0"))
+
+
 class CheckTests(FixtureRepository):
     """--check, run at the tag: the section origin/main holds against the entries origin/main's commits carry."""
 
@@ -484,7 +510,7 @@ class GitProgramTests(unittest.TestCase):
         self.assertEqual([["git", "-C", "a checkout", "log"]], commands)
         self.assertEqual("out", result.stdout)
 
-    def test_git_that_cannot_run_or_prints_other_than_utf8_is_a_value_error(self) -> None:
+    def test_git_that_cannot_run_or_prints_other_than_utf8_is_a_release_notes_error(self) -> None:
         def missing(command: list[str], timeout: float) -> git_client.GitResult:
             raise git_client.GitError(git_client.MISSING_GIT, kind="prerequisite")
 
@@ -495,6 +521,6 @@ class GitProgramTests(unittest.TestCase):
             with (
                 self.subTest(message=message),
                 mock.patch.object(release_notes.CLIENT, "runner", runner),
-                self.assertRaisesRegex(ValueError, message),
+                self.assertRaisesRegex(release_notes.ReleaseNotesError, message),
             ):
                 release_notes.git(Path("a checkout"), "log")

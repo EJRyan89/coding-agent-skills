@@ -11,10 +11,12 @@ alive with no start time, which its caller treats as a holder it cannot confirm,
 
 from __future__ import annotations
 
+import functools
 import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 # Where Linux reports each process: /proc/<pid>/stat, whose fields after the command name, in parentheses, start with
 # the state and hold the start time, in clock ticks since boot, as the twentieth (field 22 of the whole line). It is
@@ -89,14 +91,31 @@ def open_failure_status(error: int) -> ProcessStatus:
     return ProcessStatus(error != ERROR_INVALID_PARAMETER, None)
 
 
-def _windows_status(pid: int) -> ProcessStatus:
-    """The process's state as Windows reports it, by a handle that may only query it."""
+@functools.cache
+def _kernel32() -> Any:
+    """kernel32, loaded once, with every function the probe calls declared: a handle is pointer-sized, so it passes as
+    a HANDLE, never as the C int ctypes would convert an undeclared argument to."""
     import ctypes
     from ctypes import wintypes
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]  # Windows only
     kernel32.OpenProcess.restype = wintypes.HANDLE
     kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, wintypes.LPDWORD]
+    kernel32.GetProcessTimes.restype = wintypes.BOOL
+    kernel32.GetProcessTimes.argtypes = [wintypes.HANDLE, *[ctypes.POINTER(wintypes.FILETIME)] * 4]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    return kernel32
+
+
+def _windows_status(pid: int) -> ProcessStatus:
+    """The process's state as Windows reports it, by a handle that may only query it."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = _kernel32()
     query_limited_information = 0x1000
     still_active = 259
     handle = kernel32.OpenProcess(query_limited_information, False, pid)
