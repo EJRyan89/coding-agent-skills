@@ -60,7 +60,7 @@ Which runtimes run each skill. **Full** means every step runs there as it does i
 | [`github-activity-report`](#github-activity-report) | Full | Partial | Full |
 | [`repo-cleanup`](#repo-cleanup) | Full | Partial | Partial |
 | [`review-document`](#review-document) | Full | Partial | Partial |
-| [`review-insights`](#review-insights) | Full | Full | Full |
+| [`review-insights`](#review-insights) | Full | Partial | Partial |
 | [`review-prs`](#review-prs) | Full | Partial | Partial |
 | [`update-coding-agent-skills`](#update-coding-agent-skills) | Full | Full | Partial |
 | [`update-pr-dashboard`](#update-pr-dashboard) | Full | Partial | Partial |
@@ -71,6 +71,8 @@ Which runtimes run each skill. **Full** means every step runs there as it does i
 - `repo-cleanup` on Copilot CLI: partial, lacking `user-only-start`. A headless copilot -p session cannot start it; start it from an interactive session.
 - `review-document` on Codex CLI: partial, lacking `fail-closed-agent-hooks` and `sandbox-network`. The reviewer starts as a native subagent without the reviewer agent's guard, since a Codex hook lets a tool call through when it fails, so its prompt is its only boundary, at the configured reviewer effort but on the session's model; a pull request's documents need network access for gh, which Codex's default sandbox turns off.
 - `review-document` on Copilot CLI: partial, lacking `fail-closed-agent-hooks`. The reviewer role runs inline in the session, without the reviewer agent's guard, since a Copilot CLI hook lets a tool call through when it times out.
+- `review-insights` on Codex CLI: partial, lacking `fail-closed-agent-hooks`. The synthesis starts as a native subagent without the reviewer agent's guard, so its prompt is its only boundary.
+- `review-insights` on Copilot CLI: partial, lacking `fail-closed-agent-hooks`. The synthesis starts as a general-purpose subagent without the reviewer agent's guard, so its prompt is its only boundary.
 - `review-prs` on Codex CLI: partial, lacking `workflow`, `fail-closed-agent-hooks`, and `sandbox-network`. Reviewers start as native subagents without the reviewer agent's guard, since a Codex hook lets a tool call through when it fails, so their prompts are their only boundary, at the configured reviewer effort but on the session's model; its gh calls need network access, which Codex's default sandbox turns off.
 - `review-prs` on Copilot CLI: partial, lacking `workflow` and `fail-closed-agent-hooks`. The generic reviewer and delegation-free specialists run inline, without the reviewer agent's guard, since a Copilot CLI hook lets a tool call through when it times out; a specialists manifest that keeps agent-delegation fails.
 - `update-coding-agent-skills` on Copilot CLI: partial, lacking `user-only-start`. A headless copilot -p session cannot start it; start it from an interactive session.

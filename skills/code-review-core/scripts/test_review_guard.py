@@ -457,6 +457,34 @@ class BashTests(GuardFixture):
             with self.subTest(command=bad):
                 self.assert_denied(self.decide("Bash", command=bad))
 
+    def test_a_role_that_declares_its_self_check_runs_that_command_alone(self) -> None:
+        # The review-insights synthesis run: one role whose run.json entry names the one command it may run.
+        run = self.root / "code-review-run-synthesis"
+        run.mkdir()
+        script, report = self.root / "review_insights.py", self.root / "insights.json"
+        check = f'{guard.PYTHON} -B "{script}" synthesize --report "{report}" --check'
+        role = {
+            "id": "synthesis",
+            "prompt_file": str(run / "synthesis-prompt.md"),
+            "result_file": str(run / "synthesis-result.json"),
+            "self_check": check,
+        }
+        (run / "run.json").write_text(json.dumps({"roles": [role]}), encoding="utf-8")
+        self.assertIsNone(self.decide("Read", agent=OTHER_AGENT, file_path=role["prompt_file"]))
+        self.assertIsNone(self.decide("Bash", agent=OTHER_AGENT, command=f"  {check}  "))
+        for bad in (
+            f"{check}; whoami",
+            check.replace(" --check", ""),
+            rp.self_check_command(run, "synthesis"),  # the reviewer forms are not the declared role's
+            "git status",
+        ):
+            with self.subTest(command=bad):
+                self.assert_denied(self.decide("Bash", agent=OTHER_AGENT, command=bad))
+        # A reviewer role declares none, so it keeps its own self-check and never runs another role's command.
+        self.claim()
+        self.assertIsNone(self.decide("Bash", command=rp.self_check_command(self.run_directory, "csharp-review")))
+        self.assert_denied(self.decide("Bash", command=check))
+
     def test_bash_runs_the_source_commands_of_its_own_role_and_run_with_a_path_or_pattern_kept_in_quotes(
         self,
     ) -> None:
@@ -684,6 +712,8 @@ class FieldKindTests(GuardFixture):
             {"roles": [{**role, "prompt_file": None}]},
             {"roles": [{**role, "prompt_file": ""}]},
             {"roles": [{key: value for key, value in role.items() if key != "result_file"}]},
+            {"roles": [{**role, "self_check": None}]},
+            {"roles": [{**role, "self_check": ""}]},
         ]
         for run in runs:
             with self.subTest(run=run):

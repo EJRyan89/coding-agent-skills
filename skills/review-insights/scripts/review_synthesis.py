@@ -1,7 +1,7 @@
 """The synthesis stage of review insights: what an analyst agent reads, the prompt it follows, and the checks its
 result must pass before its recommendations join the report.
 
-`report` writes three files beside `insights.json`. The input (`synthesis-input.jsonl`) is what the agent reads: the
+`report` writes two files beside `insights.json`. The input (`synthesis-input.jsonl`) is what the agent reads: the
 range's totals, its findings grouped and capped so a large range still fits an agent's context, the open flags in
 scope whether or not they name a finding, each repository's guidance files with the text of its prose ones and the
 overlaps a script found in them (`review_guidance.py`), the consistency signals (`review_signals.py`), and the previous
@@ -9,9 +9,15 @@ period's synthesized recommendations. The context (`synthesis-context.json`) is 
 against and the agent never needs: every finding reference the input gives (each analyzed finding's, and each
 finding an open flag names, in the range or not), the open flag IDs, the guidance sets, the previous period's
 recommendation IDs, each analyzed category with the references of its findings when it is small enough that the
-result must address each one, and the custom-candidate rules. The prompt names both the input and the one result
-file the agent may write. The report seals the input and context by hash, so a result is only accepted against the
-input it was written from.
+result must address each one, and the custom-candidate rules. The report seals the input and context by hash, so a
+result is only accepted against the input it was written from.
+
+The agent works in a run of its own (`Staged.stage_run`): a `code-review-run-*` folder under the temporary directory
+holding the prompt, a copy of the input, and a `run.json` naming the one role, `synthesis`, with its prompt, its result
+file, and its self-check. That is the run shape code-review-core's reviewer guard binds a `code-review-reviewer` to,
+so in Claude Code the agent reads only that run, writes only its result, and runs only its self-check. The prompt
+names the input copy and the one result file the agent may write. The run is removed once its result is recorded or a
+later report stages another.
 
 A repository's guidance files are the files each repository-scoped reviewer was built from (see `review_guidance.py`),
 which a recommendation may name as the file to change. A generic reviewer is built from no repository file, so such a
@@ -27,6 +33,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
+import tempfile
 from collections import Counter
 from collections.abc import Container
 from dataclasses import dataclass, field
@@ -37,6 +45,7 @@ from typing import Any
 from executable_locator import PYTHON
 from flat_text import flat_text
 from review_config import safe_repository_path
+from review_guard import RUN_FILE, RUN_PREFIX
 from review_guidance import Guidance, is_prose
 from review_io import PersistenceError, atomic_write_text, read_json
 from review_records import ANALYZER_COVERAGES, SEVERITIES, SEVERITY_RANK, finding_reference, valid_analyzer
@@ -46,6 +55,8 @@ INPUT_NAME = "synthesis-input.jsonl"
 CONTEXT_NAME = "synthesis-context.json"
 PROMPT_NAME = "synthesis-prompt.md"
 RESULT_NAME = "synthesis-result.json"
+# The one role of a synthesis run, as its run.json names it to the reviewer guard.
+SYNTHESIS_ROLE = "synthesis"
 STATUSES = ("pending", "complete", "skipped")
 TYPES = (
     "new-rule",
@@ -371,17 +382,83 @@ def seal(directory: Path) -> str:
     return actual if sealed == actual else ""
 
 
+@dataclass(frozen=True)
+class PromptFacts:
+    """What a synthesis prompt says beyond its run's own paths."""
+
+    script: Path
+    report_path: Path
+    repositories: list[str]
+    span: str
+
+
 @dataclass
 class Staged:
     """A report's synthesis and the files it puts beside the report, held until `write`, so a report refused for its
-    size leaves the files the earlier report sealed as they were."""
+    size leaves the files the earlier report sealed as they were, and the facts of the prompt its run is staged with."""
 
     synthesis: dict[str, Any]
     files: dict[Path, str] = field(default_factory=dict)
+    facts: PromptFacts | None = None
+    run: Path | None = None
+
+    def stage_run(self) -> None:
+        """Make the run the synthesis's agent works in and name its prompt and result in the synthesis: a folder under
+        the temporary directory, named as the reviewer guard finds a run, holding the prompt, a copy of the sealed
+        input, and `run.json` naming the one role's prompt, result file, and self-check. A pending synthesis only."""
+        if self.facts is None:
+            return
+        run = Path(tempfile.mkdtemp(prefix=RUN_PREFIX)).resolve()
+        self.run = run
+        prompt, result = run / PROMPT_NAME, run / RESULT_NAME
+        try:
+            atomic_write_text(run / INPUT_NAME, self.files[Path(self.synthesis["input"])])
+            atomic_write_text(prompt, prompt_text(run, **vars(self.facts)))
+            role = {
+                "id": SYNTHESIS_ROLE,
+                "prompt_file": str(prompt),
+                "result_file": str(result),
+                "self_check": check_command(self.facts.script, self.facts.report_path, result),
+            }
+            atomic_write_text(run / RUN_FILE, json.dumps({"roles": [role]}, indent=1) + "\n")
+        except BaseException:
+            self.discard_run()
+            raise
+        self.synthesis.update(prompt=str(prompt), result=str(result))
+
+    def discard_run(self) -> None:
+        """Remove the run `stage_run` made, for a report that is not written."""
+        if self.run is not None:
+            shutil.rmtree(self.run, ignore_errors=True)
+            self.run = None
 
     def write(self) -> None:
         for path, text in self.files.items():
             atomic_write_text(path, text)
+
+
+def remove_run(synthesis: dict[str, Any] | None) -> None:
+    """Remove the run a synthesis's agent worked in, once its result is recorded or a later report staged another.
+    Only a run `stage_run` made is removed: a folder directly under the temporary directory, named as the reviewer
+    guard finds a run, whose `run.json` names this synthesis's prompt as its one role's."""
+    prompt = synthesis.get("prompt") if synthesis else None
+    if not prompt:
+        return
+    run = Path(prompt).parent
+    if not run.name.startswith(RUN_PREFIX) or run.parent.resolve() != Path(tempfile.gettempdir()).resolve():
+        return
+    try:
+        roles = json.loads((run / RUN_FILE).read_text(encoding="utf-8"))["roles"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return
+    if (
+        isinstance(roles, list)
+        and len(roles) == 1
+        and isinstance(roles[0], dict)
+        and roles[0].get("id") == SYNTHESIS_ROLE
+        and roles[0].get("prompt_file") == prompt
+    ):
+        shutil.rmtree(run, ignore_errors=True)
 
 
 def staged_inputs(directory: Path, lines: list[dict[str, Any]], context: dict[str, Any]) -> tuple[str, dict[Path, str]]:
@@ -396,14 +473,19 @@ def staged_inputs(directory: Path, lines: list[dict[str, Any]], context: dict[st
     return digest, {directory / CONTEXT_NAME: context_text, directory / INPUT_NAME: seal_line + body}
 
 
-def prompt_text(directory: Path, *, script: Path, report_path: Path, repositories: list[str], span: str) -> str:
+def check_command(script: Path, report_path: Path, result: Path) -> str:
+    """The synthesis's self-check, exactly as its prompt gives it and its run declares it to the reviewer guard."""
+    return f'{PYTHON} -B "{script}" synthesize --report "{report_path}" --result "{result}" --check'
+
+
+def prompt_text(run: Path, *, script: Path, report_path: Path, repositories: list[str], span: str) -> str:
+    """The prompt of a synthesis run in `run`, naming the input copy and the result file there."""
     return PROMPT.format(
         repositories=", ".join(repositories),
         span=span,
-        input=directory / INPUT_NAME,
-        result=directory / RESULT_NAME,
-        check=f'{PYTHON} -B "{script}" synthesize --report "{report_path}" --result "{directory / RESULT_NAME}" '
-        "--check",
+        input=run / INPUT_NAME,
+        result=run / RESULT_NAME,
+        check=check_command(script, report_path, run / RESULT_NAME),
         unsafe=UNSAFE_TEXT,
         target_path=TARGET_PATH,
         types=", ".join(f"`{item}`" for item in TYPES),
@@ -414,15 +496,6 @@ def prompt_text(directory: Path, *, script: Path, report_path: Path, repositorie
         evidence=EVIDENCE_LIMIT,
         **LIMITS,
     )
-
-
-def write_prompt(directory: Path, *, script: Path, report_path: Path, repositories: list[str], span: str) -> Path:
-    prompt = directory / PROMPT_NAME
-    atomic_write_text(
-        prompt,
-        prompt_text(directory, script=script, report_path=report_path, repositories=repositories, span=span),
-    )
-    return prompt
 
 
 @dataclass
@@ -495,8 +568,8 @@ def prepare(
     previous: tuple[Path, dict[str, Any]] | None,
     script: Path,
 ) -> Staged:
-    """A report's pending synthesis, staged with its input, context, and prompt; one with no findings and no open
-    flags in scope is skipped, with no file."""
+    """A report's pending synthesis, staged with its input, context, and the facts of its prompt; one with no findings
+    and no open flags in scope is skipped, with no file."""
     report = analyzed.report
     start, end = date.fromisoformat(report["start_date"]), date.fromisoformat(report["end_date"])
     flag_lines = scoped_flags(flags, report["repositories"], start, end)
@@ -539,22 +612,19 @@ def prepare(
         "custom_rules": sorted(line["rule"] for line in custom_lines),
     }
     digest, files = staged_inputs(directory, lines, context)
-    files[directory / PROMPT_NAME] = prompt_text(
-        directory,
+    synthesis = {
+        **empty_synthesis("pending"),
+        "input_sha256": digest,
+        "input": str(directory / INPUT_NAME),
+        "previous_report": str(previous[0]) if previous else None,
+    }
+    facts = PromptFacts(
         script=script,
         report_path=directory / "insights.json",
         repositories=report["repositories"],
         span=f"{report['start_date']} to {report['end_date']}",
     )
-    synthesis = {
-        **empty_synthesis("pending"),
-        "input_sha256": digest,
-        "input": str(directory / INPUT_NAME),
-        "prompt": str(directory / PROMPT_NAME),
-        "result": str(directory / RESULT_NAME),
-        "previous_report": str(previous[0]) if previous else None,
-    }
-    return Staged(synthesis, files)
+    return Staged(synthesis, files, facts)
 
 
 def load_context(synthesis: dict[str, Any]) -> dict[str, Any]:

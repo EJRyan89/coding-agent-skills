@@ -166,14 +166,15 @@ def review_document_prompts(directory: Path) -> dict[str, str]:
 
 
 def review_insights(directory: Path) -> dict[str, str]:
-    prompt = review_synthesis.write_prompt(
+    # The prompt Staged.stage_run writes into a synthesis run, with the throwaway folder as the run.
+    prompt = review_synthesis.prompt_text(
         directory,
         script=REPOSITORY_ROOT / "skills" / "review-insights" / "scripts" / "review_insights.py",
         report_path=directory / "insights.json",
         repositories=["example/inventory"],
         span="2026-01-01 to 2026-03-31",
     )
-    return {"synthesis": prompt.read_text(encoding="utf-8")}
+    return {"synthesis": prompt}
 
 
 # Each skill whose subagent reads a prompt a script writes at runtime, and how to render its prompts: from a throwaway
