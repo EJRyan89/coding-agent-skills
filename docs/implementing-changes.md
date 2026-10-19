@@ -176,6 +176,7 @@ Each fact has one owner; update the owner in the same change.
 | `docs/code-review-operations.md` | Code-review configuration and records. |
 | `docs/dotnet.md` | What the `dotnet` bundle's skills share: its selection, the projects they see, and their requirements. |
 | `docs/installation.md`, `docs/recovery.md` | Install, update, and recovery. |
+| `docs/setting-up-a-machine.md` | The order a new machine's setup follows and the Windows conditions it meets on the way; the install commands stay with their owners. |
 | `docs/codex-support.md`, `docs/copilot-support.md` | Per-runtime support. |
 | `CONTRIBUTING.md` | The contributor path from a clone to a merged pull request, and the full account of the Python format, lint, and type checks (`CLAUDE.md` keeps the rules a session acts on). |
 | `SECURITY.md` | The supported line, how to report a vulnerability, the disclosure policy for advisories, and the security-sensitive areas. |

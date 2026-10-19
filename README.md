@@ -92,6 +92,7 @@ Working on this repository:
 | Page | What it covers |
 |---|---|
 | [Contributing](CONTRIBUTING.md) | From a clone or fork to a merged pull request: tools, worktrees, validation, and the gates the maintainer runs |
+| [Setting up a machine](docs/setting-up-a-machine.md) | A new Windows machine's tools in the order that avoids rework, and the conditions a fresh install meets |
 | [Design](docs/design.md) | Why the repository is built as it is: the trust model, the invariants, and the decisions with their reasons |
 | [Implementing changes](docs/implementing-changes.md) | The implementation profile: size gate, contract files, validation, and which document owns what |
 | [Adding a skill](docs/adding-a-skill.md) | The skill template and metadata contract |
