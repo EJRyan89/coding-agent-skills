@@ -46,6 +46,7 @@ CHANGE_REACHES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
             "deployer/tools.py",
             "skills/skill-core/scripts/pdf_tool.py",
             "tests/validation/toolchain.py",
+            "requirements-dev.in",
             "requirements-dev.txt",
         ),
         (

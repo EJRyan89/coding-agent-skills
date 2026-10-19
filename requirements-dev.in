@@ -1,0 +1,6 @@
+# Development dependencies for validation and CI only; the deployer and shipped skills stay standard-library.
+# The hand-edited input: requirements-dev.txt is compiled from it, every package pinned and hashed, and is what pip
+# installs. docs/dependency-updates.md owns these pins and says how to compile the lock; Dependabot reviews them weekly.
+ruff==0.17.1
+mypy==2.4.0
+pytest==9.1.1

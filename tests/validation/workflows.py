@@ -475,7 +475,7 @@ def linux_job_problems(workflow: str) -> list[str]:
     for install in (
         "sudo apt-get install --yes shellcheck",
         "Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION ",
-        "python -m pip install -r requirements-dev.txt",
+        "python -m pip install --require-hashes -r requirements-dev.txt",
     ):
         if not any(install in script for script in scripts):
             problems.append(f"no step of the linux job runs {install!r}")
@@ -742,9 +742,10 @@ def uninstall_check_problems(workflow: str) -> list[str]:
     return problems
 
 
-# What mutation.yml's one job runs: the development dependencies and the mutation tools at their pins, then the gate,
+# What mutation.yml's one job runs: its lock, which holds the development dependencies and the mutation tools, with
+# hash checking, then the gate,
 # whose own cap (DEFAULT_MINUTES in tools/mutation_gate.py) sits well inside the job's time limit.
-MUTATION_INSTALL = "python -m pip install -r requirements-dev.txt -r requirements-mutation.txt"
+MUTATION_INSTALL = "python -m pip install --require-hashes -r requirements-mutation.txt"
 MUTATION_RUN = "python -B tools/mutation_gate.py"
 MUTATION_TIMEOUT_MINUTES = "60"
 
@@ -752,8 +753,8 @@ MUTATION_TIMEOUT_MINUTES = "60"
 def mutation_job_problems(workflow: str) -> list[str]:
     """Report how mutation.yml departs from the mutation gate: one job, not the required check's name, on
     ubuntu-latest, run on a pull request's opening, pushes, and reopening but not an edit of its text, with the whole
-    history to diff against the base, Python at the floor with pip's cache keyed on both requirement files, the pinned
-    tools installed, and the gate run once."""
+    history to diff against the base, Python at the floor with pip's cache keyed on the mutation lock, the locked
+    tools installed with hash checking, and the gate run once."""
     tree = read_workflow(workflow)
     problems: list[str] = []
     types = _mapping(tree, "on", "pull_request").get("types")
@@ -779,10 +780,10 @@ def mutation_job_problems(workflow: str) -> list[str]:
     expected = {
         "python-version": "3.11",
         "cache": "pip",
-        "cache-dependency-path": "requirements-dev.txt\nrequirements-mutation.txt\n",
+        "cache-dependency-path": "requirements-mutation.txt",
     }
     if python != [expected]:
-        problems.append(f"the mutation job sets up Python as {python}, not 3.11 with pip's cache on both requirements")
+        problems.append(f"the mutation job sets up Python as {python}, not 3.11 with pip's cache on the mutation lock")
     scripts = [_script_lines(step) for step in steps if "run" in step]
     if scripts != [[MUTATION_INSTALL], [MUTATION_RUN]]:
         problems.append(f"the mutation job runs {scripts}, not {MUTATION_INSTALL!r} and then {MUTATION_RUN!r}")
