@@ -228,9 +228,7 @@ class GateTests(unittest.TestCase):
     def test_a_skill_with_only_a_trigger_scenario_owes_its_run_for_a_description_change_alone(self) -> None:
         scenario = {"tests/fixtures/skill-evals/alpha/description/scenario.json": '{"mode": "trigger"}\n'}
         body = skill_text("Alpha does a thing. Use it when asked.", body="Run it twice.\n")
-        self.assertEqual(
-            ["GATE audit-skill alpha"], self.gates(committed={**scenario, "skills/alpha/SKILL.md": body})
-        )
+        self.assertEqual(["GATE audit-skill alpha"], self.gates(committed={**scenario, "skills/alpha/SKILL.md": body}))
         changed = skill_text("Alpha does another thing. Use it when asked.", body="Run it twice.\n")
         self.assertEqual(
             "GATE evaluate-skill alpha trigger", self.gates(uncommitted={"skills/alpha/SKILL.md": changed})[-1]
