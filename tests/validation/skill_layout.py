@@ -1,6 +1,6 @@
 """Layout policies: where a skill's files live, how long its fences are, how it names its own and its siblings'
-files, its metadata and variables, its script languages, the fixture sources beside it, and the trigger scenario
-that judges the description of each skill the model may start.
+files, its metadata and variables, its script languages, the fixture sources beside it, the trigger scenario that
+judges the description of each skill the model may start, and the plugins assembled from the skills.
 """
 
 from __future__ import annotations
@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import re
 import unittest
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,6 +16,7 @@ import frontmatter
 from markdown_sections import EXECUTABLE_FENCES
 from skill_roots import SKILL_CORE
 from skill_scripts import shell_git_subcommands
+from suite_names import is_suite_name
 from validation_support import (
     CODE_SPAN,
     EXECUTABLE_SCRIPT_EXTENSIONS,
@@ -485,6 +487,56 @@ def fixture_source_problems(root: Path) -> list[str]:
     return found
 
 
+PLUGIN_DOC = '"Validation" in docs/adding-a-skill.md'
+# What a template token becomes in a plugin, pinned here rather than read from tools/plugin_build.py, so a change to
+# the tool's answers fails this policy until it is made here too.
+PLUGIN_ANSWERS = {b"{{PYTHON}}": b"python"}
+PLUGIN_TOKEN = re.compile(rb"\{\{[A-Z_][A-Z0-9_]*\}\}")
+
+
+def _plugin_source(root: Path, path: str) -> tuple[Path, str] | str:
+    """The source file a plugin path comes from, with the skill it belongs to or "" for an agent, or why it has
+    none."""
+    parts = path.split("/")
+    if len(parts) == 2 and parts[0] == "agents" and parts[1].endswith(".md"):
+        return root / "agents" / parts[1], ""
+    if len(parts) >= 3 and parts[0] == "skills" and not is_suite_name(parts[-1]):
+        return root.joinpath(*parts), parts[1]
+    return "comes from no skill file or agent a deployment ships"
+
+
+def plugin_tree_problems(root: Path, plugins: Mapping[str, Mapping[str, bytes]]) -> list[str]:
+    """Report what an assembled plugin holds that its sources do not: a file no skill or agent ships, bytes that
+    differ from the source's but for the pinned token answers, a template token left, or a file of a carried skill
+    the plugin leaves out. `plugins` maps each plugin's name to its files, by path in the plugin."""
+    found: list[str] = []
+    for name, files in sorted(plugins.items()):
+        carried: set[str] = set()
+        for path, content in sorted(files.items()):
+            origin = _plugin_source(root, path)
+            if isinstance(origin, str) or not origin[0].is_file():
+                found.append(f"plugin {name}: {path} {origin if isinstance(origin, str) else 'has no source file'}")
+                continue
+            source, skill = origin
+            carried.add(skill)
+            expected = source.read_bytes()
+            for token, answer in PLUGIN_ANSWERS.items():
+                expected = expected.replace(token, answer)
+            if PLUGIN_TOKEN.search(content):
+                found.append(f"plugin {name}: {path} keeps a template token")
+            elif content != expected:
+                found.append(f"plugin {name}: {path} differs from {source.relative_to(root).as_posix()}")
+        for skill in sorted(carried - {""}):
+            directory = root / "skills" / skill
+            shipped = {
+                f"skills/{skill}/{file.relative_to(directory).as_posix()}"
+                for file in directory.rglob("*")
+                if file.is_file() and not is_suite_name(file.name)
+            }
+            found.extend(f"plugin {name}: leaves out {path}" for path in sorted(shipped - set(files)))
+    return found
+
+
 TRIGGER_SCENARIO_DOC = '"Skill evaluations" in docs/skill-evaluations.md'
 # The mode of a scenario that judges whether a description starts its skill, and the requests one holds at least: a
 # description's "Use it when" sentence names several ways a user asks for the skill, and one request samples one.
@@ -742,6 +794,21 @@ class SkillLayoutPolicies(unittest.TestCase):
     def test_fixture_sources_never_ship_or_collide_with_what_ships(self) -> None:
         self.assertTrue(list((REPOSITORY_ROOT / "tests" / "fixtures").glob("*/source.json")))
         self.assertEqual([], fixture_source_problems(REPOSITORY_ROOT))
+
+    def test_plugins_hold_their_sources_and_nothing_else(self) -> None:
+        from tools import plugin_build
+
+        # The answers are pinned against the policy's own literals, and the clone-bound update skill against a name:
+        # a plugin install has no clone, so no plugin may carry the skill that updates one.
+        self.assertEqual({"PYTHON": "python"}, plugin_build.PLUGIN_VALUES)
+        assembly = plugin_build.assemble(plugin_build.load_source(REPOSITORY_ROOT))
+        self.assertTrue(assembly.plugins)
+        self.assertNotIn(
+            "update-coding-agent-skills", {skill for plugin in assembly.plugins for skill in plugin.skills}
+        )
+        self.assertIn("update-coding-agent-skills", assembly.left_out)
+        plugins = {plugin.name: plugin.files for plugin in assembly.plugins}
+        self.assertEqual([], plugin_tree_problems(REPOSITORY_ROOT, plugins), PLUGIN_DOC)
 
     def test_every_skill_the_model_may_start_has_a_trigger_scenario(self) -> None:
         self.assertEqual([], trigger_scenario_problems(REPOSITORY_ROOT))
