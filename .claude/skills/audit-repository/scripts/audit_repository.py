@@ -217,22 +217,62 @@ REPORT_SECTIONS = (
 
 
 # What a reader compares a runtime's pages with: each file of this repository that states facts about the runtime,
-# and where in it. {runtime} is the runtime's name; a file the checkout does not hold is left out of the brief.
-RUNTIME_FACTS = (
-    ("docs/{runtime}-support.md", "the whole document"),
+# and where in it, under the runtime's name in deployer/runtime_support.py; a file the checkout does not hold is left
+# out of the brief. Codex and Copilot CLI read the adapters the deployer renders, while Claude Code is the runtime the
+# skills are written for, so its facts are in its subagent, hook, evaluation, prompt, skill, and plugin files instead.
+SHARED_RUNTIME_FACTS = (
     ("deployer/runtime_support.py", "the runtime's capabilities and the comment that gives their reasons"),
     ("deploy-meta/", "each skill's runtime_support declaration for the runtime"),
+    ("docs/code-review-operations-contract.md", "the Threat model rows that name the runtime"),
+    ("README.md", "the supported-runtimes table"),
+    ("skills/audit-skill/references/provenance.json", "each check whose source is one of these pages"),
+    ("skills/audit-ai-config/references/provenance.json", "each check whose source is one of these pages"),
+)
+ADAPTED_RUNTIME_FACTS = (
     ("deployer/render.py", "how the runtime adapter is rendered for the runtime"),
     ("tools/runtime_canary.py", "the command line that starts the runtime"),
     (
         "skills/ejryan89-code-review-core/scripts/review_hosts.py",
         "the command line the review host starts the runtime with",
     ),
-    ("docs/code-review-operations-contract.md", "the Threat model rows that name the runtime"),
-    ("README.md", "the supported-runtimes table"),
-    ("skills/audit-skill/references/provenance.json", "each check whose source is one of these pages"),
-    ("skills/audit-ai-config/references/provenance.json", "each check whose source is one of these pages"),
+    (
+        "CLAUDE.md",
+        "Parallel sessions, on which hooks the runtime runs, and Maintaining AI Agent Config, on which files it reads",
+    ),
+    (
+        "docs/design.md",
+        "the hub guard's row of the Trust model, and Generated instruction projections under Considered and declined",
+    ),
+    ("docs/installation.md", "Codex CLI settings, and the PowerShell rows of Requirements and Installing the tools"),
+    ("docs/code-review-operations.md", "Inline reviews, on the capabilities the runtime offers a review"),
+    ("deployer/tools.py", "the runtime's Tool and version floor, and CODEX_SANDBOX_PROBE and codex_sandbox_mode"),
+    ("deployer/check.py", "the runtime lines, and the codex sandbox and pwsh command lines it reports"),
+    ("deployer/discovery.py", "parse_copilot, and codex_requests and parse_codex for the app-server skills/list"),
+    ("deployer/verify.py", "how each runtime's listing is judged: adapter_line and expose"),
+    (".github/workflows/deployable.yml", "the runtime version it installs and the Codex sandbox it writes"),
+    ("tools/skill_shims.py", "PROTECTED_WRITES and the shim text on how Codex resolves paths and what it protects"),
 )
+RUNTIME_FACTS = {
+    "claude-code": (
+        *SHARED_RUNTIME_FACTS,
+        ("agents/code-review-reviewer.md", "the subagent's frontmatter: its description, tools, model, and hooks"),
+        ("skills/review-insights/SKILL.md", "Synthesize, on how the synthesis subagent is started"),
+        (".claude/settings.json", "the hooks and attribution it declares"),
+        ("tools/hub_guard.py", "the PreToolUse input it reads and the decision it returns"),
+        ("tools/skill_evals.py", "how a scenario's runs are started, repeated, and judged by script"),
+        ("docs/skill-evaluations.md", "Skill evaluations: the scenarios, the runs, and what is recorded"),
+        (".claude/skills/evaluate-skill/SKILL.md", "when a run is owed and how it is cited"),
+        ("skills/ejryan89-code-review-core/scripts/review_specialists.py", "the reviewer prompt it writes"),
+        ("docs/runtime-prompts/", "each prompt a skill's script writes for a subagent"),
+        ("docs/adding-a-skill.md", "Description and Granting tools"),
+        ("deployer/render.py", "MAX_DESCRIPTION, the description limit"),
+        (".claude-plugin/marketplace.json", "each plugin's entry and the archives it pins"),
+        ("tools/plugin_build.py", "how a plugin's manifest, skills, agents, and hooks file are assembled"),
+        ("docs/design.md", "the reviewer guard's row of the Trust model and the Decisions row on the plugin route"),
+    ),
+    "codex": (("docs/codex-support.md", "the whole document"), *SHARED_RUNTIME_FACTS, *ADAPTED_RUNTIME_FACTS),
+    "copilot-cli": (("docs/copilot-support.md", "the whole document"), *SHARED_RUNTIME_FACTS, *ADAPTED_RUNTIME_FACTS),
+}
 PYTHON_FACTS = (
     ("pyproject.toml", "the Python version and the ruff, mypy, and pytest settings"),
     ("requirements-dev.txt", "the development dependencies and how they are pinned"),
@@ -796,13 +836,12 @@ def guidance_brief(subject: str, title: str, pages: Sequence[Page], facts: Seque
 def subject_facts(subject: str, tracked: set[str]) -> list[tuple[str, str]]:
     """The files of the checkout that state facts about a subject, each with where to look, as the checkout holds
     them: a file it tracks, or a folder holding one."""
-    facts = PYTHON_FACTS if subject == PYTHON_SUBJECT else RUNTIME_FACTS
-    found = []
-    for path, where in facts:
-        named = path.format(runtime=subject)
-        if named in tracked or (named.endswith("/") and any(file.startswith(named) for file in tracked)):
-            found.append((named, where))
-    return found
+    facts = PYTHON_FACTS if subject == PYTHON_SUBJECT else RUNTIME_FACTS.get(subject, ())
+    return [
+        (path, where)
+        for path, where in facts
+        if path in tracked or (path.endswith("/") and any(file.startswith(path) for file in tracked))
+    ]
 
 
 def guidance_lines(kinds: Sequence[tuple[str, str]] = DRIFT_KINDS) -> list[str]:
@@ -910,6 +949,12 @@ def guidance(
         raise AuditError(
             f"{GUIDANCE_PATH} names no page for {', '.join(unread)}, which {RUNTIME_CATALOGUE} supports; add the "
             "runtime's pages before the audit"
+        )
+    unlisted = [runtime for runtime in runtimes if runtime not in RUNTIME_FACTS]
+    if unlisted:
+        raise AuditError(
+            f"RUNTIME_FACTS in {Path(__file__).name} names no file for {', '.join(unlisted)}, which "
+            f"{RUNTIME_CATALOGUE} supports; add the files that state the runtime's facts before the audit"
         )
     lines = [f'GUIDANCE_RECORD "{GUIDANCE_PATH}"', f"HEAD {head}"]
     by_subject = {subject: [page for page in pages if page.subject == subject] for subject in titles}

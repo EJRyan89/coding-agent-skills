@@ -81,6 +81,12 @@
       ]
     },
     {
+      "url": "https://code.claude.com/docs/en/plugins/org",
+      "subject": "claude-code",
+      "governs": "plugins in an organization: managed plugins, managed hooks, and which hooks an organization lets run",
+      "read": []
+    },
+    {
       "url": "https://code.claude.com/docs/en/mcp",
       "subject": "claude-code",
       "governs": "MCP servers: project .mcp.json and its shape",
