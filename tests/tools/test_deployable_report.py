@@ -14,6 +14,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from unittest import mock
 
@@ -60,7 +61,15 @@ class FakeRuntimes:
     def find(self, name: str) -> str | None:
         return f"C:/tools/{name}.cmd" if name in self.installed else None
 
-    def talk(self, arguments, cwd, environment, requests, answered, timeout):
+    def talk(
+        self,
+        arguments: list[str],
+        cwd: Path,
+        environment: Mapping[str, str],
+        requests: list[str],
+        answered: Callable[[str], bool] | None,
+        timeout: float,
+    ) -> list[str]:
         runtime = Path(arguments[0]).stem
         if runtime in self.errors:
             raise discovery.ListingError(self.errors[runtime])
@@ -108,7 +117,7 @@ class DeployableReportTests(unittest.TestCase):
     def use_fake_runtimes(self) -> None:
         """Have the report's command line find and talk to the fake runtimes until the test ends."""
         for patcher in (
-            mock.patch.object(report.platform_support, "find_executable", self.fake.find),
+            mock.patch.object(platform_support, "find_executable", self.fake.find),
             mock.patch.object(discovery, "converse", self.fake.talk),
         ):
             patcher.start()
@@ -219,7 +228,14 @@ class DeployableReportTests(unittest.TestCase):
     def test_a_shadowed_adapter_fails(self) -> None:
         original = self.fake.talk
 
-        def talk(arguments, cwd, environment, requests, answered, timeout):
+        def talk(
+            arguments: list[str],
+            cwd: Path,
+            environment: Mapping[str, str],
+            requests: list[str],
+            answered: Callable[[str], bool] | None,
+            timeout: float,
+        ) -> list[str]:
             lines = original(arguments, cwd, environment, requests, answered, timeout)
             if Path(arguments[0]).stem == "copilot":
                 other = [{"name": "alpha", "path": str(self.home / ".copilot" / "skills" / "alpha"), "enabled": True}]
@@ -334,7 +350,7 @@ class DeployableReportTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        with mock.patch.object(report.platform_support, "find_executable", side_effect=self.fake.find):
+        with mock.patch.object(platform_support, "find_executable", side_effect=self.fake.find):
             code, output = self.run_main(
                 "layout",
                 "--label",
@@ -354,7 +370,7 @@ class DeployableReportTests(unittest.TestCase):
 
     def test_a_layout_failure_exits_non_zero_and_is_still_recorded(self) -> None:
         (self.paths.dest_dir / "alpha" / "SKILL.md").unlink()
-        with mock.patch.object(report.platform_support, "find_executable", side_effect=self.fake.find):
+        with mock.patch.object(platform_support, "find_executable", side_effect=self.fake.find):
             code, _ = self.run_main(
                 "layout",
                 "--label",

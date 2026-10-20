@@ -7,6 +7,7 @@ import re
 import sys
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -182,7 +183,7 @@ class ConfigurationRemedyTests(RemedyTestCase):
         result = self.deploy_fails("--all", pattern="not valid UTF-8")
         self.assert_lines(result.output, f"ERROR: Config file is not valid UTF-8: {self.config_file()}", RESET)
 
-    def canonical_directory_of_repos(self, canonical: Exception | str) -> mock._patch:
+    def canonical_directory_of_repos(self, canonical: Exception | str) -> mock._patch[mock.MagicMock | mock.AsyncMock]:
         """Make the configured REPOS_ROOT canonicalize to canonical, or fail with it, leaving every other path alone."""
         real = platform_support.canonical_directory
 
@@ -423,7 +424,7 @@ class BackupRemedyTests(RemedyTestCase):
 
 
 class LockRemedyTests(RemedyTestCase):
-    def write_lock(self, info: dict | None) -> None:
+    def write_lock(self, info: dict[str, Any] | None) -> None:
         self.lock_dir.mkdir(parents=True)
         if info is not None:
             self.write(self.lock_dir / "token", "old-token")

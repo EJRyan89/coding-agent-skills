@@ -33,7 +33,7 @@ class TreeStateTests(DeployerTestCase):
         unchanged = tree_state(self.tree("unchanged"))
         self.assertEqual({"a", "a/file.txt", "b.txt"}, set(unchanged))
         self.assertEqual(unchanged, tree_state(self.tree("identical")))
-        changes = {
+        changes: dict[str, Callable[[Path], object]] = {
             "a byte": lambda tree: self.write(tree / "a" / "file.txt", "One\n"),
             "a directory": lambda tree: (tree / "a" / "empty").mkdir(),
             "a removed file": lambda tree: (tree / "b.txt").unlink(),
@@ -45,7 +45,7 @@ class TreeStateTests(DeployerTestCase):
                 self.assertNotEqual(unchanged, tree_state(tree))
 
 
-def failing_after_applying() -> mock._patch:
+def failing_after_applying() -> mock._patch[mock.MagicMock | mock.AsyncMock]:
     """Make the deployment fail with REFUSAL once it has applied its plan: a refusal moved after the mutation."""
     apply = pipeline._apply
 
@@ -56,7 +56,7 @@ def failing_after_applying() -> mock._patch:
     return mock.patch("deployer.pipeline._apply", side_effect=apply_then_refuse)
 
 
-def rendering_then(action: Callable[[], object]) -> mock._patch:
+def rendering_then(action: Callable[[], object]) -> mock._patch[mock.MagicMock | mock.AsyncMock]:
     """Run action as the deployment renders, as a renderer that wrote into its source would."""
     real_render = render.render
 
@@ -230,7 +230,7 @@ class CLIImmutabilityGuardTests(DeployerTestCase):
             self.configure()
 
 
-def killed_after_applying() -> mock._patch:
+def killed_after_applying() -> mock._patch[mock.MagicMock | mock.AsyncMock]:
     """Kill the deployment once it has applied its plan, as SystemExit raised past the pipeline ends it."""
     return mock.patch("deployer.pipeline._finalize", side_effect=SystemExit(1))
 

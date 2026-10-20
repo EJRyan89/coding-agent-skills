@@ -135,7 +135,7 @@ class FilesystemOperationTests(unittest.TestCase):
 
             with (
                 self.subTest(failure=failure),
-                mock.patch.object(platform_support.os, "lstat", side_effect=lstat),
+                mock.patch.object(os, "lstat", side_effect=lstat),
                 mock.patch.object(fsops, "_remove_tree") as removed_tree,
                 self.assertRaises(OSError) as raised,
             ):

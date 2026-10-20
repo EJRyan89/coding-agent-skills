@@ -33,7 +33,7 @@ EXECUTABLES = {"codex": "C:/tools/codex.cmd", "copilot": "C:/tools/copilot.exe"}
 VERSIONS = {"codex": "codex-cli 0.160.0\n", "copilot": "GitHub Copilot CLI 1.0.92.\n"}
 
 
-def codex_answer(*skills: tuple[str, str, bool], errors: list | None = None) -> str:
+def codex_answer(*skills: tuple[str, str, bool], errors: list[dict[str, str]] | None = None) -> str:
     """The app server's answer to skills/list, which names each skill by its SKILL.md file."""
     entries = [
         {"name": name, "description": "d", "path": path, "scope": "user", "enabled": enabled}
@@ -444,7 +444,7 @@ class ConverseTests(DeployerTestCase):
                 for pipe in ("stdin", "stdout"):
                     setattr(process, pipe, None if pipe == missing else mock.MagicMock())
                 with (
-                    mock.patch.object(discovery.subprocess, "Popen", return_value=process),
+                    mock.patch.object(subprocess, "Popen", return_value=process),
                     self.assertRaisesRegex(ListingError, r"^its pipes did not open$"),
                 ):
                     self.talk([sys.executable], ['{"id": 0}'], answered=discovery.codex_answered)

@@ -377,9 +377,10 @@ class SharedReaderFixtures(unittest.TestCase):
         self.assertIsNone(markdown_section(text, "## Three"))
 
     def test_section_readers_share_trailing_whitespace_and_crlf_semantics(self) -> None:
-        from tools.release_notes import markdown_section as release_section
+        from tools import release_notes
 
-        self.assertIs(markdown_section, release_section)
+        # tools/release_notes.py imports markdown_section and exports none, so its own binding is read.
+        self.assertIs(markdown_section, vars(release_notes)["markdown_section"])
         text = "# Title\r\n## One \t\r\nfirst  \r\n### Inner\r\nkept\t\r\n## Two \t\r\nsecond"
         self.assertEqual("first  \n### Inner\nkept\t", markdown_section(text, "## One"))
         self.assertEqual("second", markdown_section(text, "## Two"))
@@ -391,8 +392,9 @@ class SharedReaderFixtures(unittest.TestCase):
         import skill_layout
 
         self.assertIs(markdown_sections.CODE_SPAN, CODE_SPAN)
-        self.assertIs(CODE_SPAN, skill_layout.CODE_SPAN)
-        self.assertIs(markdown_sections.COMMONMARK_CODE_SPAN, markdown_links.COMMONMARK_CODE_SPAN)
+        # skill_layout and markdown_links import these and export none, so each module's own binding is read.
+        self.assertIs(CODE_SPAN, vars(skill_layout)["CODE_SPAN"])
+        self.assertIs(markdown_sections.COMMONMARK_CODE_SPAN, vars(markdown_links)["COMMONMARK_CODE_SPAN"])
 
     def test_a_fence_body_line_excludes_the_opener_and_the_closer(self) -> None:
         lines = ["text", "```bash", "echo hi", "```", "after"]

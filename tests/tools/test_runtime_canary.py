@@ -585,7 +585,7 @@ class RemoveHomeTests(unittest.TestCase):
             real_mkdir(path, given)
 
         real_mkdir = os.mkdir
-        with mock.patch.object(runtime_canary.os, "mkdir", side_effect=mkdir):
+        with mock.patch.object(os, "mkdir", side_effect=mkdir):
             home = runtime_canary.create_home()
         self.addCleanup(shutil.rmtree, home, ignore_errors=True)
         # A name already taken is passed over for a new one.
@@ -621,7 +621,7 @@ class RemoveHomeTests(unittest.TestCase):
                 raise PermissionError(13, "Access is denied", os.fspath(state))
             return real(target, *rest, **options)
 
-        with mock.patch.object(platform_support.os, "lstat", side_effect=lstat):
+        with mock.patch.object(os, "lstat", side_effect=lstat):
             self.assertFalse(runtime_canary.claimed(home))
             code, output = remove_home(str(home))
         self.assertEqual(1, code)
@@ -733,7 +733,7 @@ class RunTests(RuntimeCanaryTestCase):
     def test_a_ran_line_carries_the_recorded_exit_and_a_timeout_and_still_passes(self) -> None:
         script = f"{self.skill_dir('alpha')}/scripts/tool.py"
         start = {"argv": [script], "cwd": forward(self.home), "pid": 41}
-        cases: tuple[tuple[list[dict], Completed, str], ...] = (
+        cases: tuple[tuple[list[dict[str, Any]], Completed, str], ...] = (
             ([start, {**start, "exit": 1}], Completed(0, "", ""), " exit=1"),
             ([start, {**start, "exit": 1}], Completed(-1, "", "", timed_out=True), " exit=1 timed-out"),
             # The session ran out of time while the script still ran, so no exit was recorded.
@@ -967,7 +967,7 @@ class RunTests(RuntimeCanaryTestCase):
         runner = FakeRuntimes()
         real = runtime_canary.read_records
 
-        def denied(path: Path) -> list[dict]:
+        def denied(path: Path) -> list[dict[str, Any]]:
             if path.name == "probe.jsonl" and "codex" in str(runner.calls[-1][1][0]):
                 raise PermissionError(13, "Permission denied", str(path))
             return real(path)
@@ -2053,7 +2053,7 @@ class FinishTests(unittest.TestCase):
                 self.assertTrue(runtime_canary.claimed(home))
 
     def test_a_home_that_cannot_be_removed_fails_a_run_that_passed(self) -> None:
-        with mock.patch.object(runtime_canary.shutil, "rmtree", side_effect=OSError("held open")):
+        with mock.patch.object(shutil, "rmtree", side_effect=OSError("held open")):
             home, code, output = self.finish(0)
         self.assertEqual((1, f'FAILED "cannot remove {home.as_posix()}: held open"\n'), (code, output))
 

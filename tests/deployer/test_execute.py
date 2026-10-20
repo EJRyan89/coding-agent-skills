@@ -7,6 +7,7 @@ import argparse
 import contextlib
 import io
 import os
+import secrets
 import sys
 import tempfile
 import time
@@ -21,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 from harness import DEPLOY_COMMAND
 
-from deployer import config, errors, journal, lock, pipeline, plan, platform_support, source
+from deployer import config, errors, journal, lock, pipeline, plan, platform_support, selection, source
 from deployer.arguments import usage_error
 from deployer.context import Options
 from deployer.errors import Cancelled, DeployError
@@ -112,7 +113,7 @@ class ExecuteTests(unittest.TestCase):
             (pipeline, "validate_managed_roots"): None,
             (config, "load"): {"VALUE": "configured"},
             (source, "discover"): self.src,
-            (pipeline.selection_module, "check_includes"): None,
+            (selection, "check_includes"): None,
             (plan, "check_source_forced_items"): None,
             (pipeline, "_print_source"): None,
             (pipeline, "_stop_for_pending_recovery"): False,
@@ -131,8 +132,8 @@ class ExecuteTests(unittest.TestCase):
         with contextlib.ExitStack() as stack:
             for (module, name), default in steps.items():
                 stack.enter_context(mock.patch.object(module, name, self.step(name, outcomes.get(name, default))))
-            stack.enter_context(mock.patch.object(pipeline.secrets, "token_hex", return_value="beef"))
-            stack.enter_context(mock.patch.object(pipeline.time, "gmtime", return_value=time.gmtime(0)))
+            stack.enter_context(mock.patch.object(secrets, "token_hex", return_value="beef"))
+            stack.enter_context(mock.patch.object(time, "gmtime", return_value=time.gmtime(0)))
             stack.enter_context(mock.patch.dict(os.environ, {"DEPLOYER_DEBUG": ""}))
             yield
 

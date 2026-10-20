@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import ClassVar, get_args
+from typing import Any, ClassVar, get_args
 from unittest import mock
 
 from harness import (
@@ -42,7 +42,7 @@ class RecoveryTestCase(DeployerTestCase):
         self.make_config()
         self.deploy_ok("--all")
 
-    def write_journal(self, run_id: str, *entries: dict) -> Path:
+    def write_journal(self, run_id: str, *entries: dict[str, Any]) -> Path:
         path = self.staging_run(run_id) / "journal.jsonl"
         self.write(path, "".join(journal_line(entry) for entry in entries))
         return path
@@ -427,7 +427,9 @@ def denied(path: Path) -> PermissionError:
     return PermissionError(13, "Access is denied", str(path))
 
 
-def failing_at(function: str, path: Path, module: str = "deployer.fsops") -> mock._patch:
+def failing_at(
+    function: str, path: Path, module: str = "deployer.fsops"
+) -> mock._patch[mock.MagicMock | mock.AsyncMock]:
     """Patch one function so it raises PermissionError for one path and behaves normally for every other."""
     owner = {"deployer.fsops": fsops, "deployer.hashing": hashing}[module]
     real = getattr(owner, function)
@@ -440,7 +442,7 @@ def failing_at(function: str, path: Path, module: str = "deployer.fsops") -> moc
     return mock.patch(f"{module}.{function}", side_effect=fail)
 
 
-def path_method_failing_at(method: str, path: Path) -> mock._patch:
+def path_method_failing_at(method: str, path: Path) -> mock._patch[mock.MagicMock | mock.AsyncMock]:
     real = getattr(Path, method)
 
     def fail(self: Path, *rest: object, **options: object) -> object:
@@ -1185,7 +1187,7 @@ class UnkeptBackupTests(RecoveryTestCase):
     RUN = "20260101-000000-unkp"
     EDIT = "edited during the deployment\n"
 
-    def edited_before_its_move(self, item: str) -> mock._patch:
+    def edited_before_its_move(self, item: str) -> mock._patch[mock.MagicMock | mock.AsyncMock]:
         """Edit an item after the plan read its hash and just before the move that makes it a transient backup."""
         real_move = fsops.move
 
@@ -1417,7 +1419,7 @@ class DryRunRecoveryTests(RecoveryTestCase):
 
 
 class MigrationTests(DeployerTestCase):
-    def old_source_with_agent(self, bundles: dict | None = None, *arguments: str) -> None:
+    def old_source_with_agent(self, bundles: dict[str, Any] | None = None, *arguments: str) -> None:
         """Deploy alpha, its runtime adapter, and its agent from test/old, then make this source define them."""
         self.make_source_json("test/old", bundles=bundles)
         self.make_agent("reviewer")
@@ -1645,7 +1647,7 @@ class MigrationTests(DeployerTestCase):
             ["alpha", "b", "c", "reviewer.md (agent)"],
         )
 
-    def pack_from_the_old_source(self, bundles: dict | None = None, include: tuple[str, ...] = ()) -> Path:
+    def pack_from_the_old_source(self, bundles: dict[str, Any] | None = None, include: tuple[str, ...] = ()) -> Path:
         """Deploy opt-in bundle pack [alpha, beta] from test/old by request, beside the other bundles given, of which
         those include names are requested too. Return the old source."""
         self.make_source_json(

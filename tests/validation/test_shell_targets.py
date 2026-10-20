@@ -382,10 +382,10 @@ class ShellTargetsFixtures(unittest.TestCase):
             mock.patch.object(platform_support, "run_tool", return_value=platform_support.ToolResult(0, "\n")),
         ):
             self.assertIsNone(find_psscriptanalyzer())
-        with mock.patch.object(shell_targets, "find_psscriptanalyzer", return_value=None):
+        with mock.patch.object(shell_targets, "find_psscriptanalyzer", return_value=None) as missing:
             self.assertIn(
                 f"  - PSScriptAnalyzer: {install}",
-                missing_prerequisites((("PSScriptAnalyzer", "PSScriptAnalyzer", shell_targets.find_psscriptanalyzer),)),
+                missing_prerequisites((("PSScriptAnalyzer", "PSScriptAnalyzer", missing),)),
             )
             with self.assertRaises(AssertionError) as raised:
                 script_analyzer_check(REPOSITORY_ROOT, [])

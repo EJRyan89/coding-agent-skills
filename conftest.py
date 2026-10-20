@@ -173,7 +173,8 @@ def git_settings(*owners: Any) -> Mapping[str, str]:
     for owner in owners:
         settings = getattr(owner, GIT_CONFIG, None) if owner is not None else None
         if settings:
-            return settings
+            found: Mapping[str, str] = settings
+            return found
     return {}
 
 
