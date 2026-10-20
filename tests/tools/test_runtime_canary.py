@@ -1552,7 +1552,7 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
         runner = FakeRuntimes()
         adapters = forward(self.home / ".agents" / "skills")
         runner.listings["codex"] = [
-            ("alpha", "C:/Users/YourName/.agents/skills/alpha", True),
+            ("alpha", "C:/Profiles/YourName/.agents/skills/alpha", True),
             ("alpha", f"{adapters}/alpha", True),
             (FIXTURE, f"{adapters}/{FIXTURE}", True),
         ]
@@ -1566,7 +1566,7 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
             [
                 f'DISCOVERED codex {FIXTURE} "{forward(self.home)}/.agents/skills/{FIXTURE}"',
                 f'DISCOVERED codex alpha "{forward(self.home)}/.agents/skills/alpha"',
-                'SHADOWED codex alpha "C:/Users/YourName/.agents/skills/alpha"',
+                'SHADOWED codex alpha "C:/Profiles/YourName/.agents/skills/alpha"',
                 "UNDISCOVERED codex gamma",
             ],
             [line for line in lines if line.split()[0] in {"DISCOVERED", "SHADOWED", "UNDISCOVERED"}],
@@ -1649,7 +1649,7 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
 
     def test_a_copy_the_runtime_lists_disabled_is_neither_discovered_nor_a_shadow(self) -> None:
         adapters = forward(self.home / ".agents" / "skills")
-        other = "C:/Users/YourName/.agents/skills/alpha"
+        other = "C:/Profiles/YourName/.agents/skills/alpha"
         source = self.make_source()
         for runtime in ("codex", "copilot"):
             with self.subTest(runtime=runtime):
