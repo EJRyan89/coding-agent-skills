@@ -245,13 +245,19 @@ refused while a guarded hub is in view, and what they do not see at all is named
   and nested brackets included, and an array's, `NAME=( )` and `NAME+=( )`, to a subscript or not. Bash refuses an
   element's assignment before a command, sets nothing for it, and runs the command all the same, and the guard reads
   it so; on its own an element's assignment makes the variable an array, whose value it leaves unsettled. No form of
-  assignment Bash reads before a command stays outside what the guard sees. A word's value comes from its
+  assignment Bash reads before a command stays outside what the guard sees. A redirection may stand before the
+  command's name and among its assignments, as in `2>/dev/null git push` or `x=1 >out git push`, and the guard
+  places that call as it places the bare one, with every redirection operator Bash has: `<`, `>`, `>>`, `>|`, `<>`,
+  `&>`, `&>>`, `<<<`, a here-document, and a duplication such as `2>&1`, with or without a descriptor. As Bash does,
+  it still assigns each assignment after such a redirection, but after one that follows an assignment it reads no
+  subscript whole and refuses `NAME=( )`, and it reads a reserved word only as a command's first word, so in
+  `2>/dev/null time git push` or `x=1 time git push` Bash runs the program `time`. A word's value comes from its
   literal text, `~`, and each `$NAME` the command sets or the environment holds, and `$PWD` is where the shell is; a
   substitution, arithmetic, a special parameter, a glob, a brace expansion, or a value that would split leaves the
   word unsettled. The guard follows `cd` (with `--`; bare goes home, `cd -` and a `CDPATH` search leave the
   directory unknown), `pushd`, `popd`, and `env -C`, and runs a function's body where a command calls it.
-  Commands after `exec`, `command`, `builtin`, `nohup`, `nice`, `timeout`, `stdbuf`, and `env` are read as the
-  commands they start, `env`'s after every word holding `=`, which it takes as an assignment whatever the name, and
+  Commands after `exec`, `command`, `builtin`, `nohup`, `nice`, `timeout`, `stdbuf`, the program `time`, and `env`
+  are read as the commands they start, `env`'s after every word holding `=`, which it takes as an assignment whatever the name, and
   `eval` of fixed words is read as part of the shell. Every command or process substitution runs, as Bash runs it,
   in a subshell before the command that holds it, and so does one in an unquoted here-document's body.
 - **PowerShell, by its parser.** A PowerShell command is read by PowerShell's own parser, not by a second

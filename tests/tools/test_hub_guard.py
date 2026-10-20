@@ -1136,6 +1136,57 @@ class ContractTests(GuardTestCase):
         self.assertEqual("deny", self.bash(command, self.tree))
         self.assertIn(UNPLACED.format("commit"), self.reason)
 
+    def test_a_git_call_after_any_redirection_bash_reads_before_it_is_judged_as_the_bare_call(self) -> None:
+        for template in (
+            ">out {git}",
+            "2>/dev/null {git}",
+            "<in {git}",
+            ">>out {git}",
+            "&>out {git}",
+            "&>>out {git}",
+            "<<<'a b' {git}",
+            "2>&1 {git}",
+            ">&2 {git}",
+            "2>&- {git}",
+            "<>file {git}",
+            ">|out {git}",
+            "{{fd}}>out {git}",
+            "<<EOF {git}\nbody\nEOF",
+            '2>/dev/null >"a b" {git}',
+            "2>/dev/null x=1 {git}",
+            "x=1 2>/dev/null {git}",
+            "x=1 2>/dev/null y=2 >out {git}",
+            "2>/dev/null a[x y]=v {git}",
+            "! 2>/dev/null {git}",
+            "true && 2>/dev/null {git}",
+        ):
+            command = template.format(git="git commit -m x")
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn(WRITES.format("commit"), self.reason)
+                self.assertIsNone(self.bash(command, self.tree))
+                self.assertIsNone(self.bash(template.format(git="git status"), self.hub))
+        # Where `time` is not a command's first word, or is quoted, Bash runs the program, which starts git.
+        for command in (
+            "2>/dev/null time git commit -m x",
+            "x=1 time -p git commit -m x",
+            "\\time -f %e -o out --append git commit -m x",
+            "'time' --format=%e -- git commit -m x",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn(WRITES.format("commit"), self.reason)
+                self.assertIsNone(self.bash(command, self.tree))
+        self.assertEqual("deny", self.bash("\\time --bogus git commit -m x", self.hub))
+        self.assertIn("could not read the options passed to time", self.reason)
+        # An assignment after a leading redirection, or after a redirection that follows an assignment, still
+        # reaches git, as Bash still assigns it.
+        for prefix in ("2>/dev/null", "x=1 2>/dev/null"):
+            command = f'{prefix} GIT_WORK_TREE="{self.hub}" git reset --hard'
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn(WRITES.format("reset"), self.reason)
+
     def test_a_directory_change_that_runs_only_on_some_paths_leaves_the_directory_unknown(self) -> None:
         for command in (
             f'if [ -d x ]; then cd "{self.tree}"; fi; git commit -m x',

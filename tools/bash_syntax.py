@@ -3,11 +3,17 @@
 `parse` splits a command into words and operators by Bash's quoting rules (single and double quotes, `$'...'`,
 backslash escapes and line continuations, comments, and here-documents, whose bodies are data and never commands)
 and builds the tree Bash runs: lists, `&&` and `||`, pipelines, subshells, groups, `if`, `while`, `until`, `for`,
-`select`, `case`, `[[ ]]`, function definitions, and simple commands with their redirections and the assignments
-before their name. Every assignment Bash reads there is one: NAME=value and NAME+=value, an element's,
-NAME[SUBSCRIPT]=value and NAME[SUBSCRIPT]+=value, whose subscript is read whole, blanks, quotes, and nested brackets
-and all, as Bash reads it where an assignment may stand, and an array's, NAME=( ), NAME+=( ), and the same to a
-subscript, which Bash also reads among a declaration builtin's arguments. A word keeps its parts apart, so a reader
+`select`, `case`, `[[ ]]`, function definitions, and simple commands with the assignments before their name and
+their redirections, each of which may stand before the name, among those assignments, or after it: a command read
+with a redirection first, such as `2>/dev/null git status`, is the one read with it last. Every assignment Bash
+reads before a name is one: NAME=value and NAME+=value, an element's, NAME[SUBSCRIPT]=value and
+NAME[SUBSCRIPT]+=value, whose subscript is read whole, blanks, quotes, and nested brackets and all, as Bash reads it
+where an assignment may stand, and an array's, NAME=( ), NAME+=( ), and the same to a subscript, which Bash also
+reads among a declaration builtin's arguments. An assignment may stand at a command's start, after an assignment
+that stood there, and after redirections that are all the command holds so far, but not after a redirection that
+follows a word: there Bash still assigns NAME=value, yet reads a subscript's blank as the word's end and refuses
+NAME=( ), as the reader does. A reserved word is one only as a command's first word, never after an assignment or a
+redirection. A word keeps its parts apart, so a reader
 can tell literal text from a `$NAME` it must look up and from what only running the command settles: a command or
 process substitution, arithmetic, a special parameter, a glob, or a brace expansion. The text of every command and
 process substitution, and of each one in an unquoted here-document's body, is kept for a reader to read as the
@@ -237,8 +243,12 @@ class Lexer:
         self.tokens: list[Token] = []
         self.pending: list[HereDocument] = []
         # Whether the next word is where Bash reads an assignment: a command's first word, or one after its
-        # assignments and redirections; and whether it is a redirection's target, which leaves that as it was.
+        # assignments, or after redirections that are all the command holds so far; whether it is where Bash reads a
+        # reserved word, which is only a command's first; whether the command so far is only redirections; and
+        # whether the next word is a redirection's target, which leaves all that as it was.
         self.command_start = True
+        self.reserved = True
+        self.redirections_only = True
         self.redirecting = False
         self.naming_function = False
 
@@ -268,8 +278,11 @@ class Lexer:
                 self.tokens.append(Operator(operator))
                 if operator in REDIRECTIONS:
                     self.redirecting = operator not in HERE_DOCUMENTS
+                    self.command_start = self.command_start and self.redirections_only
+                    self.reserved = False
                 else:
-                    self.command_start = operator not in CASE_ENDS
+                    self.command_start = self.reserved = operator not in CASE_ENDS
+                    self.redirections_only = True
                 if operator == "\n":
                     self.read_here_documents()
                 elif operator in HERE_DOCUMENTS:
@@ -285,16 +298,18 @@ class Lexer:
         return self.tokens
 
     def follow_word(self, word: Word) -> None:
-        """Whether the word after this one starts a command: after an assignment, a reserved word that opens one,
-        `time -p`, or a function's name, where the word itself started one."""
+        """Whether the word after this one starts a command, after a reserved word that opens one, `time -p`, or a
+        function's name, each where Bash reads a reserved word; or stands where Bash reads an assignment, after one
+        that did."""
         if self.redirecting:
             self.redirecting = False
             return
         after_time = bool(self.tokens) and isinstance(self.tokens[-1], Word) and self.tokens[-1].literal == "time"
-        opens = word.assignment is not None or word.literal in COMMAND_OPENERS or (after_time and word.literal == "-p")
-        started, naming = self.command_start, self.naming_function
-        self.command_start = naming or (started and opens)
-        self.naming_function = started and not naming and word.literal == "function"
+        opens = word.literal in COMMAND_OPENERS or (after_time and word.literal == "-p")
+        started, reserved, naming = self.command_start, self.reserved, self.naming_function
+        self.reserved = self.redirections_only = naming or (reserved and opens)
+        self.command_start = self.reserved or (started and word.assignment is not None)
+        self.naming_function = reserved and not naming and word.literal == "function"
 
     def open_here_document(self, operator: str) -> None:
         while self.peek() in (" ", "\t"):
@@ -755,6 +770,8 @@ class Parser:
         if token is None:
             raise BashSyntaxError("a command is missing")
         if isinstance(token, Operator):
+            if token.text in REDIRECTIONS:
+                return self.simple()  # a redirection may stand anywhere in a simple command, its name's place too
             if token.text != "(":
                 raise BashSyntaxError(f"`{token.text.strip() or 'newline'}` where a command should start")
             self.index += 1
@@ -776,8 +793,9 @@ class Parser:
         redirects: list[Redirect] = []
         conditional = self.at_reserved("[[")
         # Bash reads NAME=( ) among the assignments before a command's name, and among a declaration builtin's
-        # arguments.
-        prefix, declaration = True, False
+        # arguments, where it reads that name as one; neither after a redirection that follows a word, as it stops
+        # reading the words before the name as assignments there, though it still assigns each that is one.
+        prefix, declaration, assigning = True, False, True
         while True:
             token = self.peek()
             if token is None:
@@ -787,6 +805,7 @@ class Parser:
                     self.index += 1  # inside [[ ]], operators are the expression's own
                     continue
                 if token.text in REDIRECTIONS:
+                    assigning = assigning and not words
                     redirects.append(self.redirect())
                     continue
                 if token.text == "(" and len(words) == 1 and not redirects and words[0].literal:
@@ -795,8 +814,8 @@ class Parser:
             if isinstance(token, HereDocument):
                 raise BashSyntaxError("a here-document has no operator")
             if prefix and token.assignment is None:
-                prefix, declaration = False, token.literal in DECLARATION_BUILTINS
-            if not (prefix or declaration):
+                prefix, declaration = False, assigning and token.literal in DECLARATION_BUILTINS
+            if not ((prefix and assigning) or declaration):
                 refuse_array(token)
             words.append(token)
             self.index += 1
