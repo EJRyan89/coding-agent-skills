@@ -42,7 +42,7 @@ def frozen_clock(seconds: int) -> contextlib.AbstractContextManager[Any]:
 
 class ReviewOperationTests(unittest.TestCase):
     @staticmethod
-    def _pull(number: int, state: str = "OPEN", merged_at: str | None = None) -> dict:
+    def _pull(number: int, state: str = "OPEN", merged_at: str | None = None) -> dict[str, Any]:
         return {
             "number": number,
             "title": f"Pull {number}",
@@ -70,7 +70,7 @@ class ReviewOperationTests(unittest.TestCase):
             validate_canary_pull(self._pull(41), repository="example/one", number=42)
 
     def test_pull_metadata_and_selectors_of_the_wrong_kind_are_field_errors(self) -> None:
-        def changed(**fields: Any) -> dict:
+        def changed(**fields: Any) -> dict[str, Any]:
             return {**self._pull(42), **fields}
 
         merged = self._pull(42, "MERGED", "2026-01-05T00:00:00Z")

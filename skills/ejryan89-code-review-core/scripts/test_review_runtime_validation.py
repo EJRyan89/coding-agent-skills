@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import review_runtime
+from link_probe import is_link_or_junction
 from review_config import ConfigurationError
 from review_runtime import (
     RuntimeContractError,
@@ -856,7 +857,7 @@ class SourceSnapshotVerificationTests(unittest.TestCase):
 
     def verify(self, snapshot: Snapshot, root: Path) -> dict[str, Any]:
         marked = {root if name == "." else root.joinpath(*name.split("/")) for name in snapshot.reparse}
-        original = review_runtime.is_link_or_junction
+        original = is_link_or_junction
 
         def is_reparse_point(path: Path, metadata: os.stat_result | None = None) -> bool:
             return path in marked or original(path, metadata)

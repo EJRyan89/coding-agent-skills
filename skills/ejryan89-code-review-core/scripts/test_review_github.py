@@ -16,8 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import review_github
-from github_client import CommandResult
-from review_github import GitHubClient, GitHubError, GitHubFieldError, GitHubInputError
+from github_client import CommandResult, GitHubError, subprocess_runner
+from review_github import GitHubClient, GitHubFieldError, GitHubInputError
 from review_operation import ReviewOperationFieldError, validate_pull
 from test_review_records import NOT_HEX, OBJECT_ID, field_message, field_pattern
 
@@ -41,7 +41,7 @@ def answering(result: CommandResult) -> Callable[[Sequence[str]], CommandResult]
 
 class GitHubTests(unittest.TestCase):
     @staticmethod
-    def _api_pull(number: int, *, state: str = "open", merged_at: str | None = None) -> dict:
+    def _api_pull(number: int, *, state: str = "open", merged_at: str | None = None) -> dict[str, Any]:
         return {
             "number": number,
             "title": f"Pull {number}",
@@ -58,7 +58,7 @@ class GitHubTests(unittest.TestCase):
             mock.patch("github_client.run_bounded", side_effect=FileNotFoundError("gh was not found")),
             self.assertRaises(GitHubError) as context,
         ):
-            review_github.subprocess_runner(["gh", "api", "user"])
+            subprocess_runner(["gh", "api", "user"])
         self.assertEqual("prerequisite", context.exception.kind)
         self.assertIn("install GitHub CLI", str(context.exception))
 
@@ -76,7 +76,7 @@ class GitHubTests(unittest.TestCase):
         self.assertIn("--slurp", calls[0])
 
     @staticmethod
-    def _closed_page(numbers: range | list[int], updated: str, *, merged: str | None = None) -> list[dict]:
+    def _closed_page(numbers: range | list[int], updated: str, *, merged: str | None = None) -> list[dict[str, Any]]:
         pulls = []
         for number in numbers:
             value = GitHubTests._api_pull(number, state="closed", merged_at=merged or updated)
@@ -316,8 +316,8 @@ class GitHubTests(unittest.TestCase):
         page = json.loads(self._graphql_page([1], "c1"))
         connection = "graphql response.data.repository.pullRequests"
 
-        def with_page(**fields: Any) -> dict:
-            changed = copy.deepcopy(page)
+        def with_page(**fields: Any) -> dict[str, Any]:
+            changed: dict[str, Any] = copy.deepcopy(page)
             changed["data"]["repository"]["pullRequests"].update(fields)
             return changed
 
@@ -467,7 +467,7 @@ class GitHubTests(unittest.TestCase):
         self.assertEqual([["gh", "api", "repos/example/one/pulls"]] * 2, calls)
 
     def test_runner_decodes_bytes_that_are_not_utf8_without_losing_them(self) -> None:
-        result = review_github.subprocess_runner(
+        result = subprocess_runner(
             [
                 sys.executable,
                 "-c",

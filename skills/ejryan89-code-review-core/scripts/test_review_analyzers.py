@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -81,7 +82,7 @@ class InventoryTests(unittest.TestCase):
                 target.write_text(content, encoding="utf-8", newline="\n")
         return list(files)
 
-    def settings(self, result: dict, path: str) -> list[str]:
+    def settings(self, result: dict[str, Any], path: str) -> list[str]:
         return [entry["setting"] for entry in result["settings"] if entry["file"] == path]
 
     def test_dotnet_projects_packages_and_severities(self) -> None:
@@ -216,7 +217,7 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(10, len(entry["files"]))
         self.assertEqual(2, entry["more_files"])
 
-    def tools(self, result: dict) -> dict[str, list[str]]:
+    def tools(self, result: dict[str, Any]) -> dict[str, list[str]]:
         return {entry["tool"]: entry["files"] for entry in result["tools"]}
 
     def test_an_empty_snapshot_has_the_schema_and_nothing_else(self) -> None:

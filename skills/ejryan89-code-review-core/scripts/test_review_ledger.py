@@ -8,7 +8,7 @@ import re
 import sys
 import tempfile
 import unittest
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -56,7 +56,7 @@ def field_pattern(path: str, expected: str, found: str) -> str:
     return f"^{re.escape(f'{path} must be {expected}, found {found}')}$"
 
 
-def finding(key: str, severity: str = "SHOULD_FIX", line: int = 10, **extra: object) -> dict:
+def finding(key: str, severity: str = "SHOULD_FIX", line: int = 10, **extra: object) -> dict[str, Any]:
     return {
         "candidate_key": key,
         "severity": severity,
@@ -76,7 +76,8 @@ def reviewed_ledger(archive: Path) -> dict[str, Any]:
     head = reviewed_head(archive, "example/one", 12)
     if head is None:
         raise AssertionError("example/one#12 has no reviewed head")
-    return head["ledger"]
+    ledger: dict[str, Any] = head["ledger"]
+    return ledger
 
 
 def disposition(identifier: str, value: Disposition) -> PriorDisposition:
@@ -98,7 +99,7 @@ def adapter_result(findings: Sequence[Any] = (), dispositions: Sequence[PriorDis
     }
 
 
-def record_request(mode: str = "initial") -> dict:
+def record_request(mode: str = "initial") -> dict[str, Any]:
     return {
         "repository": "example/one",
         "pull_number": 12,
@@ -112,7 +113,7 @@ def record_request(mode: str = "initial") -> dict:
     }
 
 
-def validate(result: object, prior: Sequence[dict] = ()) -> AdapterResult:
+def validate(result: object, prior: Sequence[dict[str, Any]] = ()) -> AdapterResult:
     return validate_adapter_result(
         result,
         expected_repository="example/one",
@@ -152,12 +153,12 @@ class ArchiveFixture:
         self.archive = root / "archive"
         self.count = 0
 
-    def prior(self) -> list[dict]:
+    def prior(self) -> list[dict[str, Any]]:
         return carried_findings(pull_records(self.archive, "example/one", 12))
 
     def commit(
         self,
-        findings: Sequence[dict] = (),
+        findings: Sequence[dict[str, Any]] = (),
         dispositions: Sequence[PriorDisposition] = (),
         *,
         mode: str = "re-review",
@@ -452,6 +453,7 @@ class RepeatTests(unittest.TestCase):
             [{"version": 1, "id": "F001"}, None, {"version": 2, "id": "F002"}],
             [item.get("repeats") for item in record["findings"]],
         )
+        mutate: Callable[[ReviewRecord], object]
         for mutate, message in (
             (lambda r: r["findings"][2].update(repeats={"version": 2, "id": "F009"}), "repeats an unknown finding"),
             (lambda r: r["findings"][2].update(repeats={"version": 2, "id": "F003"}), "cannot repeat itself"),
@@ -514,6 +516,7 @@ class RepeatTests(unittest.TestCase):
         record = build_record(record_request("re-review"), result, version=2, policy=POLICY, prior_ledger=prior_ledger)
         severities = 'one of "MUST_FIX", "SHOULD_FIX", "SUGGESTION"'
         dispositions = 'one of "addressed", "partially_addressed", "still_present", "superseded", "unable_to_verify"'
+        mutate: Callable[[ReviewRecord], object]
         for mutate, path, expected, found in (
             (
                 lambda r: r["findings"][2].update(repeats=["F002"]),
@@ -709,7 +712,7 @@ def fixture_report(archive: Path, version: int) -> str:
 
 def flag(
     identifier: int, version: int | None, finding_id: str | None, *, number: int = 12, status: str = "open"
-) -> dict:
+) -> dict[str, Any]:
     resolved = status == "resolved"
     return {
         "id": f"RF-{identifier:06d}",

@@ -22,8 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import review_io
+from process_identity import ProcessStatus
 from review_io import PersistenceError, PersistenceFieldError, ResourceLock, atomic_write_json, read_json
-from review_process import ProcessStatus
 from review_state import StateError, StateFieldError, empty_state, load_state, update_state, validate_state
 
 
@@ -53,7 +53,7 @@ class StateAndLockTests(unittest.TestCase):
             path = Path(temporary) / "state.json"
             initial = empty_state()
 
-            def advance(state: dict) -> dict:
+            def advance(state: dict[str, Any]) -> dict[str, Any]:
                 replacement = copy.deepcopy(state)
                 replacement["repositories"]["example/one"] = {
                     "merged_since": "2026-01-01T00:00:00Z",
@@ -72,7 +72,7 @@ class StateAndLockTests(unittest.TestCase):
             self.assertEqual(updated, load_state(path), "a refused replacement leaves the state as it was")
 
     def test_a_watermark_must_begin_with_a_calendar_date(self) -> None:
-        def state(value: str) -> dict:
+        def state(value: str) -> dict[str, Any]:
             return {"schema_version": 1, "repositories": {"example/one": {"merged_since": value}}}
 
         for value in ("2026-03-10", "2026-03-10T00:00:00Z"):
@@ -125,7 +125,7 @@ class StateAndLockTests(unittest.TestCase):
         self.assertGreaterEqual(int(match[1]), self.BACKDATED_SECONDS, warning)
         self.assertLessEqual(int(match[1]), elapsed + 1, warning)
 
-    def _old_lock(self, path: Path, owner: dict) -> None:
+    def _old_lock(self, path: Path, owner: dict[str, Any]) -> None:
         path.mkdir()
         atomic_write_json(path / "owner.json", {"token": "a" * 32, "created_unix": time.time() - 7200, **owner})
 
@@ -282,7 +282,7 @@ class StateAndLockTests(unittest.TestCase):
                     self.assertFalse(path.exists(), "the lock is released while the owner file is open")
                     self.assertEqual(lock.token, json.loads(reader.read())["token"])
                 with (
-                    mock.patch.object(review_io.time, "sleep", side_effect=AssertionError("waited")),
+                    mock.patch.object(time, "sleep", side_effect=AssertionError("waited")),
                     ResourceLock(path),
                 ):
                     pass
@@ -359,7 +359,7 @@ class StateAndLockTests(unittest.TestCase):
             errors = io.StringIO()
             with (
                 mock.patch.object(review_io, "open_shared", side_effect=release_first),
-                mock.patch.object(review_io.time, "sleep", side_effect=AssertionError("waited")),
+                mock.patch.object(time, "sleep", side_effect=AssertionError("waited")),
                 contextlib.redirect_stderr(errors),
                 lock,
             ):
