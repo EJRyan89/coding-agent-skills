@@ -1439,7 +1439,9 @@ class GuardTests(SynthesisFixture):
         )
         self.assertEqual(before, self.json_path.read_text(encoding="utf-8"), "nothing is recorded")
         self.assertEqual([self.synthesis_run], self.runs(), "the run stays for another attempt")
-        self.assertEqual((0, ""), self.synthesize(self.json_path, result, "--check")[::2], "the self-check still passes")
+        self.assertEqual(
+            (0, ""), self.synthesize(self.json_path, result, "--check")[::2], "the self-check still passes"
+        )
 
     def test_on_claude_code_a_result_is_recorded_once_the_guard_claimed_the_role(self) -> None:
         self.assertIsNone(self.decide("Read", file_path=str(self.prompt(self.json_path))))

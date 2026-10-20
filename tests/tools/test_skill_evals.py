@@ -2533,7 +2533,11 @@ class StubClaude:
                     built = self.built[f"{run.name} {model}"] = build_document(Path(prepare[0]), stage)
                     prepare = ["--canary", "--fixture", fixture_of(built)]
                 pipeline = Pipeline(self.test, Path(environment["CODE_REVIEW_CONFIG"]))
-                written = pipeline.review(prepare, spec) if self.guarded else pipeline.refused(prepare, spec)
+                written: Path | None = None
+                if self.guarded:
+                    written = pipeline.review(prepare, spec)
+                else:
+                    pipeline.refused(prepare, spec)
             if self.after is not None and written is not None:
                 self.after(written)
         reviewer = self.reviewer or model

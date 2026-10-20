@@ -32,6 +32,7 @@ from skill_roots import sibling_scripts
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 import review_document
+import review_guard
 import review_pipeline as rp
 import review_run
 import review_runtime
@@ -628,6 +629,7 @@ class PipelineTestCase(DocumentTestCase):
             "body": "Retrying forever never gives up on a poisoned message.",
         }
         result = {"model": "fixture-model", "summary": "One gap.", "findings": [finding], "prior_dispositions": []}
+        review_guard.read_log(run, roles[0]["id"]).touch()  # the reviewer guard's claim of the role starts its log
         Path(roles[0]["result_file"]).write_text(json.dumps(result), encoding="utf-8")
         # Every later command takes the run list prepare printed, as the skill passes it.
         listed = next(fact for fact in prepared if fact.startswith("RUNS "))

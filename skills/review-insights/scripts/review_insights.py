@@ -74,6 +74,7 @@ from flat_text import flat_text
 from git_client import GitClient
 from review_archive import list_versions, pull_directory, record_files, record_paths
 from review_config import (
+    RUNTIME_HOSTS,
     ConfigurationError,
     load_config,
     resolve_repositories,
@@ -94,7 +95,6 @@ from review_records import (
     valid_analyzer,
     validate_record_pair,
 )
-from review_runtime import RUNTIME_CAPABILITIES
 from skill_roots import skills_directory_holding
 from typed_fields import FieldError
 
@@ -1357,7 +1357,7 @@ def _add_synthesize_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--report", required=True, type=Path, help="the insights.json a report printed")
     parser.add_argument("--result", required=True, type=Path, help="the SYNTHESIS_RESULT file")
     parser.add_argument("--check", action="store_true", help="only check the result; record nothing")
-    parser.add_argument("--host", choices=sorted(RUNTIME_CAPABILITIES), help="the runtime this session runs in")
+    parser.add_argument("--host", choices=sorted(RUNTIME_HOSTS - {"auto"}), help="the runtime this session runs in")
     parser.add_argument("--inline", action="store_true", help="this session followed the prompt itself")
 
 

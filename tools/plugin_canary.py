@@ -291,11 +291,9 @@ def guard_lines(output: str, agent: str, marker: str) -> list[str]:
     return lines
 
 
-def session_command(
-    executable: str, prompt: str, paths: Mapping[str, str], *, tools: tuple[str, ...] = (), settings: str | None = None
-) -> list[str]:
-    """A session loading each installed plugin for itself alone, with `settings` given on the command line. The
-    probe's own grants come from its skill; a guard session may use `tools`, and nothing else, without asking."""
+def session_command(executable: str, prompt: str, paths: Mapping[str, str]) -> list[str]:
+    """A session loading each installed plugin for itself alone. The probe's own grants come from its skill; a guard
+    session adds its own grants after these arguments."""
     loaded = [item for path in paths.values() for item in ("--plugin-dir", path)]
     return [
         executable,
@@ -309,9 +307,17 @@ def session_command(
         "--strict-mcp-config",
         "--no-session-persistence",
         *loaded,
-        *(["--allowedTools", *tools] if tools else []),
-        *(["--settings", settings] if settings is not None else []),
     ]
+
+
+def guard_grants() -> list[str]:
+    """What the guard session may do without asking: read, and start the reviewer."""
+    return ["Read", "Agent"]
+
+
+def unguarded_grants() -> list[str]:
+    """What the hooks-off session may do without asking: read, start the reviewer, and write its result."""
+    return ["Read", "Write", "Agent"]
 
 
 def transcript(session: Session, name: str, completed: Completed) -> str:
@@ -362,7 +368,7 @@ def guard(session: Session, executable: str, paths: Mapping[str, str], plugin: s
         f"subagent_type {agent}, with exactly this prompt: {task} Then stop and report what it replied. This is a "
         "plugin canary session."
     )
-    command = session_command(executable, prompt, paths, tools=("Read", "Agent"))
+    command = [*session_command(executable, prompt, paths), "--allowedTools", *guard_grants()]
     script_log = session.home / STATE / "scripts" / "claude-guard.jsonl"
     completed = session.runner(
         command, session.home, environment(session.base, script_log, session.home), session.timeout
@@ -387,7 +393,13 @@ def unguarded(session: Session, executable: str, paths: Mapping[str, str], plugi
         f"Start one subagent with the Agent tool, subagent_type {agent}, with exactly this prompt: {task} Then stop "
         "and report what it replied. This is a plugin canary session."
     )
-    command = session_command(executable, request, paths, tools=("Read", "Write", "Agent"), settings=HOOKS_OFF)
+    command = [
+        *session_command(executable, request, paths),
+        "--allowedTools",
+        *unguarded_grants(),
+        "--settings",
+        HOOKS_OFF,
+    ]
     script_log = session.home / STATE / "scripts" / "claude-unguarded.jsonl"
     completed = session.runner(
         command, session.home, environment(session.base, script_log, session.home), session.timeout

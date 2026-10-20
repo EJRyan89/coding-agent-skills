@@ -90,8 +90,8 @@ def count_reads(run: Path, state: RunState, roles: Sequence[str]) -> bool:
     their bytes, add them to the role's counts in run.json's `reads`, and delete the log, so no path outlives this
     step. Returns whether any log was counted. A role without a log is not counted: no guard ran for it, and on
     Claude Code `unguarded_roles` refuses its result. A run prepared before reads were counted has no `reads` and
-    counts nothing. The snapshot's own manifest is not a file
-    of the snapshot, as `review.snapshot.files` leaves it out, so reading it counts for nothing."""
+    counts nothing. The snapshot's own manifest is not a file of the snapshot, as `review.snapshot.files` leaves it
+    out, so reading it counts for nothing."""
     if "reads" not in state:
         return False
     source = run / "source"
@@ -126,8 +126,8 @@ def unguarded_roles(run: Path, state: RunState, roles: Sequence[str]) -> dict[st
     On Claude Code a role dispatched as a native subagent, whether started one by one or by a Workflow, runs as the
     code-review-reviewer agent, whose hook, or the plugin's, runs the guard; the guard's claim creates the role's read
     log, and check counts the log into run.json's `reads` and deletes it. A role with neither ran with no hook, bound
-    by its prompt alone. An inline role, the Copilot CLI host, and a Codex or Copilot CLI subagent run no guard, so
-    they are never held to a claim.
+    by its prompt alone. An inline role, the Copilot CLI host, and a Codex subagent run no guard, so they are never
+    held to a claim.
     """
     if state["runtime"] != "claude-code" or run_dispatch(state) != "subagents":
         return {}
