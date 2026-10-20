@@ -1094,6 +1094,12 @@ FIXTURE_PAGES = [
 ]
 
 
+FIXTURE_FACTS = {
+    runtime: ((f"docs/{runtime}-support.md", "the whole document"), *audit.SHARED_RUNTIME_FACTS)
+    for runtime in ("alpha", "beta")
+}
+
+
 class GuidanceTests(Fixture):
     """A fixture whose deployer supports the runtimes alpha and beta, with a guidance record naming pages for both."""
 
@@ -1111,6 +1117,7 @@ class GuidanceTests(Fixture):
             },
         )
         self.commit("the guidance record")
+        self.enterContext(mock.patch.dict(audit.RUNTIME_FACTS, FIXTURE_FACTS, clear=True))
 
     def test_writes_one_brief_per_subject_naming_its_pages_files_and_questions(self) -> None:
         code, lines = self.run_main("guidance")
@@ -1182,6 +1189,17 @@ class GuidanceTests(Fixture):
         self.assertEqual(
             f"FAILED {GUIDANCE} names no page for beta, which deployer/runtime_support.py supports; add the "
             "runtime's pages before the audit",
+            lines[-1],
+        )
+        self.assertFalse([line for line in lines if line.startswith("BRIEF")])
+
+    def test_refuses_a_supported_runtime_with_no_facts_and_writes_no_brief(self) -> None:
+        del audit.RUNTIME_FACTS["beta"]
+        code, lines = self.run_main("guidance")
+        self.assertEqual(1, code)
+        self.assertEqual(
+            "FAILED RUNTIME_FACTS in audit_repository.py names no file for beta, which deployer/runtime_support.py "
+            "supports; add the files that state the runtime's facts before the audit",
             lines[-1],
         )
         self.assertFalse([line for line in lines if line.startswith("BRIEF")])
@@ -1299,12 +1317,58 @@ class RepositoryGuidanceTests(unittest.TestCase):
                 self.assertTrue(cited)
                 self.assertEqual([], sorted(cited - recorded))
 
-    def test_every_file_a_brief_names_is_one_this_repository_holds(self) -> None:
+    def named(self, subject: str) -> list[str]:
         tracked = set(git(REPOSITORY, "ls-files").splitlines())
-        for subject in (*audit.supported_runtimes(REPOSITORY), audit.PYTHON_SUBJECT):
-            facts = audit.PYTHON_FACTS if subject == audit.PYTHON_SUBJECT else audit.RUNTIME_FACTS
-            expected = [path for path, _ in facts if "{runtime}" not in path]
+        return [path for path, _ in audit.subject_facts(subject, tracked)]
+
+    def test_every_supported_runtime_has_facts_and_every_file_a_brief_names_is_one_this_repository_holds(
+        self,
+    ) -> None:
+        runtimes = audit.supported_runtimes(REPOSITORY)
+        self.assertEqual(sorted(runtimes), sorted(audit.RUNTIME_FACTS))
+        for subject in (*runtimes, audit.PYTHON_SUBJECT):
+            facts = audit.PYTHON_FACTS if subject == audit.PYTHON_SUBJECT else audit.RUNTIME_FACTS[subject]
             with self.subTest(subject=subject):
-                named = [path for path, _ in audit.subject_facts(subject, tracked)]
-                self.assertEqual([], [path for path in expected if path not in named])
-        self.assertIn("docs/codex-support.md", [path for path, _ in audit.subject_facts("codex", tracked)])
+                self.assertEqual([path for path, _ in facts], self.named(subject))
+                self.assertEqual(len(facts), len({path for path, _ in facts}))
+                self.assertTrue(all(where.strip() for _, where in facts))
+
+    def test_each_adapted_runtime_brief_names_its_support_document_and_the_files_its_audit_corrected(self) -> None:
+        corrected = [
+            "CLAUDE.md",
+            "docs/design.md",
+            "docs/installation.md",
+            "docs/code-review-operations.md",
+            "deployer/tools.py",
+            "deployer/check.py",
+            "deployer/discovery.py",
+            "deployer/verify.py",
+            ".github/workflows/deployable.yml",
+            "tools/skill_shims.py",
+        ]
+        for runtime, document in (("codex", "docs/codex-support.md"), ("copilot-cli", "docs/copilot-support.md")):
+            with self.subTest(runtime=runtime):
+                named = self.named(runtime)
+                self.assertIn(document, named)
+                self.assertEqual([], [path for path in corrected if path not in named])
+
+    def test_the_claude_code_brief_names_its_own_files_and_differs_from_the_codex_brief(self) -> None:
+        named = self.named("claude-code")
+        expected = [
+            "agents/code-review-reviewer.md",
+            ".claude/settings.json",
+            "tools/hub_guard.py",
+            "tools/skill_evals.py",
+            "docs/skill-evaluations.md",
+            "docs/runtime-prompts/",
+            "docs/adding-a-skill.md",
+            ".claude-plugin/marketplace.json",
+            "tools/plugin_build.py",
+        ]
+        self.assertEqual([], [path for path in expected if path not in named])
+        self.assertNotEqual(sorted(self.named("codex")), sorted(named))
+        self.assertFalse([path for path in named if path.endswith("-support.md")])
+
+    def test_the_plugin_organization_page_is_a_claude_code_page(self) -> None:
+        subjects = {found.url: found.subject for found in self.pages()}
+        self.assertEqual("claude-code", subjects.get("https://code.claude.com/docs/en/plugins/org"))
