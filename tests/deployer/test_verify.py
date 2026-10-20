@@ -175,14 +175,14 @@ class ParsingTests(unittest.TestCase):
         def test_copilot_paths_are_skill_directories_with_forward_slashes(self) -> None:
             found = discovery.parse_copilot(
                 copilot_answer(
-                    ("alpha", "C:\\Users\\YourName\\a dir\\.agents\\skills\\alpha", True),
-                    ("beta", "C:\\Users\\YourName\\a dir\\.agents\\skills\\beta", False),
+                    ("alpha", "C:\\Profiles\\YourName\\a dir\\.agents\\skills\\alpha", True),
+                    ("beta", "C:\\Profiles\\YourName\\a dir\\.agents\\skills\\beta", False),
                 )
             )
             self.assertEqual(
                 {
-                    "alpha": [Listed("C:/Users/YourName/a dir/.agents/skills/alpha", True)],
-                    "beta": [Listed("C:/Users/YourName/a dir/.agents/skills/beta", False)],
+                    "alpha": [Listed("C:/Profiles/YourName/a dir/.agents/skills/alpha", True)],
+                    "beta": [Listed("C:/Profiles/YourName/a dir/.agents/skills/beta", False)],
                 },
                 found,
             )
@@ -193,8 +193,8 @@ class ParsingTests(unittest.TestCase):
                     json.dumps({"id": 0, "result": {"codexHome": "C:/x"}}),
                     json.dumps({"method": "skills/changed"}),
                     codex_answer(
-                        ("alpha", "C:\\Users\\YourName\\a dir\\.agents\\skills\\alpha\\SKILL.md", True),
-                        ("alpha", "C:\\Users\\YourName\\a dir\\.codex\\skills\\alpha\\SKILL.md", True),
+                        ("alpha", "C:\\Profiles\\YourName\\a dir\\.agents\\skills\\alpha\\SKILL.md", True),
+                        ("alpha", "C:\\Profiles\\YourName\\a dir\\.codex\\skills\\alpha\\SKILL.md", True),
                         ("beta", "C:/home/.agents/skills/beta/SKILL.md", False),
                     ),
                 ]
@@ -202,8 +202,8 @@ class ParsingTests(unittest.TestCase):
             self.assertEqual(
                 {
                     "alpha": [
-                        Listed("C:/Users/YourName/a dir/.agents/skills/alpha", True),
-                        Listed("C:/Users/YourName/a dir/.codex/skills/alpha", True),
+                        Listed("C:/Profiles/YourName/a dir/.agents/skills/alpha", True),
+                        Listed("C:/Profiles/YourName/a dir/.codex/skills/alpha", True),
                     ],
                     "beta": [Listed("C:/home/.agents/skills/beta", False)],
                 },
@@ -595,7 +595,7 @@ class VerifyCommandTests(DeployerTestCase):
         self.assertFalse(directories.pop().exists())
 
     def test_a_missing_disabled_or_shadowed_adapter_fails_and_names_the_runtime_documentation(self) -> None:
-        other = "C:/Users/YourName/.codex/skills/alpha"
+        other = "C:/Profiles/YourName/.codex/skills/alpha"
         self.answer(
             codex=[("alpha", self.adapter("alpha"), True), ("alpha", other, True)],
             copilot=[("beta", self.adapter("beta"), False)],

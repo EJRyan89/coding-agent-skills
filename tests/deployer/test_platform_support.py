@@ -60,7 +60,7 @@ if platform_support.WINDOWS:
             bash = self.make_bash(git_root)
             exec_path = f"{platform_support.normalize(git_root)}/mingw64/libexec/git-core\n"
             with (
-                self.which(r"C:\Users\YourName\scoop\shims\git.exe"),
+                self.which(r"C:\Profiles\YourName\scoop\shims\git.exe"),
                 mock.patch(
                     "deployer.platform_support.run_tool", return_value=platform_support.ToolResult(0, exec_path)
                 ) as run_tool,
@@ -69,7 +69,7 @@ if platform_support.WINDOWS:
             if found is None:
                 self.fail("Git Bash beside the git on PATH is found")
             self.assertEqual(bash, Path(found))
-            run_tool.assert_called_once_with([r"C:\Users\YourName\scoop\shims\git.exe", "--exec-path"])
+            run_tool.assert_called_once_with([r"C:\Profiles\YourName\scoop\shims\git.exe", "--exec-path"])
 
         def test_other_bash_on_path_is_never_used(self) -> None:
             with self.which(None):

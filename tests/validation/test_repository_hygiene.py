@@ -80,12 +80,13 @@ class RepositoryHygieneFixtures(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             # Each sample is split so this source file does not match the scan it tests.
+            allowed = "C:/" + "Users/YourName/GitHub and C:\\" + "Users\\YourName\\scoop"
             user = "C:\\" + "Users\\someone\\GitHub"
             forward = "c:/" + "users/Someone/tools"
             synced = "One" + "Drive - Contoso"
             internal = "github.com/contoso" + "-internal/tools"
             samples = {
-                "allowed.md": "C:/Users/YourName/GitHub and C:\\Users\\YourName\\scoop\n",
+                "allowed.md": f"{allowed}\n",
                 "user.md": f"Install to {user}\n",
                 "forward.md": f"see {forward}\n",
                 "synced.md": f"C:/Data/{synced}/notes\n",
