@@ -184,6 +184,13 @@ PREFIX_PROGRAMS: dict[str, tuple[frozenset[str], frozenset[str], int]] = {
         1,
     ),
     "stdbuf": (frozenset(), frozenset({"-i", "-o", "-e", "--input", "--output", "--error"}), 0),
+    # The program, which Bash runs where `time` is not a command's first word, as after an assignment or a
+    # redirection, or is quoted.
+    "time": (
+        frozenset({"-p", "--portability", "-v", "--verbose", "-a", "--append", "-q", "--quiet"}),
+        frozenset({"-f", "--format", "-o", "--output"}),
+        0,
+    ),
 }
 # Bash options whose next word is their value, so it is not the script that -c runs.
 BASH_OPTIONS_WITH_VALUE = {"-o", "+o", "-O", "+O", "--rcfile", "--init-file"}

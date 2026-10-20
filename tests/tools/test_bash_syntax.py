@@ -133,7 +133,9 @@ class ArrayAssignmentTests(unittest.TestCase):
         ("a[]=v git push", [("a", True, False)]),
         ("a[1]=(x) git push", [("a", True, False)]),
         ("a[1]+=(x y) git push", [("a", True, True)]),
-        ("x=1 >out a[x y]=v git push", [("x", False, False), ("a", True, False)]),
+        ("2>/dev/null a[x y]=v git push", [("a", True, False)]),
+        ("2>&1 >out x=1 a[x y]=v git push", [("x", False, False), ("a", True, False)]),
+        ("x=1 2>/dev/null y=2 git push", [("x", False, False), ("y", False, False)]),
         ("if a[x y]=v git push; then :; fi", [("a", True, False)]),
         ("! a[x y]=v git push", [("a", True, False)]),
         ("time -p a[x y]=v git push", [("a", True, False)]),
@@ -171,11 +173,75 @@ def test_an_element_assignment_keeps_its_value_apart_from_its_subscript() -> Non
         # Where Bash reads one it reads the subscript whole, = or not, and a word that is not one is the command's name.
         ("a[x y] echo", ["a[x y]", "echo"]),
         ("a[x]y]=v echo", ["a[x]y]=v", "echo"]),
+        # A redirection keeps the place only while it is all the command holds, so after an assignment it ends it.
+        ("x=1 >out a[x y]=v echo", ["x=1", "a[x", "y]=v", "echo"]),
+        ("2>&1 x=1 >out a[x y]=v echo", ["x=1", "a[x", "y]=v", "echo"]),
+        # A reserved word is one only as a command's first word, so after an assignment or a redirection it is the
+        # command's name and the words after it its arguments.
+        ("x=1 time a[x y]=v", ["x=1", "time", "a[x", "y]=v"]),
+        ("x=1 ! a[x y]=v", ["x=1", "!", "a[x", "y]=v"]),
+        (">out time -p a[x y]=v", ["time", "-p", "a[x", "y]=v"]),
+        ("2>&1 if a[x y]=v", ["if", "a[x", "y]=v"]),
     ],
 )
 def test_a_subscript_is_read_whole_only_where_bash_reads_an_assignment(text: str, words: list[str]) -> None:
     command = first_simple(text)
     assert words == [word.raw for word in command.words]
+
+
+# Each redirection Bash reads before a command's name, alone, among the assignments before it, and after a reserved
+# word, with the command written with the redirection after its name.
+@pytest.mark.parametrize(
+    ("text", "after"),
+    [
+        (">out git push", "git push >out"),
+        ("2>/dev/null git push", "git push 2>/dev/null"),
+        ("<in git push", "git push <in"),
+        (">>out git push", "git push >>out"),
+        ("&>out git push", "git push &>out"),
+        ("&>>out git push", "git push &>>out"),
+        ("<<<'a b' git push", "git push <<<'a b'"),
+        ("2>&1 git push", "git push 2>&1"),
+        (">&2 git push", "git push >&2"),
+        ("3<&- git push", "git push 3<&-"),
+        ("<>file git push", "git push <>file"),
+        (">|out git push", "git push >|out"),
+        ("{fd}>out git push", "git push {fd}>out"),
+        ("<<EOF git push\n$(git am)\nEOF", "git push <<EOF\n$(git am)\nEOF"),
+        ("<<-'EOF' git push\n\tbody\n\tEOF", "git push <<-'EOF'\n\tbody\n\tEOF"),
+        ('2>/dev/null >"a b" <in git push', 'git push 2>/dev/null >"a b" <in'),
+        ("2>/dev/null x=1 git push", "x=1 git push 2>/dev/null"),
+        ("x=1 2>/dev/null git push", "x=1 git push 2>/dev/null"),
+        ("x=1 2>/dev/null y=2 >out git push", "x=1 y=2 git push 2>/dev/null >out"),
+        ("2>/dev/null a[x y]=v b=(1) git push", "a[x y]=v b=(1) git push 2>/dev/null"),
+        (">$(git am) git push", "git push >$(git am)"),
+        ("! 2>/dev/null git push", "! git push 2>/dev/null"),
+        ("time 2>/dev/null git push", "time git push 2>/dev/null"),
+        ("true && 2>/dev/null git push", "true && git push 2>/dev/null"),
+        ("echo | 2>/dev/null git push", "echo | git push 2>/dev/null"),
+        ("if 2>/dev/null git push; then :; fi", "if git push 2>/dev/null; then :; fi"),
+        ("f() { 2>/dev/null git push; }", "f() { git push 2>/dev/null; }"),
+        ("2>/dev/null declare -a a=(1)", "declare -a a=(1) 2>/dev/null"),
+    ],
+)
+def test_a_redirection_before_a_commands_name_builds_the_command_it_builds_after_it(text: str, after: str) -> None:
+    def read(text: str) -> list[tuple[object, ...]]:
+        return [
+            (
+                [(word.raw, word.assignment, word.array, word.substitutions) for word in command.words],
+                [(redirect.operator, redirect.target, redirect.here) for redirect in command.redirects],
+            )
+            for command in bash_agreement.simple_commands(parse(text))
+        ]
+
+    assert read(after) == read(text)
+
+
+@pytest.mark.parametrize("text", [">out", ">out | git push", "2>/dev/null; git push", "x=1 >out"])
+def test_a_command_of_redirections_and_assignments_alone_has_no_name(text: str) -> None:
+    command = first_simple(text)
+    assert [word.raw for word in command.words if word.assignment is None] == []
+    assert len(command.redirects) == 1
 
 
 @pytest.mark.parametrize("text", ["[[ ]]", "[[ -n ]]", "[[ a && ]]"])
@@ -258,6 +324,18 @@ def test_reserved_words_and_prefixes_start_compound_commands_not_programs(text: 
         "a[1=v git push",
         "git a[1]=(x)",
         "echo a[x y]=(1)",
+        ">out f() { :; }",
+        ">out ( : )",
+        ">out { :; }",
+        "x=1 { :; }",
+        ">out function f { :; }",
+        "x=1 if true; then :; fi",
+        "x=1 >out a=(1) git push",
+        "2>&1 x=1 >out a=(1) git push",
+        "x=1 >out declare a=(1)",
+        "x=1 2>&1 declare a=(1)",
+        "2>",
+        ">out <",
     ],
 )
 def test_text_bash_would_refuse_is_an_error(text: str) -> None:
