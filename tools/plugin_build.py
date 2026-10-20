@@ -22,7 +22,8 @@ every plugin the source makes and nothing else. Its manifest, .claude-plugin/plu
 source, with the plugin's name and --version (0.0.0-dev unless given; a release passes its tag without the `v`).
 Claude Code namespaces a plugin's agents under its name, so a skill's backticked mention of an agent the plugin
 carries names it as `<plugin>:<agent>`. A plugin agent's own hooks are ignored, so each agent's hooks move into the
-plugin's hooks/hooks.json, as tools/plugin_agents.py describes.
+plugin's hooks/hooks.json, as tools/plugin_agents.py describes. The source's .claude-plugin/README.md, when it has one,
+is each plugin's README.md. A release builds from its tag with tools/plugin_release.py.
 
 It prints one fact per line:
 
@@ -72,6 +73,7 @@ ARCHIVE_TIME = (1980, 1, 1, 0, 0, 0)
 ARCHIVE_MODE = 0o100644 << 16
 NO_VALUE = "{skill} takes {{{{{variable}}}}}, which a plugin has no value for"
 MARKETPLACE = Path(".claude-plugin") / "marketplace.json"
+README = Path(".claude-plugin") / "README.md"
 MANIFEST = ".claude-plugin/plugin.json"
 HOOKS = "hooks/hooks.json"
 DEVELOPMENT_VERSION = "0.0.0-dev"
@@ -216,19 +218,17 @@ def _plugin(
     return plugin
 
 
-def assemble(
-    source: deploy_source.Source, catalogue: dict[str, dict[str, object]], version: str = DEVELOPMENT_VERSION
-) -> Assembly:
-    """The plugins a source makes, in memory: the default selection's, then one per opt-in menu item, each described
-    by its catalogue entry, which must name exactly the plugins made."""
-    assembly = Assembly()
+def plan(source: deploy_source.Source) -> tuple[dict[str, list[str]], dict[str, str]]:
+    """Each plugin a source makes, with the skills it carries, in the order they are assembled: the default
+    selection's, then one per opt-in menu item; and each menu item no plugin carries, with why."""
+    left_out: dict[str, str] = {}
     default: list[str] = []
     opt_in: list[str] = []
     for item in [*sorted(source.bundles), *deploy_source.root_names(source)]:
         closure = deploy_source.expand(source, [], _members(source, item))
         reason = _blocker(source, closure)
         if reason is not None:
-            assembly.left_out[item] = reason
+            left_out[item] = reason
         elif deploy_source.is_opt_in(source, item):
             opt_in.append(item)
         else:
@@ -236,14 +236,36 @@ def assemble(
     name = plugin_name(source.source_id)
     closures = {name: default} if default else {}
     closures.update({f"{name}-{item}": deploy_source.expand(source, [], _members(source, item)) for item in opt_in})
+    return closures, left_out
+
+
+def assemble(
+    source: deploy_source.Source,
+    catalogue: dict[str, dict[str, object]],
+    version: str = DEVELOPMENT_VERSION,
+    readme: bytes | None = None,
+) -> Assembly:
+    """The plugins a source makes, in memory, each described by its catalogue entry, which must name exactly the
+    plugins made, and each carrying the README, if there is one."""
+    closures, left_out = plan(source)
     if set(closures) != set(catalogue):
         raise BuildError(
             f"the marketplace lists {', '.join(sorted(catalogue)) or 'no plugin'}, but the source makes "
             f"{', '.join(closures) or 'none'}"
         )
+    assembly = Assembly(left_out=left_out)
     for plugin, closure in closures.items():
-        assembly.plugins.append(_plugin(source, plugin, closure, catalogue[plugin], version))
+        built = _plugin(source, plugin, closure, catalogue[plugin], version)
+        if readme is not None:
+            built.files["README.md"] = readme
+        assembly.plugins.append(built)
     return assembly
+
+
+def load_readme(directory: Path) -> bytes | None:
+    """The README every plugin of the source tree carries, or None when the tree has none."""
+    path = directory / README
+    return path.read_bytes() if path.is_file() else None
 
 
 def archive_bytes(files: Mapping[str, bytes]) -> bytes:
@@ -307,7 +329,8 @@ def main(arguments: list[str] | None = None) -> int:
     parser.add_argument("--version", default=DEVELOPMENT_VERSION, help="the version each manifest carries")
     options = parser.parse_args(arguments)
     try:
-        assembly = assemble(load_source(options.source), load_catalogue(options.source), options.version)
+        source, catalogue = load_source(options.source), load_catalogue(options.source)
+        assembly = assemble(source, catalogue, options.version, load_readme(options.source))
         lines = write(assembly, output_directory(options.output, options.source), archive=options.archive)
     except (BuildError, OSError) as exc:
         print(f"FAILED {flat_text(str(exc))}")

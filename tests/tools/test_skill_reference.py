@@ -97,9 +97,13 @@ class SkillReferenceTestCase(unittest.TestCase):
         self.assertLess(text.index("## `alpha`"), text.index("## `beta`"))
         self.assertNotIn("gamma", text)
         self.assertIn(
-            "| [`alpha`](#alpha) | You or the agent | Opt-in | `copilot` (optional), the `REPOS_ROOT` setting |", text
+            "| [`alpha`](#alpha) | You or the agent | Opt-in | Deployer only | `copilot` (optional), the `REPOS_ROOT` "
+            "setting |",
+            text,
         )
-        self.assertIn("| [`beta`](#beta) | You | `suite` bundle | `dotnet-format` (optional), `gh` |", text)
+        # beta takes no value a plugin cannot answer, so the default plugin, named for the source's repository,
+        # carries it; alpha takes REPOS_ROOT, so only the deployer installs it.
+        self.assertIn("| [`beta`](#beta) | You | `suite` bundle | `skills` | `dotnet-format` (optional), `gh` |", text)
         self.assertIn('Sweeps every repository under `REPOS_ROOT`, "carefully".', text)
         self.assertIn("```text\n/alpha [--flag X]\n```", text)
         self.assertIn(

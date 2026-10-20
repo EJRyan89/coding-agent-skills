@@ -128,7 +128,8 @@ def build(home: Path, sources: list[Path]) -> list[plugin_build.Plugin]:
     entries = []
     for source_dir in sources:
         catalogue = plugin_build.load_catalogue(source_dir)
-        assembly = plugin_build.assemble(plugin_build.load_source(source_dir), catalogue)
+        source = plugin_build.load_source(source_dir)
+        assembly = plugin_build.assemble(source, catalogue, readme=plugin_build.load_readme(source_dir))
         plugin_build.write(assembly, home, archive=False)
         for plugin in assembly.plugins:
             plugins.append(plugin)

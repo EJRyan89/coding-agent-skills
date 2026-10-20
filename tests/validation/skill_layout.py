@@ -46,6 +46,7 @@ from validation_support import (
 from deployer import platform_support
 from tools.plugin_build import HOOKS as PLUGIN_HOOKS
 from tools.plugin_build import MANIFEST as PLUGIN_MANIFEST
+from tools.plugin_build import README as PLUGIN_README
 
 MAXIMUM_INLINE_EXECUTABLE_LINES = 5
 
@@ -582,8 +583,11 @@ def plugin_tree_problems(root: Path, plugins: Mapping[str, Mapping[str, bytes]])
         carried: set[str] = set()
         agents = [path[len("agents/") : -len(".md")] for path in files if path.startswith("agents/")]
         declared = ""
+        readme = root / PLUGIN_README
+        if readme.is_file() and files.get("README.md") != readme.read_bytes():
+            found.append(f"plugin {name}: README.md is not {PLUGIN_README.as_posix()}")
         for path, content in sorted(files.items()):
-            if path in (PLUGIN_MANIFEST, PLUGIN_HOOKS):
+            if path in (PLUGIN_MANIFEST, PLUGIN_HOOKS) or (path == "README.md" and readme.is_file()):
                 continue
             origin = _plugin_source(root, path)
             if isinstance(origin, str) or not origin[0].is_file():
@@ -615,6 +619,37 @@ def plugin_tree_problems(root: Path, plugins: Mapping[str, Mapping[str, bytes]])
                 if file.is_file() and not is_suite_name(file.name)
             }
             found.extend(f"plugin {name}: leaves out {path}" for path in sorted(shipped - set(files)))
+    return found
+
+
+# A marketplace entry's source: the release asset of one release tag, under the entry's own repository, pinned by a
+# sha256 once the release has attached it.
+RELEASE_ASSET = re.compile(
+    r"(?P<repository>https://[^\s]+)/releases/download/(?P<tag>v\d+\.\d+\.\d+)/(?P<name>[a-z0-9-]+)\.zip"
+)
+SHA256 = re.compile(r"[0-9a-f]{64}")
+
+
+def marketplace_problems(root: Path) -> list[str]:
+    """Report a marketplace entry whose source is not its own release asset of the one release every entry names,
+    with no digest or a sha256 one."""
+    document = json.loads((root / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
+    found, tags = [], set()
+    for entry in document.get("plugins", []):
+        name, source = entry.get("name"), entry.get("source")
+        match = RELEASE_ASSET.fullmatch(source.get("url", "")) if isinstance(source, dict) else None
+        if not isinstance(source, dict) or source.get("source") != "archive" or match is None:
+            found.append(f"marketplace entry {name}: its source is not an archive at a release asset")
+            continue
+        tags.add(match.group("tag"))
+        if match.group("name") != name or match.group("repository") != entry.get("repository"):
+            found.append(f"marketplace entry {name}: its asset is not its own under its repository")
+        if "sha256" in source and not SHA256.fullmatch(str(source["sha256"])):
+            found.append(f"marketplace entry {name}: its sha256 is not a digest")
+        if set(source) - {"source", "url", "sha256"}:
+            found.append(f"marketplace entry {name}: its source holds more than an archive's url and sha256")
+    if len(tags) > 1:
+        found.append(f"the marketplace names assets of more than one release: {', '.join(sorted(tags))}")
     return found
 
 
@@ -884,7 +919,8 @@ class SkillLayoutPolicies(unittest.TestCase):
         # are carried with their reviewer, whose guard the plugin's hooks file runs.
         self.assertEqual({"PYTHON": "python"}, plugin_build.PLUGIN_VALUES)
         source = plugin_build.load_source(REPOSITORY_ROOT)
-        assembly = plugin_build.assemble(source, plugin_build.load_catalogue(REPOSITORY_ROOT))
+        catalogue = plugin_build.load_catalogue(REPOSITORY_ROOT)
+        assembly = plugin_build.assemble(source, catalogue, readme=plugin_build.load_readme(REPOSITORY_ROOT))
         carried = {skill for plugin in assembly.plugins for skill in plugin.skills}
         self.assertNotIn("update-coding-agent-skills", carried)
         self.assertIn("update-coding-agent-skills", assembly.left_out)
@@ -892,6 +928,9 @@ class SkillLayoutPolicies(unittest.TestCase):
         plugins = {plugin.name: plugin.files for plugin in assembly.plugins}
         self.assertIn(PLUGIN_HOOKS, plugins["coding-agent-skills"])
         self.assertEqual([], plugin_tree_problems(REPOSITORY_ROOT, plugins), PLUGIN_DOC)
+
+    def test_the_marketplace_names_each_plugins_release_asset(self) -> None:
+        self.assertEqual([], marketplace_problems(REPOSITORY_ROOT), PLUGIN_DOC)
 
     def test_every_skill_the_model_may_start_has_a_trigger_scenario(self) -> None:
         self.assertEqual([], trigger_scenario_problems(REPOSITORY_ROOT))

@@ -364,3 +364,16 @@ def test_an_agents_hooks_with_two_events_and_a_plain_command_keep_their_order_an
         "PreToolUse": [{"matcher": "Read", "hooks": [{"type": "command", "command": "echo one"}]}],
         "Stop": [{"hooks": [{"type": "command", "command": "echo two"}]}],
     }
+
+
+def test_the_sources_readme_is_each_plugins_readme_and_a_source_without_one_gives_none(source: Source) -> None:
+    source.skill("alpha")
+    source.skill("solo", opt_in=True)
+    assert plugin_build.load_readme(source.root) is None
+    assert all("README.md" not in plugin.files for plugin in assembled(source).plugins)
+    (source.root / ".claude-plugin" / "README.md").write_bytes(b"# Fixture\n")
+    readme = plugin_build.load_readme(source.root)
+    assert readme == b"# Fixture\n"
+    catalogue = plugin_build.load_catalogue(source.root)
+    plugins = plugin_build.assemble(plugin_build.load_source(source.root), catalogue, readme=readme).plugins
+    assert [plugin.files["README.md"] for plugin in plugins] == [b"# Fixture\n", b"# Fixture\n"]

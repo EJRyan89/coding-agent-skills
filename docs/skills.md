@@ -4,7 +4,7 @@ Every skill this repository deploys: how to start it, what its arguments mean, a
 
 ## Starting a skill
 
-In Claude Code, type `/<skill>` followed by its arguments, or ask for the skill by name. A skill started by "you or the agent" also runs when a request matches its description. One started only by "you" changes things you should decide on, such as deleting branches or redeploying, so it runs only when you type it.
+In Claude Code, type `/<skill>` followed by its arguments, or ask for the skill by name; a skill installed with a [plugin](installation.md#the-claude-code-plugin) carries the plugin's name first, as `/coding-agent-skills:<skill>`. A skill started by "you or the agent" also runs when a request matches its description. One started only by "you" changes things you should decide on, such as deleting branches or redeploying, so it runs only when you type it.
 
 Codex and GitHub Copilot CLI load each skill through a generated adapter under `~/.agents/skills` that carries the skill's description, so a skill started by "you or the agent" also runs there when a request matches it. Start one explicitly with `$<skill>` in Codex or `/<skill>` in Copilot, followed by its arguments. A skill started only by "you" runs only when you start it that way.
 
@@ -22,24 +22,24 @@ When a required argument is missing, a skill asks for it rather than guessing.
 
 ## Summary
 
-**Installed** says how `python deploy.py` selects the skill: `--all` installs every skill marked "by default"; an opt-in skill needs `--include <name>` or a menu choice; a bundle installs its skills together. **Needs** lists what the skill runs beyond the deployment prerequisites in [Installation](installation.md#requirements), and any setting it reads from `python deploy.py configure`. `python deploy.py check` reports which of those tools are installed.
+**Installed** says how `python deploy.py` selects the skill: `--all` installs every skill marked "by default"; an opt-in skill needs `--include <name>` or a menu choice; a bundle installs its skills together. **Plugin** names the Claude Code plugin that carries the skill, or says that only the deployer installs it, as [The Claude Code plugin](installation.md#the-claude-code-plugin) describes. **Needs** lists what the skill runs beyond the deployment prerequisites in [Installation](installation.md#requirements), and any setting it reads from `python deploy.py configure`. `python deploy.py check` reports which of those tools are installed.
 
 <!-- generated:summary -->
-| Skill | Started by | Installed | Needs |
-|---|---|---|---|
-| [`audit-ai-config`](#audit-ai-config) | You or the agent | By default | Nothing extra |
-| [`audit-skill`](#audit-skill) | You or the agent | By default | Nothing extra |
-| [`curate-agent-memory`](#curate-agent-memory) | You or the agent | By default | Nothing extra |
-| [`dotnet-dependencies`](#dotnet-dependencies) | You or the agent | Opt-in, `dotnet` bundle | `dotnet` (optional) |
-| [`dotnet-format`](#dotnet-format) | You or the agent | Opt-in, `dotnet` bundle | `dotnet`, `dotnet-format` (optional), `gh` (optional) |
-| [`flag-review-finding`](#flag-review-finding) | You or the agent | `code-review-operations` bundle | Nothing extra |
-| [`github-activity-report`](#github-activity-report) | You or the agent | By default | `gh` |
-| [`repo-cleanup`](#repo-cleanup) | You | By default | `gh`, the `REPOS_ROOT` setting |
-| [`review-document`](#review-document) | You or the agent | `code-review-operations` bundle | `copilot` (optional), `gh` (optional), `pdftotext` (optional) |
-| [`review-insights`](#review-insights) | You or the agent | `code-review-operations` bundle | Nothing extra |
-| [`review-prs`](#review-prs) | You or the agent | `code-review-operations` bundle | `copilot` (optional), `gh`, `pdftotext` (optional) |
-| [`update-coding-agent-skills`](#update-coding-agent-skills) | You | By default | the `UPDATE_CHANNEL` setting |
-| [`update-pr-dashboard`](#update-pr-dashboard) | You or the agent | `code-review-operations` bundle | `gh` |
+| Skill | Started by | Installed | Plugin | Needs |
+|---|---|---|---|---|
+| [`audit-ai-config`](#audit-ai-config) | You or the agent | By default | `coding-agent-skills` | Nothing extra |
+| [`audit-skill`](#audit-skill) | You or the agent | By default | `coding-agent-skills` | Nothing extra |
+| [`curate-agent-memory`](#curate-agent-memory) | You or the agent | By default | `coding-agent-skills` | Nothing extra |
+| [`dotnet-dependencies`](#dotnet-dependencies) | You or the agent | Opt-in, `dotnet` bundle | `coding-agent-skills-dotnet` | `dotnet` (optional) |
+| [`dotnet-format`](#dotnet-format) | You or the agent | Opt-in, `dotnet` bundle | `coding-agent-skills-dotnet` | `dotnet`, `dotnet-format` (optional), `gh` (optional) |
+| [`flag-review-finding`](#flag-review-finding) | You or the agent | `code-review-operations` bundle | `coding-agent-skills` | Nothing extra |
+| [`github-activity-report`](#github-activity-report) | You or the agent | By default | `coding-agent-skills` | `gh` |
+| [`repo-cleanup`](#repo-cleanup) | You | By default | Deployer only | `gh`, the `REPOS_ROOT` setting |
+| [`review-document`](#review-document) | You or the agent | `code-review-operations` bundle | `coding-agent-skills` | `copilot` (optional), `gh` (optional), `pdftotext` (optional) |
+| [`review-insights`](#review-insights) | You or the agent | `code-review-operations` bundle | `coding-agent-skills` | Nothing extra |
+| [`review-prs`](#review-prs) | You or the agent | `code-review-operations` bundle | `coding-agent-skills` | `copilot` (optional), `gh`, `pdftotext` (optional) |
+| [`update-coding-agent-skills`](#update-coding-agent-skills) | You | By default | Deployer only | the `UPDATE_CHANNEL` setting |
+| [`update-pr-dashboard`](#update-pr-dashboard) | You or the agent | `code-review-operations` bundle | `coding-agent-skills` | `gh` |
 <!-- /generated:summary -->
 
 The summary and the first block of each section below are generated from each skill's `SKILL.md` frontmatter and `deploy-meta/<name>.json`. Change those, then run `python tools/skill_reference.py --write`; validation fails while this file is stale. The explanation after each generated block is written by hand.
