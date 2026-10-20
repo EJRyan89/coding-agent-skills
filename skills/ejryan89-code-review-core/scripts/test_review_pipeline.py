@@ -165,6 +165,17 @@ def archived_record(archive: Path, pull_number: int) -> ReviewRecord:
     return record
 
 
+def claim(role: Mapping[str, Any]) -> None:
+    """Start the role's read log as the reviewer guard's claim of it does, where the guard runs: a role of a Claude
+    Code run whose reviewers start as native subagents, in the run its prompt sits in."""
+    run = next(folder for folder in Path(role["prompt_file"]).parents if (folder / review_run.RUN_FILE).is_file())
+    state = review_run.load_run(run)
+    if state["runtime"] == "claude-code" and review_run.run_dispatch(state) == "subagents":
+        log = guard.read_log(run, role["id"])
+        log.parent.mkdir(exist_ok=True)
+        log.touch()
+
+
 def strip_artifacts(archive: Path, case: str) -> None:
     """Make the archived first review's `artifacts` null, or remove it."""
     json_path = pull_directory(archive, REPOSITORY, 12) / "review.json"
@@ -592,8 +603,12 @@ class PipelineFixture(unittest.TestCase):
         findings: list[dict[str, Any]] | None = None,
         dispositions: list[dict[str, Any]] | None = None,
         model: str | None = "fixture-model",
+        claimed: bool = True,
     ) -> None:
-        """A reviewer's result; `model=None` leaves the model out."""
+        """A reviewer's result; `model=None` leaves the model out. A `claimed` reviewer is one the reviewer guard held
+        wherever the guard runs, whose claim started the role's read log."""
+        if claimed:
+            claim(role)
         result = {
             "summary": "Reviewed the change.",
             "findings": findings or [],
@@ -952,9 +967,9 @@ class GenericReviewTests(PipelineFixture):
                     "dispositions_only": False,
                     "seconds": 125,
                     "model": "claude-haiku-4-5",
-                    # No guard ran here, so its reads were not counted: unknown, not zero.
-                    "files_read": None,
-                    "bytes_read": None,
+                    # The guard claimed the role and logged no read of the snapshot: zero, not unknown.
+                    "files_read": 0,
+                    "bytes_read": 0,
                 }
             ],
             record["review"]["reviewers"],
@@ -962,7 +977,7 @@ class GenericReviewTests(PipelineFixture):
         markdown = (pull_directory(self.archive, REPOSITORY, 12) / "review.md").read_text(encoding="utf-8")
         self.assertIn("| Reviewer | Focus | Model | Files | Findings | Retries | Time | Files read |", markdown)
         self.assertIn(
-            "| `generic-review` | General | claude&#45;haiku&#45;4&#45;5 | 2 | 1 | 1 | 2m 05s | unknown |", markdown
+            "| `generic-review` | General | claude&#45;haiku&#45;4&#45;5 | 2 | 1 | 1 | 2m 05s | 0 (0 B) |", markdown
         )
 
     def test_a_result_must_name_its_model(self) -> None:
@@ -1083,6 +1098,7 @@ class UndecodableDiffTests(PipelineFixture):
         return head
 
     def entrypoint_result(self, ready: dict[str, Any], head: str) -> None:
+        claim(ready["roles"][0])
         Path(ready["result_path"]).write_text(
             json.dumps(
                 {
@@ -1756,11 +1772,13 @@ class ReReviewTests(PipelineFixture):
             with self.subTest(name):
                 changed = {key: value for key, value in prepared.items() if key != "archive_base"}
                 run_file.write_text(json.dumps(changed if base is None else {**changed, "archive_base": base}), "utf-8")
+                claim(ready["roles"][0])  # the run.json this case replaces held the claim an earlier finalize counted
                 with self.assertRaises(ReviewOperationError) as raised:
                     rp.finalize(ready["run"])
                 self.assertEqual(message, str(raised.exception))
                 self.assertEqual([1], list_versions(pull_directory(self.archive, REPOSITORY, 12)))
         run_file.write_text(json.dumps(prepared), encoding="utf-8")
+        claim(ready["roles"][0])
         rp.finalize(ready["run"])
         self.assertEqual(2, archived_record(self.archive, 12)["review"]["version"])
 
@@ -2328,6 +2346,7 @@ class RepositoryReviewerTests(PipelineFixture):
             '--role "fixture-review"\nIt prints VALID',
             prompt,
         )
+        claim(ready["roles"][0])
         Path(ready["result_path"]).write_text(
             json.dumps(
                 {
@@ -2359,8 +2378,8 @@ class RepositoryReviewerTests(PipelineFixture):
                     "retries": 0,
                     "dispositions_only": False,
                     "seconds": 42,
-                    "files_read": None,
-                    "bytes_read": None,
+                    "files_read": 0,
+                    "bytes_read": 0,
                 }
             ],
             record["review"]["reviewers"],
@@ -2394,6 +2413,7 @@ class RepositoryReviewerTests(PipelineFixture):
             "prior_dispositions": [],
             "usage": None,
         }
+        claim(ready["roles"][0])
         Path(ready["result_path"]).write_text(json.dumps(result), encoding="utf-8")
         reason = (
             "Finding outside at never/changed.py:999999 is not on a file the pull request changes; "
@@ -2406,11 +2426,13 @@ class RepositoryReviewerTests(PipelineFixture):
             self.run_main("check", "--run", str(ready["run"])),
         )
         # check set the result aside for the retry; a reviewer that writes it again cannot have it recorded.
+        claim(ready["roles"][0])
         Path(ready["result_path"]).write_text(json.dumps(result), encoding="utf-8")
         with self.assertRaisesRegex(review_run.PipelineError, "is not on a file the pull request changes"):
             rp.finalize(ready["run"])
         self.assertFalse(pull_directory(self.archive, REPOSITORY, 12).exists())
         # The same finding on a changed file is accepted and recorded.
+        claim(ready["roles"][0])
         Path(ready["result_path"]).write_text(
             json.dumps({**result, "findings": [{**finding, "path": "app/service.py", "line": 2}]}), encoding="utf-8"
         )
@@ -2435,11 +2457,13 @@ class RepositoryReviewerTests(PipelineFixture):
             "comment_dispositions": [],
             "usage": None,
         }
+        claim(ready["roles"][0])
         Path(ready["result_path"]).write_text(json.dumps(result), encoding="utf-8")
         code, out, _ = self.run_main("check", "--run", str(ready["run"]))
         self.assertEqual(1, code)
         self.assertIn("missing=['C1']", out)
         del result["comment_dispositions"]
+        claim(ready["roles"][0])
         Path(ready["result_path"]).write_text(json.dumps(result), encoding="utf-8")
         self.assertEqual(f"ALL_VALID {SELECTOR}\n", self.run_main("check", "--run", str(ready["run"]))[1])
         rp.finalize(ready["run"])
@@ -2630,21 +2654,118 @@ class ReadCountTests(PipelineFixture):
         size = (run / "source" / "app" / "service.py").stat().st_size
         self.assertEqual({role["id"]: {"files": 1, "bytes": size}}, review_run.load_run(run)["reads"])
 
-    def test_finalize_counts_a_log_check_did_not_reach_and_a_reviewer_without_one_is_unknown(self) -> None:
+    def test_finalize_counts_a_log_check_did_not_reach(self) -> None:
         self.configure(self.repository_reviewer("review/specialists.json"))
         ready = self.prepare()
         run = Path(ready["run"])
-        guarded, unguarded = ready["roles"][0], ready["roles"][1]
-        self.guarded(guarded, "a71dab35ebc1b97eb", "app/service.py")
+        reader, idle = ready["roles"][0], ready["roles"][1]
+        self.guarded(reader, "a71dab35ebc1b97eb", "app/service.py")
+        self.guarded(idle, "a73176509870d6114")
         for role in ready["roles"]:
-            self.write_role_result(role, findings=[self.finding()] if role is guarded else [])
+            self.write_role_result(role, findings=[self.finding()] if role is reader else [], claimed=False)
         rp.finalize(run)  # no check in between
         reviewers = {item["id"]: item for item in archived_record(self.archive, 12)["review"]["reviewers"]}
-        self.assertEqual(1, reviewers[guarded["id"]]["files_read"])
-        # A reviewer no guard held, such as the general-purpose fallback: unknown, not zero.
+        self.assertEqual(1, reviewers[reader["id"]]["files_read"])
+        self.assertEqual((0, 0), (reviewers[idle["id"]]["files_read"], reviewers[idle["id"]]["bytes_read"]))
+
+    def test_a_reviewer_no_guard_held_has_unknown_reads_not_zero(self) -> None:
+        # A Codex reviewer runs with no guard, so it has no log and its counts are unknown.
+        self.services.resolve_runtime = lambda configured, host: "codex"
+        ready = self.prepare()
+        self.write_role_result(ready["roles"][0], findings=[self.finding()], claimed=False)
+        rp.finalize(Path(ready["run"]))
+        [reviewer] = archived_record(self.archive, 12)["review"]["reviewers"]
+        self.assertEqual((None, None), (reviewer["files_read"], reviewer["bytes_read"]))
+
+
+# Literal: the reason check gives for a role the reviewer guard never claimed, as review-prs's SKILL.md names it.
+UNGUARDED = (
+    "the reviewer ran without its guard: the reviewer guard never claimed this role, as when hooks are off "
+    "(disableAllHooks, or allowManagedHooksOnly for a plugin's hooks), the code-review-reviewer agent or its hook did "
+    "not load, or another agent type ran the role; enable hooks for the code-review-reviewer agent, or prepare the "
+    "review again with --inline"
+)
+
+
+class GuardClaimTests(PipelineFixture):
+    """On Claude Code, check and finalize take a native subagent's result only once the reviewer guard claimed its
+    role: its read log, or the role's entry in run.json's reads once check counted the log."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        claims = mock.patch.object(guard, "CLAIMS", self.root / "claims")
+        claims.start()
+        self.addCleanup(claims.stop)
+
+    def test_a_role_the_guard_claimed_passes_check_and_its_counted_claim_holds_for_finalize(self) -> None:
+        ready = self.prepare()
+        run, role = Path(ready["run"]), ready["roles"][0]
+        self.assertEqual(("claude-code", "subagents"), (ready["runtime"], ready["dispatch"]))
+        event = {
+            "tool_name": "Read",
+            "tool_input": {"file_path": role["prompt_file"]},
+            "cwd": str(self.root),
+            "agent_id": "a71dab35ebc1b97eb",
+        }
+        self.assertIsNone(guard.decide(event), "the guard claims the role at its prompt")
+        self.write_role_result(role, findings=[self.finding()], claimed=False)
+        self.assertEqual((0, f"ALL_VALID {SELECTOR}\n", ""), self.run_main("check", "--run", str(run)))
+        self.assertFalse(guard.read_log(run, role["id"]).exists(), "check counted the log and removed it")
+        self.assertEqual({role["id"]: {"files": 0, "bytes": 0}}, review_run.load_run(run)["reads"])
+        self.assertEqual(0, self.run_main("finalize", "--run", str(run))[0])
+        self.assertEqual(1, len(list_versions(pull_directory(self.archive, REPOSITORY, 12))))
+
+    def test_a_role_the_guard_never_claimed_is_retried_then_fails_its_pull_request(self) -> None:
+        ready = self.prepare()
+        run, role = Path(ready["run"]), ready["roles"][0]
+        result = Path(role["result_file"])
+        self.write_role_result(role, findings=[self.finding()], claimed=False)
         self.assertEqual(
-            (None, None), (reviewers[unguarded["id"]]["files_read"], reviewers[unguarded["id"]]["bytes_read"])
+            (0, "VALID\n"),
+            self.run_main("validate-result", "--run", str(run), "--role", role["id"])[:2],
+            "the reviewer's self-check judges its result alone",
         )
+        code, out, _ = self.run_main("wait-reviewers", "--run", str(run), "--timeout", "1")
+        self.assertEqual((0, f"READY {SELECTOR}\n"), (code, out), "a result is ready for check to judge")
+        code, out, _ = self.run_main("check", "--run", str(run))
+        self.assertEqual(
+            (1, f"RETRY {SELECTOR} {role['id']} {role['prompt_file']} {UNGUARDED}"), (code, out.splitlines()[0])
+        )
+        self.assertTrue(result.with_name(f"{result.name}.rejected-1").is_file(), "the unguarded result is set aside")
+        self.write_role_result(role, findings=[self.finding()], claimed=False)
+        code, out, _ = self.run_main("check", "--run", str(run))
+        self.assertEqual((1, f"FAILED {SELECTOR} {role['id']} {UNGUARDED}\n"), (code, out))
+        state = review_run.load_run(run)
+        self.assertEqual(({role["id"]: 1}, {}), (state["attempts"], state["reads"]))
+        self.assertEqual([], list_versions(pull_directory(self.archive, REPOSITORY, 12)))
+
+    def test_finalize_refuses_a_result_the_guard_never_claimed_with_nothing_recorded(self) -> None:
+        self.configure(self.repository_reviewer("review/specialists.json"))
+        ready = self.prepare()
+        run = Path(ready["run"])
+        claimed, unclaimed = ready["roles"][0], ready["roles"][1]
+        for role in ready["roles"]:
+            self.write_role_result(role, claimed=role is claimed)
+        with self.assertRaises(review_run.PipelineError) as raised:
+            rp.finalize(run)  # no check in between
+        self.assertEqual(f"Reviewer results are invalid: {unclaimed['id']}: {UNGUARDED}", str(raised.exception))
+        self.assertTrue(guard.read_log(run, claimed["id"]).is_file(), "nothing was counted")
+        self.assertEqual([], list_versions(pull_directory(self.archive, REPOSITORY, 12)))
+
+    def test_a_codex_subagent_runs_no_guard_and_needs_no_claim(self) -> None:
+        # The Copilot CLI host, which runs no guard either, passes check with no claim in
+        # CopilotHostTests.test_dispatch_starts_the_host_detached_and_returns_at_once.
+        self.services.resolve_runtime = lambda configured, host: "codex"
+        self.configure(self.repository_reviewer("review/specialists.json"))
+        ready = self.prepare()
+        run = Path(ready["run"])
+        self.assertEqual(("codex", "subagents"), (ready["runtime"], ready["dispatch"]))
+        for role in ready["roles"]:
+            self.write_role_result(role, claimed=False)
+        self.assertEqual((0, f"ALL_VALID {SELECTOR}\n", ""), self.run_main("check", "--run", str(run)))
+        self.assertEqual(0, self.run_main("finalize", "--run", str(run))[0])
+        reviewers = archived_record(self.archive, 12)["review"]["reviewers"]
+        self.assertEqual({None}, {reviewer["files_read"] for reviewer in reviewers}, "no guard counted reads")
 
 
 class InlineReviewTests(PipelineFixture):
@@ -2840,6 +2961,17 @@ class InlineReviewTests(PipelineFixture):
         self.assertEqual(0, self.run_main("finalize", "--run", str(run))[0])
         reviewers = archived_record(self.archive, 12)["review"]["reviewers"]
         self.assertEqual({"python-reviewer": 1, "generic-review": 0}, {r["id"]: r["retries"] for r in reviewers})
+
+    def test_an_inline_role_on_claude_code_needs_no_guard_claim(self) -> None:
+        run = self.prepare_inline("--host", "claude-code", "--inline")
+        self.assertEqual(
+            ("claude-code", "inline"), (review_run.load_run(run)["runtime"], review_run.load_run(run)["dispatch"])
+        )
+        while (handed := self.next_role(run))[1].startswith("INLINE_ROLE "):
+            self.write_role_result(self.role(run, handed[1].split(" ")[2]), claimed=False)
+        self.assertEqual([], list((run / "work").glob("reads-*.log")), "no guard ran")
+        self.assertEqual((0, f"ALL_VALID {SELECTOR}\n", ""), self.run_main("check", "--run", str(run)))
+        self.assertEqual(0, self.run_main("finalize", "--run", str(run))[0])
 
     def test_a_role_s_model_is_named_in_a_note_since_an_inline_review_cannot_switch_models(self) -> None:
         specialist = {

@@ -94,6 +94,7 @@ from review_records import (
     valid_analyzer,
     validate_record_pair,
 )
+from review_runtime import RUNTIME_CAPABILITIES
 from skill_roots import skills_directory_holding
 from typed_fields import FieldError
 
@@ -951,12 +952,18 @@ def report_from_config(
 
 
 def synthesize(
-    report_path: Path, result_path: Path, *, check: bool = False, services: Services | None = None
+    report_path: Path,
+    result_path: Path,
+    *,
+    check: bool = False,
+    guarded: bool = False,
+    services: Services | None = None,
 ) -> list[dict[str, Any]]:
     """Record a synthesis result in its report, or with `check` only test that it could be recorded. Returns the
     recommendations it adds. A result is refused, and the report left unchanged, unless the report's synthesis is
     still pending, it is the result file the report named, its input is still what the report sealed, and it passes
-    every check."""
+    every check. A `guarded` result, one a Claude Code subagent wrote, is recorded only once the reviewer guard claimed
+    its role; the self-check, `check`, is the agent's own and leaves that to recording."""
     services = services or Services()
     with _existing_report_lock(report_path, services):
         report = load_report(report_path)
@@ -974,6 +981,9 @@ def synthesize(
             raise InsightError(f"Cannot read the synthesis result: {exc}") from exc
         if check:
             return []
+        reason = synthesis_stage.unclaimed(synthesis) if guarded else None
+        if reason is not None:
+            raise InsightError(reason)
         first = report["next_recommendation_number"]
         added = [
             synthesis_stage.recorded_recommendation(item, f"REC-{number:03d}")
@@ -1295,9 +1305,14 @@ def _run_decide_custom(args: argparse.Namespace, services: Services | None) -> i
 
 
 def _run_synthesize(args: argparse.Namespace, services: Services | None) -> int:
-    """`synthesize`: a refused result prints each problem, so the agent can fix them all before checking again."""
+    """`synthesize`: a refused result prints each problem, so the agent can fix them all before checking again.
+    Recording names the runtime the session runs in: on Claude Code a result a subagent wrote, not one the session
+    worked `--inline`, must come from the guarded agent."""
+    if not args.check and args.host is None:
+        raise InsightError("synthesize needs --host, the runtime this session runs in, to record a result")
+    guarded = args.host == "claude-code" and not args.inline
     try:
-        added = synthesize(args.report, args.result, check=args.check, services=services)
+        added = synthesize(args.report, args.result, check=args.check, guarded=guarded, services=services)
     except synthesis_stage.SynthesisError as exc:
         for problem in exc.problems[: synthesis_stage.PROBLEMS_SHOWN]:
             print(f"PROBLEM {flat_text(problem)}")
@@ -1338,6 +1353,14 @@ def _analyzer_subject(value: str) -> tuple[str, ...]:
     return parts
 
 
+def _add_synthesize_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--report", required=True, type=Path, help="the insights.json a report printed")
+    parser.add_argument("--result", required=True, type=Path, help="the SYNTHESIS_RESULT file")
+    parser.add_argument("--check", action="store_true", help="only check the result; record nothing")
+    parser.add_argument("--host", choices=sorted(RUNTIME_CAPABILITIES), help="the runtime this session runs in")
+    parser.add_argument("--inline", action="store_true", help="this session followed the prompt itself")
+
+
 def main(arguments: list[str] | None = None, services: Services | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", type=Path, help="defaults to CODE_REVIEW_CONFIG or the standard config path")
@@ -1366,10 +1389,7 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
     custom_parser.add_argument("--flags", required=True, help="the CUSTOM_CANDIDATES line's flags= value")
     custom_parser.add_argument("decision", choices=DECISIONS)
     custom_parser.add_argument("--note")
-    synthesize_parser = commands.add_parser("synthesize")
-    synthesize_parser.add_argument("--report", required=True, type=Path, help="the insights.json a report printed")
-    synthesize_parser.add_argument("--result", required=True, type=Path, help="the SYNTHESIS_RESULT file")
-    synthesize_parser.add_argument("--check", action="store_true", help="only check the result; record nothing")
+    _add_synthesize_parser(commands.add_parser("synthesize"))
     decide_parser.add_argument(
         "--flags", required=True, help="the flags= value the line printed: comma-separated IDs or none"
     )

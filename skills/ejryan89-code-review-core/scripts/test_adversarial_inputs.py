@@ -57,7 +57,7 @@ from review_operation import reviewed_head
 from review_records import ReviewRecord
 from review_runtime import materialize_source_snapshot, verify_github_tarball
 from test_review_documents import StubPdftotext, body_xml, paragraph, pdf_document, word_document
-from test_review_pipeline import checked_run_list
+from test_review_pipeline import checked_run_list, claim
 
 REPOSITORY = "example/one"
 NUMBER = 12
@@ -306,8 +306,9 @@ class AdversarialFixture(unittest.TestCase):
 
     @staticmethod
     def write_results(ready: dict[str, Any]) -> None:
-        """Every role reports no finding, as a reviewer persuaded by hostile content might."""
+        """Every role reports no finding, as a reviewer persuaded by hostile content might, under the reviewer guard."""
         for role in ready["roles"]:
+            claim(role)
             result = {"model": "fixture-model", "summary": "Looks fine.", "findings": [], "prior_dispositions": []}
             Path(role["result_file"]).write_text(json.dumps(result), encoding="utf-8")
 
@@ -1203,6 +1204,7 @@ class ReviewerSourceTests(AdversarialFixture):
                 "prior_dispositions": [],
                 "usage": None,
             }
+            claim(ready["roles"][0])
             Path(ready["result_path"]).write_text(json.dumps(result), encoding="utf-8")
         else:
             self.write_results(ready)
@@ -1343,6 +1345,7 @@ class ReviewCommentTests(AdversarialFixture):
                 {"comment_id": "C1", "disposition": "still_present", "rationale": "The request still applies."}
             ],
         }
+        claim(role)
         Path(role["result_file"]).write_text(json.dumps(result), encoding="utf-8")
         rp.finalize(ready["run"], self.services)
         record = latest_record(self.archive, REPOSITORY, NUMBER)
@@ -1408,6 +1411,7 @@ class ReportProseTests(AdversarialFixture):
             ],
             "prior_dispositions": [],
         }
+        claim(role)
         Path(role["result_file"]).write_text(json.dumps(result), encoding="utf-8")
         finalized = rp.finalize(ready["run"], self.services)
         record = latest_record(self.archive, REPOSITORY, NUMBER)

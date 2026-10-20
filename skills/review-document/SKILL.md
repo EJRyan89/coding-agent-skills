@@ -32,7 +32,7 @@ Every step is one command, run exactly as shown, in the turn that invoked the sk
    ```bash
    {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/../ejryan89-code-review-core/scripts/review_pipeline.py" check --runs "<run list>"
    ```
-   `ALL_VALID` means go on. For `RETRY <selector> <id> <prompt file> <reason>`, start one fresh subagent the same way, with any `MODEL` and `EFFORT` lines that follow it (or, inline, `next-role` until `INLINE_DONE`) and check again. `FAILED` ends that document's review: report it.
+   `ALL_VALID` means go on. For `RETRY <selector> <id> <prompt file> <reason>`, start one fresh subagent the same way, with any `MODEL` and `EFFORT` lines that follow it (or, inline, `next-role` until `INLINE_DONE`) and check again. `FAILED` ends that document's review: report it. A reason that starts `the reviewer ran without its guard` means no reviewer guard held that Claude Code subagent, as when hooks are off: tell the user the settings and the remedy it names, and review `--inline` only when the user asks.
 5. **Finalize** the runs, then copy each report beside its fixture with the report path from its run's `RECORDED` line, which `finalize` prints in the order `prepare` printed the runs:
    ```bash
    {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/../ejryan89-code-review-core/scripts/review_pipeline.py" finalize --runs "<run list>"

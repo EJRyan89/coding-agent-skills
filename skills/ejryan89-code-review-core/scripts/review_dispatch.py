@@ -13,7 +13,7 @@ from typing import Any, cast
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 from review_config import ConfigurationError, load_config
-from review_guard import PLUGIN, read_log, reviewer_agent_type
+from review_guard import PLUGIN, UNGUARDED, claimed, read_log, reviewer_agent_type
 from review_hosts import (
     HostSuperseded,
     claim_holds,
@@ -88,8 +88,9 @@ def role_errors(run: Path, state: RunState) -> dict[str, str]:
 def count_reads(run: Path, state: RunState, roles: Sequence[str]) -> bool:
     """Reduce each named role's read log, which the reviewer guard writes, to the distinct snapshot files it names and
     their bytes, add them to the role's counts in run.json's `reads`, and delete the log, so no path outlives this
-    step. Returns whether any log was counted. A role without a log had no guard and stays uncounted, and a run
-    prepared before reads were counted has no `reads` and counts nothing. The snapshot's own manifest is not a file
+    step. Returns whether any log was counted. A role without a log is not counted: no guard ran for it, and on
+    Claude Code `unguarded_roles` refuses its result. A run prepared before reads were counted has no `reads` and
+    counts nothing. The snapshot's own manifest is not a file
     of the snapshot, as `review.snapshot.files` leaves it out, so reading it counts for nothing."""
     if "reads" not in state:
         return False
@@ -113,6 +114,26 @@ def count_reads(run: Path, state: RunState, roles: Sequence[str]) -> bool:
         log.unlink()
         counted = True
     return counted
+
+
+# What a refused role's reviewer does instead of the agent: work the review inline, where the seal holds it.
+UNGUARDED_REMEDY = "prepare the review again with --inline"
+
+
+def unguarded_roles(run: Path, state: RunState, roles: Sequence[str]) -> dict[str, str]:
+    """Each of these roles that its guard should have claimed and never did, with the reason its result is refused.
+
+    On Claude Code a role dispatched as a native subagent, whether started one by one or by a Workflow, runs as the
+    code-review-reviewer agent, whose hook, or the plugin's, runs the guard; the guard's claim creates the role's read
+    log, and check counts the log into run.json's `reads` and deletes it. A role with neither ran with no hook, bound
+    by its prompt alone. An inline role, the Copilot CLI host, and a Codex or Copilot CLI subagent run no guard, so
+    they are never held to a claim.
+    """
+    if state["runtime"] != "claude-code" or run_dispatch(state) != "subagents":
+        return {}
+    counted = state.get("reads", {})
+    reason = UNGUARDED.format(remedy=UNGUARDED_REMEDY)
+    return {role: reason for role in roles if role not in counted and not claimed(run, role)}
 
 
 def reviewer_seconds(state: RunState) -> dict[str, int]:
@@ -188,6 +209,7 @@ def check_run(run: Path, services: Services | None = None) -> dict[str, Any]:
 
 def _check_roles(run: Path, state: RunState) -> dict[str, Any]:
     errors = role_errors(run, state)
+    errors.update(unguarded_roles(run, state, [role["id"] for role in state["roles"] if role["id"] not in errors]))
     retry: list[RunRole] = []
     failed: dict[str, str] = {}
     seal = state.get("seal")  # an inline run's
@@ -221,7 +243,9 @@ def _check_roles(run: Path, state: RunState) -> dict[str, Any]:
 
 
 def validate_result(run: Path, role: str) -> str | None:
-    """Why check would reject this role's result, or None. It only reads: no rename, no retry counted."""
+    """Why check would reject this role's result for what it holds, or None. It only reads: no rename, no retry
+    counted. It is the reviewer's self-check, so it leaves the guard's claim to check: a reviewer is never told how to
+    show one."""
     run = run.resolve()
     state = load_run(run)
     if role not in {entry["id"] for entry in state["roles"]}:
@@ -427,7 +451,8 @@ def reviewer_progress(run: Path, state: RunState, now: float) -> dict[str, tuple
     """Each role's state, `ready`, `running`, or `overdue`, and its whole seconds since it was handed out.
 
     It only reads, as validate-result does. An invalid result may be one its reviewer is still fixing, so it counts as
-    running and is left alone: check stays the only step that sets a result aside and counts a retry.
+    running and is left alone: check stays the only step that sets a result aside and counts a retry, and the only
+    one that holds a role to its guard's claim, so a valid result the guard never claimed is ready for check to refuse.
     """
     errors = role_errors(run, state)
     started = state.get("dispatched_at", {})
