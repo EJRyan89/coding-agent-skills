@@ -73,6 +73,7 @@ from review_dispatch import (
     role_errors,
     run_host,
     unfinalized_selector,
+    unguarded_roles,
     validate_result,
     wait_for_host,
     wait_for_reviewers,
@@ -777,6 +778,7 @@ def finalize(run: Path, services: Services | None = None) -> dict[str, Any]:
     if run_dispatch(state) == "inline":
         verify_seal(run, state)
     errors = role_errors(run, state)
+    errors.update(unguarded_roles(run, state, [role["id"] for role in state["roles"] if role["id"] not in errors]))
     if errors:
         raise PipelineError("Reviewer results are invalid: " + "; ".join(f"{k}: {v}" for k, v in errors.items()))
     seconds = reviewer_seconds(state)

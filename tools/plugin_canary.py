@@ -10,14 +10,17 @@ It writes a marketplace beside them and, with CLAUDE_CONFIG_DIR set to a folder 
 user's own configuration, validates each plugin, adds the marketplace, installs each plugin, and reads what Claude Code
 installed with `claude plugin list --json` and `claude plugin details`. None of that starts a model.
 
-Unless --discovery-only is given, it then starts Claude Code twice, signed in as the user is, with the installed copies
-loaded through --plugin-dir for that session alone and project settings only, as the runtime canary does:
+Unless --discovery-only is given, it then starts Claude Code three times, signed in as the user is, with the installed
+copies loaded through --plugin-dir for that session alone and project settings only, as the runtime canary does:
 
 - the fixture's probe, `/runtime-canary:runtime-canary-probe`, which must run the installed copy's script;
 - the plugin's reviewer agent, which the plugin's hooks file must guard though a plugin agent's own hooks are
   ignored: the session reads a marker file outside any review run itself, which must pass, and starts the reviewer
   with a reviewer's task naming the same file as its prompt, whose read the guard must deny, since no review run
-  prepared it.
+  prepared it;
+- the plugin's reviewer again, with every hook off as `disableAllHooks` turns them off, on the one role of a review run
+  the canary makes in the home: the reviewer writes that role's result with no guard to claim the role, and the
+  pipeline's `check` must refuse the result, as `unguarded_roles` in review_dispatch.py decides it.
 
 Each check is judged from the session's stream, never from what the model reports. It prints one fact per line:
 
@@ -30,6 +33,7 @@ Each check is judged from the session's stream, never from what the model report
   RUNTIME claude <plugin>:<skill> RAN "<script>" "<cwd>"   or FAILED "<reason>"
   GUARD claude main-session PASSED                    or DENIED "<reason>" or FAILED "<reason>"
   GUARD claude <plugin>:<agent> DENIED "<reason>"     or PASSED, which fails the run, or FAILED "<reason>"
+  UNGUARDED claude <plugin>:<agent> REFUSED "<reason>"   or ACCEPTED, which fails the run, or FAILED "<reason>"
   TRANSCRIPT claude <check> "<path>"                  the session's stream
   RECORD_BEGIN ... RECORD_END                         the lines a pull request records, paths as placeholders
   REMOVED "<dir>" or HOME_KEPT "<dir>" "<reason>"     as tools/runtime_canary.py ends
@@ -49,7 +53,7 @@ import sys
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -59,8 +63,9 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
-from review_dispatch import REVIEWER_TASK
-from review_guard import REVIEWER
+from review_dispatch import REVIEWER_TASK, unguarded_roles
+from review_guard import REVIEWER, RUN_FILE, RUN_PREFIX
+from review_run import RunState
 
 from deployer import platform_support
 from tools import plugin_build
@@ -92,6 +97,10 @@ from tools.runtime_canary import (
 MARKETPLACE = "canary"
 CONFIG = "claude-config"
 GUARD_MARKER = "PLUGIN-CANARY-OUTSIDE"
+# The run the reviewer works in with every hook off, its one role, and the settings that turn the hooks off.
+UNGUARDED_RUN = f"{RUN_PREFIX}unguarded"
+UNGUARDED_ROLE = "canary"
+HOOKS_OFF = json.dumps({"disableAllHooks": True})
 BOUNDARY = "Code-review reviewer boundary"
 DETAILS = re.compile(r"^\s*(Skills|Agents|Hooks)\s+\(\d+\)\s*(.*)$")
 RECORDED = (
@@ -103,6 +112,7 @@ RECORDED = (
     "UNDISCOVERED",
     "RUNTIME",
     "GUARD",
+    "UNGUARDED",
 )
 FAILING = ("VALIDATION_FAILED", "INSTALL_FAILED", "UNDISCOVERED")
 
@@ -281,9 +291,9 @@ def guard_lines(output: str, agent: str, marker: str) -> list[str]:
     return lines
 
 
-def session_command(executable: str, prompt: str, paths: Mapping[str, str], *, reads: bool = False) -> list[str]:
-    """A session loading each installed plugin for itself alone. The probe's own grants come from its skill; the
-    guard's session may read and start the reviewer, and nothing else, without asking."""
+def session_command(executable: str, prompt: str, paths: Mapping[str, str]) -> list[str]:
+    """A session loading each installed plugin for itself alone. The probe's own grants come from its skill; a guard
+    session adds its own grants after these arguments."""
     loaded = [item for path in paths.values() for item in ("--plugin-dir", path)]
     return [
         executable,
@@ -297,8 +307,17 @@ def session_command(executable: str, prompt: str, paths: Mapping[str, str], *, r
         "--strict-mcp-config",
         "--no-session-persistence",
         *loaded,
-        *(["--allowedTools", "Read", "Agent"] if reads else []),
     ]
+
+
+def guard_grants() -> list[str]:
+    """What the guard session may do without asking: read, and start the reviewer."""
+    return ["Read", "Agent"]
+
+
+def unguarded_grants() -> list[str]:
+    """What the hooks-off session may do without asking: read, start the reviewer, and write its result."""
+    return ["Read", "Write", "Agent"]
 
 
 def transcript(session: Session, name: str, completed: Completed) -> str:
@@ -349,12 +368,50 @@ def guard(session: Session, executable: str, paths: Mapping[str, str], plugin: s
         f"subagent_type {agent}, with exactly this prompt: {task} Then stop and report what it replied. This is a "
         "plugin canary session."
     )
-    command = session_command(executable, prompt, paths, reads=True)
+    command = [*session_command(executable, prompt, paths), "--allowedTools", *guard_grants()]
     script_log = session.home / STATE / "scripts" / "claude-guard.jsonl"
     completed = session.runner(
         command, session.home, environment(session.base, script_log, session.home), session.timeout
     )
     return [*guard_lines(completed.stdout, agent, text), transcript(session, "guard", completed)]
+
+
+def unguarded(session: Session, executable: str, paths: Mapping[str, str], plugin: str) -> list[str]:
+    """Have the plugin's reviewer work a review run's one role with every hook off, then hold its result to the guard's
+    claim as `check` does: with no hook, no guard claimed the role, so the result is refused."""
+    run = session.home / UNGUARDED_RUN
+    run.mkdir(exist_ok=True)
+    prompt, result = run / f"{UNGUARDED_ROLE}.prompt.md", run / f"{UNGUARDED_ROLE}.json"
+    prompt.write_text(
+        f'Write the JSON text {{"canary": true}} to {result} with the Write tool. Do nothing else.\n', encoding="utf-8"
+    )
+    role = {"id": UNGUARDED_ROLE, "prompt_file": str(prompt), "result_file": str(result)}
+    (run / RUN_FILE).write_text(json.dumps({"roles": [role]}), encoding="utf-8")
+    agent = f"{plugin}:{REVIEWER}"
+    task = REVIEWER_TASK.format(prompt=prompt)
+    request = (
+        f"Start one subagent with the Agent tool, subagent_type {agent}, with exactly this prompt: {task} Then stop "
+        "and report what it replied. This is a plugin canary session."
+    )
+    command = [
+        *session_command(executable, request, paths),
+        "--allowedTools",
+        *unguarded_grants(),
+        "--settings",
+        HOOKS_OFF,
+    ]
+    script_log = session.home / STATE / "scripts" / "claude-unguarded.jsonl"
+    completed = session.runner(
+        command, session.home, environment(session.base, script_log, session.home), session.timeout
+    )
+    if not result.is_file():
+        outcome = f"FAILED {quote('the reviewer wrote no result: ' + last_line(completed))}"
+    else:
+        # The state check reads: a native subagent's run on Claude Code, which the guard should have claimed.
+        state = cast(RunState, {"runtime": "claude-code", "dispatch": "subagents", "reads": {}})
+        refused = unguarded_roles(run, state, [UNGUARDED_ROLE])
+        outcome = f"REFUSED {quote(refused[UNGUARDED_ROLE])}" if refused else "ACCEPTED"
+    return [f"UNGUARDED claude {agent} {outcome}", transcript(session, "unguarded", completed)]
 
 
 def checks(session: Session, executable: str, discovery_only: bool) -> Iterator[str]:
@@ -375,6 +432,7 @@ def checks(session: Session, executable: str, discovery_only: bool) -> Iterator[
         return
     yield from probe(session, executable, paths, fixture)
     yield from guard(session, executable, paths, reviewers[0])
+    yield from unguarded(session, executable, paths, reviewers[0])
 
 
 def failed(line: str) -> bool:
@@ -383,6 +441,8 @@ def failed(line: str) -> bool:
         return True
     if kind == "RUNTIME":
         return " RAN " not in line
+    if kind == "UNGUARDED":
+        return " REFUSED " not in line
     if kind == "GUARD":
         main = " main-session " in line
         return not (" PASSED" in line if main else " DENIED " in line)

@@ -35,7 +35,8 @@ The hook also counts what a reviewer reads: a claim creates the role's read log 
 allowed Read of a file, or Grep of one file, under the run's source snapshot appends that file's path, relative to
 the snapshot, as one JSON string per line, as `source-file` does for each file it fetches or finds. Only the
 pipeline's `check` reads the log, and it keeps nothing of it but counts. A log that cannot be written is left
-short: counting never denies a call.
+short: counting never denies a call. The log is also the claim's proof: on Claude Code, `check` refuses the result of
+a role the guard never claimed (`UNGUARDED`), since no hook held its reviewer.
 
 Other tools pass. Anything the hook cannot evaluate is denied, a call without an agent ID included: a reviewer
 reading the wrong code, or writing another role's result, produces a plausible but wrong review, which is worse
@@ -136,6 +137,21 @@ READ = FieldReader(DeniedField)
 def read_log(run: Path, role: str) -> Path:
     """The file the guard logs a role's snapshot reads in. `check` in review_pipeline.py reduces it to counts."""
     return run / "work" / f"reads-{role}.log"
+
+
+def claimed(run: Path, role: str) -> bool:
+    """Whether the guard claimed this role of the run and its log is still there to show it: the claim creates the
+    log, and `check` deletes it once it has counted it."""
+    return read_log(run, role).is_file()
+
+
+# Why a result is refused on Claude Code when the guard never claimed its role, ending with the remedy, which names how
+# the skill runs the role without the agent.
+UNGUARDED = (
+    "the reviewer ran without its guard: the reviewer guard never claimed this role, as when hooks are off "
+    "(disableAllHooks, or allowManagedHooksOnly for a plugin's hooks), the code-review-reviewer agent or its hook did "
+    "not load, or another agent type ran the role; enable hooks for the code-review-reviewer agent, or {remedy}"
+)
 
 
 def _start_log(run: Path, role: str) -> None:

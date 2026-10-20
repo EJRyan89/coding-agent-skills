@@ -107,6 +107,9 @@ def test_the_component_inventory_is_read_from_plugin_details() -> None:
         ('RUNTIME claude a:b RAN "s" "c"', False),
         ('RUNTIME claude a:b FAILED "x"', True),
         ("INSTALLED claude a 1.0.0", False),
+        ('UNGUARDED claude a:b REFUSED "x"', False),
+        ("UNGUARDED claude a:b ACCEPTED", True),
+        ('UNGUARDED claude a:b FAILED "x"', True),
     ],
 )
 def test_each_kind_of_line_passes_or_fails_the_run(line: str, fails: bool) -> None:
@@ -250,3 +253,50 @@ def test_the_guard_session_gives_the_reviewer_a_reviewers_task_naming_the_marker
         "GUARD claude main-session PASSED",
         f'GUARD claude {AGENT} DENIED "Code-review reviewer boundary: read the prompt file your task names first"',
     ]
+
+
+def unguarded_session(home: Path, writes: bool, claims: bool, seen: list[list[str]]) -> canary.Session:
+    """A session whose reviewer writes its role's result, or not, and whose guard claims the role, or not."""
+
+    def reviewing(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Completed:
+        seen.append(arguments)
+        run = home / canary.UNGUARDED_RUN
+        if claims:
+            (run / "work").mkdir()
+            (run / "work" / f"reads-{canary.UNGUARDED_ROLE}.log").touch()
+        if writes:
+            (run / f"{canary.UNGUARDED_ROLE}.json").write_text('{"canary": true}', encoding="utf-8")
+        return Completed(0, "the reviewer reports", "")
+
+    (home / STATE).mkdir(parents=True)
+    return canary.Session(home, reviewing, {"PATH": "x"}, 30)
+
+
+def test_a_reviewer_with_every_hook_off_writes_a_result_check_refuses(tmp_path: Path) -> None:
+    seen: list[list[str]] = []
+    lines = canary.unguarded(
+        unguarded_session(tmp_path, True, False, seen), "claude", {"a": "b"}, "coding-agent-skills"
+    )
+    command = seen[0]
+    assert command[command.index("--settings") + 1] == '{"disableAllHooks": true}'
+    assert command[command.index("--allowedTools") + 1 : command.index("--settings")] == ["Read", "Write", "Agent"]
+    prompt = tmp_path / canary.UNGUARDED_RUN / f"{canary.UNGUARDED_ROLE}.prompt.md"
+    task = f"Read {prompt} and follow it exactly. It is your complete task."
+    assert f"subagent_type {AGENT}, with exactly this prompt: {task}" in command[2]
+    roles = json.loads((tmp_path / canary.UNGUARDED_RUN / "run.json").read_text(encoding="utf-8"))["roles"]
+    assert [role["prompt_file"] for role in roles] == [str(prompt)]
+    assert lines[0].startswith(f'UNGUARDED claude {AGENT} REFUSED "the reviewer ran without its guard: ')
+    assert lines[0].endswith('or prepare the review again with --inline"')
+    assert not canary.failed(lines[0])
+
+
+def test_a_result_the_guard_claimed_or_no_result_fails_the_check(tmp_path: Path) -> None:
+    claimed = canary.unguarded(unguarded_session(tmp_path / "claimed", True, True, []), "claude", {}, "p")
+    assert claimed[0] == "UNGUARDED claude p:code-review-reviewer ACCEPTED"
+    silent = canary.unguarded(unguarded_session(tmp_path / "silent", False, False, []), "claude", {}, "p")
+    assert (
+        silent[0]
+        == 'UNGUARDED claude p:code-review-reviewer FAILED "the reviewer wrote no result: the reviewer reports"'
+    )
+    assert canary.failed(claimed[0])
+    assert canary.failed(silent[0])

@@ -17,7 +17,9 @@ holding the prompt, a copy of the input, and a `run.json` naming the one role, `
 file, and its self-check. That is the run shape ejryan89-code-review-core's reviewer guard binds a
 `code-review-reviewer` to, so in Claude Code the agent reads only that run, writes only its result, and runs only its
 self-check. The prompt names the input copy and the one result file the agent may write. The run is removed once its
-result is recorded or a later report stages another.
+result is recorded or a later report stages another. On Claude Code a result from a subagent the guard never claimed
+is not recorded (`unclaimed`): the guard's claim starts the role's read log in the run, and a run with none had no
+hook holding its agent.
 
 A repository's guidance files are the files each repository-scoped reviewer was built from (see `review_guidance.py`),
 which a recommendation may name as the file to change. A generic reviewer is built from no repository file, so such a
@@ -45,7 +47,7 @@ from typing import Any
 from executable_locator import PYTHON
 from flat_text import flat_text
 from review_config import safe_repository_path
-from review_guard import RUN_FILE, RUN_PREFIX
+from review_guard import RUN_FILE, RUN_PREFIX, UNGUARDED, claimed
 from review_guidance import Guidance, is_prose
 from review_io import PersistenceError, atomic_write_text, read_json
 from review_records import (
@@ -441,6 +443,19 @@ class Staged:
     def write(self) -> None:
         for path, text in self.files.items():
             atomic_write_text(path, text)
+
+
+# What the session does in place of a subagent the guard never claimed: the synthesis worked inline, by itself.
+UNGUARDED_REMEDY = "follow the prompt yourself and record its result with --inline"
+
+
+def unclaimed(synthesis: Mapping[str, Any]) -> str | None:
+    """Why a pending synthesis's result, written by a subagent the reviewer guard should have held, is not recorded,
+    or None once the guard claimed its role in the run `stage_run` made."""
+    prompt = synthesis.get("prompt")
+    if prompt and claimed(Path(prompt).parent, SYNTHESIS_ROLE):
+        return None
+    return UNGUARDED.format(remedy=UNGUARDED_REMEDY)
 
 
 def remove_run(synthesis: dict[str, Any] | None) -> None:

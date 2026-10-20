@@ -208,7 +208,9 @@ class SynthesisFixture(InsightFixture):
         return path
 
     def synthesize(self, json_path: Path, result_path: Path, *extra: str) -> tuple[int, str, str]:
-        return self.run_main("synthesize", "--report", str(json_path), "--result", str(result_path), *extra)
+        """Check or record a result. Recording names a runtime, Codex unless `extra` names one, where no guard runs."""
+        host = () if "--check" in extra or "--host" in extra else ("--host", "codex")
+        return self.run_main("synthesize", "--report", str(json_path), "--result", str(result_path), *extra, *host)
 
 
 class InputTests(SynthesisFixture):
@@ -1420,6 +1422,52 @@ class GuardTests(SynthesisFixture):
         ):
             with self.subTest(path=other):
                 self.assert_denied("Write", file_path=str(other), content="{}")
+
+    def test_on_claude_code_a_result_the_guard_never_claimed_is_not_recorded(self) -> None:
+        result = self.write_result(self.json_path, self.valid_result(self.json_path))
+        before = self.json_path.read_text(encoding="utf-8")
+        code, out, _ = self.synthesize(self.json_path, result, "--host", "claude-code")
+        self.assertEqual(1, code)
+        self.assertEqual(
+            [
+                "FAILED the reviewer ran without its guard: the reviewer guard never claimed this role, as when hooks "
+                "are off (disableAllHooks, or allowManagedHooksOnly for a plugin's hooks), the code-review-reviewer "
+                "agent or its hook did not load, or another agent type ran the role; enable hooks for the "
+                "code-review-reviewer agent, or follow the prompt yourself and record its result with --inline"
+            ],
+            out.splitlines(),
+        )
+        self.assertEqual(before, self.json_path.read_text(encoding="utf-8"), "nothing is recorded")
+        self.assertEqual([self.synthesis_run], self.runs(), "the run stays for another attempt")
+        self.assertEqual(
+            (0, ""), self.synthesize(self.json_path, result, "--check")[::2], "the self-check still passes"
+        )
+
+    def test_on_claude_code_a_result_is_recorded_once_the_guard_claimed_the_role(self) -> None:
+        self.assertIsNone(self.decide("Read", file_path=str(self.prompt(self.json_path))))
+        result = self.write_result(self.json_path, self.valid_result(self.json_path))
+        code, out, err = self.synthesize(self.json_path, result, "--host", "claude-code")
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertEqual("complete", self.synthesis(self.json_path)["status"])
+
+    def test_a_synthesis_worked_inline_or_on_another_runtime_needs_no_claim(self) -> None:
+        for host in (("--host", "claude-code", "--inline"), ("--host", "codex"), ("--host", "copilot-cli")):
+            with self.subTest(host=host):
+                json_path, _ = self.run_report()
+                result = self.write_result(json_path, self.valid_result(json_path))
+                code, out, err = self.synthesize(json_path, result, *host)
+                self.assertEqual((0, ""), (code, err), out)
+                self.assertEqual("complete", self.synthesis(json_path)["status"])
+                shutil.rmtree(json_path.parent)
+
+    def test_recording_names_the_runtime_and_the_self_check_does_not(self) -> None:
+        result = self.write_result(self.json_path, self.valid_result(self.json_path))
+        code, out, _ = self.run_main("synthesize", "--report", str(self.json_path), "--result", str(result))
+        self.assertEqual(
+            (1, ["FAILED synthesize needs --host, the runtime this session runs in, to record a result"]),
+            (code, out.splitlines()),
+        )
+        self.assertEqual("pending", self.synthesis(self.json_path)["status"])
 
     def test_the_guard_lets_the_synthesis_run_only_its_self_check(self) -> None:
         self.decide("Read", file_path=str(self.prompt(self.json_path)))

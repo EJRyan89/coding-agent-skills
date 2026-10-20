@@ -1737,22 +1737,41 @@ class Pipeline:
             github=GitHubClient(runner=self.github), fetch_tarball=no_tarball, resolve_runtime=lambda *_: "claude-code"
         )
 
-    def __call__(self, *arguments: str) -> list[str]:
+    def __call__(self, *arguments: str, status: int = 0) -> list[str]:
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            status = review_pipeline.main(["--config", str(self.config), *arguments], services=self.services)
+            exited = review_pipeline.main(["--config", str(self.config), *arguments], services=self.services)
         lines = output.getvalue().splitlines()
-        self.test.assertEqual(0, status, lines)
+        self.test.assertEqual(status, exited, lines)
         return lines
 
-    def review(self, prepare: Sequence[str], spec: dict[str, Any], guarded: bool = False) -> Path:
+    def review(self, prepare: Sequence[str], spec: dict[str, Any]) -> Path:
         """Prepare, review, check, and finalize one fixture, each reviewer doing what the scenario `spec` expects, a
-        specialist raising only the expected findings in its own files, as check holds it to; return the record JSON
-        finalize wrote. With `guarded`, each role's read log is started as the reviewer guard's claim starts it."""
+        specialist raising only the expected findings in its own files, as check holds it to, under the reviewer guard,
+        whose claim starts each role's read log; return the record JSON finalize wrote."""
+        run, pull = self.reviewed(prepare, spec, guarded=True)
+        checked = self("check", "--run", str(run))
+        self.test.assertEqual([f"ALL_VALID {pull['repository']}#{pull['number']}"], checked)
+        finalized = self("finalize", "--run", str(run))
+        return Path(
+            next(line.split(" ", 2)[2] for line in finalized if line.startswith("SHA256 ") and line.endswith(".json"))
+        )
+
+    def refused(self, prepare: Sequence[str], spec: dict[str, Any]) -> None:
+        """Prepare and review one fixture as `review` does, but with no guard to claim a role, as when hooks are off:
+        check refuses every role as one that ran without its guard, so nothing is recorded."""
+        run, _ = self.reviewed(prepare, spec, guarded=False)
+        checked = self("check", "--run", str(run), status=1)
+        refused = [line for line in checked if line.startswith("RETRY ")]
+        self.test.assertTrue(refused, checked)
+        self.test.assertTrue(all(" the reviewer ran without its guard: " in line for line in refused), checked)
+
+    def reviewed(self, prepare: Sequence[str], spec: dict[str, Any], *, guarded: bool) -> tuple[Path, dict[str, Any]]:
+        """Prepare one fixture and write each role's result; return the run and the fixture's pull.json."""
         prepared = self("prepare", "--host", "claude-code", *prepare)
         run = Path(next(line for line in prepared if line.startswith("RUN ")).split(" ", 2)[2])
         fixture = Path(prepare[list(prepare).index("--fixture") + 1])
-        pull = json.loads((fixture / "pull.json").read_text(encoding="utf-8"))
+        pull: dict[str, Any] = json.loads((fixture / "pull.json").read_text(encoding="utf-8"))
         plan = run / "work" / "plan.json"
         planned = json.loads(plan.read_text(encoding="utf-8"))["roles"] if plan.is_file() else []
         files = {role["id"]: set(role["files"]) for role in planned}
@@ -1763,12 +1782,7 @@ class Pipeline:
             if role["id"] in files:
                 result["findings"] = [item for item in result["findings"] if item["path"] in files[role["id"]]]
             Path(role["result_file"]).write_text(json.dumps(result), encoding="utf-8")
-        checked = self("check", "--run", str(run))
-        self.test.assertEqual([f"ALL_VALID {pull['repository']}#{pull['number']}"], checked)
-        finalized = self("finalize", "--run", str(run))
-        return Path(
-            next(line.split(" ", 2)[2] for line in finalized if line.startswith("SHA256 ") and line.endswith(".json"))
-        )
+        return run, pull
 
 
 def spec_of(scenario: Scenario) -> dict[str, Any]:
@@ -2518,10 +2532,13 @@ class StubClaude:
                     stage = prepare[prepare.index("--stage") + 1] if "--stage" in prepare else None
                     built = self.built[f"{run.name} {model}"] = build_document(Path(prepare[0]), stage)
                     prepare = ["--canary", "--fixture", fixture_of(built)]
-                written = Pipeline(self.test, Path(environment["CODE_REVIEW_CONFIG"])).review(
-                    prepare, spec, self.guarded
-                )
-            if self.after is not None:
+                pipeline = Pipeline(self.test, Path(environment["CODE_REVIEW_CONFIG"]))
+                written: Path | None = None
+                if self.guarded:
+                    written = pipeline.review(prepare, spec)
+                else:
+                    pipeline.refused(prepare, spec)
+            if self.after is not None and written is not None:
                 self.after(written)
         reviewer = self.reviewer or model
         forwarded = [assistant(reviewer, subagent=True)] if self.subagent else []
@@ -2817,12 +2834,12 @@ class EvaluateTests(unittest.TestCase):
                     self.assertIn(f'"{reason}', line)
                 self.assertFalse(any(line.startswith(("PASS", "GUARDED")) for line in lines))
 
-    def test_a_record_no_guard_held_fails_the_run(self) -> None:
+    def test_a_review_no_guard_held_records_nothing_and_fails_the_run(self) -> None:
+        # check refuses a reviewer the guard never claimed, so the session records no review.
         claude = StubClaude(self, guarded=False)
         status, lines = self.evaluate(["--model", "haiku", "--scenario", "clean-change"], self.seams(claude))
         self.assertEqual(1, status)
-        reason = "no reviewer guard held generic-review: its files_read is null"
-        self.assertIn(f'FAIL review-prs clean-change haiku verdict APPROVED record "{reason}"', lines)
+        self.assertIn('FAIL review-prs clean-change haiku verdict APPROVED run "the run recorded no review"', lines)
         self.assertFalse(any(line.startswith(("PASS", "GUARDED")) for line in lines))
 
     def test_an_agent_that_cannot_be_passed_stops_the_run(self) -> None:
@@ -2937,7 +2954,6 @@ class EvaluateTests(unittest.TestCase):
             "no reviewer subagent ran, so the record is not the model's": StubClaude(self, subagent=False),
             "reviewers ran on claude-opus-5-5, not claude-haiku-5-5": StubClaude(self, reviewer="claude-opus-5-5"),
             "the session ran on claude-sonnet-5-5, not claude-opus-5-5": StubClaude(self, session="claude-sonnet-5-5"),
-            "no reviewer guard held generic-review: its files_read is null": StubClaude(self, guarded=False),
         }
         for index, (reason, claude) in enumerate(cases.items()):
             with self.subTest(reason=reason):
