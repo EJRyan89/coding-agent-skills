@@ -35,6 +35,7 @@ from job_pool import (
     worker_count,
 )
 from process_identity import process_status
+from validation_support import REPOSITORY_ROOT
 
 from deployer import platform_support
 from tests import run_validation
@@ -375,7 +376,7 @@ class RunnerDefaultEnvironment(unittest.TestCase):
             self.assertTrue(summary.is_file(), "the step summary is written to the file os.environ names")
             text = summary.read_text(encoding="utf-8")
         self.assertEqual(0, code, output.getvalue())
-        changed.assert_called_once_with(run_validation.REPOSITORY_ROOT, "origin/release line")
+        changed.assert_called_once_with(REPOSITORY_ROOT, "origin/release line")
         self.assertEqual(3, beside.call_args.args[3])
         self.assertIn("suite jobs on 3 workers.", output.getvalue())
         self.assertIn("## Repository validation\n", text)

@@ -8,6 +8,7 @@ import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -371,7 +372,7 @@ class RenderedExecutableTests(DeployerTestCase):
         checked: list[tuple[str, str]] = []
         real = platform_support.run_tool
 
-        def record(arguments: list[str], environment: dict[str, str] | None = None):
+        def record(arguments: list[str], environment: dict[str, str] | None = None) -> platform_support.ToolResult:
             tool = Path(arguments[0]).stem.casefold()
             checked.extend(
                 (tool, Path(argument).read_text(encoding="utf-8"))
@@ -535,7 +536,7 @@ class RenderedExecutableTests(DeployerTestCase):
 
 
 class LockTests(DeployerTestCase):
-    def write_lock(self, info: dict) -> Path:
+    def write_lock(self, info: dict[str, Any]) -> Path:
         directory = self.home / ".claude" / "deployer" / ".deploy.lock.d"
         directory.mkdir(parents=True)
         self.write(directory / "token", str(info.get("token", "old-token")))
@@ -767,7 +768,7 @@ class LockTests(DeployerTestCase):
         self.assertFalse(lock_dir.exists())
         self.assertFalse((self.skills_dir / "alpha").exists())
 
-    def denied_at(self, path: Path) -> mock._patch:
+    def denied_at(self, path: Path) -> mock._patch[mock.MagicMock | mock.AsyncMock]:
         real_remove = fsops.remove
 
         def remove(target: Path) -> None:
@@ -877,7 +878,9 @@ class LockTests(DeployerTestCase):
         real_acquire = lock.acquire
         state = {"nested": False}
 
-        def acquire_after_competitor(paths: Paths, probe=platform_support.process_status):
+        def acquire_after_competitor(
+            paths: Paths, probe: lock.ProcessProbe = platform_support.process_status
+        ) -> lock.Lock:
             if not state["nested"]:
                 state["nested"] = True
                 self.deploy_from(source_a, "--all")

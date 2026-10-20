@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import upgrade_notes
+from release_levels import versioning_levels
 from upgrade_notes import Snapshot, changed_contract_items, contract_list_problems, upgrade_notes_problems
 from validation_support import write_fixture_tree
 
@@ -505,9 +506,7 @@ class UpgradeNotesPolicy(unittest.TestCase):
                     [] if value is None else release_notes.body_entries(self.body(self.entry("none", level=value)))
                 )
                 sourced = [release_notes.SourcedEntry(entry, "fixture", "#7", from_notes=False) for entry in entries]
-                section = release_notes.version_section(
-                    "v0.2.0", sourced, upgrade_notes.versioning_levels(self.RELEASING)
-                )
+                section = release_notes.version_section("v0.2.0", sourced, versioning_levels(self.RELEASING))
                 self.assertEqual(
                     release_notes.notes_entries("\n\n".join(item.rendered() for item in sourced)),
                     release_notes.notes_entries(section),
@@ -518,13 +517,14 @@ class UpgradeNotesPolicy(unittest.TestCase):
                 )
 
     def test_the_policy_and_generator_import_one_version_and_level_reader(self) -> None:
-        self.assertIs(upgrade_notes.VERSION, release_notes.VERSION)
-        self.assertIs(upgrade_notes.versioning_levels, release_notes.versioning_levels)
+        # Both modules import these from release_levels and export none, so each module's own binding is read.
+        self.assertIs(vars(upgrade_notes)["VERSION"], vars(release_notes)["VERSION"])
+        self.assertIs(vars(upgrade_notes)["versioning_levels"], vars(release_notes)["versioning_levels"])
 
     def test_contract_and_level_sections_accept_trailing_whitespace_and_crlf(self) -> None:
         self.release()
         changed = self.RELEASING.replace("## Versioning\n", "## Versioning \t\n").replace("\n", "\r\n")
-        self.assertEqual(["patch", "minor", "major"], upgrade_notes.versioning_levels(changed))
+        self.assertEqual(["patch", "minor", "major"], versioning_levels(changed))
         self.assertEqual(
             [],
             self.problems({"docs/releasing.md": changed}, self.body(self.entry("none"))),
@@ -533,7 +533,8 @@ class UpgradeNotesPolicy(unittest.TestCase):
     def test_the_tag_and_its_tree_are_the_checkouts_whatever_repository_git_dir_names(self) -> None:
         # The commits since the tag are read through tools/release_notes.py, so the tag must be read through the same
         # git, or the two halves of one check read different repositories.
-        self.assertIs(release_notes.git, upgrade_notes.git)
+        # upgrade_notes imports git from tools/release_notes.py and exports none, so its own binding is read.
+        self.assertIs(release_notes.git, vars(upgrade_notes)["git"])
         self.release()
         other = self.home / "another repository"
         self.git("init", "-q", "-b", "main", str(other))

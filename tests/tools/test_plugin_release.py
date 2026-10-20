@@ -33,7 +33,8 @@ def write(root: Path, relative: str, text: str) -> None:
 
 
 def marketplace(root: Path) -> dict[str, Any]:
-    return json.loads((root / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
+    found: dict[str, Any] = json.loads((root / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
+    return found
 
 
 @pytest.fixture

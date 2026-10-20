@@ -233,7 +233,7 @@ class PythonChecksFixtures(unittest.TestCase):
             )
             # A strict root of those also runs alone in strict mode, from the repository root, and the run above is
             # kept as it was. The strict roots are pinned as literals.
-            strict_roots = ("deployer", "tools", "deploy.py")
+            strict_roots = ("deployer", "tools", "deploy.py", "tests", "conftest.py")
             self.assertEqual(
                 {f"static type check (mypy --strict {top})" for top in strict_roots},
                 {name for name in jobs if name.startswith("static type check (mypy --strict ")},
@@ -275,7 +275,7 @@ class PythonChecksFixtures(unittest.TestCase):
                     }
                     check.assert_called_once_with(root, ["."], configuration, strict=strict)
 
-    def test_the_strict_list_only_grows_and_names_areas_checked_on_their_own(self) -> None:
+    def test_the_strict_list_holds_every_root_and_never_loses_one(self) -> None:
         pinned = ("skills/alpha/scripts",)
         files = {
             "skills/alpha/SKILL.md": "",
@@ -284,6 +284,7 @@ class PythonChecksFixtures(unittest.TestCase):
             "skills/beta/scripts/run.py": "",
             "deployer/__init__.py": "",
         }
+        complete = '"skills/alpha/scripts", "skills/beta/scripts", "deployer"'
 
         def problems(table: str) -> list[str]:
             with tempfile.TemporaryDirectory() as temporary:
@@ -291,21 +292,32 @@ class PythonChecksFixtures(unittest.TestCase):
                 write_fixture_tree(root, {**files, "pyproject.toml": table})
                 return strict_area_problems(root, pinned)
 
-        self.assertEqual([], problems('[tool.validation]\nmypy-strict = ["skills/alpha/scripts"]\n'))
-        # An area added beside the pinned one passes, a skill's scripts or a root the others are checked with.
-        self.assertEqual(
-            [], problems('[tool.validation]\nmypy-strict = ["skills/alpha/scripts", "skills/beta/scripts"]\n')
-        )
-        self.assertEqual(
-            [], problems('[tool.validation]\nmypy-strict = ["skills/alpha/scripts", "deployer", "deploy.py"]\n')
-        )
-        # An area removed fails, however the rest of the list is left.
+        # Every root the tree has, the skills' scripts and the roots checked together, is listed.
+        self.assertEqual([], problems(f"[tool.validation]\nmypy-strict = [{complete}]\n"))
+        # A root the others are checked with may be listed before the tree has it.
+        self.assertEqual([], problems(f'[tool.validation]\nmypy-strict = [{complete}, "deploy.py"]\n'))
+        # A pinned area removed fails, however the rest of the list is left.
         removed = (
             "pyproject.toml: [tool.validation] mypy-strict lacks skills/alpha/scripts, which is checked in strict "
             "mode; an area joins the list and never leaves it, so fix the errors strict mode reports instead"
         )
-        self.assertEqual([removed], problems("[tool.validation]\nmypy-strict = []\n"))
-        self.assertEqual([removed], problems('[tool.validation]\nmypy-strict = ["skills/beta/scripts"]\n'))
+        self.assertEqual([removed], problems('[tool.validation]\nmypy-strict = ["skills/beta/scripts", "deployer"]\n'))
+
+        # A root the list does not name, such as a new skill's scripts, fails until it is listed.
+        def unlisted(area: str) -> str:
+            return (
+                f"pyproject.toml: [tool.validation] mypy-strict lacks {area}, a type-check root; every root is "
+                "checked in strict mode, so list it and fix the errors strict mode reports there"
+            )
+
+        self.assertEqual(
+            [unlisted("skills/beta/scripts")],
+            problems('[tool.validation]\nmypy-strict = ["skills/alpha/scripts", "deployer"]\n'),
+        )
+        self.assertEqual(
+            [removed, unlisted("deployer"), unlisted("skills/beta/scripts")],
+            problems("[tool.validation]\nmypy-strict = []\n"),
+        )
         # A list that is missing or holds anything but paths is refused whole.
         malformed = ["pyproject.toml: [tool.validation] mypy-strict must be a list of paths from the repository root"]
         for table in (
@@ -327,7 +339,7 @@ class PythonChecksFixtures(unittest.TestCase):
                 "pyproject.toml: [tool.validation] mypy-strict names skills/alpha/scripts more than once",
             ],
             problems(
-                '[tool.validation]\nmypy-strict = ["skills/alpha/scripts", "deployer/sub", "skills/gamma/scripts", '
+                f'[tool.validation]\nmypy-strict = [{complete}, "deployer/sub", "skills/gamma/scripts", '
                 '"skills/alpha/scripts"]\n'
             ),
         )

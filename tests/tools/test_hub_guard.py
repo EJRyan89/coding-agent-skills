@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 import bash_agreement
 import git_client
 import git_worktrees
+from bounded_process import run_bounded
 from worktree_fixture import GUARD_SCRIPT, REPOSITORY_ROOT, HubTestCase, isolated_environment
 
 from deployer import platform_support
@@ -51,7 +52,8 @@ class GuardTestCase(HubTestCase):
         self.assertEqual("PreToolUse", output["hookEventName"])
         self.reason = output["permissionDecisionReason"]
         self.assertIn("tools/worktrees.py new", self.reason)
-        return output["permissionDecision"]
+        decision: str = output["permissionDecision"]
+        return decision
 
     def edit(
         self,
@@ -85,7 +87,7 @@ class PowerShellReaderStartTests(unittest.TestCase):
         reading = hub_guard.Reading(environment, text="git commit -m x")
         with (
             mock.patch.object(subprocess, "Popen", wraps=subprocess.Popen) as start,
-            mock.patch.object(hub_guard, "run_bounded", wraps=hub_guard.run_bounded) as bounded,
+            mock.patch.object(hub_guard, "run_bounded", wraps=run_bounded) as bounded,
         ):
             events = hub_guard.powershell_events("git commit -m x", reading, 0)
         self.assertEqual([], reading.unread)

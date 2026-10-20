@@ -22,6 +22,8 @@ import pull_request_title
 from git_client import GitResult
 from pull_request_title import head_branch, title_problems, title_types_problems
 
+from tools.worktrees import TITLE_TYPES
+
 
 def git(repository: Path, *arguments: str) -> None:
     subprocess.run(["git", "-C", str(repository), *arguments], capture_output=True, check=True)
@@ -29,9 +31,7 @@ def git(repository: Path, *arguments: str) -> None:
 
 class PullRequestTitlePolicy(unittest.TestCase):
     def test_the_types_are_the_agreed_ones(self) -> None:
-        self.assertEqual(
-            ("feat", "fix", "docs", "test", "refactor", "chore", "ci", "build"), pull_request_title.TITLE_TYPES
-        )
+        self.assertEqual(("feat", "fix", "docs", "test", "refactor", "chore", "ci", "build"), TITLE_TYPES)
 
     def test_the_type_agrees_with_a_branch_kind_that_is_a_type(self) -> None:
         self.assertEqual([], title_problems("fix(deployer): refuse a bad name", "fix/bad-name"))

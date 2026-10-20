@@ -6,25 +6,32 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+from skill_roots import sibling_scripts
+
+sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
+
+from review_dispatch import REVIEWER_TASK
+
 from tools import plugin_build
 from tools import plugin_canary as canary
-from tools.runtime_canary import Completed
+from tools.runtime_canary import FIXTURE_SKILL, FIXTURE_SOURCE, REPOSITORY_ROOT, RUN_ID, STATE, Completed
 
 MARKER = "PLUGIN-CANARY-OUTSIDE-1a2b"
 AGENT = "coding-agent-skills:code-review-reviewer"
 
 
-def event(kind: str, content: list[dict], parent: str | None = None) -> str:
+def event(kind: str, content: list[dict[str, Any]], parent: str | None = None) -> str:
     return json.dumps({"type": kind, "parent_tool_use_id": parent, "message": {"content": content}})
 
 
-def result(text: object, *, error: bool = False) -> dict:
+def result(text: object, *, error: bool = False) -> dict[str, Any]:
     return {"type": "tool_result", "content": text, "is_error": error}
 
 
@@ -138,7 +145,7 @@ def session(home: Path, runner: FakeClaude) -> canary.Session:
 
 
 def test_the_plugins_are_built_validated_installed_and_listed_in_the_throwaway_configuration(tmp_path: Path) -> None:
-    plugins = canary.build(tmp_path, [canary.REPOSITORY_ROOT, canary.FIXTURE_SOURCE])
+    plugins = canary.build(tmp_path, [REPOSITORY_ROOT, FIXTURE_SOURCE])
     assert [plugin.name for plugin in plugins] == [
         "coding-agent-skills",
         "coding-agent-skills-dotnet",
@@ -163,7 +170,7 @@ def test_the_plugins_are_built_validated_installed_and_listed_in_the_throwaway_c
 
 
 def test_a_component_the_installed_plugin_does_not_list_is_undiscovered(tmp_path: Path) -> None:
-    plugins = canary.build(tmp_path, [canary.FIXTURE_SOURCE])
+    plugins = canary.build(tmp_path, [FIXTURE_SOURCE])
     runner = FakeClaude(tmp_path, listed={"skill": set()})
     runner.plugins = plugins
     lines = list(canary.install(session(tmp_path, runner), "claude", plugins))
@@ -171,7 +178,7 @@ def test_a_component_the_installed_plugin_does_not_list_is_undiscovered(tmp_path
 
 
 def test_a_plugin_that_fails_validation_or_install_is_reported(tmp_path: Path) -> None:
-    plugins = canary.build(tmp_path, [canary.FIXTURE_SOURCE])
+    plugins = canary.build(tmp_path, [FIXTURE_SOURCE])
 
     def refusing(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Completed:
         return Completed(1, "", "✘ Validation failed\n")
@@ -186,16 +193,16 @@ def test_a_plugin_that_fails_validation_or_install_is_reported(tmp_path: Path) -
 
 def test_the_probe_runs_the_installed_copy_and_records_beside_it(tmp_path: Path) -> None:
     installed = tmp_path / "cache" / "runtime-canary" / "0.0.0-dev"
-    script = installed / "skills" / canary.FIXTURE_SKILL / "scripts" / "canary_probe.py"
+    script = installed / "skills" / FIXTURE_SKILL / "scripts" / "canary_probe.py"
     script.parent.mkdir(parents=True)
     script.write_text("", encoding="utf-8")
-    (tmp_path / canary.STATE).mkdir()
+    (tmp_path / STATE).mkdir()
 
     def probing(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Completed:
         assert ["--plugin-dir", str(installed)] == arguments[arguments.index("--plugin-dir") :][:2]
-        assert arguments[2].startswith(f"/runtime-canary:{canary.FIXTURE_SKILL} ")
-        state = installed.parent / canary.STATE
-        run = (state / canary.RUN_ID).read_text(encoding="utf-8")
+        assert arguments[2].startswith(f"/runtime-canary:{FIXTURE_SKILL} ")
+        state = installed.parent / STATE
+        run = (state / RUN_ID).read_text(encoding="utf-8")
         record = {"script": script.as_posix(), "cwd": cwd.as_posix(), "run": run}
         (state / "probe.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
         return Completed(0, "", "")
@@ -203,14 +210,14 @@ def test_the_probe_runs_the_installed_copy_and_records_beside_it(tmp_path: Path)
     lines = canary.probe(
         canary.Session(tmp_path, probing, {}, 30), "claude", {"runtime-canary": str(installed)}, "runtime-canary"
     )
-    assert lines[0].startswith(f'RUNTIME claude runtime-canary:{canary.FIXTURE_SKILL} RAN "{script.as_posix()}"')
+    assert lines[0].startswith(f'RUNTIME claude runtime-canary:{FIXTURE_SKILL} RAN "{script.as_posix()}"')
     assert lines[1].startswith("TRANSCRIPT claude probe ")
 
 
 def test_a_probe_that_never_ran_the_installed_copy_fails(tmp_path: Path) -> None:
     installed = tmp_path / "cache" / "runtime-canary" / "0.0.0-dev"
     installed.mkdir(parents=True)
-    (tmp_path / canary.STATE).mkdir()
+    (tmp_path / STATE).mkdir()
 
     def silent(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Completed:
         return Completed(0, "", "")
@@ -218,12 +225,12 @@ def test_a_probe_that_never_ran_the_installed_copy_fails(tmp_path: Path) -> None
     lines = canary.probe(
         canary.Session(tmp_path, silent, {}, 30), "claude", {"runtime-canary": str(installed)}, "runtime-canary"
     )
-    assert lines[0].startswith(f'RUNTIME claude runtime-canary:{canary.FIXTURE_SKILL} FAILED "the installed copy')
+    assert lines[0].startswith(f'RUNTIME claude runtime-canary:{FIXTURE_SKILL} FAILED "the installed copy')
     assert canary.failed(lines[0])
 
 
 def test_the_guard_session_gives_the_reviewer_a_reviewers_task_naming_the_marker(tmp_path: Path) -> None:
-    (tmp_path / canary.STATE).mkdir()
+    (tmp_path / STATE).mkdir()
     seen: list[list[str]] = []
 
     def guarded(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Completed:
@@ -237,7 +244,7 @@ def test_the_guard_session_gives_the_reviewer_a_reviewers_task_naming_the_marker
     lines = canary.guard(
         canary.Session(tmp_path, guarded, {"PATH": "x"}, 30), "claude", {"a": "b"}, "coding-agent-skills"
     )
-    task = canary.REVIEWER_TASK.format(prompt=tmp_path / "outside.txt")
+    task = REVIEWER_TASK.format(prompt=tmp_path / "outside.txt")
     assert f"subagent_type {AGENT}, with exactly this prompt: {task}" in seen[0][2]
     assert lines[:2] == [
         "GUARD claude main-session PASSED",

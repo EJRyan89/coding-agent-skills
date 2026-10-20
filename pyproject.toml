@@ -146,14 +146,16 @@ mypy_path = [
 # The areas mypy checks in strict mode, as paths from this root: a skill's scripts directory, which
 # tests/run_validation.py type-checks in a run of its own, or a root it type-checks with the others from this root,
 # which then also gets a run of its own. mypy takes strict for a whole run, never for one module, so the runner reads
-# this list and adds --strict to each listed area's own run, with the [tool.mypy] configuration above. Areas join in
-# stages and none leaves: tests/validation/python_checks.py fails when an area it pins is missing here.
+# this list and adds --strict to each listed area's own run, with the [tool.mypy] configuration above. Every root is
+# listed and none leaves: tests/validation/python_checks.py fails when a root, or an area it pins, is missing here.
 [tool.validation]
 mypy-strict = [
     "skills/ejryan89-skill-core/scripts",
     "deployer",
     "deploy.py",
     "tools",
+    "tests",
+    "conftest.py",
     "skills/audit-ai-config/scripts",
     "skills/audit-skill/scripts",
     "skills/curate-agent-memory/scripts",

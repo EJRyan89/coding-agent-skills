@@ -444,7 +444,7 @@ class DeployAtTests(DeployerTestCase):
         with (
             mock.patch.object(tools, "python_version", return_value=(3, 11, 3)),
             mock.patch.object(platform_support, "run_tool") as run_tool,
-            mock.patch.object(source_ref.tempfile, "mkdtemp") as mkdtemp,
+            mock.patch.object(tempfile, "mkdtemp") as mkdtemp,
         ):
             result = self.deploy_fails("--all", "--at", "v1.0.0", pattern=r"--at needs Python 3\.11\.4 or newer")
         self.assertEqual(1, result.code)

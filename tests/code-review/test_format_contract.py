@@ -222,7 +222,7 @@ def _judge(validate: Callable[[Any], Any]) -> Callable[[Any], bool]:
     return accepts
 
 
-def _locations(value: Any, steps: list[str], prefix: tuple = ()) -> list[tuple]:
+def _locations(value: Any, steps: list[str], prefix: tuple[str | int, ...] = ()) -> list[tuple[str | int, ...]]:
     """Key paths of the objects a path's steps lead to: `name[]` is each item, `<name>` each value of an object."""
     if not steps:
         return [prefix] if isinstance(value, dict) else []
@@ -240,7 +240,7 @@ def _locations(value: Any, steps: list[str], prefix: tuple = ()) -> list[tuple]:
     return [found for index, item in enumerate(entries) for found in _locations(item, rest, (*prefix, name, index))]
 
 
-def _at(value: Any, location: tuple) -> Any:
+def _at(value: Any, location: tuple[str | int, ...]) -> Any:
     for key in location:
         value = value[key]
     return value
@@ -249,11 +249,12 @@ def _at(value: Any, location: tuple) -> Any:
 @dataclass(frozen=True)
 class Instance:
     fixture: Fixture
-    location: tuple
+    location: tuple[str | int, ...]
 
     @property
     def object(self) -> dict[str, Any]:
-        return _at(self.fixture.value, self.location)
+        found: dict[str, Any] = _at(self.fixture.value, self.location)
+        return found
 
     def accepts(self, change: Callable[[dict[str, Any]], None]) -> bool:
         judge = self.fixture.accepts
@@ -963,7 +964,9 @@ def _insights_record(
     commit_record(archive, INSIGHTS_REPOSITORY, number, built, expected_latest_version=version - 1 or None)
 
 
-def _insights_finding(index: int, category: str, *, analyzer: dict[str, str] | None = None, **extra: Any) -> dict:
+def _insights_finding(
+    index: int, category: str, *, analyzer: dict[str, str] | None = None, **extra: Any
+) -> dict[str, Any]:
     """A finding with its own headline, so each groups apart; one with analyzer coverage has a title."""
     finding = _finding(f"k{index}", "SHOULD_FIX", index + 1, category=category, body=f"Problem {chr(65 + index)} here.")
     if analyzer is not None:
@@ -971,7 +974,9 @@ def _insights_finding(index: int, category: str, *, analyzer: dict[str, str] | N
     return {**finding, **extra}
 
 
-def _insights_result(context: dict[str, Any], sha: str, recommendations: list[dict[str, Any]], **extra: Any) -> dict:
+def _insights_result(
+    context: dict[str, Any], sha: str, recommendations: list[dict[str, Any]], **extra: Any
+) -> dict[str, Any]:
     """A result `check_result` accepts against `context`: every category, each small one's findings, and every
     custom-candidate rule in one pattern."""
     example = context["refs"][0]
@@ -1040,7 +1045,9 @@ class InsightsRun:
         moment = datetime(2026, 2, 3, 9, 30, tzinfo=UTC)
         self.services = review_insights.Services(now=lambda: moment, flags_path=lambda: self.flags_path)
 
-    def report(self, start: str, end: str, *, repositories: tuple[str, ...] = (INSIGHTS_REPOSITORY,), **extra: Any):
+    def report(
+        self, start: str, end: str, *, repositories: tuple[str, ...] = (INSIGHTS_REPOSITORY,), **extra: Any
+    ) -> Path:
         flags = extra.pop("flags", load_store(self.flags_path)["flags"])
         checkout = self.root / "checkout"
         for path, text in INSIGHTS_GUIDANCE.items():
@@ -1517,7 +1524,7 @@ def schema_rows(described: dict[str, Any]) -> dict[str, Row]:
 
 
 class FormatContractTest(unittest.TestCase):
-    scratch: tempfile.TemporaryDirectory
+    scratch: tempfile.TemporaryDirectory[str]
     fixtures: ClassVar[dict[str, list[Fixture]]]
 
     @classmethod

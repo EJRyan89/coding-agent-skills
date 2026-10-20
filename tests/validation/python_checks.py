@@ -44,13 +44,16 @@ CEILING_CODES = frozenset({"C901", "PLR0915"})
 # mypy checks these as one root from the repository root, and each skill's scripts/ directory from inside it, where
 # the deployed skill's own imports resolve. pyproject.toml's [tool.mypy] holds the configuration; it excludes nothing.
 TYPE_CHECK_ROOTS = ("deployer", "tools", "deploy.py", "tests", "conftest.py")
-# The areas mypy checks in strict mode, which pyproject.toml's [tool.validation] mypy-strict lists. Areas join in stages
-# and none leaves, so each one here must stay listed there; a pull request that makes an area strict adds it to both.
+# The areas mypy checks in strict mode, which pyproject.toml's [tool.validation] mypy-strict lists. Every type-check
+# root is one, and none leaves, so each one here must stay listed there; a pull request that adds a root, such as a new
+# skill's scripts, lists it there and here.
 STRICT_TYPE_CHECK_AREAS = (
     "skills/ejryan89-skill-core/scripts",
     "deployer",
     "deploy.py",
     "tools",
+    "tests",
+    "conftest.py",
     "skills/audit-ai-config/scripts",
     "skills/audit-skill/scripts",
     "skills/curate-agent-memory/scripts",
@@ -350,16 +353,24 @@ def strict_type_check_areas(root: Path) -> list[str] | None:
 
 def strict_area_problems(root: Path, pinned: tuple[str, ...] = STRICT_TYPE_CHECK_AREAS) -> list[str]:
     """The strict list must be a list of type-check roots, each a skill's scripts/ directory or one of
-    TYPE_CHECK_ROOTS, and hold every pinned area, since an area joins the list and never leaves it."""
+    TYPE_CHECK_ROOTS, holding every pinned area, since an area never leaves it, and every root the tree has, since
+    every root is checked in strict mode."""
     areas = strict_type_check_areas(root)
     if areas is None:
         return ["pyproject.toml: [tool.validation] mypy-strict must be a list of paths from the repository root"]
-    roots = {scripts.relative_to(root).as_posix() for scripts in type_check_skill_roots(root)} | set(TYPE_CHECK_ROOTS)
+    skill_roots = {scripts.relative_to(root).as_posix() for scripts in type_check_skill_roots(root)}
+    roots = skill_roots | set(TYPE_CHECK_ROOTS)
     problems = [
         f"pyproject.toml: [tool.validation] mypy-strict lacks {area}, which is checked in strict mode; an area "
         "joins the list and never leaves it, so fix the errors strict mode reports instead"
         for area in pinned
         if area not in areas
+    ]
+    present = skill_roots | {top for top in TYPE_CHECK_ROOTS if (root / top).exists()}
+    problems += [
+        f"pyproject.toml: [tool.validation] mypy-strict lacks {area}, a type-check root; every root is checked in "
+        "strict mode, so list it and fix the errors strict mode reports there"
+        for area in sorted(present - set(areas) - set(pinned))
     ]
     problems += [
         f"pyproject.toml: [tool.validation] mypy-strict names {area}, which is no root validation type-checks"
@@ -504,9 +515,9 @@ class PythonChecksPolicies(unittest.TestCase):
         configuration = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["mypy"]
         self.assertEqual("3.11", configuration["python_version"])
         self.assertIs(True, configuration["explicit_package_bases"])
-        # Default strictness, and no module, suite, or import is exempt; the areas [tool.validation] lists are checked
-        # with --strict besides. No platform: each host checks the code as it runs there, so every platform's branches
-        # are checked on the platform that runs them.
+        # Default strictness, and no module, suite, or import is exempt; every root is also checked with --strict, as
+        # [tool.validation] lists them. No platform: each host checks the code as it runs there, so every platform's
+        # branches are checked on the platform that runs them.
         self.assertEqual(["explicit_package_bases", "mypy_path", "python_version"], sorted(configuration))
 
     def test_strict_type_check_areas_only_grow(self) -> None:

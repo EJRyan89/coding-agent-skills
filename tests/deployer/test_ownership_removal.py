@@ -480,7 +480,7 @@ class ManifestValidationTests(DeployerTestCase):
     def test_malformed_hashes_roles_sources_and_selections_are_rejected(self) -> None:
         self.deployed()
         original = self.manifest()
-        cases = [
+        cases: list[tuple[str, Callable[[dict[str, Any]], object]]] = [
             (
                 "Manifest entry is malformed",
                 lambda data: data["sources"]["test/skills"]["skills"]["alpha"].update(hash="sha256:bad"),

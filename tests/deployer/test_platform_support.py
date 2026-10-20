@@ -294,7 +294,7 @@ def own_metadata(path: Path, answer: object) -> Any:
             raise answer
         return answer
 
-    return mock.patch.object(platform_support.os, "lstat", side_effect=lstat)
+    return mock.patch.object(os, "lstat", side_effect=lstat)
 
 
 class LinkJudgementTests(unittest.TestCase):
@@ -359,10 +359,10 @@ class LinkJudgementTests(unittest.TestCase):
 class SupportedPlatformTests(unittest.TestCase):
     def test_windows_and_linux_are_supported_and_macos_is_refused_by_name(self) -> None:
         for platform in ("win32", "linux"):
-            with self.subTest(platform=platform), mock.patch.object(platform_support.sys, "platform", platform):
+            with self.subTest(platform=platform), mock.patch.object(sys, "platform", platform):
                 platform_support.ensure_supported()
         with (
-            mock.patch.object(platform_support.sys, "platform", "darwin"),
+            mock.patch.object(sys, "platform", "darwin"),
             self.assertRaises(DeployError) as raised,
         ):
             platform_support.ensure_supported()
@@ -616,7 +616,7 @@ class NameKeyTests(unittest.TestCase):
                 return real(Path(path).with_name("PROBE.txt"))
             return real(path)
 
-        return mock.patch.object(platform_support.os, "lstat", side_effect=lstat)
+        return mock.patch.object(os, "lstat", side_effect=lstat)
 
     def test_without_a_directory_names_compare_without_regard_to_case(self) -> None:
         self.assertEqual(platform_support.name_key("Guide.md"), platform_support.name_key("guide.md"))

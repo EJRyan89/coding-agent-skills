@@ -1772,7 +1772,8 @@ class Pipeline:
 
 
 def spec_of(scenario: Scenario) -> dict[str, Any]:
-    return json.loads((scenario.directory / "scenario.json").read_text(encoding="utf-8"))
+    spec: dict[str, Any] = json.loads((scenario.directory / "scenario.json").read_text(encoding="utf-8"))
+    return spec
 
 
 def build_document(path: Path, stage: str | None = None) -> list[str]:
@@ -1903,7 +1904,8 @@ def fake_deploy(home: Path, _source: Path) -> tuple[int, str]:
 def reviewer_of(arguments: Sequence[str]) -> dict[str, Any]:
     """The reviewer definition a session command passes with --agents."""
     agents = json.loads(Path(arguments[list(arguments).index("--agents") + 1]).read_text(encoding="utf-8"))
-    return agents["code-review-reviewer"]
+    reviewer: dict[str, Any] = agents["code-review-reviewer"]
+    return reviewer
 
 
 def scenario_of(mode: str) -> Scenario:

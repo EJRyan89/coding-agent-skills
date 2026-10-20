@@ -28,8 +28,9 @@ class HomeTests(unittest.TestCase):
         # so the deployer, the tools, and the skills share one module object and one FrontmatterError.
         expected = REPOSITORY_ROOT / "skills" / "ejryan89-skill-core" / "scripts" / "frontmatter.py"
         self.assertEqual(expected, Path(frontmatter.__file__).resolve())
-        self.assertIs(frontmatter, render.frontmatter)
-        self.assertIs(frontmatter, source.frontmatter)
+        # render and source import frontmatter and export none, so their own bindings are read through vars.
+        self.assertIs(frontmatter, vars(render)["frontmatter"])
+        self.assertIs(frontmatter, vars(source)["frontmatter"])
         self.assertFalse((REPOSITORY_ROOT / "deployer" / "frontmatter.py").exists())
 
 

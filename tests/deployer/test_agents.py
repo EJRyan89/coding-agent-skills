@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
 
@@ -198,7 +199,7 @@ class AgentDeploymentTests(DeployerTestCase):
         self.assertIn("reviewer.md", self.owned("agents"))
 
     def test_invalid_agent_sources_fail_before_any_change(self) -> None:
-        cases = {
+        cases: dict[str, tuple[Callable[[], object], str]] = {
             "unknown agent": (
                 lambda: self.make_skill("alpha", "Alpha", agent_deps=["missing"]),
                 "Skill 'alpha' depends on unknown agent 'missing'",

@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 
-from deployer import cli, configure, fsops, pipeline, platform_support, source_ref
+from deployer import cli, configure, fsops, pipeline, platform_support
 from deployer.paths import Paths
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -110,14 +110,14 @@ def git(directory: Path, *arguments: str) -> str:
     return completed.stdout.strip()
 
 
-def journal_line(entry: dict) -> str:
+def journal_line(entry: dict[str, Any]) -> str:
     return json.dumps(entry, separators=(",", ":")) + "\n"
 
 
-def backup_entry(item: str, backup_hash: str, retain: bool = False, run_id: str = "", root: str = "") -> dict:
+def backup_entry(item: str, backup_hash: str, retain: bool = False, run_id: str = "", root: str = "") -> dict[str, Any]:
     """The journal entry a run writes before it moves item in root aside, retained under .backups when retain."""
     prefix = JOURNAL_ROOTS[root][0]
-    entry: dict = {"op": "backup", **({"root": root} if root else {})}
+    entry: dict[str, Any] = {"op": "backup", **({"root": root} if root else {})}
     entry.update(
         {
             "item": item,
@@ -132,7 +132,7 @@ def backup_entry(item: str, backup_hash: str, retain: bool = False, run_id: str 
     return entry
 
 
-def install_entry(item: str, staged_hash: str, root: str = "") -> dict:
+def install_entry(item: str, staged_hash: str, root: str = "") -> dict[str, Any]:
     """The journal entry a run writes before it moves item's staged copy into root."""
     prefix, staging = JOURNAL_ROOTS[root]
     return {
@@ -157,7 +157,7 @@ def interrupting() -> io.StringIO:
     return mock.Mock(io.StringIO, readline=mock.Mock(side_effect=KeyboardInterrupt))
 
 
-def recorded_temporary_directories() -> tuple[Any, list[Path]]:
+def recorded_temporary_directories() -> tuple[mock._patch[Callable[..., str]], list[Path]]:
     """A patch of --at's mkdtemp that records each directory the export makes, and the list it records them in."""
     made: list[Path] = []
     real = tempfile.mkdtemp
@@ -166,10 +166,10 @@ def recorded_temporary_directories() -> tuple[Any, list[Path]]:
         made.append(Path(real(*positional, **keywords)))
         return str(made[-1])
 
-    return mock.patch.object(source_ref.tempfile, "mkdtemp", mkdtemp), made
+    return mock.patch.object(tempfile, "mkdtemp", mkdtemp), made
 
 
-def failing_lock_metadata_write() -> mock._patch:
+def failing_lock_metadata_write() -> mock._patch[mock.MagicMock | mock.AsyncMock]:
     """Make writing the lock's info.json fail, leaving every other atomic write alone."""
     real_write = fsops.write_atomic
 
@@ -181,7 +181,7 @@ def failing_lock_metadata_write() -> mock._patch:
     return mock.patch("deployer.fsops.write_atomic", side_effect=failing_write)
 
 
-def contended_lock(lock_dir: Path) -> mock._patch:
+def contended_lock(lock_dir: Path) -> mock._patch[mock.MagicMock | mock.AsyncMock]:
     """Let another deployment take the lock at lock_dir just before this one's second attempt to make it."""
     real_make_directory = fsops.make_directory
     calls = {"count": 0}
@@ -579,7 +579,8 @@ class Deployment:
         return groups
 
     def manifest(self) -> dict[str, Any]:
-        return json.loads(self.manifest_file.read_text(encoding="utf-8"))
+        data: dict[str, Any] = json.loads(self.manifest_file.read_text(encoding="utf-8"))
+        return data
 
     def write_manifest(self, data: dict[str, Any]) -> None:
         self.manifest_file.parent.mkdir(parents=True, exist_ok=True)
@@ -623,7 +624,8 @@ class Deployment:
         self.write_manifest(data)
 
     def owned(self, kind: str, source_id: str = SOURCE_ID) -> dict[str, Any]:
-        return self.manifest()["sources"].get(source_id, {}).get(kind, {})
+        items: dict[str, Any] = self.manifest()["sources"].get(source_id, {}).get(kind, {})
+        return items
 
     def skill_text(self, name: str) -> str:
         return (self.skills_dir / name / "SKILL.md").read_text(encoding="utf-8")
@@ -637,7 +639,7 @@ class Deployment:
         with path.open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(text)
 
-    def killed_while_journaling(self, op: str, item: str) -> mock._patch:
+    def killed_while_journaling(self, op: str, item: str) -> mock._patch[mock.MagicMock | mock.AsyncMock]:
         """Kill the deployment partway through writing the journal entry for op on item.
 
         The patched fsops.append_line writes the first half of that entry with no newline, as a process killed
@@ -654,7 +656,7 @@ class Deployment:
 
         return mock.patch("deployer.fsops.append_line", side_effect=append_line)
 
-    def unreadable(self, path: Path) -> mock._patch:
+    def unreadable(self, path: Path) -> mock._patch[Callable[..., str]]:
         """Make reading one file fail as a file another process holds does, leaving every other read alone."""
         read_text = Path.read_text
 
