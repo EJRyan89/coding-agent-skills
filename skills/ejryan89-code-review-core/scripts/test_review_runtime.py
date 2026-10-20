@@ -25,7 +25,7 @@ import bounded_process
 import github_client
 import review_runtime
 from executable_locator import located_command
-from git_client import GitError, GitResult, GitStream
+from git_client import GitError, GitResult, GitStream, subprocess_runner
 from review_config import is_unreviewed_suffix, verdict_policy
 from review_records import calculate_verdict
 from review_runtime import (
@@ -50,7 +50,7 @@ from test_review_records import field_pattern
 
 class RuntimeContractTests(unittest.TestCase):
     @staticmethod
-    def _manifest() -> dict:
+    def _manifest() -> dict[str, Any]:
         return {
             "schema_version": 1,
             "id": "fixture-review",
@@ -292,15 +292,11 @@ class RuntimeContractTests(unittest.TestCase):
             commit = self._git(checkout, "rev-parse", "HEAD")
             self.assertEqual(
                 crlf,
-                review_runtime._read_git_file(
-                    checkout, commit, manifest["entrypoint"], review_runtime.subprocess_runner
-                ),
+                review_runtime._read_git_file(checkout, commit, manifest["entrypoint"], subprocess_runner),
             )
             self.assertEqual(
                 latin1,
-                review_runtime._read_git_file(
-                    checkout, commit, manifest["resources"][0], review_runtime.subprocess_runner
-                ),
+                review_runtime._read_git_file(checkout, commit, manifest["resources"][0], subprocess_runner),
             )
             destination = root / "materialized"
             hashes = materialize_reviewer(checkout, commit, manifest, destination)
@@ -324,7 +320,7 @@ class RuntimeContractTests(unittest.TestCase):
         # which gives both platforms the same, lossless path.
         finished = bounded_process.Finished(0, b"caf\xe9\r\nok\r\n", b"fatal: caf\xe9\n")
         with mock.patch("git_client.run_bounded", return_value=finished) as run:
-            result = review_runtime.subprocess_runner(["git", "show", "HEAD:latin1.md"], 60)
+            result = subprocess_runner(["git", "show", "HEAD:latin1.md"], 60)
         git = located_command(["git"])[0]
         self.assertEqual(([git, "show", "HEAD:latin1.md"], 60), run.call_args.args)
         self.assertEqual(b"caf\xe9\r\nok\r\n", result.stdout.encode("utf-8", "surrogateescape"))
@@ -1286,7 +1282,7 @@ class CommittedReadTests(unittest.TestCase):
 
     def runner(self, arguments: Sequence[str], timeout: float) -> GitResult:
         self.calls.append(list(arguments[3:]))
-        return review_runtime.subprocess_runner(arguments, timeout)
+        return subprocess_runner(arguments, timeout)
 
     def reader(self, checkout: Path, blobs: Sequence[str]) -> Iterator[bytes]:
         self.batches.append(list(blobs))
@@ -1496,7 +1492,7 @@ class CommittedReadTests(unittest.TestCase):
         def unsized(arguments: Sequence[str], timeout: float) -> GitResult:
             if list(arguments[3:5]) == ["cat-file", "-s"]:
                 return GitResult(0, "12 bytes\n", "")
-            return review_runtime.subprocess_runner(arguments, timeout)
+            return subprocess_runner(arguments, timeout)
 
         blob = git_blob_id(b"rules\n")
         with self.assertRaisesRegex(RuntimeContractError, f"^The checkout did not return the size of blob {blob}$"):

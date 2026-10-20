@@ -8,6 +8,7 @@ import json
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -127,6 +128,7 @@ class VersionBoundaryTests(unittest.TestCase):
                 self.assertEqual(malformed, upgrade_store(malformed))
                 path.write_text(json.dumps(malformed), encoding="utf-8")
                 before = path.read_bytes()
+                action: Callable[[], object]
                 for action in (lambda: load_store(path), lambda: add_flag(path, category="Noise", body="Reason.")):
                     with self.assertRaises(FlagError) as caught:
                         action()

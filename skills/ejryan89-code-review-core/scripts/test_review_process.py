@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
 
@@ -100,7 +101,8 @@ if sys.platform == "win32":
         try:
             if not library.TerminateProcess(handle, 1):
                 raise ctypes.WinError(ctypes.get_last_error())
-            return library.WaitForSingleObject(handle, 20_000) == wait_object_0
+            signaled: bool = library.WaitForSingleObject(handle, 20_000) == wait_object_0
+            return signaled
         finally:
             library.CloseHandle(handle)
 
@@ -123,7 +125,7 @@ else:
         return found
 
 
-def wait_until(condition, seconds: float = 20.0) -> bool:
+def wait_until(condition: Callable[[], bool], seconds: float = 20.0) -> bool:
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         if condition():

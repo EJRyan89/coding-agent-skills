@@ -22,7 +22,6 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
-import job_tree
 import review_hosts
 from git_client import GitClient
 from review_hosts import HostSuperseded, ProcessResult, run_copilot
@@ -1189,7 +1188,7 @@ class CopilotProcessTests(unittest.TestCase):
                 return process
 
             with (
-                mock.patch.object(job_tree.os, "getpgid", return_value=0),
+                mock.patch.object(os, "getpgid", return_value=0),
                 mock.patch("bounded_process.subprocess.Popen", side_effect=start),
                 self.assertRaises(RuntimeContractError) as raised,
             ):

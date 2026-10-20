@@ -25,6 +25,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, ClassVar
 from unittest import mock
+from xml.parsers import expat
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
@@ -534,15 +535,15 @@ class mock_parser_never_created:
         self.test = test
 
     def __enter__(self) -> None:
-        self.original = documents.expat.ParserCreate
-
         def refuse(*_: object, **__: object) -> object:
             self.test.fail("a parser was created")
 
-        documents.expat.ParserCreate = refuse  # type: ignore[assignment]  # restored on exit
+        # The patch puts the original back on exit.
+        self.patch = mock.patch.object(expat, "ParserCreate", refuse)
+        self.patch.start()
 
     def __exit__(self, *_: object) -> None:
-        documents.expat.ParserCreate = self.original  # type: ignore[assignment]  # the original, put back
+        self.patch.stop()
 
 
 PDF = pdf_document(["Scope", "Keep one queue."], ["Retry twice."])
@@ -567,7 +568,7 @@ class PdfExtractionTests(unittest.TestCase):
         ):
             with self.subTest(banner=banner):
                 stub.version(banner, status)
-                with mock.patch.object(documents.tempfile, "TemporaryDirectory") as temporary:
+                with mock.patch.object(tempfile, "TemporaryDirectory") as temporary:
                     with self.assertRaises(ExtractionRefused):
                         extract("pdf", PDF)
                     temporary.assert_not_called()

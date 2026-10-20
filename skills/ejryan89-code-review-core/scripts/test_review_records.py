@@ -8,6 +8,7 @@ import re
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ from review_records import (
     AdapterResult,
     RecordError,
     RecordFieldError,
+    ReviewRecord,
     build_record,
     calculate_verdict,
     read_title,
@@ -62,7 +64,7 @@ def field_pattern(path: str, expected: str, found: str) -> str:
     return f"^{re.escape(field_message(path, expected, found))}$"
 
 
-def valid_request(repository: str = "example/one", number: int = 12) -> dict:
+def valid_request(repository: str = "example/one", number: int = 12) -> dict[str, Any]:
     return {
         "repository": repository,
         "pull_number": number,
@@ -348,6 +350,7 @@ class RecordTests(unittest.TestCase):
         uncompared["review"]["scope"].update({"used": "full", "files_changed": None, "lines_changed": None})
         validate_record(uncompared)
         self.assertIn("full&#44; could not compare with v1", render_markdown(uncompared, record_payload_hash="0" * 64))
+        mutate: Callable[[ReviewRecord], object]
         for mutate, message in (
             (lambda r: r["review"].update(patches={}), "patches must be a non-empty object"),
             (lambda r: r["review"].update(patches={"../x.cs": patches["src/file.cs"]}), "patch path is unsafe"),
@@ -431,6 +434,7 @@ class RecordTests(unittest.TestCase):
         }
         record = build_record(request, result, version=1, policy={"request_changes_for": ["MUST_FIX"]})
         validate_record(record)
+        mutate: Callable[[ReviewRecord], object]
         for mutate, message in (
             (lambda r: r.pop("comment_dispositions"), field_pattern("record.comment_dispositions", "an array", "null")),
             (lambda r: r.pop("github_comments"), "need the comments"),
@@ -511,6 +515,7 @@ class RecordTests(unittest.TestCase):
             "expected_number": 12,
             "expected_head_sha": "b" * 40,
         }
+        mutate: Callable[[dict[str, Any]], object]
         for mutate, message in (
             (
                 lambda r: r.update(status=["complete"]),

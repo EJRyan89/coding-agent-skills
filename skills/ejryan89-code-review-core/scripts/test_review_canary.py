@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
 import subprocess
 import sys
@@ -18,10 +19,12 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import bounded_process
 import git_client
 import review_canary
 import test_review_fixture as review_fixture
 from git_client import subprocess_runner
+from link_probe import is_link_or_junction
 from review_canary import FixtureError, FixtureFieldError, fixture_change, validate_fixture_pull, validate_prior_record
 from review_operation import PULL_FIELDS, validate_canary_pull
 from test_review_runtime_validation import directory_link
@@ -307,7 +310,7 @@ class FixtureChangeTests(unittest.TestCase):
     def recording(self) -> tuple[Any, list[tuple[str, bytes | None]]]:
         """A patch of the bounded layer that records each git command's verb and the input it was given."""
         started: list[tuple[str, bytes | None]] = []
-        real = git_client.run_bounded
+        real = bounded_process.run_bounded
 
         def run(command: Sequence[str], timeout: float, **options: Any) -> Any:
             arguments = list(command)[3:]  # after git -C <repository>
@@ -431,7 +434,7 @@ class FixtureChangeTests(unittest.TestCase):
 
     def test_a_link_or_special_file_in_a_tree_is_refused(self) -> None:
         directory = write_fixture(self.root / "fixture", {"a.txt": b"a\n"}, {"a.txt": b"b\n", "link": b"a.txt"})
-        real = review_canary.is_link_or_junction
+        real = is_link_or_junction
         with (
             mock.patch.object(
                 review_canary,
@@ -461,8 +464,8 @@ class FixtureChangeTests(unittest.TestCase):
         write_tree(tree, {"b.txt": b"", "a/z.txt": b"", "a/b c/y.txt": b"", "a.txt": b""})
         (tree / "empty").mkdir()
         with (
-            mock.patch.object(review_canary.os, "lstat", wraps=review_canary.os.lstat) as lstat,
-            mock.patch.object(review_canary.os, "stat", wraps=review_canary.os.stat) as stat,
+            mock.patch.object(os, "lstat", wraps=os.lstat) as lstat,
+            mock.patch.object(os, "stat", wraps=os.stat) as stat,
         ):
             files = review_canary._tree_files(tree)
         self.assertEqual(

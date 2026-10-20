@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -20,6 +21,7 @@ import job_tree
 import review_specialists as rs
 from review_records import validate_adapter_result
 from review_runtime import (
+    GENERIC_SPECIALIST,
     RuntimeContractError,
     build_adapter_request,
     declared_reviewer_files,
@@ -66,7 +68,7 @@ DIFF = (
 )
 
 
-def manifest(**overrides: object) -> dict:
+def manifest(**overrides: object) -> dict[str, Any]:
     value = {
         "schema_version": 2,
         "id": "fixture-specialists",
@@ -188,7 +190,7 @@ class DiffAndRoutingTests(unittest.TestCase):
         self.assertEqual({}, files["src dir/Old.cs"]["added"])
 
     def test_a_base_move_keeps_a_patch_fingerprint_and_an_edit_changes_it(self) -> None:
-        def fingerprint(start: int, context: str, index: str, added: str) -> dict:
+        def fingerprint(start: int, context: str, index: str, added: str) -> dict[str, Any]:
             text = (
                 f"diff --git a/app/x.py b/app/x.py\nindex {index} 100644\n--- a/app/x.py\n+++ b/app/x.py\n"
                 f"@@ -{start},2 +{start},3 @@\n {context}\n-old\n+{added}\n+second\n"
@@ -205,7 +207,7 @@ class DiffAndRoutingTests(unittest.TestCase):
         self.assertNotEqual(first["sha256"], fingerprint(3, "def f():", "1111111..2222222", "newer")["sha256"])
 
     def test_a_binary_patch_fingerprint_follows_its_new_blob(self) -> None:
-        def fingerprint(index: str) -> dict:
+        def fingerprint(index: str) -> dict[str, Any]:
             text = (
                 f"diff --git a/img.png b/img.png\nindex {index} 100644\nBinary files a/img.png and b/img.png differ\n"
             )
@@ -363,7 +365,7 @@ LOGGING_134 = (
 )
 
 
-def located(body: str, source: str, line: int = 134) -> dict:
+def located(body: str, source: str, line: int = 134) -> dict[str, Any]:
     return {"path": "Sources/Q.cs", "line": line, "body": body, "sources": [source]}
 
 
@@ -845,7 +847,7 @@ class PromptCommentTests(unittest.TestCase):
             "coverage": {"unavailable_sources": []},
         }
         role = {
-            "id": rs.GENERIC_SPECIALIST,
+            "id": GENERIC_SPECIALIST,
             "instructions": "generic.md",
             "files": ["app/service.py"],
             "dispositions_only": False,
@@ -1059,7 +1061,7 @@ class SymbolicLinkPromptTests(unittest.TestCase):
         links: dict[str, tuple[int, str] | None] = {"tools/cache": (1, "/home/dev/x")}
         for dispositions_only in (False, True):
             role = {
-                "id": rs.GENERIC_SPECIALIST,
+                "id": GENERIC_SPECIALIST,
                 "instructions": "generic.md",
                 "files": ["tools/cache"],
                 "dispositions_only": dispositions_only,
@@ -1079,7 +1081,7 @@ class SymbolicLinkPromptTests(unittest.TestCase):
             "source_snapshot": {"root": "C:/source"},
         }
         role = {
-            "id": rs.GENERIC_SPECIALIST,
+            "id": GENERIC_SPECIALIST,
             "instructions": "generic.md",
             "files": ["app/service.py"],
             "dispositions_only": True,
@@ -1150,7 +1152,7 @@ class FindingCategoryTests(unittest.TestCase):
             "source_snapshot": {"root": "C:/source"},
         }
         role = {
-            "id": rs.GENERIC_SPECIALIST,
+            "id": GENERIC_SPECIALIST,
             "instructions": "generic.md",
             "files": ["app/service.py"],
             "dispositions_only": False,
@@ -1369,7 +1371,11 @@ class RepeatLinkTests(unittest.TestCase):
         {"finding_id": "v1:F001", "disposition": "still_present", "rationale": "Unchanged."}
     ]
 
-    def assemble(self, roles: list[tuple[str, list[dict], list[dict]]], prior: dict[str, str] | None = None) -> dict:
+    def assemble(
+        self,
+        roles: list[tuple[str, list[dict[str, Any]], list[dict[str, Any]]]],
+        prior: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         prior = self.PRIOR if prior is None else prior
         with tempfile.TemporaryDirectory() as temporary:
             plan: dict[str, Any] = {
@@ -1413,7 +1419,7 @@ class RepeatLinkTests(unittest.TestCase):
         return result
 
     @staticmethod
-    def finding(line: int, severity: str = "SHOULD_FIX", body: str | None = None, **extra: object) -> dict:
+    def finding(line: int, severity: str = "SHOULD_FIX", body: str | None = None, **extra: object) -> dict[str, Any]:
         return {
             "path": "Sources/Q.cs",
             "line": line,
@@ -1710,7 +1716,7 @@ class SpecialistFixture:
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def plan(self, prior: list | None = None) -> dict:
+    def plan(self, prior: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         mode = "re-review" if prior else "initial"
         write_adapter_request(
             self.request_path, build_adapter_request(mode=mode, prior_findings=prior, **self.request_args)
@@ -1719,7 +1725,13 @@ class SpecialistFixture:
         return rs.build_plan(self.request_path, self.reviewer, work)
 
     @staticmethod
-    def write(plan: dict, role: str, findings: list, dispositions: list | None = None, key: str = "findings") -> None:
+    def write(
+        plan: dict[str, Any],
+        role: str,
+        findings: list[dict[str, Any]],
+        dispositions: list[dict[str, Any]] | None = None,
+        key: str = "findings",
+    ) -> None:
         target = next(r for r in plan["roles"] if r["id"] == role)["result_file"]
         findings = [{"title": f"{role} headline", **finding} for finding in findings]
         Path(target).write_text(
@@ -1760,7 +1772,7 @@ class EndToEndTests(SpecialistFixture, unittest.TestCase):
             with self.subTest(field), self.assertRaisesRegex(RuntimeContractError, f"^{message}$"):
                 build_adapter_request(mode="initial", snapshot={**self.manifest, field: value}, **self.request_args)
 
-    def write_valid_results(self, plan: dict) -> None:
+    def write_valid_results(self, plan: dict[str, Any]) -> None:
         """A result for each role whose findings are all on added lines of its own files."""
         self.write(
             plan,
@@ -2167,7 +2179,7 @@ class EndToEndTests(SpecialistFixture, unittest.TestCase):
         with (
             mock.patch.object(rs, "CONDITION_TIMEOUT_SECONDS", SHORT_LIMIT_SECONDS),
             mock.patch.object(rs, "process_tree", return_value=tree),
-            mock.patch.object(rs.subprocess, "Popen", side_effect=start),
+            mock.patch.object(subprocess, "Popen", side_effect=start),
             self.assertRaises(rs.SpecialistError) as raised,
         ):
             self.plan()
@@ -2213,7 +2225,7 @@ class EndToEndTests(SpecialistFixture, unittest.TestCase):
 
             with (
                 mock.patch("job_tree._kernel32", return_value=FailingKernel("AssignProcessToJobObject")),
-                mock.patch.object(rs.subprocess, "Popen", side_effect=start),
+                mock.patch.object(subprocess, "Popen", side_effect=start),
                 self.assertRaises(rs.SpecialistError) as raised,
             ):
                 self.plan()
@@ -2259,8 +2271,8 @@ class EndToEndTests(SpecialistFixture, unittest.TestCase):
                 return process
 
             with (
-                mock.patch.object(job_tree.os, "getpgid", return_value=0),
-                mock.patch.object(rs.subprocess, "Popen", side_effect=start),
+                mock.patch.object(os, "getpgid", return_value=0),
+                mock.patch.object(subprocess, "Popen", side_effect=start),
                 self.assertRaises(rs.SpecialistError) as raised,
             ):
                 self.plan()
@@ -2360,7 +2372,7 @@ class EndToEndTests(SpecialistFixture, unittest.TestCase):
         "sys.exit({exit})\n"
     )
 
-    def prompt(self, plan: dict, role: str) -> str:
+    def prompt(self, plan: dict[str, Any], role: str) -> str:
         return Path(next(r for r in plan["roles"] if r["id"] == role)["prompt_file"]).read_text(encoding="utf-8")
 
     def test_an_open_condition_s_file_reaches_only_the_specialists_it_opened_named_untrusted(self) -> None:
@@ -2591,7 +2603,7 @@ class EndToEndTests(SpecialistFixture, unittest.TestCase):
         self.assertTrue(roles["generic-review"]["dispositions_only"], "an unowned comment needs only a disposition")
         self.assertIn("Needs a WHERE clause", Path(roles["db-review"]["prompt_file"]).read_text(encoding="utf-8"))
 
-        def result(role: str, dispositions: list) -> None:
+        def result(role: str, dispositions: list[dict[str, str]]) -> None:
             Path(roles[role]["result_file"]).write_text(
                 json.dumps(
                     {

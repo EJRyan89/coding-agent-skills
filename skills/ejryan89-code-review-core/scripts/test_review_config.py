@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -32,7 +33,7 @@ from test_review_records import field_pattern
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
 
-def valid_config() -> dict:
+def valid_config() -> dict[str, Any]:
     return {
         "schema_version": 1,
         "default_repository_set": "primary",
@@ -260,7 +261,7 @@ class ConfigurationTests(unittest.TestCase):
             validate_config(config)
 
     def test_a_repository_reviewer_is_a_committed_manifest_or_a_skill_with_an_optional_local_manifest(self) -> None:
-        def reviewer_config(**fields: object) -> dict:
+        def reviewer_config(**fields: object) -> dict[str, Any]:
             config = valid_config()
             config["repositories"]["example/one"]["reviewer"] = {
                 "id": "team",

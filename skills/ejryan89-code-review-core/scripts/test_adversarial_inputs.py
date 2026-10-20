@@ -30,6 +30,7 @@ from datetime import date
 from pathlib import Path
 from typing import IO, Any, ClassVar
 from unittest import mock
+from xml.parsers import expat
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
@@ -48,6 +49,7 @@ import review_source
 import review_specialists
 from git_client import GitResult, subprocess_runner
 from github_client import CommandResult, replace_undecodable
+from link_probe import is_link_or_junction
 from review_archive import latest_record, list_versions, pull_directory, record_paths
 from review_config import ConfigurationError, write_config
 from review_github import GitHubClient, PullFiles
@@ -295,7 +297,8 @@ class AdversarialFixture(unittest.TestCase):
 
     @staticmethod
     def request(ready: dict[str, Any]) -> dict[str, Any]:
-        return json.loads((ready["run"] / "request.json").read_text(encoding="utf-8"))
+        request: dict[str, Any] = json.loads((ready["run"] / "request.json").read_text(encoding="utf-8"))
+        return request
 
     @staticmethod
     def prompts(ready: dict[str, Any]) -> str:
@@ -755,7 +758,7 @@ class DocumentExtractionTests(AdversarialFixture):
         design = word_document(paragraph("Scope", style="Titre1"), paragraph(planted))
         self.pull_request(files({**hostile, "docs/design.docx": design}))
         created: list[object] = []
-        real = review_documents.expat.ParserCreate
+        real = expat.ParserCreate
 
         def counted(*arguments: Any) -> Any:
             created.append(arguments)
@@ -763,7 +766,7 @@ class DocumentExtractionTests(AdversarialFixture):
 
         with (
             mock.patch.object(review_documents, "MAX_DOCUMENT_PART_BYTES", 4096),
-            mock.patch.object(review_documents.expat, "ParserCreate", counted),
+            mock.patch.object(expat, "ParserCreate", counted),
         ):
             ready = self.prepare()
         self.assertEqual(2, len(created), "only the well-formed document's two parts are parsed")
@@ -2136,7 +2139,7 @@ class FixtureInputTests(AdversarialFixture):
         self.assertEqual([], calls)
 
         # A link has no place in a fixture: refused before any run exists.
-        real = review_canary.is_link_or_junction
+        real = is_link_or_junction
         with mock.patch.object(
             review_canary,
             "is_link_or_junction",

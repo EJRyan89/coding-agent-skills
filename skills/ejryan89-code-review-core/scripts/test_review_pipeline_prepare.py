@@ -311,7 +311,8 @@ class RecordingGitHub(GitHubClient):
     def get_pull(self, repository: str, number: int) -> dict[str, Any]:
         self.calls.append(("get_pull", repository, number))
         served = self.pulls[0] if len(self.pulls) == 1 else self.pulls.pop(0)
-        return json.loads(json.dumps(served))
+        pull: dict[str, Any] = json.loads(json.dumps(served))
+        return pull
 
     def get_pull_diff(self, repository: str, number: int) -> tuple[str, int]:
         self.calls.append(("get_pull_diff", repository, number))
@@ -319,7 +320,8 @@ class RecordingGitHub(GitHubClient):
 
     def list_open_review_threads(self, repository: str, number: int) -> list[dict[str, Any]]:
         self.calls.append(("list_open_review_threads", repository, number))
-        return json.loads(json.dumps(self.threads))
+        threads: list[dict[str, Any]] = json.loads(json.dumps(self.threads))
+        return threads
 
 
 class RecordingGit:
@@ -1355,12 +1357,12 @@ class InitialReviewTests(PrepareFixture):
         )
 
     def test_a_session_inside_the_checkout_is_told_to_start_elsewhere(self) -> None:
-        with mock.patch.object(rp.Path, "cwd", return_value=self.checkout / "app"):
+        with mock.patch.object(Path, "cwd", return_value=self.checkout / "app"):
             result, _ = self.prepare()
         self.assertEqual([CHECKOUT_NOTE, LINK_NOTE], result["notes"])
         self.assertEqual(result["notes"], self.json_file("run.json")["notes"])
         self.run_dir = self.root / "second run"
-        with mock.patch.object(rp.Path, "cwd", return_value=self.root):
+        with mock.patch.object(Path, "cwd", return_value=self.root):
             result, _ = self.prepare()
         self.assertEqual([LINK_NOTE], result["notes"], "the checkout's parent is outside it")
 
@@ -2672,7 +2674,7 @@ class NoteOrderTests(PrepareFixture):
         self.seed_review(patches={**current_patches(), "CLAUDE.md": {"sha256": "0" * 64, "lines": 1}})
         self.configure({**self.repository("unused"), "id": "team", "manifest_path": None, "skill": "review/solo.md"})
         self.github.undecodable = 1
-        with mock.patch.object(rp.Path, "cwd", return_value=self.checkout):
+        with mock.patch.object(Path, "cwd", return_value=self.checkout):
             result, _ = self.prepare(re_review=True, scope="incremental")
         self.assertEqual(
             [
@@ -2691,7 +2693,7 @@ class NoteOrderTests(PrepareFixture):
         self.seed_legacy()
         self.configure(self.repository("review/ignore.json"))
         self.github.undecodable = 2
-        with mock.patch.object(rp.Path, "cwd", return_value=self.checkout):
+        with mock.patch.object(Path, "cwd", return_value=self.checkout):
             result, _ = self.prepare(re_review=True, scope="full")
         self.assertEqual(
             [

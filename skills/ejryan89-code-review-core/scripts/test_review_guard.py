@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import review_guard as guard
 import review_pipeline as rp
 import review_run
+from executable_locator import PYTHON
 from review_source import source_commands
 from test_review_runtime_validation import directory_link
 
@@ -438,7 +439,7 @@ class BashTests(GuardFixture):
         self.assert_denied(self.decide("Bash", command=command), "read the prompt file your task names first")
         self.claim()
         self.assertIsNone(self.decide("Bash", command=command))
-        script = str(rp.Path(rp.__file__).resolve())
+        script = str(Path(rp.__file__).resolve())
         for bad in (
             # The run or the script ending in a backslash, which would shift every quote after it.
             command.replace(f'--run "{self.run_directory}"', f'--run "{self.run_directory}\\"'),
@@ -465,7 +466,7 @@ class BashTests(GuardFixture):
         run = self.root / "code-review-run-synthesis"
         run.mkdir()
         script, report = self.root / "review_insights.py", self.root / "insights.json"
-        check = f'{guard.PYTHON} -B "{script}" synthesize --report "{report}" --check'
+        check = f'{PYTHON} -B "{script}" synthesize --report "{report}" --check'
         role = {
             "id": "synthesis",
             "prompt_file": str(run / "synthesis-prompt.md"),
@@ -549,7 +550,7 @@ class ClaimTests(GuardFixture):
                     destination.write_text(content, encoding="utf-8")
                     raise FileExistsError
 
-                with mock.patch.object(guard, "CLAIMS", claims), mock.patch.object(guard.os, "open", racing_open):
+                with mock.patch.object(guard, "CLAIMS", claims), mock.patch.object(os, "open", racing_open):
                     reason = self.decide("Read", file_path=self.prompt())
                     if allowed:
                         self.assertIsNone(reason)

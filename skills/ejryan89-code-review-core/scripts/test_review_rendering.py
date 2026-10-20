@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import review_records as records
 from review_documents import extract, locations
 from review_operation import archive_base, commit_adapter_result
+from review_vocabularies import DISPOSITIONS, OPEN_DISPOSITIONS
 from test_review_documents import paragraph, word_document
 from test_review_records import valid_adapter_result, valid_request
 
@@ -162,14 +163,14 @@ class LiteralReportTests(unittest.TestCase):
     def test_ledger_status_flags_repeats_and_closed_rationales_render_literally(self) -> None:
         first = records.build_record(valid_request(), validated_result(), version=1, policy={})
         request = {**valid_request(), "mode": "re-review"}
-        for disposition in records.DISPOSITIONS:
+        for disposition in DISPOSITIONS:
             with self.subTest(disposition=disposition):
                 result = validated_result()
                 result["findings"][0]["repeats"] = "v1:F001"
                 result["prior_dispositions"] = [
                     {"finding_id": "v1:F001", "disposition": disposition, "rationale": PROSE}
                 ]
-                if disposition not in records.OPEN_DISPOSITIONS:
+                if disposition not in OPEN_DISPOSITIONS:
                     del result["findings"][0]["repeats"]
                 records.validate_adapter_result(
                     result,
@@ -201,7 +202,7 @@ class LiteralReportTests(unittest.TestCase):
                     self.assertIn(f"[{LITERAL}] {LITERAL},", report)
                 else:
                     self.assertIn(f"> **Flagged:** RF&#45;000001 ({LITERAL}): {LITERAL}<br>", report)
-                    if disposition in records.OPEN_DISPOSITIONS:
+                    if disposition in OPEN_DISPOSITIONS:
                         self.assertIn("Repeats v1 F001:", report)
 
     def test_reviewer_metadata_and_scope_prose_are_literal_in_table_cells(self) -> None:

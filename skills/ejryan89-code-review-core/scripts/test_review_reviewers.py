@@ -7,14 +7,17 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 from git_client import GitResult
 from review_reviewers import (
+    Inspection,
+    ResolvedReviewer,
     entrypoint_manifest,
     frontmatter_value,
     inspect_configured_skill,
@@ -33,7 +36,7 @@ CHECKOUT = Path("C:/fixture/checkout")
 SKILL = ".claude/skills/review/SKILL.md"
 
 
-def inspect(text: str, skill: str = ".claude/agents/review.md"):
+def inspect(text: str, skill: str = ".claude/agents/review.md") -> Inspection:
     return inspect_skill(skill, text, "a" * 40, FILES)
 
 
@@ -263,7 +266,7 @@ class InspectionTests(unittest.TestCase):
     def test_a_common_word_agent_name_in_an_agent_context_is_delegation(self) -> None:
         files = {".claude/agents/review.md", ".claude/agents/SecReview.md", ".claude/skills/x/SKILL.md"}
 
-        def inspected(line: str):
+        def inspected(line: str) -> Inspection:
             return inspect_skill(".claude/skills/x/SKILL.md", f"---\nname: x\n---\n{line}\n", COMMIT, files)
 
         result = inspected("Start the review agent.")
@@ -385,7 +388,7 @@ class RepositoryTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def raises(self, message: str, call, *arguments, **keywords) -> None:
+    def raises(self, message: str, call: Callable[..., object], *arguments: object, **keywords: object) -> None:
         with self.assertRaises(RuntimeContractError) as raised:
             call(*arguments, **keywords)
         self.assertEqual(message, str(raised.exception))
@@ -485,7 +488,7 @@ class RepositoryTests(unittest.TestCase):
             with self.subTest(reviewer=reviewer):
                 self.assertIsNone(manifest_location(reviewer, self.config, "Octo/Repo"))
 
-    def manifest(self, entrypoint: str = SKILL) -> dict:
+    def manifest(self, entrypoint: str = SKILL) -> dict[str, Any]:
         return {
             "schema_version": 1,
             "id": "repo-review",
@@ -497,7 +500,7 @@ class RepositoryTests(unittest.TestCase):
             "agent_profiles": [],
         }
 
-    def resolve(self, reviewer: dict, git: FakeGit):
+    def resolve(self, reviewer: dict[str, Any], git: FakeGit) -> ResolvedReviewer:
         return resolve_reviewer(
             reviewer, checkout=CHECKOUT, commit=COMMIT, config_path=self.config, repository="Octo/Repo", runner=git
         )
@@ -525,6 +528,7 @@ class RepositoryTests(unittest.TestCase):
                     (self.manifest(), "local-manifest", str(path), path.parent),
                     (resolved.manifest, resolved.source, resolved.location, resolved.local_root),
                 )
+                assert resolved.inspection is not None
                 self.assertEqual("yes", resolved.inspection.delegates)
 
     def test_the_skill_must_exist_even_with_a_local_manifest(self) -> None:
@@ -554,6 +558,7 @@ class RepositoryTests(unittest.TestCase):
             with self.subTest(delegates=delegates):
                 git = FakeGit({SKILL: text, "docs/rules.md": "Rules\n"})
                 resolved = self.resolve({"id": "solo", "skill": SKILL, "manifest": False}, git)
+                assert resolved.inspection is not None
                 self.assertEqual(
                     ("skill", SKILL, None, delegates),
                     (resolved.source, resolved.location, resolved.local_root, resolved.inspection.delegates),

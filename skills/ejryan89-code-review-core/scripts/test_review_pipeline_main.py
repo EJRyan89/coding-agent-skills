@@ -25,11 +25,11 @@ import review_batches
 import review_dispatch
 import review_pipeline as rp
 import review_run
+from github_client import GitHubError
 from review_archive import ArchiveError
 from review_canary import FixtureError
 from review_config import ConfigurationError
 from review_flags import FlagError
-from review_github import GitHubError
 from review_hosts import HostSuperseded
 from review_io import PersistenceError
 from review_operation import ReviewOperationError

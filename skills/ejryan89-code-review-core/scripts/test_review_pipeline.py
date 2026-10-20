@@ -38,20 +38,21 @@ import review_state
 from git_client import GitError, GitResult
 from github_client import CommandResult, subprocess_runner
 from job_tree import JobRefused
+from process_identity import ProcessStatus
 from review_archive import latest_record, list_versions, pull_directory
 from review_config import (
     ConfigurationError,
     ConfigurationFieldError,
     default_manifest_path,
+    load_config,
     validate_config,
     write_config,
 )
 from review_flags import FlagError, FlagFieldError, add_flag
 from review_github import GitHubClient, GitHubFieldError
 from review_hosts import ProcessResult
-from review_io import PersistenceError
-from review_operation import ReviewOperationError
-from review_process import ProcessStatus
+from review_io import PersistenceError, atomic_write_json
+from review_operation import ReviewOperationError, archive_base
 from review_records import Coverage, ReviewRecord
 from review_runtime import RuntimeContractError, RuntimeContractFieldError, validate_adapter_manifest
 from review_state import load_state
@@ -635,12 +636,11 @@ class PreparePublicationTests(PipelineFixture):
         self, prepared: dict[str, dict[str, Any]], failed_selector: str, *, fixture: bool = False
     ) -> tuple[int, str, str]:
         failed_run = prepared[failed_selector]["run"]
-        write_json = rp.atomic_write_json
 
         def fail_marking(path: Path, value: Any) -> None:
             if path == failed_run / review_run.RUN_FILE:
                 raise PersistenceError("disk full")
-            write_json(path, value)
+            atomic_write_json(path, value)
 
         arguments = (
             ["prepare", "--canary", "--fixture", "fixture dir"]
@@ -674,7 +674,7 @@ class PreparePublicationTests(PipelineFixture):
                 )
                 self.assertFalse(prepared[failed_selector]["run"].exists())
                 self.assertEqual(
-                    {ready["run"] for ready in successful.values()}, set(self.temporary.glob(f"{rp.RUN_PREFIX}*"))
+                    {ready["run"] for ready in successful.values()}, set(self.temporary.glob(f"{guard.RUN_PREFIX}*"))
                 )
                 self.assertFalse(self.archive.exists(), "publication never records a review")
                 for selector, ready in successful.items():
@@ -999,7 +999,8 @@ class GenericReviewTests(PipelineFixture):
             ready = self.prepare()
 
         def state() -> dict[str, Any]:
-            return json.loads((ready["run"] / review_run.RUN_FILE).read_text(encoding="utf-8"))
+            run: dict[str, Any] = json.loads((ready["run"] / review_run.RUN_FILE).read_text(encoding="utf-8"))
+            return run
 
         self.assertEqual({"generic-review": 1_000.0}, state()["dispatched_at"])
         with mock.patch("time.time", return_value=1_600.0):
@@ -2919,7 +2920,7 @@ class CopilotHostTests(PipelineFixture):
         self.copilot_calls = 0
         self.review_commands: list[list[str]] = []  # each review command the fake Copilot CLI was started with
         self.review = "valid"  # what the fake Copilot CLI does: valid, partial, failed, or unheld (no job holds it)
-        self.during_review = lambda: None
+        self.during_review: Callable[[], None] = lambda: None
         self.services.resolve_runtime = lambda configured, host: "copilot-cli"
         self.services.clock = self.clock
         self.services.sleep = self.clock.sleep
@@ -2985,10 +2986,13 @@ class CopilotHostTests(PipelineFixture):
         return self.run_main(*arguments[3:])
 
     def claim(self) -> dict[str, Any]:
-        return json.loads((self.run_directory / "copilot-host.json").read_text(encoding="utf-8"))
+        claim: dict[str, Any] = json.loads((self.run_directory / "copilot-host.json").read_text(encoding="utf-8"))
+        return claim
 
     def attempts(self) -> dict[str, int]:
-        return json.loads((self.run_directory / review_run.RUN_FILE).read_text(encoding="utf-8"))["attempts"]
+        run = json.loads((self.run_directory / review_run.RUN_FILE).read_text(encoding="utf-8"))
+        attempts: dict[str, int] = run["attempts"]
+        return attempts
 
     def test_dispatch_starts_the_host_detached_and_returns_at_once(self) -> None:
         with mock.patch("time.time", return_value=3_000.0):
@@ -3002,7 +3006,9 @@ class CopilotHostTests(PipelineFixture):
         )
 
         def started() -> dict[str, float]:
-            return json.loads((self.run_directory / review_run.RUN_FILE).read_text(encoding="utf-8"))["dispatched_at"]
+            run = json.loads((self.run_directory / review_run.RUN_FILE).read_text(encoding="utf-8"))
+            dispatched: dict[str, float] = run["dispatched_at"]
+            return dispatched
 
         self.assertEqual({"fixture-copilot": 3_000.0}, started())
 
@@ -4861,7 +4867,7 @@ class FixtureCanaryTests(PipelineFixture):
         self.assertEqual("re-review", state["mode"])
         self.assertEqual(("full", 1), (state["scope"]["used"], state["scope"]["since_version"]))
         self.assertEqual(
-            {"version": 1, "ledger_sha256": rp.archive_base(1, prior["ledger"])["ledger_sha256"]}, state["archive_base"]
+            {"version": 1, "ledger_sha256": archive_base(1, prior["ledger"])["ledger_sha256"]}, state["archive_base"]
         )
         self.assertEqual(prior, json.loads(Path(state["fixture"]["prior_record"]).read_text(encoding="utf-8")))
         request = json.loads(Path(state["request_path"]).read_text(encoding="utf-8"))
@@ -4914,7 +4920,7 @@ class FixtureCanaryTests(PipelineFixture):
             "a later version": ({}, {**prior, "review": {**prior["review"], "version": 2}}, "The prior record is"),
             "an invalid record": ({}, {**prior, "findings": "none"}, "The prior record is invalid"),
         }
-        runs_before = sorted(self.temporary.glob(f"{rp.RUN_PREFIX}*"))
+        runs_before = sorted(self.temporary.glob(f"{guard.RUN_PREFIX}*"))
         for name, (pull, value, message) in cases.items():
             with self.subTest(name):
                 prior_path = self.root / f"{name}.json"
@@ -4927,7 +4933,7 @@ class FixtureCanaryTests(PipelineFixture):
                 self.assertEqual(1, len(lines), lines)
                 self.assertTrue(lines[0].startswith(f"FAILED {directory} "), lines)
                 self.assertIn(message, lines[0])
-                self.assertEqual(runs_before, sorted(self.temporary.glob(f"{rp.RUN_PREFIX}*")))
+                self.assertEqual(runs_before, sorted(self.temporary.glob(f"{guard.RUN_PREFIX}*")))
                 self.assertEqual([], list(self.temporary.glob("code-review-fixture-*")))
         self.assertEqual([], self.no_github.calls)
 
@@ -4972,7 +4978,7 @@ class FixtureCanaryTests(PipelineFixture):
 
     def test_a_fixture_needs_no_configured_repository_and_runs_inline_too(self) -> None:
         state = self.prepare_fixture_run("--fixture", str(self.fixture("inline", FIXTURE_HEAD)), "--inline")
-        self.assertNotIn("example/fixture", rp.load_config(self.config_path)["repositories"])
+        self.assertNotIn("example/fixture", load_config(self.config_path)["repositories"])
         self.assertEqual("inline", state["dispatch"])
         run = Path(state["request_path"]).parent
         code, lines = self.fixture_main("next-role", "--run", str(run))
@@ -5198,7 +5204,8 @@ class SnapshotSizeTests(PipelineFixture):
             )
         written = [snapshot.joinpath(*relative.split("/")).stat().st_size for relative in metadata["source_hashes"]]
         self.assertEqual(
-            (len(written), sum(written), len(metadata[rp.SNAPSHOT_FETCHABLE])), (size.files, size.bytes, size.fetchable)
+            (len(written), sum(written), len(metadata[review_runtime.SNAPSHOT_FETCHABLE])),
+            (size.files, size.bytes, size.fetchable),
         )
         reasons = sorted(metadata["excluded_paths"].values())
         self.assertEqual({reason: reasons.count(reason) for reason in reasons}, size.excluded)

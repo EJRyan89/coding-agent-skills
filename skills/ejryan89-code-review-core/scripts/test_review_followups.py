@@ -81,7 +81,7 @@ def serving(stdout: str) -> Callable[[Sequence[str]], CommandResult]:
 class GitHubSnapshotTests(unittest.TestCase):
     def snapshot(
         self, members: dict[str, bytes], changed: tuple[str, ...] = (), exclude: tuple[str, ...] = ()
-    ) -> tuple[Path, dict]:
+    ) -> tuple[Path, dict[str, Any]]:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         destination = Path(temporary.name).resolve() / "source"
@@ -429,7 +429,7 @@ class GitHubTarballVerificationTests(unittest.TestCase):
 
 
 class ConfigOperationSetTests(unittest.TestCase):
-    def config(self, **extra: object) -> dict:
+    def config(self, **extra: object) -> dict[str, Any]:
         generic = {"reviewer": {"id": "generic", "protocol_version": 1, "scope": "generic"}, "checkout_path": None}
         value = {
             "schema_version": 1,
@@ -905,7 +905,7 @@ class EnumerateBatchTests(unittest.TestCase):
 class CoverageTests(unittest.TestCase):
     POLICY: ClassVar[dict[str, Any]] = {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3}
 
-    def request(self, exclude: tuple[str, ...] = ()) -> tuple[dict, Path]:
+    def request(self, exclude: tuple[str, ...] = ()) -> tuple[dict[str, Any], Path]:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name).resolve()
@@ -939,7 +939,9 @@ class CoverageTests(unittest.TestCase):
             )
         return request, root
 
-    def record(self, request: dict, findings: list[dict], uncovered: list[str] | None = None) -> ReviewRecord:
+    def record(
+        self, request: dict[str, Any], findings: list[dict[str, Any]], uncovered: list[str] | None = None
+    ) -> ReviewRecord:
         from review_records import build_record
 
         adapter: dict[str, Any] = {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}}
@@ -962,7 +964,7 @@ class CoverageTests(unittest.TestCase):
         )
 
     @staticmethod
-    def finding(severity: str) -> dict:
+    def finding(severity: str) -> dict[str, Any]:
         return {
             "candidate_key": "k",
             "severity": severity,
