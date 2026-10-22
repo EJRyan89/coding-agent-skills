@@ -35,7 +35,10 @@ from the naming file, or from the skill folder after ${CLAUDE_SKILL_DIR}/.
 
 Listing: DESCRIPTION gives the description's characters and ceil(characters / 4) tokens, which every session
 loads while the skill is model-invocable; INVOCATION is model, user-only (disable-model-invocation: true),
-or hidden (also user-invocable: false); INTERNAL_LISTED marks internal wording in a model-invocable skill.
+or hidden (also user-invocable: false); INTERNAL_LISTED marks internal wording in a model-invocable skill. For a
+model-invocable skill in its source tree, TRIGGER_SCENARIO <path> <requests> <near misses> is each scenario.json of the
+skill's folder under TRIGGER_SCENARIOS, the source tree's evaluation scenarios, whose mode is trigger, which judges
+whether the description starts the skill, and NO_TRIGGER_SCENARIO <path> names that folder when it holds none.
 
 Tool references: a tool counts as used on a line when its exact, case-sensitive name is
   - the start of an inline code span (`Read`, `Grep -l`, `Glob("*")`), outside fenced blocks;
@@ -90,8 +93,12 @@ Runtime prompts: RUNTIME_PROMPT <file> <line> <writer> is a subagent told to rea
 each such prompt as docs/runtime-prompts/<skill>/<name>.txt, naming the throwaway folder it was rendered in as <temp>
 and the source tree as <source>. For each sample of the skill, scan prints RUNTIME_PROMPT_SAMPLE <sample> <tokens>,
 one RUNTIME_PROMPT_READ <sample> <path> <tokens> per file of the source tree the prompt names other than a script,
-which the subagent reads on every run, and REPLY_BOUNDED <sample> yes|no, whether the prompt bounds the reply. A skill
-with no sample prints RUNTIME_PROMPT_UNSAMPLED <file> <line> <reason> for each runtime prompt instead.
+which the subagent reads on every run, and REPLY_BOUNDED <sample> yes|no, whether the prompt bounds the reply, then a
+CUE line for each candidate in the sample's order and wording: after-reply at the first text after a reply line that
+comes after the output contract starts (an "Output contract" line, or "Write one ... object", file, or line),
+untrusted-after-contract at each line after the contract starts that marks data untrusted, and emphasis at each line
+holding an emphatic word in capitals, such as MUST or NOT, but not a status value such as MUST_FIX. A skill with no
+sample prints RUNTIME_PROMPT_UNSAMPLED <file> <line> <reason> for each runtime prompt instead.
 
 Deterministic prose: besides the cost cues, scan names prose a script should replace, each a CUE line:
 assembled-arguments (a flag chosen per printed line or value), parsed-output (output split, grouped, or renamed by a
@@ -390,8 +397,20 @@ CODE_CUES = frozenset({"wide-glob", "generated-code"})
 SHELL_FILE_CUE = "shell-file-command"
 AGENT_CUE = "agent"
 SUBAGENT_REPLY_CUE = "subagent-reply"
+# Cues on the shape of a runtime prompt sample rather than on a skill's own lines.
+AFTER_REPLY_CUE = "after-reply"
+UNTRUSTED_AFTER_CONTRACT_CUE = "untrusted-after-contract"
+EMPHASIS_CUE = "emphasis"
+SAMPLE_CUES = (AFTER_REPLY_CUE, UNTRUSTED_AFTER_CONTRACT_CUE, EMPHASIS_CUE)
 CUE_NAMES = frozenset(
-    {*(name for name, _ in CUES), *(name for name, _ in PROSE_CUES), SHELL_FILE_CUE, AGENT_CUE, SUBAGENT_REPLY_CUE}
+    {
+        *(name for name, _ in CUES),
+        *(name for name, _ in PROSE_CUES),
+        SHELL_FILE_CUE,
+        AGENT_CUE,
+        SUBAGENT_REPLY_CUE,
+        *SAMPLE_CUES,
+    }
 )
 # The lines the audit judges, which with the cues are the checks references/provenance.json names the guidance of;
 # every other line a command prints is a measurement or a location, which rests on no guidance.
@@ -412,6 +431,7 @@ CHECK_LINES = frozenset(
         "MISSING_ALLOWED",
         "MODEL",
         "NESTED_REFERENCE",
+        "NO_TRIGGER_SCENARIO",
         "NO_SCRIPT_ALLOWED",
         "OPEN_PATH_ALLOWED",
         "OUTSIDE_MISSING",
@@ -466,8 +486,17 @@ DELEGATION = re.compile(r"(?i)\bsubagents?\b")
 # A subagent told to read a prompt file: the real prompt is written at runtime and the audit cannot see it.
 RUNTIME_PROMPT = re.compile(r"(?i)\bread <[^>]*\bprompt\b[^>]*>")
 SCRIPT_PATH = re.compile(r"[\w./{}$-]*scripts/[\w.-]+\.(?:py|sh|bash|ps1|js|mjs)")
+# Where a runtime prompt's output contract starts, a block the prompt marks as untrusted data, and an emphatic word
+# in capitals; a word of a status value such as MUST_FIX or NOT_FOUND is not emphasis.
+OUTPUT_CONTRACT = re.compile(r"(?i)^\s*(?:output contract\b|write (?:exactly )?one\b.*\b(?:object|file|line)\b)")
+UNTRUSTED_DATA = re.compile(r"(?i)\buntrusted\b")
+EMPHASIS = re.compile(
+    r"(?<![\w-])(?:MUST|NEVER|ALWAYS|NOT|CRITICAL|IMPORTANT|ONLY|AUTHORITATIVE|REQUIRED|EXACTLY|WARNING)(?![\w-])"
+)
 # Where a skill source tree keeps the rendered samples of its runtime prompts, one folder per skill.
 RUNTIME_PROMPT_SAMPLES = Path("docs") / "runtime-prompts"
+# Where a skill source tree keeps the scenarios that judge each skill, one folder per skill.
+TRIGGER_SCENARIOS = Path("tests") / "fixtures" / "skill-evals"
 # A file of the source tree a rendered sample names, which the renderer wrote as <source> and the path below it.
 SAMPLE_SOURCE_PATH = re.compile(r"<source>[\\/]([^\s\"'`<>]+)")
 # A relative Markdown path that leaves the skill folder, such as `../shared.md`. With a ${CLAUDE_SKILL_DIR}
@@ -1107,6 +1136,26 @@ def declared_lines(directory: Path) -> list[str]:
     ]
 
 
+def trigger_scenario_lines(directory: Path, invocation: str) -> list[str]:
+    """The trigger scenario a model-invocable skill's description is judged by, when the skill is audited from its
+    source tree, or NO_TRIGGER_SCENARIO when it has none."""
+    root = source_root(directory)
+    if root is None or invocation != "model":
+        return []
+    scenarios = root / TRIGGER_SCENARIOS / directory.name
+    output = []
+    for spec_file in sorted(scenarios.glob("*/scenario.json")):
+        try:
+            spec = json.loads(spec_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(spec, dict) and spec.get("mode") == "trigger":
+            requests, near_misses = (spec.get(key) for key in ("requests", "near_misses"))
+            counts = [len(value) if isinstance(value, list) else 0 for value in (requests, near_misses)]
+            output.append(f"TRIGGER_SCENARIO {posix(spec_file)} {counts[0]} {counts[1]}")
+    return output or [f"NO_TRIGGER_SCENARIO {posix(scenarios)}"]
+
+
 def duplicate_flags(texts: dict[str, tuple[str, str]]) -> list[str]:
     """Fenced blocks repeated in Markdown, and helper scripts copied into Markdown fences."""
     flags: list[str] = []
@@ -1231,7 +1280,8 @@ def tools(path: Path) -> list[str]:
             for name in allowed or []:
                 if name in IMPLIED_BY and affirmed(IMPLIED_BY[name], line):
                     first_implied.setdefault(name, start + offset + 1)
-    output = [f"MODEL {model or 'none'}", *listed]
+    invocation = next(line.split()[1] for line in listed if line.startswith("INVOCATION "))
+    output = [f"MODEL {model or 'none'}", *listed, *trigger_scenario_lines(path.parent, invocation)]
     output += [f"ALLOWED {name}" for name in allowed] if allowed is not None else ["NO_ALLOWED_TOOLS"]
     used = sorted(first_use.items(), key=lambda item: (item[1], item[0]))
     output += [f"USED {name} {line}" for name, line in used]
@@ -1492,6 +1542,31 @@ def measure_sample(root: Path, sample: Path) -> list[str]:
             tokens = estimate_tokens(require_text(target), "doc")
             output.append(f"RUNTIME_PROMPT_READ {posix(sample)} {relative} {tokens}")
     output.append(f"REPLY_BOUNDED {posix(sample)} {'yes' if REPLY_BOUND.search(text) else 'no'}")
+    return output + sample_shape_cues(sample, text.splitlines())
+
+
+def sample_shape_cues(sample: Path, lines: list[str]) -> list[str]:
+    """Candidates in a rendered prompt's order and wording: the first text after a reply line that ends the output
+    contract, each line marking untrusted data after the contract starts, and each line with capitalised emphasis."""
+    contract = next((index for index, line in enumerate(lines) if OUTPUT_CONTRACT.search(line)), None)
+    replies = [index for index, line in enumerate(lines) if REPLY_BOUND.search(line)]
+    found: list[tuple[int, str]] = []
+    if contract is not None and replies and replies[-1] > contract:
+        after = next((index for index in range(replies[-1] + 1, len(lines)) if lines[index].strip()), None)
+        if after is not None:
+            found.append((after, AFTER_REPLY_CUE))
+    if contract is not None:
+        found += [
+            (index, UNTRUSTED_AFTER_CONTRACT_CUE)
+            for index in range(contract + 1, len(lines))
+            if UNTRUSTED_DATA.search(lines[index])
+        ]
+    found += [(index, EMPHASIS_CUE) for index, line in enumerate(lines) if EMPHASIS.search(line)]
+    output = []
+    for index, cue in sorted(found):
+        text = lines[index].strip()
+        excerpt = text if len(text) <= 160 else text[:157] + "..."
+        output.append(f"CUE {posix(sample)} {index + 1} {cue} {excerpt}")
     return output
 
 

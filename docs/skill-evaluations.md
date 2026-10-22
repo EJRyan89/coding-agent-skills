@@ -93,6 +93,9 @@ session model and the judged one. A skill with no row has not been run since its
 <!-- skill-evals:begin -->
 | Skill | Model | Model ID | Passed | Runs | By scenario | Session model | Claude Code | Date |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| audit-skill | haiku | claude-haiku-5-5 | 6/8 | 1 | description 6/8 | claude-haiku-5-5 | 2.1.302 | 2026-10-22 |
+| audit-skill | sonnet | claude-sonnet-5-5 | 8/8 | 1 | description 8/8 | claude-sonnet-5-5 | 2.1.302 | 2026-10-22 |
+| audit-skill | opus | claude-opus-5-5 | 8/8 | 1 | description 8/8 | claude-opus-5-5 | 2.1.302 | 2026-10-22 |
 | review-document | haiku | claude-haiku-5-5 | 19/20 | 1 | committed-edit 3/3, design-clean 1/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps not run, word-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
 | review-document | sonnet | claude-sonnet-5-5 | 20/20 | 1 | committed-edit 3/3, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps not run, word-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
 | review-document | opus | claude-opus-5-5 | 20/20 | 1 | committed-edit 3/3, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps not run, word-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |

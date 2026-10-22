@@ -1,11 +1,11 @@
 ---
 name: audit-skill
-description: "Audit an agent skill for cost and efficiency: token footprint, tool calls, deterministic work left to prose, subagent overhead, runtime adapters, model, and allowed-tools. Read-only findings report. Use it when asked what a skill costs, why it is slow or expensive, or to check one before shipping it."
+description: "Audit an agent skill's contract, grants, and cost: whether its Markdown names the lines and exit codes its scripts print, its allowed-tools grants and listing, deterministic work left to prose, token footprint, tool calls, subagents, and model. Read-only findings report. Use it when asked to audit or check a skill: whether its allowed-tools grants are too broad, whether its SKILL.md names the lines its scripts print, what it costs to run or why it is slow, or before shipping it."
 argument-hint: "<SkillName>"
-allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py\" *)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py\" *)", "Read", "Grep"]
+allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py\" *)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py\" *)", "Read"]
 ---
 
-Audit a named agent skill for cost and efficiency regressions and render a bucketed findings report. Read-only — no edits, no prompts.
+Audit a named agent skill's contract, grants, and cost, and render a bucketed findings report. Read-only — no edits, no prompts.
 
 The measurements are commands of `skill_inventory.py`, run exactly as shown. Each prints one fact per line, with paths in forward-slash form; a missing or unreadable input prints `FAILED <reason>` as its last line; stop and report it. `inventory` is the exception for a Markdown file that is not UTF-8 text: it prints an `UNREADABLE` line for it, measures the rest, and exits 1, as Step 2 says. Do not re-measure, re-count, or write your own code for anything a command reports. Your job is the judgment the commands cannot make.
 
@@ -94,7 +94,7 @@ The same command compares the status words the skill's Markdown names with what 
 
 ## Step 6 — Agent delegation cost
 
-When Step 5 printed an `agent` or `subagent-reply` cue or a `RUNTIME_PROMPT` line, read `${CLAUDE_SKILL_DIR}/references/delegation-and-model.md` and judge them by its Delegation section; it also says what the runtime prompt lines that follow mean. Otherwise the skill delegates nothing and this bucket has no findings.
+When Step 5 printed an `agent` or `subagent-reply` cue or a `RUNTIME_PROMPT` line, read `${CLAUDE_SKILL_DIR}/references/delegation-and-model.md` and judge them by its Delegation section; it also says what the runtime prompt lines that follow mean, and the `CUE` lines a sample prints. Otherwise the skill delegates nothing and this bucket has no findings.
 
 ## Step 7 — Model, allowed-tools, and listing
 
@@ -111,6 +111,8 @@ Listing. While `INVOCATION` is `model`, every session in every project loads the
 - `INTERNAL_LISTED` → **MUST FIX**: add `disable-model-invocation: true`, and `user-invocable: false` when users should not start it either.
 - A skill only the user should start (it deletes, deploys, or otherwise acts outside the conversation) with `INVOCATION model` → SUGGESTION: add `disable-model-invocation: true`. First check that no other skill invokes it by name, since that needs model invocation.
 - A long description → SUGGESTION to trim it to what tells the model when to use the skill. Judge by content, not a fixed length.
+- `TRIGGER_SCENARIO <path> <requests> <near misses>`, printed only for a model-invocable skill in its source tree: the scenario whose run judges whether the description starts the skill. Report it in the Scope; it has no finding.
+- `NO_TRIGGER_SCENARIO <path>` → SUGGESTION: no scenario judges the description, so an edit that stops the skill starting, or starts it on a near miss, goes unnoticed. Recommend a trigger scenario at that path, requests from the description's "Use it when" clause and near misses from its neighbours', and its evaluation run whenever the description changes.
 
 Allowed-tools grants. `ALLOWED` lines fill the Scope. `NO_ALLOWED_TOOLS` renders it as `(none)`, and each `USED` line then counts as a `MISSING_ALLOWED` line. In Claude Code, `allowed-tools` pre-approves its entries for the turn that starts the skill and restricts nothing, so judge each entry by what it lets run unasked. A shell pattern matches the command's text, quotes included, with `*` for any text; on Windows the model may run a fence through Bash or PowerShell.
 
@@ -139,7 +141,7 @@ Group all findings into four buckets. Within each bucket, subdivide into MUST FI
 ### Report template
 
 ```markdown
-# Skill Cost Audit — <SKILL_NAME>
+# Skill Audit: contract, grants, and cost — <SKILL_NAME>
 
 ## Scope
 - Location: <SKILL_FILE>
@@ -151,7 +153,7 @@ Group all findings into four buckets. Within each bucket, subdivide into MUST FI
   - Outside reads ≈ <T> tok in <n> files (read on every run)
   - Runtime prompt <sample> ≈ <N> tok, its reads ≈ <M> tok in <n> files, reply bounded <yes|no> (one line per sample; omit when none)
 - Frontmatter model: <value or "(inherits caller)">
-- Listing: <INVOCATION>, description ≈ <N> tok loaded every session while model-invocable
+- Listing: <INVOCATION>, description ≈ <N> tok loaded every session while model-invocable; trigger scenario <path> with <requests> requests and <near misses> near misses, or none (omit outside a source tree)
 - Allowed tools: <comma-separated list>
 - Declared dependencies: <DECLARED names, "none", or "unreadable <path>">
 
@@ -192,7 +194,7 @@ Group all findings into four buckets. Within each bucket, subdivide into MUST FI
 | Agent delegation cost    |    <N>   |    <N>      |
 | Model, tools & listing   |    <N>   |    <N>      |
 
-**Verdict:** OPTIMIZABLE if any bucket has a MUST FIX; otherwise EFFICIENT.
+**Verdict:** FIX BEFORE SHIPPING if any bucket has a MUST FIX; otherwise READY TO SHIP.
 
 ## Top wins
 <2–4 bullets; highest-impact changes phrased as "before → after" with an estimated saving (tokens/invocation, or calls eliminated).>
