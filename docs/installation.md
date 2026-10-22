@@ -27,7 +27,7 @@ Every deployment needs:
 | Python 3.11.4 or newer | Runs the deployer. The deployer and the `audit-ai-config` engine use only the standard library. |
 | Git for Windows, or on Linux Git and Bash | The Bash, Git for Windows' on Windows and the system's on Linux, checks the syntax of rendered Bash scripts and Bash blocks in Markdown; several skills run Bash commands. |
 | ShellCheck | Lints the same rendered Bash content. Deployment stops if it is missing. CI uses 0.9.0 and checks the latest release weekly; newer releases also work. |
-| PowerShell | Parses rendered `.ps1` files regardless of extension case. Windows PowerShell 5.1 is enough for deployment on Windows; Linux and the validation suite need PowerShell 7 (`pwsh`). |
+| PowerShell | Parses rendered `.ps1` files regardless of extension case. Windows PowerShell 5.1 is enough for deployment on Windows; Linux and the validation suite need PowerShell 7 (`pwsh`), and GitHub Copilot CLI on Windows needs PowerShell 6 or newer. |
 
 Some skills need more when you use them, not when you deploy them:
 
@@ -63,7 +63,7 @@ Use whichever installer your machine allows. [winget](https://learn.microsoft.co
 | GitHub CLI | `GitHub.cli` | `gh` | `gh` | [cli.github.com](https://cli.github.com/) |
 | Claude Code | none | none | none | `npm install -g @anthropic-ai/claude-code` with Node.js |
 | Codex CLI | none | none | none | `npm install -g @openai/codex` with Node.js, or [GitHub releases](https://github.com/openai/codex/releases) |
-| GitHub Copilot CLI | `GitHub.Copilot` | `github-copilot-cli` (community-maintained) | `copilot-cli` | `npm install -g @github/copilot` with Node.js 22 or newer, or [GitHub releases](https://github.com/github/copilot-cli/releases); the code-review host needs WinGet's or the release's program ([Copilot support](copilot-support.md#bounded-code-review-host)) |
+| GitHub Copilot CLI | `GitHub.Copilot` | `github-copilot-cli` (community-maintained) | `copilot-cli` | `npm install -g @github/copilot` with Node.js 22 or newer, or [GitHub releases](https://github.com/github/copilot-cli/releases); on Windows it needs PowerShell 6 or newer, such as the PowerShell 7 above ([Installing GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli)); the code-review host needs WinGet's or the release's program ([Copilot support](copilot-support.md#bounded-code-review-host)) |
 
 Install PowerShell 7's MSI build, as the table's `--installer-type wix` does: WinGet's default is now the packaged (MSIX) PowerShell, whose `pwsh` is an app execution alias that Codex CLI's sandbox cannot start, which stops every command Codex runs ([PowerShell app execution alias](codex-support.md#powershell-app-execution-alias)).
 
