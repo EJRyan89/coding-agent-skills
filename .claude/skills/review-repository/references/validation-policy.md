@@ -1,6 +1,6 @@
 # Validation policy reviewer
 
-Your files are validation: the policies in `tests/validation/`, the runner, and the lint configuration in `pyproject.toml`. A policy is what makes a rule executable, so judge whether each policy holds the sentence that cites it: the "validation fails when" sentences in TRUSTED_ROOT/CLAUDE.md ("Required validation" and "Architecture") and TRUSTED_ROOT/docs/adding-a-skill.md "Validation", and the "Held by" of each invariant in TRUSTED_ROOT/docs/design.md. Read only the sections the change touches.
+Your files are validation: the policies in `tests/validation/`, the runner, the root `conftest.py`, which isolates every Python suite's git, and the lint configuration in `pyproject.toml`. A policy is what makes a rule executable, so judge whether each policy holds the sentence that cites it: the "validation fails when" sentences in TRUSTED_ROOT/CLAUDE.md ("Required validation" and "Architecture") and TRUSTED_ROOT/docs/adding-a-skill.md "Validation", and the "Held by" of each invariant in TRUSTED_ROOT/docs/design.md. Read only the sections the change touches.
 
 Ask of each change:
 
