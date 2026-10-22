@@ -208,9 +208,10 @@ EOF
 }
 # The child's stderr starts with its START line and ends with its END line, which names the status and the case.
 expect_traced() {
-  head -n 1 "$FIXTURE/child.err" | grep -q -x -E "START test_update.sh [0-9]+" ||
+  grep -q -x -E "START test_update.sh [0-9]+" <<<"$(head -n 1 "$FIXTURE/child.err")" ||
     fail "$3: no START line first: $(<"$FIXTURE/child.err")"
-  tail -n 1 "$FIXTURE/child.err" | grep -q -x -F -e "END test_update.sh $(head -n 1 "$FIXTURE/child.err" | cut -d ' ' -f 3): exit $1 in case $2" ||
+  grep -q -x -F -e "END test_update.sh $(head -n 1 "$FIXTURE/child.err" | cut -d ' ' -f 3): exit $1 in case $2" \
+    <<<"$(tail -n 1 "$FIXTURE/child.err")" ||
     fail "$3: no END line for exit $1 in case $2 last: $(<"$FIXTURE/child.err")"
 }
 
@@ -295,6 +296,8 @@ run_subject() {
   set -e
 }
 
+# A check hands grep its text in a here-string, never through a pipe: grep -q exits at its first match, and under
+# pipefail the writer it leaves can die of SIGPIPE and fail a check whose pattern matched.
 expect_status() { [ "$status" -eq "$1" ] || fail "$2: expected exit $1, got $status: $OUTPUT $(cat "$FIXTURE/stderr")"; }
 expect_first_line() { [ "$(printf '%s\n' "$OUTPUT" | head -n 1)" = "$1" ] || fail "$2: expected '$1', got: $OUTPUT"; }
 expect_no_stderr() { [ ! -s "$FIXTURE/stderr" ] || fail "$1: wrote to stderr: $(cat "$FIXTURE/stderr")"; }
@@ -362,7 +365,7 @@ run_subject "$CLONE" main
 expect_status 0 "up to date"
 expect_first_line "UP_TO_DATE $(head_of "$CLONE" HEAD)" "up to date"
 expect_deployed "up to date"
-printf '%s\n' "$OUTPUT" | grep -qx "fake deploy ran" || fail "up to date: deploy output was not shown"
+grep -qx "fake deploy ran" <<<"$OUTPUT" || fail "up to date: deploy output was not shown"
 [ "$(printf '%s\n' "$OUTPUT" | tail -n 1)" = "DEPLOYED" ] || fail "up to date: missing DEPLOYED"
 
 # A clone behind origin is fast-forwarded, lists the pulled commits, then deploys.
@@ -376,8 +379,8 @@ expect_status 0 "behind"
 AFTER=$(head_of "$CLONE" HEAD)
 [ "$AFTER" = "$(head_of "$SEED" HEAD)" ] || fail "behind: clone was not fast-forwarded"
 expect_first_line "UPDATED $BEFORE..$AFTER" "behind"
-printf '%s\n' "$OUTPUT" | grep -q "first change" || fail "behind: pulled commit missing"
-printf '%s\n' "$OUTPUT" | grep -q "second change" || fail "behind: pulled commit missing"
+grep -q "first change" <<<"$OUTPUT" || fail "behind: pulled commit missing"
+grep -q "second change" <<<"$OUTPUT" || fail "behind: pulled commit missing"
 expect_deployed "behind"
 
 # A clean clone on another branch is switched to main before the fast-forward, and stays there.
@@ -401,7 +404,7 @@ run_subject "$CLONE" main
 expect_status 1 "dirty"
 expect_first_line "DIRTY" "dirty"
 expect_no_stderr "dirty"
-printf '%s\n' "$OUTPUT" | grep -q "notes.txt" || fail "dirty: changed file not listed"
+grep -q "notes.txt" <<<"$OUTPUT" || fail "dirty: changed file not listed"
 [ "$(git -C "$CLONE" rev-parse origin/main)" = "$BEFORE" ] || fail "dirty: fetched anyway"
 expect_nothing_run "dirty"
 
@@ -416,7 +419,7 @@ expect_status 1 "diverged"
 expect_first_line "NOT_FAST_FORWARD" "diverged"
 expect_no_stderr "diverged"
 [ "$(git -C "$CLONE" rev-parse HEAD)" = "$LOCAL" ] || fail "diverged: main moved"
-printf '%s\n' "$OUTPUT" | grep -q "local work" || fail "diverged: local commit not listed: $OUTPUT"
+grep -q "local work" <<<"$OUTPUT" || fail "diverged: local commit not listed: $OUTPUT"
 expect_not_deployed "diverged"
 
 # A diverged main stops before any checkout, so a clone on another branch stays on it.
@@ -480,7 +483,7 @@ chmod +x "$WRAPPER/git"
 PATH="$WRAPPER:$PATH" run_subject "$CLONE" main
 expect_status 1 "switch back refused"
 expect_first_line "NOT_FAST_FORWARD" "switch back refused"
-printf '%s\n' "$OUTPUT" | grep -qx "still on main: cannot switch back to topic: error: switch refused by the test" ||
+grep -qx "still on main: cannot switch back to topic: error: switch refused by the test" <<<"$OUTPUT" ||
   fail "switch back refused: no still-on-main line: $OUTPUT"
 [ "$(git -C "$CLONE" branch --show-current)" = "main" ] || fail "switch back refused: expected main"
 expect_not_deployed "switch back refused"
@@ -569,8 +572,8 @@ new_clone
 publish "untagged change"
 run_subject "$CLONE" main
 expect_status 0 "no tag"
-printf '%s\n' "$OUTPUT" | grep -q "^UPDATED " || fail "no tag: expected UPDATED: $OUTPUT"
-if printf '%s\n' "$OUTPUT" | grep -q "CROSSED"; then fail "no tag: crossing reported"; fi
+grep -q "^UPDATED " <<<"$OUTPUT" || fail "no tag: expected UPDATED: $OUTPUT"
+if grep -q "CROSSED" <<<"$OUTPUT"; then fail "no tag: crossing reported"; fi
 expect_no_stderr "no tag"
 expect_deployed "no tag"
 
@@ -601,12 +604,12 @@ run_subject "$CLONE" main
 expect_status 1 "untagged"
 expect_first_line "MAJOR_UPDATE untagged..v0.1.0" "untagged"
 expect_no_stderr "untagged"
-printf '%s\n' "$OUTPUT" | grep -q "first release" || fail "untagged: pending commit not listed"
+grep -q "first release" <<<"$OUTPUT" || fail "untagged: pending commit not listed"
 [ "$(head_of "$CLONE" HEAD)" = "$BEFORE" ] || fail "untagged: main moved"
 expect_not_deployed "untagged"
 run_subject "$CLONE" main --cross-major
 expect_status 0 "untagged accepted"
-printf '%s\n' "$OUTPUT" | grep -qx "CROSSED untagged..v0.1.0" || fail "untagged accepted: crossing not named: $OUTPUT"
+grep -qx "CROSSED untagged..v0.1.0" <<<"$OUTPUT" || fail "untagged accepted: crossing not named: $OUTPUT"
 expect_deployed "untagged accepted"
 
 # A release with a higher breaking component stops before main moves, and lists what it would pull.
@@ -619,7 +622,7 @@ run_subject "$CLONE" main
 expect_status 1 "major"
 expect_first_line "MAJOR_UPDATE v0.1.0..v0.2.0" "major"
 expect_no_stderr "major"
-printf '%s\n' "$OUTPUT" | grep -q "breaking change" || fail "major: pending commit not listed"
+grep -q "breaking change" <<<"$OUTPUT" || fail "major: pending commit not listed"
 [ "$(head_of "$CLONE" HEAD)" = "$BEFORE" ] || fail "major: main moved"
 expect_not_deployed "major"
 
@@ -629,7 +632,7 @@ run_subject "$CLONE" main --cross-major
 expect_status 0 "cross major"
 AFTER=$(head_of "$CLONE" HEAD)
 expect_first_line "UPDATED $BEFORE..$AFTER" "cross major"
-printf '%s\n' "$OUTPUT" | grep -qx "CROSSED v0.1.0..v0.2.0" || fail "cross major: crossing not named: $OUTPUT"
+grep -qx "CROSSED v0.1.0..v0.2.0" <<<"$OUTPUT" || fail "cross major: crossing not named: $OUTPUT"
 expect_deployed "cross major"
 
 # A patch release within the same breaking component needs no acceptance.
@@ -639,8 +642,8 @@ publish "patch change"
 tag_upstream v0.2.3
 run_subject "$CLONE" main
 expect_status 0 "patch"
-printf '%s\n' "$OUTPUT" | grep -q "^UPDATED " || fail "patch: expected UPDATED: $OUTPUT"
-if printf '%s\n' "$OUTPUT" | grep -q "CROSSED"; then fail "patch: crossing reported"; fi
+grep -q "^UPDATED " <<<"$OUTPUT" || fail "patch: expected UPDATED: $OUTPUT"
+if grep -q "CROSSED" <<<"$OUTPUT"; then fail "patch: crossing reported"; fi
 expect_deployed "patch"
 
 # Leaving 0.x raises the major, so it stops too. A nearer tag that is not numeric is not a release.
@@ -667,7 +670,7 @@ publish "minor stable"
 tag_upstream v1.5.0
 run_subject "$CLONE" main
 expect_status 0 "stable minor"
-if printf '%s\n' "$OUTPUT" | grep -q "CROSSED"; then fail "stable minor: crossing reported"; fi
+if grep -q "CROSSED" <<<"$OUTPUT"; then fail "stable minor: crossing reported"; fi
 expect_deployed "stable minor"
 new_clone
 BEFORE=$(head_of "$CLONE" HEAD)
@@ -689,7 +692,7 @@ publish "third major candidate"
 tag_upstream v3.0.0-rc.1
 run_subject "$CLONE" main
 expect_status 0 "pre-release"
-if printf '%s\n' "$OUTPUT" | grep -q "CROSSED"; then fail "pre-release: crossing reported"; fi
+if grep -q "CROSSED" <<<"$OUTPUT"; then fail "pre-release: crossing reported"; fi
 expect_no_stderr "pre-release"
 expect_deployed "pre-release"
 publish "third major"
@@ -700,7 +703,7 @@ expect_first_line "MAJOR_UPDATE v2.0.0..v3.0.0" "pre-release to release"
 expect_not_deployed "pre-release to release"
 run_subject "$CLONE" main --cross-major
 expect_status 0 "pre-release to release accepted"
-printf '%s\n' "$OUTPUT" | grep -qx "CROSSED v2.0.0..v3.0.0" || fail "pre-release to release accepted: crossing not named"
+grep -qx "CROSSED v2.0.0..v3.0.0" <<<"$OUTPUT" || fail "pre-release to release accepted: crossing not named"
 expect_deployed "pre-release to release accepted"
 
 # A deployment made with deploy.py --at stops the update before the fetch, naming the ref and the commit check reports.
@@ -735,7 +738,7 @@ begin_case 'unpin across a major'
 FAKE_CHECK_OUTPUT=$PINNED_CHECK run_subject "$CLONE" main --unpin
 expect_status 1 "unpin across a major"
 expect_first_line "MAJOR_UPDATE v1.0.0..v3.0.0" "unpin across a major"
-printf '%s\n' "$OUTPUT" | grep -q "second major" || fail "unpin across a major: commit since the pin not listed: $OUTPUT"
+grep -q "second major" <<<"$OUTPUT" || fail "unpin across a major: commit since the pin not listed: $OUTPUT"
 [ "$(git -C "$CLONE" rev-parse HEAD)" = "$BEFORE" ] || fail "unpin across a major: main moved"
 expect_not_deployed "unpin across a major"
 
@@ -745,7 +748,7 @@ begin_case 'unpin with cross-major'
 FAKE_CHECK_OUTPUT=$PINNED_CHECK run_subject "$CLONE" main --cross-major --unpin
 expect_status 0 "unpin after cross-major"
 expect_first_line "UPDATED $(git -C "$CLONE" rev-parse --short "$BEFORE")..$(head_of "$CLONE" HEAD)" "unpin after cross-major"
-printf '%s\n' "$OUTPUT" | grep -qx "CROSSED v1.0.0..v3.0.0" || fail "unpin after cross-major: crossing not named: $OUTPUT"
+grep -qx "CROSSED v1.0.0..v3.0.0" <<<"$OUTPUT" || fail "unpin after cross-major: crossing not named: $OUTPUT"
 expect_deployed "unpin after cross-major" "--all --unpin"
 publish "unpin first"
 FAKE_CHECK_OUTPUT=$PINNED_CHECK run_subject "$CLONE" main --unpin --cross-major
@@ -757,7 +760,7 @@ begin_case 'not pinned'
 publish "unpinned change"
 FAKE_CHECK_OUTPUT="Deployed commit: v3.0.0-4-g0000000 ($(git -C "$CLONE" rev-parse HEAD))" run_subject "$CLONE" main
 expect_status 0 "not pinned"
-printf '%s\n' "$OUTPUT" | grep -q "^UPDATED " || fail "not pinned: expected UPDATED: $OUTPUT"
+grep -q "^UPDATED " <<<"$OUTPUT" || fail "not pinned: expected UPDATED: $OUTPUT"
 expect_deployed "not pinned"
 
 # A pin check does not name, here a check that names the commit alone, still stops at the deployer, which refuses to
@@ -776,8 +779,8 @@ for DESCRIBED in "v1.0.0 ($PINNED_COMMIT)" "$PINNED_COMMIT"; do
   [ "$(head_of "$CLONE" HEAD)" = "$(head_of "$SEED" HEAD)" ] || fail "pin refused '$DESCRIBED': main not fast-forwarded"
   [ "$(printf '%s\n' "$OUTPUT" | tail -n 1)" = "DEPLOY_PINNED v1.0.0 $PINNED_COMMIT" ] ||
     fail "pin refused '$DESCRIBED': expected DEPLOY_PINNED v1.0.0 $PINNED_COMMIT last, got: $OUTPUT"
-  if printf '%s\n' "$OUTPUT" | grep -q "DEPLOY_FAILED"; then fail "pin refused '$DESCRIBED': DEPLOY_FAILED printed"; fi
-  tr -d '\r' <"$FIXTURE/stderr" | grep -qxF -e "$REFUSAL" ||
+  if grep -q "DEPLOY_FAILED" <<<"$OUTPUT"; then fail "pin refused '$DESCRIBED': DEPLOY_FAILED printed"; fi
+  grep -qxF -e "$REFUSAL" <<<"$(tr -d '\r' <"$FIXTURE/stderr")" ||
     fail "pin refused '$DESCRIBED': the deployer's refusal not shown: $(cat "$FIXTURE/stderr")"
   expect_deployed "pin refused '$DESCRIBED'"
 done
@@ -792,7 +795,7 @@ for FAILURE in "1 ERROR: Could not write the manifest." \
   expect_status 1 "deploy failed '$FAILURE'"
   [ "$(printf '%s\n' "$OUTPUT" | tail -n 1)" = "DEPLOY_FAILED ${FAILURE%% *}" ] ||
     fail "deploy failed '$FAILURE': expected DEPLOY_FAILED ${FAILURE%% *} last, got: $OUTPUT"
-  tr -d '\r' <"$FIXTURE/stderr" | grep -qxF -e "${FAILURE#* }" ||
+  grep -qxF -e "${FAILURE#* }" <<<"$(tr -d '\r' <"$FIXTURE/stderr")" ||
     fail "deploy failed '$FAILURE': the deployer's error not shown: $(cat "$FIXTURE/stderr")"
 done
 
@@ -816,7 +819,7 @@ for CHECK_OUTPUT in "Deployed commit: unknown" ""; do
 done
 FAKE_CHECK_OUTPUT="Deployed commit: unknown" run_subject "$CLONE" main --cross-major
 expect_status 0 "no deployed commit accepted"
-printf '%s\n' "$OUTPUT" | grep -qx "CROSSED unknown..v3.0.0" || fail "no deployed commit accepted: crossing not named: $OUTPUT"
+grep -qx "CROSSED unknown..v3.0.0" <<<"$OUTPUT" || fail "no deployed commit accepted: crossing not named: $OUTPUT"
 expect_deployed "no deployed commit accepted"
 
 # A deployed commit the clone does not hold is a named failure, not version zero.
@@ -843,12 +846,12 @@ run_subject "$CLONE" main
 expect_status 1 "pulled by hand"
 expect_first_line "MAJOR_UPDATE v3.0.0..v4.0.0" "pulled by hand"
 expect_no_stderr "pulled by hand"
-printf '%s\n' "$OUTPUT" | grep -q "fourth major" || fail "pulled by hand: pending commit not listed: $OUTPUT"
+grep -q "fourth major" <<<"$OUTPUT" || fail "pulled by hand: pending commit not listed: $OUTPUT"
 expect_not_deployed "pulled by hand"
 run_subject "$CLONE" main --cross-major
 expect_status 0 "pulled by hand accepted"
 expect_first_line "UP_TO_DATE $(head_of "$CLONE" HEAD)" "pulled by hand accepted"
-printf '%s\n' "$OUTPUT" | grep -qx "CROSSED v3.0.0..v4.0.0" || fail "pulled by hand accepted: crossing not named: $OUTPUT"
+grep -qx "CROSSED v3.0.0..v4.0.0" <<<"$OUTPUT" || fail "pulled by hand accepted: crossing not named: $OUTPUT"
 expect_deployed "pulled by hand accepted"
 
 # A clone with no local main, detached at the release origin/main is on, is at that release and updates.
@@ -996,9 +999,9 @@ expect_status 0 "release"
 expect_first_line "UPDATED $BEFORE..v4.2.0" "release"
 expect_no_stderr "release"
 for PULLED in "release four one" "release four two"; do
-  printf '%s\n' "$OUTPUT" | grep -q " $PULLED$" || fail "release: commit '$PULLED' not listed: $OUTPUT"
+  grep -q " $PULLED$" <<<"$OUTPUT" || fail "release: commit '$PULLED' not listed: $OUTPUT"
 done
-if printf '%s\n' "$OUTPUT" | grep -q -e "after the last release" -e "NOT_IN_RELEASE"; then
+if grep -q -e "after the last release" -e "NOT_IN_RELEASE" <<<"$OUTPUT"; then
   fail "release: listed a commit the release does not carry: $OUTPUT"
 fi
 expect_deployed "release" "--all --at refs/tags/v4.2.0"
@@ -1031,9 +1034,9 @@ FOLLOWED=$(head_of "$CLONE" HEAD)
 run_subject "$CLONE" release
 expect_status 0 "step back"
 expect_first_line "UPDATED $FOLLOWED..v4.2.0" "step back"
-printf '%s\n' "$OUTPUT" | grep -qx "NOT_IN_RELEASE v4.2.0..$FOLLOWED" || fail "step back: no NOT_IN_RELEASE line: $OUTPUT"
+grep -qx "NOT_IN_RELEASE v4.2.0..$FOLLOWED" <<<"$OUTPUT" || fail "step back: no NOT_IN_RELEASE line: $OUTPUT"
 for LEFT in "after the last release" "later on main"; do
-  printf '%s\n' "$OUTPUT" | grep -q " $LEFT$" || fail "step back: commit '$LEFT' not listed: $OUTPUT"
+  grep -q " $LEFT$" <<<"$OUTPUT" || fail "step back: commit '$LEFT' not listed: $OUTPUT"
 done
 expect_deployed "step back" "--all --at refs/tags/v4.2.0"
 
@@ -1045,7 +1048,7 @@ publish "main channel change"
 run_subject "$CLONE" main
 expect_status 0 "configured main"
 expect_first_line "UPDATED $BEFORE..$(head_of "$SEED" HEAD)" "configured main"
-printf '%s\n' "$OUTPUT" | grep -q " main channel change$" || fail "configured main: pulled commit not listed: $OUTPUT"
+grep -q " main channel change$" <<<"$OUTPUT" || fail "configured main: pulled commit not listed: $OUTPUT"
 expect_deployed "configured main" "--all --unpin"
 FOLLOWED=$(head_of "$CLONE" HEAD)
 run_subject "$CLONE" main --channel release
@@ -1089,7 +1092,7 @@ printf '%s\nv4.1.0\n' "$V41" >"$CLONE/.fake-deployed"
 run_subject "$CLONE" release --unpin
 expect_status 0 "user pin unpinned"
 expect_first_line "UPDATED $(git -C "$CLONE" rev-parse --short "$V41")..v4.2.0" "user pin unpinned"
-printf '%s\n' "$OUTPUT" | grep -q " release four two$" || fail "user pin unpinned: commit since the pin not listed: $OUTPUT"
+grep -q " release four two$" <<<"$OUTPUT" || fail "user pin unpinned: commit since the pin not listed: $OUTPUT"
 expect_deployed "user pin unpinned" "--all --at refs/tags/v4.2.0"
 
 # A release that raises the breaking component stops the release channel at that tag, listing the commits up to it
@@ -1103,14 +1106,14 @@ run_subject "$CLONE" release
 expect_status 1 "release major"
 expect_first_line "MAJOR_UPDATE v4.2.0..v5.0.0" "release major"
 expect_no_stderr "release major"
-printf '%s\n' "$OUTPUT" | grep -q " fifth major$" || fail "release major: the release's commit not listed: $OUTPUT"
-if printf '%s\n' "$OUTPUT" | grep -q "after the fifth major"; then fail "release major: listed a commit after the tag"; fi
+grep -q " fifth major$" <<<"$OUTPUT" || fail "release major: the release's commit not listed: $OUTPUT"
+if grep -q "after the fifth major" <<<"$OUTPUT"; then fail "release major: listed a commit after the tag"; fi
 [ "$(git -C "$CLONE" rev-parse HEAD)" = "$BEFORE" ] || fail "release major: main moved"
 expect_not_deployed "release major"
 run_subject "$CLONE" release --cross-major
 expect_status 0 "release major accepted"
 expect_first_line "UPDATED $(git -C "$CLONE" rev-parse --short "$RELEASE_COMMIT")..v5.0.0" "release major accepted"
-printf '%s\n' "$OUTPUT" | grep -qx "CROSSED v4.2.0..v5.0.0" || fail "release major accepted: crossing not named: $OUTPUT"
+grep -qx "CROSSED v4.2.0..v5.0.0" <<<"$OUTPUT" || fail "release major accepted: crossing not named: $OUTPUT"
 expect_deployed "release major accepted" "--all --at refs/tags/v5.0.0"
 
 # With no deployed commit to read, the release channel stops at any release, and once --cross-major accepts it the
@@ -1123,7 +1126,7 @@ publish "after the sixth major"
 FAKE_CHECK_OUTPUT="Deployed commit: unknown" run_subject "$CLONE" release
 expect_status 1 "release from no deployed commit"
 expect_first_line "MAJOR_UPDATE unknown..v6.0.0" "release from no deployed commit"
-printf '%s\n' "$OUTPUT" | grep -q " sixth major$" || fail "release from no deployed commit: commit not listed: $OUTPUT"
+grep -q " sixth major$" <<<"$OUTPUT" || fail "release from no deployed commit: commit not listed: $OUTPUT"
 [ "$(git -C "$CLONE" rev-parse HEAD)" = "$BEFORE" ] || fail "release from no deployed commit: main moved"
 expect_not_deployed "release from no deployed commit"
 FAKE_CHECK_OUTPUT="Deployed commit: unknown" run_subject "$CLONE" release --cross-major
@@ -1132,10 +1135,10 @@ expect_first_line "UPDATED unknown..v6.0.0" "release from no deployed commit acc
 expect_no_stderr "release from no deployed commit accepted"
 [ "$(printf '%s\n' "$OUTPUT" | sed -n 2p)" = "$(git -C "$CLONE" log --oneline --no-decorate -1 v6.0.0)" ] ||
   fail "release from no deployed commit accepted: the release's commit does not follow UPDATED: $OUTPUT"
-if printf '%s\n' "$OUTPUT" | grep -q -e "after the sixth major" -e " fifth major$" -e "NOT_IN_RELEASE"; then
+if grep -q -e "after the sixth major" -e " fifth major$" -e "NOT_IN_RELEASE" <<<"$OUTPUT"; then
   fail "release from no deployed commit accepted: listed a commit the release does not add to local main: $OUTPUT"
 fi
-printf '%s\n' "$OUTPUT" | grep -qx "CROSSED unknown..v6.0.0" ||
+grep -qx "CROSSED unknown..v6.0.0" <<<"$OUTPUT" ||
   fail "release from no deployed commit accepted: crossing not named: $OUTPUT"
 expect_deployed "release from no deployed commit accepted" "--all --at refs/tags/v6.0.0"
 
