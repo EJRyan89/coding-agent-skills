@@ -44,6 +44,7 @@ from validation_support import (
 )
 
 from deployer import platform_support
+from deployer.render import shipped_files
 from tools.plugin_build import HOOKS as PLUGIN_HOOKS
 from tools.plugin_build import MANIFEST as PLUGIN_MANIFEST
 from tools.plugin_build import README as PLUGIN_README
@@ -574,8 +575,9 @@ def plugin_tree_problems(root: Path, plugins: Mapping[str, Mapping[str, bytes]])
     """Report what an assembled plugin holds that its sources do not: a file no skill or agent ships, bytes that
     differ from the source's but for the pinned token answers, an agent's hooks, which move to the plugin's hooks
     file, and each backticked mention of an agent the plugin carries, which names it as `<plugin>:<agent>`; a template
-    token left; a file of a carried skill the plugin leaves out; a manifest that is not its marketplace entry; and a
-    hooks file that is not its agents' hooks. `plugins` maps each plugin's name to its files, by path in the plugin."""
+    token left; a file of a carried skill, as the builder reads it, that the plugin leaves out; a manifest that is not
+    its marketplace entry; and a hooks file that is not its agents' hooks. `plugins` maps each plugin's name to its
+    files, by path in the plugin."""
     if (root / PLUGIN_MANIFEST).exists():
         return [f"{PLUGIN_MANIFEST} makes the checkout's skills read as a plugin's"]
     found: list[str] = []
@@ -612,12 +614,7 @@ def plugin_tree_problems(root: Path, plugins: Mapping[str, Mapping[str, bytes]])
         elif declared.strip():
             found.append(f"plugin {name}: its agents declare hooks, but it has no {PLUGIN_HOOKS}")
         for skill in sorted(carried - {""}):
-            directory = root / "skills" / skill
-            shipped = {
-                f"skills/{skill}/{file.relative_to(directory).as_posix()}"
-                for file in directory.rglob("*")
-                if file.is_file() and not is_suite_name(file.name)
-            }
+            shipped = {f"skills/{skill}/{relative}" for relative in shipped_files(root / "skills" / skill)}
             found.extend(f"plugin {name}: leaves out {path}" for path in sorted(shipped - set(files)))
     return found
 
