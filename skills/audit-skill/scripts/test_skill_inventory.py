@@ -2492,11 +2492,11 @@ class SourcePluginTests(SourceTreeTestCase):
 
     def test_a_skill_no_plugin_carries_names_each_item_that_needs_it_and_why(self) -> None:
         self.source()
-        rooted = self.skill("Rooted.\n", {"selectable": False, "required_vars": ["REPOS_ROOT"]}, name="rooted")
+        rooted = self.skill("Rooted.\n", {"selectable": False, "required_vars": ["SOURCE_ROOT"]}, name="rooted")
         cleanup = self.skill("Cleanup.\n", {"skill_deps": ["rooted"]}, name="cleanup")
         orphan = self.skill("Orphan.\n", {"selectable": False}, name="orphan")
         # Built so that no template token appears in a skill's files, where the deployer would render one.
-        reason = "LEFT_OUT cleanup rooted takes {" + "{REPOS_ROOT}" + "}, which a plugin has no value for"
+        reason = "LEFT_OUT cleanup rooted takes {" + "{SOURCE_ROOT}" + "}, which a plugin has no value for"
         self.assertEqual([reason], self.plugins(cleanup))
         self.assertEqual([reason], self.plugins(rooted))
         self.assertEqual(["LEFT_OUT orphan no menu item needs it"], self.plugins(orphan))

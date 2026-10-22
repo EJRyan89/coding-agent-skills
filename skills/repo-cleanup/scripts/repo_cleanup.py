@@ -402,6 +402,12 @@ def require_repository(root: str | Path) -> None:
 
 
 def discover(target: str | None, repos_root: str, services: Services) -> list[str]:
+    # A plugin passes its repos_root option as typed, with no allowlist behind it: an empty root would sweep the
+    # working directory, and a relative one would resolve against it.
+    if not repos_root.strip():
+        raise CleanupError("--repos-root is empty; set the root directory for your git repositories")
+    if not Path(repos_root).is_absolute():
+        raise CleanupError(f"--repos-root {repos_root} is not an absolute path")
     if target:
         candidate = Path(target)
         if not candidate.is_absolute():

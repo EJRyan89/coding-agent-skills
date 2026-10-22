@@ -38,10 +38,10 @@ class SkillReferenceTestCase(unittest.TestCase):
         self.write_json("source.json", {"id": "test/skills", "bundles": {"suite": {"members": ["beta"]}}})
         self.add_skill(
             "alpha",
-            'description: "Sweeps every repository under {{REPOS_ROOT}}, '
+            'description: "Sweeps every repository on {{UPDATE_CHANNEL}}, '
             '\\"carefully\\". Use it when asked to sweep."\nargument-hint: "[--flag X]"',
             {
-                "required_vars": ["REPOS_ROOT"],
+                "required_vars": ["UPDATE_CHANNEL"],
                 "opt_in": True,
                 "tools": ["copilot"],
                 "runtime_support": {
@@ -92,12 +92,12 @@ class SkillReferenceTestCase(unittest.TestCase):
 
     def test_an_optional_setting_is_named_as_optional(self) -> None:
         metadata = json.loads((self.root / "deploy-meta" / "alpha.json").read_text(encoding="utf-8"))
-        metadata["required_vars"] = ["REPOS_ROOT", "REPO_CLEANUP_PROTECTED"]
+        metadata["required_vars"] = ["UPDATE_CHANNEL", "REPO_CLEANUP_PROTECTED"]
         self.write_json("deploy-meta/alpha.json", metadata)
         skill_reference.write(self.root)
         self.assertIn(
-            "Needs `copilot` (optional), the `REPOS_ROOT` setting, and the `REPO_CLEANUP_PROTECTED` setting "
-            "(optional).",
+            "Needs `copilot` (optional), the `REPO_CLEANUP_PROTECTED` setting (optional), and the `UPDATE_CHANNEL` "
+            "setting.",
             self.text(),
         )
 
@@ -108,17 +108,18 @@ class SkillReferenceTestCase(unittest.TestCase):
         self.assertLess(text.index("## `alpha`"), text.index("## `beta`"))
         self.assertNotIn("gamma", text)
         self.assertIn(
-            "| [`alpha`](#alpha) | You or the agent | Opt-in | Deployer only | `copilot` (optional), the `REPOS_ROOT` "
-            "setting |",
+            "| [`alpha`](#alpha) | You or the agent | Opt-in | Deployer only | `copilot` (optional), "
+            "the `UPDATE_CHANNEL` setting |",
             text,
         )
         # beta takes no value a plugin cannot answer, so the default plugin, named for the source's repository,
-        # carries it; alpha takes REPOS_ROOT, so only the deployer installs it.
+        # carries it; alpha takes UPDATE_CHANNEL, so only the deployer installs it.
         self.assertIn("| [`beta`](#beta) | You | `suite` bundle | `skills` | `dotnet-format` (optional), `gh` |", text)
-        self.assertIn('Sweeps every repository under `REPOS_ROOT`, "carefully".', text)
+        self.assertIn('Sweeps every repository on `UPDATE_CHANNEL`, "carefully".', text)
         self.assertIn("```text\n/alpha [--flag X]\n```", text)
         self.assertIn(
-            "Opt-in: deploy it with `--include alpha`. Needs `copilot` (optional) and the `REPOS_ROOT` setting.", text
+            "Opt-in: deploy it with `--include alpha`. Needs `copilot` (optional) and the `UPDATE_CHANNEL` setting.",
+            text,
         )
         self.assertIn("Beta's plain description.", text)
         self.assertIn("```text\n/beta\n```", text)
@@ -224,7 +225,7 @@ class SkillReferenceTestCase(unittest.TestCase):
     def test_a_model_invocable_description_must_say_when_to_use_the_skill(self) -> None:
         # The description is all the model has when deciding to start a skill on its own; a user-only skill's
         # description never triggers anything, so beta needs no such clause.
-        self.add_skill("alpha", "description: Sweeps every repository.", {"required_vars": ["REPOS_ROOT"]})
+        self.add_skill("alpha", "description: Sweeps every repository.", {"required_vars": ["UPDATE_CHANNEL"]})
         self.written_and_explained()
 
         self.assertEqual(
@@ -297,7 +298,7 @@ class SkillReferenceTestCase(unittest.TestCase):
         self.add_skill(
             "alpha",
             "description: >-\n  Folded across\n  two lines.\nargument-hint: '[--flag X]'",
-            {"required_vars": ["REPOS_ROOT"], "opt_in": True, "tools": ["copilot"]},
+            {"required_vars": ["UPDATE_CHANNEL"], "opt_in": True, "tools": ["copilot"]},
         )
         skill_reference.write(self.root)
         self.assertIn("<!-- generated:alpha -->\nFolded across two lines.\n", self.text())
@@ -309,7 +310,7 @@ class SkillReferenceTestCase(unittest.TestCase):
             ('description: "unterminated', "description: a double-quoted value is not closed"),
         ):
             with self.subTest(frontmatter=frontmatter):
-                self.add_skill("alpha", frontmatter, {"required_vars": ["REPOS_ROOT"], "opt_in": True})
+                self.add_skill("alpha", frontmatter, {"required_vars": ["UPDATE_CHANNEL"], "opt_in": True})
                 with self.assertRaisesRegex(skill_reference.SkillReferenceError, message):
                     skill_reference.problems(self.root)
         skill_md = self.root / "skills" / "alpha" / "SKILL.md"

@@ -34,7 +34,7 @@ When a required argument is missing, a skill asks for it rather than guessing.
 | [`dotnet-format`](#dotnet-format) | You or the agent | Opt-in, `dotnet` bundle | `coding-agent-skills-dotnet` | `dotnet`, `dotnet-format` (optional), `gh` (optional) |
 | [`flag-review-finding`](#flag-review-finding) | You or the agent | `code-review-operations` bundle | `coding-agent-skills` | Nothing extra |
 | [`github-activity-report`](#github-activity-report) | You or the agent | By default | `coding-agent-skills` | `gh` |
-| [`repo-cleanup`](#repo-cleanup) | You | By default | Deployer only | `gh`, the `REPOS_ROOT` setting, the `REPO_CLEANUP_PROTECTED` setting (optional), the `REPO_CLEANUP_REGENERABLE` setting (optional) |
+| [`repo-cleanup`](#repo-cleanup) | You | By default | `coding-agent-skills` | `gh`, the `REPOS_ROOT` setting, the `REPO_CLEANUP_PROTECTED` setting (optional), the `REPO_CLEANUP_REGENERABLE` setting (optional) |
 | [`review-document`](#review-document) | You or the agent | `code-review-operations` bundle | `coding-agent-skills` | `copilot` (optional), `gh` (optional), `pdftotext` (optional) |
 | [`review-insights`](#review-insights) | You or the agent | `code-review-operations` bundle | `coding-agent-skills` | Nothing extra |
 | [`review-prs`](#review-prs) | You or the agent | `code-review-operations` bundle | `coding-agent-skills` | `copilot` (optional), `gh`, `pdftotext` (optional) |
@@ -274,7 +274,7 @@ Clean up GitHub repos: switch to default branch, prune gone branches, remove sta
 Started by you. Installed by default. Needs `gh`, the `REPOS_ROOT` setting, the `REPO_CLEANUP_PROTECTED` setting (optional), and the `REPO_CLEANUP_REGENERABLE` setting (optional).
 <!-- /generated:repo-cleanup -->
 
-- With no argument, it sweeps every repository under the `REPOS_ROOT` you set with `python deploy.py configure`.
+- With no argument, it sweeps every repository under the `REPOS_ROOT` you set with `python deploy.py configure`, or, in the Claude Code plugin, the `repos_root` option you give at install. It refuses an empty or relative root.
 - `<repo-name-or-path>` cleans one repository: a name under `REPOS_ROOT`, or an absolute path to a directory that contains `.git`.
 
 It performs only the actions it can prove safe, such as removing a branch whose pull request merged, and asks you about anything else, such as local branches with no remote and the clean worktrees they are checked out in, a branch whose pull request closed without merging, unmerged work, a clean detached worktree, or a directory left in the worktree area that Git no longer tracks. Its plan files go in a new temporary directory, never in a skill directory.

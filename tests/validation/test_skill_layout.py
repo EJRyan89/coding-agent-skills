@@ -1007,10 +1007,65 @@ def test_plugin_policy_refuses_what_its_sources_do_not_hold(
 
 
 def test_plugin_policy_refuses_a_token_the_source_left_with_no_pinned_answer(tmp_path: Path) -> None:
-    write_plugin_sources(tmp_path, {**PLUGIN_SOURCES, "skills/alpha/scripts/tool.py": "Root {{REPOS_ROOT}}.\n"})
-    files = {**plugin_files(), "skills/alpha/scripts/tool.py": b"Root {{REPOS_ROOT}}.\n"}
+    write_plugin_sources(tmp_path, {**PLUGIN_SOURCES, "skills/alpha/scripts/tool.py": "Root {{HOME}}.\n"})
+    files = {**plugin_files(), "skills/alpha/scripts/tool.py": b"Root {{HOME}}.\n"}
     assert plugin_tree_problems(tmp_path, {"suite": files}) == [
         "plugin suite: skills/alpha/scripts/tool.py keeps a template token"
+    ]
+
+
+ROOTED_SOURCE = (
+    "---\nname: alpha\ndescription: Sweeps under {{REPOS_ROOT}}.\n---\n\n"
+    'Run {{PYTHON}} -B it --root "{{REPOS_ROOT}}" --protected "{{REPO_CLEANUP_PROTECTED}}", then start `helper`.\n'
+)
+ROOTED_PLUGIN = (
+    b"---\nname: alpha\ndescription: Sweeps under your repositories root.\n---\n\n"
+    b'Run python -B it --root "${user_config.repos_root}" --protected "", then start `suite:helper`.\n'
+)
+ROOTED_OPTIONS = {
+    "repos_root": {
+        "type": "directory",
+        "title": "Repositories root",
+        "description": "The absolute path of the folder holding your git repositories, which repo-cleanup sweeps. "
+        "It is used as typed.",
+        "required": True,
+    }
+}
+
+
+def rooted_manifest(**extra: object) -> bytes:
+    return json.dumps({"name": "suite", "description": "A suite.", "version": "1.0.0", **extra}).encode()
+
+
+@pytest.mark.parametrize(
+    ("skill", "manifest", "problems"),
+    [
+        (ROOTED_PLUGIN, rooted_manifest(userConfig=ROOTED_OPTIONS), []),
+        (
+            ROOTED_PLUGIN,
+            rooted_manifest(),
+            ["plugin suite: .claude-plugin/plugin.json must declare userConfig for ['repos_root']"],
+        ),
+        (
+            ROOTED_PLUGIN.replace(b"your repositories root", b"${user_config.repos_root}"),
+            rooted_manifest(userConfig=ROOTED_OPTIONS),
+            ["plugin suite: skills/alpha/SKILL.md differs from skills/alpha/SKILL.md"],
+        ),
+    ],
+)
+def test_plugin_policy_holds_the_repositories_root_to_a_declared_option_and_words_in_the_frontmatter(
+    skill: bytes, manifest: bytes, problems: list[str], tmp_path: Path
+) -> None:
+    write_plugin_sources(tmp_path, {**PLUGIN_SOURCES, "skills/alpha/SKILL.md": ROOTED_SOURCE})
+    files = {**plugin_files(), "skills/alpha/SKILL.md": skill, ".claude-plugin/plugin.json": manifest}
+    assert plugin_tree_problems(tmp_path, {"suite": files}) == problems
+
+
+def test_plugin_policy_refuses_an_option_no_carried_skill_reads(tmp_path: Path) -> None:
+    write_plugin_sources(tmp_path, PLUGIN_SOURCES)
+    files = {**plugin_files(), ".claude-plugin/plugin.json": rooted_manifest(userConfig=ROOTED_OPTIONS)}
+    assert plugin_tree_problems(tmp_path, {"suite": files}) == [
+        "plugin suite: .claude-plugin/plugin.json must declare userConfig for no option"
     ]
 
 

@@ -13,9 +13,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import skill_menu
 from skill_menu import MenuEntry, SourceMenu
 
-# Why no plugin carries an item needing REPOS_ROOT, built so that no template token appears in a skill's files,
+# Why no plugin carries an item needing SOURCE_ROOT, built so that no template token appears in a skill's files,
 # where the deployer would render one.
-LEFT_OUT = "rooted takes {" + "{REPOS_ROOT}" + "}, which a plugin has no value for"
+LEFT_OUT = "rooted takes {" + "{SOURCE_ROOT}" + "}, which a plugin has no value for"
 
 
 def menu() -> SourceMenu:
@@ -29,7 +29,7 @@ def menu() -> SourceMenu:
             "beta": MenuEntry(),
             "dotnet-one": MenuEntry(skill_deps=("core",)),
             "solo": MenuEntry(opt_in=True),
-            "rooted": MenuEntry(selectable=False, required_vars=("REPOS_ROOT",)),
+            "rooted": MenuEntry(selectable=False, required_vars=("SOURCE_ROOT",)),
             "cleanup": MenuEntry(skill_deps=("rooted",)),
             "orphan": MenuEntry(selectable=False),
         },
@@ -58,7 +58,12 @@ def test_the_menu_offers_bundles_and_root_skills_and_expands_through_dependencie
 
 def test_the_plan_names_the_default_plugin_each_opt_in_plugin_and_each_item_left_out() -> None:
     # The answers are pinned against literals, never against the constant under test.
-    assert skill_menu.PLUGIN_VALUES == {"PYTHON": "python"}
+    assert skill_menu.PLUGIN_VALUES == {
+        "PYTHON": "python",
+        "REPOS_ROOT": "${user_config.repos_root}",
+        "REPO_CLEANUP_REGENERABLE": "",
+        "REPO_CLEANUP_PROTECTED": "",
+    }
     closures, left_out = skill_menu.plugin_plan(menu())
     assert closures == {
         "fixture-skills": ["beta", "alpha", "core"],

@@ -144,12 +144,48 @@ def test_a_token_a_skill_does_not_declare_is_refused_rather_than_shipped(source:
 
 
 def test_an_item_needing_a_value_with_no_plugin_answer_is_left_out_with_its_dependents(source: Source) -> None:
-    source.skill("rooted", selectable=False, required_vars=["REPOS_ROOT"])
+    source.skill("rooted", selectable=False, required_vars=["SOURCE_ROOT"])
     source.skill("alpha", skill_deps=["rooted"])
     source.skill("beta")
     assembly = assembled(source)
     assert by_name(assembly)["fixture-skills"].skills == ["beta"]
-    assert assembly.left_out == {"alpha": "rooted takes {{REPOS_ROOT}}, which a plugin has no value for"}
+    assert assembly.left_out == {"alpha": "rooted takes {{SOURCE_ROOT}}, which a plugin has no value for"}
+
+
+ROOTED = (
+    "---\nname: rooted\ndescription: Sweeps the repos under {{REPOS_ROOT}}. Use it when asked.\n---\n\n"
+    'Run {{PYTHON}} -B sweep.py --repos-root "{{REPOS_ROOT}}" --protected "{{REPO_CLEANUP_PROTECTED}}" '
+    '--regenerable "{{REPO_CLEANUP_REGENERABLE}}".\n'
+)
+
+
+def test_the_repositories_root_is_the_plugin_option_in_the_body_and_a_phrase_in_the_frontmatter(
+    source: Source,
+) -> None:
+    # Claude Code substitutes a stored plugin option in a skill's body but leaves the frontmatter's placeholder as
+    # written, so the description names the root in words.
+    variables = ["PYTHON", "REPOS_ROOT", "REPO_CLEANUP_PROTECTED", "REPO_CLEANUP_REGENERABLE"]
+    directory = source.skill("rooted", required_vars=variables)
+    (directory / "SKILL.md").write_text(ROOTED, encoding="utf-8", newline="\n")
+    solo = source.skill("solo", opt_in=True)
+    # A script naming the option as text is no reason to declare it; only a variable the skill takes is.
+    (solo / "scripts" / "names.py").write_text('OPTION = "${user_config.repos_root}"\n', encoding="utf-8")
+    plugins = by_name(assembled(source))
+    assert plugins["fixture-skills"].files["skills/rooted/SKILL.md"].decode("utf-8") == (
+        "---\nname: rooted\ndescription: Sweeps the repos under your repositories root. Use it when asked.\n---\n\n"
+        'Run python -B sweep.py --repos-root "${user_config.repos_root}" --protected "" --regenerable "".\n'
+    )
+    manifest = json.loads(plugins["fixture-skills"].files[skill_menu.PLUGIN_MANIFEST])
+    assert manifest["userConfig"] == {
+        "repos_root": {
+            "type": "directory",
+            "title": "Repositories root",
+            "description": "The absolute path of the folder holding your git repositories, which repo-cleanup "
+            "sweeps. It is used as typed.",
+            "required": True,
+        }
+    }
+    assert "userConfig" not in json.loads(plugins["fixture-skills-solo"].files[skill_menu.PLUGIN_MANIFEST])
 
 
 GUARD_HOOK = (
