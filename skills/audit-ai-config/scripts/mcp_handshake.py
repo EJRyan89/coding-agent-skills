@@ -61,7 +61,14 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
-from audit_ai_config import CODEX_CONFIG, MCP_JSON_FILES, _read_codex_mcp, leaves_root, read_mcp_json
+from audit_ai_config import (
+    CODEX_CONFIG,
+    MCP_JSON_FILES,
+    _read_codex_mcp,
+    declared_type,
+    leaves_root,
+    read_mcp_json,
+)
 from bounded_process import Streaming, streaming
 from console import run_main
 from executable_locator import find_executable
@@ -99,13 +106,15 @@ def declared_servers(root: Path) -> tuple[list[tuple[str, str, dict[str, Any]]],
     return found, problems
 
 
-def transport(entry: dict[str, Any]) -> str:
-    declared = entry.get("type")
-    if isinstance(declared, str) and declared.strip():
-        return declared.strip().lower()
+def transport(entry: dict[str, Any], sources: list[str]) -> str:
+    """The declared type, else stdio for a command. Codex reads a bare url as streamable HTTP, but a JSON file's url
+    with no type names no transport: Claude Code reads such an entry as stdio and skips it."""
+    declared = declared_type(entry)
+    if declared is not None:
+        return declared
     if isinstance(entry.get("command"), str) and entry["command"].strip():
         return "stdio"
-    return "http" if isinstance(entry.get("url"), str) else "unknown"
+    return "http" if sources == [CODEX_CONFIG] and isinstance(entry.get("url"), str) else "unknown"
 
 
 def connection(entry: dict[str, Any]) -> dict[str, Any]:
@@ -376,8 +385,8 @@ def main(arguments: list[str] | None = None) -> int:
     for index, (name, sources, entry) in enumerate(groups):
         # The name, the type, and a failure's reason are the repository's text or carry it, so each is flattened.
         label = f"{flat_text(name)} source={','.join(sources)}"
-        if index in refused or not starts(entry):
-            print(f"SKIPPED {label} transport={flat_text(transport(entry))}")
+        if index in refused or not starts(entry, sources):
+            print(f"SKIPPED {label} transport={flat_text(transport(entry, sources))}")
             continue
         try:
             print(f"HANDSHAKE_OK {label} {handshake(root, entry, args.timeout)}")
@@ -387,9 +396,9 @@ def main(arguments: list[str] | None = None) -> int:
     return 1 if failed else 0
 
 
-def starts(entry: dict[str, Any]) -> bool:
+def starts(entry: dict[str, Any], sources: list[str]) -> bool:
     """Whether the handshake starts this server: a stdio or local one with a command."""
-    return transport(entry) in {"stdio", "local"} and isinstance(entry.get("command"), str)
+    return transport(entry, sources) in {"stdio", "local"} and isinstance(entry.get("command"), str)
 
 
 def refuse_outside(
@@ -399,7 +408,7 @@ def refuse_outside(
     every file that declares it, so it is reported with the other config problems and never started."""
     refused: set[int] = set()
     for index, (name, sources, entry) in enumerate(groups):
-        problem = outside_problem(root, entry) if starts(entry) else None
+        problem = outside_problem(root, entry) if starts(entry, sources) else None
         if problem is not None:
             refused.add(index)
             problems.extend(("ERROR", source, f"Server '{name}': {problem}") for source in sources)

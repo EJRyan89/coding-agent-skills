@@ -96,7 +96,7 @@
     "mcp": [
       {
         "page": "https://code.claude.com/docs/en/mcp",
-        "passage": "A project's shared MCP servers live in .mcp.json at the repository root, under mcpServers, each with a command for a stdio server or a url for a remote one."
+        "passage": "A project's shared MCP servers live in .mcp.json at the repository root, under mcpServers, each with a command for a stdio server or a url and a type of http, sse, or ws for a remote one. Claude Code reads an entry with no type as stdio, so it skips one with a url and no type, and it also skips a type sdk entry and a server with a reserved built-in name."
       },
       {
         "page": "https://learn.chatgpt.com/docs/config-file/config-reference",

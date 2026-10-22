@@ -12,6 +12,11 @@ after it.
 runtime-prompt-shape holds a runtime prompt sample as it stood before the pull request that put its untrusted data
 first and dropped its capitalised emphasis; corpus.json names the cues and lines the sample shows before it, and the
 sample the source tree keeps today shows none.
+
+unguarded-subagent holds a SKILL.md as it stood before the pull request that started its subagent as the guarded
+reviewer type rather than a general-purpose one; corpus.json names the line, the skill dependency that declares the
+guarded agent, and the agent. The text before it, in a source tree that declares that agent with this checkout's
+definition, shows UNGUARDED_SUBAGENT on that line, and the skill the source tree keeps today shows none.
 """
 
 from __future__ import annotations
@@ -115,3 +120,25 @@ def test_a_prompt_sample_shows_its_shape_cues_before_its_fix_and_none_after(role
     lines = scan(REPOSITORY / "skills" / entry["skill"])
     assert f"REPLY_BOUNDED {after.as_posix()} yes" in lines
     assert shape_cues(lines, after) == []
+
+
+@pytest.mark.parametrize("skill", sorted(CORPUS["unguarded-subagent"]))
+def test_a_general_purpose_subagent_is_unguarded_before_its_fix_and_not_after(skill: str, tmp_path: Path) -> None:
+    entry = CORPUS["unguarded-subagent"][skill]
+    (tmp_path / "deploy-meta").mkdir()
+    for name, metadata in (
+        (skill, {"skill_deps": entry["skill_deps"]}),
+        *((dependency, {"agent_deps": [entry["agent"]]}) for dependency in entry["skill_deps"]),
+    ):
+        (tmp_path / "deploy-meta" / f"{name}.json").write_text(json.dumps(metadata), encoding="utf-8")
+    (tmp_path / "agents").mkdir()
+    definition = f"{entry['agent']}.md"
+    (tmp_path / "agents" / definition).write_bytes((REPOSITORY / "agents" / definition).read_bytes())
+    before = tmp_path / entry["path"]
+    before.parent.mkdir(parents=True)
+    before.write_bytes((FIXTURES / "unguarded-subagent" / skill / "before.md").read_bytes())
+    unguarded = [line for line in scan(before.parent) if line.startswith("UNGUARDED_SUBAGENT ")]
+    assert unguarded == [f"UNGUARDED_SUBAGENT {before.as_posix()} {entry['line']} {entry['agent']}"]
+    today = scan(REPOSITORY / Path(entry["path"]).parent)
+    assert [line for line in today if line.startswith("UNGUARDED_SUBAGENT ")] == []
+    assert f"AGENT {entry['agent']} {(REPOSITORY / 'agents' / definition).as_posix()}" in today

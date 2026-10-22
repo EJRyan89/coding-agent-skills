@@ -1821,6 +1821,11 @@ def test_a_usage_error_exits_2(arguments: tuple[str, ...]) -> None:
 # guidance; a new line belongs here or among the checks.
 MEASUREMENT_LINES = frozenset(
     {
+        "AGENT",
+        "AGENT_CLAUDE_MD",
+        "AGENT_MODEL",
+        "AGENT_TOOLS",
+        "AGENT_UNREADABLE",
         "ALLOWED",
         "AMBIGUOUS",
         "AVAILABLE",
@@ -1836,12 +1841,18 @@ MEASUREMENT_LINES = frozenset(
         "NO_MAIN",
         "REPO",
         "REPOSITORY_CODE",
+        "RUNTIME",
+        "RUNTIME_NEEDS",
         "RUNTIME_PROMPT_READ",
         "RUNTIME_PROMPT_SAMPLE",
+        "RUNTIME_UNDECLARED",
+        "RUNTIME_UNREADABLE",
         "SCOPE",
         "SKILL_DIR",
         "SKILL_FILE",
         "STOP",
+        "SUBAGENT_EFFORT",
+        "SUBAGENT_MODEL",
         "TOTAL",
         "TRIGGER_SCENARIO",
         "UNREADABLE",
@@ -1912,4 +1923,347 @@ def test_provenance_fails_on_a_file_that_leaves_a_check_out() -> None:
         path = write(Path(folder) / "provenance.json", json.dumps({"checks": {"wide-glob": [{"decision": "A."}]}}))
         with pytest.raises(skill_inventory.InputError) as caught:
             skill_inventory.provenance(["wide-glob"], path)
-    assert "provenance.json: no entry for BODY_OVER_500_LINES, " in str(caught.value)
+    assert "provenance.json: no entry for AGENT_HOOK, AGENT_UNDECLARED, " in str(caught.value)
+
+
+REPOSITORY_ROOT = SCRIPT.parents[3]
+GUARDED_AGENT = (
+    "---\n"
+    "name: guarded\n"
+    "description: Runs one prepared role.\n"
+    "tools: Read, Grep\n"
+    "model: inherit\n"
+    "omitClaudeMd: true\n"
+    "hooks:\n"
+    "  PreToolUse:\n"
+    '    - matcher: "Read|Grep"\n'
+    "      hooks:\n"
+    "        - type: command\n"
+    "          command: >-\n"
+    '            python -I -B -c "import guard;\n'
+    '            guard.main()"\n'
+    "          timeout: 30\n"
+    "          onFailure: block\n"
+    "  Stop:\n"
+    "    - hooks:\n"
+    "        - type: command\n"
+    "          command: 'node \"$HOME/stop.js\"'\n"
+    "---\n"
+    "Follow the prompt file.\n"
+)
+# Every candidate line the subagent, model, and runtime checks print, which no skill this source ships yields.
+SUBAGENT_CANDIDATES = (
+    "AGENT_UNDEFINED",
+    "AGENT_UNDECLARED",
+    "AGENT_UNREADABLE",
+    "UNGUARDED_SUBAGENT",
+    "PINNED_SUBAGENT",
+    "RUNTIME_OVERCLAIMED",
+    "RUNTIME_UNDECLARED",
+    "RUNTIME_UNREADABLE",
+)
+
+
+class SourceTreeTestCase(TemporaryTestCase):
+    """A skill in a throwaway source tree, with its metadata, its siblings, and the agents beside them."""
+
+    def skill(self, body: str, metadata: object = None, name: str = "alpha", frontmatter: str = "") -> Path:
+        write(self.root / "deploy-meta" / f"{name}.json", json.dumps({} if metadata is None else metadata))
+        return write(self.root / "skills" / name / "SKILL.md", f"---\ndescription: Run.\n{frontmatter}---\n{body}")
+
+    def agent(self, name: str, text: str = GUARDED_AGENT) -> Path:
+        return write(self.root / "agents" / f"{name}.md", text)
+
+    def lines(self, command: str, target: Path, prefixes: tuple[str, ...]) -> list[str]:
+        code, lines, error = run(command, str(target))
+        self.assertEqual(0, code, error)
+        return [line for line in lines if line.startswith(prefixes)]
+
+
+class AgentTests(SourceTreeTestCase):
+    def test_inventory_declares_agents_with_the_skill_that_declares_them_and_tools(self) -> None:
+        skill = self.skill(
+            "Body.\n",
+            {"skill_deps": ["core"], "agent_deps": ["own"], "tools": ["gh"], "optional_tools": ["copilot"]},
+        )
+        write(self.root / "deploy-meta" / "core.json", '{"skill_deps": ["base"], "agent_deps": ["guarded", "own"]}')
+        write(self.root / "deploy-meta" / "base.json", '{"agent_deps": ["deep"]}')
+        self.assertEqual(
+            [
+                "DECLARED skill core",
+                "DECLARED agent own",
+                "DECLARED agent guarded via core",
+                "DECLARED agent deep via base",
+                "DECLARED tool gh",
+                "DECLARED optional-tool copilot",
+            ],
+            self.lines("inventory", skill.parent, ("DECLARED",)),
+        )
+
+    def test_scan_reads_the_definition_of_each_type_the_skill_names(self) -> None:
+        skill = self.skill("Start one fresh subagent of type `guarded` for each role.\n", {"agent_deps": ["guarded"]})
+        definition = self.agent("guarded")
+        self.assertEqual(
+            [
+                f"AGENT guarded {definition.as_posix()}",
+                "AGENT_TOOLS guarded Read,Grep",
+                "AGENT_MODEL guarded inherit",
+                "AGENT_CLAUDE_MD guarded omitted",
+                "AGENT_HOOK guarded PreToolUse Read|Grep python timeout=30 on_failure=block",
+                "AGENT_HOOK guarded Stop * node timeout=default on_failure=default",
+            ],
+            self.lines("scan", skill.parent, ("AGENT",)),
+        )
+
+    def test_a_definition_with_no_tools_model_or_hooks_grants_everything_and_follows_the_session(self) -> None:
+        skill = self.skill("Start a `plain` subagent.\n", {"agent_deps": ["plain"]})
+        definition = self.agent("plain", "---\nname: plain\ndescription: Anything.\n---\nBody.\n")
+        self.assertEqual(
+            [
+                f"AGENT plain {definition.as_posix()}",
+                "AGENT_TOOLS plain all",
+                "AGENT_MODEL plain none",
+                "AGENT_CLAUDE_MD plain loaded",
+            ],
+            self.lines("scan", skill.parent, ("AGENT",)),
+        )
+
+    def test_a_type_with_no_definition_or_no_declaration_is_a_candidate(self) -> None:
+        skill = self.skill(
+            "Start one subagent of type `missing`.\n"  # 4
+            "If this session has no `missing` type, use a general-purpose subagent instead.\n"
+            "Then start an `orphan` subagent, and an `Explore` subagent to search.\n",  # 6
+        )
+        self.agent("orphan")
+        lines = self.lines("scan", skill.parent, ("AGENT_UNDEFINED", "AGENT_UNDECLARED", "UNGUARDED"))
+        self.assertEqual(
+            [f"AGENT_UNDEFINED {skill.as_posix()} 4 missing", f"AGENT_UNDECLARED {skill.as_posix()} 6 orphan"], lines
+        )
+
+    def test_outside_a_source_tree_a_named_type_needs_only_its_definition(self) -> None:
+        home = self.root / "home"
+        skill = write(home / ".claude" / "skills" / "alpha" / "SKILL.md", "Start a subagent of type `guarded`.\n")
+        write(home / ".claude" / "agents" / "guarded.md", GUARDED_AGENT)
+        lines = self.lines("scan", skill.parent, ("AGENT",))
+        self.assertIn("AGENT_TOOLS guarded Read,Grep", lines)
+        self.assertEqual([], [line for line in lines if line.startswith(("AGENT_UNDEFINED", "AGENT_UNDECLARED"))])
+
+    def test_an_unreadable_definition_is_reported_in_place_of_its_grants(self) -> None:
+        skill = self.skill("Start a subagent of type `broken`.\n", {"agent_deps": ["broken"]})
+        definition = self.agent("broken", "---\nname: a\nmodel: [a\n---\nBody.\n")
+        lines = self.lines("scan", skill.parent, ("AGENT",))
+        self.assertEqual(1, len(lines), lines)
+        self.assertTrue(lines[0].startswith(f"AGENT_UNREADABLE {definition.as_posix()} "), lines)
+
+    def test_a_general_purpose_subagent_is_unguarded_only_where_a_guarded_type_is_at_hand(self) -> None:
+        body = (
+            "Start one fresh general-purpose subagent with this prompt.\n"  # 4
+            "If this session has no `guarded` type, use a general-purpose subagent instead.\n"  # 5
+        )
+        skill = self.skill(body, {"skill_deps": ["core"]})
+        self.assertEqual([], self.lines("scan", skill.parent, ("UNGUARDED",)), "no guarded type is declared")
+        write(self.root / "deploy-meta" / "core.json", '{"agent_deps": ["guarded"]}')
+        self.agent("guarded")
+        self.assertEqual(
+            [f"UNGUARDED_SUBAGENT {skill.as_posix()} 4 guarded"],
+            self.lines("scan", skill.parent, ("UNGUARDED",)),
+            "the fallback line names the guarded type, so it is not unguarded",
+        )
+        self.agent("guarded", "---\nname: guarded\ndescription: No hooks.\n---\nBody.\n")
+        self.assertEqual([], self.lines("scan", skill.parent, ("UNGUARDED",)), "a type with no hook guards nothing")
+
+    def test_review_prs_names_the_reviewer_its_tools_model_and_guard(self) -> None:
+        skill = REPOSITORY_ROOT / "skills" / "review-prs"
+        definition = REPOSITORY_ROOT / "agents" / "code-review-reviewer.md"
+        self.assertEqual(
+            [
+                f"AGENT code-review-reviewer {definition.as_posix()}",
+                "AGENT_TOOLS code-review-reviewer Read,Grep,Glob,Write,Edit,Bash",
+                "AGENT_MODEL code-review-reviewer inherit",
+                "AGENT_CLAUDE_MD code-review-reviewer omitted",
+                "AGENT_HOOK code-review-reviewer PreToolUse Read|Grep|Glob|Write|Edit|Bash {{PYTHON}} timeout=30 "
+                "on_failure=block",
+            ],
+            self.lines("scan", skill, ("AGENT",)),
+        )
+        self.assertIn(
+            "DECLARED agent code-review-reviewer via ejryan89-code-review-core",
+            self.lines("inventory", skill, ("DECLARED",)),
+        )
+
+
+class SubagentSettingTests(SourceTreeTestCase):
+    def test_a_relayed_line_is_where_a_role_takes_its_model_and_effort(self) -> None:
+        skill = self.skill(
+            "When a `MODEL` line names that role, start its subagent on that model.\n"  # 4
+            "When an `EFFORT` line names that role, start its subagent at that reasoning effort.\n"  # 5
+            "Each `MODEL` line names a role; no sentence here delegates.\n",
+        )
+        self.assertEqual(
+            [
+                f"SUBAGENT_MODEL {skill.as_posix()} 4 printed MODEL",
+                f"SUBAGENT_EFFORT {skill.as_posix()} 5 printed EFFORT",
+            ],
+            self.lines("tools", skill, ("SUBAGENT", "PINNED")),
+        )
+
+    def test_a_body_that_starts_a_subagent_on_a_literal_model_or_effort_pins_it(self) -> None:
+        skill = self.skill(
+            "Start one subagent on `haiku` at low effort for each file.\n"  # 4
+            "Run the review subagent on opus.\n"  # 5
+            "A subagent on haiku is cheaper, the docs say.\n",  # 6: starts nothing
+        )
+        self.assertEqual(
+            [
+                f"SUBAGENT_MODEL {skill.as_posix()} 4 haiku",
+                f"SUBAGENT_EFFORT {skill.as_posix()} 4 low",
+                f"SUBAGENT_MODEL {skill.as_posix()} 5 opus",
+                f"PINNED_SUBAGENT {skill.as_posix()} 4 model haiku",
+                f"PINNED_SUBAGENT {skill.as_posix()} 4 effort low",
+                f"PINNED_SUBAGENT {skill.as_posix()} 5 model opus",
+            ],
+            self.lines("tools", skill, ("SUBAGENT", "PINNED")),
+        )
+
+    def test_a_profile_a_configuration_a_script_or_a_definition_pins_a_role(self) -> None:
+        skill = self.skill(
+            "Start a subagent of type `cheap` for each role.\n"
+            'Run `python -B "${CLAUDE_SKILL_DIR}/../reach/scripts/run.py"`.\n',
+            {"skill_deps": ["core"], "agent_deps": ["cheap"]},
+        )
+        self.agent("cheap", "---\nname: cheap\ndescription: Cheap.\nmodel: haiku\n---\nBody.\n")
+        core = self.root / "skills" / "core"
+        write(self.root / "deploy-meta" / "core.json", "{}")
+        profile = write(core / "references" / "profile.md", "---\nmodel: haiku\neffort: inherit\n---\n# Profile\n")
+        write(core / "references" / "other.md", "---\nmodel: inherit\n---\n# Inherits\n")
+        config = write(core / "references" / "config.json", '{\n  "roles": [\n    {"reviewer_effort": "low"}\n  ]\n}\n')
+        script = write(
+            core / "scripts" / "dispatch.py", 'ROLE = {"model": "sonnet", "effort": None}\nrun(effort="low")\n'
+        )
+        write(core / "scripts" / "test_dispatch.py", 'CASE = {"model": "haiku"}\n')
+        reached = write(self.root / "skills" / "reach" / "scripts" / "run.py", 'start(model="claude-opus-5-5")\n')
+        self.assertEqual(
+            [
+                f"PINNED_SUBAGENT {(self.root / 'agents' / 'cheap.md').as_posix()} 4 model haiku",
+                f"PINNED_SUBAGENT {config.as_posix()} 3 effort low",
+                f"PINNED_SUBAGENT {profile.as_posix()} 2 model haiku",
+                f"PINNED_SUBAGENT {script.as_posix()} 1 model sonnet",
+                f"PINNED_SUBAGENT {script.as_posix()} 2 effort low",
+                f"PINNED_SUBAGENT {reached.as_posix()} 1 model claude-opus-5-5",
+            ],
+            self.lines("tools", skill, ("PINNED",)),
+        )
+
+    def test_review_prs_and_review_document_take_each_role_from_printed_lines_and_pin_nothing(self) -> None:
+        for name in ("review-prs", "review-document"):
+            with self.subTest(skill=name):
+                lines = self.lines("tools", REPOSITORY_ROOT / "skills" / name / "SKILL.md", ("SUBAGENT", "PINNED"))
+                self.assertEqual(
+                    {"SUBAGENT_MODEL printed MODEL", "SUBAGENT_EFFORT printed EFFORT"},
+                    {" ".join([line.split()[0], *line.split()[3:]]) for line in lines},
+                )
+
+
+class RuntimeSupportTests(SourceTreeTestCase):
+    GRANTS = 'allowed-tools: ["Agent", "Read"]\n'
+
+    def runtime(self, skill: Path) -> list[str]:
+        return self.lines("tools", skill, ("RUNTIME",))
+
+    def full(self, **extra: object) -> dict[str, object]:
+        return {"runtime_support": {"claude-code": "full", "codex": "full", "copilot-cli": "full"}, **extra}
+
+    def test_review_document_states_each_runtimes_level_needs_and_reason(self) -> None:
+        skill = REPOSITORY_ROOT / "skills" / "review-document"
+        metadata = json.loads((REPOSITORY_ROOT / "deploy-meta" / "review-document.json").read_text(encoding="utf-8"))
+        codex = metadata["runtime_support"]["codex"]
+        lines = self.runtime(skill / "SKILL.md")
+        self.assertIn("RUNTIME claude-code full needs=none", lines)
+        self.assertIn(f"RUNTIME codex partial needs={','.join(codex['needs'])} {codex['reason']}", lines)
+        self.assertIn("RUNTIME_NEEDS fail-closed-agent-hooks agent code-review-reviewer", lines)
+        self.assertIn("RUNTIME_NEEDS sandbox-network tool gh", lines)
+        self.assertEqual([], [line for line in lines if line.startswith("RUNTIME_OVERCLAIMED")])
+        declared = self.lines("inventory", skill, ("DECLARED optional-tool",))
+        self.assertEqual([f"DECLARED optional-tool {tool}" for tool in metadata["optional_tools"]], declared)
+
+    def test_full_on_a_runtime_that_lacks_the_guard_an_agent_needs_is_overclaimed(self) -> None:
+        skill = self.skill(
+            "Start a subagent of type `guarded`.\n", self.full(agent_deps=["guarded"]), frontmatter=self.GRANTS
+        )
+        self.agent("guarded")
+        self.assertEqual(
+            [
+                "RUNTIME claude-code full needs=none",
+                "RUNTIME codex full needs=none",
+                "RUNTIME copilot-cli full needs=none",
+                "RUNTIME_NEEDS agent-delegation grant Agent",
+                "RUNTIME_NEEDS fail-closed-agent-hooks agent guarded",
+                "RUNTIME_OVERCLAIMED codex fail-closed-agent-hooks",
+                "RUNTIME_OVERCLAIMED copilot-cli fail-closed-agent-hooks",
+            ],
+            self.runtime(skill),
+        )
+
+    def test_full_on_codex_for_a_network_tool_or_a_git_fetch_is_overclaimed(self) -> None:
+        skill = self.skill("Body.\n", self.full(optional_tools=["gh"]))
+        self.assertIn("RUNTIME_OVERCLAIMED codex sandbox-network", self.runtime(skill))
+        skill = self.skill("Body.\n", self.full(), name="beta")
+        write(skill.parent / "scripts" / "update.sh", '# git fetch here is a comment\ngit -C "$CLONE" status\n')
+        write(skill.parent / "scripts" / "test_update.sh", "git fetch origin\n")
+        self.assertEqual([], [line for line in self.runtime(skill) if line.startswith("RUNTIME_OVERCLAIMED")])
+        write(skill.parent / "scripts" / "update.sh", 'if ! OUT=$(git -C "$CLONE" fetch --tags origin 2>&1); then\n')
+        self.assertEqual(
+            ["RUNTIME_NEEDS sandbox-network git fetch scripts/update.sh", "RUNTIME_OVERCLAIMED codex sandbox-network"],
+            [line for line in self.runtime(skill) if line.startswith(("RUNTIME_NEEDS", "RUNTIME_OVERCLAIMED"))],
+        )
+
+    def test_a_partial_declaration_naming_the_lack_is_not_overclaimed(self) -> None:
+        partial = {"level": "partial", "needs": ["sandbox-network"], "reason": "Its gh calls need the network."}
+        support = {"claude-code": "full", "codex": partial, "copilot-cli": "full"}
+        skill = self.skill("Body.\n", {"tools": ["gh"], "runtime_support": support})
+        self.assertEqual(
+            [
+                "RUNTIME claude-code full needs=none",
+                "RUNTIME codex partial needs=sandbox-network Its gh calls need the network.",
+                "RUNTIME copilot-cli full needs=none",
+                "RUNTIME_NEEDS sandbox-network tool gh",
+            ],
+            self.runtime(skill),
+        )
+
+    def test_a_missing_or_malformed_declaration_and_a_skill_outside_a_source_tree(self) -> None:
+        self.assertEqual(["RUNTIME_UNDECLARED"], self.runtime(self.skill("Body.\n")))
+        broken = self.runtime(self.skill("Body.\n", {"runtime_support": {"codex": "full"}}, name="beta"))
+        self.assertEqual(["RUNTIME_UNREADABLE runtime_support does not declare claude-code"], broken)
+        deployed = write(self.root / "home" / ".claude" / "skills" / "alpha" / "SKILL.md", "Body.\n")
+        self.assertEqual([], self.runtime(deployed))
+
+
+def test_no_skill_this_source_ships_or_keeps_yields_a_subagent_model_or_runtime_candidate() -> None:
+    folders = sorted(
+        path.parent
+        for root in (REPOSITORY_ROOT / "skills", REPOSITORY_ROOT / ".claude" / "skills")
+        for path in root.glob("*/SKILL.md")
+    )
+    found = []
+    for folder in folders:
+        for command, target in (("scan", folder), ("tools", folder / "SKILL.md")):
+            code, lines, _ = run(command, str(target))
+            assert code == 0, (folder, lines[-1:])
+            found += [line for line in lines if line.startswith(SUBAGENT_CANDIDATES)]
+    assert found == []
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ('git -C "$CLONE" fetch --tags origin', {"fetch"}),
+        ("OUT=$(git ls-remote --tags origin) && git push", {"ls-remote", "push"}),
+        ("if git rev-parse --git-dir; then", {"rev-parse"}),
+        ('echo "run git fetch first"', set()),
+        ("  # git pull later", set()),
+        ("legit fetch", set()),
+    ],
+)
+def test_a_bash_script_runs_the_git_subcommand_after_gits_own_options(line: str, expected: set[str]) -> None:
+    assert skill_inventory.bash_git_subcommands(line) == expected

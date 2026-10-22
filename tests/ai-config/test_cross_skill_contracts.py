@@ -312,7 +312,7 @@ class CrossSkillContractTests(unittest.TestCase):
         # table. It starts reviewers as subagents only on a runtime that can, and keeps Copilot CLI's inline although
         # Copilot CLI starts subagents, because there no hook blocks a tool call when it fails: the seal of an inline
         # review stands in for the guard. When either changes, review-prs's declared support has to change with it.
-        from deployer import runtime_support
+        import runtime_support
 
         pipeline = literal_assignment(
             REPOSITORY_ROOT / "skills/ejryan89-code-review-core/scripts/review_runtime.py", "RUNTIME_CAPABILITIES"

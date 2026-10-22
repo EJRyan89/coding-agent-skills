@@ -210,6 +210,15 @@ class RefusalTests(unittest.TestCase):
         with self.assertRaisesRegex(FrontmatterError, "hooks: a nested mapping"):
             document.value("hooks")
 
+    def test_lines_gives_a_keys_text_as_written_for_a_value_it_does_not_read(self) -> None:
+        document = parse("name: reviewer\nhooks:\n  PreToolUse:\n    - matcher: Read\n\nmodel: inherit")
+        self.assertEqual(["  PreToolUse:", "    - matcher: Read", ""], document.lines("hooks"))
+        self.assertEqual([], document.lines("name"))
+        self.assertIsNone(document.lines("absent"))
+        duplicated = parse("hooks: a\nhooks: b")
+        with self.assertRaisesRegex(FrontmatterError, "hooks appears more than once"):
+            duplicated.lines("hooks")
+
     def test_duplicate_keys_are_refused_when_read(self) -> None:
         document = parse("name: a\nname: b\nother: c")
         self.assertEqual("c", document.value("other"))
