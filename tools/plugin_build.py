@@ -15,7 +15,8 @@ each agent the skills declare. The source's default selection, every menu item b
 named for the source's repository, the part of its ID after the slash; each opt-in bundle or skill is a plugin of its
 own, `<plugin>-<item>`, so it stays opt-in. A plugin has no deployer, so each template value a skill carries takes the
 fixed text PLUGIN_VALUES gives it, and a menu item is left out of every plugin when a skill it needs takes a value
-with no plugin answer: a plugin carries nothing it cannot run as the deployer would.
+with no plugin answer: a plugin carries nothing it cannot run as the deployer would. That plan, with PLUGIN_VALUES, is
+ejryan89-skill-core's skill_menu, so audit-skill's script names the plugins that carry a skill the same way.
 
 Each plugin is described by its entry in the source's marketplace file, .claude-plugin/marketplace.json, which names
 every plugin the source makes and nothing else. Its manifest, .claude-plugin/plugin.json, is that entry without its
@@ -55,6 +56,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 
 from console import run_main
 from flat_text import flat_text
+from skill_menu import PLUGIN_HOOKS, PLUGIN_MANIFEST, PLUGIN_MARKETPLACE, PLUGIN_VALUES, plugin_plan
 from skill_roots import skills_directory_holding
 
 from deployer import source as deploy_source
@@ -64,18 +66,11 @@ from deployer.render import SUFFIX_CONTEXT, TOKEN, shipped_files
 from tools.plugin_agents import AgentError, Node, plugin_agent
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-# What each template value becomes in a plugin, which has no deployer to render it. A plugin is one tree for every
-# platform, so the interpreter is the command the deployer renders on Windows, and the plugin's README states that it
-# must start Python. A value missing here has no plugin answer, and a skill that takes one stays out of every plugin.
-PLUGIN_VALUES: dict[str, str] = {"PYTHON": "python"}
 # The fixed time and mode of every archive entry, so an archive's bytes depend on its files alone.
 ARCHIVE_TIME = (1980, 1, 1, 0, 0, 0)
 ARCHIVE_MODE = 0o100644 << 16
-NO_VALUE = "{skill} takes {{{{{variable}}}}}, which a plugin has no value for"
-MARKETPLACE = Path(".claude-plugin") / "marketplace.json"
+MARKETPLACE = Path(PLUGIN_MARKETPLACE)
 README = Path(".claude-plugin") / "README.md"
-MANIFEST = ".claude-plugin/plugin.json"
-HOOKS = "hooks/hooks.json"
 DEVELOPMENT_VERSION = "0.0.0-dev"
 
 
@@ -101,11 +96,6 @@ class Assembly:
     left_out: dict[str, str] = field(default_factory=dict)
 
 
-def plugin_name(source_id: str) -> str:
-    """The default plugin's name: the repository part of the source's ID, which every component is namespaced under."""
-    return source_id.split("/", 1)[1]
-
-
 def load_source(directory: Path) -> deploy_source.Source:
     paths = Paths(directory, directory)
     try:
@@ -114,15 +104,11 @@ def load_source(directory: Path) -> deploy_source.Source:
         raise BuildError(" ".join(exc.lines)) from exc
 
 
-def _members(source: deploy_source.Source, item: str) -> list[str]:
-    return source.bundles.get(item, [item])
-
-
 def load_catalogue(directory: Path) -> dict[str, dict[str, object]]:
     """The source's marketplace entries by plugin name. A source tree holds no plugin manifest of its own, which
     would make the skills in its checkout read as a plugin's."""
-    if (directory / MANIFEST).exists():
-        raise BuildError(f"{directory / MANIFEST} exists; a source tree is never a plugin itself")
+    if (directory / PLUGIN_MANIFEST).exists():
+        raise BuildError(f"{directory / PLUGIN_MANIFEST} exists; a source tree is never a plugin itself")
     try:
         document = json.loads((directory / MARKETPLACE).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -135,15 +121,6 @@ def load_catalogue(directory: Path) -> dict[str, dict[str, object]]:
             raise BuildError(f"{directory / MARKETPLACE} must list each plugin once, as an object with a name")
         entries[name] = entry
     return entries
-
-
-def _blocker(source: deploy_source.Source, closure: list[str]) -> str | None:
-    """Why a plugin cannot carry a menu item with this closure, or None when it can."""
-    for name in closure:
-        for variable in source.skills[name].required_vars:
-            if variable not in PLUGIN_VALUES:
-                return NO_VALUE.format(skill=name, variable=variable)
-    return None
 
 
 def render(logical: str, content: bytes, variables: list[str]) -> bytes:
@@ -195,7 +172,7 @@ def _agents(source: deploy_source.Source, plugin: Plugin, closure: list[str]) ->
         for event, entries in declared.items():
             hooks.setdefault(event, []).extend(entries if isinstance(entries, list) else [entries])
     if hooks:
-        plugin.files[HOOKS] = (json.dumps({"hooks": hooks}, indent=2) + "\n").encode("utf-8")
+        plugin.files[PLUGIN_HOOKS] = (json.dumps({"hooks": hooks}, indent=2) + "\n").encode("utf-8")
 
 
 def _plugin(
@@ -211,32 +188,11 @@ def _plugin(
                 rendered = namespaced(rendered, name, plugin.agents)
             plugin.files[f"skills/{skill}/{relative}"] = rendered
     manifest = {"name": name, "version": version, **{key: value for key, value in entry.items() if key != "source"}}
-    plugin.files[MANIFEST] = (json.dumps(manifest, indent=2) + "\n").encode("utf-8")
+    plugin.files[PLUGIN_MANIFEST] = (json.dumps(manifest, indent=2) + "\n").encode("utf-8")
     leftover = leftover_tokens(plugin.files)
     if leftover:
         raise BuildError(f"plugin {name} keeps template tokens: {'; '.join(leftover)}")
     return plugin
-
-
-def plan(source: deploy_source.Source) -> tuple[dict[str, list[str]], dict[str, str]]:
-    """Each plugin a source makes, with the skills it carries, in the order they are assembled: the default
-    selection's, then one per opt-in menu item; and each menu item no plugin carries, with why."""
-    left_out: dict[str, str] = {}
-    default: list[str] = []
-    opt_in: list[str] = []
-    for item in [*sorted(source.bundles), *deploy_source.root_names(source)]:
-        closure = deploy_source.expand(source, [], _members(source, item))
-        reason = _blocker(source, closure)
-        if reason is not None:
-            left_out[item] = reason
-        elif deploy_source.is_opt_in(source, item):
-            opt_in.append(item)
-        else:
-            default.extend(name for name in closure if name not in default)
-    name = plugin_name(source.source_id)
-    closures = {name: default} if default else {}
-    closures.update({f"{name}-{item}": deploy_source.expand(source, [], _members(source, item)) for item in opt_in})
-    return closures, left_out
 
 
 def assemble(
@@ -247,7 +203,7 @@ def assemble(
 ) -> Assembly:
     """The plugins a source makes, in memory, each described by its catalogue entry, which must name exactly the
     plugins made, and each carrying the README, if there is one."""
-    closures, left_out = plan(source)
+    closures, left_out = plugin_plan(source)
     if set(closures) != set(catalogue):
         raise BuildError(
             f"the marketplace lists {', '.join(sorted(catalogue)) or 'no plugin'}, but the source makes "

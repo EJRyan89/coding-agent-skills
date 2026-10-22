@@ -1,7 +1,8 @@
 """Deterministic measurements for the audit-skill audit.
 
-    locate [NAME] [--repo DIR] [--home DIR] find the skill's main file in the user, project, and source skill roots
-    inventory DIR                           classify and size every file, estimate tokens, flag structure that
+    locate [NAME] [--repo DIR] [--home DIR] find the skill's main file in the user, project, source, and plugin skill
+                                            roots
+    inventory DIR                          classify and size every file, estimate tokens, flag structure that
                                             departs from the published guidance, and size the Markdown files
                                             the skill reads from outside its folder
     tools FILE                              compare the tools a skill body references with its allowed-tools, and
@@ -18,6 +19,21 @@ copy, and counts a .agents/skills shim that points to the .claude/skills skill o
 NOT_FOUND and its AVAILABLE lines, or AMBIGUOUS lines, with STOP <message>, the message the audit stops with, and
 prints only that line for an empty name; it exits 1 after STOP. A missing or unreadable input prints
 FAILED <reason> as its last line and exits 1; only a usage error exits 2.
+
+Plugins: a Claude Code plugin's root holds its manifest, its skills under skills/, its agents under agents/, and the
+hooks it runs in every session while enabled in hooks/hooks.json, at the paths ejryan89-skill-core's skill_menu names.
+locate's NAME may be <plugin>:<skill>, as Claude Code names a plugin's skill, and may be followed by a space and a
+plugin folder: a plugin root, a folder of them as tools/plugin_build.py writes, or Claude Code's plugin cache, searched
+down to PLUGIN_DEPTH folders. A plugin name or folder searches plugins alone; a bare name also searches the plugin cache
+under the home, preferring any other copy to a plugin's. A plugin copy is SCOPE plugin, followed by
+PLUGIN <name> <root>, the name from the plugin's manifest. inventory reports what the copy's plugin carries beside it,
+CARRIED_BY <plugin> and PLUGIN_CARRIES skill|agent <name>, an agent by the namespaced name Claude Code gives it; in a
+source tree that has a marketplace file, it reports CARRIED_BY for each plugin skill_menu plans to carry the skill, or,
+when none does, LEFT_OUT <item> <reason> for each menu item that needs the skill and why no plugin carries it, or
+PLUGINS_UNREADABLE <reason>. scan reads a plugin's agents by their namespaced names and prints
+PLUGIN_HOOK <event> <matcher> <program> timeout=<seconds or default> on_failure=<value> for each command hook the
+plugin's hooks file holds, a hook that counts as guarding every agent the plugin carries, since the build moves each
+agent's own hooks there. Every other line measures the plugin's bytes as it measures a deployed copy's.
 
 Token estimate: ceil(prose_chars / 4 + code_chars / 3), in characters of the UTF-8 text. Every
 character of a helper script or data file is code. In Markdown, lines inside fenced code blocks,
@@ -139,12 +155,19 @@ import check_provenance
 import frontmatter
 import git_client
 import runtime_support
+import skill_menu
 from console import run_main
 from git_client import GitClient
 from markdown_sections import CODE_SPAN, POWERSHELL_FENCES, SHELL_FENCES, find_fences, prose_code_spans
 from suite_names import is_suite_name
 
 MAIN_NAME = "skill.md"
+# Where Claude Code keeps the plugins it installs, under the home: each under its marketplace and version, so a plugin
+# root lies PLUGIN_DEPTH folders down, as deep as locate searches any plugin folder.
+PLUGIN_CACHE = Path(".claude") / "plugins" / "cache"
+PLUGIN_DEPTH = 3
+PLUGIN_SCOPE = "plugin"
+SKILLS_FOLDER = "skills"
 HELPER_SUFFIXES = frozenset({".sh", ".bash", ".ps1", ".py", ".js", ".mjs", ".cjs", ".ts"})
 CATEGORIES = ("main", "helper", "doc", "data")
 # Structure limits from Anthropic's skill authoring best practices
@@ -157,7 +180,7 @@ SKIPPED_DIRECTORIES = frozenset({".git", "__pycache__", "node_modules"})
 # Why a file the skill loads cannot be measured.
 NOT_UTF8 = "not UTF-8 text"
 SKILL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-USAGE = "usage: audit-skill <SkillName>"
+USAGE = "usage: audit-skill [<plugin>:]<SkillName> [<plugin folder>]"
 KNOWN_TOOLS = (
     "Agent",
     "AskUserQuestion",
@@ -442,6 +465,7 @@ CHECK_LINES = frozenset(
         "OUTSIDE_MISSING",
         "OUTSIDE_READ",
         "PINNED_SUBAGENT",
+        "PLUGIN_HOOK",
         "REPLY_BOUNDED",
         "RUNTIME_PROMPT",
         "RUNTIME_PROMPT_UNSAMPLED",
@@ -514,7 +538,8 @@ SAMPLE_SOURCE_PATH = re.compile(r"<source>[\\/]([^\s\"'`<>]+)")
 # tool. A type a delegation line names: "of type `x`", "`x` type", "`x` subagent", or subagent_type x.
 AGENTS_FOLDER = "agents"
 BUILTIN_AGENTS = frozenset({"general-purpose", "Explore", "Plan"})
-AGENT_NAME = r"[A-Za-z][A-Za-z0-9-]*"
+# A plugin's agent is named under the plugin, as <plugin>:<agent>.
+AGENT_NAME = r"[A-Za-z][A-Za-z0-9-]*(?::[A-Za-z][A-Za-z0-9-]*)?"
 TYPED_AGENT = re.compile(
     rf"\btype\s+`({AGENT_NAME})`|`({AGENT_NAME})`\s+(?:type|subagent|agent)s?\b|\bsubagent_type\b\W{{0,4}}({AGENT_NAME})"
 )
@@ -919,42 +944,87 @@ def identity(path: Path) -> str:
     return os.path.normcase(str(path.resolve()))
 
 
-def locate(name: str, home: Path, repo: Path | None) -> list[str]:
-    if not name:
-        return [f"STOP {USAGE}"]
-    if not SKILL_NAME.fullmatch(name):
-        raise InputError(f"invalid skill name {name!r}")
-    roots = skill_roots(home, repo)
-    hits: list[tuple[str, Path]] = []
-    seen: set[str] = set()
-    for scope, root in roots:
-        for path in skill_files(scope, root / name):
-            if identity(path) not in seen:
-                seen.add(identity(path))
-                hits.append((scope, path))
+def plugin_roots(folder: Path, depth: int = PLUGIN_DEPTH) -> list[Path]:
+    """Each plugin root at or below folder, down to depth folders, never searching inside a plugin."""
+    if (folder / skill_menu.PLUGIN_MANIFEST).is_file():
+        return [folder]
+    if depth == 0 or not folder.is_dir():
+        return []
+    children = sorted((child for child in folder.iterdir() if child.is_dir()), key=lambda path: path.name.casefold())
+    return [root for child in children for root in plugin_roots(child, depth - 1)]
+
+
+def manifest_name(root: Path) -> str | None:
+    """A plugin's name, from its manifest, or None when the manifest names none."""
+    try:
+        document = json.loads((root / skill_menu.PLUGIN_MANIFEST).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return None
+    name = document.get("name") if isinstance(document, dict) else None
+    return name if isinstance(name, str) and SKILL_NAME.fullmatch(name) else None
+
+
+def plugin_of(directory: Path) -> tuple[str, Path] | None:
+    """The name and root of the plugin a skill folder belongs to, or None outside a plugin."""
+    root = directory.parent.parent
+    name = manifest_name(root) if directory.parent.name == SKILLS_FOLDER else None
+    return (name, root) if name is not None else None
+
+
+def plugin_skill_roots(folder: Path, plugin: str) -> list[tuple[str, Path]]:
+    """The skills folder of each plugin found under folder, of the named plugin alone when one is named."""
+    return [
+        (PLUGIN_SCOPE, root / SKILLS_FOLDER)
+        for root in plugin_roots(folder)
+        if (found := manifest_name(root)) is not None and plugin in ("", found)
+    ]
+
+
+def search_roots(home: Path, repo: Path | None, plugin: str, folder: Path | None) -> list[tuple[str, Path]]:
+    """Where locate looks: the plugins under a folder the user names, or the skill roots and then Claude Code's plugin
+    cache, which alone is searched for a skill named with its plugin."""
+    if folder is not None:
+        if not folder.is_dir():
+            raise InputError(f"plugin folder not found: {posix(folder)}")
+        return plugin_skill_roots(folder, plugin)
+    cache = plugin_skill_roots(home / PLUGIN_CACHE, plugin)
+    return cache if plugin else [*skill_roots(home, repo), *cache]
+
+
+def preferred(hits: list[tuple[str, Path]], name: str) -> list[tuple[str, Path]]:
+    """The copies of a skill the audit means, of those found."""
+    scopes = {scope for scope, _ in hits}
     # A developer in the source tree means the source, not the deployed copy of it.
-    if any(scope == "source" for scope, _ in hits):
+    if "source" in scopes:
         hits = [(scope, path) for scope, path in hits if scope != "user"]
     # A .agents/skills shim that sends other runtimes to the .claude/skills skill of its name is that skill.
-    if any(scope == "project-claude" for scope, _ in hits):
+    if "project-claude" in scopes:
         pointer = f".claude/skills/{name}/SKILL.md"
         hits = [
             (scope, path)
             for scope, path in hits
             if not (scope == "project-agents" and pointer in (read_text(path) or ""))
         ]
-    lines = [f"REPO {posix(repo)}" if repo is not None else "REPO none"]
-    if len(hits) == 1:
-        scope, path = hits[0]
-        return [*lines, f"SKILL_FILE {posix(path)}", f"SKILL_DIR {posix(path.parent)}", f"SCOPE {scope}"]
-    if hits:
-        paths = ", ".join(posix(path) for _, path in hits)
-        return [
-            *lines,
-            *(f"AMBIGUOUS {scope} {posix(path)}" for scope, path in hits),
-            f"STOP ambiguous skill name '{name}' — found at: {paths}. Rename one or delete the duplicate.",
-        ]
-    lines.append(f"NOT_FOUND {name}")
+    # An installed plugin's copy is audited when it is the only one, or when the plugin is named.
+    if scopes - {PLUGIN_SCOPE}:
+        hits = [(scope, path) for scope, path in hits if scope != PLUGIN_SCOPE]
+    return hits
+
+
+def shown_name(scope: str, directory: Path) -> str:
+    """A skill's name as its runtime lists it: a plugin's skill under the plugin's name."""
+    plugin = plugin_of(directory) if scope == PLUGIN_SCOPE else None
+    return f"{plugin[0]}:{directory.name}" if plugin is not None else directory.name
+
+
+def found_lines(scope: str, path: Path) -> list[str]:
+    lines = [f"SKILL_FILE {posix(path)}", f"SKILL_DIR {posix(path.parent)}", f"SCOPE {scope}"]
+    plugin = plugin_of(path.parent) if scope == PLUGIN_SCOPE else None
+    return [*lines, f"PLUGIN {plugin[0]} {posix(plugin[1])}"] if plugin is not None else lines
+
+
+def available_lines(name: str, roots: list[tuple[str, Path]]) -> list[str]:
+    lines = [f"NOT_FOUND {name}"]
     listed: set[str] = set()
     available: dict[str, list[str]] = {}
     for scope, root in roots:
@@ -963,10 +1033,43 @@ def locate(name: str, home: Path, repo: Path | None) -> list[str]:
         for directory in sorted(root.iterdir(), key=lambda path: path.name.casefold()):
             if directory.is_dir() and skill_files(scope, directory) and identity(directory) not in listed:
                 listed.add(identity(directory))
-                lines.append(f"AVAILABLE {scope} {directory.name}")
-                available.setdefault(scope, []).append(directory.name)
+                lines.append(f"AVAILABLE {scope} {shown_name(scope, directory)}")
+                available.setdefault(scope, []).append(shown_name(scope, directory))
     groups = " / ".join(f"{scope}: {', '.join(names)}" for scope, names in available.items()) or "none"
     return [*lines, f"STOP skill '{name}' not found. Available skills: {groups}"]
+
+
+def locate(name: str, home: Path, repo: Path | None, folder: Path | None = None) -> list[str]:
+    """Find a skill by its name, or by <plugin>:<name>, and in the plugins under folder when one is given."""
+    if not name:
+        return [f"STOP {USAGE}"]
+    plugin, _, skill = name.rpartition(":")
+    if not SKILL_NAME.fullmatch(skill) or (plugin and not SKILL_NAME.fullmatch(plugin)):
+        raise InputError(f"invalid skill name {name!r}")
+    roots = search_roots(home, repo, plugin, folder)
+    hits: list[tuple[str, Path]] = []
+    seen: set[str] = set()
+    for scope, root in roots:
+        for path in skill_files(scope, root / skill):
+            if identity(path) not in seen:
+                seen.add(identity(path))
+                hits.append((scope, path))
+    hits = preferred(hits, skill)
+    lines = [f"REPO {posix(repo)}" if repo is not None else "REPO none"]
+    if len(hits) == 1:
+        return [*lines, *found_lines(*hits[0])]
+    if hits:
+        paths = ", ".join(posix(path) for _, path in hits)
+        plugins = all(scope == PLUGIN_SCOPE for scope, _ in hits)
+        advice = (
+            "Name the plugin, as <plugin>:<skill>, or its folder." if plugins else "Rename one or delete the duplicate."
+        )
+        return [
+            *lines,
+            *(f"AMBIGUOUS {scope} {posix(path)}" for scope, path in hits),
+            f"STOP ambiguous skill name '{name}' — found at: {paths}. {advice}",
+        ]
+    return [*lines, *available_lines(name, roots)]
 
 
 def git_toplevel(directory: Path, git: GitClient | None = None) -> Path | None:
@@ -1056,6 +1159,7 @@ def inventory(directory: Path) -> list[str]:
         *nested_flags(directory, texts),
         *outside_lines(directory, texts),
         *declared_lines(directory),
+        *plugin_lines(directory),
     ]
 
 
@@ -1221,6 +1325,32 @@ def declared_lines(directory: Path) -> list[str]:
         *(f"DECLARED tool {name}" for name in names(declared, "tools")),
         *(f"DECLARED optional-tool {name}" for name in names(declared, "optional_tools")),
     ]
+
+
+def plugin_lines(directory: Path) -> list[str]:
+    """Which plugins carry the skill: for a plugin's copy, its plugin and what that plugin carries beside it; in a
+    source tree with a marketplace file, each plugin the source makes that carries it, or why none does."""
+    plugin = plugin_of(directory)
+    if plugin is not None:
+        name, plugin_root = plugin
+        skills = [
+            child.name
+            for child in sorted((plugin_root / SKILLS_FOLDER).iterdir(), key=lambda path: path.name.casefold())
+            if child.is_dir() and child.name != directory.name and main_files(child)
+        ]
+        return [
+            f"CARRIED_BY {name}",
+            *(f"PLUGIN_CARRIES skill {skill}" for skill in skills),
+            *(f"PLUGIN_CARRIES agent {agent}" for agent in defined_agents(directory)),
+        ]
+    root = source_root(directory)
+    if root is None or not (root / skill_menu.PLUGIN_MARKETPLACE).is_file():
+        return []
+    try:
+        carried, reasons = skill_menu.carriers(skill_menu.read_menu(root), directory.name)
+    except skill_menu.MenuError as exc:
+        return [f"PLUGINS_UNREADABLE {exc}"]
+    return [*(f"CARRIED_BY {name}" for name in carried), *(f"LEFT_OUT {item} {why}" for item, why in reasons.items())]
 
 
 def trigger_scenario_lines(directory: Path, invocation: str) -> list[str]:
@@ -2009,8 +2139,8 @@ def hook_field(hook: Hook, key: str, value: str) -> bool:
     return False
 
 
-def read_agent(path: Path) -> AgentDefinition | str:
-    """An agent definition, or why it cannot be read."""
+def read_agent(path: Path, name: str | None = None) -> AgentDefinition | str:
+    """An agent definition, under the name a skill names it by, or why it cannot be read."""
     try:
         document = frontmatter.read(path)
         tools_value = document.value("tools")
@@ -2022,7 +2152,8 @@ def read_agent(path: Path) -> AgentDefinition | str:
         return str(exc)
     listed = tools_value if isinstance(tools_value, list) else re.split(r"[,\s]+", tools_value or "")
     tools = ",".join(name.strip() for name in listed if name.strip()) or "all"
-    return AgentDefinition(path.stem, path, tools, (model or "none").strip(), effort, omits, agent_hooks(hook_lines))
+    model = (model or "none").strip()
+    return AgentDefinition(name or path.stem, path, tools, model, effort, omits, agent_hooks(hook_lines))
 
 
 def delegates(line: str) -> bool:
@@ -2047,6 +2178,15 @@ def agents_folder(folder: Path) -> Path:
     return folder.parent.parent / AGENTS_FOLDER
 
 
+def defined_agents(folder: Path) -> dict[str, Path]:
+    """Each agent definition beside the skill's root, by the name a skill names it by: in a plugin, the plugin's name,
+    a colon, and the agent's, as Claude Code namespaces a plugin's agents."""
+    root = agents_folder(folder)
+    plugin = plugin_of(folder)
+    prefix = f"{plugin[0]}:" if plugin is not None else ""
+    return {f"{prefix}{path.stem}": path for path in sorted(root.glob("*.md"))} if root.is_dir() else {}
+
+
 def line_agents(line: str, defined: set[str]) -> list[str]:
     """The subagent types a prose line names: a type a delegation line names by TYPED_AGENT, and any code span that is
     the name of a defined agent."""
@@ -2056,14 +2196,18 @@ def line_agents(line: str, defined: set[str]) -> list[str]:
 
 def named_agents(folder: Path, markdown: list[tuple[Path, list[str]]]) -> dict[str, tuple[Path, int]]:
     """Each subagent type the skill's Markdown names, with the file and line that first names it."""
-    root = agents_folder(folder)
-    defined = {path.stem for path in root.glob("*.md")} if root.is_dir() else set()
+    defined = set(defined_agents(folder))
     found: dict[str, tuple[Path, int]] = {}
     for path, lines in markdown:
         for index in prose_lines(lines):
             for name in line_agents(lines[index], defined):
                 found.setdefault(name, (path, index + 1))
     return found
+
+
+def hook_text(hook: Hook, matcher: str) -> str:
+    """A hook's event, matcher, program, and limits, as AGENT_HOOK and PLUGIN_HOOK print them."""
+    return f"{hook.event} {''.join(matcher.split())} {hook.program} timeout={hook.timeout} on_failure={hook.on_failure}"
 
 
 def definition_lines(definition: AgentDefinition) -> list[str]:
@@ -2073,30 +2217,64 @@ def definition_lines(definition: AgentDefinition) -> list[str]:
         f"AGENT_TOOLS {name} {definition.tools}",
         f"AGENT_MODEL {name} {definition.model}",
         f"AGENT_CLAUDE_MD {name} {'omitted' if definition.omits_claude_md else 'loaded'}",
-        *(
-            f"AGENT_HOOK {name} {hook.event} {''.join(matcher.split())} {hook.program} timeout={hook.timeout} "
-            f"on_failure={hook.on_failure}"
-            for hook, matcher in definition.hooks
-        ),
+        *(f"AGENT_HOOK {name} {hook_text(hook, matcher)}" for hook, matcher in definition.hooks),
     ]
+
+
+def json_hook(event: str, group: int, handler: dict[str, object]) -> Hook:
+    """One command handler of a hooks file, read as agent_hooks reads a definition's."""
+    hook = Hook(event, group)
+    command = handler.get("command")
+    if isinstance(command, str) and command.split():
+        hook.program = unquoted(command.split()[0])
+    hook.timeout = str(handler["timeout"]) if "timeout" in handler else hook.timeout
+    hook.on_failure = str(handler["onFailure"]) if "onFailure" in handler else hook.on_failure
+    return hook
+
+
+def plugin_hooks(folder: Path) -> list[tuple[Hook, str]]:
+    """Each command hook the hooks file of the skill's plugin holds, with its matcher; none outside a plugin."""
+    plugin = plugin_of(folder)
+    path = plugin[1] / skill_menu.PLUGIN_HOOKS if plugin is not None else None
+    if path is None or not path.is_file():
+        return []
+    try:
+        document = json.loads(require_text(path))
+    except ValueError as exc:
+        raise InputError(f"{posix(path)} is not JSON: {exc}") from exc
+    events = document.get("hooks") if isinstance(document, dict) else None
+    found: list[tuple[Hook, str]] = []
+    group = 0
+    for event, groups in events.items() if isinstance(events, dict) else []:
+        for entry in groups if isinstance(groups, list) else []:
+            group += 1
+            matcher = entry.get("matcher") if isinstance(entry, dict) else None
+            handlers = entry.get("hooks") if isinstance(entry, dict) else None
+            found += [
+                (json_hook(event, group, handler), matcher if isinstance(matcher, str) and matcher else "*")
+                for handler in (handlers if isinstance(handlers, list) else [])
+                if isinstance(handler, dict) and handler.get("type") == "command"
+            ]
+    return found
 
 
 def started_agents(folder: Path, markdown: list[tuple[Path, list[str]]]) -> list[tuple[str, Path, int, object]]:
     """Each subagent type the skill names other than a built-in one, with where it is first named and its definition:
     an AgentDefinition, the reason it cannot be read, or None when no definition exists."""
-    root = agents_folder(folder)
+    definitions = defined_agents(folder)
     found: list[tuple[str, Path, int, object]] = []
     for name, (path, line) in named_agents(folder, markdown).items():
         if name in BUILTIN_AGENTS:
             continue
-        definition = root / f"{name}.md"
-        found.append((name, path, line, read_agent(definition) if definition.is_file() else None))
+        definition = definitions.get(name)
+        found.append((name, path, line, read_agent(definition, name) if definition is not None else None))
     return found
 
 
 def agent_lines(folder: Path) -> list[str]:
     """What each subagent type a skill names grants and costs, a type with no definition or, in a source tree, one no
-    declared dependency installs, and a general-purpose subagent started where a guarded type is at hand."""
+    declared dependency installs, each hook its plugin runs in every session, and a general-purpose subagent started
+    where a guarded type is at hand."""
     markdown = skill_markdown(folder)
     declared = declared_agents(folder)
     output: list[str] = []
@@ -2111,12 +2289,16 @@ def agent_lines(folder: Path) -> list[str]:
             output += definition_lines(definition)
             guarded += [name] if definition.hooks else []
         else:
-            output.append(f"AGENT_UNREADABLE {posix(agents_folder(folder) / f'{name}.md')} {definition}")
+            output.append(f"AGENT_UNREADABLE {posix(defined_agents(folder)[name])} {definition}")
     for name in declared or {}:
         path = agents_folder(folder) / f"{name}.md"
         definition = read_agent(path) if path.is_file() and name not in guarded else None
         guarded += [name] if isinstance(definition, AgentDefinition) and definition.hooks else []
-    defined = {path.stem for path in agents_folder(folder).glob("*.md")} if agents_folder(folder).is_dir() else set()
+    defined = set(defined_agents(folder))
+    hooks = plugin_hooks(folder)
+    output += [f"PLUGIN_HOOK {hook_text(hook, matcher)}" for hook, matcher in hooks]
+    # The plugin build moves each agent's own hooks into the plugin's hooks file, so they guard every agent it carries.
+    guarded += [name for name in defined if name not in guarded] if hooks else []
     for path, lines in markdown:
         for index in prose_lines(lines):
             text = lines[index]
@@ -2379,7 +2561,7 @@ def main(arguments: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
     find = commands.add_parser("locate", help="find a skill's main file")
-    find.add_argument("name", nargs="?", default="")
+    find.add_argument("name", nargs="?", default="", help="[<plugin>:]<skill>, then optionally a plugin folder")
     find.add_argument("--repo", type=Path, help="project root; default: the Git root of the current directory")
     find.add_argument("--home", type=Path, default=Path.home())
     commands.add_parser("inventory", help="size every file of a skill").add_argument("directory", type=Path)
@@ -2390,7 +2572,9 @@ def main(arguments: list[str] | None = None) -> int:
     try:
         if args.command == "locate":
             repo = args.repo if args.repo is not None else git_toplevel(Path.cwd())
-            output = locate(args.name.strip(), args.home, repo)
+            # The argument as the user gave it: a name, then a plugin folder after the first space.
+            name, _, folder = args.name.strip().partition(" ")
+            output = locate(name, args.home, repo, Path(folder.strip()) if folder.strip() else None)
         elif args.command == "inventory":
             output = inventory(args.directory)
         elif args.command == "tools":
