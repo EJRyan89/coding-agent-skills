@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,6 +19,9 @@ class Paths:
     # The tree the templates are read from, when it is not the checkout: a commit `--at` exported. The checkout stays
     # source_dir, the one the manifest records, the configuration reads, and SOURCE_ROOT names.
     tree_dir: Path | None = None
+    # Copilot CLI's configuration directory, when COPILOT_HOME names one: deploy.py reads it once, and a canary home
+    # clears it. None is the .copilot folder of the home.
+    copilot_home: Path | None = None
 
     @property
     def tree(self) -> Path:
@@ -53,8 +57,22 @@ class Paths:
         return self.home / ".claude" / "agents"
 
     @property
+    def default_copilot_dir(self) -> Path:
+        return self.home / ".copilot"
+
+    @property
     def copilot_skills_dir(self) -> Path:
-        return self.home / ".copilot" / "skills"
+        """Copilot CLI's personal skills, which take precedence over the adapters: those of COPILOT_HOME when set."""
+        return (self.copilot_home or self.default_copilot_dir) / "skills"
+
+    @property
+    def copilot_reads_adapters(self) -> bool:
+        """Whether Copilot CLI reads adapter_dest_dir, which it does only while COPILOT_HOME is unset or names the
+        .copilot folder of the home. Copilot compares the two spellings once each is resolved, letter case included, so
+        the same folder spelled in another case on Windows still hides the adapters."""
+        if self.copilot_home is None:
+            return True
+        return os.path.normpath(self.copilot_home) == os.path.normpath(self.default_copilot_dir)
 
     @property
     def deployer_dir(self) -> Path:
@@ -91,6 +109,18 @@ class Paths:
             self.config_dir,
             self.staging_root,
         )
+
+
+# The variable that moves Copilot CLI's configuration directory from ~/.copilot. Copilot then reads personal skills from
+# its skills folder alone and not from ~/.agents/skills. The --config-dir flag does the same for one session, unseen.
+COPILOT_HOME = "COPILOT_HOME"
+
+
+def copilot_home(environment: Mapping[str, str] | None = None) -> Path | None:
+    """The directory COPILOT_HOME names, made absolute, or None when it is unset or empty."""
+    environment = os.environ if environment is None else environment
+    value = environment.get(COPILOT_HOME)
+    return Path(value).absolute() if value else None
 
 
 CANARY_MARKER = ".deploy-canary-home"

@@ -363,18 +363,19 @@ class Deployment:
         home: Path | None = None,
         refusal_home: Path | None = None,
         changes_home: str = "",
+        copilot_home: Path | None = None,
         **options: Any,
     ) -> Result:
         """Deploy from source (the fixture source by default) into home, failing the test if the source changed.
 
         Templates are immutable: the deployer renders in memory and writes only under the home, so the source tree is
         compared, file by file and byte for byte, before and after every deployment a test runs. refusal_home checks
-        a --canary-home destination without changing the Paths passed to the entry point.
+        a --canary-home destination without changing the Paths passed to the entry point. copilot_home is the
+        COPILOT_HOME deploy.py would read.
         """
+        paths = Paths(source or self.source, home or self.home, copilot_home=copilot_home)
         return self.run_command(
-            lambda: pipeline.run(
-                list(arguments), Paths(source or self.source, home or self.home), stdin=io.StringIO(stdin), **options
-            ),
+            lambda: pipeline.run(list(arguments), paths, stdin=io.StringIO(stdin), **options),
             source=source,
             home=refusal_home or home,
             changes_home=changes_home,

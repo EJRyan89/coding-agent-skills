@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import os
 import shutil
 import tempfile
@@ -14,9 +15,9 @@ from .arguments import PROG, VERIFY_COMMAND, parse_command
 from .discovery import Listed, Listing, ListingError, Refused
 from .errors import DeployError, debug_requested, fail
 from .kinds import ADAPTER_KIND
-from .paths import Paths
+from .paths import Paths, copilot_home
 from .render import CODEX_METADATA
-from .report import ReportLine, print_report
+from .report import ReportLine, copilot_home_note, paragraph, print_report
 
 # Filesystem writes that tests/run_validation.py allows outside deployer/fsops.py, with the reason.
 FSOPS_ALLOWED = {
@@ -100,6 +101,17 @@ def expose(lines: list[ReportLine], hidden: list[str], catalog: Listing, adapter
     ]
 
 
+def unlisted_note(runtime: str, lines: list[ReportLine], paths: Paths, environment: Mapping[str, str]) -> str | None:
+    """Why Copilot CLI listed none of the adapters, when the COPILOT_HOME it ran with is the reason: Copilot then reads
+    personal skills from that directory's skills folder alone, unless the variable names its default."""
+    copilot = dataclasses.replace(paths, copilot_home=copilot_home(environment))
+    if runtime != "copilot" or copilot.copilot_home is None or copilot.copilot_reads_adapters:
+        return None
+    if any(line.action != "NOT FOUND" for line in lines):
+        return None
+    return copilot_home_note(copilot.copilot_home, paths.adapter_dest_dir, paths.default_copilot_dir)
+
+
 def runtime_report(
     runtime: str, executable: str, names: list[str], adapters: Path, cwd: Path, environment: Mapping[str, str]
 ) -> list[ReportLine] | str:
@@ -169,6 +181,10 @@ def _verify(names: list[str], paths: Paths, environment: dict[str, str]) -> int:
                 problems.append(runtime)
                 continue
             print_report(label.upper(), VERIFY_ACTIONS, lines)
+            note = unlisted_note(runtime, lines, paths, environment)
+            if note is not None:
+                print(paragraph(note))
+                print("")
             (verified if all(line.action == "FOUND" for line in lines) else problems).append(runtime)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
