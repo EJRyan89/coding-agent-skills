@@ -120,7 +120,11 @@ class RuntimeHostTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             command = copilot_command(
-                "copilot", run_directory=root, materialized_root=root, result_path=root / "result.json"
+                "copilot",
+                version=(1, 0, 103),
+                run_directory=root,
+                materialized_root=root,
+                result_path=root / "result.json",
             )
             self.assertIn("--no-custom-instructions", command)
             self.assertIn("--no-ask-user", command)
@@ -142,7 +146,11 @@ class RuntimeHostTests(unittest.TestCase):
             run_directory.mkdir()
             with self.assertRaisesRegex(RuntimeContractError, "result path must be inside the run directory"):
                 copilot_command(
-                    "copilot", run_directory=run_directory, materialized_root=root, result_path=root / "result.json"
+                    "copilot",
+                    version=(1, 0, 103),
+                    run_directory=run_directory,
+                    materialized_root=root,
+                    result_path=root / "result.json",
                 )
 
     def test_copilot_rejects_diff_outside_run_directory(self) -> None:

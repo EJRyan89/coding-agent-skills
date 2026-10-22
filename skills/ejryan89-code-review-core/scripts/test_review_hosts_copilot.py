@@ -155,7 +155,13 @@ def _prompt(paths: dict[str, Path]) -> str:
     )
 
 
-def _command(paths: dict[str, Path], executable: str = "copilot") -> list[str]:
+# The flags Copilot CLI before 1.0.103 takes to keep a session local, which 1.0.103 refuses.
+BEFORE_SYNC_SESSION = ("--no-remote", "--no-remote-export")
+
+
+def _command(
+    paths: dict[str, Path], executable: str = "copilot", local_session: Sequence[str] = BEFORE_SYNC_SESSION
+) -> list[str]:
     """The review command run_copilot starts for the base call, written out in full: it carries no prompt."""
     return [
         executable,
@@ -163,8 +169,7 @@ def _command(paths: dict[str, Path], executable: str = "copilot") -> list[str]:
         f"--add-dir={paths['trusted']}",
         "--no-custom-instructions",
         "--no-ask-user",
-        "--no-remote",
-        "--no-remote-export",
+        *local_session,
         "--disable-builtin-mcps",
         "--disallow-temp-dir",
         "--stream=off",
@@ -658,12 +663,14 @@ class CopilotHostTests(unittest.TestCase):
             except Exception as exc:  # noqa: BLE001 - the test inspects whichever exception the run raised
                 return events, exc
 
-    def full_sequence(self, paths: dict[str, Path], executable: str = "copilot") -> list[tuple[Any, ...]]:
+    def full_sequence(
+        self, paths: dict[str, Path], executable: str = "copilot", local_session: Sequence[str] = BEFORE_SYNC_SESSION
+    ) -> list[tuple[Any, ...]]:
         workspace = paths["isolation"] / "workspace"
         environment = _environment(paths)
         return [
             ("run", [executable, "--version"], workspace, environment, ""),
-            ("run", _command(paths, executable), workspace, environment, _prompt(paths)),
+            ("run", _command(paths, executable, local_session), workspace, environment, _prompt(paths)),
             ("promote", paths["staging"], paths["result"]),
         ]
 
@@ -696,6 +703,20 @@ class CopilotHostTests(unittest.TestCase):
         self.assertEqual(
             ["copilot-home", "home", "workspace"], sorted(path.name for path in paths["isolation"].iterdir())
         )
+
+    def test_each_copilot_version_starts_with_the_flags_it_takes_to_keep_the_session_local(self) -> None:
+        for printed, local_session in (
+            ("GitHub Copilot CLI 1.0.88\n", BEFORE_SYNC_SESSION),
+            ("GitHub Copilot CLI 1.0.102.\nRun 'copilot update' to check for updates.\n", BEFORE_SYNC_SESSION),
+            ("GitHub Copilot CLI 1.0.103.\nRun 'copilot update' to check for updates.\n", ("--sync-session=off",)),
+            ("GitHub Copilot CLI 1.1.0\n", ("--sync-session=off",)),
+        ):
+            with self.subTest(printed=printed):
+                copilot = Copilot(version=ProcessResult(0, printed, ""))
+                paths = self.materialize(copilot)
+                events, error = self.call(copilot, paths)
+                self.assertIsNone(error)
+                self.assertEqual(_command(paths, local_session=local_session), events[1][1])
 
     def test_a_recorded_effort_is_the_last_argument_of_the_review_command(self) -> None:
         copilot = Copilot(effort="xhigh")
@@ -835,17 +856,17 @@ class CopilotHostTests(unittest.TestCase):
         self.assertEqual(copilot.writes, paths["result"].read_bytes())
 
     def test_the_version_is_the_first_one_named_and_newer_ones_pass(self) -> None:
-        for stdout in (
-            "copilot 2.0.0 (build 1.0.0)\n",
-            "1.1.0",
-            "  1.0.100  \n",
+        for stdout, local_session in (
+            ("copilot 2.0.0 (build 1.0.0)\n", ("--sync-session=off",)),
+            ("1.1.0", ("--sync-session=off",)),
+            ("  1.0.100  \n", BEFORE_SYNC_SESSION),
         ):
             with self.subTest(stdout):
                 copilot = Copilot(version=ProcessResult(0, stdout, "ignored"))
                 paths = self.materialize(copilot)
                 events, error = self.call(copilot, paths)
                 self.assertIsNone(error)
-                self.assertEqual(self.full_sequence(paths), events)
+                self.assertEqual(self.full_sequence(paths, local_session=local_session), events)
                 self.assertEqual(RESULT, paths["result"].read_bytes())
                 self.assertEqual(REVIEW_LOG.format(), paths["diagnostic"].read_text(encoding="utf-8"))
                 self.assertFalse(paths["staging"].exists())

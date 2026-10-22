@@ -1408,6 +1408,24 @@ class CopilotVersionTests(RuntimeCanaryTestCase):
             ],
         )
 
+    def test_each_copilot_version_starts_with_the_flags_it_takes_to_keep_the_session_local(self) -> None:
+        before = ["--no-remote", "--no-remote-export"]
+        for printed, local_session in (
+            ("GitHub Copilot CLI 1.0.88.", before),
+            ("GitHub Copilot CLI 1.0.102.\nRun 'copilot update' to check for updates.", before),
+            ("GitHub Copilot CLI 1.0.103.\nRun 'copilot update' to check for updates.", ["--sync-session=off"]),
+            # A version it cannot read is taken to be the latest, which Copilot updates itself to.
+            ("GitHub Copilot CLI", ["--sync-session=off"]),
+        ):
+            with self.subTest(printed=printed), mock.patch.dict(VERSIONS, {"copilot": printed}):
+                runner = FakeRuntimes()
+                self.canary(runner, runtimes=("copilot",))
+                run = next(arguments for kind, arguments, _, _ in runner.calls if kind == "run")
+                self.assertEqual(
+                    ["--no-custom-instructions", "--no-ask-user", *local_session, "--disable-builtin-mcps"],
+                    run[1 : 4 + len(local_session)],
+                )
+
 
 class CopilotUserOnlyTests(RuntimeCanaryTestCase):
     def test_copilot_reports_a_user_only_skill_unsupported_and_spends_no_run_on_it(self) -> None:

@@ -56,6 +56,9 @@ Runner = Callable[[Sequence[str], Path, Mapping[str, str], str], ProcessResult]
 Promote = Callable[[Path, Path], bool]
 
 MINIMUM_COPILOT_CLI_VERSION = (1, 0, 88)
+# The first Copilot CLI that refuses --no-remote and --no-remote-export and turns the session's export off with
+# --sync-session=off instead.
+COPILOT_SYNC_SESSION_VERSION = (1, 0, 103)
 COPILOT_TIMEOUT_SECONDS = 1800
 # Bytes of each of Copilot CLI's output streams kept for its diagnostic; the rest is cut and the cut named.
 COPILOT_OUTPUT_BYTES = 1024 * 1024
@@ -335,15 +338,29 @@ def materialized_reviewer_entrypoint(materialized_root: Path) -> Path:
     return materialized_root.joinpath(*relative.parts).resolve(strict=True)
 
 
+def copilot_local_session(version: tuple[int, ...]) -> list[str]:
+    """The flags that keep a Copilot CLI session of `version` local: not exported to the account's history on GitHub
+    web and mobile, and not controlled from there. Before COPILOT_SYNC_SESSION_VERSION, --no-remote-export turns off
+    the export and, with it, remote control, and --no-remote turns off remote control on its own. From that version
+    Copilot refuses both and names --sync-session=off as the export's replacement; remote control there starts only
+    from the /remote command in an interactive session or a hosting option such as --connect, and the session is given
+    neither."""
+    if version >= COPILOT_SYNC_SESSION_VERSION:
+        return ["--sync-session=off"]
+    return ["--no-remote", "--no-remote-export"]
+
+
 def copilot_command(
     executable: str,
     *,
+    version: tuple[int, ...],
     run_directory: Path,
     materialized_root: Path,
     result_path: Path,
     effort: str | None = None,
 ) -> list[str]:
-    """The Copilot CLI command that reviews one run, at `effort` when one is given, else at the session's default."""
+    """The Copilot CLI command that reviews one run on the Copilot CLI `version` names, at `effort` when one is given,
+    else at the session's default."""
     negotiate_capabilities("copilot-cli", ["isolated-added-root", "read-diff", "write-result"])
     if effort is not None and effort not in REVIEWER_EFFORTS:
         raise RuntimeContractError(f"Copilot reasoning effort must be one of {', '.join(sorted(REVIEWER_EFFORTS))}")
@@ -366,8 +383,7 @@ def copilot_command(
         f"--add-dir={materialized_root}",
         "--no-custom-instructions",
         "--no-ask-user",
-        "--no-remote",
-        "--no-remote-export",
+        *copilot_local_session(version),
         "--disable-builtin-mcps",
         "--disallow-temp-dir",
         "--stream=off",
@@ -420,7 +436,7 @@ def run_copilot(
     source_resolved = _verified_copilot_source(run_directory, request, snapshot_stamp)
     execution_directory, environment = isolated_copilot_environment(isolation_root, base_environment)
     executable = executable or find_copilot()
-    _copilot_version(runner, executable, execution_directory, environment, diagnostic_path)
+    version = _copilot_version(runner, executable, execution_directory, environment, diagnostic_path)
     prompt = _copilot_prompt(
         request.value, request_path, entrypoint_resolved, materialized_resolved, source_resolved, staging_path
     )
@@ -428,6 +444,7 @@ def run_copilot(
         runner,
         copilot_command(
             executable,
+            version=version,
             run_directory=run_directory,
             materialized_root=materialized_root,
             result_path=staging_path,
@@ -526,8 +543,8 @@ def _verified_copilot_source(run_directory: Path, request: _CopilotRequest, stam
 
 def _copilot_version(
     runner: Runner, executable: str, execution_directory: Path, environment: Mapping[str, str], diagnostic_path: Path
-) -> None:
-    """Require the bounded `--version` run to succeed and name a version at least the minimum."""
+) -> tuple[int, int, int]:
+    """The version the bounded `--version` run names, once the run succeeded and the version is at least the minimum."""
     version_result = _run_bounded(runner, [executable, "--version"], execution_directory, environment, diagnostic_path)
     if version_result.returncode != 0:
         raise RuntimeContractError("Cannot determine GitHub Copilot CLI version")
@@ -535,6 +552,7 @@ def _copilot_version(
     if version < MINIMUM_COPILOT_CLI_VERSION:
         minimum = ".".join(str(part) for part in MINIMUM_COPILOT_CLI_VERSION)
         raise RuntimeContractError(f"GitHub Copilot CLI {minimum} or newer is required")
+    return version
 
 
 def _copilot_prompt(
