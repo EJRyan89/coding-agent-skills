@@ -64,7 +64,10 @@ def unquote(value: str) -> str:
 def quote(value: str) -> str:
     """`value` as git writes a path with core.quotePath on, its default: as given when every byte of its UTF-8 is
     printable ASCII other than a double quote or a backslash, and otherwise between double quotes, each such byte
-    escaped by a letter or by itself where git does that and in three octal digits elsewhere. `unquote` undoes it."""
+    escaped by a letter or by itself where git does that and in three octal digits elsewhere. A surrogate-escaped
+    byte, the form a name that is not UTF-8 takes in `GitResult.stdout`, is written as that byte. `unquote` undoes it
+    for a path that is UTF-8 and returns each byte that is not as U+FFFD, so a surrogate-escaped byte does not come
+    back."""
     data = value.encode("utf-8", "surrogateescape")
     if all(0x20 <= byte < 0x7F and byte not in (0x22, 0x5C) for byte in data):
         return value

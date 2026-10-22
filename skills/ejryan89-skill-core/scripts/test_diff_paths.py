@@ -109,6 +109,10 @@ class DecoderTests(unittest.TestCase):
         for path in ("x/a b.py", ACCENTED, 'x/"q"\\r\x01\x7f.py', "x/\ufffd.py"):
             self.assertEqual(path, unquote(quote(path)))
 
+    def test_a_surrogate_escaped_byte_is_quoted_as_the_byte_and_read_back_as_a_replacement(self) -> None:
+        self.assertEqual('"x/caf\\351.py"', quote("x/caf\udce9.py"))
+        self.assertEqual("x/caf�.py", unquote(quote("x/caf\udce9.py")))
+
     def test_a_header_s_text_names_its_path_as_git_writes_it(self) -> None:
         self.assertEqual("/dev/null", header_text(None))
         self.assertEqual("a/tools/report age.py\t", header_text(f"a/{SPACED}"))
