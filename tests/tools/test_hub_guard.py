@@ -236,6 +236,75 @@ class HookCommandTests(GuardTestCase):
                 self.assertEqual((0, ["-B", f"{self.hub}/tools/hub_guard.py"]), (code, arguments))
 
 
+class HookCommandUnderPowerShellTests(GuardTestCase):
+    """The tracked hook command run under PowerShell, as Copilot CLI runs a hook's command on Windows.
+
+    Copilot reads .claude/settings.json as a hook source in a trusted folder and hands its shell calls to this hook as
+    `Bash`, PowerShell commands included. PowerShell must parse the command and end it at its own `exit 0`, so a
+    Copilot call is never denied by a hook that errored, and never judged by the Bash reader.
+    """
+
+    def run_hook(self, mode: str) -> tuple[subprocess.CompletedProcess[str], bool]:
+        pwsh = platform_support.find_pwsh(self.environment["PATH"])
+        if pwsh is None:
+            raise AssertionError("pwsh was not found; it is required for repository validation.")
+        settings = json.loads((REPOSITORY_ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        [hook] = settings["hooks"]["PreToolUse"][0]["hooks"]
+        shims = self.root / "shims"
+        shims.mkdir(exist_ok=True)
+        record = self.root / "started.txt"
+        record.unlink(missing_ok=True)
+        # Each program the command would start after its exit, under the name PowerShell would find it by.
+        for program in ("python", "git", "env", "awk", "test"):
+            (shims / f"{program}.cmd").write_text(f'@echo {program}>>"%SHIM_RECORD%"\r\n', encoding="utf-8")
+            (shims / program).write_text(f'#!/bin/sh\necho {program} >> "$SHIM_RECORD"\n', encoding="utf-8")
+            (shims / program).chmod(0o755)  # pwsh runs a program off Windows only when it is executable
+        environment = {
+            **self.environment,
+            "CLAUDE_PROJECT_DIR": str(self.hub),
+            "COPILOT_PROJECT_DIR": str(self.hub),
+            "SHIM_RECORD": str(record),
+            "PATH": str(shims) + os.pathsep + self.environment["PATH"],
+        }
+        # The payload Copilot CLI hands a .claude/settings.json hook for its powershell tool.
+        event = json.dumps(
+            {
+                "hook_event_name": "PreToolUse",
+                "session_id": "probe",
+                "timestamp": "2026-10-22T00:00:00.000Z",
+                "cwd": str(self.hub),
+                "tool_name": "Bash",
+                "tool_input": {"command": "git checkout -b probe-x"},
+            }
+        )
+        if mode == "-File":
+            script = self.root / "hook.ps1"
+            script.write_text(hook["command"], encoding="utf-8")
+            arguments = [pwsh, "-NoProfile", "-NonInteractive", "-File", str(script)]
+        else:
+            arguments = [pwsh, "-NoProfile", "-NonInteractive", "-Command", hook["command"]]
+        completed = subprocess.run(
+            arguments,
+            cwd=self.hub,
+            input=event,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=environment,
+            check=False,
+        )
+        return completed, record.exists()
+
+    def test_powershell_parses_the_command_and_ends_it_before_it_starts_anything(self) -> None:
+        for value in (None, "true"):
+            for mode in ("-Command", "-File"):
+                with self.subTest(value=value, mode=mode):
+                    self.enable(value)
+                    completed, started = self.run_hook(mode)
+                    outcome = (completed.returncode, completed.stdout, completed.stderr, started)
+                    self.assertEqual((0, "", "", False), outcome)
+
+
 UNPLACED = "could not tell where `git {}` runs"
 WRITES = "`git {}` would move the hub's HEAD or write its index or tree."
 
