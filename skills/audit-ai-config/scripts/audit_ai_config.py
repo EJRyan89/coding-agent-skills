@@ -1606,18 +1606,49 @@ def read_mcp_json(root: Path, rel_path: str) -> tuple[dict[str, Any], list[Findi
                 )
             )
             continue
-        has_command = isinstance(entry.get("command"), str) and entry["command"].strip()
-        has_url = isinstance(entry.get("url"), str) and entry["url"].strip()
-        if not has_command and not has_url:
-            findings.append(
-                Finding(
-                    severity="ERROR",
-                    check="mcp",
-                    path=rel_path,
-                    message=f"Server '{name}': must have 'command' (STDIO/local) or 'url' (HTTP/SSE)",
-                )
-            )
+        problem = server_problem(name, entry, claude_code=rel_path == ".mcp.json")
+        if problem is not None:
+            findings.append(Finding(severity="ERROR", check="mcp", path=rel_path, message=problem))
     return servers, findings
+
+
+# The built-in server names Claude Code's MCP page lists as reserved; it skips a configured server with one of them.
+CLAUDE_CODE_RESERVED_SERVER_NAMES = frozenset(
+    {"workspace", "claude-in-chrome", "computer-use", "Claude Preview", "Claude Browser"}
+)
+
+
+def declared_type(entry: dict[str, Any]) -> str | None:
+    """The entry's non-blank `type`, stripped and lowercased, or None when it declares none."""
+    declared = entry.get("type")
+    if isinstance(declared, str) and declared.strip():
+        return declared.strip().lower()
+    return None
+
+
+def server_problem(name: str, entry: dict[str, Any], *, claude_code: bool) -> str | None:
+    """Why a server entry never loads, or None. Every file needs a command or a url; in .mcp.json, which Claude Code
+    reads, also each shape its MCP page says it skips."""
+    kind = declared_type(entry)
+    if claude_code and kind == "sdk":
+        return (
+            f"Server '{name}': declares type 'sdk', which only an SDK host application can register, "
+            "so Claude Code skips it"
+        )
+    has_command = isinstance(entry.get("command"), str) and entry["command"].strip()
+    has_url = isinstance(entry.get("url"), str) and entry["url"].strip()
+    if not has_command and not has_url:
+        return f"Server '{name}': must have 'command' (STDIO/local) or 'url' (HTTP/SSE)"
+    if not claude_code:
+        return None
+    if kind is None and not has_command:
+        return (
+            f"Server '{name}': has a 'url' but no 'type', which Claude Code reads as stdio and skips; "
+            'add "type": "http" (or "sse" / "ws") to this entry'
+        )
+    if name in CLAUDE_CODE_RESERVED_SERVER_NAMES:
+        return f"Server '{name}': Claude Code reserves this name for a built-in server and skips it; rename it"
+    return None
 
 
 def _check_duplicate_mcp_names(

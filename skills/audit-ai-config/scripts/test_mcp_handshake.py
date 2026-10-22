@@ -345,7 +345,9 @@ class HandshakeTests(unittest.TestCase):
         )
 
     def test_remote_servers_are_skipped_and_filter_selects_one(self) -> None:
-        self._write(".github/mcp.json", "mcpServers", {"remote": {"url": "https://example.invalid/mcp"}})
+        self._write(
+            ".github/mcp.json", "mcpServers", {"remote": {"type": "http", "url": "https://example.invalid/mcp"}}
+        )
         (self.root / ".codex").mkdir()
         (self.root / ".codex/config.toml").write_text(
             '[mcp_servers.events]\nurl = "https://example.invalid/sse"\ntype = "sse"\n', encoding="utf-8"
@@ -362,6 +364,25 @@ class HandshakeTests(unittest.TestCase):
         )
         self.assertEqual(
             (0, ["SKIPPED events source=.codex/config.toml transport=sse"]), self._run("--server", "events")
+        )
+
+    def test_a_url_without_a_type_names_a_transport_only_in_codex(self) -> None:
+        self._write(".mcp.json", "mcpServers", {"remote": {"url": "https://example.invalid/mcp"}})
+        (self.root / ".codex").mkdir()
+        (self.root / ".codex/config.toml").write_text(
+            '[mcp_servers.streamed]\nurl = "https://example.invalid/mcp/codex"\n', encoding="utf-8"
+        )
+        self.assertEqual(
+            (
+                1,
+                [
+                    "CONFIG_ERROR .mcp.json Server 'remote': has a 'url' but no 'type', which Claude Code reads as "
+                    'stdio and skips; add "type": "http" (or "sse" / "ws") to this entry',
+                    "SKIPPED remote source=.mcp.json transport=unknown",
+                    "SKIPPED streamed source=.codex/config.toml transport=http",
+                ],
+            ),
+            self._run(),
         )
 
     def test_unreadable_configs_fail_instead_of_reporting_no_servers(self) -> None:
@@ -671,6 +692,7 @@ CONFIG_SHAPES = [
     pytest.param('{"servers": []}', id="servers-a-list"),
     pytest.param('{"mcpServers": []}', id="mcpServers-a-list"),
     pytest.param("{bad", id="not-json"),
+    pytest.param('{"mcpServers": {"remote": {"url": "https://example.invalid/mcp"}}}', id="mcpServers-a-bare-url"),
 ]
 
 

@@ -521,6 +521,49 @@ class McpTests(unittest.TestCase):
                 self.assertEqual({".codex/config.toml"}, {f.path for f in findings} or {".codex/config.toml"})
                 self.assertEqual(["docs"] if "command" in text else [], list(servers))
 
+    def test_mcp_json_servers_claude_code_skips_are_errors_and_loaded_ones_pass(self) -> None:
+        url = "https://mcp.example.com/mcp"
+        skipped = {
+            "remote": {"url": url},
+            "blank-type": {"url": url, "type": " "},
+            "in-process": {"type": "sdk"},
+            "workspace": {"type": "http", "url": url},
+            "Claude Browser": {"command": "browser"},
+        }
+        loaded = {
+            "http": {"type": "http", "url": url},
+            "alias": {"type": "streamable-http", "url": url},
+            "events": {"type": "SSE", "url": url},
+            "socket": {"type": "ws", "url": url},
+            "local": {"command": "server", "url": url},
+            "Workspace": {"command": "server"},
+        }
+        (self.root / ".mcp.json").write_text(json.dumps({"mcpServers": {**skipped, **loaded}}), encoding="utf-8")
+        fix = 'add "type": "http" (or "sse" / "ws") to this entry'
+        self.assertEqual(
+            [
+                f"Server 'remote': has a 'url' but no 'type', which Claude Code reads as stdio and skips; {fix}",
+                f"Server 'blank-type': has a 'url' but no 'type', which Claude Code reads as stdio and skips; {fix}",
+                "Server 'in-process': declares type 'sdk', which only an SDK host application can register, "
+                "so Claude Code skips it",
+                "Server 'workspace': Claude Code reserves this name for a built-in server and skips it; rename it",
+                "Server 'Claude Browser': Claude Code reserves this name for a built-in server and skips it; rename it",
+            ],
+            [f.message for f in audit.check_mcp(self.root, {}) if f.severity == "ERROR"],
+        )
+
+    def test_only_mcp_json_is_held_to_what_claude_code_skips(self) -> None:
+        servers = json.dumps({"remote": {"url": "https://mcp.example.com/mcp"}, "workspace": {"type": "sdk"}})
+        for rel, wrapper in ((".github/mcp.json", "mcpServers"), (".vscode/mcp.json", "servers")):
+            with self.subTest(rel=rel):
+                path = self.root / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(f'{{"{wrapper}": {servers}}}', encoding="utf-8")
+                self.assertEqual(
+                    ["Server 'workspace': must have 'command' (STDIO/local) or 'url' (HTTP/SSE)"],
+                    [f.message for f in audit.read_mcp_json(self.root, rel)[1]],
+                )
+
     def test_vscode_mcp_wrong_schema(self) -> None:
         (self.root / ".vscode").mkdir(exist_ok=True)
         (self.root / ".vscode/mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
