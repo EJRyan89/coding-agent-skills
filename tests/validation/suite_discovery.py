@@ -10,8 +10,10 @@ from __future__ import annotations
 import ast
 import fnmatch
 import functools
+import io
 import itertools
 import re
+import shlex
 import sys
 import tomllib
 import unittest
@@ -22,7 +24,7 @@ from typing import TypeGuard
 from dealing import deal
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
 from shell_targets import run_git_bash, shell_quote
-from skill_scripts import STANDARD_STREAMS
+from skill_scripts import ASSIGNMENT, STANDARD_STREAMS, split_operators
 from toolchain import find_powershell
 from validation_support import (
     ATTRIBUTE_LOOKUPS,
@@ -37,6 +39,7 @@ from validation_support import (
     import_aliases,
     is_executable_script,
     is_main_guard,
+    is_shell_script,
     is_test_script,
     markdown_section,
     module_lookup,
@@ -373,6 +376,121 @@ def suite_shape_problems(root: Path) -> list[str]:
             "pytest, so remove it"
             for node in module_statements(tree.body)
             if isinstance(node, ast.If) and is_main_guard(node.test)
+        ]
+    return problems
+
+
+# A pipe hands the next command what the one before it writes.
+PIPES = frozenset({"|", "|&"})
+# What ends a simple command in a Bash suite. A redirection's < and > stay in the command they belong to.
+COMMAND_BREAKS = frozenset({";", ";;", "&", "&&", "||", "|", "|&", "(", ")", "{", "}", "\n"})
+GREP_PROGRAMS = frozenset({"grep", "egrep", "fgrep"})
+# Bash's $'...' string, in which a backslash escapes a single quote.
+ANSI_C_STRING = re.compile(r"\$'(?:[^'\\]|\\.)*'", re.DOTALL)
+# grep's options that end it at a match, before what writes into it may have written everything.
+EARLY_EXIT_LETTERS = frozenset("qm")
+EARLY_EXIT_LONG_OPTIONS = frozenset({"--quiet", "--silent", "--max-count"})
+# grep's options whose argument, the rest of a short option's word or the next word, is never an option of its own.
+GREP_ARGUMENT_LETTERS = frozenset("ABCDdef")
+GREP_ARGUMENT_LONG_OPTIONS = frozenset({"--regexp", "--file", "--after-context", "--before-context", "--context"})
+
+
+def _early_exit_grep(words: list[str]) -> str:
+    """A grep command's program and the option that ends it at its first match, as in `grep -q`, or an empty string
+    for a command that is not grep or reads to the end."""
+    while words and (ASSIGNMENT.match(words[0]) or words[0] == "command"):
+        words = words[1:]
+    if not words or words[0] not in GREP_PROGRAMS:
+        return ""
+    argument_next = False
+    for word in words[1:]:
+        if argument_next:
+            argument_next = False
+        elif word == "--":
+            return ""
+        elif word.startswith("--"):
+            option = word.split("=", 1)[0]
+            if option in EARLY_EXIT_LONG_OPTIONS:
+                return f"{words[0]} {option}"
+            argument_next = word in GREP_ARGUMENT_LONG_OPTIONS
+        elif word.startswith("-") and len(word) > 1:
+            for end, letter in enumerate(word[1:], 2):
+                if letter in EARLY_EXIT_LETTERS:
+                    return f"{words[0]} -{letter}"
+                if letter in GREP_ARGUMENT_LETTERS:
+                    argument_next = end == len(word)
+                    break
+    return ""
+
+
+class _ShellText(io.StringIO):
+    """A script shlex reads, whose comments leave their newline to be read, so a comment still ends its command."""
+
+    # typeshed gives StringIO both _TextIOBase.readline, returning str, and _IOBase.readline, returning bytes, and no
+    # override can match both.
+    def readline(self, size: int = -1, /) -> str:  # type: ignore[override]  # StringIO's bases disagree on the return
+        start = self.tell()
+        line = super().readline(size)
+        if line.endswith("\n"):
+            self.seek(start + len(line) - 1)
+            return line[:-1]
+        return line
+
+
+def _bash_commands(script: str) -> list[tuple[str, int, list[str]]]:
+    """Each simple command a Bash script runs, outside quotes and comments, as (the break before it, its line, its
+    words); a pipe or a list operator at the end of a line carries over to the command on the next. Raises ValueError
+    for a script shlex cannot read."""
+    # A line continuation becomes two spaces, and an ANSI-C string, whose \' shlex would read as its end, a word and a
+    # plain single-quoted string of the same length and lines, so each offset still names its line as written.
+    plain = ANSI_C_STRING.sub(lambda match: "x'" + re.sub(r"[^\n]", "x", match[0][2:-1]) + "'", script)
+    stream = _ShellText(plain.replace("\\\n", "  "))
+    lexer = shlex.shlex(stream, posix=True, punctuation_chars=";&|()<>\n")
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    commands: list[tuple[str, int, list[str]]] = []
+    before, line = "\n", 0
+    words: list[str] = []
+    for token in lexer:
+        for part in split_operators(token):
+            if part not in COMMAND_BREAKS or (part == "&" and words[-1:] in (["<"], [">"])):
+                if not words:
+                    line = script.count("\n", 0, max(stream.tell() - 1, 0)) + 1
+                words.append(part)
+                continue
+            if words:
+                commands.append((before, line, words))
+                before, words = part, []
+            elif part != "\n":
+                before = part
+    if words:
+        commands.append((before, line, words))
+    return commands
+
+
+def pipe_race_problems(root: Path) -> list[str]:
+    """Report each pipe into a grep that ends at its first match, in a Bash regression suite that sets pipefail.
+
+    grep -q or -m can exit before the command writing into it has written everything; the writer then dies of SIGPIPE,
+    and pipefail fails the pipeline though the pattern matched, so the check fails at random.
+    """
+    problems: list[str] = []
+    for suite in regression_suites(root):
+        if not is_shell_script(suite):
+            continue
+        name = suite.relative_to(root).as_posix()
+        try:
+            commands = _bash_commands(suite.read_text(encoding="utf-8"))
+        except ValueError as error:
+            problems.append(f"{name} cannot be read as Bash to find a pipe into grep -q: {error}")
+            continue
+        if not any(words[0] == "set" and "pipefail" in words for _, _, words in commands):
+            continue
+        problems += [
+            f"{name}:{line} pipes into {grep} under pipefail, which fails the check when the writer dies "
+            "of SIGPIPE after the match; give grep its text in a here-string or a file"
+            for before, line, words in commands
+            if before in PIPES and (grep := _early_exit_grep(words))
         ]
     return problems
 
@@ -940,6 +1058,9 @@ class SuiteDiscoveryPolicies(unittest.TestCase):
             self.assertIn(expected, suites)
         self.assertNotIn("tests/deployer/harness.py", suites)
         self.assertNotIn("conftest.py", suites)
+
+    def test_no_bash_suite_pipes_into_a_grep_that_ends_at_its_match(self) -> None:
+        self.assertEqual([], pipe_race_problems(REPOSITORY_ROOT))
 
     def test_python_suites_define_tests_and_run_only_through_pytest(self) -> None:
         self.assertTrue([path for path in regression_suites() if path.suffix.casefold() == ".py"])

@@ -124,7 +124,7 @@ FIND_ACTIONS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 UNREAD_PROGRAM = "<unread> "
 
 
-def _split_operators(token: str) -> list[str]:
+def split_operators(token: str) -> list[str]:
     """Split a run of shell punctuation, which shlex returns as one token, into its operators."""
     if not token or any(char not in ";&|()<>\n" for char in token):
         return [token]
@@ -220,7 +220,7 @@ def shell_commands(script: str, commands: list[list[str]] | None = None) -> set[
     lexer = shlex.shlex(script.replace("\\\n", " "), posix=True, punctuation_chars=";&|()<>\n")
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
-    tokens = [part for token in lexer for part in _split_operators(token)]
+    tokens = [part for token in lexer for part in split_operators(token)]
     functions = {tokens[i] for i in range(len(tokens) - 1) if tokens[i + 1] == "()"}
     functions |= {tokens[i + 1] for i in range(len(tokens) - 1) if tokens[i] == "function"}
     found: set[str] = {name for inner in _substitutions(script) for name in shell_commands(inner, commands)}
