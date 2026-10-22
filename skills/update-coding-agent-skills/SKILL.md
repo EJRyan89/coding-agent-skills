@@ -24,7 +24,7 @@ The first line of output is the status; act on it, not on the exit code:
 - `DIRTY`: tracked files have uncommitted changes, listed below it. Nothing was fetched. Report the files and stop.
 - `TAG_SHADOWS_BRANCH`: a tag named `main` or `origin/main`, listed below it as `on origin` or `in the clone`, would stand in for that branch. Nothing was fetched, merged, or deployed. Report the tags and stop; removing one is the user's decision.
 - `FETCH_FAILED`, `CHECKOUT_FAILED`, or `NOT_FAST_FORWARD`: nothing was merged or deployed, and the clone is on the branch it was found on. Report what follows the status and stop. `NOT_FAST_FORWARD` lists the commits local `main` has that `origin/main` lacks, or quotes Git's refusal; a `still on main:` line below it means the clone could not be switched back, so report that too.
-- `FAILED <reason>`: the clone path holds no `deploy.py` or is not a Git repository, a step failed outright, or a release tag has a version number too long to compare. Nothing was merged or deployed. Report the reason and stop.
+- `FAILED <reason>`: the clone path holds no `deploy.py` or is not a Git repository, no `ejryan89-skill-core` is deployed beside this skill, a step failed outright, or a release tag has a version number too long to compare. Nothing was merged or deployed. Report the reason and stop.
 - A usage error (exit 2) prints only on stderr: report it and stop.
 
 Never stash, rebase, reset, or force anything to work around a stop, and never rerun the deployer with `--force` or `--force-item`; those decisions are the user's.
