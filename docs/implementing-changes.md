@@ -2,8 +2,8 @@
 
 This is the implementation profile for this repository. The `implement-change` repository skill
 (`.claude/skills/implement-change/`) carries the generic procedure and reads every repository-specific fact from the
-sections below. `tests/tools/test_implementing_changes_profile.py` fails when a section goes missing. The skill that
-adds or changes a shipped skill, `change-skill`, builds on `implement-change`.
+sections below. `tests/tools/test_implementing_changes_profile.py` fails when a section goes missing or one it does
+not name appears. The skill that adds or changes a shipped skill, `change-skill`, builds on `implement-change`.
 
 ## Size gate
 
@@ -146,8 +146,10 @@ validation's silent-revert check, in `tests/validation/silent_reverts.py`, names
 its pull request. A branch left behind, or a conflict resolved by taking the branch's side of a file it never set out
 to change, carries such a revert unseen. The check compares each changed file's content with its versions on `main`'s
 first-parent line, from the tip back to `COMMITS_BEFORE_MERGE_BASE` commits before the branch's merge base, and judges
-a branch that merged `origin/main` in by what it holds. A file the branch deletes is never a revert, and one it adds
-is one only when it brings back a file `main` deleted, as it stood. A deliberate revert is declared on a
+a branch that merged `origin/main` in by what it holds. A file the branch deletes is never a revert. One it adds is
+judged like any other, so it is named when it equals the file as it stood before any commit in that span changed or
+deleted it, the newest such commit with it: a file brought back as it stood at its deletion names the deletion, and
+one equal to an earlier version names the change that replaced that version. A deliberate revert is declared on a
 line of the body of its own, optionally as a list item and outside an HTML comment, as
 ``Reverts `<path>` to its state before <commit>``, with seven or more hexadecimal digits of the commit the check
 names. The check reads the body from `--pr-body <file>` locally, otherwise the branch's commit messages, and the pull

@@ -59,8 +59,6 @@ EXECUTABLE_SCRIPT_EXTENSIONS = set(SCRIPT_INTERPRETERS)
 # No runtime JavaScript or TypeScript needs is a deployment prerequisite and the renderer cannot validate them, and no
 # analyzer or command policy here reads a PowerShell module or a Windows batch file, so a skill holds none of these.
 UNSUPPORTED_SCRIPT_EXTENSIONS = {".bat", ".cjs", ".cmd", ".js", ".mjs", ".psm1", ".ts"}
-# Every suite runs as `python <file>`, so a Python suite without this entry point runs no tests and still exits 0.
-PYTHON_ENTRY_POINT = 'if __name__ == "__main__":'
 SKILL_GUIDE = "docs/adding-a-skill.md"
 # Where the skill contract states the rules of validation, which a problem cites for its fix.
 VALIDATION_DOC = f'"Validation" in {SKILL_GUIDE}'

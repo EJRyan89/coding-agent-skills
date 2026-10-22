@@ -287,7 +287,7 @@ LINUX = (
     "      - run: |\n          sudo apt-get update\n          sudo apt-get install --yes shellcheck\n"
     "      - shell: pwsh\n"
     "        run: Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION -Force\n"
-    "      - run: python -m pip install --require-hashes -r requirements-dev.txt\n"
+    "      - run: |\n          python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt\n"
     "      - name: Run\n        shell: pwsh\n        run: |\n"
     "          $arguments = @('-B', 'tests/run_validation.py', '-v')\n"
     "          if ($env:GITHUB_EVENT_NAME -ne 'pull_request') { $arguments += '--full' }\n"
@@ -336,14 +336,23 @@ class LinuxJobFixtures(unittest.TestCase):
             id="an unpinned analyzer",
         ),
         pytest.param(
-            LINUX.replace("      - run: python -m pip install --require-hashes -r requirements-dev.txt\n", ""),
+            LINUX.replace(
+                "      - run: |\n"
+                "          python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt\n",
+                "",
+            ),
             "requirements-dev",
             id="no development dependencies",
         ),
         pytest.param(
-            LINUX.replace(" --require-hashes -r requirements-dev.txt", " -r requirements-dev.txt"),
+            LINUX.replace(" --require-hashes --only-binary :all: -r", " --only-binary :all: -r"),
             "requirements-dev",
             id="no hash checking",
+        ),
+        pytest.param(
+            LINUX.replace(" --require-hashes --only-binary :all: -r", " --require-hashes -r"),
+            "requirements-dev",
+            id="source distributions allowed",
         ),
         pytest.param(
             LINUX.replace("        shell: pwsh\n        run: |", "        shell: bash\n        run: |"),
@@ -809,7 +818,8 @@ MUTATION = (
     "      - uses: actions/checkout@abc\n        with:\n          fetch-depth: 0\n"
     "      - uses: actions/setup-python@abc\n        with:\n          python-version: '3.11'\n          cache: pip\n"
     "          cache-dependency-path: requirements-mutation.txt\n"
-    "      - name: Install\n        run: python -m pip install --require-hashes -r requirements-mutation.txt\n"
+    "      - name: Install\n        run: |\n"
+    "          python -m pip install --require-hashes --only-binary :all: -r requirements-mutation.txt\n"
     "      - name: Gate\n        run: python -B tools/mutation_gate.py\n"
 )
 
@@ -838,6 +848,7 @@ def test_the_mutation_job_runs_the_gate_on_linux_outside_the_required_check() ->
             MUTATION.replace("-r requirements-mutation.txt", "-r requirements-dev.txt"), "runs", id="no mutation tools"
         ),
         pytest.param(MUTATION.replace(" --require-hashes", ""), "runs", id="no hash checking"),
+        pytest.param(MUTATION.replace(" --only-binary :all:", ""), "runs", id="source distributions allowed"),
         pytest.param(
             MUTATION.replace("python -B tools/mutation_gate.py", "python -B tools/mutation_gate.py || true"),
             "runs",

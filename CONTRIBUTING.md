@@ -44,7 +44,7 @@ Install the development dependencies into the Python that runs validation:
 python -m pip install -r requirements-dev.txt
 ```
 
-They are the only ones: contributor and CI tools, pinned, while the deployer and every shipped skill stay standard-library. [Python checks](#python-checks) states what validation runs with them, and [Dependency updates](docs/dependency-updates.md#development-dependencies) records the decision and how the pins are updated.
+`requirements-dev.in` pins the only ones, `ruff`, `mypy`, and `pytest`, as contributor and CI tools, and `requirements-dev.txt` is its lock, every package they install pinned and hashed, while the deployer and every shipped skill stay standard-library. [Python checks](#python-checks) states what validation runs with them, and [Dependency updates](docs/dependency-updates.md#development-dependencies) records the decision and how the pins are updated.
 
 Install PSScriptAnalyzer from PowerShell 7; `-Force` also upgrades an older version and answers the untrusted-repository prompt:
 
@@ -122,13 +122,13 @@ The runner reports each failing suite by path. A suite or check whose program wa
 
 Changes to deployment behavior should also be exercised against an isolated temporary home: `python deploy.py --canary-home <dir>` with a directory under the temporary directory, or a test that builds the deployer's paths on one. On Windows the deployer takes its home from the profile folder, not `HOME`, so setting `HOME` alone does not isolate a run. Never use ordinary development validation to deploy into the contributor's real agent directories.
 
-The runner starts each Python suite as `python -B -m pytest <suite>` from the repository root, so pytest reads `[tool.pytest.ini_options]` in `pyproject.toml` and loads the root `conftest.py`, which isolates every test's git and deals a large suite's shards. Run one suite the same way while you work on it, or one test with `python -B -m pytest '<suite>::<Class>::<test>'`; [Adding a skill](docs/adding-a-skill.md#validation) states what a suite holds.
+The runner starts each Python suite as `python -B -m pytest <suite>` from the repository root, so pytest reads `[tool.pytest.ini_options]` in `pyproject.toml`, whose strict mode, `strict = true`, makes an unregistered marker, an unknown option, and a duplicate parametrization id errors, and loads the root `conftest.py`, which isolates every test's git and deals a large suite's shards. Run one suite the same way while you work on it, or one test with `python -B -m pytest '<suite>::<Class>::<test>'`; [Adding a skill](docs/adding-a-skill.md#validation) states what a suite holds.
 
 ### The runner
 
 `tests/run_validation.py` is the single entry point, locally and in CI. The policies it runs live in `tests/validation/`, one module per policy family, beside `job_pool.py` (the pool of workers), `job_selection.py` (what a run selects), and `validation_support.py` (what they share). A policy module holds its policy functions and the checks that apply them to this repository, which the runner loads as the policy checks and runs in its own process. Beside each is its fixture suite, `tests/validation/test_<module>.py`, which shows a violating input failing and a conforming one passing and runs in the pool like any other suite; a new policy goes in its family's module with a fixture test in that suite. A policy that reads Python reads it through `ast` and resolves each name through the module's imports.
 
-The runner starts one pool of workers on the static shell checks, the PowerShell analyzer, the Python format, lint, and type checks, and every regression suite under `tests/` (outside `tests/fixtures/`) and each skill's `scripts/`, a repository skill's under `.claude/skills/` included, and runs the repository layout policies in its own process while the pool works, printing their report as one block when they finish. It starts each Bash or PowerShell suite as a program. Because the pool's jobs start from the runner's working directory and print to its streams meanwhile, a policy check, the runner's own included, swaps no standard stream and changes neither `os.environ` nor the working directory: it takes a stream or an environment as a parameter, or moves into a regression suite. `pool_shared_state_problems` in `tests/validation/suite_discovery.py` holds that rule.
+The runner starts one pool of workers on the static shell checks, the PowerShell analyzer, the Python format, lint, and type checks, and every regression suite under `tests/` (outside `tests/fixtures/`) and each skill's `scripts/`, a repository skill's under `.claude/skills/` included, and runs the repository layout policies in its own process while the pool works, printing their report as one block when they finish. It starts each Bash or PowerShell suite as a program. Because the pool's jobs start from the runner's working directory and print to its streams meanwhile, a policy check swaps no standard stream and changes neither `os.environ` nor the working directory: it takes a stream or an environment as a parameter, or moves into a regression suite. `pool_shared_state_problems` in `tests/validation/suite_discovery.py` holds that rule.
 
 A job that raises anything other than a failed check is reported as a failed job with its traceback, in the output and in the CI step summary. A termination status is one Windows sets when an exception or another process ends a program, or elsewhere the signal that ended it, never the program's own exit code, and `platform_support.termination_status` reads it. The runner starts Git Bash as a plain shell, not a login one, as every other start of it in the repository does. A `-k` selection that matches neither a policy nor a suite is refused with exit 2 rather than passing empty, and `-k` does not combine with `--changed`.
 
@@ -201,9 +201,10 @@ The template's sections ask for the problem and the chosen behavior, and the use
 - the local checks [Validation](#validation) names for the touched files pass, with no skipped prerequisites, and the `Validation` check runs every suite, or the subset the runner selects when the change is documentation-only;
 - regression coverage is added or updated for every behavior change;
 - for a change to skill paths, `allowed-tools`, runtime adapters, or agents, the `runtime-canary` lines are in the body, with each runtime's version and any `SKIPPED` or `NOTHING_CHECKED` reason;
-- for a change to a skill's prompt, model guidance, or reviewer instructions, the `evaluate-skill` run is cited with its table, and `docs/skill-evaluations.md` holds its result;
+- for a change to a skill's prompt, description, model guidance, or reviewer instructions, the `evaluate-skill` run is cited with its table, and `docs/skill-evaluations.md` holds its result;
 - for a skill change, `audit-skill` audited each changed skill from the source tree with no MUST FIX left, and any SUGGESTION left is named with why;
 - for a contract change, the body's `## Upgrade note` has an entry naming each changed contract item;
+- each surviving mutant the `Mutation gate` job's summary names on a changed line, where the mutation alters behavior a caller relies on, is killed by a new test or named with why it is equivalent;
 - documentation is updated in the same change; and
 - the diff is reviewed for personal paths, organization names, credentials, and generated artifacts.
 
@@ -220,7 +221,7 @@ An absent issue template configuration on `main` leaves blank issues enabled, so
 Some gates need more than a clone and the validation tools. Run them when you can and put their output in the pull request; when you cannot, say so under the checklist, and the maintainer runs them before merging:
 
 - `runtime-canary`, for a change to skill paths, `allowed-tools`, runtime adapters, or agents. It needs Claude Code, Codex, and Copilot CLI installed and signed in, and each run calls a model.
-- `evaluate-skill`, for a change to a skill's prompt, model guidance, or reviewer instructions when the skill has scenarios under `tests/fixtures/skill-evals/`. It runs headless Claude Code sessions, so it needs Claude Code signed in, and each run calls models.
+- `evaluate-skill`, for a change to a skill's prompt, description, model guidance, or reviewer instructions when the skill has scenarios under `tests/fixtures/skill-evals/`. It runs headless Claude Code sessions, so it needs Claude Code signed in, and each run calls models.
 - `audit-skill`, for a skill change. It is a shipped skill, so it runs from a deployment of this suite into your own profile ([Installation](docs/installation.md)); run from the worktree, it audits the source tree, not the deployed copy. Without a deployment, leave it to the maintainer.
 - The `deployable` workflow, which deploys onto a fresh GitHub-hosted runner. It is dispatched by hand before each release ([Releasing](docs/releasing.md#before-tagging)), not for each pull request.
 

@@ -258,19 +258,23 @@ def test_a_lock_that_departs_from_its_input_or_the_development_lock_fails() -> N
 
 
 def test_a_workflow_installs_only_its_locks_with_hash_checking() -> None:
-    clean = "      - run: python -m pip install --require-hashes -r requirements-dev.txt\n"
+    clean = "          python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt\n"
     assert hash_install_problems(clean, ("requirements-dev.txt",)) == []
     for drifted in (
-        "        run: python -m pip install -r requirements-dev.txt\n",
-        "        run: python -m pip install -r requirements-dev.txt --require-hashes\n",
-        "        run: python -m pip install --require-hashes -r requirements-dev.in\n",
-        "        run: python -m pip install --require-hashes -r requirements-dev.txt ruff\n",
-        "        run: python -m pip install --require-hashes -r requirements-dev.txt -r\n",
-        "        run: python -m pip install --require-hashes\n",
-        "        run: python -m pip install ruff==0.17.1\n",
+        "          python -m pip install -r requirements-dev.txt\n",
+        "          python -m pip install -r requirements-dev.txt --require-hashes --only-binary :all:\n",
+        "          python -m pip install --require-hashes -r requirements-dev.txt\n",
+        "          python -m pip install --only-binary :all: --require-hashes -r requirements-dev.txt\n",
+        "          python -m pip install --require-hashes --only-binary :none: -r requirements-dev.txt\n",
+        "          python -m pip install --require-hashes --only-binary :all: -r requirements-dev.in\n",
+        "          python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt ruff\n",
+        "          python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt -r\n",
+        "          python -m pip install --require-hashes --only-binary :all:\n",
+        "          python -m pip install ruff==0.17.1\n",
     ):
         assert [
-            "line 2 does not install only ['requirements-dev.txt'] with --require-hashes: " + repr(drifted.strip())
+            "line 2 does not install only ['requirements-dev.txt'] with --require-hashes --only-binary :all:: "
+            + repr(drifted.strip())
         ] == hash_install_problems(clean + drifted, ("requirements-dev.txt",))
 
 

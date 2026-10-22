@@ -49,9 +49,7 @@ DISPOSITIONS = tuple(sorted(RECORD_DISPOSITIONS))
 TRIGGER = "trigger"
 MODES = ("initial", "re-review", TRIGGER)
 SCENARIO_FIELDS = frozenset({"skill", "mode", "expectations"})
-# A trigger scenario's fields, where its shipped skills are, the record each of its runs writes in its folder, and the
-# turns a request's session may take: enough to read a file before choosing, few enough that a session which starts a
-# skill stops soon after, since the start is all that is judged.
+# A trigger scenario's fields, and where its shipped skills are.
 TRIGGER_FIELDS = frozenset({"skill", "mode", "requests", "near_misses"})
 SHIPPED_SKILLS = "skills"
 # The folder in a run's own folder where a document scenario's document is written for the skill to review.

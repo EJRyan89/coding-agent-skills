@@ -243,9 +243,14 @@ class DeployAtTests(DeployerTestCase):
         self.assertIn(
             f"\nDeployed commit: v1.0.0 ({self.release}), pinned with --at refs/tags/v1.0.0\n", self.check().output
         )
-        self.deploy_ok("--all", "--at", "refs/tags/v1.0.0")
+        git(self.source, "tag", "v1.1.0")
         self.assertIn(
-            "\nReplaced the deployment pinned with --at refs/tags/v1.0.0 to ", self.deploy_ok("--all", "--unpin").output
+            f"\nReplaced the deployment pinned with --at refs/tags/v1.0.0 to v1.0.0 ({self.release}).\n",
+            self.deploy_ok("--all", "--at", "refs/tags/v1.1.0").output,
+        )
+        self.assertEqual("refs/tags/v1.1.0", self.manifest()["sources"][SOURCE_ID]["source_ref"])
+        self.assertIn(
+            "\nReplaced the deployment pinned with --at refs/tags/v1.1.0 to ", self.deploy_ok("--all", "--unpin").output
         )
         self.assertNotIn("source_ref", self.manifest()["sources"][SOURCE_ID])
 
