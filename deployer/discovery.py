@@ -369,14 +369,26 @@ def discover(
     """The skills `runtime` finds when started in `cwd`, with those it could not load where it says so (Codex);
     raise ListingError when it cannot say."""
     talk = talk or converse
+    command = listing_command(runtime, executable)
     if runtime == "codex":
-        lines = talk([executable, "app-server"], cwd, environment, codex_requests(cwd), codex_answered, timeout)
+        lines = talk(command, cwd, environment, codex_requests(cwd), codex_answered, timeout)
         return Discovered(parse_codex(lines), parse_codex_refusals(lines))
+    return Discovered(parse_copilot("\n".join(talk(command, cwd, environment, [], None, timeout))))
+
+
+def listing_command(runtime: str, executable: str) -> list[str]:
+    """The command that lists the skills `runtime` finds: Codex's app server, which answers `skills/list` on stdin,
+    or Copilot CLI's `skill list --json`."""
+    if runtime == "codex":
+        return [executable, "app-server"]
     if runtime == "copilot":
-        return Discovered(
-            parse_copilot("\n".join(talk([executable, "skill", "list", "--json"], cwd, environment, [], None, timeout)))
-        )
+        return [executable, "skill", "list", "--json"]
     raise ValueError(f"no skill listing for {runtime}")
+
+
+def catalog_command(executable: str) -> list[str]:
+    """The command that prints the skills Codex offers the model, which starts no model."""
+    return [executable, *CODEX_CATALOG]
 
 
 def codex_catalog(
@@ -389,4 +401,4 @@ def codex_catalog(
     """The skills Codex offers the model when started in `cwd`, from `codex debug prompt-input`, which starts no
     model; raise ListingError when it cannot say."""
     talk = talk or converse
-    return parse_codex_catalog(talk([executable, *CODEX_CATALOG], cwd, environment, [], None, timeout))
+    return parse_codex_catalog(talk(catalog_command(executable), cwd, environment, [], None, timeout))

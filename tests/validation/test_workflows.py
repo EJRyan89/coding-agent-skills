@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 from workflows import (
     WorkflowSyntaxError,
+    command_line_job_problems,
     copilot_auto_update_problems,
     deployable_linux_problems,
     leg_problems,
@@ -572,6 +573,50 @@ class DeployableLinuxFixtures(unittest.TestCase):
                     [f"the {job} job's env does not set COPILOT_AUTO_UPDATE: 'false'" for job in jobs],
                     copilot_auto_update_problems(drifted),
                 )
+
+
+COMMAND_LINE_JOBS = (
+    "jobs:\n"
+    "  command-lines:\n    runs-on: windows-latest\n    env:\n      COPILOT_AUTO_UPDATE: 'false'\n    steps:\n"
+    "      - name: Install\n        run: |\n"
+    "          npm install --global '@anthropic-ai/claude-code@latest' "
+    "'@openai/codex@latest' '@github/copilot@latest'\n"
+    "      - name: Check\n        run: |\n"
+    "          python tools/runtime_command_lines.py --summary $env:GITHUB_STEP_SUMMARY\n"
+    "  command-lines-linux:\n    runs-on: ubuntu-latest\n    env:\n      COPILOT_AUTO_UPDATE: 'false'\n    steps:\n"
+    "      - name: Install\n        run: |\n"
+    "          npm install --global '@anthropic-ai/claude-code@latest' "
+    "'@openai/codex@latest' '@github/copilot@latest'\n"
+    "      - name: Check\n        run: |\n"
+    '          python3 tools/runtime_command_lines.py --summary "$GITHUB_STEP_SUMMARY"\n'
+)
+
+
+class CommandLineJobFixtures(unittest.TestCase):
+    def test_each_departure_from_the_command_line_check_fails(self) -> None:
+        self.assertEqual([], command_line_job_problems(COMMAND_LINE_JOBS))
+        linux = COMMAND_LINE_JOBS.index("  command-lines-linux:")
+        windows, rest = COMMAND_LINE_JOBS[:linux], COMMAND_LINE_JOBS[linux:]
+        must = (
+            "the command-lines job must run \"npm install --global '@anthropic-ai/claude-code@latest' "
+            "'@openai/codex@latest' '@github/copilot@latest'\" once and then "
+            "'python tools/runtime_command_lines.py --summary $env:GITHUB_STEP_SUMMARY' once"
+        )
+        for drifted, problem in (
+            (
+                windows.replace("windows-latest", "windows-2022") + rest,
+                "the command-lines job runs on windows-2022, not windows-latest",
+            ),
+            (
+                windows + rest.replace("'false'", "'true'"),
+                "the command-lines-linux job's env does not set COPILOT_AUTO_UPDATE: 'false'",
+            ),
+            (windows.replace("@openai/codex@latest", "@openai/codex@0.163.0") + rest, must),
+            (windows.replace(" --summary $env:GITHUB_STEP_SUMMARY", "") + rest, must),
+            (windows, "the jobs are ['command-lines'], not ['command-lines', 'command-lines-linux']"),
+        ):
+            with self.subTest(problem=problem):
+                self.assertIn(problem, command_line_job_problems(drifted))
 
 
 LINUX_VERIFY_LOGS = (
