@@ -1,4 +1,6 @@
-"""The Copilot CLI host a run's reviewer works on: its claim, its process, and its outcome."""
+"""The Copilot CLI host a run's reviewer works on: the command it starts, finding Copilot and reading its version, the
+paths and reviewer resources it refuses, and the result it promotes. A host's claim is tested in
+test_review_pipeline.py."""
 
 from __future__ import annotations
 

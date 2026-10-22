@@ -1,4 +1,6 @@
-"""Archiving a reviewer's result as the next review record, and what the archive reports."""
+"""A review operation's selection and archive: its selectors, the pull requests it selects, the watermarks it
+advances over UTC merge dates, and archiving a reviewer's result as the next review record, with what the archive
+reports."""
 
 from __future__ import annotations
 

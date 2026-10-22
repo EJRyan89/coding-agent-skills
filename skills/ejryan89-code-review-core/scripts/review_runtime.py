@@ -1076,8 +1076,11 @@ def _is_agent_instruction_path(relative: str) -> bool:
         "gemini.md",
     }:
         return True
-    if parts and parts[0] == ".github":
-        if len(parts) > 1 and parts[1] in {"agents", "instructions", "prompts", "skills"}:
+    # A `.github` folder at any depth holds Copilot's agents, instructions, prompts, and skills.
+    for index, part in enumerate(parts[:-1]):
+        if part != ".github":
+            continue
+        if parts[index + 1] in {"agents", "instructions", "prompts", "skills"}:
             return True
         if path.name.casefold().endswith(".instructions.md"):
             return True
@@ -2495,11 +2498,6 @@ def review_coverage(diff_path: Path, snapshot: dict[str, Any], suffixes: Iterabl
         elif gaps:
             unavailable.append(path)
     return {"unavailable_sources": unavailable, "unreviewed_files": unreviewed}
-
-
-def unavailable_sources(diff_path: Path, snapshot: dict[str, Any], suffixes: Iterable[str] = ()) -> list[str]:
-    """The changed files whose source the snapshot could not provide, as `review_coverage` finds them."""
-    return list(review_coverage(diff_path, snapshot, suffixes)["unavailable_sources"])
 
 
 REPLACEMENT_RUN = re.compile(f"{chr(0xFFFD)}+")

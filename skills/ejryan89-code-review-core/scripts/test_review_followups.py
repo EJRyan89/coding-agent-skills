@@ -133,7 +133,9 @@ class GitHubSnapshotTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        self.assertEqual(["src/Form1.Designer.cs"], review_runtime.unavailable_sources(diff, metadata))
+        self.assertEqual(
+            ["src/Form1.Designer.cs"], review_runtime.review_coverage(diff, metadata)["unavailable_sources"]
+        )
 
     def test_tarball_snapshot_strips_top_folder_and_records_exclusions(self) -> None:
         big = b"x" * (review_runtime.MAX_SOURCE_FILE_BYTES + 1)

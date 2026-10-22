@@ -31,7 +31,7 @@ from review_hosts import subprocess_runner as copilot_subprocess_runner
 from review_io import PersistenceError, atomic_write_json, read_json
 from review_operation import ReviewOperationError
 from review_process import start_detached
-from review_records import RE_REVIEW_SCOPES, SCOPE_FIELDS, RecordError, Scope
+from review_records import ADAPTER_SOURCES, RE_REVIEW_SCOPES, SCOPE_FIELDS, RecordError, Scope
 from review_runtime import (
     MODEL_ALIAS_RUNTIMES,
     NATIVE_EFFORT_RUNTIMES,
@@ -132,8 +132,9 @@ class RunState(TypedDict):
 
     A run prepared before a field was recorded lacks it: its dispatch, the roles' dispatch times, the snapshot, its
     repository and stamp, the read counts, the archive base, which finalize then refuses to record without, the
-    changed documents, and an inline run's seal. The reviewer adapter, a fixture canary's paths, the patches, the
-    archive base, and the snapshot stay open mappings, which the steps that use them read.
+    changed documents, and an inline run's seal. The reviewer adapter and a fixture canary's paths are read field by
+    field, though typed as the mappings the steps that use them take; the patches, the archive base, and the snapshot
+    stay open mappings, which those steps read.
     """
 
     schema_version: int
@@ -176,6 +177,14 @@ def _fields(shape: type) -> tuple[frozenset[str], frozenset[str]]:
 
 RUN_FIELDS, RUN_OPTIONAL_FIELDS = _fields(RunState)
 ROLE_FIELDS, ROLE_OPTIONAL_FIELDS = _fields(RunRole)
+# The reviewer adapter the record will name. A run prepared before its source, commit, and hashes were recorded lacks
+# them, and the record then takes no source, no commit, and no hashes.
+ADAPTER_FIELDS = frozenset({"name", "scope"})
+ADAPTER_OPTIONAL_FIELDS = frozenset({"source", "source_commit", "source_hashes"})
+# A fixture canary's directory, the prior record it was given, and the run's copy of that record, which a run
+# prepared before the copy was kept lacks.
+FIXTURE_FIELDS = frozenset({"directory", "prior"})
+FIXTURE_OPTIONAL_FIELDS = frozenset({"prior_record"})
 
 
 class PipelineError(ValueError):
@@ -295,7 +304,7 @@ def _read_run(state: dict[str, Any]) -> RunState:
         "selector": READ.string(state["selector"], "run.selector", single_line=True),
         "mode": READ.one_of(state["mode"], "run.mode", ("initial", "re-review")),
         "canary": READ.boolean(state["canary"], "run.canary"),
-        "fixture": READ.optional(READ.json_object, state["fixture"], "run.fixture"),
+        "fixture": READ.optional(_read_fixture, state["fixture"], "run.fixture"),
         "config_path": READ.string(state["config_path"], "run.config_path"),
         "host": READ.optional(READ.string, state["host"], "run.host"),
         "runtime": READ.string(state["runtime"], "run.runtime"),
@@ -303,7 +312,7 @@ def _read_run(state: dict[str, Any]) -> RunState:
         "request_path": READ.string(state["request_path"], "run.request_path"),
         "reviewer_root": READ.optional(READ.string, state["reviewer_root"], "run.reviewer_root"),
         "result_path": READ.string(state["result_path"], "run.result_path"),
-        "adapter": READ.json_object(state["adapter"], "run.adapter"),
+        "adapter": _read_adapter(state["adapter"], "run.adapter"),
         "roles": roles,
         "attempts": _by_role(state["attempts"], "run.attempts", identities, _attempt_count, every=True),
         "notes": READ.array(state["notes"], "run.notes", READ.string),
@@ -335,6 +344,34 @@ def _read_optional(state: dict[str, Any], read: RunState, identities: set[str]) 
         read["documents"] = _object_of(state["documents"], "run.documents", _document_places)
     if "seal" in state:
         read["seal"] = _read_seal(state["seal"], "run.seal", identities)
+
+
+def _read_adapter(value: object, path: str) -> dict[str, Any]:
+    adapter = READ.json_object(value, path, required=ADAPTER_FIELDS, optional=ADAPTER_OPTIONAL_FIELDS)
+    read: dict[str, Any] = {
+        "name": READ.string(adapter["name"], f"{path}.name"),
+        "scope": READ.one_of(adapter["scope"], f"{path}.scope", ("generic", "repository")),
+    }
+    if "source" in adapter:
+        read["source"] = READ.one_of(adapter["source"], f"{path}.source", tuple(ADAPTER_SOURCES))
+    if "source_commit" in adapter:
+        read["source_commit"] = READ.optional(
+            READ.hex_digest, adapter["source_commit"], f"{path}.source_commit", 40, 64
+        )
+    if "source_hashes" in adapter:
+        read["source_hashes"] = _object_of(adapter["source_hashes"], f"{path}.source_hashes", _sha256_digest)
+    return read
+
+
+def _read_fixture(value: object, path: str) -> dict[str, Any]:
+    fixture = READ.json_object(value, path, required=FIXTURE_FIELDS, optional=FIXTURE_OPTIONAL_FIELDS)
+    read: dict[str, Any] = {
+        "directory": READ.string(fixture["directory"], f"{path}.directory"),
+        "prior": READ.optional(READ.string, fixture["prior"], f"{path}.prior"),
+    }
+    if "prior_record" in fixture:
+        read["prior_record"] = READ.optional(READ.string, fixture["prior_record"], f"{path}.prior_record")
+    return read
 
 
 def _read_role(value: object, path: str) -> RunRole:

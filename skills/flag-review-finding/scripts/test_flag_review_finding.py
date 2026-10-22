@@ -492,6 +492,29 @@ class FlagCliTests(unittest.TestCase):
         )
         self.assert_result(self.flag_finding("1", "F001"), 0, "ADDED RF-000001\n")
 
+    def test_a_finding_with_no_title_is_headed_by_its_body_on_one_line_and_cut(self) -> None:
+        # A record archived before findings had titles: the body spans lines and runs past the limit.
+        body = (
+            "The lock taken here is not released\nwhen the read fails, so every later caller\n  waits on it forever "
+            "and the service stops answering requests until it is restarted by hand."
+        )
+        first = copy.deepcopy(review_fixture.VERSIONS[0])
+        first["findings"] = [first["findings"][0]]
+        del first["findings"][0]["title"]
+        first["findings"][0]["body"] = body
+        with mock.patch.object(review_fixture, "VERSIONS", (first,)):
+            review_fixture.commit_fixture(self.archive, versions=1)
+        headline = (
+            "The lock taken here is not released when the read fails, so every later caller waits on it forever and "
+            "the service stops answering requests until it is restart…"
+        )
+        self.assertEqual(160, len(headline))
+        self.assert_result(
+            self.store_cli("findings", "--repository", "example/one", "--pull", "12"),
+            0,
+            f"FINDING v1 F001 MUST_FIX src/lock.py:10 {headline}\nCOUNT 1\n",
+        )
+
     def test_add_takes_each_finding_under_the_label_findings_prints(self) -> None:
         review_fixture.commit_fixture(self.archive)
         printed = self.store_cli("findings", "--repository", "example/one", "--pull", "12").stdout.splitlines()

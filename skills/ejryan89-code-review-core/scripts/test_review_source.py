@@ -643,7 +643,7 @@ class ConfiguredExclusionTests(LazySnapshotFixture):
             encoding="utf-8",
         )
         for snapshot in (self.manifest, metadata):
-            self.assertEqual(["src/changed.py"], review_runtime.unavailable_sources(diff, snapshot))
+            self.assertEqual(["src/changed.py"], review_runtime.review_coverage(diff, snapshot)["unavailable_sources"])
 
 
 class GlobMatcherTests(unittest.TestCase):

@@ -491,7 +491,9 @@ class RuntimeContractTests(unittest.TestCase):
                 "--- /dev/null\n+++ b/hidden.py\n@@ -0,0 +1 @@\n+print('hidden')\n",
                 encoding="utf-8",
             )
-            self.assertEqual([], review_runtime.unavailable_sources(diff, metadata), "reviewers have its source")
+            self.assertEqual(
+                [], review_runtime.review_coverage(diff, metadata)["unavailable_sources"], "reviewers have its source"
+            )
 
     def test_an_undecodable_name_is_an_unsafe_path_and_a_coverage_gap_only_where_changed(self) -> None:
         # Two bytes that open a UTF-8 sequence and never finish it: one U+FFFD each, as diff.patch shows them.
@@ -522,7 +524,9 @@ class RuntimeContractTests(unittest.TestCase):
                     f"--- a/{changed}\n+++ b/{changed}\n@@ -1 +1 @@\n-old\n+new\n",
                     encoding="utf-8",
                 )
-                self.assertEqual(unavailable, review_runtime.unavailable_sources(diff, metadata), changed)
+                self.assertEqual(
+                    unavailable, review_runtime.review_coverage(diff, metadata)["unavailable_sources"], changed
+                )
                 self.assertEqual(verdict, calculate_verdict([], verdict_policy({}), unavailable), changed)
             # git quotes the name with octal escapes, which the diff parser decodes with one U+FFFD for the whole
             # truncated sequence, not one per byte; the two forms still match.
@@ -533,7 +537,7 @@ class RuntimeContractTests(unittest.TestCase):
                 f'--- "a/{quoted}"\n+++ "b/{quoted}"\n@@ -1 +1 @@\n-old\n+new\n',
                 encoding="utf-8",
             )
-            unavailable = review_runtime.unavailable_sources(diff, metadata)
+            unavailable = review_runtime.review_coverage(diff, metadata)["unavailable_sources"]
             self.assertEqual([f"src/bad{chr(0xFFFD)}.py"], unavailable)
             self.assertEqual("INCOMPLETE", calculate_verdict([], verdict_policy({}), unavailable))
 
@@ -568,7 +572,7 @@ class RuntimeContractTests(unittest.TestCase):
                 "\\ No newline at end of file\n",
                 encoding="utf-8",
             )
-            self.assertEqual([], review_runtime.unavailable_sources(diff, metadata))
+            self.assertEqual([], review_runtime.review_coverage(diff, metadata)["unavailable_sources"])
         self.assertEqual(
             {
                 "agent-instruction",
@@ -638,7 +642,7 @@ class RuntimeContractTests(unittest.TestCase):
                 coverage["unreviewed_files"],
             )
             self.assertEqual("APPROVED", calculate_verdict([], verdict_policy({}), coverage["unavailable_sources"]))
-            self.assertEqual([], review_runtime.unavailable_sources(diff, metadata, [".bin"]))
+            self.assertEqual([], review_runtime.review_coverage(diff, metadata, [".bin"])["unavailable_sources"])
 
     def test_a_gap_reason_of_a_name_merged_with_a_binary_one_keeps_it_a_gap(self) -> None:
         # Two undecodable spellings of one name read as one; the gap one of them has is never hidden by the other.

@@ -41,7 +41,7 @@ from test_review_run import prepared_state
 
 Call = tuple[tuple[Any, ...], dict[str, Any]]
 
-SERVICES_TYPE = review_run.Services  # setUp replaces review_run.Services, so the class is kept here
+SERVICES_TYPE = review_run.Services  # setUp replaces review_pipeline's Services, so the class is kept here
 UNFINALIZED_SELECTOR = review_dispatch.unfinalized_selector  # and these functions, which some tests run unstubbed
 WORKED_BY_SUBAGENTS = review_batches.worked_by_subagents
 SERVICES = SERVICES_TYPE()

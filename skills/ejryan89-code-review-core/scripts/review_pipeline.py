@@ -59,7 +59,7 @@ from review_batches import (
     new_run_list,
     worked_by_subagents,
 )
-from review_canary import fixture_change, validate_prior_record
+from review_canary import fixture_change, read_fixture_pull, validate_prior_record
 from review_config import default_config_path, load_config
 from review_dispatch import (
     MAX_WAIT_SECONDS,
@@ -505,12 +505,16 @@ def prepare_fixture(
     config = load_config(config_path)
     prior_value = None if prior is None else read_json(prior.resolve())
     notes: list[str] = []
-    with fixture_change(directory, services.git) as change:
+    # pull.json and the prior record are validated before the throwaway repository is written.
+    fixture_pull = read_fixture_pull(directory)
+    record = None
+    if prior_value is not None:
+        record = validate_prior_record(
+            prior_value, repository=fixture_pull["repository"], number=fixture_pull["number"]
+        )
+    with fixture_change(directory, services.git, fixture_pull) as change:
         repository, number, pull = change.name, change.pull["number"], change.pull
         selector = f"{repository}#{number}"
-        record = None
-        if prior_value is not None:
-            record = validate_prior_record(prior_value, repository=repository, number=number)
         review = _Review(
             selector=selector,
             repository=repository,
