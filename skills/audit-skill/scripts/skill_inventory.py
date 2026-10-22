@@ -37,8 +37,8 @@ Listing: DESCRIPTION gives the description's characters and ceil(characters / 4)
 loads while the skill is model-invocable; INVOCATION is model, user-only (disable-model-invocation: true),
 or hidden (also user-invocable: false); INTERNAL_LISTED marks internal wording in a model-invocable skill. For a
 model-invocable skill in its source tree, TRIGGER_SCENARIO <path> <requests> <near misses> is each scenario.json of the
-skill's folder under TRIGGER_SCENARIOS, the source tree's evaluation scenarios, whose mode is trigger, which judges whether the description starts the skill, and
-NO_TRIGGER_SCENARIO <path> names that folder when it holds none.
+skill's folder under TRIGGER_SCENARIOS, the source tree's evaluation scenarios, whose mode is trigger, which judges
+whether the description starts the skill, and NO_TRIGGER_SCENARIO <path> names that folder when it holds none.
 
 Tool references: a tool counts as used on a line when its exact, case-sensitive name is
   - the start of an inline code span (`Read`, `Grep -l`, `Glob("*")`), outside fenced blocks;
