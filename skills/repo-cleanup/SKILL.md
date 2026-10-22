@@ -15,10 +15,10 @@ Every step is one command of `repo_cleanup.py`, run exactly as shown. Do not run
 Pass the user's argument as the target, or omit it to sweep every repository:
 
 ```bash
-{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" sweep --repos-root "{{REPOS_ROOT}}" "<target>"
+{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" sweep --repos-root "{{REPOS_ROOT}}" --regenerable "{{REPO_CLEANUP_REGENERABLE}}" --protected "{{REPO_CLEANUP_PROTECTED}}" "<target>"
 ```
 
-A single line `FAILED <reason>` (for example, the GitHub CLI is not signed in) means nothing ran and nothing was created: report it and stop. Otherwise it first prints `PLANS <directory>`, the new temporary directory that holds each repository's plan file, then one block per repository, starting with `REPO <path> <state>`, then `PLAN <plan file>` once a plan was applied, then only the lines that need you, and ends with `SWEPT <n>` and a count per state. Act on the blocks, not the exit status.
+A single line `FAILED <reason>` (for example, the GitHub CLI is not signed in) means nothing ran and nothing was created: report it and stop. Otherwise it first prints `PLANS <directory>`, the new temporary directory that holds each repository's plan file, then which lists decide what it may delete: `POLICY <defaults or defaults+additions> <file>`, the shipped lists' file, with `ADDED <list> <entry>` for each configured addition it used and `REFUSED_ENTRY <list> <entry> <reason>` for each it refused, then one block per repository, starting with `REPO <path> <state>`, then `PLAN <plan file>` once a plan was applied, then only the lines that need you, and ends with `SWEPT <n>` and a count per state. Act on the blocks, not the exit status.
 
 ## 2. Each repository's state
 
@@ -35,7 +35,7 @@ A `CHECKOUT failed <reason>` line means the switch to the default branch failed;
 For each `dirty` repository, call `AskUserQuestion` with question `"<REPO_NAME>: The main worktree has uncommitted changes. Continue (branch switch will be skipped) or abort this repo?"`, header `"Dirty tree"`, and options `"Continue"` and `"Abort"`. For Abort, report the repository as aborted. For Continue, sweep that repository again without switching its branch, passing its path as the target and the first sweep's `PLANS` directory as the record it adds to, so that directory keeps every repository's plan:
 
 ```bash
-{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" sweep --repos-root "{{REPOS_ROOT}}" --record "<plans directory>" --skip-checkout "<repo>"
+{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" sweep --repos-root "{{REPOS_ROOT}}" --regenerable "{{REPO_CLEANUP_REGENERABLE}}" --protected "{{REPO_CLEANUP_PROTECTED}}" --record "<plans directory>" --skip-checkout "<repo>"
 ```
 
 It prints the same block as the first sweep, now with the repository's state after cleaning; handle that state as step 2 describes.
@@ -74,4 +74,4 @@ Once every question is answered, print the run's report from the first sweep's `
 {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" report --record "<plans directory>" --aborted "<repo>"
 ```
 
-Show its lines' text as given: each `REPO <path> <state>` with the `SUMMARY`, `ERROR`, `CHECKOUT`, and `FF_DEFAULT` lines after it, the `QUIET` repositories on one line, and the last line, `PROCESSED`. A line `FAILED <reason>` instead means no report was given: when it names a dirty repository still to handle, handle it as step 3 says and run the report again; otherwise relay it.
+Show its lines' text as given: the `POLICY`, `ADDED`, and `REFUSED_ENTRY` lines, telling the user that a refused entry was not used and to correct it with the deployer's `configure` command, each `REPO <path> <state>` with the `SUMMARY`, `ERROR`, `CHECKOUT`, and `FF_DEFAULT` lines after it, the `QUIET` repositories on one line, and the last line, `PROCESSED`. A line `FAILED <reason>` instead means no report was given: when it names a dirty repository still to handle, handle it as step 3 says and run the report again; otherwise relay it.

@@ -30,7 +30,7 @@ from console import run_main
 
 from deployer import runtime_support
 from deployer import source as deploy_source
-from deployer.config import CONFIGURED_VARIABLES
+from deployer.config import CONFIGURED_VARIABLES, OPTIONAL_VARIABLES
 from deployer.errors import DeployError
 from deployer.paths import Paths
 from deployer.tools import SKILL_TOOLS
@@ -103,7 +103,7 @@ def _needs(source: deploy_source.Source, name: str) -> list[str]:
     settings = sorted(
         {var for skill in skills for var in source.skills[skill].required_vars if var in CONFIGURED_VARIABLES}
     )
-    needs.extend(f"the `{var}` setting" for var in settings)
+    needs.extend(f"the `{var}` setting{' (optional)' if var in OPTIONAL_VARIABLES else ''}" for var in settings)
     return needs
 
 

@@ -11,16 +11,30 @@ from .arguments import CONFIGURE_COMMAND_LINE
 from .errors import DeployError
 
 ALLOW_PATH = "[A-Za-z0-9 /:.@_()-]"
-CONFIGURED_VARIABLES: dict[str, str] = {"REPOS_ROOT": ALLOW_PATH, "UPDATE_CHANNEL": "[a-z]"}
+# repo-cleanup's additions to its shipped lists: words separated by spaces, which the skill passes quoted to its
+# script; the script, not the configuration, refuses an entry that could hold work.
+CONFIGURED_VARIABLES: dict[str, str] = {
+    "REPOS_ROOT": ALLOW_PATH,
+    "UPDATE_CHANNEL": "[a-z]",
+    "REPO_CLEANUP_REGENERABLE": "[A-Za-z0-9 ._*=,/-]",
+    "REPO_CLEANUP_PROTECTED": "[A-Za-z0-9 ._/-]",
+}
 DIRECTORY_VARIABLES = ("REPOS_ROOT",)
 # The configured variables whose value is one of a fixed set, which a saved configuration and configure's answer are
 # both held to.
 CHOICE_VARIABLES: dict[str, tuple[str, ...]] = {"UPDATE_CHANNEL": ("release", "main")}
+# The configured variables an empty value answers, meaning none, rather than leaving unset.
+OPTIONAL_VARIABLES = ("REPO_CLEANUP_REGENERABLE", "REPO_CLEANUP_PROTECTED")
 # The value a configuration without the key takes, so a configuration saved before the key existed needs no change.
-DEFAULTS: dict[str, str] = {"UPDATE_CHANNEL": "release"}
+DEFAULTS: dict[str, str] = {"UPDATE_CHANNEL": "release", **dict.fromkeys(OPTIONAL_VARIABLES, "")}
 PROMPTS: dict[str, str] = {
     "REPOS_ROOT": f"root directory for your git repositories, such as {platform_support.EXAMPLE_DIRECTORY}",
     "UPDATE_CHANNEL": "what update-coding-agent-skills deploys: release, the latest release, or main, the head of main",
+    "REPO_CLEANUP_REGENERABLE": "ignored directories repo-cleanup may delete with a worktree, besides the ones it "
+    "ships with, separated by spaces: a directory, or a directory, an equals sign, and the project files one of which "
+    "must sit beside it, such as .venv .tox=tox.ini,setup.cfg; empty for none",
+    "REPO_CLEANUP_PROTECTED": "branch prefixes repo-cleanup never deletes, besides the ones it ships with, separated "
+    "by spaces, such as hotfix/ support/; empty for none",
 }
 # Rendering escapes a value only for the contexts it knows, so derived values pass an allowlist as configured ones
 # do. Nobody chooses a home folder's name to suit the deployer, so letters of any script are allowed, but nothing a

@@ -21,6 +21,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import cleanup_policy
 import git_client
 import repo_cleanup as rc
 from git_client import GitClient, GitError, GitResult
@@ -1025,7 +1026,7 @@ class PlanApplyTests(Fixture):
             self.assertIsNotNone(self.tip(name), name)
         summary = "\n".join(fields[0] for fields in facts(applied, "SUMMARY"))
         self.assertIn("  Dirty worktrees skipped: 1 — ", summary)
-        self.assertIn("  Protected release worktrees: 1 (preserved)", summary)
+        self.assertIn("  Protected worktrees:     1 (preserved)", summary)
 
     def test_a_worktree_whose_pull_request_closed_unmerged_is_removed_and_its_branch_asked_about(self) -> None:
         tracked = self.push_branch("closed-tracked")
@@ -1350,7 +1351,7 @@ class SweepTests(Fixture):
             facts(lines, "SWEPT"),
         )
         self.assertEqual(
-            {"PLANS", "REPO", "PLAN", "SWEPT", "SUMMARY", "DIRTY_MAIN", "FETCH_FAILED", "CONFIRM_LOCAL"},
+            {"PLANS", "POLICY", "REPO", "PLAN", "SWEPT", "SUMMARY", "DIRTY_MAIN", "FETCH_FAILED", "CONFIRM_LOCAL"},
             {line.split("\t")[0] for line in lines},
             "plan items and step chatter stay out",
         )
@@ -1466,7 +1467,8 @@ class SweepTests(Fixture):
         self.assertNotIn("stopped", json.loads(Path(plan).read_text(encoding="utf-8")))
         code, reported = self.report()
         self.assertEqual(0, code, reported)
-        self.assertEqual(lines, reported[1:-1], "the report shows the last summary printed")
+        self.assertEqual("POLICY", reported[0].split("\t")[0], "the lists the sweep used come first")
+        self.assertEqual(lines, reported[2:-1], "the report shows the last summary printed")
         self.assertEqual(
             [["Processed 1 repository; skipped: 0 fetch failed, 0 aborted, 0 with an error."]],
             facts(reported, "PROCESSED"),
@@ -1574,7 +1576,11 @@ class SweepTests(Fixture):
         self.make_clone("other repo")
 
         def failing(
-            root: str, repos_root: str, services: rc.Services, chosen: rc.DefaultBranch | None = None
+            root: str,
+            repos_root: str,
+            services: rc.Services,
+            chosen: rc.DefaultBranch | None = None,
+            policy: rc.Policy | None = None,
         ) -> dict[str, Any]:
             raise ValueError("not enough values to unpack (expected 4, got 1)")
 
@@ -1584,6 +1590,7 @@ class SweepTests(Fixture):
         self.assertEqual(0, code, lines)
         self.assertEqual(
             [
+                f"POLICY\tdefaults\t{cleanup_policy.POLICY_FILE.as_posix()}",
                 f"REPO\t{self.repos.as_posix()}/other repo\terror",
                 "ERROR\tunexpected ValueError: not enough values to unpack (expected 4, got 1)",
                 "PROCESSED\tProcessed 1 repository; skipped: 0 fetch failed, 0 aborted, 1 with an error.",
@@ -1787,11 +1794,15 @@ class SweepTests(Fixture):
         build_plan = rc.build_plan
 
         def failing(
-            root: str, repos_root: str, services: rc.Services, chosen: rc.DefaultBranch | None = None
+            root: str,
+            repos_root: str,
+            services: rc.Services,
+            chosen: rc.DefaultBranch | None = None,
+            policy: rc.Policy | None = None,
         ) -> dict[str, Any]:
             if root.endswith("other repo"):
                 raise ValueError("not enough values to unpack (expected 4, got 1)")
-            return build_plan(root, repos_root, services, chosen)
+            return build_plan(root, repos_root, services, chosen, policy)
 
         with mock.patch.object(rc, "build_plan", failing):
             code, lines = self.sweep()
@@ -1909,8 +1920,8 @@ class DefaultBranchTests(CleanupTestCase):
         self.assertEqual("refs/heads/topic", git(root, "symbolic-ref", "HEAD"))
 
 
-class RemoveWorktreeTests(CleanupTestCase):
-    """git worktree remove, then git branch -d, as apply runs them for a stale worktree."""
+class WorktreeTestCase(CleanupTestCase):
+    """A repository whose worktrees a test adds, fills, and removes as apply removes a stale one."""
 
     def setUp(self) -> None:
         self.root = Path(tempfile.mkdtemp(prefix="repo cleanup remove ")).resolve()
@@ -1943,6 +1954,22 @@ class RemoveWorktreeTests(CleanupTestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             removed = rc.remove_worktree(rc.Services(), self.plan, entry, tip, pr)
         return removed, self.plan["events"], path
+
+    def ignore(self, *patterns: str) -> None:
+        (self.repo / ".gitignore").write_text("".join(f"{pattern}\n" for pattern in patterns), encoding="utf-8")
+        git(self.repo, "add", ".gitignore")
+        git(self.repo, "commit", "--quiet", "-m", "ignore paths")
+
+    def fill(self, path: Path, *files: str) -> None:
+        """Write each file, making its directories, so every ignored path exists in the worktree."""
+        for name in files:
+            (path / name).parent.mkdir(parents=True, exist_ok=True)
+            (path / name).write_text("x", encoding="utf-8")
+        self.assertEqual("", git(path, "status", "--porcelain"), "Git calls it clean")
+
+
+class RemoveWorktreeTests(WorktreeTestCase):
+    """git worktree remove, then git branch -d, as apply runs them for a stale worktree."""
 
     def test_a_merged_worktree_and_its_branch_are_removed(self) -> None:
         self.add("merged")
@@ -2010,18 +2037,6 @@ class RemoveWorktreeTests(CleanupTestCase):
             events,
         )
         self.assertTrue((path / ".env").is_file())
-
-    def ignore(self, *patterns: str) -> None:
-        (self.repo / ".gitignore").write_text("".join(f"{pattern}\n" for pattern in patterns), encoding="utf-8")
-        git(self.repo, "add", ".gitignore")
-        git(self.repo, "commit", "--quiet", "-m", "ignore paths")
-
-    def fill(self, path: Path, *files: str) -> None:
-        """Write each file, making its directories, so every ignored path exists in the worktree."""
-        for name in files:
-            (path / name).parent.mkdir(parents=True, exist_ok=True)
-            (path / name).write_text("x", encoding="utf-8")
-        self.assertEqual("", git(path, "status", "--porcelain"), "Git calls it clean")
 
     def test_ignored_files_keep_a_worktree_git_would_remove_with_them(self) -> None:
         # git worktree remove counts a worktree holding only ignored files as clean and deletes them.
@@ -2118,21 +2133,9 @@ class RemoveWorktreeTests(CleanupTestCase):
         )
         self.assertEqual(rc.NAMED_PATHS, 5)
 
-    def test_the_regenerable_paths_are_exactly_the_documented_set(self) -> None:
-        self.assertEqual(
-            {
-                "__pycache__": (),
-                ".pytest_cache": (),
-                ".mypy_cache": (),
-                ".ruff_cache": (),
-                "node_modules/.cache": (),
-                ".vs": (),
-                "node_modules": ("package.json",),
-                "bin": ("*.csproj", "*.vbproj", "*.fsproj"),
-                "obj": ("*.csproj", "*.vbproj", "*.fsproj"),
-            },
-            dict(rc.REGENERABLE),
-        )
+    def test_an_ignored_path_is_regenerable_inside_a_shipped_directory_with_its_project_beside_it(self) -> None:
+        # test_cleanup_policy.py holds the shipped list itself.
+        shipped = cleanup_policy.configured().regenerable
         tree = self.root / "layout"
         for name in ("App/App.csproj", "Lib/Lib.fsproj", "web/package.json"):
             (tree / name).parent.mkdir(parents=True, exist_ok=True)
@@ -2181,7 +2184,7 @@ class RemoveWorktreeTests(CleanupTestCase):
             ("pytest_cache/", False),
         ):
             with self.subTest(entry=entry):
-                self.assertEqual(regenerable, rc.is_regenerable(entry, str(tree)))
+                self.assertEqual(regenerable, rc.is_regenerable(entry, str(tree), shipped))
 
     def test_a_projects_build_and_ide_output_is_removed_with_its_worktree_and_a_bin_without_one_keeps_it(self) -> None:
         for name in ("App/App.csproj", "web/package.json"):
@@ -2346,7 +2349,7 @@ class UnitTests(CleanupTestCase):
             ("topic/fix", "C:\\GitHub\\RELEASE\\example", True),
         ):
             with self.subTest(branch=branch, path=path):
-                self.assertEqual(expected, rc.is_protected(branch, path))
+                self.assertEqual(expected, rc.is_protected(branch, path, cleanup_policy.configured()))
 
     def test_github_remote_urls(self) -> None:
         for url, expected in (

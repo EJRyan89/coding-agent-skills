@@ -39,15 +39,16 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from types import MappingProxyType
 from typing import Any, TypeVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import cleanup_policy
 import git_client
 import git_worktrees
 import pr_status
 from atomic_file import replace_text
+from cleanup_policy import Policy, Regenerable
 from console import run_main
 from flat_text import single_line
 from git_client import GitClient, GitResult
@@ -60,29 +61,7 @@ from skill_roots import skills_directory_holding
 
 T = TypeVar("T")
 PLAN_SCHEMA_VERSION = 1
-# Matched in any letter case: Windows treats Release and release as one directory, and refs stored as files there
-# cannot hold both, so protection errs toward keeping.
-RELEASE_PREFIX = "release/"
 STALE_STATES = ("MERGED", "CLOSED")
-# Directories a tool rebuilds from what the worktree holds, by name, with the file one of which must sit beside the
-# directory for it to count: the project the build or the package manager rebuilds it from. An ignored path inside
-# one carries no work of the user's, so a worktree holding only such paths is removed with them; any other ignored
-# path, such as a `.env` or a `bin` with no project beside it, preserves the worktree. Add a name here only for a
-# directory whose loss costs nothing but time.
-DOTNET_PROJECTS = ("*.csproj", "*.vbproj", "*.fsproj")
-REGENERABLE = MappingProxyType(
-    {
-        "__pycache__": (),
-        ".pytest_cache": (),
-        ".mypy_cache": (),
-        ".ruff_cache": (),
-        "node_modules/.cache": (),
-        ".vs": (),
-        "node_modules": ("package.json",),
-        "bin": DOTNET_PROJECTS,
-        "obj": DOTNET_PROJECTS,
-    }
-)
 # What a worktree's own Git directory holds while an operation is under way, with the operation's name. Removing the
 # worktree deletes that directory and the operation with it.
 OPERATION_MARKERS = (
@@ -123,6 +102,8 @@ SUMMARY_WIDTH = 25
 # files end in .json.
 SWEEP_RECORD = "sweep.record"
 RECORD_SCHEMA_VERSION = 1
+# The configured values a plan records its policy by, in the order cleanup_policy.configured takes them.
+POLICY_FIELDS = ("regenerable", "protected")
 # A repository's lines the record keeps when no plan holds its summary: what the report repeats for it.
 RECORDED_KINDS = ("SUMMARY", "ERROR", "CHECKOUT", "FF_DEFAULT")
 SWEEP_STATES = ("cleaned", "quiet", "dirty", "fetch-failed", "error", "git-failed")
@@ -368,15 +349,13 @@ def default_branch(services: Services, root: str | Path) -> DefaultBranch:
     )
 
 
-def is_release(branch: str) -> bool:
-    return branch.casefold().startswith(RELEASE_PREFIX)
-
-
-def is_protected(branch: str, path: str) -> bool:
-    """A release branch, or a worktree with a directory named release anywhere in its path, in any letter case."""
-    if is_release(branch):
+def is_protected(branch: str, path: str, policy: Policy) -> bool:
+    """A branch starting with a protected prefix, or a worktree with a folder anywhere in its path that starts with
+    one, as a release worktree's folder does, in any letter case."""
+    if policy.protecting(branch):
         return True
-    return "/release/" in f"/{path.replace(chr(92), '/').removeprefix('/')}/".casefold()
+    folders = f"/{path.replace(chr(92), '/').removeprefix('/')}/".casefold()
+    return any(f"/{prefix.casefold()}" in folders for prefix in policy.protected)
 
 
 def pull_state(
@@ -562,9 +541,11 @@ def decide(
     return "keep", ""
 
 
-def evaluate_worktree(services: Services, root: str, default: str, tree: Worktree) -> dict[str, Any]:
+def evaluate_worktree(
+    services: Services, root: str, default: str, tree: Worktree, policy: Policy | None = None
+) -> dict[str, Any]:
     entry: dict[str, Any] = {"path": tree.path, "branch": tree.branch, "action": "keep", "detail": ""}
-    if is_protected(tree.branch or "", tree.path):
+    if is_protected(tree.branch or "", tree.path, policy or cleanup_policy.configured()):
         entry["action"] = "protected"
         return entry
     try:
@@ -613,14 +594,22 @@ def landed_in_default(services: Services, root: str, default: str, name: str, sh
     return all(reachable(services, root, tip, *default_refs(default)) for tip in dict.fromkeys(tips))
 
 
-def build_plan(root: str, repos_root: str, services: Services, chosen: DefaultBranch | None = None) -> dict[str, Any]:
-    """The repository's plan, against `chosen`, the default branch sync found, or the one found now when None."""
+def build_plan(
+    root: str,
+    repos_root: str,
+    services: Services,
+    chosen: DefaultBranch | None = None,
+    policy: Policy | None = None,
+) -> dict[str, Any]:
+    """The repository's plan, against `chosen`, the default branch sync found, or the one found now when None, under
+    `policy`, the shipped lists alone when None, which the plan records for every later command on it."""
+    policy = policy or cleanup_policy.configured()
     require_repository(root)
     default = (chosen or default_branch(services, root)).name
     nwo = name_with_owner(services, root)
     trees = list_worktrees(services, root)
     located = {tree.branch: tree for tree in trees if tree.branch}
-    worktrees = [evaluate_worktree(services, root, default, tree) for tree in trees if not tree.main]
+    worktrees = [evaluate_worktree(services, root, default, tree, policy) for tree in trees if not tree.main]
     linked = {entry["branch"]: entry for entry in worktrees if entry["branch"]}
     branches: list[dict[str, Any]] = []
     moves: dict[str, list[dict[str, Any]]] = {"fastforward": [], "fastforward_skipped": [], "diverged": []}
@@ -641,8 +630,8 @@ def build_plan(root: str, repos_root: str, services: Services, chosen: DefaultBr
         tree, entry = located.get(name), linked.get(name)
         candidate = entry is not None and entry["action"] == "candidate"
         state, error, landed = "-", "", False
-        if is_release(name):
-            action, detail = "keep", "release"
+        if policy.protecting(name):
+            action, detail = "keep", "protected"
         else:
             if category == "tracking" and (candidate or tree is None):
                 landed = landed_in_default(services, root, default, name, sha, upstream)
@@ -678,6 +667,7 @@ def build_plan(root: str, repos_root: str, services: Services, chosen: DefaultBr
         "branches": branches,
         "worktrees": worktrees,
         **moves,
+        "policy": dict(zip(POLICY_FIELDS, policy.given, strict=True)),
         "applied": False,
         "events": [],
     }
@@ -728,6 +718,13 @@ def default_status(services: Services, root: str, default: str) -> str:
 # Plan file ------------------------------------------------------------------------------------------------------
 
 
+def policy_of(plan: dict[str, Any]) -> Policy:
+    """The policy the plan was made under, rebuilt from the configured values it recorded, or the shipped lists
+    alone for a plan that recorded none."""
+    recorded = plan.get("policy") or {}
+    return cleanup_policy.configured(*(recorded.get(field, "") for field in POLICY_FIELDS))
+
+
 def save_plan(path: str | Path, plan: dict[str, Any]) -> None:
     """Write the plan, or another JSON document such as a sweep record, in one step: a reader sees the old or the
     new one, never part of either."""
@@ -743,9 +740,19 @@ def load_plan(path: str | Path) -> dict[str, Any]:
         not isinstance(plan, dict)
         or type(plan.get("schema_version")) is not int
         or plan["schema_version"] != PLAN_SCHEMA_VERSION
+        or not recorded_policy(plan.get("policy", {}))
     ):
         raise CleanupError(f"{path} is not a repo-cleanup plan")
     return plan
+
+
+def recorded_policy(value: Any) -> bool:
+    """Whether a plan's policy is the configured values a sweep records, each a string."""
+    return (
+        isinstance(value, dict)
+        and set(value) <= set(POLICY_FIELDS)
+        and all(isinstance(given, str) for given in value.values())
+    )
 
 
 def record(plan: dict[str, Any], kind: str, *fields: Any) -> None:
@@ -896,25 +903,39 @@ def ignored_entries(services: Services, directory: str | Path) -> list[str]:
     return [change.path for change in listed if change.code == "!!"]
 
 
-def is_regenerable(path: str, worktree: str) -> bool:
-    """Whether the ignored path is one of the REGENERABLE directories, or lies inside one.
+def regenerable_holders(path: str, worktree: str, entries: tuple[Regenerable, ...]) -> list[tuple[Regenerable, str]]:
+    """Each of the regenerable `entries` the ignored path is, or lies inside, with the directory it matched, from the
+    worktree, in forward slashes.
 
     The directory counts only when it and every directory from the worktree down to it is a plain directory, so
     nothing outside the worktree is reached through it, and, when its entry names projects, one of them sits beside
     it to rebuild it from.
     """
     parts = [part for part in path.replace(chr(92), "/").split("/") if part]
+    holders: list[tuple[Regenerable, str]] = []
     for start in range(len(parts)):
-        for name, projects in REGENERABLE.items():
-            components = name.split("/")
+        for entry in entries:
+            components = list(entry.directory)
             if parts[start : start + len(components)] != components:
                 continue
             holder = Path(worktree, *parts[:start])
             if not linkless_below(str(holder.joinpath(*components)), worktree):
                 continue
-            if not projects or any(entry.is_file() for pattern in projects for entry in holder.glob(pattern)):
-                return True
-    return False
+            if not entry.projects or any(
+                found.is_file() for pattern in entry.projects for found in holder.glob(pattern)
+            ):
+                holders.append((entry, "/".join(parts[: start + len(components)])))
+    return holders
+
+
+def is_regenerable(path: str, worktree: str, entries: tuple[Regenerable, ...]) -> bool:
+    """Whether the ignored path is one of the regenerable `entries`, or lies inside one."""
+    return bool(regenerable_holders(path, worktree, entries))
+
+
+def tracked_below(services: Services, worktree: str, directory: str) -> bool:
+    """Whether Git tracks a file at or below `directory` of the worktree, named literally, never as a pattern."""
+    return bool(git_output(services, worktree, "ls-files", "-z", "--", f":(literal){directory}"))
 
 
 def named(paths: list[str]) -> str:
@@ -927,19 +948,47 @@ def counted(count: int, noun: str) -> str:
     return f"{count} {noun}{'' if count == 1 else 's'}"
 
 
-def ignored_paths(services: Services, path: str) -> tuple[str, str]:
+def regenerable_under(
+    services: Services, path: str, entries: list[str], policy: Policy
+) -> tuple[set[str], dict[str, str]]:
+    """The ignored `entries` of the worktree at `path` that are regenerable under `policy`, and each added entry
+    refused here, as written, with the directory it matched that holds tracked files.
+
+    A shipped entry is used as it is. An added one is used only where the directory it matched holds no tracked file:
+    a directory Git tracks content in holds the user's work beside whatever it ignores.
+    """
+    regenerable: set[str] = set()
+    refused: dict[str, str] = {}
+    tracked: dict[str, bool] = {}
+    for ignored in entries:
+        holders = regenerable_holders(ignored, path, policy.regenerable)
+        if any(not entry.added for entry, _ in holders):
+            regenerable.add(ignored)
+            continue
+        for entry, directory in holders:
+            if directory not in tracked:
+                tracked[directory] = tracked_below(services, path, directory)
+            if not tracked[directory]:
+                regenerable.add(ignored)
+                break
+            refused.setdefault(entry.written(), directory)
+    return regenerable, refused
+
+
+def ignored_paths(services: Services, path: str, policy: Policy) -> tuple[str, str]:
     """Why a worktree's ignored files keep it, and what is deleted with it.
 
     git worktree remove counts a worktree holding only ignored files, such as a .env, as clean and deletes them, so
-    a worktree holding any ignored path that is not REGENERABLE is kept, and the reason names the paths. The second
-    string names the regenerable paths, present with the reason or, when they are all the worktree holds, alone with
-    an empty reason, so the removal can say what it deleted. Both are empty for a worktree with no ignored path.
+    a worktree holding any ignored path that is not regenerable under `policy` is kept, and the reason names the
+    paths, then each added entry refused because the directory it matched holds tracked files. The second string
+    names the regenerable paths, present with the reason or, when they are all the worktree holds, alone with an
+    empty reason, so the removal can say what it deleted. Both are empty for a worktree with no ignored path.
     """
     try:
         entries = ignored_entries(services, path)
+        regenerable, refused = regenerable_under(services, path, entries, policy)
     except CleanupError as exc:
         return str(exc), ""
-    regenerable = {entry for entry in entries if is_regenerable(entry, path)}
     kept = [entry for entry in entries if entry not in regenerable]
     rebuilt = [entry for entry in entries if entry in regenerable]
     disposed = f"deleted {counted(len(rebuilt), 'regenerable path')}: {named(rebuilt)}" if rebuilt else ""
@@ -948,6 +997,8 @@ def ignored_paths(services: Services, path: str) -> tuple[str, str]:
     reason = (
         f"worktree {path} holds {counted(len(kept), 'ignored path')} git worktree remove would delete: {named(kept)}"
     )
+    for written, directory in refused.items():
+        reason += f"; refused added regenerable entry {written}: {directory} holds tracked files"
     if rebuilt:
         reason += f"; also {counted(len(rebuilt), 'regenerable path')}: {named(rebuilt)}"
     return reason, disposed
@@ -1042,7 +1093,7 @@ def remove_checkout(services: Services, plan: dict[str, Any], path: str, name: s
     if held:
         record(plan, "PRESERVED", name, f"worktree {path} {held}")
         return "kept"
-    kept, disposed = ignored_paths(services, path)
+    kept, disposed = ignored_paths(services, path, policy_of(plan))
     if kept:
         record(plan, "PRESERVED", name, kept)
         return "kept"
@@ -1554,7 +1605,7 @@ def summary_lines(plan: dict[str, Any]) -> list[str]:
         summary_row("Dirty worktrees skipped", items["Dirty worktrees skipped"]),
         summary_row("PR status unverified", items["PR status unverified"], " (kept)"),
         summary_row("PR history unmatched", items["PR history unmatched"], " (kept)"),
-        f"  Protected release worktrees: {len(protected)} (preserved)",
+        f"  {'Protected worktrees:'.ljust(SUMMARY_WIDTH - 1)} {len(protected)} (preserved)",
     ]
     lines.extend(
         summary_row(label, items[label])
@@ -1643,7 +1694,12 @@ def applied_plan(path: Path | None) -> str | None:
 
 
 def sweep_repository(
-    root: str, repos_root: str, plans: str, services: Services, skip_checkout: bool = False
+    root: str,
+    repos_root: str,
+    plans: str,
+    services: Services,
+    skip_checkout: bool = False,
+    policy: Policy | None = None,
 ) -> dict[str, Any]:
     """sync, plan, and apply one repository, capturing its lines. Runs on a sweep worker thread."""
     lines: list[str] = []
@@ -1656,7 +1712,7 @@ def sweep_repository(
             dirty = any(line.split("\t")[0] == "DIRTY_MAIN" for line in lines)
             state = "dirty" if dirty else "fetch-failed"
         else:
-            plan = build_plan(root, repos_root, services, DefaultBranch(**synced["default"]))
+            plan = build_plan(root, repos_root, services, DefaultBranch(**synced["default"]), policy)
             plan["sync"] = synced
             plan_path = Path(plans) / f"{Path(root).name}.json"
             save_plan(plan_path, plan)
@@ -1693,8 +1749,25 @@ def passed_on(line: str, result: dict[str, Any]) -> bool:
     return kind in SWEEP_KINDS
 
 
+def policy_lines(policy: Policy) -> list[str]:
+    """The lines saying which lists the sweep used: POLICY, with `defaults` or `defaults+additions` and the shipped
+    file, then ADDED for each addition used and REFUSED_ENTRY for each refused one, with its reason."""
+    regenerable, protected = policy.added_regenerable(), list(policy.added_protected)
+    lists = "defaults+additions" if regenerable or protected else "defaults"
+    lines = [f"POLICY\t{lists}\t{cleanup_policy.POLICY_FILE.as_posix()}"]
+    lines += [f"ADDED\tregenerable\t{one_line(entry)}" for entry in regenerable]
+    lines += [f"ADDED\tprotected\t{one_line(prefix)}" for prefix in protected]
+    lines += [f"REFUSED_ENTRY\tregenerable\t{one_line(entry.entry)}\t{entry.reason}" for entry in policy.refused]
+    return lines
+
+
 def sweep(
-    target: str | None, repos_root: str, plans: Path | None, services: Services, skip_checkout: bool = False
+    target: str | None,
+    repos_root: str,
+    plans: Path | None,
+    services: Services,
+    skip_checkout: bool = False,
+    policy: Policy | None = None,
 ) -> int:
     """Clean every repository at once; print each one's decisions, failures, and summary in discovery order.
 
@@ -1702,16 +1775,22 @@ def sweep(
     nothing behind. Each repository is synced, planned, and applied in turn, re-checking every recorded branch tip.
     A failure in one repository never stops the others: every result is reported, and the sweep exits 1 when any
     repository needs the agent or Git refused a deletion or removal in one. skip_checkout cleans a dirty main worktree
-    without switching its branch.
+    without switching its branch. `policy`, the shipped lists alone when None, decides what a worktree's removal may
+    delete and which branches are protected; the lines naming it follow PLANS.
     """
+    policy = policy or cleanup_policy.configured()
     repositories = discover(target, repos_root, services)
     directory = plans or Path(tempfile.mkdtemp(prefix="repo-cleanup-plans-"))
-    entries = read_record(directory) if (directory / SWEEP_RECORD).exists() else []
+    entries = read_record(directory)[0] if (directory / SWEEP_RECORD).exists() else []
     emit("PLANS", directory.as_posix())
+    used = policy_lines(policy)
+    for line in used:
+        print(line)
     with ThreadPoolExecutor(max_workers=max(1, min(SWEEP_WORKERS, len(repositories)))) as pool:
         results = list(
             pool.map(
-                lambda root: sweep_repository(root, repos_root, str(directory), services, skip_checkout), repositories
+                lambda root: sweep_repository(root, repos_root, str(directory), services, skip_checkout, policy),
+                repositories,
             )
         )
     states: dict[str, int] = {}
@@ -1728,7 +1807,7 @@ def sweep(
         len(results),
         *(f"{state}={states.get(state, 0)}" for state in SWEEP_STATES),
     )
-    write_record(directory, entries, results)
+    write_record(directory, entries, results, used)
     return 0 if set(states) <= {"cleaned", "quiet"} and not any(result["refused"] for result in results) else 1
 
 
@@ -1742,9 +1821,12 @@ def recorded_lines(result: dict[str, Any]) -> list[str]:
     return [line for line in result["lines"] if line.split("\t")[0] in RECORDED_KINDS and passed_on(line, result)]
 
 
-def write_record(directory: Path, entries: list[dict[str, Any]], results: list[dict[str, Any]]) -> None:
+def write_record(
+    directory: Path, entries: list[dict[str, Any]], results: list[dict[str, Any]], policy: list[str]
+) -> None:
     """Record each swept repository's state and plan in the plans directory, replacing what an earlier sweep there
-    recorded for it, as sweeping a dirty repository again does, and keeping every other repository in its place."""
+    recorded for it, as sweeping a dirty repository again does, and keeping every other repository in its place, with
+    the lines naming the lists the latest sweep used."""
     for result in results:
         entry = {
             "root": result["root"],
@@ -1757,7 +1839,10 @@ def write_record(directory: Path, entries: list[dict[str, Any]], results: list[d
             entries.append(entry)
         else:
             entries[index] = entry
-    save_plan(directory / SWEEP_RECORD, {"schema_version": RECORD_SCHEMA_VERSION, "repositories": entries})
+    save_plan(
+        directory / SWEEP_RECORD,
+        {"schema_version": RECORD_SCHEMA_VERSION, "repositories": entries, "policy": policy},
+    )
 
 
 def is_entry(entry: Any) -> bool:
@@ -1771,7 +1856,9 @@ def is_entry(entry: Any) -> bool:
     )
 
 
-def read_record(directory: Path) -> list[dict[str, Any]]:
+def read_record(directory: Path) -> tuple[list[dict[str, Any]], list[str]]:
+    """The recorded repositories, and the lines naming the lists the latest sweep used, none for a record an earlier
+    version wrote."""
     path = directory / SWEEP_RECORD
     if not path.is_file():
         raise CleanupError(f"{directory} holds no sweep record; name the directory a sweep printed as PLANS")
@@ -1785,10 +1872,12 @@ def read_record(directory: Path) -> list[dict[str, Any]]:
         or record["schema_version"] != RECORD_SCHEMA_VERSION
         or not isinstance(record.get("repositories"), list)
         or not all(is_entry(entry) for entry in record["repositories"])
+        or not isinstance(record.get("policy", []), list)
+        or not all(isinstance(line, str) for line in record.get("policy", []))
     ):
         raise CleanupError(f"{path} is not a repo-cleanup sweep record")
     repositories: list[dict[str, Any]] = record["repositories"]
-    return repositories
+    return repositories, record.get("policy", [])
 
 
 def aborted_entries(entries: list[dict[str, Any]], aborted: list[str]) -> list[dict[str, Any]]:
@@ -1813,11 +1902,14 @@ def report(directory: Path, aborted: list[str]) -> int:
     """Print each repository's current summary, then the closing count, from what the sweeps there recorded.
 
     A plan's summary is its latest: every command saves it, and one that completes clears an earlier stop, which then
-    no longer counts as an error. Quiet repositories share one line.
+    no longer counts as an error. Quiet repositories share one line. The lines naming the lists the sweep used come
+    first, once the record and the plans are read, so a report that fails prints only its FAILED line.
     """
-    entries = read_record(directory)
+    entries, policy = read_record(directory)
     dropped = aborted_entries(entries, aborted)
     plans = {entry["root"]: load_plan(entry["plan"]) for entry in entries if entry["plan"]}
+    for line in policy:
+        print(line)
     quiet: list[str] = []
     failed = 0
     for entry in entries:
@@ -1862,6 +1954,15 @@ def build_parser() -> argparse.ArgumentParser:
     sweep_parser.add_argument(
         "--skip-checkout", action="store_true", help="clean a dirty main worktree without switching branches"
     )
+    sweep_parser.add_argument(
+        "--regenerable",
+        default="",
+        help="regenerable directories to add to the shipped list, separated by spaces, each <directory> or "
+        "<directory>:<project file>,<project file>",
+    )
+    sweep_parser.add_argument(
+        "--protected", default="", help="branch prefixes to protect beside the shipped ones, separated by spaces"
+    )
     sweep_parser.add_argument("target", nargs="?")
     commands.add_parser("summary").add_argument("--plan", required=True)
     report_parser = commands.add_parser("report")
@@ -1884,8 +1985,9 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
     services = services or Services()
     try:
         if options.command == "sweep":
+            policy = cleanup_policy.configured(options.regenerable, options.protected)
             plans = recorded_location(options.record) if options.record else plans_location(options.plans)
-            return sweep(options.target, options.repos_root, plans, services, options.skip_checkout)
+            return sweep(options.target, options.repos_root, plans, services, options.skip_checkout, policy)
         if options.command == "report":
             return report(Path(options.record), options.aborted)
         if options.command == "summary":

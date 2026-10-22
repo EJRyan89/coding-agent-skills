@@ -102,7 +102,10 @@ def require_variables(context: Context, selected: list[str]) -> None:
     missing: list[str] = []
     for name in selected:
         for variable in context.source.skills[name].required_vars:
-            if variable in config.DERIVED_VARIABLES or context.config.get(variable):
+            # An optional variable's empty value is its answer, so only another variable can be missing.
+            if variable in config.DERIVED_VARIABLES or variable in config.OPTIONAL_VARIABLES:
+                continue
+            if context.config.get(variable):
                 continue
             if variable not in missing:
                 missing.append(variable)
