@@ -1854,17 +1854,34 @@ def _nested_files(root: Path, name: str) -> list[Path]:
 # its project_doc_fallback_filenames setting names: it takes the first that exists, at most one per directory.
 CODEX_INSTRUCTION_FILES = ("AGENTS.override.md", "AGENTS.md")
 CODEX_FALLBACK_SETTING = "project_doc_fallback_filenames"
+# Codex stops adding instructions at this many bytes unless its configuration sets another value.
+CODEX_SIZE_SETTING = "project_doc_max_bytes"
+CODEX_DEFAULT_MAX_BYTES = 32 * 1024
+
+
+def _codex_config(root: Path) -> dict[str, Any]:
+    """The repository's .codex/config.toml, or nothing when it cannot be read; check_mcp reports that."""
+    try:
+        with (root / CODEX_CONFIG).open("rb") as handle:
+            return tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+        return {}
+
+
+def _codex_max_bytes(root: Path) -> int:
+    """The instruction size cap the repository's .codex/config.toml gives Codex, or Codex's default. A user's own
+    Codex configuration may set another, which a static audit cannot read."""
+    cap = _codex_config(root).get(CODEX_SIZE_SETTING)
+    if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0:
+        return cap
+    return CODEX_DEFAULT_MAX_BYTES
 
 
 def _codex_fallback_filenames(root: Path) -> list[str]:
     """The fallback names the repository's .codex/config.toml gives Codex, keeping only the plain file names Codex
-    keeps. A config that cannot be read names none; check_mcp reports it. A user's own Codex configuration may name
-    others, which a static audit cannot read."""
-    try:
-        with (root / CODEX_CONFIG).open("rb") as handle:
-            names = tomllib.load(handle).get(CODEX_FALLBACK_SETTING, [])
-    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
-        return []
+    keeps. A config that cannot be read names none. A user's own Codex configuration may name others, which a static
+    audit cannot read."""
+    names = _codex_config(root).get(CODEX_FALLBACK_SETTING, [])
     if not isinstance(names, list):
         return []
     return [
@@ -1901,8 +1918,37 @@ def _codex_layering_finding(severity: str, message: str, path: str | None = None
 
 
 def _layering_codex(root: Path, sources: InstructionSources) -> list[Finding]:
-    """The root file Codex loads, and whether CLAUDE.md reaches it through that file."""
+    """The root file Codex loads, whether CLAUDE.md reaches it through that file, and whether Codex reads it whole."""
     choice = _codex_choice(root, root, _codex_fallback_filenames(root))
+    findings = _codex_root_selection(sources, choice)
+    if choice is not None and choice[1]:
+        findings.extend(_codex_size(root, choice[0]))
+    return findings
+
+
+def _codex_size(root: Path, name: str) -> list[Finding]:
+    """A root file over the cap is read in part. A user's own Codex configuration may raise the cap, so the finding is
+    a warning; a file behind a link that leads out of the root, or one that cannot be read, is not measured."""
+    path = root / name
+    if leaves_root(root, path):
+        return []
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return []
+    cap = _codex_max_bytes(root)
+    if size <= cap:
+        return []
+    return _codex_layering_finding(
+        "WARNING",
+        f"Codex: the root {name} is {size} bytes, over the {cap}-byte {CODEX_SIZE_SETTING} cap"
+        f" — Codex reads only its first {cap} bytes",
+        name,
+    )
+
+
+def _codex_root_selection(sources: InstructionSources, choice: tuple[str, bool] | None) -> list[Finding]:
+    """The root file Codex chooses, and whether CLAUDE.md reaches it through that file."""
     if choice is None:
         if sources.claude_md:
             return _codex_layering_finding(

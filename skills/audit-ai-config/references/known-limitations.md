@@ -53,7 +53,7 @@ Deterministic reconstruction covers AGENTS.md, skill shims, and copilot-instruct
 
 ## Instruction-layering analysis is incomplete
 
-Surface resolvers exist for Codex, Copilot CLI/app, JetBrains, cloud agent, code review, and VS Code. Codex nested files use correct additive-chain semantics for `AGENTS.override.md` and `AGENTS.md`; the fallback names a repository's `.codex/config.toml` gives Codex are read for the root only, and the fallback names a user's own Codex configuration gives cannot be read. The engine does not judge whether effective sources contradict or overlap, including path-specific instructions; the skill asks the agent to review that content as a separate, labelled assessment.
+Surface resolvers exist for Codex, Copilot CLI/app, JetBrains, cloud agent, code review, and VS Code. Codex nested files use correct additive-chain semantics for `AGENTS.override.md` and `AGENTS.md`; the fallback names a repository's `.codex/config.toml` gives Codex are read for the root only, and the fallback names a user's own Codex configuration gives cannot be read. The size cap is held for the root file only, not for the chain of nested files Codex adds below it, and against the cap the repository's `.codex/config.toml` sets, never one a user's own configuration sets. The engine does not judge whether effective sources contradict or overlap, including path-specific instructions; the skill asks the agent to review that content as a separate, labelled assessment.
 
 ## Copilot configuration is static, not operational
 
