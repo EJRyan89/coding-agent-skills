@@ -61,11 +61,18 @@ SEVERITY_ORDER = {"ERROR": 0, "WARNING": 1, "INFO": 2}
 # Every check a finding can name, each with an entry in references/provenance.json naming the guidance it derives from.
 CHECKS = frozenset(
     {
+        "agent-skill",
         "authority",
         "behavioral",
+        "claude-agent",
         "claude-hook",
         "claude-memory",
         "claude-settings",
+        "claude-skill",
+        "codex-agent",
+        "codex-hook",
+        "codex-rule",
+        "codex-skill",
         "collision",
         "copilot-agent",
         "copilot-config",
@@ -395,6 +402,7 @@ INVENTORY_FILES: list[str] = [
     "GEMINI.md",
     "REVIEW.md",
     ".codex/config.toml",
+    ".codex/hooks.json",
     ".mcp.json",
     ".github/mcp.json",
     ".vscode/mcp.json",
@@ -430,6 +438,7 @@ def check_inventory(root: Path) -> list[Finding]:
         *_inventory_skill_directories(root),
         *_inventory_agent_directories(root),
         *_inventory_claude_rules(root),
+        *_inventory_codex_folders(root),
         *_inventory_path_instructions(root),
         *_inventory_generator_scripts(root),
         *_inventory_parity_workflows(root),
@@ -524,6 +533,17 @@ def _inventory_claude_rules(root: Path) -> list[Finding]:
         return []
     rules = sorted(path.relative_to(base).as_posix() for path in walk_files(root, base, _is_markdown).paths)
     return [_inventory_finding(".claude/rules", f"Rules found: {', '.join(rules)}")] if rules else []
+
+
+def _inventory_codex_folders(root: Path) -> list[Finding]:
+    """Codex's custom agents and rules, the files directly in .codex/agents and .codex/rules its pages describe; the
+    Codex checks report a link either listing skips."""
+    findings: list[Finding] = []
+    for folder, pattern, kind in ((".codex/agents", "*.toml", "Custom agents"), (".codex/rules", "*.rules", "Rules")):
+        names = [path.name for path in _codex_files(root, folder, pattern).paths]
+        if names:
+            findings.append(_inventory_finding(folder, f"{kind} found: {', '.join(names)}"))
+    return findings
 
 
 def _is_markdown(name: str) -> bool:
@@ -922,6 +942,8 @@ def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Fi
             findings.extend(_validate_skill(path, root))
             if skill_dir == ".github/skills":
                 findings.extend(_provenance(path, path.relative_to(root).as_posix(), "skill", manifest_paths))
+            else:
+                findings.extend(_agent_skill_rules(path, root, skill_dir))
     for agent_dir in (".github/agents", ".claude/agents"):
         directory = root / agent_dir
         if not directory.is_dir():
@@ -935,9 +957,184 @@ def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Fi
             continue
         findings.extend(outside_link_findings(root, listing))
         for path in (p for p in listing.paths if p.is_file()):
-            findings.extend(_validate_agent(path, root))
+            if agent_dir == ".claude/agents":
+                # Claude Code's sub-agents page reads a project agent from a Markdown file here; Copilot documents
+                # no agent location but .github/agents.
+                if path.suffix != ".md":
+                    continue
+                findings.extend(_validate_claude_agent(path, root))
+            else:
+                findings.extend(_validate_agent(path, root))
             findings.extend(_provenance(path, path.relative_to(root).as_posix(), "agent", manifest_paths))
     return findings
+
+
+# The Agent Skills field requirements Anthropic's skills overview and best-practices pages give: a name of at most 64
+# characters without XML tags or the reserved words, and a description of at most 1,024 characters without XML tags.
+AGENT_SKILL_NAME_MAX = 64
+AGENT_SKILL_DESCRIPTION_MAX = 1024
+AGENT_SKILL_RESERVED_WORDS = ("anthropic", "claude")
+XML_TAG = re.compile(r"</?[A-Za-z][\w:.-]*(?:\s[^<>]*)?/?>")
+CODEX_SKILL_POLICY = "agents/openai.yaml"
+
+
+def _agent_skill_rules(path: Path, root: Path, skill_dir: str) -> list[Finding]:
+    """A skill under .claude/skills or .agents/skills, judged by the rules of the runtimes that read its folder
+    besides Copilot: the Agent Skills field requirements for both, Claude Code's for .claude/skills, and Codex's for
+    .agents/skills. The frontmatter's own problems are _validate_skill's findings."""
+    rel = path.relative_to(root).as_posix()
+    values, _ = _frontmatter(path)
+    name = _text(values, "name")
+    description = _text(values, "description").strip()
+    findings: list[Finding] = []
+    if len(name) > AGENT_SKILL_NAME_MAX:
+        findings.append(
+            Finding("ERROR", "agent-skill", rel, message=f"Skill name is over {AGENT_SKILL_NAME_MAX} characters")
+        )
+    reserved = [word for word in AGENT_SKILL_RESERVED_WORDS if word in name.lower()]
+    if reserved:
+        findings.append(
+            Finding("ERROR", "agent-skill", rel, message=f"Skill name contains the reserved word '{reserved[0]}'")
+        )
+    findings.extend(
+        Finding("ERROR", "agent-skill", rel, message=f"Skill {key} contains an XML tag")
+        for key, value in (("name", name), ("description", description))
+        if XML_TAG.search(value)
+    )
+    if len(description) > AGENT_SKILL_DESCRIPTION_MAX:
+        findings.append(
+            Finding(
+                "ERROR",
+                "agent-skill",
+                rel,
+                message=f"Skill description is {len(description)} characters, over {AGENT_SKILL_DESCRIPTION_MAX}",
+            )
+        )
+    if skill_dir == ".claude/skills":
+        findings.extend(_claude_skill_rules(path, rel, values))
+    else:
+        findings.extend(_codex_skill_rules(path, root, rel, values))
+    return findings
+
+
+def _claude_skill_rules(path: Path, rel: str, values: dict[str, FrontmatterValue]) -> list[Finding]:
+    """A skill that reads $ARGUMENTS without the argument-hint Claude Code shows during autocomplete."""
+    body = read_text_or_none(path) or ""
+    if "$ARGUMENTS" not in body.split("---", 2)[-1] or _text(values, "argument-hint").strip():
+        return []
+    return [
+        Finding(
+            "WARNING",
+            "claude-skill",
+            rel,
+            message="Skill reads $ARGUMENTS but gives no argument-hint, so Claude Code's autocomplete shows no "
+            "expected arguments",
+        )
+    ]
+
+
+def _is_true(value: FrontmatterValue | None) -> bool:
+    return isinstance(value, str) and value.strip().lower() == "true"
+
+
+def _codex_skill_rules(path: Path, root: Path, rel: str, values: dict[str, FrontmatterValue]) -> list[Finding]:
+    """A skill Codex reads from .agents/skills: whether a user-only skill keeps Codex from invoking it, and whether a
+    shim says what the .claude/skills skill it stands for says."""
+    findings: list[Finding] = []
+    canonical_path = root / ".claude/skills" / path.parent.name / "SKILL.md"
+    canonical: dict[str, FrontmatterValue] = _frontmatter(canonical_path)[0] if canonical_path.is_file() else {}
+    user_only = _is_true(values.get("disable-model-invocation")) or _is_true(canonical.get("disable-model-invocation"))
+    if user_only:
+        implicit, problem = _codex_implicit_invocation(path.parent / CODEX_SKILL_POLICY)
+        if problem:
+            policy_rel = (path.parent / CODEX_SKILL_POLICY).relative_to(root).as_posix()
+            findings.append(Finding("ERROR", "codex-skill", policy_rel, message=problem))
+        elif implicit:
+            findings.append(
+                Finding(
+                    "WARNING",
+                    "codex-skill",
+                    rel,
+                    message="Skill is user-only (disable-model-invocation: true), which Codex does not read; without "
+                    f"{CODEX_SKILL_POLICY} setting policy.allow_implicit_invocation: false, Codex may invoke it on "
+                    "its own",
+                )
+            )
+    shim_description = _text(values, "description").strip()
+    canonical_description = _text(canonical, "description").strip()
+    if canonical and shim_description and canonical_description and shim_description != canonical_description:
+        findings.append(
+            Finding(
+                "WARNING",
+                "codex-skill",
+                rel,
+                message=f"Skill description differs from .claude/skills/{path.parent.name}/SKILL.md, the skill it "
+                "stands for, so Codex and Copilot choose it on other words than Claude Code",
+            )
+        )
+    return findings
+
+
+POLICY_BLOCK = re.compile(r"^policy:[ \t]*(?:#.*)?\n((?:[ \t]+.*(?:\n|$)|[ \t]*(?:\n|$))*)", re.MULTILINE)
+POLICY_FLOW = re.compile(r"^policy:[ \t]*\{([^}]*)\}", re.MULTILINE)
+IMPLICIT_FALSE = re.compile(r"(?:^|[\s,{])allow_implicit_invocation:[ \t]*false\b", re.MULTILINE)
+
+
+def _codex_implicit_invocation(policy: Path) -> tuple[bool, str | None]:
+    """Whether Codex may invoke the skill on its own, which its skills page makes the default unless
+    agents/openai.yaml sets policy.allow_implicit_invocation to false, and a problem reading that file."""
+    if not policy.is_file():
+        return True, None
+    text = read_text_or_none(policy)
+    if text is None:
+        return True, f"Could not read {CODEX_SKILL_POLICY}, so the skill's invocation policy was not checked"
+    blocks = [match.group(1) for match in (*POLICY_BLOCK.finditer(text), *POLICY_FLOW.finditer(text))]
+    return not any(IMPLICIT_FALSE.search(block) for block in blocks), None
+
+
+# Claude Code's sub-agents page: a project agent's name, which need not match its file, is at most 256 characters,
+# holds no ':', and does not start with '-', or Claude Code skips the file.
+CLAUDE_AGENT_NAME_MAX = 256
+
+
+def _validate_claude_agent(path: Path, root: Path) -> list[Finding]:
+    """A Claude Code project agent, read with the fields Claude Code's sub-agents page gives it, and an INFO naming
+    what it may do: its tools, model, and hooks."""
+    rel = path.relative_to(root).as_posix()
+    values, findings = _frontmatter(path)
+    for finding in findings:
+        finding.path, finding.check = rel, "claude-agent"
+    if findings and not values:
+        return findings  # unreadable, or no frontmatter to judge
+    name = _text(values, "name").strip()
+    if not name:
+        findings.append(Finding("ERROR", "claude-agent", rel, message="Agent frontmatter requires name"))
+    elif len(name) > CLAUDE_AGENT_NAME_MAX or ":" in name or name.startswith("-"):
+        findings.append(
+            Finding(
+                "ERROR",
+                "claude-agent",
+                rel,
+                message=f"Agent name must be at most {CLAUDE_AGENT_NAME_MAX} characters, hold no ':', and not start "
+                "with '-', or Claude Code skips the file",
+            )
+        )
+    if not _text(values, "description").strip():
+        findings.append(Finding("ERROR", "claude-agent", rel, message="Agent frontmatter requires description"))
+    if findings:
+        return findings
+    tools = values.get("tools")
+    granted = ", ".join(tools) if isinstance(tools, list) else tools if isinstance(tools, str) and tools else None
+    hooks = "its own hooks" if "hooks" in values else "no hooks of its own"
+    model = _text(values, "model") or "the default model"
+    return [
+        Finding(
+            "INFO",
+            "claude-agent",
+            rel,
+            message=f"Claude Code agent '{name}': tools {granted or 'every tool (inherited)'}; {model}; {hooks}",
+        )
+    ]
 
 
 def derive_generator_scope(root: Path) -> tuple[dict[str, list[str]] | None, str]:
@@ -2688,6 +2885,179 @@ def _rule_scope(path: Path, rel: str, text: str) -> list[Finding]:
 
 
 # ---------------------------------------------------------------------------
+# Codex's project configuration
+# ---------------------------------------------------------------------------
+
+CODEX_HOOKS_FILE = ".codex/hooks.json"
+CODEX_AGENTS = ".codex/agents"
+CODEX_RULES = ".codex/rules"
+CODEX_HOOKS = HookRules(
+    runtime="Codex",
+    events=frozenset(
+        {
+            "PreToolUse",
+            "PermissionRequest",
+            "PostToolUse",
+            "PreCompact",
+            "PostCompact",
+            "UserPromptSubmit",
+            "SubagentStop",
+            "Stop",
+            "Interrupt",
+            "SessionStart",
+            "SubagentStart",
+            "SessionEnd",
+        }
+    ),
+    types=None,
+    short_timeout_events=frozenset({"SessionEnd", "Interrupt"}),
+    long_timeout_types=frozenset({"command"}),
+    on_failure=False,
+)
+# The fields Codex's subagents page requires of a custom agent file, and the session settings it says such a file
+# cannot override.
+CODEX_AGENT_REQUIRED = ("name", "description", "developer_instructions")
+CODEX_AGENT_IGNORED = ("sandbox_mode", "approval_policy", "model_provider", "mcp_servers")
+CODEX_RULE_DECISIONS = ("allow", "prompt", "forbidden")
+
+
+def check_codex(root: Path) -> list[Finding]:
+    """Codex's project configuration under .codex beside config.toml: its hooks, custom agents, and rules, each of
+    which Codex loads once the project's .codex layer is trusted."""
+    return [*_codex_hooks(root), *_codex_agents(root), *_codex_rules(root)]
+
+
+def _codex_hooks(root: Path) -> list[Finding]:
+    """Hooks from .codex/hooks.json and from the [hooks] tables of .codex/config.toml, which Codex merges, warning at
+    startup, when one layer holds both. check_mcp reports a config.toml that does not parse."""
+    findings: list[Finding] = []
+    path = root / CODEX_HOOKS_FILE
+    file_hooks = None
+    if path.is_file():
+        try:
+            data = json.loads(read_text(path))
+        except (json.JSONDecodeError, OSError, UnicodeError) as error:
+            return [Finding("ERROR", "codex-hook", CODEX_HOOKS_FILE, message=f"Could not read or parse: {error}")]
+        if not isinstance(data, dict):
+            return [Finding("ERROR", "codex-hook", CODEX_HOOKS_FILE, message="Top-level value must be an object")]
+        file_hooks = data.get("hooks")
+        findings.extend(
+            Finding(severity, "codex-hook", CODEX_HOOKS_FILE, message=message)
+            for severity, message in hook_problems(CODEX_HOOKS, file_hooks)
+        )
+    table_hooks = _codex_config(root).get("hooks")
+    findings.extend(
+        Finding(severity, "codex-hook", CODEX_CONFIG, message=message)
+        for severity, message in hook_problems(CODEX_HOOKS, table_hooks)
+    )
+    if file_hooks is not None and table_hooks is not None:
+        findings.append(
+            Finding(
+                "WARNING",
+                "codex-hook",
+                CODEX_HOOKS_FILE,
+                message="Hooks are configured in both .codex/hooks.json and .codex/config.toml; Codex merges them "
+                "and warns at startup",
+            )
+        )
+    return findings
+
+
+def _codex_files(root: Path, folder: str, pattern: str) -> Listing:
+    """The files directly in one of Codex's folders that match `pattern`, or none when it cannot be listed."""
+    directory = root / folder
+    if not directory.is_dir():
+        return Listing()
+    try:
+        listing = list_directory(root, directory, pattern)
+    except OSError:
+        return Listing()
+    return Listing([path for path in listing.paths if path.is_file()], listing.outside)
+
+
+def _codex_agents(root: Path) -> list[Finding]:
+    """Each custom agent TOML file: one that does not parse, a required field it lacks, and a session setting it
+    sets that Codex ignores there."""
+    listing = _codex_files(root, CODEX_AGENTS, "*.toml")
+    findings = outside_link_findings(root, listing)
+    for path in listing.paths:
+        rel = path.relative_to(root).as_posix()
+        try:
+            with path.open("rb") as handle:
+                agent = tomllib.load(handle)
+        except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
+            findings.append(Finding("ERROR", "codex-agent", rel, message=f"Could not read or parse: {error}"))
+            continue
+        findings.extend(
+            Finding("ERROR", "codex-agent", rel, message=f"Custom agent requires {key}")
+            for key in CODEX_AGENT_REQUIRED
+            if not (isinstance(agent.get(key), str) and agent[key].strip())
+        )
+        findings.extend(
+            Finding(
+                "WARNING",
+                "codex-agent",
+                rel,
+                message=f"{key} has no effect in a custom agent file; the parent session's setting applies",
+            )
+            for key in CODEX_AGENT_IGNORED
+            if key in agent
+        )
+    return findings
+
+
+def _codex_rules(root: Path) -> list[Finding]:
+    """Each rules file, read as the Starlark it is with Python's parser, which never runs it: one that does not parse,
+    and each prefix_rule, whose decision defaults to allow, that lets a command run outside the sandbox."""
+    listing = _codex_files(root, CODEX_RULES, "*.rules")
+    findings = outside_link_findings(root, listing)
+    for path in listing.paths:
+        rel = path.relative_to(root).as_posix()
+        try:
+            tree = ast.parse(read_text(path), filename=rel)
+        except (OSError, SyntaxError, ValueError) as error:  # ValueError covers UnicodeError and a null byte
+            findings.append(Finding("ERROR", "codex-rule", rel, message=f"Could not read or parse: {error}"))
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "prefix_rule":
+                findings.extend(
+                    Finding(severity, "codex-rule", rel, node.lineno, message)
+                    for severity, message in _prefix_rule_problems(node)
+                )
+    return findings
+
+
+def _literal(node: ast.expr | None) -> Any:
+    """A node's literal value, or the node itself when it is not a literal."""
+    if node is None:
+        return None
+    try:
+        return ast.literal_eval(node)
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        return node
+
+
+def _prefix_rule_problems(call: ast.Call) -> list[tuple[str, str]]:
+    keywords = {keyword.arg: keyword.value for keyword in call.keywords if keyword.arg}
+    pattern = _literal(keywords.get("pattern"))
+    decision = _literal(keywords.get("decision")) if "decision" in keywords else "allow"
+    if not isinstance(pattern, list) or not pattern:
+        return [("ERROR", "prefix_rule needs a non-empty literal pattern list")]
+    if decision not in CODEX_RULE_DECISIONS:
+        return [("ERROR", "prefix_rule decision must be 'allow', 'prompt', or 'forbidden'")]
+    if decision != "allow":
+        return []
+    shown = " ".join(token if isinstance(token, str) else str(token) for token in pattern)
+    return [
+        (
+            "WARNING",
+            f"prefix_rule allows '{shown}' to run outside the sandbox without prompting, for everyone who trusts "
+            "this project",
+        )
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Check 7: Behavioral constraints
 # ---------------------------------------------------------------------------
 
@@ -2945,6 +3315,7 @@ def _authority_and_checks(root: Path, result: AuditResult) -> None:
 
     result.findings.extend(check_copilot_configuration(root, manifest or {}))
     result.findings.extend(check_claude_code(root))
+    result.findings.extend(check_codex(root))
 
     # Step 7: Behavioral constraints
     result.findings.extend(check_behavioral_constraints(root))
