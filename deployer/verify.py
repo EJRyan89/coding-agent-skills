@@ -30,6 +30,11 @@ EXPOSED_DETAIL = f"Codex offers it to the model, though only the user starts it;
 SUPPORT = {"codex": "docs/codex-support.md", "copilot": "docs/copilot-support.md"}
 # The line that names each runtime verify failed for, which the deployable workflow's report reads back.
 FAILED_FOR = "Verification failed for "
+# Each probe's failure has its own sentence, so a reader knows which command to rerun by itself.
+LISTING_FAILED = "Cannot list its skills: "
+CATALOG_FAILED = (
+    f"Listed its skills, but cannot read which ones it offers the model (codex {' '.join(discovery.CODEX_CATALOG)}): "
+)
 
 
 def _section(label: str, text: str) -> None:
@@ -95,6 +100,26 @@ def expose(lines: list[ReportLine], hidden: list[str], catalog: Listing, adapter
     ]
 
 
+def runtime_report(
+    runtime: str, executable: str, names: list[str], adapters: Path, workdir: Path, environment: Mapping[str, str]
+) -> list[ReportLine] | str:
+    """The runtime's report lines, or the sentence that says which of its probes failed: the listing, or, for Codex
+    with a user-only adapter deployed, the catalog of the skills it offers the model."""
+    try:
+        discovered = discovery.discover(runtime, executable, workdir, environment)
+    except ListingError as exc:
+        return f"{LISTING_FAILED}{exc}"
+    lines = runtime_lines(names, discovered.listing, adapters, discovered.refused)
+    hidden = user_only(names, adapters) if runtime == "codex" else []
+    if not hidden:
+        return lines
+    try:
+        catalog = discovery.codex_catalog(executable, workdir, environment)
+    except ListingError as exc:
+        return f"{CATALOG_FAILED}{exc}"
+    return expose(lines, hidden, catalog, adapters)
+
+
 def run(arguments: list[str], paths: Paths, environment: Mapping[str, str] | None = None) -> int:
     """`python deploy.py verify` with these arguments."""
     namespace = parse_command([VERIFY_COMMAND, *arguments])
@@ -138,15 +163,9 @@ def _verify(names: list[str], paths: Paths, environment: dict[str, str]) -> int:
                 )
                 problems.append(runtime)
                 continue
-            try:
-                discovered = discovery.discover(runtime, probe.path, workdir, environment)
-                lines = runtime_lines(names, discovered.listing, adapters, discovered.refused)
-                hidden = user_only(names, adapters) if runtime == "codex" else []
-                if hidden:
-                    catalog = discovery.codex_catalog(probe.path, workdir, environment)
-                    lines = expose(lines, hidden, catalog, adapters)
-            except ListingError as exc:
-                _section(label, f"Cannot list its skills: {exc}")
+            lines = runtime_report(runtime, probe.path, names, adapters, workdir, environment)
+            if isinstance(lines, str):
+                _section(label, lines)
                 problems.append(runtime)
                 continue
             print_report(label.upper(), VERIFY_ACTIONS, lines)
