@@ -4,7 +4,9 @@ A skill's `deploy-meta/<name>.json` may declare `runtime_support`, one value per
 an object whose `level` is `partial` or `none`, whose `reason` says in one line what the user loses, and whose `needs`
 names the capabilities from CAPABILITIES the runtime lacks for it. Repository validation derives each skill's needs
 from its frontmatter and holds the declaration to them; tools/skill_reference.py prints the matrix and
-tools/runtime_canary.py checks it against what each runtime ran.
+tools/runtime_canary.py checks it against what each runtime ran. It lives in ejryan89-skill-core because audit-skill's
+script reads a declaration and derives the needs the same way, wherever the skill it audits comes from, and a skill's
+script imports nothing from the deployer.
 """
 
 from __future__ import annotations

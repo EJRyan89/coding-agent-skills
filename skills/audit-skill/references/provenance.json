@@ -1,5 +1,33 @@
 {
   "checks": {
+    "AGENT_HOOK": [
+      {
+        "page": "https://code.claude.com/docs/en/hooks",
+        "passage": "A PreToolUse hook runs before every tool call its matcher matches, and a command hook's timeout defaults to 600 seconds."
+      },
+      {
+        "page": "https://code.claude.com/docs/en/sub-agents",
+        "passage": "Hooks in a subagent's frontmatter run only while that subagent is active and are cleaned up when it finishes."
+      },
+      {
+        "page": "https://code.claude.com/docs/en/hooks",
+        "passage": "A plugin's hooks in hooks/hooks.json apply when the plugin is enabled, merged with the user's and the project's hooks."
+      }
+    ],
+    "AGENT_UNDECLARED": [
+      {
+        "decision": "A skill declares in agent_deps, directly or through a skill it depends on, every agent it starts, which the deployer then installs to ~/.claude/agents: Metadata in this source's docs/adding-a-skill.md."
+      }
+    ],
+    "AGENT_UNDEFINED": [
+      {
+        "page": "https://code.claude.com/docs/en/sub-agents",
+        "passage": "The general-purpose subagent has every tool available to subagents, where a defined subagent has the tools, model, and hooks its definition gives."
+      },
+      {
+        "decision": "A review skill that finds no code-review-reviewer type starts a general-purpose subagent instead, so a type no definition provides is that fallback on every run: the reviewer guard among the trust boundaries in this source's docs/design.md."
+      }
+    ],
     "BODY_OVER_500_LINES": [
       {
         "page": "https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices",
@@ -144,10 +172,32 @@
         "decision": "Runtime guidance such as a tool mapping is a shared asset the runtime adapters point to and SKILL.md never names, so Claude spends no read on it: Shared assets in this source's docs/adding-a-skill.md."
       }
     ],
+    "PINNED_SUBAGENT": [
+      {
+        "page": "https://code.claude.com/docs/en/sub-agents",
+        "passage": "A subagent's model is the per-invocation model, else its definition's model, where inherit selects the main conversation's, and its effort overrides the session's."
+      },
+      {
+        "decision": "A skill pins no model, and a reviewer's model or effort setting changes only with a before-and-after comparison of real reviews, since a cheaper model or lower effort can miss findings without any visible failure: this source's docs/design.md."
+      }
+    ],
     "REPLY_BOUNDED": [
       {
         "page": "https://code.claude.com/docs/en/sub-agents",
         "passage": "A subagent's final message returns to the main conversation as its result, so its length is context the main conversation keeps."
+      }
+    ],
+    "RUNTIME_OVERCLAIMED": [
+      {
+        "page": "https://docs.github.com/en/copilot/reference/hooks-configuration",
+        "passage": "Hook timeouts are always fail-open, even for preToolUse hooks, so a timed-out hook lets the tool call proceed."
+      },
+      {
+        "page": "https://learn.chatgpt.com/docs/hooks",
+        "passage": "When a hook's output is not one Codex supports, Codex marks the hook run as failed, reports the error, and continues the tool call."
+      },
+      {
+        "decision": "A skill's runtime_support is full on a runtime only when the runtime offers every capability the skill's grants, a hooked agent it starts, its network tools, and its network git commands need, the capabilities ejryan89-skill-core's runtime_support.py catalogues: Metadata in this source's docs/adding-a-skill.md, and the decision in docs/design.md that reviewers run under the guard only on a runtime that blocks a tool call when its hook fails."
       }
     ],
     "RUNTIME_PROMPT": [
@@ -181,6 +231,15 @@
       },
       {
         "decision": "A skill grants every script it runs, its own and its siblings', by name: Granting tools in this source's docs/adding-a-skill.md."
+      }
+    ],
+    "UNGUARDED_SUBAGENT": [
+      {
+        "page": "https://code.claude.com/docs/en/sub-agents",
+        "passage": "The general-purpose subagent has every tool available to subagents."
+      },
+      {
+        "decision": "A subagent that reads untrusted text runs as a defined type whose PreToolUse hook binds it to its task and blocks a call when the hook fails: the reviewer guard among the trust boundaries in this source's docs/design.md."
       }
     ],
     "UNPAIRED_ALLOWED": [

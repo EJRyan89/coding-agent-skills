@@ -97,5 +97,15 @@
         [130, "untrusted-after-contract"]
       ]
     }
+  },
+  "unguarded-subagent": {
+    "review-insights": {
+      "pull_request": 1410,
+      "commit": "666527fb7ca3072834a659a6e883dcdcfadadc45",
+      "path": "skills/review-insights/SKILL.md",
+      "skill_deps": ["ejryan89-code-review-core"],
+      "agent": "code-review-reviewer",
+      "line": 29
+    }
   }
 }
