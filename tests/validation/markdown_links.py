@@ -7,6 +7,7 @@ from __future__ import annotations
 import ast
 import re
 import unittest
+from collections.abc import Iterator
 from pathlib import Path
 
 from validation_support import (
@@ -85,18 +86,60 @@ THREAT_MODEL_HEADING = "## Threat model"
 THREAT_MODEL_SUITES = "skills/ejryan89-code-review-core/scripts"
 # The suite that holds the threat model one row at a time: every row names at least one of its tests.
 THREAT_MODEL_ADVERSARIAL_SUITE = "test_adversarial_inputs.py"
-CITED_TEST = re.compile(r"`(test_[\w-]+\.py)::(test_\w+)`")
+# A cited test, `<suite>::<test>`, and a cited class, the `<class>` cases in `<suite>`. A suite named by its file name
+# alone is under THREAT_MODEL_SUITES; one with a directory is from the repository root.
+CITED_SUITE = r"((?:[\w.-]+/)*test_[\w-]+\.py)"
+CITED_TEST = re.compile(rf"`{CITED_SUITE}::(\w+)`")
+CITED_CLASS = re.compile(rf"`(\w+)` cases in `{CITED_SUITE}`")
+
+
+def _definitions(body: list[ast.stmt]) -> Iterator[ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef]:
+    """The functions and classes a module or class body defines, those under an `if`, `try`, or `with` included, and
+    never one nested in a function."""
+    for node in body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            yield node
+        else:
+            for field in ("body", "orelse", "finalbody"):
+                yield from _definitions(getattr(node, field, []))
+            for handler in getattr(node, "handlers", []):
+                yield from _definitions(handler.body)
+
+
+def _test_names(body: list[ast.stmt]) -> set[str]:
+    return {
+        node.name
+        for node in _definitions(body)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test")
+    }
+
+
+def _suite_tests(path: Path, root: Path, problems: list[str]) -> tuple[set[str], set[str]]:
+    """The test functions and the test classes a suite defines: a module-level function or a class's method named
+    `test...`, and a module-level class that defines such a method. A helper is neither."""
+    functions: set[str] = set()
+    classes: set[str] = set()
+    for _, _, tree in python_trees([path], root, problems):
+        functions |= _test_names(tree.body)
+        for node in _definitions(tree.body):
+            if isinstance(node, ast.ClassDef):
+                methods = _test_names(node.body)
+                if methods:
+                    functions |= methods
+                    classes.add(node.name)
+    return functions, classes
 
 
 def threat_model_test_problems(root: Path) -> list[str]:
-    """Report each row of the code-review threat model that names no test in test_adversarial_inputs.py, and each
-    `<suite>::<test>` it names that is not a test function in that suite under
+    """Report each row of the code-review threat model that names no test in test_adversarial_inputs.py, each
+    `<suite>::<test>` it names that is not a test function in that suite, and each `<class>` whose cases it cites
+    that is not a test class there. A suite named by its file name alone is under
     skills/ejryan89-code-review-core/scripts/."""
     section = markdown_section((root / THREAT_MODEL_DOC).read_text(encoding="utf-8"), THREAT_MODEL_HEADING)
     rows = [line for line in (section or "").split("\n") if line.startswith("|")][2:]
     if not rows:
         return [f"{THREAT_MODEL_DOC} has no table under {THREAT_MODEL_HEADING!r}"]
-    defined: dict[str, set[str] | None] = {}
+    defined: dict[str, tuple[set[str], set[str]] | None] = {}
     problems: list[str] = []
     for row in rows:
         cited = CITED_TEST.findall(row)
@@ -105,26 +148,19 @@ def threat_model_test_problems(root: Path) -> list[str]:
                 f"{THREAT_MODEL_DOC}: the threat-model row {row.split('|')[1].strip()!r} names no test in "
                 f"{THREAT_MODEL_ADVERSARIAL_SUITE}"
             )
-        for suite, test in cited:
+        citations = [(suite, test, "test") for suite, test in cited]
+        citations += [(suite, name, "class") for name, suite in CITED_CLASS.findall(row)]
+        for suite, name, kind in citations:
+            location = suite if "/" in suite else f"{THREAT_MODEL_SUITES}/{suite}"
             if suite not in defined:
-                path = root / THREAT_MODEL_SUITES / suite
-                defined[suite] = (
-                    {
-                        node.name
-                        for _, _, tree in python_trees([path], root, problems)
-                        for node in ast.walk(tree)
-                        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                    }
-                    if path.is_file()
-                    else None
-                )
-            names = defined[suite]
-            if names is None:
-                problems.append(
-                    f"{THREAT_MODEL_DOC} names {suite}::{test}, but {THREAT_MODEL_SUITES}/{suite} does not exist"
-                )
-            elif test not in names:
-                problems.append(f"{THREAT_MODEL_DOC} names {suite}::{test}, which {suite} does not define")
+                path = root / location
+                defined[suite] = _suite_tests(path, root, problems) if path.is_file() else None
+            tests = defined[suite]
+            cited_as = f"{suite}::{name}" if kind == "test" else f"the {name} cases in {suite}"
+            if tests is None:
+                problems.append(f"{THREAT_MODEL_DOC} names {cited_as}, but {location} does not exist")
+            elif name not in tests[0 if kind == "test" else 1]:
+                problems.append(f"{THREAT_MODEL_DOC} names {cited_as}, which {suite} does not define as a {kind}")
     return problems
 
 
