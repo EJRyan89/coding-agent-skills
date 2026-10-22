@@ -35,8 +35,9 @@
 #                    <commit> when the deployer refused to replace a deployment made with `deploy.py --at <ref>`,
 #                    which deployed <commit>, that check did not name: the clone was updated, and nothing was
 #                    deployed
-#   FAILED <reason>  alone: the clone is not a repository with deploy.py, a step failed outright, or a release tag
-#                    the stop compares has a version component too long to compare
+#   FAILED <reason>  alone: the clone is not a repository with deploy.py, no ejryan89-skill-core is deployed beside
+#                    this skill, a step failed outright, or a release tag the stop compares has a version component too
+#                    long to compare
 # A stop leaves the clone on the branch it was found on unless a "still on main:" line says otherwise; an update
 # switches it to main and leaves it there.
 # Exit: 0 deployed; 1 any other status line, or FAILED; 2 usage (the wrong arguments, on stderr).
@@ -101,11 +102,12 @@ if [ "${UPDATE_SKILLS_COPY:-}" != "$0" ]; then
     echo "FAILED cannot copy update.sh to $COPY: $(one_line "$ERROR")"
     exit 1
   fi
-  UPDATE_SKILLS_COPY=$COPY exec bash "$COPY" "$@"
+  UPDATE_SKILLS_COPY=$COPY UPDATE_SKILLS_SCRIPTS=$(dirname -- "$0") exec bash "$COPY" "$@"
 fi
 DEPLOY_ERRORS=
 trap 'rm -f -- "$0" ${DEPLOY_ERRORS:+"$DEPLOY_ERRORS"}' EXIT
-unset UPDATE_SKILLS_COPY
+SCRIPTS=$UPDATE_SKILLS_SCRIPTS
+unset UPDATE_SKILLS_COPY UPDATE_SKILLS_SCRIPTS
 
 # The deployer's stderr is kept in a file before it is shown, so its refusal to replace a pin can be read below.
 if ! DEPLOY_ERRORS=$(mktemp 2>&1); then
@@ -130,6 +132,17 @@ for NAME in $(git rev-parse --local-env-vars 2>/dev/null | awk '
   unset "$NAME"
 done
 
+# What a release tag is, and their order, is ejryan89-skill-core's release_tags.py, the one definition the release notes
+# and the upgrade-notes check read too: vMAJOR.MINOR.PATCH and nothing after it, so a pre-release such as v1.0.0-rc.1
+# and every other tag are not releases. It runs from the copy of ejryan89-skill-core the deployment that installed this
+# script put beside it, never from the clone, whose later commits may move or rename it before the update has deployed
+# them. deploy.py at the clone's root is the one file the update runs from the clone.
+RELEASE_TAGS="$SCRIPTS/../../ejryan89-skill-core/scripts/release_tags.py"
+if [ ! -f "$RELEASE_TAGS" ]; then
+  echo "FAILED no ejryan89-skill-core release_tags.py deployed beside update.sh: $RELEASE_TAGS"
+  exit 1
+fi
+
 CLONE=$1
 if [ ! -f "$CLONE/deploy.py" ]; then
   echo "FAILED no deploy.py in $CLONE"
@@ -152,11 +165,7 @@ if [ -n "$DIRTY" ]; then
 fi
 
 # The highest release tag reachable from a commit, or nothing when there is none; when it cannot be read, a FAILED line
-# naming the second argument, and status 1. What a release tag is, and their order, is ejryan89-skill-core's release_tags.py in
-# the clone, the one definition the release notes and the upgrade-notes check read too, run with the Python that runs
-# the clone's deployer: vMAJOR.MINOR.PATCH and nothing after it, so a pre-release such as v1.0.0-rc.1 and every other
-# tag are not releases.
-RELEASE_TAGS="$CLONE/skills/ejryan89-skill-core/scripts/release_tags.py"
+# naming the second argument, and status 1.
 release_of() {
   local answer
   answer=$("$PYTHON" "$RELEASE_TAGS" "$CLONE" "$1" </dev/null 2>&1 | tr -d '\r')
@@ -289,7 +298,8 @@ if [ "$CHANNEL" = release ]; then
     exit 1
   fi
   RELEASE_REF="refs/tags/$TARGET"
-  if ! RELEASE_COMMIT=$(git -C "$CLONE" rev-parse --verify --quiet "$RELEASE_REF^{commit}" 2>&1); then
+  # Without --quiet, which silences --verify's error, git names why the tag cannot be read.
+  if ! RELEASE_COMMIT=$(git -C "$CLONE" rev-parse --verify "$RELEASE_REF^{commit}" 2>&1); then
     echo "FAILED cannot read the commit of $RELEASE_REF: $(one_line "$RELEASE_COMMIT")"
     exit 1
   fi
