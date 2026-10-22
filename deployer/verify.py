@@ -101,12 +101,12 @@ def expose(lines: list[ReportLine], hidden: list[str], catalog: Listing, adapter
 
 
 def runtime_report(
-    runtime: str, executable: str, names: list[str], adapters: Path, workdir: Path, environment: Mapping[str, str]
+    runtime: str, executable: str, names: list[str], adapters: Path, cwd: Path, environment: Mapping[str, str]
 ) -> list[ReportLine] | str:
     """The runtime's report lines, or the sentence that says which of its probes failed: the listing, or, for Codex
     with a user-only adapter deployed, the catalog of the skills it offers the model."""
     try:
-        discovered = discovery.discover(runtime, executable, workdir, environment)
+        discovered = discovery.discover(runtime, executable, cwd, environment)
     except ListingError as exc:
         return f"{LISTING_FAILED}{exc}"
     lines = runtime_lines(names, discovered.listing, adapters, discovered.refused)
@@ -114,7 +114,7 @@ def runtime_report(
     if not hidden:
         return lines
     try:
-        catalog = discovery.codex_catalog(executable, workdir, environment)
+        catalog = discovery.codex_catalog(executable, cwd, environment)
     except ListingError as exc:
         return f"{CATALOG_FAILED}{exc}"
     return expose(lines, hidden, catalog, adapters)
