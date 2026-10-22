@@ -3578,6 +3578,32 @@ class GeneratedLayoutReferenceTests(unittest.TestCase):
         self.assertIn(".github/workflows/ai-config-parity-pr.yml", documented)
         self.assertEqual(set(), documented - set(audit.MANIFEST_ALLOWED_PATHS))
 
+    def test_the_surface_tables_instruction_columns_agree_with_the_layering_resolvers(self) -> None:
+        # The cloud agent's resolver selects its agent instruction file only, so its other columns are not compared.
+        resolvers: dict[str, Callable[[Path, audit.InstructionSources], audit.Finding]] = {
+            "JetBrains": lambda _, sources: audit._layering_jetbrains(sources)[0],
+            "Copilot app": lambda _, sources: audit._layering_copilot_cli(sources)[0],
+            "CLI": lambda _, sources: audit._layering_copilot_cli(sources)[0],
+            "Cloud agent": lambda _, sources: audit._cloud_agent_selection(sources),
+            "Code review": lambda root, sources: audit._layering_code_review(root, sources)[0],
+        }
+        columns: dict[str, dict[str, str | bytes]] = {
+            "CLAUDE.md": {"CLAUDE.md": "# Rules\n"},
+            "AGENTS.md": {"AGENTS.md": PLAIN_AGENTS},
+            ".github/copilot-instructions.md": {".github/copilot-instructions.md": "# Copilot\n"},
+            "Path-specific": {".github/instructions/a.instructions.md": "---\napplyTo: '**'\n---\nRules\n"},
+        }
+        compared = {"Cloud agent": 2}
+        for row in self._table("### Copilot surface capabilities"):
+            if row[0] not in resolvers:
+                continue
+            for column, cell in list(zip(columns, row[1:], strict=False))[: compared.get(row[0], len(columns))]:
+                with self.subTest(surface=row[0], column=column), tempfile.TemporaryDirectory() as temp:
+                    root = Path(temp)
+                    _write_fixture(root, columns[column])
+                    finding = resolvers[row[0]](root, audit._instruction_sources(root))
+                    self.assertEqual(cell != "No", finding.severity == "INFO", (cell, finding.message))
+
     def test_the_copilot_local_tools_row_names_what_the_mcp_check_accepts(self) -> None:
         row = next(row for row in self._table("## MCP server objects") if row[0] == "`copilot_local.tools`")
         self.assertEqual(["null", '["*"]'], re.findall(r"`([^`]+)`", row[1])[:2])
@@ -4371,6 +4397,71 @@ class CodexLayeringTests(unittest.TestCase):
                     ".codex/config.toml": 'project_doc_fallback_filenames = ["TEAM.md", "CLAUDE.md"]\n',
                 }
             ),
+        )
+
+    def test_the_size_cap_is_codexs_documented_default(self) -> None:
+        self.assertEqual(32768, audit.CODEX_DEFAULT_MAX_BYTES)
+        self.assertEqual("project_doc_max_bytes", audit.CODEX_SIZE_SETTING)
+
+    def test_a_root_file_over_the_cap_is_read_in_part_and_one_under_or_at_it_whole(self) -> None:
+        redirect = REDIRECTING_AGENTS.encode()
+        adapter = ("INFO", None, "Codex: AGENTS.md adapter redirects to CLAUDE.md")
+        for size, expected in (
+            (32767, [adapter]),
+            (32768, [adapter]),
+            (
+                32769,
+                [
+                    adapter,
+                    (
+                        "WARNING",
+                        "AGENTS.md",
+                        "Codex: the root AGENTS.md is 32769 bytes, over the 32768-byte project_doc_max_bytes cap — "
+                        "Codex reads only its first 32768 bytes",
+                    ),
+                ],
+            ),
+        ):
+            with self.subTest(size=size):
+                self.assertEqual(expected, self._codex({"AGENTS.md": redirect + b" " * (size - len(redirect))}))
+
+    def test_a_fallback_claude_md_over_a_configured_cap_is_read_in_part(self) -> None:
+        self.assertEqual(
+            [
+                (
+                    "INFO",
+                    None,
+                    "Codex: no AGENTS.md, CLAUDE.md loaded as a project_doc_fallback_filenames entry in "
+                    ".codex/config.toml",
+                ),
+                (
+                    "WARNING",
+                    "CLAUDE.md",
+                    "Codex: the root CLAUDE.md is 101 bytes, over the 100-byte project_doc_max_bytes cap — Codex "
+                    "reads only its first 100 bytes",
+                ),
+            ],
+            self._codex(
+                {
+                    "CLAUDE.md": "#" * 101,
+                    ".codex/config.toml": 'project_doc_fallback_filenames = ["CLAUDE.md"]\n'
+                    "project_doc_max_bytes = 100\n",
+                }
+            ),
+        )
+
+    def test_a_cap_that_is_not_a_positive_integer_leaves_codexs_default(self) -> None:
+        for value in ("0", "-1", "true", '"100"', "1.5"):
+            with self.subTest(value=value):
+                _write_fixture(self.root, {".codex/config.toml": f"project_doc_max_bytes = {value}\n"})
+                self.assertEqual(32768, audit._codex_max_bytes(self.root))
+        _write_fixture(self.root, {".codex/config.toml": "project_doc_max_bytes = [\n"})
+        self.assertEqual(32768, audit._codex_max_bytes(self.root))
+
+    def test_an_override_over_the_cap_is_reported_beside_the_mask(self) -> None:
+        self.assertEqual(
+            ["ERROR", "WARNING"],
+            [severity for severity, _, _ in self._codex({"AGENTS.override.md": "x" * 40000})],
         )
 
     def test_a_fallback_that_is_not_a_plain_file_name_is_ignored_as_codex_ignores_it(self) -> None:
