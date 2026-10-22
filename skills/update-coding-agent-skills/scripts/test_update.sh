@@ -38,7 +38,7 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 SUBJECT="$SCRIPT_DIR/update.sh"
 FIXTURE=$(mktemp -d "${TMPDIR:-/tmp}/update-skills-test.XXXXXX")
 
-# Isolate git from the shell that started the suite, as the root conftest.py's isolated_git does for the Python suites: a
+# Isolate git from the shell that started the suite, as isolated_git in the root pytest configuration does for the Python suites: a
 # home and global configuration of its own with the fixture identity, no hooks, and git's automatic maintenance off,
 # no system configuration or attributes, no prompt or editor, and none of the shell's other GIT_* variables. A name is
 # matched in any case, as update.sh unsets it, because Windows reads a name so: git there takes git_dir as GIT_DIR.
@@ -72,7 +72,7 @@ fail() {
   exit 1
 }
 
-# The global configuration is one plain write, as the root conftest.py makes it. Each git config call replaces the file by
+# The global configuration is one plain write, as isolated_git makes it. Each git config call replaces the file by
 # renaming a lock file onto it, which Windows refuses while another process holds the file open, such as a scanner
 # reading what the call before wrote, and git config then exits 4. The hooks folder is named from the home, which git
 # expands in its own form of the path.
