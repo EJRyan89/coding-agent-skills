@@ -1156,7 +1156,9 @@ class RunListTests(MainCase):
                         "canary_root": None,
                         "hashes": {},
                         "verdict": "approve",
-                        "findings": 2,
+                        "new": 2,
+                        "open": 2,
+                        "addressed": 0,
                         "markdown": "review.md",
                     },
                     Path("run b"): {
@@ -1166,7 +1168,9 @@ class RunListTests(MainCase):
                         "hashes": {"record.json": "d1", "review.md": "d2"},
                         "stats": ["snapshot source=checkout files=2", "reviewer generic files_read=unknown"],
                         "verdict": "request-changes",
-                        "findings": 0,
+                        "new": 0,
+                        "open": 4,
+                        "addressed": 1,
                         "markdown": "canary.md",
                     },
                     Path("run c"): StateError("state locked"),
@@ -1177,13 +1181,13 @@ class RunListTests(MainCase):
             (
                 1,
                 "NOTE example/app#3 first note\n"
-                "RECORDED example/app#3 verdict=approve findings=2 review.md\n"
+                "RECORDED example/app#3 verdict=approve new=2 open=2 addressed=0 review.md\n"
                 "CANARY example/app#5 canary root\n"
                 "SHA256 d1 record.json\n"
                 "SHA256 d2 review.md\n"
                 "STATS example/app#5 snapshot source=checkout files=2\n"
                 "STATS example/app#5 reviewer generic files_read=unknown\n"
-                "RECORDED example/app#5 verdict=request-changes findings=0 canary.md\n"
+                "RECORDED example/app#5 verdict=request-changes new=0 open=4 addressed=1 canary.md\n"
                 "FAILED run c state locked\n",
                 "",
             ),
@@ -1203,12 +1207,14 @@ class RunListTests(MainCase):
                 "canary_root": "",
                 "hashes": {"ignored.json": "d1"},
                 "verdict": "approve",
-                "findings": 0,
+                "new": 0,
+                "open": 0,
+                "addressed": 0,
                 "markdown": "review.md",
             },
         )
         self.assertEqual(
-            (0, "RECORDED example/app#3 verdict=approve findings=0 review.md\n", ""),
+            (0, "RECORDED example/app#3 verdict=approve new=0 open=0 addressed=0 review.md\n", ""),
             self.run_main("finalize", "--run", "run a"),
         )
 
@@ -1226,7 +1232,9 @@ class RunListTests(MainCase):
                     "canary_root": None,
                     "hashes": {},
                     "verdict": "approve",
-                    "findings": 0,
+                    "new": 0,
+                    "open": 0,
+                    "addressed": 0,
                     "markdown": "review.md",
                 },
             ),
@@ -1234,7 +1242,7 @@ class RunListTests(MainCase):
         }
         second = {
             "check": "ALL_VALID example/app#3\n",
-            "finalize": "RECORDED example/app#3 verdict=approve findings=0 review.md\n",
+            "finalize": "RECORDED example/app#3 verdict=approve new=0 open=0 addressed=0 review.md\n",
             "unfinalized": "",
         }
         for command, (name, success) in commands.items():
@@ -1335,14 +1343,21 @@ class RunListCommandTests(RunListCase):
             "canary_root": None,
             "hashes": {},
             "verdict": "approve",
-            "findings": 0,
+            "new": 0,
+            "open": 0,
+            "addressed": 0,
             "markdown": "review.md",
         }
         stub = self.stub(
             "finalize", effect=by_first_argument({Path("run a"): recorded, Path("run c"): StateError("state locked")})
         )
         self.assertEqual(
-            (1, "RECORDED example/app#1 verdict=approve findings=0 review.md\nFAILED run c state locked\n", ""),
+            (
+                1,
+                "RECORDED example/app#1 verdict=approve new=0 open=0 addressed=0 review.md\n"
+                "FAILED run c state locked\n",
+                "",
+            ),
             self.run_main("finalize", "--runs", str(self.run_list)),
         )
         self.assertEqual([Path("run a"), Path("run c")], [call[0][0] for call in stub.calls])
