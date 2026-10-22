@@ -14,6 +14,44 @@
         "decision": "An agent's instructions forbid disabling, suppressing, or working around a failing check and state a quality gate, as this source's own CLAUDE.md does under Required validation."
       }
     ],
+    "claude-hook": [
+      {
+        "page": "https://code.claude.com/docs/en/hooks",
+        "passage": "A hook is configured under hooks, by event name, as matcher groups whose hooks list holds handlers of type command, http, mcp_tool, prompt, or agent, each with its required field, an optional timeout in seconds that defaults to 600 for command, http, and mcp_tool, and, on command and http hooks, onFailure of continue or block."
+      },
+      {
+        "page": "https://code.claude.com/docs/en/settings",
+        "passage": "A settings file with an unknown hook event name fails only that entry, so its hooks never run."
+      }
+    ],
+    "claude-memory": [
+      {
+        "page": "https://code.claude.com/docs/en/memory",
+        "passage": "Target under 200 lines per CLAUDE.md file, since longer files consume more context and reduce adherence."
+      },
+      {
+        "page": "https://code.claude.com/docs/en/memory",
+        "passage": "A CLAUDE.md imports a file with @path syntax outside code spans and fenced blocks, resolved relative to the importing file, and imports help organize a long file but don't reduce its context cost, because imported files also load at launch."
+      },
+      {
+        "page": "https://code.claude.com/docs/en/memory",
+        "passage": "Every .md file under .claude/rules is discovered recursively; a rule is scoped to files by a paths frontmatter list of globs, and rules without a paths field are loaded unconditionally."
+      }
+    ],
+    "claude-settings": [
+      {
+        "page": "https://code.claude.com/docs/en/settings",
+        "passage": "The shared .claude/settings.json is committed for everyone working in the folder, while .claude/settings.local.json holds personal overrides for one project and stays out of git."
+      },
+      {
+        "page": "https://code.claude.com/docs/en/permissions",
+        "passage": "permissions.allow rules and permissions.additionalDirectories entries in a project's .claude/settings.json grant capability, so Claude Code applies them only after the workspace trust dialog is accepted."
+      },
+      {
+        "page": "https://code.claude.com/docs/en/settings-reference",
+        "passage": "permissions.defaultMode is one of default, acceptEdits, plan, auto, dontAsk, bypassPermissions, or manual, and auto and bypassPermissions don't take effect from project or local settings."
+      }
+    ],
     "collision": [
       {
         "decision": "A skill or custom agent named code-review collides with Copilot's built-in agent, and an unmarked AGENTS.md or copilot-instructions.md is one the generator refuses to overwrite: checks 8 and 11 of references/audit-policy.md."
@@ -49,6 +87,14 @@
       {
         "page": "https://code.claude.com/docs/en/memory",
         "passage": "Claude Code reads CLAUDE.md from the project root, or from .claude/CLAUDE.md, at the start of every session."
+      },
+      {
+        "page": "https://code.claude.com/docs/en/memory",
+        "passage": "A CLAUDE.local.md at the project root holds private per-project preferences that shouldn't be checked into version control, and markdown files in .claude/rules organize instructions by topic."
+      },
+      {
+        "page": "https://code.claude.com/docs/en/settings",
+        "passage": "A project's shared Claude Code settings live in .claude/settings.json."
       },
       {
         "page": "https://learn.chatgpt.com/docs/agent-configuration/agents-md",
@@ -143,6 +189,13 @@
     "scope": [
       {
         "decision": "The manifest is editable, so the scope it declares is compared with the literal targets of a recognized generator, read without running it: check 3 of references/audit-policy.md."
+      },
+      {
+        "decision": "Without a manifest or a generator, the scope is the runtimes and surfaces the repository's own files show it serves, a CLAUDE.md for Claude Code, a root AGENTS.md, .codex, or .agents/skills for Codex, and a .github folder for Copilot's CLI, app, and code review, which read those files with no setting of the repository's own: check 3 of references/audit-policy.md."
+      },
+      {
+        "page": "https://docs.github.com/en/copilot/reference/custom-instructions-support",
+        "passage": "Copilot CLI, the cloud agent, and code review on GitHub.com read agent instructions from AGENTS.md, CLAUDE.md, or GEMINI.md, while Copilot Chat in JetBrains reads only .github/copilot-instructions.md and path-specific instructions."
       }
     ],
     "trust-boundary": [

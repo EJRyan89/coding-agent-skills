@@ -8,7 +8,7 @@ What the audit engine checks and why. Each check maps to a function in `scripts/
 - Order of Checks
 - Checks: 1. Inventory, 2. Authority Classification, 3. Vocabulary and Scope Integrity, 4. Parity, 5. Orphans,
   6. MCP Configuration, 7. Instruction Layering, 8. Copilot Skills, Agents, and Roles, 9. Behavioral Constraints,
-  10. Ownership, 11. User-Authored Collisions, 12. Applicable Limitations
+  10. Ownership, 11. User-Authored Collisions, 12. Claude Code Project Configuration, 13. Applicable Limitations
 
 ## Read-Only Safety Model
 
@@ -17,15 +17,15 @@ The engine never writes, modifies, or deletes files. It does not run generators,
 ## Order of Checks
 
 1. Inventory runs for every repository.
-2. Authority classification decides whether the remaining checks run. Only a **conforming** repository receives checks 3 to 12; any other classification stops the audit with `RESULT INCONCLUSIVE` (exit code `1`).
+2. Authority classification decides whether the remaining checks run. Only a **conforming** repository receives checks 3 to 13; any other classification stops the audit with `RESULT INCONCLUSIVE` (exit code `1`).
 
 ## Checks
 
 ### 1. Inventory (`inventory`)
 
-Reports each AI configuration file found as an `INFO` finding: `CLAUDE.md`, `GEMINI.md`, `REVIEW.md`, `.codex/config.toml`, `.mcp.json`, `.github/mcp.json`, `.vscode/mcp.json`, `.github/copilot-instructions.md`, `.github/workflows/copilot-setup-steps.yml`, `.github/ai-config-manifest.json`, every `AGENTS.md` and `AGENTS.override.md` at any depth outside version-control, dependency, build-output, and Visual Studio folders (`.git`, `.hg`, `.svn`, `node_modules`, `.venv`, `venv`, `__pycache__`, `.tox`, `.nox`, `bin`, `obj`, `.vs`) and nested checkouts (a folder holding a `.git` folder or file: a clone, submodule, or worktree), which no nested-file check walks into, skills under `.claude/skills`, `.agents/skills`, and `.github/skills`, custom agents under `.github/agents` and `.claude/agents`, path-specific `.github/instructions/**/*.instructions.md`, a generator at `.github/scripts/ai_config.py` or `scripts/ai_config.py`, and any workflow mentioning `ai-config` or `ai_config`.
+Reports each AI configuration file found as an `INFO` finding: `CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md`, `.claude/settings.json`, `GEMINI.md`, `REVIEW.md`, `.codex/config.toml`, `.mcp.json`, `.github/mcp.json`, `.vscode/mcp.json`, `.github/copilot-instructions.md`, `.github/workflows/copilot-setup-steps.yml`, `.github/ai-config-manifest.json`, every `AGENTS.md` and `AGENTS.override.md` at any depth outside version-control, dependency, build-output, and Visual Studio folders (`.git`, `.hg`, `.svn`, `node_modules`, `.venv`, `venv`, `__pycache__`, `.tox`, `.nox`, `bin`, `obj`, `.vs`) and nested checkouts (a folder holding a `.git` folder or file: a clone, submodule, or worktree), which no nested-file check walks into, skills under `.claude/skills`, `.agents/skills`, and `.github/skills`, custom agents under `.github/agents` and `.claude/agents`, Claude Code's rules (every `.md` file below `.claude/rules`), path-specific `.github/instructions/**/*.instructions.md`, a generator at `.github/scripts/ai_config.py` or `scripts/ai_config.py`, and any workflow mentioning `ai-config` or `ai_config`.
 
-A file a check reads that cannot be read or decoded is an inventory `ERROR`, `Could not read, so the checks that read it did not run`, so an audit that skipped those checks is never `COMPLIANT`: `CLAUDE.md`, the manifest, `.github/copilot-instructions.md`, each generator, every `AGENTS.md`, and every workflow. The other files a check reads report their own read failure, as the checks below say.
+A file a check reads that cannot be read or decoded is an inventory `ERROR`, `Could not read, so the checks that read it did not run`, so an audit that skipped those checks is never `COMPLIANT`: `CLAUDE.md`, `.claude/CLAUDE.md`, the manifest, `.github/copilot-instructions.md`, each generator, every `AGENTS.md`, and every workflow. The other files a check reads report their own read failure, as the checks below say.
 
 No walk or directory listing in any check follows a symbolic link or junction that leads out of the repository root: the link is skipped, so nothing behind it is read or named, and it is reported once as an inventory `WARNING` at its path, `Link leads out of the repository; the audit does not follow it`. A link whose target stays inside the root is followed, but never back into a folder the walk is already inside, so a link to the root or to one of its own parents is walked once.
 
@@ -36,8 +36,8 @@ No walk or directory listing in any check follows a symbolic link or junction th
 Independent signals:
 
 1. A valid manifest at `.github/ai-config-manifest.json` with `generatedBy: ai_config.py`, `canonicalSource: CLAUDE.md`, a valid schema, an existing canonical source, and at least one derived artifact.
-2. `CLAUDE.md` exists at the repository root.
-3. `CLAUDE.md` has a `## Maintaining AI Agent Config` section.
+2. `CLAUDE.md` exists at the repository root, or at `.claude/CLAUDE.md`, which Claude Code's memory page reads as the project's `CLAUDE.md`.
+3. Either `CLAUDE.md` has a `## Maintaining AI Agent Config` section.
 4. A generator script references `CLAUDE.md`.
 5. A workflow references `ai_config` together with `--check`.
 
@@ -54,7 +54,7 @@ A malformed or non-object manifest is a `WARNING` and is not a signal; a structu
 
 ### 3. Vocabulary and Scope Integrity (`vocabulary`, `scope`)
 
-Manifest runtimes, surfaces, and MCP targets must use the canonical names. The manifest is editable, so it cannot be the only trust source for its own scope: when a recognized generator exists, its literal `TARGET_RUNTIMES`, `TARGET_SURFACES`, and `TARGET_FEATURES` assignments are read with Python AST only, and a manifest disagreement is an `ERROR` (`scopeStatus: independently-derived`). A derived scope is compared only with a valid manifest: a missing one, or one the authority check does not accept as an `ai_config.py` manifest of `CLAUDE.md` (malformed, failing its schema, or declaring no derived artifacts), is one `ERROR` saying the scope was not compared. When the values cannot be derived safely, or no recognized generator exists, the report is `manifest-declared-only` with a `WARNING` whose message names the reason (`report-schema.md` lists them). With neither a manifest nor a generator, it is `no-declared-scope` with an `INFO` finding that target-specific checks were not run.
+Manifest runtimes, surfaces, and MCP targets must use the canonical names. The manifest is editable, so it cannot be the only trust source for its own scope: when a recognized generator exists, its literal `TARGET_RUNTIMES`, `TARGET_SURFACES`, and `TARGET_FEATURES` assignments are read with Python AST only, and a manifest disagreement is an `ERROR` (`scopeStatus: independently-derived`). A derived scope is compared only with a valid manifest: a missing one, or one the authority check does not accept as an `ai_config.py` manifest of `CLAUDE.md` (malformed, failing its schema, or declaring no derived artifacts), is one `ERROR` saying the scope was not compared. When the values cannot be derived safely, or no recognized generator exists, the report is `manifest-declared-only` with a `WARNING` whose message names the reason (`report-schema.md` lists them). With neither a manifest nor a generator, the repository's own files show the scope (`file-derived`), named by a `scope` `INFO` finding, and the instruction-layering checks (check 7) run over it: the `claude` runtime when a `CLAUDE.md` or `.claude/CLAUDE.md` exists; the `codex` runtime when a root `AGENTS.md` or `AGENTS.override.md`, a `.codex` folder, or `.agents/skills` exists; the `copilot_cli` and `code_review` surfaces when a `.github` folder exists, since Copilot's CLI and app and code review read a GitHub repository's `CLAUDE.md` and `AGENTS.md` with no setting of its own; and `cloud_agent` when `.github/workflows/copilot-setup-steps.yml` exists too. JetBrains and VS Code read instructions only through settings or Copilot's own files, which no file shows, so only a manifest targets them. A file-derived scope declares no MCP target, so the manifest-driven MCP checks (check 6) and runtime roles stay unrun, and the collision check (check 11) keeps to a declared scope, because it guards a generator's writes and a repository without one has nothing that writes. When no file shows a runtime or surface either, the status is `no-declared-scope` with an `INFO` finding that target-specific checks were not run.
 
 ### 4. Parity (`parity`)
 
@@ -131,6 +131,17 @@ Every manifest artifact needs ownership tracking: an embedded `AUTO-GENERATED fr
 
 An unmarked `AGENTS.md` when Codex is targeted, or an unmarked `.github/copilot-instructions.md` when a Copilot surface is targeted, is an `ERROR`: the generator refuses to overwrite it, so it must be resolved deliberately.
 
-### 12. Applicable Limitations (`limitation`)
+### 12. Claude Code Project Configuration (`claude-settings`, `claude-hook`, `claude-memory`)
+
+Claude Code's own project files, read statically as its settings, permissions, hooks, and memory pages describe them:
+
+- `.claude/settings.json`, the settings file the settings page has a team commit, must parse as a JSON object (`claude-settings` `ERROR` otherwise). Its `permissions` apply to everyone who opens the folder, so they are named: `allow` rules or `additionalDirectories`, which grant capability once the workspace is trusted, are a `WARNING` that personal approvals belong in `.claude/settings.local.json` or `~/.claude/settings.json`; other entries, such as `deny` and `ask`, are an `INFO`. A `defaultMode` the settings reference does not list is an `ERROR`, and `auto` or `bypassPermissions`, which do not take effect from project settings, a `WARNING`.
+- Its `hooks` (`claude-hook`): an event the hooks page does not list is an `ERROR`, since Claude Code fails that entry and its hooks never run, as is a level of the event, matcher group, and handler shape that is not the page's, a handler `type` other than `command`, `http`, `mcp_tool`, `prompt`, or `agent`, a handler without the field its type requires (`command`, `url`, `server` and `tool`, or `prompt`), a `timeout` that is not a positive number of seconds, and an `onFailure` other than `continue` or `block`, or on a hook other than `command` or `http`. A `command`, `http`, or `mcp_tool` handler without a `timeout` is a `WARNING`: it may run for the 600-second default, except on the events whose default the page makes shorter (`UserPromptSubmit`, `PreModelSwitch`, `PostModelSwitch`, `MessageDisplay`, and `SessionEnd`).
+- Each `CLAUDE.md`, `.claude/CLAUDE.md`, and `CLAUDE.local.md`, and each rule (`claude-memory`): one over 200 lines, the memory page's target, is a `WARNING`. A `CLAUDE.md` file's `@path` imports, outside code spans and fenced code blocks, are named in an `INFO`, since imported files load at launch and do not reduce the file's context cost, and a relative import that names a path (one with a folder or extension) resolving inside the repository to no file is a `WARNING`.
+- Each rule below `.claude/rules`, found recursively as the memory page says (`claude-memory`): an `INFO` names the globs its `paths` frontmatter list scopes it to, or that it has none and loads at launch; a `paths` value that is not a list of globs is a `WARNING`, and a rule that cannot be read an `ERROR`.
+
+**Why**: These files change what Claude Code loads and may run for everyone who opens the repository, and a hook or rule Claude Code never loads fails silently.
+
+### 13. Applicable Limitations (`limitation`)
 
 `INFO` findings for each documented limitation this repository hits: marker-only parity for TOML and YAML artifacts, a manifest without `copilot_sections`, provenance-only Copilot projections, unanalyzed path-specific instructions, and nested `.mcp.json` files. They never change the exit code. See `known-limitations.md` for detail.

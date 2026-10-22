@@ -33,9 +33,13 @@ This hardening is unavailable when there is no recognized generator, assignments
 are dynamic, parsing fails, or target declarations are incomplete. In that case the
 report is explicitly `manifest-declared-only` and emits a warning naming the reason:
 a structurally valid but narrowed manifest can still suppress checks. When no manifest exists either,
-the report is `no-declared-scope` with an informational finding instead, because no
-editable scope exists to narrow. A future independently
-trusted configuration artifact could close that remaining gap.
+no editable scope exists to narrow, and the report is `file-derived`: the layering checks cover the
+runtimes and surfaces the repository's files show it serves, which an informational finding names.
+That reading is a heuristic: a `.github` folder stands for Copilot's CLI, app, and code review, though
+a repository on GitHub may not use them, and JetBrains and VS Code, which only settings and Copilot's
+own files show, are never covered without a manifest. When no file shows a runtime or surface, the
+report is `no-declared-scope`. A future independently trusted configuration artifact could close that
+remaining gap.
 
 ## Malformed manifests can produce conforming classification
 
