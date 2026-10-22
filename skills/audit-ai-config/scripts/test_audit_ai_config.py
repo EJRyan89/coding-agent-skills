@@ -1446,14 +1446,14 @@ class CopilotConfigurationTests(unittest.TestCase):
         _assert_scope_status(self, result, "independently-derived")
         self.assertTrue(any(f.check == "scope" and f.severity == "ERROR" for f in result.findings))
 
-    def test_scope_without_manifest_or_generator_is_informational(self) -> None:
+    def test_scope_without_manifest_or_generator_is_the_one_its_files_show(self) -> None:
         (self.root / ".github/ai-config-manifest.json").unlink()
         result = audit.audit(self.root)
         self.assertEqual("conforming", result.authority)
-        _assert_scope_status(self, result, "no-declared-scope")
+        _assert_scope_status(self, result, "file-derived")
         scope = [f for f in result.findings if f.check == "scope"]
         self.assertEqual(["INFO"], [f.severity for f in scope])
-        self.assertIn("target-specific checks were not run", scope[0].message)
+        self.assertIn("files show it serves", scope[0].message)
 
     def test_manifest_without_generator_still_warns_about_editable_scope(self) -> None:
         result = audit.audit(self.root)
@@ -1493,7 +1493,13 @@ class CopilotConfigurationTests(unittest.TestCase):
                 )
 
     def test_scope_statuses_and_generator_failure_reasons_match_report_schema(self) -> None:
-        documented = {"independently-derived", "manifest-declared-only", "no-declared-scope", "not-applicable"}
+        documented = {
+            "independently-derived",
+            "manifest-declared-only",
+            "file-derived",
+            "no-declared-scope",
+            "not-applicable",
+        }
         text = (Path(audit.__file__).resolve().parent.parent / "references/report-schema.md").read_text(
             encoding="utf-8"
         )
@@ -2734,6 +2740,8 @@ def _manifest(**overrides: Any) -> str:
 
 AUTHORITY_SCENARIOS: dict[str, dict[str, str | bytes]] = {
     "nothing": {},
+    "dot_claude_md_alone": {".claude/CLAUDE.md": PLAIN_CLAUDE},
+    "maintained_dot_claude_md": {".claude/CLAUDE.md": MAINTAINED_CLAUDE},
     "manifest_with_every_signal": {
         MANIFEST_PATH: _manifest(),
         "CLAUDE.md": MAINTAINED_CLAUDE,
@@ -2935,6 +2943,24 @@ AUTHORITY_EXPECTED: dict[str, tuple[str, str, list[tuple[str, str, str | None, s
         "empty",
         [
             ("INFO", "authority", None, "Authority classification: unconfigured (signals: none)"),
+        ],
+    ),
+    # Claude Code's memory page reads .claude/CLAUDE.md as the project's CLAUDE.md, so it is the same signal.
+    "dot_claude_md_alone": (
+        "ambiguous",
+        "empty",
+        [("INFO", "authority", None, "Authority classification: ambiguous (signals: claude_md_exists)")],
+    ),
+    "maintained_dot_claude_md": (
+        "conforming",
+        "empty",
+        [
+            (
+                "INFO",
+                "authority",
+                None,
+                "Authority classification: conforming (signals: claude_md_exists, maintaining_section)",
+            )
         ],
     ),
     "manifest_with_every_signal": (
@@ -3410,6 +3436,16 @@ INVENTORY_SCENARIOS: dict[str, dict[str, str | bytes]] = {
         MANIFEST_PATH: "x",
     },
     "fixed_file_is_a_directory": {"CLAUDE.md": DIRECTORY},
+    "claude_code_files": {
+        ".claude/CLAUDE.md": "x",
+        "CLAUDE.local.md": "x",
+        ".claude/settings.json": "{}",
+        ".claude/settings.local.json": "{}",
+        ".claude/rules/testing.md": "x",
+        ".claude/rules/frontend/ui.md": "x",
+        ".claude/rules/notes.txt": "x",
+    },
+    "claude_rules_without_markdown": {".claude/rules/notes.txt": "x"},
     "recursive_files": {
         "AGENTS.md": "x",
         "sub/AGENTS.md": "x",
@@ -3484,6 +3520,13 @@ INVENTORY_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
         ("INFO", "inventory", ".github/ai-config-manifest.json", "Found .github/ai-config-manifest.json"),
     ],
     "fixed_file_is_a_directory": [],
+    "claude_code_files": [
+        ("INFO", "inventory", ".claude/CLAUDE.md", "Found .claude/CLAUDE.md"),
+        ("INFO", "inventory", "CLAUDE.local.md", "Found CLAUDE.local.md"),
+        ("INFO", "inventory", ".claude/settings.json", "Found .claude/settings.json"),
+        ("INFO", "inventory", ".claude/rules", "Rules found: frontend/ui.md, testing.md"),
+    ],
+    "claude_rules_without_markdown": [],
     "recursive_files": [
         ("INFO", "inventory", "AGENTS.md", "Found AGENTS.md"),
         ("INFO", "inventory", "sub/AGENTS.md", "Found sub/AGENTS.md"),
@@ -3734,6 +3777,9 @@ class AuditPolicyReferenceTests(unittest.TestCase):
             "runtime-role",
             "behavioral",
             "ownership",
+            "claude-settings",
+            "claude-hook",
+            "claude-memory",
             "limitation",
         }
     )
@@ -3964,6 +4010,407 @@ class ScopeWithoutAValidManifestTests(unittest.TestCase):
             ),
             self._scope(),
         )
+
+
+# A repository in this source's own layout: a CLAUDE.md, an AGENTS.md that redirects to it, and no manifest.
+FILE_SCOPE_REPOSITORY: dict[str, str | bytes] = {
+    "CLAUDE.md": MAINTAINED_CLAUDE,
+    "AGENTS.md": "Before working here, read `CLAUDE.md` and apply it as the authoritative instructions.\n",
+    "deployer/AGENTS.md": PLAIN_AGENTS,
+    ".github/pull_request_template.md": "## Summary\n",
+}
+
+
+class FileDerivedScopeTests(unittest.TestCase):
+    """Without a manifest or a generator, the layering checks cover what the repository's files show it serves."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _audit(self, files: dict[str, str | bytes]) -> audit.AuditResult:
+        _write_fixture(self.root, files)
+        result = audit.audit(self.root)
+        self.assertEqual("conforming", result.authority)
+        return result
+
+    def test_a_repository_without_a_manifest_gets_the_layering_its_files_show(self) -> None:
+        result = self._audit(FILE_SCOPE_REPOSITORY)
+        _assert_scope_status(self, result, "file-derived")
+        self.assertEqual(
+            [
+                (
+                    "INFO",
+                    None,
+                    "No AI-config manifest or recognized generator declares target runtimes or surfaces; the layering "
+                    "checks cover what the repository's files show it serves: runtimes claude, codex; surfaces "
+                    "copilot_cli, code_review",
+                )
+            ],
+            [(f.severity, f.path, f.message) for f in result.findings if f.check == "scope"],
+        )
+        self.assertEqual(
+            [
+                ("INFO", None, "Codex: AGENTS.md adapter redirects to CLAUDE.md"),
+                (
+                    "WARNING",
+                    "deployer/AGENTS.md",
+                    "Nested AGENTS.md adds instructions alongside the root adapter in this subtree — review for "
+                    "conflicting or redundant guidance",
+                ),
+                ("INFO", None, "Copilot CLI/app: effective sources: CLAUDE.md, AGENTS.md"),
+                ("INFO", None, "Code review: effective sources: CLAUDE.md"),
+            ],
+            [
+                (f.severity, f.path, f.message)
+                for f in result.findings
+                if f.check == "layering"
+                and f.message.startswith(("Codex", "Nested", "Copilot CLI/app: eff", "Code review"))
+            ],
+        )
+
+    def test_a_hand_written_agents_md_is_no_collision_without_a_generator(self) -> None:
+        result = self._audit({**FILE_SCOPE_REPOSITORY, "AGENTS.md": PLAIN_AGENTS})
+        self.assertEqual([], [f for f in result.findings if f.check == "collision"])
+        self.assertIn(
+            ("WARNING", "Codex: non-redirecting AGENTS.md — CLAUDE.md not loaded through adapter"),
+            [(f.severity, f.message) for f in result.findings if f.check == "layering"],
+        )
+
+    def test_a_manifest_keeps_the_scope_it_declares(self) -> None:
+        _setup_conforming_repo(self.root)
+        result = audit.audit(self.root)
+        _assert_scope_status(self, result, "manifest-declared-only")
+        layering = [f.message for f in result.findings if f.check == "layering"]
+        self.assertIn("Codex: AGENTS.md adapter redirects to CLAUDE.md", layering)
+        self.assertIn(
+            "Copilot CLI/app: effective sources: CLAUDE.md, AGENTS.md, .github/copilot-instructions.md", layering
+        )
+        self.assertEqual([], [message for message in layering if message.startswith("Code review")])
+
+    def test_each_file_shows_its_runtime_or_surface(self) -> None:
+        cases: dict[str, tuple[dict[str, str | bytes], dict[str, list[str]]]] = {
+            "nothing": ({}, {}),
+            "root CLAUDE.md": ({"CLAUDE.md": "x"}, {"runtimes": ["claude"], "surfaces": []}),
+            ".claude/CLAUDE.md": ({".claude/CLAUDE.md": "x"}, {"runtimes": ["claude"], "surfaces": []}),
+            "AGENTS.override.md": ({"AGENTS.override.md": "x"}, {"runtimes": ["codex"], "surfaces": []}),
+            ".codex folder": ({".codex/hooks.json": "{}"}, {"runtimes": ["codex"], "surfaces": []}),
+            ".agents/skills": ({".agents/skills/demo/SKILL.md": "x"}, {"runtimes": ["codex"], "surfaces": []}),
+            ".github folder": (
+                {".github/CODEOWNERS": "x"},
+                {"runtimes": [], "surfaces": ["copilot_cli", "code_review"]},
+            ),
+            "cloud agent setup": (
+                {".github/workflows/copilot-setup-steps.yml": "x"},
+                {"runtimes": [], "surfaces": ["copilot_cli", "code_review", "cloud_agent"]},
+            ),
+        }
+        for name, (files, expected) in cases.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                _write_fixture(Path(temporary), files)
+                self.assertEqual(expected, audit.derive_file_scope(Path(temporary)))
+
+    def test_a_repository_whose_files_show_nothing_says_the_checks_did_not_run(self) -> None:
+        self.assertEqual(
+            (
+                "no-declared-scope",
+                audit.Finding(
+                    "INFO",
+                    "scope",
+                    message="No AI-config manifest or recognized generator declares target runtimes or surfaces, and "
+                    "no file shows one; target-specific checks were not run",
+                ),
+            ),
+            audit._file_scope_finding({}),
+        )
+
+
+SETTINGS = ".claude/settings.json"
+
+
+def claude_code_rows(files: dict[str, str | bytes]) -> list[tuple[str, str, str | None, str]]:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        _write_fixture(root, files)
+        return [
+            (
+                f.severity,
+                f.check,
+                f.path,
+                f.message.split(":")[0] if "Could not read or parse" in f.message else f.message,
+            )
+            for f in audit.check_claude_code(root)
+        ]
+
+
+def settings_rows(settings: Any) -> list[tuple[str, str, str | None, str]]:
+    return claude_code_rows({SETTINGS: json.dumps(settings)})
+
+
+def command_hook(**fields: Any) -> dict[str, Any]:
+    return {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", **fields}]}]}}
+
+
+class ClaudeCodeConfigurationTests(unittest.TestCase):
+    """Claude Code's shared settings, hooks, CLAUDE.md files, imports, and rules, read as its own pages describe."""
+
+    def test_settings_that_do_not_parse_are_a_read_failure(self) -> None:
+        self.assertEqual(
+            [("ERROR", "claude-settings", SETTINGS, "Could not read or parse")], claude_code_rows({SETTINGS: "{bad"})
+        )
+        self.assertEqual(
+            [("ERROR", "claude-settings", SETTINGS, "Top-level value must be an object")], settings_rows([])
+        )
+
+    def test_this_repositorys_settings_shape_is_clean(self) -> None:
+        settings = {
+            "$schema": "https://json.schemastore.org/claude-code-settings.json",
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Edit|Write",
+                        "hooks": [{"type": "command", "command": "python guard.py", "timeout": 30}],
+                    }
+                ]
+            },
+            "attribution": {"commit": "", "pr": ""},
+        }
+        self.assertEqual([], settings_rows(settings))
+
+    def test_shared_permissions_are_named_and_a_grant_is_a_warning(self) -> None:
+        grant = (
+            "WARNING",
+            "claude-settings",
+            SETTINGS,
+            "The shared settings grant permissions.allow and permissions.additionalDirectories to everyone who trusts "
+            "this folder; personal approvals belong in .claude/settings.local.json or ~/.claude/settings.json",
+        )
+        self.assertEqual(
+            [grant], settings_rows({"permissions": {"allow": ["Bash(git *)"], "additionalDirectories": ["../x"]}})
+        )
+        self.assertEqual(
+            [
+                (
+                    "INFO",
+                    "claude-settings",
+                    SETTINGS,
+                    "The shared settings set permissions.deny, permissions.ask for everyone who opens the repository",
+                )
+            ],
+            settings_rows({"permissions": {"deny": ["Read(.env)"], "ask": ["Bash(git push *)"], "allow": []}}),
+        )
+        self.assertEqual([], settings_rows({"permissions": {}}))
+
+    def test_a_default_mode_is_checked_against_the_settings_reference(self) -> None:
+        self.assertEqual(
+            [
+                (
+                    "WARNING",
+                    "claude-settings",
+                    SETTINGS,
+                    "permissions.defaultMode 'bypassPermissions' does not take effect from project settings; set it "
+                    "in ~/.claude/settings.json",
+                ),
+                (
+                    "INFO",
+                    "claude-settings",
+                    SETTINGS,
+                    "The shared settings set permissions.defaultMode for everyone who opens the repository",
+                ),
+            ],
+            settings_rows({"permissions": {"defaultMode": "bypassPermissions"}}),
+        )
+        self.assertEqual(
+            [
+                (
+                    "ERROR",
+                    "claude-settings",
+                    SETTINGS,
+                    "permissions.defaultMode 'yolo' is not a mode Claude Code knows",
+                ),
+                (
+                    "INFO",
+                    "claude-settings",
+                    SETTINGS,
+                    "The shared settings set permissions.defaultMode for everyone who opens the repository",
+                ),
+            ],
+            settings_rows({"permissions": {"defaultMode": "yolo"}}),
+        )
+        self.assertEqual(
+            [("ERROR", "claude-settings", SETTINGS, "'permissions' must be an object")],
+            settings_rows({"permissions": ["allow"]}),
+        )
+
+    def test_a_hook_is_read_as_the_hooks_page_gives_it(self) -> None:
+        cases: dict[str, tuple[dict[str, Any], list[tuple[str, str]]]] = {
+            "conforming": (command_hook(command="x", timeout=30, onFailure="block"), []),
+            "no timeout": (
+                command_hook(command="x"),
+                [("WARNING", "Hook on 'PreToolUse' sets no timeout, so Claude Code waits up to 600 seconds for it")],
+            ),
+            "timeout not a number": (
+                command_hook(command="x", timeout="30"),
+                [("ERROR", "Hook on 'PreToolUse': timeout must be a positive number of seconds")],
+            ),
+            "no command": (
+                command_hook(command=" ", timeout=5),
+                [("ERROR", "Hook on 'PreToolUse': a command hook needs 'command'")],
+            ),
+            "unknown onFailure": (
+                command_hook(command="x", timeout=5, onFailure="ignore"),
+                [("ERROR", "Hook on 'PreToolUse': onFailure must be 'continue' or 'block'")],
+            ),
+            "unknown event": (
+                {"hooks": {"BeforeTool": [], "PreToolUse": []}},
+                [("ERROR", "Hook event 'BeforeTool' is not one Claude Code knows, so its hooks never run")],
+            ),
+            "unknown type": (
+                {"hooks": {"Stop": [{"hooks": [{"type": "shell", "command": "x"}]}]}},
+                [("ERROR", "Hook on 'Stop': type 'shell' is not one Claude Code runs")],
+            ),
+            "prompt hook with onFailure and its short default": (
+                {"hooks": {"Stop": [{"hooks": [{"type": "prompt", "prompt": "Check.", "onFailure": "block"}]}]}},
+                [("ERROR", "Hook on 'Stop': onFailure applies to command and http hooks only")],
+            ),
+            "an event with a short default": (
+                {"hooks": {"SessionEnd": [{"hooks": [{"type": "command", "command": "x"}]}]}},
+                [],
+            ),
+            "http and mcp_tool fields": (
+                {
+                    "hooks": {
+                        "PostToolUse": [
+                            {
+                                "hooks": [
+                                    {"type": "http", "timeout": 5},
+                                    {"type": "mcp_tool", "server": "s", "timeout": 5},
+                                ]
+                            }
+                        ]
+                    }
+                },
+                [
+                    ("ERROR", "Hook on 'PostToolUse': a http hook needs 'url'"),
+                    ("ERROR", "Hook on 'PostToolUse': a mcp_tool hook needs 'tool'"),
+                ],
+            ),
+            "malformed levels": (
+                {
+                    "hooks": {
+                        "Stop": {"hooks": []},
+                        "PreToolUse": [{"matcher": "Bash"}],
+                        "PostToolUse": [{"hooks": ["x"]}],
+                    }
+                },
+                [
+                    ("ERROR", "Hook event 'Stop': must be a list of matcher groups"),
+                    ("ERROR", "Hook event 'PreToolUse': each matcher group needs a 'hooks' list"),
+                    ("ERROR", "Hook on 'PostToolUse': each handler must be an object"),
+                ],
+            ),
+            "hooks not an object": (
+                {"hooks": ["PreToolUse"]},
+                [("ERROR", "'hooks' must be an object mapping event names to matcher groups")],
+            ),
+        }
+        for name, (settings, expected) in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(
+                    [(severity, "claude-hook", SETTINGS, message) for severity, message in expected],
+                    settings_rows(settings),
+                )
+
+    def test_a_claude_md_over_the_target_length_is_a_warning(self) -> None:
+        for name in ("CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md"):
+            with self.subTest(name=name):
+                self.assertEqual([], claude_code_rows({name: "line\n" * 200}))
+                self.assertEqual(
+                    [
+                        (
+                            "WARNING",
+                            "claude-memory",
+                            name,
+                            "201 lines, over the 200 lines Claude Code's memory page targets; longer files consume "
+                            "more context and reduce adherence",
+                        )
+                    ],
+                    claude_code_rows({name: "line\n" * 201}),
+                )
+
+    def test_imports_outside_code_are_named_and_a_missing_one_is_a_warning(self) -> None:
+        text = (
+            "See @docs/guide.md and @docs/present.md, mail a@example.com, ask @maintainer,\n"
+            "and keep `@literal.md` literal.\n"
+            "```text\n@fenced.md\n```\n"
+            "- @~/.claude/personal.md\n"
+        )
+        self.assertEqual(
+            ["docs/guide.md", "docs/present.md", "maintainer", "~/.claude/personal.md"], audit.claude_imports(text)
+        )
+        self.assertEqual(
+            [
+                (
+                    "INFO",
+                    "claude-memory",
+                    "CLAUDE.md",
+                    "Imports @docs/guide.md, @docs/present.md, @maintainer, @~/.claude/personal.md; imported files "
+                    "load at launch with this file, so they organize it without reducing its context cost",
+                ),
+                (
+                    "WARNING",
+                    "claude-memory",
+                    "CLAUDE.md",
+                    "Import @docs/guide.md names no file, so nothing loads for it",
+                ),
+            ],
+            claude_code_rows({"CLAUDE.md": text, "docs/present.md": "x"}),
+        )
+
+    def test_an_import_resolves_from_the_file_that_holds_it(self) -> None:
+        self.assertEqual(
+            [
+                "Imports @rules.md; imported files load at launch with this file, so they organize it without reducing "
+                "its context cost"
+            ],
+            [row[3] for row in claude_code_rows({".claude/CLAUDE.md": "@rules.md\n", ".claude/rules.md": "x"})],
+        )
+
+    def test_each_rule_is_unconditional_or_scoped_by_its_paths(self) -> None:
+        self.assertEqual(
+            [
+                ("INFO", "claude-memory", ".claude/rules/api.md", "Rule scoped to src/api/**/*.ts, lib/**"),
+                (
+                    "WARNING",
+                    "claude-memory",
+                    ".claude/rules/frontend/ui.md",
+                    "paths should be a YAML list of glob patterns, as the memory page gives it",
+                ),
+                ("INFO", "claude-memory", ".claude/rules/testing.md", "Rule without paths: loads at launch"),
+                ("INFO", "claude-memory", ".claude/rules/titled.md", "Rule without paths: loads at launch"),
+                ("ERROR", "claude-memory", ".claude/rules/zz.md", "Could not read, so the rule was not checked"),
+            ],
+            claude_code_rows(
+                {
+                    ".claude/rules/api.md": '---\npaths:\n  - "src/api/**/*.ts"\n  - lib/**\n---\n\nUse REST.\n',
+                    ".claude/rules/frontend/ui.md": "---\npaths: src/ui/**\n---\n\nUse tabs.\n",
+                    ".claude/rules/testing.md": "# Testing\n\nRun pytest.\n",
+                    ".claude/rules/titled.md": "---\ndescription: Titled.\n---\n",
+                    ".claude/rules/zz.md": UNDECODABLE,
+                }
+            ),
+        )
+
+    def test_a_dot_claude_md_is_the_one_the_behavioral_checks_read(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _write_fixture(root, {".claude/CLAUDE.md": MAINTAINED_CLAUDE})
+            result = audit.audit(root)
+        self.assertEqual("conforming", result.authority)
+        self.assertEqual({".claude/CLAUDE.md"}, {f.path for f in result.findings if f.check == "behavioral"})
 
 
 def markdown_row(path: str, message: str) -> str:

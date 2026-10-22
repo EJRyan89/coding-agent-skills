@@ -16,7 +16,7 @@ Finding format, severities, and output modes for the audit engine.
 ## Report Envelope
 
 The Markdown and JSON report include repository `authority` plus `scopeStatus`.
-`scopeStatus` is one of four values:
+`scopeStatus` is one of these values:
 
 - `independently-derived` when literal generator target declarations were read and statically compared to the
   manifest, one `scope` `ERROR` per field that differs; when the manifest is missing, or is not a valid `ai_config.py`
@@ -25,7 +25,10 @@ The Markdown and JSON report include repository `authority` plus `scopeStatus`.
   whose message ends with the reason in parentheses: `manifest-declared-only` (no recognized generator),
   `generator-scope-unreadable`, `generator-scope-not-literal`, `generator-scope-invalid`, or
   `generator-scope-incomplete`;
-- `no-declared-scope` when there is neither a manifest nor a recognized generator;
+- `file-derived` when there is neither a manifest nor a recognized generator, and the repository's files show the
+  runtimes and surfaces the layering checks cover, which a `scope` `INFO` names (check 3 of `audit-policy.md`);
+- `no-declared-scope` when there is neither a manifest nor a recognized generator, and no file shows a runtime or
+  surface;
 - `not-applicable` before authority is conforming.
 
 ## Finding Structure

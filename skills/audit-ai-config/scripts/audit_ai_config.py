@@ -63,6 +63,9 @@ CHECKS = frozenset(
     {
         "authority",
         "behavioral",
+        "claude-hook",
+        "claude-memory",
+        "claude-settings",
         "collision",
         "copilot-agent",
         "copilot-config",
@@ -131,7 +134,13 @@ class Finding:
 
 # The scope statuses references/report-schema.md names; a reason the generator's scope could not be derived goes in
 # the scope WARNING's message, never in the status.
-SCOPE_STATUSES = ("independently-derived", "manifest-declared-only", "no-declared-scope", "not-applicable")
+SCOPE_STATUSES = (
+    "independently-derived",
+    "manifest-declared-only",
+    "file-derived",
+    "no-declared-scope",
+    "not-applicable",
+)
 
 
 @dataclass
@@ -367,9 +376,10 @@ def validate_manifest_vocabulary(manifest: dict[str, Any]) -> list[Finding]:
 
 
 def is_redirecting_agents_md(content: str) -> bool:
-    """Check if AGENTS.md is an adapter that redirects to CLAUDE.md."""
+    """Check if AGENTS.md is an adapter that redirects to CLAUDE.md: it names CLAUDE.md and tells the agent to read and
+    follow it, or to take it as authoritative."""
     lower = content.lower()
-    return "claude.md" in lower and ("read and follow" in lower or "authoritative source" in lower)
+    return "claude.md" in lower and ("read and follow" in lower or "authoritative" in lower)
 
 
 # ---------------------------------------------------------------------------
@@ -379,6 +389,9 @@ def is_redirecting_agents_md(content: str) -> bool:
 # Fixed and recursively discovered configuration files.
 INVENTORY_FILES: list[str] = [
     "CLAUDE.md",
+    ".claude/CLAUDE.md",
+    "CLAUDE.local.md",
+    ".claude/settings.json",
     "GEMINI.md",
     "REVIEW.md",
     ".codex/config.toml",
@@ -399,7 +412,14 @@ GENERATOR_CANDIDATES: list[str] = [".github/scripts/ai_config.py", "scripts/ai_c
 # the canonical source, which the authority signals, the behavioral checks, and Copilot parity read, the manifest, the
 # Copilot instructions, and each generator. The inventory reports each of them, every AGENTS.md, and every workflow it
 # cannot read as an ERROR, so an audit that skipped the checks reading one is never COMPLIANT.
-READ_FILES: list[str] = ["CLAUDE.md", ".github/ai-config-manifest.json", ".github/copilot-instructions.md"]
+READ_FILES: list[str] = [
+    "CLAUDE.md",
+    ".claude/CLAUDE.md",
+    ".github/ai-config-manifest.json",
+    ".github/copilot-instructions.md",
+]
+# Where Claude Code's memory page reads a project's CLAUDE.md: the root, or .claude/CLAUDE.md.
+CLAUDE_MD_FILES: tuple[str, ...] = ("CLAUDE.md", ".claude/CLAUDE.md")
 
 
 def check_inventory(root: Path) -> list[Finding]:
@@ -409,6 +429,7 @@ def check_inventory(root: Path) -> list[Finding]:
         *_inventory_recursive_files(root),
         *_inventory_skill_directories(root),
         *_inventory_agent_directories(root),
+        *_inventory_claude_rules(root),
         *_inventory_path_instructions(root),
         *_inventory_generator_scripts(root),
         *_inventory_parity_workflows(root),
@@ -494,6 +515,19 @@ def _inventory_agent_directories(root: Path) -> list[Finding]:
                 findings.append(_inventory_finding(agent_dir, f"Custom agent files found: {', '.join(sorted(agents))}"))
             findings.extend(outside_link_findings(root, listing))
     return findings
+
+
+def _inventory_claude_rules(root: Path) -> list[Finding]:
+    """Claude Code's rules, every Markdown file below .claude/rules; the rule check reports a link this walk skips."""
+    base = root / ".claude/rules"
+    if not base.is_dir():
+        return []
+    rules = sorted(path.relative_to(base).as_posix() for path in walk_files(root, base, _is_markdown).paths)
+    return [_inventory_finding(".claude/rules", f"Rules found: {', '.join(rules)}")] if rules else []
+
+
+def _is_markdown(name: str) -> bool:
+    return name.endswith(".md")
 
 
 def _inventory_path_instructions(root: Path) -> list[Finding]:
@@ -947,23 +981,64 @@ def derive_generator_scope(root: Path) -> tuple[dict[str, list[str]] | None, str
     return None, "manifest-declared-only"
 
 
+def derive_file_scope(root: Path) -> dict[str, list[str]]:
+    """The runtimes and surfaces the repository's own files show it serves, for a repository without a manifest or a
+    recognized generator: check 3 of references/audit-policy.md.
+
+    Claude Code by a CLAUDE.md where its memory page reads one; Codex by a root AGENTS.md or AGENTS.override.md, a
+    .codex folder, or skills under .agents/skills; and Copilot CLI and app and code review by a .github folder, since a
+    repository hosted on GitHub has its CLAUDE.md and AGENTS.md read by them without any setting of its own. The cloud
+    agent needs its setup workflow. JetBrains and VS Code read instructions only through settings and Copilot's own
+    files, which no file shows, so only a manifest targets them.
+    """
+    runtimes: list[str] = []
+    if any((root / name).is_file() for name in CLAUDE_MD_FILES):
+        runtimes.append("claude")
+    if (
+        any((root / name).is_file() for name in CODEX_INSTRUCTION_FILES)
+        or (root / ".codex").is_dir()
+        or (root / ".agents/skills").is_dir()
+    ):
+        runtimes.append("codex")
+    surfaces: list[str] = []
+    if (root / ".github").is_dir():
+        surfaces.extend(("copilot_cli", "code_review"))
+        if (root / ".github/workflows/copilot-setup-steps.yml").is_file():
+            surfaces.append("cloud_agent")
+    return {"runtimes": runtimes, "surfaces": surfaces} if runtimes or surfaces else {}
+
+
+def _file_scope_finding(scope: dict[str, list[str]]) -> tuple[str, Finding]:
+    """The scope status a repository without a manifest or generator gets, and the INFO finding naming its scope."""
+    if not scope:
+        return "no-declared-scope", Finding(
+            "INFO",
+            "scope",
+            message=(
+                "No AI-config manifest or recognized generator declares target runtimes or surfaces, and no file "
+                "shows one; target-specific checks were not run"
+            ),
+        )
+    shown = "; ".join(f"{key} {', '.join(values)}" for key, values in scope.items() if values)
+    return "file-derived", Finding(
+        "INFO",
+        "scope",
+        message=(
+            "No AI-config manifest or recognized generator declares target runtimes or surfaces; the layering checks "
+            f"cover what the repository's files show it serves: {shown}"
+        ),
+    )
+
+
 def check_scope_and_roles(root: Path, manifest: dict[str, Any]) -> tuple[str, list[Finding]]:
     findings: list[Finding] = []
     derived, status = derive_generator_scope(root)
     manifest_exists = (root / ".github/ai-config-manifest.json").is_file()
     if derived is None and not manifest_exists:
-        # With no manifest there is no editable scope that could narrow checks; say what was skipped.
-        status = "no-declared-scope"
-        findings.append(
-            Finding(
-                "INFO",
-                "scope",
-                message=(
-                    "No AI-config manifest or recognized generator declares target runtimes or surfaces; "
-                    "target-specific checks were not run"
-                ),
-            )
-        )
+        # With no manifest there is no editable scope that could narrow checks: the repository's files show the
+        # runtimes and surfaces it serves, or, when they show none, say what was skipped.
+        status, finding = _file_scope_finding(derive_file_scope(root))
+        findings.append(finding)
     elif derived is None:
         findings.append(
             Finding(
@@ -1211,14 +1286,22 @@ def _validate_claude_manifest(root: Path, data: dict[str, Any]) -> tuple[str | N
 
 
 def _has_claude_md(root: Path) -> bool:
-    return (root / "CLAUDE.md").is_file()
+    return any((root / name).is_file() for name in CLAUDE_MD_FILES)
+
+
+def claude_md_text(root: Path) -> tuple[str, str] | None:
+    """The first CLAUDE.md Claude Code reads, as a path, and the text of every one it reads, or None when there is
+    none it can read; the inventory reports one it cannot read as an ERROR."""
+    found = [(name, read_text_or_none(root / name)) for name in CLAUDE_MD_FILES if (root / name).is_file()]
+    texts = [text for _, text in found if text is not None]
+    return (found[0][0], "\n".join(texts)) if texts else None
 
 
 def _has_maintaining_section(root: Path) -> bool:
-    content = read_text_or_none(root / "CLAUDE.md")  # the inventory reports one it cannot read as an ERROR
-    if content is None:
+    claude_md = claude_md_text(root)
+    if claude_md is None:
         return False
-    return re.search(r"^##\s+Maintaining\s+AI\s+Agent\s+Config", content, re.MULTILINE | re.IGNORECASE) is not None
+    return re.search(r"^##\s+Maintaining\s+AI\s+Agent\s+Config", claude_md[1], re.MULTILINE | re.IGNORECASE) is not None
 
 
 def _has_generator_script(root: Path) -> bool:
@@ -1851,6 +1934,7 @@ class InstructionSources:
     """The instruction files at a repository's root that the layering checks consider."""
 
     claude_md: bool
+    dot_claude_md: bool
     agents_md: bool
     agents_redirects: bool
     copilot_instructions: bool
@@ -1867,6 +1951,7 @@ def _instruction_sources(root: Path) -> InstructionSources:
     instructions = root / ".github/instructions"
     return InstructionSources(
         claude_md=(root / "CLAUDE.md").is_file(),
+        dot_claude_md=(root / ".claude/CLAUDE.md").is_file(),
         agents_md=agents_md,
         agents_redirects=agents_redirects,
         copilot_instructions=(root / ".github/copilot-instructions.md").is_file(),
@@ -2070,6 +2155,7 @@ def _layering_copilot_cli(sources: InstructionSources) -> list[Finding]:
         name
         for name, present in (
             ("CLAUDE.md", sources.claude_md),
+            (".claude/CLAUDE.md", sources.dot_claude_md),
             ("AGENTS.md", sources.agents_md),
             (".github/copilot-instructions.md", sources.copilot_instructions),
             ("GEMINI.md", sources.gemini_md),
@@ -2264,6 +2350,344 @@ def check_instruction_layering(
 
 
 # ---------------------------------------------------------------------------
+# Claude Code's project configuration
+# ---------------------------------------------------------------------------
+
+CLAUDE_SETTINGS = ".claude/settings.json"
+CLAUDE_RULES = ".claude/rules"
+CLAUDE_LOCAL_MD = "CLAUDE.local.md"
+# The memory page's target length for a CLAUDE.md file or a rule.
+CLAUDE_MD_TARGET_LINES = 200
+# The permissions defaultMode values the settings reference lists, and those it says do not take effect from project
+# or local settings.
+CLAUDE_DEFAULT_MODES = frozenset({"default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions", "manual"})
+PROJECT_INEFFECTIVE_MODES = ("auto", "bypassPermissions")
+# The permissions entries the permissions page says grant capability, applied only once the workspace is trusted.
+TRUST_GATED_PERMISSIONS = ("allow", "additionalDirectories")
+
+
+@dataclass(frozen=True)
+class HookRules:
+    """What one runtime's hooks page says a hooks configuration holds: the shape both Claude Code and Codex read,
+    `{"hooks": {"<event>": [{"matcher": ..., "hooks": [{"type": ..., "timeout": ...}]}]}}`."""
+
+    runtime: str
+    events: frozenset[str]
+    # The handler types the runtime runs, and the field each requires; None when its page gives no closed list.
+    types: dict[str, tuple[str, ...]] | None
+    # Events whose handlers default to a short timeout; every other handler without one runs up to DEFAULT_HOOK_TIMEOUT.
+    short_timeout_events: frozenset[str]
+    long_timeout_types: frozenset[str]
+    on_failure: bool
+
+
+DEFAULT_HOOK_TIMEOUT = 600
+CLAUDE_HOOKS = HookRules(
+    runtime="Claude Code",
+    events=frozenset(
+        {
+            "SessionStart",
+            "Setup",
+            "UserPromptSubmit",
+            "UserPromptExpansion",
+            "PreToolUse",
+            "PermissionRequest",
+            "PermissionDenied",
+            "PostToolUse",
+            "PostToolUseFailure",
+            "PostToolBatch",
+            "Notification",
+            "MessageDisplay",
+            "SubagentStart",
+            "SubagentStop",
+            "TaskCreated",
+            "TaskCompleted",
+            "Stop",
+            "StopFailure",
+            "TeammateIdle",
+            "InstructionsLoaded",
+            "ConfigChange",
+            "CwdChanged",
+            "DirectoryAdded",
+            "FileChanged",
+            "WorktreeCreate",
+            "WorktreeRemove",
+            "PreCompact",
+            "PostCompact",
+            "PreModelSwitch",
+            "PostModelSwitch",
+            "Elicitation",
+            "ElicitationResult",
+            "SessionEnd",
+        }
+    ),
+    types={
+        "command": ("command",),
+        "http": ("url",),
+        "mcp_tool": ("server", "tool"),
+        "prompt": ("prompt",),
+        "agent": ("prompt",),
+    },
+    short_timeout_events=frozenset(
+        {"UserPromptSubmit", "PreModelSwitch", "PostModelSwitch", "MessageDisplay", "SessionEnd"}
+    ),
+    long_timeout_types=frozenset({"command", "http", "mcp_tool"}),
+    on_failure=True,
+)
+ON_FAILURE_VALUES = ("continue", "block")
+ON_FAILURE_TYPES = ("command", "http")
+
+
+def check_claude_code(root: Path) -> list[Finding]:
+    """Claude Code's project configuration: the shared settings and their hooks, the CLAUDE.md files and rules its
+    memory page loads, and their @path imports."""
+    return [*_claude_settings(root), *_claude_memory(root), *_claude_rules(root)]
+
+
+def _claude_settings(root: Path) -> list[Finding]:
+    path = root / CLAUDE_SETTINGS
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(read_text(path))
+    except (json.JSONDecodeError, OSError, UnicodeError) as error:
+        return [Finding("ERROR", "claude-settings", CLAUDE_SETTINGS, message=f"Could not read or parse: {error}")]
+    if not isinstance(data, dict):
+        return [Finding("ERROR", "claude-settings", CLAUDE_SETTINGS, message="Top-level value must be an object")]
+    hooks = [
+        Finding(severity, "claude-hook", CLAUDE_SETTINGS, message=message)
+        for severity, message in hook_problems(CLAUDE_HOOKS, data.get("hooks"))
+    ]
+    return [*_claude_permissions(data.get("permissions")), *hooks]
+
+
+def _claude_permissions(permissions: Any) -> list[Finding]:
+    """The settings page commits .claude/settings.json for everyone who opens the folder, and keeps personal
+    overrides in .claude/settings.local.json: a shared grant is everyone's."""
+    if permissions is None:
+        return []
+
+    def finding(severity: str, message: str) -> Finding:
+        return Finding(severity, "claude-settings", CLAUDE_SETTINGS, message=message)
+
+    if not isinstance(permissions, dict):
+        return [finding("ERROR", "'permissions' must be an object")]
+    findings: list[Finding] = []
+    mode = permissions.get("defaultMode")
+    if mode is not None and mode not in CLAUDE_DEFAULT_MODES:
+        findings.append(finding("ERROR", f"permissions.defaultMode {mode!r} is not a mode Claude Code knows"))
+    elif mode in PROJECT_INEFFECTIVE_MODES:
+        findings.append(
+            finding(
+                "WARNING",
+                f"permissions.defaultMode '{mode}' does not take effect from project settings; "
+                "set it in ~/.claude/settings.json",
+            )
+        )
+    granted = [key for key in TRUST_GATED_PERMISSIONS if permissions.get(key)]
+    if granted:
+        findings.append(
+            finding(
+                "WARNING",
+                f"The shared settings grant permissions.{' and permissions.'.join(granted)} to everyone who trusts "
+                "this folder; personal approvals belong in .claude/settings.local.json or ~/.claude/settings.json",
+            )
+        )
+    elif set_keys := [key for key, value in permissions.items() if value not in (None, "", [], {})]:
+        findings.append(
+            finding(
+                "INFO",
+                f"The shared settings set {', '.join(f'permissions.{key}' for key in set_keys)} for everyone who "
+                "opens the repository",
+            )
+        )
+    return findings
+
+
+def hook_problems(rules: HookRules, hooks: Any) -> list[tuple[str, str]]:
+    """The severity and message of each problem in a hooks configuration, read as `rules`' runtime reads it: an event
+    it does not know, a handler it cannot run, and a handler that leaves its timeout to the long default."""
+    if hooks is None:
+        return []
+    if not isinstance(hooks, dict):
+        return [("ERROR", "'hooks' must be an object mapping event names to matcher groups")]
+    problems: list[tuple[str, str]] = []
+    for event, groups in hooks.items():
+        if event not in rules.events:
+            problems.append(("ERROR", f"Hook event '{event}' is not one {rules.runtime} knows, so its hooks never run"))
+            continue
+        if not isinstance(groups, list):
+            problems.append(("ERROR", f"Hook event '{event}': must be a list of matcher groups"))
+            continue
+        for group in groups:
+            handlers = group.get("hooks") if isinstance(group, dict) else None
+            if not isinstance(handlers, list):
+                problems.append(("ERROR", f"Hook event '{event}': each matcher group needs a 'hooks' list"))
+                continue
+            for handler in handlers:
+                problems.extend(_hook_handler_problems(rules, event, handler))
+    return problems
+
+
+def _hook_handler_problems(rules: HookRules, event: str, handler: Any) -> list[tuple[str, str]]:
+    """The severity and message of each problem one hook handler has."""
+    if not isinstance(handler, dict):
+        return [("ERROR", f"Hook on '{event}': each handler must be an object")]
+    kind = handler.get("type")
+    if rules.types is not None and kind not in rules.types:
+        return [("ERROR", f"Hook on '{event}': type {kind!r} is not one {rules.runtime} runs")]
+    required = rules.types.get(str(kind), ()) if rules.types is not None else ("command",) if kind == "command" else ()
+    problems = [
+        ("ERROR", f"Hook on '{event}': a {kind} hook needs '{name}'")
+        for name in required
+        if not (isinstance(handler.get(name), str) and handler[name].strip())
+    ]
+    timeout = handler.get("timeout")
+    if timeout is None:
+        if kind in rules.long_timeout_types and event not in rules.short_timeout_events:
+            problems.append(
+                (
+                    "WARNING",
+                    f"Hook on '{event}' sets no timeout, so {rules.runtime} waits up to {DEFAULT_HOOK_TIMEOUT} "
+                    "seconds for it",
+                )
+            )
+    elif isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
+        problems.append(("ERROR", f"Hook on '{event}': timeout must be a positive number of seconds"))
+    on_failure = handler.get("onFailure")
+    if rules.on_failure and on_failure is not None:
+        if kind not in ON_FAILURE_TYPES:
+            problems.append(("ERROR", f"Hook on '{event}': onFailure applies to command and http hooks only"))
+        elif on_failure not in ON_FAILURE_VALUES:
+            problems.append(("ERROR", f"Hook on '{event}': onFailure must be 'continue' or 'block'"))
+    return problems
+
+
+# An @path import outside code: a path the memory page resolves relative to the file holding it.
+CLAUDE_IMPORT = re.compile(r"(?<![\w@`/])@(~?[\w./-]*[\w-])")
+FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
+CODE_SPAN = re.compile(r"(`+).*?\1")
+
+
+def claude_imports(text: str) -> list[str]:
+    """The @path imports in a CLAUDE.md file, in order, skipping fenced code blocks and code spans as Claude Code
+    does."""
+    imports: list[str] = []
+    fence: str | None = None
+    for line in text.splitlines():
+        opened = FENCE.match(line)
+        if fence is not None:
+            if opened and opened.group(1)[0] == fence[0] and len(opened.group(1)) >= len(fence):
+                fence = None
+            continue
+        if opened:
+            fence = opened.group(1)
+            continue
+        imports.extend(CLAUDE_IMPORT.findall(CODE_SPAN.sub("", line)))
+    return imports
+
+
+def _claude_memory(root: Path) -> list[Finding]:
+    """Each CLAUDE.md Claude Code loads at launch: its length against the memory page's target, and its imports, which
+    load with it."""
+    findings: list[Finding] = []
+    for rel in (*CLAUDE_MD_FILES, CLAUDE_LOCAL_MD):
+        text = read_text_or_none(root / rel)  # the inventory reports a CLAUDE.md it cannot read as an ERROR
+        if text is None:
+            continue
+        findings.extend(_length_finding(rel, text))
+        imports = claude_imports(text)
+        if imports:
+            findings.append(
+                Finding(
+                    "INFO",
+                    "claude-memory",
+                    rel,
+                    message=f"Imports {', '.join('@' + name for name in imports)}; imported files load at launch with "
+                    "this file, so they organize it without reducing its context cost",
+                )
+            )
+        findings.extend(_missing_imports(root, rel, imports))
+    return findings
+
+
+def _length_finding(rel: str, text: str) -> list[Finding]:
+    lines = len(text.splitlines())
+    if lines <= CLAUDE_MD_TARGET_LINES:
+        return []
+    return [
+        Finding(
+            "WARNING",
+            "claude-memory",
+            rel,
+            message=f"{lines} lines, over the {CLAUDE_MD_TARGET_LINES} lines Claude Code's memory page targets; "
+            "longer files consume more context and reduce adherence",
+        )
+    ]
+
+
+def _missing_imports(root: Path, rel: str, imports: list[str]) -> list[Finding]:
+    """A relative import that names a path, resolving inside the repository to no file. A name with no folder or
+    extension, such as a handle, is not taken for a path, and an import outside the repository is not read."""
+    findings: list[Finding] = []
+    for name in imports:
+        if name.startswith(("~", "/")) or not ("/" in name or "." in name):
+            continue
+        target = (root / rel).parent / name
+        if leaves_root(root, target) or target.exists():
+            continue
+        findings.append(
+            Finding("WARNING", "claude-memory", rel, message=f"Import @{name} names no file, so nothing loads for it")
+        )
+    return findings
+
+
+def _claude_rules(root: Path) -> list[Finding]:
+    """Each rule under .claude/rules, found recursively as the memory page says: unconditional, or scoped by the
+    globs its paths frontmatter lists."""
+    base = root / CLAUDE_RULES
+    if not base.is_dir():
+        return []
+    walk = walk_files(root, base, _is_markdown)
+    findings = outside_link_findings(root, walk)
+    for path in sorted(walk.paths):
+        rel = path.relative_to(root).as_posix()
+        text = read_text_or_none(path)
+        if text is None:
+            findings.append(
+                Finding("ERROR", "claude-memory", rel, message="Could not read, so the rule was not checked")
+            )
+            continue
+        findings.extend(_length_finding(rel, text))
+        findings.extend(_rule_scope(path, rel, text))
+    return findings
+
+
+def _rule_scope(path: Path, rel: str, text: str) -> list[Finding]:
+    if not text.startswith("---"):
+        values: dict[str, FrontmatterValue] = {}
+        problems: list[Finding] = []
+    else:
+        values, problems = _frontmatter(path)
+        for problem in problems:
+            problem.path, problem.check = rel, "claude-memory"
+    if "paths" not in values:
+        return [*problems, Finding("INFO", "claude-memory", rel, message="Rule without paths: loads at launch")]
+    globs = values["paths"]
+    if isinstance(globs, list) and globs and all(globs):
+        return [*problems, Finding("INFO", "claude-memory", rel, message=f"Rule scoped to {', '.join(globs)}")]
+    return [
+        *problems,
+        Finding(
+            "WARNING",
+            "claude-memory",
+            rel,
+            message="paths should be a YAML list of glob patterns, as the memory page gives it",
+        ),
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Check 7: Behavioral constraints
 # ---------------------------------------------------------------------------
 
@@ -2290,9 +2714,10 @@ QUALITY_GATE_PATTERNS = (
 
 def check_behavioral_constraints(root: Path) -> list[Finding]:
     findings: list[Finding] = []
-    content = read_text_or_none(root / "CLAUDE.md")
-    if content is None:  # absent, or unreadable, which the inventory reports as an ERROR
+    claude_md = claude_md_text(root)
+    if claude_md is None:  # absent, or unreadable, which the inventory reports as an ERROR
         return findings
+    path, content = claude_md
 
     lower = content.lower()
 
@@ -2301,7 +2726,7 @@ def check_behavioral_constraints(root: Path) -> list[Finding]:
             Finding(
                 severity="WARNING",
                 check="behavioral",
-                path="CLAUDE.md",
+                path=path,
                 message="No 'never disable/suppress' rule found",
             )
         )
@@ -2311,7 +2736,7 @@ def check_behavioral_constraints(root: Path) -> list[Finding]:
             Finding(
                 severity="WARNING",
                 check="behavioral",
-                path="CLAUDE.md",
+                path=path,
                 message=(
                     "No rule forbidding workarounds for failing checks "
                     "(skip or expected-failure markers, weakened gates, TODO comments)"
@@ -2324,7 +2749,7 @@ def check_behavioral_constraints(root: Path) -> list[Finding]:
             Finding(
                 severity="WARNING",
                 check="behavioral",
-                path="CLAUDE.md",
+                path=path,
                 message=(
                     "No quality gate found (a coverage threshold, a lint severity level, "
                     "or a rule that every check must pass)"
@@ -2513,10 +2938,13 @@ def _authority_and_checks(root: Path, result: AuditResult) -> None:
     # Step 5: MCP configuration
     result.findings.extend(check_mcp(root, manifest or {}))
 
-    # Step 6: Instruction layering
-    result.findings.extend(check_instruction_layering(root, manifest or {}))
+    # Step 6: Instruction layering, over the scope the repository's files show when nothing declares one. The
+    # collision check below keeps to a declared scope: it guards a generator's writes, and without one nothing writes.
+    layering_scope = derive_file_scope(root) if result.scope_status == "file-derived" else manifest or {}
+    result.findings.extend(check_instruction_layering(root, layering_scope))
 
     result.findings.extend(check_copilot_configuration(root, manifest or {}))
+    result.findings.extend(check_claude_code(root))
 
     # Step 7: Behavioral constraints
     result.findings.extend(check_behavioral_constraints(root))

@@ -68,3 +68,13 @@ Check 7 of `audit-policy.md` resolves which instructions each surface reads; thi
 Code review reads its instructions from the pull request's head branch, and an `AGENTS.md` that only redirects to `CLAUDE.md` reaches it through the `CLAUDE.md` it names.
 
 Copilot CLI checks repository skills in `.github/skills`, then `.agents/skills`, then `.claude/skills`, and personal `~/.copilot/skills` before `~/.agents/skills`, so a higher-priority skill can shadow a generated shim.
+
+## Files the layout leaves to each runtime
+
+The generator writes none of the runtimes' own project configuration, so the audit reads it as the runtime's pages describe it, whether or not a generator exists: check 1 of `audit-policy.md` inventories each file and check 12 reads Claude Code's.
+
+| Runtime | Files | What the audit reads |
+|---|---|---|
+| Claude Code | `.claude/CLAUDE.md`, `CLAUDE.local.md` | The project's `CLAUDE.md` where it lives in `.claude`, which counts as the authority's `CLAUDE.md`, and the personal one; their length and `@path` imports |
+| Claude Code | `.claude/settings.json` | Its shared `permissions` and its `hooks` |
+| Claude Code | `.claude/rules/**/*.md` | Each rule's `paths` scope and length |
