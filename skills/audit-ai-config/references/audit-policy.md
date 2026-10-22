@@ -73,6 +73,7 @@ For each manifest artifact: the path must be in the fixed allowlist, without tra
 Parsed statically, never started:
 
 - `.mcp.json` and `.github/mcp.json` need an `mcpServers` object; each server needs `command` or `url`.
+- A `.mcp.json` server Claude Code skips is an `ERROR`: one with a `url` and no `type`, which it reads as stdio, one of `type` `sdk`, which only an SDK host can register, and one with a reserved built-in name (`workspace`, `claude-in-chrome`, `computer-use`, `Claude Preview`, or `Claude Browser`).
 - A server name in both `.mcp.json` and `.github/mcp.json` is an `ERROR`: `.mcp.json` wins, so the other entry is unreachable.
 - `.vscode/mcp.json` needs a `servers` object, and a missing one is an `ERROR` (`mcpServers` is the usual mistake); each server needs `command` or `url`. A missing `mcpServers` in the other two files, or an entry that is not an object, is a `WARNING`.
 - One reader reads each JSON file for the audit and for the handshake, so both report the same problems for it.
