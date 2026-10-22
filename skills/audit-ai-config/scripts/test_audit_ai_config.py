@@ -1356,7 +1356,7 @@ class CopilotConfigurationTests(unittest.TestCase):
         self.assertIn("line number", comment)
 
     def test_agent_filename_and_description_validated(self) -> None:
-        path = self.root / ".claude/agents/bad name.txt"
+        path = self.root / ".github/agents/bad name.txt"
         path.parent.mkdir(parents=True)
         path.write_text("---\nname: bad\n---\n", encoding="utf-8")
         result = audit.audit(self.root)
@@ -3446,6 +3446,14 @@ INVENTORY_SCENARIOS: dict[str, dict[str, str | bytes]] = {
         ".claude/rules/notes.txt": "x",
     },
     "claude_rules_without_markdown": {".claude/rules/notes.txt": "x"},
+    "codex_files": {
+        ".codex/hooks.json": "{}",
+        ".codex/agents/reviewer.toml": "x",
+        ".codex/agents/explorer.toml": "x",
+        ".codex/agents/notes.md": "x",
+        ".codex/rules/default.rules": "x",
+        ".codex/rules/nested/inner.rules": "x",
+    },
     "recursive_files": {
         "AGENTS.md": "x",
         "sub/AGENTS.md": "x",
@@ -3527,6 +3535,11 @@ INVENTORY_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
         ("INFO", "inventory", ".claude/rules", "Rules found: frontend/ui.md, testing.md"),
     ],
     "claude_rules_without_markdown": [],
+    "codex_files": [
+        ("INFO", "inventory", ".codex/hooks.json", "Found .codex/hooks.json"),
+        ("INFO", "inventory", ".codex/agents", "Custom agents found: explorer.toml, reviewer.toml"),
+        ("INFO", "inventory", ".codex/rules", "Rules found: default.rules"),
+    ],
     "recursive_files": [
         ("INFO", "inventory", "AGENTS.md", "Found AGENTS.md"),
         ("INFO", "inventory", "sub/AGENTS.md", "Found sub/AGENTS.md"),
@@ -3780,6 +3793,13 @@ class AuditPolicyReferenceTests(unittest.TestCase):
             "claude-settings",
             "claude-hook",
             "claude-memory",
+            "agent-skill",
+            "claude-skill",
+            "claude-agent",
+            "codex-skill",
+            "codex-hook",
+            "codex-agent",
+            "codex-rule",
             "limitation",
         }
     )
@@ -3869,14 +3889,18 @@ class UnreadableConfigurationTests(unittest.TestCase):
             (f.check, f.message) for f in audit.audit(self.root).findings if f.path == rel and f.severity == "ERROR"
         ]
 
-    def test_an_undecodable_copilot_skill_or_agent_is_an_error(self) -> None:
-        for rel in (".github/skills/demo/SKILL.md", ".github/agents/reviewer.md", ".claude/agents/reviewer.md"):
+    def test_an_undecodable_skill_or_agent_is_an_error(self) -> None:
+        for rel, check in (
+            (".github/skills/demo/SKILL.md", "copilot-config"),
+            (".github/agents/reviewer.md", "copilot-config"),
+            (".claude/agents/reviewer.md", "claude-agent"),
+        ):
             with self.subTest(rel=rel):
                 path = self.root / rel
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(UNDECODABLE)
                 errors = self._errors(rel)
-                self.assertIn("copilot-config", [check for check, _ in errors])
+                self.assertIn(check, [check for check, _ in errors])
                 self.assertTrue(any(message.startswith("Could not read:") for _, message in errors), errors)
                 path.unlink()
 
@@ -4411,6 +4435,355 @@ class ClaudeCodeConfigurationTests(unittest.TestCase):
             result = audit.audit(root)
         self.assertEqual("conforming", result.authority)
         self.assertEqual({".claude/CLAUDE.md"}, {f.path for f in result.findings if f.check == "behavioral"})
+
+
+def skill_md(name: str, description: str = "Does a thing. Use it when asked.", extra: str = "", body: str = "") -> str:
+    return f"---\nname: {name}\ndescription: {description}\n{extra}---\n\n{body}\n"
+
+
+def runtime_rows(files: dict[str, str | bytes], checks: tuple[str, ...]) -> list[tuple[str, str, str | None, str]]:
+    """The findings of the named checks in the skill and agent check of a fixture."""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        _write_fixture(root, files)
+        return [row for row in _finding_rows(audit.check_copilot_configuration(root, {})) if row[1] in checks]
+
+
+SKILL_CHECKS = ("agent-skill", "claude-skill", "codex-skill")
+USER_ONLY = "disable-model-invocation: true\n"
+
+
+class RuntimeSkillAndAgentTests(unittest.TestCase):
+    """Skills under .claude/skills and .agents/skills, and agents under .claude/agents, are judged by the rules of the
+    runtimes that read their folders."""
+
+    def test_the_agent_skills_field_requirements_hold_in_both_folders_but_not_in_github_skills(self) -> None:
+        long = "x" * 1025
+        files: dict[str, str | bytes] = {}
+        for folder in (".claude/skills", ".agents/skills", ".github/skills"):
+            files[f"{folder}/claude-helper/SKILL.md"] = skill_md("claude-helper", "Formats <b>bold</b> text.")
+            files[f"{folder}/long/SKILL.md"] = skill_md("long", long)
+            files[f"{folder}/fine/SKILL.md"] = skill_md("fine", "Mentions claude and a < b comparison.")
+        expected = []
+        for folder in (".claude/skills", ".agents/skills"):
+            expected += [
+                (
+                    "ERROR",
+                    "agent-skill",
+                    f"{folder}/claude-helper/SKILL.md",
+                    "Skill name contains the reserved word 'claude'",
+                ),
+                ("ERROR", "agent-skill", f"{folder}/claude-helper/SKILL.md", "Skill description contains an XML tag"),
+                ("ERROR", "agent-skill", f"{folder}/long/SKILL.md", "Skill description is 1025 characters, over 1024"),
+            ]
+        self.assertEqual(expected, runtime_rows(files, SKILL_CHECKS))
+
+    def test_a_name_over_64_characters_is_an_error(self) -> None:
+        name = "a" * 65
+        self.assertEqual(
+            [("ERROR", "agent-skill", f".claude/skills/{name}/SKILL.md", "Skill name is over 64 characters")],
+            runtime_rows({f".claude/skills/{name}/SKILL.md": skill_md(name)}, SKILL_CHECKS),
+        )
+
+    def test_a_claude_skill_reading_arguments_needs_an_argument_hint(self) -> None:
+        files: dict[str, str | bytes] = {
+            ".claude/skills/bare/SKILL.md": skill_md("bare", body="Review $ARGUMENTS."),
+            ".claude/skills/hinted/SKILL.md": skill_md("hinted", extra='argument-hint: "<pr>"\n', body="$ARGUMENTS"),
+            ".claude/skills/none/SKILL.md": skill_md("none", body="No arguments."),
+            ".agents/skills/codex/SKILL.md": skill_md("codex", body="Review $ARGUMENTS."),
+        }
+        self.assertEqual(
+            [
+                (
+                    "WARNING",
+                    "claude-skill",
+                    ".claude/skills/bare/SKILL.md",
+                    "Skill reads $ARGUMENTS but gives no argument-hint, so Claude Code's autocomplete shows no "
+                    "expected arguments",
+                )
+            ],
+            [row for row in runtime_rows(files, SKILL_CHECKS) if row[1] == "claude-skill"],
+        )
+
+    def test_a_user_only_codex_skill_needs_the_policy_file_that_stops_implicit_invocation(self) -> None:
+        warning = (
+            "Skill is user-only (disable-model-invocation: true), which Codex does not read; without "
+            "agents/openai.yaml setting policy.allow_implicit_invocation: false, Codex may invoke it on its own"
+        )
+        cases: dict[str, tuple[dict[str, str | bytes], list[tuple[str, str, str]]]] = {
+            "no policy file": ({}, [("WARNING", ".agents/skills/demo/SKILL.md", warning)]),
+            "block policy": ({"agents/openai.yaml": "policy:\n  allow_implicit_invocation: false\n"}, []),
+            "flow policy": ({"agents/openai.yaml": "interface: {}\npolicy: {allow_implicit_invocation: false}\n"}, []),
+            "policy left on": (
+                {"agents/openai.yaml": "policy:\n  allow_implicit_invocation: true\n"},
+                [("WARNING", ".agents/skills/demo/SKILL.md", warning)],
+            ),
+            "unreadable policy": (
+                {"agents/openai.yaml": UNDECODABLE},
+                [
+                    (
+                        "ERROR",
+                        ".agents/skills/demo/agents/openai.yaml",
+                        "Could not read agents/openai.yaml, so the skill's invocation policy was not checked",
+                    )
+                ],
+            ),
+        }
+        for name, (extra, expected) in cases.items():
+            with self.subTest(name=name):
+                files: dict[str, str | bytes] = {".agents/skills/demo/SKILL.md": skill_md("demo", extra=USER_ONLY)}
+                files.update({f".agents/skills/demo/{rel}": content for rel, content in extra.items()})
+                self.assertEqual(
+                    [(severity, "codex-skill", path, message) for severity, path, message in expected],
+                    runtime_rows(files, SKILL_CHECKS),
+                )
+
+    def test_a_shim_of_a_user_only_skill_is_user_only_too(self) -> None:
+        rows = runtime_rows(
+            {
+                ".claude/skills/demo/SKILL.md": skill_md("demo", extra=USER_ONLY),
+                ".agents/skills/demo/SKILL.md": skill_md("demo"),
+                ".agents/skills/model/SKILL.md": skill_md("model"),
+            },
+            ("codex-skill",),
+        )
+        self.assertEqual([".agents/skills/demo/SKILL.md"], [row[2] for row in rows])
+
+    def test_a_shim_whose_description_differs_from_its_skill_is_a_warning(self) -> None:
+        self.assertEqual(
+            [
+                (
+                    "WARNING",
+                    "codex-skill",
+                    ".agents/skills/demo/SKILL.md",
+                    "Skill description differs from .claude/skills/demo/SKILL.md, the skill it stands for, so Codex "
+                    "and Copilot choose it on other words than Claude Code",
+                )
+            ],
+            runtime_rows(
+                {
+                    ".claude/skills/demo/SKILL.md": skill_md("demo", "Reviews a pull request."),
+                    ".agents/skills/demo/SKILL.md": skill_md("demo", "Reviews a document."),
+                    ".claude/skills/same/SKILL.md": skill_md("same", "Same words."),
+                    ".agents/skills/same/SKILL.md": skill_md("same", '"Same words."'),
+                },
+                SKILL_CHECKS,
+            ),
+        )
+
+    def test_a_claude_code_agent_is_read_with_its_own_fields_and_never_copilots(self) -> None:
+        files: dict[str, str | bytes] = {
+            ".claude/agents/reviewer.md": (
+                "---\nname: code-review\ndescription: Reviews.\ntarget: invalid\ntools: Read, Grep\nmodel: inherit\n"
+                "hooks:\n  PreToolUse:\n    - matcher: Bash\n---\n"
+            ),
+            ".claude/agents/open.md": "---\nname: open\ndescription: Does anything.\n---\n",
+            ".claude/agents/listed.md": "---\nname: listed\ndescription: Lists.\ntools:\n  - Read\n  - Edit\n---\n",
+            ".claude/agents/unnamed.md": "---\ndescription: No name.\n---\n",
+            ".claude/agents/colon.md": "---\nname: a:b\n---\n",
+            ".claude/agents/notes.txt": "not an agent",
+        }
+        rows = runtime_rows(files, ("claude-agent", "copilot-agent", "copilot-config", "collision"))
+        self.assertEqual(
+            [
+                (
+                    "ERROR",
+                    "claude-agent",
+                    ".claude/agents/colon.md",
+                    "Agent name must be at most 256 characters, hold no ':', and not start with '-', or Claude Code "
+                    "skips the file",
+                ),
+                ("ERROR", "claude-agent", ".claude/agents/colon.md", "Agent frontmatter requires description"),
+                (
+                    "INFO",
+                    "claude-agent",
+                    ".claude/agents/listed.md",
+                    "Claude Code agent 'listed': tools Read, Edit; the default model; no hooks of its own",
+                ),
+                (
+                    "INFO",
+                    "claude-agent",
+                    ".claude/agents/open.md",
+                    "Claude Code agent 'open': tools every tool (inherited); the default model; no hooks of its own",
+                ),
+                (
+                    "INFO",
+                    "claude-agent",
+                    ".claude/agents/reviewer.md",
+                    "Claude Code agent 'code-review': tools Read, Grep; inherit; its own hooks",
+                ),
+                ("ERROR", "claude-agent", ".claude/agents/unnamed.md", "Agent frontmatter requires name"),
+            ],
+            rows,
+        )
+
+
+def codex_rows(files: dict[str, str | bytes]) -> list[tuple[str, str, str | None, int | None, str]]:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        _write_fixture(root, files)
+        return [
+            (
+                f.severity,
+                f.check,
+                f.path,
+                f.line,
+                f.message.split(":")[0] if "Could not read or parse" in f.message else f.message,
+            )
+            for f in audit.check_codex(root)
+        ]
+
+
+CODEX_HOOK = (
+    '{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "x", "timeout": 5}]}]}}'
+)
+CODEX_AGENT = 'name = "explorer"\ndescription = "Explores."\ndeveloper_instructions = "Read only."\n'
+
+
+class CodexConfigurationTests(unittest.TestCase):
+    """Codex's hooks, custom agents, and rules under .codex, read as its hooks, subagents, and rules pages describe."""
+
+    def test_hooks_are_read_from_hooks_json_and_config_toml(self) -> None:
+        self.assertEqual([], codex_rows({".codex/hooks.json": CODEX_HOOK}))
+        self.assertEqual(
+            [("ERROR", "codex-hook", ".codex/hooks.json", None, "Could not read or parse")],
+            codex_rows({".codex/hooks.json": "{bad"}),
+        )
+        self.assertEqual(
+            [
+                (
+                    "ERROR",
+                    "codex-hook",
+                    ".codex/hooks.json",
+                    None,
+                    "Hook event 'PreToolCall' is not one Codex knows, so its hooks never run",
+                ),
+                (
+                    "WARNING",
+                    "codex-hook",
+                    ".codex/hooks.json",
+                    None,
+                    "Hook on 'Stop' sets no timeout, so Codex waits up to 600 seconds for it",
+                ),
+            ],
+            codex_rows(
+                {
+                    ".codex/hooks.json": json.dumps(
+                        {
+                            "hooks": {
+                                "PreToolCall": [],
+                                "Stop": [{"hooks": [{"type": "command", "command": "x"}]}],
+                                "SessionEnd": [{"hooks": [{"type": "command", "command": "x"}]}],
+                            }
+                        }
+                    )
+                }
+            ),
+        )
+        self.assertEqual(
+            [
+                ("ERROR", "codex-hook", ".codex/config.toml", None, "Hook on 'Stop': a command hook needs 'command'"),
+                (
+                    "WARNING",
+                    "codex-hook",
+                    ".codex/hooks.json",
+                    None,
+                    "Hooks are configured in both .codex/hooks.json and .codex/config.toml; Codex merges them and "
+                    "warns at startup",
+                ),
+            ],
+            codex_rows(
+                {
+                    ".codex/hooks.json": CODEX_HOOK,
+                    ".codex/config.toml": '[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = "command"\ntimeout = 5\n',
+                }
+            ),
+        )
+
+    def test_a_custom_agent_needs_its_fields_and_sets_no_session_setting(self) -> None:
+        self.assertEqual([], codex_rows({".codex/agents/explorer.toml": CODEX_AGENT}))
+        self.assertEqual(
+            [
+                ("ERROR", "codex-agent", ".codex/agents/broken.toml", None, "Could not read or parse"),
+                ("ERROR", "codex-agent", ".codex/agents/thin.toml", None, "Custom agent requires description"),
+                (
+                    "ERROR",
+                    "codex-agent",
+                    ".codex/agents/thin.toml",
+                    None,
+                    "Custom agent requires developer_instructions",
+                ),
+                (
+                    "WARNING",
+                    "codex-agent",
+                    ".codex/agents/thin.toml",
+                    None,
+                    "sandbox_mode has no effect in a custom agent file; the parent session's setting applies",
+                ),
+            ],
+            codex_rows(
+                {
+                    ".codex/agents/broken.toml": "name = ",
+                    ".codex/agents/thin.toml": 'name = "thin"\nsandbox_mode = "danger-full-access"\n',
+                    ".codex/agents/notes.md": "not an agent",
+                }
+            ),
+        )
+
+    def test_each_allowing_rule_is_a_warning_at_its_line(self) -> None:
+        rules = (
+            "# Project rules\n"
+            'prefix_rule(pattern = ["git", "push"], decision = "prompt")\n'
+            'prefix_rule(pattern = ["npm", ["test", "run"]])\n'
+            'prefix_rule(pattern = ["rm"], decision = "forbidden")\n'
+            'prefix_rule(pattern = ["make"], decision = "allow")\n'
+            'prefix_rule(pattern = [], decision = "allow")\n'
+            'prefix_rule(pattern = ["curl"], decision = "maybe")\n'
+        )
+        self.assertEqual(
+            [
+                (
+                    "WARNING",
+                    "codex-rule",
+                    ".codex/rules/default.rules",
+                    3,
+                    "prefix_rule allows 'npm ['test', 'run']' to run outside the sandbox without prompting, for "
+                    "everyone who trusts this project",
+                ),
+                (
+                    "WARNING",
+                    "codex-rule",
+                    ".codex/rules/default.rules",
+                    5,
+                    "prefix_rule allows 'make' to run outside the sandbox without prompting, for everyone who trusts "
+                    "this project",
+                ),
+                (
+                    "ERROR",
+                    "codex-rule",
+                    ".codex/rules/default.rules",
+                    6,
+                    "prefix_rule needs a non-empty literal pattern list",
+                ),
+                (
+                    "ERROR",
+                    "codex-rule",
+                    ".codex/rules/default.rules",
+                    7,
+                    "prefix_rule decision must be 'allow', 'prompt', or 'forbidden'",
+                ),
+            ],
+            sorted(codex_rows({".codex/rules/default.rules": rules}), key=lambda row: row[3] or 0),
+        )
+
+    def test_a_rules_file_that_does_not_parse_is_a_read_failure(self) -> None:
+        self.assertEqual(
+            [
+                ("ERROR", "codex-rule", ".codex/rules/broken.rules", None, "Could not read or parse"),
+                ("ERROR", "codex-rule", ".codex/rules/bytes.rules", None, "Could not read or parse"),
+            ],
+            codex_rows({".codex/rules/broken.rules": "prefix_rule(\n", ".codex/rules/bytes.rules": UNDECODABLE}),
+        )
 
 
 def markdown_row(path: str, message: str) -> str:
@@ -5125,4 +5498,6 @@ class ProvenanceTests(unittest.TestCase):
         with mock.patch.object(audit, "PROVENANCE", broken):
             code, output = self._main("--provenance")
         self.assertEqual(1, code)
-        self.assertEqual([f"FAILED {broken.as_posix()}: no entry for authority, "], [output.split("behavioral")[0]])
+        self.assertEqual(
+            [f"FAILED {broken.as_posix()}: no entry for agent-skill, authority, "], [output.split("behavioral")[0]]
+        )
