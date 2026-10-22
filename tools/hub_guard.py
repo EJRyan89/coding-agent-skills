@@ -43,7 +43,7 @@ GUARD_SETTING = "coding-agent-skills.hubGuard"
 FILE_TOOLS = {"Edit", "MultiEdit", "NotebookEdit", "Write"}
 # Git subcommands that can move HEAD or the branch it names, or write the index or the tracked files of the
 # checkout they run in, whichever subcommand or option makes them do it: the plumbing and porcelain that do, the
-# interactive tools that can (difftool and mergetool, gitk, gui, citool), and the importers that commit and check
+# interactive tools that can (difftool and mergetool, gui, citool), and the importers that commit and check
 # out (archimport, cvsimport, p4, quiltimport, svn). A subcommand that writes only objects, refs other than HEAD's
 # branch (notes, replace, tag), or other worktrees (worktree) is not here. fetch is judged by its options: with
 # --update-head-ok it moves the branch HEAD names, as git pull asks it to.
@@ -64,7 +64,6 @@ WRITING_SUBCOMMANDS = {
     "difftool",
     "fast-import",
     "filter-branch",
-    "gitk",
     "gui",
     "history",
     "merge",
@@ -1159,34 +1158,42 @@ class BashReader:
         elif program in POWERSHELL_NAMES:
             script = powershell_script(arguments)
             follow(program, script, shell.cwd, variables, self.reading, self.depth, read_powershell)
-        elif program in ENV_NAMES:
-            self.run_env(arguments, redirects, shell, variables)
-        elif program in PREFIX_PROGRAMS:
-            command = prefixed_command(program, arguments)
-            if command is None:
-                self.reading.cannot_read(f"could not read the options passed to {program}")
-            elif command:
-                self.run_program(command_name(command[0]), command[1:], redirects, shell, variables)
+        elif program in ENV_NAMES or program in PREFIX_PROGRAMS:
+            command = started_command(program, arguments, shell.cwd, variables, self.reading)
+            if command is not None:
+                name, rest, cwd, given = command
+                started = shell.copy()
+                started.cwd = cwd
+                self.run_program(name, rest, redirects, started, given)
 
-    def run_env(
-        self, arguments: list[Word], redirects: list[bash_syntax.Redirect], shell: Shell, variables: dict[str, Word]
-    ) -> None:
-        """env starts its program with the environment it is given: emptied by -i, less each -u, plus each NAME=value,
-        and in the directory -C names."""
-        read = read_env_options(arguments, shell.cwd, variables)
-        if read is None:
-            self.reading.cannot_read(f"could not read the option {first_unread_env_option(arguments)} passed to env")
-            return
-        index, cwd, given = read
-        # env takes every word holding `=` before its command as NAME=value, whatever the name: a[1]=x and `x y=1` too.
-        while index < len(arguments) and "=" in (arguments[index] or ""):
-            name, _, assigned = (arguments[index] or "").partition("=")
-            given[name] = assigned
-            index += 1
-        if index < len(arguments):
-            started = shell.copy()
-            started.cwd = cwd
-            self.run_program(command_name(arguments[index]), arguments[index + 1 :], redirects, started, given)
+
+def started_command(
+    program: str, arguments: list[Word], cwd: Path | None, variables: Variables, reading: Reading
+) -> tuple[str | None, list[Word], Path | None, dict[str, Word]] | None:
+    """The command env or a prefix program such as nice starts: its name, its arguments, its directory, and its
+    environment; None when it starts none, and when its options cannot be read, which is recorded as unread.
+
+    env starts its program with the environment it is given: emptied by -i, less each -u, plus each NAME=value, and in
+    the directory -C names."""
+    if program not in ENV_NAMES:
+        command = prefixed_command(program, arguments)
+        if command is None:
+            reading.cannot_read(f"could not read the options passed to {program}")
+            return None
+        return (command_name(command[0]), command[1:], cwd, dict(variables)) if command else None
+    read = read_env_options(arguments, cwd, variables)
+    if read is None:
+        reading.cannot_read(f"could not read the option {first_unread_env_option(arguments)} passed to env")
+        return None
+    index, cwd, given = read
+    # env takes every word holding `=` before its command as NAME=value, whatever the name: a[1]=x and `x y=1` too.
+    while index < len(arguments) and "=" in (arguments[index] or ""):
+        name, _, assigned = (arguments[index] or "").partition("=")
+        given[name] = assigned
+        index += 1
+    if index < len(arguments):
+        return command_name(arguments[index]), arguments[index + 1 :], cwd, given
+    return None
 
 
 def read_env_options(
@@ -1225,7 +1232,10 @@ def first_unread_env_option(arguments: list[Word]) -> str:
 
 
 def prefixed_command(program: str, arguments: list[Word]) -> list[Word] | None:
-    """The command a prefix program such as nohup, nice, or timeout starts; None when its options cannot be read."""
+    """The command a prefix program such as nohup, nice, or timeout starts; None when its options cannot be read.
+
+    A short option that takes a value takes the rest of its word when anything follows it there, as in `nice -n5`
+    and `stdbuf -oL`, the way getopt reads it; any other bundle of short options is not read."""
     flags, valued, operands = PREFIX_PROGRAMS[program]
     index = 0
     while index < len(arguments):
@@ -1242,6 +1252,8 @@ def prefixed_command(program: str, arguments: list[Word]) -> list[Word] | None:
             index += 1
         elif option in valued:
             index += 1 if "=" in word else 2
+        elif not word.startswith("--") and word[:2] in valued:
+            index += 1
         else:
             return None
     index += operands
@@ -1742,14 +1754,28 @@ class PowerShellReader:
             return self.call_function(name, session)
         if name in LOCATION_NAMES | PUSH_LOCATION_NAMES | POP_LOCATION_NAMES:
             return self.location(name, arguments, parameters, session)
-        if name in GIT_NAMES:
-            read_git(arguments, session.cwd, session.variables, self.reading, session.opaque)
-        elif name in BASH_NAMES:
-            script = bash_script(arguments, [], Shell(None, {}, set()))
-            follow(name, script, session.cwd, session.variables, self.reading, self.depth, read_bash)
+        if name in GIT_NAMES | BASH_NAMES | ENV_NAMES or name in PREFIX_PROGRAMS:
+            self.run_program(name, arguments, session.cwd, session.variables, session.opaque)
         else:
             self.environment_change(name, parameters, session)
         return session
+
+    def run_program(
+        self, name: str | None, arguments: list[Word], cwd: Path | None, variables: Variables, opaque: bool
+    ) -> None:
+        """A program a PowerShell command starts, in this directory and with these variables in its environment. A pwsh
+        the session starts itself is read by the PowerShell reader; one that env or a prefix program starts, here."""
+        if name in GIT_NAMES:
+            read_git(arguments, cwd, variables, self.reading, opaque)
+        elif name in BASH_NAMES:
+            script = bash_script(arguments, [], Shell(None, {}, set()))
+            follow(name, script, cwd, variables, self.reading, self.depth, read_bash)
+        elif name in POWERSHELL_NAMES:
+            follow(name, powershell_script(arguments), cwd, variables, self.reading, self.depth, read_powershell)
+        elif name in ENV_NAMES or name in PREFIX_PROGRAMS:
+            command = started_command(name, arguments, cwd, variables, self.reading)
+            if command is not None:
+                self.run_program(*command, opaque)
 
     def call_function(self, name: str, session: Session) -> Session:
         if self.depth >= NESTING_LIMIT:
@@ -1894,9 +1920,9 @@ def guard(stream: str) -> int:
             reason = denied(reading, reading.context_hubs | reached_hubs(reading))
             refused = None if reason is None else f"{reason} {DENY_REASON}"
             for note in reading.notes:
-                print(f"worktrees guard could not judge part of the command: {note}", file=sys.stderr)
+                print(f"hub guard could not judge part of the command: {note}", file=sys.stderr)
     except Exception as exc:  # noqa: BLE001 - a broken guard must not block every tool; the regression suite pins its behavior
-        print(f"worktrees guard skipped: {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(f"hub guard skipped: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 0
     if refused is not None:
         print(
