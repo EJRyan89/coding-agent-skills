@@ -187,7 +187,9 @@ MUTATION_INPUT = "requirements-mutation.in"
 MUTATION_LOCK = "requirements-mutation.txt"
 MUTATION_INCLUDES = (f"-r {DEVELOPMENT_INPUT}", f"-c {DEVELOPMENT_LOCK}")
 LOCK_HASH = re.compile(r"--hash=sha256:[0-9a-f]{64}")
-HASH_CHECKED_INSTALL = "--require-hashes"
+# How CI runs pip: every download checked against the lock's hashes, and no source distribution, whose build would
+# run its own code where a Python has no wheel.
+HASH_CHECKED_INSTALL = "--require-hashes --only-binary :all:"
 
 
 @dataclass(frozen=True)
@@ -278,17 +280,19 @@ def lock_problems(lock: str, inputs: str, shared: Mapping[str, Locked] | None = 
 
 
 def hash_install_problems(workflow: str, locks: tuple[str, ...]) -> list[str]:
-    """Report each line of a workflow whose pip install does not check hashes or installs anything but a lock: it
-    must read `pip install --require-hashes` followed only by `-r <lock>` for one of `locks`."""
+    """Report each line of a workflow whose pip install does not check hashes, may build a source distribution, or
+    installs anything but a lock: it must read `pip install --require-hashes --only-binary :all:` followed only by
+    `-r <lock>` for one of `locks`."""
     problems: list[str] = []
     for number, line in enumerate(workflow.splitlines(), start=1):
         if "pip install" not in line:
             continue
         words = line.split("pip install", 1)[1].split()
-        files = words[1:]
+        flags = HASH_CHECKED_INSTALL.split()
+        files = words[len(flags) :]
         pairs = list(zip(files[::2], files[1::2], strict=False))
         if (
-            words[:1] != [HASH_CHECKED_INSTALL]
+            words[: len(flags)] != flags
             or not pairs
             or len(files) % 2
             or any(flag != "-r" or path not in locks for flag, path in pairs)
@@ -442,7 +446,7 @@ class ToolchainPolicies(unittest.TestCase):
         self.assertIn("if: github.event_name == 'schedule' && matrix.python-version == '3.x'", workflow)
         # Both matrix entries install the pinned development dependencies, so ruff, mypy, and pytest run at their
         # floors.
-        self.assertIn("python -m pip install --require-hashes -r requirements-dev.txt", workflow)
+        self.assertIn("python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt", workflow)
         self.assertIn("python -m mypy --version", workflow)
         requirements = (REPOSITORY_ROOT / DEVELOPMENT_INPUT).read_text(encoding="utf-8")
         self.assertEqual(

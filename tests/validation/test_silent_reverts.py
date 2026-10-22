@@ -158,6 +158,15 @@ class SilentRevertFixture(unittest.TestCase):
         self.commit("feat: b, with a stale a.txt", {"a.txt": "one\n", "b.txt": "bees\n"})
         self.assertEqual([Revert("a.txt", removed, "chore: drop a (#12)")], find_reverts(self.root))
 
+    def test_an_added_file_matching_a_version_main_changed_before_deleting_it_names_that_change(self) -> None:
+        self.commit("start (#1)", {"a.txt": "one\n", "b.txt": "bee\n"})
+        changed = self.commit("feat: change a (#11)", {"a.txt": "two\n"})
+        self.commit("chore: drop a (#12)", {"a.txt": None})
+        self.publish()
+        self.git("checkout", "-q", "-b", "feat/branch")
+        self.commit("feat: b, with the first a.txt", {"a.txt": "one\n", "b.txt": "bees\n"})
+        self.assertEqual([Revert("a.txt", changed, "feat: change a (#11)")], find_reverts(self.root))
+
     def test_the_newest_state_the_file_returns_to_is_named(self) -> None:
         self.commit("start (#1)", {"a.txt": "one\n"})
         self.commit("feat: two (#2)", {"a.txt": "two\n"})

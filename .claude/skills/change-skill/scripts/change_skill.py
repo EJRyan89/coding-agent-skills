@@ -31,7 +31,7 @@ Every line is one fact:
     BASE <ref> <commit>                             gates: the merge base the change is read from
     CHANGED <count>                                 gates: the files changed since it
     REGENERATE <command>                            gates: a generated file the change may have left stale; run it
-    GATE audit-skill <skill>                 gates: a skill the change touches, shipped or repository
+    GATE audit-skill <skill>                        gates: a skill the change touches, shipped or repository
     GATE runtime-canary <skill> ...                 gates: the shipped skills whose discovery the change touches
     GATE evaluate-skill <skill> if-prompt           gates: a skill with a review scenario the change reaches, owed only
                                                     when it touches a prompt, model guidance, or reviewer instructions

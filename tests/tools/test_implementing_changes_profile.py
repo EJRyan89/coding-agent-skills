@@ -24,6 +24,8 @@ REQUIRED_HEADINGS = (
     "Model guidance",
     "Pull requests",
 )
+# Sections the profile holds for this repository's own work, which the implement-change skill does not read.
+REPOSITORY_HEADINGS = ("Shared code",)
 ISSUE_TEMPLATES = REPOSITORY_ROOT / ".github" / "ISSUE_TEMPLATE"
 
 
@@ -36,10 +38,11 @@ def headings(text: str) -> dict[str, str]:
 class ImplementingChangesProfileTest(unittest.TestCase):
     def test_profile_has_every_required_heading_with_content(self) -> None:
         found = headings(PROFILE.read_text(encoding="utf-8"))
-        for name in REQUIRED_HEADINGS:
+        for name in REQUIRED_HEADINGS + REPOSITORY_HEADINGS:
             with self.subTest(heading=name):
                 self.assertIn(name, found, f"docs/implementing-changes.md lacks a '## {name}' section")
                 self.assertTrue(found[name], f"'## {name}' is empty")
+        self.assertEqual(set(REQUIRED_HEADINGS + REPOSITORY_HEADINGS), set(found), "a section this suite does not hold")
 
     def test_headings_detector_reports_a_missing_section(self) -> None:
         found = headings("# Title\n\n## Size gate\n\nText.\n\n## Worktree\n\n")
