@@ -19,7 +19,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 from skill_grants import (
     GRANTS_DOC,
     REPOSITORY_TOOL_COMMAND,
-    RESULTS_DOC,
     description_problems,
     repository_code_declaration_problems,
     repository_skill_files,
@@ -29,6 +28,7 @@ from skill_grants import (
     status_line_problems,
     tool_grant_problems,
 )
+from skill_scripts import RESULTS_DOC
 from validation_support import write_fixture_tree
 
 # The allowance a script that starts the command a repository configures states, since its program is not the
