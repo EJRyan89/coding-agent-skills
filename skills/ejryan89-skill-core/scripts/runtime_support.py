@@ -41,16 +41,17 @@ DEFAULT_REASONS = {
     "agent-delegation": "It starts subagents, which this runtime cannot.",
     "workflow": "It uses Claude Code's Workflow tool, which this runtime lacks.",
     "fail-closed-agent-hooks": (
-        "This runtime lets a tool call through when a hook fails, so its subagent runs without its agent definition's "
-        "guard and its prompt is its only boundary."
+        "This runtime lets a tool call through when a hook times out, so its subagent runs without its agent "
+        "definition's guard and its prompt is its only boundary."
     ),
     "user-only-start": "A headless copilot -p session cannot start it; start it from an interactive session.",
     "sandbox-network": "Its network calls need network access, which this runtime's default sandbox turns off.",
 }
 # Copilot CLI starts subagents, but its `copilot -p` neither expands /<skill> for a user-only skill nor lets the model
 # start one (Copilot CLI 1.0.91; see docs/copilot-support.md). Workflow is Claude Code's alone. Codex and Copilot CLI
-# run hooks, but each lets a tool call through when a hook fails or times out, where Claude Code's agent definition
-# blocks it, so a guard there holds only when it runs (the fail-closed decision in docs/design.md). Codex's default
+# run hooks, but Codex lets a tool call through when a hook fails or times out, and Copilot CLI when one times out,
+# where Claude Code's agent definition blocks it, so a guard there holds only when it runs (the fail-closed decision in
+# docs/design.md). Codex's default
 # sandbox gives commands no network until [sandbox_workspace_write] network_access is set (docs/codex-support.md).
 RUNTIME_CAPABILITIES = {
     "claude-code": frozenset(

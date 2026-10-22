@@ -72,7 +72,9 @@ These are the pages this was read from, beside the spawn tool's own instructions
 
 ## Network access
 
-Codex's sandbox gives commands no network by default, on every platform ([Sandboxing](https://learn.chatgpt.com/docs/sandboxing)). A skill that calls GitHub through `gh`, or fetches with Git, therefore cannot reach it from the sandbox: in an interactive session Codex asks you to approve each such command to run outside the sandbox, and `codex exec`, which asks for no approval, fails it. The [Runtime support](skills.md#runtime-support) table marks these skills partial on Codex, lacking `sandbox-network`. To let their commands reach the network from the sandbox, add this to `~/.codex/config.toml`:
+Codex runs commands with network access turned off by default, on every platform ([Approvals and security](https://learn.chatgpt.com/docs/agent-approvals-security)). A skill whose script calls GitHub through `gh`, or fetches with Git, therefore cannot reach it from the sandbox: in an interactive session Codex asks you to approve each such command to run outside the sandbox, and `codex exec`, which asks for no approval, fails it. The [Runtime support](skills.md#runtime-support) table marks these skills partial on Codex, lacking `sandbox-network`. Two settings let them reach the network: one keeps every command in the sandbox and opens the network to all of them, the other opens it to the commands you name by running them outside the sandbox.
+
+To let every sandboxed command reach the network, add this to `~/.codex/config.toml`, the `sandbox_workspace_write.network_access` key of the [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference):
 
 ```toml
 [sandbox_workspace_write]
@@ -86,6 +88,20 @@ codex sandbox -c sandbox_mode=workspace-write -- gh api rate_limit --jq .rate.li
 ```
 
 It prints your hourly API limit; a `proxyconnect` error means the network is still off. With the unelevated sandbox, the commands run as you, so `gh` finds your sign-in. With the elevated sandbox, they run as a separate Windows user, which may not find a sign-in stored for your account; run the command above to see.
+
+To open the network to one skill alone, add a prefix rule with the decision `allow` to a rules file, such as `~/.codex/rules/default.rules`, and restart Codex ([Rules](https://learn.chatgpt.com/docs/agent-configuration/rules)). A rule matches the command Codex starts, not the commands that command starts, and these skills run `gh` and `git fetch` from their scripts, so a rule for `gh` or `git fetch` never applies to them: name the skill's script command instead, as its deployed `SKILL.md` writes it, its program, switches, and script path each one item of the rule's `pattern`:
+
+```text
+prefix_rule(pattern = ["python", "-B", "<skills>/repo-cleanup/scripts/repo_cleanup.py"], decision = "allow")
+```
+
+The script then runs outside the sandbox without asking, as you, with whatever arguments follow: it reaches the network and finds your `gh` sign-in, under the elevated sandbox too, and it can write anywhere you can. That is narrower than `network_access` in which commands it reaches, and wider in what those commands may do. To confirm that the rule matches, without starting a model:
+
+```powershell
+codex execpolicy check --pretty --rules "$HOME/.codex/rules/default.rules" -- python -B '<skills>/repo-cleanup/scripts/repo_cleanup.py'
+```
+
+It prints `"decision": "allow"` and the prefix that matched, and no matched rule when the pattern and the command differ. The runtime canary runs Codex with `--ignore-rules`, so it does not exercise this route.
 
 ## Python app execution aliases
 
