@@ -638,7 +638,7 @@ class PipelineTestCase(DocumentTestCase):
         self.assertEqual([f"ALL_VALID {review_run.load_run(run)['selector']}"], self.pipeline("check", "--runs", runs))
         recorded = next(fact for fact in self.pipeline("finalize", "--runs", runs) if fact.startswith("RECORDED "))
         self.assertEqual(["ALL_FINALIZED"], self.pipeline("unfinalized", "--runs", runs))
-        self.recorded = Path(recorded.split(" ", 4)[4])
+        self.recorded = Path(recorded.split(" ", 6)[6])
         code, lines = run_main("report", "--fixture", str(fixture), "--report", str(self.recorded))
         self.assertEqual(0, code, lines)
         record = json.loads(Path(facts(lines)["RECORD"]).read_text(encoding="utf-8"))

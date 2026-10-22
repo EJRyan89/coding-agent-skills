@@ -104,6 +104,7 @@ from review_records import (
     carried_findings,
     describe_scope,
     ledger_history,
+    ledger_summary,
     snapshot_seconds,
     validate_record,
 )
@@ -850,6 +851,7 @@ def finalize(run: Path, services: Services | None = None) -> dict[str, Any]:
         snapshot=state.get("snapshot"),  # absent from runs prepared before snapshots were measured
         documents=state.get("documents"),  # absent from runs prepared before documents were extracted
     )
+    ledger = ledger_summary(record["ledger"], record["review"]["version"])
     notes = list(state["notes"])
     left = remove_recorded_run(
         run, {"selector": state["selector"], "json": str(json_path), "markdown": str(markdown_path)}, services.sleep
@@ -861,7 +863,11 @@ def finalize(run: Path, services: Services | None = None) -> dict[str, Any]:
         "json": json_path,
         "markdown": markdown_path,
         "verdict": record["review"]["verdict"],
-        "findings": len(record["findings"]),
+        # The findings this review raised, and the ledger's open and addressed entries after it, as its report's
+        # verdict counts them: an incremental re-review seeks new findings only in the files that changed.
+        "new": len(record["findings"]),
+        "open": sum(ledger["open"].values()),
+        "addressed": ledger["addressed"],
         "canary_root": canary_root,
         "hashes": {json_path: _sha256(json_path), markdown_path: _sha256(markdown_path)} if canary_root else {},
         "stats": stats_lines(record["review"]) if canary_root else [],
@@ -1352,8 +1358,8 @@ def _run_finalize(args: argparse.Namespace, services: Services | None) -> int:
             for line in result["stats"]:
                 print(f"STATS {result['selector']} {line}")
         print(
-            f"RECORDED {result['selector']} verdict={result['verdict']} findings={result['findings']} "
-            f"{result['markdown']}"
+            f"RECORDED {result['selector']} verdict={result['verdict']} new={result['new']} open={result['open']} "
+            f"addressed={result['addressed']} {result['markdown']}"
         )
     _save_run_list(args, runs)
     return 1 if failed else 0

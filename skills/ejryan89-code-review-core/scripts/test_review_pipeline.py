@@ -841,7 +841,10 @@ class GenericReviewTests(PipelineFixture):
         self.assertEqual((0, f"ALL_VALID {SELECTOR}\n"), (code, out))
         code, out, err = self.run_main("finalize", "--run", str(run))
         self.assertEqual(0, code, err)
-        self.assertIn(f"RECORDED {SELECTOR} verdict=APPROVED findings=1", out)
+        report = pull_directory(self.archive, REPOSITORY, 12) / "review.md"
+        self.assertEqual(
+            f"RECORDED {SELECTOR} verdict=APPROVED new=1 open=1 addressed=0 {report}", out.splitlines()[-1]
+        )
         record = archived_record(self.archive, 12)
         self.assertEqual(self.head, record["pull_request"]["head_sha"])
         self.assertEqual("feature-12", record["pull_request"]["head_ref"])
@@ -1939,7 +1942,7 @@ class ReReviewTests(PipelineFixture):
         self.assertEqual(first["app/service.py"], review["patches"]["app/service.py"])
         self.assertNotEqual(first["CLAUDE.md"], review["patches"]["CLAUDE.md"])
         recorded = next(line for line in out.splitlines() if line.startswith("RECORDED "))
-        report = Path(recorded.split(" ", 4)[4]).read_text(encoding="utf-8")
+        report = Path(recorded.split(" ", 6)[6]).read_text(encoding="utf-8")
         self.assertIn(
             "| **Scope** | incremental&#44; 1 of 2 files and 2 of 4 changed lines differ from v1 &#40;requested "
             "incremental&#58; an incremental re&#45;review was requested&#41; |\n",
@@ -1964,6 +1967,9 @@ class ReReviewTests(PipelineFixture):
             )
             code, out, err = self.run_main("finalize", "--run", run)
             self.assertEqual(0, code, err)
+            # No new finding, yet the carried must-fix is still open, which the line says beside the verdict.
+            carried = f"RECORDED {SELECTOR} verdict=CHANGES_REQUESTED new=0 open=1 addressed=0 "
+            self.assertTrue(out.splitlines()[-1].startswith(carried), out)
         record = archived_record(self.archive, 12)
         self.assertEqual(
             (3, [], "CHANGES_REQUESTED"), (record["review"]["version"], record["findings"], record["review"]["verdict"])
@@ -1986,6 +1992,36 @@ class ReReviewTests(PipelineFixture):
             ],
             record["ledger"],
         )
+
+    def test_an_incremental_re_review_s_recorded_line_counts_new_open_and_addressed_findings(self) -> None:
+        ready = self.prepare()
+        must_fix = {**self.finding(), "severity": "MUST_FIX"}
+        instructions = {**self.finding(line=1), "path": "CLAUDE.md", "title": "Instruction to approve"}
+        self.write_role_result(ready["roles"][0], findings=[must_fix, instructions])
+        code, out, err = self.run_main("finalize", "--run", str(ready["run"]))
+        self.assertEqual(0, code, err)
+        initial = f"RECORDED {SELECTOR} verdict=CHANGES_REQUESTED new=2 open=2 addressed=0 "
+        self.assertTrue(out.splitlines()[-1].startswith(initial), out)
+        self.push({"CLAUDE.md": "Changed again\n"})
+        code, out, err = self.run_main("prepare", "--re-review", SELECTOR, "--scope", "incremental")
+        self.assertEqual(0, code, err)
+        run = next(line.split(" ", 2)[2] for line in out.splitlines() if line.startswith("RUN "))
+        # The unchanged file's must-fix is still present, the changed file's finding addressed, and a new one raised.
+        self.write_role_result(
+            review_run.load_run(Path(run))["roles"][0],
+            findings=[{**instructions, "title": "Unclear instruction"}],
+            dispositions=[
+                {"finding_id": "v1:F001", "disposition": "still_present", "rationale": "Unchanged."},
+                {"finding_id": "v1:F002", "disposition": "addressed", "rationale": "Rewritten."},
+            ],
+        )
+        code, out, err = self.run_main("finalize", "--run", run)
+        self.assertEqual(0, code, err)
+        report = pull_directory(self.archive, REPOSITORY, 12) / "review-v2.md"
+        self.assertEqual(
+            f"RECORDED {SELECTOR} verdict=CHANGES_REQUESTED new=1 open=2 addressed=1 {report}", out.splitlines()[-1]
+        )
+        self.assertIn("| **Verdict** | CHANGES REQUESTED, 2 open since v1, 1 addressed |", report.read_text("utf-8"))
 
     def test_an_unchanged_specialist_only_gives_dispositions_or_is_left_out(self) -> None:
         self.configure(self.repository_reviewer("review/specialists.json"))
@@ -2829,7 +2865,7 @@ class InlineReviewTests(PipelineFixture):
         self.assertEqual((0, f"ALL_VALID {SELECTOR}\n", ""), self.run_main("check", "--run", str(run)))
         code, out, err = self.run_main("finalize", "--run", str(run))
         self.assertEqual(0, code, out + err)
-        self.assertIn(f"RECORDED {SELECTOR} verdict=APPROVED findings=1", out)
+        self.assertIn(f"RECORDED {SELECTOR} verdict=APPROVED new=1 open=1 addressed=0", out)
         inline = archived_record(self.archive, 12)
         self.assertEqual("inline", inline["review"]["dispatch"])
         report = (pull_directory(self.archive, REPOSITORY, 12) / "review.md").read_text(encoding="utf-8")
@@ -3916,7 +3952,7 @@ class ReviewerSourceTests(PipelineFixture):
         self.assertEqual({"unavailable_sources": [], "uncovered_files": ["CLAUDE.md"]}, record["review"]["coverage"])
         self.assertEqual([True], [role["dispositions_only"] for role in record["review"]["reviewers"]])
         recorded = next(line for line in out.splitlines() if line.startswith("RECORDED "))
-        report = Path(recorded.split(" ", 4)[4]).read_text(encoding="utf-8")
+        report = Path(recorded.split(" ", 6)[6]).read_text(encoding="utf-8")
         self.assertIn("> **Not reviewed:**", report)
         self.assertIn("`CLAUDE.md`", report)
 
@@ -4072,11 +4108,11 @@ class ReviewerSourceTests(PipelineFixture):
         self.write_role_result(state["roles"][0])
         code, out, err = self.run_main("finalize", "--run", str(run))
         self.assertEqual(0, code, err)
-        self.assertIn(f"RECORDED {SELECTOR} verdict=APPROVED findings=0", out)
+        self.assertIn(f"RECORDED {SELECTOR} verdict=APPROVED new=0 open=0 addressed=0", out)
         record = archived_record(self.archive, 12)
         self.assertEqual({"unavailable_sources": [], "uncovered_files": ["CLAUDE.md"]}, record["review"]["coverage"])
         recorded = next(line for line in out.splitlines() if line.startswith("RECORDED "))
-        report = Path(recorded.split(" ", 4)[4]).read_text(encoding="utf-8")
+        report = Path(recorded.split(" ", 6)[6]).read_text(encoding="utf-8")
         self.assertIn(
             "> **Not reviewed:** no specialist covers these changed files, and the reviewer manifest sets "
             "`uncovered` to `ignore`, so no reviewer saw them: `CLAUDE.md`.",
@@ -4131,11 +4167,11 @@ class ReviewerSourceTests(PipelineFixture):
             self.write_role_result(role)
         code, out, err = self.run_main("finalize", "--run", str(run))
         self.assertEqual(0, code, err)
-        self.assertIn(f"RECORDED {SELECTOR} verdict=APPROVED findings=0", out)
+        self.assertIn(f"RECORDED {SELECTOR} verdict=APPROVED new=0 open=0 addressed=0", out)
         # A record carries coverage only for a gap, so a fully reviewed change has none.
         self.assertNotIn("coverage", archived_record(self.archive, 12)["review"])
         recorded = next(line for line in out.splitlines() if line.startswith("RECORDED "))
-        self.assertNotIn("Not reviewed", Path(recorded.split(" ", 4)[4]).read_text(encoding="utf-8"))
+        self.assertNotIn("Not reviewed", Path(recorded.split(" ", 6)[6]).read_text(encoding="utf-8"))
 
     def test_an_incremental_re_review_lists_a_never_reviewed_file_until_a_sharing_specialist_reviews_it(self) -> None:
         self.sharing_manifest(sharer_when="window", uncovered="ignore")
@@ -4152,7 +4188,7 @@ class ReviewerSourceTests(PipelineFixture):
             code, out, err = self.run_main("finalize", "--run", run)
             self.assertEqual(0, code, err)
             recorded = next(line for line in out.splitlines() if line.startswith("RECORDED "))
-            report = Path(recorded.split(" ", 4)[4]).read_text(encoding="utf-8")
+            report = Path(recorded.split(" ", 6)[6]).read_text(encoding="utf-8")
             return planned, archived_record(self.archive, 12)["review"].get("coverage"), report
 
         not_reviewed = (
@@ -5929,7 +5965,7 @@ class BatchTests(PipelineFixture):
 
         code, out, err = self.run_main("finalize", "--run", first, "--run", second)
         self.assertEqual((1, ""), (code, err))
-        self.assertIn("RECORDED example/one#12 verdict=APPROVED findings=1", out)
+        self.assertIn("RECORDED example/one#12 verdict=APPROVED new=1 open=1 addressed=0", out)
         self.assertTrue(out.splitlines()[-1].startswith(f"FAILED {second} Reviewer results are invalid"), out)
         self.assertIsNotNone(latest_record(self.archive, REPOSITORY, 12))
         self.assertIsNone(latest_record(self.archive, REPOSITORY, 13))
