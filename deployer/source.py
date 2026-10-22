@@ -1,4 +1,8 @@
-"""Discovery and validation of the deployable source tree."""
+"""Discovery and validation of the deployable source tree.
+
+The menu's closures, expand, root_names, and is_opt_in, are ejryan89-skill-core's skill_menu, which audit-skill's script
+reads a source's plugins through too; they are imported here for the deployer's modules.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +15,9 @@ from pathlib import Path
 
 import frontmatter
 import runtime_support
+from skill_menu import expand as expand
+from skill_menu import is_opt_in as is_opt_in
+from skill_menu import root_names as root_names
 
 from . import platform_support
 from .config import CONFIGURED_VARIABLES, DERIVED_VARIABLES
@@ -448,38 +455,9 @@ def _shared_assets(document: dict[str, object]) -> dict[str, str]:
     return shared
 
 
-def expand(source: Source, bundles: list[str], skills: list[str]) -> list[str]:
-    """Depth-first preorder expansion of bundle members, then skills, through dependencies."""
-    ordered: list[str] = []
-
-    def visit(name: str) -> None:
-        if name in ordered:
-            return
-        ordered.append(name)
-        for dependency in source.skills[name].skill_deps:
-            visit(dependency)
-
-    for bundle in bundles:
-        for member in source.bundles[bundle]:
-            visit(member)
-    for skill in skills:
-        visit(skill)
-    return ordered
-
-
 def agent_closure(source: Source, selected: list[str]) -> list[str]:
     """The agents the selected skills declare, as the file names deployed to ~/.claude/agents."""
     return sorted({f"{agent}.md" for name in selected for agent in source.skills[name].agent_deps})
-
-
-def root_names(source: Source) -> list[str]:
-    """Selectable skills that are not part of a bundle, which the menu offers on their own."""
-    return sorted(name for name, skill in source.skills.items() if skill.selectable and name not in source.skill_bundle)
-
-
-def is_opt_in(source: Source, root: str) -> bool:
-    """Whether a menu item, a bundle or a root skill, is left out of --all unless chosen."""
-    return root in source.opt_in_bundles or (root in source.skills and source.skills[root].opt_in)
 
 
 def _closures(source: Source, bundles: list[str], skills: list[str]) -> list[tuple[str, list[str]]]:

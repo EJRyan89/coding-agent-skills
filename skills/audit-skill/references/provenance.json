@@ -181,6 +181,19 @@
         "decision": "A skill pins no model, and a reviewer's model or effort setting changes only with a before-and-after comparison of real reviews, since a cheaper model or lower effort can miss findings without any visible failure: this source's docs/design.md."
       }
     ],
+    "PLUGIN_HOOK": [
+      {
+        "page": "https://code.claude.com/docs/en/hooks",
+        "passage": "A plugin's hooks in hooks/hooks.json apply when the plugin is enabled, merged with the user's and the project's hooks."
+      },
+      {
+        "page": "https://code.claude.com/docs/en/hooks",
+        "passage": "A PreToolUse hook runs before every tool call its matcher matches, and a command hook's timeout defaults to 600 seconds."
+      },
+      {
+        "decision": "A plugin agent's own hooks are ignored, so a plugin runs each agent's hooks from its hooks/hooks.json, on every matching call of every session while the plugin is enabled, holding only to its own agent: the plugin row of this source's docs/design.md."
+      }
+    ],
     "REPLY_BOUNDED": [
       {
         "page": "https://code.claude.com/docs/en/sub-agents",

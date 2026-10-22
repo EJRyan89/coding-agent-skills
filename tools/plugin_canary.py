@@ -58,6 +58,7 @@ from typing import Any, cast
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import skill_menu
 from console import run_main
 from skill_roots import sibling_scripts
 
@@ -171,7 +172,11 @@ def details(text: str) -> dict[str, set[str]]:
 
 
 def expected(plugin: plugin_build.Plugin) -> dict[str, set[str]]:
-    hooks = json.loads(plugin.files[plugin_build.HOOKS]).get("hooks", {}) if plugin_build.HOOKS in plugin.files else {}
+    hooks = (
+        json.loads(plugin.files[skill_menu.PLUGIN_HOOKS]).get("hooks", {})
+        if skill_menu.PLUGIN_HOOKS in plugin.files
+        else {}
+    )
     return {"skill": set(plugin.skills), "agent": set(plugin.agents), "hook": set(hooks)}
 
 
@@ -425,7 +430,7 @@ def checks(session: Session, executable: str, discovery_only: bool) -> Iterator[
             yield line
     if discovery_only:
         return
-    fixture = plugin_build.plugin_name(plugin_build.load_source(FIXTURE_SOURCE).source_id)
+    fixture = skill_menu.plugin_name(plugin_build.load_source(FIXTURE_SOURCE).source_id)
     reviewers = [plugin.name for plugin in plugins if REVIEWER in plugin.agents]
     if fixture not in paths or not reviewers or reviewers[0] not in paths:
         yield f"RUNTIME claude {fixture}:{FIXTURE_SKILL} FAILED {quote('a plugin the sessions load is not installed')}"

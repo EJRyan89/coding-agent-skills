@@ -15,7 +15,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
-from skill_roots import SKILLS_ROOT
+import skill_menu
+from skill_roots import SKILLS_ROOT, sibling_scripts
+
+sys.path.insert(0, str(sibling_scripts("audit-skill")))
+
+import skill_inventory
 
 from tools import plugin_agents, plugin_build
 
@@ -170,7 +175,7 @@ def test_an_agent_ships_answered_and_namespaced_where_a_skill_names_it(source: S
     assert plugin.files["skills/alpha/SKILL.md"].endswith(
         b"Start a subagent of type `fixture-skills:plain`, not plain.\n"
     )
-    assert plugin_build.HOOKS not in plugin.files
+    assert skill_menu.PLUGIN_HOOKS not in plugin.files
 
 
 def test_an_agents_hooks_move_into_the_plugins_hooks_file_with_its_scripts_under_the_plugin(source: Source) -> None:
@@ -186,7 +191,7 @@ def test_an_agents_hooks_move_into_the_plugins_hooks_file_with_its_scripts_under
         'python -I -c "import os, runpy; runpy.run_path(os.path.join(os.environ['
         "'CLAUDE_PLUGIN_ROOT'], 'skills', 'core', 'scripts', 'guard.py'))\""
     )
-    assert json.loads(plugin.files[plugin_build.HOOKS]) == {
+    assert json.loads(plugin.files[skill_menu.PLUGIN_HOOKS]) == {
         "hooks": {
             "PreToolUse": [
                 {
@@ -216,9 +221,9 @@ def test_hooks_a_plugin_cannot_carry_as_written_are_refused(source: Source, hook
 
 def test_the_manifest_is_the_marketplace_entry_with_the_name_and_version_and_no_source(source: Source) -> None:
     source.skill("alpha")
-    manifest = json.loads(by_name(assembled(source, "1.2.3"))["fixture-skills"].files[plugin_build.MANIFEST])
+    manifest = json.loads(by_name(assembled(source, "1.2.3"))["fixture-skills"].files[skill_menu.PLUGIN_MANIFEST])
     assert manifest == {"name": "fixture-skills", "version": "1.2.3", "description": "The fixture-skills plugin."}
-    default = json.loads(by_name(assembled(source))["fixture-skills"].files[plugin_build.MANIFEST])
+    default = json.loads(by_name(assembled(source))["fixture-skills"].files[skill_menu.PLUGIN_MANIFEST])
     assert default["version"] == "0.0.0-dev"
 
 
@@ -377,3 +382,43 @@ def test_the_sources_readme_is_each_plugins_readme_and_a_source_without_one_give
     catalogue = plugin_build.load_catalogue(source.root)
     plugins = plugin_build.assemble(plugin_build.load_source(source.root), catalogue, readme=readme).plugins
     assert [plugin.files["README.md"] for plugin in plugins] == [b"# Fixture\n", b"# Fixture\n"]
+
+
+def test_audit_skill_locates_each_skill_a_built_plugin_carries_and_measures_its_hooks(
+    source: Source, tmp_path: Path
+) -> None:
+    source.skill("core", selectable=False, required_vars=["PYTHON"])
+    source.skill("alpha", body="Start a `guard` subagent.\n", skill_deps=["core"], agent_deps=["guard"])
+    source.skill("solo", opt_in=True, skill_deps=["core"])
+    source.agent("guard", GUARD_HOOK)
+    output = tmp_path / "out put"
+    assert run(["--source", str(source.root), "--output", str(output)])[0] == 0
+    home = tmp_path / "home"
+    alpha = skill_inventory.locate("fixture-skills:alpha", home, None, output)
+    assert alpha[-2:] == ["SCOPE plugin", f"PLUGIN fixture-skills {(output / 'fixture-skills').resolve().as_posix()}"]
+    core = skill_inventory.locate("fixture-skills-solo:core", home, None, output)
+    assert core[-1] == f"PLUGIN fixture-skills-solo {(output / 'fixture-skills-solo').resolve().as_posix()}"
+    scanned = skill_inventory.scan([Path(alpha[1].split(" ", 1)[1]).parent])
+    assert [line for line in scanned if line.startswith(("AGENT ", "PLUGIN_HOOK"))] == [
+        f"AGENT fixture-skills:guard {(output / 'fixture-skills' / 'agents' / 'guard.md').resolve().as_posix()}",
+        "PLUGIN_HOOK PreToolUse Read|Bash python timeout=30 on_failure=block",
+    ]
+
+
+def test_audit_skill_names_the_plugins_this_checkout_makes_for_each_skill_as_the_build_plans_them() -> None:
+    # audit-skill reads the menu without the deployer's loader, so its reading is held to the build's on every skill.
+    source = plugin_build.load_source(plugin_build.REPOSITORY_ROOT)
+    closures, left_out = skill_menu.plugin_plan(source)
+    for name in sorted(source.skills):
+        lines = [
+            line
+            for line in skill_inventory.plugin_lines(plugin_build.REPOSITORY_ROOT / "skills" / name)
+            if line.startswith(("CARRIED_BY", "LEFT_OUT"))
+        ]
+        carried = [f"CARRIED_BY {plugin}" for plugin, closure in closures.items() if name in closure]
+        reasons = [
+            f"LEFT_OUT {item} {reason}"
+            for item, reason in left_out.items()
+            if name in skill_menu.expand(source, [], skill_menu.members(source, item))
+        ]
+        assert lines == (carried or reasons), name

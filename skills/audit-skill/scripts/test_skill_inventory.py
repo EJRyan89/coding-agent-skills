@@ -239,10 +239,10 @@ class LocateTests(TemporaryTestCase):
             with self.subTest(arguments=arguments):
                 code, lines, error = run("locate", *arguments, "--home", str(self.home), "--repo", str(self.repo))
                 self.assertEqual((1, ""), (code, error))
-                self.assertEqual(["STOP usage: audit-skill <SkillName>"], lines)
+                self.assertEqual(["STOP usage: audit-skill [<plugin>:]<SkillName> [<plugin folder>]"], lines)
 
     def test_invalid_names_are_rejected(self) -> None:
-        for name in ("../alpha", "a/b", "a b"):
+        for name in ("../alpha", "a/b", "a:b:c", "plug/in:alpha"):
             with self.subTest(name=name):
                 code, lines, error = self.locate(name)
                 self.assertEqual((1, ""), (code, error))
@@ -1829,16 +1829,21 @@ MEASUREMENT_LINES = frozenset(
         "ALLOWED",
         "AMBIGUOUS",
         "AVAILABLE",
+        "CARRIED_BY",
         "CUE",
         "DECLARED",
         "DECLARED_UNREADABLE",
         "FAILED",
         "FILE",
         "IMPLIED",
+        "LEFT_OUT",
         "NOT_A_CHECK",
         "NOT_FOUND",
         "NO_ALLOWED_TOOLS",
         "NO_MAIN",
+        "PLUGIN",
+        "PLUGINS_UNREADABLE",
+        "PLUGIN_CARRIES",
         "REPO",
         "REPOSITORY_CODE",
         "RUNTIME",
@@ -2267,3 +2272,207 @@ def test_no_skill_this_source_ships_or_keeps_yields_a_subagent_model_or_runtime_
 )
 def test_a_bash_script_runs_the_git_subcommand_after_gits_own_options(line: str, expected: set[str]) -> None:
     assert skill_inventory.bash_git_subcommands(line) == expected
+
+
+# A plugin agent as tools/plugin_build.py writes it: the definition without its hooks, which move into the plugin's
+# hooks file with each template value answered.
+PLUGIN_AGENT = "---\nname: guarded\ndescription: Runs one prepared role.\ntools: Read, Grep\nmodel: inherit\n---\nGo.\n"
+PLUGIN_HOOKS = {
+    "hooks": {
+        "PreToolUse": [
+            {
+                "matcher": "Read|Grep",
+                "hooks": [{"type": "command", "command": 'python -I -B -c "import guard"', "timeout": 30}],
+            }
+        ],
+        "Stop": [{"hooks": [{"type": "command", "command": "node stop.js", "onFailure": "block"}, {"type": "x"}]}],
+    }
+}
+
+
+class PluginTests(TemporaryTestCase):
+    """A skill's plugin form, in a plugin tree laid out as tools/plugin_build.py writes one and Claude Code installs
+    one: the manifest, the skills with their template values answered, the agents namespaced under the plugin."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.home = self.root / "home with space"
+        self.built = self.root / "built plugins"
+
+    def plugin(self, name: str = "fixture-skills", folder: Path | None = None, hooks: object = None) -> Path:
+        root = (self.built if folder is None else folder) / name
+        write(root / ".claude-plugin" / "plugin.json", json.dumps({"name": name, "version": "0.0.0-dev"}))
+        if hooks is not None:
+            write(root / "hooks" / "hooks.json", json.dumps(hooks))
+        return root
+
+    def skill(self, root: Path, name: str = "alpha", text: str = "---\ndescription: Run.\n---\nBody.\n") -> Path:
+        return write(root / "skills" / name / "SKILL.md", text)
+
+    def locate(self, argument: str) -> list[str]:
+        code, lines, error = run("locate", argument, "--home", str(self.home), "--repo", str(self.root / "repo"))
+        self.assertEqual(("", 0 if lines and lines[-1].startswith("PLUGIN ") else 1), (error, code))
+        return lines[1:]
+
+    def test_locate_finds_a_skill_in_a_built_plugin_folder_with_its_plugin(self) -> None:
+        root = self.plugin()
+        skill = self.skill(root)
+        write(self.home / ".claude" / "skills" / "alpha" / "SKILL.md", "deployed")
+        found = [
+            f"SKILL_FILE {skill.as_posix()}",
+            f"SKILL_DIR {skill.parent.as_posix()}",
+            "SCOPE plugin",
+            f"PLUGIN fixture-skills {root.as_posix()}",
+        ]
+        self.assertEqual(found, self.locate(f"alpha {self.built}"))
+        self.assertEqual(found, self.locate(f"fixture-skills:alpha {root}"))
+
+    def test_a_skill_two_plugins_carry_is_ambiguous_until_its_plugin_is_named(self) -> None:
+        default, dotnet = self.plugin(), self.plugin("fixture-skills-dotnet")
+        self.skill(default, "core")
+        core = self.skill(dotnet, "core")
+        lines = self.locate(f"core {self.built}")
+        self.assertEqual(["AMBIGUOUS plugin", "AMBIGUOUS plugin"], [" ".join(line.split()[:2]) for line in lines[:2]])
+        self.assertTrue(lines[2].endswith("Name the plugin, as <plugin>:<skill>, or its folder."), lines)
+        self.assertEqual(f"SKILL_FILE {core.as_posix()}", self.locate(f"fixture-skills-dotnet:core {self.built}")[0])
+
+    def test_an_installed_plugin_is_audited_when_it_is_the_only_copy_or_is_named(self) -> None:
+        cache = self.home / ".claude" / "plugins" / "cache" / "fixture-market" / "fixture-skills"
+        root = self.plugin(folder=cache, name="1.0.0")
+        write(root / ".claude-plugin" / "plugin.json", json.dumps({"name": "fixture-skills"}))
+        self.skill(root)
+        self.assertEqual("SCOPE plugin", self.locate("alpha")[2])
+        deployed = write(self.home / ".claude" / "skills" / "alpha" / "SKILL.md", "deployed")
+        code, lines, _ = run("locate", "alpha", "--home", str(self.home))
+        self.assertEqual((0, f"SKILL_FILE {deployed.as_posix()}", "SCOPE user"), (code, lines[1], lines[-1]))
+        self.assertEqual(f"PLUGIN fixture-skills {root.as_posix()}", self.locate("fixture-skills:alpha")[-1])
+
+    def test_a_skill_no_plugin_carries_lists_each_plugins_skills_by_their_plugin_names(self) -> None:
+        self.skill(self.plugin(), "alpha")
+        self.skill(self.plugin("other"), "beta")
+        code, lines, _ = run("locate", f"gamma {self.built}", "--home", str(self.home))
+        self.assertEqual(1, code)
+        self.assertEqual(
+            [
+                "NOT_FOUND gamma",
+                "AVAILABLE plugin fixture-skills:alpha",
+                "AVAILABLE plugin other:beta",
+                "STOP skill 'gamma' not found. Available skills: plugin: fixture-skills:alpha, other:beta",
+            ],
+            lines[1:],
+        )
+
+    def test_a_plugin_folder_that_does_not_exist_fails(self) -> None:
+        code, lines, _ = run("locate", f"alpha {self.root / 'absent'}", "--home", str(self.home))
+        self.assertEqual((1, [f"FAILED plugin folder not found: {(self.root / 'absent').as_posix()}"]), (code, lines))
+
+    def test_inventory_names_the_plugin_and_what_it_carries_beside_the_skill(self) -> None:
+        root = self.plugin()
+        skill = self.skill(root)
+        self.skill(root, "ejryan89-skill-core")
+        write(root / "agents" / "guarded.md", PLUGIN_AGENT)
+        code, lines, _ = run("inventory", str(skill.parent))
+        self.assertEqual(0, code)
+        self.assertEqual(
+            [
+                "CARRIED_BY fixture-skills",
+                "PLUGIN_CARRIES skill ejryan89-skill-core",
+                "PLUGIN_CARRIES agent fixture-skills:guarded",
+            ],
+            [line for line in lines if line.startswith(("CARRIED_BY", "PLUGIN", "LEFT_OUT", "DECLARED"))],
+        )
+
+    def test_scan_reads_namespaced_agents_and_the_hooks_the_plugin_runs_in_every_session(self) -> None:
+        root = self.plugin(hooks=PLUGIN_HOOKS)
+        skill = self.skill(
+            root,
+            text="---\ndescription: Run.\n---\n"  # 1-3
+            "Start one fresh subagent of type `fixture-skills:guarded` for each role.\n"  # 4
+            "Without it, start a general-purpose subagent.\n",  # 5
+        )
+        definition = write(root / "agents" / "guarded.md", PLUGIN_AGENT)
+        code, lines, _ = run("scan", str(skill.parent))
+        self.assertEqual(0, code)
+        self.assertEqual(
+            [
+                f"AGENT fixture-skills:guarded {definition.as_posix()}",
+                "AGENT_TOOLS fixture-skills:guarded Read,Grep",
+                "AGENT_MODEL fixture-skills:guarded inherit",
+                "AGENT_CLAUDE_MD fixture-skills:guarded loaded",
+                "PLUGIN_HOOK PreToolUse Read|Grep python timeout=30 on_failure=default",
+                "PLUGIN_HOOK Stop * node timeout=default on_failure=block",
+                f"UNGUARDED_SUBAGENT {skill.as_posix()} 5 fixture-skills:guarded",
+            ],
+            [line for line in lines if line.startswith(("AGENT", "PLUGIN", "UNGUARDED"))],
+        )
+
+    def test_a_skill_in_a_plugin_without_hooks_prints_none(self) -> None:
+        skill = self.skill(self.plugin(), text="---\ndescription: Run.\n---\nStart a general-purpose subagent.\n")
+        code, lines, _ = run("scan", str(skill.parent))
+        self.assertEqual((0, []), (code, [line for line in lines if line.startswith(("PLUGIN", "UNGUARDED"))]))
+
+    def test_a_hooks_file_that_is_not_json_fails_the_scan(self) -> None:
+        root = self.plugin()
+        write(root / "hooks" / "hooks.json", "{not json")
+        code, lines, _ = run("scan", str(self.skill(root).parent))
+        self.assertEqual(1, code)
+        self.assertTrue(lines[-1].startswith(f"FAILED {(root / 'hooks' / 'hooks.json').as_posix()} is not JSON"))
+
+    def test_tools_judges_each_grant_against_the_plugins_answered_commands(self) -> None:
+        # tools/plugin_build.py answers {{PYTHON}} with python in the fence and in the grant that names it, so the
+        # answered grant matches its fence; a grant written by hand for another interpreter matches no command.
+        own = '"${CLAUDE_SKILL_DIR}/scripts/tool.py"'
+        quoted = own.replace('"', '\\"')
+        skill = self.skill(
+            self.plugin(),
+            text="---\ndescription: Run.\n"
+            f'allowed-tools: ["Bash(python -B {quoted} list *)", "Bash(python3 -B {quoted} report *)"]\n'
+            "---\n```bash\n"
+            f"python -B {own} list\n"
+            "```\n```bash\n"
+            f"python -B {own} report\n"  # 9
+            "```\n",
+        )
+        code, lines, _ = run("tools", str(skill))
+        self.assertEqual(0, code)
+        self.assertEqual(
+            [f"UNGRANTED Bash 9 python -B {own} report", f"IDLE_ALLOWED Bash(python3 -B {own} report *)"],
+            [line for line in lines if line.startswith(("UNGRANTED Bash", "IDLE_ALLOWED"))],
+        )
+
+
+class SourcePluginTests(SourceTreeTestCase):
+    """In its source tree, the plugins the source makes that carry the skill, or why none does."""
+
+    def source(self, document: object = None) -> None:
+        write(self.root / "source.json", json.dumps({"id": "owner/fixture-skills"} if document is None else document))
+        write(self.root / ".claude-plugin" / "marketplace.json", '{"plugins": []}')
+
+    def plugins(self, skill: Path) -> list[str]:
+        return self.lines("inventory", skill.parent, ("CARRIED_BY", "LEFT_OUT", "PLUGINS_UNREADABLE"))
+
+    def test_the_plugins_that_carry_the_skill_are_named(self) -> None:
+        self.source({"id": "owner/fixture-skills", "bundles": {"dotnet": {"members": ["dotnet-one"], "opt_in": True}}})
+        core = self.skill("Core.\n", {"selectable": False}, name="core")
+        self.skill("Alpha.\n", {"skill_deps": ["core"]})
+        self.skill("One.\n", {"skill_deps": ["core"]}, name="dotnet-one")
+        self.assertEqual(["CARRIED_BY fixture-skills", "CARRIED_BY fixture-skills-dotnet"], self.plugins(core))
+
+    def test_a_skill_no_plugin_carries_names_each_item_that_needs_it_and_why(self) -> None:
+        self.source()
+        rooted = self.skill("Rooted.\n", {"selectable": False, "required_vars": ["REPOS_ROOT"]}, name="rooted")
+        cleanup = self.skill("Cleanup.\n", {"skill_deps": ["rooted"]}, name="cleanup")
+        orphan = self.skill("Orphan.\n", {"selectable": False}, name="orphan")
+        # Built so that no template token appears in a skill's files, where the deployer would render one.
+        reason = "LEFT_OUT cleanup rooted takes {" + "{REPOS_ROOT}" + "}, which a plugin has no value for"
+        self.assertEqual([reason], self.plugins(cleanup))
+        self.assertEqual([reason], self.plugins(rooted))
+        self.assertEqual(["LEFT_OUT orphan no menu item needs it"], self.plugins(orphan))
+
+    def test_a_source_without_a_marketplace_makes_no_plugin_and_one_it_cannot_read_says_so(self) -> None:
+        skill = self.skill("Alpha.\n")
+        self.assertEqual([], self.plugins(skill))
+        self.source({"id": "no-slash"})
+        lines = self.plugins(skill)
+        self.assertEqual(1, len(lines), lines)
+        self.assertTrue(lines[0].startswith("PLUGINS_UNREADABLE ") and "names no source ID" in lines[0], lines)
