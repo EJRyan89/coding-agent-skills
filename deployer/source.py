@@ -11,6 +11,7 @@ from pathlib import Path
 
 import frontmatter
 import runtime_support
+from agent_skills import RESERVED_WORDS, XML_TAG_PATTERN
 
 from . import platform_support
 from .config import CONFIGURED_VARIABLES, DERIVED_VARIABLES
@@ -21,11 +22,9 @@ from .tools import SKILL_TOOLS
 SOURCE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$")
 SOURCE_ID_MAX_LENGTH = 128
 SKILL_NAME_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
-# The Agent Skills frontmatter rules ("YAML frontmatter requirements" in Anthropic's skill authoring best
-# practices): a skill name may not contain these words, and neither its name nor its description an XML tag.
-# The naming grammar already keeps angle brackets out of a name.
-RESERVED_WORDS = ("anthropic", "claude")
-XML_TAG_PATTERN = re.compile(r"</?[A-Za-z][^<>]*>")
+# The Agent Skills frontmatter rules, RESERVED_WORDS and XML_TAG_PATTERN from ejryan89-skill-core: a skill name may
+# not contain a reserved word, and neither its name nor its description an XML tag. The naming grammar already keeps
+# angle brackets out of a name.
 AGENT_SKILLS_RULE = "which the Agent Skills frontmatter rules forbid"
 
 
