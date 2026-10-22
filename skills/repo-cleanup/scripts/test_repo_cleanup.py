@@ -1580,7 +1580,7 @@ class SweepTests(Fixture):
             repos_root: str,
             services: rc.Services,
             chosen: rc.DefaultBranch | None = None,
-            policy: rc.Policy | None = None,
+            policy: cleanup_policy.Policy | None = None,
         ) -> dict[str, Any]:
             raise ValueError("not enough values to unpack (expected 4, got 1)")
 
@@ -1798,7 +1798,7 @@ class SweepTests(Fixture):
             repos_root: str,
             services: rc.Services,
             chosen: rc.DefaultBranch | None = None,
-            policy: rc.Policy | None = None,
+            policy: cleanup_policy.Policy | None = None,
         ) -> dict[str, Any]:
             if root.endswith("other repo"):
                 raise ValueError("not enough values to unpack (expected 4, got 1)")

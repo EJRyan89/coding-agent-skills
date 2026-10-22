@@ -35,7 +35,7 @@ class SingleEntryPointTests(DeployerTestCase):
     def test_configure_command_writes_the_config(self) -> None:
         self.make_source_json()
         self.repos.mkdir()
-        result = self.run_cli("configure", stdin=f"{forward(self.repos)}\n\n")
+        result = self.run_cli("configure", stdin=f"{forward(self.repos)}\n\n\n\n")
         self.assertEqual(0, result.code, result.output)
         self.assertTrue(result.output.startswith("\nSource: Test Skills (test/skills)\nConfig: "), result.output)
         self.assertTrue(
