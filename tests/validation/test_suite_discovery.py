@@ -27,6 +27,7 @@ from suite_discovery import (
     assertion_holder_problems,
     defined_tests,
     git_isolation_problems,
+    pipe_race_problems,
     pool_shared_state_problems,
     pytest_command,
     pytest_configuration_problems,
@@ -96,6 +97,64 @@ class SuiteDiscoveryFixtures(unittest.TestCase):
                     f"tests/test_reversed.py:9 {main_block}",
                 ],
                 suite_shape_problems(root),
+            )
+
+    def test_pipe_race_policy_refuses_a_pipe_into_a_grep_that_ends_at_its_match(self) -> None:
+        pipefail = "#!/usr/bin/env bash\nset -Eeuo pipefail\n"
+        racing = "printf x | grep -q x\n"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "skills/alpha/SKILL.md": "---\nname: alpha\n---\n",
+                    "skills/alpha/scripts/test_alpha.sh": (
+                        f"{pipefail}"
+                        'printf \'%s\\n\' "$OUTPUT" | grep -q "^UPDATED " || fail\n'
+                        "if tr -d '\\r' <err | grep -qxF -e \"$REFUSAL\"; then :; fi\n"
+                        "printf x |\n  grep --quiet x\n"
+                        "printf x \\\n  | grep -m 1 x\n"
+                        "printf x | LC_ALL=C grep -Eq x # a comment\n"
+                        # An ANSI-C string's escaped quote does not end it, and a string's lines count.
+                        "LINE=$'it\\'s'\nTEXT='one\ntwo'\nprintf x |& egrep --max-count=1 x\n"
+                    ),
+                    "tests/test_beta.sh": (
+                        f"{pipefail}"
+                        # A here-string, a file, a grep that reads to the end, a -q that is a pattern, a comment that
+                        # ends its command, a list operator, and a pipe in a string or a comment race nothing.
+                        'grep -q "^UPDATED " <<<"$OUTPUT"\n'
+                        "grep -q x file\n"
+                        "printf x | grep -c x\n"
+                        "printf x | grep -e -q x\n"
+                        "printf x | grep -- -q\n"
+                        "printf x | cat # a comment\ngrep -q x file\n"
+                        "true || grep -q x file\n"
+                        "echo 'printf x | grep -q x'\n"
+                        f"# {racing}"
+                    ),
+                    # Without pipefail the pipeline's status is grep's own.
+                    "tests/test_gamma.sh": f"#!/usr/bin/env bash\nset -eu\n{racing}",
+                    # A script that is not a suite, and a fixture tree's suite, are not read.
+                    "skills/alpha/scripts/alpha.sh": f"{pipefail}{racing}",
+                    "tests/fixtures/review/test_other.sh": f"{pipefail}{racing}",
+                    "tests/test_unread.sh": f"{pipefail}echo 'open\n",
+                },
+            )
+            race = (
+                "under pipefail, which fails the check when the writer dies of SIGPIPE after the match; give grep its "
+                "text in a here-string or a file"
+            )
+            self.assertEqual(
+                [
+                    f"skills/alpha/scripts/test_alpha.sh:3 pipes into grep -q {race}",
+                    f"skills/alpha/scripts/test_alpha.sh:4 pipes into grep -q {race}",
+                    f"skills/alpha/scripts/test_alpha.sh:6 pipes into grep --quiet {race}",
+                    f"skills/alpha/scripts/test_alpha.sh:8 pipes into grep -m {race}",
+                    f"skills/alpha/scripts/test_alpha.sh:9 pipes into grep -q {race}",
+                    f"skills/alpha/scripts/test_alpha.sh:13 pipes into egrep --max-count {race}",
+                    "tests/test_unread.sh cannot be read as Bash to find a pipe into grep -q: No closing quotation",
+                ],
+                pipe_race_problems(root),
             )
 
     def test_assertion_holder_policy_refuses_a_test_case_made_outside_a_class(self) -> None:

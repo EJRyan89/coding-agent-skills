@@ -1,7 +1,7 @@
 ---
 name: audit-skill
 description: "Audit an agent skill's contract, grants, and cost: whether its Markdown names the lines and exit codes its scripts print, its allowed-tools grants and listing, deterministic work left to prose, token footprint, tool calls, subagents, and model. Read-only findings report. Use it when asked to audit or check a skill: whether its allowed-tools grants are too broad, whether its SKILL.md names the lines its scripts print, what it costs to run or why it is slow, or before shipping it."
-argument-hint: "<SkillName>"
+argument-hint: "[<plugin>:]<SkillName> [<plugin folder>]"
 allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py\" *)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py\" *)", "Read"]
 ---
 
@@ -11,16 +11,16 @@ The measurements are commands of `skill_inventory.py`, run exactly as shown. Eac
 
 ## Step 1 — Locate the skill
 
-`<SKILL_NAME>` is `$ARGUMENTS` as given, even when empty; the skill takes no flags.
+`<SKILL_NAME>` is `$ARGUMENTS` as given, even when empty: a skill's name, or `<plugin>:<name>` for a plugin's copy, then optionally a plugin folder; the skill takes no flags.
 
 ```bash
 {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py" locate "<SKILL_NAME>"
 ```
 
-It searches `.claude/skills/` in your home folder, the current repository's `.agents/skills/` and `.claude/skills/`, and, in a skill source tree, `skills/` (`SCOPE source`, preferred over the deployed copy).
+It searches `.claude/skills/` in your home folder, the current repository's `.agents/skills/` and `.claude/skills/`, in a skill source tree `skills/` (`SCOPE source`, preferred over the deployed copy), and Claude Code's installed plugins (`SCOPE plugin`, when no other copy has the name). A plugin's name or a plugin folder searches plugins alone.
 
 - `REPO <path>` or `REPO none`: the repository searched; nothing to do.
-- `SKILL_FILE <path>`, `SKILL_DIR <path>`, `SCOPE <scope>`: continue with these.
+- `SKILL_FILE <path>`, `SKILL_DIR <path>`, `SCOPE <scope>`: continue with these. After `SCOPE plugin`, `PLUGIN <name> <root>` names the plugin: the audit measures its copy, with each template value as the plugin answers it, for the Scope.
 - `STOP <message>`: show the message and stop. It ends the `NOT_FOUND <name>` and `AVAILABLE <scope> <name>` lines of a skill not found and the `AMBIGUOUS <scope> <path>` lines of one found twice, and is the only line for an empty name.
 
 ## Step 2 — Inventory and token estimate
@@ -29,7 +29,7 @@ It searches `.claude/skills/` in your home folder, the current repository's `.ag
 {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py" inventory "<SKILL_DIR>"
 ```
 
-`FILE` lines list every file by category; a `doc` file is Markdown other than the main `SKILL.md`. `TOTAL` lines fill the report's Scope, and so do `DECLARED <kind> <name>` lines (the kinds are `shared`, `skill`, `agent`, `tool`, and `optional-tool`, and `DECLARED agent <name> via <skill>` is an agent a skill dependency declares, installed with this skill), or `DECLARED_UNREADABLE <path>` when the skill's metadata is not valid JSON. `NO_MAIN` means the folder lost its `SKILL.md`, and `UNREADABLE <path> <reason>` that a Markdown file it loads cannot be measured: stop and report either. Step 4 judges the rest.
+`FILE` lines list every file by category; a `doc` file is Markdown other than the main `SKILL.md`. `TOTAL` lines fill the report's Scope, and so do `DECLARED <kind> <name>` lines (the kinds are `shared`, `skill`, `agent`, `tool`, and `optional-tool`, and `DECLARED agent <name> via <skill>` is an agent a skill dependency declares, installed with this skill), or `DECLARED_UNREADABLE <path>` when the skill's metadata is not valid JSON. `CARRIED_BY <plugin>` lines, or `LEFT_OUT <item> <reason>` lines for a skill no plugin carries, fill the Scope's plugins, and so do `PLUGIN_CARRIES skill|agent <name>` lines, what a plugin carries beside its copy, such as its own `ejryan89-skill-core`; `PLUGINS_UNREADABLE <reason>` means the source's plugins cannot be planned: report it in the Scope. `NO_MAIN` means the folder lost its `SKILL.md`, and `UNREADABLE <path> <reason>` that a Markdown file it loads cannot be measured: stop and report either. Step 4 judges the rest.
 
 ## Step 3 — Read what the judgment needs
 
@@ -94,7 +94,7 @@ The same command compares the status words the skill's Markdown names with what 
 
 ## Step 6 — Agent delegation cost
 
-When Step 5 printed an `agent` or `subagent-reply` cue, a `RUNTIME_PROMPT` line, or an `AGENT`, `AGENT_UNDEFINED`, `AGENT_UNDECLARED`, or `UNGUARDED_SUBAGENT` line, read `${CLAUDE_SKILL_DIR}/references/delegation-and-model.md` and judge them by its Delegation section; it also says what the runtime prompt lines that follow mean, the `CUE` lines a sample prints, and the lines that describe the agent definition of each type the skill names. Otherwise the skill delegates nothing and this bucket has no findings.
+When Step 5 printed an `agent` or `subagent-reply` cue, a `RUNTIME_PROMPT` line, or an `AGENT`, `AGENT_UNDEFINED`, `AGENT_UNDECLARED`, `PLUGIN_HOOK`, or `UNGUARDED_SUBAGENT` line, read `${CLAUDE_SKILL_DIR}/references/delegation-and-model.md` and judge them by its Delegation section; it also says what the runtime prompt lines that follow mean, the `CUE` lines a sample prints, and the lines that describe the agent definition of each type the skill names. Otherwise the skill delegates nothing and this bucket has no findings.
 
 ## Step 7 — Model, allowed-tools, and listing
 
@@ -160,6 +160,7 @@ Group all findings into four buckets. Within each bucket, subdivide into MUST FI
 - Subagents: per type, tools <AGENT_TOOLS>, model <AGENT_MODEL>, CLAUDE.md <omitted|loaded>, and each hook: starts <program> before every <event> call matching <matcher>, timeout <seconds or default>, on failure <value>; in the plugin form it runs for every matching call of every session (omit when none)
 - Runtime support: <runtime> <level> (needs <capabilities>; <reason>) for each runtime, and the needs with their evidence (omit outside a source tree)
 - Listing: <INVOCATION>, description ≈ <N> tok loaded every session while model-invocable; trigger scenario <path> with <requests> requests and <near misses> near misses, or none (omit outside a source tree)
+- Plugins: <each CARRIED_BY plugin, or "left out" with each LEFT_OUT item and reason>; for a plugin's copy, <PLUGIN name and root> and what it carries beside the skill (omit when none is printed)
 - Allowed tools: <comma-separated list>
 - Declared dependencies: <DECLARED names by kind, each agent with the skill that declares it, then the tools and optional tools; "none", or "unreadable <path>">
 

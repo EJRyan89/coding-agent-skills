@@ -13,7 +13,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import frontmatter
+import skill_menu
 from markdown_sections import EXECUTABLE_FENCES
+from skill_menu import PLUGIN_HOOKS, PLUGIN_MANIFEST
 from skill_roots import SKILL_CORE
 from skill_scripts import shell_git_subcommands
 from suite_names import is_suite_name
@@ -45,8 +47,6 @@ from validation_support import (
 
 from deployer import platform_support
 from deployer.render import shipped_files
-from tools.plugin_build import HOOKS as PLUGIN_HOOKS
-from tools.plugin_build import MANIFEST as PLUGIN_MANIFEST
 from tools.plugin_build import README as PLUGIN_README
 
 MAXIMUM_INLINE_EXECUTABLE_LINES = 5
@@ -914,7 +914,7 @@ class SkillLayoutPolicies(unittest.TestCase):
         # The answers are pinned against the policy's own literals, and the clone-bound update skill against a name:
         # a plugin install has no clone, so no plugin may carry the skill that updates one. The code-review skills
         # are carried with their reviewer, whose guard the plugin's hooks file runs.
-        self.assertEqual({"PYTHON": "python"}, plugin_build.PLUGIN_VALUES)
+        self.assertEqual({"PYTHON": "python"}, skill_menu.PLUGIN_VALUES)
         source = plugin_build.load_source(REPOSITORY_ROOT)
         catalogue = plugin_build.load_catalogue(REPOSITORY_ROOT)
         assembly = plugin_build.assemble(source, catalogue, readme=plugin_build.load_readme(REPOSITORY_ROOT))
