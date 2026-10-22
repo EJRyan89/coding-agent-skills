@@ -202,6 +202,20 @@ class BuilderTests(RuntimeCommandLinesTestCase):
             self.assertIn("--sync-session", line.flags)
             self.assertNotIn("--no-remote", line.flags)
 
+    def test_the_deployer_commands_come_from_its_exported_builders(self) -> None:
+        self.assertEqual(["codex", "app-server"], lines.discovery.listing_command("codex", "codex"))
+        self.assertEqual(["copilot", "skill", "list", "--json"], lines.discovery.listing_command("copilot", "copilot"))
+        with self.assertRaisesRegex(ValueError, "no skill listing for claude"):
+            lines.discovery.listing_command("claude", "claude")
+        self.assertEqual(["codex", "debug", "prompt-input"], lines.discovery.catalog_command("codex"))
+        self.assertEqual(
+            ["codex", "debug", "prompt-input", "-c", "sandbox_mode=workspace-write"],
+            lines.deployer_tools.codex_sandbox_command("codex"),
+        )
+        found = {line.name: line.arguments for line in lines.command_lines("codex", "codex", self.root / "c", {}, None)}
+        self.assertEqual(["codex", "app-server"], found["skill-listing"])
+        self.assertEqual(["codex", "debug", "prompt-input"], found["skill-catalog"])
+
     def test_flags_and_subcommands_are_read_from_the_arguments(self) -> None:
         line = lines.CommandLine(
             "codex", "x", ["codex", "exec", "--json", "-C", "dir", "--allow-tool=shell(a)", "prompt"], self.root, {}
