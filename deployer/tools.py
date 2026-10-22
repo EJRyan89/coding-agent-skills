@@ -134,12 +134,17 @@ CODEX_SANDBOX_MODE = re.compile(r"sandbox_mode` is `([a-z-]+)`")
 CODEX_WRITABLE_SANDBOX = "workspace-write"
 
 
+def codex_sandbox_command(codex: str) -> list[str]:
+    """The probe's command line for the Codex CLI at this path."""
+    return [codex, *CODEX_SANDBOX_PROBE]
+
+
 def codex_sandbox_mode(codex: str) -> str | None:
     """The sandbox mode the Codex CLI at this path would run a skill's scripts in, or None when it names none.
 
     A probe that does not finish raises ToolTimedOut, which stops `check` as every other tool's deadline does.
     """
-    result = platform_support.run_tool([codex, *CODEX_SANDBOX_PROBE])
+    result = platform_support.run_tool(codex_sandbox_command(codex))
     found = CODEX_SANDBOX_MODE.search(result.output) if result.returncode == 0 else None
     return None if found is None else found.group(1)
 

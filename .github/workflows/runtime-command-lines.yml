@@ -1,0 +1,99 @@
+name: Runtime Command Lines
+
+# A signal, never a gate: it runs weekly, the day after deployable.yml, and on dispatch. Each job installs the latest
+# release of Claude Code, Codex CLI, and GitHub Copilot CLI on a fresh GitHub-hosted runner, Windows in one and Ubuntu
+# in the other, and runs tools/runtime_command_lines.py, which builds every runtime command line this repository starts
+# from the functions that build it for real runs, looks for each flag in the runtime's help, and starts each signed out
+# to see whether the runtime still parses it. A runtime release that drops or renames a flag the review host, a canary,
+# or an evaluation passes fails the job, with the flag named in the step summary. It starts no model: the tool gives
+# every runtime a throwaway home, no credential, and a proxy nothing listens on. It needs no secret and no sign-in.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 6 * * 3'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  command-lines:
+    name: Runtime command lines on Windows (latest runtimes)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      # Copilot CLI otherwise runs the newest package it has downloaded, not the one installed and checked here.
+      COPILOT_AUTO_UPDATE: 'false'
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          # The floor in deployer/tools.py.
+          python-version: '3.11'
+
+      # Copilot CLI needs Node.js 22 or newer.
+      - name: Set up Node.js 22
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+
+      - name: Install the latest Claude Code, Codex CLI, and GitHub Copilot CLI
+        run: |
+          npm install --global '@anthropic-ai/claude-code@latest' '@openai/codex@latest' '@github/copilot@latest'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Later steps start with the PATH the runner had, so hand them npm's global directory.
+          npm prefix --global | Add-Content -Path $env:GITHUB_PATH
+
+      - name: Check the command lines
+        run: |
+          python tools/runtime_command_lines.py --summary $env:GITHUB_STEP_SUMMARY
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  # The same check on a fresh GitHub-hosted Ubuntu runner, in Bash.
+  command-lines-linux:
+    name: Runtime command lines on Linux (latest runtimes)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Copilot CLI otherwise runs the newest package it has downloaded, not the one installed and checked here.
+      COPILOT_AUTO_UPDATE: 'false'
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          # The floor in deployer/tools.py.
+          python-version: '3.11'
+
+      # Copilot CLI needs Node.js 22 or newer.
+      - name: Set up Node.js 22
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+
+      - name: Install the latest Claude Code, Codex CLI, and GitHub Copilot CLI
+        run: |
+          npm install --global '@anthropic-ai/claude-code@latest' '@openai/codex@latest' '@github/copilot@latest'
+          # Later steps start with the PATH the runner had, so hand them npm's global directory.
+          echo "$(npm prefix --global)/bin" >> "$GITHUB_PATH"
+
+      - name: Check the command lines
+        run: |
+          python3 tools/runtime_command_lines.py --summary "$GITHUB_STEP_SUMMARY"
