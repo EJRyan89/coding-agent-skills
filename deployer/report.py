@@ -10,6 +10,7 @@ from typing import Literal
 
 from . import manifest, platform_support, source
 from .kinds import ADAPTER, DIFFERS, DIFFERS_FROM_SKILL, KINDS, MODIFIED
+from .paths import COPILOT_HOME
 
 KINDS_ALLOWED = {
     "_fold_adapters.repeats_skill": "a runtime adapter is a thin pointer to its skill, so only its lines fold into "
@@ -104,6 +105,23 @@ def wrap(text: str) -> str:
     )
 
 
+def paragraph(text: str) -> str:
+    """Wrap a warning or a note between words, never inside a hyphenated name, with no indent."""
+    return textwrap.fill(text, width=REPORT_WIDTH, break_long_words=False, break_on_hyphens=False)
+
+
+def copilot_home_note(configured: Path, adapters: Path, default: Path) -> str:
+    """Why Copilot CLI does not read the adapters while COPILOT_HOME names a directory other than its default, and
+    what the user can do."""
+    return (
+        f"{COPILOT_HOME} is set to {platform_support.normalize(configured)}, so GitHub Copilot CLI reads personal "
+        f"skills from {platform_support.normalize(configured / 'skills')} and not from "
+        f"{platform_support.normalize(adapters)}, where the runtime adapters are. To use these skills in Copilot, "
+        f"unset {COPILOT_HOME} or set it to {platform_support.normalize(default)}; see \"Copilot's configuration "
+        'directory" in docs/copilot-support.md.'
+    )
+
+
 def print_report(title: str, order: tuple[str, ...], lines: list[ReportLine]) -> None:
     """Print report lines grouped by action, attention first and each group alphabetized, then any force hint."""
     lines = _fold_adapters(lines)
@@ -143,13 +161,10 @@ def warn_ignored_home(home: Path) -> None:
     sys.stdout.flush()
     print("", file=sys.stderr)
     print(
-        textwrap.fill(
+        paragraph(
             f"WARNING: HOME is set to {ignored}, but Claude Code, Codex, and Copilot CLI read skills from "
             f"{platform_support.RUNTIME_HOME}, so this run uses {platform_support.normalize(home)}. To deploy into a "
-            "throwaway home instead, use --canary-home.",
-            width=REPORT_WIDTH,
-            break_long_words=False,
-            break_on_hyphens=False,
+            "throwaway home instead, use --canary-home."
         ),
         file=sys.stderr,
     )

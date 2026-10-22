@@ -14,9 +14,9 @@ Repository instructions, IDE surfaces, the cloud coding agent, and GitHub code r
 
 ## Discovery precedence
 
-For repository skills, Copilot CLI prefers `.github/skills/`, then `.agents/skills/`, then `.claude/skills/`. For personal skills, `~/.copilot/skills/` takes precedence over `~/.agents/skills/`.
+For repository skills, Copilot CLI prefers `.github/skills/`, then `.agents/skills/`, then `.claude/skills/`. For personal skills, `~/.copilot/skills/` takes precedence over `~/.agents/skills/`. With `COPILOT_HOME` set, Copilot's personal skills are under `$COPILOT_HOME/skills/` instead, and it may not read `~/.agents/skills/` at all; see [Copilot's configuration directory](#copilots-configuration-directory).
 
-The deployer owns only its generated `~/.agents/skills` adapters. If a same-named path exists under `~/.copilot/skills`, deployment continues for Claude Code and Codex but reports that Copilot will use the higher-priority skill. Resolve that path manually; the deployer will not adopt, replace, or remove it.
+The deployer owns only its generated `~/.agents/skills` adapters. If a same-named path exists under `~/.copilot/skills`, or under `$COPILOT_HOME/skills` while `COPILOT_HOME` is set, deployment continues for Claude Code and Codex but reports that Copilot will use the higher-priority skill. Resolve that path manually; the deployer will not adopt, replace, or remove it.
 
 After deployment, run the read-only discovery check:
 
@@ -24,7 +24,19 @@ After deployment, run the read-only discovery check:
 python deploy.py verify
 ```
 
-The verifier runs `copilot skill list --json` from an empty directory, so no repository skill takes part, and compares each manifest-owned adapter with the copy Copilot lists. Copilot lists one copy per name, the one it will use, so an adapter is `FOUND` only when that copy is the adapter and it is enabled. A same-named skill under `~/.copilot/skills` is reported as `SHADOWED`, with its path. The command performs discovery only; it does not start an AI session or consume a model request. It reports Copilot CLI older than 1.0.88 as `OUTDATED` without starting it. It checks Codex the same way when Codex is installed; see [Codex support](codex-support.md#checking-discovery). On Linux, Copilot reads personal skills under `HOME`, where the deployer installs, and the check runs the same way, as `python3 deploy.py verify`; the [`deployable` workflow](../.github/workflows/deployable.yml) runs it on a fresh Ubuntu runner as it does on a fresh Windows one.
+The verifier runs `copilot skill list --json` from an empty directory, so no repository skill takes part, and compares each manifest-owned adapter with the copy Copilot lists. Copilot lists one copy per name, the one it will use, so an adapter is `FOUND` only when that copy is the adapter and it is enabled. A same-named skill under Copilot's personal skills is reported as `SHADOWED`, with its path. When Copilot lists none of the adapters because `COPILOT_HOME` hides them, the report says so after its `NOT FOUND` lines. The command performs discovery only; it does not start an AI session or consume a model request. It reports Copilot CLI older than 1.0.88 as `OUTDATED` without starting it. It checks Codex the same way when Codex is installed; see [Codex support](codex-support.md#checking-discovery). On Linux, Copilot reads personal skills under `HOME`, where the deployer installs, and the check runs the same way, as `python3 deploy.py verify`; the [`deployable` workflow](../.github/workflows/deployable.yml) runs it on a fresh Ubuntu runner as it does on a fresh Windows one.
+
+## Copilot's configuration directory
+
+Copilot CLI keeps its configuration in `~/.copilot` unless `COPILOT_HOME` names another directory, or a session starts with `--config-dir`, which Copilot deprecates in favor of the variable. Either one moves Copilot's personal skills to that directory's `skills` folder and stops Copilot reading `~/.agents/skills`, so it finds none of the deployed adapters. Claude Code and Codex are unaffected. A `COPILOT_HOME` that names `~/.copilot` itself changes nothing, but Copilot compares the two by their spelling, letter case included, so the same folder named in another case on Windows still hides the adapters.
+
+The deployer reads `COPILOT_HOME` but never writes into Copilot's configuration directory:
+
+- the shadow check looks for same-named skills in `$COPILOT_HOME/skills` while the variable is set;
+- a deployment warns when the variable names another directory than `~/.copilot`, printing the folder to set it to; and
+- `python deploy.py verify`, which starts Copilot with your environment, explains the `NOT FOUND` lines when the variable hides every adapter.
+
+The deployer cannot see `--config-dir`, an argument of one session, so a session started with it finds none of the adapters without a warning. To use the deployed skills in Copilot CLI, leave `COPILOT_HOME` unset, or set it to the `.copilot` folder of your home spelled as the warning prints it, and start Copilot without `--config-dir`. A `--canary-home` deployment ignores `COPILOT_HOME`, since its runtimes read the throwaway home.
 
 ## Headless sessions
 
