@@ -1230,7 +1230,7 @@ class GuidanceTests(Fixture):
         code, lines = self.run_main("guidance")
         self.assertEqual(1, code)
         self.assertEqual(
-            "FAILED RUNTIME_FACTS in audit_repository.py names no file for beta, which "
+            "FAILED audit_repository.py's RUNTIME_FACTS names no file for beta, which "
             "skills/ejryan89-skill-core/scripts/runtime_support.py supports; add the files that state the runtime's "
             "facts before the audit",
             lines[-1],

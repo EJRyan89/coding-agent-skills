@@ -19,12 +19,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 from skill_grants import (
     GRANTS_DOC,
     REPOSITORY_TOOL_COMMAND,
+    RESULTS_DOC,
     description_problems,
     repository_code_declaration_problems,
     repository_skill_files,
     repository_skill_problems,
     root_option_problems,
     skill_grant_problems,
+    status_line_problems,
     tool_grant_problems,
 )
 from validation_support import write_fixture_tree
@@ -283,6 +285,61 @@ class SkillGrantsFixtures(unittest.TestCase):
                     f"skills/unused/SKILL.md grants Glob, which no step uses; see {GRANTS_DOC}",
                 ],
                 skill_grant_problems(root),
+            )
+
+    def test_grant_policy_fails_a_grant_whose_tool_a_step_only_implies(self) -> None:
+        # "read the file" may be a script's read as well as the agent's, so only a step naming Read uses the grant.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deploy-meta/implied.json": "{}",
+                    "deploy-meta/named.json": "{}",
+                    "skills/implied/SKILL.md": '---\nname: implied\nallowed-tools: ["Read"]\n---\n\nread the file.\n',
+                    "skills/named/SKILL.md": '---\nname: named\nallowed-tools: ["Read"]\n---\n\n`Read` the file.\n',
+                },
+            )
+            self.assertEqual(
+                [
+                    "skills/implied/SKILL.md:6 implies Read, which it grants, but no step names it; name the tool in "
+                    f"the step that uses it, or drop the grant; see {GRANTS_DOC}"
+                ],
+                skill_grant_problems(root),
+            )
+
+    def test_status_line_policy_fails_lines_the_markdown_and_its_scripts_disagree_on(self) -> None:
+        script = 'def main() -> int:\n    print(f"WIDGET_DONE {1}")\n    return 0\n'
+        run = '---\nname: {0}\n---\n\n```bash\npython -B "${{CLAUDE_SKILL_DIR}}/scripts/widget.py"\n```\n\n{1}\n'
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deploy-meta/drifted.json": "{}",
+                    "deploy-meta/named.json": "{}",
+                    "skills/drifted/scripts/widget.py": script,
+                    "skills/drifted/SKILL.md": run.format("drifted", "It prints `GADGET_READY <name>`, or exits 3."),
+                    "skills/named/scripts/widget.py": script,
+                    "skills/named/SKILL.md": run.format("named", "It prints `WIDGET_DONE <count>` and exits 0."),
+                    ".claude/skills/local/scripts/widget.py": script,
+                    ".claude/skills/local/SKILL.md": run.format("local", "Run it."),
+                },
+            )
+            self.assertEqual(
+                [
+                    f"skills/drifted/SKILL.md:9 names GADGET_READY as output, which no script the skill reads prints; "
+                    f"see {RESULTS_DOC}",
+                    "skills/drifted/SKILL.md:9 states exit code 3, which no script the skill reads exits with; "
+                    f"see {RESULTS_DOC}",
+                    "skills/drifted/scripts/widget.py:2 prints a line starting WIDGET_DONE, which "
+                    "skills/drifted/SKILL.md never names; name it where the agent acts on it, or say why the agent "
+                    f"need not; see {RESULTS_DOC}",
+                    ".claude/skills/local/scripts/widget.py:2 prints a line starting WIDGET_DONE, which "
+                    ".claude/skills/local/SKILL.md never names; name it where the agent acts on it, or say why the "
+                    f"agent need not; see {RESULTS_DOC}",
+                ],
+                status_line_problems(root),
             )
 
     def test_grant_policy_fails_a_sibling_grant_that_does_not_name_its_script(self) -> None:

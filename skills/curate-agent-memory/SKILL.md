@@ -34,7 +34,7 @@ It prints `REPORT <path>`, a new JSON file in the system temporary directory; re
 
 ## Step 3: Verify and classify every memory
 
-Read each memory file in full, and read every overlapping passage in context. Memories are point-in-time notes, so check any claim about code, paths, or configuration by searching the current files before relying on it.
+`Read` each memory file in full, and every overlapping passage in context. Memories are point-in-time notes, so check any claim about code, paths, or configuration by searching the current files with `Grep` before relying on it.
 
 Assign each memory exactly one outcome, with a one-line reason and evidence (`file:line` for anything that exists elsewhere):
 
@@ -65,11 +65,11 @@ Fix mechanical problems from Step 2 as part of the relevant outcome: repair or r
 
 Present the proposal grouped by outcome, headed by the memory directory it applies to, one line per memory: file, outcome, reason, evidence. For every move, show the exact text that would be added and where.
 
-Ask which groups to apply with a multi-select question, one option per non-empty group. Offer to review a group item by item when the user wants to exclude individual memories. Apply nothing that was not approved.
+Ask which groups to apply with a multi-select `AskUserQuestion`, one option per non-empty group. Offer to review a group item by item when the user wants to exclude individual memories. Apply nothing that was not approved.
 
 ## Step 5: Apply the approved changes
 
-- Edit destination files first, reading each before changing it and keeping its existing style and structure. Never replace a whole existing file. A skill's destination is a `SKILL_FILE` from Step 3, never a file under a skills directory.
+- Change destination files first with `Edit`, reading each before changing it and keeping its existing style and structure. Never replace a whole existing file. A skill's destination is a `SKILL_FILE` from Step 3, never a file under a skills directory.
 - Only then delete or rewrite the memories those changes cover. When rewriting one, keep its frontmatter `name` and `description` accurate: the index is built from them. Delete approved memories by file name, never with another command:
 
   ```bash
@@ -77,7 +77,7 @@ Ask which groups to apply with a multi-select question, one option per non-empty
   ```
 
   It checks every name before deleting any, and prints `DELETED <file>` for each file it deletes. A lone `FAILED <memory dir> ...` line, here or from `reindex`, means the directory holds no `MEMORY.md` or lies inside a skills directory, so it changed nothing; show it and go back to Step 1. `FAILED <file>: <reason>` lines with no `DELETED` line mean it refused those names and deleted nothing; show the reasons and fix the list. A `FAILED` line after `DELETED` lines means the deletion stopped part way: the `DELETED` files are gone and the rest remain, so show the reason and rerun with the remaining files.
-- For review findings, invoke `flag-review-finding` with the memory's substance; delete the memory the same way once the finding is recorded.
+- For review findings, invoke `flag-review-finding` through the `Skill` tool with the memory's substance; delete the memory the same way once the finding is recorded.
 - When any memory changed or the "Rebuild index" group was approved, rebuild `MEMORY.md` last instead of editing it by hand:
 
   ```bash

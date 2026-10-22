@@ -33,7 +33,7 @@ It searches `.claude/skills/` in your home folder, the current repository's `.ag
 
 ## Step 3 — Read what the judgment needs
 
-Read the main body and every `doc` file in full; they are what the audit judges. Read a helper script only when a finding depends on it, for example to check whether the body has the agent redo logic the script already implements. Helpers that run through a shell do not load into context: report their size as reference, not as context cost.
+`Read` the main body and every `doc` file in full; they are what the audit judges. Read a helper script only when a finding depends on it, for example to check whether the body has the agent redo logic the script already implements. Helpers that run through a shell do not load into context: report their size as reference, not as context cost.
 
 ## Step 4 — Token footprint
 

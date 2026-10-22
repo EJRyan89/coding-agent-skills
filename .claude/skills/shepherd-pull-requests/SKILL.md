@@ -31,7 +31,7 @@ The second form lists and judges and writes nothing. From anywhere else, such as
 - `PR_FAILED`, `MERGED_FAILED`, or a last line `FAILED <reason>`: report the reason; the next tick tries again.
 - `REMAINING 0`: no pull request is open. Stop whatever repeats the tick, such as a scheduled prompt.
 
-`JUDGED`, `RERUN`, `PR`, and `HUB` lines need nothing from you.
+`JUDGED`, `RERUN`, `PR`, and `HUB` lines need nothing from you, nor do `REPOSITORY <owner>/<name>`, the repository the tick reads, and `DRY_RUN`, which opens a `--dry-run` tick.
 
 ## 3. Hand off each merge
 

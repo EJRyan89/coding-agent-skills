@@ -36,6 +36,9 @@ Add `--since '<ref>'` to `release` to start from another base. Keep these lines 
 - `CARRIED <number> "<title>"`: an open issue the next milestone carries; every rotation brief names them too.
 - `BRIEFS "<directory>"`, then one `BRIEF <name> "<file>"` per reader, each its whole prompt; `READERS` counts an area's.
 - `SUBJECT <subject> <pages> <tag>`: guidance's runtimes and Python, each with its pages and the oldest of their last reads, or `never`.
+- `DRIFT <kind> <what>`, `TEMPLATE <field> <what>`, and `SECTION <name> <what>`: the kinds of drift the briefs ask the readers to look for, the fields of a finding, and the sections of a reader's report, which step 4 confirms findings against.
+
+The rest are context, with nothing to do: `HEAD <commit>`, the commit the briefs describe; for `release`, `BASE <ref> <commit>`, where the diff starts, `CHANGED <count>`, the files changed since it, and `AREA <area> <count>` for each area; for `rotation`, `RECORD "<file>"`, the record read, `READ <area> <tag> <date>` or `UNREAD <area>` for each area, `NEXT <area>`, the area read whole now, and `FILES <count>`, its files; and for `guidance`, `GUIDANCE_RECORD "<file>"`, the record read.
 
 A `FAILED` line is the last line and names what stopped the run, such as no release tag reachable from `HEAD`, a guidance record naming no page for a runtime the deployer supports, or gh's own reason. A run that fails while writing the briefs prints no `BRIEFS` line and leaves its directory in place: the folder holding the file its `FAILED` line names. Once you have diagnosed the failure, remove that folder as step 6 says; a failure writing the marker, `.audit-repository-briefs.json`, leaves a folder `remove-briefs` refuses, so delete it yourself.
 

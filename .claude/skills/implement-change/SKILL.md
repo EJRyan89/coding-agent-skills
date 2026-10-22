@@ -62,7 +62,7 @@ Work test first: write the failing test, then make it pass. Update *Documentatio
 
 ## 8. Pull request
 
-`.claude/skills/implement-change/scripts/pull_request.py` does the deterministic part: it drafts the body from the repository's pull request template, checks the title, the body, and the branch, and opens the pull request with the title read from its file, so no title is pasted into a command. Its docstring lists every line it prints. Take these in order:
+`.claude/skills/implement-change/scripts/pull_request.py` does the deterministic part: it drafts the body from the repository's pull request template, checks the title, the body, and the branch, and opens the pull request with the title read from its file, so no title is pasted into a command. Any command of it that cannot finish prints a last line `FAILED <reason>`: report it and stop. Take these in order:
 
 1. Draft the body, with one `--closes` for each issue the change resolves and none when it resolves none:
 
@@ -70,16 +70,16 @@ Work test first: write the failing test, then make it pass. Update *Documentatio
    python -B .claude/skills/implement-change/scripts/pull_request.py draft --closes '<number>'
    ```
 
-   Write the title, as *Pull requests* says, on one line in the `TITLE` file it names, and fill the `BODY` file: replace each template comment and empty item with what it asks for, and state the upgrade note when the change owes one.
+   It prints `TEMPLATE "<file>"`, the template it read, a `CLOSES <number>` line for each issue, and the `BODY` and `TITLE` files. Write the title, as *Pull requests* says, on one line in the `TITLE` file it names, and fill the `BODY` file: replace each template comment and empty item with what it asks for, and state the upgrade note when the change owes one.
 2. Bring the branch up to date with its base as *Pull requests* says; continuous integration validates the result, so it needs no local rerun.
-3. Check both files and the branch against the base *Pull requests* names, such as `origin/main`, then run *Validation*'s title and body checks on the same files. Fix what each line names and rerun until it prints `READY`:
+3. Check both files and the branch against the base *Pull requests* names, such as `origin/main`, then run *Validation*'s title and body checks on the same files. It prints the `TITLE` it read, a `CLOSES` line for each issue the body closes, and `BASE <base> <commit>`, the base's tip after its fetch, then a line for each problem: `TITLE_EMPTY` or `TITLE_LINES <count>` for a title file that holds no title or more than one line; `PLACEHOLDER <line> <what>`, `CLOSES_LINE <line> <text>`, or `HEADING_MISSING <heading>` for a template comment or empty item left in the body, a closing line that is not `Closes #<number>` naming one issue, or a template heading the body dropped; `BEHIND <base> <commit>` for a branch to bring up to date (step 2); `NO_COMMITS <base>` for a branch with nothing to open; and `UNCOMMITTED <count>` for changed or untracked files the pull request would leave out. Fix what each line names and rerun until it prints `READY`:
 
    ```bash
    python -B .claude/skills/implement-change/scripts/pull_request.py check --title-file "<title file>" --body-file "<body file>" --base "<base>"
    ```
 
 4. Push the branch under its own name, as *Pull requests* says, so the pull request has a branch to open from.
-5. Open the pull request. `open` repeats the check, refuses a branch whose upstream does not hold `HEAD`, and prints `PULL_REQUEST <url>`:
+5. Open the pull request. `open` repeats the check, refuses a branch whose upstream does not hold `HEAD` with `UNPUSHED <upstream>`, or `UNPUSHED no upstream`, so push it (step 4), and prints `PULL_REQUEST <url>`:
 
    ```bash
    python -B .claude/skills/implement-change/scripts/pull_request.py open --title-file "<title file>" --body-file "<body file>" --base "<base>"
