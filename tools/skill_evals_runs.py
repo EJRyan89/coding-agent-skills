@@ -400,7 +400,9 @@ def run_failure(
             reasons.append(f"timed out after {timeout:g} seconds")
         elif completed.returncode != 0:
             reasons.append(f"Claude Code exited with code {completed.returncode}")
-        if listed is not None and skill not in listed:
+        if nothing := runtime_canary.discovery_failure(completed.stdout):
+            reasons.append(nothing)
+        elif listed is not None and skill not in listed:
             reasons.append(f"Claude Code did not list {skill}")
         if denials and recorded:
             reasons.append(f"denied {len(denials)} command{'' if len(denials) == 1 else 's'}")
@@ -456,6 +458,8 @@ def trigger_failure(model: str, completed: Completed, timeout: float, skill: str
         return completed.error, "Claude Code could not start", RUN
     if completed.timed_out:
         return f"timed out after {timeout:g} seconds", f"timed out after {timeout:g} seconds", RUN
+    if nothing := runtime_canary.discovery_failure(completed.stdout):
+        return nothing, nothing, RUN
     if listed is None or skill not in listed:
         return f"Claude Code did not list {skill}", f"Claude Code did not list {skill}", RUN
     session, _ = stream_models(completed.stdout)

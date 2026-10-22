@@ -25,7 +25,7 @@ The report states its result on one line, before the `SUMMARY` lines; report by 
 | `RESULT COMPLIANT` | No `ERROR` findings and the authority is conforming | Compliant within statically verifiable scope |
 | `RESULT ERRORS` | One or more `ERROR` findings | Errors found |
 | `RESULT INCONCLUSIVE` | Authority is ambiguous, unconfigured, or an alternative source | Inconclusive; the conforming-only checks did not run |
-| `FAILED <reason>` | The root is not a Git repository; there is no report | The failure |
+| `FAILED <reason>` | There is no report: the root is not a Git repository, or `--provenance` could not read the provenance file | The failure |
 
 With `--json` there is no `RESULT` line: a non-conforming `authority` is inconclusive, otherwise `exitCode` `1` means errors found.
 

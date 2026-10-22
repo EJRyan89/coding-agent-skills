@@ -82,6 +82,7 @@ from tools.runtime_canary import (
     Runner,
     claim_home,
     create_home,
+    discovery_failure,
     environment,
     finish,
     forward,
@@ -352,6 +353,8 @@ def probe(session: Session, executable: str, paths: Mapping[str, str], fixture: 
     ran = [record for record in records if Path(record["script"]).resolve() == script.resolve()]
     if ran:
         outcome = f"RAN {quote(forward(ran[0]['script']))} {quote(forward(ran[0].get('cwd', '')))}"
+    elif nothing := discovery_failure(completed.stdout):
+        outcome = f"FAILED {quote(nothing)}"
     elif completed.timed_out:
         outcome = f"FAILED {quote(f'timed out after {session.timeout:g} seconds before the probe ran')}"
     else:

@@ -321,6 +321,12 @@
       ]
     },
     {
+      "url": "https://code.visualstudio.com/docs/copilot/customization/custom-instructions",
+      "subject": "copilot-cli",
+      "governs": "instructions: the VS Code settings that decide which instruction files its chat reads",
+      "read": []
+    },
+    {
       "url": "https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/add-custom-instructions/add-repository-instructions",
       "subject": "copilot-cli",
       "governs": "instructions: repository-wide and path-specific files",

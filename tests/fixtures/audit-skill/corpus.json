@@ -3,7 +3,7 @@
     "audit-skill": {
       "pull_request": 1239,
       "commit": "a84a66e79b5a2d3d70d15704b236ff91f7ffba28",
-      "path": "skills/audit-skill/SKILL.md",
+      "path": "skills/analyze-skill-cost/SKILL.md",
       "cues": ["assembled-arguments", "hand-drafted"]
     },
     "implement-change": {

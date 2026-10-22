@@ -17,6 +17,9 @@ unguarded-subagent holds a SKILL.md as it stood before the pull request that sta
 reviewer type rather than a general-purpose one; corpus.json names the line, the skill dependency that declares the
 guarded agent, and the agent. The text before it, in a source tree that declares that agent with this checkout's
 definition, shows UNGUARDED_SUBAGENT on that line, and the skill the source tree keeps today shows none.
+
+Every fixture is, byte for byte, the text its entry names at the commit or its parent, path included, so a
+later rename of a skill or a name it mentions leaves the fixtures as their commits hold them.
 """
 
 from __future__ import annotations
@@ -36,6 +39,7 @@ from skill_roots import sibling_scripts
 sys.path.insert(0, str(sibling_scripts("audit-skill")))
 
 import skill_inventory
+from git_client import GitClient
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 FIXTURES = REPOSITORY / "tests" / "fixtures" / "audit-skill"
@@ -142,3 +146,29 @@ def test_a_general_purpose_subagent_is_unguarded_before_its_fix_and_not_after(sk
     today = scan(REPOSITORY / Path(entry["path"]).parent)
     assert [line for line in today if line.startswith("UNGUARDED_SUBAGENT ")] == []
     assert f"AGENT {entry['agent']} {(REPOSITORY / 'agents' / definition).as_posix()}" in today
+
+
+def corpus_texts() -> list[tuple[Path, str]]:
+    """Each fixture file and the revision and path, `<revision>:<path>`, whose text it holds."""
+    texts: list[tuple[Path, str]] = []
+    for family in ("deterministic-prose", "status-lines"):
+        for name, entry in CORPUS[family].items():
+            folder = FIXTURES / family / name
+            texts += [(folder / "before.md", f"{entry['commit']}^:{entry['path']}")]
+            texts += [(folder / "after.md", f"{entry['commit']}:{entry['path']}")]
+            if "script" in entry:
+                script = Path(entry["script"])
+                texts += [(folder / f"{script.name}.txt", f"{entry['commit']}:{script.as_posix()}")]
+    for name, entry in CORPUS["runtime-prompt-shape"].items():
+        texts += [(FIXTURES / "runtime-prompt-shape" / name / "before.txt", f"{entry['commit']}^:{entry['sample']}")]
+    for name, entry in CORPUS["unguarded-subagent"].items():
+        texts += [(FIXTURES / "unguarded-subagent" / name / "before.md", f"{entry['commit']}^:{entry['path']}")]
+    return texts
+
+
+@pytest.mark.parametrize(("fixture", "revision"), corpus_texts(), ids=lambda value: str(value))
+def test_each_fixture_is_the_named_commits_text_byte_for_byte(fixture: Path, revision: str) -> None:
+    # A rename across the repository must not reach these texts: each is what its commit held, so a cue is held to
+    # the prose a pull request actually changed.
+    committed = GitClient().run(["show", revision], directory=REPOSITORY).output_bytes()
+    assert committed == fixture.read_bytes()

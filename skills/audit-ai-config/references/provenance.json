@@ -175,11 +175,15 @@
       },
       {
         "page": "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-custom-instructions",
-        "passage": "Copilot CLI combines AGENTS.md, CLAUDE.md, .claude/CLAUDE.md, GEMINI.md, .github/copilot-instructions.md, and .github/instructions/*.instructions.md from the repository root, the working directory, and the directories between."
+        "passage": "Copilot CLI combines AGENTS.md, CLAUDE.md, .claude/CLAUDE.md, GEMINI.md, and .github/copilot-instructions.md from the repository root, the working directory, and the directories between, and modular .github/instructions files from the same locations but not intermediate directories."
       },
       {
         "page": "https://docs.github.com/en/copilot/reference/custom-instructions-support",
-        "passage": "The instruction files the cloud agent, code review, JetBrains, and VS Code read differ by surface, and VS Code reads several only when a setting enables them."
+        "passage": "The instruction files Copilot Chat, the cloud agent, code review, and Copilot CLI read differ by surface and by editor: in VS Code, Copilot Chat reads AGENTS.md as its only agent file and code review reads only repository-wide instructions."
+      },
+      {
+        "page": "https://code.visualstudio.com/docs/copilot/customization/custom-instructions",
+        "passage": "VS Code settings decide which instruction files its chat reads: chat.useAgentsMdFile for a root AGENTS.md, chat.useClaudeMdFile for CLAUDE.md, github.copilot.chat.codeGeneration.useInstructionFiles for .github/copilot-instructions.md, and chat.includeApplyingInstructions for applyTo instructions."
       },
       {
         "page": "https://docs.github.com/en/copilot/how-tos/copilot-on-github/use-copilot-agents/copilot-code-review",
@@ -230,8 +234,8 @@
     ],
     "runtime": [
       {
-        "page": "https://docs.github.com/en/copilot/reference/custom-instructions-support",
-        "passage": "Whether a Copilot surface uses custom instructions depends on settings and policies outside the repository."
+        "page": "https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/add-custom-instructions/add-repository-instructions",
+        "passage": "Custom instructions are enabled for Copilot code review by default, a repository setting on GitHub.com can disable them, and each user's personal choice of whether to use custom instructions must be enabled, as it is by default."
       },
       {
         "decision": "Settings, policies, authentication, model availability, and enablement live outside the repository, so a static audit names them for checking by hand: check 7 of references/audit-policy.md."

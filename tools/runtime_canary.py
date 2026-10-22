@@ -624,6 +624,20 @@ def run_command(
     ]
 
 
+# Every `claude -p` session the canaries and the skill evaluations start depends on what --bare skips: discovery of the
+# home's skills and agents, and the user's sign-in. Claude Code's headless page says --bare will become the default for
+# -p, and no option keeps discovery yet, so a session whose init event lists no skill fails with this reason rather than
+# counting as a result.
+NOTHING_DISCOVERED = "Claude Code discovered no skill, as a session in bare mode does"
+
+
+def discovery_failure(output: str) -> str | None:
+    """Why a Claude Code session counts for nothing because it discovered no skill, or None. A session that printed no
+    init event has its own failure to report."""
+    skills, _ = claude_stream(output)
+    return NOTHING_DISCOVERED if skills is not None and not skills else None
+
+
 def claude_stream(output: str) -> tuple[set[str] | None, list[str]]:
     """The skills Claude Code's init event lists, if it printed one, and the permissions its result denied."""
     skills: set[str] | None = None
@@ -855,6 +869,8 @@ def run_skill(
             rejected=rejections(runtime, completed),
             cause=blocked_cause(runtime, codex_sandbox),
         )
+    if runtime == "claude" and (nothing := discovery_failure(completed.stdout)):
+        outcome = f"FAILED {quote(nothing)}"
     return [
         *lines,
         f"RUNTIME {runtime} {skill} {outcome} KEPT {quote(KEPT[runtime])}",
