@@ -1140,7 +1140,7 @@ class GuidanceTests(Fixture):
         write(
             self.root,
             {
-                "deployer/runtime_support.py": CATALOGUE,
+                "skills/ejryan89-skill-core/scripts/runtime_support.py": CATALOGUE,
                 "docs/alpha-support.md": "alpha\n",
                 "deploy-meta/demo.json": "{}\n",
                 "pyproject.toml": "[tool.ruff]\n",
@@ -1192,8 +1192,8 @@ class GuidanceTests(Fixture):
         self.assertEqual(
             [
                 '- `"docs/alpha-support.md"`: the whole document.',
-                '- `"deployer/runtime_support.py"`: the runtime\'s capabilities and the comment that gives their '
-                "reasons.",
+                '- `"skills/ejryan89-skill-core/scripts/runtime_support.py"`: the runtime\'s capabilities and the '
+                "comment that gives their reasons.",
                 '- `"deploy-meta/"`: each skill\'s runtime_support declaration for the runtime.',
                 '- `"README.md"`: the supported-runtimes table.',
                 '- `"skills/audit-skill/references/provenance.json"`: each check whose source is one of these pages.',
@@ -1219,8 +1219,8 @@ class GuidanceTests(Fixture):
         code, lines = self.run_main("guidance")
         self.assertEqual(1, code)
         self.assertEqual(
-            f"FAILED {GUIDANCE} names no page for beta, which deployer/runtime_support.py supports; add the "
-            "runtime's pages before the audit",
+            f"FAILED {GUIDANCE} names no page for beta, which skills/ejryan89-skill-core/scripts/runtime_support.py "
+            "supports; add the runtime's pages before the audit",
             lines[-1],
         )
         self.assertFalse([line for line in lines if line.startswith("BRIEF")])
@@ -1230,8 +1230,9 @@ class GuidanceTests(Fixture):
         code, lines = self.run_main("guidance")
         self.assertEqual(1, code)
         self.assertEqual(
-            "FAILED RUNTIME_FACTS in audit_repository.py names no file for beta, which deployer/runtime_support.py "
-            "supports; add the files that state the runtime's facts before the audit",
+            "FAILED RUNTIME_FACTS in audit_repository.py names no file for beta, which "
+            "skills/ejryan89-skill-core/scripts/runtime_support.py supports; add the files that state the runtime's "
+            "facts before the audit",
             lines[-1],
         )
         self.assertFalse([line for line in lines if line.startswith("BRIEF")])
@@ -1276,11 +1277,11 @@ class GuidanceTests(Fixture):
     def test_a_catalogue_without_literal_runtimes_fails(self) -> None:
         for text in ("RUNTIMES = tuple(load())\n", "RUNTIMES = ('alpha',)\nRUNTIME_TITLES = {}\n", "def (\n"):
             with self.subTest(text=text):
-                write(self.root, {"deployer/runtime_support.py": text})
+                write(self.root, {"skills/ejryan89-skill-core/scripts/runtime_support.py": text})
                 code, lines = self.run_main("guidance")
                 self.assertEqual(1, code)
                 self.assertTrue(lines[-1].startswith("FAILED "), lines)
-                self.assertIn("deployer/runtime_support.py", lines[-1])
+                self.assertIn("skills/ejryan89-skill-core/scripts/runtime_support.py", lines[-1])
 
 
 @pytest.mark.parametrize(

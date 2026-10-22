@@ -127,6 +127,13 @@ class Frontmatter:
         except FrontmatterError as exc:
             raise FrontmatterError(f"{key}: {exc}") from None
 
+    def lines(self, key: str) -> list[str] | None:
+        """The lines below the key's own, as written, or None when the key is absent: the text of a structured value
+        this reader does not interpret, such as an agent's hooks, for a caller that reads only what it needs of it."""
+        if key in self._duplicates:
+            raise FrontmatterError(f"{key} appears more than once")
+        return list(self._raw[key][1]) if key in self._raw else None
+
     def string(self, key: str) -> str | None:
         """The key's value, which must not be a sequence, or None when the key is absent or empty."""
         value = self.value(key)

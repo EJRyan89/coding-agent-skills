@@ -126,12 +126,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import frontmatter
+import runtime_support
 from bounded_process import run_bounded, without_repository_variables
 from console import run_main
 from git_client import GitClient, GitError
 from release_tags import last_release
 
-from deployer import discovery, manifest, pipeline, platform_support, runtime_support, verify
+from deployer import discovery, manifest, pipeline, platform_support, verify
 from deployer import source as deploy_source
 from deployer.errors import DeployError
 from deployer.paths import Paths

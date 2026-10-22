@@ -184,7 +184,7 @@ def derived_needs(root: Path, name: str, seen: frozenset[str] = frozenset()) -> 
     a SKILL.md line that says "invoke", the rule tests/ai-config/test_cross_skill_contracts.py applies; its limits
     reach the step that invokes it.
     """
-    from deployer import runtime_support
+    import runtime_support
 
     skills = skills_by_name(root)
     if name not in skills:
@@ -227,7 +227,7 @@ def runtime_support_problems(root: Path) -> list[str]:
     partial or none, naming exactly the capabilities that runtime lacks. A hidden skill is none everywhere, since no
     runtime starts it.
     """
-    from deployer import runtime_support
+    import runtime_support
 
     problems: list[str] = []
     for metadata in sorted((root / "deploy-meta").glob("*.json")):
