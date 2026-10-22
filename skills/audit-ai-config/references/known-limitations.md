@@ -13,6 +13,7 @@ The engine reports each limitation below that applies to the audited repository 
 - Older manifests use default Copilot sections
 - Codex TOML and workflow YAML use marker-only parity
 - Instruction-layering analysis is incomplete
+- Codex rules are read with Python's parser
 - Copilot configuration is static, not operational
 - Frontmatter is read as simple YAML
 - Copilot projections are only provenance-checked
@@ -58,6 +59,13 @@ Deterministic reconstruction covers AGENTS.md, skill shims, and copilot-instruct
 ## Instruction-layering analysis is incomplete
 
 Surface resolvers exist for Codex, Copilot CLI/app, JetBrains, cloud agent, code review, and VS Code. Codex nested files use correct additive-chain semantics for `AGENTS.override.md` and `AGENTS.md`; the fallback names a repository's `.codex/config.toml` gives Codex are read for the root only, and the fallback names a user's own Codex configuration gives cannot be read. The size cap is held for the root file only, not for the chain of nested files Codex adds below it, and against the cap the repository's `.codex/config.toml` sets, never one a user's own configuration sets. The engine does not judge whether effective sources contradict or overlap, including path-specific instructions; the skill asks the agent to review that content as a separate, labelled assessment.
+
+## Codex rules are read with Python's parser
+
+Codex writes its rules in Starlark, a Python dialect. The audit reads each `.codex/rules/*.rules` file
+with Python's parser, which never runs it, so a construct Starlark accepts and Python does not is
+reported as a file that does not parse, and a `prefix_rule` whose `pattern` or `decision` is computed
+rather than written as a literal is reported as lacking a literal pattern.
 
 ## Copilot configuration is static, not operational
 

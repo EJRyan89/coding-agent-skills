@@ -1,5 +1,11 @@
 {
   "checks": {
+    "agent-skill": [
+      {
+        "page": "https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview",
+        "passage": "A skill's name is at most 64 characters of lowercase letters, numbers, and hyphens, with no XML tags and neither reserved word, anthropic or claude; its description is non-empty, at most 1,024 characters, and holds no XML tags."
+      }
+    ],
     "authority": [
       {
         "decision": "A repository counts as generated from CLAUDE.md only on the signals check 2 of references/audit-policy.md names, the layout of this source's retired init-ai-config generator, so a repository that keeps its instructions another way is never reported as drifted."
@@ -12,6 +18,12 @@
       },
       {
         "decision": "An agent's instructions forbid disabling, suppressing, or working around a failing check and state a quality gate, as this source's own CLAUDE.md does under Required validation."
+      }
+    ],
+    "claude-agent": [
+      {
+        "page": "https://code.claude.com/docs/en/sub-agents",
+        "passage": "A project subagent is a Markdown file in .claude/agents whose frontmatter requires a name, of at most 256 characters without a colon, and a description, and whose tools, given as a comma-separated string or a YAML list, inherit every tool when omitted, beside optional model and hooks."
       }
     ],
     "claude-hook": [
@@ -52,6 +64,42 @@
         "passage": "permissions.defaultMode is one of default, acceptEdits, plan, auto, dontAsk, bypassPermissions, or manual, and auto and bypassPermissions don't take effect from project or local settings."
       }
     ],
+    "claude-skill": [
+      {
+        "page": "https://code.claude.com/docs/en/skills",
+        "passage": "argument-hint is the hint shown during autocomplete to indicate expected arguments, and $ARGUMENTS holds all arguments passed when the skill is invoked."
+      },
+      {
+        "decision": "A Claude Code skill that reads $ARGUMENTS gives an argument-hint, so the person invoking it sees what to pass: check 8 of references/audit-policy.md."
+      }
+    ],
+    "codex-agent": [
+      {
+        "page": "https://learn.chatgpt.com/docs/agent-configuration/subagents",
+        "passage": "A project's custom agents are TOML files under .codex/agents that must define name, description, and developer_instructions, and sandbox_mode, approval_policy, model_provider, and mcp_servers in such a file don't override the parent configuration."
+      }
+    ],
+    "codex-hook": [
+      {
+        "page": "https://learn.chatgpt.com/docs/hooks",
+        "passage": "Codex loads a trusted project's hooks from .codex/hooks.json or the [hooks] tables of .codex/config.toml, merging both with a warning, under the events PreToolUse, PermissionRequest, PostToolUse, PreCompact, PostCompact, UserPromptSubmit, SubagentStop, Stop, Interrupt, SessionStart, SubagentStart, and SessionEnd, and a hook without a timeout runs up to 600 seconds, or 1 second on SessionEnd and Interrupt."
+      }
+    ],
+    "codex-rule": [
+      {
+        "page": "https://learn.chatgpt.com/docs/agent-configuration/rules",
+        "passage": "Project rules under .codex/rules are Starlark prefix_rule calls whose non-empty pattern names a command prefix and whose decision, allow by default, is allow, prompt, or forbidden, where allow runs the command outside the sandbox without prompting; they load only when the project's .codex layer is trusted."
+      }
+    ],
+    "codex-skill": [
+      {
+        "page": "https://learn.chatgpt.com/docs/build-skills",
+        "passage": "Codex scans .agents/skills in a repository, and a skill's agents/openai.yaml sets policy.allow_implicit_invocation, true by default, to false so Codex does not invoke the skill implicitly from a prompt."
+      },
+      {
+        "decision": "A skill under .agents/skills that stands for one under .claude/skills carries its description, so every runtime chooses it on the same words: check 8 of references/audit-policy.md."
+      }
+    ],
     "collision": [
       {
         "decision": "A skill or custom agent named code-review collides with Copilot's built-in agent, and an unmarked AGENTS.md or copilot-instructions.md is one the generator refuses to overwrite: checks 8 and 11 of references/audit-policy.md."
@@ -61,6 +109,10 @@
       {
         "page": "https://docs.github.com/en/copilot/reference/custom-agents-configuration",
         "passage": "A custom agent is a .agent.md or .md file whose frontmatter requires a description, whose target is vscode or github-copilot, and whose tools list enables every tool when unset and none when empty."
+      },
+      {
+        "page": "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/create-custom-agents-for-cli",
+        "passage": "Copilot CLI reads a repository's custom agents from .github/agents and personal ones from ~/.copilot/agents."
       }
     ],
     "copilot-config": [
@@ -103,6 +155,10 @@
       {
         "page": "https://docs.github.com/en/copilot/reference/custom-instructions-support",
         "passage": "Each Copilot surface reads its own set of instruction files: .github/copilot-instructions.md, .github/instructions/*.instructions.md, and agent instructions such as AGENTS.md, CLAUDE.md, and GEMINI.md."
+      },
+      {
+        "page": "https://learn.chatgpt.com/docs/hooks",
+        "passage": "Besides .codex/config.toml, a trusted project's .codex holds hooks.json, custom agents as TOML files under agents, and Starlark rules under rules."
       }
     ],
     "layering": [
