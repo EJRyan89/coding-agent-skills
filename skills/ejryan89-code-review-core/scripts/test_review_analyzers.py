@@ -200,8 +200,37 @@ class InventoryTests(unittest.TestCase):
         result = inventory(self.root, paths)
         self.assertEqual(["ruff"], tool_names(result), "a broken pyproject.toml or package.json names no analyzer")
         self.assertEqual(
-            [(".editorconfig", UNREAD), ("Broken.csproj", UNREAD), ("Entities.props", UNREAD), ("ruff.toml", UNREAD)],
+            [
+                (".editorconfig", UNREAD),
+                ("Broken.csproj", UNREAD),
+                ("Entities.props", UNREAD),
+                ("package.json", UNREAD),
+                ("pyproject.toml", UNREAD),
+                ("ruff.toml", UNREAD),
+            ],
             [(entry["file"], entry["setting"]) for entry in result["settings"]],
+        )
+
+    def test_content_any_parser_raises_on_is_listed_unread_and_the_other_files_still_read(self) -> None:
+        deep_array, overlong = "[" * 100_000 + "]" * 100_000, "9" * (sys.get_int_max_str_digits() + 1)
+        paths = self.write(
+            {
+                "a/ruff.toml": f"select = {deep_array}\n",
+                "b/.ruff.toml": f"line-length = {overlong}\n",
+                "c/pyproject.toml": f"[tool.ruff]\nselect = {deep_array}\n",
+                "d/pyproject.toml": f"[tool.mypy]\nlimit = {overlong}\n",
+                "e/package.json": '{"devDependencies": {"eslint": ' + deep_array + "}}",
+                "f/package.json": '{"devDependencies": {"eslint": ' + overlong + "}}",
+                "g/package.json": '{"devDependencies": {"eslint-plugin-\\ud800": "1", "eslint": "1"}}',
+                "h/ruff.toml": 'select = ["E"]\n',
+            }
+        )
+        result = inventory(self.root, paths)
+        self.assertEqual({"ruff": ["a/ruff.toml", "b/.ruff.toml", "h/ruff.toml"]}, self.tools(result))
+        self.assertEqual(
+            [*((path, UNREAD) for path in paths[:-1]), ("h/ruff.toml", 'select = ["E"]')],
+            [(entry["file"], entry["setting"]) for entry in result["settings"]],
+            "a lone surrogate, which no UTF-8 file holds, leaves a package.json unread",
         )
 
     def test_settings_are_bounded(self) -> None:
@@ -474,7 +503,7 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(["[flake8] extend-select = B"], self.settings(result, "tox.ini"))
         self.assertEqual([], self.settings(result, "lib/.flake8"), "a .flake8 names flake8 even without the section")
         self.assertEqual(
-            [("bad/.flake8", UNREAD)],
+            [("bad/.flake8", UNREAD), ("bad/setup.cfg", UNREAD), ("bad/tox.ini", UNREAD)],
             [(entry["file"], entry["setting"]) for entry in result["settings"] if entry["file"].startswith("bad/")],
         )
 
@@ -569,21 +598,8 @@ class InventoryTests(unittest.TestCase):
         )
         result = inventory(self.root, [*paths, "missing/.editorconfig", "missing/setup.cfg"])
         self.assertEqual(
-            [
-                (path, UNREAD)
-                for path in (
-                    ".editorconfig",
-                    "a/App.csproj",
-                    "b/team.globalconfig",
-                    "c/.shellcheckrc",
-                    "d/ruff.toml",
-                    "e/.ruff.toml",
-                    "f/.flake8",
-                    "missing/.editorconfig",
-                )
-            ],
+            [(path, UNREAD) for path in (*paths, "missing/.editorconfig", "missing/setup.cfg")],
             [(entry["file"], entry["setting"]) for entry in result["settings"]],
-            "files that may configure no analyzer at all are not listed when they cannot be read",
         )
         # A file whose name alone names its tool still names it, as when it cannot be parsed, so a reviewer can
         # report that tool's coverage. A Windows-1252 comment once hid ShellCheck entirely.

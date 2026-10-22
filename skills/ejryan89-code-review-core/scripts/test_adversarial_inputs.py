@@ -114,6 +114,9 @@ def files(entries: dict[str, bytes]) -> Entries:
 
 
 BASE: Entries = files({"app/service.py": b"def total(items):\n    return sum(items)\n"})
+UNREAD = "(present, but could not be parsed; read the file for its settings)"
+DEEP_ARRAY = b"[" * 100_000 + b"]" * 100_000  # nested far past the interpreter's recursion limit
+OVERLONG_INTEGER = b"9" * (sys.get_int_max_str_digits() + 1)  # past the interpreter's int-to-string digit limit
 
 
 class ScratchGitHub(GitHubClient):
@@ -699,12 +702,11 @@ class AnalyzerInventoryTests(AdversarialFixture):
         self.pull_request({**BASE, **files({path: text.encode("utf-8") for path, text in project.items()})})
         ready = self.prepare()
         analyzers = json.loads((ready["run"] / "work" / "analyzers.json").read_text(encoding="utf-8"))
-        unread = "(present, but could not be parsed; read the file for its settings)"
         self.assertEqual(
             [
-                ("src/App/App.csproj", unread),
+                ("src/App/App.csproj", UNREAD),
                 ("src/Clean.props", "<AnalysisLevel>latest</AnalysisLevel>"),
-                ("src/Expanding.props", unread),
+                ("src/Expanding.props", UNREAD),
             ],
             [(entry["file"], entry["setting"]) for entry in analyzers["settings"]],
         )
@@ -712,6 +714,75 @@ class AnalyzerInventoryTests(AdversarialFixture):
         listed = json.dumps(analyzers) + self.prompts(ready)
         self.assertNotIn("expanded-entity</AnalysisLevel>", listed)
         self.assertNotIn("read-from-outside", listed)
+
+    def inventoried(self, head: dict[str, bytes]) -> tuple[dict[str, list[str]], list[tuple[str, str]]]:
+        """Prepare a pull request whose head adds `head` and a clean ruff.toml, and return the inventory's tools and
+        settings; `prepare` returning at all means the run carried on past every file."""
+        self.pull_request({**BASE, **files({**head, "clean/ruff.toml": b'select = ["E"]\n'})})
+        analyzers = json.loads((self.prepare()["run"] / "work" / "analyzers.json").read_text(encoding="utf-8"))
+        self.assertIn(("clean/ruff.toml", 'select = ["E"]'), [(e["file"], e["setting"]) for e in analyzers["settings"]])
+        tools = {entry["tool"]: entry["files"] for entry in analyzers["tools"] if entry["tool"] != "ruff"}
+        settings = [(e["file"], e["setting"]) for e in analyzers["settings"] if e["file"] != "clean/ruff.toml"]
+        return tools, settings
+
+    def test_toml_nested_past_the_recursion_limit_or_holding_an_overlong_integer_is_listed_unread(self) -> None:
+        tools, settings = self.inventoried(
+            {
+                "a/ruff.toml": b"select = " + DEEP_ARRAY + b"\n",
+                "b/.ruff.toml": b"line-length = " + OVERLONG_INTEGER + b"\n",
+                "c/pyproject.toml": b"[tool.mypy]\nx = " + b"{a = " * 100_000 + b"1" + b"}" * 100_000 + b"\n",
+                "d/pyproject.toml": b"[tool.pylint]\nx = " + OVERLONG_INTEGER + b"\n",
+            }
+        )
+        self.assertEqual({}, tools, "a pyproject.toml that cannot be parsed names no analyzer")
+        self.assertEqual(
+            [(path, UNREAD) for path in ("a/ruff.toml", "b/.ruff.toml", "c/pyproject.toml", "d/pyproject.toml")],
+            settings,
+        )
+
+    def test_package_json_nested_past_the_recursion_limit_an_overlong_integer_or_a_lone_surrogate_is_listed_unread(
+        self,
+    ) -> None:
+        tools, settings = self.inventoried(
+            {
+                "a/package.json": b'{"devDependencies": {"eslint": "1"}, "x": ' + DEEP_ARRAY + b"}",
+                "b/package.json": b'{"devDependencies": {"eslint": "1"}, "x": ' + OVERLONG_INTEGER + b"}",
+                "c/package.json": b'{"devDependencies": {"eslint-plugin-\\ud800": "1", "eslint": "1"}}',
+            }
+        )
+        self.assertEqual({}, tools, "a package.json that cannot be parsed names no analyzer")
+        self.assertEqual([(path, UNREAD) for path in ("a/package.json", "b/package.json", "c/package.json")], settings)
+
+    def test_ini_files_configparser_refuses_or_that_are_not_utf8_are_listed_unread(self) -> None:
+        tools, settings = self.inventoried(
+            {
+                "a/setup.cfg": b"select = E\n[flake8]\nselect = W\n",
+                "b/tox.ini": b"[flake8\nselect = E\n",
+                "c/.flake8": b"[flake8]\nselect = \x80\n",
+            }
+        )
+        self.assertEqual({"flake8": ["c/.flake8"]}, tools, "only a file whose name names its tool names it unread")
+        self.assertEqual([(path, UNREAD) for path in ("a/setup.cfg", "b/tox.ini", "c/.flake8")], settings)
+
+    def test_editorconfig_and_globalconfig_lines_that_are_not_settings_or_not_utf8_are_listed_unread(self) -> None:
+        tools, settings = self.inventoried(
+            {
+                ".editorconfig": b"[*.cs]\ndotnet_diagnostic.CA2000.severity = none\nnot a setting\n",
+                "build/team.globalconfig": b"is_global = true\ndotnet_diagnostic.CA1000.severity = \x80\n",
+            }
+        )
+        self.assertEqual({}, tools)
+        self.assertEqual([(".editorconfig", UNREAD), ("build/team.globalconfig", UNREAD)], settings)
+
+    def test_shellcheckrc_directives_stay_bounded_and_one_that_is_not_utf8_is_listed_unread(self) -> None:
+        directives = b"".join(b"disable=SC%04d\n" % index for index in range(1_000))
+        tools, settings = self.inventoried({"a/.shellcheckrc": b"disable=\x80\n", "z/.shellcheckrc": directives})
+        self.assertEqual({"ShellCheck": ["a/.shellcheckrc", "z/.shellcheckrc"]}, tools)
+        self.assertEqual(
+            [("a/.shellcheckrc", UNREAD), *(("z/.shellcheckrc", f"disable=SC{index:04d}") for index in range(398))],
+            settings,
+            "the inventory lists 400 settings at most, the clean ruff.toml's among them",
+        )
 
 
 class DocumentExtractionTests(AdversarialFixture):
