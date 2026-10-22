@@ -67,6 +67,10 @@ suite, and so does `--full`, which the workflow passes on a push. Markdown under
 skill and agent behavior, not documentation. `DOCUMENTATION_FILES` and `DOCUMENTATION_DIRECTORIES` in
 `tests/run_validation.py` name only files no suite executes.
 
+A test that holds a document's promise, such as a status line, an error line, or a listed construct, takes its
+expected wording from that document, or from the one constant the code and the document both use, never from a copy
+restated in the test, so the test cannot pin a change the document does not make.
+
 Run the suite in full locally only when the change's reach warrants it, such as a validation policy or the runner.
 When a leg fails in continuous integration, reproduce that leg with
 `python -B tests/run_validation.py --shard <index>/<count>`, adding `--full` for a push, schedule, or dispatch leg,
