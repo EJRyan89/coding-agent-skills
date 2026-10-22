@@ -12,7 +12,8 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 import frontmatter
-from agent_skills import CODEX_METADATA, MAX_DESCRIPTION
+from agent_skills import CODEX_METADATA as CODEX_METADATA
+from agent_skills import MAX_DESCRIPTION as MAX_DESCRIPTION
 from markdown_sections import FENCE_LANGUAGES, Fence, find_fences
 from suite_names import is_suite_name
 
