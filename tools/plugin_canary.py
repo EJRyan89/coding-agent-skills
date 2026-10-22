@@ -7,8 +7,9 @@ Usage:
 It makes a fresh home under the temporary directory, as tools/runtime_canary.py does, and assembles into it, with
 tools/plugin_build.py, this checkout's plugins and the plugin of the fixture source in tests/fixtures/runtime-canary.
 It writes a marketplace beside them and, with CLAUDE_CONFIG_DIR set to a folder of the home, so nothing reaches the
-user's own configuration, validates each plugin, adds the marketplace, installs each plugin, and reads what Claude Code
-installed with `claude plugin list --json` and `claude plugin details`. None of that starts a model.
+user's own configuration, validates each plugin, adds the marketplace, installs each plugin, giving each option its
+manifest declares a folder of the home, and reads what Claude Code installed with `claude plugin list --json` and
+`claude plugin details`. None of that starts a model.
 
 Unless --discovery-only is given, it then starts Claude Code three times, signed in as the user is, with the installed
 copies loaded through --plugin-dir for that session alone and project settings only, as the runtime canary does:
@@ -98,6 +99,8 @@ from tools.runtime_canary import (
 
 MARKETPLACE = "canary"
 CONFIG = "claude-config"
+# The folder of the home holding a folder for each option a plugin declares, as its value at install.
+OPTIONS = "options"
 GUARD_MARKER = "PLUGIN-CANARY-OUTSIDE"
 # The run the reviewer works in with every hook off, its one role, and the settings that turn the hooks off.
 UNGUARDED_RUN = f"{RUN_PREFIX}unguarded"
@@ -181,6 +184,18 @@ def expected(plugin: plugin_build.Plugin) -> dict[str, set[str]]:
     return {"skill": set(plugin.skills), "agent": set(plugin.agents), "hook": set(hooks)}
 
 
+def option_values(home: Path, plugin: plugin_build.Plugin) -> list[str]:
+    """The --config arguments giving each option the plugin's manifest declares a new folder of the home, as
+    `claude plugin install` takes them: a required option left unset would stop the install."""
+    declared = json.loads(plugin.files[skill_menu.PLUGIN_MANIFEST]).get("userConfig", {})
+    arguments: list[str] = []
+    for name in sorted(declared):
+        folder = home / OPTIONS / name
+        folder.mkdir(parents=True, exist_ok=True)
+        arguments += ["--config", f"{name}={folder}"]
+    return arguments
+
+
 def install(session: Session, executable: str, plugins: list[plugin_build.Plugin]) -> Iterator[str]:
     """Validate, install, and list each plugin in the throwaway configuration; the installed copies' paths are yielded
     last, as one `PATHS` line of JSON, for the sessions that load them."""
@@ -206,7 +221,10 @@ def install(session: Session, executable: str, plugins: list[plugin_build.Plugin
         result = added
         if added.returncode == 0 and not added.error:
             result = session.runner(
-                [executable, "plugin", "install", identifier], session.home, session.config, session.timeout
+                [executable, "plugin", "install", identifier, *option_values(session.home, plugin)],
+                session.home,
+                session.config,
+                session.timeout,
             )
         if result.returncode != 0 or result.error:
             yield f"INSTALL_FAILED claude {plugin.name} {quote(last_line(result))}"

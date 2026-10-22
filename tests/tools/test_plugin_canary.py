@@ -168,6 +168,15 @@ def test_the_plugins_are_built_validated_installed_and_listed_in_the_throwaway_c
     assert not any(canary.failed(line) for line in lines)
     paths = json.loads(lines[-1].removeprefix("PATHS "))
     assert paths["runtime-canary"] == str(tmp_path / "cache" / "runtime-canary")
+    # A plugin with a required option is installed with a value for it: a folder of the throwaway home.
+    installs = [arguments[3:] for arguments, _ in runner.calls if arguments[1:3] == ["plugin", "install"]]
+    root = tmp_path / "options" / "repos_root"
+    assert installs == [
+        ["coding-agent-skills@canary", "--config", f"repos_root={root}"],
+        ["coding-agent-skills-dotnet@canary"],
+        ["runtime-canary@canary"],
+    ]
+    assert root.is_dir()
     # Every command reads and writes the throwaway configuration, never the user's.
     assert {environment["CLAUDE_CONFIG_DIR"] for _, environment in runner.calls} == {str(tmp_path / canary.CONFIG)}
 

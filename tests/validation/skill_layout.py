@@ -495,7 +495,17 @@ PLUGIN_DOC = '"Validation" in docs/adding-a-skill.md'
 # What a template token becomes in a plugin, and where a hook finds the script the deployed agent's hook names under
 # the home, pinned here rather than read from tools/plugin_build.py, so a change to the tool's answers fails this
 # policy until it is made here too.
-PLUGIN_ANSWERS = {b"{{PYTHON}}": b"python"}
+PLUGIN_ANSWERS = {
+    b"{{PYTHON}}": b"python",
+    b"{{REPOS_ROOT}}": b"${user_config.repos_root}",
+    b"{{REPO_CLEANUP_REGENERABLE}}": b"",
+    b"{{REPO_CLEANUP_PROTECTED}}": b"",
+}
+# Claude Code substitutes a plugin option only below a file's frontmatter, so a skill's frontmatter names it in words.
+PLUGIN_FRONTMATTER_ANSWERS = {b"{{REPOS_ROOT}}": b"your repositories root"}
+PLUGIN_FRONTMATTER = re.compile(rb"\A---[ \t\r]*\n.*?^---[ \t\r]*$", re.DOTALL | re.MULTILINE)
+# The plugin option a skill carrying its placeholder needs its plugin's manifest to declare.
+PLUGIN_OPTION_PLACEHOLDERS = {"repos_root": b"${user_config.repos_root}"}
 PLUGIN_HOOK_PATHS = {
     "os.path.expanduser('~/.claude/skills/ejryan89-code-review-core/scripts/review_guard.py')": (
         "os.path.join(os.environ['CLAUDE_PLUGIN_ROOT'], 'skills', 'ejryan89-code-review-core', 'scripts', "
@@ -516,7 +526,14 @@ def _plugin_source(root: Path, path: str) -> tuple[Path, str] | str:
     return "comes from no skill file or agent a deployment ships"
 
 
-def _answered(content: bytes) -> bytes:
+def _answered(content: bytes, *, markdown: bool = False) -> bytes:
+    """The source's bytes with the pinned answers, and in a Markdown file's frontmatter the pinned words first."""
+    head = PLUGIN_FRONTMATTER.match(content) if markdown else None
+    if head is not None:
+        front = head.group(0)
+        for token, answer in PLUGIN_FRONTMATTER_ANSWERS.items():
+            front = front.replace(token, answer)
+        content = front + content[head.end() :]
     for token, answer in PLUGIN_ANSWERS.items():
         content = content.replace(token, answer)
     return content
@@ -557,8 +574,15 @@ def _hook_problems(name: str, hooks: bytes, declared: str) -> list[str]:
     return found
 
 
-def _manifest_problems(root: Path, name: str, manifest: bytes) -> list[str]:
-    """What a plugin's manifest holds but its marketplace entry, its name, and a version do not."""
+def _manifest_problems(root: Path, name: str, files: Mapping[str, bytes]) -> list[str]:
+    """What a plugin's manifest holds but its marketplace entry, its name, a version, and the userConfig declaring each
+    plugin option a skill it carries reads do not."""
+    manifest = files.get(PLUGIN_MANIFEST, b"")
+    options = {
+        option: skill_menu.PLUGIN_OPTIONS.get(option)
+        for option, placeholder in PLUGIN_OPTION_PLACEHOLDERS.items()
+        if any(path.endswith("/SKILL.md") and placeholder in content for path, content in files.items())
+    }
     catalogue = json.loads((root / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
     entry = next((entry for entry in catalogue.get("plugins", []) if entry.get("name") == name), None)
     try:
@@ -568,7 +592,15 @@ def _manifest_problems(root: Path, name: str, manifest: bytes) -> list[str]:
     if entry is None or not isinstance(document, dict) or not isinstance(document.get("version"), str):
         return [f"plugin {name}: {PLUGIN_MANIFEST} is no manifest of a plugin the marketplace lists"]
     expected = {**{key: value for key, value in entry.items() if key != "source"}, "version": document["version"]}
-    return [] if document == expected else [f"plugin {name}: {PLUGIN_MANIFEST} differs from its marketplace entry"]
+    if options:
+        expected["userConfig"] = options
+    if document == expected:
+        return []
+    if {key: value for key, value in document.items() if key != "userConfig"} == {
+        key: value for key, value in expected.items() if key != "userConfig"
+    }:
+        return [f"plugin {name}: {PLUGIN_MANIFEST} must declare userConfig for {sorted(options) or 'no option'}"]
+    return [f"plugin {name}: {PLUGIN_MANIFEST} differs from its marketplace entry"]
 
 
 def plugin_tree_problems(root: Path, plugins: Mapping[str, Mapping[str, bytes]]) -> list[str]:
@@ -597,7 +629,7 @@ def plugin_tree_problems(root: Path, plugins: Mapping[str, Mapping[str, bytes]])
                 continue
             source, skill = origin
             carried.add(skill)
-            expected = _answered(source.read_bytes())
+            expected = _answered(source.read_bytes(), markdown=path.endswith(".md"))
             if not skill:
                 kept, hooks = _without_hooks(expected.decode("utf-8"))
                 expected, declared = kept.encode("utf-8"), f"{declared} {hooks}"
@@ -608,7 +640,7 @@ def plugin_tree_problems(root: Path, plugins: Mapping[str, Mapping[str, bytes]])
                 found.append(f"plugin {name}: {path} keeps a template token")
             elif content != expected:
                 found.append(f"plugin {name}: {path} differs from {source.relative_to(root).as_posix()}")
-        found += _manifest_problems(root, name, files.get(PLUGIN_MANIFEST, b""))
+        found += _manifest_problems(root, name, files)
         if PLUGIN_HOOKS in files:
             found += _hook_problems(name, files[PLUGIN_HOOKS], declared)
         elif declared.strip():
@@ -914,14 +946,32 @@ class SkillLayoutPolicies(unittest.TestCase):
         # The answers are pinned against the policy's own literals, and the clone-bound update skill against a name:
         # a plugin install has no clone, so no plugin may carry the skill that updates one. The code-review skills
         # are carried with their reviewer, whose guard the plugin's hooks file runs.
-        self.assertEqual({"PYTHON": "python"}, skill_menu.PLUGIN_VALUES)
+        self.assertEqual(
+            {
+                "PYTHON": "python",
+                "REPOS_ROOT": "${user_config.repos_root}",
+                "REPO_CLEANUP_REGENERABLE": "",
+                "REPO_CLEANUP_PROTECTED": "",
+            },
+            skill_menu.PLUGIN_VALUES,
+        )
+        # An installed plugin's session was seen substituting a stored option in a skill's body but not its
+        # description, so the root is a required option and the frontmatter names it in words.
+        self.assertEqual({"REPOS_ROOT": "your repositories root"}, skill_menu.PLUGIN_FRONTMATTER_VALUES)
+        self.assertEqual(
+            {"repos_root": {"type": "directory", "title": "Repositories root", "required": True}},
+            {
+                key: {field: value for field, value in option.items() if field != "description"}
+                for key, option in skill_menu.PLUGIN_OPTIONS.items()
+            },
+        )
         source = plugin_build.load_source(REPOSITORY_ROOT)
         catalogue = plugin_build.load_catalogue(REPOSITORY_ROOT)
         assembly = plugin_build.assemble(source, catalogue, readme=plugin_build.load_readme(REPOSITORY_ROOT))
         carried = {skill for plugin in assembly.plugins for skill in plugin.skills}
         self.assertNotIn("update-coding-agent-skills", carried)
         self.assertIn("update-coding-agent-skills", assembly.left_out)
-        self.assertLessEqual({"review-prs", "ejryan89-code-review-core"}, carried)
+        self.assertLessEqual({"review-prs", "ejryan89-code-review-core", "repo-cleanup"}, carried)
         plugins = {plugin.name: plugin.files for plugin in assembly.plugins}
         self.assertIn(PLUGIN_HOOKS, plugins["coding-agent-skills"])
         self.assertEqual([], plugin_tree_problems(REPOSITORY_ROOT, plugins), PLUGIN_DOC)

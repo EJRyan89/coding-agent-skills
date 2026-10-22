@@ -20,7 +20,9 @@ ejryan89-skill-core's skill_menu, so audit-skill's script names the plugins that
 
 Each plugin is described by its entry in the source's marketplace file, .claude-plugin/marketplace.json, which names
 every plugin the source makes and nothing else. Its manifest, .claude-plugin/plugin.json, is that entry without its
-source, with the plugin's name and --version (0.0.0-dev unless given; a release passes its tag without the `v`).
+source, with the plugin's name and --version (0.0.0-dev unless given; a release passes its tag without the `v`),
+and, when a variable its skills take is answered by a plugin option, the userConfig declaring that option. Claude
+Code substitutes an option only below a file's frontmatter, so the frontmatter names it in words instead.
 Claude Code namespaces a plugin's agents under its name, so a skill's backticked mention of an agent the plugin
 carries names it as `<plugin>:<agent>`. A plugin agent's own hooks are ignored, so each agent's hooks move into the
 plugin's hooks/hooks.json, as tools/plugin_agents.py describes. The source's .claude-plugin/README.md, when it has one,
@@ -54,9 +56,18 @@ from pathlib import Path, PurePosixPath
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import frontmatter
 from console import run_main
 from flat_text import flat_text
-from skill_menu import PLUGIN_HOOKS, PLUGIN_MANIFEST, PLUGIN_MARKETPLACE, PLUGIN_VALUES, plugin_plan
+from skill_menu import (
+    PLUGIN_FRONTMATTER_VALUES,
+    PLUGIN_HOOKS,
+    PLUGIN_MANIFEST,
+    PLUGIN_MARKETPLACE,
+    PLUGIN_OPTIONS,
+    PLUGIN_VALUES,
+    plugin_plan,
+)
 from skill_roots import skills_directory_holding
 
 from deployer import source as deploy_source
@@ -72,6 +83,8 @@ ARCHIVE_MODE = 0o100644 << 16
 MARKETPLACE = Path(PLUGIN_MARKETPLACE)
 README = Path(".claude-plugin") / "README.md"
 DEVELOPMENT_VERSION = "0.0.0-dev"
+# A plugin option as Claude Code substitutes it in a skill or agent file.
+USER_OPTION = re.compile(r"\$\{user_config\.([A-Za-z0-9_]+)\}")
 
 
 class BuildError(Exception):
@@ -125,18 +138,49 @@ def load_catalogue(directory: Path) -> dict[str, dict[str, object]]:
 
 def render(logical: str, content: bytes, variables: list[str]) -> bytes:
     """A file with each variable it may take in its plugin answer, as the deployer substitutes only a skill's declared
-    variables and only in the files whose suffix it knows."""
-    if Path(logical).suffix.casefold() not in SUFFIX_CONTEXT or not variables:
+    variables and only in the files whose suffix it knows. A Markdown file's frontmatter takes the words
+    PLUGIN_FRONTMATTER_VALUES gives a plugin option, which Claude Code substitutes only below it."""
+    suffix = Path(logical).suffix.casefold()
+    if suffix not in SUFFIX_CONTEXT or not variables:
         return content
     try:
         text = content.decode("utf-8")
     except UnicodeDecodeError:
         return content
 
-    def answer(match: re.Match[str]) -> str:
-        return PLUGIN_VALUES[match.group(1)] if match.group(1) in variables else match.group(0)
+    def answered(part: str, values: Mapping[str, str]) -> str:
+        return TOKEN.sub(lambda match: values[match.group(1)] if match.group(1) in variables else match.group(0), part)
 
-    return TOKEN.sub(answer, text).encode("utf-8")
+    lines = text.split("\n")
+    try:
+        head = frontmatter.split(lines) if suffix == ".md" else None
+    except frontmatter.FrontmatterError:
+        head = None
+    if head is None:
+        return answered(text, PLUGIN_VALUES).encode("utf-8")
+    end = sum(len(line) + 1 for line in lines[: head[1]])
+    front = answered(text[:end], {**PLUGIN_VALUES, **PLUGIN_FRONTMATTER_VALUES})
+    return (front + answered(text[end:], PLUGIN_VALUES)).encode("utf-8")
+
+
+def plugin_options(source: deploy_source.Source, plugin: Plugin) -> dict[str, dict[str, object]]:
+    """The userConfig a plugin's manifest declares: each plugin option the answer to a variable its skills declare or
+    its agents hold reads, by name. Not read from the built files, whose scripts may name an option as text."""
+    variables = {variable for skill in plugin.skills for variable in source.skills[skill].required_vars}
+    for agent in plugin.agents:
+        variables.update(TOKEN.findall(source.agents[agent].read_text(encoding="utf-8")))
+    names = sorted(
+        {
+            name
+            for variable in variables
+            if variable in PLUGIN_VALUES
+            for name in USER_OPTION.findall(PLUGIN_VALUES[variable])
+        }
+    )
+    unknown = [name for name in names if name not in PLUGIN_OPTIONS]
+    if unknown:
+        raise BuildError(f"no plugin option is declared for {', '.join(unknown)}")
+    return {name: PLUGIN_OPTIONS[name] for name in names}
 
 
 def leftover_tokens(files: Mapping[str, bytes]) -> list[str]:
@@ -188,6 +232,9 @@ def _plugin(
                 rendered = namespaced(rendered, name, plugin.agents)
             plugin.files[f"skills/{skill}/{relative}"] = rendered
     manifest = {"name": name, "version": version, **{key: value for key, value in entry.items() if key != "source"}}
+    options = plugin_options(source, plugin)
+    if options:
+        manifest["userConfig"] = options
     plugin.files[PLUGIN_MANIFEST] = (json.dumps(manifest, indent=2) + "\n").encode("utf-8")
     leftover = leftover_tokens(plugin.files)
     if leftover:

@@ -29,8 +29,28 @@ from typing import Protocol
 
 # What each template value becomes in a plugin, which has no deployer to render it. A plugin is one tree for every
 # platform, so the interpreter is the command the deployer renders on Windows, and the plugin's README states that it
-# must start Python. A value missing here has no plugin answer, and a skill that takes one stays out of every plugin.
-PLUGIN_VALUES: dict[str, str] = {"PYTHON": "python"}
+# must start Python. The repositories root is the plugin option the user sets at install, which Claude Code
+# substitutes as typed, and repo-cleanup's optional additions are none, as a deployment's are by default. A value
+# missing here has no plugin answer, and a skill that takes one stays out of every plugin.
+PLUGIN_VALUES: dict[str, str] = {
+    "PYTHON": "python",
+    "REPOS_ROOT": "${user_config.repos_root}",
+    "REPO_CLEANUP_REGENERABLE": "",
+    "REPO_CLEANUP_PROTECTED": "",
+}
+# Each plugin option a plugin value reads, as the manifest's userConfig of a plugin whose skills take it declares it.
+PLUGIN_OPTIONS: dict[str, dict[str, object]] = {
+    "repos_root": {
+        "type": "directory",
+        "title": "Repositories root",
+        "description": "The absolute path of the folder holding your git repositories, which repo-cleanup sweeps. "
+        "It is used as typed.",
+        "required": True,
+    },
+}
+# Claude Code substitutes a plugin option in a skill's body but not in its frontmatter, where the model would read
+# the placeholder itself, so a value there that is a plugin option takes these words instead.
+PLUGIN_FRONTMATTER_VALUES: dict[str, str] = {"REPOS_ROOT": "your repositories root"}
 NO_VALUE = "{skill} takes {{{{{variable}}}}}, which a plugin has no value for"
 # Why no plugin carries a skill that no menu item needs, such as a hidden skill nothing depends on.
 NO_ITEM = "no menu item needs it"

@@ -8,7 +8,7 @@
   "plugins": [
     {
       "name": "coding-agent-skills",
-      "description": "Code review, skill and agent-configuration audits, memory curation, and GitHub reports for Claude Code; the same skills the deployer installs.",
+      "description": "Code review, skill and agent-configuration audits, memory curation, GitHub reports, and repository cleanup for Claude Code; the same skills the deployer installs.",
       "author": {
         "name": "EJRyan89",
         "url": "https://github.com/EJRyan89"
