@@ -5864,6 +5864,43 @@ class BatchTests(PipelineFixture):
         self.assertEqual(0, code)
         self.assertIn("WATERMARK example/two unchanged: enumeration failed\n", out)
 
+    def test_an_unconfigured_explicit_repository_fails_only_its_repository(self) -> None:
+        # An explicit --repository the configuration lacks: its repository fails before any listing, the others list.
+        self.github.listing = [rest_pull(12, self.head, self.base)]
+        batch_path = self.root / "batch.json"
+        for extra in ([], ["--batch-size", "1"]):
+            with self.subTest(extra=extra):
+                self.github.calls.clear()
+                code, out, err = self.run_main(
+                    "enumerate",
+                    "--repository",
+                    REPOSITORY,
+                    "--repository",
+                    "example/unconfigured",
+                    *extra,
+                    "--output",
+                    str(batch_path),
+                )
+                self.assertEqual((1, ""), (code, err))
+                lines = out.splitlines()
+                self.assertIn(
+                    "REPOSITORY_FAILED example/unconfigured example/unconfigured is not a configured repository", lines
+                )
+                self.assertIn("PULL example/one#12", lines)
+                self.assertEqual(f"BATCH {batch_path}", lines[-1])
+                self.assertFalse(any("example/unconfigured" in str(call) for call in self.github.calls))
+        code, out, _ = self.run_main("advance", "--batch", str(batch_path))
+        self.assertEqual(0, code)
+        self.assertIn("WATERMARK example/unconfigured unchanged: enumeration failed\n", out)
+
+    def test_a_configured_explicit_repository_lists(self) -> None:
+        self.github.listing = [rest_pull(12, self.head, self.base)]
+        batch_path = self.root / "batch.json"
+        code, out, err = self.run_main("enumerate", "--repository", REPOSITORY, "--output", str(batch_path))
+        self.assertEqual((0, ""), (code, err))
+        self.assertNotIn("REPOSITORY_FAILED", out)
+        self.assertIn("PULL example/one#12", out.splitlines())
+
     def test_one_call_covers_several_pulls_and_each_fails_alone(self) -> None:
         self.github.pulls[13] = rest_pull(13, self.head, self.base)
         code, out, err = self.run_main(

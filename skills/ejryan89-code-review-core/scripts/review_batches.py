@@ -96,6 +96,11 @@ def enumerate_batch(
             read.extend(numbers)
             return latest_reviewed_heads(archive_root, repository, numbers)
 
+        configured: dict[str, Any] | None = config["repositories"].get(repository)
+        if configured is None:
+            # An explicit --repository need not be configured, but prepare refuses one that is not, so it fails here.
+            entry["error"] = f"{repository} is not a configured repository"
+            return entry
         try:
             recorded = recorded_watermark(state, repository)
             # A repository without a watermark starts today in UTC, so its first batch run reviews the open pull
@@ -115,7 +120,7 @@ def enumerate_batch(
             eligible = select_eligible_pulls(
                 pulls.values(), merged_since=watermark, reviewed_heads=reviewed_heads, force=force
             )
-            size = config["repositories"][repository]["batch_size"] if batch_size is None else batch_size
+            size = configured["batch_size"] if batch_size is None else batch_size
             entry["eligible"], entry["deferred"] = split_batch(eligible, size)
             entry["listing"] = {
                 "scan": "full" if recorded is None else "watermark",
