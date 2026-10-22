@@ -479,7 +479,7 @@ def linux_job_problems(workflow: str) -> list[str]:
         for install in (
             "sudo apt-get install --yes shellcheck",
             "Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION ",
-            "python -m pip install --require-hashes -r requirements-dev.txt",
+            "python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
         )
         if not any(install in script for script in scripts)
     )
@@ -753,9 +753,9 @@ def uninstall_check_problems(workflow: str) -> list[str]:
 
 
 # What mutation.yml's one job runs: its lock, which holds the development dependencies and the mutation tools, with
-# hash checking, then the gate,
-# whose own cap (DEFAULT_MINUTES in tools/mutation_gate.py) sits well inside the job's time limit.
-MUTATION_INSTALL = "python -m pip install --require-hashes -r requirements-mutation.txt"
+# hash checking and wheels only, then the gate, whose own cap (DEFAULT_MINUTES in tools/mutation_gate.py) sits well
+# inside the job's time limit.
+MUTATION_INSTALL = "python -m pip install --require-hashes --only-binary :all: -r requirements-mutation.txt"
 MUTATION_RUN = "python -B tools/mutation_gate.py"
 MUTATION_TIMEOUT_MINUTES = "60"
 

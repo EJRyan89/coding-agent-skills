@@ -80,7 +80,8 @@ def head_branch() -> str | None:
 
 class PullRequestTitlePolicies(PullRequestChecks):
     def test_the_pull_request_title_opens_with_a_known_type(self) -> None:
-        # Without a title there is nothing to judge: a local run passes, as the upgrade-notes check does without a body.
+        # Without a title there is nothing to judge, so a local run passes: this check alone has no fallback, while the
+        # upgrade-notes and silent-revert checks read the branch's commits when they have no body.
         title = self.pull_request.title_text()
         if title is None:
             return

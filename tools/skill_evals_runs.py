@@ -57,6 +57,9 @@ STATE = ".skill-evals"
 # A run that recorded no review, as the results file records it: why the record is missing may name the machine's
 # paths, which the FAIL lines keep.
 NO_REVIEW = "the run recorded no review"
+# The record each of a trigger scenario's runs writes in its folder, and the turns a request's session may take: enough
+# to read a file before choosing, few enough that a session which starts a skill stops soon after, since the start is
+# all that is judged.
 TRIGGER_RECORD = "trigger.json"
 TRIGGER_TURNS = 2
 RunKey = tuple[str, str, Index]

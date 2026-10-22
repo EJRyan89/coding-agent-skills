@@ -65,7 +65,7 @@ If your organization lets you install Claude Code plugins, you can install the s
 /plugin install coding-agent-skills@ejryan89
 ```
 
-A skill then starts as `/coding-agent-skills:<skill>`, and `coding-agent-skills-dotnet@ejryan89` adds the `dotnet` bundle. The plugin serves Claude Code alone, follows releases, and carries every skill but `repo-cleanup` and `update-coding-agent-skills`. It gives none of the deployer's rollback, ownership manifest, or backups, and the code-review reviewer's guard runs as a hook on every tool call of every session while the plugin is enabled. [Choosing a route](docs/installation.md#choosing-a-route) compares the two routes, and [The Claude Code plugin](docs/installation.md#the-claude-code-plugin) covers updating and what the plugin needs.
+A skill then starts as `/coding-agent-skills:<skill>`, and `coding-agent-skills-dotnet@ejryan89` adds the `dotnet` bundle. The plugin serves Claude Code alone, follows releases, and carries every skill but `repo-cleanup` and `update-coding-agent-skills`. It gives none of the deployer's rollback, ownership manifest, or backups, and the code-review reviewer's guard runs as a hook on every Read, Grep, Glob, Write, Edit, and Bash call of every session while the plugin is enabled. [Choosing a route](docs/installation.md#choosing-a-route) compares the two routes, and [The Claude Code plugin](docs/installation.md#the-claude-code-plugin) covers updating and what the plugin needs.
 
 ## Updating and uninstalling
 

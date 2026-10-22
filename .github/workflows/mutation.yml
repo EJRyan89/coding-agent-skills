@@ -37,7 +37,8 @@ jobs:
           cache-dependency-path: requirements-mutation.txt
 
       - name: Install the mutation tools
-        run: python -m pip install --require-hashes -r requirements-mutation.txt
+        run: |
+          python -m pip install --require-hashes --only-binary :all: -r requirements-mutation.txt
 
       # It calls no model and reads no secret; GITHUB_BASE_REF names the base it diffs against.
       - name: Run the mutation gate
