@@ -142,7 +142,8 @@ counts for nothing either: the guard's claim starts a role's read log, so a revi
 only 0, and null means the boundary was never exercised.
 
 What still comes from the user's own setup: their sign-in, user CLAUDE.md and auto-memory, as for the runtime
-canary.
+canary. Each session runs without --bare, which would skip the home's skills and agents and the sign-in, so a session
+whose init event lists no skill counts for nothing rather than being judged.
 
 Output, one fact per line. With --runs above 1, every line about one run, a TRANSCRIPT, GUARDED, NOT_COUNTED, PASS, or
 FAIL line, names it as ` run=<run>` after its model, and the lines are otherwise as they are for one run:

@@ -232,6 +232,24 @@ def test_a_probe_that_never_ran_the_installed_copy_fails(tmp_path: Path) -> None
     assert canary.failed(lines[0])
 
 
+def test_a_probe_session_that_discovered_no_skill_fails_as_a_bare_session_would(tmp_path: Path) -> None:
+    installed = tmp_path / "cache" / "runtime-canary" / "0.0.0-dev"
+    installed.mkdir(parents=True)
+    (tmp_path / STATE).mkdir()
+
+    def bare(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Completed:
+        return Completed(0, json.dumps({"type": "system", "subtype": "init", "skills": []}) + "\n", "")
+
+    lines = canary.probe(
+        canary.Session(tmp_path, bare, {}, 30), "claude", {"runtime-canary": str(installed)}, "runtime-canary"
+    )
+    assert lines[0] == (
+        f'RUNTIME claude runtime-canary:{FIXTURE_SKILL} FAILED "Claude Code discovered no skill, as a session in bare '
+        'mode does"'
+    )
+    assert canary.failed(lines[0])
+
+
 def test_the_guard_session_gives_the_reviewer_a_reviewers_task_naming_the_marker(tmp_path: Path) -> None:
     (tmp_path / STATE).mkdir()
     seen: list[list[str]] = []

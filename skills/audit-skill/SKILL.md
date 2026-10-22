@@ -115,6 +115,7 @@ Listing. While `INVOCATION` is `model`, every session in every project loads the
 - `INTERNAL_LISTED` → **MUST FIX**: add `disable-model-invocation: true`, and `user-invocable: false` when users should not start it either.
 - A skill only the user should start (it deletes, deploys, or otherwise acts outside the conversation) with `INVOCATION model` → SUGGESTION: add `disable-model-invocation: true`. First check that no other skill invokes it by name, since that needs model invocation.
 - A long description → SUGGESTION to trim it to what tells the model when to use the skill. Judge by content, not a fixed length.
+- `DESCRIPTION_LEAD <sentence>` is the description's first sentence. Claude Code and Codex both shorten descriptions when the listing passes its budget, so when it names neither what the skill does nor when to use it → SUGGESTION to front-load the key use case and trigger words.
 - `TRIGGER_SCENARIO <path> <requests> <near misses>`, printed only for a model-invocable skill in its source tree: the scenario whose run judges whether the description starts the skill. Report it in the Scope; it has no finding.
 - `NO_TRIGGER_SCENARIO <path>` → SUGGESTION: no scenario judges the description, so an edit that stops the skill starting, or starts it on a near miss, goes unnoticed. Recommend a trigger scenario at that path, requests from the description's "Use it when" clause and near misses from its neighbours', and its evaluation run whenever the description changes.
 

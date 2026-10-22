@@ -67,6 +67,13 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   running scenarios and when judging existing records with `--records`. Without `--scenario`, scenarios are selected
   in name order. `--records` holds each record to what a run's is held to: ejryan89-code-review-core's record contract, the
   version the run writes, the reviewer guard, and each reviewer's model, as the reviewer's result reports it.
+- **What a run depends on:** each session is a `claude -p` session without `--bare`, so it discovers the home's
+  skills and agents and signs in as the user does. Claude Code's
+  [headless page](https://code.claude.com/docs/en/headless) says `--bare`, which skips that discovery and the
+  subscription sign-in, will become the default for `-p`, and no option yet keeps discovery. A session whose init
+  event lists no skill therefore makes its run count for nothing with the reason that it discovered no skill, as a
+  bare session does, rather than being judged; the runtime canary and the plugin canary fail such a session with the
+  same reason, from the one check in `tools/runtime_canary.py`.
 - **What it prints** is `PASS` or `FAIL` per expectation and model, then a table. The tool's `MODELS` constant is the
   one place the models are named, and `tests/tools/test_skill_evals.py` covers the tool with a stub Claude Code and no
   model.

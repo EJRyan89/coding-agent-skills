@@ -1090,6 +1090,23 @@ class RunTests(RuntimeCanaryTestCase):
         init = json.dumps({"type": "system", "subtype": "init", "skills": 5})
         self.assertEqual((set(), []), runtime_canary.claude_stream(init))
 
+    def test_a_session_that_discovered_no_skill_fails_as_a_bare_session_would(self) -> None:
+        # --bare skips skill discovery and may become the default for claude -p; a session in it lists no skill.
+        bare = json.dumps({"type": "system", "subtype": "init", "skills": []})
+        self.assertEqual(
+            "Claude Code discovered no skill, as a session in bare mode does", runtime_canary.discovery_failure(bare)
+        )
+        listed = json.dumps({"type": "system", "subtype": "init", "skills": [FIXTURE]})
+        self.assertIsNone(runtime_canary.discovery_failure(listed))
+        self.assertIsNone(runtime_canary.discovery_failure(""))
+        runner = FakeRuntimes()
+        runner.actions["claude"] = lambda *_: Completed(0, bare + "\n", "")
+        lines = self.canary(runner, runtimes=("claude",))
+        self.assertIn(f"UNDISCOVERED claude {FIXTURE}", lines)
+        self.assertIn(
+            f'RUNTIME claude {FIXTURE} FAILED "{runtime_canary.NOTHING_DISCOVERED}" {self.kept("claude")}', lines
+        )
+
     def test_claude_discovery_and_permission_denials_come_from_its_stream(self) -> None:
         runner = FakeRuntimes()
         stream = "\n".join(

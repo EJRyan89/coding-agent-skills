@@ -2215,6 +2215,11 @@ class RunPieceTests(unittest.TestCase):
                 "haiku", completed(-1, f"{init}\n{denied}", "", timed_out=True), 60, "review-prs", missing
             ),
         )
+        bare = json.dumps({"type": "system", "subtype": "init", "skills": []})
+        self.assertEqual(
+            f"{missing}; {runtime_canary.NOTHING_DISCOVERED}",
+            skill_evals_runs.run_failure("haiku", completed(0, bare, ""), 60, "review-prs", missing),
+        )
         self.assertEqual(
             f"{missing}; Claude Code exited with code 3",
             skill_evals_runs.run_failure("haiku", completed(3, "", ""), 60, "review-prs", missing),
@@ -3217,12 +3222,15 @@ class EvaluateTests(unittest.TestCase):
             self.assertEqual(skill_evals_runs.trigger_command("claude.exe", arguments[2], cwd.name), arguments)
 
     def test_a_trigger_session_that_does_not_count_makes_its_run_count_for_nothing(self) -> None:
+        bare = StubTrigger(self, {"Audit the audit-skill skill.": "audit-skill"})
+        bare.bare = True
         cases = {
             "unlisted": (
                 StubTrigger(self, {}, listed=False),
                 "run",
                 "request 1: Claude Code did not list audit-skill",
             ),
+            "nothing discovered": (bare, "run", f"request 1: {runtime_canary.NOTHING_DISCOVERED}"),
             "other model": (
                 StubTrigger(self, {}, session="claude-sonnet-5-5"),
                 "record",
@@ -3457,6 +3465,7 @@ class StubTrigger:
         self, test: unittest.TestCase, starts: dict[str, str], listed: bool = True, session: str | None = None
     ) -> None:
         self.test, self.starts, self.listed, self.session = test, starts, listed, session
+        self.bare = False
         self.calls: list[tuple[list[str], Path, dict[str, str]]] = []
 
     def __call__(self, arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Any:
@@ -3465,7 +3474,7 @@ class StubTrigger:
             return runtime_canary.Completed(0, "2.1.291 (Claude Code)\n", "")
         self.test.assertTrue(Path(environment["TMPDIR"]).is_relative_to(cwd / skill_evals_runs.STATE))
         request, model = arguments[2], arguments[arguments.index("--model") + 1]
-        skills = ["audit-ai-config", *(["audit-skill"] if self.listed else [])]
+        skills = [] if self.bare else ["audit-ai-config", *(["audit-skill"] if self.listed else [])]
         content: list[dict[str, Any]] = [{"type": "text", "text": "On it."}]
         if request in self.starts:
             content.append(

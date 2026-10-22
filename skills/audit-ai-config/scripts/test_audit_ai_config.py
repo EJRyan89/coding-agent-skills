@@ -2252,6 +2252,12 @@ LAYERING_SCENARIOS: dict[str, tuple[dict[str, str], dict[str, Any]]] = {
         {".github/instructions/api.instructions.md": "Prefer async.\n"},
         {"runtimes": [], "surfaces": ["copilot_cli", "copilot_app"]},
     ),
+    # Copilot CLI finds modular instructions at the repository root and the working directory but not in the
+    # directories between them, so a nested .github/instructions folder is no source of the repository's own.
+    "nested_path_instructions": (
+        {"CLAUDE.md": "# CLAUDE.md\n", "sub/.github/instructions/api.instructions.md": "Prefer async.\n"},
+        {"runtimes": [], "surfaces": ["copilot_cli", "copilot_app"]},
+    ),
     "claude_only": (
         {"CLAUDE.md": "# CLAUDE.md\n"},
         {"runtimes": ["codex"], "surfaces": EVERY_SURFACE},
@@ -2490,6 +2496,23 @@ LAYERING_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
     ],
     "path_instructions_only": [
         ("INFO", "layering", None, "Copilot CLI/app: effective sources: .github/instructions"),
+        (
+            "WARNING",
+            "layering",
+            None,
+            "Copilot CLI/app folder trust status cannot be determined "
+            "statically — .mcp.json silently skipped in untrusted directories",
+        ),
+        (
+            "WARNING",
+            "runtime",
+            None,
+            "Copilot repository settings, organization policy, authentication, model availability, "
+            "runtime enablement, and actual operational use cannot be verified statically",
+        ),
+    ],
+    "nested_path_instructions": [
+        ("INFO", "layering", None, "Copilot CLI/app: effective sources: CLAUDE.md"),
         (
             "WARNING",
             "layering",

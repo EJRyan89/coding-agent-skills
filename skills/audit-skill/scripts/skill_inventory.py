@@ -49,9 +49,10 @@ NESTED_REFERENCE <path:line> <reference> is a Markdown file other than SKILL.md 
 skill folder that SKILL.md itself never names, so it is reached only through another reference. A path resolves
 from the naming file, or from the skill folder after ${CLAUDE_SKILL_DIR}/.
 
-Listing: DESCRIPTION gives the description's characters and ceil(characters / 4) tokens, which every session
-loads while the skill is model-invocable; INVOCATION is model, user-only (disable-model-invocation: true),
-or hidden (also user-invocable: false); INTERNAL_LISTED marks internal wording in a model-invocable skill. For a
+Listing: DESCRIPTION gives the description's characters and ceil(characters / 4) tokens, which every session loads while
+the skill is model-invocable; INVOCATION is model, user-only (disable-model-invocation: true), or hidden (also
+user-invocable: false); DESCRIPTION_LEAD <sentence> is a model-invocable description's first sentence, which a runtime
+shortening its listing keeps longest; INTERNAL_LISTED marks internal wording in a model-invocable skill. For a
 model-invocable skill in its source tree, TRIGGER_SCENARIO <path> <requests> <near misses> is each scenario.json of the
 skill's folder under TRIGGER_SCENARIOS, the source tree's evaluation scenarios, whose mode is trigger, which judges
 whether the description starts the skill, and NO_TRIGGER_SCENARIO <path> names that folder when it holds none.
@@ -157,6 +158,7 @@ import git_client
 import runtime_support
 import skill_menu
 from console import run_main
+from flat_text import flat_text
 from git_client import GitClient
 from markdown_sections import CODE_SPAN, POWERSHELL_FENCES, SHELL_FENCES, find_fences, prose_code_spans
 from suite_names import is_suite_name
@@ -259,6 +261,9 @@ GOVERNED_LIST_ITEM = re.compile(r"(?i)(?:,\s*(?:(?:or|and|nor)\s+)?|\s(?:or|and|
 SUBAGENT_PROMPT = re.compile(r"(?i)\bprompts?\b[^`\"\n]*?:\s*(`[^`\n]+`|\"[^\"\n]+\")")
 # Wording that marks a skill as internal; such a skill should not sit in the model's skill list.
 INTERNAL_WORDING = re.compile(r"(?i)\binternal\b|not intended for direct invocation|do not invoke")
+# The end of a description's first sentence: a full stop, question, or exclamation mark before the next sentence's
+# capital or the end, so an abbreviation such as "e.g." inside a sentence does not end it.
+SENTENCE_END = re.compile(r"[.!?](?=\s+[A-Z]|\s*$)")
 MCP_TOOL = re.compile(r"\bmcp__[A-Za-z0-9_-]+")
 ALLOWED_NAME = re.compile(r"[A-Za-z_][\w-]*")
 SHELL_TOOLS = ("Bash", "PowerShell")
@@ -1533,9 +1538,17 @@ def listing(document: frontmatter.Frontmatter) -> list[str]:
     user_invocable = flag("user-invocable") != "false"
     invocation = "model" if model_invocable else ("user-only" if user_invocable else "hidden")
     lines = [f"DESCRIPTION {len(text)} {-(-len(text) // 4)}", f"INVOCATION {invocation}"]
+    if model_invocable and text:
+        lines.append(f"DESCRIPTION_LEAD {description_lead(text)}")
     if model_invocable and INTERNAL_WORDING.search(text):
         lines.append("INTERNAL_LISTED")
     return lines
+
+
+def description_lead(text: str) -> str:
+    """The description's first sentence on one line: what a runtime that shortens a long listing keeps longest."""
+    end = SENTENCE_END.search(text)
+    return flat_text(text[: end.end()] if end else text)
 
 
 # --- scan -----------------------------------------------------------------------------------------

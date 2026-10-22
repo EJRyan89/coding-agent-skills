@@ -22,7 +22,7 @@ The Markdown report states its result on one line, before the SUMMARY lines:
 Exit codes:
     0  RESULT COMPLIANT
     1  RESULT ERRORS or RESULT INCONCLUSIVE, or a last line FAILED <reason>
-       (the root is not a Git repository)
+       (the root is not a Git repository, or --provenance could not read the provenance file)
     2  usage error
 """
 
