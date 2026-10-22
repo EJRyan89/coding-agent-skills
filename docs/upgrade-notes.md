@@ -17,6 +17,456 @@ An entry is a `###` heading saying what changed, followed by these fields:
 
 A pull request whose change no user meets writes `None` under its `## Upgrade note`.
 
+## v0.10.0
+
+Level: minor.
+
+### The hub guard reads a redirection before a command's name, and the `time` program's command
+
+- Level: patch, a defect fix in a contributor-facing tool with no contract change.
+- Contract: none
+- User action: none, in a clone that has not opted into the guard. In one that has, a git call after a redirection that starts its command, such as `2>/dev/null git status` or `>out git commit`, is now judged as the bare call: allowed from a worktree, and in the hub refused only when it writes the hub, where before it was refused everywhere as unreadable. A git call the `time` program starts, as in `\time git commit` or `x=1 time git commit`, is now refused in the hub where it was allowed.
+- Pull request: #1452
+
+### On Claude Code, a reviewer result the reviewer guard never claimed is refused
+
+- Level: minor, a new refusal and a new required argument to a shipped skill's command, before 1.0.0.
+- Contract: `review-prs` `check`, `review-document` `check`, `review-insights` `synthesize`. The new refusal reason, printed in `RETRY <selector> <id> <prompt file> <reason>` and `FAILED <selector> <id> <reason>`, and by `synthesize` as `FAILED <reason>`, is `the reviewer ran without its guard: the reviewer guard never claimed this role, as when hooks are off (disableAllHooks, or allowManagedHooksOnly for a plugin's hooks), the code-review-reviewer agent or its hook did not load, or another agent type ran the role; enable hooks for the code-review-reviewer agent, or prepare the review again with --inline`. For `synthesize`, the remedy reads `or follow the prompt yourself and record its result with --inline`. `synthesize` now needs `--host RUNTIME` to record a result, and takes `--inline`.
+- User action: on Claude Code, keep hooks enabled for the `code-review-reviewer` agent: no `disableAllHooks`, and for the plugin route no organization `allowManagedHooksOnly` that drops its hooks. Otherwise, review with `--inline`. Anything that calls `review_insights.py synthesize` outside the skill passes `--host`.
+- Pull request: #1451
+
+### Validation type-checks every root with mypy's strict mode, and a new root must join
+
+- Level: patch, a contributor-facing validation change with no contract change.
+- Contract: none
+- User action: none for a user who updates. A contributor now meets `mypy --strict` in every file validation type-checks, the tests and `conftest.py` included. A pull request that adds a skill's `scripts/` or another type-check root lists it under `mypy-strict` in `pyproject.toml`'s `[tool.validation]`, and its code meets strict mode from the start; validation fails until it is listed.
+- Pull request: #1450
+
+### Validation type-checks ejryan89-code-review-core and review-document with mypy's strict mode
+
+- Level: patch, a contributor-facing validation change with no contract change.
+- Contract: none
+- User action: none for a user who updates. A contributor changing `skills/ejryan89-code-review-core/scripts` or `skills/review-document/scripts` now meets `mypy --strict` there, in the skill's existing type-check job, as every other skill's `scripts/` already does.
+- Pull request: #1449
+
+### Validation type-checks the shipped and repository skills' scripts with mypy's strict mode
+
+- Level: patch, a contributor-facing validation change with no contract change.
+- Contract: none
+- User action: none for a user who updates. A contributor changing a skill's `scripts/` (every shipped and repository skill but ejryan89-code-review-core and review-document, which follow) now meets `mypy --strict` there, in that skill's existing type-check job. That means every definition fully annotated, no bare generics, no `Any` returned where a type is declared, no implicit re-export (a suite imports a name from the module that defines it, or patches `os`, not `module.os`), and no unused `type: ignore`.
+- Pull request: #1447
+
+### Claude Code users can install the skills as a plugin from the repository's marketplace
+
+- Level: minor, a second way to install that leaves the deployer and every deployed install as they were.
+- Contract: `claude plugin marketplace add EJRyan89/coding-agent-skills`, `claude plugin install coding-agent-skills@ejryan89`, `claude plugin install coding-agent-skills-dotnet@ejryan89`, and the invocation form `/coding-agent-skills:<skill>` and `/coding-agent-skills-dotnet:<skill>`
+- User action: none. A Claude Code user who wants the plugin runs `/plugin marketplace add EJRyan89/coding-agent-skills`, then `/plugin install coding-agent-skills@ejryan89`, once a release attaches the archives, and starts a skill as `/coding-agent-skills:<skill>`. The plugin carries neither `repo-cleanup` nor `update-coding-agent-skills`.
+- Pull request: #1446
+
+### Validation type-checks tools/ with mypy's strict mode
+
+- Level: patch, a contributor-facing validation change with no contract change.
+- Contract: none
+- User action: none for a user who updates. A contributor changing `tools/` now meets `mypy --strict` there, in the job `static type check (mypy --strict tools)`. That means every definition fully annotated, no bare generics, no `Any` returned where a type is declared, no implicit re-export, and no unused `type: ignore`. The ejryan89-code-review-core and review-insights scripts and the `tests/validation` modules that `tools/` imports are held to it through that run too.
+- Pull request: #1445
+
+### Validation type-checks the deployer and deploy.py with mypy's strict mode
+
+- Level: patch, a contributor-facing validation change with no contract change.
+- Contract: none
+- User action: none for a user who updates. A contributor changing `deployer/` or `deploy.py` now meets `mypy --strict` there, in a validation job of its own named `static type check (mypy --strict <root>)`. That means every definition fully annotated, no bare generics, no `Any` returned where a type is declared, no implicit re-export, and no unused `type: ignore`. `deploy.py` keeps `from __future__ import annotations`, so an annotation never runs before the version check.
+- Pull request: #1442
+
+### Validation type-checks ejryan89-skill-core with mypy's strict mode
+
+- Level: patch, a contributor-facing validation change with no contract change.
+- Contract: none
+- User action: none for a user who updates. A contributor changing `skills/ejryan89-skill-core/scripts` now meets `mypy --strict` there. That means every definition fully annotated, no bare generics, no `Any` returned where a type is declared, no implicit re-export (a suite patches `os`, not `atomic_file.os`), and no unused `type: ignore`. A helper for one platform starts with a `sys.platform` check that raises elsewhere; code the suites also run on the other platform names `unused-ignore` in its ignore. An area added to `[tool.validation]` `mypy-strict` in `pyproject.toml` never leaves it.
+- Pull request: #1440
+
+### analyze-skill-cost is renamed audit-skill, and the hidden cores are renamed ejryan89-skill-core and ejryan89-code-review-core
+
+- Level: minor. A renamed skill, which is major, carried in a minor before 1.0.0.
+- Contract: `skills/analyze-skill-cost`, `skills/audit-skill`, `skills/skill-core`, `skills/ejryan89-skill-core`, `skills/code-review-core`, `skills/ejryan89-code-review-core`, `deploy-meta/analyze-skill-cost.json`, `deploy-meta/audit-skill.json`, `skills/ejryan89-code-review-core/references/review-adapter.schema.json` (moved with its skill, unchanged), `skills/ejryan89-skill-core/scripts/pdf_tool.py` (moved with its skill, its PDF provider floors unchanged)
+- User action: run `python deploy.py --all` from the hub. The deployment moves each skill you have under an old name to its new one in one journaled step, which `--dry-run` lists under `RENAME` and the deployment under `RENAMED`:
+  - `analyze-skill-cost` to `audit-skill`, with its runtime adapter;
+  - `skill-core` to `ejryan89-skill-core`;
+  - `code-review-core` to `ejryan89-code-review-core`, with the reviewer agent's guard hook now naming that folder.
+
+A request you made for `analyze-skill-cost` carries to `audit-skill`. If you had modified one of the old skills, the update preserves it under its old name beside the new one, and its report line names the new name. An old core that a preserved skill still runs on stays with it. Carry your changes over, delete the old folder under `~/.claude/skills`, and the next deployment drops it. Start the audit as `/audit-skill <SkillName>`: `/analyze-skill-cost` no longer resolves. Update any permission rule or script you wrote for a path under `analyze-skill-cost/`, `skill-core/`, or `code-review-core/` to the new folder name.
+- Pull request: #1439
+
+### The hub guard places a git call after any prefix assignment Bash reads, subscripted ones included
+
+- Level: patch, a defect fix in a contributor-facing tool.
+- Contract: none; the guard now reads `NAME[SUBSCRIPT]=value git ...`, `NAME[SUBSCRIPT]+=value git ...`, and `NAME[SUBSCRIPT]=( ) git ...` as it reads `NAME=value git ...`, and `env` takes any `NAME=value` word.
+- User action: none, in a clone that has not opted into the guard. In one that has, a git call after a subscripted prefix assignment, such as `a[1]=x git commit -m x` in the hub, is now refused where it was allowed, and so is one after `env 'a[1]=x'`.
+- Pull request: #1437
+
+### Every skill the model may start has a trigger scenario, and a changed description owes its run
+
+- Level: patch, a contributor-facing validation policy and repository skill gate; no shipped skill changes.
+- Contract: the `trigger_scenario_problems` validation policy, which fails on a model-invocable shipped skill without a trigger scenario of at least three requests and on a trigger scenario its loader refuses, and `change-skill`'s `GATE evaluate-skill <skill> trigger` line, with `GATE evaluate-skill <skill> if-prompt` now printed only for a skill with a review scenario
+- User action: none for a user of the deployed skills. A contributor adding a model-invocable shipped skill writes its `tests/fixtures/skill-evals/<skill>/description/scenario.json`, and one changing such a skill's description runs `evaluate-skill` for it before the pull request.
+- Pull request: #1438
+
+### Argument counts and blind excepts are ratchets
+
+- Level: patch, a contributor-facing lint change with no contract change.
+- Contract: none
+- User action: none. A contributor's function takes at most the arguments `max-args` in `pyproject.toml` allows; group the ones that travel together rather than raise it. A blind except, `except Exception` or `except BaseException`, is refused, and validation counts the ones kept with `# noqa: BLE001 - <reason>` and fails past `BLIND_EXCEPT_CEILING` in `tests/validation/python_checks.py`, so catch the exceptions the code expects. A change that lowers either count lowers its ceiling and literal with it.
+- Pull request: #1436
+
+### The return, idiom, comprehension, performance, and builtins lint rules hold the Python
+
+- Level: patch, a contributor-facing lint change with no contract change.
+- Contract: none
+- User action: none. A contributor's Python meets ruff's `RET`, `PIE`, `C4`, `PERF`, and `A` rules: a list built by a loop that only appends is a comprehension or an `extend`, a dictionary whose every key takes one value is `dict.fromkeys`, a value is returned without first being named, and no variable, argument, class, or module takes a builtin's name. `python -m ruff check --fix` rewrites the findings ruff marks safe.
+- Pull request: #1435
+
+### code-review-core defines its severities, verdicts, dispositions, ledger states, and dispatch modes once, with types
+
+- Level: patch, a typing refactor with no behavior or contract change.
+- Contract: none
+- User action: none
+- Pull request: #1433
+
+### review-prs reviews a pull request over GitHub's diff limits
+
+- Level: minor, a new optional record field and new `NOTE` and `FAILED` lines, with no change asked of an existing configuration.
+- Contract: `record.review.snapshot.diff`, `review-prs` `NOTE`, `review-prs` `FAILED`
+- User action: none. A repository whose pull requests can pass the diff endpoint's limits, such as its 300 changed files, should set `checkout_path`. Without a checkout, the diff comes from GitHub's files API, which lists at most 3,000 files and leaves out the patch of a very large file diff, and such a review is `INCOMPLETE`.
+- Pull request: #1432
+
+### A damaged or hand-edited `run.json` fails with a line naming its first wrong field
+
+- Level: patch, a defect fix: a run `prepare` wrote reads as before.
+- Contract: `review-prs` `FAILED`, `review-document` `FAILED`
+- User action: none. A `FAILED <run directory> <reason>` line from `check` or `finalize`, or a `FAILED <reason>` line from `next-role`, `wait`, or `dispatch`, for a run whose `run.json` was damaged or edited, now gives as its reason `run.<field> must be <expected>, found <found>`, such as `run.roles[1].model must be a non-empty string or null, found integer 5`; prepare the review again.
+- Pull request: #1431
+
+### The hub guard reads Bash array assignments
+
+- Level: patch, a contributor-facing tool now reads a Bash shape it refused, with no contract change.
+- Contract: none
+- User action: none. In a clone that has opted into the guard, a Bash command holding `NAME=( )` or `NAME+=( )` that names git is now judged by where each git call acts, where before it was refused as unreadable.
+- Pull request: #1430
+
+### skill-core's error kinds and the deployer's plan actions and journal ops are typed vocabularies
+
+- Level: patch, a typing refactor with no behavior or contract change.
+- Contract: none
+- User action: none
+- Pull request: #1428
+
+### A walk-through sets up a new Windows machine in order and names the conditions a fresh install meets
+
+- Level: patch, a documentation addition with no contract change.
+- Contract: none
+- User action: none
+- Pull request: #1427
+
+### The pytest-style lint rules hold the suites
+
+- Level: patch, a contributor-facing lint change with no contract change.
+- Contract: none
+- User action: none. In a test function or a helper it calls, a contributor writes the forms the `PT` rules hold: one condition per `assert`, `pytest.raises` around one statement, a `parametrize` table in its documented shape, and a mock's `return_value` in place of a lambda. A unittest test case still checks with its own assertion methods, since PT009 and PT027 are not selected.
+- Pull request: #1425
+
+### The suites' helpers assert directly, and a module-level TestCase is refused
+
+- Level: patch, a contributor-facing test change with no contract change.
+- Contract: none
+- User action: none. A contributor checks in a test function, or a helper it calls, with a plain `assert` or `pytest.raises`, never through a `unittest.TestCase` made outside a class, which validation now refuses; a unittest test case keeps its own assertion methods.
+- Pull request: #1424
+
+### update-coding-agent-skills reads Partial on Codex, whose default sandbox turns off the network its fetch needs
+
+- Level: minor, a runtime-support declaration that now says what Codex's default sandbox withholds.
+- Contract: `update-coding-agent-skills` `runtime_support` `codex`
+- User action: to run the update from Codex without approving each git call, or through `codex exec`, add `[sandbox_workspace_write]` with `network_access = true` to `~/.codex/config.toml`, as "Network access" in `docs/codex-support.md` shows.
+- Pull request: #1423
+
+### On Windows, check reports a pwsh that is the packaged PowerShell's alias, and the install command names the MSI build
+
+- Level: minor, a new `check` line.
+- Contract: `deploy.py check` (the `pwsh command` line)
+- User action: if `check` reports `pwsh command` as `UNUSABLE`, run `winget uninstall --id Microsoft.PowerShell`, then `winget install --id Microsoft.PowerShell --installer-type wix`, as "PowerShell app execution alias" in `docs/codex-support.md` shows.
+- Pull request: #1423
+
+### audit-ai-config counts CLAUDE.md, GEMINI.md, and REVIEW.md as code review's instructions
+
+- Level: patch, a check corrected to what GitHub's code review reads today.
+- Contract: `audit-ai-config` `layering`
+- User action: none. A repository that failed only on the code-review `layering` `ERROR` now passes.
+- Pull request: #1423
+
+### The regression suites may use a plain assert
+
+- Level: patch, a contributor-facing lint change with no contract change.
+- Contract: none
+- User action: none. A contributor writing a test under `tests/` or in a skill's `scripts/test_*.py` checks with a plain `assert`, which pytest rewrites to show both sides when it fails, in place of a module-level `CHECK = unittest.TestCase()`; S101 still refuses an `assert` in every other module.
+- Pull request: #1422
+
+### tools/skill_evals.py is cut into modules by concern
+
+- Level: patch, an internal refactor of a contributor tool with no change to its command line, output, or files.
+- Contract: none
+- User action: none
+- Pull request: #1421
+
+### code-review-core's pipeline is cut into modules by concern and its run state is typed
+
+- Level: patch, an internal refactor with no change to any command, status line, or file.
+- Contract: none
+- User action: none
+- Pull request: #1419
+
+### code-review-core reads review records and reviewer results into typed shapes
+
+- Level: patch, an internal refactor with no change to the record or result format.
+- Contract: none
+- User action: none
+- Pull request: #1418
+
+### analyze-skill-cost and audit-ai-config name the guidance each check derives from
+
+- Level: minor, a new command, option, and status lines that add to the skills' contract without changing what was there.
+- Contract: `analyze-skill-cost` `provenance`, `PAGE`, `DECISION`, `NOT_A_CHECK`; `audit-ai-config` `--provenance`, and the JSON report's `provenance` key.
+- User action: none. Ask either skill why a finding holds to see the page and passage, or the decision, its check rests on.
+- Pull request: #1415
+
+### The deployer reads its manifest and journal into typed shapes
+
+- Level: patch, an internal refactor with no change to the manifest or journal format.
+- Contract: none
+- User action: none
+- Pull request: #1413
+
+### review-insights runs its synthesis as the guarded code-review-reviewer, in a run under the temporary directory
+
+- Level: minor, a changed meaning of two status lines and of two format fields, and a runtime support declaration narrowed on Codex and Copilot CLI.
+- Contract: `review-insights` `SYNTHESIS_PROMPT`, `review-insights` `SYNTHESIS_RESULT`, `docs/code-review-operations-contract.md` (`insights.synthesis`), and the agent `code-review-reviewer`, which `review-insights` now starts in Claude Code
+- User action: none. `report` stages the synthesis's run each time it writes a pending synthesis, so a synthesis left pending by an earlier version is staged again by the next `report`, which step 1 always runs. A `synthesis-prompt.md` an earlier version left beside a report is no longer read and can be deleted. A Claude Code session started before the update may not have the new agent description loaded, and starts the agent all the same.
+- Pull request: #1410
+
+### The hub guard's hook runs tools/hub_guard.py
+
+- Level: patch, a contributor-facing tool split by concern with no change to what the guard refuses or prints.
+- Contract: `.claude/settings.json` (its `PreToolUse` hook command now runs `python -B "$CLAUDE_PROJECT_DIR/tools/hub_guard.py"`, where it ran `tools/worktrees.py guard`)
+- User action: none in a clone that has not opted into the guard. In one that has, nothing is required: a Claude Code session started before the update keeps the old hook command, which `tools/worktrees.py guard` still answers by running the moved guard; a session started after it runs `tools/hub_guard.py`. A script that imported the guard's functions from `tools.worktrees` imports them from `tools.hub_guard`.
+- Pull request: #1408
+
+### Reviewer effort reaches Codex reviewers and the Copilot CLI host
+
+- Level: minor, a new status line in two shipped skills and a setting that now applies on two more runtimes.
+- Contract: `review-prs` `EFFORT`, `review-document` `EFFORT`
+- User action: none. A configured `reviewer_effort`, or a specialist manifest's `effort`, now sets the reasoning effort of each reviewer Codex starts, through `spawn_agent`'s `reasoning_effort`, and of the Copilot CLI host, through `--reasoning-effort`. Clear it if you set it only for the Workflow path in Claude Code.
+- Pull request: #1409
+
+### The capability the review skills lack on Codex and Copilot CLI is `fail-closed-agent-hooks`
+
+- Level: minor, a renamed capability in the deployer operation contract, carried in a minor before 1.0.0. A declaration that names the old capability is refused.
+- Contract: `fail-closed-agent-hooks`, `deploy-meta/review-document.json` (its `runtime_support`), `deploy-meta/review-insights.json` (its `runtime_support`), `deploy-meta/review-prs.json` (its `runtime_support`), `deploy-meta/update-pr-dashboard.json` (its `runtime_support`)
+- User action: none for this repository's skills. In a skill source of your own, rename `agent-hooks` to `fail-closed-agent-hooks` in each `runtime_support` declaration. Drop `agent-delegation` from a Copilot CLI declaration, since Copilot CLI now offers it. `review-insights` stays partial on Copilot CLI, which lacks `fail-closed-agent-hooks` (#1410).
+- Pull request: #1409
+
+### `CLAUDE.md` states each rule once and points at the section that holds its enforcement
+
+- Level: patch, a contributor-facing documentation change with no contract change.
+- Contract: none
+- User action: none. A contributor who looked in `CLAUDE.md` for how validation enforces a rule follows its pointer: the deployer's invariants are in `docs/design.md`, the validation runner under "The runner" in `CONTRIBUTING.md`, documentation-only selection under "Validation" in `docs/implementing-changes.md`, and the skill contract's rules in `docs/adding-a-skill.md` as before.
+- Pull request: #1407
+
+### The development and mutation dependencies are hash-locked, dependencies included
+
+- Level: patch, a contributor-facing change to how the validation tools are pinned, with no contract change.
+- Contract: none
+- User action: none for a user who deploys. A contributor installs as before with `python -m pip install -r requirements-dev.txt`, which now checks every hash and installs only the locked versions. To change a pin, edit `requirements-dev.in` or `requirements-mutation.in`, not the `.txt` lock. Install pip-tools into a virtual environment of its own. Then run `python -m piptools compile --generate-hashes --allow-unsafe --strip-extras --no-emit-index-url requirements-dev.in` from the repository root on Windows, and again for `requirements-mutation.in`, as "Compiling a lock" in `docs/dependency-updates.md` says. Commit the input and the locks together.
+- Pull request: #1406
+
+### Skill evaluations run each scenario several times on request and judge whether a skill's description starts it
+
+- Level: patch, a change to a contributor-facing tool and a repository skill.
+- Contract: `tools/skill_evals.py` `--runs`, its `RUNS` line and the ` run=<run>` token on its per-run lines, the `trigger` scenario mode with `requests` and `near_misses`, and the `Runs` column of `docs/skill-evaluations.md`'s results table
+- User action: none. A hand-kept copy of the results table adds the `Runs` column after `Passed`.
+- Pull request: #1401
+
+### Two test suites name their failures
+
+- Level: patch, because only test suites change.
+- Contract: none
+- User action: none.
+- Pull request: #1397
+
+### The deployer's internal names and lock release are consolidated
+
+- Level: patch, a refactor with no contract change; no deployment output, file, or journal entry changes.
+- Contract: none
+- User action: none
+- Pull request: #1395
+
+### The gh skills read Partial on Codex, which gives their commands no network by default
+
+- Level: minor, a new runtime-support capability and declarations that now say what Codex's default sandbox withholds.
+- Contract: `dotnet-format` `runtime_support` `codex`, `github-activity-report` `runtime_support` `codex`, `repo-cleanup` `runtime_support` `codex`, `review-document` `runtime_support` `codex`, `review-prs` `runtime_support` `codex`, `update-pr-dashboard` `runtime_support` `codex`, `sandbox-network`
+- User action: to run these skills in Codex without approving each `gh` call, or through `codex exec`, add `[sandbox_workspace_write]` with `network_access = true` to `~/.codex/config.toml`, as "Network access" in `docs/codex-support.md` shows.
+- Pull request: #1403
+
+### On Windows, Codex's sandbox guidance recommends MXC, and check's codex sandbox line reports the configured mode
+
+- Level: patch, documentation and wording with no change to what a setting does.
+- Contract: `deploy.py check` (the `codex sandbox` line)
+- User action: none needed. A Windows user may switch to MXC with `[features] prefer_mxc = true`, keeping `[windows] sandbox = "elevated"` as the fallback, and confirm with the `codex sandbox` command in "Windows sandbox mode".
+- Pull request: #1403
+
+### deploy.py verify names Codex's reason for an adapter it could not load, and fails a user-only adapter Codex offers the model
+
+- Level: minor, a new verify status and a new reason on an existing one.
+- Contract: `deploy.py verify` (`NOT FOUND` with `could not load it: <reason>`, and the new `EXPOSED` status)
+- User action: none. An `EXPOSED` adapter means its `agents/openai.yaml` is not keeping it out of the model's catalog; redeploy, and report it if it persists.
+- Pull request: #1403
+
+### Runtime adapters carry the skill's argument hint and a user-only skill's real description
+
+- Level: patch. A fix to what the generated adapters hold. The next deployment rewrites them, and the user does nothing.
+- Contract: none. The runtime adapter `~/.agents/skills/<name>/SKILL.md` now carries the skill's `argument-hint` when it has one, and a user-only skill's adapter carries the skill's own `description` in place of the generic "Runtime adapter for the authoritative <skill> skill" line, beside `disable-model-invocation: true` and Codex's `agents/openai.yaml` as before.
+- User action: none. Copilot CLI and Codex show the new frontmatter after the next deployment.
+- Pull request: #1398
+
+### Repository tools report their own failures precisely: the mutation gate's coverage steps, release_notes' defects, and a failed repository scaffold
+
+- Level: patch, defect fixes in skill-core and in contributor-facing tools with no contract change.
+- Contract: none
+- User action: none. A contributor who records a test's cost in `RECORDED_TEST_SECONDS` records only a test that is not parametrized.
+- Pull request: #1396
+
+### review-document reads Partial on Codex, and the review skills' runtime support names the reviewer guard
+
+- Level: patch, a correction of what the runtime-support declarations say, with no change to how a skill runs.
+- Contract: `review-document` `runtime_support` `codex`, `review-document` `runtime_support` `copilot-cli`, `review-prs` `runtime_support` `codex`, `review-prs` `runtime_support` `copilot-cli`, `update-pr-dashboard` `runtime_support` `codex`, `update-pr-dashboard` `runtime_support` `copilot-cli`, `agent-hooks`
+- User action: none. A Codex user of `review-document` should know its reviewer runs without the reviewer agent's guard, so the reviewer's prompt is its only boundary; run reviews of untrusted content from Claude Code.
+- Pull request: #1394
+
+### review-document's build prints the prepare arguments that name every fixture
+
+- Level: minor, a new output line and a new refusal of an output directory whose path a quoted argument does not keep.
+- Contract: `review-document` `PREPARE_ARGUMENTS`
+- User action: none. An `--output`, or a temporary directory, whose path holds `"`, `$`, a backtick, or a backslash is now refused with a `FAILED` line naming it; name another `--output`.
+- Pull request: #1360
+
+### repo-cleanup and curate-agent-memory name every line their commands print
+
+- Level: patch, documentation of lines the scripts already printed.
+- Contract: `repo-cleanup` `FETCH_FAILED`, `curate-agent-memory` `INDEX_LINE`, `curate-agent-memory` `WOULD_WRITE`
+- User action: none. repo-cleanup's sweep no longer records a `DEFAULT` line, which it never printed. The change-skill repository skill names its lines too.
+- Pull request: #1360
+
+### analyze-skill-cost names deterministic prose by cue and compares the status lines a skill names with what its scripts print
+
+- Level: minor, new status lines and cue identifiers in a shipped skill's output.
+- Contract: `analyze-skill-cost` `UNPRINTED`, `analyze-skill-cost` `EXIT_MISMATCH`, `analyze-skill-cost` `UNEXPLAINED`, `analyze-skill-cost` `assembled-arguments`, `analyze-skill-cost` `parsed-output`, `analyze-skill-cost` `carried-state`, `analyze-skill-cost` `owed-by-rules`, `analyze-skill-cost` `hand-drafted`
+- User action: none. An audit may now report prose a script should replace and lines a skill's document and scripts disagree on; anything reading `scan`'s output by line prefix meets the three new lines after the `RUNTIME_PROMPT` lines.
+- Pull request: #1353
+
+### A changed installer or other listed binary over the 16 MiB limit is named as unreviewed instead of making the review INCOMPLETE
+
+- Level: patch, a defect fix completing the previous release's handling of binary types the review does not read, with no contract change.
+- Contract: none
+- User action: none.
+- Pull request: #1352
+
+### A review names the binary file types it does not read, and any other changed binary makes it INCOMPLETE
+
+- Level: minor. A changed binary of a type the review does not read is recorded under `review.coverage.unreviewed_files` and named in the report, and does not make the verdict `INCOMPLETE`. A changed binary of any other type now does. A repository's entry may set `unreviewed_suffixes` to add its own types. Records are written at `schema_version` 2, and version 1 records are still read without a migration. A previous release cannot read a version 2 record, which would be major from `1.0.0` on and is carried in a minor before it.
+- Contract: `docs/code-review-operations-contract.md` (`config.repositories.<repository>.unreviewed_suffixes`, `request.coverage.unreviewed_files`, `record.review.coverage.unreviewed_files`, `record.schema_version` `2`)
+- User action: none. If a repository's pull requests change binaries of a type the shipped list does not name and those reviews now end `INCOMPLETE`, add the suffixes to that repository's entry with `review_config.py write`, as in `"unreviewed_suffixes": [".bin"]`.
+- Pull request: #1347
+
+### update-coding-agent-skills follows the latest release by default, and main only when you opt in
+
+- Level: minor, a changed default of the update skill and a new configured variable, which would be major after 1.0.0.
+- Contract: `deploy-meta/update-coding-agent-skills.json` (its `required_vars`, which now carry `UPDATE_CHANNEL`); the configured variable `UPDATE_CHANNEL` (`release` or `main`, default `release`); `update-coding-agent-skills` `--channel` (new argument); `update-coding-agent-skills` `UP_TO_DATE` and `UPDATED` (on the release channel they name the release tag, and `UPDATED` lists the commits the release adds to the deployed commit); `update-coding-agent-skills` `NOT_IN_RELEASE` (new detail line); `update-coding-agent-skills` `NO_RELEASE` (new status line); `update-coding-agent-skills` `PINNED` (now only for a pin the user made, and on the release channel only for one at another commit than the release, after the fetch); `update-coding-agent-skills` `MAJOR_UPDATE` (on the release channel it compares the release tag the update would deploy and lists the commits up to it).
+- User action: none to keep the new default. Your next update deploys the latest release and pins the installation there with `--at refs/tags/<tag>`. If the installation had followed `main` past that release, it steps back, and the update lists the commits it leaves after `NOT_IN_RELEASE`. To keep following `main`, run `python deploy.py configure` and answer `main` at the `UPDATE_CHANNEL` prompt, or start the skill with `--channel main` for one run. Until a release carries this change, the release it deploys holds the older copy of the skill. That copy stops at the pin with `PINNED refs/tags/<tag>`, and rerunning it with `--unpin` returns you to `main`. After the skill deploys a release, `python deploy.py --all` from the clone needs `--unpin`, as it does over any pin.
+- Pull request: #1343
+
+### review-prs can review a repository's pull requests in batches of a configured size
+
+- Level: minor. Additive: a repository's entry may set `batch_size` to review that many pull requests per run, the oldest first, and `enumerate --batch-size N` overrides it for one run. `enumerate`'s `LISTED` line gains `deferred=<n>`, the eligible pull requests left for the next run, which the watermark never passes. The batch file's version is now 2. A previous release refuses a configuration that has `batch_size`.
+- Contract: `docs/code-review-operations-contract.md` (`config.repositories.<repository>.batch_size`), `review-prs` `LISTED` (`deferred=<n>`), `review-prs` `enumerate --batch-size`
+- User action: none. To review a large repository in chunks, add `"batch_size": 25` (or another size) to its entry with `review_config.py write`, and run `review-prs` again for each later chunk.
+- Pull request: #1341
+
+### A pull request runs a mutation gate beside Validation
+
+- Level: patch, since it changes CI and contributor guidance, not anything a deployment installs.
+- Contract: none
+- User action: none. A contributor now sees a `Mutation gate` check on each pull request. Its step summary gives each changed module's kill ratio and surviving mutants, and is the record. The template's Validation section asks only for the judgment it dictates: kill each survivor on a changed line where the mutation alters behavior a caller relies on, or name it as equivalent. Nothing from the summary is copied into the pull request.
+- Pull request: #1339
+
+### deploy.py names the path and reason of each failure the recovery and installation guides describe
+
+- Level: patch, defect fixes that make the deployer's messages match its documents.
+- Contract: `ERROR: <tool> did not finish within <seconds> seconds` (now printed by `check` for the Codex sandbox probe, in place of `codex debug prompt-input named no sandbox mode`), `ERROR: Recovery of run <run-id> failed at <path>: <reason>` (in place of `WARNING: Failed to restore backup for <item>`), `ERROR: Could not finish the deployment: <path>: <reason>` (in place of `ERROR: Unexpected OSError: ...`), `Cancelled after the deployment began; its changes are reconciled before exit.` and `Deployment cancelled; reconciling the current journal before exit...` (in place of `ERROR: Unexpected KeyboardInterrupt: `), `ERROR: Could not finish recovery: <path>: <reason>` (in place of `ERROR: Unexpected OSError: ...` when recovery stops)
+- User action: none. A script that matched one of the old lines should match the new one.
+- Pull request: #1340
+
+### A pull request declares a revert of a file to an older state of main
+
+- Level: patch, since it changes contributor validation and no deployed skill, deployer command, or record.
+- Contract: the pull request body's revert declaration, ``Reverts `<path>` to its state before <commit>``, on a line of its own outside an HTML comment, as "Pull requests" in `docs/implementing-changes.md` and the template state.
+- User action: none for a user who deploys; a contributor whose pull request reverts a file on purpose adds the line to its body.
+- Pull request: #1337
+
+### review-prs and code-review-core declare Copilot CLI optional
+
+- Level: patch, a metadata correction with no contract change.
+- Contract: none
+- User action: none. The two skills' metadata now matches what `python deploy.py check` reported all along: Copilot CLI is optional, and the review skills run fully without it.
+- Pull request: #1335
+
+### code-review-core no longer ships its test archive builder
+
+- Level: minor, a file removed from a deployed hidden skill; nothing a user runs changes.
+- Contract: none
+- User action: none; the next deployment reports `ejryan89-code-review-core` under `RENAMED` (from `code-review-core`, as the rename entry for #1439 says) and installs it without `scripts/review_fixture.py`.
+- Pull request: #1329
+
+### The regression suites run through pytest, and skill-core no longer ships its test base
+
+- Level: minor, a new development prerequisite for contributors and a file removed from a deployed hidden skill; nothing a user runs changes.
+- Contract: none
+- User action: none for a user who deploys; the next deployment reports `ejryan89-skill-core` under `RENAMED` (from `skill-core`, as the rename entry for #1439 says) and installs it without `scripts/git_test_base.py`. A contributor runs `python -m pip install -r requirements-dev.txt` to install pytest, runs a suite with `python -B -m pytest <suite>` from the repository root instead of `python <suite>`, and isolates a suite's git by nothing at all: the root `conftest.py` does it, and a test class or suite module adds settings as `git_config`.
+- Pull request: #1327
+
+### What changed, as a user meets it
+
+- Level: patch; a record entry in a repository skill's reference file, nothing deployed.
+- Contract: none
+- User action: none
+- Pull request: #1325
+
+### Validation requires ruff 0.17.1
+
+- Level: patch, a development-dependency move with no contract change.
+- Contract: none
+- User action: contributors reinstall the development dependencies with `python -m pip install -r requirements-dev.txt`; validation stops on ruff 0.17.0 and names the floor. Users who only deploy need nothing.
+- Pull request: #1326
+
+### Deployed skills no longer carry their regression suites
+
+- Level: minor, a change to what a deployment holds; it asks nothing of the user.
+- Contract: none
+- User action: none. The next deployment reports each skill that had a suite under `UPDATED` and removes the suite files from `~/.claude/skills/<skill>/scripts/`. A skill you edited locally is preserved as before.
+- Pull request: #1315
+
+### Validation requires ruff 0.17.0
+
+- Level: patch, a development-dependency move with no contract change.
+- Contract: none
+- User action: contributors reinstall the development dependencies with `python -m pip install -r requirements-dev.txt`; validation stops on ruff 0.16.10 and names the floor. Users who only deploy need nothing.
+- Pull request: #1314
+
 ## v0.9.0
 
 Level: minor.
