@@ -27,7 +27,7 @@
     ],
     "copilot-config": [
       {
-        "page": "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/create-skills",
+        "page": "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-skills",
         "passage": "A skill is a SKILL.md file that starts with YAML frontmatter."
       },
       {
@@ -37,11 +37,11 @@
     ],
     "copilot-skill": [
       {
-        "page": "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/create-skills",
+        "page": "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-skills",
         "passage": "A skill's frontmatter gives a name, lowercase with hyphens and matching its folder, and a description of what it does and when to use it."
       },
       {
-        "page": "https://docs.github.com/en/copilot/concepts/agents/about-agent-skills",
+        "page": "https://docs.github.com/en/copilot/concepts/customizations/agent-skills",
         "passage": "Copilot reads a repository's skills from folders under .github/skills, .claude/skills, and .agents/skills, each holding a SKILL.md."
       }
     ],
@@ -84,7 +84,7 @@
         "passage": "Copilot code review on GitHub reads a root AGENTS.md, CLAUDE.md, GEMINI.md, REVIEW.md, .github/copilot-instructions.md, and path-specific instructions, and skills in .github/skills, from the pull request's head branch."
       },
       {
-        "page": "https://docs.github.com/en/copilot/how-tos/configure-custom-instructions/add-repository-instructions",
+        "page": "https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/add-custom-instructions/add-repository-instructions",
         "passage": "Repository-wide instructions live in .github/copilot-instructions.md, and path-specific ones in .github/instructions/NAME.instructions.md, whose applyTo frontmatter names the files they cover."
       }
     ],

@@ -24,6 +24,11 @@
       "date": "2026-10-18",
       "tag": "v0.9.0",
       "area": "deployer"
+    },
+    {
+      "date": "2026-10-22",
+      "tag": "v0.10.0",
+      "area": "code-review"
     }
   ]
 }
