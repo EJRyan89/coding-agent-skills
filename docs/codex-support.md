@@ -18,7 +18,7 @@ On Windows, Codex looks for personal skills in your Windows profile folder, what
 
 On Linux, Codex looks for personal skills under `HOME`, where the deployer installs, so the same check, run as `python3 deploy.py verify`, reads the same adapters; the [`deployable` workflow](../.github/workflows/deployable.yml) runs it on a fresh Ubuntu runner as it does on a fresh Windows one.
 
-`codex debug prompt-input` also lists skills, but only those the model may choose for itself, so it leaves out user-only skills such as `update-coding-agent-skills`, whose adapter's `agents/openai.yaml` asks Codex never to offer them to the model. The verifier reads it, without a sign-in or a model, whenever a user-only adapter is deployed, and reports a user-only adapter it lists as `EXPOSED`, which fails the check.
+`codex debug prompt-input` also lists skills, but only those the model may choose for itself, so it leaves out user-only skills such as `update-coding-agent-skills`, whose adapter's `agents/openai.yaml` asks Codex never to offer them to the model. The verifier reads it, without a sign-in or a model, whenever a user-only adapter is deployed, and reports a user-only adapter it lists as `EXPOSED`, which fails the check. When this second probe fails after the listing answered, the verifier says so, as `Listed its skills, but cannot read which ones it offers the model (codex debug prompt-input): <reason>`, and fails Codex, since it cannot tell whether a user-only adapter is exposed; a failed listing is `Cannot list its skills: <reason>`, and the catalog is then not read.
 
 ## Running skill scripts
 
