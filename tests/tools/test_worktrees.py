@@ -272,4 +272,4 @@ class GuardSubcommandTests(WorktreesTestCase):
                 )
                 decision = json.loads(forwarded.stdout)["hookSpecificOutput"] if forwarded.stdout.strip() else None
                 self.assertEqual(expected, None if decision is None else decision["permissionDecision"])
-        self.assertIn("worktrees guard skipped", forwarded.stderr)
+        self.assertIn("hub guard skipped", forwarded.stderr)
