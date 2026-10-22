@@ -27,7 +27,8 @@
 #                    switched back to the branch it was found on, or a "still on main:" line says why not
 #   UP_TO_DATE <sha> or UPDATED <old>..<new> on the main channel, followed by the pulled commits;
 #   UP_TO_DATE <tag> or UPDATED <old>..<tag> on the release channel, where <old> is the deployed commit, or unknown
-#                    when check names none, followed by the commits the release adds to it, and by
+#                    when check names none, followed by the commits the release adds to it, or to local main as it
+#                    was before the fast-forward when <old> is unknown, and by
 #                    NOT_IN_RELEASE <tag>..<old> and the deployed commits the release does not carry, when there are
 #                    any; either is followed by CROSSED <current>..<target> when --cross-major accepted a release
 #                    boundary, then the deploy output and DEPLOYED, DEPLOY_FAILED <code>, or DEPLOY_PINNED <ref>
@@ -379,7 +380,9 @@ if [ "$CHANNEL" = main ]; then
 elif [ "$DEPLOYED_COMMIT" = "$RELEASE_COMMIT" ]; then
   echo "UP_TO_DATE $TARGET"
 elif [ -z "$DEPLOYED_COMMIT" ]; then
+  # Without a deployed commit, the commits listed are those the release adds to local main, as the stop listed them.
   echo "UPDATED unknown..$TARGET"
+  git -C "$CLONE" log --oneline --no-decorate "$BEFORE..$RELEASE_REF" | tr -d '\r'
 else
   OLD=$(git -C "$CLONE" rev-parse --short "$DEPLOYED_COMMIT" | tr -d '\r')
   echo "UPDATED $OLD..$TARGET"
