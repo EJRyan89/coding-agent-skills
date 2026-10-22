@@ -4,10 +4,6 @@
       {
         "page": "https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview",
         "passage": "A skill's name is at most 64 characters of lowercase letters, numbers, and hyphens, with no XML tags and neither reserved word, anthropic or claude; its description is non-empty, at most 1,024 characters, and holds no XML tags."
-      },
-      {
-        "page": "https://agentskills.io/specification",
-        "passage": "A skill's name is 1 to 64 characters and matches its parent directory, and its description is 1 to 1,024 characters."
       }
     ],
     "authority": [

@@ -46,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import check_provenance
 import folder_walk
+from agent_skills import CODEX_METADATA, MAX_DESCRIPTION, MAX_NAME, RESERVED_WORDS, XML_TAG_PATTERN
 from check_provenance import Source
 from console import run_main
 from folder_walk import LINKED, SKIPPED_FOLDERS
@@ -969,15 +970,6 @@ def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Fi
     return findings
 
 
-# The Agent Skills field requirements Anthropic's skills overview and best-practices pages give: a name of at most 64
-# characters without XML tags or the reserved words, and a description of at most 1,024 characters without XML tags.
-AGENT_SKILL_NAME_MAX = 64
-AGENT_SKILL_DESCRIPTION_MAX = 1024
-AGENT_SKILL_RESERVED_WORDS = ("anthropic", "claude")
-XML_TAG = re.compile(r"</?[A-Za-z][\w:.-]*(?:\s[^<>]*)?/?>")
-CODEX_SKILL_POLICY = "agents/openai.yaml"
-
-
 def _agent_skill_rules(path: Path, root: Path, skill_dir: str) -> list[Finding]:
     """A skill under .claude/skills or .agents/skills, judged by the rules of the runtimes that read its folder
     besides Copilot: the Agent Skills field requirements for both, Claude Code's for .claude/skills, and Codex's for
@@ -987,11 +979,9 @@ def _agent_skill_rules(path: Path, root: Path, skill_dir: str) -> list[Finding]:
     name = _text(values, "name")
     description = _text(values, "description").strip()
     findings: list[Finding] = []
-    if len(name) > AGENT_SKILL_NAME_MAX:
-        findings.append(
-            Finding("ERROR", "agent-skill", rel, message=f"Skill name is over {AGENT_SKILL_NAME_MAX} characters")
-        )
-    reserved = [word for word in AGENT_SKILL_RESERVED_WORDS if word in name.lower()]
+    if len(name) > MAX_NAME:
+        findings.append(Finding("ERROR", "agent-skill", rel, message=f"Skill name is over {MAX_NAME} characters"))
+    reserved = [word for word in RESERVED_WORDS if word in name.lower()]
     if reserved:
         findings.append(
             Finding("ERROR", "agent-skill", rel, message=f"Skill name contains the reserved word '{reserved[0]}'")
@@ -999,15 +989,15 @@ def _agent_skill_rules(path: Path, root: Path, skill_dir: str) -> list[Finding]:
     findings.extend(
         Finding("ERROR", "agent-skill", rel, message=f"Skill {key} contains an XML tag")
         for key, value in (("name", name), ("description", description))
-        if XML_TAG.search(value)
+        if XML_TAG_PATTERN.search(value)
     )
-    if len(description) > AGENT_SKILL_DESCRIPTION_MAX:
+    if len(description) > MAX_DESCRIPTION:
         findings.append(
             Finding(
                 "ERROR",
                 "agent-skill",
                 rel,
-                message=f"Skill description is {len(description)} characters, over {AGENT_SKILL_DESCRIPTION_MAX}",
+                message=f"Skill description is {len(description)} characters, over {MAX_DESCRIPTION}",
             )
         )
     if skill_dir == ".claude/skills":
@@ -1045,9 +1035,9 @@ def _codex_skill_rules(path: Path, root: Path, rel: str, values: dict[str, Front
     canonical: dict[str, FrontmatterValue] = _frontmatter(canonical_path)[0] if canonical_path.is_file() else {}
     user_only = _is_true(values.get("disable-model-invocation")) or _is_true(canonical.get("disable-model-invocation"))
     if user_only:
-        implicit, problem = _codex_implicit_invocation(path.parent / CODEX_SKILL_POLICY)
+        implicit, problem = _codex_implicit_invocation(path.parent / CODEX_METADATA)
         if problem:
-            policy_rel = (path.parent / CODEX_SKILL_POLICY).relative_to(root).as_posix()
+            policy_rel = (path.parent / CODEX_METADATA).relative_to(root).as_posix()
             findings.append(Finding("ERROR", "codex-skill", policy_rel, message=problem))
         elif implicit:
             findings.append(
@@ -1056,7 +1046,7 @@ def _codex_skill_rules(path: Path, root: Path, rel: str, values: dict[str, Front
                     "codex-skill",
                     rel,
                     message="Skill is user-only (disable-model-invocation: true), which Codex does not read; without "
-                    f"{CODEX_SKILL_POLICY} setting policy.allow_implicit_invocation: false, Codex may invoke it on "
+                    f"{CODEX_METADATA} setting policy.allow_implicit_invocation: false, Codex may invoke it on "
                     "its own",
                 )
             )
@@ -1087,7 +1077,7 @@ def _codex_implicit_invocation(policy: Path) -> tuple[bool, str | None]:
         return True, None
     text = read_text_or_none(policy)
     if text is None:
-        return True, f"Could not read {CODEX_SKILL_POLICY}, so the skill's invocation policy was not checked"
+        return True, f"Could not read {CODEX_METADATA}, so the skill's invocation policy was not checked"
     blocks = [match.group(1) for match in (*POLICY_BLOCK.finditer(text), *POLICY_FLOW.finditer(text))]
     return not any(IMPLICIT_FALSE.search(block) for block in blocks), None
 
