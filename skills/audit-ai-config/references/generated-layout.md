@@ -54,13 +54,17 @@ The manifest's `mcp_servers` entries:
 
 ### Copilot surface capabilities
 
+Check 7 of `audit-policy.md` resolves which instructions each surface reads; this table summarizes it beside the skills and MCP each surface reads.
+
 | Surface | `CLAUDE.md` | `AGENTS.md` | `.github/copilot-instructions.md` | Path-specific | Skills | File MCP | Repository MCP |
 |---|---|---|---|---|---|---|---|
 | VS Code | Conditional | Conditional | Conditional | Conditional | Yes | `.vscode/mcp.json` | No |
 | JetBrains | No | No | Yes | Yes | Yes | Manual | No |
 | Copilot app | Yes | Yes | Yes | Yes | Yes | `.mcp.json`, `.github/mcp.json` | No |
 | CLI | Yes | Yes | Yes | Yes | Yes | `.mcp.json`, `.github/mcp.json` | No |
-| Cloud agent | Indirect | Nearest wins | Yes | Yes | Yes | No | Yes |
-| Code review | No | When enabled | When enabled | When enabled | Yes | No | Yes |
+| Cloud agent | Without `AGENTS.md` | Nearest wins | Yes | Yes | Yes | No | Yes |
+| Code review | When enabled | Unless it only redirects, when enabled | When enabled | When enabled | Yes | No | Yes |
+
+Code review reads its instructions from the pull request's head branch, and an `AGENTS.md` that only redirects to `CLAUDE.md` reaches it through the `CLAUDE.md` it names.
 
 Copilot CLI checks repository skills in `.github/skills`, then `.agents/skills`, then `.claude/skills`, and personal `~/.copilot/skills` before `~/.agents/skills`, so a higher-priority skill can shadow a generated shim.
