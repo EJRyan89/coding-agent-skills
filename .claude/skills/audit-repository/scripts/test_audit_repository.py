@@ -319,6 +319,24 @@ class RecordTests(AuditTestCase):
         entries = self.entries("infrastructure", "other-skills", "code-review", "deployer")
         self.assertEqual("infrastructure", audit.next_area(entries).name)
 
+    def test_the_last_reads_and_the_next_area_follow_the_release_order_whatever_the_record_order(self) -> None:
+        reads = [
+            ("v0.10.0", "code-review"),
+            ("v0.5.0", "code-review"),
+            ("v0.4.0", "deployer"),
+            ("v0.9.0", "deployer"),
+            ("v0.7.0", "other-skills"),
+            ("v0.8.0", "infrastructure"),
+        ]
+        entries = [audit.Entry("2026-01-01", tag, area) for tag, area in reads]
+        last = {area: entry.tag for area, entry in audit.last_reads(entries).items()}
+        self.assertEqual(
+            {"code-review": "v0.10.0", "deployer": "v0.9.0", "other-skills": "v0.7.0", "infrastructure": "v0.8.0"},
+            last,
+        )
+        self.assertEqual("other-skills", audit.next_area(entries).name)
+        self.assertEqual("other-skills", audit.next_area(list(reversed(entries))).name)
+
     def test_this_repository_record_starts_with_the_first_rotation_audit(self) -> None:
         entries = audit.read_record(REPOSITORY / RECORD)
         self.assertEqual(audit.Entry("2026-10-09", "v0.4.0", "deployer"), entries[0])
@@ -556,7 +574,12 @@ class RotationTests(Fixture):
     def test_record_refuses_a_recorded_or_unknown_tag_and_leaves_the_record(self) -> None:
         linked = self.linked_worktree()
         before = (linked / RECORD).read_bytes()
-        for tag, reason in (("v0.1.0", "v0.1.0 is already in the rotation record"), ("v9.9.9", "names no commit")):
+        cases = (
+            ("v0.1.0", "v0.1.0 is already in the rotation record"),
+            ("v9.9.9", "names no commit"),
+            ("v0.2.0-rc.1", "v0.2.0-rc.1 is not a release tag vX.Y.Z"),
+        )
+        for tag, reason in cases:
             with self.subTest(tag=tag):
                 code, lines = self.run_main("rotation", "--record", tag, repository=linked)
                 self.assertEqual(1, code)
@@ -1029,15 +1052,24 @@ def test_a_code_literal_of_a_printable_path_is_its_json_string_in_backticks() ->
             '{"audits": [{"date": "1 Jan", "tag": "v1", "area": "deployer"}]}', "not YYYY-MM-DD", id="date-not-iso"
         ),
         pytest.param(
-            '{"audits": [{"date": "2026-01-01", "tag": " ", "area": "deployer"}]}', "has no tag", id="blank-tag"
+            '{"audits": [{"date": "2026-01-01", "tag": " ", "area": "deployer"}]}',
+            "has a tag that is not a release tag vX.Y.Z",
+            id="blank-tag",
         ),
         pytest.param(
-            '{"audits": [{"date": "2026-01-01", "tag": "v1", "area": "docs"}]}', "names area 'docs'", id="unknown-area"
+            '{"audits": [{"date": "2026-01-01", "tag": "v1.0.0-rc.1", "area": "deployer"}]}',
+            "has a tag that is not a release tag vX.Y.Z",
+            id="pre-release-tag",
         ),
         pytest.param(
-            '{"audits": [{"date": "2026-01-01", "tag": "v1", "area": "deployer"}, '
-            '{"date": "2026-02-01", "tag": "v1", "area": "code-review"}]}',
-            "records v1 more than once",
+            '{"audits": [{"date": "2026-01-01", "tag": "v1.0.0", "area": "docs"}]}',
+            "names area 'docs'",
+            id="unknown-area",
+        ),
+        pytest.param(
+            '{"audits": [{"date": "2026-01-01", "tag": "v1.0.0", "area": "deployer"}, '
+            '{"date": "2026-02-01", "tag": "v1.0.0", "area": "code-review"}]}',
+            "records v1.0.0 more than once",
             id="tag-twice",
         ),
     ],
@@ -1230,6 +1262,7 @@ class GuidanceTests(Fixture):
         cases = (
             ("v0.1.0", linked, "v0.1.0 is already in the guidance record"),
             ("v9.9.9", linked, "names no commit"),
+            ("v0.2.0-rc.1", linked, "v0.2.0-rc.1 is not a release tag vX.Y.Z"),
             ("v0.2.0", self.root, "is the main checkout; record the guidance audit from a worktree"),
         )
         for tag, repository, reason in cases:
@@ -1258,7 +1291,12 @@ class GuidanceTests(Fixture):
         pytest.param([page("http://example.com", "alpha", [])], "must be a URL starting https://", id="http"),
         pytest.param([page("https://example.com/a b", "alpha", [])], "without whitespace", id="space"),
         pytest.param([page("https://example.com", "gamma", [])], "$.pages[0].subject must be one of", id="subject"),
-        pytest.param([page("https://example.com", "alpha", ["v1", "v1"])], "a tag named twice", id="tag-twice"),
+        pytest.param([page("https://example.com", "alpha", ["v1.0.0", "v1.0.0"])], "a tag named twice", id="tag-twice"),
+        pytest.param(
+            [page("https://example.com", "alpha", ["v1.0.0-rc.1"])],
+            "$.pages[0].read[0] must be a release tag vX.Y.Z",
+            id="pre-release-tag",
+        ),
         pytest.param([page("https://example.com", "alpha", [" "])], "$.pages[0].read[0] must be", id="blank-tag"),
         pytest.param(
             [page("https://example.com", "alpha", []), page("https://example.com", "python", [])],
@@ -1291,9 +1329,18 @@ def test_the_oldest_read_is_never_while_a_page_is_unread_and_otherwise_the_earli
     def pages(*reads: tuple[str, ...]) -> list[audit.Page]:
         return [audit.Page(f"https://example.com/{n}", "alpha", "x", read) for n, read in enumerate(reads)]
 
-    assert audit.oldest_read(pages(("v1",), ())) == "never"
-    assert audit.oldest_read(pages(("v1", "v2"), ("v1",))) == "v1"
-    assert audit.oldest_read(pages(("v1", "v2"), ("v2", "v3"))) == "v2"
+    assert audit.oldest_read(pages(("v0.1.0",), ())) == "never"
+    assert audit.oldest_read(pages(("v0.1.0", "v0.2.0"), ("v0.1.0",))) == "v0.1.0"
+    assert audit.oldest_read(pages(("v0.1.0", "v0.2.0"), ("v0.2.0", "v0.3.0"))) == "v0.2.0"
+
+
+def test_the_oldest_read_follows_the_release_order_whatever_the_record_order() -> None:
+    def pages(*reads: tuple[str, ...]) -> list[audit.Page]:
+        return [audit.Page(f"https://example.com/{n}", "alpha", "x", read) for n, read in enumerate(reads)]
+
+    assert audit.oldest_read(pages(("v0.10.0",), ("v0.9.0",))) == "v0.9.0"
+    assert audit.oldest_read(pages(("v0.9.0",), ("v0.10.0",))) == "v0.9.0"
+    assert audit.oldest_read(pages(("v0.10.0", "v0.9.0"), ("v0.9.0", "v0.10.0"))) == "v0.10.0"
 
 
 class RepositoryGuidanceTests(unittest.TestCase):
