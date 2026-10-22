@@ -173,7 +173,7 @@ With the guard enabled:
   - `fast-import`, `filter-branch`, `history`, `merge`, `merge-file`, `merge-index`, `merge-one-file`, `mv`
   - `pull`, `read-tree`, `rebase`, `replay`, `rerere`, `reset`, `restore`, `revert`, `rm`, `sparse-checkout`
   - `stage`, `stash`, `submodule`, `switch`, `symbolic-ref`, `update-index`, `update-ref`
-  - the interactive tools `citool`, `difftool`, `gitk`, `gui`, and `mergetool`
+  - the interactive tools `citool`, `difftool`, `gui`, and `mergetool`
   - the importers `archimport`, `cvsimport`, `p4`, `quiltimport`, and `svn`
 - **Still allowed in the hub.** Only these forms of a refused command, which keep the hub on `main` and current:
   - `switch main` and `checkout main`, optionally with `-q`
@@ -257,7 +257,8 @@ refused while a guarded hub is in view, and what they do not see at all is named
   word unsettled. The guard follows `cd` (with `--`; bare goes home, `cd -` and a `CDPATH` search leave the
   directory unknown), `pushd`, `popd`, and `env -C`, and runs a function's body where a command calls it.
   Commands after `exec`, `command`, `builtin`, `nohup`, `nice`, `timeout`, `stdbuf`, the program `time`, and `env`
-  are read as the commands they start, `env`'s after every word holding `=`, which it takes as an assignment whatever the name, and
+  are read as the commands they start, a short option's value read attached, as in `nice -n5` and `stdbuf -oL`, or
+  as the next word; `env`'s after every word holding `=`, which it takes as an assignment whatever the name; and
   `eval` of fixed words is read as part of the shell. Every command or process substitution runs, as Bash runs it,
   in a subshell before the command that holds it, and so does one in an unquoted here-document's body.
 - **PowerShell, by its parser.** A PowerShell command is read by PowerShell's own parser, not by a second
@@ -273,7 +274,8 @@ refused while a guarded hub is in view, and what they do not see at all is named
   (`$env:NAME = <word>` or `${env:NAME} = <word>`, on any path of the provider), while an empty value or `$null`
   removes it. A compound, cast, parenthesized, or multiple assignment, a `foreach` loop's variable, `PSVariable.Set`,
   `[Environment]::SetEnvironmentVariable`, and a cmdlet that writes the provider leave its value unsettled, and a
-  variable the session does not hold is unsettled too. A location set inside a
+  variable the session does not hold is unsettled too. A command after the programs `env`, `nohup`, `nice`,
+  `timeout`, `stdbuf`, and `time` is read as in Bash, as the command it starts. A location set inside a
   script block outlives the block, as it does in PowerShell. `Invoke-Expression` (`iex`) with a fixed string is read
   as part of the same session. A command that does not parse is allowed: PowerShell parses a whole script before it
   runs any of it, so none of it runs.
@@ -305,8 +307,9 @@ command names. While one is, the guard refuses:
 - a git call whose subcommand the text does not settle, or that comes after an option of git's own the guard does
   not read;
 - a command with a part it cannot read that may start git, when the command names git: Bash its grammar cannot read
-  (the lines before a syntax error do run, unlike PowerShell's), a script handed to `bash`, `pwsh`, `eval`,
-  `Invoke-Expression`, or `env -S` that the text does not settle or that nests more than four deep, and a PowerShell
+  (the lines before a syntax error do run, unlike PowerShell's), a script handed to `bash`, `pwsh`, `eval`, or
+  `Invoke-Expression` that the text does not settle or that nests more than four deep, every `env -S`, whatever
+  follows it, an option of `env` or of a prefix program above that the guard does not read, and a PowerShell
   command when `pwsh` cannot be started or does not finish reading it within 20 seconds;
 - an alias that cannot be read, as above.
 
