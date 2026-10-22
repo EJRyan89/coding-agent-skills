@@ -711,6 +711,41 @@ class VerifyCommandTests(DeployerTestCase):
         )
         self.assertIn("Verification failed for Copilot CLI.\nSee docs/copilot-support.md.\n", result.output)
 
+    def copilot_home_note(self, copilot_home: Path) -> str:
+        return (
+            f"COPILOT_HOME is set to {forward(copilot_home)}, so GitHub Copilot CLI reads personal skills from "
+            f"{forward(copilot_home / 'skills')} and not from {forward(self.agents_dir)}, where the runtime adapters "
+            f"are. To use these skills in Copilot, unset COPILOT_HOME or set it to {forward(self.home / '.copilot')}; "
+            'see "Copilot\'s configuration directory" in docs/copilot-support.md.'
+        )
+
+    def test_copilot_listing_no_adapter_with_copilot_home_set_names_it_and_what_to_do(self) -> None:
+        copilot_home = self.root / "copilot home"
+        self.answer(copilot=[("gamma", forward(copilot_home / "skills" / "gamma"), True)])
+        with mock.patch.dict(os.environ, {"COPILOT_HOME": str(copilot_home)}):
+            result = self.verify()
+        self.assertEqual(1, result.code, result.output)
+        self.assertEqual({"NOT FOUND": ["alpha", "beta"]}, self.groups(result.output, "COPILOT CLI"))
+        self.assertIn(self.copilot_home_note(copilot_home), " ".join(result.output.split()))
+        self.assertLess(result.output.index("COPILOT_HOME is set"), result.output.index("Verification failed for"))
+        # Copilot itself ran with the variable, which is why it listed none of the adapters.
+        copilot_call = next(call for call in self.runtimes.calls if call[0][0] == EXECUTABLES["copilot"])
+        self.assertEqual(str(copilot_home), copilot_call[2]["COPILOT_HOME"])
+
+    def test_copilot_home_is_named_only_when_it_is_set_and_copilot_lists_no_adapter(self) -> None:
+        copilot_home = self.root / "copilot home"
+        for environment, copilot in (
+            ({}, []),
+            ({"COPILOT_HOME": ""}, []),
+            ({"COPILOT_HOME": str(copilot_home)}, [("alpha", self.adapter("alpha"), True)]),
+            ({"COPILOT_HOME": str(self.home / ".copilot")}, []),
+        ):
+            with self.subTest(environment=environment, copilot=copilot), mock.patch.dict(os.environ, environment):
+                if not environment:
+                    os.environ.pop("COPILOT_HOME", None)
+                self.answer(copilot=copilot)
+                self.assertNotIn("COPILOT_HOME is set", self.verify().output)
+
     def test_a_runtime_listing_the_adapters_under_another_spelling_of_the_home_finds_them(self) -> None:
         # Copilot CLI lists a profile folder by its 8.3 short name on some machines (RUNNER~1 for
         # runneradmin). A junction is the same directory under another name, which a textual comparison misses.

@@ -5,12 +5,13 @@ import io
 import json
 import os
 from functools import partial
+from pathlib import Path
 from typing import Any
 from unittest import mock
 
 from harness import DEPLOY_COMMAND, REPOSITORY_ROOT, DeployerTestCase, Result, forward, interrupting
 
-from deployer import check, configure, platform_support, verify
+from deployer import check, configure, paths, platform_support, verify
 from deployer.arguments import USAGE_ERROR, debug_given, parse_command
 
 
@@ -307,6 +308,80 @@ class HomeTests(DeployerTestCase):
             self.assertIn(f"\nHome: {forward(self.home)}\n", result.output)
             self.assertNotIn("WARNING", result.output)
             self.assertFalse(self.other.exists())
+
+
+class CopilotHomeTests(DeployerTestCase):
+    """COPILOT_HOME moves Copilot CLI's personal skills, and while it names another directory than ~/.copilot, Copilot
+    reads no adapter: a deployment says so, and the shadow check reads the skills Copilot reads."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.copilot_home = self.root / "copilot home"
+        self.make_source_json()
+        self.make_skill("alpha", "Alpha")
+        self.make_config()
+
+    def warning(self, copilot_home: str) -> str:
+        return (
+            f"WARNING: COPILOT_HOME is set to {copilot_home}, so GitHub Copilot CLI reads personal skills from "
+            f"{copilot_home}/skills and not from {forward(self.agents_dir)}, where the runtime adapters are. To use "
+            f"these skills in Copilot, unset COPILOT_HOME or set it to {forward(self.home / '.copilot')}; see "
+            '"Copilot\'s configuration directory" in docs/copilot-support.md.'
+        )
+
+    def test_copilot_home_is_read_from_the_environment_when_it_names_a_directory(self) -> None:
+        self.assertIsNone(paths.copilot_home({}))
+        self.assertIsNone(paths.copilot_home({"COPILOT_HOME": ""}))
+        self.assertEqual(self.copilot_home, paths.copilot_home({"COPILOT_HOME": str(self.copilot_home)}))
+        # A relative value is read from the working directory, as Copilot reads it.
+        self.assertEqual(Path.cwd() / "relative", paths.copilot_home({"COPILOT_HOME": "relative"}))
+
+    def test_unset_reads_the_default_copilot_skills_and_warns_about_nothing_else(self) -> None:
+        self.write(self.home / ".copilot" / "skills" / "alpha" / "SKILL.md", "native Copilot skill\n")
+        output = self.deploy_ok("--all").output
+        self.assertNotIn("COPILOT_HOME", output)
+        self.assertIn(f"  - alpha ({forward(self.home / '.copilot' / 'skills' / 'alpha')})", output)
+
+    def test_another_directory_is_warned_about_and_its_skills_are_the_shadow_check(self) -> None:
+        self.write(self.home / ".copilot" / "skills" / "alpha" / "SKILL.md", "unread Copilot skill\n")
+        native = self.copilot_home / "skills" / "alpha" / "SKILL.md"
+        self.write(native, "native Copilot skill\n")
+        output = self.deploy_ok("--all", copilot_home=self.copilot_home).output
+        self.assertIn(self.warning(forward(self.copilot_home)), unwrapped(output))
+        self.assertIn(f"  - alpha ({forward(self.copilot_home / 'skills' / 'alpha')})", output)
+        self.assertIn(f"The deployer will not modify {forward(self.copilot_home / 'skills')}.", output)
+        self.assertNotIn(forward(self.home / ".copilot" / "skills" / "alpha"), output)
+        # Claude Code and Codex still get the skill and its adapter, and Copilot's own skill is left alone.
+        self.assertTrue((self.agents_dir / "alpha" / "SKILL.md").is_file())
+        self.assertEqual("native Copilot skill\n", native.read_text(encoding="utf-8"))
+
+    def test_the_default_directory_is_not_warned_about(self) -> None:
+        spellings = [self.home / ".copilot", self.home / "other" / ".." / ".copilot", Path(f"{self.home}/.copilot/")]
+        for copilot_home in spellings:
+            with self.subTest(copilot_home=copilot_home):
+                self.assertNotIn("WARNING", self.deploy_ok("--all", copilot_home=copilot_home).output)
+
+    def test_the_default_directory_in_another_case_is_warned_about_as_copilot_compares_it(self) -> None:
+        # Copilot CLI compares COPILOT_HOME with its default by spelling, letter case included, on Windows too.
+        copilot_home = Path(str(self.home / ".copilot").upper())
+        output = self.deploy_ok("--all", copilot_home=copilot_home).output
+        self.assertIn(self.warning(forward(copilot_home)), unwrapped(output))
+
+    def test_a_canary_deployment_ignores_copilot_home(self) -> None:
+        self.write(self.copilot_home / "skills" / "alpha" / "SKILL.md", "native Copilot skill\n")
+        canary = self.root / "canary"
+        canary.mkdir()
+        output = self.deploy_ok("--canary-home", str(canary), "--all", copilot_home=self.copilot_home).output
+        self.assertNotIn("WARNING", output)
+
+    def test_the_entry_point_reads_copilot_home(self) -> None:
+        source_id = json.loads((REPOSITORY_ROOT / "source.json").read_text(encoding="utf-8"))["id"]
+        self.make_config(source_id)
+        environment = {"HOME": str(self.home), "USERPROFILE": str(self.home), "COPILOT_HOME": str(self.copilot_home)}
+        result = self.run_entry_point("--all", "--dry-run", environment=environment)
+        self.assertEqual(0, result.code, result.output)
+        self.assertIn(self.warning(forward(self.copilot_home)), unwrapped(result.output))
+        self.assertFalse(self.copilot_home.exists())
 
 
 # Run deploy.py as written in a child Python whose deploy and check commands raise past everything they handle, so the
