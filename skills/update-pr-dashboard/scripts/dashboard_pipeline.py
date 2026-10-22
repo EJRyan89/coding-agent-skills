@@ -1,7 +1,8 @@
 """Deterministic update-pr-dashboard steps, so the orchestrating agent only asks the user about reviews.
 
     collect  read every open pull request and its reviewed head for the selected repositories into a tracker input file
-             (by default in a new temporary directory)
+             (by default in a new temporary directory), and, for a repository set, name each repository outside it in
+             which the configured user authors, is asked to review, or has reviewed an open pull request
     update   render the owned dashboard section from that file, with every other argument taken from the configuration,
              name each review that went stale since the last update, and record the pull requests the tracker holds
              and their reviews beside the configuration
@@ -9,6 +10,10 @@
              before it is written; a set must name a pull request that record holds, and the listing marks each
              override it does not, but it reads nothing from GitHub, so a closed pull request's override clears like
              any other
+    repository
+             add a repository to the configuration and to a repository set, by default the one `collect` reads,
+             validating the whole configuration before it is written; a repository with no entry yet gets the
+             generic reviewer
     review-arguments
              print the `review-prs` arguments for the candidates the user confirmed, read from that record and the
              configuration's overrides, or name the confirmed stale ones when the re-review scope is still to be asked
@@ -21,6 +26,7 @@ last line and exit 1; only a usage error exits 2.
 from __future__ import annotations
 
 import argparse
+import copy
 import sys
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -45,7 +51,9 @@ from review_config import (
     default_config_path,
     load_config,
     resolve_repositories,
+    selected_repository_set,
     validate_config,
+    validate_repository_identity,
 )
 from review_flags import FlagError, default_flags_path, load_store
 from review_github import READ, GitHubClient
@@ -117,6 +125,30 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {{
         ),
         ("participants", "login"),
     )
+}
+# Every open pull request one search matches, each read only for its repository's name.
+SEARCH_QUERY = """
+query($q: String!, $after: String) {
+  search(type: ISSUE, query: $q, first: 100, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { ... on PullRequest { repository { nameWithOwner } } }
+  }
+}
+""".strip()
+# The searches whose repositories a tracked set should hold: open pull requests the user authored, is asked to review,
+# or has reviewed, outside archived repositories, which take no new pull requests.
+UNTRACKED_SEARCHES = ("author", "review-requested", "reviewed-by")
+# The entry a repository added without one gets: the generic reviewer, the one reviewer that needs no checkout or
+# review skill of the repository's own, so it is valid for any repository.
+GENERIC_REPOSITORY_ENTRY: dict[str, Any] = {
+    "reviewer": {
+        "id": "generic",
+        "protocol_version": 1,
+        "trusted_ref": None,
+        "scope": "generic",
+        "manifest_path": None,
+    },
+    "checkout_path": None,
 }
 GHOST_LOGIN = "ghost"
 TRACKER_RECORD = "tracker.json"
@@ -290,6 +322,30 @@ def _since_review(ledger: list[LedgerEntry], baseline: int) -> dict[str, int]:
     return {"version": baseline, "new": new, "addressed": addressed}
 
 
+@dataclass
+class Collection:
+    """Each selected repository's open-pull count or its error, and, for a collection of a repository set, the
+    repositories outside it in which the user has an open pull request to track, or why they could not be found.
+    `untracked` is None for named repositories, which are not a set the user keeps."""
+
+    results: dict[str, int | str]
+    untracked: list[str] | None = None
+    untracked_error: str | None = None
+
+
+def untracked_repositories(github: GitHubClient, login: str, tracked: Iterable[str]) -> list[str]:
+    """The repositories, lowercase and sorted, outside `tracked` that hold an open pull request `login` authored, is
+    asked to review, or has reviewed."""
+    found: set[str] = set()
+    for qualifier in UNTRACKED_SEARCHES:
+        query = f"is:pr is:open archived:false {qualifier}:{login}"
+        for node in github.graphql_nodes(SEARCH_QUERY, {"q": query}, ("search",)):
+            name = READ.json_object(node.get("repository", {}), "search node.repository").get("nameWithOwner")
+            if name is not None:
+                found.add(validate_repository_identity(name, "search node.repository.nameWithOwner"))
+    return sorted(found - set(tracked))
+
+
 def collect(
     output: Path,
     *,
@@ -297,12 +353,14 @@ def collect(
     repository_set: str | None = None,
     config_path: Path | None = None,
     services: Services | None = None,
-) -> dict[str, int | str]:
-    """Each selected repository's open-pull count, or its error.
+) -> Collection:
+    """Each selected repository's open-pull count, or its error, and, when no repositories are named, the
+    repositories outside the selected set that `untracked_repositories` finds.
 
     The input file is written only when every repository succeeded. Rendering from a partial collection would
     silently drop the failed repositories' rows, so a failure leaves the dashboard to keep its previous rows.
-    Missing GitHub CLI, authentication, and rate-limit failures stop the collection at once.
+    Missing GitHub CLI, authentication, and rate-limit failures stop the collection at once. A failed search for
+    untracked repositories is reported rather than failing the collection, since it changes no row.
     """
     services = services or Services()
     config = load_config(config_path)
@@ -350,7 +408,13 @@ def collect(
         items.extend(collected)
     if all(isinstance(value, int) for value in results.values()):
         atomic_write_json(output, validate_items(items))
-    return results
+    collection = Collection(results)
+    if repositories is None:
+        try:
+            collection.untracked = untracked_repositories(services.github, login, selected)
+        except (GitHubError, ConfigurationError) as exc:
+            collection.untracked_error = str(exc)
+    return collection
 
 
 def update(
@@ -441,36 +505,81 @@ def _add_change(changes: dict[str, str | None], key: str, status: str | None) ->
     changes[key] = status
 
 
+def rewrite_config(edit: Callable[[dict[str, Any], dict[str, Any]], None], config_path: Path | None = None) -> Path:
+    """Change the configuration file in one validated write, through `edit`, which changes the value as the user
+    wrote it in place, given beside it in the normalized form, or raises to write nothing.
+
+    Every other value is kept as the user wrote it rather than in `write_config`'s normalized form, which would fill
+    in every default, and it is validated exactly as `review_config.py write` validates it, before `edit` and, before
+    and after it is serialized, after it. The layout is normalized, keys sorted and indented two spaces as that command
+    writes them, so a file it wrote changes only in what `edit` changed; keeping an arbitrary hand layout would need an
+    indentation guess in the shared writer, and JSON holds no comments to lose. A configuration `replacement` refuses
+    is not written either. The write replaces the file the configuration path leads to, through any symbolic link, and
+    keeps that file's mode."""
+    path = config_path or default_config_path()
+    target, mode = replacement(path)
+    raw = read_json(path)
+    edit(raw, validate_config(raw))
+    atomic_write_json(target, raw, validator=validate_config, mode=mode)
+    return path
+
+
 def change_overrides(
     sets: list[str], clears: list[str], *, config_path: Path | None = None
 ) -> tuple[Path, dict[str, str | None]]:
-    """Set and clear status overrides in one validated write, changing no other value in the configuration file.
-
-    Every other value is kept as the user wrote it rather than in `write_config`'s normalized form, which would fill
-    in every default, and it is validated exactly as `review_config.py write` validates it, before and after it is
-    serialized. The layout is normalized, keys sorted and indented two spaces as that command writes them, so a file it
-    wrote changes only in its overrides; keeping an arbitrary hand layout would need an indentation guess in the
-    shared writer, and JSON holds no comments to lose. A change that fails, such as a computed state, a malformed key,
-    clearing an override that is not set, or setting one for a pull request the tracker does not hold, writes
-    nothing, as does a configuration `replacement` refuses. The write replaces the file the configuration path leads
-    to, through any symbolic link, and keeps that file's mode."""
+    """Set and clear status overrides in one `rewrite_config` write, changing no other value in the configuration
+    file. A change that fails, such as a computed state, a malformed key, clearing an override that is not set, or
+    setting one for a pull request the tracker does not hold, writes nothing."""
     path = config_path or default_config_path()
-    target, mode = replacement(path)
     changes = override_changes(sets, clears)
-    raw = read_json(path)
-    validate_config(raw)
-    dashboard = raw.setdefault("dashboard", {})
-    current = dashboard.get("status_overrides", {})
-    present = {_pull_key(key) for key in current}
-    missing = [key for key, status in changes.items() if status is None and key not in present]
-    if missing:
-        raise TrackerError(f"No status override for {missing[0]}")
-    kept = {key: status for key, status in current.items() if _pull_key(key) not in changes}
-    dashboard["status_overrides"] = {**kept, **{key: status for key, status in changes.items() if status is not None}}
-    validate_config(raw)
-    _refuse_untracked([key for key, status in changes.items() if status is not None], path)
-    atomic_write_json(target, raw, validator=validate_config, mode=mode)
-    return path, changes
+
+    def edit(raw: dict[str, Any], _: dict[str, Any]) -> None:
+        dashboard = raw.setdefault("dashboard", {})
+        current = dashboard.get("status_overrides", {})
+        present = {_pull_key(key) for key in current}
+        missing = [key for key, status in changes.items() if status is None and key not in present]
+        if missing:
+            raise TrackerError(f"No status override for {missing[0]}")
+        kept = {key: status for key, status in current.items() if _pull_key(key) not in changes}
+        dashboard["status_overrides"] = {
+            **kept,
+            **{key: status for key, status in changes.items() if status is not None},
+        }
+        validate_config(raw)
+        _refuse_untracked([key for key, status in changes.items() if status is not None], path)
+
+    return rewrite_config(edit, path), changes
+
+
+def add_repositories(
+    repositories: list[str], *, repository_set: str | None = None, config_path: Path | None = None
+) -> tuple[Path, str, list[tuple[str, bool]]]:
+    """Add each repository to a repository set in one `rewrite_config` write, giving one with no entry under
+    `repositories` the generic reviewer's entry and keeping the entry of one that has its own. The set is the named
+    one, else the one `collect` reads without a scope. Return the configuration, the set, and each repository,
+    lowercase as the configuration matches it, with whether its entry was added. A malformed identity, a repository
+    named twice or already in the set, and a set the configuration does not name are refused, writing nothing."""
+    identities = [validate_repository_identity(repository) for repository in repositories]
+    for index, identity in enumerate(identities):
+        if identity in identities[:index]:
+            raise ConfigurationError(f"Repository {identity} is named more than once")
+    added: list[tuple[str, bool]] = []
+    chosen = ""
+
+    def edit(raw: dict[str, Any], config: dict[str, Any]) -> None:
+        nonlocal chosen
+        chosen = selected_repository_set(config, repository_set=repository_set, operation="update-pr-dashboard")
+        if chosen not in config["repository_sets"]:
+            raise ConfigurationError(f"Unknown repository set: {chosen}")
+        for identity in identities:
+            if identity in config["repository_sets"][chosen]:
+                raise ConfigurationError(f"Repository {identity} is already in repository set {chosen}")
+            if identity not in config["repositories"]:
+                raw.setdefault("repositories", {})[identity] = copy.deepcopy(GENERIC_REPOSITORY_ENTRY)
+            raw["repository_sets"][chosen].append(identity)
+            added.append((identity, identity not in config["repositories"]))
+
+    return rewrite_config(edit, config_path), chosen, added
 
 
 def _refuse_untracked(keys: list[str], config_path: Path) -> None:
@@ -554,6 +663,11 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
     override_parser.add_argument(
         "--clear", action="append", default=[], dest="clears", metavar="OWNER/REPO#N", help="repeatable"
     )
+    repository_parser = commands.add_parser("repository")
+    repository_parser.add_argument(
+        "--add", action="append", required=True, dest="additions", metavar="OWNER/REPO", help="repeatable"
+    )
+    repository_parser.add_argument("--repository-set", help="defaults to the set collect reads without a scope")
     arguments_parser = commands.add_parser("review-arguments")
     arguments_parser.add_argument(
         "--confirm",
@@ -572,30 +686,10 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
             return _override(args.sets, args.clears, args.config)
         if args.command == "review-arguments":
             return _review_arguments(args.confirmed, args.scope, args.config)
+        if args.command == "repository":
+            return _repository(args.additions, args.repository_set, args.config)
         if args.command == "collect":
-            output = working_path(args.output, "update-pr-dashboard-input-", "input.json")
-            results = collect(
-                output,
-                repositories=args.repositories,
-                repository_set=args.repository_set,
-                config_path=args.config,
-                services=services,
-            )
-            for repository, result in results.items():
-                print(
-                    f"REPOSITORY {repository} pulls={result}"
-                    if isinstance(result, int)
-                    else f"REPOSITORY_FAILED {repository} {flat_text(result)}"
-                )
-            failed = sum(1 for result in results.values() if not isinstance(result, int))
-            if failed:
-                print(
-                    f"FAILED {failed} of {len(results)} repositories could not be collected; no input was written "
-                    "and the dashboard keeps its previous rows"
-                )
-                return 1
-            print(f"INPUT {output}")
-            return 0
+            return _collect(args, services)
         calls = services.github.call_count
         dashboard, rows, stale = update(args.input, removals=args.remove, config_path=args.config, services=services)
         print(f"UPDATED {dashboard} rows={len(rows)}")
@@ -614,6 +708,37 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
     except EXPECTED_ERRORS as exc:
         print(f"FAILED {flat_text(str(exc))}")
         return 1
+
+
+def _collect(args: argparse.Namespace, services: Services) -> int:
+    output = working_path(args.output, "update-pr-dashboard-input-", "input.json")
+    collection = collect(
+        output,
+        repositories=args.repositories,
+        repository_set=args.repository_set,
+        config_path=args.config,
+        services=services,
+    )
+    results = collection.results
+    for repository, result in results.items():
+        print(
+            f"REPOSITORY {repository} pulls={result}"
+            if isinstance(result, int)
+            else f"REPOSITORY_FAILED {repository} {flat_text(result)}"
+        )
+    for repository in collection.untracked or []:
+        print(f"UNTRACKED_REPOSITORY {repository}")
+    if collection.untracked_error is not None:
+        print(f"UNTRACKED_CHECK_FAILED {flat_text(collection.untracked_error)}")
+    failed = sum(1 for result in results.values() if not isinstance(result, int))
+    if failed:
+        print(
+            f"FAILED {failed} of {len(results)} repositories could not be collected; no input was written "
+            "and the dashboard keeps its previous rows"
+        )
+        return 1
+    print(f"INPUT {output}")
+    return 0
 
 
 def _review_arguments(confirmed: list[str], scope: str | None, config_path: Path | None) -> int:
@@ -635,6 +760,16 @@ def _override(sets: list[str], clears: list[str], config_path: Path | None) -> i
     path, changes = change_overrides(sets, clears, config_path=config_path)
     for key, change in changes.items():
         print(f"CLEARED {key}" if change is None else f"SET {key} {change}")
+    print(f"WROTE {path}")
+    return 0
+
+
+def _repository(additions: list[str], repository_set: str | None, config_path: Path | None) -> int:
+    path, chosen, added = add_repositories(additions, repository_set=repository_set, config_path=config_path)
+    for repository, entry in added:
+        if entry:
+            print(f"ADDED_REPOSITORY {repository} reviewer=generic")
+        print(f"ADDED_TO_SET {chosen} {repository}")
     print(f"WROTE {path}")
     return 0
 

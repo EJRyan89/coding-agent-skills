@@ -13,7 +13,7 @@ Every step below is one command of the dashboard pipeline script, run exactly as
    ```bash
    {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/dashboard_pipeline.py" collect
    ```
-   It prints `REPOSITORY <owner/repo> pulls=<count>` per repository and `INPUT <input file>`, the file it wrote under a new temporary directory. Use the same scope on every run, or rows for the other repositories disappear. If any repository prints `REPOSITORY_FAILED <owner/repo> <error>`, no input is written and the command ends with a `FAILED` line: report each error and stop, so the dashboard keeps its previous rows rather than losing that repository's.
+   It prints `REPOSITORY <owner/repo> pulls=<count>` per repository and `INPUT <input file>`, the file it wrote under a new temporary directory. Use the same scope on every run, or rows for the other repositories disappear. If any repository prints `REPOSITORY_FAILED <owner/repo> <error>`, no input is written and the command ends with a `FAILED` line: report each error and stop, so the dashboard keeps its previous rows rather than losing that repository's. For a set, it also prints `UNTRACKED_REPOSITORY <owner/repo>` for each repository outside the set where the user authors, is asked to review, or has reviewed an open pull request: report them, since their pull requests never reach the dashboard (adding one is below). `UNTRACKED_CHECK_FAILED <reason>` means that search failed; report it and carry on.
 2. **Update** the dashboard from the `INPUT` file, adding `--remove "<owner/repo#number>"` for each removal and `--candidates` unless `--no-review` was given:
    ```bash
    {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/dashboard_pipeline.py" update --input "<input file>" --candidates
@@ -35,3 +35,9 @@ If the user wants a pull request shown under a status of their own, such as `on 
 {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/dashboard_pipeline.py" override --set "<owner/repo#number>=<status>"
 ```
 It prints `SET` and `WROTE <configuration>`; a `FAILED` line naming the pull request means the tracker does not hold it, so check the number with the user, or run steps 1 and 2 first if the pull request is new. `--clear "<owner/repo#number>"` instead unpins one, printing `CLEARED`; nothing else clears an override, even once its pull request has closed. `override` alone prints `OVERRIDE <owner/repo#number> <status>` for each, or `OVERRIDE_UNTRACKED` for one whose pull request the tracker no longer holds, which the user may want to clear, then `OVERRIDES <count>`.
+
+If the user wants a repository tracked, such as one an `UNTRACKED_REPOSITORY` line named, add it with this command, which validates the configuration before writing it; never edit the configuration by hand:
+```bash
+{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/dashboard_pipeline.py" repository --add "<owner/repo>"
+```
+It adds the repository to the set step 1 reads without a scope, or to the user's `--repository-set NAME`. It prints `ADDED_REPOSITORY <owner/repo> reviewer=generic` when the repository had no entry and now has the generic reviewer, `ADDED_TO_SET <set> <owner/repo>`, and `WROTE <configuration>`. A `FAILED` line names a repository already in the set, an unknown set, or a configuration that does not validate; report it. Its pull requests appear from the next collection.
