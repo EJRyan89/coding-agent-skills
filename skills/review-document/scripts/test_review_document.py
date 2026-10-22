@@ -1654,12 +1654,19 @@ class OutputTests(DocumentTestCase):
     def test_an_output_whose_path_a_quoted_argument_does_not_keep_is_refused_before_anything_is_written(self) -> None:
         document = self.root / "plan.md"
         document.write_bytes(b"# Plan\n")
-        for character in ("$", "`"):
+        # Each character of UNQUOTABLE, and a line break, named as the refusal names it. Windows reads a backslash as a
+        # separator, so only another platform's path can hold one.
+        cases = [("$", "$"), ("`", "`"), ('"', '"'), ("\n", "a line break")]
+        if sys.platform != "win32":
+            cases.append(("\\", "\\"))
+        self.assertEqual(review_document.UNQUOTABLE, {held for held, _ in cases if held != "\n"} | {"\\"})
+        for character, named in cases:
             target = self.root / f"out{character}put"
             with self.subTest(character=character):
                 code, lines = run_main("build", str(document), "--output", str(target))
-                reason = f"holds {character}, which a quoted argument does not keep; name another --output"
-                self.assertEqual((1, [f"FAILED {target.as_posix()} {reason}"]), (code, lines))
+                reason = f"holds {named}, which a quoted argument does not keep; name another --output"
+                shown = flat_text(target.as_posix())
+                self.assertEqual((1, [f"FAILED {shown} {reason}"]), (code, lines))
                 self.assertFalse(target.exists())
 
     def test_a_temporary_output_a_quoted_argument_does_not_keep_is_refused_and_removed(self) -> None:

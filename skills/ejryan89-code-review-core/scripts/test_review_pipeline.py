@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import review_batches
+import review_canary
 import review_dispatch
 import review_documents
 import review_guard as guard
@@ -5094,9 +5095,11 @@ class FixtureCanaryTests(PipelineFixture):
                 prior_path = self.root / f"{name}.json"
                 prior_path.write_text(json.dumps(value), encoding="utf-8")
                 directory = self.fixture(name, FIXTURE_HEAD, **pull)
-                code, lines = self.fixture_main(
-                    "prepare", "--canary", "--fixture", str(directory), "--re-review", "--prior", str(prior_path)
-                )
+                with mock.patch.object(review_canary, "_Repository", wraps=review_canary._Repository) as repository:
+                    code, lines = self.fixture_main(
+                        "prepare", "--canary", "--fixture", str(directory), "--re-review", "--prior", str(prior_path)
+                    )
+                repository.assert_not_called()
                 self.assertEqual(1, code)
                 self.assertEqual(1, len(lines), lines)
                 self.assertTrue(lines[0].startswith(f"FAILED {directory} "), lines)
@@ -6057,7 +6060,8 @@ class GitHubReadTests(unittest.TestCase):
 
 class RunAndBatchFieldTests(unittest.TestCase):
     """The run file and the batch file are each refused, field by field, in the one shape a wrong kind takes, before
-    anything else is read; a schema version of the right kind but another value keeps its own refusal."""
+    anything else is read; a batch's schema version of the right kind but another value keeps its own refusal. A
+    boolean or float version, and a run's other version, are refused in test_review_versions.py."""
 
     # Each wrong-kind case: the file's content, the field it names, what it expects there, and what it found.
     CASES: tuple[tuple[Any, str, str, str], ...] = (
@@ -6065,8 +6069,6 @@ class RunAndBatchFieldTests(unittest.TestCase):
         ("run", "", "an object", 'string "run"'),
         ({}, ".schema_version", "an integer", "null"),
         ({"schema_version": "1"}, ".schema_version", "an integer", 'string "1"'),
-        ({"schema_version": True}, ".schema_version", "an integer", "boolean true"),
-        ({"schema_version": 1.0}, ".schema_version", "an integer", "number 1.0"),
         ({"schema_version": [1]}, ".schema_version", "an integer", "an array"),
         ({"schema_version": {"value": 1}}, ".schema_version", "an integer", "an object"),
     )
@@ -6089,11 +6091,6 @@ class RunAndBatchFieldTests(unittest.TestCase):
         self.assert_each_wrong_kind_is_refused(
             "run", self.root / review_run.RUN_FILE, lambda: review_run.load_run(self.root)
         )
-        (self.root / review_run.RUN_FILE).write_text(json.dumps({"schema_version": 2}), encoding="utf-8")
-        with self.assertRaises(review_run.PipelineError) as raised:
-            review_run.load_run(self.root)
-        self.assertIs(review_run.PipelineError, type(raised.exception))
-        self.assertEqual(f"{self.root} is not a prepared review run", str(raised.exception))
 
     def test_a_batch_file_of_the_wrong_kind_is_refused_by_field_before_the_configuration_is_read(self) -> None:
         batch = self.root / "batch.json"

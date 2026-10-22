@@ -37,7 +37,13 @@ def prepared_state(**fields: Any) -> dict[str, Any]:
         "request_path": "/run/request.json",
         "reviewer_root": "/run/reviewer",
         "result_path": "/run/result.json",
-        "adapter": {"name": "example-review", "scope": "repository"},
+        "adapter": {
+            "name": "example-review",
+            "scope": "repository",
+            "source": "base",
+            "source_commit": "f" * 40,
+            "source_hashes": {"review/SKILL.md": "a" * 64},
+        },
         "roles": [
             {"id": "generic-review", "prompt_file": "/run/work/generic.md", "result_file": "/run/work/generic.json"},
             {
@@ -123,10 +129,29 @@ def test_a_run_prepared_before_an_optional_field_loads_without_it(tmp_path: Path
 def test_a_run_prepared_before_every_optional_field_loads_without_them(tmp_path: Path) -> None:
     state = {name: value for name, value in prepared_state().items() if name not in OPTIONAL_FIELDS}
     state["roles"] = [{key: role[key] for key in ("id", "prompt_file", "result_file")} for role in state["roles"]]
+    state["adapter"] = {"name": "example-review", "scope": "repository"}
     write_run(tmp_path, state)
     assert state == review_run.load_run(tmp_path)
     assert set(OPTIONAL_FIELDS) == review_run.RUN_OPTIONAL_FIELDS
     assert {"model", "effort"} == review_run.ROLE_OPTIONAL_FIELDS
+    assert {"source", "source_commit", "source_hashes"} == review_run.ADAPTER_OPTIONAL_FIELDS
+    assert {"prior_record"} == review_run.FIXTURE_OPTIONAL_FIELDS
+
+
+# A fixture canary's paths as prepare writes them for a re-review, and as a run prepared before the copy of the prior
+# record was kept has them.
+FIXTURE = {"directory": "/fixtures/one", "prior": "/records/v1.json", "prior_record": "/run/prior-record.json"}
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [FIXTURE, {**FIXTURE, "prior": None, "prior_record": None}, {"directory": "/fixtures/one", "prior": None}],
+    ids=["re-review", "initial", "before-the-copy"],
+)
+def test_a_fixture_canarys_run_loads_unchanged(tmp_path: Path, fixture: dict[str, Any]) -> None:
+    state = prepared_state(canary=True, fixture=fixture)
+    write_run(tmp_path, state)
+    assert state == review_run.load_run(tmp_path)
 
 
 def _role(index: int, **fields: Any) -> Callable[[dict[str, Any]], object]:
@@ -192,6 +217,53 @@ DAMAGED = [
         _set("result_path", value=""), "run.result_path must be a non-empty string, found an empty string", id="result"
     ),
     pytest.param(_set("adapter", value=None), "run.adapter must be an object, found null", id="adapter"),
+    pytest.param(
+        _drop("adapter", "name"),
+        "run.adapter must be an object with field name, found an object without it",
+        id="adapter-missing-name",
+    ),
+    pytest.param(
+        _set("adapter", "scope", value="team"),
+        'run.adapter.scope must be one of "generic", "repository", found string "team"',
+        id="adapter-scope",
+    ),
+    pytest.param(
+        _set("adapter", "source", value="head"),
+        'run.adapter.source must be one of "generic", "trusted-ref", "base", "default-branch", "generic-fallback", '
+        'found string "head"',
+        id="adapter-source",
+    ),
+    pytest.param(
+        _set("adapter", "source_commit", value="F" * 40),
+        "run.adapter.source_commit must be a lowercase hexadecimal digest of 40 or 64 characters or null, found a "
+        "string with a character that is not a lowercase hexadecimal digit",
+        id="adapter-commit",
+    ),
+    pytest.param(
+        _set("adapter", "source_hashes", "review/SKILL.md", value="abc"),
+        f"run.adapter.source_hashes.review/SKILL.md must be {DIGEST}, found a string of 3 characters",
+        id="adapter-hash",
+    ),
+    pytest.param(
+        _set("adapter", "id", value="example-review"),
+        'run.adapter must be an object of known fields, found unknown field "id"',
+        id="adapter-unknown-field",
+    ),
+    pytest.param(
+        _set("fixture", value={"prior": None}),
+        "run.fixture must be an object with field directory, found an object without it",
+        id="fixture-missing-directory",
+    ),
+    pytest.param(
+        _set("fixture", value={**FIXTURE, "prior_record": 5}),
+        "run.fixture.prior_record must be a non-empty string or null, found integer 5",
+        id="fixture-prior-record",
+    ),
+    pytest.param(
+        _set("fixture", value={**FIXTURE, "prior": ""}),
+        "run.fixture.prior must be a non-empty string or null, found an empty string",
+        id="fixture-prior",
+    ),
     pytest.param(_set("roles", value={}), "run.roles must be an array, found an object", id="roles"),
     pytest.param(
         _drop("roles", 1, "result_file"),
@@ -320,14 +392,6 @@ def test_the_first_damaged_field_is_the_one_named(tmp_path: Path) -> None:
         review_run.load_run(tmp_path)
 
 
-def test_the_schema_version_is_checked_before_any_other_field(tmp_path: Path) -> None:
-    write_run(tmp_path, {"schema_version": 2, "canary": "yes"})
-    with pytest.raises(review_run.PipelineError) as raised:
-        review_run.load_run(tmp_path)
-    assert review_run.PipelineError is type(raised.value)
-    assert f"{tmp_path} is not a prepared review run" == str(raised.value)
-
-
 def _pipeline(*arguments: str) -> tuple[int, str, str]:
     stdout, stderr = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
@@ -335,20 +399,50 @@ def _pipeline(*arguments: str) -> tuple[int, str, str]:
     return code, stdout.getvalue(), stderr.getvalue()
 
 
-@pytest.mark.parametrize(
-    "arguments", [["check"], ["finalize"], ["next-role"], ["dispatch"], ["wait", "--timeout", "1"]], ids=lambda a: a[0]
-)
+# Every step after prepare that reads a run, with the arguments it needs beside --run.
+STEPS = [
+    ["check"],
+    ["finalize"],
+    ["unfinalized"],
+    ["next-role"],
+    ["dispatch"],
+    ["wait", "--timeout", "1"],
+    ["workflow"],
+    ["wait-reviewers", "--timeout", "1"],
+    ["validate-result", "--role", "generic-review"],
+]
+
+# A damaged field of a role, of the adapter, and of a fixture canary's paths, each with its refusal.
+STEP_DAMAGE = [
+    pytest.param(
+        _role(1, model=5), "run.roles[1].model must be a non-empty string or null, found integer 5", id="role-model"
+    ),
+    pytest.param(
+        _drop("adapter", "name"),
+        "run.adapter must be an object with field name, found an object without it",
+        id="adapter-name",
+    ),
+    pytest.param(
+        _set("fixture", value={**FIXTURE, "prior_record": 5}),
+        "run.fixture.prior_record must be a non-empty string or null, found integer 5",
+        id="fixture-prior-record",
+    ),
+]
+
+
+@pytest.mark.parametrize("arguments", STEPS, ids=lambda a: a[0])
+@pytest.mark.parametrize(("change", "message"), STEP_DAMAGE)
 def test_every_step_that_reads_a_damaged_run_names_the_field_in_its_failed_line(
-    tmp_path: Path, arguments: list[str]
+    tmp_path: Path, arguments: list[str], change: Callable[[dict[str, Any]], object], message: str
 ) -> None:
     run = tmp_path.resolve()
     command, *rest = arguments
-    state = prepared_state(dispatch="copilot-host" if command in {"dispatch", "wait"} else "inline")
-    state["roles"][1]["model"] = 5
+    state = prepared_state(canary=True, dispatch="copilot-host" if command in {"dispatch", "wait"} else "inline")
+    change(state)
     write_run(run, state)
     before = (run / review_run.RUN_FILE).read_bytes()
-    message = "run.roles[1].model must be a non-empty string or null, found integer 5"
-    # check and finalize name the run each line is for; a step given one run names only the reason.
-    expected = f"FAILED {run} {message}\n" if command in {"check", "finalize"} else f"FAILED {message}\n"
+    # A step that can take several runs names the run each line is for; a step given one run names only the reason.
+    several = {"check", "finalize", "unfinalized", "wait-reviewers"}
+    expected = f"FAILED {run} {message}\n" if command in several else f"FAILED {message}\n"
     assert (1, expected, "") == _pipeline(command, "--run", str(run), *rest)
     assert before == (run / review_run.RUN_FILE).read_bytes()

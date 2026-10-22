@@ -154,6 +154,12 @@ class VersionBoundaryTests(unittest.TestCase):
                 self.assertEqual(1, result)
                 self.assertEqual(f"FAILED {self.root} {message}\n", stdout.getvalue())
                 self.assertEqual("", stderr.getvalue())
+        # Another version is refused as no prepared run, before the field it would read wrongly.
+        path.write_text(json.dumps({"schema_version": 2, "canary": "yes"}), encoding="utf-8")
+        with self.assertRaises(review_run.PipelineError) as caught:
+            review_run.load_run(self.root)
+        self.assertIs(review_run.PipelineError, type(caught.exception))
+        self.assertEqual(f"{self.root} is not a prepared review run", str(caught.exception))
         value = prepared_state()
         path.write_text(json.dumps(value), encoding="utf-8")
         self.assertEqual(value, review_run.load_run(self.root))

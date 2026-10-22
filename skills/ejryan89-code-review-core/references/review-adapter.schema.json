@@ -16,11 +16,15 @@
   ],
   "properties": {
     "protocol_version": { "type": "integer", "const": 1 },
-    "repository": { "type": "string" },
+    "repository": {
+      "description": "The request's repository, as owner/name in any case.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$"
+    },
     "pull_number": { "type": "integer", "minimum": 1 },
-    "head_sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
-    "summary": { "type": "string", "minLength": 1 },
-    "reviewer": { "type": "string", "minLength": 1 },
+    "head_sha": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+    "summary": { "type": "string", "minLength": 1, "pattern": "\\S" },
+    "reviewer": { "type": "string", "minLength": 1, "pattern": "\\S" },
     "status": {
       "type": "string",
       "enum": ["complete", "partial", "failed"]
@@ -41,22 +45,33 @@
           "source"
         ],
         "properties": {
-          "candidate_key": { "type": "string", "minLength": 1 },
+          "candidate_key": {
+            "description": "Unique among the findings, so another finding's repeats can name it.",
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
           "severity": {
             "type": "string",
             "enum": ["MUST_FIX", "SHOULD_FIX", "SUGGESTION"]
           },
-          "category": { "type": "string", "minLength": 1 },
-          "path": { "type": "string", "minLength": 1 },
+          "category": { "type": "string", "minLength": 1, "pattern": "\\S" },
+          "path": {
+            "description": "A repository-relative POSIX path that stays inside the repository: no backslash, no leading slash or drive letter, and no .. segment.",
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?=[\\s\\S]*\\S)(?!/)(?![A-Za-z]:)(?!(?:[^/]*/)*\\.\\.(?:/|$))[^\\\\]*$"
+          },
           "line": { "type": "integer", "minimum": 1 },
           "title": { "type": "string", "minLength": 1, "maxLength": 120, "pattern": "^\\S(?:.*\\S)?$" },
-          "body": { "type": "string", "minLength": 1 },
-          "evidence": { "type": "string", "minLength": 1 },
-          "source": { "type": "string", "minLength": 1 },
+          "body": { "type": "string", "minLength": 1, "pattern": "\\S" },
+          "evidence": { "type": "string", "minLength": 1, "pattern": "\\S" },
+          "source": { "type": "string", "minLength": 1, "pattern": "\\S" },
           "repeats": {
             "description": "Present only when the finding reports the same problem as another one, so it counts once: another finding's candidate_key, or the ID of a prior finding whose disposition is still_present or partially_addressed. The finding it names must be at least as severe and must not have repeats itself.",
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "pattern": "\\S"
           },
           "analyzer": {
             "description": "Present only when a diagnostic analyzer could catch the finding: a rule in an analyzer the repository already has but does not enforce (available), a rule in an established analyzer it does not use (known), or a mechanically detectable pattern no rule covers (custom-candidate, whose rule is a proposed pattern name).",
@@ -82,7 +97,12 @@
         "additionalProperties": false,
         "required": ["finding_id", "disposition", "rationale"],
         "properties": {
-          "finding_id": { "type": "string", "minLength": 1 },
+          "finding_id": {
+            "description": "The ID of one of the request's prior_findings, each once.",
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
           "disposition": {
             "type": "string",
             "enum": [
@@ -93,7 +113,7 @@
               "unable_to_verify"
             ]
           },
-          "rationale": { "type": "string", "minLength": 1 }
+          "rationale": { "type": "string", "minLength": 1, "pattern": "\\S" }
         }
       }
     },
@@ -105,7 +125,11 @@
         "additionalProperties": false,
         "required": ["comment_id", "disposition", "rationale"],
         "properties": {
-          "comment_id": { "type": "string", "pattern": "^C[1-9][0-9]*$" },
+          "comment_id": {
+            "description": "The ID of one of the request's github_comments, each once.",
+            "type": "string",
+            "pattern": "^C[1-9][0-9]*$"
+          },
           "disposition": {
             "type": "string",
             "enum": [
@@ -116,7 +140,7 @@
               "unable_to_verify"
             ]
           },
-          "rationale": { "type": "string", "minLength": 1 }
+          "rationale": { "type": "string", "minLength": 1, "pattern": "\\S" }
         }
       }
     },

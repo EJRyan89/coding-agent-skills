@@ -2011,13 +2011,19 @@ REJECTED_RESULTS: list[ResultCase] = [
             f"pull_number {value!r}",
             _set(("pull_number",), value),
             F,
-            _wrong("adapter-result.pull_number", "an integer", value),
+            _wrong("adapter-result.pull_number", "an integer of at least 1", value),
             {},
         )
-        # A string, and the right number as a float: a pull number is an integer.
-        for value in ("7", 7.0)
+        # A string, the right number as a float, and zero: a pull number is a positive integer.
+        for value in ("7", 7.0, 0)
     ),
-    ("pull_number missing", _delete(("pull_number",)), F, _wrong("adapter-result.pull_number", "an integer", None), {}),
+    (
+        "pull_number missing",
+        _delete(("pull_number",)),
+        F,
+        _wrong("adapter-result.pull_number", "an integer of at least 1", None),
+        {},
+    ),
     ("head_sha other", _set(("head_sha",), BASE_SHA), R, "Adapter result head SHA does not match request", {}),
     (
         "head_sha uppercase",
@@ -2260,7 +2266,12 @@ RESULT_STAGES: list[tuple[str, Mutation, type[Exception], str]] = [
     ("repository kind", _set(("repository",), None), F, _wrong("adapter-result.repository", TEXT, None)),
     ("repository identity", _set(("repository",), "bad"), C, "Invalid repository identity: 'bad'"),
     ("repository", _set(("repository",), "owner/other"), R, "Adapter result repository does not match request"),
-    ("pull number kind", _set(("pull_number",), "7"), F, _wrong("adapter-result.pull_number", "an integer", "7")),
+    (
+        "pull number kind",
+        _set(("pull_number",), "7"),
+        F,
+        _wrong("adapter-result.pull_number", "an integer of at least 1", "7"),
+    ),
     ("pull number", _set(("pull_number",), 8), R, "Adapter result pull number does not match request"),
     ("head SHA kind", _set(("head_sha",), "2" * 39 + "A"), F, f"{RESULT_SHA} must be {SHA_KIND}, found {NOT_HEX}"),
     ("head SHA", _set(("head_sha",), BASE_SHA), R, "Adapter result head SHA does not match request"),
@@ -2403,7 +2414,11 @@ WRONG_RESULT_KINDS: list[tuple[str, Mutation, str]] = [
         _set(("summary",), ["One problem."]),
         "adapter-result.summary must be a non-empty string, found an array",
     ),
-    ("integer", _set(("pull_number",), 7.0), "adapter-result.pull_number must be an integer, found number 7.0"),
+    (
+        "integer",
+        _set(("pull_number",), 7.0),
+        "adapter-result.pull_number must be an integer of at least 1, found number 7.0",
+    ),
     ("object", _set(RESULT_FINDING, None), "adapter-result.findings[0] must be an object, found null"),
     ("array", _set(("findings",), "key-a"), 'adapter-result.findings must be an array, found string "key-a"'),
     (

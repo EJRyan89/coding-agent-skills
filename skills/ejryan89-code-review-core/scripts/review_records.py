@@ -511,7 +511,7 @@ def _validate_result_request(
     repository = READ.string(value.get("repository"), "adapter-result.repository")
     if validate_repository_identity(repository) != expected_repository.lower():
         raise RecordError("Adapter result repository does not match request")
-    if READ.integer(value.get("pull_number"), "adapter-result.pull_number") != expected_number:
+    if READ.integer(value.get("pull_number"), "adapter-result.pull_number", minimum=1) != expected_number:
         raise RecordError("Adapter result pull number does not match request")
     if READ.hex_digest(value.get("head_sha"), "adapter-result.head_sha", 40, 64) != expected_head_sha:
         raise RecordError("Adapter result head SHA does not match request")

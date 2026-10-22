@@ -220,15 +220,22 @@ def _comments(threads: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{"id": f"C{index}", **thread} for index, thread in enumerate(threads, start=1)]
 
 
-@contextmanager
-def fixture_change(directory: Path, runner: Runner) -> Iterator[FixtureChange]:
-    """The fixture's pull request, its commits in a throwaway repository that exists until the block ends, unless the
-    caller moves it elsewhere first."""
-    directory = directory.resolve()
+def read_fixture_pull(directory: Path) -> dict[str, Any]:
+    """The fixture directory's pull.json, validated."""
     try:
-        pull = validate_fixture_pull(read_json(directory / PULL_FILE))
+        return validate_fixture_pull(read_json(directory.resolve() / PULL_FILE))
     except PersistenceError as exc:
         raise FixtureError(str(exc)) from exc
+
+
+@contextmanager
+def fixture_change(directory: Path, runner: Runner, pull: dict[str, Any] | None = None) -> Iterator[FixtureChange]:
+    """The fixture's pull request, its commits in a throwaway repository that exists until the block ends, unless the
+    caller moves it elsewhere first. `pull` is the fixture's pull.json as `read_fixture_pull` read it, which is read
+    here when not given."""
+    directory = directory.resolve()
+    if pull is None:
+        pull = read_fixture_pull(directory)
     # TemporaryDirectory's cleanup also removes the object files git leaves read-only, which Windows will not delete.
     with tempfile.TemporaryDirectory(prefix="code-review-fixture-", ignore_cleanup_errors=True) as temporary:
         # A folder of its own, so prepare can move the repository into the run, where a lazy snapshot's reviewers

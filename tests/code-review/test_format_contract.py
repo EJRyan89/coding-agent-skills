@@ -19,7 +19,10 @@ and `decide-custom` write; the report's shape is also pinned per schema version,
 version. The synthesis result is judged by `check_result` against the context it was written for. A specialist result
 is judged by `load_role_result` against the role each fixture names. The adapter result is described
 by `review-adapter.schema.json`, which an entrypoint reviewer's author reads, and its objects get the same checks from
-the schema's `properties`, `required`, `type`, and `enum`.
+the schema's `properties`, `required`, `type`, and `enum`. Its string and integer fields are also probed with values
+their `pattern`, `minLength`, `maxLength`, and `minimum` decide: the validator accepts a probe exactly when the schema
+does, except that a field the validator also checks against the request or the other findings, which its
+`description` says, may be refused where the schema accepts it.
 """
 
 from __future__ import annotations
@@ -1453,17 +1456,22 @@ def adapter_fixtures() -> list[Fixture]:
     )
 
     def judge(repository: str, number: int, prior_findings: list[dict[str, Any]], comments: list[str]) -> Accepts:
-        return _judge(
-            lambda value: validate_adapter_result(
+        # A result is judged against the request it answers: one for its own repository, pull request, and head, when
+        # each is of the kind a request holds, so a probe of those fields meets the validator's reading of them.
+        def validate(value: Any) -> Any:
+            echoed = value if isinstance(value, dict) else {}
+            given = (echoed.get("repository"), echoed.get("pull_number"), echoed.get("head_sha"))
+            return validate_adapter_result(
                 value,
-                expected_repository=repository,
-                expected_number=number,
-                expected_head_sha=SHA,
+                expected_repository=given[0] if isinstance(given[0], str) else repository,
+                expected_number=given[1] if type(given[1]) is int else number,
+                expected_head_sha=given[2] if isinstance(given[2], str) else SHA,
                 prior_ids=[item["id"] for item in prior_findings],
                 comment_ids=comments,
                 prior_severities={item["id"]: item["severity"] for item in prior_findings},
             )
-        )
+
+        return _judge(validate)
 
     return [
         Fixture("published adapter-result.json", published, judge("example/example-repository", 17, [], [])),
@@ -1521,6 +1529,110 @@ def schema_rows(described: dict[str, Any]) -> dict[str, Row]:
             types = None
         rows[name] = Row(name, types, "yes" if name in described.get("required", ()) else "no", None, values, "")
     return rows
+
+
+# String and integer values to probe each adapter-result field with: blank, padded, multi-line, and long strings,
+# digests of each length, repository identities, paths that leave or stay in the repository, comment IDs, analyzer
+# names and rules, and integers around a minimum.
+STRING_PROBES = (
+    "",
+    " ",
+    "\t\n",
+    "x",
+    " x",
+    "x ",
+    "a\nb",
+    "a" * 60,
+    "a" * 61,
+    "a" * 100,
+    "a" * 101,
+    "a" * 120,
+    "a" * 121,
+    "b" * 40,
+    "b" * 50,
+    "b" * 64,
+    "B" * 40,
+    "owner/name",
+    "Owner/Name.js",
+    "-owner/name",
+    "owner/name/more",
+    "src/a.cs",
+    "src/..x/a.cs",
+    "../a.cs",
+    "src/../a.cs",
+    "src/..",
+    "/a.cs",
+    "src\\a.cs",
+    "C:a.cs",
+    "C1",
+    "C0",
+    "C12",
+    "kebab-rule",
+    "Kebab-Rule",
+    "a b",
+    "a`b",
+    "a|b",
+    "<a>",
+)
+INTEGER_PROBES = (-1, 0, 1, 2)
+# The adapter-result fields the validator also checks against the request or the other findings, each of which says
+# so in its description: a candidate key must be unique, a repeats must name a finding, and a disposition must answer
+# one of the request's prior findings or comments.
+CROSS_CHECKED = frozenset({"candidate_key", "repeats", "finding_id", "comment_id"})
+
+
+def schema_accepts(described: dict[str, Any], name: str, target: dict[str, Any], value: Any) -> bool:
+    """Whether the schema of the object `described` accepts `value` as its field `name` in `target`, by the property's
+    type, listed values, and string and number constraints, and its `then` when the object meets its `if`."""
+    constraints = [described["properties"][name]]
+    condition = described.get("if", {}).get("properties", {})
+    changed = {**target, name: value}
+    if "then" in described and all(
+        "const" not in each or changed.get(key, each["const"]) == each["const"] for key, each in condition.items()
+    ):
+        constraints.append(described["then"]["properties"].get(name, {}))
+    return all(_meets(constraint, value) for constraint in constraints)
+
+
+def _meets(constraint: dict[str, Any], value: Any) -> bool:
+    declared = constraint.get("type")
+    if declared is not None and json_type(value) not in ([declared] if isinstance(declared, str) else declared):
+        return False
+    if "const" in constraint and value != constraint["const"]:
+        return False
+    if "enum" in constraint and value not in constraint["enum"]:
+        return False
+    if isinstance(value, str):
+        if len(value) < constraint.get("minLength", 0) or len(value) > constraint.get("maxLength", len(value)):
+            return False
+        # The schema's patterns are ECMA-262, where `$` without the multiline flag is only the end of the string.
+        if "pattern" in constraint and re.search(re.sub(r"(?<!\\)\$", r"\\Z", constraint["pattern"]), value) is None:
+            return False
+    return json_type(value) != "integer" or value >= constraint.get("minimum", value)
+
+
+def schema_constraint_problems(path: str, described: dict[str, Any], found: list[Instance]) -> list[str]:
+    """Where the schema of the object at `path` and the validator disagree on a probe of a string or integer field."""
+    problems: list[str] = []
+    for name, prop in described["properties"].items():
+        kind = prop.get("type")
+        probes = {"string": STRING_PROBES, "integer": INTEGER_PROBES}.get(kind, ()) if isinstance(kind, str) else ()
+        if not probes or "enum" in prop or "const" in prop:
+            continue
+        if name in CROSS_CHECKED and "description" not in prop:
+            problems.append(f"{path}: {name} is checked further by the validator, but its description does not say so")
+        for item in found:
+            if item.fixture.accepts is None or name not in item.object:
+                continue
+            for probe in probes:
+                by_schema = schema_accepts(described, name, item.object, probe)
+                by_validator = item.accepts(_set(name, probe))
+                where = f"{path}: {name} {probe!r} in {item.fixture.name}"
+                if by_validator and not by_schema:
+                    problems.append(f"{where} is accepted by the validator but refused by the schema")
+                elif by_schema and not by_validator and name not in CROSS_CHECKED:
+                    problems.append(f"{where} is accepted by the schema but refused by the validator")
+    return problems
 
 
 class FormatContractTest(unittest.TestCase):
@@ -1617,6 +1729,48 @@ class FormatContractTest(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertIs(False, described["additionalProperties"])
                 self.assertEqual([], check_table(path, schema_rows(described), instances((path,), self.fixtures)))
+
+    def test_adapter_schema_string_and_integer_constraints_agree_with_the_adapter_validator(self) -> None:
+        schema = json.loads((REFERENCES / "review-adapter.schema.json").read_text(encoding="utf-8"))
+        for path, described in schema_tables(schema):
+            with self.subTest(path=path):
+                found = instances((path,), self.fixtures)
+                self.assertEqual([], schema_constraint_problems(path, described, found))
+
+    def test_a_loosened_or_narrowed_adapter_schema_disagrees_with_the_adapter_validator(self) -> None:
+        schema = json.loads((REFERENCES / "review-adapter.schema.json").read_text(encoding="utf-8"))
+        top, findings = schema, schema["properties"]["findings"]["items"]
+        for name, described, named, change, expected in (
+            (
+                "head",
+                top,
+                "head_sha",
+                {"pattern": "^[0-9a-f]{40,64}$"},
+                "head_sha 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
+            (
+                "blank summary",
+                top,
+                "summary",
+                {"pattern": "."},
+                "summary ' ' in published adapter-result.json is accepted",
+            ),
+            ("unsafe path", findings, "path", {"pattern": "."}, "path '../a.cs' in published adapter-result.json is"),
+            ("pull floor", top, "pull_number", {"minimum": 2}, "pull_number 1 in published adapter-result.json is acc"),
+            ("title length", findings, "title", {"maxLength": 100}, "title 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            ("unsaid check", findings, "candidate_key", {"description": None}, "candidate_key is checked further"),
+        ):
+            with self.subTest(changed=name):
+                doctored = copy.deepcopy(described)
+                prop = doctored["properties"][named]
+                for key, value in change.items():
+                    if value is None:
+                        prop.pop(key)
+                    else:
+                        prop[key] = value
+                path = "adapter-result" if described is top else "adapter-result.findings[]"
+                problems = schema_constraint_problems(path, doctored, instances((path,), self.fixtures))
+                self.assertTrue(any(expected in problem for problem in problems), problems)
 
     def test_a_doctored_table_disagrees(self) -> None:
         text = CONTRACT.read_text(encoding="utf-8")
