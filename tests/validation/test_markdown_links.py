@@ -15,7 +15,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
-from markdown_links import THREAT_MODEL_DOC, THREAT_MODEL_SUITES, markdown_link_problems, threat_model_test_problems
+from markdown_links import (
+    THREAT_MODEL_DOC,
+    THREAT_MODEL_SUITES,
+    cited_test_problems,
+    markdown_link_problems,
+    threat_model_test_problems,
+)
 from validation_support import write_fixture_tree
 
 
@@ -79,19 +85,123 @@ class MarkdownLinkPolicy(unittest.TestCase):
         )
 
 
+class CitedTestPolicy(unittest.TestCase):
+    # A helper beside the tests, a class defined under an `if`, as a platform's tests are, and a class whose tests are
+    # its base's.
+    SUITE = (
+        "import unittest\n\n\ndef helper() -> None:\n    pass\n\n\ndef test_alone() -> None:\n    pass\n\n\n"
+        "class Base(unittest.TestCase):\n    def test_inherited(self) -> None:\n        pass\n\n\n"
+        "class Derived(Base):\n    pass\n\n\n"
+        "if True:\n\n    class GuardTests(unittest.TestCase):\n        def test_held(self) -> None:\n"
+        "            pass\n\n        def check(self) -> None:\n            pass\n"
+    )
+
+    def problems(self, files: Mapping[str, str]) -> list[str]:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            write_fixture_tree(root, {"tests/test_a.py": self.SUITE, **files})
+            return cited_test_problems(root)
+
+    def test_cited_tests_and_test_classes_that_exist_pass(self) -> None:
+        guide = (
+            "# Guide\n\n"
+            "Held by `tests/test_a.py::test_alone`, `tests/test_a.py::GuardTests::test_held`, and "
+            "`tests/test_a.py::Derived::test_inherited`.\n"
+            "The `GuardTests` cases and `test_held` in `tests/test_a.py`, and `test_alone` in `test_a.py`.\n"
+            "| `GuardTests` | `test_a.py::Derived` |\n"
+            "The policy `test_policy` in `tests/policy.py`, with its fixtures in `tests/test_a.py`.\n"
+            "Named alone, `Derived` and `test_inherited` are defined somewhere; `subTest` is no citation.\n\n"
+            "```text\n`tests/test_a.py::test_gone`\n```\n"
+        )
+        policy = (
+            "import unittest\n\n\nclass Policies(unittest.TestCase):\n    def test_policy(self) -> None:\n"
+            "        pass\n"
+        )
+        self.assertEqual(
+            [],
+            self.problems(
+                {
+                    "docs/guide.md": guide,
+                    "tests/policy.py": policy,
+                    "tests/fixtures/x/README.md": "`tests/test_a.py::test_gone`\n",
+                    "docs/upgrade-notes.md": "`tests/test_a.py::test_gone`\n",
+                }
+            ),
+        )
+
+    def test_a_missing_test_or_test_class_fails(self) -> None:
+        guide = (
+            "`tests/test_a.py::test_gone` and `tests/test_a.py::GoneTests`.\n"
+            "`tests/test_a.py::GuardTests::test_gone` and `tests/test_a.py::Derived::test_held`.\n"
+            "The `GoneTests` cases in `tests/test_a.py`.\n"
+            "`test_gone` alone.\n"
+        )
+        self.assertEqual(
+            [
+                "guide.md:1 cites tests/test_a.py::test_gone, which tests/test_a.py does not define as a test or a "
+                "test class",
+                "guide.md:1 cites tests/test_a.py::GoneTests, which tests/test_a.py does not define as a test or a "
+                "test class",
+                "guide.md:2 cites tests/test_a.py::GuardTests::test_gone, which tests/test_a.py does not define as a "
+                "test of its class GuardTests",
+                "guide.md:2 cites tests/test_a.py::Derived::test_held, which tests/test_a.py does not define as a "
+                "test of its class Derived",
+                "guide.md:3 cites GoneTests in tests/test_a.py, where no test or test class has that name",
+                "guide.md:4 cites test_gone, which no Python file defines as a test or a test class",
+            ],
+            self.problems({"guide.md": guide}),
+        )
+
+    def test_a_cited_helper_is_not_a_test(self) -> None:
+        guide = (
+            "`tests/test_a.py::helper`, `tests/test_a.py::GuardTests::check`, and `tests/test_a.py::Base::helper`.\n"
+        )
+        self.assertEqual(
+            [
+                "guide.md:1 cites tests/test_a.py::helper, which tests/test_a.py does not define as a test or a test "
+                "class",
+                "guide.md:1 cites tests/test_a.py::GuardTests::check, which tests/test_a.py does not define as a test "
+                "of its class GuardTests",
+                "guide.md:1 cites tests/test_a.py::Base::helper, which tests/test_a.py does not define as a test of "
+                "its class Base",
+            ],
+            self.problems({"guide.md": guide}),
+        )
+
+    def test_a_missing_suite_fails_whether_named_with_its_path_or_alone(self) -> None:
+        guide = (
+            "`tests/test_gone.py::test_alone`, and the `GuardTests` cases in `tests/test_gone.py`.\n"
+            "`test_gone.py::test_alone`.\n"
+        )
+        self.assertEqual(
+            [
+                "guide.md:1 cites tests/test_gone.py::test_alone, but tests/test_gone.py does not exist",
+                "guide.md:1 cites GuardTests in tests/test_gone.py, which does not exist",
+                "guide.md:2 cites test_gone.py::test_alone, but any file named test_gone.py does not exist",
+            ],
+            self.problems({"guide.md": guide}),
+        )
+
+    def test_the_threat_model_names_its_suites_under_the_code_review_scripts(self) -> None:
+        # The contract's suites named alone are under THREAT_MODEL_SUITES, so tests/test_a.py does not hold its
+        # citation.
+        contract = "`test_a.py::test_alone` and `test_b.py::test_alone`.\n"
+        self.assertEqual(
+            [f"{THREAT_MODEL_DOC}:1 cites test_a.py::test_alone, but {THREAT_MODEL_SUITES}/test_a.py does not exist"],
+            self.problems({THREAT_MODEL_DOC: contract, f"{THREAT_MODEL_SUITES}/test_b.py": self.SUITE}),
+        )
+
+
 class ThreatModelPolicy(unittest.TestCase):
     TABLE = (
         "# Contract\n\n## Threat model\n\n"
         "| The author controls | The suite guarantees | Held by |\n| --- | --- | --- |\n"
         "| Diff text | Data only. | `test_adversarial_inputs.py::test_held`, `test_a.py::test_in_a_class` |\n"
-        "| Paths | Excluded. | `test_adversarial_inputs.py::test_gone`, `test_missing.py::test_held` |\n"
+        "| Paths | Excluded. | `test_a.py::test_held`, the `Tests` cases in `test_adversarial_inputs.py` |\n"
         "| Links | Excluded. | the snapshot tests |\n"
-        "| Blobs | Exact bytes. | `test_a.py::test_in_a_class` |\n\n## Formats\n\n| `not_cited.py::test_x` |\n"
-    )
-    ADVERSARIAL = (
-        "import unittest\n\n\ndef test_held() -> None:\n    pass\n\n\n"
-        "class Tests(unittest.TestCase):\n    def test_in_a_class(self) -> None:\n        pass\n\n\n"
-        "# test_gone is only a comment\n"
+        "| Blobs | Exact bytes. | `test_adversarial_inputs.py::Tests::test_in_a_class` |\n\n"
+        "## Formats\n\n| `not_cited.py::test_x` |\n"
     )
 
     def problems(self, files: Mapping[str, str]) -> list[str]:
@@ -100,74 +210,23 @@ class ThreatModelPolicy(unittest.TestCase):
             write_fixture_tree(root, files)
             return threat_model_test_problems(root)
 
-    def test_a_missing_test_a_missing_suite_and_a_row_without_an_adversarial_test_fail(self) -> None:
+    def test_a_row_that_names_no_adversarial_test_by_its_id_fails(self) -> None:
         self.assertEqual(
             [
-                f"{THREAT_MODEL_DOC} names test_adversarial_inputs.py::test_gone, which test_adversarial_inputs.py "
-                "does not define as a test",
-                f"{THREAT_MODEL_DOC} names test_missing.py::test_held, but {THREAT_MODEL_SUITES}/test_missing.py does "
-                "not exist",
+                f"{THREAT_MODEL_DOC}: the threat-model row 'Paths' names no test in test_adversarial_inputs.py",
                 f"{THREAT_MODEL_DOC}: the threat-model row 'Links' names no test in test_adversarial_inputs.py",
-                f"{THREAT_MODEL_DOC}: the threat-model row 'Blobs' names no test in test_adversarial_inputs.py",
             ],
-            self.problems(
-                {
-                    THREAT_MODEL_DOC: self.TABLE,
-                    f"{THREAT_MODEL_SUITES}/test_adversarial_inputs.py": self.ADVERSARIAL,
-                    f"{THREAT_MODEL_SUITES}/test_a.py": self.ADVERSARIAL,
-                }
-            ),
+            self.problems({THREAT_MODEL_DOC: self.TABLE}),
         )
 
-    def test_rows_that_each_name_an_adversarial_test_that_exists_pass(self) -> None:
+    def test_rows_that_each_name_an_adversarial_test_pass(self) -> None:
         table = (
             "# Contract\n\n## Threat model\n\n"
             "| The author controls | The suite guarantees | Held by |\n| --- | --- | --- |\n"
             "| Diff text | Data only. | `test_adversarial_inputs.py::test_held`, `test_a.py::test_in_a_class` |\n"
-            "| Blobs | Exact bytes. | `test_a.py::test_held`, `test_adversarial_inputs.py::test_in_a_class` |\n"
+            "| Blobs | Exact bytes. | `test_a.py::test_held`, `test_adversarial_inputs.py::Tests::test_in_a_class` |\n"
         )
-        self.assertEqual(
-            [],
-            self.problems(
-                {
-                    THREAT_MODEL_DOC: table,
-                    f"{THREAT_MODEL_SUITES}/test_adversarial_inputs.py": self.ADVERSARIAL,
-                    f"{THREAT_MODEL_SUITES}/test_a.py": self.ADVERSARIAL,
-                }
-            ),
-        )
-
-    def test_a_missing_class_a_helper_and_a_missing_path_qualified_suite_fail(self) -> None:
-        # A helper beside the tests, and a class defined under an `if`, as a platform's tests are.
-        suite = (
-            "import unittest\n\n\ndef held() -> None:\n    pass\n\n\n"
-            "if True:\n\n    class Tests(unittest.TestCase):\n        def test_in_a_class(self) -> None:\n"
-            "            pass\n"
-        )
-        table = (
-            "# Contract\n\n## Threat model\n\n"
-            "| The author controls | The suite guarantees | Held by |\n| --- | --- | --- |\n"
-            "| Diff text | Data only. | `test_adversarial_inputs.py::test_held`, the `Tests` cases in "
-            "`skills/x/scripts/test_x.py`, the `Gone` cases in `test_a.py`, `test_a.py::held` |\n"
-            "| Blobs | Exact bytes. | `test_adversarial_inputs.py::test_in_a_class`, the `Tests` cases in "
-            "`skills/y/scripts/test_y.py`, `skills/x/scripts/test_x.py::test_in_a_class` |\n"
-        )
-        self.assertEqual(
-            [
-                f"{THREAT_MODEL_DOC} names test_a.py::held, which test_a.py does not define as a test",
-                f"{THREAT_MODEL_DOC} names the Gone cases in test_a.py, which test_a.py does not define as a class",
-                f"{THREAT_MODEL_DOC} names the Tests cases in skills/y/scripts/test_y.py, but "
-                "skills/y/scripts/test_y.py does not exist",
-            ],
-            self.problems(
-                {
-                    THREAT_MODEL_DOC: table,
-                    f"{THREAT_MODEL_SUITES}/test_adversarial_inputs.py": self.ADVERSARIAL,
-                    f"{THREAT_MODEL_SUITES}/test_a.py": suite,
-                    "skills/x/scripts/test_x.py": suite,
-                }
-            ),
-        )
+        self.assertEqual([], self.problems({THREAT_MODEL_DOC: table}))
 
     def test_a_contract_without_the_table_fails(self) -> None:
         self.assertEqual(
