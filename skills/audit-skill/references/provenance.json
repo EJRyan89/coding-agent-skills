@@ -42,6 +42,14 @@
       {
         "page": "https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices",
         "passage": "The description says what the skill does and when to use it, in at most 1,024 characters, because Claude chooses a skill from its description among many."
+      },
+      {
+        "page": "https://code.claude.com/docs/en/skills",
+        "passage": "Put the key use case first, since the listing truncates the combined description and when_to_use text at 1,536 characters."
+      },
+      {
+        "page": "https://learn.chatgpt.com/docs/build-skills",
+        "passage": "Codex chooses a skill implicitly from its description, caps the initial skills list at 2% of the model's context window, shortens descriptions first when many skills are installed, and advises front-loading the key use case and trigger words."
       }
     ],
     "DOC_NO_TOC": [
@@ -74,7 +82,7 @@
     "HIDDEN_ALLOWED": [
       {
         "page": "https://code.claude.com/docs/en/skills",
-        "passage": "allowed-tools lets Claude use the listed tools without asking while the skill is active, and a skill neither Claude (disable-model-invocation: true) nor the user (user-invocable: false) can start is never active."
+        "passage": "allowed-tools lets Claude use the listed tools without asking during the turn that invokes the skill, and the grant clears with the next message, so a skill neither Claude (disable-model-invocation: true) nor the user (user-invocable: false) can start grants nothing."
       },
       {
         "decision": "A hidden skill grants nothing, and the skills that run its scripts grant them: Granting tools in this source's docs/adding-a-skill.md."
@@ -83,7 +91,7 @@
     "IDLE_ALLOWED": [
       {
         "page": "https://code.claude.com/docs/en/skills",
-        "passage": "allowed-tools lets Claude use the listed tools without asking while the skill is active."
+        "passage": "allowed-tools lets Claude use the listed tools without asking during the turn that invokes the skill, and the grant clears with the next message."
       },
       {
         "decision": "A skill grants a pattern only for a command its body shows, so a command it leaves to the repository it works in keeps prompting there: Granting tools in this source's docs/adding-a-skill.md."
@@ -119,7 +127,7 @@
     "MODEL": [
       {
         "page": "https://code.claude.com/docs/en/skills",
-        "passage": "A skill's model field sets the model Claude uses while the skill is active."
+        "passage": "A skill's model field sets the model Claude uses for the rest of the turn that invokes it, and the session model resumes with the next prompt."
       },
       {
         "decision": "A cheaper model is suggested only after comparing real runs, and never for a skill followed in the same turn by work that starts subagents, which inherit it: the decision that a skill pins no model in this source's docs/design.md."
@@ -274,7 +282,7 @@
     "UNUSED_ALLOWED": [
       {
         "page": "https://code.claude.com/docs/en/skills",
-        "passage": "allowed-tools lets Claude use the listed tools without asking while the skill is active."
+        "passage": "allowed-tools lets Claude use the listed tools without asking during the turn that invokes the skill, and the grant clears with the next message."
       },
       {
         "decision": "A skill lists only the tools a step uses, because each grant widens what runs unasked: Granting tools in this source's docs/adding-a-skill.md."

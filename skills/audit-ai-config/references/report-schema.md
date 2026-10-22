@@ -61,7 +61,7 @@ the exit code, which `ERRORS` and `INCONCLUSIVE` share:
 | `RESULT COMPLIANT` | `0` | Compliant within statically verifiable scope |
 | `RESULT ERRORS` | `1` | One or more `ERROR`-level findings |
 | `RESULT INCONCLUSIVE` | `1` | Ambiguous, unconfigured, or alternative authority; cannot confirm compliance or non-compliance |
-| `FAILED <reason>` | `1` | No report: the root is not a Git repository |
+| `FAILED <reason>` | `1` | No report: the root is not a Git repository, or `--provenance` could not read `references/provenance.json` |
 | (usage text on stderr) | `2` | A usage error: arguments the engine rejects |
 
 Ambiguous repositories must not return `0`. `INCONCLUSIVE` takes precedence over `ERROR` findings. JSON output has no
@@ -145,7 +145,8 @@ With `--provenance`, the JSON report adds `provenance`, an object keyed by each 
 lists what that check derives from, each a published page and the passage it rests on, `{"page": "<url>", "passage":
 "<sentence>"}`, or a decision of this source, `{"decision": "<sentence>"}`; the Markdown report ends with a `Sources`
 section holding the same, a line per source. Both come from `references/provenance.json`, which holds an entry for
-every check.
+every check; when that file cannot be read, or leaves a check out, the run prints no report and ends with a
+`FAILED <reason>` line naming the file.
 
 ## Manual-Verification Warnings
 

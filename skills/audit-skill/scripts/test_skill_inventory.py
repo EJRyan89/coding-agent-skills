@@ -988,13 +988,26 @@ class ToolsTests(TemporaryTestCase):
         # 53 characters, ceil(53 / 4) = 14 tokens
         description = 'description: "Internal support. Not intended for direct invocation."'
         cases = {
-            "description: Run the report.": ["DESCRIPTION 15 4", "INVOCATION model"],
-            "description: >-\n  Run the\n  report.": ["DESCRIPTION 15 4", "INVOCATION model"],
+            "description: Run the report.": [
+                "DESCRIPTION 15 4",
+                "INVOCATION model",
+                "DESCRIPTION_LEAD Run the report.",
+            ],
+            "description: >-\n  Run the\n  report.": [
+                "DESCRIPTION 15 4",
+                "INVOCATION model",
+                "DESCRIPTION_LEAD Run the report.",
+            ],
             "description: 'Run the report.'\ndisable-model-invocation: 'true'": [
                 "DESCRIPTION 15 4",
                 "INVOCATION user-only",
             ],
-            description: ["DESCRIPTION 53 14", "INVOCATION model", "INTERNAL_LISTED"],
+            description: [
+                "DESCRIPTION 53 14",
+                "INVOCATION model",
+                "DESCRIPTION_LEAD Internal support.",
+                "INTERNAL_LISTED",
+            ],
             f"{description}\ndisable-model-invocation: true": ["DESCRIPTION 53 14", "INVOCATION user-only"],
             f"{description}\ndisable-model-invocation: true\nuser-invocable: false": [
                 "DESCRIPTION 53 14",
@@ -1007,6 +1020,22 @@ class ToolsTests(TemporaryTestCase):
                 self.assertEqual(
                     expected, [line for line in lines if line.startswith(("DESCRIPTION", "INVOCATION", "INTERNAL"))]
                 )
+
+    def test_the_description_lead_is_its_first_sentence_where_a_late_use_case_shows(self) -> None:
+        # Claude Code and Codex both shorten a long listing, so a description whose use case comes last leads with
+        # words that say nothing of when to start the skill; the lead shows it, and the audit judges it.
+        cases = {
+            "description: >-\n  Built over many releases by the platform team, e.g. for audits.\n"
+            "  Use it to check a deployment's manifest.": "DESCRIPTION_LEAD Built over many releases by the platform"
+            " team, e.g. for audits.",
+            "description: Check a deployment's manifest. Use it when asked.": "DESCRIPTION_LEAD Check a deployment's"
+            " manifest.",
+            "description: check a manifest when asked": "DESCRIPTION_LEAD check a manifest when asked",
+        }
+        for frontmatter, expected in cases.items():
+            with self.subTest(frontmatter=frontmatter):
+                lines = self.tools(f"---\n{frontmatter}\n---\nBody.\n")
+                self.assertEqual([expected], [line for line in lines if line.startswith("DESCRIPTION_LEAD")])
 
     def test_a_source_skill_the_model_may_start_names_its_trigger_scenario(self) -> None:
         write(self.root / "deploy-meta" / "alpha.json", "{}")
@@ -1059,7 +1088,9 @@ class ToolsTests(TemporaryTestCase):
 
     def test_keys_it_does_not_read_may_be_structured(self) -> None:
         lines = self.tools("---\ndescription: Run.\nhooks:\n  PreToolUse:\n    - matcher: Bash\n---\nBody.\n")
-        self.assertEqual(["MODEL none", "DESCRIPTION 4 1", "INVOCATION model", "NO_ALLOWED_TOOLS"], lines)
+        self.assertEqual(
+            ["MODEL none", "DESCRIPTION 4 1", "INVOCATION model", "DESCRIPTION_LEAD Run.", "NO_ALLOWED_TOOLS"], lines
+        )
 
     def test_missing_file_fails(self) -> None:
         code, lines, error = run("tools", str(self.root / "absent.md"))
@@ -1833,6 +1864,7 @@ MEASUREMENT_LINES = frozenset(
         "CUE",
         "DECLARED",
         "DECLARED_UNREADABLE",
+        "DESCRIPTION_LEAD",
         "FAILED",
         "FILE",
         "IMPLIED",

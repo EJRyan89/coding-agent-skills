@@ -1,5 +1,5 @@
 ---
-name: audit-skill
+name: analyze-skill-cost
 description: "Audit an agent skill for cost and efficiency: token footprint, tool calls, deterministic work left to prose, subagent overhead, runtime adapters, model, and allowed-tools. Read-only findings report. Use it when asked what a skill costs, why it is slow or expensive, or to check one before shipping it."
 argument-hint: "<SkillName>"
 allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py\" *)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py\" *)", "Read", "Grep"]
@@ -11,7 +11,7 @@ The measurements are commands of `skill_inventory.py`, run exactly as shown. Eac
 
 ## Step 0 — Parse `$ARGUMENTS`
 
-Trim leading/trailing whitespace. If empty, print `usage: audit-skill <SkillName>` and stop. Otherwise `SKILL_NAME=$ARGUMENTS`. No flags.
+Trim leading/trailing whitespace. If empty, print `usage: analyze-skill-cost <SkillName>` and stop. Otherwise `SKILL_NAME=$ARGUMENTS`. No flags.
 
 ## Step 1 — Locate the skill
 

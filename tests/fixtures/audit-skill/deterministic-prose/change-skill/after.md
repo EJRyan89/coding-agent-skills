@@ -86,9 +86,9 @@ For a `GATE evaluate-skill <name> if-prompt` line, decide whether the change tou
 
 ## 6. Audit the cost
 
-Validation checks the contract; `audit-skill` judges what the change costs: token footprint, deterministic work left to prose, delegation, and the `model`, `allowed-tools`, and listing frontmatter. From the worktree, run `audit-skill <name>` for each `GATE audit-skill` line, and check its `Scope`: `locate` reports `SCOPE source` for `skills/<name>` here and `SCOPE project-claude` for `.claude/skills/<name>`, never the deployed copy.
+Validation checks the contract; `analyze-skill-cost` judges what the change costs: token footprint, deterministic work left to prose, delegation, and the `model`, `allowed-tools`, and listing frontmatter. From the worktree, run `analyze-skill-cost <name>` for each `GATE analyze-skill-cost` line, and check its `Scope`: `locate` reports `SCOPE source` for `skills/<name>` here and `SCOPE project-claude` for `.claude/skills/<name>`, never the deployed copy.
 
-`audit-skill` is a shipped skill, so it runs from your deployment under `~/.claude/skills`, not from this checkout. If it is not deployed, or reports another scope because the deployed copy predates this behavior, deploy from the hub on an up-to-date `main` and rerun it, or skip the audit and say why in the pull request. Resolve every MUST FIX before opening the pull request and rerun validation if that changed anything. A SUGGESTION may stay, but the pull request body names each one left and why.
+`analyze-skill-cost` is a shipped skill, so it runs from your deployment under `~/.claude/skills`, not from this checkout. If it is not deployed, or reports another scope because the deployed copy predates this behavior, deploy from the hub on an up-to-date `main` and rerun it, or skip the audit and say why in the pull request. Resolve every MUST FIX before opening the pull request and rerun validation if that changed anything. A SUGGESTION may stay, but the pull request body names each one left and why.
 
 ## 7. Open the pull request
 
