@@ -131,6 +131,10 @@ from bounded_process import run_bounded, without_repository_variables
 from console import run_main
 from git_client import GitClient, GitError
 from release_tags import last_release
+from skill_roots import sibling_scripts
+
+sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
+from review_hosts import COPILOT_SYNC_SESSION_VERSION, copilot_local_session
 
 from deployer import discovery, manifest, pipeline, platform_support, verify
 from deployer import source as deploy_source
@@ -565,8 +569,14 @@ def supplied(runtime: str, codex_sandbox: str) -> list[str]:
 
 
 def run_command(
-    runtime: str, executable: str, skill: str, home: Path, codex_sandbox: str = DEFAULT_CODEX_SANDBOX
+    runtime: str,
+    executable: str,
+    skill: str,
+    home: Path,
+    codex_sandbox: str = DEFAULT_CODEX_SANDBOX,
+    version: tuple[int, ...] | None = None,
 ) -> list[str]:
+    """The command that runs `skill` on the runtime, whose `--version` named `version`, or nothing it could read."""
     text = prompt(runtime, skill)
     if runtime == "claude":
         # Project settings only, so the installed skills under ~/.claude/skills do not load beside the canary's. No
@@ -604,13 +614,12 @@ def run_command(
         ]
     # The isolation of the Copilot review host in ejryan89-code-review-core, except --disallow-temp-dir, since the home
     # is a temporary directory, and with shell allowed only for the platform's Python command and Bash, which is what
-    # the skills run.
+    # the skills run. A Copilot whose version cannot be read is taken to be the latest, which it updates itself to.
     return [
         executable,
         "--no-custom-instructions",
         "--no-ask-user",
-        "--no-remote",
-        "--no-remote-export",
+        *copilot_local_session(version or COPILOT_SYNC_SESSION_VERSION),
         "--disable-builtin-mcps",
         "--stream=off",
         "--output-format=json",
@@ -827,6 +836,7 @@ def run_skill(
     timeout: float,
     allowed: list[str],
     codex_sandbox: str = DEFAULT_CODEX_SANDBOX,
+    version: tuple[int, ...] | None = None,
 ) -> list[str]:
     state = home / STATE
     probe_log = state / "probe.jsonl"
@@ -839,7 +849,10 @@ def run_skill(
     run = secrets.token_hex(16)
     (state / RUN_ID).write_text(run, encoding="utf-8")
     completed = runner(
-        run_command(runtime, executable, skill, home, codex_sandbox), home, environment(base, script_log, home), timeout
+        run_command(runtime, executable, skill, home, codex_sandbox, version),
+        home,
+        environment(base, script_log, home),
+        timeout,
     )
     transcript = state / "transcripts" / f"{runtime}-{skill}.jsonl"
     transcript.write_text(completed.stdout, encoding="utf-8")
@@ -896,8 +909,11 @@ class RuntimeChecks:
     unadapted: Mapping[str, str] | None = None
 
 
-def check_runtime(runtime: str, executable: str, run: RuntimeChecks) -> Iterator[str]:
-    """Each line of the runtime's checks, given as soon as it is known, so a run that fails later loses none."""
+def check_runtime(
+    runtime: str, executable: str, run: RuntimeChecks, version: tuple[int, ...] | None = None
+) -> Iterator[str]:
+    """Each line of the checks of the runtime whose `--version` named `version`, given as soon as it is known, so a run
+    that fails later loses none."""
     # Claude Code has no listing; its run reports the skills it found.
     if runtime in discovery.RUNTIMES:
         listing_environment = environment(run.base, run.home / STATE / "scripts" / "listing.jsonl", run.home)
@@ -921,7 +937,16 @@ def check_runtime(runtime: str, executable: str, run: RuntimeChecks) -> Iterator
             continue
         reachable = run.closure.get(skill, [skill])
         yield from run_skill(
-            runtime, executable, skill, run.home, run.base, run.runner, run.timeout, reachable, run.codex_sandbox
+            runtime,
+            executable,
+            skill,
+            run.home,
+            run.base,
+            run.runner,
+            run.timeout,
+            reachable,
+            run.codex_sandbox,
+            version,
         )
 
 
@@ -1029,9 +1054,10 @@ def checked(
             say(f"SKIPPED {runtime} {quote(f'{runtime} is not installed')}")
             reasons.append(f"{runtime} is not installed")
             continue
-        versions[runtime] = runtime_version(executable, runner, base, home)
+        version = read_version(executable, runner, base, home)
+        versions[runtime] = version_text(version)
         lines = []
-        for line in check_runtime(runtime, executable, run):
+        for line in check_runtime(runtime, executable, run, version):
             say(line)
             lines.append(line)
         printed += lines
@@ -1050,12 +1076,20 @@ def checked(
     return 1 if unestablished or any(" DISAGREES " in line for line in matrix) else 0
 
 
-def runtime_version(executable: str, runner: Runner, base: Mapping[str, str], home: Path) -> str:
-    """The version the runtime's `--version` prints, read as `deploy.py check` reads it, or `unknown`."""
+def read_version(executable: str, runner: Runner, base: Mapping[str, str], home: Path) -> tuple[int, ...] | None:
+    """The version the runtime's `--version` prints, read as `deploy.py check` reads it, or None."""
     environment = {**without_repository_variables(base), **PINNED_VERSION}
     completed = runner([executable, "--version"], home, environment, VERSION_TIMEOUT)
-    version = parse_version(completed.stdout) if completed.returncode == 0 and not completed.error else None
+    return parse_version(completed.stdout) if completed.returncode == 0 and not completed.error else None
+
+
+def version_text(version: tuple[int, ...] | None) -> str:
     return format_version(version) if version else "unknown"
+
+
+def runtime_version(executable: str, runner: Runner, base: Mapping[str, str], home: Path) -> str:
+    """The version the runtime's `--version` prints, read as `deploy.py check` reads it, or `unknown`."""
+    return version_text(read_version(executable, runner, base, home))
 
 
 def places(home: Path) -> dict[Path, str]:
