@@ -32,7 +32,7 @@ from . import (
     source_ref,
 )
 from . import selection as selection_module
-from .arguments import PROG, USAGE_ERROR, VERIFY_COMMAND_LINE, parse_command, usage_error
+from .arguments import PROG, USAGE_ERROR, parse_command, usage_error
 from .context import Context, Options
 from .errors import Cancelled, DeployError, debug_requested, fail, print_error, print_traceback, see_recovery
 from .kinds import ADAPTER_KIND, AGENT_KIND, DEPENDENCY_KINDS, KINDS, SHARED, SKILL, KindKey
@@ -224,28 +224,6 @@ def _refuse_unpinning(context: Context, replaced_pin: str | None) -> None:
     )
 
 
-def _warn_copilot(paths: Paths, adapters: list[str]) -> None:
-    """Warn on stderr when Copilot CLI will not use the adapters: COPILOT_HOME moves its personal skills elsewhere, or a
-    same-named personal skill takes precedence."""
-    if adapters and not paths.copilot_reads_adapters and paths.copilot_home is not None:
-        print("", file=sys.stderr)
-        note = report.copilot_home_note(paths.copilot_home, paths.adapter_dest_dir, paths.default_copilot_dir)
-        print(report.paragraph(f"WARNING: {note}"), file=sys.stderr)
-    shadowed = [name for name in adapters if os.path.lexists(paths.copilot_skills_dir / name)]
-    if not shadowed:
-        return
-    skills_dir = platform_support.normalize(paths.copilot_skills_dir)
-    print("", file=sys.stderr)
-    print("WARNING: Higher-priority GitHub Copilot personal skills shadow generated runtime adapters:", file=sys.stderr)
-    for name in shadowed:
-        print(f"  - {name} ({platform_support.normalize(paths.copilot_skills_dir / name)})", file=sys.stderr)
-    print(
-        f"The deployer will not modify {skills_dir}. Resolve these paths manually, then check "
-        f"which copy Copilot uses with '{VERIFY_COMMAND_LINE}'.",
-        file=sys.stderr,
-    )
-
-
 def _deploy(
     paths: Paths,
     options: Options,
@@ -268,7 +246,7 @@ def _deploy(
     _refuse_unpinning(context, replaced_pin)
     selected = [] if selection.deselect_all else source.expand(src, selection.bundles, selection.skills)
     adapters = [name for name in selected if src.skills[name].selectable]
-    _warn_copilot(paths, adapters)
+    report.warn_copilot(paths, adapters)
     selection_module.print_selection(src, selection, selected)
     selection_module.warn_missing_tools(src, selection)
     selection_module.require_variables(context, selected)

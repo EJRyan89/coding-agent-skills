@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import textwrap
 from dataclasses import dataclass
@@ -9,8 +10,9 @@ from pathlib import Path
 from typing import Literal
 
 from . import manifest, platform_support, source
+from .arguments import VERIFY_COMMAND_LINE
 from .kinds import ADAPTER, DIFFERS, DIFFERS_FROM_SKILL, KINDS, MODIFIED
-from .paths import COPILOT_HOME
+from .paths import COPILOT_HOME, Paths
 
 KINDS_ALLOWED = {
     "_fold_adapters.repeats_skill": "a runtime adapter is a thin pointer to its skill, so only its lines fold into "
@@ -169,6 +171,28 @@ def warn_ignored_home(home: Path) -> None:
         file=sys.stderr,
     )
     sys.stderr.flush()
+
+
+def warn_copilot(paths: Paths, adapters: list[str]) -> None:
+    """Warn on stderr when Copilot CLI will not use the adapters: COPILOT_HOME moves its personal skills elsewhere, or a
+    same-named personal skill takes precedence."""
+    if adapters and not paths.copilot_reads_adapters and paths.copilot_home is not None:
+        print("", file=sys.stderr)
+        note = copilot_home_note(paths.copilot_home, paths.adapter_dest_dir, paths.default_copilot_dir)
+        print(paragraph(f"WARNING: {note}"), file=sys.stderr)
+    shadowed = [name for name in adapters if os.path.lexists(paths.copilot_skills_dir / name)]
+    if not shadowed:
+        return
+    skills_dir = platform_support.normalize(paths.copilot_skills_dir)
+    print("", file=sys.stderr)
+    print("WARNING: Higher-priority GitHub Copilot personal skills shadow generated runtime adapters:", file=sys.stderr)
+    for name in shadowed:
+        print(f"  - {name} ({platform_support.normalize(paths.copilot_skills_dir / name)})", file=sys.stderr)
+    print(
+        f"The deployer will not modify {skills_dir}. Resolve these paths manually, then check "
+        f"which copy Copilot uses with '{VERIFY_COMMAND_LINE}'.",
+        file=sys.stderr,
+    )
 
 
 def members_recorded(owned: manifest.Ownership) -> bool:
