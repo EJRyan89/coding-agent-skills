@@ -265,7 +265,7 @@ class ManifestTests(unittest.TestCase):
             "tools/release_notes.py",
             "skills/ejryan89-code-review-core/scripts/review_io.py",
             "skills/ejryan89-code-review-core/scripts/test_review_hosts_copilot.py",
-            "skills/ejryan89-skill-core/scripts/git_test_base.py",
+            "skills/ejryan89-skill-core/scripts/folders_up.py",
             "skills/ejryan89-skill-core/scripts/test_pdf_tool.py",
         ]
         self.assertEqual(others, uncovered(MANIFEST, others))
