@@ -22,7 +22,7 @@ import bash_agreement
 import git_client
 import git_worktrees
 from bounded_process import run_bounded
-from worktree_fixture import GUARD_SCRIPT, REPOSITORY_ROOT, HubTestCase, isolated_environment
+from worktree_fixture import GUARD_SCRIPT, HUB, REPOSITORY_ROOT, TREE, HubTestCase, isolated_environment
 
 from deployer import platform_support
 from tools import hub_guard, worktrees
@@ -234,11 +234,6 @@ class HookCommandTests(GuardTestCase):
             with self.subTest(variables=variables):
                 code, arguments = self.run_hook(variables)
                 self.assertEqual((0, ["-B", f"{self.hub}/tools/hub_guard.py"]), (code, arguments))
-
-
-class CommandNameTests(unittest.TestCase):
-    def test_a_command_is_named_lower_cased_without_its_directory_or_exe(self) -> None:
-        self.assertIsNone(hub_guard.command_name(None))
 
 
 UNPLACED = "could not tell where `git {}` runs"
@@ -494,7 +489,7 @@ class CommandGuardTests(GuardTestCase):
         result = self.run_script([], cwd=self.root, stdin="{not json")
         self.assertEqual(0, result.returncode)
         self.assertEqual("", result.stdout)
-        self.assertIn("worktrees guard skipped", result.stderr)
+        self.assertIn("hub guard skipped", result.stderr)
 
     def test_a_location_variable_is_judged_by_the_checkout_it_names(self) -> None:
         other = self.other_repository() / ".git"
@@ -1099,6 +1094,10 @@ class ContractTests(GuardTestCase):
             ("time git commit -m x", "commit"),
             ("nohup git commit -m x", "commit"),
             ("timeout 5 git commit -m x", "commit"),
+            ("nice git commit -m x", "commit"),
+            ("stdbuf -o L git commit -m x", "commit"),
+            ("select x in a; do git commit -m x; done", "commit"),
+            ("$'git' $'commit' -m $'a\\nb'", "commit"),
             ("echo `git switch feat/demo`", "switch"),
             ("while true; do git reset --hard; done", "reset"),
             ("case x in x) git clean -fd;; esac", "clean"),
@@ -1109,6 +1108,93 @@ class ContractTests(GuardTestCase):
                 self.assertEqual("deny", self.bash(command, self.hub))
                 self.assertIn(WRITES.format(subcommand), self.reason)
         self.assertIsNone(self.bash("command -v git", self.hub))
+
+    def test_a_short_option_value_attached_or_separate_is_read_in_both_shells(self) -> None:
+        for prefix in (
+            "nice -n5",
+            "nice -n 5",
+            "nice --adjustment=5",
+            "stdbuf -oL",
+            "stdbuf -oL -eL",
+            "timeout -k5 10",
+        ):
+            # Both readers share the reading of a prefix's options, so PowerShell takes the attached spellings only.
+            for shell in (self.bash, self.powershell) if prefix in {"nice -n5", "stdbuf -oL"} else (self.bash,):
+                with self.subTest(prefix=prefix, shell=shell.__name__):
+                    self.assertEqual("deny", shell(f"{prefix} git commit -m x", self.hub))
+                    self.assertIn(WRITES.format("commit"), self.reason)
+                    self.assertIsNone(shell(f"{prefix} git commit -m x", self.tree))
+                    self.assertIsNone(shell(f"{prefix} git status", self.hub))
+        # A bundle of short options, or an option the guard does not know, stays unread, and a command that names git
+        # with one is refused while a guarded hub is in view, from a worktree too.
+        for command in ("nice -x5 git status", "timeout -vk5 10 git status", "stdbuf -oL --bogus git status"):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn("The guard could not read part of this command", self.reason)
+
+    def test_env_and_the_prefix_programs_are_read_in_powershell(self) -> None:
+        for command in (
+            "env git commit -m x",
+            f"env -C '{self.hub}' git commit -m x",
+            "nohup git commit -m x",
+            "time -p git commit -m x",
+            "nice bash -c 'git commit -m x'",
+            "env pwsh -c 'git commit -m x'",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.hub if "-C" not in command else self.tree))
+                self.assertIn(WRITES.format("commit"), self.reason)
+        self.assertIsNone(self.powershell("env git commit -m x", self.tree))
+
+    def test_env_dash_s_is_refused_whatever_follows_it(self) -> None:
+        # pwsh starts only for a command that names a refused subcommand, so PowerShell takes the writing one alone.
+        for shell, command in (
+            (self.bash, "env -S 'git status'"),
+            (self.bash, "env -S 'git commit -m x'"),
+            (self.powershell, "env -S 'git commit -m x'"),
+        ):
+            with self.subTest(command=command, shell=shell.__name__):
+                self.assertEqual("deny", shell(command, self.tree))
+                self.assertIn("could not read the option -S passed to env", self.reason)
+
+    def test_builtin_cd_a_cdpath_search_and_powershell_cd_plus_and_home_are_followed(self) -> None:
+        self.assertEqual("deny", self.bash(f"builtin cd '{self.hub}' && git commit -m x", self.tree))
+        self.assertIn(WRITES.format("commit"), self.reason)
+        # Without CDPATH, `cd '<hub>'` from the worktree names a folder there is not, so it fails and git never runs;
+        # with it, a search the guard does not follow.
+        self.assertIsNone(self.bash(f"cd '{HUB}' && git commit -m x", self.tree))
+        command = f"export CDPATH='{self.root}'; cd '{HUB}' && git commit -m x"
+        self.assertEqual("deny", self.bash(command, self.tree))
+        self.assertIn(UNPLACED.format("commit"), self.reason)
+        self.assertEqual("deny", self.powershell("cd +; git commit -m x", self.tree))
+        self.assertIn(UNPLACED.format("commit"), self.reason)
+        home = {**self.environment, "HOME": str(self.root), "USERPROFILE": str(self.root)}
+        self.assertEqual("deny", self.powershell(f"cd '~/{HUB}'; git commit -m x", self.tree, home))
+        self.assertIn(WRITES.format("commit"), self.reason)
+        self.assertIsNone(self.powershell(f"cd '~/{HUB}/{TREE.as_posix()}'; git commit -m x", self.hub, home))
+
+    def test_the_named_git_options_take_their_value_attached_or_as_the_next_word(self) -> None:
+        for option in ("--namespace", "--super-prefix"):
+            for spelling in (f"{option} x/", f"{option}=x/"):
+                with self.subTest(spelling=spelling):
+                    self.assertEqual("deny", self.bash(f"git {spelling} commit -m x", self.hub))
+                    self.assertIn(WRITES.format("commit"), self.reason)
+                    self.assertIsNone(self.bash(f"git {spelling} -C '{self.tree}' commit -m x", self.hub))
+
+    def test_the_named_subcommands_are_refused_in_the_hub_and_stash_show_is_allowed(self) -> None:
+        for subcommand in ("cherry-pick x", "archimport x", "cvsimport x", "p4 sync", "quiltimport", "svn rebase"):
+            with self.subTest(subcommand=subcommand):
+                self.assertEqual("deny", self.bash(f"git {subcommand}", self.hub))
+                self.assertIn(WRITES.format(subcommand.split()[0]), self.reason)
+        self.assertIsNone(self.bash("git stash show; git stash list", self.hub))
+        self.assertEqual("deny", self.bash("git stash pop", self.hub))
+        # gitk is a program of its own, which git does not run as a subcommand.
+        self.assertNotIn("gitk", hub_guard.WRITING_SUBCOMMANDS)
+
+    def test_powershell_dash_command_from_bash_is_read(self) -> None:
+        self.assertEqual("deny", self.bash("powershell -Command 'git commit -m x'", self.hub))
+        self.assertIn(WRITES.format("commit"), self.reason)
+        self.assertIsNone(self.bash("powershell -Command 'git status'", self.hub))
 
     def test_a_git_call_after_any_assignment_bash_reads_before_it_is_judged_as_the_bare_call(self) -> None:
         tree = f'"{self.tree}"'
@@ -1613,6 +1699,7 @@ def test_rename_options_before_or_after_values_are_still_detected(arguments: lis
 @pytest.mark.parametrize(
     ("word", "expected"),
     [
+        (None, None),
         ("git", "git"),
         ("GIT.EXE", "git"),
         ("/c/Program Files/Git/cmd/Git.Exe", "git"),
@@ -1621,5 +1708,5 @@ def test_rename_options_before_or_after_values_are_still_detected(arguments: lis
         *([("C:\\Program Files\\Git\\cmd\\git.exe", "git")] if platform_support.WINDOWS else []),
     ],
 )
-def test_a_command_is_named_lower_cased_without_its_directory_or_exe(word: str, expected: str) -> None:
+def test_a_command_is_named_lower_cased_without_its_directory_or_exe(word: str | None, expected: str | None) -> None:
     assert expected == hub_guard.command_name(word)
