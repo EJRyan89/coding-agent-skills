@@ -84,6 +84,18 @@ def page(nodes: list[dict[str, Any]], cursor: str | None = None) -> str:
     )
 
 
+def searches(call: list[str]) -> bool:
+    """Whether a gh call is a pull-request search."""
+    return any(argument.startswith("q=") for argument in call)
+
+
+def search_page(repositories: list[str], cursor: str | None = None) -> str:
+    """One page of a pull-request search, a pull request in each repository named."""
+    nodes = [{"repository": {"nameWithOwner": repository}} for repository in repositories]
+    info = {"hasNextPage": cursor is not None, "endCursor": cursor}
+    return json.dumps({"data": {"search": {"pageInfo": info, "nodes": nodes}}})
+
+
 class FakeGitHub:
     """Serves the GraphQL pages, authenticated user, and comparison calls the tracker pipeline makes."""
 
@@ -100,6 +112,10 @@ class FakeGitHub:
         # Raised, as a failed gh call would be, by every ancestry comparison, or by every other comparison and tree.
         self.ancestry_failure: GitHubError | None = None
         self.change_failure: GitHubError | None = None
+        # The pages of one pull-request search, by its query, each one repository name per pull request, and the stderr
+        # every search fails with; a search not served finds nothing.
+        self.searches: dict[str, list[str]] = {}
+        self.search_failure: str | None = None
         self.calls: list[list[str]] = []
 
     def __call__(self, arguments: Sequence[str]) -> CommandResult:
@@ -107,8 +123,12 @@ class FakeGitHub:
         self.calls.append(arguments)
         if arguments[:3] == ["gh", "api", "graphql"]:
             fields = dict(value.split("=", 1) for value in arguments[4::2])
-            repository = f"{fields['owner']}/{fields['name']}"
+            repository = f"{fields.get('owner')}/{fields.get('name')}"
             index = int(fields["after"].removeprefix("cursor-")) if "after" in fields else 0
+            if "q" in fields:
+                if self.search_failure is not None:
+                    return CommandResult(1, "", self.search_failure)
+                return CommandResult(0, self.searches.get(fields["q"], [search_page([])])[index], "")
             if "number" in fields:
                 connection = "participants" if "participants(" in fields["query"] else "reviewRequests"
                 key = (repository, int(fields["number"]), connection)
@@ -290,7 +310,7 @@ class CollectTests(TrackerPipelineFixture):
             ["REPOSITORY example/one pulls=3", "REPOSITORY example/two pulls=1", f"INPUT {self.input}"],
             out.splitlines(),
         )
-        graphql = [call for call in self.github.calls if call[:3] == ["gh", "api", "graphql"]]
+        graphql = [call for call in self.github.calls if call[:3] == ["gh", "api", "graphql"] and not searches(call)]
         self.assertEqual(3, len(graphql), "one call per page, no per-pull calls")
         self.assertIn("after=cursor-1", graphql[1])
         self.assertIn("login=reviewer", graphql[0])
@@ -508,6 +528,74 @@ class CollectTests(TrackerPipelineFixture):
                 self.assertEqual([*expected, summary], out.splitlines())
                 self.assertFalse(self.input.exists())
 
+    def serve_searches(self) -> None:
+        """Open pull requests of the configured user in tracked and untracked repositories, one search over two
+        pages."""
+        self.github.searches = {
+            "is:pr is:open archived:false author:reviewer": [search_page(["example/one", "Other/Three"])],
+            "is:pr is:open archived:false review-requested:reviewer": [
+                search_page(["other/four"], "cursor-1"),
+                search_page(["example/two"]),
+            ],
+            "is:pr is:open archived:false reviewed-by:reviewer": [search_page(["other/three"])],
+        }
+
+    def test_collect_names_each_repository_outside_the_set_where_the_user_has_an_open_pull_request(self) -> None:
+        self.serve_default_pages()
+        self.serve_searches()
+        code, out, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual(
+            [
+                "REPOSITORY example/one pulls=3",
+                "REPOSITORY example/two pulls=1",
+                "UNTRACKED_REPOSITORY other/four",
+                "UNTRACKED_REPOSITORY other/three",
+                f"INPUT {self.input}",
+            ],
+            out.splitlines(),
+        )
+        self.assertEqual(4, sum(searches(call) for call in self.github.calls), "every page of each search")
+        # A named set is the set compared with.
+        code, out, err = self.run_main("collect", "--repository-set", "primary", "--output", str(self.input))
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual(
+            ["UNTRACKED_REPOSITORY example/two", "UNTRACKED_REPOSITORY other/four", "UNTRACKED_REPOSITORY other/three"],
+            [line for line in out.splitlines() if line.startswith("UNTRACKED_")],
+        )
+
+    def test_collect_of_named_repositories_searches_for_no_untracked_one(self) -> None:
+        self.serve_default_pages()
+        self.serve_searches()
+        code, out, err = self.run_main("collect", "--repository", "example/one", "--output", str(self.input))
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual(["REPOSITORY example/one pulls=3", f"INPUT {self.input}"], out.splitlines())
+        self.assertFalse(any(searches(call) for call in self.github.calls))
+
+    def test_a_failed_search_for_untracked_repositories_is_reported_without_failing_the_collection(self) -> None:
+        self.serve_default_pages()
+        self.github.search_failure = "HTTP 422: Validation Failed\nthe users cannot be searched"
+        code, out, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual(
+            [
+                "REPOSITORY example/one pulls=3",
+                "REPOSITORY example/two pulls=1",
+                "UNTRACKED_CHECK_FAILED HTTP 422: Validation Failed the users cannot be searched",
+                f"INPUT {self.input}",
+            ],
+            out.splitlines(),
+        )
+        self.assertEqual(4, len(json.loads(self.input.read_text(encoding="utf-8"))))
+        # A failed repository still fails the collection, with its FAILED line last.
+        self.github.failures["example/two"] = ("", "HTTP 404: Not Found")
+        code, out, _ = self.run_main("collect", "--output", str(self.root / "second.json"))
+        self.assertEqual(1, code)
+        self.assertIn(
+            "UNTRACKED_CHECK_FAILED HTTP 422: Validation Failed the users cannot be searched", out.splitlines()
+        )
+        self.assertTrue(out.splitlines()[-1].startswith("FAILED 1 of 2 repositories"), out)
+
 
 class ExitContractTests(TrackerPipelineFixture):
     """The process-level contract: 1 with a last stdout line FAILED for a failure, 2 for usage alone."""
@@ -536,7 +624,7 @@ class ExitContractTests(TrackerPipelineFixture):
         self.assertIn("absent.json", result.stdout)
 
     def test_a_usage_error_exits_2(self) -> None:
-        for arguments in ((), ("unknown",), ("update",), ("override", "--set")):
+        for arguments in ((), ("unknown",), ("update",), ("override", "--set"), ("repository",)):
             with self.subTest(arguments=arguments):
                 result = self.execute(*arguments)
                 self.assertEqual((2, ""), (result.returncode, result.stdout))
@@ -1396,6 +1484,159 @@ class OverrideTests(TrackerPipelineFixture):
         self.assertEqual(1, code)
         self.assertTrue(out.startswith("FAILED "), out)
         self.assertEqual({"schema_version": 1}, self.written())
+
+
+class RepositoryTests(TrackerPipelineFixture):
+    """`repository --add` adds a repository to the configuration and a repository set without GitHub, validating the
+    whole file."""
+
+    def written(self) -> Any:
+        return json.loads(self.config_path.read_text(encoding="utf-8"))
+
+    def test_add_gives_a_new_repository_the_generic_reviewer_and_adds_it_to_the_dashboard_set(self) -> None:
+        raw = {
+            "schema_version": 1,
+            "default_repository_set": "primary",
+            "repository_sets": {"primary": ["example/one"], "tracked": ["Example/One"]},
+            "repositories": {"Example/One": {"reviewer": {"id": "generic", "protocol_version": 1, "scope": "generic"}}},
+            "operation_repository_sets": {"update-pr-dashboard": "tracked"},
+            "archive_root": str(self.archive),
+            "summary_root": str(self.root / "summaries"),
+            "dashboard_file": str(self.dashboard),
+        }
+        self.config_path.write_text(json.dumps(raw, indent=4), encoding="utf-8")
+        code, out, err = self.run_main("repository", "--add", "Other/Three", "--add", "other/four")
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual(
+            [
+                "ADDED_REPOSITORY other/three reviewer=generic",
+                "ADDED_TO_SET tracked other/three",
+                "ADDED_REPOSITORY other/four reviewer=generic",
+                "ADDED_TO_SET tracked other/four",
+                f"WROTE {self.config_path}",
+            ],
+            out.splitlines(),
+        )
+        generic = {
+            "reviewer": {
+                "id": "generic",
+                "protocol_version": 1,
+                "trusted_ref": None,
+                "scope": "generic",
+                "manifest_path": None,
+            },
+            "checkout_path": None,
+        }
+        expected = json.loads(json.dumps(raw))
+        expected["repository_sets"]["tracked"] += ["other/three", "other/four"]
+        expected["repositories"].update({"other/three": generic, "other/four": generic})
+        self.assertEqual(expected, self.written(), "no default is filled in and no other value changes")
+        self.assertTrue(self.config_path.read_text(encoding="utf-8").startswith('{\n  "archive_root": '))
+        config = load_config(self.config_path)
+        self.assertEqual(["example/one", "other/three", "other/four"], config["repository_sets"]["tracked"])
+        self.assertEqual("generic", config["repositories"]["other/four"]["reviewer"]["scope"])
+        self.assertEqual([], self.github.calls)
+
+    def test_an_added_repository_is_collected_and_no_longer_untracked(self) -> None:
+        self.serve_default_pages()
+        self.github.pages["other/three"] = [page([])]
+        self.github.searches = {"is:pr is:open archived:false author:reviewer": [search_page(["other/three"])]}
+        code, out, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual((0, ""), (code, err))
+        self.assertIn("UNTRACKED_REPOSITORY other/three", out.splitlines())
+        code, out, err = self.run_main("repository", "--add", "other/three")
+        self.assertEqual((0, ""), (code, err))
+        code, out, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual(
+            [
+                "REPOSITORY example/one pulls=3",
+                "REPOSITORY example/two pulls=1",
+                "REPOSITORY other/three pulls=0",
+                f"INPUT {self.input}",
+            ],
+            out.splitlines(),
+        )
+
+    def test_a_repository_with_an_entry_keeps_it_and_joins_the_named_set(self) -> None:
+        before = self.written()["repositories"]["example/two"]
+        code, out, err = self.run_main("repository", "--add", "Example/Two", "--repository-set", "primary")
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual(["ADDED_TO_SET primary example/two", f"WROTE {self.config_path}"], out.splitlines())
+        written = self.written()
+        self.assertEqual(before, written["repositories"]["example/two"])
+        self.assertEqual(["example/one", "example/two"], written["repository_sets"]["primary"])
+        self.assertEqual(["example/one", "example/two"], written["repository_sets"]["tracked"])
+
+    def test_the_skill_names_every_line_the_command_and_collect_print(self) -> None:
+        # The agent reads only SKILL.md, so a line it does not name is output the agent has to guess at.
+        printed: set[str] = set()
+        code, out, err = self.run_main("repository", "--add", "other/three")
+        self.assertEqual((0, ""), (code, err))
+        printed |= {line.split()[0] for line in out.splitlines()}
+        self.serve_default_pages()
+        self.github.pages["other/three"] = [page([])]
+        self.github.searches = {"is:pr is:open archived:false author:reviewer": [search_page(["other/four"])]}
+        code, out, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual((0, ""), (code, err))
+        printed |= {line.split()[0] for line in out.splitlines()}
+        self.github.search_failure = "HTTP 422: Validation Failed"
+        code, out, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual((0, ""), (code, err))
+        printed |= {line.split()[0] for line in out.splitlines()}
+        self.assertEqual(
+            {
+                "ADDED_REPOSITORY",
+                "ADDED_TO_SET",
+                "WROTE",
+                "REPOSITORY",
+                "UNTRACKED_REPOSITORY",
+                "UNTRACKED_CHECK_FAILED",
+                "INPUT",
+            },
+            printed,
+        )
+        skill = (SCRIPT_DIRECTORY.parent / "SKILL.md").read_text(encoding="utf-8")
+        for word in sorted(printed):
+            with self.subTest(line=word):
+                self.assertTrue(f"`{word}`" in skill or f"`{word} <" in skill, word)
+
+    def test_a_refused_addition_writes_nothing(self) -> None:
+        original = self.config_path.read_bytes()
+        cases: list[tuple[list[str], str]] = [
+            (["--add", "Example/One"], "Repository example/one is already in repository set tracked"),
+            (
+                ["--add", "other/three", "--add", "example/two"],
+                "Repository example/two is already in repository set tracked",
+            ),
+            (["--add", "example/one", "--repository-set", "primary"], "already in repository set primary"),
+            (["--add", "other/three", "--repository-set", "absent"], "Unknown repository set: absent"),
+            (["--add", "other/three", "--add", "Other/Three"], "Repository other/three is named more than once"),
+            (["--add", "other"], "Invalid repository identity: 'other'"),
+            (["--add", "other/three/four"], "Invalid repository identity"),
+        ]
+        for arguments, reason in cases:
+            with self.subTest(arguments=arguments):
+                code, out, err = self.run_main("repository", *arguments)
+                self.assertEqual((1, ""), (code, err))
+                self.assertEqual(1, len(out.splitlines()), out)
+                self.assertTrue(out.startswith("FAILED "), out)
+                self.assertIn(reason, out)
+                self.assertEqual(original, self.config_path.read_bytes())
+        self.assertEqual([], self.github.calls)
+
+    def test_a_configuration_that_does_not_validate_is_refused_before_any_change(self) -> None:
+        missing_set = json.loads(self.config_path.read_text(encoding="utf-8"))
+        missing_set["repository_sets"]["tracked"].append("example/three")  # a set member with no entry
+        for content in ("{", json.dumps({"schema_version": 1}), json.dumps(missing_set)):
+            with self.subTest(content=content):
+                self.config_path.write_text(content, encoding="utf-8")
+                code, out, err = self.run_main("repository", "--add", "other/three")
+                self.assertEqual((1, ""), (code, err))
+                self.assertEqual(1, len(out.splitlines()), out)
+                self.assertTrue(out.startswith("FAILED "), out)
+                self.assertEqual(content, self.config_path.read_text(encoding="utf-8"))
+        self.assertIn("Missing per-repository configuration for: example/three", out)
 
 
 class ReviewArgumentsTests(TrackerPipelineFixture):
