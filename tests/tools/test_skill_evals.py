@@ -3578,8 +3578,9 @@ def test_the_worked_trigger_scenario_draws_on_its_description_and_a_neighbour_s(
     neighbour = frontmatter.read(skill_evals_scenarios.REPOSITORY_ROOT / "skills" / "audit-ai-config" / "SKILL.md")
     # The requests ask what the description's "Use it when" sentence names, and the near misses what the neighbour's.
     assert (
-        "Use it when asked to check a skill's allowed-tools or that its SKILL.md matches its scripts, what a skill "
-        "costs or why it is slow, or to check one before shipping it." in (description.string("description") or "")
+        "Use it when asked to audit or check a skill: whether its allowed-tools grants are too broad, whether its "
+        "SKILL.md names the lines its scripts print, what it costs to run or why it is slow, or before shipping it."
+        in (description.string("description") or "")
     )
     assert "Use it when asked to audit or check a repository's agent instructions or setup" in (
         neighbour.string("description") or ""

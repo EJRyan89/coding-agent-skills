@@ -1,6 +1,6 @@
 ---
 name: audit-skill
-description: "Audit an agent skill's contract, grants, and cost: whether its Markdown names the lines and exit codes its scripts print, its allowed-tools grants and listing, deterministic work left to prose, token footprint, tool calls, subagents, and model. Read-only findings report. Use it when asked to check a skill's allowed-tools or that its SKILL.md matches its scripts, what a skill costs or why it is slow, or to check one before shipping it."
+description: "Audit an agent skill's contract, grants, and cost: whether its Markdown names the lines and exit codes its scripts print, its allowed-tools grants and listing, deterministic work left to prose, token footprint, tool calls, subagents, and model. Read-only findings report. Use it when asked to audit or check a skill: whether its allowed-tools grants are too broad, whether its SKILL.md names the lines its scripts print, what it costs to run or why it is slow, or before shipping it."
 argument-hint: "<SkillName>"
 allowed-tools: ["Bash({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py\" *)", "PowerShell({{PYTHON}} -B \"${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py\" *)", "Read"]
 ---

@@ -100,7 +100,7 @@ It never fixes what it finds; findings are fixed by hand. This source used to sh
 ## `audit-skill`
 
 <!-- generated:audit-skill -->
-Audit an agent skill's contract, grants, and cost: whether its Markdown names the lines and exit codes its scripts print, its allowed-tools grants and listing, deterministic work left to prose, token footprint, tool calls, subagents, and model. Read-only findings report. Use it when asked to check a skill's allowed-tools or that its SKILL.md matches its scripts, what a skill costs or why it is slow, or to check one before shipping it.
+Audit an agent skill's contract, grants, and cost: whether its Markdown names the lines and exit codes its scripts print, its allowed-tools grants and listing, deterministic work left to prose, token footprint, tool calls, subagents, and model. Read-only findings report. Use it when asked to audit or check a skill: whether its allowed-tools grants are too broad, whether its SKILL.md names the lines its scripts print, what it costs to run or why it is slow, or before shipping it.
 
 ```text
 /audit-skill <SkillName>
