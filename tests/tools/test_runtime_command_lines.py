@@ -17,7 +17,14 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
-from deployer import platform_support
+from skill_roots import sibling_scripts
+
+sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
+from review_hosts import COPILOT_SYNC_SESSION_VERSION
+
+from deployer import discovery, platform_support
+from deployer import tools as deployer_tools
+from tools import runtime_canary
 from tools import runtime_command_lines as lines
 from tools.runtime_canary import Completed
 
@@ -73,17 +80,17 @@ class RuntimeCommandLinesTestCase(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         # Nothing here may start a real runtime or read the real PATH's GitHub CLI.
-        patcher = mock.patch.object(lines.platform_support, "find_on_path", return_value=None)
+        patcher = mock.patch.object(platform_support, "find_on_path", return_value=None)
         patcher.start()
         self.addCleanup(patcher.stop)
-        for runtime in lines.RUNTIMES:
+        for runtime in runtime_canary.RUNTIMES:
             if runtime not in KNOWN_FLAGS:
                 built = lines.command_lines(
-                    runtime, runtime, self.root / f"flags-{runtime}", {}, lines.COPILOT_SYNC_SESSION_VERSION
+                    runtime, runtime, self.root / f"flags-{runtime}", {}, COPILOT_SYNC_SESSION_VERSION
                 )
                 KNOWN_FLAGS[runtime] = [flag for line in built for flag in line.flags]
 
-    def check(self, stub: StubRuntimes, runtimes: tuple[str, ...] = lines.RUNTIMES) -> list[str]:
+    def check(self, stub: StubRuntimes, runtimes: tuple[str, ...] = runtime_canary.RUNTIMES) -> list[str]:
         printed: list[str] = []
         found = lines.run(runtimes, 5, self.root / "run", runner=stub, which=lambda name: name, say=printed.append)
         self.assertEqual(printed, found)
@@ -188,7 +195,7 @@ class FailedTests(RuntimeCommandLinesTestCase):
 class BuilderTests(RuntimeCommandLinesTestCase):
     def test_each_command_line_is_the_one_its_builder_returns(self) -> None:
         sentinel = ["claude", "--from-the-builder"]
-        with mock.patch.object(lines.runtime_canary, "run_command", return_value=sentinel) as built:
+        with mock.patch.object(runtime_canary, "run_command", return_value=sentinel) as built:
             found = lines.command_lines("claude", "claude", self.root / "c", {}, None)
         self.assertEqual(sentinel, next(line for line in found if line.name == "runtime-canary").arguments)
         built.assert_called_once()
@@ -203,14 +210,14 @@ class BuilderTests(RuntimeCommandLinesTestCase):
             self.assertNotIn("--no-remote", line.flags)
 
     def test_the_deployer_commands_come_from_its_exported_builders(self) -> None:
-        self.assertEqual(["codex", "app-server"], lines.discovery.listing_command("codex", "codex"))
-        self.assertEqual(["copilot", "skill", "list", "--json"], lines.discovery.listing_command("copilot", "copilot"))
+        self.assertEqual(["codex", "app-server"], discovery.listing_command("codex", "codex"))
+        self.assertEqual(["copilot", "skill", "list", "--json"], discovery.listing_command("copilot", "copilot"))
         with self.assertRaisesRegex(ValueError, "no skill listing for claude"):
-            lines.discovery.listing_command("claude", "claude")
-        self.assertEqual(["codex", "debug", "prompt-input"], lines.discovery.catalog_command("codex"))
+            discovery.listing_command("claude", "claude")
+        self.assertEqual(["codex", "debug", "prompt-input"], discovery.catalog_command("codex"))
         self.assertEqual(
             ["codex", "debug", "prompt-input", "-c", "sandbox_mode=workspace-write"],
-            lines.deployer_tools.codex_sandbox_command("codex"),
+            deployer_tools.codex_sandbox_command("codex"),
         )
         found = {line.name: line.arguments for line in lines.command_lines("codex", "codex", self.root / "c", {}, None)}
         self.assertEqual(["codex", "app-server"], found["skill-listing"])
@@ -233,7 +240,7 @@ class SignedOutTests(unittest.TestCase):
             base = {"PATH": "bin", "GH_TOKEN": "t", "ANTHROPIC_API_KEY": "k", "CLAUDE_CODE_USE_BEDROCK": "1"}
             with (
                 mock.patch.dict(os.environ, base, clear=True),
-                mock.patch.object(lines.platform_support, "find_on_path", return_value=None),
+                mock.patch.object(platform_support, "find_on_path", return_value=None),
             ):
                 environment = lines.signed_out(home, "runtime")
             self.assertEqual("bin", environment["PATH"])
@@ -261,7 +268,7 @@ class SignedOutTests(unittest.TestCase):
                 return None
             return f"{search_path}/gh" if name == "gh" and search_path in holds_gh else None
 
-        with mock.patch.object(lines.platform_support, "find_on_path", side_effect=find):
+        with mock.patch.object(platform_support, "find_on_path", side_effect=find):
             self.assertEqual(
                 separator.join(["tools", "runtime-dir"]),
                 lines.without_gh(separator.join(["tools", "gh-dir", "runtime-dir"]), "runtime-dir/copilot"),

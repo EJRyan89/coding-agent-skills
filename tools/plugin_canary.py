@@ -351,7 +351,13 @@ def guard_command(executable: str, prompt: str, paths: Mapping[str, str]) -> lis
 
 def unguarded_command(executable: str, request: str, paths: Mapping[str, str]) -> list[str]:
     """The hooks-off session: a plugin session granted unguarded_grants, with every hook off."""
-    return [*session_command(executable, request, paths), "--allowedTools", *unguarded_grants(), "--settings", HOOKS_OFF]
+    return [
+        *session_command(executable, request, paths),
+        "--allowedTools",
+        *unguarded_grants(),
+        "--settings",
+        HOOKS_OFF,
+    ]
 
 
 def transcript(session: Session, name: str, completed: Completed) -> str:

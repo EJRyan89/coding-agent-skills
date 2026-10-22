@@ -68,15 +68,13 @@ from review_hosts import COPILOT_SYNC_SESSION_VERSION, copilot_command, isolated
 from deployer import discovery, platform_support
 from deployer import tools as deployer_tools
 from tools import plugin_canary, runtime_canary, skill_evals_runs
-from tools.runtime_canary import Completed, quote, text
+from tools.runtime_canary import RUNTIMES, Completed, quote, text
 
-RUNTIMES = ("claude", "codex", "copilot")
 DEFAULT_TIMEOUT = 30.0
 # A port nothing listens on, so a runtime that found a credential after all could still reach no model through it.
 UNREACHABLE_PROXY = "http://127.0.0.1:9"
 PROXY_VARIABLES = ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy")
-# What a builder is given where a real run gives its own: a skill, a request, and a plugin.
-PROBE_SKILL = "runtime-canary-probe"
+# What a builder is given where a real run gives its own: the canary's fixture skill, a request, and a plugin.
 REQUEST = "runtime command line check"
 REVIEWED_SKILL = "review-prs"
 PLUGIN = "runtime-command-lines"
@@ -213,7 +211,7 @@ def claude_lines(executable: str, root: Path, environment: dict[str, str]) -> li
     plugin.mkdir(exist_ok=True)
     paths = {PLUGIN: str(plugin)}
     built = {
-        "runtime-canary": runtime_canary.run_command("claude", executable, PROBE_SKILL, home),
+        "runtime-canary": runtime_canary.run_command("claude", executable, runtime_canary.FIXTURE_SKILL, home),
         "skill-evals-review": skill_evals_runs.claude_command(executable, REQUEST, home, REVIEWED_SKILL),
         "skill-evals-trigger": skill_evals_runs.trigger_command(executable, REQUEST, skill_evals_runs.SESSION_MODEL),
         "plugin-canary-probe": plugin_canary.session_command(executable, REQUEST, paths),
@@ -227,7 +225,7 @@ def codex_lines(executable: str, root: Path, environment: dict[str, str]) -> lis
     """The canary's Codex exec session, the deployer's skill listing and catalog, and `check`'s sandbox probe."""
     home = root / "home"
     built = {
-        "runtime-canary": runtime_canary.run_command("codex", executable, PROBE_SKILL, home),
+        "runtime-canary": runtime_canary.run_command("codex", executable, runtime_canary.FIXTURE_SKILL, home),
         "skill-listing": discovery.listing_command("codex", executable),
         "skill-catalog": discovery.catalog_command(executable),
         "sandbox-probe": deployer_tools.codex_sandbox_command(executable),
@@ -260,7 +258,7 @@ def copilot_lines(
         CommandLine(
             "copilot",
             "runtime-canary",
-            runtime_canary.run_command("copilot", executable, PROBE_SKILL, home, version=version),
+            runtime_canary.run_command("copilot", executable, runtime_canary.FIXTURE_SKILL, home, version=version),
             home,
             environment,
         ),
