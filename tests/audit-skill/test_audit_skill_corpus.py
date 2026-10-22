@@ -8,6 +8,10 @@ cues fire on the text before, and none fires on the text after.
 status-lines holds a SKILL.md before and after a documentation fix that explained lines its script printed, with that
 script as the fix left it, which the fix did not change. Each line the fix explained is UNEXPLAINED before it and not
 after it.
+
+runtime-prompt-shape holds a runtime prompt sample as it stood before the pull request that put its untrusted data
+first and dropped its capitalised emphasis; corpus.json names the cues and lines the sample shows before it, and the
+sample the source tree keeps today shows none.
 """
 
 from __future__ import annotations
@@ -28,7 +32,8 @@ sys.path.insert(0, str(sibling_scripts("audit-skill")))
 
 import skill_inventory
 
-FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "audit-skill"
+REPOSITORY = Path(__file__).resolve().parents[2]
+FIXTURES = REPOSITORY / "tests" / "fixtures" / "audit-skill"
 CORPUS = json.loads((FIXTURES / "corpus.json").read_text(encoding="utf-8"))
 PROSE_CUES = {name for name, _ in skill_inventory.PROSE_CUES}
 
@@ -87,3 +92,26 @@ def test_the_lines_a_documentation_fix_explained_are_unexplained_before_it_only(
     explained = set(entry["unexplained"])
     assert explained <= found["before"]
     assert set() == explained & found["after"]
+
+
+def shape_cues(lines: list[str], sample: Path) -> list[list[object]]:
+    prefix = f"CUE {sample.as_posix()} "
+    return [[int(line.split()[2]), line.split()[3]] for line in lines if line.startswith(prefix)]
+
+
+@pytest.mark.parametrize("role", sorted(CORPUS["runtime-prompt-shape"]))
+def test_a_prompt_sample_shows_its_shape_cues_before_its_fix_and_none_after(role: str, tmp_path: Path) -> None:
+    entry = CORPUS["runtime-prompt-shape"][role]
+    (tmp_path / "deploy-meta").mkdir()
+    (tmp_path / "deploy-meta" / f"{entry['skill']}.json").write_text("{}", encoding="utf-8")
+    skill = tmp_path / "skills" / entry["skill"] / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("Start one subagent with this prompt: `Read <prompt file> and follow it.`\n", encoding="utf-8")
+    before = tmp_path / entry["sample"]
+    before.parent.mkdir(parents=True)
+    before.write_bytes((FIXTURES / "runtime-prompt-shape" / role / "before.txt").read_bytes())
+    assert entry["cues"] == shape_cues(scan(skill.parent), before)
+    after = REPOSITORY / entry["sample"]
+    lines = scan(REPOSITORY / "skills" / entry["skill"])
+    assert f"REPLY_BOUNDED {after.as_posix()} yes" in lines
+    assert shape_cues(lines, after) == []

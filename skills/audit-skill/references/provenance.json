@@ -112,6 +112,15 @@
         "decision": "A grant's text before its * names a script by its path or a git or gh subcommand: the grant decisions in this source's docs/design.md."
       }
     ],
+    "NO_TRIGGER_SCENARIO": [
+      {
+        "page": "https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices",
+        "passage": "Claude uses a skill's name and description when deciding whether to trigger it, and a skill should have at least three evaluations, built before its documentation."
+      },
+      {
+        "decision": "Every shipped skill the model may start has a trigger scenario, rerun through evaluate-skill whenever its description is new or changed: the trigger scenario decision in this source's docs/design.md."
+      }
+    ],
     "OPEN_PATH_ALLOWED": [
       {
         "page": "https://code.claude.com/docs/en/permissions",
@@ -199,6 +208,15 @@
         "decision": "A skill lists only the tools a step uses, because each grant widens what runs unasked: Granting tools in this source's docs/adding-a-skill.md."
       }
     ],
+    "after-reply": [
+      {
+        "page": "https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices",
+        "passage": "Place long documents and inputs near the top of the prompt, above the query, instructions, and examples."
+      },
+      {
+        "decision": "A prompt a script writes for a subagent puts its data first and ends with its output contract and reply, so the last text the subagent reads is never untrusted: the reviewer prompt decision in this source's docs/design.md."
+      }
+    ],
     "agent": [
       {
         "page": "https://code.claude.com/docs/en/sub-agents",
@@ -213,6 +231,15 @@
     "carried-state": [
       {
         "decision": "A skill's deterministic steps are tested scripts that print one fact per line, and its prose keeps judgment, delegation, and the user's questions: Tested scripts over prose in this source's docs/design.md."
+      }
+    ],
+    "emphasis": [
+      {
+        "page": "https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices",
+        "passage": "Current models are more responsive to the system prompt and may overtrigger on aggressive wording such as \"CRITICAL: You MUST\"; soften it to normal prompting."
+      },
+      {
+        "decision": "A reviewer prompt states its rules plainly, without capitalised emphasis: the reviewer prompt decision in this source's docs/design.md."
       }
     ],
     "generated-code": [
@@ -280,6 +307,15 @@
       {
         "page": "https://code.claude.com/docs/en/sub-agents",
         "passage": "A subagent's final message returns to the main conversation as its result, so its length is context the main conversation keeps."
+      }
+    ],
+    "untrusted-after-contract": [
+      {
+        "page": "https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices",
+        "passage": "Place long documents and inputs near the top of the prompt, above the query, instructions, and examples."
+      },
+      {
+        "decision": "A prompt a script writes for a subagent puts its data first and ends with its output contract and reply, so the last text the subagent reads is never untrusted: the reviewer prompt decision in this source's docs/design.md."
       }
     ],
     "wide-glob": [

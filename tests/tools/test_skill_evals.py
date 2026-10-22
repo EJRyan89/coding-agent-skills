@@ -3148,22 +3148,25 @@ class EvaluateTests(unittest.TestCase):
 
     def test_a_trigger_scenario_judges_whether_each_request_started_the_skill_and_records_it(self) -> None:
         scenario = skill_evals_scenarios.load_scenarios("audit-skill", ["description"])[0]
-        first, second, third = scenario.requests
-        near, other = scenario.near_misses
+        first, second, third, fourth, fifth = scenario.requests
+        near, other, last = scenario.near_misses
         # The third request starts nothing, and the second near miss starts the skill: two judgments fail.
         claude = StubTrigger(
             self,
             {
                 first: "audit-skill",
                 second: "/audit-skill",
+                fourth: "audit-skill",
+                fifth: "audit-skill",
                 near: "audit-ai-config",
                 other: "audit-skill",
+                last: "review-prs",
             },
         )
         status, lines = self.evaluate(["--write", "--jobs", "1"], self.seams(claude), "audit-skill")
         self.assertEqual(1, status, lines)
         ended = [line.split(" ")[1:3] for line in lines if line.startswith("TRANSCRIPT ")]
-        self.assertEqual([["description", model] for model in skill_evals_records.MODELS for _ in range(5)], ended)
+        self.assertEqual([["description", model] for model in skill_evals_records.MODELS for _ in range(8)], ended)
         self.assertEqual(
             [f"REVIEWER {model} {model_id}" for model, model_id in skill_evals_records.MODELS.items()],
             [line for line in lines if line.startswith("REVIEWER ")],
@@ -3176,13 +3179,16 @@ class EvaluateTests(unittest.TestCase):
                 f"PASS audit-skill description haiku starts {json.dumps(second)}",
                 f'FAIL audit-skill description haiku starts {json.dumps(third)} judgment "the session started '
                 'no skill"',
+                f"PASS audit-skill description haiku starts {json.dumps(fourth)}",
+                f"PASS audit-skill description haiku starts {json.dumps(fifth)}",
                 f"PASS audit-skill description haiku does_not_start {json.dumps(near)}",
                 f"FAIL audit-skill description haiku does_not_start {json.dumps(other)} judgment "
                 '"the session started audit-skill"',
+                f"PASS audit-skill description haiku does_not_start {json.dumps(last)}",
             ],
-            haiku[:5],
+            haiku[:8],
         )
-        self.assertIn("| description | 3/5 | 3/5 | 3/5 |", self.cited)
+        self.assertIn("| description | 6/8 | 6/8 | 6/8 |", self.cited)
         record = json.loads(
             (self.homes / "haiku" / skill_evals_runs.STATE / "description" / "trigger.json").read_text(encoding="utf-8")
         )
@@ -3193,14 +3199,17 @@ class EvaluateTests(unittest.TestCase):
                     {"request": first, "started": ["audit-skill"]},
                     {"request": second, "started": ["audit-skill"]},
                     {"request": third, "started": []},
+                    {"request": fourth, "started": ["audit-skill"]},
+                    {"request": fifth, "started": ["audit-skill"]},
                     {"request": near, "started": ["audit-ai-config"]},
                     {"request": other, "started": ["audit-skill"]},
+                    {"request": last, "started": ["review-prs"]},
                 ],
             },
             record,
         )
         self.assertIn(
-            "| audit-skill | haiku | claude-haiku-5-5 | 3/5 | 1 | description 3/5 | claude-haiku-5-5 | 2.1.291 "
+            "| audit-skill | haiku | claude-haiku-5-5 | 6/8 | 1 | description 6/8 | claude-haiku-5-5 | 2.1.291 "
             "| 2026-10-08 |",
             self.results.read_text(encoding="utf-8"),
         )
@@ -3228,7 +3237,7 @@ class EvaluateTests(unittest.TestCase):
                 self.assertEqual(1, status, lines)
                 self.assertIn(f"NOT_COUNTED description haiku {kind} {json.dumps(reason)}", lines)
                 failed = [line for line in lines if line.startswith("FAIL ")]
-                self.assertEqual(5, len(failed))
+                self.assertEqual(8, len(failed))
                 self.assertTrue(all(line.endswith(f"{kind} {json.dumps(reason)}") for line in failed), failed)
 
     def test_write_records_only_a_full_run(self) -> None:
@@ -3568,13 +3577,14 @@ def test_the_worked_trigger_scenario_draws_on_its_description_and_a_neighbour_s(
     description = frontmatter.read(skill_evals_scenarios.REPOSITORY_ROOT / "skills" / "audit-skill" / "SKILL.md")
     neighbour = frontmatter.read(skill_evals_scenarios.REPOSITORY_ROOT / "skills" / "audit-ai-config" / "SKILL.md")
     # The requests ask what the description's "Use it when" sentence names, and the near misses what the neighbour's.
-    assert "Use it when asked what a skill costs, why it is slow or expensive, or to check one before shipping it." in (
-        description.string("description") or ""
+    assert (
+        "Use it when asked to check a skill's allowed-tools or that its SKILL.md matches its scripts, what a skill "
+        "costs or why it is slow, or to check one before shipping it." in (description.string("description") or "")
     )
     assert "Use it when asked to audit or check a repository's agent instructions or setup" in (
         neighbour.string("description") or ""
     )
-    assert len(scenario.requests) == 3
+    assert len(scenario.requests) == 5
     assert all("skill" in request for request in scenario.requests), scenario.requests
     assert all("repository" in request for request in scenario.near_misses), scenario.near_misses
 

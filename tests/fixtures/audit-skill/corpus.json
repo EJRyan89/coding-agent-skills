@@ -81,5 +81,21 @@
       "script": "tools/runtime_canary.py",
       "unexplained": ["DEPLOYED", "DEPLOY_FAILED"]
     }
+  },
+  "runtime-prompt-shape": {
+    "generic-review": {
+      "pull_request": 1410,
+      "commit": "90dae8b",
+      "skill": "review-prs",
+      "sample": "docs/runtime-prompts/review-prs/generic-review.txt",
+      "cues": [
+        [3, "emphasis"],
+        [66, "emphasis"],
+        [68, "emphasis"],
+        [126, "after-reply"],
+        [127, "untrusted-after-contract"],
+        [130, "untrusted-after-contract"]
+      ]
+    }
   }
 }

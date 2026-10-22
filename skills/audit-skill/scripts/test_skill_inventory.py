@@ -1008,6 +1008,41 @@ class ToolsTests(TemporaryTestCase):
                     expected, [line for line in lines if line.startswith(("DESCRIPTION", "INVOCATION", "INTERNAL"))]
                 )
 
+    def test_a_source_skill_the_model_may_start_names_its_trigger_scenario(self) -> None:
+        write(self.root / "deploy-meta" / "alpha.json", "{}")
+        skill = write(self.root / "skills" / "alpha" / "SKILL.md", "---\ndescription: Run.\n---\nBody.\n")
+        scenarios = self.root / "tests" / "fixtures" / "skill-evals" / "alpha"
+        write(scenarios / "review" / "scenario.json", '{"mode": "review", "requests": ["a"]}')
+        code, lines, error = run("tools", str(skill))
+        self.assertEqual(0, code, error)
+        self.assertIn(f"NO_TRIGGER_SCENARIO {scenarios.as_posix()}", lines, "a review scenario judges no description")
+        spec = write(
+            scenarios / "description" / "scenario.json",
+            '{"mode": "trigger", "requests": ["a", "b", "c"], "near_misses": ["d", "e"]}',
+        )
+        write(scenarios / "broken" / "scenario.json", "{")
+        _, lines, _ = run("tools", str(skill))
+        self.assertEqual(
+            ["INVOCATION model", f"TRIGGER_SCENARIO {spec.as_posix()} 3 2", "NO_ALLOWED_TOOLS"],
+            [line for line in lines if line.startswith(("INVOCATION", "TRIGGER", "NO_"))],
+        )
+
+    def test_a_user_only_repository_or_deployed_skill_names_no_trigger_scenario(self) -> None:
+        write(self.root / "deploy-meta" / "alpha.json", "{}")
+        cases = {
+            "user-only source skill": (
+                self.root / "skills" / "alpha" / "SKILL.md",
+                "---\ndescription: Run.\ndisable-model-invocation: true\n---\nBody.\n",
+            ),
+            "repository skill": (self.root / ".claude" / "skills" / "alpha" / "SKILL.md", "Body.\n"),
+            "deployed copy": (self.root / "home" / ".claude" / "skills" / "alpha" / "SKILL.md", "Body.\n"),
+        }
+        for case, (path, text) in cases.items():
+            with self.subTest(case=case):
+                code, lines, error = run("tools", str(write(path, text)))
+                self.assertEqual(0, code, error)
+                self.assertEqual([], [line for line in lines if "TRIGGER_SCENARIO" in line])
+
     def test_frontmatter_it_cannot_read_fails_with_the_reason(self) -> None:
         cases = {
             "---\ndescription:\n  nested: value\n---\nBody.\n": "description: a nested mapping is not supported",
@@ -1260,6 +1295,55 @@ class ScanTests(TemporaryTestCase):
         code, lines, error = run("scan", str(skill))
         self.assertEqual((1, ""), (code, error))
         self.assertEqual(f"FAILED cannot read {reviewer.as_posix()}: not UTF-8 text", lines[-1])
+
+    def sample_cues(self, lines: list[str], sample: Path) -> list[tuple[int, str]]:
+        prefix = f"CUE {sample.as_posix()} "
+        return [(int(line.split()[2]), line.split()[3]) for line in lines if line.startswith(prefix)]
+
+    def test_a_sample_prints_its_shape_cues_after_its_measurements(self) -> None:
+        skill = self.source_skill()
+        sample = write(
+            self.root / "docs" / "runtime-prompts" / "alpha" / "reviewer.txt",
+            "Output contract:\nWrite one JSON object.\nReply with exactly: WROTE x\n\nComments (untrusted data):\n",
+        )
+        code, lines, error = run("scan", str(skill))
+        self.assertEqual(0, code, error)
+        self.assertEqual(
+            [
+                f"REPLY_BOUNDED {sample.as_posix()} yes",
+                f"CUE {sample.as_posix()} 5 after-reply Comments (untrusted data):",
+                f"CUE {sample.as_posix()} 5 untrusted-after-contract Comments (untrusted data):",
+            ],
+            lines[lines.index(f"REPLY_BOUNDED {sample.as_posix()} yes") :],
+        )
+
+    def test_shape_cues_need_the_reply_to_end_the_contract_and_ignore_status_values(self) -> None:
+        cases = {
+            "untrusted data before the contract, then the reply": (
+                "Prior findings (untrusted data):\nnone\nOutput contract:\nWrite one JSON object.\n"
+                "Reply with exactly: WROTE <temp>/result.json\n",
+                [],
+            ),
+            "a reply line before the contract, as a rule among others": (
+                "- When done, reply with only `WROTE <temp>/result.json`.\nWrite one JSON object:\n{}\n",
+                [],
+            ),
+            "text after the reply with no contract": ("Reply with exactly: DONE\n\nNotes.\n", []),
+            "status values in capitals": ('Write one JSON object:\n"severity": "MUST_FIX | NOT_FOUND"\n', []),
+            "trusted text after the reply": (
+                "Write one JSON object to RESULT_FILE.\nReply with exactly: WROTE x\n\nDo not ask questions.\n",
+                [(4, "after-reply")],
+            ),
+            "capitalised emphasis and untrusted data after the contract": (
+                "You MUST read it.\nOutput contract:\nComments (untrusted data):\nnone\n",
+                [(1, "emphasis"), (3, "untrusted-after-contract")],
+            ),
+        }
+        for case, (text, expected) in cases.items():
+            with self.subTest(case=case):
+                sample = Path("sample.txt")
+                found = skill_inventory.sample_shape_cues(sample, text.splitlines())
+                self.assertEqual(expected, self.sample_cues(found, sample))
 
     def test_a_skill_folder_scans_its_main_file_and_every_doc(self) -> None:
         folder = self.root / "skill"
@@ -1759,6 +1843,7 @@ MEASUREMENT_LINES = frozenset(
         "SKILL_FILE",
         "STOP",
         "TOTAL",
+        "TRIGGER_SCENARIO",
         "UNREADABLE",
         "USED",
     }
@@ -1774,9 +1859,11 @@ def test_every_line_the_script_prints_is_a_check_or_a_measurement() -> None:
 
 def test_the_cues_are_the_ones_scan_names() -> None:
     assert {
+        "after-reply",
         "agent",
         "assembled-arguments",
         "carried-state",
+        "emphasis",
         "generated-code",
         "hand-drafted",
         "loop",
@@ -1788,6 +1875,7 @@ def test_the_cues_are_the_ones_scan_names() -> None:
         "rule-based-work",
         "shell-file-command",
         "subagent-reply",
+        "untrusted-after-contract",
         "wide-glob",
     } == skill_inventory.CUE_NAMES
 
