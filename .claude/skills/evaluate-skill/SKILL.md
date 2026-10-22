@@ -28,7 +28,7 @@ From the worktree, in the background, since it outlasts a command's time limit, 
 python -B tools/skill_evals.py review-prs --write
 ```
 
-The first line is `HOME "<dir>"`. A `FAILED` or `DEPLOY_FAILED` line instead means nothing ran: report what it names, such as Claude Code missing from `PATH` or the log of a deployment that failed.
+The first line is `HOME "<dir>"`, then a `DEPLOYED <model> <source>` line for each model's home and `RUNTIME claude <version>`, the Claude Code it runs, which the cited block repeats; none needs anything from you. A `FAILED` or `DEPLOY_FAILED` line instead means nothing ran: report what it names, such as Claude Code missing from `PATH` or the log of a deployment that failed.
 
 ## 3. Say what each failure means
 

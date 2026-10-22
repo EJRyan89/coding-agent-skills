@@ -321,6 +321,11 @@ def grant_remaining(root: Path, skill_md: Path) -> list[str]:
         kind, _, detail = line.partition(" ")
         if kind in GRANT_REMAINING:
             found.append(f"{skill_md.as_posix()} " + GRANT_REMAINING[kind].format(detail=detail))
+        elif kind == "IMPLIED" and (implied := detail.split(" "))[0] not in skill_inventory.SHELL_TOOLS:
+            found.append(
+                f"{skill_md.as_posix()} grants {implied[0]}, which line {implied[1]} only implies; name the tool in "
+                "the step that uses it, or remove it from allowed-tools"
+            )
     return found
 
 

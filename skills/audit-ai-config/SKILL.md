@@ -10,7 +10,7 @@ Assess a repository's AI agent configuration across Claude Code, Codex, and Copi
 
 ## 1. Run the engine
 
-Confirm the target is a Git repository (`git rev-parse --show-toplevel`); if it is not, ask the user which repository to audit. Then run, from anywhere:
+Confirm the target is a Git repository (`git rev-parse --show-toplevel`); if it is not, ask the user with `AskUserQuestion` which repository to audit. Then run, from anywhere:
 
 ```bash
 {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/audit_ai_config.py" --root "<repository root>"
@@ -33,7 +33,7 @@ The Markdown report writes the punctuation of each path and message as character
 
 ## 2. Review instruction content (judgment)
 
-Only for a conforming repository, read the instruction files the engine lists as effective sources for each targeted surface (the `layering` findings) and every file the glob `.github/instructions/**/*.instructions.md` matches, and report as `WARNING` findings of your own:
+Only for a conforming repository, `Read` the instruction files the engine lists as effective sources for each targeted surface (the `layering` findings) and every file `Glob` matches for `.github/instructions/**/*.instructions.md`, and report as `WARNING` findings of your own:
 
 - instructions that contradict each other within one surface's effective set, such as two sources prescribing different build commands or formatting rules;
 - substantial overlap that duplicates `CLAUDE.md` guidance in a non-generated file, which will drift;

@@ -13,7 +13,7 @@ from pathlib import Path
 import frontmatter
 from skill_layout import embedded_program_problems, output_placeholder_problems
 from skill_roots import sibling_scripts
-from skill_scripts import command_reader
+from skill_scripts import RESULTS_DOC, command_reader
 from validation_support import (
     REPOSITORY_ROOT,
     REPOSITORY_SKILLS,
@@ -68,8 +68,10 @@ def skill_grant_problems(
     a path a * continues, such as the skill's own scripts/*, rather than a script by name, or a program with no
     script, such as python *, grants no step uses, own-script commands left ungranted, grants that pre-approve a
     script that starts code from the target repository, shell patterns that match no command the skill shows, and any
-    grant in a hidden skill, which no turn starts. A command is read from every fence Markdown allows and from each
-    code span outside one that runs a script.
+    grant in a hidden skill, which no turn starts. A grant counts as used only where a step names its tool: prose that
+    only implies it, such as "read the file" for Read, names an action a script may take as well as the agent. A
+    shell grant is used by the commands its pattern matches, which the idle check holds. A command is read from every
+    fence Markdown allows and from each code span outside one that runs a script.
 
     The rules are the audit-skill inventory's, so the audit and this policy cannot disagree. A shipped skill's
     own scripts run through ${CLAUDE_SKILL_DIR}; a repository skill's are the repository's tools and tests.
@@ -92,6 +94,12 @@ def skill_grant_problems(
                 problems.append(problem)
             elif kind == "UNUSED_ALLOWED":
                 problems.append(f"{name} grants {detail}, which no step uses; see {GRANTS_DOC}")
+            elif kind == "IMPLIED" and (tool_line := detail.split(" "))[0] not in skill_inventory.SHELL_TOOLS:
+                tool, number = tool_line
+                problems.append(
+                    f"{name}:{number} implies {tool}, which it grants, but no step names it; name the tool in the "
+                    f"step that uses it, or drop the grant; see {GRANTS_DOC}"
+                )
             elif kind == "MISSING_ALLOWED" and detail.split(" ")[0] == "Bash":
                 problems.append(f"{name}:{detail.split(' ')[1]} runs a command without a shell grant; see {GRANTS_DOC}")
             elif kind == "UNGRANTED" and own.search(detail.split(" ", 2)[2]):
@@ -107,6 +115,44 @@ def skill_grant_problems(
                 number, command = detail.split(" ", 1)
                 problems.append(
                     f"{name}:{number} expands a shell variable, so it always prompts: {command}; see {GRANTS_DOC}"
+                )
+    return problems
+
+
+def status_line_problems(root: Path, skill_files: list[Path] | None = None) -> list[str]:
+    """Report each status line a skill's Markdown and its scripts disagree on: a line a script the skill runs prints
+    whose first word the Markdown never names, a status word the Markdown names as output that none of its scripts
+    prints, and an exit code it states that none of them uses.
+
+    The comparison is the audit-skill inventory's status_lines, so the audit and this policy cannot disagree. A line
+    the agent need not act on is named as such in the Markdown, which is how a reader learns it needs nothing.
+    """
+    tops = (root, root.resolve())
+
+    def shown(text: str) -> str:
+        """A path the inventory printed, from the repository root when it lies under the root as given or resolved."""
+        path = Path(text)
+        return next((path.relative_to(top).as_posix() for top in tops if path.is_relative_to(top)), text)
+
+    problems: list[str] = []
+    files = [*shipped_skill_files(root), *repository_skill_files(root)] if skill_files is None else skill_files
+    for skill_md in files:
+        for line in skill_inventory.status_lines(skill_md.parent):
+            kind, _, detail = line.partition(" ")
+            path, number, word = detail.rsplit(" ", 2)
+            where = f"{shown(path)}:{number}"
+            if kind == "UNEXPLAINED":
+                problems.append(
+                    f"{where} prints a line starting {word}, which {shown(skill_md.as_posix())} never names; name it "
+                    f"where the agent acts on it, or say why the agent need not; see {RESULTS_DOC}"
+                )
+            elif kind == "UNPRINTED":
+                problems.append(
+                    f"{where} names {word} as output, which no script the skill reads prints; see {RESULTS_DOC}"
+                )
+            elif kind == "EXIT_MISMATCH":
+                problems.append(
+                    f"{where} states exit code {word}, which no script the skill reads exits with; see {RESULTS_DOC}"
                 )
     return problems
 
@@ -371,6 +417,11 @@ class SkillGrantsPolicies(unittest.TestCase):
     def test_skills_grant_only_scoped_twin_shell_patterns_that_cover_their_own_scripts(self) -> None:
         # allowed-tools pre-approves; a bare Bash would pre-approve every command in the turn that starts the skill.
         self.assertEqual([], skill_grant_problems(REPOSITORY_ROOT))
+
+    def test_skill_markdown_names_every_status_line_its_scripts_print(self) -> None:
+        # The agent acts on a script's lines through its Markdown, so a line the Markdown never names is one the
+        # agent meets unexplained, and a word or exit code it names that no script gives is one it waits for in vain.
+        self.assertEqual([], status_line_problems(REPOSITORY_ROOT))
 
     def test_repository_code_declarations_are_read_and_current(self) -> None:
         # A script that starts code the target repository configures declares it, so the grant policy above can
