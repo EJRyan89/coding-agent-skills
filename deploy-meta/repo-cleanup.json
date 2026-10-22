@@ -1,5 +1,5 @@
 {
-    "required_vars": ["REPOS_ROOT", "PYTHON"],
+    "required_vars": ["REPOS_ROOT", "REPO_CLEANUP_REGENERABLE", "REPO_CLEANUP_PROTECTED", "PYTHON"],
     "shared_deps": ["runtime-compatibility.md"],
     "skill_deps": ["ejryan89-skill-core"],
     "tools": ["gh"],

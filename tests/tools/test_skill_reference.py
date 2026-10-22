@@ -90,6 +90,17 @@ class SkillReferenceTestCase(unittest.TestCase):
         self.add_prose("alpha", "Alpha's flag explained.")
         self.add_prose("beta", "Beta explained.")
 
+    def test_an_optional_setting_is_named_as_optional(self) -> None:
+        metadata = json.loads((self.root / "deploy-meta" / "alpha.json").read_text(encoding="utf-8"))
+        metadata["required_vars"] = ["REPOS_ROOT", "REPO_CLEANUP_PROTECTED"]
+        self.write_json("deploy-meta/alpha.json", metadata)
+        skill_reference.write(self.root)
+        self.assertIn(
+            "Needs `copilot` (optional), the `REPOS_ROOT` setting, and the `REPO_CLEANUP_PROTECTED` setting "
+            "(optional).",
+            self.text(),
+        )
+
     def test_write_adds_a_generated_section_for_each_selectable_skill(self) -> None:
         skill_reference.write(self.root)
         text = self.text()

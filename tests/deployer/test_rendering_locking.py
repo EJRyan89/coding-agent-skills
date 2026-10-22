@@ -57,6 +57,33 @@ class RenderedExecutableTests(DeployerTestCase):
                 self.assertEqual(0, result.returncode, result.output)
                 self.assertEqual(expected, result.output.strip())
 
+    def test_repo_cleanup_additions_render_as_configured_or_empty_and_execute_with_spaces(self) -> None:
+        # repo-cleanup passes each list to its script as one quoted argument, as this fixture does.
+        line = 'printf \'[%s] [%s]\\n\' "{{REPO_CLEANUP_REGENERABLE}}" "{{REPO_CLEANUP_PROTECTED}}"'
+        self.make_source_json()
+        variables = ["REPO_CLEANUP_REGENERABLE", "REPO_CLEANUP_PROTECTED"]
+        directory = self.make_skill("alpha", f"Additions fixture\n\n```bash\n{line}\n```", variables)
+        self.write(directory / "run.sh", f"#!/usr/bin/env bash\n{line}\n")
+        bash = platform_support.find_bash()
+        if bash is None:
+            self.fail("Git Bash is a validation prerequisite")
+        script = forward(self.skills_dir / "alpha" / "run.sh")
+        # Unset, both render empty, which the script reads as no additions.
+        self.make_config()
+        self.deploy_ok("--all")
+        empty = platform_support.run_tool([bash, script])
+        self.assertEqual(0, empty.returncode, empty.output)
+        self.assertEqual("[] []", empty.output.strip())
+        regenerable = ".venv .tox=tox.ini,setup.cfg build/*.csproj"
+        protected = "hotfix/ support/v-1.2_x"
+        self.make_config(extra=f"REPO_CLEANUP_REGENERABLE={regenerable}\nREPO_CLEANUP_PROTECTED={protected}\n")
+        self.deploy_ok("--all")
+        assert_value_quoted(rendered_fragments(self.skills_dir / "alpha"), regenerable)
+        assert_value_quoted(rendered_fragments(self.skills_dir / "alpha"), protected)
+        result = platform_support.run_tool([bash, script])
+        self.assertEqual(0, result.returncode, result.output)
+        self.assertEqual(f"[{regenerable}] [{protected}]", result.output.strip())
+
     def test_rendered_bash_validates_and_executes_with_spaces(self) -> None:
         self.make_source_json()
         directory = self.make_skill(

@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "protected_prefixes": ["release/"],
+  "regenerable": [
+    {"directory": "__pycache__", "projects": []},
+    {"directory": ".pytest_cache", "projects": []},
+    {"directory": ".mypy_cache", "projects": []},
+    {"directory": ".ruff_cache", "projects": []},
+    {"directory": "node_modules/.cache", "projects": []},
+    {"directory": ".vs", "projects": []},
+    {"directory": "node_modules", "projects": ["package.json"]},
+    {"directory": "bin", "projects": ["*.csproj", "*.vbproj", "*.fsproj"]},
+    {"directory": "obj", "projects": ["*.csproj", "*.vbproj", "*.fsproj"]}
+  ]
+}

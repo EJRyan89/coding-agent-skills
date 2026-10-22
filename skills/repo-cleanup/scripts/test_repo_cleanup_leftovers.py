@@ -16,6 +16,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import cleanup_policy
 import repo_cleanup as rc
 from test_repo_cleanup import GIT_CONFIG, UNNAMEABLE, Fixture, build_template, facts, git, refusing_branch_deletion
 
@@ -278,7 +279,7 @@ class LeftoverTests(Fixture):
         self.assertIn(f"own-commit wt (its commit {own[:12]} is on neither main nor a remote branch)", summary)
         self.assertIn("dirty wt (1 uncommitted change)", summary)
         self.assertIn("on-main wt (clean, its commit is on main or a remote branch)", summary)
-        self.assertIn("  Protected release worktrees: 1 (preserved)", summary)
+        self.assertIn("  Protected worktrees:     1 (preserved)", summary)
         self.assertTrue(all(path.exists() for path in trees.values()), "nothing is removed before the user answers")
 
         git(self.clone, "update-ref", "-d", "refs/remotes/origin/pushed")
@@ -718,17 +719,22 @@ class LeftoverTests(Fixture):
         self.assertTrue(detached.is_dir() and leftover.is_dir())
 
     def test_a_link_where_a_regenerable_directory_is_named_is_not_regenerable(self) -> None:
+        entries = cleanup_policy.configured(".venv").regenerable
         tree = self.root / "layout"
         (tree / "web").mkdir(parents=True)
         (tree / "web" / "package.json").write_text("{}\n", encoding="utf-8")
         target = self.outside_area("store")
         link_directory(target, tree / "web" / "node_modules")
         link_directory(target, tree / ".vs")
-        for entry in ("web/node_modules/", "web/node_modules/victim/keep.txt", ".vs/", ".vs/victim/"):
+        link_directory(target, tree / ".venv")
+        for entry in ("web/node_modules/", "web/node_modules/victim/keep.txt", ".vs/", ".vs/victim/", ".venv/lib/"):
             with self.subTest(entry=entry):
-                self.assertFalse(rc.is_regenerable(entry, str(tree)))
+                self.assertFalse(rc.is_regenerable(entry, str(tree), entries))
         (tree / "real").mkdir()
         link_directory(tree / "real", tree / "linked")
         (tree / "real" / "__pycache__").mkdir()
-        self.assertTrue(rc.is_regenerable("real/__pycache__/", str(tree)))
-        self.assertFalse(rc.is_regenerable("linked/__pycache__/", str(tree)), "reached through a link")
+        (tree / "real" / ".venv").mkdir()
+        self.assertTrue(rc.is_regenerable("real/__pycache__/", str(tree), entries))
+        self.assertTrue(rc.is_regenerable("real/.venv/", str(tree), entries))
+        self.assertFalse(rc.is_regenerable("linked/__pycache__/", str(tree), entries), "reached through a link")
+        self.assertFalse(rc.is_regenerable("linked/.venv/", str(tree), entries), "an addition, through a link")
