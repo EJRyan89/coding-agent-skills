@@ -708,10 +708,11 @@ class RepositoryModules:
 # the homes a class's and a module's fixtures run in.
 ISOLATION_FIXTURES = {"isolated_git_module": "module", "isolated_git_class": "class", "git_home": "function"}
 # The configuration pytest runs every suite with, as pyproject.toml's [tool.pytest.ini_options] holds it: no cache
-# written into the checkout, output not captured, misspelled markers and options refused, and nothing selected,
-# deselected, or skipped.
+# written into the checkout, output not captured, every strictness option pytest has on (misspelled markers and
+# options and duplicate parametrization ids refused), and nothing selected, deselected, or skipped.
 PYTEST_CONFIGURATION = {
-    "addopts": ["-p", "no:cacheprovider", "--capture=no", "--strict-markers", "--strict-config"],
+    "addopts": ["-p", "no:cacheprovider", "--capture=no"],
+    "strict": True,
 }
 # The files pytest reads its configuration from ahead of pyproject.toml, none of which the repository holds.
 PYTEST_CONFIGURATION_FILES = ("pytest.ini", ".pytest.ini", "tox.ini", "setup.cfg")

@@ -729,25 +729,25 @@ class PytestConfigurationPolicy(unittest.TestCase):
             return pytest_configuration_problems(root)
 
     def test_the_pinned_table_passes_and_any_other_or_an_earlier_file_fails(self) -> None:
-        pinned = (
-            "[tool.pytest.ini_options]\n"
-            'addopts = ["-p", "no:cacheprovider", "--capture=no", "--strict-markers", "--strict-config"]\n'
-        )
-        self.assertEqual(
-            {"addopts": ["-p", "no:cacheprovider", "--capture=no", "--strict-markers", "--strict-config"]},
-            PYTEST_CONFIGURATION,
-        )
+        pinned = '[tool.pytest.ini_options]\naddopts = ["-p", "no:cacheprovider", "--capture=no"]\nstrict = true\n'
+        self.assertEqual({"addopts": ["-p", "no:cacheprovider", "--capture=no"], "strict": True}, PYTEST_CONFIGURATION)
         self.assertEqual([], self.problems({"pyproject.toml": pinned}))
-        deselects = pinned.replace('"--strict-config"]', '"--strict-config", "--deselect", "tests/test_a.py"]')
+        deselects = pinned.replace('"--capture=no"]', '"--capture=no", "--deselect", "tests/test_a.py"]')
         self.assertEqual(
             [
                 "pyproject.toml: [tool.pytest] must be ini_options = "
                 f"{PYTEST_CONFIGURATION!r}, not {{'ini_options': {{'addopts': "
-                "['-p', 'no:cacheprovider', '--capture=no', '--strict-markers', '--strict-config', '--deselect', "
-                "'tests/test_a.py']}}"
+                "['-p', 'no:cacheprovider', '--capture=no', '--deselect', 'tests/test_a.py'], 'strict': True}}"
             ],
             self.problems({"pyproject.toml": deselects}),
         )
+        # Strict mode off, or only the options pytest 8 had, which still allow a duplicate parametrization id.
+        for loosened in (
+            pinned.replace("strict = true", "strict = false"),
+            pinned.replace("strict = true", "strict_markers = true\nstrict_config = true"),
+        ):
+            with self.subTest(configuration=loosened):
+                self.assertEqual(1, len(self.problems({"pyproject.toml": loosened})))
         self.assertEqual(
             [
                 "pytest.ini holds pytest configuration ahead of pyproject.toml; keep it in [tool.pytest.ini_options] "

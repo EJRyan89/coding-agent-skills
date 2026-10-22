@@ -100,7 +100,8 @@ def tree_state(root: Path) -> dict[str, str]:
 
 
 def git(directory: Path, *arguments: str) -> str:
-    """Run git in a fixture repository; DeployerTestCase gives it the fixture identity and no user hooks or signing."""
+    """Run git in a fixture repository; the root conftest.py gives it the fixture identity and no user hooks or
+    signing."""
     completed = subprocess.run(
         ["git", "-C", str(directory), *arguments],
         capture_output=True,
