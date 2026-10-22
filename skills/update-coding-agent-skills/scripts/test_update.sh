@@ -1113,6 +1113,32 @@ expect_first_line "UPDATED $(git -C "$CLONE" rev-parse --short "$RELEASE_COMMIT"
 printf '%s\n' "$OUTPUT" | grep -qx "CROSSED v4.2.0..v5.0.0" || fail "release major accepted: crossing not named: $OUTPUT"
 expect_deployed "release major accepted" "--all --at refs/tags/v5.0.0"
 
+# With no deployed commit to read, the release channel stops at any release, and once --cross-major accepts it the
+# update names the deployed commit unknown and lists the commits the release adds to local main, as the stop did.
+begin_case 'release from no deployed commit'
+BEFORE=$(git -C "$CLONE" rev-parse HEAD)
+publish "sixth major"
+tag_upstream v6.0.0
+publish "after the sixth major"
+FAKE_CHECK_OUTPUT="Deployed commit: unknown" run_subject "$CLONE" release
+expect_status 1 "release from no deployed commit"
+expect_first_line "MAJOR_UPDATE unknown..v6.0.0" "release from no deployed commit"
+printf '%s\n' "$OUTPUT" | grep -q " sixth major$" || fail "release from no deployed commit: commit not listed: $OUTPUT"
+[ "$(git -C "$CLONE" rev-parse HEAD)" = "$BEFORE" ] || fail "release from no deployed commit: main moved"
+expect_not_deployed "release from no deployed commit"
+FAKE_CHECK_OUTPUT="Deployed commit: unknown" run_subject "$CLONE" release --cross-major
+expect_status 0 "release from no deployed commit accepted"
+expect_first_line "UPDATED unknown..v6.0.0" "release from no deployed commit accepted"
+expect_no_stderr "release from no deployed commit accepted"
+[ "$(printf '%s\n' "$OUTPUT" | sed -n 2p)" = "$(git -C "$CLONE" log --oneline --no-decorate -1 v6.0.0)" ] ||
+  fail "release from no deployed commit accepted: the release's commit does not follow UPDATED: $OUTPUT"
+if printf '%s\n' "$OUTPUT" | grep -q -e "after the sixth major" -e " fifth major$" -e "NOT_IN_RELEASE"; then
+  fail "release from no deployed commit accepted: listed a commit the release does not add to local main: $OUTPUT"
+fi
+printf '%s\n' "$OUTPUT" | grep -qx "CROSSED unknown..v6.0.0" ||
+  fail "release from no deployed commit accepted: crossing not named: $OUTPUT"
+expect_deployed "release from no deployed commit accepted" "--all --at refs/tags/v6.0.0"
+
 # Without a release tag on origin/main the release channel has nothing to deploy: it stops after the fetch, and the
 # main channel still follows main.
 begin_case 'no release'
