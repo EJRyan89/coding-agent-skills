@@ -13,8 +13,9 @@ the readers, confirms what they find, and files it.
     guidance       write one brief per runtime the deployer supports and for Python, naming the pages of its published
                    guidance the guidance record lists, the files of this repository that state facts about it, and
                    the questions a reader answers for each page, for the guidance audit after tagging; refused while
-                   the record names no page for a runtime deployer/runtime_support.py lists. With --record TAG,
-                   append TAG to every page's reads instead, from a worktree as rotation --record does
+                   the record names no page for a runtime
+                   skills/ejryan89-skill-core/scripts/runtime_support.py lists. With --record TAG, append TAG to every
+                   page's reads instead, from a worktree as rotation --record does
     duplicates     search the open issues for each QUERY, so a finding already filed is not filed twice
     remove-briefs  delete a briefs directory a release or rotation run printed as BRIEFS, and nothing else: one
                    holding the BRIEFS_MARKER file the run wrote before its first brief, naming the directory
@@ -109,7 +110,7 @@ BRIEFS_MARKER = ".audit-repository-briefs.json"
 # The guidance record, relative to the top of the repository it describes.
 GUIDANCE_PATH = ".claude/skills/audit-repository/references/guidance.json"
 # Where the deployer catalogues the runtimes it supports, read as literals so the audit runs no deployer code.
-RUNTIME_CATALOGUE = "deployer/runtime_support.py"
+RUNTIME_CATALOGUE = "skills/ejryan89-skill-core/scripts/runtime_support.py"
 PYTHON_SUBJECT = "python"
 PYTHON_TITLE = "Python"
 PAGE_SCHEME = "https://"
@@ -221,11 +222,15 @@ REPORT_SECTIONS = (
 
 
 # What a reader compares a runtime's pages with: each file of this repository that states facts about the runtime,
-# and where in it, under the runtime's name in deployer/runtime_support.py; a file the checkout does not hold is left
-# out of the brief. Codex and Copilot CLI read the adapters the deployer renders, while Claude Code is the runtime the
-# skills are written for, so its facts are in its subagent, hook, evaluation, prompt, skill, and plugin files instead.
+# and where in it, under the runtime's name in skills/ejryan89-skill-core/scripts/runtime_support.py; a file the
+# checkout does not hold is left out of the brief. Codex and Copilot CLI read the adapters the deployer renders, while
+# Claude Code is the runtime the skills are written for, so its facts are in its subagent, hook, evaluation, prompt,
+# skill, and plugin files instead.
 SHARED_RUNTIME_FACTS = (
-    ("deployer/runtime_support.py", "the runtime's capabilities and the comment that gives their reasons"),
+    (
+        "skills/ejryan89-skill-core/scripts/runtime_support.py",
+        "the runtime's capabilities and the comment that gives their reasons",
+    ),
     ("deploy-meta/", "each skill's runtime_support declaration for the runtime"),
     ("docs/code-review-operations-contract.md", "the Threat model rows that name the runtime"),
     ("README.md", "the supported-runtimes table"),

@@ -29,7 +29,7 @@ It searches `.claude/skills/` in your home folder, the current repository's `.ag
 {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py" inventory "<SKILL_DIR>"
 ```
 
-`FILE` lines list every file by category; a `doc` file is Markdown other than the main `SKILL.md`. `TOTAL` lines fill the report's Scope, and so do `DECLARED <kind> <name>` lines, or `DECLARED_UNREADABLE <path>` when the skill's metadata is not valid JSON. `NO_MAIN` means the folder lost its `SKILL.md`, and `UNREADABLE <path> <reason>` that a Markdown file it loads cannot be measured: stop and report either. Step 4 judges the rest.
+`FILE` lines list every file by category; a `doc` file is Markdown other than the main `SKILL.md`. `TOTAL` lines fill the report's Scope, and so do `DECLARED <kind> <name>` lines (the kinds are `shared`, `skill`, `agent`, `tool`, and `optional-tool`, and `DECLARED agent <name> via <skill>` is an agent a skill dependency declares, installed with this skill), or `DECLARED_UNREADABLE <path>` when the skill's metadata is not valid JSON. `NO_MAIN` means the folder lost its `SKILL.md`, and `UNREADABLE <path> <reason>` that a Markdown file it loads cannot be measured: stop and report either. Step 4 judges the rest.
 
 ## Step 3 — Read what the judgment needs
 
@@ -94,7 +94,7 @@ The same command compares the status words the skill's Markdown names with what 
 
 ## Step 6 — Agent delegation cost
 
-When Step 5 printed an `agent` or `subagent-reply` cue or a `RUNTIME_PROMPT` line, read `${CLAUDE_SKILL_DIR}/references/delegation-and-model.md` and judge them by its Delegation section; it also says what the runtime prompt lines that follow mean, and the `CUE` lines a sample prints. Otherwise the skill delegates nothing and this bucket has no findings.
+When Step 5 printed an `agent` or `subagent-reply` cue, a `RUNTIME_PROMPT` line, or an `AGENT`, `AGENT_UNDEFINED`, `AGENT_UNDECLARED`, or `UNGUARDED_SUBAGENT` line, read `${CLAUDE_SKILL_DIR}/references/delegation-and-model.md` and judge them by its Delegation section; it also says what the runtime prompt lines that follow mean, the `CUE` lines a sample prints, and the lines that describe the agent definition of each type the skill names. Otherwise the skill delegates nothing and this bucket has no findings.
 
 ## Step 7 — Model, allowed-tools, and listing
 
@@ -104,7 +104,11 @@ When Step 5 printed an `agent` or `subagent-reply` cue or a `RUNTIME_PROMPT` lin
 
 `MODEL none` means the caller's model applies. A tool is `USED` only where the body names it in a tool-use context (a code span, call syntax, "tool" or "call", or a shell fence); a sentence that starts with "Read" is not a use. `IMPLIED` means prose names the tool's action ("read", "search", "ask", "subagent") without naming the tool; a prohibition ("do not read") and a prompt quoted for a subagent never count. The bullets below say what each other line means for the report.
 
-Model. When `MODEL` names a model, or the skill's work is purely mechanical (shell and file operations only, no synthesis, no output beyond a fixed template), judge it by the Model section of `${CLAUDE_SKILL_DIR}/references/delegation-and-model.md`. Otherwise the model has no finding.
+Model. `MODEL` is the skill's own model. `SUBAGENT_MODEL <file> <line> <source>` and `SUBAGENT_EFFORT <file> <line> <source>` say where the model and effort of a role the skill delegates come from, and `PINNED_SUBAGENT <file> <line> <model or effort> <value>` is a literal value a role is started on. When `MODEL` names a model, any of those lines is printed, or the skill's work is purely mechanical (shell and file operations only, no synthesis, no output beyond a fixed template), judge it by the Model section of `${CLAUDE_SKILL_DIR}/references/delegation-and-model.md`. Otherwise the model has no finding.
+
+Runtime support, printed only in a skill source tree. `RUNTIME <runtime> <level> needs=<capabilities> <reason>` is each runtime's declared support and `RUNTIME_NEEDS <capability> <evidence>` each capability the skill needs, with what shows it: a `grant`, `user-only` start, an `agent` with hooks it starts, a network `tool` it declares, or a `git` subcommand a Bash script runs that reaches a remote. Both fill the Scope; `RUNTIME_UNDECLARED` means the metadata declares no support and `RUNTIME_UNREADABLE <reason>` that its declaration is not in the shape the reason names: report either in the Scope.
+
+- `RUNTIME_OVERCLAIMED <runtime> <capabilities>` → **MUST FIX**: the skill declares `full` on a runtime that lacks those capabilities, so its users there lose what the declaration promises, such as the reviewer's guard or a network call. Recommend declaring `partial` with those needs and a one-line reason saying what the user loses, or removing what needs them.
 
 Listing. While `INVOCATION` is `model`, every session in every project loads the description that `DESCRIPTION <characters> <tokens>` measures, whether or not the skill runs.
 
@@ -152,10 +156,12 @@ Group all findings into four buckets. Within each bucket, subdivide into MUST FI
   - Helpers ≈ <K> tok (invoked via a shell — not auto-loaded)
   - Outside reads ≈ <T> tok in <n> files (read on every run)
   - Runtime prompt <sample> ≈ <N> tok, its reads ≈ <M> tok in <n> files, reply bounded <yes|no> (one line per sample; omit when none)
-- Frontmatter model: <value or "(inherits caller)">
+- Models: the skill <MODEL value or "(inherits caller)">; then, per subagent role or type, its model and effort and where each comes from: a literal, a printed line and where its script takes the value, the agent definition's, or "(inherits session)"
+- Subagents: per type, tools <AGENT_TOOLS>, model <AGENT_MODEL>, CLAUDE.md <omitted|loaded>, and each hook: starts <program> before every <event> call matching <matcher>, timeout <seconds or default>, on failure <value>; in the plugin form it runs for every matching call of every session (omit when none)
+- Runtime support: <runtime> <level> (needs <capabilities>; <reason>) for each runtime, and the needs with their evidence (omit outside a source tree)
 - Listing: <INVOCATION>, description ≈ <N> tok loaded every session while model-invocable; trigger scenario <path> with <requests> requests and <near misses> near misses, or none (omit outside a source tree)
 - Allowed tools: <comma-separated list>
-- Declared dependencies: <DECLARED names, "none", or "unreadable <path>">
+- Declared dependencies: <DECLARED names by kind, each agent with the skill that declares it, then the tools and optional tools; "none", or "unreadable <path>">
 
 ---
 

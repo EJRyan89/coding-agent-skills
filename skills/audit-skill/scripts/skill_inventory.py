@@ -137,6 +137,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import check_provenance
 import frontmatter
+import git_client
+import runtime_support
 from console import run_main
 from git_client import GitClient
 from markdown_sections import CODE_SPAN, POWERSHELL_FENCES, SHELL_FENCES, find_fences, prose_code_spans
@@ -416,6 +418,9 @@ CUE_NAMES = frozenset(
 # every other line a command prints is a measurement or a location, which rests on no guidance.
 CHECK_LINES = frozenset(
     {
+        "AGENT_HOOK",
+        "AGENT_UNDECLARED",
+        "AGENT_UNDEFINED",
         "BODY_OVER_500_LINES",
         "DESCRIPTION",
         "DOC_NO_TOC",
@@ -436,12 +441,15 @@ CHECK_LINES = frozenset(
         "OPEN_PATH_ALLOWED",
         "OUTSIDE_MISSING",
         "OUTSIDE_READ",
+        "PINNED_SUBAGENT",
         "REPLY_BOUNDED",
         "RUNTIME_PROMPT",
         "RUNTIME_PROMPT_UNSAMPLED",
+        "RUNTIME_OVERCLAIMED",
         "SIBLING_FOLDER_ALLOWED",
         "UNEXPLAINED",
         "UNGRANTED",
+        "UNGUARDED_SUBAGENT",
         "UNPAIRED_ALLOWED",
         "UNPRINTED",
         "UNSCOPED_ALLOWED",
@@ -501,6 +509,39 @@ TRIGGER_SCENARIOS = Path("tests") / "fixtures" / "skill-evals"
 SAMPLE_SOURCE_PATH = re.compile(r"<source>[\\/]([^\s\"'`<>]+)")
 # A relative Markdown path that leaves the skill folder, such as `../shared.md`. With a ${CLAUDE_SKILL_DIR}
 # prefix it resolves against the skill folder instead of the file that names it.
+# Where agent definitions sit beside a skills folder, and the subagent types a session has without one: the sub-agents
+# page (https://code.claude.com/docs/en/sub-agents) names Explore, Plan, and the general-purpose agent, which has every
+# tool. A type a delegation line names: "of type `x`", "`x` type", "`x` subagent", or subagent_type x.
+AGENTS_FOLDER = "agents"
+BUILTIN_AGENTS = frozenset({"general-purpose", "Explore", "Plan"})
+AGENT_NAME = r"[A-Za-z][A-Za-z0-9-]*"
+TYPED_AGENT = re.compile(
+    rf"\btype\s+`({AGENT_NAME})`|`({AGENT_NAME})`\s+(?:type|subagent|agent)s?\b|\bsubagent_type\b\W{{0,4}}({AGENT_NAME})"
+)
+GENERAL_PURPOSE = re.compile(r"(?i)(?<![\w-])general-purpose(?![\w-])")
+# A key of a hooks value's line, after any sequence item's dash, and a block scalar's header.
+HOOK_KEY = re.compile(r"^(-\s+)?([A-Za-z][\w-]*)\s*:(?:\s+(.*))?$")
+BLOCK_SCALAR = re.compile(r"[|>][+-]?")
+# A subagent's model or effort. A sentence that starts a subagent names a literal one as "on haiku" or "at low
+# effort", or relays a printed line's value as a code span whose status word holds MODEL or EFFORT. A data file sets
+# one under a key SETTING_KEYS names, to a model alias or ID or an effort level.
+SENTENCE_END = re.compile(r"(?<=[.!?;])\s+(?=[A-Z`*(])")
+START_VERB = re.compile(r"(?i)\b(?:start|starts|starting|spawn|spawns|launch|launches|run|runs)\b")
+LITERAL_MODEL = re.compile(r"(?i)\bon\s+(?:the\s+)?`?(haiku|sonnet|opus|fable)`?(?![\w-])")
+LITERAL_EFFORT = re.compile(
+    r"(?i)\bat\s+(?:an?\s+)?`?(minimal|low|medium|high|xhigh|max)`?\s+(?:reasoning\s+)?effort\b"
+)
+STATUS_SPAN_WORD = re.compile(r"`([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*)(?:\s[^`]*)?`")
+SETTING_WORDS = ("model", "effort")
+SETTING_KEYS = {"model": "model", "effort": "effort", "reasoning_effort": "effort", "reviewer_effort": "effort"}
+MODEL_VALUE = re.compile(r"(?i)haiku|sonnet|opus|fable|claude-[\w.-]+")
+EFFORT_LEVELS = frozenset({"minimal", "low", "medium", "high", "xhigh", "max"})
+# A sibling skill a skill's Markdown reaches through its own directory.
+SIBLING_SKILL = re.compile(r"\$\{CLAUDE_SKILL_DIR\}/\.\./([A-Za-z0-9._-]+)/")
+# A git command where a Bash command starts: at the line's start, after an operator, a substitution, or a keyword.
+GIT_COMMAND = re.compile(
+    r"(?:^|[;&|(`]|\$\(|\b(?:then|do|else|if|elif|while|until|time|command|exec)\s|!\s)\s*git\s+([^;&|)`\n]*)"
+)
 OUTSIDE_REFERENCE = re.compile(r"(?<![\w./-])(\$\{CLAUDE_SKILL_DIR\}/)?((?:\.\./)+[\w./-]+\.md)\b")
 # A relative Markdown path that stays in the skill folder, such as `references/a.md` or `a.md`.
 INSIDE_REFERENCE = re.compile(r"(?<![\w./$}-])(\$\{CLAUDE_SKILL_DIR\}/)?((?:\./)?[\w-][\w./-]*\.md)\b")
@@ -1120,19 +1161,65 @@ def source_root(directory: Path) -> Path | None:
     return root if (root / "deploy-meta" / f"{directory.name}.json").is_file() else None
 
 
+def read_metadata(root: Path, name: str) -> dict[str, object] | None:
+    """A skill's deploy metadata in its source tree, or None when the file is missing or not a JSON object."""
+    try:
+        metadata = json.loads((root / "deploy-meta" / f"{name}.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return metadata if isinstance(metadata, dict) else None
+
+
+def names(metadata: dict[str, object] | None, key: str) -> list[str]:
+    """The names a metadata list holds, or none for a key that is absent or not a list of names."""
+    value = (metadata or {}).get(key)
+    return [name for name in value if isinstance(name, str)] if isinstance(value, list) else []
+
+
+def skill_closure(root: Path, name: str) -> list[str]:
+    """The skill and every skill its metadata's skill_deps reach, in the order they are first reached."""
+    reached: list[str] = []
+    queue = [name]
+    while queue:
+        current = queue.pop(0)
+        if current not in reached:
+            reached.append(current)
+            queue += names(read_metadata(root, current), "skill_deps")
+    return reached
+
+
+def declared_agents(directory: Path) -> dict[str, str] | None:
+    """The agents a deployment of the skill installs, each with the skill that declares it in agent_deps, its own
+    first: None outside a source tree, where no metadata says."""
+    root = source_root(directory)
+    if root is None:
+        return None
+    agents: dict[str, str] = {}
+    for skill in skill_closure(root, directory.name):
+        for agent in names(read_metadata(root, skill), "agent_deps"):
+            agents.setdefault(agent, skill)
+    return agents
+
+
 def declared_lines(directory: Path) -> list[str]:
-    """The skill's declared shared assets and skill dependencies, when it is audited from its source tree."""
+    """The skill's declared shared assets, skill dependencies, agents, and tools, when it is audited from its source
+    tree: an agent a skill dependency declares is installed with the skill too, so it is named with that skill."""
     root = source_root(directory)
     if root is None:
         return []
-    metadata = root / "deploy-meta" / f"{directory.name}.json"
-    try:
-        declared = json.loads(metadata.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return [f"DECLARED_UNREADABLE {posix(metadata)}"]
+    declared = read_metadata(root, directory.name)
+    if declared is None:
+        return [f"DECLARED_UNREADABLE {posix(root / 'deploy-meta' / f'{directory.name}.json')}"]
+    agents = declared_agents(directory) or {}
     return [
-        *(f"DECLARED shared {name}" for name in declared.get("shared_deps", [])),
-        *(f"DECLARED skill {name}" for name in declared.get("skill_deps", [])),
+        *(f"DECLARED shared {name}" for name in names(declared, "shared_deps")),
+        *(f"DECLARED skill {name}" for name in names(declared, "skill_deps")),
+        *(
+            f"DECLARED agent {agent}" if skill == directory.name else f"DECLARED agent {agent} via {skill}"
+            for agent, skill in agents.items()
+        ),
+        *(f"DECLARED tool {name}" for name in names(declared, "tools")),
+        *(f"DECLARED optional-tool {name}" for name in names(declared, "optional_tools")),
     ]
 
 
@@ -1281,7 +1368,11 @@ def tools(path: Path) -> list[str]:
                 if name in IMPLIED_BY and affirmed(IMPLIED_BY[name], line):
                     first_implied.setdefault(name, start + offset + 1)
     invocation = next(line.split()[1] for line in listed if line.startswith("INVOCATION "))
-    output = [f"MODEL {model or 'none'}", *listed, *trigger_scenario_lines(path.parent, invocation)]
+    output = [f"MODEL {model or 'none'}"]
+    if path.name.casefold() == MAIN_NAME:
+        output += setting_lines(path.parent)
+    output += [*listed, *trigger_scenario_lines(path.parent, invocation)]
+    output += runtime_lines(path.parent, allowed or [], invocation != "model")
     output += [f"ALLOWED {name}" for name in allowed] if allowed is not None else ["NO_ALLOWED_TOOLS"]
     used = sorted(first_use.items(), key=lambda item: (item[1], item[0]))
     output += [f"USED {name} {line}" for name, line in used]
@@ -1465,6 +1556,7 @@ def scan(given: list[Path]) -> list[str]:
             runtime_prompts += [(path, int(line.split()[2])) for line in found if line.startswith("RUNTIME_PROMPT ")]
     return (
         output
+        + [line for path in given if path.is_dir() for line in agent_lines(path)]
         + sample_lines(runtime_prompts)
         + [line for path in given if path.is_dir() for line in status_lines(path)]
     )
@@ -1831,6 +1923,438 @@ def status_lines(folder: Path) -> list[str]:
         if not re.search(rf"(?<![\w-]){word}(?![\w-])", named)
     ]
     return output + [f"UNEXPLAINED {path} {number} {word}" for path, number, word in sorted(unnamed)]
+
+
+# --- subagents ------------------------------------------------------------------------------------
+
+
+@dataclass
+class Hook:
+    """One command a subagent's definition runs on an event: what it matches, the program it starts, and its limits."""
+
+    event: str
+    group: int
+    program: str = "unknown"
+    timeout: str = "default"
+    on_failure: str = "default"
+
+
+@dataclass
+class AgentDefinition:
+    """What an agent definition grants and costs: its tools, model, effort, CLAUDE.md, and hooks."""
+
+    name: str
+    path: Path
+    tools: str
+    model: str
+    effort: str | None
+    omits_claude_md: bool
+    hooks: list[tuple[Hook, str]]
+
+
+def unquoted(value: str) -> str:
+    value = value.strip()
+    return value[1:-1] if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'" else value
+
+
+def agent_hooks(lines: list[str]) -> list[tuple[Hook, str]]:
+    """Each command hook a definition's hooks value declares, with its matcher, read from the value's lines: an
+    event's key, a matcher group's item, and the keys of each hook in the group. A group without a matcher matches
+    every tool call; a command written as a block scalar starts the program its first line names."""
+    hooks: list[Hook] = []
+    matchers: dict[int, str] = {}
+    event, group, base = "", 0, None
+    block: int | None = None
+    for raw in lines:
+        text = raw.strip()
+        indent = len(raw) - len(raw.lstrip(" "))
+        if not text or text.startswith("#"):
+            continue
+        if block is not None:
+            if indent > block:
+                if hooks and hooks[-1].program == "unknown":
+                    hooks[-1].program = unquoted(text.split()[0])
+                continue
+            block = None
+        match = HOOK_KEY.match(text)
+        if match is None:
+            continue
+        item, key, value = bool(match.group(1)), match.group(2), unquoted(match.group(3) or "")
+        base = indent if base is None else base
+        if indent == base and not item:
+            event = key
+        elif item and key in ("matcher", "hooks"):
+            group += 1
+            matchers[group] = value if key == "matcher" else "*"
+        elif key == "matcher":
+            matchers[group] = value
+        else:
+            if item:
+                hooks.append(Hook(event, group))
+            if hooks and hook_field(hooks[-1], key, value):
+                block = indent
+    return [(hook, matchers.get(hook.group, "*")) for hook in hooks]
+
+
+def hook_field(hook: Hook, key: str, value: str) -> bool:
+    """Record one key of a hook; True when its command is a block scalar, whose first line names the program."""
+    if key == "command" and BLOCK_SCALAR.fullmatch(value):
+        return True
+    if key == "command" and value:
+        hook.program = unquoted(value.split()[0])
+    elif key == "timeout":
+        hook.timeout = value
+    elif key == "onFailure":
+        hook.on_failure = value
+    return False
+
+
+def read_agent(path: Path) -> AgentDefinition | str:
+    """An agent definition, or why it cannot be read."""
+    try:
+        document = frontmatter.read(path)
+        tools_value = document.value("tools")
+        model = document.string("model")
+        effort = document.string("effort")
+        omits = (document.string("omitClaudeMd") or "").strip().casefold() == "true"
+        hook_lines = document.lines("hooks") or []
+    except (OSError, UnicodeError, frontmatter.FrontmatterError) as exc:
+        return str(exc)
+    listed = tools_value if isinstance(tools_value, list) else re.split(r"[,\s]+", tools_value or "")
+    tools = ",".join(name.strip() for name in listed if name.strip()) or "all"
+    return AgentDefinition(path.stem, path, tools, (model or "none").strip(), effort, omits, agent_hooks(hook_lines))
+
+
+def delegates(line: str) -> bool:
+    """Whether a prose line names a subagent or the tool that starts one."""
+    return bool(DELEGATION.search(line) or line_references(line, None, ["Agent", "Task"], []))
+
+
+def skill_markdown(folder: Path) -> list[tuple[Path, list[str]]]:
+    """A skill folder's SKILL.md and every doc file inventory lists, each with its lines."""
+    return [(path, text.splitlines()) for path in scanned_files(folder) if (text := read_text(path)) is not None]
+
+
+def prose_lines(lines: list[str]) -> list[int]:
+    """The indexes of a Markdown file's body lines outside fences."""
+    languages, _ = parse_fences(lines)
+    return [index for index in range(body_start(lines), len(lines)) if languages[index] is None]
+
+
+def agents_folder(folder: Path) -> Path:
+    """Where the agent definitions sit beside a skill's root: agents/ in a source tree, ~/.claude/agents for a
+    deployed skill, and a project's .claude/agents for one of its skills."""
+    return folder.parent.parent / AGENTS_FOLDER
+
+
+def line_agents(line: str, defined: set[str]) -> list[str]:
+    """The subagent types a prose line names: a type a delegation line names by TYPED_AGENT, and any code span that is
+    the name of a defined agent."""
+    found = [name for match in TYPED_AGENT.finditer(line) for name in match.groups() if name] if delegates(line) else []
+    return found + [span.strip() for span in CODE_SPAN.findall(line) if span.strip() in defined]
+
+
+def named_agents(folder: Path, markdown: list[tuple[Path, list[str]]]) -> dict[str, tuple[Path, int]]:
+    """Each subagent type the skill's Markdown names, with the file and line that first names it."""
+    root = agents_folder(folder)
+    defined = {path.stem for path in root.glob("*.md")} if root.is_dir() else set()
+    found: dict[str, tuple[Path, int]] = {}
+    for path, lines in markdown:
+        for index in prose_lines(lines):
+            for name in line_agents(lines[index], defined):
+                found.setdefault(name, (path, index + 1))
+    return found
+
+
+def definition_lines(definition: AgentDefinition) -> list[str]:
+    name = definition.name
+    return [
+        f"AGENT {name} {posix(definition.path)}",
+        f"AGENT_TOOLS {name} {definition.tools}",
+        f"AGENT_MODEL {name} {definition.model}",
+        f"AGENT_CLAUDE_MD {name} {'omitted' if definition.omits_claude_md else 'loaded'}",
+        *(
+            f"AGENT_HOOK {name} {hook.event} {''.join(matcher.split())} {hook.program} timeout={hook.timeout} "
+            f"on_failure={hook.on_failure}"
+            for hook, matcher in definition.hooks
+        ),
+    ]
+
+
+def started_agents(folder: Path, markdown: list[tuple[Path, list[str]]]) -> list[tuple[str, Path, int, object]]:
+    """Each subagent type the skill names other than a built-in one, with where it is first named and its definition:
+    an AgentDefinition, the reason it cannot be read, or None when no definition exists."""
+    root = agents_folder(folder)
+    found: list[tuple[str, Path, int, object]] = []
+    for name, (path, line) in named_agents(folder, markdown).items():
+        if name in BUILTIN_AGENTS:
+            continue
+        definition = root / f"{name}.md"
+        found.append((name, path, line, read_agent(definition) if definition.is_file() else None))
+    return found
+
+
+def agent_lines(folder: Path) -> list[str]:
+    """What each subagent type a skill names grants and costs, a type with no definition or, in a source tree, one no
+    declared dependency installs, and a general-purpose subagent started where a guarded type is at hand."""
+    markdown = skill_markdown(folder)
+    declared = declared_agents(folder)
+    output: list[str] = []
+    guarded: list[str] = []
+    for name, path, line, definition in started_agents(folder, markdown):
+        if definition is None:
+            output.append(f"AGENT_UNDEFINED {posix(path)} {line} {name}")
+            continue
+        if declared is not None and name not in declared:
+            output.append(f"AGENT_UNDECLARED {posix(path)} {line} {name}")
+        if isinstance(definition, AgentDefinition):
+            output += definition_lines(definition)
+            guarded += [name] if definition.hooks else []
+        else:
+            output.append(f"AGENT_UNREADABLE {posix(agents_folder(folder) / f'{name}.md')} {definition}")
+    for name in declared or {}:
+        path = agents_folder(folder) / f"{name}.md"
+        definition = read_agent(path) if path.is_file() and name not in guarded else None
+        guarded += [name] if isinstance(definition, AgentDefinition) and definition.hooks else []
+    defined = {path.stem for path in agents_folder(folder).glob("*.md")} if agents_folder(folder).is_dir() else set()
+    for path, lines in markdown:
+        for index in prose_lines(lines):
+            text = lines[index]
+            typed = [name for name in line_agents(text, defined) if name not in BUILTIN_AGENTS]
+            if guarded and GENERAL_PURPOSE.search(text) and delegates(text) and not typed:
+                output.append(f"UNGUARDED_SUBAGENT {posix(path)} {index + 1} {guarded[0]}")
+    return output
+
+
+# --- subagent models and efforts ------------------------------------------------------------------
+
+
+def sentences(line: str) -> list[str]:
+    return SENTENCE_END.split(line)
+
+
+def stated_settings(markdown: list[tuple[Path, list[str]]]) -> list[tuple[str, Path, int, str, bool]]:
+    """Each model and effort the skill's Markdown starts a subagent on: the value of a printed line it relays, or a
+    literal it names, as (kind, file, line, value, literal)."""
+    found: list[tuple[str, Path, int, str, bool]] = []
+    for path, lines in markdown:
+        for index in prose_lines(lines):
+            for sentence in sentences(lines[index]):
+                if not DELEGATION.search(sentence):
+                    continue
+                for word in (match.group(1) for match in STATUS_SPAN_WORD.finditer(sentence)):
+                    found += [
+                        (kind, path, index + 1, f"printed {word}", False)
+                        for kind in SETTING_WORDS
+                        if kind.upper() in word
+                    ]
+                if START_VERB.search(sentence):
+                    found += [
+                        ("model", path, index + 1, value.casefold(), True) for value in LITERAL_MODEL.findall(sentence)
+                    ]
+                    found += [
+                        ("effort", path, index + 1, value.casefold(), True)
+                        for value in LITERAL_EFFORT.findall(sentence)
+                    ]
+    return list(dict.fromkeys(found))
+
+
+def setting_kind(key: str, value: object) -> str | None:
+    """Whether a key and its value set a subagent's model or effort: a model alias or ID, or an effort level."""
+    kind = SETTING_KEYS.get(key)
+    if not isinstance(value, str) or kind is None:
+        return None
+    if kind == "model":
+        return kind if MODEL_VALUE.fullmatch(value.strip()) else None
+    return kind if value.strip().casefold() in EFFORT_LEVELS else None
+
+
+def json_settings(path: Path, text: str) -> list[tuple[str, Path, int, str]]:
+    """Each model or effort a JSON data file sets, such as a manifest's per-role model or a configured effort."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return []
+    found: list[tuple[str, Path, int, str]] = []
+    stack: list[object] = [data]
+    while stack:
+        node = stack.pop()
+        items = node.items() if isinstance(node, dict) else enumerate(node) if isinstance(node, list) else []
+        for key, value in items:
+            kind = setting_kind(key, value) if isinstance(key, str) else None
+            if kind is not None and isinstance(key, str) and isinstance(value, str):
+                where = re.search(rf'"{re.escape(key)}"\s*:\s*"{re.escape(value)}"', text)
+                found.append((kind, path, text.count("\n", 0, where.start()) + 1 if where else 1, value))
+            elif isinstance(value, dict | list):
+                stack.append(value)
+    return sorted(found, key=lambda item: item[2])
+
+
+def python_settings(path: Path, text: str) -> list[tuple[str, Path, int, str]]:
+    """Each model or effort a script sets as a literal: a dict entry or a keyword argument named for one."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    pairs: list[tuple[str, ast.expr, int]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict):
+            pairs += [
+                (key.value, value, key.lineno)
+                for key, value in zip(node.keys, node.values, strict=True)
+                if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            ]
+        elif isinstance(node, ast.keyword) and node.arg is not None:
+            pairs.append((node.arg, node.value, node.value.lineno))
+    return sorted(
+        (
+            (kind, path, line, value.value)
+            for key, value, line in pairs
+            if isinstance(value, ast.Constant)
+            and isinstance(value.value, str)
+            and (kind := setting_kind(key, value.value)) is not None
+        ),
+        key=lambda item: item[2],
+    )
+
+
+def dependency_folders(folder: Path, markdown: list[tuple[Path, list[str]]]) -> list[Path]:
+    """The folders of the skills this one depends on: the skill_deps its metadata reaches in a source tree, and each
+    sibling its Markdown reaches through ${CLAUDE_SKILL_DIR}/../."""
+    root = source_root(folder)
+    found = skill_closure(root, folder.name)[1:] if root is not None else []
+    found += [name for _, lines in markdown for line in lines for name in SIBLING_SKILL.findall(line)]
+    return [
+        folder.parent / name for name in dict.fromkeys(found) if name != folder.name and (folder.parent / name).is_dir()
+    ]
+
+
+def data_settings(folders: list[Path]) -> list[tuple[str, Path, int, str]]:
+    """The models and efforts the skill's and its dependencies' files set for a subagent: a reference's frontmatter, as
+    a reviewer profile's, a JSON data file, or a script's literal."""
+    found: list[tuple[str, Path, int, str]] = []
+    for folder in folders:
+        for path in folder_files(folder):
+            relative = path.relative_to(folder)
+            text = read_text(path)
+            kind = category(relative)
+            if text is None or kind == "main" or is_suite_name(path.name):
+                continue
+            if kind == "doc":
+                found += markdown_settings(path, text)
+            elif path.suffix.casefold() == ".json":
+                found += json_settings(path, text)
+            elif path.suffix.casefold() == ".py":
+                found += python_settings(path, text)
+    return found
+
+
+def markdown_settings(path: Path, text: str) -> list[tuple[str, Path, int, str]]:
+    """The model and effort a Markdown file's frontmatter sets, such as a reviewer profile's."""
+    lines = text.splitlines()
+    try:
+        found = frontmatter.split(lines)
+        document = frontmatter.Frontmatter(found[0] if found else [])
+        values = {key: document.string(key) for key in ("model", "effort") if key in document}
+    except frontmatter.FrontmatterError:
+        return []
+    settings = []
+    for key, value in values.items():
+        number = next((index + 1 for index, line in enumerate(lines) if line.startswith(f"{key}:")), 1)
+        if (kind := setting_kind(key, value)) is not None and value is not None:
+            settings.append((kind, path, number, value))
+    return settings
+
+
+def setting_lines(folder: Path) -> list[str]:
+    """Where each model and effort a subagent of the skill starts on comes from, and each literal one it pins."""
+    markdown = skill_markdown(folder)
+    stated = stated_settings(markdown)
+    output = [
+        f"SUBAGENT_MODEL {posix(path)} {line} {value}"
+        if kind == "model"
+        else f"SUBAGENT_EFFORT {posix(path)} {line} {value}"
+        for kind, path, line, value, _ in stated
+    ]
+    pinned = [(kind, path, line, value) for kind, path, line, value, literal in stated if literal]
+    for _, _, _, definition in started_agents(folder, markdown):
+        if isinstance(definition, AgentDefinition):
+            pinned += markdown_settings(definition.path, require_text(definition.path))
+    pinned += data_settings([folder, *dependency_folders(folder, markdown)])
+    output += [
+        f"PINNED_SUBAGENT {posix(path)} {line} {kind} {value}"
+        for kind, path, line, value in dict.fromkeys(pinned)
+        if value.strip().casefold() != "inherit"
+    ]
+    return output
+
+
+# --- runtime support ------------------------------------------------------------------------------
+
+
+def bash_git_subcommands(text: str) -> set[str]:
+    """The subcommand of each git command a Bash script runs where a command starts, outside comments."""
+    found: set[str] = set()
+    for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        for match in GIT_COMMAND.finditer(line):
+            subcommand = git_client.subcommand([word.strip("\"'") for word in match.group(1).split()])
+            found |= {subcommand} if subcommand else set()
+    return found
+
+
+def needs_evidence(folder: Path, granted: list[str], user_only: bool, tools: list[str]) -> list[tuple[str, str]]:
+    """Each runtime capability the skill needs, by the shared derivation, with what shows it: a grant, user-only
+    start, a hooked agent it starts, a network tool it declares, or a git subcommand that reaches a remote."""
+    evidence = [
+        (need, f"grant {grant}") for grant in granted for need in runtime_support.frontmatter_needs([grant], False)
+    ]
+    evidence += [(need, "user-only") for need in runtime_support.frontmatter_needs([], user_only)]
+    for name, _, _, definition in started_agents(folder, skill_markdown(folder)):
+        if isinstance(definition, AgentDefinition) and definition.hooks:
+            hooked = runtime_support.frontmatter_needs(granted, False, starts_hooked_agent=True)
+            evidence += [(need, f"agent {name}") for need in hooked - runtime_support.frontmatter_needs(granted, False)]
+    for tool in tools:
+        evidence += [
+            (need, f"tool {tool}") for need in runtime_support.frontmatter_needs([], False, tools=frozenset({tool}))
+        ]
+    for script in folder_scripts(folder / "scripts"):
+        if script.suffix.casefold() not in (".sh", ".bash"):
+            continue
+        for subcommand in sorted(bash_git_subcommands(require_text(script))):
+            needs = runtime_support.frontmatter_needs([], False, git_subcommands=frozenset({subcommand}))
+            evidence += [(need, f"git {subcommand} {posix(script.relative_to(folder.resolve()))}") for need in needs]
+    return list(dict.fromkeys(evidence))
+
+
+def runtime_lines(folder: Path, granted: list[str], user_only: bool) -> list[str]:
+    """In a source tree, each runtime's declared support, what the skill needs and why, and each runtime declared
+    full that lacks a capability the skill needs."""
+    root = source_root(folder)
+    metadata = read_metadata(root, folder.name) if root is not None else None
+    if metadata is None:
+        return []
+    if "runtime_support" not in metadata:
+        return ["RUNTIME_UNDECLARED"]
+    try:
+        declared = runtime_support.parse(metadata["runtime_support"])
+    except runtime_support.RuntimeSupportError as exc:
+        return [f"RUNTIME_UNREADABLE {exc}"]
+    evidence = needs_evidence(folder, granted, user_only, names(metadata, "tools") + names(metadata, "optional_tools"))
+    needs = {need for need, _ in evidence}
+    output = [
+        f"RUNTIME {runtime} {support.level} needs={','.join(support.needs) or 'none'}"
+        + (f" {support.reason}" if support.reason else "")
+        for runtime, support in declared.items()
+    ]
+    output += [f"RUNTIME_NEEDS {need} {shown}" for need, shown in evidence]
+    output += [
+        f"RUNTIME_OVERCLAIMED {runtime} {','.join(lacking)}"
+        for runtime, support in declared.items()
+        if support.level == runtime_support.FULL and (lacking := runtime_support.lacking(runtime, needs))
+    ]
+    return output
 
 
 # --- provenance -----------------------------------------------------------------------------------

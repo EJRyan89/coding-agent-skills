@@ -30,8 +30,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import runtime_support
 
-from deployer import discovery, platform_support, runtime_support
+from deployer import discovery, platform_support
 from deployer import source as deploy_source
 from deployer.paths import Paths
 from tools import runtime_canary

@@ -26,9 +26,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import frontmatter
+import runtime_support
 from console import run_main
 
-from deployer import runtime_support
 from deployer import source as deploy_source
 from deployer.config import CONFIGURED_VARIABLES
 from deployer.errors import DeployError
