@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 import frontmatter
+from agent_skills import CODEX_METADATA as CODEX_METADATA
+from agent_skills import MAX_DESCRIPTION as MAX_DESCRIPTION
 from markdown_sections import FENCE_LANGUAGES, Fence, find_fences
 from suite_names import is_suite_name
 
@@ -196,9 +198,8 @@ def render_file(logical: str, content: bytes, values: dict[str, str]) -> bytes:
     return rendered.encode("utf-8")
 
 
-MAX_DESCRIPTION = 1024  # The Agent Skills limit; GitHub Copilot CLI refuses to load a longer description.
-# Codex reads a skill's invocation policy from this file beside SKILL.md, not from its frontmatter.
-CODEX_METADATA = "agents/openai.yaml"
+# MAX_DESCRIPTION is the Agent Skills limit, and GitHub Copilot CLI refuses to load a longer description; Codex reads
+# a skill's invocation policy from CODEX_METADATA beside SKILL.md, not from its frontmatter.
 CODEX_USER_ONLY = b"policy:\n  allow_implicit_invocation: false\n"
 
 
