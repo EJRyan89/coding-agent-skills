@@ -344,8 +344,9 @@ WORKFLOWS_DIRECTORY = ".github/workflows"
 # to. A file not named here fails validation, so a new workflow is added here in the pull request that adds the file.
 # validate.yml takes no pull_request_target, so a pull request's code never runs with the base repository's token or
 # secrets. deployable.yml takes only dispatch and a weekly schedule, so it can never be a required status check or run
-# on a pull request, and its schedule is Tuesday's, the day after validate.yml's Monday run. mutation.yml runs on pull
-# requests only, also without pull_request_target, and its job is not the required check.
+# on a pull request, and its schedule is Tuesday's, the day after validate.yml's Monday run. runtime-command-lines.yml
+# likewise takes only dispatch and a weekly schedule, Wednesday's, the day after deployable.yml's. mutation.yml runs on
+# pull requests only, also without pull_request_target, and its job is not the required check.
 WORKFLOW_GUARDS: dict[str, tuple[list[str], set[str], tuple[str, ...]]] = {
     "deployable.yml": (
         ["workflow_dispatch", "schedule"],
@@ -353,6 +354,11 @@ WORKFLOW_GUARDS: dict[str, tuple[list[str], set[str], tuple[str, ...]]] = {
         ("23 6 * * 2",),
     ),
     "mutation.yml": (["pull_request"], {"actions/checkout", "actions/setup-python"}, ()),
+    "runtime-command-lines.yml": (
+        ["workflow_dispatch", "schedule"],
+        {"actions/checkout", "actions/setup-python", "actions/setup-node"},
+        ("23 6 * * 3",),
+    ),
     "validate.yml": (
         ["pull_request", "push", "schedule", "workflow_dispatch"],
         {"actions/checkout", "actions/setup-python", "actions/cache"},
@@ -634,6 +640,40 @@ def copilot_auto_update_problems(workflow: str) -> list[str]:
     ]
 
 
+# What runtime-command-lines.yml's two jobs run, by job: the runner, and the check, whose facts go to the step summary
+# and whose failure fails the job, after the latest release of every runtime is installed.
+COMMAND_LINE_JOBS = {
+    "command-lines": ("windows-latest", "python tools/runtime_command_lines.py --summary $env:GITHUB_STEP_SUMMARY"),
+    "command-lines-linux": ("ubuntu-latest", 'python3 tools/runtime_command_lines.py --summary "$GITHUB_STEP_SUMMARY"'),
+}
+LATEST_RUNTIMES = (
+    "npm install --global '@anthropic-ai/claude-code@latest' '@openai/codex@latest' '@github/copilot@latest'"
+)
+
+
+def command_line_job_problems(workflow: str) -> list[str]:
+    """Report how runtime-command-lines.yml departs from its check: each job on its runner, with Copilot CLI's
+    auto-update off, installing the latest release of every runtime and then running the check once."""
+    jobs = _mapping(read_workflow(workflow), "jobs")
+    problems = (
+        [] if set(jobs) == set(COMMAND_LINE_JOBS) else [f"the jobs are {sorted(jobs)}, not {sorted(COMMAND_LINE_JOBS)}"]
+    )
+    for name, (runner, check) in COMMAND_LINE_JOBS.items():
+        job = _mapping(jobs, name)
+        if not job:
+            continue
+        if job.get("runs-on") != runner:
+            problems.append(f"the {name} job runs on {job.get('runs-on')}, not {runner}")
+        if _mapping(job, "env").get("COPILOT_AUTO_UPDATE") != "false":
+            problems.append(f"the {name} job's env does not set COPILOT_AUTO_UPDATE: 'false'")
+        scripts = [_script_lines(step) for step in _steps(job) if "run" in step]
+        installs = [index for index, lines in enumerate(scripts) if LATEST_RUNTIMES in lines]
+        checks = [index for index, lines in enumerate(scripts) if check in lines]
+        if len(installs) != 1 or len(checks) != 1 or installs[0] > checks[0]:
+            problems.append(f"the {name} job must run {LATEST_RUNTIMES!r} once and then {check!r} once")
+    return problems
+
+
 LINUX_VERIFY = re.compile(r"python3\s+(?:deploy\.py|tools/deployable_report\.py)\s+verify(?:\s|$)")
 
 
@@ -829,7 +869,7 @@ class WorkflowsPolicies(unittest.TestCase):
     def test_deployable_and_mutation_workflows_share_validates_action_pins(self) -> None:
         workflows = REPOSITORY_ROOT / WORKFLOWS_DIRECTORY
         reviewed = (workflows / "validate.yml").read_text(encoding="utf-8")
-        for name in ("deployable.yml", "mutation.yml"):
+        for name in ("deployable.yml", "mutation.yml", "runtime-command-lines.yml"):
             workflow = (workflows / name).read_text(encoding="utf-8")
             # An action both workflows use is pinned to the commit Dependabot reviews in validate.yml.
             shared = {action for action, _, _ in action_pins(workflow)} & set(re.findall(r"uses:\s*(\S+)@", reviewed))
@@ -840,6 +880,10 @@ class WorkflowsPolicies(unittest.TestCase):
                         required_match(rf"{re.escape(action)}@(\S+ +# v\S+)", reviewed).group(1),
                         required_match(rf"{re.escape(action)}@(\S+ +# v\S+)", workflow).group(1),
                     )
+
+    def test_runtime_command_lines_workflow_checks_the_latest_runtimes_on_both_platforms(self) -> None:
+        workflow = (REPOSITORY_ROOT / WORKFLOWS_DIRECTORY / "runtime-command-lines.yml").read_text(encoding="utf-8")
+        self.assertEqual([], command_line_job_problems(workflow))
 
     def test_mutation_workflow_runs_the_gate_on_pull_requests_outside_the_required_check(self) -> None:
         workflow = (REPOSITORY_ROOT / WORKFLOWS_DIRECTORY / "mutation.yml").read_text(encoding="utf-8")

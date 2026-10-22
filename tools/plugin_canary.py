@@ -344,6 +344,16 @@ def unguarded_grants() -> list[str]:
     return ["Read", "Write", "Agent"]
 
 
+def guard_command(executable: str, prompt: str, paths: Mapping[str, str]) -> list[str]:
+    """The guard session: a plugin session granted guard_grants."""
+    return [*session_command(executable, prompt, paths), "--allowedTools", *guard_grants()]
+
+
+def unguarded_command(executable: str, request: str, paths: Mapping[str, str]) -> list[str]:
+    """The hooks-off session: a plugin session granted unguarded_grants, with every hook off."""
+    return [*session_command(executable, request, paths), "--allowedTools", *unguarded_grants(), "--settings", HOOKS_OFF]
+
+
 def transcript(session: Session, name: str, completed: Completed) -> str:
     path = session.home / STATE / "transcripts" / f"claude-{name}.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -394,7 +404,7 @@ def guard(session: Session, executable: str, paths: Mapping[str, str], plugin: s
         f"subagent_type {agent}, with exactly this prompt: {task} Then stop and report what it replied. This is a "
         "plugin canary session."
     )
-    command = [*session_command(executable, prompt, paths), "--allowedTools", *guard_grants()]
+    command = guard_command(executable, prompt, paths)
     script_log = session.home / STATE / "scripts" / "claude-guard.jsonl"
     completed = session.runner(
         command, session.home, environment(session.base, script_log, session.home), session.timeout
@@ -419,13 +429,7 @@ def unguarded(session: Session, executable: str, paths: Mapping[str, str], plugi
         f"Start one subagent with the Agent tool, subagent_type {agent}, with exactly this prompt: {task} Then stop "
         "and report what it replied. This is a plugin canary session."
     )
-    command = [
-        *session_command(executable, request, paths),
-        "--allowedTools",
-        *unguarded_grants(),
-        "--settings",
-        HOOKS_OFF,
-    ]
+    command = unguarded_command(executable, request, paths)
     script_log = session.home / STATE / "scripts" / "claude-unguarded.jsonl"
     completed = session.runner(
         command, session.home, environment(session.base, script_log, session.home), session.timeout

@@ -156,6 +156,57 @@ def home_directory(environment: Mapping[str, str] | None = None) -> Path:
     return Path(value) if value else Path.home()
 
 
+# The variables a program needs to start and find the system's own files, which a run that must hold no credential
+# keeps from its environment; every other variable, a token or a provider's setting among them, is left out.
+STARTING_VARIABLES = (
+    frozenset(
+        {
+            "PATH",
+            "PATHEXT",
+            "SystemRoot",
+            "SystemDrive",
+            "WINDIR",
+            "ComSpec",
+            "TEMP",
+            "TMP",
+            "OS",
+            "NUMBER_OF_PROCESSORS",
+            "PROCESSOR_ARCHITECTURE",
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+            "ProgramW6432",
+            "ProgramData",
+            "CommonProgramFiles",
+        }
+    )
+    if WINDOWS
+    else frozenset({"PATH", "TMPDIR", "LANG", "LC_ALL"})
+)
+
+
+def signed_out_environment(base: Mapping[str, str], home: Path) -> dict[str, str]:
+    """`base`'s STARTING_VARIABLES, matched as this platform matches a name, with every variable that names the user's
+    home or a per-user folder set inside `home`, so a program started with it finds no sign-in and no settings. The
+    folders are named, not made; a program makes the ones it writes."""
+    starting = {name.casefold() if ENVIRONMENT_NAMES_FOLD_CASE else name for name in STARTING_VARIABLES}
+    kept = {
+        name: value
+        for name, value in base.items()
+        if (name.casefold() if ENVIRONMENT_NAMES_FOLD_CASE else name) in starting
+    }
+    folders = (
+        {"USERPROFILE": home, "APPDATA": home / "AppData" / "Roaming", "LOCALAPPDATA": home / "AppData" / "Local"}
+        if WINDOWS
+        else {
+            "XDG_CONFIG_HOME": home / ".config",
+            "XDG_DATA_HOME": home / ".local" / "share",
+            "XDG_STATE_HOME": home / ".local" / "state",
+            "XDG_CACHE_HOME": home / ".cache",
+        }
+    )
+    return {**kept, "HOME": str(home), **{name: str(folder) for name, folder in folders.items()}}
+
+
 def ignored_home_variable(home: Path, environment: Mapping[str, str] | None = None) -> str | None:
     """HOME as a drive-letter path, when this run's home is the profile folder and HOME names another directory.
 
