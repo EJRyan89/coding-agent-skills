@@ -103,12 +103,12 @@ session model and the judged one. A skill with no row has not been run since its
 | audit-skill | haiku | claude-haiku-5-5 | 6/8 | 1 | description 6/8 | claude-haiku-5-5 | 2.1.302 | 2026-10-22 |
 | audit-skill | sonnet | claude-sonnet-5-5 | 8/8 | 1 | description 8/8 | claude-sonnet-5-5 | 2.1.302 | 2026-10-22 |
 | audit-skill | opus | claude-opus-5-5 | 8/8 | 1 | description 8/8 | claude-opus-5-5 | 2.1.302 | 2026-10-22 |
-| review-document | haiku | claude-haiku-5-5 | 19/20 | 1 | committed-edit 3/3, design-clean 1/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps not run, word-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
-| review-document | sonnet | claude-sonnet-5-5 | 20/20 | 1 | committed-edit 3/3, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps not run, word-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
-| review-document | opus | claude-opus-5-5 | 20/20 | 1 | committed-edit 3/3, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps not run, word-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
-| review-prs | haiku | claude-haiku-5-5 | 19/21 | 1 | clean-change 2/2, design-clean 1/2, design-gaps 5/5, planted-defects 4/5, re-review 7/7 | claude-opus-5-5 | 2.1.302 | 2026-10-19 |
-| review-prs | sonnet | claude-sonnet-5-5 | 21/21 | 1 | clean-change 2/2, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.302 | 2026-10-19 |
-| review-prs | opus | claude-opus-5-5 | 21/21 | 1 | clean-change 2/2, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.302 | 2026-10-19 |
+| review-document | haiku | claude-haiku-5-5 | 28/32 | 1 | committed-edit 3/3, description 4/7, design-clean 1/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-haiku-5-5, claude-opus-5-5 | 2.1.302 | 2026-10-22 |
+| review-document | sonnet | claude-sonnet-5-5 | 32/32 | 1 | committed-edit 3/3, description 7/7, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5, claude-sonnet-5-5 | 2.1.302 | 2026-10-22 |
+| review-document | opus | claude-opus-5-5 | 32/32 | 1 | committed-edit 3/3, description 7/7, design-clean 2/2, design-draft 3/3, design-final 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5 | 2.1.302 | 2026-10-22 |
+| review-prs | haiku | claude-haiku-5-5 | 25/27 | 1 | clean-change 2/2, description 5/6, design-clean 2/2, design-gaps 5/5, planted-defects 4/5, re-review 7/7 | claude-haiku-5-5, claude-opus-5-5 | 2.1.302 | 2026-10-22 |
+| review-prs | sonnet | claude-sonnet-5-5 | 27/27 | 1 | clean-change 2/2, description 6/6, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5, claude-sonnet-5-5 | 2.1.302 | 2026-10-22 |
+| review-prs | opus | claude-opus-5-5 | 27/27 | 1 | clean-change 2/2, description 6/6, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.302 | 2026-10-22 |
 | review-repository | haiku | claude-haiku-5-5 | 5/5 | 1 | drifted-guide 2/2, tested-change 1/1, undocumented-change 1/1, untested-change 1/1 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
 | review-repository | sonnet | claude-sonnet-5-5 | 5/5 | 1 | drifted-guide 2/2, tested-change 1/1, undocumented-change 1/1, untested-change 1/1 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
 | review-repository | opus | claude-opus-5-5 | 5/5 | 1 | drifted-guide 2/2, tested-change 1/1, undocumented-change 1/1, untested-change 1/1 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
