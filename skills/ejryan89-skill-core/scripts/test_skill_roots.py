@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
 import sys
 import tempfile
@@ -99,11 +100,17 @@ class SiblingScriptsTests(unittest.TestCase):
             'sys.path.insert(0, str(sibling_scripts("shared-dep")))\n',
             encoding="utf-8",
         )
-        result = subprocess.run([sys.executable, "-B", str(script)], capture_output=True, text=True, check=False)
-        self.assertEqual(1, result.returncode)
-        self.assertEqual("", result.stdout)
-        self.assertNotIn("Traceback", result.stderr)
-        self.assertIn("skill shared-dep has no scripts under", result.stderr)
+        # A plugin's manifest beside the skills directory that is not JSON ends the script the same way.
+        for manifest in (None, "{not json"):
+            if manifest is not None:
+                (deployed.parent / ".claude-plugin").mkdir()
+                (deployed.parent / ".claude-plugin" / "plugin.json").write_text(manifest, encoding="utf-8")
+            result = subprocess.run([sys.executable, "-B", str(script)], capture_output=True, text=True, check=False)
+            with self.subTest(manifest=manifest):
+                self.assertEqual(1, result.returncode)
+                self.assertEqual("", result.stdout)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertIn("skill shared-dep has no scripts under", result.stderr)
 
 
 class PluginNameTests(unittest.TestCase):
@@ -134,6 +141,35 @@ class PluginNameTests(unittest.TestCase):
             self.write_manifest(text)
             with self.subTest(text=text), self.assertRaisesRegex(ValueError, "names no plugin"):
                 plugin_name()
+
+    def test_a_manifest_that_cannot_be_read_or_parsed_raises_value_error(self) -> None:
+        for text, reason in (("{not json", "is not JSON"), ("", "is not JSON")):
+            self.write_manifest(text)
+            with self.subTest(text=text), self.assertRaisesRegex(ValueError, reason):
+                plugin_name()
+        (self.plugin / ".claude-plugin" / "plugin.json").write_bytes(b"\xff\xfe")
+        with self.assertRaisesRegex(ValueError, "is not JSON"):
+            plugin_name()
+        with (
+            mock.patch("pathlib.Path.read_text", side_effect=PermissionError(13, "Permission denied")),
+            self.assertRaisesRegex(ValueError, "cannot be read: Permission denied"),
+        ):
+            plugin_name()
+
+    def test_an_absent_sibling_beside_a_manifest_that_cannot_be_known_still_names_the_sibling(self) -> None:
+        unreadable = mock.patch("pathlib.Path.read_text", side_effect=PermissionError(13, "Permission denied"))
+        for text, reading, reason in (
+            ("{not json", contextlib.nullcontext(), "is not JSON"),
+            ('{"name": ""}', contextlib.nullcontext(), "names no plugin"),
+            ('{"name": "a-suite"}', unreadable, "cannot be read"),
+        ):
+            self.write_manifest(text)
+            with self.subTest(reason=reason), reading, self.assertRaises(MissingSibling) as caught:
+                sibling_scripts("shared-dep")
+            self.assertEqual("shared-dep", caught.exception.name)
+            self.assertIn("skill shared-dep has no scripts under", str(caught.exception))
+            self.assertIn("; reinstall the plugin: ", str(caught.exception))
+            self.assertIn(reason, str(caught.exception))
 
     def test_an_absent_sibling_in_a_plugin_asks_for_the_plugin_again_not_a_deployment(self) -> None:
         self.write_manifest('{"name": "a-suite"}')

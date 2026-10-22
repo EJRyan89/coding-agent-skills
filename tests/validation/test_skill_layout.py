@@ -924,6 +924,21 @@ def test_plugin_policy_passes_a_plugin_that_holds_its_sources_with_the_pinned_an
     assert plugin_tree_problems(tmp_path, {"suite": plugin_files()}) == []
 
 
+@pytest.mark.parametrize(
+    ("stray", "problems"),
+    [
+        ("skills/alpha/scripts/__pycache__/tool.cpython-311.pyc", []),
+        ("skills/alpha/scripts/tool.pyc", []),
+        ("skills/alpha/scripts/notes.txt", ["plugin suite: leaves out skills/alpha/scripts/notes.txt"]),
+    ],
+)
+def test_plugin_policy_skips_bytecode_the_builder_never_reads_but_not_a_stray_file(
+    stray: str, problems: list[str], tmp_path: Path
+) -> None:
+    write_plugin_sources(tmp_path, {**PLUGIN_SOURCES, stray: "x"})
+    assert plugin_tree_problems(tmp_path, {"suite": plugin_files()}) == problems
+
+
 def test_plugin_policy_passes_an_agent_without_hooks_and_a_plugin_without_a_hooks_file(tmp_path: Path) -> None:
     write_plugin_sources(
         tmp_path, {**PLUGIN_SOURCES, "agents/helper.md": "---\nname: helper\ntools: Read\n---\n\nHelp.\n"}

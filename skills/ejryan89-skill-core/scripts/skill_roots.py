@@ -52,7 +52,12 @@ def sibling_scripts(name: str) -> Path:
     scripts = SKILLS_ROOT / name / "scripts"
     if scripts.is_dir():
         return scripts
-    plugin = plugin_name()
+    try:
+        plugin = plugin_name()
+    except ValueError as error:
+        raise MissingSibling(
+            name, f"skill {name} has no scripts under {SKILLS_ROOT}; reinstall the plugin: {error}"
+        ) from None
     remedy = (
         f"update or reinstall the plugin {plugin}"
         if plugin is not None
@@ -66,12 +71,18 @@ def plugin_name() -> str | None:
 
     A plugin holds its manifest beside its skills directory, and Claude Code namespaces every component the plugin
     carries under the manifest's name, so an agent `reviewer` of plugin `suite` is `suite:reviewer`. A manifest that
-    names no plugin raises ValueError: the skills run from a plugin whose name cannot be known.
+    cannot be read, is not JSON, or names no plugin raises ValueError: the skills run from a plugin whose name cannot
+    be known.
     """
     manifest = SKILLS_ROOT.parent / PLUGIN_MANIFEST
     if not manifest.is_file():
         return None
-    document: object = json.loads(manifest.read_text(encoding="utf-8"))
+    try:
+        document: object = json.loads(manifest.read_text(encoding="utf-8"))
+    except OSError as error:
+        raise ValueError(f"{manifest} cannot be read: {error.strerror or error}") from error
+    except ValueError as error:
+        raise ValueError(f"{manifest} is not JSON: {error}") from error
     name = document.get("name") if isinstance(document, dict) else None
     if not isinstance(name, str) or not name:
         raise ValueError(f"{manifest} names no plugin")
