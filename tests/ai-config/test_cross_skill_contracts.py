@@ -427,12 +427,25 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertIn('REVIEWER = "code-review-reviewer"', guard.read_text(encoding="utf-8"))
         skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")
         self.assertIn("start one fresh native subagent of type `code-review-reviewer`", skill)
+        # Claude Code refuses a result no guard held, so the general-purpose fallback is for the other runtimes, and
+        # on Claude Code each skill takes the remedy the refusal names.
+        fallback = (
+            "on Codex or Copilot CLI, use a general-purpose subagent{} on Claude Code, which refuses a result no "
+            "reviewer guard held, start none"
+        )
         self.assertIn("If this session has no `code-review-reviewer` type", skill)
-        self.assertIn("use a general-purpose subagent instead", skill)
+        self.assertIn(fallback.format(" instead;"), skill)
+        self.assertIn("prepare those pull requests again with the same arguments and `--inline`", skill)
+        document = (REPOSITORY_ROOT / "skills/review-document/SKILL.md").read_text(encoding="utf-8-sig")
+        self.assertIn(fallback.format(";"), document)
+        self.assertIn("and prepare again with `--inline`", document)
         # The review-insights synthesis reads finding and flag text, so it runs as the guarded agent too.
         insights = (REPOSITORY_ROOT / "skills/review-insights/SKILL.md").read_text(encoding="utf-8-sig")
         self.assertIn("Start one fresh subagent of type `code-review-reviewer`", insights)
-        self.assertIn("If this session has no `code-review-reviewer` type, use a general-purpose subagent", insights)
+        self.assertIn(fallback.format(" instead;"), insights)
+        self.assertIn(
+            "start none, tell the user a new session loads the agent, and follow the prompt yourself", insights
+        )
         self.assertNotIn("general-purpose subagent with exactly this prompt", insights)
         insights_meta = json.loads((REPOSITORY_ROOT / "deploy-meta/review-insights.json").read_text(encoding="utf-8"))
         self.assertIn(
