@@ -104,7 +104,7 @@ class ThreatModelPolicy(unittest.TestCase):
         self.assertEqual(
             [
                 f"{THREAT_MODEL_DOC} names test_adversarial_inputs.py::test_gone, which test_adversarial_inputs.py "
-                "does not define",
+                "does not define as a test",
                 f"{THREAT_MODEL_DOC} names test_missing.py::test_held, but {THREAT_MODEL_SUITES}/test_missing.py does "
                 "not exist",
                 f"{THREAT_MODEL_DOC}: the threat-model row 'Links' names no test in test_adversarial_inputs.py",
@@ -133,6 +133,38 @@ class ThreatModelPolicy(unittest.TestCase):
                     THREAT_MODEL_DOC: table,
                     f"{THREAT_MODEL_SUITES}/test_adversarial_inputs.py": self.ADVERSARIAL,
                     f"{THREAT_MODEL_SUITES}/test_a.py": self.ADVERSARIAL,
+                }
+            ),
+        )
+
+    def test_a_missing_class_a_helper_and_a_missing_path_qualified_suite_fail(self) -> None:
+        # A helper beside the tests, and a class defined under an `if`, as a platform's tests are.
+        suite = (
+            "import unittest\n\n\ndef held() -> None:\n    pass\n\n\n"
+            "if True:\n\n    class Tests(unittest.TestCase):\n        def test_in_a_class(self) -> None:\n"
+            "            pass\n"
+        )
+        table = (
+            "# Contract\n\n## Threat model\n\n"
+            "| The author controls | The suite guarantees | Held by |\n| --- | --- | --- |\n"
+            "| Diff text | Data only. | `test_adversarial_inputs.py::test_held`, the `Tests` cases in "
+            "`skills/x/scripts/test_x.py`, the `Gone` cases in `test_a.py`, `test_a.py::held` |\n"
+            "| Blobs | Exact bytes. | `test_adversarial_inputs.py::test_in_a_class`, the `Tests` cases in "
+            "`skills/y/scripts/test_y.py`, `skills/x/scripts/test_x.py::test_in_a_class` |\n"
+        )
+        self.assertEqual(
+            [
+                f"{THREAT_MODEL_DOC} names test_a.py::held, which test_a.py does not define as a test",
+                f"{THREAT_MODEL_DOC} names the Gone cases in test_a.py, which test_a.py does not define as a class",
+                f"{THREAT_MODEL_DOC} names the Tests cases in skills/y/scripts/test_y.py, but "
+                "skills/y/scripts/test_y.py does not exist",
+            ],
+            self.problems(
+                {
+                    THREAT_MODEL_DOC: table,
+                    f"{THREAT_MODEL_SUITES}/test_adversarial_inputs.py": self.ADVERSARIAL,
+                    f"{THREAT_MODEL_SUITES}/test_a.py": suite,
+                    "skills/x/scripts/test_x.py": suite,
                 }
             ),
         )
