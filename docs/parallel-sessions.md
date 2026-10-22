@@ -148,16 +148,24 @@ The setting lives in the shared `.git/config`, so one command covers the hub and
 the setting is not tracked, someone who clones the repository and works in a single checkout is never blocked.
 
 The hook command reads the setting itself, in Bash, and exits before starting Python when the clone has not opted
-in. Elsewhere the hook is inert and costs one `awk` and one `git config` call per tool call: `python` never runs, so
-a `python` that still resolves to the Microsoft Store alias cannot fail the hook. In an opted-in clone it runs
-`tools/hub_guard.py` under `$CLAUDE_PROJECT_DIR`, which checks the same setting again. Neither read can be
+in. Elsewhere the hook is inert and costs one `awk`, one `env`, and one `git config` call per tool call: `python`
+never runs, so a `python` that still resolves to the Microsoft Store alias cannot fail the hook. In an opted-in clone
+it runs `tools/hub_guard.py` under `$CLAUDE_PROJECT_DIR`, which checks the same setting again. Neither read can be
 pointed at another repository's setting or outranked: each reads only the repository's own file, with
 `git config --local`, which passes over the command-line configuration `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT`
-carry; the hook command unsets `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, and `GIT_CONFIG` for its call, each in
-any case, since Windows reads an environment name in any case; and `tools/hub_guard.py` runs its own git calls,
-and the `pwsh` that reads a PowerShell command, without any of git's repository-selecting variables, the set
-ejryan89-skill-core's `bounded_process.py` names, through its `run_bounded`, which ends every process `pwsh` starts with it.
-`tests/tools/test_hub_guard.py` runs the tracked command both ways.
+carry; the hook command runs its call through `env -u` for each of `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, and
+`GIT_CONFIG` it holds, in any case, since Windows reads an environment name in any case; and `tools/hub_guard.py` runs
+its own git calls, and the `pwsh` that reads a PowerShell command, without any of git's repository-selecting
+variables, the set ejryan89-skill-core's `bounded_process.py` names, through its `run_bounded`, which ends every
+process `pwsh` starts with it. `tests/tools/test_hub_guard.py` runs the tracked command both ways.
+
+The command is also written to end at once under PowerShell, for the runtime that runs it there (see
+[Other runtimes](#other-runtimes)). Its first two lines are `set \` and `exit 0`: Bash, like any POSIX shell, joins
+them into `set exit 0`, which only sets the positional parameters, and goes on, while PowerShell reads `set \` as
+setting a variable named `\` and then exits with status 0. PowerShell parses a whole command before it runs any of
+it, so the rest is written in what both shells parse, `test` rather than `[` and `env -u` rather than a loop of
+`unset`. `HookCommandUnderPowerShellTests` in `tests/tools/test_hub_guard.py` runs the tracked command under `pwsh`,
+opted in and not, and holds that it exits 0 with no output and starts no program.
 
 With the guard enabled:
 
@@ -200,7 +208,20 @@ With the guard enabled:
 - **Both shell tools.** The same commands are refused, with the same allowances, whether they run through the
   `Bash` tool or the `PowerShell` tool, or as a `Monitor` tool's command, which runs in the `Bash` tool's shell.
 
-Codex and Copilot CLI run hooks of their own but not this one, which lives in Claude Code's settings, so for them the `CLAUDE.md` rules are the guard.
+### Other runtimes
+
+The guard is Claude Code's. For Codex and Copilot CLI the `CLAUDE.md` rules are the guard:
+
+- **Codex** runs hooks of its own but not this one, which lives in Claude Code's settings.
+- **Copilot CLI** reads `.claude/settings.json` as a source of repository hooks, but only in a folder it trusts
+  (`--trust-folder`, or one the user trusted); in any other folder it runs no repository hook. In a trusted folder it
+  runs this hook, matcher included, with a Claude-format event that names its shell tool `Bash` whichever shell that
+  tool runs, and with `$CLAUDE_PROJECT_DIR` set. On Windows it runs the command under PowerShell, where the command
+  exits with status 0 before it starts anything, so the guard neither refuses nor allows any of Copilot's calls and
+  Copilot runs them as it would without the hook. A command that errored there would be worse than none:
+  Copilot treats a `preToolUse` hook that fails as a denial, so it would refuse every shell call. On Linux, which this
+  repository does not claim yet, Copilot runs the command under Bash, so in an opted-in clone the guard reads
+  Copilot's shell calls as Bash commands, which Copilot's Bash tool runs there; that path is not checked.
 
 ### The guard's contract
 

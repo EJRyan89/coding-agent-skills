@@ -256,7 +256,7 @@ class HookCommandUnderPowerShellTests(GuardTestCase):
         record.unlink(missing_ok=True)
         # Each program the command would start after its exit, under the name PowerShell would find it by.
         for program in ("python", "git", "env", "awk", "test"):
-            (shims / f"{program}.cmd").write_text(f"@echo {program}>>\"%SHIM_RECORD%\"\r\n", encoding="utf-8")
+            (shims / f"{program}.cmd").write_text(f'@echo {program}>>"%SHIM_RECORD%"\r\n', encoding="utf-8")
             (shims / program).write_text(f'#!/bin/sh\necho {program} >> "$SHIM_RECORD"\n', encoding="utf-8")
             (shims / program).chmod(0o755)  # pwsh runs a program off Windows only when it is executable
         environment = {
