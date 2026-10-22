@@ -32,7 +32,7 @@ from . import (
     source_ref,
 )
 from . import selection as selection_module
-from .arguments import PROG, USAGE_ERROR, VERIFY_COMMAND_LINE, parse_command, usage_error
+from .arguments import PROG, USAGE_ERROR, parse_command, usage_error
 from .context import Context, Options
 from .errors import Cancelled, DeployError, debug_requested, fail, print_error, print_traceback, see_recovery
 from .kinds import ADAPTER_KIND, AGENT_KIND, DEPENDENCY_KINDS, KINDS, SHARED, SKILL, KindKey
@@ -246,20 +246,7 @@ def _deploy(
     _refuse_unpinning(context, replaced_pin)
     selected = [] if selection.deselect_all else source.expand(src, selection.bundles, selection.skills)
     adapters = [name for name in selected if src.skills[name].selectable]
-    shadowed = [name for name in adapters if os.path.lexists(paths.copilot_skills_dir / name)]
-    if shadowed:
-        print("", file=sys.stderr)
-        print(
-            "WARNING: Higher-priority GitHub Copilot personal skills shadow generated runtime adapters:",
-            file=sys.stderr,
-        )
-        for name in shadowed:
-            print(f"  - {name} ({platform_support.normalize(paths.copilot_skills_dir / name)})", file=sys.stderr)
-        print(
-            "The deployer will not modify ~/.copilot/skills. Resolve these paths manually, then check "
-            f"which copy Copilot uses with '{VERIFY_COMMAND_LINE}'.",
-            file=sys.stderr,
-        )
+    report.warn_copilot(paths, adapters)
     selection_module.print_selection(src, selection, selected)
     selection_module.warn_missing_tools(src, selection)
     selection_module.require_variables(context, selected)
@@ -460,7 +447,8 @@ def _prepare(namespace: argparse.Namespace, paths: Paths) -> tuple[Paths, str, O
         _reject_other_source_id(paths, source_id)
     options = parse_arguments(namespace, source_id)
     if options.canary_home:
-        paths = dataclasses.replace(paths, home=canary_home(options.canary_home))
+        # The canary's runtimes read their configuration from the canary home, never from the user's COPILOT_HOME.
+        paths = dataclasses.replace(paths, home=canary_home(options.canary_home), copilot_home=None)
     validate_managed_roots(paths)
     # A canary home's values are set when it is claimed, after every check; the real configuration is unread.
     values = (
