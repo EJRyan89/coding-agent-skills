@@ -662,7 +662,7 @@ class VerifyCommandTests(DeployerTestCase):
         catalog_calls = [call for call in self.runtimes.calls if call[0][1:] == list(discovery.CODEX_CATALOG)]
         self.assertEqual(2, len(catalog_calls))
 
-    def test_a_codex_catalog_that_cannot_be_read_fails_codex(self) -> None:
+    def test_a_codex_catalog_that_cannot_be_read_fails_codex_naming_that_probe_not_the_listing(self) -> None:
         self.make_skill("gamma", "Gamma", user_only=True)
         self.deploy_ok("--all")
         everything = [(name, self.adapter(name), True) for name in ("alpha", "beta", "gamma")]
@@ -670,7 +670,34 @@ class VerifyCommandTests(DeployerTestCase):
         self.runtimes.answers["codex-catalog"] = ListingError("it failed with exit code 1")
         result = self.verify()
         self.assertEqual(1, result.code, result.output)
-        self.assertIn("\n=== CODEX CLI ===\n\nCannot list its skills: it failed with exit code 1\n\n", result.output)
+        self.assertIn(
+            "\n=== CODEX CLI ===\n\nListed its skills, but cannot read which ones it offers the model "
+            "(codex debug prompt-input): it failed with exit code 1\n\n",
+            result.output,
+        )
+        self.assertNotIn("Cannot list its skills", result.output)
+        self.assertEqual({"FOUND": ["alpha", "beta", "gamma"]}, self.groups(result.output, "COPILOT CLI"))
+        self.assertIn("Verification failed for Codex CLI.\nSee docs/codex-support.md.\n", result.output)
+
+    def test_a_codex_listing_that_fails_with_a_user_only_adapter_deployed_names_the_listing_and_skips_the_catalog(
+        self,
+    ) -> None:
+        self.make_skill("gamma", "Gamma", user_only=True)
+        self.deploy_ok("--all")
+        everything = [(name, self.adapter(name), True) for name in ("alpha", "beta", "gamma")]
+        self.answer(codex=everything, copilot=everything)
+        self.runtimes.answers["codex"] = ListingError("it exited before answering with exit code 1")
+        self.runtimes.answers["codex-catalog"] = [catalog_answer()]
+        result = self.verify()
+        self.assertEqual(1, result.code, result.output)
+        self.assertIn(
+            "\n=== CODEX CLI ===\n\nCannot list its skills: it exited before answering with exit code 1\n\n",
+            result.output,
+        )
+        self.assertNotIn("prompt-input", result.output)
+        catalog_calls = [call for call in self.runtimes.calls if call[0][1:] == ["debug", "prompt-input"]]
+        self.assertEqual([], catalog_calls)
+        self.assertIn("Verification failed for Codex CLI.\nSee docs/codex-support.md.\n", result.output)
 
     def test_copilot_listing_another_copy_in_place_of_the_adapter_is_shadowed(self) -> None:
         personal = forward(self.home / ".copilot" / "skills" / "alpha")
