@@ -13,7 +13,7 @@ from pathlib import Path
 import frontmatter
 from skill_layout import embedded_program_problems, output_placeholder_problems
 from skill_roots import sibling_scripts
-from skill_scripts import command_reader
+from skill_scripts import RESULTS_DOC, command_reader
 from validation_support import (
     REPOSITORY_ROOT,
     REPOSITORY_SKILLS,
@@ -34,7 +34,6 @@ sys.path.insert(0, str(sibling_scripts("audit-skill")))
 import skill_inventory
 
 GRANTS_DOC = '"Granting tools" in docs/adding-a-skill.md'
-RESULTS_DOC = '"Script results" in docs/adding-a-skill.md'
 # A fence command that runs the skill's own scripts, which its grants must cover: a shipped skill names them through
 # its directory, and a repository skill runs the repository's tools and tests from the working tree.
 OWN_SCRIPT_COMMAND = re.compile(r"\$\{CLAUDE_SKILL_DIR\}")

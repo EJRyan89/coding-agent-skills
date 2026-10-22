@@ -259,7 +259,10 @@ ADAPTED_RUNTIME_FACTS = (
     ("deployer/discovery.py", "parse_copilot, and codex_requests and parse_codex for the app-server skills/list"),
     ("deployer/verify.py", "how each runtime's listing is judged: adapter_line and expose"),
     (".github/workflows/deployable.yml", "the runtime version it installs and the Codex sandbox it writes"),
-    ("tools/skill_shims.py", "the PROTECTED_WRITES constant and the shim text on how Codex resolves paths and what it protects"),
+    (
+        "tools/skill_shims.py",
+        "the PROTECTED_WRITES constant and the shim text on how Codex resolves paths and what it protects",
+    ),
 )
 RUNTIME_FACTS = {
     "claude-code": (

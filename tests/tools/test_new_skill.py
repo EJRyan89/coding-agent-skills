@@ -145,12 +145,20 @@ class NewSkillTestCase(FixtureRepositoryTestCase):
             "a script or a step, or remove it from tools",
             remaining,
         )
-        # Once a step runs the script through both grants and reads a file, no grant remains.
-        skill_md.write_text(
-            skill_md.read_text(encoding="utf-8")
-            + '\nRead the input, then run `{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/widget_report.py" --all`.\n',
-            encoding="utf-8",
+        # A step that only says "read" leaves the Read grant named; one that names the tool clears it.
+        body = skill_md.read_text(encoding="utf-8")
+        run = 'then run `{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/widget_report.py" --all`.\n'
+        skill_md.write_text(body + "\nRead the input, " + run, encoding="utf-8")
+        line = len(body.splitlines()) + 2
+        self.assertEqual(
+            [
+                f"skills/widget-report/SKILL.md grants Read, which line {line} only implies; name the tool in the "
+                "step that uses it, or remove it from allowed-tools"
+            ],
+            new_skill.grant_remaining(self.root, Path("skills/widget-report/SKILL.md")),
         )
+        # Once a step runs the script through both grants and names the tool that reads a file, no grant remains.
+        skill_md.write_text(body + "\n`Read` the input, " + run, encoding="utf-8")
         self.assertEqual([], new_skill.grant_remaining(self.root, Path("skills/widget-report/SKILL.md")))
         self.assertEqual([], skill_grant_problems(self.root, [skill_md]))
 
