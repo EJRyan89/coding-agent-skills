@@ -7,9 +7,10 @@ Analyzers are recognized by their configuration files and, for .NET, by analyzer
 projects (which carry the SDK's own analyzers). Where the format is one the standard library reads, the inventory
 also lists the settings that decide which rules run and how severely: MSBuild analysis properties, .editorconfig and
 .globalconfig diagnostic severities, ruff and flake8 rule selections, and ShellCheck directives. Nothing here runs an
-analyzer or executes repository code, and a file that cannot be parsed is listed as present but unread. EditorConfig
-files are read one `key = value` per line, since the format has no continuation lines; setup.cfg and tox.ini keep
-configparser's, which are real there.
+analyzer or executes repository code. Each settings file is read whole, within the reader's size bound, and parsed in
+memory, and one that cannot be read or parsed, for any reason its parser gives on its content, is listed as present but
+unread and names a tool only when its file name does. EditorConfig files are read one `key = value` per line, since the
+format has no continuation lines; setup.cfg and tox.ini keep configparser's, which are real there.
 """
 
 from __future__ import annotations
@@ -29,12 +30,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 from dotnet_solution import read_bounded, read_text
 from flat_text import flat_text
 from msbuild_xml import is_sdk_style, local_name
-from xml_reader import XmlRefused, read_xml
+from xml_reader import read_xml
 
 INVENTORY_SCHEMA_VERSION = 1
 MAX_SETTINGS = 400
 MAX_FILES_PER_TOOL = 10
 UNREAD = "(present, but could not be parsed; read the file for its settings)"
+# What a parser here raises on content it cannot read: a decode error, which is a ValueError, as are `XmlRefused` and
+# an integer past the interpreter's digit limit; nesting deeper than the recursion limit; and configparser's own errors.
+PARSE_ERRORS = (ValueError, RecursionError, configparser.Error)
 
 SDK_ANALYZERS = "Microsoft.CodeAnalysis.NetAnalyzers"
 CODE_STYLE_ANALYZERS = {
@@ -175,12 +179,12 @@ def _text(root: Path, path: str) -> str | None:
         return None
 
 
+class _Unparsed(ValueError):
+    """Content a reader here refuses although no parser raised on it."""
+
+
 def _msbuild(found: _Inventory, path: str, text: str) -> None:
-    try:
-        project = read_xml(text)
-    except XmlRefused:
-        found.setting(path, UNREAD)
-        return
+    project = read_xml(text)
     suffix = PurePosixPath(path).suffix.lower()
     if is_sdk_style(project) and suffix in {".csproj", ".vbproj", ".fsproj"}:
         found.tool(SDK_ANALYZERS, path)
@@ -215,8 +219,7 @@ def _editorconfig(found: _Inventory, path: str, text: str) -> None:
         elif equals and key.strip():
             current[key.strip()] = value.strip()
         else:
-            found.setting(path, UNREAD)
-            return
+            raise _Unparsed("a line that is neither a section nor a setting")
     for section, values in sections.items():
         for key, value in values.items():
             if DIAGNOSTIC_KEY.fullmatch(key) or key.casefold() in GLOBAL_KEYS:
@@ -240,13 +243,7 @@ def _ruff(found: _Inventory, path: str, table: dict[str, Any], prefix: str) -> N
 
 def _toml(found: _Inventory, path: str, text: str) -> None:
     name = PurePosixPath(path).name
-    try:
-        document = tomllib.loads(text)
-    except tomllib.TOMLDecodeError:
-        if name != "pyproject.toml":
-            found.tool("ruff", path)
-            found.setting(path, UNREAD)
-        return
+    document = tomllib.loads(text)
     if name != "pyproject.toml":
         _ruff(found, path, document, "")
         return
@@ -264,13 +261,7 @@ def _toml(found: _Inventory, path: str, text: str) -> None:
 def _ini(found: _Inventory, path: str, text: str) -> None:
     name = PurePosixPath(path).name
     parser = configparser.ConfigParser(strict=False, interpolation=None)
-    try:
-        parser.read_string(text)
-    except configparser.Error:
-        if name == ".flake8":
-            found.tool("flake8", path)
-            found.setting(path, UNREAD)
-        return
+    parser.read_string(text)
     sections = {section.casefold(): section for section in parser.sections()}
     if name == ".flake8":
         found.tool("flake8", path)
@@ -292,10 +283,9 @@ def _shellcheckrc(found: _Inventory, path: str, text: str) -> None:
 
 
 def _package_json(found: _Inventory, path: str, text: str) -> None:
-    try:
-        document = json.loads(text)
-    except json.JSONDecodeError:
-        return
+    document = json.loads(text)
+    # JSON's \u escapes can spell a lone surrogate, which no UTF-8 file, analyzers.json included, can hold.
+    json.dumps(document, ensure_ascii=False).encode("utf-8")
     if not isinstance(document, dict):
         return
     if "eslintConfig" in document:
@@ -323,16 +313,22 @@ def inventory(root: Path, paths: Iterable[str]) -> dict[str, Any]:
         if handler is None:
             continue
         text = _text(root, path)
-        if text is None:
-            # A file whose name names its tool still names it, as when it cannot be parsed. A setup.cfg, tox.ini,
-            # pyproject.toml, or package.json may configure no analyzer at all, so it is not listed.
+        if text is None or not _parsed(handler, found, path, text):
+            # A file whose name names its tool still names it, so a reviewer can report that tool's coverage; an
+            # MSBuild file, setup.cfg, tox.ini, pyproject.toml, or package.json may configure none, so it names none.
             if name in NAMED_BY_FILE:
                 found.tool(NAMED_BY_FILE[name], path)
-            if handler in (_msbuild, _editorconfig) or name in NAMED_BY_FILE:
-                found.setting(path, UNREAD)
-            continue
-        handler(found, path, text)
+            found.setting(path, UNREAD)
     return found.result()
+
+
+def _parsed(handler: Callable[[_Inventory, str, str], None], found: _Inventory, path: str, text: str) -> bool:
+    """Whether `handler` read the file, listing what it found; False when its parser refused the content."""
+    try:
+        handler(found, path, text)
+    except PARSE_ERRORS:
+        return False
+    return True
 
 
 def _settings_handler(path: str) -> Callable[[_Inventory, str, str], None] | None:
