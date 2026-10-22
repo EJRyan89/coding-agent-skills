@@ -19,6 +19,10 @@ the readers, confirms what they find, and files it.
     remove-briefs  delete a briefs directory a release or rotation run printed as BRIEFS, and nothing else: one
                    holding the BRIEFS_MARKER file the run wrote before its first brief, naming the directory
 
+Both records hold release tags only, as release_tags.py defines them, and a read's recency is its tag's place among
+releases, whatever order a record lists its reads in: an area's last read and a page's are those of the latest
+release, and NEXT and SUBJECT name the earliest of them.
+
 An area holding more than MAX_FILES_PER_READER files is split between readers by directory: one brief per part, no
 part above that size, and a directory split only when it alone holds more than a part. A release or rotation run
 reads the open milestones and, for rotation, the next milestone's open issues through gh, from the checkout audited.
@@ -87,7 +91,7 @@ from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError, classify_failure
 from github_client import GitHubClient, GitHubError, subprocess_runner
-from release_tags import last_release
+from release_tags import is_release_tag, last_release, release_order
 from typed_fields import FieldError, FieldReader
 
 # The rotation record, relative to the top of the repository it describes.
@@ -466,7 +470,7 @@ def milestone_lines(release_milestone: str | None, next_milestone: str | None) -
 
 
 def read_record(path: Path) -> list[Entry]:
-    """The record's entries, oldest first, or AuditError naming what is wrong with it."""
+    """The record's entries, in the order it lists them, or AuditError naming what is wrong with it."""
     name = path.as_posix()
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
@@ -491,22 +495,39 @@ def record_entry(name: str, number: int, item: object) -> Entry:
     when, tag, area = item["date"], item["tag"], item["area"]
     if not isinstance(when, str) or not DATE_FORMAT.fullmatch(when):
         raise AuditError(f"{name} audit {number} has a date that is not YYYY-MM-DD")
-    if not isinstance(tag, str) or not tag.strip():
-        raise AuditError(f"{name} audit {number} has no tag")
+    if not isinstance(tag, str) or not is_release_tag(tag):
+        raise AuditError(f"{name} audit {number} has a tag that is not a release tag vX.Y.Z")
     if area not in AREA_NAMES:
         raise AuditError(f"{name} audit {number} names area {area!r}, not one of {', '.join(AREA_NAMES)}")
     return Entry(when, tag, area)
 
 
-def last_reads(entries: list[Entry]) -> dict[str, tuple[int, Entry]]:
-    """Each area's most recent whole read, with its position in the record."""
-    return {entry.area: (position, entry) for position, entry in enumerate(entries)}
+def release_key(tag: str) -> tuple[tuple[int, str], ...]:
+    """A recorded tag's place among releases, as ejryan89-skill-core's release_tags orders them, so a read's recency
+    never depends on where a record lists it. Both readers refuse any other tag, so AuditError means one got past."""
+    order = release_order(tag)
+    if order is None:
+        raise AuditError(f"{tag} is not a release tag vX.Y.Z")
+    return order
+
+
+def last_reads(entries: list[Entry]) -> dict[str, Entry]:
+    """Each area's most recent whole read: the one of the latest release, wherever the record lists it."""
+    reads: dict[str, Entry] = {}
+    for entry in entries:
+        if entry.area not in reads or release_key(entry.tag) > release_key(reads[entry.area].tag):
+            reads[entry.area] = entry
+    return reads
 
 
 def next_area(entries: list[Entry]) -> Area:
-    """The area read whole least recently: never read first, then oldest, ties in the rotation order."""
+    """The area read whole least recently: never read first, then the oldest release, ties in the rotation order."""
     reads = last_reads(entries)
-    return min(AREAS, key=lambda area: (reads[area.name][0] if area.name in reads else -1, AREAS.index(area)))
+    unread: tuple[tuple[int, str], ...] = ()
+    return min(
+        AREAS,
+        key=lambda area: (release_key(reads[area.name].tag) if area.name in reads else unread, AREAS.index(area)),
+    )
 
 
 def write_record(path: Path, entries: list[Entry]) -> None:
@@ -591,10 +612,17 @@ def guidance_page(value: object, path: str, subjects: Sequence[str]) -> Page:
         raise READ.fail(f"{path}.url", f"a URL starting {PAGE_SCHEME} without whitespace", json.dumps(url))
     subject = READ.one_of(fields["subject"], f"{path}.subject", subjects)
     governs = READ.string(fields["governs"], f"{path}.governs", single_line=True, trimmed=True)
-    read = READ.array(fields["read"], f"{path}.read", partial(READ.string, single_line=True, trimmed=True))
+    read = READ.array(fields["read"], f"{path}.read", read_tag)
     if len(set(read)) != len(read):
         raise READ.fail(f"{path}.read", "tags each named once", "a tag named twice")
     return Page(url, subject, governs, tuple(read))
+
+
+def read_tag(value: object, path: str) -> str:
+    tag = READ.string(value, path, single_line=True, trimmed=True)
+    if not is_release_tag(tag):
+        raise READ.fail(path, "a release tag vX.Y.Z", json.dumps(tag))
+    return tag
 
 
 def write_guidance(path: Path, pages: Sequence[Page]) -> None:
@@ -608,11 +636,11 @@ def unread_runtimes(pages: Sequence[Page], runtimes: Sequence[str]) -> list[str]
 
 
 def oldest_read(pages: Sequence[Page]) -> str:
-    """The least recent last read among pages, by the record's order of tags, or never when a page has none."""
+    """The least recent last read among pages, each page's last read its latest release and the least recent the
+    earliest release among them, whatever order the record lists them in, or never when a page has none."""
     if not pages or any(not page.read for page in pages):
         return "never"
-    order = list(dict.fromkeys(tag for page in pages for tag in page.read))
-    return min((page.read[-1] for page in pages), key=order.index)
+    return min((max(page.read, key=release_key) for page in pages), key=release_key)
 
 
 # --- briefs ---------------------------------------------------------------------------------------
@@ -901,7 +929,7 @@ def rotation(
     lines = [f'RECORD "{RECORD_PATH}"', f"HEAD {head}"]
     for area in AREAS:
         if area.name in reads:
-            entry = reads[area.name][1]
+            entry = reads[area.name]
             lines.append(f"READ {area.name} {entry.tag} {entry.date}")
         else:
             lines.append(f"UNREAD {area.name}")
@@ -984,6 +1012,8 @@ def guidance(
 
 def record_reads(git: GitClient, repository: Path, path: Path, pages: list[Page], tag: str) -> str:
     """Append `tag` to every page's reads, refusing a tag a page already holds or that names no tag."""
+    if not is_release_tag(tag):
+        raise AuditError(f"{tag} is not a release tag vX.Y.Z")
     if any(tag in page.read for page in pages):
         raise AuditError(f"{tag} is already in the guidance record")
     commit_of(git, repository, f"refs/tags/{tag}")
@@ -995,6 +1025,8 @@ def record_reads(git: GitClient, repository: Path, path: Path, pages: list[Page]
 
 
 def append_entry(git: GitClient, repository: Path, path: Path, entries: list[Entry], entry: Entry) -> str:
+    if not is_release_tag(entry.tag):
+        raise AuditError(f"{entry.tag} is not a release tag vX.Y.Z")
     if any(existing.tag == entry.tag for existing in entries):
         raise AuditError(f"{entry.tag} is already in the rotation record")
     commit_of(git, repository, f"refs/tags/{entry.tag}")
