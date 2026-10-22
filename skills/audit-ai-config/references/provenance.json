@@ -65,6 +65,13 @@
         "passage": "In each directory from the project root down to the working directory, Codex takes the first non-empty file of AGENTS.override.md, AGENTS.md, and the names project_doc_fallback_filenames lists, and stops adding content at project_doc_max_bytes, 32 KiB by default."
       },
       {
+        "page": "https://learn.chatgpt.com/docs/config-file/config-reference",
+        "passage": "project_doc_max_bytes sets the maximum number of bytes Codex reads from its AGENTS.md instruction files."
+      },
+      {
+        "decision": "A root instruction file over project_doc_max_bytes is a WARNING rather than an ERROR, because a user's own Codex configuration may set another cap, which a static audit cannot read: check 7 of references/audit-policy.md."
+      },
+      {
         "page": "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-custom-instructions",
         "passage": "Copilot CLI combines AGENTS.md, CLAUDE.md, .claude/CLAUDE.md, GEMINI.md, .github/copilot-instructions.md, and .github/instructions/*.instructions.md from the repository root, the working directory, and the directories between."
       },
