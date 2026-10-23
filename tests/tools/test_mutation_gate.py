@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -276,7 +277,7 @@ class CoverageReachFixtures(unittest.TestCase):
 
     def test_a_gate_measured_by_coverage_starts_every_coverage_step_unmeasured(self) -> None:
         # The gate's own suite runs under the reach pass's `patch = subprocess`, which leaves this variable set.
-        with mock.patch.dict(mutation_gate.os.environ, {"COVERAGE_PROCESS_CONFIG": "{}"}):
+        with mock.patch.dict(os.environ, {"COVERAGE_PROCESS_CONFIG": "{}"}):
             result = self.reach({})
         self.assertIsInstance(result, Reach, result)
 
