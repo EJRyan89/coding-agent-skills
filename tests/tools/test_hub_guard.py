@@ -22,6 +22,7 @@ import bash_agreement
 import git_client
 import git_worktrees
 from bounded_process import run_bounded
+from markdown_sections import CODE_SPAN, markdown_section
 from worktree_fixture import GUARD_SCRIPT, HUB, REPOSITORY_ROOT, TREE, HubTestCase, isolated_environment
 
 from deployer import platform_support
@@ -307,6 +308,28 @@ class HookCommandUnderPowerShellTests(GuardTestCase):
 
 UNPLACED = "could not tell where `git {}` runs"
 WRITES = "`git {}` would move the hub's HEAD or write its index or tree."
+
+
+def guard_section() -> str:
+    """The "The guard" section of docs/parallel-sessions.md, its contract included."""
+    document = (REPOSITORY_ROOT / "docs" / "parallel-sessions.md").read_text(encoding="utf-8")
+    section = markdown_section(document, "## The guard")
+    if section is None:
+        raise ValueError("docs/parallel-sessions.md has no ## The guard section")
+    return section
+
+
+def contract_names(after: str, before: str) -> list[str]:
+    """The code spans the guard's section names between two phrases, read with its lines joined."""
+    text = " ".join(guard_section().split())
+    start = text.index(after) + len(after)
+    return CODE_SPAN.findall(text[start : text.index(before, start)])
+
+
+def bash_prefix_programs() -> set[str]:
+    """The programs and builtins whose command the Bash reader reads as the one it starts."""
+    builtins = {name for name, reader in hub_guard.BASH_BUILTINS.items() if reader is hub_guard.bash_exec}
+    return builtins | set(hub_guard.PREFIX_PROGRAMS) | hub_guard.ENV_NAMES
 
 
 class CommandGuardTests(GuardTestCase):
@@ -1215,6 +1238,33 @@ class ContractTests(GuardTestCase):
                 self.assertIn(WRITES.format("commit"), self.reason)
         self.assertIsNone(self.powershell("env git commit -m x", self.tree))
 
+    def test_each_prefix_program_the_contract_names_is_read_as_the_command_it_starts(self) -> None:
+        # One case for each program or builtin the contract names for each shell; ContractListTests holds the
+        # contract's lists to the readers' own sets.
+        cases = {
+            "exec": "exec git commit -m x",
+            "command": "command git commit -m x",
+            "builtin": f"builtin cd '{self.hub}' && git commit -m x",
+            "nohup": "nohup git commit -m x",
+            "nice": "nice -n5 git commit -m x",
+            "timeout": "timeout 5 git commit -m x",
+            "stdbuf": "stdbuf -oL git commit -m x",
+            "time": "time -p git commit -m x",
+            "env": "env git commit -m x",
+        }
+        # In Bash `time` as a command's first word is the reserved word; after an assignment it is the program.
+        bash_cases = {**cases, "time": "x=1 time -p git commit -m x"}
+        for shell, named, shell_cases in (
+            (self.bash, contract_names("Commands after", "are read as the commands they start"), bash_cases),
+            (self.powershell, contract_names("A command after the programs", "is read as in Bash"), cases),
+        ):
+            self.assertLessEqual(set(named), set(shell_cases))
+            for program in named:
+                with self.subTest(program=program, shell=shell.__name__):
+                    start = self.tree if program == "builtin" else self.hub
+                    self.assertEqual("deny", shell(shell_cases[program], start))
+                    self.assertIn(WRITES.format("commit"), self.reason)
+
     def test_env_dash_s_is_refused_whatever_follows_it(self) -> None:
         # pwsh starts only for a command that names a refused subcommand, so PowerShell takes the writing one alone.
         for shell, command in (
@@ -1630,6 +1680,41 @@ class ContractTests(GuardTestCase):
         self.assertEqual("deny", self.bash("git commit -m 'unterminated", self.tree))
         self.assertIn("a single quote is not closed", self.reason)
         self.assertIsNone(self.bash("echo 'unterminated", self.tree))
+
+
+class ContractListTests(unittest.TestCase):
+    """Each list of names the guard's section of docs/parallel-sessions.md gives is the set tools/hub_guard.py reads."""
+
+    def test_the_refused_subcommands_are_the_writing_subcommands(self) -> None:
+        lines = guard_section().split("\n")
+        start = next(index for index, line in enumerate(lines) if "**Refused git commands.**" in line)
+        end = next(index for index, line in enumerate(lines) if "**Still allowed in the hub.**" in line)
+        listed = [name for line in lines[start:end] if line.startswith("  - ") for name in CODE_SPAN.findall(line)]
+        self.assertEqual(len(listed), len(set(listed)))
+        self.assertEqual(sorted(hub_guard.WRITING_SUBCOMMANDS), sorted(listed))
+
+    def test_the_file_tools_are_the_ones_the_guard_judges_by_their_path(self) -> None:
+        self.assertEqual(sorted(hub_guard.FILE_TOOLS), sorted(contract_names("**File tools.**", "is refused when")))
+
+    def test_the_fast_forward_options_and_the_reading_submodule_subcommands_are_the_guard_s(self) -> None:
+        self.assertEqual(
+            sorted(hub_guard.FAST_FORWARD_OPTIONS), sorted(contract_names("`origin main`;", "and a fast-forward to"))
+        )
+        named = contract_names("`submodule` with no subcommand,", "; every other subcommand")
+        self.assertEqual(hub_guard.READ_SUBMODULE, {None, *(name.removeprefix("submodule ") for name in named)})
+
+    def test_git_s_options_with_a_value_are_the_ones_the_guard_reads(self) -> None:
+        self.assertEqual(sorted(hub_guard.GIT_OPTIONS_WITH_VALUE), sorted(contract_names("or as the next word (", ")")))
+
+    def test_the_prefix_programs_are_the_ones_each_reader_reads(self) -> None:
+        bash = contract_names("Commands after", "are read as the commands they start")
+        powershell = contract_names("A command after the programs", "is read as in Bash")
+        self.assertEqual(sorted(bash_prefix_programs()), sorted(bash))
+        self.assertEqual(sorted({*hub_guard.PREFIX_PROGRAMS, *hub_guard.ENV_NAMES}), sorted(powershell))
+
+    def test_the_powershell_location_commands_are_the_ones_the_reader_follows(self) -> None:
+        named = contract_names("makes every decision. The guard follows", "(bare goes home")
+        self.assertEqual(sorted(hub_guard.LOCATION_NAMES), sorted(name.casefold() for name in named))
 
 
 class WorkflowTests(GuardTestCase):

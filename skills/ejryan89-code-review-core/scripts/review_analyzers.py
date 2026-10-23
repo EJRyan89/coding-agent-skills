@@ -331,6 +331,22 @@ def _parsed(handler: Callable[[_Inventory, str, str], None], found: _Inventory, 
     return True
 
 
+# The files whose text the inventory parses for settings, by name; MSBuild files are read by their suffix and
+# *.globalconfig files by their ending. The threat model's analyzer-inventory rows name each of them.
+PARSED_BY_NAME: dict[str, Callable[[_Inventory, str, str], None]] = {
+    ".editorconfig": _editorconfig,
+    "ruff.toml": _toml,
+    ".ruff.toml": _toml,
+    "pyproject.toml": _toml,
+    ".flake8": _ini,
+    "setup.cfg": _ini,
+    "tox.ini": _ini,
+    ".shellcheckrc": _shellcheckrc,
+    "shellcheckrc": _shellcheckrc,
+    "package.json": _package_json,
+}
+
+
 def _settings_handler(path: str) -> Callable[[_Inventory, str, str], None] | None:
     """The reader of a file whose text the inventory parses for settings, by its name, or None."""
     posix = PurePosixPath(path)
@@ -339,17 +355,9 @@ def _settings_handler(path: str) -> Callable[[_Inventory, str, str], None] | Non
         return None  # named by the file alone
     if suffix in MSBUILD_SUFFIXES:
         return _msbuild
-    if name == ".editorconfig" or name.endswith(".globalconfig"):
+    if name.endswith(".globalconfig"):
         return _editorconfig
-    if name in {"ruff.toml", ".ruff.toml", "pyproject.toml"}:
-        return _toml
-    if name in {".flake8", "setup.cfg", "tox.ini"}:
-        return _ini
-    if name in {".shellcheckrc", "shellcheckrc"}:
-        return _shellcheckrc
-    if name == "package.json":
-        return _package_json
-    return None
+    return PARSED_BY_NAME.get(name)
 
 
 def reads_settings(path: str) -> bool:
