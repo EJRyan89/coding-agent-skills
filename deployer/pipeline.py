@@ -121,13 +121,27 @@ def _commit_manifest(context: Context, entries: list[PlanEntry], run_id: str, co
         platform_support.normalize(context.paths.source_dir),
         time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         commit=commit,
-        ref=context.pin.ref if context.pin is not None else None,
+        ref=_pinned_ref(context),
         requested_bundles=context.selection.bundles,
         requested_bundle_members={name: sorted(context.source.bundles[name]) for name in context.selection.bundles},
         requested_skills=context.selection.skills,
         items=recorded,
     )
     data.save()
+
+
+def _pinned_ref(context: Context) -> str | None:
+    """The ref the manifest records the deployment pinned with: the one --at names, or None without --at.
+
+    A deployment at the pinned commit keeps the recorded ref as it was written unless it passes --unpin, since the ref's
+    form tells update-coding-agent-skills' own pin from the user's (source_ref.is_release_pin): recording the update's
+    refs/tags/<tag> over a user's short name would let the next release move the user's pin without --unpin.
+    """
+    if context.pin is None:
+        return None
+    recorded = context.manifest.source_ref(context.source_id)
+    unchanged = context.pin.commit == context.manifest.source_commit(context.source_id)
+    return recorded if recorded is not None and unchanged and not context.options.unpin else context.pin.ref
 
 
 def _finalize(context: Context, record: journal.Journal, run_id: str) -> list[tuple[str, str]]:
@@ -197,8 +211,8 @@ def _summary(
 def _replaced_pin(context: Context) -> str | None:
     """The deployment made with --at that this one replaces, described, or None when it replaces none.
 
-    A deployment pinned to the same commit keeps the pin; any other moves the installation off it, which
-    update-coding-agent-skills reports from the line this describes.
+    A deployment pinned to the same commit keeps the pin and its recorded ref (_pinned_ref); any other moves the
+    installation off it, which update-coding-agent-skills reports from the line this describes.
     """
     ref = context.manifest.source_ref(context.source_id)
     commit = context.manifest.source_commit(context.source_id)
@@ -219,14 +233,15 @@ def _refuse_unpinning(context: Context, replaced_pin: str | None) -> None:
     recorded = (context.manifest.source_ref(context.source_id), context.manifest.source_commit(context.source_id))
     if context.pin is not None and source_ref.is_release_pin(context.paths.source_dir, *recorded):
         return
-    move, rerun, keep = (
-        ("this checkout's HEAD", f"{PROG} --all --unpin", "change nothing, or deploy another commit with --at.")
+    # A run at any other commit, with --at or without, is refused here alike, so the pin is kept by changing nothing.
+    move, rerun = (
+        ("this checkout's HEAD", f"{PROG} --all --unpin")
         if context.pin is None
-        else (context.pin.ref, f"{PROG} --all --at {context.pin.ref} --unpin", "change nothing.")
+        else (context.pin.ref, f"{PROG} --all --at {context.pin.ref} --unpin")
     )
     raise DeployError(
         f"ERROR: Refusing to replace {replaced_pin} without --unpin.",
-        f"To move it to {move}, rerun with --unpin, as in '{rerun}'; to keep the pin, {keep}",
+        f"To move it to {move}, rerun with --unpin, as in '{rerun}'; to keep the pin, change nothing.",
         see_recovery(source_ref.EARLIER_COMMIT),
     )
 
