@@ -46,6 +46,15 @@ class RefValidationTests(unittest.TestCase):
                 raised.exception.lines,
             )
 
+    def test_the_recorded_ref_is_kept_only_over_a_pin_at_the_same_commit_without_unpin(self) -> None:
+        same, other = "1" * 40, "2" * 40
+        pin = source_ref.Pin("refs/tags/v1.0.0", same)
+        self.assertEqual("v1.0.0", source_ref.recorded_ref(pin, "v1.0.0", same, unpin=False))
+        self.assertEqual(pin.ref, source_ref.recorded_ref(pin, "v1.0.0", same, unpin=True))
+        self.assertEqual(pin.ref, source_ref.recorded_ref(pin, "v1.0.0", other, unpin=False))
+        self.assertEqual(pin.ref, source_ref.recorded_ref(pin, None, same, unpin=False))
+        self.assertIsNone(source_ref.recorded_ref(None, "v1.0.0", same, unpin=False))
+
     def test_git_is_asked_for_the_commit_with_the_options_ended_before_the_ref(self) -> None:
         commit = "0123456789abcdef0123456789abcdef01234567"
         with tempfile.TemporaryDirectory() as directory:
@@ -144,7 +153,7 @@ class DeployAtTests(DeployerTestCase):
             f"ERROR: Refusing to replace the deployment pinned with --at v1.0.0 to v1.0.0 ({self.release}) without "
             "--unpin.\n"
             f"To move it to this checkout's HEAD, rerun with --unpin, as in '{DEPLOY_COMMAND} --all --unpin'; to "
-            "keep the pin, change nothing, or deploy another commit with --at.\n"
+            "keep the pin, change nothing.\n"
             'See "Deploying an earlier commit" in docs/recovery.md.\n'
         )
 
@@ -310,11 +319,36 @@ class DeployAtTests(DeployerTestCase):
             result.output,
         )
 
-    def test_deploying_the_pinned_commit_again_keeps_the_pin_without_a_notice(self) -> None:
+    def test_deploying_the_pinned_commit_again_keeps_the_pin_as_written_without_a_notice(self) -> None:
+        # The ref's form tells the update skill's own pin from the user's, so another name for the pinned commit,
+        # update-coding-agent-skills' refs/tags/<tag> among them, leaves the recorded ref as the user wrote it.
         self.deploy_ok("--all", "--at", "v1.0.0")
-        output = self.deploy_ok("--all", "--at", self.release).output
-        self.assertNotIn("Replaced", output)
-        self.assertEqual(self.release, self.manifest()["sources"][SOURCE_ID]["source_ref"])
+        for ref in (self.release, "refs/tags/v1.0.0", "v1.0.0"):
+            with self.subTest(ref=ref):
+                self.assertNotIn("Replaced", self.deploy_ok("--all", "--at", ref).output)
+                self.assert_pinned_at_the_release()
+        # --unpin hands the pin over, so the ref it names is recorded.
+        self.assertNotIn("Replaced", self.deploy_ok("--all", "--at", "refs/tags/v1.0.0", "--unpin").output)
+        self.assertEqual("refs/tags/v1.0.0", self.manifest()["sources"][SOURCE_ID]["source_ref"])
+
+    def test_a_users_pin_the_update_deployed_its_release_over_is_refused_at_the_next_release_until_unpin(self) -> None:
+        # update-coding-agent-skills does not stop at a user's pin at the release's own commit and deploys it with
+        # --at refs/tags/<tag>; the pin stays the user's, so the next release's --at is refused, which the update
+        # reports as DEPLOY_PINNED, until the user passes --unpin.
+        self.deploy_ok("--all", "--at", "v1.0.0")
+        self.deploy_ok("--all", "--at", "refs/tags/v1.0.0")
+        git(self.source, "tag", "v1.1.0")
+        result = self.deploy_fails("--all", "--at", "refs/tags/v1.1.0", pattern=r"ERROR: Refusing to replace")
+        self.assertIn(
+            f"\nERROR: Refusing to replace the deployment pinned with --at v1.0.0 to v1.0.0 ({self.release}) without "
+            "--unpin.\n",
+            result.output,
+        )
+        self.assert_pinned_at_the_release()
+        output = self.deploy_ok("--all", "--at", "refs/tags/v1.1.0", "--unpin").output
+        self.assertIn(f"\nReplaced the deployment pinned with --at v1.0.0 to v1.0.0 ({self.release}).\n", output)
+        entry = self.manifest()["sources"][SOURCE_ID]
+        self.assertEqual((self.head, "refs/tags/v1.1.0"), (entry["source_commit"], entry["source_ref"]))
 
     def test_a_dry_run_at_a_ref_previews_that_tree_and_changes_nothing(self) -> None:
         before = self.deploy_ok("--all", "--at", "v1.0.0", "--dry-run").output
