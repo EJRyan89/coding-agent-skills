@@ -334,7 +334,8 @@ if [ "$CHANNEL" = release ]; then
   fi
   RELEASE_COMMIT=$(printf '%s' "$RELEASE_COMMIT" | tr -d '\r')
   DEPLOY_END=$RELEASE_REF
-  # A user's pin at the release's own commit is the deployment the update would make, so it does not stop it.
+  # A user's pin at the release's own commit is the deployment the update would make, so it does not stop it; the
+  # deployer keeps the pin's ref as the user wrote it, so the next release stops here again.
   if [ -n "$USER_PIN" ] && [ "$DEPLOYED_COMMIT" != "$RELEASE_COMMIT" ]; then
     echo "PINNED $PIN_REF $DEPLOYED"
     exit 1
