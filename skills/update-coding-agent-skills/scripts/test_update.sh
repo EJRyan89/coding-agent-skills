@@ -1,9 +1,29 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# A shell ended by a signal it cannot trap, or by Windows rather than through its own exit, runs no EXIT trap and leaves
+# only its status. So the suite runs its body in a child bash that traces every command it runs to a file, and when the
+# body ends without its EXIT trap, this outer run names the exit and the last commands the body ran. A child run of the
+# suite that sets UPDATE_TEST_BODY empty runs its body directly, untraced.
+if [ -z "${UPDATE_TEST_BODY+set}" ]; then
+  TRACE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/update-skills-trace.XXXXXX") || {
+    printf 'FAIL: the suite could not make its trace folder\n' >&2
+    exit 1
+  }
+  status=0
+  UPDATE_TEST_BODY=$TRACE_DIR bash "$0" "$@" || status=$?
+  if [ ! -e "$TRACE_DIR/ended" ]; then
+    printf 'FAIL: the suite exited %s without its EXIT trap; the last commands it ran:\n' "$status" >&2
+    tail -n 20 "$TRACE_DIR/trace" >&2 || true
+  fi
+  rm -rf -- "$TRACE_DIR"
+  exit "$status"
+fi
+
 # The suite traces its own run on stderr before anything else runs: a START line, a CASE line as each case begins, and
 # an END line from the EXIT trap on every exit, with its status and the case it ended in. A run that ends with none of
-# them was never started or lost its output; one with START and no END was ended without its EXIT trap.
+# them was never started or lost its output; one with START and no END was ended without its EXIT trap, and the outer
+# run's FAIL line after them names its exit and the commands it ran last.
 printf 'START test_update.sh %s\n' "$$" >&2
 CASE="setup"
 begin_case() {
@@ -19,6 +39,9 @@ FIXTURE=""
 trap 'FAILED_COMMAND="line $LINENO: $BASH_COMMAND"' ERR
 end_suite() {
   local status=$?
+  if [ -n "${UPDATE_TEST_BODY:-}" ]; then
+    : >"$UPDATE_TEST_BODY/ended"
+  fi
   if [ "$status" -ne 0 ] && [ -z "$REPORTED" ]; then
     printf 'FAIL: the suite exited %s in case %s; the last command that failed: %s\n' "$status" "$CASE" \
       "${FAILED_COMMAND:-none}" >&2
@@ -33,6 +56,13 @@ trap end_suite EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
+# The traced body writes each command, with its line, to the trace file the outer run reads.
+if [ -n "${UPDATE_TEST_BODY:-}" ]; then
+  exec {TRACE_FD}>"$UPDATE_TEST_BODY/trace"
+  BASH_XTRACEFD=$TRACE_FD
+  PS4='+ line $LINENO: '
+  set -x
+fi
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 SUBJECT="$SCRIPT_DIR/update.sh"
@@ -188,11 +218,13 @@ done
   fail "global configuration: core.hooksPath does not name $HOME/no-hooks"
 
 # A child run of the setup meets a wrapper of the program the first argument names, which runs the third argument for
-# a command whose arguments match the second and the program itself for any other.
+# a command whose arguments match the second and the program itself for any other. It runs its body directly, or, when
+# the fourth argument is "traced", through the outer run, with its temporary folders in CHILD_TMP.
 SETUP_WRAPPER="$FIXTURE/setup wrapper"
+CHILD_TMP="$FIXTURE/child tmp"
 run_setup_child() {
-  rm -rf -- "$SETUP_WRAPPER"
-  mkdir -p "$SETUP_WRAPPER"
+  rm -rf -- "$SETUP_WRAPPER" "$CHILD_TMP"
+  mkdir -p "$SETUP_WRAPPER" "$CHILD_TMP"
   cat >"$SETUP_WRAPPER/$1" <<EOF
 #!/usr/bin/env bash
 case " \$* " in
@@ -202,7 +234,13 @@ exec "$(command -v "$1")" "\$@"
 EOF
   chmod +x "$SETUP_WRAPPER/$1"
   set +e
-  UPDATE_TEST_SETUP_ONLY=1 PATH="$SETUP_WRAPPER:$PATH" bash "$SCRIPT_DIR/${0##*/}" >"$FIXTURE/child.out" 2>"$FIXTURE/child.err"
+  if [ "${4:-}" = traced ]; then
+    UPDATE_TEST_SETUP_ONLY=1 TMPDIR="$CHILD_TMP" PATH="$SETUP_WRAPPER:$PATH" env -u UPDATE_TEST_BODY \
+      bash "$SCRIPT_DIR/${0##*/}" >"$FIXTURE/child.out" 2>"$FIXTURE/child.err"
+  else
+    UPDATE_TEST_BODY='' UPDATE_TEST_SETUP_ONLY=1 PATH="$SETUP_WRAPPER:$PATH" bash "$SCRIPT_DIR/${0##*/}" \
+      >"$FIXTURE/child.out" 2>"$FIXTURE/child.err"
+  fi
   status=$?
   set -e
 }
@@ -259,6 +297,26 @@ run_setup_child mkdir '*"/no-hooks "*' 'kill -TERM "$PPID"; exit 0'
 grep -q -x -E "FAIL: the suite exited 143 in case setup; the last command that failed: .+" "$FIXTURE/child.err" ||
   fail "signal: the exit not named: $(<"$FIXTURE/child.err")"
 expect_traced 143 setup "signal"
+
+# The outer run is silent when its body ends through the EXIT trap, and leaves no trace folder behind.
+begin_case 'traced body'
+run_setup_child git '*" never-run "*' 'exit 4' traced
+[ "$status" -eq 0 ] || fail "traced body: exit $status: $(<"$FIXTURE/child.err")"
+expect_traced 0 "setup self-tests" "traced body"
+[ -z "$(ls -A "$CHILD_TMP")" ] || fail "traced body: left behind: $(ls -A "$CHILD_TMP")"
+
+# A body ended without its EXIT trap, here by a KILL the wrapper sends it, is named by the outer run with its exit and
+# the last command it ran.
+begin_case 'end without the EXIT trap'
+run_setup_child mkdir '*"/no-hooks "*' 'kill -KILL "$PPID"; exit 0' traced
+[ "$status" -eq 137 ] || fail "end without the EXIT trap: expected exit 137, got $status: $(<"$FIXTURE/child.err")"
+grep -q -x -F "FAIL: the suite exited 137 without its EXIT trap; the last commands it ran:" "$FIXTURE/child.err" ||
+  fail "end without the EXIT trap: the exit not named: $(<"$FIXTURE/child.err")"
+grep -q -x -E "\+ line [0-9]+: mkdir -p '?[^ ].*/no-hooks'?" <<<"$(tail -n 1 "$FIXTURE/child.err")" ||
+  fail "end without the EXIT trap: the last command not named last: $(<"$FIXTURE/child.err")"
+! grep -q "^END " "$FIXTURE/child.err" || fail "end without the EXIT trap: an END line: $(<"$FIXTURE/child.err")"
+[ -z "$(find "$CHILD_TMP" -maxdepth 1 -name 'update-skills-trace.*')" ] ||
+  fail "end without the EXIT trap: the trace folder left behind: $(ls -A "$CHILD_TMP")"
 
 # The suite's isolation unsets a git variable named in any case, and keeps the two that locate git itself.
 begin_case 'isolation'
