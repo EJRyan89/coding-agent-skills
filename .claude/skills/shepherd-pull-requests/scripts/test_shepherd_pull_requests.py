@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import importlib
 import io
 import json
 import os
@@ -9,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
@@ -17,11 +18,17 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
+# The validation runner's pool, whose own reports the log tests judge, and the repository root its imports need.
+sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "tests" / "validation"))
 
 import shepherd_pull_requests as shepherd
 from git_client import GitClient
 from git_worktrees import list_worktrees
 from github_client import Backoff, CommandResult, GitHubClient
+
+# Imported by name, since mypy checks this folder from inside it, where the deployer the pool imports does not resolve.
+job_pool = importlib.import_module("job_pool")
 
 GIT_CONFIG: Mapping[str, str] = MappingProxyType({"init.defaultBranch": "main"})
 REPOSITORY = "owner/repo"
@@ -234,6 +241,29 @@ GALLERY_BLOCK = (
     "tests/validation/test_toolchain.py",
     ["Command failed with exit code 1: python -B test_toolchain.py", "Unable to resolve package source 'x'."],
 )
+
+SUITE_COMMAND = ["python.exe", "-B", "tests/x.py"]
+
+
+def ended() -> None:
+    raise job_pool.Terminated("0xC0000142", SUITE_COMMAND)
+
+
+def failed() -> None:
+    raise AssertionError(f"Command failed with exit code 1: {' '.join(SUITE_COMMAND)}\nE   assert 1 == 2\n\n1 failed")
+
+
+def exited_silently() -> None:
+    raise AssertionError(f"Command failed with exit code 4: {' '.join(SUITE_COMMAND)}\n\n")
+
+
+def pool_report(*attempts: Callable[[], None]) -> str:
+    """The report the validation runner's own pool gives a suite whose attempts run in turn, one per start."""
+    remaining = iter(attempts)
+    suite = job_pool.Job("tests/x.py", "tests/x.py", 1, lambda: next(remaining)())
+    with contextlib.redirect_stdout(io.StringIO()):
+        failures, _ = job_pool.run_jobs([suite], verbose=False, workers=1)
+    return str(failures[0].report)
 
 
 class StubGh:
@@ -513,6 +543,52 @@ class FieldTest(FixtureTestCase):
                 self.assertTrue(any(line.startswith(failure) and wrong in line for line in lines), lines)
 
 
+class AdmissionTest(FixtureTestCase):
+    def fork_beside_own(self) -> StubGh:
+        """An unarmed pull request from another repository that is behind, red, and changes the runner, beside an
+        unarmed one from this repository that is behind and green."""
+        fork = pull(30, armed=False, cross=True, merge="BEHIND", state="FAILURE", files=("tests/run_validation.py",))
+        return StubGh(
+            [fork, pull(31, armed=False, merge="BEHIND")],
+            runs={RUN: run_view([job("Windows shard 2/4", "failure")])},
+            logs={1: failed_log(TERMINATED_BLOCK)},
+        )
+
+    def test_a_pull_request_from_another_repository_is_never_armed_and_is_named(self) -> None:
+        gh = self.fork_beside_own()
+        status, lines = self.tick(gh)
+        self.assertEqual(1, status)
+        self.assertEqual(
+            "NOT_ADMITTED #30 fix/topic-30 head aaaaaaa from another repository", self.line(lines, "NOT_ADMITTED ")
+        )
+        self.assertEqual(
+            "PR #30 fix/topic-30 BEHIND auto-merge off head aaaaaaa Validation FAILURE none",
+            self.line(lines, "PR #30 "),
+        )
+        self.assertFalse(any(line.startswith(("HOLD", "JUDGED", "RERUN", "DEFECT")) for line in lines), lines)
+        self.assertFalse(any(call[1:3] == ["run", "view"] for call in gh.calls))
+        self.assertFalse(any("30" in write for write in gh.writes()), gh.writes())
+
+    def test_a_pull_request_from_this_repository_is_still_armed_and_updated(self) -> None:
+        gh = self.fork_beside_own()
+        _, lines = self.tick(gh)
+        self.assertEqual(
+            [
+                ["pr", "merge", "31", "--repo", REPOSITORY, "--auto", "--squash"],
+                ["pr", "update-branch", "31", "--repo", REPOSITORY],
+            ],
+            gh.writes(),
+        )
+        self.assertTrue(self.line(lines, "PR #31 ").endswith(" armed,updated"))
+
+    def test_a_dry_run_names_it_and_would_arm_only_this_repository_s(self) -> None:
+        status, lines = self.tick(self.fork_beside_own(), dry_run=True)
+        self.assertEqual(1, status)
+        self.assertTrue(self.line(lines, "NOT_ADMITTED #30 ").endswith(" from another repository"))
+        self.assertTrue(self.line(lines, "PR #30 ").endswith(" none"))
+        self.assertTrue(self.line(lines, "PR #31 ").endswith(" would-arm,would-update"))
+
+
 class ConflictTest(FixtureTestCase):
     def test_a_pull_request_in_conflict_with_main_is_named_for_its_owner_and_not_updated(self) -> None:
         gh = StubGh([pull(15, merge="DIRTY"), pull(16, merge="BEHIND")])
@@ -683,8 +759,8 @@ class OutOfStepTest(FixtureTestCase):
     def test_a_branch_from_another_repository_is_not_compared_with_origin_s(self) -> None:
         first, after = self.branches_behind_and_current()
         self.push_branch(after, "fix/topic-46")
-        status, lines = self.tick(StubGh([pull(46, head=first, cross=True)]), dry_run=True)
-        self.assertEqual(0, status)
+        _, lines = self.tick(StubGh([pull(46, head=first, cross=True)]), dry_run=True)
+        self.line(lines, "NOT_ADMITTED #46 ")
         self.assertFalse(any(line.startswith("OUT_OF_STEP") for line in lines))
 
     def test_origin_s_branches_that_cannot_be_read_end_the_tick(self) -> None:
@@ -836,6 +912,15 @@ class JudgementTest(FixtureTestCase):
             f'DEFECT #20 fix/topic-20 leg "Windows shard 1/4" check "{VALIDATION_STEP}"', self.line(lines, "DEFECT ")
         )
 
+    def test_a_suite_whose_retry_failed_is_a_defect(self) -> None:
+        retried = ("tests/x.py", pool_report(ended, failed).split("\n"))
+        status, lines, gh = self.red([job("Windows shard 2/4", "failure")], {1: failed_log(retried)})
+        self.assertEqual(1, status)
+        self.assertEqual(
+            'DEFECT #20 fix/topic-20 leg "Windows shard 2/4" check "tests/x.py"', self.line(lines, "DEFECT ")
+        )
+        self.assertEqual([], gh.writes())
+
     def test_a_rerun_case_on_a_head_already_rerun_is_left_to_judgment(self) -> None:
         status, lines, gh = self.red(
             [job("Windows shard 2/4", "failure")], {1: failed_log(TERMINATED_BLOCK)}, attempt=2
@@ -887,6 +972,14 @@ class LogTest(unittest.TestCase):
         blocks = shepherd.failure_blocks(lines)
         self.assertEqual([SILENT_BLOCK[0], MYPY_BLOCK[0]], [label for label, _ in blocks])
         self.assertEqual(["silent-exit", None], [shepherd.block_reason(body) for _, body in blocks])
+
+    def test_the_pool_s_termination_on_every_attempt_is_a_termination(self) -> None:
+        report = pool_report(ended, ended)
+        self.assertEqual("termination", shepherd.block_reason(shepherd.log_lines(report)))
+
+    def test_the_pool_s_failed_retry_is_judged_by_the_retry_s_report(self) -> None:
+        self.assertIsNone(shepherd.block_reason(shepherd.log_lines(pool_report(ended, failed))))
+        self.assertEqual("silent-exit", shepherd.block_reason(shepherd.log_lines(pool_report(ended, exited_silently))))
 
     def test_a_retried_block_is_not_a_failure(self) -> None:
         lines = shepherd.log_lines(
