@@ -75,11 +75,14 @@ python -B .claude/skills/change-skill/scripts/change_skill.py gates
 
 ## 5. Verify
 
-Run the local checks "Validation" in `docs/implementing-changes.md` names for the files the change touches, the deployer's rendering tests among them for a shipped skill's scripts, and get them green; continuous integration runs the full suite. Never skip, weaken, or suppress a check to get there.
+Run the local checks "Validation" in `docs/implementing-changes.md` names for the files the change touches, and get them green; continuous integration runs the full suite, and `--changed` is optional. Those are the skill's suites one at a time, `tests/deployer/test_rendering_locking.py` among them for a shipped skill, each new regression test with the fix reverted, and, for a changed script, ruff and the type check of its `scripts/`:
 
 ```bash
-python -B tests/run_validation.py -k '<pattern>'
+python -B tests/run_validation.py -k '<suite path>'
+python -B tests/run_validation.py -k ruff -k '*mypy*<skill folder>/scripts*'
 ```
+
+Never skip, weaken, or suppress a check to get there. The title and body checks run before the pull request, as `implement-change` says.
 
 Then read the whole diff once more for personal paths, organization names, and generated artifacts, and leave no scratch file in the worktree and no background command running.
 

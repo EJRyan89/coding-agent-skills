@@ -40,21 +40,34 @@ Validation is continuous integration's job: the `Validation` check runs `python 
 across its Windows legs and across its Linux legs, in full on every push and on every pull request that is not
 documentation-only. A documentation-only pull request runs the subset the runner selects (the policy checks, the suites
 that name a changed file, and, when a changed file is Markdown, the Markdown fence checks), and a pull request merges
-only when the check passes on both platforms. Locally, run what the change reaches:
+only when the check passes on both platforms.
+
+Locally, before the pull request, run what the change directly touches and leave the rest to continuous integration,
+which runs it anyway:
+
+1. Each suite the change adds or changes, and each suite of a module or script it changes, one at a time, as the
+   runner starts it: a Python suite with `python -B -m pytest <suite>`, a Bash or PowerShell suite as a program, or
+   any of them through the runner with `-k <suite path>`.
+2. Each new regression test with the fix reverted, to see it fail without the fix, then again with the fix restored.
+3. For a changed Python file, ruff and mypy through the runner's jobs: `-k ruff`, the format and lint checks, which
+   take seconds over the whole tree, and the type check of each root a changed file sits in, as in
+   `python -B tests/run_validation.py -k ruff -k '*mypy*deployer*'` for a change under `deployer/`.
+4. Once the title and the body are written, the checks that read them, and only those:
 
 ```powershell
-python -B tests/run_validation.py --changed
+python -B tests/run_validation.py -k PullRequestTitlePolicies -k UpgradeNotesPolicies -k SilentRevertPolicies --pr-title '<title file>' --pr-body '<body file>'
 ```
 
-From the files changed since `origin/main`, committed, uncommitted, or untracked, it selects the policy checks, the
-static checks that read the kinds of file changed (for Python, the format, lint, and type checks), and the suites the
-change reaches: a changed suite, a suite that imports a changed module directly or through others, one that names a
-changed file or such an importer, one in the `scripts/` of the skill a changed file sits in, and the suites
-`CHANGE_REACHES` in `tests/validation/job_selection.py` adds, such as the deployer's rendering suite for a change under
-`skills/` and the suites that read the floors for a change to a tool floor. A reach no file name or import shows goes
-in that table, never in a list a contributor keeps. Add `--pr-body <file>` and
-`--pr-title <file>` once the body and the title are written. `-k <pattern>` instead runs only the policies and suites
-whose name or path matches, as when rerunning one suite, and a pattern that matches nothing is refused.
+`--changed` is optional, never required: from the files changed since `origin/main`, committed, uncommitted, or
+untracked, it selects the policy checks, the static checks that read the kinds of file changed (for Python, the format,
+lint, and type checks), and the suites the change reaches: a changed suite, a suite that imports a changed module
+directly or through others, one that names a changed file or such an importer, one in the `scripts/` of the skill a
+changed file sits in, and the suites `CHANGE_REACHES` in `tests/validation/job_selection.py` adds, such as the
+deployer's rendering suite for a change under `skills/` and the suites that read the floors for a change to a tool
+floor. It earns its run when that reach is narrow; for a change to the deployer, ejryan89-skill-core, or the runner it
+selects most suites and comes close to a full run. A reach no file name or import shows goes in that table, never in a
+list a contributor keeps. `-k <pattern>` instead runs only the policies and suites whose name or path matches, as when
+rerunning one suite, and a pattern that matches nothing is refused.
 
 The runner decides what a documentation-only change needs. When every file changed since `origin/main` (the pull
 request's base in continuous integration), uncommitted or untracked, is under `docs/` or `.github/ISSUE_TEMPLATE/`, or
