@@ -1135,7 +1135,9 @@ def derive_generator_scope(root: Path) -> tuple[dict[str, list[str]] | None, str
             continue
         try:
             tree = ast.parse(read_text(path), filename=candidate)
-        except (SyntaxError, ValueError, OSError):  # ValueError covers UnicodeError and, before 3.12, a null byte
+        # ValueError covers UnicodeError and, before 3.12, a null byte; MemoryError and RecursionError, source nested
+        # past the parser's limits
+        except (SyntaxError, ValueError, OSError, MemoryError, RecursionError):
             return None, "generator-scope-unreadable"
         values: dict[str, list[str]] = {}
         for node in tree.body:
@@ -1153,7 +1155,7 @@ def derive_generator_scope(root: Path) -> tuple[dict[str, list[str]] | None, str
                         return None, "generator-scope-not-literal"
                     try:
                         literal = ast.literal_eval(value)
-                    except (ValueError, TypeError):
+                    except (ValueError, TypeError, MemoryError, RecursionError):
                         return None, "generator-scope-not-literal"
                     if not isinstance(literal, list) or not all(isinstance(item, str) for item in literal):
                         return None, "generator-scope-invalid"
@@ -1428,7 +1430,8 @@ def _manifest_signal(root: Path) -> tuple[str | None, dict[str, Any], list[Findi
         return None, {}, []
     try:
         return _judge_manifest(root, json.loads(read_text(manifest_path)))
-    except (json.JSONDecodeError, KeyError, OSError, UnicodeError):
+    # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
+    except (KeyError, OSError, ValueError, RecursionError):
         return None, {}, [_manifest_authority_finding("WARNING", "Manifest exists but is malformed")]
 
 
@@ -1821,7 +1824,8 @@ def read_mcp_json(root: Path, rel_path: str) -> tuple[dict[str, Any], list[Findi
         return {}, findings
     try:
         data = json.loads(read_text(path))
-    except (json.JSONDecodeError, OSError, UnicodeError) as e:
+    # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
+    except (OSError, ValueError, RecursionError) as e:
         findings.append(
             Finding(
                 severity="ERROR",
@@ -1951,7 +1955,8 @@ def _read_codex_mcp(root: Path) -> tuple[dict[str, dict[str, Any]], list[Finding
     try:
         with path.open("rb") as handle:
             config = tomllib.load(handle)
-    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
+    # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
+    except (ValueError, RecursionError) as e:
         message = f"Invalid TOML: {e}"
     except OSError as e:
         message = f"Error reading config: {e}"
@@ -2167,7 +2172,8 @@ def _codex_config(root: Path) -> dict[str, Any]:
     try:
         with (root / CODEX_CONFIG).open("rb") as handle:
             return tomllib.load(handle)
-    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+    # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
+    except (OSError, ValueError, RecursionError):
         return {}
 
 
@@ -2637,7 +2643,8 @@ def _claude_settings(root: Path) -> list[Finding]:
         return []
     try:
         data = json.loads(read_text(path))
-    except (json.JSONDecodeError, OSError, UnicodeError) as error:
+    # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
+    except (OSError, ValueError, RecursionError) as error:
         return [Finding("ERROR", "claude-settings", CLAUDE_SETTINGS, message=f"Could not read or parse: {error}")]
     if not isinstance(data, dict):
         return [Finding("ERROR", "claude-settings", CLAUDE_SETTINGS, message="Top-level value must be an object")]
@@ -2926,7 +2933,8 @@ def _codex_hooks(root: Path) -> list[Finding]:
     if path.is_file():
         try:
             data = json.loads(read_text(path))
-        except (json.JSONDecodeError, OSError, UnicodeError) as error:
+        # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
+        except (OSError, ValueError, RecursionError) as error:
             return [Finding("ERROR", "codex-hook", CODEX_HOOKS_FILE, message=f"Could not read or parse: {error}")]
         if not isinstance(data, dict):
             return [Finding("ERROR", "codex-hook", CODEX_HOOKS_FILE, message="Top-level value must be an object")]
@@ -2975,7 +2983,8 @@ def _codex_agents(root: Path) -> list[Finding]:
         try:
             with path.open("rb") as handle:
                 agent = tomllib.load(handle)
-        except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
+        # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
+        except (OSError, ValueError, RecursionError) as error:
             findings.append(Finding("ERROR", "codex-agent", rel, message=f"Could not read or parse: {error}"))
             continue
         findings.extend(
@@ -3005,7 +3014,9 @@ def _codex_rules(root: Path) -> list[Finding]:
         rel = path.relative_to(root).as_posix()
         try:
             tree = ast.parse(read_text(path), filename=rel)
-        except (OSError, SyntaxError, ValueError) as error:  # ValueError covers UnicodeError and a null byte
+        # ValueError covers UnicodeError and, before 3.12, a null byte; MemoryError and RecursionError, source nested
+        # past the parser's limits
+        except (OSError, SyntaxError, ValueError, MemoryError, RecursionError) as error:
             findings.append(Finding("ERROR", "codex-rule", rel, message=f"Could not read or parse: {error}"))
             continue
         for node in ast.walk(tree):
