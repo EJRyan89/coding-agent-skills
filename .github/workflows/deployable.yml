@@ -174,12 +174,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # configure reads its answers from stdin, so piping them exercises the prompts a person uses: the repositories
-      # directory, then an empty line that keeps UPDATE_CHANNEL's default.
+      # directory, then an empty line for each later prompt, which keeps its default. Validation holds the answers to
+      # the prompts deployer/config.py declares.
       - name: Configure
         run: |
           $repositories = Join-Path $env:USERPROFILE 'GitHub'
           New-Item -ItemType Directory -Force $repositories | Out-Null
-          $repositories, '' | python deploy.py configure 2>&1 | Tee-Object -FilePath (Join-Path $env:LOGS 'configure.log')
+          $repositories, '', '', '' | python deploy.py configure 2>&1 | Tee-Object -FilePath (Join-Path $env:LOGS 'configure.log')
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Deploy (dry run, then for real)
@@ -356,12 +357,13 @@ jobs:
           python3 deploy.py check 2>&1 | tee "$LOGS/check.log"
 
       # configure reads its answers from stdin, so piping them exercises the prompts a person uses: the repositories
-      # directory, then an empty line that keeps UPDATE_CHANNEL's default.
+      # directory, then an empty line for each later prompt, which keeps its default. Validation holds the answers to
+      # the prompts deployer/config.py declares.
       - name: Configure
         run: |
           repositories="$HOME/GitHub"
           mkdir -p "$repositories"
-          printf '%s\n' "$repositories" '' | python3 deploy.py configure 2>&1 | tee "$LOGS/configure.log"
+          printf '%s\n' "$repositories" '' '' '' | python3 deploy.py configure 2>&1 | tee "$LOGS/configure.log"
 
       - name: Deploy (dry run, then for real)
         run: |

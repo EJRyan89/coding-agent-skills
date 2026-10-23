@@ -8,7 +8,7 @@ from typing import TextIO
 
 from . import config, fsops, platform_support, source
 from .arguments import CONFIGURE_COMMAND, PROG, parse_command
-from .errors import Cancelled, DeployError, debug_requested, fail, os_error, print_error
+from .errors import Cancelled, DeployError, debug_requested, fail, input_ended, os_error, print_error
 from .paths import Paths, validate_managed_roots
 
 # Ctrl+C or the end of input at a prompt. The configuration is written atomically, so it is unchanged.
@@ -16,7 +16,8 @@ CANCELLED = "Configuration cancelled; existing config was not changed."
 
 
 def _prompt(key: str, description: str, current: str, stdin: TextIO) -> str | None:
-    """Ask for one value on stderr, which carries every prompt, so stdout holds only results."""
+    """Ask for one value on stderr, which carries every prompt, so stdout holds only results; None at the end of
+    input."""
     sys.stdout.flush()
     print("", file=sys.stderr)
     print(f"{key}: {description}", file=sys.stderr)
@@ -24,10 +25,8 @@ def _prompt(key: str, description: str, current: str, stdin: TextIO) -> str | No
         print(f"  Current: {current}", file=sys.stderr)
     label = "New value (Enter keeps the current value, Ctrl+C cancels)" if current else "Value (Ctrl+C cancels)"
     print(f"  {label}: ", end="", file=sys.stderr, flush=True)
-    try:
-        line = stdin.readline()
-    except KeyboardInterrupt:
-        return None
+    # Ctrl+C reaches execute as KeyboardInterrupt; only the end of input returns None.
+    line = stdin.readline()
     if not line:
         return None
     value = line.rstrip("\r\n")
@@ -67,7 +66,7 @@ def execute(namespace: argparse.Namespace, paths: Paths, stdin: TextIO | None = 
             # A key the saved configuration lacks offers its default, the value a deployment already takes for it.
             answer = _prompt(key, description, existing.get(key, config.DEFAULTS.get(key, "")), stdin)
             if answer is None:
-                raise Cancelled(CANCELLED)
+                raise Cancelled(input_ended(f"a value for {key}"), CANCELLED)
             if key in config.DIRECTORY_VARIABLES:
                 answer = platform_support.normalize_path_input(answer)
             elif key in config.CHOICE_VARIABLES:

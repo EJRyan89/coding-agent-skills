@@ -10,6 +10,8 @@ from pathlib import Path
 
 from validation_support import REPOSITORY_ROOT
 
+from deployer import config
+
 
 def required_match(pattern: str, text: str) -> re.Match[str]:
     """re.search for a check that fails, naming the pattern, when the text does not match it."""
@@ -632,6 +634,62 @@ def deployable_linux_problems(workflow: str) -> list[str]:
     return problems
 
 
+# Each deployable job's Configure step pipes its answers into configure, one line per prompt, in the job's shell: the
+# repositories directory, then an empty line for each later prompt, which keeps that variable's default.
+CONFIGURE_STEP = "Configure"
+CONFIGURE_PIPES = {
+    "deployable": re.compile(r"(?P<answers>.+?)\s*\|\s*python deploy\.py configure(?:\s|$)"),
+    "deployable-linux": re.compile(r"printf '%s\\n' (?P<answers>.+?)\s*\|\s*python3 deploy\.py configure(?:\s|$)"),
+}
+REPOSITORIES_ANSWER = "$repositories"
+
+
+def _configure_answers(job: str, line: str) -> list[str] | None:
+    """The answers a line pipes into configure, unquoted, or None when it pipes none in its job's form."""
+    match = CONFIGURE_PIPES[job].match(line)
+    if match is None:
+        return None
+    answers = match["answers"]
+    if job == "deployable":
+        # A PowerShell array of a variable and single-quoted strings.
+        items = [item.strip() for item in answers.split(",")]
+        return [item[1:-1] if len(item) >= 2 and item[0] == item[-1] == "'" else item for item in items]
+    return shlex.split(answers)
+
+
+def configure_answer_problems(workflow: str, prompts: Collection[str], defaulted: Collection[str]) -> list[str]:
+    """Hold each deployable job's Configure step to configure's prompts, in order: one answer per prompt, the
+    repositories directory for the first, and an empty line, which keeps the default, only for a variable that has one.
+
+    configure takes its answers from standard input and stops at the first it is not given, so a prompt added without
+    an answer here would fail the workflow on the runner rather than validation.
+    """
+    tree = read_workflow(workflow)
+    problems: list[str] = []
+    for job in CONFIGURE_PIPES:
+        steps = [step for step in _steps(_mapping(tree, "jobs", job)) if step.get("name") == CONFIGURE_STEP]
+        pipes = [line for step in steps for line in _script_lines(step) if " configure" in line]
+        found = [_configure_answers(job, line) for line in pipes]
+        if len(steps) != 1 or len(found) != 1 or found[0] is None:
+            problems.append(f"{job}: expected one {CONFIGURE_STEP!r} step whose one line pipes answers into configure")
+            continue
+        answers = found[0]
+        keys = list(prompts)
+        if len(answers) != len(keys):
+            problems.append(
+                f"{job}: the {CONFIGURE_STEP!r} step pipes {len(answers)} answers, but configure asks for "
+                f"{len(keys)}: {', '.join(keys)}"
+            )
+        if answers[:1] != [REPOSITORIES_ANSWER]:
+            problems.append(f"{job}: the first answer, to {keys[0]}, must be {REPOSITORIES_ANSWER}")
+        problems.extend(
+            f"{job}: the {CONFIGURE_STEP!r} step answers {key} with an empty line, but {key} has no default"
+            for key, answer in zip(keys[1:], answers[1:], strict=False)
+            if answer == "" and key not in defaulted
+        )
+    return problems
+
+
 def copilot_auto_update_problems(workflow: str) -> list[str]:
     """Report each deployable.yml job whose env does not set COPILOT_AUTO_UPDATE to false.
 
@@ -887,6 +945,10 @@ class WorkflowsPolicies(unittest.TestCase):
     def test_deployable_workflow_runs_the_windows_job_again_on_a_fresh_linux_runner(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
         self.assertEqual([], deployable_linux_problems(workflow))
+
+    def test_deployable_workflow_answers_every_prompt_configure_declares_in_both_jobs(self) -> None:
+        workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
+        self.assertEqual([], configure_answer_problems(workflow, config.PROMPTS, config.DEFAULTS))
 
     def test_deployable_workflow_keeps_copilot_on_the_version_it_installed_in_both_jobs(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")

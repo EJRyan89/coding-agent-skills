@@ -7,7 +7,7 @@ import sys
 from . import config, source, tools
 from .arguments import CHECK_COMMAND_LINE, CONFIGURE_COMMAND_LINE, usage_error
 from .context import Context, Selection
-from .errors import CANCELLED, Cancelled, DeployError
+from .errors import CANCELLED, Cancelled, DeployError, input_ended
 from .report import currently_chosen, plural, wrap
 
 
@@ -72,7 +72,7 @@ def select(context: Context) -> Selection | None:
     if not line:
         # The end of input cancels like Ctrl+C: nobody is there to answer.
         print("", file=sys.stderr)
-        raise Cancelled(CANCELLED)
+        raise Cancelled(input_ended("a selection"), CANCELLED)
     answer = line.rstrip("\r\n")
     if answer == "all":
         selection = select_all(context, [])

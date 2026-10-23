@@ -19,6 +19,7 @@ from workflows import (
     WorkflowSyntaxError,
     changelog_job_problems,
     command_line_job_problems,
+    configure_answer_problems,
     copilot_auto_update_problems,
     deployable_linux_problems,
     leg_problems,
@@ -574,6 +575,62 @@ class DeployableLinuxFixtures(unittest.TestCase):
                     [f"the {job} job's env does not set COPILOT_AUTO_UPDATE: 'false'" for job in jobs],
                     copilot_auto_update_problems(drifted),
                 )
+
+
+CONFIGURE_JOBS = (
+    "jobs:\n"
+    "  deployable:\n    runs-on: windows-latest\n    steps:\n"
+    "      - name: Configure\n        run: |\n"
+    "          $repositories = Join-Path $env:USERPROFILE 'GitHub'\n"
+    "          $repositories, '', '' | python deploy.py configure 2>&1 | Tee-Object -FilePath configure.log\n"
+    "  deployable-linux:\n    runs-on: ubuntu-latest\n    steps:\n"
+    "      - name: Configure\n        run: |\n"
+    '          repositories="$HOME/GitHub"\n'
+    "          printf '%s\\n' \"$repositories\" '' '' | python3 deploy.py configure 2>&1 | tee configure.log\n"
+)
+CONFIGURE_PROMPTS = ("REPOS_ROOT", "UPDATE_CHANNEL", "EXTRA")
+CONFIGURE_DEFAULTS = ("UPDATE_CHANNEL", "EXTRA")
+
+
+class ConfigureAnswerFixtures(unittest.TestCase):
+    def test_each_job_answers_every_prompt_with_an_empty_line_only_for_a_default(self) -> None:
+        self.assertEqual([], configure_answer_problems(CONFIGURE_JOBS, CONFIGURE_PROMPTS, CONFIGURE_DEFAULTS))
+        for prompts, defaults, problem in (
+            (
+                (*CONFIGURE_PROMPTS, "NEW"),
+                (*CONFIGURE_DEFAULTS, "NEW"),
+                "pipes 3 answers, but configure asks for 4: REPOS_ROOT, UPDATE_CHANNEL, EXTRA, NEW",
+            ),
+            (
+                CONFIGURE_PROMPTS[:2],
+                CONFIGURE_DEFAULTS,
+                "pipes 3 answers, but configure asks for 2: REPOS_ROOT, UPDATE_CHANNEL",
+            ),
+            (CONFIGURE_PROMPTS, ("UPDATE_CHANNEL",), "answers EXTRA with an empty line, but EXTRA has no default"),
+        ):
+            with self.subTest(problem=problem):
+                self.assertEqual(
+                    [f"{job}: the 'Configure' step {problem}" for job in ("deployable", "deployable-linux")],
+                    configure_answer_problems(CONFIGURE_JOBS, prompts, defaults),
+                )
+
+    def test_a_step_that_pipes_no_answers_in_its_jobs_form_fails(self) -> None:
+        linux = CONFIGURE_JOBS.index("  deployable-linux:")
+        missing = "deployable-linux: expected one 'Configure' step whose one line pipes answers into configure"
+        for drifted, problems in (
+            (
+                CONFIGURE_JOBS.replace("$repositories, '', ''", "''"),
+                [
+                    "deployable: the 'Configure' step pipes 1 answers, but configure asks for 3: "
+                    "REPOS_ROOT, UPDATE_CHANNEL, EXTRA",
+                    "deployable: the first answer, to REPOS_ROOT, must be $repositories",
+                ],
+            ),
+            (CONFIGURE_JOBS[:linux] + CONFIGURE_JOBS[linux:].replace("name: Configure", "name: Setup"), [missing]),
+            (CONFIGURE_JOBS[:linux] + CONFIGURE_JOBS[linux:].replace("printf '%s\\n' ", "echo "), [missing]),
+        ):
+            with self.subTest(problems=problems):
+                self.assertEqual(problems, configure_answer_problems(drifted, CONFIGURE_PROMPTS, CONFIGURE_DEFAULTS))
 
 
 COMMAND_LINE_JOBS = (
