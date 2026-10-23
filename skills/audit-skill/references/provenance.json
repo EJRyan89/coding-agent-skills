@@ -210,7 +210,7 @@
     ],
     "RUNTIME_OVERCLAIMED": [
       {
-        "page": "https://docs.github.com/en/copilot/reference/hooks-configuration",
+        "page": "https://docs.github.com/en/copilot/reference/hooks-reference",
         "passage": "Hook timeouts are always fail-open, even for preToolUse hooks, so a timed-out hook lets the tool call proceed."
       },
       {
@@ -363,7 +363,7 @@
     ],
     "read-then-search": [
       {
-        "page": "https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents",
+        "page": "https://www.anthropic.com/research/effective-context-engineering-for-ai-agents",
         "passage": "An agent can keep lightweight references such as file paths and load only what it needs at runtime with tools such as grep, head, and tail, rather than loading whole files into context."
       }
     ],
@@ -379,7 +379,7 @@
     ],
     "shell-file-command": [
       {
-        "page": "https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents",
+        "page": "https://www.anthropic.com/research/effective-context-engineering-for-ai-agents",
         "passage": "Tools should return token-efficient information and have clear, non-overlapping purposes, since everything a tool returns enters the context the agent works within."
       }
     ],
@@ -400,7 +400,7 @@
     ],
     "wide-glob": [
       {
-        "page": "https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents",
+        "page": "https://www.anthropic.com/research/effective-context-engineering-for-ai-agents",
         "passage": "Tools should return token-efficient information and have clear, non-overlapping purposes, since everything a tool returns enters the context the agent works within."
       }
     ]

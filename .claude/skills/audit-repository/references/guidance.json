@@ -6,7 +6,8 @@
       "governs": "skills: frontmatter, invocation, allowed-tools, and the listing",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -15,7 +16,8 @@
       "governs": "subagents: definitions, tools, hooks, and what returns to the session",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -24,7 +26,8 @@
       "governs": "hooks: events, matchers, decisions, and failure handling",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -33,7 +36,8 @@
       "governs": "settings: scopes, shared and personal files, and attribution",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -41,7 +45,8 @@
       "subject": "claude-code",
       "governs": "settings: every key, attribution among them",
       "read": [
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -50,7 +55,8 @@
       "governs": "permission rules and how a Bash or PowerShell pattern matches",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -59,7 +65,8 @@
       "governs": "instructions: CLAUDE.md, its loading, its size, and path-scoped rules",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -68,7 +75,8 @@
       "governs": "working practice: verification, context, and sessions",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -77,7 +85,8 @@
       "governs": "headless use: claude -p and its flags",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -86,7 +95,8 @@
       "governs": "plugins: the manifest",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -95,7 +105,8 @@
       "governs": "plugins: marketplaces and distribution",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -103,7 +114,8 @@
       "subject": "claude-code",
       "governs": "plugins in an organization: managed plugins, managed hooks, and which hooks an organization lets run",
       "read": [
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -111,7 +123,8 @@
       "subject": "claude-code",
       "governs": "MCP servers: project .mcp.json and its shape",
       "read": [
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -120,7 +133,8 @@
       "governs": "Agent Skills: the format and how skills load in levels",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -129,7 +143,8 @@
       "governs": "skill authoring: names, descriptions, body size, references, and scripts",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -138,34 +153,78 @@
       "governs": "prompting: structure, data placement, emphasis, and parallel tool calls",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
-      "url": "https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents",
+      "url": "https://www.anthropic.com/research/effective-context-engineering-for-ai-agents",
       "subject": "claude-code",
       "governs": "context: what a tool returns and loading data just in time",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
-      "url": "https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents",
+      "url": "https://www.anthropic.com/research/demystifying-evals-for-ai-agents",
       "subject": "claude-code",
       "governs": "evaluations: graders, trials, and pass rates",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
-      "url": "https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills",
+      "url": "https://www.anthropic.com/research/equipping-agents-for-the-real-world-with-agent-skills",
       "subject": "claude-code",
       "governs": "skills: progressive disclosure and bundled scripts",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
+      ]
+    },
+    {
+      "url": "https://code.claude.com/docs/en/cli-reference",
+      "subject": "claude-code",
+      "governs": "the command line: every flag, --max-turns among them, and what --help leaves out",
+      "read": [
+        "v0.11.0"
+      ]
+    },
+    {
+      "url": "https://code.claude.com/docs/en/tools-reference",
+      "subject": "claude-code",
+      "governs": "tools: each built-in tool and the platforms and tool lists that make it available",
+      "read": [
+        "v0.11.0"
+      ]
+    },
+    {
+      "url": "https://code.claude.com/docs/en/permission-modes",
+      "subject": "claude-code",
+      "governs": "permission modes: what each mode allows without asking",
+      "read": [
+        "v0.11.0"
+      ]
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/marketplace-reference",
+      "subject": "claude-code",
+      "governs": "plugin marketplaces: the marketplace file and each plugin's source",
+      "read": [
+        "v0.11.0"
+      ]
+    },
+    {
+      "url": "https://raw.githubusercontent.com/anthropics/claude-code/refs/heads/main/CHANGELOG.md",
+      "subject": "claude-code",
+      "governs": "the changelog: each release's new and changed behavior",
+      "read": [
+        "v0.11.0"
       ]
     },
     {
@@ -174,7 +233,8 @@
       "governs": "skills: the format, locations, invocation, and agents/openai.yaml",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -183,7 +243,8 @@
       "governs": "instructions: AGENTS.md discovery, overrides, fallback names, and the size cap",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -192,7 +253,8 @@
       "governs": "configuration: config.toml basics and profiles",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -201,7 +263,8 @@
       "governs": "configuration: every key, MCP servers among them",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -210,7 +273,8 @@
       "governs": "the Windows sandbox and its modes",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -219,7 +283,8 @@
       "governs": "approvals and security",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -228,7 +293,8 @@
       "governs": "sandboxing and network access",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -237,7 +303,8 @@
       "governs": "rules: prefix rules and what they allow",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -246,7 +313,8 @@
       "governs": "hooks: events, decisions, and failure handling",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -255,7 +323,8 @@
       "governs": "subagents and custom agents, with per-spawn model and effort",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -264,7 +333,8 @@
       "governs": "headless use: codex exec and its flags",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -272,7 +342,8 @@
       "subject": "codex",
       "governs": "commands and flags, codex debug prompt-input among them",
       "read": [
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -281,7 +352,32 @@
       "governs": "the app server protocol, skills/list among its requests",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
+      ]
+    },
+    {
+      "url": "https://github.com/openai/codex/releases",
+      "subject": "codex",
+      "governs": "releases: each tag's notes, the hook events and flags a release adds",
+      "read": [
+        "v0.11.0"
+      ]
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/developer-commands?surface=cli",
+      "subject": "codex",
+      "governs": "developer commands: the commands and options the CLI accepts",
+      "read": [
+        "v0.11.0"
+      ]
+    },
+    {
+      "url": "https://github.com/microsoft/winget-pkgs/tree/master/manifests/o/OpenAI/Codex",
+      "subject": "codex",
+      "governs": "installation: the WinGet package and the releases it carries",
+      "read": [
+        "v0.11.0"
       ]
     },
     {
@@ -290,7 +386,8 @@
       "governs": "skills: what they are and where Copilot reads them",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -299,7 +396,8 @@
       "governs": "skills: locations, precedence, and explicit use",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -308,7 +406,8 @@
       "governs": "instructions: the files Copilot CLI reads and where",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -317,14 +416,17 @@
       "governs": "instructions: which files each Copilot surface reads",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
-      "url": "https://code.visualstudio.com/docs/copilot/customization/custom-instructions",
+      "url": "https://code.visualstudio.com/docs/agent-customization/custom-instructions",
       "subject": "copilot-cli",
       "governs": "instructions: the VS Code settings that decide which instruction files its chat reads",
-      "read": []
+      "read": [
+        "v0.11.0"
+      ]
     },
     {
       "url": "https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/add-custom-instructions/add-repository-instructions",
@@ -332,7 +434,8 @@
       "governs": "instructions: repository-wide and path-specific files",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -341,7 +444,8 @@
       "governs": "code review on GitHub: what it reads and from which branch",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -350,7 +454,8 @@
       "governs": "code review: customizing it and the size of its instructions",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -359,7 +464,8 @@
       "governs": "custom agents for the CLI and running them as subagents",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -368,7 +474,8 @@
       "governs": "custom agents: the profile's frontmatter, tools, and hooks",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -377,7 +484,8 @@
       "governs": "headless use: copilot -p, its flags, and environment variables",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -386,7 +494,8 @@
       "governs": "headless use: running the CLI from scripts and CI",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -395,15 +504,17 @@
       "governs": "commands and slash commands",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
-      "url": "https://docs.github.com/en/copilot/reference/hooks-configuration",
+      "url": "https://docs.github.com/en/copilot/reference/hooks-reference",
       "subject": "copilot-cli",
       "governs": "hooks: the files Copilot CLI reads them from, .claude/settings.json among them",
       "read": [
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -412,16 +523,26 @@
       "governs": "installation, Windows included",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
-      "url": "https://github.com/github/copilot-cli/blob/main/changelog.md",
+      "url": "https://raw.githubusercontent.com/github/copilot-cli/main/changelog.md",
       "subject": "copilot-cli",
       "governs": "the changelog: each release's new and changed behavior",
       "read": [
         "v0.9.0",
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
+      ]
+    },
+    {
+      "url": "https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference",
+      "subject": "copilot-cli",
+      "governs": "the configuration directory: the files Copilot CLI reads and writes there",
+      "read": [
+        "v0.11.0"
       ]
     },
     {
@@ -429,7 +550,8 @@
       "subject": "python",
       "governs": "supported Python versions and the end of life of the 3.11 floor",
       "read": [
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -437,7 +559,8 @@
       "subject": "python",
       "governs": "language and standard-library changes since the floor",
       "read": [
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -445,7 +568,8 @@
       "subject": "python",
       "governs": "typing practice: Literal, TypedDict, Protocol, and strictness",
       "read": [
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -453,7 +577,8 @@
       "subject": "python",
       "governs": "the lint rules ruff offers",
       "read": [
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -461,7 +586,8 @@
       "subject": "python",
       "governs": "type checking and its strict options",
       "read": [
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -469,7 +595,8 @@
       "subject": "python",
       "governs": "test practice under pytest: fixtures and parametrization",
       "read": [
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -477,7 +604,8 @@
       "subject": "python",
       "governs": "test layout, import modes, and strict mode",
       "read": [
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
       ]
     },
     {
@@ -485,7 +613,56 @@
       "subject": "python",
       "governs": "hash-checked installs of the development dependencies",
       "read": [
-        "v0.10.0"
+        "v0.10.0",
+        "v0.11.0"
+      ]
+    },
+    {
+      "url": "https://docs.pytest.org/en/stable/reference/customize.html",
+      "subject": "python",
+      "governs": "pytest configuration: the files it reads, their precedence, and the root it finds",
+      "read": [
+        "v0.11.0"
+      ]
+    },
+    {
+      "url": "https://docs.pytest.org/en/stable/changelog.html",
+      "subject": "python",
+      "governs": "pytest's changelog: each release's new options and strictness changes",
+      "read": [
+        "v0.11.0"
+      ]
+    },
+    {
+      "url": "https://mypy.readthedocs.io/en/stable/command_line.html",
+      "subject": "python",
+      "governs": "mypy's options: what --strict enables and the checks it leaves out",
+      "read": [
+        "v0.11.0"
+      ]
+    },
+    {
+      "url": "https://mypy.readthedocs.io/en/stable/error_code_list2.html",
+      "subject": "python",
+      "governs": "mypy's optional error codes: the checks enabled one by one",
+      "read": [
+        "v0.11.0"
+      ]
+    },
+    {
+      "url": "https://docs.python.org/3/whatsnew/3.15.html",
+      "subject": "python",
+      "governs": "the current Python release: changed defaults, UTF-8 mode among them",
+      "read": [
+        "v0.11.0"
+      ]
+    },
+    {
+      "url": "https://docs.astral.sh/ruff/rules/unspecified-encoding/",
+      "subject": "python",
+      "governs": "ruff's unspecified-encoding rule: text reads and writes without an encoding",
+      "read": [
+        "v0.11.0"
       ]
     }
   ],
@@ -494,19 +671,19 @@
       "subject": "claude-code",
       "url": "https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md",
       "format": "markdown",
-      "read_through": "2.1.302"
+      "read_through": "2.1.309"
     },
     {
       "subject": "codex",
       "url": "https://api.github.com/repos/openai/codex/releases",
       "format": "github-releases",
-      "read_through": "0.163.0"
+      "read_through": "0.164.0"
     },
     {
       "subject": "copilot-cli",
       "url": "https://raw.githubusercontent.com/github/copilot-cli/main/changelog.md",
       "format": "markdown",
-      "read_through": "1.0.100"
+      "read_through": "1.0.103"
     }
   ]
 }
