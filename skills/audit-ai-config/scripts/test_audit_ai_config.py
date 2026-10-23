@@ -5524,3 +5524,80 @@ class ProvenanceTests(unittest.TestCase):
         self.assertEqual(
             [f"FAILED {broken.as_posix()}: no entry for agent-skill, authority, "], [output.split("behavioral")[0]]
         )
+
+
+# ---------------------------------------------------------------------------
+# Unparseable configuration a repository supplies
+# ---------------------------------------------------------------------------
+
+# Past the parsers' nesting limit, and past Python's limit on the digits of an integer it converts from text.
+TOO_DEEP = "[" * 100_000 + "]" * 100_000
+OVER_LONG_INTEGER = "1" * 5_000
+UNPARSEABLE_JSON = {"too_deep": TOO_DEEP, "over_long_integer": '{"value": ' + OVER_LONG_INTEGER + "}"}
+UNPARSEABLE_TOML = {"too_deep": "value = " + TOO_DEEP, "over_long_integer": "value = " + OVER_LONG_INTEGER}
+# Python source Python's parser refuses, each in its own way: too deep for its stack, too many nested parentheses,
+# and a null byte.
+PAST_THE_PARSER = {
+    "too_deep": "-" * 100_000 + "1",
+    "too_many_parentheses": "x = " + "(" * 100_000 + ")" * 100_000,
+    "null_byte": "x = 1\0",
+}
+# Each reader of a JSON or TOML file a repository supplies, with the finding that names a file it cannot parse.
+UNPARSEABLE_READERS = {
+    ".mcp.json": (UNPARSEABLE_JSON, "ERROR", "mcp", "Could not read or parse:"),
+    ".github/mcp.json": (UNPARSEABLE_JSON, "ERROR", "mcp", "Could not read or parse:"),
+    ".vscode/mcp.json": (UNPARSEABLE_JSON, "ERROR", "mcp", "Could not read or parse:"),
+    ".claude/settings.json": (UNPARSEABLE_JSON, "ERROR", "claude-settings", "Could not read or parse:"),
+    ".codex/hooks.json": (UNPARSEABLE_JSON, "ERROR", "codex-hook", "Could not read or parse:"),
+    ".codex/config.toml": (UNPARSEABLE_TOML, "ERROR", "mcp", "Invalid TOML:"),
+    ".codex/agents/reviewer.toml": (UNPARSEABLE_TOML, "ERROR", "codex-agent", "Could not read or parse:"),
+    MANIFEST_PATH: (UNPARSEABLE_JSON, "WARNING", "authority", "Manifest exists but is malformed"),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(UNPARSEABLE_JSON))
+@pytest.mark.parametrize("rel", sorted(UNPARSEABLE_READERS))
+def test_an_unparseable_file_is_its_reader_s_finding_and_the_audit_carries_on(rel: str, shape: str) -> None:
+    contents, severity, check, prefix = UNPARSEABLE_READERS[rel]
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        _setup_conforming_repo(root)
+        _write_fixture(root, {rel: contents[shape]})
+        result = audit.audit(root)
+        report = audit.format_markdown(result, None)
+    assert [(severity, check, rel)] == [
+        (f.severity, f.check, f.path) for f in result.findings if f.path == rel and f.message.startswith(prefix)
+    ]
+    assert any(f.check == "inventory" and f.path == "CLAUDE.md" for f in result.findings), "the audit carried on"
+    assert markdown_literal.markdown_line(rel) in report
+
+
+@pytest.mark.parametrize("shape", sorted(PAST_THE_PARSER))
+def test_a_rules_file_past_the_parser_s_limits_is_an_error_and_the_audit_carries_on(shape: str) -> None:
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        _setup_conforming_repo(root)
+        _write_fixture(root, {".codex/rules/deep.rules": PAST_THE_PARSER[shape]})
+        result = audit.audit(root)
+    assert [
+        (f.severity, f.check)
+        for f in result.findings
+        if f.path == ".codex/rules/deep.rules" and f.message.startswith("Could not read or parse:")
+    ] == [("ERROR", "codex-rule")]
+
+
+@pytest.mark.parametrize("shape", sorted(PAST_THE_PARSER))
+def test_a_generator_past_the_parser_s_limits_has_an_unreadable_scope(shape: str) -> None:
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        _write_fixture(root, {"scripts/ai_config.py": PAST_THE_PARSER[shape]})
+        assert audit.derive_generator_scope(root) == (None, "generator-scope-unreadable")
+
+
+@pytest.mark.parametrize("error", [RecursionError, MemoryError])
+def test_a_scope_literal_too_deep_to_evaluate_is_not_a_literal(error: type[Exception]) -> None:
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        _write_fixture(root, {"scripts/ai_config.py": 'TARGET_RUNTIMES = ["claude"]\n'})
+        with mock.patch.object(ast, "literal_eval", side_effect=error):
+            assert audit.derive_generator_scope(root) == (None, "generator-scope-not-literal")

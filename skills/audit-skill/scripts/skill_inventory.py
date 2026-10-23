@@ -158,7 +158,7 @@ import git_client
 import runtime_support
 import skill_menu
 from console import run_main
-from flat_text import flat_text
+from flat_text import flat_text, single_line
 from git_client import GitClient
 from markdown_sections import CODE_SPAN, POWERSHELL_FENCES, SHELL_FENCES, find_fences, prose_code_spans
 from suite_names import is_suite_name
@@ -740,7 +740,9 @@ def runs_repository_code(script: Path) -> bool:
     text = read_text(script) if script.is_file() else None
     try:
         tree = ast.parse(text or "")
-    except SyntaxError:
+    # ValueError covers, before 3.12, a null byte; MemoryError and RecursionError, source nested past the parser's
+    # limits
+    except (SyntaxError, ValueError, MemoryError, RecursionError):
         return False
     for node in tree.body:
         targets = (
@@ -963,7 +965,8 @@ def manifest_name(root: Path) -> str | None:
     """A plugin's name, from its manifest, or None when the manifest names none."""
     try:
         document = json.loads((root / skill_menu.PLUGIN_MANIFEST).read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValueError):
+    # ValueError covers a decode error, UnicodeError, and an over-long integer; RecursionError, nesting too deep
+    except (OSError, ValueError, RecursionError):
         return None
     name = document.get("name") if isinstance(document, dict) else None
     return name if isinstance(name, str) and SKILL_NAME.fullmatch(name) else None
@@ -1274,7 +1277,8 @@ def read_metadata(root: Path, name: str) -> dict[str, object] | None:
     """A skill's deploy metadata in its source tree, or None when the file is missing or not a JSON object."""
     try:
         metadata = json.loads((root / "deploy-meta" / f"{name}.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    # ValueError covers a decode error, UnicodeError, and an over-long integer; RecursionError, nesting too deep
+    except (OSError, ValueError, RecursionError):
         return None
     return metadata if isinstance(metadata, dict) else None
 
@@ -1369,7 +1373,8 @@ def trigger_scenario_lines(directory: Path, invocation: str) -> list[str]:
     for spec_file in sorted(scenarios.glob("*/scenario.json")):
         try:
             spec = json.loads(spec_file.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        # ValueError covers a decode error, UnicodeError, and an over-long integer; RecursionError, nesting too deep
+        except (OSError, ValueError, RecursionError):
             continue
         if isinstance(spec, dict) and spec.get("mode") == "trigger":
             requests, near_misses = (spec.get(key) for key in ("requests", "near_misses"))
@@ -1939,7 +1944,9 @@ def script_facts(path: Path) -> ScriptFacts | None:
         return shell_facts(text)
     try:
         return python_facts(text)
-    except SyntaxError:
+    # ValueError covers, before 3.12, a null byte; MemoryError and RecursionError, source nested past the parser's
+    # limits
+    except (SyntaxError, ValueError, MemoryError, RecursionError):
         return None
 
 
@@ -2218,17 +2225,25 @@ def named_agents(folder: Path, markdown: list[tuple[Path, list[str]]]) -> dict[s
     return found
 
 
+def field_text(value: str) -> str:
+    """A value a definition or hooks file gives, as one field of a printed line: flattened, with no whitespace left
+    inside it, so no value can end its line or read as two fields."""
+    return flat_text(value).replace(" ", "")
+
+
 def hook_text(hook: Hook, matcher: str) -> str:
     """A hook's event, matcher, program, and limits, as AGENT_HOOK and PLUGIN_HOOK print them."""
-    return f"{hook.event} {''.join(matcher.split())} {hook.program} timeout={hook.timeout} on_failure={hook.on_failure}"
+    event, program = field_text(hook.event), field_text(hook.program)
+    limits = f"timeout={field_text(hook.timeout)} on_failure={field_text(hook.on_failure)}"
+    return f"{event} {field_text(matcher)} {program} {limits}"
 
 
 def definition_lines(definition: AgentDefinition) -> list[str]:
-    name = definition.name
+    name = field_text(definition.name)
     return [
         f"AGENT {name} {posix(definition.path)}",
-        f"AGENT_TOOLS {name} {definition.tools}",
-        f"AGENT_MODEL {name} {definition.model}",
+        f"AGENT_TOOLS {name} {field_text(definition.tools)}",
+        f"AGENT_MODEL {name} {field_text(definition.model)}",
         f"AGENT_CLAUDE_MD {name} {'omitted' if definition.omits_claude_md else 'loaded'}",
         *(f"AGENT_HOOK {name} {hook_text(hook, matcher)}" for hook, matcher in definition.hooks),
     ]
@@ -2253,7 +2268,8 @@ def plugin_hooks(folder: Path) -> list[tuple[Hook, str]]:
         return []
     try:
         document = json.loads(require_text(path))
-    except ValueError as exc:
+    # ValueError covers a decode error, UnicodeError, and an over-long integer; RecursionError, nesting too deep
+    except (ValueError, RecursionError) as exc:
         raise InputError(f"{posix(path)} is not JSON: {exc}") from exc
     events = document.get("hooks") if isinstance(document, dict) else None
     found: list[tuple[Hook, str]] = []
@@ -2368,7 +2384,8 @@ def json_settings(path: Path, text: str) -> list[tuple[str, Path, int, str]]:
     """Each model or effort a JSON data file sets, such as a manifest's per-role model or a configured effort."""
     try:
         data = json.loads(text)
-    except ValueError:
+    # ValueError covers a decode error, UnicodeError, and an over-long integer; RecursionError, nesting too deep
+    except (ValueError, RecursionError):
         return []
     found: list[tuple[str, Path, int, str]] = []
     stack: list[object] = [data]
@@ -2389,7 +2406,9 @@ def python_settings(path: Path, text: str) -> list[tuple[str, Path, int, str]]:
     """Each model or effort a script sets as a literal: a dict entry or a keyword argument named for one."""
     try:
         tree = ast.parse(text)
-    except SyntaxError:
+    # ValueError covers, before 3.12, a null byte; MemoryError and RecursionError, source nested past the parser's
+    # limits
+    except (SyntaxError, ValueError, MemoryError, RecursionError):
         return []
     pairs: list[tuple[str, ast.expr, int]] = []
     for node in ast.walk(tree):
@@ -2597,12 +2616,14 @@ def main(arguments: list[str] | None = None) -> int:
         else:
             output = scan(args.paths)
     except InputError as exc:
-        print(f"FAILED {exc}")
+        print(single_line(f"FAILED {exc}"))
         return 1
     except OSError as exc:
         where = f" {Path(exc.filename).as_posix()}" if exc.filename else ""
-        print(f"FAILED cannot read{where}: {exc.strerror or exc}")
+        print(single_line(f"FAILED cannot read{where}: {exc.strerror or exc}"))
         return 1
+    # A line names paths, names, and values the audited files give; none of them may end the line it sits on.
+    output = [single_line(line) for line in output]
     print("\n".join(output))
     return 1 if any(line.startswith(("STOP ", "UNREADABLE ", "NOT_A_CHECK ")) for line in output) else 0
 
