@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import repo_cleanup as rc
-from test_repo_cleanup import GIT_CONFIG, Fixture, build_template, facts, git
+from test_repo_cleanup import (
+    GIT_CONFIG,
+    UNNAMEABLE,
+    CleanupTestCase,
+    Fixture,
+    build_template,
+    facts,
+    git,
+    remove_tree,
+    written_plan,
+)
 
 # The settings conftest.py adds to the global configuration of every home this suite's git runs in.
 git_config = GIT_CONFIG
@@ -274,6 +285,7 @@ class PlanSealTests(Fixture):
                 for arguments in (
                     ["report", "--record", str(plans)],
                     ["sweep", "--repos-root", str(self.repos), "--record", str(plans), "--skip-checkout", "my repo"],
+                    ["sweep", "--repos-root", str(self.repos), "--plans", str(plans), "my repo"],
                 ):
                     code, lines = self.invoke(*arguments)
                     self.assertEqual(1, code, lines)
@@ -283,6 +295,31 @@ class PlanSealTests(Fixture):
         record.write_bytes(saved)
         code, lines = self.invoke("report", "--record", str(plans))
         self.assertEqual(0, code, lines)
+
+    def test_the_report_refuses_a_changed_plan_its_sealed_record_names(self) -> None:
+        self.rewrite(lambda plan: plan["events"].append(["DELETED", "scratch"]))
+        code, lines = self.invoke("report", "--record", str(self.root / "plans"))
+        self.assertEqual(1, code, lines)
+        self.assertEqual(1, len(lines), lines)
+        self.assertTrue(lines[0].startswith(f"FAILED\t{self.plan_file.as_posix()} {NOT_SAVED}"), lines)
+
+    def test_a_branch_named_only_by_unicode_whitespace_is_preserved_and_the_rest_cleaned(self) -> None:
+        # Git accepts a name of a no-break space; its flattened form names nothing, so it is never offered.
+        blank = "\u00a0"
+        git(self.clone, "branch", blank, "main")
+        code, lines = self.invoke(
+            "sweep", "--repos-root", str(self.repos), "--plans", str(self.root / "fresh"), "my repo"
+        )
+        self.assertEqual([[f"{self.repos.as_posix()}/my repo", "cleaned"]], facts(lines, "REPO"), lines)
+        self.assertEqual([], facts(lines, "ERROR"), lines)
+        plan = rc.load_plan(self.root / "fresh" / "my repo.json")
+        self.assertIn(blank, [branch["name"] for branch in plan["branches"]])
+        self.assertIn(["PRESERVED", "", UNNAMEABLE.format("")], plan["events"], "listed by its flattened form")
+        code, lines = self.invoke(
+            "delete-local", "--plan", str(self.root / "fresh" / "my repo.json"), "--branch", "scratch"
+        )
+        self.assertEqual((0, [["scratch"]]), (code, facts(lines, "DELETED")), lines)
+        self.assertIsNotNone(self.tip(blank))
 
     def test_a_record_directory_inside_a_skills_directory_is_refused_before_the_sweep_writes_there(self) -> None:
         home = self.root / "home"
@@ -298,3 +335,163 @@ class PlanSealTests(Fixture):
         self.assertEqual(1, len(lines), lines)
         self.assertTrue(lines[0].startswith(f"FAILED\t{record} is inside the skills directory "), lines)
         self.assertEqual(before, sorted(path.name for path in record.iterdir()))
+
+
+class PlanFieldTests(CleanupTestCase):
+    """What the plan reader accepts and refuses, field by field, on plans saved with the script's own writer."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        root = Path(tempfile.mkdtemp(prefix="repo cleanup fields ")).resolve()
+        self.addCleanup(remove_tree, root)
+        self.plan = root / "plan.json"
+
+    def read(self, plan: dict[str, Any]) -> dict[str, Any]:
+        rc.save_plan(self.plan, plan)
+        return rc.load_plan(self.plan)
+
+    def refused(self, plan: dict[str, Any], detail: str) -> None:
+        rc.save_plan(self.plan, plan)
+        with self.assertRaises(rc.CleanupError) as raised:
+            rc.load_plan(self.plan)
+        self.assertTrue(str(raised.exception).startswith(f"{self.plan} {NOT_A_PLAN}{detail}"), raised.exception)
+
+    def test_a_branch_name_of_unicode_whitespace_is_read_wherever_a_plan_names_a_branch(self) -> None:
+        for blank in ("\u00a0", "\u3000", " "):
+            with self.subTest(name=repr(blank)):
+                plan = written_plan(
+                    default={"name": blank, "status": "up to date"},
+                    branches=[
+                        {
+                            "name": blank,
+                            "category": "local",
+                            "pr": "NONE",
+                            "sha": "a" * 40,
+                            "action": "ask-delete",
+                            "detail": "",
+                            "worktree": None,
+                        }
+                    ],
+                    worktrees=[
+                        {"path": "/repos/Worktrees/my repo/wt", "branch": blank, "action": "keep", "detail": ""}
+                    ],
+                    fastforward=[{"branch": blank, "sha": "a" * 40, "target": "b" * 40, "worktree": None}],
+                    fastforward_skipped=[{"branch": blank, "behind": 1, "reason": "changes"}],
+                    diverged=[{"branch": blank, "ahead": 1, "behind": 2}],
+                    sync={"default": {"name": blank}, "checkout": "current", "fast_forward": ["current"], "behind": 0},
+                )
+                self.assertEqual(plan, self.read(plan))
+
+    def test_the_sync_record_is_read_and_a_failed_outcome_needs_its_reason(self) -> None:
+        synced = {
+            "default": {"name": "main", "note": ""},
+            "checkout": "switched",
+            "fast_forward": ["failed", "not a fast-forward"],
+            "behind": 2,
+        }
+        self.assertEqual(synced, self.read(written_plan(sync=synced))["sync"])
+        cases: dict[str, tuple[dict[str, Any], str]] = {
+            "a failed outcome without its reason": (
+                {**synced, "fast_forward": ["failed"]},
+                "sync.fast_forward must be a failed outcome with its reason",
+            ),
+            "no outcome": ({**synced, "fast_forward": []}, "sync.fast_forward must be a non-empty array"),
+            "no checkout": ({key: synced[key] for key in ("default", "fast_forward", "behind")}, "sync must be"),
+            "a negative count behind": ({**synced, "behind": -1}, "sync.behind must be an integer of at least 0"),
+            "a note that is not a string": (
+                {**synced, "default": {"name": "main", "note": 3}},
+                "sync.default.note must be a string",
+            ),
+            "an unknown default field": (
+                {**synced, "default": {"name": "main", "other": ""}},
+                "sync.default must be an object of known fields",
+            ),
+        }
+        for name, (value, detail) in cases.items():
+            with self.subTest(name):
+                self.refused(written_plan(sync=value), detail)
+
+    def test_stopped_and_the_default_branch_are_read_by_their_kinds(self) -> None:
+        self.assertEqual("git vanished", self.read(written_plan(stopped="git vanished"))["stopped"])
+        cases: dict[str, tuple[dict[str, Any], str]] = {
+            "a stopped marker that is not a string": (written_plan(stopped=1), "stopped must be a non-empty string"),
+            "an empty stopped marker": (written_plan(stopped=""), "stopped must be a non-empty string"),
+            "no default status": (
+                written_plan(default={"name": "main"}),
+                "default must be an object with field status",
+            ),
+            "a null default name": (
+                written_plan(default={"name": None, "status": "up to date"}),
+                "default.name must be a string",
+            ),
+            "an empty default status": (
+                written_plan(default={"name": "main", "status": ""}),
+                "default.status must be a non-empty string",
+            ),
+        }
+        for name, (plan, detail) in cases.items():
+            with self.subTest(name):
+                self.refused(plan, detail)
+
+    def test_each_nested_entry_is_read_field_by_field(self) -> None:
+        branch = {
+            "name": "topic",
+            "category": "gone",
+            "pr": "MERGED",
+            "sha": "a" * 40,
+            "action": "delete",
+            "detail": "",
+            "worktree": None,
+        }
+        tree = {"path": "/repos/Worktrees/my repo/wt", "branch": None, "action": "ask", "detail": "clean", "sha": ""}
+        move = {"branch": "topic", "sha": "a" * 40, "target": "b" * 40, "worktree": "/repos/Worktrees/my repo/wt"}
+        plan = written_plan(
+            branches=[branch],
+            worktrees=[tree],
+            fastforward=[move],
+            fastforward_skipped=[{"branch": "topic", "behind": 3, "reason": "changes"}],
+            diverged=[{"branch": "topic", "ahead": 1, "behind": 2}],
+        )
+        self.assertEqual(plan, self.read(plan))
+        cases: dict[str, tuple[dict[str, Any], str]] = {
+            "a branch of an unknown category": (
+                written_plan(branches=[{**branch, "category": "remote"}]),
+                "branches[0].category must be one of",
+            ),
+            "a branch with an empty sha": (
+                written_plan(branches=[{**branch, "sha": ""}]),
+                "branches[0].sha must be a non-empty string",
+            ),
+            "a branch whose worktree is a number": (
+                written_plan(branches=[{**branch, "worktree": 1}]),
+                "branches[0].worktree must be a non-empty string or null",
+            ),
+            "a worktree with no detail": (
+                written_plan(worktrees=[{key: tree[key] for key in ("path", "branch", "action")}]),
+                "worktrees[0] must be an object with field detail",
+            ),
+            "a worktree whose sha is null": (
+                written_plan(worktrees=[{**tree, "sha": None}]),
+                "worktrees[0].sha must be a string",
+            ),
+            "a worktree with an empty path": (
+                written_plan(worktrees=[{**tree, "path": ""}]),
+                "worktrees[0].path must be a non-empty string",
+            ),
+            "a fast-forward with no target": (
+                written_plan(fastforward=[{key: move[key] for key in ("branch", "sha", "worktree")}]),
+                "fastforward[0] must be an object with field target",
+            ),
+            "a skipped fast-forward behind by a boolean": (
+                written_plan(fastforward_skipped=[{"branch": "topic", "behind": True, "reason": "changes"}]),
+                "fastforward_skipped[0].behind must be an integer of at least 0",
+            ),
+            "a diverged branch ahead by a string": (
+                written_plan(diverged=[{"branch": "topic", "ahead": "1", "behind": 2}]),
+                "diverged[0].ahead must be an integer of at least 0",
+            ),
+            "an applied flag that is a number": (written_plan(applied=1), "applied must be a boolean"),
+        }
+        for name, (value, detail) in cases.items():
+            with self.subTest(name):
+                self.refused(value, detail)

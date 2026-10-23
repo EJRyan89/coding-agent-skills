@@ -860,7 +860,7 @@ def read_plan_fields(plan: object) -> None:
         fields.string(document[name], name)
     fields.array(document["orphan_areas"], "orphan_areas", fields.string)
     default = fields.json_object(document["default"], "default", required=("name", "status"))
-    fields.string(default["name"], "default.name")
+    read_branch_name(fields, default["name"], "default.name")
     fields.string(default["status"], "default.status")
     fields.array(document["branches"], "branches", lambda value, path: read_branch(fields, value, path))
     fields.array(document["worktrees"], "worktrees", lambda value, path: read_worktree_entry(fields, value, path))
@@ -868,12 +868,12 @@ def read_plan_fields(plan: object) -> None:
     fields.array(
         document.get("fastforward_skipped", []),
         "fastforward_skipped",
-        lambda value, path: read_counted(fields, value, path, ("branch", "reason"), ("behind",)),
+        lambda value, path: read_counted(fields, value, path, ("reason",), ("behind",)),
     )
     fields.array(
         document["diverged"],
         "diverged",
-        lambda value, path: read_counted(fields, value, path, ("branch",), ("ahead", "behind")),
+        lambda value, path: read_counted(fields, value, path, (), ("ahead", "behind")),
     )
     fields.boolean(document["applied"], "applied")
     fields.array(document["events"], "events", lambda value, path: read_event(fields, value, path))
@@ -887,9 +887,16 @@ def read_plan_fields(plan: object) -> None:
         fields.string(document["stopped"], "stopped")
 
 
+def read_branch_name(fields: FieldReader, value: object, path: str) -> str:
+    """A branch name: any string, a blank one included, since Git accepts a name of Unicode whitespace alone, such as
+    a no-break space, and the sweep keeps such a branch under Preserved rather than refusing its own plan."""
+    return fields.string(value, path, empty=True)
+
+
 def read_branch(fields: FieldReader, value: object, path: str) -> None:
     branch = fields.json_object(value, path, required=("name", "category", "pr", "sha", "action", "detail", "worktree"))
-    for name in ("name", "pr", "sha", "action"):
+    read_branch_name(fields, branch["name"], f"{path}.name")
+    for name in ("pr", "sha", "action"):
         fields.string(branch[name], f"{path}.{name}")
     fields.one_of(branch["category"], f"{path}.category", ("local", "gone", "tracking"))
     fields.string(branch["detail"], f"{path}.detail", empty=True)
@@ -899,7 +906,8 @@ def read_branch(fields: FieldReader, value: object, path: str) -> None:
 def read_worktree_entry(fields: FieldReader, value: object, path: str) -> None:
     entry = fields.json_object(value, path, required=("path", "branch", "action", "detail"), optional=("sha",))
     fields.string(entry["path"], f"{path}.path")
-    fields.optional(fields.string, entry["branch"], f"{path}.branch")
+    if entry["branch"] is not None:
+        read_branch_name(fields, entry["branch"], f"{path}.branch")
     fields.string(entry["action"], f"{path}.action")
     fields.string(entry["detail"], f"{path}.detail", empty=True)
     if "sha" in entry:
@@ -908,7 +916,8 @@ def read_worktree_entry(fields: FieldReader, value: object, path: str) -> None:
 
 def read_move(fields: FieldReader, value: object, path: str) -> None:
     entry = fields.json_object(value, path, required=("branch", "sha", "target", "worktree"))
-    for name in ("branch", "sha", "target"):
+    read_branch_name(fields, entry["branch"], f"{path}.branch")
+    for name in ("sha", "target"):
         fields.string(entry[name], f"{path}.{name}")
     fields.optional(fields.string, entry["worktree"], f"{path}.worktree")
 
@@ -916,7 +925,9 @@ def read_move(fields: FieldReader, value: object, path: str) -> None:
 def read_counted(
     fields: FieldReader, value: object, path: str, strings: tuple[str, ...], counts: tuple[str, ...]
 ) -> None:
-    entry = fields.json_object(value, path, required=(*strings, *counts))
+    """An entry naming a branch, with the other strings `strings` and the counts `counts`."""
+    entry = fields.json_object(value, path, required=("branch", *strings, *counts))
+    read_branch_name(fields, entry["branch"], f"{path}.branch")
     for name in strings:
         fields.string(entry[name], f"{path}.{name}")
     for name in counts:
@@ -939,7 +950,7 @@ def read_event(fields: FieldReader, value: object, path: str) -> None:
 def read_sync(fields: FieldReader, value: object) -> None:
     synced = fields.json_object(value, "sync", required=("default", "checkout", "fast_forward", "behind"))
     default = fields.json_object(synced["default"], "sync.default", required=("name",), optional=("note",))
-    fields.string(default["name"], "sync.default.name")
+    read_branch_name(fields, default["name"], "sync.default.name")
     if "note" in default:
         fields.string(default["note"], "sync.default.note", empty=True)
     fields.string(synced["checkout"], "sync.checkout")
