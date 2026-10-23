@@ -1,0 +1,300 @@
+"""The plan file the confirmation commands take: they delete only what a sweep offered, so a plan this script did not
+save, or one changed since it saved it, is refused before anything is deleted, and a missing or malformed field ends
+in the documented refusal, never a traceback."""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import sys
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
+
+import repo_cleanup as rc
+from test_repo_cleanup import GIT_CONFIG, Fixture, build_template, facts, git
+
+# The settings conftest.py adds to the global configuration of every home this suite's git runs in.
+git_config = GIT_CONFIG
+
+# The refusals, by what they name after the plan's path; independent of the script's own wording constants.
+NOT_SAVED = "is not a plan as repo-cleanup last saved it, so it may name what no sweep offered; run the sweep again"
+OTHER_AREAS = "names worktree areas other than the ones a sweep derives for"
+NOT_A_PLAN = "is not a repo-cleanup plan: "
+
+
+def setUpModule() -> None:
+    """Build the repositories every Fixture test starts from, with Git isolated as each test isolates it."""
+    build_template()
+
+
+class PlanSealTests(Fixture):
+    """A swept repository offering a local-only branch and a leftover directory, beside a branch with an open pull
+    request and a folder outside every worktree area, which the sweep offers neither of."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        git(self.clone, "branch", "scratch", "main")
+        self.open_tip = self.push_branch("open-work")
+        self.github.pull("open-work", "OPEN", self.open_tip)
+        self.leftover = self.area / "leftover"
+        self.leftover.mkdir(parents=True)
+        (self.leftover / "notes.txt").write_text("left behind\n", encoding="utf-8")
+        self.outside = self.root / "outside" / "kept"
+        self.outside.mkdir(parents=True)
+        (self.outside / "precious.txt").write_text("the user's\n", encoding="utf-8")
+        code, lines = self.invoke(
+            "sweep", "--repos-root", str(self.repos), "--plans", str(self.root / "plans"), "my repo"
+        )
+        self.assertEqual(0, code, lines)
+        self.assertEqual([[self.plan_file.as_posix()]], facts(lines, "PLAN"))
+        self.assertEqual([["scratch"]], facts(lines, "CONFIRM_LOCAL"))
+        self.assertEqual([[self.leftover.as_posix()]], facts(lines, "ORPHAN"))
+        self.swept = self.plan_file.read_bytes()
+
+    def rewrite(self, change: Callable[[dict[str, Any]], None], path: Path | None = None) -> Path:
+        """Write the swept plan, changed by `change`, to `path` (the plan file itself by default) without its seal, in
+        JSON's compact form."""
+        plan = json.loads(self.swept)
+        change(plan)
+        target = path or self.plan_file
+        target.write_bytes(json.dumps(plan).encode("utf-8"))
+        return target
+
+    def confirmations(self, plan: Path) -> list[tuple[int, list[str]]]:
+        """Each confirmation command on `plan`, naming what the sweep offered, what it kept, and what lies outside."""
+        return [
+            self.invoke("delete-local", "--plan", str(plan), "--branch", "scratch", "--branch", "open-work"),
+            self.invoke("force-delete", "--plan", str(plan), "--branch", "open-work", "--branch", "scratch"),
+            self.invoke(
+                "remove-directory", "--plan", str(plan), "--path", str(self.leftover), "--path", str(self.outside)
+            ),
+        ]
+
+    def assert_refused(self, plan: Path, refusal: str, *, printing: bool = False) -> None:
+        """Each confirmation command, and with `printing` the summary, ends in `refusal` alone, deleting nothing."""
+        runs = self.confirmations(plan)
+        if printing:
+            runs.append(self.invoke("summary", "--plan", str(plan)))
+        for code, lines in runs:
+            self.assertEqual(1, code, lines)
+            self.assertEqual(1, len(lines), lines)
+            self.assertTrue(lines[0].startswith(f"FAILED\t{plan} {refusal}"), lines)
+        self.assert_untouched()
+
+    def assert_untouched(self) -> None:
+        self.assertEqual(self.open_tip, self.tip("open-work"))
+        self.assertIsNotNone(self.tip("scratch"))
+        self.assertTrue((self.leftover / "notes.txt").is_file())
+        self.assertTrue((self.outside / "precious.txt").is_file())
+
+    def test_an_untouched_plan_deletes_what_the_sweep_offered_and_each_command_reseals_it(self) -> None:
+        code, lines = self.invoke("delete-local", "--plan", str(self.plan_file), "--branch", "scratch")
+        self.assertEqual((0, [["scratch"]]), (code, facts(lines, "DELETED")), lines)
+        self.assertNotEqual(self.swept, self.plan_file.read_bytes(), "the command recorded what it did")
+        code, lines = self.invoke("remove-directory", "--plan", str(self.plan_file), "--path", str(self.leftover))
+        self.assertEqual((0, [[self.leftover.as_posix()]]), (code, facts(lines, "DELETED_DIR")), lines)
+        self.assertFalse(self.leftover.exists())
+        code, lines = self.invoke("force-delete", "--plan", str(self.plan_file), "--branch", "open-work")
+        self.assertEqual(
+            (0, [["open-work", "not reported UNMERGED by this plan"]]), (code, facts(lines, "PRESERVED")), lines
+        )
+        self.assertEqual(self.open_tip, self.tip("open-work"))
+
+    def test_a_plan_changed_after_the_sweep_saved_it_is_refused_before_anything_is_deleted(self) -> None:
+        other = self.repos / "other repo"
+        git(self.root, "clone", "--quiet", str(self.remote), str(other))
+        outside_area = str(self.outside.parent)
+
+        def area_outside(plan: dict[str, Any]) -> None:
+            plan["orphan_areas"] = [outside_area]
+            plan["events"].append(["ORPHAN", self.outside.as_posix()])
+
+        def other_root(plan: dict[str, Any]) -> None:
+            plan["repo_root"] = other.as_posix()
+
+        def unoffered_anchor(plan: dict[str, Any]) -> None:
+            plan["worktree_area"] = str(self.root / "outside" / "Worktrees")
+            plan["events"].append(["ORPHAN", self.outside.as_posix()])
+
+        def unoffered_branch(plan: dict[str, Any]) -> None:
+            plan["events"].append(["UNMERGED", "open-work", self.open_tip])
+            plan["events"].append(["CONFIRM_LOCAL", "open-work"])
+
+        def reformatted(plan: dict[str, Any]) -> None:
+            del plan  # only the layout changes: the seal holds the plan's bytes, not its meaning
+
+        tampers = {
+            "an area outside the repository": area_outside,
+            "another repository's root": other_root,
+            "an anchor the sweep never offered": unoffered_anchor,
+            "a branch the sweep never offered": unoffered_branch,
+            "the same plan reformatted": reformatted,
+        }
+        for name, change in tampers.items():
+            with self.subTest(name):
+                self.assert_refused(self.rewrite(change), NOT_SAVED, printing=True)
+        self.plan_file.write_bytes(self.swept)
+        code, lines = self.invoke("delete-local", "--plan", str(self.plan_file), "--branch", "scratch")
+        self.assertEqual((0, [["scratch"]]), (code, facts(lines, "DELETED")), "the plan as saved still works")
+
+    def test_a_plan_file_the_script_never_saved_there_is_refused(self) -> None:
+        # Unchanged but elsewhere, as a copy inside a repository or a file the caller wrote would be.
+        for copy in (self.clone / "plan.json", self.root / "plans" / "copy.json"):
+            with self.subTest(copy=copy):
+                shutil.copyfile(self.plan_file, copy)
+                self.assert_refused(copy, NOT_SAVED, printing=True)
+
+    def test_a_resealed_plan_whose_areas_or_root_are_not_derived_from_its_repository_is_refused(self) -> None:
+        # Saved through the script's own save, so the seal matches: the derived areas and the live repository are
+        # checked as well.
+        not_a_repository = self.root / "outside"
+
+        def save(change: Callable[[dict[str, Any]], None]) -> None:
+            plan = json.loads(self.swept)
+            change(plan)
+            rc.save_plan(self.plan_file, plan)
+
+        def area_outside(plan: dict[str, Any]) -> None:
+            plan["orphan_areas"] = [str(self.outside.parent), plan["orphan_areas"][1]]
+
+        def unoffered_anchor(plan: dict[str, Any]) -> None:
+            plan["worktree_area"] = str(not_a_repository / "Worktrees")
+
+        def other_name(plan: dict[str, Any]) -> None:
+            plan["repo_name"] = "other repo"
+
+        def relative_root(plan: dict[str, Any]) -> None:
+            plan["repo_root"] = "my repo"
+
+        for name, change in {
+            "an area outside the repository": area_outside,
+            "an anchor the sweep never offered": unoffered_anchor,
+            "another repository's name": other_name,
+            "a relative root": relative_root,
+        }.items():
+            with self.subTest(name):
+                save(change)
+                self.assert_refused(self.plan_file, OTHER_AREAS)
+
+        def moved_root(plan: dict[str, Any]) -> None:
+            root = not_a_repository / "my repo"
+            plan["repo_root"] = root.as_posix()
+            plan["orphan_areas"][1] = str(root / ".claude" / "worktrees")
+
+        save(moved_root)
+        root = (not_a_repository / "my repo").as_posix()
+        for code, lines in self.confirmations(self.plan_file):
+            self.assertEqual((1, [f"FAILED\t{root} is not a git repository"]), (code, lines))
+        self.assert_untouched()
+
+    def test_a_plan_with_a_missing_or_malformed_field_ends_in_the_refusal_not_a_traceback(self) -> None:
+        def without(field: str) -> Callable[[dict[str, Any]], None]:
+            return lambda plan: plan.pop(field)
+
+        def setting(path: list[Any], value: object) -> Callable[[dict[str, Any]], None]:
+            def change(plan: dict[str, Any]) -> None:
+                holder: Any = plan
+                for key in path[:-1]:
+                    holder = holder[key]
+                holder[path[-1]] = value
+
+            return change
+
+        swept = json.loads(self.swept)
+        self.assertTrue(swept["branches"] and swept["events"], "the sweep planned branches and recorded events")
+        fields = [
+            "schema_version",
+            "repo_root",
+            "repo_name",
+            "worktree_area",
+            "orphan_areas",
+            "default",
+            "branches",
+            "worktrees",
+            "fastforward",
+            "diverged",
+            "applied",
+            "events",
+        ]
+        changes: dict[str, tuple[Callable[[dict[str, Any]], None], str]] = {
+            **{f"no {field}": (without(field), f"plan must be an object with field {field}") for field in fields},
+            "no branch sha": (
+                lambda plan: plan["branches"][0].pop("sha"),
+                "branches[0] must be an object with field sha",
+            ),
+            "a null repository root": (setting(["repo_root"], None), "repo_root must be a non-empty string"),
+            "an area that is not a string": (setting(["orphan_areas", 0], 7), "orphan_areas[0] must be a non-empty"),
+            "an event with too few fields": (
+                setting(["events", 0], ["UNMERGED", "scratch"]),
+                "events[0] must be a UNMERGED event with 2 fields",
+            ),
+            "an event of an unknown kind": (setting(["events", 0], ["DELETE_ALL", "x"]), "events[0][0] must be one"),
+            "an events list that is an object": (setting(["events"], {}), "events must be an array"),
+            "an unknown field": (
+                setting(["extra"], 1),
+                'plan must be an object of known fields, found unknown field "',
+            ),
+        }
+        for name, (change, detail) in changes.items():
+            with self.subTest(name):
+                plan = json.loads(self.swept)
+                change(plan)
+                rc.save_plan(self.plan_file, plan)
+                for code, lines in [
+                    *self.confirmations(self.plan_file),
+                    self.invoke("summary", "--plan", str(self.plan_file)),
+                ]:
+                    self.assertEqual(1, code, lines)
+                    self.assertEqual(1, len(lines), lines)
+                    self.assertTrue(lines[0].startswith(f"FAILED\t{self.plan_file} {NOT_A_PLAN}{detail}"), lines)
+                self.assert_untouched()
+
+    def test_a_sweep_record_changed_after_the_sweep_saved_it_is_refused_by_the_report_and_a_later_sweep(self) -> None:
+        plans = self.root / "plans"
+        record = plans / rc.SWEEP_RECORD
+        saved = record.read_bytes()
+        changed = json.loads(saved)
+        changed["repositories"][0]["lines"] = ["SUMMARY\tmy repo cleanup complete:"]
+        refusal = (
+            f"FAILED\t{record} is not a sweep record as repo-cleanup last saved it, so it may name what no sweep "
+            "offered; run the sweep again"
+        )
+        for name, data in {
+            "changed": json.dumps(changed).encode("utf-8"),
+            "reformatted": json.dumps(json.loads(saved)).encode("utf-8"),
+        }.items():
+            with self.subTest(name):
+                record.write_bytes(data)
+                for arguments in (
+                    ["report", "--record", str(plans)],
+                    ["sweep", "--repos-root", str(self.repos), "--record", str(plans), "--skip-checkout", "my repo"],
+                ):
+                    code, lines = self.invoke(*arguments)
+                    self.assertEqual(1, code, lines)
+                    self.assertEqual(1, len(lines), lines)
+                    self.assertTrue(lines[0].startswith(refusal), lines)
+                    self.assertEqual(data, record.read_bytes(), "the refused sweep wrote nothing")
+        record.write_bytes(saved)
+        code, lines = self.invoke("report", "--record", str(plans))
+        self.assertEqual(0, code, lines)
+
+    def test_a_record_directory_inside_a_skills_directory_is_refused_before_the_sweep_writes_there(self) -> None:
+        home = self.root / "home"
+        record = home / ".claude" / "skills" / "repo-cleanup" / "plans"
+        record.mkdir(parents=True)
+        shutil.copyfile(self.root / "plans" / rc.SWEEP_RECORD, record / rc.SWEEP_RECORD)
+        before = sorted(path.name for path in record.iterdir())
+        with mock.patch.dict(os.environ, {"USERPROFILE": str(home), "HOME": str(home)}):
+            code, lines = self.invoke(
+                "sweep", "--repos-root", str(self.repos), "--record", str(record), "--skip-checkout", "my repo"
+            )
+        self.assertEqual(1, code, lines)
+        self.assertEqual(1, len(lines), lines)
+        self.assertTrue(lines[0].startswith(f"FAILED\t{record} is inside the skills directory "), lines)
+        self.assertEqual(before, sorted(path.name for path in record.iterdir()))

@@ -15,6 +15,11 @@
                   current summary and the closing count of the repositories processed and skipped, naming the dirty
                   repositories the user aborted
 
+Every command reads a plan or sweep record only when its bytes match the seal this script wrote when it last saved
+one at that path, and refuses a plan with a field missing or not of the kind a sweep writes. delete-local,
+force-delete, and remove-directory also refuse a plan whose repository root is no longer a Git repository or whose
+worktree areas are not the ones a sweep derives from it, so they delete only what a sweep offered.
+
 Every command prints one tab-separated fact per line. Exit status 0 means every repository was cleaned, or every
 confirmed deletion ran or was preserved because what it named changed since the plan: it moved, or its commit left
 the default and remote branches. 1 means something needs the agent: a repository that stopped (DIRTY_MAIN,
@@ -28,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import json
 import os
 import shutil
@@ -47,7 +53,7 @@ import cleanup_policy
 import git_client
 import git_worktrees
 import pr_status
-from atomic_file import replace_text
+from atomic_file import replace_bytes, replace_text
 from cleanup_policy import Policy, Regenerable
 from console import run_main
 from flat_text import single_line
@@ -58,9 +64,47 @@ from github_client import Runner as GhRunner
 from github_remote import github_repository
 from link_probe import is_plain_directory
 from skill_roots import skills_directory_holding
+from typed_fields import FieldError, FieldReader, describe
 
 T = TypeVar("T")
 PLAN_SCHEMA_VERSION = 1
+# Where each plan's and sweep record's seal lives: the SHA-256 of its bytes as this script last saved them, in a file
+# named by the SHA-256 of its resolved path. Every command reads a plan or record only when its bytes match its seal, so
+# what the confirmation commands may delete is what a sweep offered and the later commands recorded: a file the caller
+# names that this script never saved there has no seal, and one changed since it saved it no longer matches. The seals
+# lie outside every plans directory, so no directory a plan sits in carries a seal for it.
+SEALS = Path(tempfile.gettempdir()) / "repo-cleanup-seals"
+# The fields a plan holds, as build_plan writes them, and those a plan built outside a sweep, or a command that never
+# stopped, leaves out.
+PLAN_FIELDS = (
+    "schema_version",
+    "repo_root",
+    "repo_name",
+    "worktree_area",
+    "orphan_areas",
+    "default",
+    "branches",
+    "worktrees",
+    "fastforward",
+    "diverged",
+    "applied",
+    "events",
+)
+OPTIONAL_PLAN_FIELDS = ("fastforward_skipped", "policy", "sync", "stopped")
+# How many fields after its kind each event a plan records carries, at least and at most.
+EVENT_FIELDS = {
+    "DELETED": (1, 1),
+    "PRESERVED": (2, 2),
+    "UNMERGED": (2, 2),
+    "CONFIRM_LOCAL": (1, 2),
+    "CONFIRM_DETACHED": (2, 2),
+    "ORPHAN": (1, 1),
+    "REMOVED": (2, 3),
+    "DELETED_DIR": (1, 1),
+    "PRUNED_DIR": (1, 1),
+    "FF": (2, 2),
+    "DIVERGED": (3, 3),
+}
 STALE_STATES = ("MERGED", "CLOSED")
 # What a worktree's own Git directory holds while an operation is under way, with the operation's name. Removing the
 # worktree deletes that directory and the operation with it.
@@ -731,25 +775,178 @@ def policy_of(plan: dict[str, Any]) -> Policy:
     return cleanup_policy.configured(*(recorded.get(field, "") for field in POLICY_FIELDS))
 
 
-def save_plan(path: str | Path, plan: dict[str, Any]) -> None:
-    """Write the plan, or another JSON document such as a sweep record, in one step: a reader sees the old or the
-    new one, never part of either."""
-    replace_text(Path(path), json.dumps(plan, indent=2) + "\n")
+def save_plan(path: str | Path, document: dict[str, Any]) -> None:
+    """Write a plan, or a sweep record, in one step, so a reader sees the old or the new one, never part of either;
+    then its seal: the digest of the bytes written, which every command compares with the file before it reads it."""
+    data = (json.dumps(document, indent=2) + "\n").encode("utf-8")
+    replace_bytes(Path(path), data)
+    replace_text(seal_file(path), hashlib.sha256(data).hexdigest() + "\n")
+
+
+def seal_file(path: str | Path) -> Path:
+    """Where the seal of the plan or record at `path` lies: named by its path resolved through links, in any letter
+    case the file system treats as the same."""
+    resolved = os.path.normcase(os.path.realpath(path))
+    return SEALS / hashlib.sha256(resolved.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def read_sealed(path: str | Path, what: str) -> bytes:
+    """The bytes of the plan or record at `path`, named `what` in a refusal: refused unless they match the seal this
+    script wrote when it last saved one there, so what they name is what a sweep recorded."""
+    try:
+        data = Path(path).read_bytes()
+    except OSError as exc:
+        raise CleanupError(f"cannot read {what} {path}: {exc}") from exc
+    try:
+        seal = seal_file(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        seal = ""
+    if seal != hashlib.sha256(data).hexdigest():
+        raise CleanupError(
+            f"{path} is not a {what} as repo-cleanup last saved it, so it may name what no sweep offered; {SWEEP_AGAIN}"
+        )
+    return data
 
 
 def load_plan(path: str | Path) -> dict[str, Any]:
+    """The plan at `path`, as this script last saved it there, refused with the first field that is not as
+    build_plan writes it, so no command reads a missing or malformed field."""
+    data = read_sealed(path, "plan")
     try:
-        plan = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+        plan = json.loads(data.decode("utf-8"))
+    except ValueError as exc:
         raise CleanupError(f"cannot read plan {path}: {exc}") from exc
-    if (
-        not isinstance(plan, dict)
-        or type(plan.get("schema_version")) is not int
-        or plan["schema_version"] != PLAN_SCHEMA_VERSION
-        or not recorded_policy(plan.get("policy", {}))
-    ):
-        raise CleanupError(f"{path} is not a repo-cleanup plan")
+    try:
+        read_plan_fields(plan)
+    except FieldError as exc:
+        raise CleanupError(f"{path} is not a repo-cleanup plan: {exc}") from exc
+    result: dict[str, Any] = plan
+    return result
+
+
+def plan_in_scope(path: str | Path) -> dict[str, Any]:
+    """The plan at `path`, for a command that deletes: as load_plan reads it, and refused unless what it names still
+    holds, its repository root a Git repository and its worktree areas the ones build_plan derives from it."""
+    plan = load_plan(path)
+    require_derived_areas(path, plan)
+    require_repository(plan["repo_root"])
     return plan
+
+
+def require_derived_areas(path: str | Path, plan: dict[str, Any]) -> None:
+    """Refuse a plan whose repository name and worktree areas are not the ones build_plan derives from its repository
+    root and shared worktree area."""
+    root, area = Path(plan["repo_root"]), Path(plan["worktree_area"])
+    derived = [str(area / root.name), str(root.joinpath(*REPOSITORY_AREA))]
+    areas: list[str] = plan["orphan_areas"]
+    if not (
+        root.is_absolute()
+        and area.is_absolute()
+        and area.name == WORKTREE_AREA
+        and plan["repo_name"] == root.name
+        and len(areas) == len(derived)
+        and all(same_path(given, expected) for given, expected in zip(areas, derived, strict=True))
+    ):
+        raise CleanupError(f"{path} names worktree areas other than the ones a sweep derives for {root}; {SWEEP_AGAIN}")
+
+
+def read_plan_fields(plan: object) -> None:
+    """Hold every field of a plan to the kind build_plan, sync, and the commands write, raising FieldError for the
+    first that is not."""
+    fields = FieldReader()
+    document = fields.json_object(plan, "plan", required=PLAN_FIELDS, optional=OPTIONAL_PLAN_FIELDS)
+    fields.one_of(document["schema_version"], "schema_version", (PLAN_SCHEMA_VERSION,))
+    for name in ("repo_root", "repo_name", "worktree_area"):
+        fields.string(document[name], name)
+    fields.array(document["orphan_areas"], "orphan_areas", fields.string)
+    default = fields.json_object(document["default"], "default", required=("name", "status"))
+    fields.string(default["name"], "default.name")
+    fields.string(default["status"], "default.status")
+    fields.array(document["branches"], "branches", lambda value, path: read_branch(fields, value, path))
+    fields.array(document["worktrees"], "worktrees", lambda value, path: read_worktree_entry(fields, value, path))
+    fields.array(document["fastforward"], "fastforward", lambda value, path: read_move(fields, value, path))
+    fields.array(
+        document.get("fastforward_skipped", []),
+        "fastforward_skipped",
+        lambda value, path: read_counted(fields, value, path, ("branch", "reason"), ("behind",)),
+    )
+    fields.array(
+        document["diverged"],
+        "diverged",
+        lambda value, path: read_counted(fields, value, path, ("branch",), ("ahead", "behind")),
+    )
+    fields.boolean(document["applied"], "applied")
+    fields.array(document["events"], "events", lambda value, path: read_event(fields, value, path))
+    if "policy" in document and not recorded_policy(document["policy"]):
+        raise fields.fail(
+            "policy", "the configured values a sweep records, each a string", describe(document["policy"])
+        )
+    if "sync" in document:
+        read_sync(fields, document["sync"])
+    if "stopped" in document:
+        fields.string(document["stopped"], "stopped")
+
+
+def read_branch(fields: FieldReader, value: object, path: str) -> None:
+    branch = fields.json_object(value, path, required=("name", "category", "pr", "sha", "action", "detail", "worktree"))
+    for name in ("name", "pr", "sha", "action"):
+        fields.string(branch[name], f"{path}.{name}")
+    fields.one_of(branch["category"], f"{path}.category", ("local", "gone", "tracking"))
+    fields.string(branch["detail"], f"{path}.detail", empty=True)
+    fields.optional(fields.string, branch["worktree"], f"{path}.worktree")
+
+
+def read_worktree_entry(fields: FieldReader, value: object, path: str) -> None:
+    entry = fields.json_object(value, path, required=("path", "branch", "action", "detail"), optional=("sha",))
+    fields.string(entry["path"], f"{path}.path")
+    fields.optional(fields.string, entry["branch"], f"{path}.branch")
+    fields.string(entry["action"], f"{path}.action")
+    fields.string(entry["detail"], f"{path}.detail", empty=True)
+    if "sha" in entry:
+        fields.string(entry["sha"], f"{path}.sha", empty=True)
+
+
+def read_move(fields: FieldReader, value: object, path: str) -> None:
+    entry = fields.json_object(value, path, required=("branch", "sha", "target", "worktree"))
+    for name in ("branch", "sha", "target"):
+        fields.string(entry[name], f"{path}.{name}")
+    fields.optional(fields.string, entry["worktree"], f"{path}.worktree")
+
+
+def read_counted(
+    fields: FieldReader, value: object, path: str, strings: tuple[str, ...], counts: tuple[str, ...]
+) -> None:
+    entry = fields.json_object(value, path, required=(*strings, *counts))
+    for name in strings:
+        fields.string(entry[name], f"{path}.{name}")
+    for name in counts:
+        fields.integer(entry[name], f"{path}.{name}", minimum=0)
+
+
+def read_event(fields: FieldReader, value: object, path: str) -> None:
+    """An event: its kind, then as many fields, each a string, as EVENT_FIELDS gives that kind."""
+    event = fields.array(value, path, nonempty=True)
+    kind = fields.one_of(event[0], f"{path}[0]", tuple(EVENT_FIELDS))
+    least, most = EVENT_FIELDS[kind]
+    if not least <= len(event) - 1 <= most:
+        count = f"{least}" if least == most else f"{least} to {most}"
+        found = len(event) - 1
+        raise fields.fail(path, f"a {kind} event with {count} fields", f"{found} field{'' if found == 1 else 's'}")
+    for index, field in enumerate(event[1:], start=1):
+        fields.string(field, f"{path}[{index}]", empty=True)
+
+
+def read_sync(fields: FieldReader, value: object) -> None:
+    synced = fields.json_object(value, "sync", required=("default", "checkout", "fast_forward", "behind"))
+    default = fields.json_object(synced["default"], "sync.default", required=("name",), optional=("note",))
+    fields.string(default["name"], "sync.default.name")
+    if "note" in default:
+        fields.string(default["note"], "sync.default.note", empty=True)
+    fields.string(synced["checkout"], "sync.checkout")
+    outcome = fields.array(synced["fast_forward"], "sync.fast_forward", fields.string, nonempty=True)
+    if outcome[0] == "failed" and len(outcome) < 2:
+        raise fields.fail("sync.fast_forward", "a failed outcome with its reason", "no reason")
+    fields.integer(synced["behind"], "sync.behind", minimum=0)
 
 
 def recorded_policy(value: Any) -> bool:
@@ -1147,7 +1344,7 @@ def remove_worktree(
 
 def apply(plan_path: str, services: Services) -> bool:
     """Apply the plan; False when Git refused a deletion or removal."""
-    plan = load_plan(plan_path)
+    plan = plan_in_scope(plan_path)
     if plan["applied"]:
         raise CleanupError(f"this plan was already applied; {SWEEP_AGAIN}")
     plan["applied"] = True
@@ -1228,8 +1425,7 @@ def offer(services: Services, plan: dict[str, Any], located: dict[str, Worktree]
             offer_line(plan, "CONFIRM_LOCAL", branch["name"], branch["worktree"])
     offer_detached(services, plan)
     registered = [tree.path for tree in list_worktrees(services, root)]
-    # orphan_areas is absent from an earlier version's plan.
-    for path in orphan_directories(registered, plan.get("orphan_areas", []), area_anchors(plan)):
+    for path in orphan_directories(registered, plan["orphan_areas"], area_anchors(plan)):
         tracked = tracked_reason(services, plan, path)
         if tracked:
             record(plan, "PRESERVED", path, tracked)
@@ -1239,7 +1435,7 @@ def offer(services: Services, plan: dict[str, Any], located: dict[str, Worktree]
 
 def prune_parents(plan: dict[str, Any], removed: str) -> None:
     """Remove the empty directories a removal left, never at or above the worktree areas or the repository root."""
-    boundaries = [plan["worktree_area"], *plan.get("orphan_areas", []), plan["repo_root"]]
+    boundaries = [plan["worktree_area"], *plan["orphan_areas"], plan["repo_root"]]
     for directory in prune_empty_parents(removed, boundaries):
         record(plan, "PRUNED_DIR", directory)
 
@@ -1425,7 +1621,7 @@ def delete_orphan(services: Services, plan: dict[str, Any], path: str) -> bool:
     deletion never reaches a directory the search did not; then the search must still find it, and no repository
     holding it may track a file in it, as tracked_reason asks again.
     """
-    areas = plan.get("orphan_areas", [])
+    areas = plan["orphan_areas"]
     if not os.path.lexists(path):
         record(plan, "PRESERVED", path, "no longer a directory Git does not track")
         return True
@@ -1453,7 +1649,7 @@ def delete_orphan(services: Services, plan: dict[str, Any], path: str) -> bool:
 
 def remove_directories(plan_path: str, paths: list[str], services: Services) -> bool:
     """Remove the confirmed detached worktrees and orphan directories the plan offered; False when any stayed."""
-    plan = load_plan(plan_path)
+    plan = plan_in_scope(plan_path)
     if not plan["applied"]:
         raise CleanupError(f"this plan was not applied by a sweep; {SWEEP_AGAIN}")
 
@@ -1477,7 +1673,7 @@ def remove_directories(plan_path: str, paths: list[str], services: Services) -> 
 
 def confirm(plan_path: str, names: list[str], services: Services, force: bool) -> bool:
     """Delete the confirmed branches the plan offered; False when Git refused any deletion."""
-    plan = load_plan(plan_path)
+    plan = plan_in_scope(plan_path)
     if not plan["applied"]:
         raise CleanupError(f"this plan was not applied by a sweep; {SWEEP_AGAIN}")
     states = {branch["name"]: branch["pr"] for branch in plan["branches"]}
@@ -1682,9 +1878,16 @@ def plans_location(explicit: str | None) -> Path | None:
 def recorded_location(directory: str) -> Path:
     """The directory an earlier sweep printed and recorded its repositories in, for a sweep that adds to its record.
 
-    Only a directory holding a sweep's record is accepted, so the agent can name no other place for a sweep to write.
+    Only a directory holding a sweep's record is accepted, so the agent can name no other place for a sweep to write,
+    and never one inside a skills directory, which plans_location refuses for --plans: a record copied there would
+    otherwise make it one.
     """
     located = Path(directory)
+    root = skills_directory_holding(located)
+    if root is not None:
+        raise CleanupError(
+            f"{directory} is inside the skills directory {root}; name the directory a sweep printed as PLANS"
+        )
     read_record(located)
     return located
 
@@ -1863,14 +2066,15 @@ def is_entry(entry: Any) -> bool:
 
 
 def read_record(directory: Path) -> tuple[list[dict[str, Any]], list[str]]:
-    """The recorded repositories, and the lines naming the lists the latest sweep used, none for a record an earlier
-    version wrote."""
+    """The recorded repositories, and the lines naming the lists the latest sweep used, from the record as a sweep
+    last saved it."""
     path = directory / SWEEP_RECORD
     if not path.is_file():
         raise CleanupError(f"{directory} holds no sweep record; name the directory a sweep printed as PLANS")
+    data = read_sealed(path, "sweep record")
     try:
-        record = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+        record = json.loads(data.decode("utf-8"))
+    except ValueError as exc:
         raise CleanupError(f"cannot read the sweep record {path}: {exc}") from exc
     if (
         not isinstance(record, dict)
