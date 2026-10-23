@@ -1,13 +1,18 @@
-"""Mutate the Python modules a pull request changes and report the mutants its suites leave alive.
+"""Mutate the lines a pull request changes in its Python modules and report the mutants its suites leave alive.
 
 Usage:
   python -B tools/mutation_gate.py [--base REF] [--minutes N]
 
 The `Mutation` workflow runs it on every pull request, on Linux, where requirements-mutation.txt installs mutmut and
-coverage.py; it is not a required check, and it calls no model and reads no secret. It mutates each module the pull
-request's commits change since the base (`origin/<GITHUB_BASE_REF>`, or origin/main, unless --base names another) under
-deployer/, tools/, a skill's scripts/, or a repository skill's scripts/, leaving out suites, conftest.py, and deleted
-files. mutmut's operators make the mutants, string literals included, each one mutation of the whole module.
+coverage.py; it is not a required check, and it calls no model and reads no secret. It mutates the lines the pull
+request's commits add or change since the base (`origin/<GITHUB_BASE_REF>`, or origin/main, unless --base names
+another), as `git diff -U0` names them, in each module under deployer/, tools/, a skill's scripts/, or a repository
+skill's scripts/, leaving out suites, conftest.py, and deleted files. mutmut's operators make the mutants, string
+literals included, each one mutation of the whole module, and mutmut's own line filter (the `covered_lines` of its
+`create_mutations`) makes them only of a node that starts on a changed line. The gate keeps a mutant only when the
+first line it changes is a changed line too, so a mutation anchored on an expression that starts on an unchanged line,
+such as removing an argument from a call that opens above the change, is left out. A changed module whose changed lines
+yield no mutant is named in the summary, never left out of it.
 
 mutmut's own runner is not used: it records which tests reach a function only inside its pytest process and finds a
 mutant by a module name it derives from the file's path, while the suites here reach most modules through the
@@ -26,15 +31,17 @@ unmutated, or whose coverage data `coverage combine` or `coverage json` fails or
 with the step and its output, never read as a suite that reached nothing. The Bash and PowerShell suites run no Python
 module and are not used.
 
-The run is bounded by --minutes (DEFAULT_MINUTES): the reach pass takes at most half of it, and each module then gets an
-equal share of what is left when it starts, so one large module cannot starve the others. The mutants on the lines the
-pull request changed run first. A mutant the cap leaves untested is counted as not run, and the summary says which
-module the cap cut short. Each module's kill ratio is its killed and timed-out mutants over every mutant it tested.
+When no changed line yields a mutant, no suite runs. Otherwise the run is bounded by --minutes (DEFAULT_MINUTES): the
+reach pass, over the suites that reach a module with a mutant, takes at most half of it, and the mutants then run from
+one queue that takes one mutant from each module in turn, each module's in line order, so a module late in the list
+starts as soon as the first. A mutant the cap leaves untested is counted as not run, and the summary says which module
+the cap cut short. Each module's kill ratio is its killed and timed-out mutants over every mutant it tested.
 
-The report, each module's counts and kill ratio and each surviving mutant by its line, the mutation, and the suites it
-ran against, goes to stdout and to the step summary GITHUB_STEP_SUMMARY names. A pull request that changes no such
-module writes one line saying so. It exits 0 once the gate has run, whatever survived, and 1 when it cannot run: mutmut
-no longer makes the mutant its canary expects, or a git command fails.
+The report, each module's changed lines, counts, and kill ratio, each changed module with no mutant, and each surviving
+mutant by its line, the mutation, and the suites it ran against, goes to stdout and to the step summary
+GITHUB_STEP_SUMMARY names. A pull request that changes no such module writes one line saying so. It exits 0 once the
+gate has run, whatever survived, and 1 when it cannot run: mutmut no longer makes the mutant its canary expects on the
+canary's line alone, or a git command fails.
 """
 
 from __future__ import annotations
@@ -44,6 +51,7 @@ import contextlib
 import difflib
 import importlib
 import importlib.metadata
+import itertools
 import json
 import os
 import queue
@@ -98,6 +106,10 @@ PASSED = "passed"
 # rather than reporting fewer mutants.
 CANARY_SOURCE = "def add(a):\n    return a + 1\n"
 CANARY_MUTANT = "def add(a):\n    return a - 1\n"
+# The canary's mutant must be made when its line is asked for and not when only another line is, so a release that
+# stops honoring the line filter fails the gate rather than mutating whole modules again.
+CANARY_LINE = frozenset({2})
+CANARY_OTHER_LINE = frozenset({1})
 # coverage.py's warnings name what a measured process did not import; a suite that checks a child's stderr would read
 # them as its child's output, so none is printed.
 COVERAGE_WARNINGS = (
@@ -121,7 +133,6 @@ class Mutant:
     before: str
     after: str
     source: str
-    changed: bool
 
 
 @dataclass(frozen=True)
@@ -144,6 +155,8 @@ class ModuleReport:
     module: str
     outcomes: list[Outcome]
     cut_short: bool
+    # How many lines the pull request adds or changes in the module.
+    lines: int
 
 
 @dataclass
@@ -158,7 +171,8 @@ class Report:
     unmeasured_suites: list[str]
 
 
-Generator = Callable[[str, str], list[str]]
+# Makes a module's mutants, each as the module's whole text, of the nodes that start on the given lines.
+Generator = Callable[[str, str, frozenset[int]], list[str]]
 # Runs a suite in a worktree within a time limit and says whether it passed, failed (KILLED), or timed out.
 SuiteRunner = Callable[[Path, str, float], str]
 # Runs a suite unmutated in a worktree, measuring the changed modules, and gives its Reach or why it has none.
@@ -206,33 +220,39 @@ def describe(original: str, mutated: str) -> tuple[int, str, str]:
     raise ValueError("the mutant is the module unchanged")
 
 
-def module_mutants(module: str, source: str, changed: set[int], generate: Generator) -> list[Mutant]:
-    """Every distinct mutant of a module, those on a line the pull request changed first, then in line order."""
+def module_mutants(module: str, source: str, changed: frozenset[int], generate: Generator) -> list[Mutant]:
+    """Every distinct mutant of a module whose first changed line is one the pull request changed, in line order."""
+    if not changed:
+        return []
     mutants = []
-    for text in dict.fromkeys(generate(module, source)):
+    for text in dict.fromkeys(generate(module, source, changed)):
         if text == source:
             continue
         line, before, after = describe(source, text)
-        mutants.append(Mutant(module, line, before, after, text, line in changed))
-    return sorted(mutants, key=lambda mutant: (not mutant.changed, mutant.line))
+        if line in changed:
+            mutants.append(Mutant(module, line, before, after, text))
+    return sorted(mutants, key=lambda mutant: mutant.line)
 
 
-def mutmut_mutants(module: str, source: str) -> list[str]:
-    """Each mutant mutmut's operators make of a module, as the module's whole text with that one mutation.
+def mutmut_mutants(module: str, source: str, lines: frozenset[int]) -> list[str]:
+    """Each mutant mutmut's operators make of a module's nodes that start on `lines`, as the module's whole text with
+    that one mutation.
 
     mutmut reads its configuration, [tool.mutmut] in pyproject.toml, from the working directory, so the mutants are
     made from the repository's root."""
     file_mutation = importlib.import_module("mutmut.mutation.file_mutation")
     with contextlib.chdir(REPOSITORY_ROOT):
-        tree, mutations, _, _ = file_mutation.create_mutations(module, source)
+        tree, mutations, _, _ = file_mutation.create_mutations(module, source, covered_lines=set(lines))
     return [tree.deep_replace(mutation.original_node, mutation.mutated_node).code for mutation in mutations]
 
 
 def generator_problem(generate: Generator) -> str | None:
-    """Why the generator cannot be trusted, or None when it makes the canary's mutant."""
-    if CANARY_MUTANT in generate("canary.py", CANARY_SOURCE):
-        return None
-    return f"the mutant generator no longer turns {CANARY_SOURCE.strip()!r} into {CANARY_MUTANT.strip()!r}"
+    """Why the generator cannot be trusted, or None when it makes the canary's mutant on its line and only there."""
+    if CANARY_MUTANT not in generate("canary.py", CANARY_SOURCE, CANARY_LINE):
+        return f"the mutant generator no longer turns {CANARY_SOURCE.strip()!r} into {CANARY_MUTANT.strip()!r}"
+    if CANARY_MUTANT in generate("canary.py", CANARY_SOURCE, CANARY_OTHER_LINE):
+        return "the mutant generator mutated a line it was not given, so it no longer keeps to the changed lines"
+    return None
 
 
 def suite_environment() -> dict[str, str]:
@@ -432,7 +452,12 @@ def try_mutant(
         path.write_bytes(original)
 
 
-def try_module(
+def queue_order(selected: Iterable[Sequence[Mutant]]) -> list[Mutant]:
+    """Every module's mutants in one queue, one from each module in turn, so no module waits for another's to finish."""
+    return [mutant for turn in itertools.zip_longest(*selected) for mutant in turn if mutant is not None]
+
+
+def try_mutants(
     workers: Workers, mutants: Sequence[Mutant], reach: Mapping[str, Reach], deadline: float, run: SuiteRunner
 ) -> list[Outcome]:
     """Each mutant's outcome, those the deadline leaves untested counted as not run."""
@@ -457,11 +482,6 @@ def run_deadline(started: float, minutes: int) -> float:
 def reach_deadline(started: float, deadline: float) -> float:
     """When the reach pass stops starting suites: once it has taken its share of the run."""
     return started + REACH_SHARE * (deadline - started)
-
-
-def module_deadline(now: float, deadline: float, modules_left: int) -> float:
-    """When a module starting now stops starting mutants: an equal share of what is left among the modules left."""
-    return now + (deadline - now) / modules_left
 
 
 def counts(outcomes: Iterable[Outcome]) -> dict[str, int]:
@@ -493,30 +513,42 @@ def survivor_lines(module: ModuleReport) -> list[str]:
     lines = ["", f"### `{module.module}`: {len(survivors)} surviving {noun}", ""]
     for outcome in survivors:
         mutant = outcome.mutant
-        changed = " (a line this pull request changed)" if mutant.changed else ""
         suites = ", ".join(f"`{suite}`" for suite in outcome.suites)
-        lines.append(
-            f"- Line {mutant.line}{changed}: {code(mutant.before)} became {code(mutant.after)}; passed {suites}"
-        )
+        lines.append(f"- Line {mutant.line}: {code(mutant.before)} became {code(mutant.after)}; passed {suites}")
     return lines
 
 
+def empty_selection_line(module: ModuleReport) -> str:
+    """Why a changed module has no mutant, said so that a selection empty by mistake is seen."""
+    if not module.lines:
+        return f"`{module.module}` keeps no line this pull request added or changed, so it has nothing to mutate."
+    noun = "line" if module.lines == 1 else "lines"
+    return (
+        f"`{module.module}`: mutmut made no mutant on the {module.lines} {noun} this pull request changed, so none ran."
+    )
+
+
 def summary(report: Report) -> str:
-    """The Markdown the run's summary page shows: each module's counts and kill ratio, then each surviving mutant."""
+    """The Markdown the run's summary page shows: each module's changed lines, counts, and kill ratio, each module
+    with no mutant, then each surviving mutant."""
     lines = [
         "## Mutation gate",
         "",
-        f"- Modules changed since `{report.base}`: {len(report.modules)}; mutants made by mutmut {report.mutmut}.",
+        f"- Modules changed since `{report.base}`: {len(report.modules)}; mutants made by mutmut {report.mutmut} on "
+        "the lines the pull request changed.",
         f"- {report.workers} workers ran for {report.seconds / 60:.0f} of the {report.minutes} minutes the gate is "
         "capped at; a mutant ran against the suites that executed its line unmutated, fastest first, until one failed.",
         "",
-        "| Module | Mutants | Killed | Timed out | Survived | Not reached | Not run | Kill ratio |",
-        "|---|---|---|---|---|---|---|---|",
+        "| Module | Changed lines | Mutants | Killed | Timed out | Survived | Not reached | Not run | Kill ratio |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for module in report.modules:
         found = counts(module.outcomes)
-        cells = [str(len(module.outcomes)), *(str(found[status]) for status in found), kill_ratio(found)]
-        lines.append(f"| `{module.module}` | {' | '.join(cells)} |")
+        cells = [str(module.lines), str(len(module.outcomes)), *(str(found[status]) for status in found)]
+        lines.append(f"| `{module.module}` | {' | '.join([*cells, kill_ratio(found)])} |")
+    for module in report.modules:
+        if not module.outcomes:
+            lines += ["", empty_selection_line(module)]
     for module in report.modules:
         if module.cut_short:
             left = counts(module.outcomes)[NOT_RUN]
@@ -552,28 +584,43 @@ class Gate:
     run: SuiteRunner = run_suite
     clock: Clock = time.monotonic
 
-    def mutate(self, trees: Sequence[Path], modules: Sequence[str], started: float) -> Report:
-        """Measure the suites' reach, then test each module's mutants within its share of what time is left."""
-        deadline = run_deadline(started, self.minutes)
-        workers = Workers(trees, self.clock)
-        suites = [
-            suite.relative_to(self.root).as_posix()
-            for suite in reached_suites(self.root, list(modules))
-            if suite.suffix.casefold() == ".py"
-        ]
-        reach, failed, unmeasured = measure_reach(
-            workers, suites, modules, reach_deadline(started, deadline), self.reach
-        )
-        reports = []
-        for index, module in enumerate(modules):
-            share = module_deadline(self.clock(), deadline, len(modules) - index)
+    def select(self, tree: Path, modules: Sequence[str]) -> dict[str, tuple[int, list[Mutant]]]:
+        """Each module's count of changed lines and the mutants of those lines."""
+        selected = {}
+        for module in modules:
             diff = self.git.output(
                 ["diff", "-U0", "--no-color", f"{self.base}...HEAD", "--", module], directory=self.root
             )
-            source = (trees[0] / module).read_bytes().decode("utf-8")
-            mutants = module_mutants(module, source, changed_lines(diff), self.generate)
-            outcomes = try_module(workers, mutants, reach, share, self.run)
-            reports.append(ModuleReport(module, outcomes, any(outcome.status == NOT_RUN for outcome in outcomes)))
+            lines = frozenset(changed_lines(diff))
+            source = (tree / module).read_bytes().decode("utf-8")
+            selected[module] = (len(lines), module_mutants(module, source, lines, self.generate))
+        return selected
+
+    def mutate(self, trees: Sequence[Path], modules: Sequence[str], started: float) -> Report:
+        """Select the mutants of the changed lines, measure the reach of the suites that reach a module with one, then
+        test them from one queue until the cap."""
+        deadline = run_deadline(started, self.minutes)
+        workers = Workers(trees, self.clock)
+        selected = self.select(trees[0], modules)
+        mutated = [module for module in modules if selected[module][1]]
+        reach: dict[str, Reach] = {}
+        failed: dict[str, str] = {}
+        unmeasured: list[str] = []
+        if mutated:
+            suites = [
+                suite.relative_to(self.root).as_posix()
+                for suite in reached_suites(self.root, mutated)
+                if suite.suffix.casefold() == ".py"
+            ]
+            reach, failed, unmeasured = measure_reach(
+                workers, suites, mutated, reach_deadline(started, deadline), self.reach
+            )
+        queue = queue_order(mutants for _, mutants in selected.values())
+        outcomes = try_mutants(workers, queue, reach, deadline, self.run)
+        reports = []
+        for module, (lines, _) in selected.items():
+            found = [outcome for outcome in outcomes if outcome.mutant.module == module]
+            reports.append(ModuleReport(module, found, any(outcome.status == NOT_RUN for outcome in found), lines))
         version = importlib.metadata.version("mutmut") if self.generate is mutmut_mutants else "(a test's generator)"
         return Report(self.base, self.minutes, self.clock() - started, len(trees), version, reports, failed, unmeasured)
 
@@ -594,7 +641,7 @@ class Gate:
 
 
 def parse_arguments(argv: Sequence[str] | None, environment: Mapping[str, str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Mutate a pull request's changed modules and report the survivors.")
+    parser = argparse.ArgumentParser(description="Mutate a pull request's changed lines and report the survivors.")
     parser.add_argument(
         "--base",
         default=f"origin/{environment.get('GITHUB_BASE_REF') or 'main'}",
