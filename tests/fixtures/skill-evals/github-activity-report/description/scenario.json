@@ -4,7 +4,8 @@
   "requests": [
     "What has octocat contributed to the octo-org organization over the last six months?",
     "Show me month by month how many pull requests mona authored, merged, and reviewed in octo-org.",
-    "How many reviews did hubot submit in octo-org recently?"
+    "How many reviews did hubot submit in octo-org recently?",
+    "Compare how many pull requests each member of the octo-org platform team merged per month this year."
   ],
   "near_misses": [
     "Which pull requests need my attention?",
