@@ -30,15 +30,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 from dotnet_solution import read_bounded, read_text
 from flat_text import flat_text
 from msbuild_xml import is_sdk_style, local_name
+from review_io import CONTENT_ERRORS
 from xml_reader import read_xml
 
 INVENTORY_SCHEMA_VERSION = 1
 MAX_SETTINGS = 400
 MAX_FILES_PER_TOOL = 10
 UNREAD = "(present, but could not be parsed; read the file for its settings)"
-# What a parser here raises on content it cannot read: a decode error, which is a ValueError, as are `XmlRefused` and
-# an integer past the interpreter's digit limit; nesting deeper than the recursion limit; and configparser's own errors.
-PARSE_ERRORS = (ValueError, RecursionError, configparser.Error)
+# What a parser here raises on content it cannot read: what json and tomllib raise, `XmlRefused` among the ValueErrors,
+# and configparser's own errors.
+PARSE_ERRORS = (*CONTENT_ERRORS, configparser.Error)
 
 SDK_ANALYZERS = "Microsoft.CodeAnalysis.NetAnalyzers"
 CODE_STYLE_ANALYZERS = {

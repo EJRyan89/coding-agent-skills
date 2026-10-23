@@ -112,9 +112,9 @@ session model and the judged one. A skill with no row has not been run since its
 | review-prs | haiku | claude-haiku-5-5 | 25/27 | 1 | clean-change 2/2, description 5/6, design-clean 2/2, design-gaps 5/5, planted-defects 4/5, re-review 7/7 | claude-haiku-5-5, claude-opus-5-5 | 2.1.302 | 2026-10-22 |
 | review-prs | sonnet | claude-sonnet-5-5 | 27/27 | 1 | clean-change 2/2, description 6/6, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5, claude-sonnet-5-5 | 2.1.302 | 2026-10-22 |
 | review-prs | opus | claude-opus-5-5 | 27/27 | 1 | clean-change 2/2, description 6/6, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.302 | 2026-10-22 |
-| review-repository | haiku | claude-haiku-5-5 | 5/5 | 1 | drifted-guide 2/2, tested-change 1/1, undocumented-change 1/1, untested-change 1/1 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
-| review-repository | sonnet | claude-sonnet-5-5 | 5/5 | 1 | drifted-guide 2/2, tested-change 1/1, undocumented-change 1/1, untested-change 1/1 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
-| review-repository | opus | claude-opus-5-5 | 5/5 | 1 | drifted-guide 2/2, tested-change 1/1, undocumented-change 1/1, untested-change 1/1 | claude-opus-5-5 | 2.1.291 | 2026-10-13 |
+| review-repository | haiku | claude-haiku-5-5 | 11/11 | 1 | branch-name-command 1/1, build-grant 1/1, drifted-guide 2/2, misstated-exit-status 1/1, tested-change 1/1, text-read-policy 1/1, undocumented-change 1/1, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.302 | 2026-10-23 |
+| review-repository | sonnet | claude-sonnet-5-5 | 11/11 | 1 | branch-name-command 1/1, build-grant 1/1, drifted-guide 2/2, misstated-exit-status 1/1, tested-change 1/1, text-read-policy 1/1, undocumented-change 1/1, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.302 | 2026-10-23 |
+| review-repository | opus | claude-opus-5-5 | 8/11 | 1 | branch-name-command 0/1, build-grant 1/1, drifted-guide 2/2, misstated-exit-status 1/1, tested-change 0/1, text-read-policy 0/1, undocumented-change 1/1, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.302 | 2026-10-23 |
 <!-- skill-evals:end -->
 
 ### Notes

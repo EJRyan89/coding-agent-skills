@@ -28,6 +28,7 @@ from review_config import (
 )
 from review_io import PersistenceError
 from test_review_config_validation import ABSOLUTE_PATH, CONTAINER_CASES, _config, native
+from test_review_io import UNPARSEABLE_JSON
 from test_review_records import field_pattern
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
@@ -147,7 +148,7 @@ class ConfigCommandTests(unittest.TestCase):
         broken.write_text('{"schema_version": 1,', encoding="utf-8")
         undecodable = self.root / "undecodable.json"
         undecodable.write_bytes(b'{"github_login": "caf\xe9"}')
-        cases = (
+        cases: list[tuple[Path, str]] = [
             (
                 self.write_json("invalid.json", {**valid_config(), "runtime": "nowhere"}),
                 'config.runtime must be one of "auto", "claude-code", "codex", "copilot-cli", found string "nowhere"',
@@ -155,7 +156,10 @@ class ConfigCommandTests(unittest.TestCase):
             (broken, "Expecting property name enclosed in double quotes"),
             (undecodable, "can't decode byte 0xe9"),
             (self.root / "absent.json", "absent.json"),
-        )
+        ]
+        for index, content in enumerate(UNPARSEABLE_JSON.values()):
+            (unparseable := self.root / f"unparseable {index}.json").write_bytes(content)
+            cases.append((unparseable, ""))  # its reason is the parser's own, which only has to end as a FAILED line
         for candidate, reason in cases:
             with self.subTest(candidate=candidate.name):
                 code, out, err = self.run_main("write", str(candidate), "--output", str(output))

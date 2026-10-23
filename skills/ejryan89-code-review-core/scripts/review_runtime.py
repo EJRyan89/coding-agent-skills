@@ -32,7 +32,7 @@ from link_probe import is_link_or_junction
 from review_config import REVIEWER_EFFORTS, validate_glob_patterns, validate_repository_identity
 from review_documents import DOCUMENT_FORMATS, EXTRACTED_WHEN_TEXT, ExtractionRefused, document_format, extract
 from review_guard import ROLE_ID as SLUG
-from review_io import PersistenceError, atomic_write_json, read_diff
+from review_io import CONTENT_ERRORS, PersistenceError, atomic_write_json, parse_json, read_diff
 from review_records import SUITE_PROFILE_PREFIX, is_suite_profile
 from review_vocabularies import DispatchMode
 from typed_fields import FieldError, FieldReader
@@ -888,11 +888,12 @@ def load_manifest_from_commit(
     runner: Runner = subprocess_runner,
 ) -> dict[str, Any]:
     relative = _safe_relative_path(manifest_path, "manifest_path")
+    content = _read_git_file(checkout, commit, relative, runner)  # its own refusals are RuntimeContractErrors already
     try:
-        content = _read_git_file(checkout, commit, relative, runner).decode("utf-8-sig")
-        return validate_adapter_manifest(json.loads(content))
-    except (UnicodeError, json.JSONDecodeError) as exc:
+        manifest = parse_json(content.decode("utf-8-sig"))
+    except CONTENT_ERRORS as exc:
         raise RuntimeContractError(f"Adapter manifest is not valid UTF-8 JSON: {exc}") from exc
+    return validate_adapter_manifest(manifest)
 
 
 MAX_LOCAL_MANIFEST_BYTES = 1024 * 1024
@@ -911,9 +912,12 @@ def load_manifest_from_file(path: Path) -> dict[str, Any]:
             raise RuntimeContractError(f"Local reviewer manifest is not a regular file: {path}")
         if path.stat().st_size > MAX_LOCAL_MANIFEST_BYTES:
             raise RuntimeContractError(f"Local reviewer manifest is too large: {path}")
-        manifest = validate_adapter_manifest(json.loads(path.read_text(encoding="utf-8-sig")))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        value = parse_json(path.read_text(encoding="utf-8-sig"))
+    except RuntimeContractError:
+        raise
+    except (OSError, *CONTENT_ERRORS) as exc:
         raise RuntimeContractError(f"Local reviewer manifest is not valid UTF-8 JSON: {path}: {exc}") from exc
+    manifest = validate_adapter_manifest(value)
     for relative in local_reviewer_files(manifest):
         target = path.parent.joinpath(*PurePosixPath(relative).parts)
         if not target.is_file():
@@ -1330,8 +1334,8 @@ def _read_snapshot_metadata(root: Path) -> tuple[Any, str]:
     metadata_path = root / SOURCE_SNAPSHOT_MANIFEST
     try:
         content = metadata_path.read_bytes()
-        metadata = json.loads(content.decode("utf-8-sig"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        metadata = parse_json(content.decode("utf-8-sig"))
+    except (OSError, *CONTENT_ERRORS) as exc:
         raise RuntimeContractError(f"Source snapshot metadata is invalid: {exc}") from exc
     READ.json_object(
         metadata, SOURCE_SNAPSHOT_MANIFEST, required=SOURCE_SNAPSHOT_FIELDS, optional=SNAPSHOT_OPTIONAL_FIELDS

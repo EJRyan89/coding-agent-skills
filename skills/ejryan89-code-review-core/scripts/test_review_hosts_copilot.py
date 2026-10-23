@@ -28,6 +28,7 @@ from review_hosts import HostSuperseded, ProcessResult, run_copilot
 from review_runtime import RuntimeContractError, RuntimeContractFieldError, stamp_source_snapshot
 from review_specialists import render_entrypoint_prompt
 from test_job_tree import SHORT_LIMIT_SECONDS, FailingKernel, SignalledTree, ended
+from test_review_io import LONE_SURROGATE, UNPARSEABLE_JSON
 
 HEAD = "b" * 40
 SOURCE = b"class Example {}\n"
@@ -914,6 +915,23 @@ class CopilotHostTests(unittest.TestCase):
             with self.subTest(name):
                 self.assert_refused(mutation(Copilot()), outcome)
 
+    def test_a_request_or_result_the_parser_refuses_is_refused_as_invalid(self) -> None:
+        for reason, content in {**UNPARSEABLE_JSON, "a lone surrogate": LONE_SURROGATE}.items():
+            with self.subTest(file="result", reason=reason):
+                paths = self.materialize(copilot := _change("writes", content)(Copilot()))
+                raised = self.call(copilot, paths)[1]
+                self.assertIs(RuntimeContractError, type(raised), raised)
+                self.assertRegex(str(raised), r"\AGitHub Copilot CLI result is not valid JSON: .")
+                self.assertFalse(paths["result"].exists())
+            if reason == "not UTF-8":  # the request is written as text
+                continue
+            with self.subTest(file="request", reason=reason):
+                paths = self.materialize(copilot := _change("request_text", content.decode())(Copilot()))
+                raised = self.call(copilot, paths)[1]
+                self.assertIs(RuntimeContractError, type(raised), raised)
+                # Refused for its content, never read far enough to miss the request's first field.
+                self.assertRegex(str(raised), r"\ACopilot request source snapshot is invalid: (?!'pull_request'\Z).")
+
     def test_faults_are_detected_in_order(self) -> None:
         # With the fault of every check from k on present at once, check k's fault is the one reported.
         stages = {name: (mutation, outcome) for name, mutation, outcome in REFUSED}
@@ -1011,6 +1029,15 @@ class MaterializationRecordTests(unittest.TestCase):
     def test_a_valid_record_names_its_entrypoint(self) -> None:
         self.write(_materialization())
         self.assertEqual(self.root / "SKILL.md", review_hosts.materialized_reviewer_entrypoint(self.root))
+
+    def test_a_record_the_parser_refuses_is_refused_as_invalid(self) -> None:
+        for reason, content in {**UNPARSEABLE_JSON, "a lone surrogate": LONE_SURROGATE}.items():
+            with self.subTest(reason):
+                (self.root / "materialization.json").write_bytes(content)
+                with self.assertRaisesRegex(
+                    RuntimeContractError, r"\ACopilot reviewer materialization metadata is invalid: ."
+                ):
+                    review_hosts.materialized_reviewer_entrypoint(self.root)
 
     def test_each_field_of_the_wrong_kind_is_refused(self) -> None:
         for name, record, message in MATERIALIZATION_KINDS:

@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 from console import run_main
 from github_logins import is_login
-from review_io import PersistenceError, atomic_write_json, read_json
+from review_io import CONTENT_ERRORS, PersistenceError, atomic_write_json, read_json
 from review_vocabularies import SEVERITIES, Severity
 from typed_fields import FieldError, FieldReader, describe
 
@@ -605,7 +605,7 @@ def _main(arguments: list[str] | None = None) -> int:
             write_config(value, path)
             print(f"WROTE {path}")
         return 0
-    except (ConfigurationError, PersistenceError, OSError, UnicodeError, json.JSONDecodeError) as exc:
+    except (ConfigurationError, PersistenceError, OSError, *CONTENT_ERRORS) as exc:
         print(f"FAILED {exc}")
         return 1
 

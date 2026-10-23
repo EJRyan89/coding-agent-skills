@@ -383,6 +383,8 @@ class StateAndLockTests(unittest.TestCase):
             "null": b"null",
             "an integer": b"4242",
             "not UTF-8": b'{"token": "\xff"}',
+            "nested past the recursion limit": b'{"token": ' + b"[" * 30_000 + b"]" * 30_000 + b"}",
+            "an over-long integer": b'{"token": ' + b"9" * (sys.get_int_max_str_digits() + 1) + b"}",
             "oversized": b'{"token": "' + b"a" * (64 * 1024) + b'"}',
         }
         for name, content in cases.items():

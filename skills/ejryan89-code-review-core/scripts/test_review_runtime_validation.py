@@ -10,6 +10,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -33,6 +34,7 @@ from review_runtime import (
     validate_adapter_manifest,
     verify_source_snapshot,
 )
+from test_review_io import LONE_SURROGATE, UNPARSEABLE_JSON
 
 HEAD = "a" * 40
 APP = b"print('app')\n"
@@ -887,6 +889,17 @@ class SourceSnapshotVerificationTests(unittest.TestCase):
                 files = sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))
                 self.assertEqual(expected, self.verify(snapshot, root))
                 self.assertEqual(files, sorted(path.relative_to(root).as_posix() for path in root.rglob("*")))
+
+    def test_a_manifest_the_parser_refuses_is_invalid_metadata(self) -> None:
+        for reason, content in {**UNPARSEABLE_JSON, "a lone surrogate": LONE_SURROGATE}.items():
+            with self.subTest(reason):
+                snapshot = _attribute("manifest", content)(_snapshot())
+                root = self.materialize(snapshot)
+                with self.assertRaisesRegex(
+                    RuntimeContractError, r"\ASource snapshot metadata is invalid: ."
+                ) as caught:
+                    self.verify(snapshot, root)
+                self.assertIs(RuntimeContractError, type(caught.exception))
 
     def test_the_metadata_comes_back_as_written(self) -> None:
         snapshot = _meta("repository", "Owner/Repo")(_snapshot())
@@ -2283,6 +2296,51 @@ class AdapterManifestValidationTests(unittest.TestCase):
                                 review_runtime.load_manifest_from_commit(root, HEAD, "manifest.json")
                         self.assertIs(error, type(caught.exception))
                         self.assertEqual(message, str(caught.exception))
+
+    def test_manifest_loaders_keep_their_own_refusals_apart_from_a_parse_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            folder = root / "manifest folder"
+            folder.mkdir()
+            large = root / "large.json"
+            large.write_bytes(b" " * (review_runtime.MAX_LOCAL_MANIFEST_BYTES + 1))
+            for path, message in (
+                (folder, f"Local reviewer manifest is not a regular file: {folder}"),
+                (large, f"Local reviewer manifest is too large: {large}"),
+            ):
+                with self.subTest(message=message), self.assertRaises(RuntimeContractError) as caught:
+                    review_runtime.load_manifest_from_file(path)
+                self.assertEqual(message, str(caught.exception))
+            missing = RuntimeContractError("Declared reviewer file is missing: manifest.json")
+            with (
+                mock.patch.object(review_runtime, "_read_git_file", side_effect=missing),
+                self.assertRaises(RuntimeContractError) as caught,
+            ):
+                review_runtime.load_manifest_from_commit(root, HEAD, "manifest.json")
+            self.assertIs(missing, caught.exception)
+
+    def test_manifest_loaders_refuse_content_the_parser_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            path = root / "manifest.json"
+            for reason, content in {**UNPARSEABLE_JSON, "a lone surrogate": LONE_SURROGATE}.items():
+                path.write_bytes(content)
+                with self.subTest(reason=reason, source="file"):
+                    with self.assertRaisesRegex(
+                        RuntimeContractError,
+                        rf"\ALocal reviewer manifest is not valid UTF-8 JSON: {re.escape(str(path))}: .",
+                    ) as caught:
+                        review_runtime.load_manifest_from_file(path)
+                    self.assertIs(RuntimeContractError, type(caught.exception))
+                with self.subTest(reason=reason, source="commit"):
+                    with (
+                        mock.patch.object(review_runtime, "_read_git_file", return_value=content),
+                        self.assertRaisesRegex(
+                            RuntimeContractError, r"\AAdapter manifest is not valid UTF-8 JSON: ."
+                        ) as caught,
+                    ):
+                        review_runtime.load_manifest_from_commit(root, HEAD, "manifest.json")
+                    self.assertIs(RuntimeContractError, type(caught.exception))
 
 
 class ReservedPathMaterializationTests(unittest.TestCase):
