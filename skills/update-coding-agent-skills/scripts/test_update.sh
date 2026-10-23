@@ -125,13 +125,14 @@ EOF
 # set, and exits with $FAKE_DEPLOY_EXIT. A deployment that succeeds records the commit it ran from, or the commit --at
 # names and the ref as its pin, as the real one does, and check names that commit and the pin, or prints
 # $FAKE_CHECK_OUTPUT when it is set, and exits with $FAKE_CHECK_EXIT. Like the real one, it refuses to replace a
-# recorded pin without --at or --unpin.
+# recorded pin without --unpin: with --at only a pin at another commit that is not the full name of the last release
+# its commit holds, and without --at any pin.
 UPSTREAM="$FIXTURE/upstream.git"
 SEED="$FIXTURE/seed"
 git_quiet init --bare -b main "$UPSTREAM"
 git_quiet init -b main "$SEED"
 cat >"$SEED/deploy.py" <<'EOF'
-import os, subprocess, sys
+import os, re, subprocess, sys
 here = os.path.dirname(os.path.abspath(__file__))
 record = os.path.join(here, ".fake-deployed")
 arguments = sys.argv[1:]
@@ -156,15 +157,19 @@ if "FAKE_DEPLOY_STDERR" in os.environ:
     print(os.environ["FAKE_DEPLOY_STDERR"], file=sys.stderr)
 code = int(os.environ.get("FAKE_DEPLOY_EXIT", "0"))
 at = arguments[arguments.index("--at") + 1] if "--at" in arguments else None
-if code == 0 and pin and at is None and "--unpin" not in arguments:
+def git_lines(*command):
+    return subprocess.run(["git", "-C", here, *command], capture_output=True, text=True, check=True).stdout.split()
+def release_pin():
+    releases = [tag for tag in git_lines("tag", "--merged", commit) if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag)]
+    last = max(releases, key=lambda tag: tuple(int(part) for part in tag[1:].split(".")), default=None)
+    return last is not None and pin == "refs/tags/" + last
+named = git_lines("rev-parse", "--verify", (at or "HEAD") + "^{commit}")[0] if code == 0 else None
+if code == 0 and pin and "--unpin" not in arguments and (at is None or (named != commit and not release_pin())):
     print(f"ERROR: Refusing to replace the deployment pinned with --at {pin} to {commit} without --unpin.", file=sys.stderr)
     code = 1
 if code == 0:
-    named = subprocess.run(
-        ["git", "-C", here, "rev-parse", "--verify", (at or "HEAD") + "^{commit}"], capture_output=True, text=True, check=True
-    )
     with open(record, "w", encoding="utf-8") as recorded:
-        recorded.write(named.stdout.strip() + ("\n" + at if at else ""))
+        recorded.write(named + ("\n" + at if at else ""))
 raise SystemExit(code)
 EOF
 printf '__pycache__/\n.fake-deployed\n' >"$SEED/.gitignore"
@@ -865,16 +870,41 @@ expect_first_line "UP_TO_DATE $(head_of "$CLONE" HEAD)" "check failed"
 expect_no_stderr "check failed"
 expect_deployed "check failed"
 
-# With no deployed commit to read, from a check that names none or prints nothing, the installed version is unknown,
-# which any release on origin/main raises, until --cross-major accepts it.
-begin_case 'no deployed commit'
-for CHECK_OUTPUT in "Deployed commit: unknown" ""; do
-  FAKE_CHECK_OUTPUT=$CHECK_OUTPUT FAKE_CHECK_EXIT=1 run_subject "$CLONE" main
-  expect_status 1 "no deployed commit '$CHECK_OUTPUT'"
-  expect_first_line "MAJOR_UPDATE unknown..v3.0.0" "no deployed commit '$CHECK_OUTPUT'"
-  expect_no_stderr "no deployed commit '$CHECK_OUTPUT'"
-  expect_not_deployed "no deployed commit '$CHECK_OUTPUT'"
+# A check that names no deployed commit and pin the update can read leaves whether the installation is pinned unknown,
+# so the update stops on either channel before anything is fetched, with or without --unpin or --cross-major, rather
+# than deploy over a pin it could not see: a check that prints nothing, one that prints only its error, and a line
+# that names neither a full commit nor unknown, or a pin without a ref or with one no ref could be.
+begin_case 'pin unknown'
+FETCHED=$(git -C "$CLONE" rev-parse origin/main)
+for CHECK in "1|" "0|" "1|ERROR: Could not read the manifest." "0|Deployed commit: v3.0.0" \
+  "0|Deployed commit: v3.0.0 (abc1234)" "0|Deployed commit: $PINNED_COMMIT, pinned with --at " \
+  "0|Deployed commit: unknown, pinned with --at v1.0.0 extra"; do
+  CODE=${CHECK%%|*}
+  CHECK_OUTPUT=${CHECK#*|}
+  case "$CHECK_OUTPUT" in
+    "") REASON="deploy.py check exited $CODE and printed nothing" ;;
+    "Deployed commit: "*) REASON="deploy.py check printed: $CHECK_OUTPUT" ;;
+    *) REASON="deploy.py check exited $CODE without naming the deployed commit: $CHECK_OUTPUT" ;;
+  esac
+  for ARGUMENTS in "main" "release" "release --cross-major" "main --cross-major --unpin"; do
+    read -r -a SPLIT <<<"$ARGUMENTS"
+    FAKE_CHECK_OUTPUT=$CHECK_OUTPUT FAKE_CHECK_EXIT=$CODE run_subject "$CLONE" "${SPLIT[@]}"
+    [ "$OUTPUT" = "FAILED cannot read whether the installation is pinned: $REASON" ] ||
+      fail "pin unknown '$CHECK' $ARGUMENTS: got: $OUTPUT"
+    expect_failed "FAILED" "pin unknown '$CHECK' $ARGUMENTS"
+    [ "$(cat "$FAKE_DEPLOY_LOG")" = "check" ] || fail "pin unknown '$CHECK' $ARGUMENTS: ran: $(cat "$FAKE_DEPLOY_LOG")"
+    [ "$(git -C "$CLONE" rev-parse origin/main)" = "$FETCHED" ] || fail "pin unknown '$CHECK' $ARGUMENTS: fetched"
+  done
 done
+
+# With no deployed commit to read, from a check that names none, the installed version is unknown, which any release
+# on origin/main raises, until --cross-major accepts it.
+begin_case 'no deployed commit'
+FAKE_CHECK_OUTPUT="Deployed commit: unknown" FAKE_CHECK_EXIT=1 run_subject "$CLONE" main
+expect_status 1 "no deployed commit"
+expect_first_line "MAJOR_UPDATE unknown..v3.0.0" "no deployed commit"
+expect_no_stderr "no deployed commit"
+expect_not_deployed "no deployed commit"
 FAKE_CHECK_OUTPUT="Deployed commit: unknown" run_subject "$CLONE" main --cross-major
 expect_status 0 "no deployed commit accepted"
 grep -qx "CROSSED unknown..v3.0.0" <<<"$OUTPUT" || fail "no deployed commit accepted: crossing not named: $OUTPUT"
@@ -1036,6 +1066,27 @@ for TAG in refs/tags/main refs/tags/origin/main; do
 done
 expect_deployed "tag after the check"
 
+# A reading Git cannot give is a named failure, never an empty answer: the clone's tags, which would otherwise read as
+# no shadowing tag, and the list of repository-selecting variables, which would otherwise leave every one in place.
+begin_case 'readings git cannot give'
+for READING in "for-each-ref --format=%(refname) refs/tags/main|FAILED cannot read the clone's tags: " \
+  "rev-parse --local-env-vars|FAILED cannot list git's repository-selecting variables: "; do
+  new_clone
+  FETCHED=$(git -C "$CLONE" rev-parse origin/main)
+  publish "change while git cannot give: ${READING%%|*}"
+  cat >"$WRAPPER/git" <<EOF
+#!/usr/bin/env bash
+case " \$* " in
+  *" ${READING%%|*} "*) echo "fatal: refused by the test" >&2; exit 128 ;;
+esac
+exec "$(command -v git)" "\$@"
+EOF
+  PATH="$WRAPPER:$PATH" run_subject "$CLONE" main
+  expect_failed "${READING#*|}fatal: refused by the test" "git cannot give ${READING%%|*}"
+  [ "$(git -C "$CLONE" rev-parse origin/main)" = "$FETCHED" ] || fail "git cannot give ${READING%%|*}: fetched"
+  expect_not_deployed "git cannot give ${READING%%|*}"
+done
+
 # The release channel deploys the highest release tag origin/main holds through deploy.py --at with the tag's full
 # name, lists the commits it adds to the deployed one, and leaves the clone on main at origin/main: the commits on main
 # since, a pre-release tag, and a tag that is not a version do not move it.
@@ -1144,14 +1195,42 @@ expect_first_line "UP_TO_DATE v4.2.0" "user pin at the release"
 expect_deployed "user pin at the release" "--all --at refs/tags/v4.2.0"
 [ "$(recorded_line 2)" = "refs/tags/v4.2.0" ] || fail "user pin at the release: the pin is $(recorded_line 2)"
 
-# With --unpin the release channel moves a user's pin to the release through --at, which needs no --unpin.
-begin_case 'user pin unpinned'
+# A user's pin check cannot read stops the release channel too, before the fetch, and --cross-major does not move it:
+# without a deployed commit the update would otherwise stop only at the major release, and once accepted, deploy.
+begin_case 'user pin check cannot read'
 printf '%s\nv4.1.0\n' "$V41" >"$CLONE/.fake-deployed"
+FETCHED=$(git -C "$CLONE" rev-parse origin/main)
+for ARGUMENTS in "release" "release --cross-major"; do
+  read -r -a SPLIT <<<"$ARGUMENTS"
+  FAKE_CHECK_OUTPUT="" FAKE_CHECK_EXIT=1 run_subject "$CLONE" "${SPLIT[@]}"
+  expect_failed "FAILED cannot read whether the installation is pinned: deploy.py check exited 1 and printed nothing" \
+    "user pin check cannot read $ARGUMENTS"
+  expect_not_deployed "user pin check cannot read $ARGUMENTS"
+  [ "$(git -C "$CLONE" rev-parse origin/main)" = "$FETCHED" ] || fail "user pin check cannot read $ARGUMENTS: fetched"
+  [ "$(recorded_line 2)" = "v4.1.0" ] || fail "user pin check cannot read $ARGUMENTS: the pin is $(recorded_line 2)"
+done
+
+# A user's pin check does not name, as when the pin was made after check ran, still stops the release channel: the
+# deployer refuses to replace it through --at without --unpin, and the update ends with DEPLOY_PINNED after the
+# fast-forward, deploying nothing.
+begin_case 'user pin the release channel deploys over'
+FAKE_CHECK_OUTPUT="Deployed commit: v4.1.0 ($V41)" run_subject "$CLONE" release
+expect_status 1 "user pin the release channel deploys over"
+expect_first_line "UPDATED $(git -C "$CLONE" rev-parse --short "$V41")..v4.2.0" "user pin the release channel deploys over"
+[ "$(printf '%s\n' "$OUTPUT" | tail -n 1)" = "DEPLOY_PINNED v4.1.0 $V41" ] ||
+  fail "user pin the release channel deploys over: expected DEPLOY_PINNED v4.1.0 $V41 last, got: $OUTPUT"
+expect_deployed "user pin the release channel deploys over" "--all --at refs/tags/v4.2.0"
+[ "$(recorded_line 2)" = "v4.1.0" ] || fail "user pin the release channel deploys over: the pin is $(recorded_line 2)"
+
+# With --unpin the release channel moves a user's pin to the release through --at, passing --unpin to the deployer,
+# which refuses to replace a user's pin without it.
+begin_case 'user pin unpinned'
 run_subject "$CLONE" release --unpin
 expect_status 0 "user pin unpinned"
 expect_first_line "UPDATED $(git -C "$CLONE" rev-parse --short "$V41")..v4.2.0" "user pin unpinned"
 grep -q " release four two$" <<<"$OUTPUT" || fail "user pin unpinned: commit since the pin not listed: $OUTPUT"
-expect_deployed "user pin unpinned" "--all --at refs/tags/v4.2.0"
+expect_deployed "user pin unpinned" "--all --at refs/tags/v4.2.0 --unpin"
+[ "$(recorded_line 2)" = "refs/tags/v4.2.0" ] || fail "user pin unpinned: the pin is $(recorded_line 2)"
 
 # A release that raises the breaking component stops the release channel at that tag, listing the commits up to it
 # and none after, until --cross-major.

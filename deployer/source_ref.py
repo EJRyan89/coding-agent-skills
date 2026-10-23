@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from flat_text import flat_text
+from release_tags import TAGS, highest_release
 
 from . import fsops, platform_support, tools
 from .arguments import usage_error
@@ -75,6 +76,22 @@ def resolve(source_dir: Path, ref: str) -> Pin:
             see_recovery(EARLIER_COMMIT),
         )
     return Pin(ref, commit)
+
+
+def is_release_pin(source_dir: Path, ref: str | None, commit: str | None) -> bool:
+    """Whether a pin is update-coding-agent-skills' own: its ref is refs/tags/<the last release its commit holds>.
+
+    The release channel pins each release by its tag's full name, so a pin with a short name, another tag, or a tag a
+    later release on the same commit has overtaken is the user's. A pin whose tags git cannot read counts as the
+    user's, so a failure never lets a run replace it.
+    """
+    if ref is None or commit is None or not ref.startswith(TAGS) or not (source_dir / ".git").exists():
+        return False
+    result = _git(source_dir, "for-each-ref", f"--merged={commit}", "--format=%(refname)", TAGS)
+    if result.returncode != 0:
+        return False
+    release = highest_release(line.removeprefix(TAGS) for line in result.output.splitlines())
+    return release is not None and ref == f"{TAGS}{release}"
 
 
 def export(source_dir: Path, commit: str) -> Path:

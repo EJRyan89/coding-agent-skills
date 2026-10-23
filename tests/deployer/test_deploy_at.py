@@ -193,12 +193,52 @@ class DeployAtTests(DeployerTestCase):
             with self.subTest(arguments=arguments):
                 self.assertNotIn("Replaced the deployment pinned", self.deploy_ok(*arguments).output)
 
-    def test_another_ref_moves_the_pin_without_unpin(self) -> None:
-        self.deploy_ok("--all", "--at", "v1.0.0")
-        output = self.deploy_ok("--all", "--at", "main").output
-        self.assertIn(f"\nReplaced the deployment pinned with --at v1.0.0 to v1.0.0 ({self.release}).\n", output)
-        entry = self.manifest()["sources"][SOURCE_ID]
-        self.assertEqual((self.head, "main"), (entry["source_commit"], entry["source_ref"]))
+    def test_another_ref_over_a_users_pin_is_refused_until_unpin(self) -> None:
+        # update-coding-agent-skills' release channel deploys with --at, so a copy of it that could not read a pin, or
+        # one from a commit before it stopped at a pin on that channel, is held here: the refusal ends that update with
+        # DEPLOY_PINNED. A pin with a tag's short name, a commit, or a tag that is not a release is the user's.
+        git(self.source, "tag", "latest", self.release)
+        described = f"{git(self.source, 'describe', '--tags', '--always', self.release)} ({self.release})"
+        for pin in ("v1.0.0", "refs/tags/latest", self.release):
+            with self.subTest(pin=pin):
+                self.deploy_ok("--all", "--at", pin, "--unpin")
+                for arguments in (("--all", "--at", "main"), ("--all", "--at", "main", "--dry-run")):
+                    result = self.deploy_fails(*arguments, pattern=r"ERROR: Refusing to replace the deployment pinned")
+                    self.assertEqual(1, result.code)
+                    self.assertIn(
+                        f"ERROR: Refusing to replace the deployment pinned with --at {pin} to {described} without "
+                        "--unpin.\n"
+                        f"To move it to main, rerun with --unpin, as in '{DEPLOY_COMMAND} --all --at main --unpin'; to "
+                        "keep the pin, change nothing.\n"
+                        'See "Deploying an earlier commit" in docs/recovery.md.\n',
+                        result.output,
+                    )
+                    entry = self.manifest()["sources"][SOURCE_ID]
+                    self.assertEqual((self.release, pin), (entry["source_commit"], entry["source_ref"]))
+                output = self.deploy_ok("--all", "--at", "main", "--unpin").output
+                self.assertIn(f"\nReplaced the deployment pinned with --at {pin} to {described}.\n", output)
+                entry = self.manifest()["sources"][SOURCE_ID]
+                self.assertEqual((self.head, "main"), (entry["source_commit"], entry["source_ref"]))
+
+    def test_another_ref_over_a_release_pin_a_later_release_on_its_commit_overtook_is_refused(self) -> None:
+        # A later release tagged on the pinned commit makes refs/tags/v1.0.0 no longer the last release that commit
+        # holds, so the pin reads as the user's, as update-coding-agent-skills reads it.
+        self.deploy_ok("--all", "--at", "refs/tags/v1.0.0")
+        git(self.source, "tag", "v1.0.1", self.release)
+        self.deploy_fails("--all", "--at", "main", pattern=r"ERROR: Refusing to replace the deployment pinned")
+        self.assertEqual("refs/tags/v1.0.0", self.manifest()["sources"][SOURCE_ID]["source_ref"])
+
+    def test_a_release_pin_is_the_full_name_of_the_last_release_its_commit_holds(self) -> None:
+        git(self.source, "tag", "v1.1.0")
+        self.assertTrue(source_ref.is_release_pin(self.source, "refs/tags/v1.0.0", self.release))
+        self.assertTrue(source_ref.is_release_pin(self.source, "refs/tags/v1.1.0", self.head))
+        for ref, commit in (("v1.0.0", self.release), ("refs/tags/v1.0.0", self.head), ("refs/heads/main", self.head)):
+            with self.subTest(ref=ref, commit=commit):
+                self.assertFalse(source_ref.is_release_pin(self.source, ref, commit))
+        # A pin whose tags git cannot read counts as the user's, so a failure never lets a run replace it.
+        failed = platform_support.ToolResult(128, "fatal: refused by the test\n")
+        with mock.patch.object(source_ref, "_git", return_value=failed):
+            self.assertFalse(source_ref.is_release_pin(self.source, "refs/tags/v1.0.0", self.release))
 
     def test_the_uninstall_removes_a_pinned_deployment_without_unpin(self) -> None:
         # Answering none is the explicit removal, so it needs no flag; the pin goes with the items it pinned.
@@ -224,7 +264,7 @@ class DeployAtTests(DeployerTestCase):
         script = REPOSITORY_ROOT / "skills" / "update-coding-agent-skills" / "scripts" / "update.sh"
         text = script.read_text(encoding="utf-8")
         self.assertIn('PIN_MARK=", pinned with --at "', text)
-        self.assertIn('grep -m 1 -e "^Deployed commit: ")', text)
+        self.assertIn('grep -m 1 -e "^Deployed commit: " <<<"$CHECK_OUTPUT")', text)
         self.assertIn('*"$PIN_MARK"*) PIN_REF=', text)
         self.deploy_ok("--all", "--at", "v1.0.0")
         self.assertIn(f"\nDeployed commit: v1.0.0 ({self.release}), pinned with --at v1.0.0\n", self.check().output)
@@ -483,7 +523,7 @@ class DeployAtTests(DeployerTestCase):
             pattern=r"--at cannot be combined with --migrate-from",
         )
 
-    def test_unpin_cannot_be_combined_with_at_or_migrate_from(self) -> None:
-        for other in (("--at", "v1.0.0"), ("--migrate-from", "old/skills")):
-            with self.subTest(other=other):
-                self.deploy_fails("--unpin", *other, code=2, pattern=f"--unpin cannot be combined with {other[0]}")
+    def test_unpin_cannot_be_combined_with_migrate_from(self) -> None:
+        self.deploy_fails(
+            "--unpin", "--migrate-from", "old/skills", code=2, pattern="--unpin cannot be combined with --migrate-from"
+        )
