@@ -9,11 +9,11 @@ import subprocess
 import sys
 import unittest
 from collections.abc import Callable, Sequence
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 from unittest import mock
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import pytest
 
@@ -33,6 +33,7 @@ from github_activity_report import (
     render_report,
 )
 from github_client import BACKOFF, CommandResult, GitHubError, subprocess_runner
+from skill_roots import SKILLS_ROOT
 
 SPAN = re.compile(r"(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})")
 SECONDARY_LIMIT = "gh: You have exceeded a secondary rate limit. (HTTP 403)"
@@ -964,3 +965,270 @@ def test_invalid_arguments_are_rejected_before_querying(arguments: list[str]) ->
     code, _, _ = run_report(arguments, GitHubSearchClient(run, Recorder()))
     assert code == 2
     assert calls == []
+
+
+class GroupGitHub(FakeGitHub):
+    """FakeGitHub for several users that also answers the token's scopes and a team's members, and fails every search
+    for the user `failing`."""
+
+    def __init__(self, members: list[str] | None = None, scopes: str | None = "repo, read:org") -> None:
+        super().__init__()
+        self.members = members or []
+        self.scopes = scopes
+        self.failing: str | None = None
+        self.endpoints: list[str] = []
+
+    def __call__(self, arguments: Sequence[str]) -> CommandResult:
+        endpoint = arguments[3]
+        self.endpoints.append(endpoint)
+        if endpoint == "user":
+            return ok({}, "" if self.scopes is None else f"X-OAuth-Scopes: {self.scopes}\r\n")
+        if endpoint.startswith("orgs/acme/teams/core/members?"):
+            return ok([{"login": login} for login in self.members])
+        if self.failing is not None and f"author:{self.failing} " in unquote(" ".join(arguments)):
+            return failed("gh: HTTP 401: Bad credentials")
+        return super().__call__(arguments)
+
+    def add_pull_requests(self, user: str, *days: date) -> None:
+        """Pull requests `user` opened on each of `days` and merged the same day."""
+        authored = self.dated.setdefault(f"org:acme author:{user} is:pr created:", [])
+        merged = self.dated.setdefault(f"org:acme author:{user} is:pr is:merged merged:", [])
+        for day in days:
+            node, stamp = f"PR_{user}_{len(authored)}", f"{day}T10:00:00Z"
+            authored.append((day, {"node_id": node, "created_at": stamp}))
+            merged.append((day, {"node_id": node, "pull_request": {"merged_at": stamp}}))
+
+
+def group_github(members: list[str] | None = None, scopes: str | None = "repo, read:org") -> GroupGitHub:
+    github = GroupGitHub(members, scopes)
+    github.add_pull_requests("octo", date(2026, 3, 15), date(2026, 5, 2))
+    github.add_pull_requests("mona", date(2026, 4, 10), date(2026, 4, 11))
+    return github
+
+
+def at(day: date) -> datetime:
+    return datetime.combine(day, time(8), UTC)
+
+
+def run_group(arguments: list[str], github: GroupGitHub, now: datetime) -> tuple[int, str, str]:
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        try:
+            code = main(arguments, GitHubSearchClient(github, Recorder()), now=now)
+        except SystemExit as exit_:
+            if not isinstance(exit_.code, int):
+                raise AssertionError(f"exit code {exit_.code!r}") from exit_
+            code = exit_.code
+    return code, stdout.getvalue(), stderr.getvalue()
+
+
+GROUP = ["--org", "acme", "--user", "octo", "--user", "mona", "--months", "3"]
+COMPARISON = """\
+| Month | octo | mona |
+|---|---:|---:|
+| 2026-03 | 1 | 0 |
+| 2026-04 | 0 | 2 |
+| 2026-05 | 1 | 0 |
+| **Total** | **2** | **2** |
+"""
+FIRST_HISTORY = """\
+month,user,prs_authored,prs_merged,commits,prs_reviewed,reviews_submitted,is_partial,captured_at
+2026-03,mona,0,0,0,0,0,false,2026-05-20T08:00:00Z
+2026-03,octo,1,1,0,0,0,false,2026-05-20T08:00:00Z
+2026-04,mona,2,2,0,0,0,false,2026-05-20T08:00:00Z
+2026-04,octo,0,0,0,0,0,false,2026-05-20T08:00:00Z
+2026-05,mona,0,0,0,0,0,true,2026-05-20T08:00:00Z
+2026-05,octo,1,1,0,0,0,true,2026-05-20T08:00:00Z
+"""
+
+
+def history_lines(path: Path) -> dict[str, str]:
+    """The history's data rows keyed by their month and user."""
+    return {",".join(line.split(",")[:2]): line for line in path.read_text(encoding="utf-8").splitlines()[1:]}
+
+
+def query_starts(queries: list[str]) -> set[str]:
+    starts = set()
+    for query in queries:
+        match = SPAN.search(query)
+        if match is None:
+            raise AssertionError(query)
+        starts.add(match[1])
+    return starts
+
+
+def test_a_group_gets_one_comparison_table() -> None:
+    code, stdout, stderr = run_group(GROUP, group_github(), at(TODAY))
+    assert code == 0, stdout
+    assert stdout.startswith("## GitHub activity in acme: PRs merged\n")
+    assert COMPARISON in stdout
+    assert stdout.count("| Month |") == 1
+    assert "Querying GitHub for mona (2 of 2): 3 month(s)." in stderr
+
+
+def test_a_comparison_shows_the_metric_named() -> None:
+    code, stdout, _ = run_group([*GROUP, "--metric", "prs_authored"], group_github(), at(TODAY))
+    assert code == 0, stdout
+    assert stdout.startswith("## GitHub activity in acme: PRs authored\n")
+    assert "| 2026-04 | 0 | 2 |" in stdout
+
+
+def test_a_team_is_reported_as_its_members() -> None:
+    github = group_github(members=["octo", "mona"])
+    code, stdout, _ = run_group(["--org", "acme", "--team", "core", "--months", "3"], github, at(TODAY))
+    assert code == 0, stdout
+    assert COMPARISON in stdout
+
+
+def test_a_team_needs_a_token_that_can_read_the_organization() -> None:
+    github = group_github(members=["octo", "mona"], scopes="repo, gist")
+    code, stdout, _ = run_group(["--org", "acme", "--team", "core"], github, at(TODAY))
+    assert code == 1
+    assert stdout == (
+        "FAILED Reading the members of team acme/core needs the read:org scope, which the gh token lacks; "
+        "run gh auth refresh -s read:org and rerun [scope]\n"
+    )
+    assert github.endpoints == ["user"], "nothing but the token's scopes is asked for"
+
+
+def test_a_token_that_names_no_scopes_reads_the_team() -> None:
+    github = group_github(members=["octo"], scopes=None)
+    code, stdout, _ = run_group(["--org", "acme", "--team", "core", "--months", "3"], github, at(TODAY))
+    assert code == 0, stdout
+    assert "| Month | octo |" in stdout
+
+
+def test_a_team_without_members_is_refused_rather_than_reported_empty() -> None:
+    code, stdout, _ = run_group(["--org", "acme", "--team", "core"], group_github(), at(TODAY))
+    assert (code, stdout) == (1, "FAILED Team acme/core has no members [team]\n")
+
+
+def test_a_history_is_written_once_every_user_succeeds(tmp_path: Path) -> None:
+    history = tmp_path / "activity.csv"
+    code, stdout, _ = run_group([*GROUP, "--history", str(history)], group_github(), at(TODAY))
+    assert code == 0, stdout
+    assert history.read_text(encoding="utf-8") == FIRST_HISTORY
+    assert COMPARISON in stdout
+    assert "Closed months already in the history file are read from it" in stdout
+
+
+def test_a_second_run_changes_only_the_partial_month(tmp_path: Path) -> None:
+    history = tmp_path / "activity.csv"
+    github = group_github()
+    assert run_group([*GROUP, "--history", str(history)], github, at(TODAY))[0] == 0
+    first = history_lines(history)
+    github.add_pull_requests("octo", date(2026, 4, 25), date(2026, 5, 21))
+    github.queries.clear()
+    code, stdout, _ = run_group([*GROUP, "--history", str(history)], github, at(date(2026, 5, 22)))
+    assert code == 0, stdout
+    second = history_lines(history)
+    changed = {key for key in first if first[key] != second[key]}
+    assert (changed, set(second) - set(first)) == ({"2026-05,mona", "2026-05,octo"}, set())
+    assert second["2026-05,octo"] == "2026-05,octo,2,2,0,0,0,true,2026-05-22T08:00:00Z"
+    assert second["2026-04,octo"] == first["2026-04,octo"], "a closed month is not searched again"
+    assert query_starts(github.queries) == {"2026-05-01"}
+
+
+def test_the_first_run_after_a_month_ends_pulls_it_again(tmp_path: Path) -> None:
+    history = tmp_path / "activity.csv"
+    github = group_github()
+    assert run_group([*GROUP, "--history", str(history)], github, at(TODAY))[0] == 0
+    first = history_lines(history)
+    github.add_pull_requests("octo", date(2026, 4, 25), date(2026, 5, 31))
+    code, stdout, _ = run_group([*GROUP, "--history", str(history)], github, at(date(2026, 6, 2)))
+    assert code == 0, stdout
+    rolled = history_lines(history)
+    assert rolled["2026-05,octo"] == "2026-05,octo,2,2,0,0,0,false,2026-06-02T08:00:00Z"
+    assert rolled["2026-06,octo"] == "2026-06,octo,0,0,0,0,0,true,2026-06-02T08:00:00Z"
+    assert rolled["2026-04,octo"] == first["2026-04,octo"]
+    assert rolled["2026-03,octo"] == first["2026-03,octo"], "a month that left the window keeps its row"
+    github.add_pull_requests("octo", date(2026, 5, 30))
+    github.queries.clear()
+    assert run_group([*GROUP, "--history", str(history)], github, at(date(2026, 6, 3)))[0] == 0
+    assert history_lines(history)["2026-05,octo"] == rolled["2026-05,octo"], "a closed month is pulled again once"
+    assert query_starts(github.queries) == {"2026-06-01"}
+
+
+def test_one_users_failure_leaves_the_history_byte_identical(tmp_path: Path) -> None:
+    history = tmp_path / "activity.csv"
+    github = group_github()
+    assert run_group([*GROUP, "--history", str(history)], github, at(TODAY))[0] == 0
+    before = history.read_bytes()
+    github.add_pull_requests("octo", date(2026, 5, 21))
+    github.failing = "mona"
+    code, stdout, _ = run_group([*GROUP, "--history", str(history)], github, at(date(2026, 5, 22)))
+    assert (code, stdout) == (1, "FAILED mona: gh: HTTP 401: Bad credentials [authentication]\n")
+    assert history.read_bytes() == before
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["activity.csv"]
+
+
+def test_a_user_removed_from_the_group_keeps_their_rows(tmp_path: Path) -> None:
+    history = tmp_path / "activity.csv"
+    github = group_github()
+    assert run_group([*GROUP, "--history", str(history)], github, at(TODAY))[0] == 0
+    first = history_lines(history)
+    arguments = ["--org", "acme", "--user", "octo", "--months", "3", "--history", str(history)]
+    code, stdout, _ = run_group(arguments, github, at(date(2026, 6, 2)))
+    assert code == 0, stdout
+    assert "| Month | octo |\n" in stdout
+    kept = history_lines(history)
+    assert {key: kept[key] for key in first if key.endswith(",mona")} == {
+        key: line for key, line in first.items() if key.endswith(",mona")
+    }
+    assert "2026-06,mona" not in kept
+
+
+def test_a_history_inside_a_skills_directory_is_refused_before_querying() -> None:
+    inside = SKILLS_ROOT / "github-activity-report" / "activity.csv"
+    github = group_github()
+    code, stdout, stderr = run_group([*GROUP, "--history", str(inside)], github, at(TODAY))
+    assert (code, stdout) == (2, "")
+    assert f"is inside the skills directory {SKILLS_ROOT}" in stderr
+    assert (github.endpoints, inside.exists()) == ([], False)
+
+
+def test_a_history_in_a_folder_that_does_not_exist_is_refused(tmp_path: Path) -> None:
+    github = group_github()
+    missing = tmp_path / "missing" / "activity.csv"
+    code, _, stderr = run_group([*GROUP, "--history", str(missing)], github, at(TODAY))
+    assert code == 2
+    assert "the report creates no folder" in stderr
+    assert (github.endpoints, missing.parent.exists()) == ([], False)
+
+
+@pytest.mark.parametrize(
+    ("text", "reason"),
+    [
+        pytest.param("month,user\n", "does not start with the header", id="another-header"),
+        pytest.param(FIRST_HISTORY.replace("2026-03,mona,0", "2026-13,mona,0"), "not YYYY-MM", id="a-bad-month"),
+        pytest.param(FIRST_HISTORY.replace("octo,1,1", "octo,one,1", 1), "not a count", id="a-bad-count"),
+        pytest.param(FIRST_HISTORY.replace(",true,", ",yes,", 1), "not true or false", id="a-bad-flag"),
+        pytest.param(FIRST_HISTORY.replace(",false,2026", ",2026", 1), "has 8 fields", id="a-short-row"),
+        pytest.param(FIRST_HISTORY + FIRST_HISTORY.splitlines()[1] + "\n", "repeats 2026-03 for mona", id="a-repeat"),
+    ],
+)
+def test_a_history_the_report_did_not_write_is_refused_before_querying(tmp_path: Path, text: str, reason: str) -> None:
+    history = tmp_path / "activity.csv"
+    history.write_text(text, encoding="utf-8", newline="\n")
+    github = group_github()
+    code, stdout, _ = run_group([*GROUP, "--history", str(history)], github, at(TODAY))
+    assert code == 1
+    assert stdout.startswith(f"FAILED History file {history} ")
+    assert reason in stdout
+    assert stdout.endswith(" [history]\n")
+    assert github.endpoints == []
+    assert history.read_text(encoding="utf-8") == text
+
+
+def test_a_metric_needs_a_group_or_a_history() -> None:
+    github = group_github()
+    code, _, stderr = run_group(["--org", "acme", "--user", "octo", "--metric", "commits"], github, at(TODAY))
+    assert code == 2
+    assert "argument --metric: needs a group" in stderr
+    assert github.endpoints == []
+
+
+def test_one_user_named_twice_keeps_the_per_user_table() -> None:
+    code, stdout, _ = run_group(["--org", "acme", "--user", "octo", "--user", "Octo"], group_github(), at(TODAY))
+    assert code == 0, stdout
+    assert stdout.startswith("## GitHub activity for octo in acme")

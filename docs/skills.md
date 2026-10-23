@@ -243,23 +243,31 @@ The first word chooses what to do:
 ## `github-activity-report`
 
 <!-- generated:github-activity-report -->
-Report one user's GitHub contributions in one organization month by month: pull requests authored and merged, commits, pull requests reviewed, and reviews submitted. Use it when asked what someone contributed or reviewed over recent months.
+Report GitHub contributions in one organization month by month for a user, several users, or a team: pull requests authored and merged, commits, and reviews, optionally kept in a history file. Use it when asked what someone or a group contributed or reviewed over recent months.
 
 ```text
-/github-activity-report ORG USER [--months N]
+/github-activity-report ORG USER ... | --team SLUG [--months N] [--history PATH] [--metric METRIC]
 ```
 
 Started by you or the agent. Installed by default. Needs `gh`.
 <!-- /generated:github-activity-report -->
 
 - `ORG`: the GitHub organization. Required.
-- `USER`: the GitHub login to report on. Required.
+- `USER ...`: the GitHub login to report on, or several logins to compare. Required unless `--team` is given.
+- `--team SLUG`: an organization team, reported as its current members. Reading a team's members needs the `read:org` scope on a classic token; the report refuses with `[scope]` when the token lacks it, rather than reporting an empty team.
 - `--months N`: how many calendar months to cover, ending with the current, partial month. The default is 12 and the maximum 36.
+- `--history PATH`: a CSV file that keeps every run's months, one row per month and user: `month, user, prs_authored, prs_merged, commits, prs_reviewed, reviews_submitted, is_partial, captured_at`. Each run rewrites the current month, flagged `is_partial`, and writes a closed month once, except that the first run after a month ends pulls it again, since late merges and later-linked commit emails can shift its counts. A user who leaves the group keeps their rows. The report writes the file only at the path you name, in a folder that already exists, and refuses a path inside a skills directory.
+- `--metric METRIC`: what the comparison table compares: `prs_authored`, `prs_merged` (the default), `commits`, `prs_reviewed`, or `reviews_submitted`. It needs a group or a history.
 
-A 12-month report takes a few minutes, because searches are spaced to stay under GitHub's rate limits. `gh` must be signed in with a token that can read the organization's repositories, including SSO authorization where the organization enforces it.
+One user without a history gets the per-user table with every metric. A group, or a history, gets one comparison table of the metric, with a row per month and a column per user, drawn from the history when there is one.
+
+The history holds per-person activity over time, so keep it private, outside any repository and any folder the deployer or a runtime reads. The report fails closed: a failure for any user prints the `FAILED` line and leaves the history file byte-identical.
+
+A 12-month report takes a few minutes per user, because searches are spaced to stay under GitHub's rate limits; with a history, later runs search only the months that can still change. `gh` must be signed in with a token that can read the organization's repositories, including SSO authorization where the organization enforces it.
 
 ```text
 /github-activity-report octo-org octocat --months 6
+/github-activity-report octo-org --team platform --history ~/reports/platform-activity.csv --metric reviews_submitted
 ```
 
 ## `repo-cleanup`

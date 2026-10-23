@@ -1,12 +1,17 @@
-"""Month-by-month GitHub contribution report for one user in one organization.
+"""Month-by-month GitHub contribution report for one user, a list of users, or a team in one organization.
 
 Prints the Markdown report on stdout and progress on stderr. A failure prints no table, only the line
-`FAILED <reason> [<kind>]` on stdout, and exits 1; an invalid argument exits 2.
+`FAILED <reason> [<kind>]` on stdout, and exits 1; an invalid argument exits 2. A group, or a history file the
+caller names, gets one comparison table of a metric instead of the per-user table; the history is written only once
+every user's searches have succeeded, so a failure leaves it as it was.
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
+import io
+import re
 import sys
 import time
 from collections.abc import Callable, Iterator
@@ -19,6 +24,7 @@ from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+from atomic_file import replace_text
 from console import run_main
 from flat_text import flat_text
 from github_client import (
@@ -30,9 +36,11 @@ from github_client import (
     Sleeper,
     graphql_failure,
     json_body,
+    split_response,
     subprocess_runner,
 )
 from github_logins import is_login
+from skill_roots import skills_directory_holding
 from typed_fields import FieldError, FieldReader, describe
 
 T = TypeVar("T")
@@ -45,6 +53,24 @@ RECOVERY_STREAK = 10
 PAGINATION_PASSES = 3
 MAX_MONTHS = 36
 READ = FieldReader()
+TEAM_PAGE_SIZE = 100
+# A team's slug, as GitHub derives it from the team's name.
+TEAM_SLUG = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}")
+# Any of these classic token scopes lets a token read an organization's teams.
+ORG_READ_SCOPES = frozenset({"read:org", "write:org", "admin:org"})
+# Each metric's history column, the Activity field that holds it, and its table heading.
+METRICS = {
+    "prs_authored": ("authored", "PRs authored"),
+    "prs_merged": ("merged", "PRs merged"),
+    "commits": ("commits", "Commits"),
+    "prs_reviewed": ("prs_reviewed", "PRs reviewed"),
+    "reviews_submitted": ("reviews_submitted", "Reviews submitted"),
+}
+DEFAULT_METRIC = "prs_merged"
+HISTORY_COLUMNS = ("month", "user", *METRICS, "is_partial", "captured_at")
+MONTH_LABEL = re.compile(r"[0-9]{4}-(0[1-9]|1[0-2])")
+COUNT = re.compile(r"0|[1-9][0-9]*")
+PARTIAL = {"true": True, "false": False}
 
 REVIEW_SEARCH_QUERY = """
 query($q: String!, $user: String!, $after: String) {
@@ -110,6 +136,15 @@ class SearchPacer:
         elif error.kind == "rate_limit":
             self.interval = min(self.interval * INTERVAL_GROWTH, MAX_INTERVAL)
             self._clean_searches = 0
+
+
+class ReportFailure(Exception):
+    """A failure of the report's own rather than of a GitHub request: a history file it cannot use (`history`), a
+    token without the scope reading a team needs (`scope`), or a team it cannot resolve to members (`team`)."""
+
+    def __init__(self, message: str, kind: str) -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 @contextmanager
@@ -232,6 +267,53 @@ class GitHubSearchClient:
         items, capped = self.search_all(endpoint, query, key, first)
         return items, [str(start)] if capped else []
 
+    def token_scopes(self) -> frozenset[str] | None:
+        """The classic OAuth scopes of gh's token, or None when GitHub names none, as for a fine-grained token."""
+
+        def parse(result: CommandResult) -> frozenset[str] | None:
+            scopes = split_response(result.stdout).headers.get("x-oauth-scopes")
+            return None if scopes is None else frozenset(part.strip() for part in scopes.split(",") if part.strip())
+
+        return self.github.request(["api", "-i", "user"], parse)
+
+    def team_members(self, org: str, team: str) -> list[str]:
+        """The logins of the team's current members, refusing a token whose scopes cannot read the organization's
+        teams before asking, and a team GitHub does not show or that has no members."""
+        scopes = self.token_scopes()
+        if scopes is not None and not scopes & ORG_READ_SCOPES:
+            raise ReportFailure(
+                f"Reading the members of team {org}/{team} needs the read:org scope, which the gh token lacks; "
+                "run gh auth refresh -s read:org and rerun",
+                "scope",
+            )
+        logins: list[str] = []
+        page = 1
+        try:
+            while True:
+                batch = self._request(
+                    [f"orgs/{org}/teams/{team}/members?per_page={TEAM_PAGE_SIZE}&page={page}"],
+                    _member_logins,
+                    search=False,
+                )
+                known = {login.casefold() for login in logins}
+                new = [login for login in batch if login.casefold() not in known]
+                if batch and not new:
+                    raise GitHubError(f"Page {page} of team {org}/{team} repeats earlier members", kind="malformed")
+                logins.extend(new)
+                if len(batch) < TEAM_PAGE_SIZE:
+                    break
+                page += 1
+        except GitHubError as exc:
+            if exc.kind not in ("not_found", "forbidden"):
+                raise
+            raise ReportFailure(
+                f"Team {org}/{team} was not found, or the gh token cannot see it: {exc}; check the team's slug",
+                "team",
+            ) from exc
+        if not logins:
+            raise ReportFailure(f"Team {org}/{team} has no members", "team")
+        return logins
+
     def graphql(self, query: str, variables: dict[str, str], *, search: bool = False) -> dict[str, Any]:
         arguments = ["graphql", "-f", f"query={query}"]
         for name, value in variables.items():
@@ -280,6 +362,17 @@ class GitHubSearchClient:
             if len(unique) >= expected:
                 return unique[:SEARCH_RESULT_CAP], [str(start)] if page["issueCount"] > SEARCH_RESULT_CAP else []
         raise GitHubError(_shortfall(query, len(unique), expected), kind="incomplete")
+
+
+def _member_logins(result: CommandResult) -> list[str]:
+    """The logins on one page of a team's members."""
+    with _shape_of("Team members response"):
+        members = READ.array(json_body(result), "response", READ.json_object)
+        logins = [READ.string(member.get("login"), f"response[{index}].login") for index, member in enumerate(members)]
+    for login in logins:
+        if not is_login(login):
+            raise GitHubError(f"Team members response names {login!r}, which is not a GitHub login", kind="malformed")
+    return logins
 
 
 def _shortfall(query: str, found: int, expected: int) -> str:
@@ -508,7 +601,7 @@ def collect_activity(client: GitHubSearchClient, org: str, user: str, months: in
 
 
 def render_report(activity: Activity, org: str, user: str, today: date) -> str:
-    columns = ("authored", "merged", "commits", "prs_reviewed", "reviews_submitted")
+    columns = tuple(field for field, _ in METRICS.values())
     lines = [
         f"## GitHub activity for {user} in {org}",
         "",
@@ -536,24 +629,255 @@ def render_report(activity: Activity, org: str, user: str, today: date) -> str:
         f"- Counts cover only {org} repositories the current token can read; GitHub search omits other "
         "repositories without reporting an error."
     )
-    for column, days in sorted(activity.capped.items()):
+    lines += _cap_warnings(activity.capped, "")
+    return "\n".join(lines) + "\n"
+
+
+def _cap_warnings(capped: dict[str, list[str]], whose: str) -> list[str]:
+    """A WARNING note for each search the Search API's cap truncated; `whose` names the user in a group."""
+    lines: list[str] = []
+    for column, days in sorted(capped.items()):
         if column == "Reviews":
             lines.append(
-                "- WARNING: the review search exceeded GitHub's 1000-result Search API cap for pull requests "
+                f"- WARNING: {whose}the review search exceeded GitHub's 1000-result Search API cap for pull requests "
                 f"last updated on {', '.join(days)}. Their reviews can fall in any month, so PRs reviewed and "
                 "Reviews submitted may be undercounted in every month and in both totals."
             )
         else:
             lines.append(
-                f"- WARNING: {column} for {', '.join(days)} exceeded GitHub's 1000-result Search API cap; "
+                f"- WARNING: {whose}{column} for {', '.join(days)} exceeded GitHub's 1000-result Search API cap; "
                 "those counts are lower than the true totals."
             )
+    return lines
+
+
+@dataclass(frozen=True)
+class HistoryRow:
+    """One month of one user's activity in the history file."""
+
+    month: str
+    user: str
+    counts: dict[str, int]  # keyed by metric
+    is_partial: bool
+    captured_at: str
+
+
+History = dict[tuple[str, str], HistoryRow]  # keyed by month and casefolded login
+
+
+def _history_key(month: str, user: str) -> tuple[str, str]:
+    return month, user.casefold()
+
+
+def _history_row(fields: list[str], line: int, path: Path) -> HistoryRow:
+    """One data row of the history file, refusing any field that is not what the report writes."""
+
+    def refuse(what: str) -> ReportFailure:
+        return ReportFailure(f"History file {path} line {line} {what}; fix or move the file and rerun", "history")
+
+    if len(fields) != len(HISTORY_COLUMNS):
+        raise refuse(f"has {len(fields)} fields, not {len(HISTORY_COLUMNS)}")
+    month, user, *counts, partial, captured_at = fields
+    if not MONTH_LABEL.fullmatch(month):
+        raise refuse(f"has month {month!r}, not YYYY-MM")
+    if not is_login(user):
+        raise refuse(f"has user {user!r}, not a GitHub login")
+    for metric, count in zip(METRICS, counts, strict=True):
+        if not COUNT.fullmatch(count):
+            raise refuse(f"has {metric} {count!r}, not a count")
+    if partial not in PARTIAL:
+        raise refuse(f"has is_partial {partial!r}, not true or false")
+    try:
+        _utc_date(captured_at, "captured_at")
+    except FieldError:
+        raise refuse(f"has captured_at {captured_at!r}, not a timestamp with a UTC offset") from None
+    return HistoryRow(month, user, dict(zip(METRICS, map(int, counts), strict=True)), PARTIAL[partial], captured_at)
+
+
+def read_history(path: Path) -> History:
+    """The rows of the history file at `path`; a file that does not exist yet, or is empty, holds none."""
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        raise ReportFailure(f"History file {path} cannot be read: {exc.strerror or exc}", "history") from exc
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ReportFailure(f"History file {path} is not UTF-8 text", "history") from None
+    try:
+        records = list(csv.reader(io.StringIO(text, newline="")))
+    except csv.Error as exc:
+        raise ReportFailure(f"History file {path} is not CSV the report wrote: {exc}", "history") from exc
+    if not records:
+        return {}
+    if tuple(records[0]) != HISTORY_COLUMNS:
+        raise ReportFailure(
+            f"History file {path} does not start with the header {','.join(HISTORY_COLUMNS)}; name a history file "
+            "this report wrote, or a new path",
+            "history",
+        )
+    history: History = {}
+    for line, fields in enumerate(records[1:], start=2):
+        row = _history_row(fields, line, path)
+        key = _history_key(row.month, row.user)
+        if key in history:
+            raise ReportFailure(f"History file {path} line {line} repeats {row.month} for {row.user}", "history")
+        history[key] = row
+    return history
+
+
+def render_history(history: History) -> str:
+    """The history file's text: the header, then one row per month and user, sorted by both."""
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(HISTORY_COLUMNS)
+    for row in sorted(history.values(), key=lambda row: (row.month, row.user.casefold())):
+        flag = "true" if row.is_partial else "false"
+        writer.writerow([row.month, row.user, *(row.counts[metric] for metric in METRICS), flag, row.captured_at])
+    return buffer.getvalue()
+
+
+def months_to_pull(history: History, user: str, labels: list[str]) -> list[str]:
+    """The months of `labels` to search for the user's activity: the last, which is the current, partial month, and
+    each month the history lacks or captured while it was still partial, so the first run after a month ends pulls
+    it again. A closed month already in the history is never searched for again."""
+    pulled = []
+    for label in labels:
+        row = history.get(_history_key(label, user))
+        if label == labels[-1] or row is None or row.is_partial:
+            pulled.append(label)
+    return pulled
+
+
+def _rows_of(activity: Activity, user: str, labels: list[str], current: str, captured_at: str) -> History:
+    """History rows for the user's months in `labels`, from this run's activity."""
+    return {
+        _history_key(label, user): HistoryRow(
+            label,
+            user,
+            {metric: getattr(activity, field)[label] for metric, (field, _) in METRICS.items()},
+            label == current,
+            captured_at,
+        )
+        for label in labels
+    }
+
+
+METRIC_NOTES = {
+    "prs_authored": "PRs authored counts the pull requests each user opened in the month.",
+    "prs_merged": "PRs merged counts each user's pull requests merged in the month.",
+    "commits": "Commits counts distinct default-branch commits whose author email is linked to each user's account.",
+    "prs_reviewed": (
+        "PRs reviewed counts distinct pull requests each user reviewed in the month, excluding their own; a pull "
+        "request reviewed in two months appears in both, and twice in the total."
+    ),
+    "reviews_submitted": (
+        "Reviews submitted counts every review each user submitted in the month, including re-reviews and "
+        "comment-only reviews, excluding reviews on their own pull requests."
+    ),
+}
+
+
+@dataclass(frozen=True)
+class Comparison:
+    """What a comparison table shows: `metric` for `users` over the months `labels`, from `rows`."""
+
+    org: str
+    users: list[str]
+    labels: list[str]
+    metric: str
+    rows: History
+    warnings: list[str]
+    from_history: bool
+
+
+def render_comparison(comparison: Comparison, today: date) -> str:
+    """One table of the metric with a row per month and a column per user, then its notes."""
+    users, labels, metric = comparison.users, comparison.labels, comparison.metric
+    lines = [
+        f"## GitHub activity in {comparison.org}: {METRICS[metric][1]}",
+        "",
+        f"{labels[0]} through {today.isoformat()}. All dates and months are UTC; the current month is partial.",
+        "",
+        f"| Month | {' | '.join(users)} |",
+        f"|---|{'---:|' * len(users)}",
+    ]
+    totals = dict.fromkeys(users, 0)
+    for label in labels:
+        values = [comparison.rows[_history_key(label, user)].counts[metric] for user in users]
+        for user, value in zip(users, values, strict=True):
+            totals[user] += value
+        lines.append(f"| {label} | {' | '.join(map(str, values))} |")
+    lines.append(f"| **Total** | {' | '.join(f'**{totals[user]}**' for user in users)} |")
+    lines += [
+        "",
+        "Notes:",
+        f"- {METRIC_NOTES[metric]} Total sums the months shown.",
+        f"- Counts cover only {comparison.org} repositories the current token can read; GitHub search omits other "
+        "repositories without reporting an error.",
+    ]
+    if comparison.from_history:
+        lines.append(
+            "- Closed months already in the history file are read from it, not searched again; the current month "
+            "is searched on every run, and a month the history captured while it was partial once more after it ends."
+        )
+    lines += comparison.warnings
     return "\n".join(lines) + "\n"
+
+
+def _captured_at(now: datetime) -> str:
+    return now.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+@dataclass(frozen=True)
+class Request:
+    """A group report's arguments: whom to report, over how many months, on which metric, and the history file."""
+
+    org: str
+    users: list[str]
+    months: int
+    metric: str
+    history_path: Path | None
+
+
+def compare(client: GitHubSearchClient, request: Request, history: History, now: datetime) -> Comparison:
+    """Search each user's activity, merge it into `history`, and write the history file only once every user has
+    succeeded, so a failure for any of them leaves the file as it was. A user who is not in the request keeps their
+    rows."""
+    today = now.astimezone(UTC).date()
+    org, users, history_path = request.org, request.users, request.history_path
+    labels = [month_label(first) for first in months_window(today, request.months)]
+    rows = dict(history)
+    warnings: list[str] = []
+    for index, user in enumerate(users, start=1):
+        pulled = months_to_pull(history, user, labels)
+        span = len(labels) - labels.index(pulled[0])
+        print(f"Querying GitHub for {user} ({index} of {len(users)}): {span} month(s).", file=sys.stderr)
+        try:
+            activity = collect_activity(client, org, user, span, today)
+        except GitHubError as exc:
+            raise GitHubError(f"{user}: {exc}", kind=exc.kind) from exc
+        rows.update(_rows_of(activity, user, pulled, labels[-1], _captured_at(now)))
+        warnings += _cap_warnings(activity.capped, f"for {user}, ")
+    if history_path is not None:
+        try:
+            replace_text(history_path, render_history(rows))
+        except OSError as exc:
+            raise ReportFailure(f"History file {history_path} cannot be written: {exc}", "history") from exc
+    return Comparison(org, users, labels, request.metric, rows, warnings, history_path is not None)
 
 
 def _login(value: str) -> str:
     if not is_login(value):
         raise argparse.ArgumentTypeError(f"not a valid GitHub login: {value!r}")
+    return value
+
+
+def _team(value: str) -> str:
+    if not TEAM_SLUG.fullmatch(value):
+        raise argparse.ArgumentTypeError(f"not a GitHub team slug: {value!r}")
     return value
 
 
@@ -563,25 +887,81 @@ def _months(value: str) -> int:
     return int(value)
 
 
-def main(
-    arguments: list[str] | None = None, client: GitHubSearchClient | None = None, today: date | None = None
-) -> int:
+def _history_path(value: str) -> Path:
+    """The history file the caller names: outside every skills directory, and in a folder that exists, since the
+    report neither chooses nor creates a place for per-person data."""
+    path = Path(value)
+    holder = skills_directory_holding(path)
+    if holder is not None:
+        raise argparse.ArgumentTypeError(f"{value} is inside the skills directory {holder}; name a path outside it")
+    if path.is_dir():
+        raise argparse.ArgumentTypeError(f"{value} is a folder; name the history file inside it")
+    if not path.parent.is_dir():
+        raise argparse.ArgumentTypeError(f"the folder of {value} does not exist; the report creates no folder")
+    return path
+
+
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--org", type=_login, required=True)
-    parser.add_argument("--user", type=_login, required=True)
+    who = parser.add_mutually_exclusive_group(required=True)
+    who.add_argument("--user", type=_login, action="append", help="a login to report; repeat it for a group")
+    who.add_argument("--team", type=_team, help="the slug of an organization team, reported as its current members")
     parser.add_argument("--months", type=_months, default=12)
+    parser.add_argument("--history", type=_history_path, help="a CSV file of every run's months, kept private")
+    parser.add_argument("--metric", choices=tuple(METRICS), help=f"the comparison's metric (default {DEFAULT_METRIC})")
+    return parser
+
+
+def _distinct(logins: list[str]) -> list[str]:
+    """`logins` without repeats, compared without case as GitHub compares logins."""
+    seen: set[str] = set()
+    distinct: list[str] = []
+    for login in logins:
+        if login.casefold() not in seen:
+            seen.add(login.casefold())
+            distinct.append(login)
+    return distinct
+
+
+def main(
+    arguments: list[str] | None = None,
+    client: GitHubSearchClient | None = None,
+    today: date | None = None,
+    now: datetime | None = None,
+) -> int:
+    parser = _parser()
     options = parser.parse_args(arguments)
-    current = today or datetime.now(UTC).date()
+    users = _distinct(options.user or [])
+    group = options.team is not None or len(users) > 1
+    if not group and options.history is None and options.metric is not None:
+        parser.error("argument --metric: needs a group (--team, or --user more than once) or --history")
+    if now is None:
+        now = datetime.combine(today, datetime.min.time(), UTC) if today is not None else datetime.now(UTC)
+    current = now.astimezone(UTC).date()
+    search = client or GitHubSearchClient()
     print(
         f"Querying GitHub for {options.months} month(s); searches are spaced {SEARCH_INTERVAL}s apart.", file=sys.stderr
     )
     try:
-        activity = collect_activity(client or GitHubSearchClient(), options.org, options.user, options.months, current)
-    except GitHubError as exc:
+        if not group and options.history is None:
+            activity = collect_activity(search, options.org, users[0], options.months, current)
+            sys.stdout.write(render_report(activity, options.org, users[0], current))
+            return 0
+        history = read_history(options.history) if options.history is not None else {}
+        if options.team is not None:
+            users = search.team_members(options.org, options.team)
+        comparison = compare(
+            search,
+            Request(options.org, users, options.months, options.metric or DEFAULT_METRIC, options.history),
+            history,
+            now,
+        )
+    except (GitHubError, ReportFailure) as exc:
         # The reason can carry gh's multi-line stderr; the FAILED line stays one line.
         print(f"FAILED {flat_text(str(exc))} [{exc.kind}]")
         return 1
-    sys.stdout.write(render_report(activity, options.org, options.user, current))
+    sys.stdout.write(render_comparison(comparison, current))
     return 0
 
 
