@@ -5569,7 +5569,7 @@ def test_an_unparseable_file_is_its_reader_s_finding_and_the_audit_carries_on(re
         (f.severity, f.check, f.path) for f in result.findings if f.path == rel and f.message.startswith(prefix)
     ]
     assert any(f.check == "inventory" and f.path == "CLAUDE.md" for f in result.findings), "the audit carried on"
-    assert audit.markdown_line(rel) in report
+    assert markdown_literal.markdown_line(rel) in report
 
 
 @pytest.mark.parametrize("shape", sorted(PAST_THE_PARSER))
@@ -5599,5 +5599,5 @@ def test_a_scope_literal_too_deep_to_evaluate_is_not_a_literal(error: type[Excep
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
         _write_fixture(root, {"scripts/ai_config.py": 'TARGET_RUNTIMES = ["claude"]\n'})
-        with mock.patch.object(audit.ast, "literal_eval", side_effect=error):
+        with mock.patch.object(ast, "literal_eval", side_effect=error):
             assert audit.derive_generator_scope(root) == (None, "generator-scope-not-literal")
