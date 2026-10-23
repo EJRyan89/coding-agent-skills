@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import itertools
 import sys
 import tarfile
 import tempfile
@@ -45,15 +46,6 @@ class RefValidationTests(unittest.TestCase):
                 ),
                 raised.exception.lines,
             )
-
-    def test_the_recorded_ref_is_kept_only_over_a_pin_at_the_same_commit_without_unpin(self) -> None:
-        same, other = "1" * 40, "2" * 40
-        pin = source_ref.Pin("refs/tags/v1.0.0", same)
-        self.assertEqual("v1.0.0", source_ref.recorded_ref(pin, "v1.0.0", same, unpin=False))
-        self.assertEqual(pin.ref, source_ref.recorded_ref(pin, "v1.0.0", same, unpin=True))
-        self.assertEqual(pin.ref, source_ref.recorded_ref(pin, "v1.0.0", other, unpin=False))
-        self.assertEqual(pin.ref, source_ref.recorded_ref(pin, None, same, unpin=False))
-        self.assertIsNone(source_ref.recorded_ref(None, "v1.0.0", same, unpin=False))
 
     def test_git_is_asked_for_the_commit_with_the_options_ended_before_the_ref(self) -> None:
         commit = "0123456789abcdef0123456789abcdef01234567"
@@ -349,6 +341,118 @@ class DeployAtTests(DeployerTestCase):
         self.assertIn(f"\nReplaced the deployment pinned with --at v1.0.0 to v1.0.0 ({self.release}).\n", output)
         entry = self.manifest()["sources"][SOURCE_ID]
         self.assertEqual((self.head, "refs/tags/v1.1.0"), (entry["source_commit"], entry["source_ref"]))
+
+    def assert_a_users_pin_over_the_updates_is_refused_at_the_next_release_until_unpin(self, user_ref: str) -> None:
+        # The reverse order: the update's own release pin is recorded first, then the user pins the same commit by
+        # hand. The user's ref is recorded, so the pin is the user's and the next release's --at is refused.
+        self.deploy_ok("--all", "--at", "refs/tags/v1.0.0")
+        self.assertNotIn("Replaced", self.deploy_ok("--all", "--at", user_ref).output)
+        entry = self.manifest()["sources"][SOURCE_ID]
+        self.assertEqual((self.release, user_ref), (entry["source_commit"], entry["source_ref"]))
+        git(self.source, "tag", "v1.1.0")
+        result = self.deploy_fails("--all", "--at", "refs/tags/v1.1.0", pattern=r"ERROR: Refusing to replace")
+        self.assertIn(
+            f"\nERROR: Refusing to replace the deployment pinned with --at {user_ref} to v1.0.0 ({self.release}) "
+            "without --unpin.\n",
+            result.output,
+        )
+        entry = self.manifest()["sources"][SOURCE_ID]
+        self.assertEqual((self.release, user_ref), (entry["source_commit"], entry["source_ref"]))
+        self.assertFalse((self.skills_dir / "beta").exists())
+        output = self.deploy_ok("--all", "--at", "refs/tags/v1.1.0", "--unpin").output
+        self.assertIn(f"\nReplaced the deployment pinned with --at {user_ref} to v1.0.0 ({self.release}).\n", output)
+        entry = self.manifest()["sources"][SOURCE_ID]
+        self.assertEqual((self.head, "refs/tags/v1.1.0"), (entry["source_commit"], entry["source_ref"]))
+
+    def test_a_users_short_name_pin_over_the_updates_own_pin_is_refused_at_the_next_release_until_unpin(self) -> None:
+        self.assert_a_users_pin_over_the_updates_is_refused_at_the_next_release_until_unpin("v1.0.0")
+
+    def test_a_users_commit_pin_over_the_updates_own_pin_is_refused_at_the_next_release_until_unpin(self) -> None:
+        self.assert_a_users_pin_over_the_updates_is_refused_at_the_next_release_until_unpin(self.release)
+
+    def test_the_recorded_ref_and_its_owner_for_every_pin_transition(self) -> None:
+        # Every combination of the recorded pin (none, the update's own, or a user's by short name or by commit), the
+        # form of --at's ref, whether it names the recorded commit, and --unpin. A user's pin keeps its ref only at its
+        # own commit without --unpin; every other run records --at's ref, whose form then names the owner.
+        git(self.source, "tag", "v1.1.0")
+        recorded_refs = {
+            "none": None,
+            "update": "refs/tags/v1.0.0",
+            "user short": "v1.0.0",
+            "user commit": self.release,
+        }
+        new_refs = {
+            ("short", True): "v1.0.0",
+            ("full", True): "refs/tags/v1.0.0",
+            ("commit", True): self.release,
+            ("short", False): "v1.1.0",
+            ("full", False): "refs/tags/v1.1.0",
+            ("commit", False): self.head,
+        }
+        # (recorded, --at's form, same commit, --unpin) -> (the ref recorded, its owner)
+        expected = {
+            ("none", "short", True, False): ("new", "user"),
+            ("none", "short", True, True): ("new", "user"),
+            ("none", "short", False, False): ("new", "user"),
+            ("none", "short", False, True): ("new", "user"),
+            ("none", "full", True, False): ("new", "update"),
+            ("none", "full", True, True): ("new", "update"),
+            ("none", "full", False, False): ("new", "update"),
+            ("none", "full", False, True): ("new", "update"),
+            ("none", "commit", True, False): ("new", "user"),
+            ("none", "commit", True, True): ("new", "user"),
+            ("none", "commit", False, False): ("new", "user"),
+            ("none", "commit", False, True): ("new", "user"),
+            ("update", "short", True, False): ("new", "user"),
+            ("update", "short", True, True): ("new", "user"),
+            ("update", "short", False, False): ("new", "user"),
+            ("update", "short", False, True): ("new", "user"),
+            ("update", "full", True, False): ("new", "update"),
+            ("update", "full", True, True): ("new", "update"),
+            ("update", "full", False, False): ("new", "update"),
+            ("update", "full", False, True): ("new", "update"),
+            ("update", "commit", True, False): ("new", "user"),
+            ("update", "commit", True, True): ("new", "user"),
+            ("update", "commit", False, False): ("new", "user"),
+            ("update", "commit", False, True): ("new", "user"),
+            ("user short", "short", True, False): ("recorded", "user"),
+            ("user short", "short", True, True): ("new", "user"),
+            ("user short", "short", False, False): ("new", "user"),
+            ("user short", "short", False, True): ("new", "user"),
+            ("user short", "full", True, False): ("recorded", "user"),
+            ("user short", "full", True, True): ("new", "update"),
+            ("user short", "full", False, False): ("new", "update"),
+            ("user short", "full", False, True): ("new", "update"),
+            ("user short", "commit", True, False): ("recorded", "user"),
+            ("user short", "commit", True, True): ("new", "user"),
+            ("user short", "commit", False, False): ("new", "user"),
+            ("user short", "commit", False, True): ("new", "user"),
+            ("user commit", "short", True, False): ("recorded", "user"),
+            ("user commit", "short", True, True): ("new", "user"),
+            ("user commit", "short", False, False): ("new", "user"),
+            ("user commit", "short", False, True): ("new", "user"),
+            ("user commit", "full", True, False): ("recorded", "user"),
+            ("user commit", "full", True, True): ("new", "update"),
+            ("user commit", "full", False, False): ("new", "update"),
+            ("user commit", "full", False, True): ("new", "update"),
+            ("user commit", "commit", True, False): ("recorded", "user"),
+            ("user commit", "commit", True, True): ("new", "user"),
+            ("user commit", "commit", False, False): ("new", "user"),
+            ("user commit", "commit", False, True): ("new", "user"),
+        }
+        combinations = itertools.product(recorded_refs, ("short", "full", "commit"), (True, False), (True, False))
+        self.assertEqual(set(combinations), set(expected))
+        self.assertTrue(source_ref.is_release_pin(self.source, recorded_refs["update"], self.release))
+        for (recorded, form, same, unpin), (kept, owner) in expected.items():
+            with self.subTest(recorded=recorded, form=form, same=same, unpin=unpin):
+                pin = source_ref.Pin(new_refs[form, same], self.release if same else self.head)
+                result = source_ref.recorded_ref(self.source, pin, recorded_refs[recorded], self.release, unpin=unpin)
+                self.assertEqual(recorded_refs[recorded] if kept == "recorded" else pin.ref, result)
+                self.assertEqual(owner == "update", source_ref.is_release_pin(self.source, result, pin.commit))
+                # A run without --at records no pin, whatever was recorded.
+                self.assertIsNone(
+                    source_ref.recorded_ref(self.source, None, recorded_refs[recorded], self.release, unpin=unpin)
+                )
 
     def test_a_dry_run_at_a_ref_previews_that_tree_and_changes_nothing(self) -> None:
         before = self.deploy_ok("--all", "--at", "v1.0.0", "--dry-run").output

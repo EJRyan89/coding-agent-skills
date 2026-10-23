@@ -122,7 +122,7 @@ def _commit_manifest(context: Context, entries: list[PlanEntry], run_id: str, co
         platform_support.normalize(context.paths.source_dir),
         time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         commit=commit,
-        ref=source_ref.recorded_ref(context.pin, *pinned, unpin=context.options.unpin),
+        ref=source_ref.recorded_ref(context.paths.source_dir, context.pin, *pinned, unpin=context.options.unpin),
         requested_bundles=context.selection.bundles,
         requested_bundle_members={name: sorted(context.source.bundles[name]) for name in context.selection.bundles},
         requested_skills=context.selection.skills,
@@ -198,7 +198,7 @@ def _summary(
 def _replaced_pin(context: Context) -> str | None:
     """The deployment made with --at that this one replaces, described, or None when it replaces none.
 
-    A deployment pinned to the same commit keeps the pin and its recorded ref (source_ref.recorded_ref); any other
+    A deployment pinned to the same commit keeps the pin, and a user's pin its ref (source_ref.recorded_ref); any other
     moves the installation off it, which update-coding-agent-skills reports from the line this describes.
     """
     ref = context.manifest.source_ref(context.source_id)

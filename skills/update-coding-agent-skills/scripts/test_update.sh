@@ -123,8 +123,8 @@ EOF
 
 # The upstream carries a stand-in deploy.py that records its arguments, prints $FAKE_DEPLOY_STDERR to stderr when it is
 # set, and exits with $FAKE_DEPLOY_EXIT. A deployment that succeeds records the commit it ran from, or the commit --at
-# names and the ref as its pin, keeping a recorded pin's ref at its own commit unless --unpin is given, as the real one
-# does, and check names that commit and the pin, or prints
+# names and the ref as its pin, keeping a user's recorded pin's ref at its own commit unless --unpin is given, as the
+# real one does, and check names that commit and the pin, or prints
 # $FAKE_CHECK_OUTPUT when it is set, and exits with $FAKE_CHECK_EXIT. Like the real one, it refuses to replace a
 # recorded pin without --unpin: with --at only a pin at another commit that is not the full name of the last release
 # its commit holds, and without --at any pin.
@@ -168,7 +168,7 @@ named = git_lines("rev-parse", "--verify", (at or "HEAD") + "^{commit}")[0] if c
 if code == 0 and pin and "--unpin" not in arguments and (at is None or (named != commit and not release_pin())):
     print(f"ERROR: Refusing to replace the deployment pinned with --at {pin} to {commit} without --unpin.", file=sys.stderr)
     code = 1
-ref = pin if at and pin and named == commit and "--unpin" not in arguments else at
+ref = pin if at and pin and named == commit and "--unpin" not in arguments and not release_pin() else at
 if code == 0:
     with open(record, "w", encoding="utf-8") as recorded:
         recorded.write(named + ("\n" + ref if ref else ""))
@@ -1281,6 +1281,30 @@ expect_status 0 "user pin at the next release unpinned"
 expect_deployed "user pin at the next release unpinned" "--all --at refs/tags/v5.1.0 --unpin"
 [ "$(recorded_line 2)" = "refs/tags/v5.1.0" ] ||
   fail "user pin at the next release unpinned: the pin is $(recorded_line 2)"
+
+# A user who pins by hand, with the tag's short name or the commit, over the update's own pin at the same commit makes
+# the pin theirs: the deployer records the user's ref, and the next release stops at it with PINNED.
+begin_case 'user pin over the release pin, then the next release'
+V51=$(git -C "$SEED" rev-parse "v5.1.0^{commit}")
+publish "five two"
+tag_upstream v5.2.0
+case "${OSTYPE:-}" in
+  msys* | cygwin*) BY_HAND=python ;;
+  *) BY_HAND=python3 ;;
+esac
+for PIN in v5.1.0 "$V51"; do
+  printf '%s\nrefs/tags/v5.1.0\n' "$V51" >"$CLONE/.fake-deployed"
+  FAKE_DEPLOY_LOG="$FIXTURE/by-hand.log" "$BY_HAND" "$CLONE/deploy.py" --all --at "$PIN" >/dev/null ||
+    fail "user pin $PIN over the release pin: the deployment by hand failed"
+  [ "$(recorded_line 2)" = "$PIN" ] || fail "user pin $PIN over the release pin: the pin is $(recorded_line 2)"
+  run_subject "$CLONE" release
+  expect_status 1 "user pin $PIN over the release pin at the next release"
+  [ "$OUTPUT" = "PINNED $PIN $V51" ] ||
+    fail "user pin $PIN over the release pin at the next release: expected only the PINNED line, got: $OUTPUT"
+  expect_not_deployed "user pin $PIN over the release pin at the next release"
+done
+# The update's own pin again, which the next case's release moves.
+printf '%s\nrefs/tags/v5.1.0\n' "$V51" >"$CLONE/.fake-deployed"
 
 # With no deployed commit to read, the release channel stops at any release, and once --cross-major accepts it the
 # update names the deployed commit unknown and lists the commits the release adds to local main, as the stop did.
