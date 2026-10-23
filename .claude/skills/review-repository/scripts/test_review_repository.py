@@ -27,6 +27,7 @@ import doc_passages
 import review_specialists
 import untested_functions
 from git_client import GitClient
+from markdown_sections import CODE_SPAN
 from review_runtime import declared_reviewer_files, glob_matcher, validate_adapter_manifest
 from review_specialists import INPUTS, route, uncovered
 
@@ -54,42 +55,9 @@ SCENARIO_ROUTES = {
     "write-before-refusal": {"deployer"},
 }
 PIPELINE_SCRIPTS = "skills/ejryan89-code-review-core/scripts"
-# The trust-boundary route's modules by folder, as the route names them.
-TRUST_BOUNDARY_PIPELINE = (
-    "analyzers",
-    "canary",
-    "documents",
-    "github",
-    "guard",
-    "hosts",
-    "pipeline",
-    "process",
-    "records",
-    "reviewers",
-    "runtime",
-    "source",
-    "specialists",
-)
-TRUST_BOUNDARY_SKILL_CORE = (
-    "bounded_process",
-    "diff_paths",
-    "executable_locator",
-    "flat_text",
-    "git_client",
-    "github_client",
-    "github_remote",
-    "job_tree",
-    "markdown_literal",
-    "pdf_tool",
-    "process_identity",
-    "typed_fields",
-    "xml_reader",
-)
-TRUST_BOUNDARY_MODULES = [
-    *(f"{PIPELINE_SCRIPTS}/review_{name}.py" for name in TRUST_BOUNDARY_PIPELINE),
-    "skills/review-document/scripts/review_document.py",
-    *(f"{SKILL_CORE}/{name}.py" for name in TRUST_BOUNDARY_SKILL_CORE),
-]
+TRUST_BOUNDARY_BRIEF = REPOSITORY / SKILL / "references" / "trust-boundary.md"
+# A group of alternatives in a route's pattern, which holds no group of its own.
+ALTERNATIVES = re.compile(r"\(\?:([^()]*\|[^()]*)\)")
 # The repository modules a trust-boundary module imports that the boundary does not depend on, each with its reason.
 OUTSIDE_THE_BOUNDARY = {
     f"{PIPELINE_SCRIPTS}/review_archive.py": "allocates paths in the review archive, which the threat model trusts",
@@ -158,6 +126,40 @@ def tracked_files() -> list[str]:
     return [path for path in listed.stdout.split("\0") if path]
 
 
+def reviewed_files() -> list[str]:
+    """The tracked files a reviewer can be given: every one but the fixtures, which the configuration leaves out."""
+    return [path for path in tracked_files() if not path.startswith("tests/fixtures/")]
+
+
+def brief_scripts(files: list[str]) -> dict[str, list[str]]:
+    """Each script the trust-boundary brief names, with the files of that name among `files`."""
+    named = {
+        span for span in CODE_SPAN.findall(TRUST_BOUNDARY_BRIEF.read_text(encoding="utf-8")) if span.endswith(".py")
+    }
+    return {name: [path for path in files if path.rsplit("/", 1)[-1] == name] for name in sorted(named)}
+
+
+def trust_boundary_modules() -> list[str]:
+    """The trust-boundary brief's scripts but the suite it names, each as the one file of its name."""
+    return [
+        paths[0]
+        for paths in brief_scripts(reviewed_files()).values()
+        if len(paths) == 1 and not conditions.is_suite(paths[0])
+    ]
+
+
+def alternatives(pattern: str) -> list[str]:
+    """The patterns a route's pattern is the union of, one for each choice in each group of alternatives."""
+    match = ALTERNATIVES.search(pattern)
+    if match is None:
+        return [pattern]
+    return [
+        expanded
+        for choice in match.group(1).split("|")
+        for expanded in alternatives(pattern[: match.start()] + choice + pattern[match.end() :])
+    ]
+
+
 def reached(paths: list[str]) -> dict[str, set[str]]:
     """The specialists each path reaches, with every condition open."""
     found: dict[str, set[str]] = {path: set() for path in paths}
@@ -210,7 +212,7 @@ class ManifestTests(unittest.TestCase):
             "tests/run_validation.py": {"validation-policy", *script},
             "pyproject.toml": {"validation-policy"},
             "docs/code-review-operations-contract.md": {"trust-boundary", "documentation", "upgrade-notes"},
-            **dict.fromkeys(TRUST_BOUNDARY_MODULES, trusted),
+            **dict.fromkeys(trust_boundary_modules(), trusted),
             f"{SKILL_CORE}/pdf_tool.py": {"upgrade-notes", *trusted},
             f"{PIPELINE_SCRIPTS}/test_adversarial_inputs.py": {"trust-boundary", *script},
             "skills/ejryan89-code-review-core/references/review-adapter.schema.json": {"upgrade-notes"},
@@ -222,6 +224,8 @@ class ManifestTests(unittest.TestCase):
             ".github/ISSUE_TEMPLATE/bug.md": {"documentation"},
         }
         self.assertEqual(expected, reached(list(expected)))
+        # A pattern matches a path whether or not a file has it, so each sample must be a file this tree holds.
+        self.assertEqual([], sorted(set(expected) - set(tracked_files())))
 
     def test_every_script_a_skill_runs_reaches_the_grant_reviewer_beside_its_other_reviewers(self) -> None:
         # A change to what a granted script runs leaves its grant pre-approved, so the reviewer briefed on grants
@@ -269,6 +273,7 @@ class ManifestTests(unittest.TestCase):
             "skills/ejryan89-skill-core/scripts/test_pdf_tool.py",
         ]
         self.assertEqual(others, uncovered(MANIFEST, others))
+        self.assertEqual([], sorted(set(others) - set(tracked_files())))
 
     def test_a_skill_md_below_a_skill_folder_reaches_only_the_generic_reviewer(self) -> None:
         # The deployer refuses a SKILL.md that is not directly under skills/<name>, and validation fails on it, so no
@@ -277,13 +282,20 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual({}, route(MANIFEST, nested, lambda name: True))
         self.assertEqual(nested, uncovered(MANIFEST, nested))
 
-    def test_every_trust_boundary_script_the_route_names_is_in_the_repository(self) -> None:
-        # A rename would leave the route matching nothing, and the specialist would stop seeing the file.
-        files = set(tracked_files())
-        for path in TRUST_BOUNDARY_MODULES:
-            with self.subTest(path=path):
-                self.assertIn(path, files)
-                self.assertIn("trust-boundary", reached([path])[path])
+    def test_the_brief_names_each_script_the_trust_boundary_route_matches_and_each_choice_matches_a_file(self) -> None:
+        # The brief tells its reviewer what each script holds, so a script the route gains is one the brief names,
+        # and a rename leaves neither a choice in the route nor a name in the brief that no file has.
+        files = reviewed_files()
+        named = brief_scripts(files)
+        self.assertIn("review_document.py", named)
+        self.assertEqual({}, {name: paths for name, paths in named.items() if len(paths) != 1})
+        routed = [path for path in route(MANIFEST, files, lambda name: True)["trust-boundary"] if path.endswith(".py")]
+        self.assertEqual(sorted(routed), sorted(paths[0] for paths in named.values()))
+        entry = next(item for item in MANIFEST["specialists"] if item["id"] == "trust-boundary")
+        for pattern in entry["include"]:
+            for choice in alternatives(pattern):
+                with self.subTest(pattern=choice):
+                    self.assertTrue(any(re.search(choice, path) for path in files))
 
     def test_every_module_a_trust_boundary_module_imports_is_routed_or_named_outside_the_boundary(self) -> None:
         # A module the boundary's code imports carries the boundary with it, as the decoder of an author's diff

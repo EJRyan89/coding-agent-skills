@@ -43,12 +43,14 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+from markdown_sections import CODE_SPAN, markdown_section
 from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 sys.path.insert(0, str(sibling_scripts("review-insights")))
 sys.path.insert(0, str(sibling_scripts("update-pr-dashboard")))
 
+import review_analyzers
 import review_guidance
 import review_insights
 import review_runtime
@@ -1717,6 +1719,31 @@ class FormatContractTest(unittest.TestCase):
         listed = re.findall(r"`(\.[^`]+)`", listing.group(1) if listing else "")
         self.assertEqual(len(listed), len(set(listed)), "a suffix is listed twice")
         self.assertEqual(review_runtime.UNREVIEWED_SUFFIXES, set(listed))
+
+    def test_the_threat_model_rows_name_each_file_the_analyzer_inventory_parses(self) -> None:
+        section = markdown_section(CONTRACT.read_text(encoding="utf-8"), "## Threat model") or ""
+        rows = [
+            CODE_SPAN.findall(_cells(line)[0])
+            for line in section.split("\n")
+            if line.startswith("| ") and "which the analyzer inventory" in _cells(line)[0]
+        ]
+        listed = [name for row in rows for name in row]
+        self.assertEqual(len(listed), len(set(listed)), "a file is named in two rows")
+        parsed = {*review_analyzers.PARSED_BY_NAME, *review_analyzers.MSBUILD_SUFFIXES}
+        self.assertEqual(sorted({*parsed, f"*{review_analyzers.GLOBALCONFIG_SUFFIX}"}), sorted(listed))
+        # Each row states one parser's guarantee, so the files it names are read by the same one; a suffix or a
+        # pattern is probed with a file it names.
+        for row in rows:
+            with self.subTest(row=row):
+                probes = [
+                    "a" + name.lstrip("*")
+                    if name.startswith("*") or name in review_analyzers.MSBUILD_SUFFIXES
+                    else name
+                    for name in row
+                ]
+                readers = {review_analyzers._settings_handler(name) for name in probes}
+                self.assertEqual(1, len(readers))
+                self.assertNotIn(None, readers)
 
     def test_every_format_and_nested_object_has_a_table(self) -> None:
         documented = {path.split(".")[0] for table in self.tables for path in table.paths}
