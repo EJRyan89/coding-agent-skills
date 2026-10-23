@@ -243,6 +243,11 @@ GALLERY_BLOCK = (
 )
 
 SUITE_COMMAND = ["python.exe", "-B", "tests/x.py"]
+# A termination whose command names a package gallery, as a suite that installs from one would.
+ENDING_NAMING_A_SERVICE = (
+    "pwsh.exe was ended with status 0xC0000142 before its first line of output: pwsh.exe -File install.ps1 "
+    "-Source powershellgallery.com"
+)
 
 
 def ended() -> None:
@@ -980,6 +985,17 @@ class LogTest(unittest.TestCase):
     def test_the_pool_s_failed_retry_is_judged_by_the_retry_s_report(self) -> None:
         self.assertIsNone(shepherd.block_reason(shepherd.log_lines(pool_report(ended, failed))))
         self.assertEqual("silent-exit", shepherd.block_reason(shepherd.log_lines(pool_report(ended, exited_silently))))
+
+    def test_a_lone_retry_note_is_read_without_its_failure_line(self) -> None:
+        ending = (
+            f"python.exe was ended with status 0xC0000142 before its first line of output: {' '.join(SUITE_COMMAND)}"
+        )
+        self.assertIsNone(shepherd.block_reason([f"{shepherd.RETRIED}{ending}"]))
+
+    def test_a_retry_that_failed_with_an_empty_report_is_judged_by_that_report_alone(self) -> None:
+        # The ending's command names a service marker, which only the retry's own report may decide on.
+        body = [f"{shepherd.RETRIED}{ENDING_NAMING_A_SERVICE}", shepherd.RETRY_FAILED, ""]
+        self.assertIsNone(shepherd.block_reason(body))
 
     def test_a_retried_block_is_not_a_failure(self) -> None:
         lines = shepherd.log_lines(
