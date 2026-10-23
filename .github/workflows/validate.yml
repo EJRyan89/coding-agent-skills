@@ -156,12 +156,18 @@ jobs:
           python -B tests/run_validation.py --full -v --shard $env:SHARD
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-  # The whole validation run on Linux in one leg. The `validate` job needs it as it needs the Windows legs, so a red
-  # Linux run fails the required check.
+  # The whole validation run on Linux, dealt across its own legs by Linux's seconds as the Windows legs are by
+  # Windows'. The `validate` job needs it as it needs the Windows legs, so a red Linux leg fails the required check.
   linux:
-    name: Validation on Linux
+    # tools/record_job_seconds.py reads each Linux leg's shard from the name.
+    name: Validation on Linux, shard ${{ matrix.shard }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # One run's jobs dealt across two runners. The count is the second number of each entry.
+        shard: ['1/2', '2/2']
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -196,10 +202,12 @@ jobs:
 
       - name: Run repository validation
         shell: pwsh
+        env:
+          SHARD: ${{ matrix.shard }}
         run: |
-          # The Windows legs' step, unsharded: outside a pull request there is no base to compare with, so every suite
-          # runs, and a pull request's body and title reach the checks as files written from the event payload.
-          $arguments = @('-B', 'tests/run_validation.py', '-v')
+          # The Windows legs' step: outside a pull request there is no base to compare with, so every suite runs, and
+          # a pull request's body and title reach the checks as files written from the event payload.
+          $arguments = @('-B', 'tests/run_validation.py', '-v', '--shard', $env:SHARD)
           if ($env:GITHUB_EVENT_NAME -ne 'pull_request') { $arguments += '--full' }
           else {
             $payload = Get-Content -LiteralPath $env:GITHUB_EVENT_PATH -Raw -Encoding utf8 | ConvertFrom-Json
@@ -228,6 +236,6 @@ jobs:
           WINDOWS: ${{ needs.suite.result }}
           LINUX: ${{ needs.linux.result }}
         run: |
-          echo "Windows legs: $WINDOWS; Linux: $LINUX"
+          echo "Windows legs: $WINDOWS; Linux legs: $LINUX"
           test "$WINDOWS" = success
           test "$LINUX" = success

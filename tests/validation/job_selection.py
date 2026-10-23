@@ -21,6 +21,8 @@ from shell_targets import static_markdown_shell_check, static_powershell_check, 
 from suite_discovery import FIXTURE_ROOT, regression_suites, suite_jobs
 from validation_support import REPOSITORY_ROOT, UnreadablePython, git, parse_python, repository_files
 
+from deployer import platform_support
+
 POWERSHELL_JOB = "static PowerShell checks (PSScriptAnalyzer on .ps1 files and PowerShell fences)"
 MARKDOWN_SHELL_JOB = "static Markdown shell checks (ShellCheck on Bash fences outside skills/ and tests/)"
 SHELL_JOB = "static shell checks (bash -n and ShellCheck on skill scripts)"
@@ -59,10 +61,11 @@ CHANGE_REACHES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
 )
 # The folders skills sit in: a change anywhere in a skill reaches the suites in its scripts/.
 SKILL_PARENTS = ("skills", ".claude/skills")
-# What each job took on CI's runners, by job name (a suite's path, summed over its shards, or a static check's label),
-# the median across several completed validate runs' logs. tools/record_job_seconds.py writes it, and the release
-# procedure refreshes it, so the legs are dealt by measured seconds that change only when the file does, never by a
-# run's live timings.
+# What each job took on CI's runners, by platform and then by job name (a suite's path, summed over its shards, or a
+# static check's label), the median across several completed validate runs' logs. A job's cost differs between the
+# platforms by up to an order of magnitude, so each platform's legs are dealt by that platform's seconds.
+# tools/record_job_seconds.py writes it, and the release procedure refreshes it, so the legs are dealt by measured
+# seconds that change only when the file does, never by a run's live timings.
 JOB_SECONDS = Path(__file__).with_name("job_seconds.json")
 # A job the table does not name yet, such as a new suite, is dealt by its count instead: its typical tests, or for an
 # unsplit job UNSPLIT_JOB_COST of them, at TYPICAL_TEST_SECONDS each. An unsplit job's weight only starts it before
@@ -277,11 +280,13 @@ def name_patterns(patterns: list[str]) -> list[str]:
     return [pattern if any(character in pattern for character in "*?[") else f"*{pattern}*" for pattern in patterns]
 
 
-def job_seconds(path: Path = JOB_SECONDS) -> dict[str, float]:
-    """The measured seconds by job name: a JSON object of the runs they came from and the seconds, each above zero.
+def job_seconds(path: Path = JOB_SECONDS) -> dict[str, dict[str, float]]:
+    """The measured seconds by platform and job name: a JSON object of the runs they came from and the seconds, an
+    object for each platform the deployer supports, each value above zero.
 
-    A table from before the runs were several, which records one run under "run", is refused rather than read: the
-    release step that writes it rewrites it whole, so a reader of both would only keep the old shape alive.
+    A table from before the runs were several, which records one run under "run", or from before each platform had its
+    own seconds, whose seconds are by job name alone, is refused rather than read: the release step that writes it
+    rewrites it whole, so a reader of both would only keep the old shape alive.
     """
     try:
         table = json.loads(path.read_text(encoding="utf-8"))
@@ -302,15 +307,26 @@ def job_seconds(path: Path = JOB_SECONDS) -> dict[str, float]:
         and len(set(runs)) == len(runs)
     ):
         raise ValueError(f'{path.name} records "runs" as {runs!r}; they are a list of distinct run IDs, at least one')
+    platforms = sorted(platform_support.SUPPORTED_PLATFORMS.values())
     seconds = table["seconds"]
-    for name, value in seconds.items():
-        if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
-            raise ValueError(f"{path.name} records {name} at {value!r}; a job's seconds are a number above zero")
-    return {name: float(value) for name, value in seconds.items()}
+    if any(not isinstance(value, dict) for value in seconds.values()):
+        raise ValueError(
+            f"{path.name} records seconds by job name alone; rerun tools/record_job_seconds.py to record each "
+            f"platform's, under {', '.join(platforms)}"
+        )
+    if sorted(seconds) != platforms:
+        raise ValueError(f"{path.name} records seconds for {sorted(seconds)}; it records each of {platforms}")
+    for platform, jobs in seconds.items():
+        for name, value in jobs.items():
+            if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
+                raise ValueError(
+                    f"{path.name} records {name} on {platform} at {value!r}; a job's seconds are a number above zero"
+                )
+    return {platform: {name: float(value) for name, value in jobs.items()} for platform, jobs in seconds.items()}
 
 
 @functools.cache
-def recorded_job_seconds() -> dict[str, float]:
+def recorded_job_seconds() -> dict[str, dict[str, float]]:
     return job_seconds()
 
 
@@ -332,10 +348,10 @@ def flatten(suite: unittest.TestSuite) -> Iterable[unittest.TestCase]:
 
 def leg_jobs(jobs: list[Job], index: int, count: int, seconds: Mapping[str, float] | None = None) -> list[Job]:
     """The jobs leg `index` (from 0) of `count` runs, dealt as conftest.py deals a suite's tests: the heaviest first
-    onto the leg with the least so far, by label on a tie, each weighed by leg_cost from `seconds` (JOB_SECONDS when
-    None). The legs run every job exactly once between them, and each leg's share depends only on the jobs and the
-    table, never on their order, so legs that select alike deal alike."""
-    measured = recorded_job_seconds() if seconds is None else seconds
+    onto the leg with the least so far, by label on a tie, each weighed by leg_cost from `seconds` (when None, the
+    host platform's table in JOB_SECONDS). The legs run every job exactly once between them, and each leg's share
+    depends only on the jobs and the table, never on their order, so legs that select alike deal alike."""
+    measured = recorded_job_seconds()[platform_support.PLATFORM_NAME] if seconds is None else seconds
     shards = Counter(job.name for job in jobs)
     costs = {job.label: leg_cost(job, shards[job.name], measured) for job in jobs}
     legs = deal([job.label for job in jobs], count, costs)
@@ -350,12 +366,14 @@ def leg_policies(policies: unittest.TestSuite, index: int, count: int) -> unitte
     return unittest.TestSuite(check for check in checks if legs[check.id()] == index)
 
 
-def stale_job_seconds_problems(seconds: Mapping[str, float], names: set[str]) -> list[str]:
-    """Report a measured entry that names no job a full run selects, such as a suite since renamed or removed."""
+def stale_job_seconds_problems(seconds: Mapping[str, Mapping[str, float]], names: set[str]) -> list[str]:
+    """Report a measured entry on any platform that names no job a full run selects, such as a suite since renamed or
+    removed."""
     return [
-        f"{JOB_SECONDS.name} records {name}, which no validation job runs; rerun tools/record_job_seconds.py on a "
-        "completed main run, or remove the entry"
-        for name in sorted(set(seconds) - names)
+        f"{JOB_SECONDS.name} records {name} on {platform}, which no validation job runs; rerun "
+        "tools/record_job_seconds.py on a completed main run, or remove the entry"
+        for platform, jobs in sorted(seconds.items())
+        for name in sorted(set(jobs) - names)
     ]
 
 
