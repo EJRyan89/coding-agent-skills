@@ -26,7 +26,7 @@ from review_hosts import (
     staging_path,
     write_outcome,
 )
-from review_io import PersistenceError, atomic_write_json, atomic_write_text, read_diff, read_json
+from review_io import CONTENT_ERRORS, PersistenceError, atomic_write_json, atomic_write_text, read_diff, read_json
 from review_operation import prior_severities
 from review_records import RecordError, validate_adapter_result
 from review_run import (
@@ -103,7 +103,7 @@ def count_reads(run: Path, state: RunState, roles: Sequence[str]) -> bool:
             continue
         sizes: dict[str, int] = {}
         for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
-            with contextlib.suppress(ValueError):
+            with contextlib.suppress(*CONTENT_ERRORS):
                 relative = json.loads(line)
                 target = source.joinpath(relative) if isinstance(relative, str) else source
                 key = os.path.normcase(os.path.normpath(target))

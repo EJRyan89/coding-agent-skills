@@ -35,6 +35,7 @@ from xml.parsers import expat
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import review_batches
 import review_canary
 import review_dispatch
 import review_documents
@@ -2079,6 +2080,77 @@ class InlineReviewerTests(AdversarialFixture):
         self.assertEqual("INCOMPLETE", self.recorded_verdict(self.prepare_inline()))
         record: Any = latest_record(self.archive, REPOSITORY, NUMBER)
         self.assertEqual("inline", (record or {})["review"]["dispatch"])
+
+
+class ReviewerResultTests(AdversarialFixture):
+    # Result files a reviewer that read hostile content might write, each one the parser refuses for its own reason.
+    UNPARSEABLE: ClassVar[dict[str, bytes]] = {
+        "nested past the recursion limit": b'{"model": "m", "summary": "s", "findings": ' + DEEP_ARRAY + b"}",
+        "an over-long integer": b'{"model": "m", "summary": "s", "findings": [], "x": ' + OVERLONG_INTEGER + b"}",
+        "not UTF-8": b'{"model": "m", "summary": "\xff", "findings": []}',
+        "not JSON": b'{"model": "m", "summary": "s", "findings": [',
+        # Valid JSON, but no UTF-8 file can hold the text, so the record finalize writes could not either.
+        "a lone surrogate": b'{"model": "m", "summary": "\\ud800", "findings": [], "prior_dispositions": []}',
+    }
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.pull_request({**BASE, **files({"app/service.py": b"def total(items):\n    return 0\n"})})
+        self.run_list = self.root / "runs.json"
+
+    def check_runs(self, runs: Sequence[Path]) -> tuple[int, str, str, list[str]]:
+        """`check --runs` on a run list publishing `runs` in order: its exit code, output, errors, and each run's
+        status in the list afterwards."""
+        listed = review_batches.new_run_list(
+            [],
+            {
+                name: False if name in ("inline", "force", "canary") else None
+                for name in review_batches.RUN_LIST_OPTIONS
+            },
+        )
+        listed["runs"] = [{"run": str(run), "selector": SELECTOR, "status": "published"} for run in runs]
+        review_io.atomic_write_json(self.run_list, listed)
+        code, out, err = self.main("check", "--runs", str(self.run_list))
+        return code, out, err, [entry["status"] for entry in review_batches.load_run_list(self.run_list)["runs"]]
+
+    def test_a_result_file_the_parser_refuses_is_its_roles_retry_and_check_carries_on_to_the_other_runs(self) -> None:
+        hostile: dict[str, dict[str, Any]] = {}
+        for reason, content in self.UNPARSEABLE.items():
+            hostile[reason] = ready = self.prepare()
+            for role in ready["roles"]:
+                claim(role)
+                Path(role["result_file"]).write_bytes(content)
+        clean = self.prepare()
+        self.write_results(clean)
+        # The clean run is checked last, so it is reached only when every run before it ended as its own lines.
+        code, out, err, statuses = self.check_runs([ready["run"] for ready in [*hostile.values(), clean]])
+        self.assertEqual((1, ""), (code, err), "a RETRY line is for the skill to act on")
+        for reason, ready in hostile.items():
+            with self.subTest(reason=reason):
+                (role,) = ready["roles"]
+                prefix = f"RETRY {SELECTOR} {role['id']} {role['prompt_file']} {role['id']}: result file is not valid "
+                self.assertEqual(1, out.count(prefix), out)
+        self.assertTrue(out.endswith(f"ALL_VALID {SELECTOR}\n"), out)
+        self.assertEqual(["published"] * len(hostile) + ["valid"], statuses, "a role to retry is checked again")
+
+    def test_a_run_file_the_parser_refuses_fails_that_run_alone(self) -> None:
+        broken: dict[str, Path] = {}
+        for reason, content in {
+            "nested past the recursion limit": DEEP_ARRAY,
+            "an over-long integer": OVERLONG_INTEGER,
+        }.items():
+            broken[reason] = run = self.prepare()["run"]
+            (run / review_run.RUN_FILE).write_bytes(content)
+        clean = self.prepare()
+        self.write_results(clean)
+        code, out, err, statuses = self.check_runs([*broken.values(), clean["run"]])
+        self.assertEqual((1, ""), (code, err))
+        *failed, last = out.splitlines()
+        for (reason, run), line in zip(broken.items(), failed, strict=True):
+            with self.subTest(reason=reason):
+                self.assertTrue(line.startswith(f"FAILED {run} Cannot read valid JSON from "), out)
+        self.assertEqual(f"ALL_VALID {SELECTOR}", last, "the run after them is still checked")
+        self.assertEqual(["failed"] * len(broken) + ["valid"], statuses, "a failed run is not checked again")
 
 
 class ConcurrentReviewTests(AdversarialFixture):

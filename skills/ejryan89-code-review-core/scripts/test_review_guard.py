@@ -17,11 +17,13 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import review_dispatch
 import review_guard as guard
 import review_pipeline as rp
 import review_run
 from executable_locator import PYTHON
 from review_source import source_commands
+from test_review_io import UNPARSEABLE_JSON
 from test_review_runtime_validation import directory_link
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
@@ -325,6 +327,16 @@ class ReadLogTests(GuardFixture):
     def entry(relative: str) -> str:
         """A path as the log names it: relative to the snapshot, in the case the file system compares."""
         return Path(os.path.normcase(relative)).as_posix()
+
+    def test_check_skips_a_log_line_the_parser_refuses_and_counts_the_others(self) -> None:
+        log = guard.read_log(self.run_directory, "csharp-review")
+        lines = [json.dumps("app/Service.cs").encode(), *UNPARSEABLE_JSON.values(), json.dumps("app/Role.cs").encode()]
+        log.write_bytes(b"\n".join(lines) + b"\n")
+        state: Any = {"reads": {}}
+        self.assertTrue(review_dispatch.count_reads(self.run_directory, state, ["csharp-review"]))
+        size = sum((self.source / "app" / name).stat().st_size for name in ("Service.cs", "Role.cs"))
+        self.assertEqual({"csharp-review": {"files": 2, "bytes": size}}, state["reads"])
+        self.assertFalse(log.exists(), "a counted log is removed")
 
     def test_a_claim_starts_the_log_and_each_snapshot_file_read_is_logged(self) -> None:
         log = guard.read_log(self.run_directory, "csharp-review")
@@ -630,6 +642,31 @@ class ClaimTests(GuardFixture):
         self.assert_denied(self.decide("Read", file_path=self.prompt()))
         (self.claims / f"{AGENT}.json").write_text(json.dumps({"run": str(self.run_directory)}), encoding="utf-8")
         self.assert_denied(self.decide("Write", file_path=self.result()))
+
+    def test_a_run_or_claim_the_parser_refuses_denies_as_unreadable_and_a_stale_one_is_left_in_place(self) -> None:
+        run_file = self.run_directory / "run.json"
+        run = run_file.read_bytes()
+        stale = self.claims / f"{OTHER_AGENT}.json"
+        for reason, content in UNPARSEABLE_JSON.items():
+            with self.subTest(reason=reason):
+                run_file.write_bytes(content)
+                self.assertEqual(
+                    f"Code-review reviewer boundary: the review run {self.run_directory} could not be read.",
+                    self.decide("Read", file_path=self.prompt()),
+                )
+                run_file.write_bytes(run)
+                self.claims.mkdir(exist_ok=True)
+                (self.claims / f"{AGENT}.json").write_bytes(content)
+                self.assertEqual(
+                    "Code-review reviewer boundary: this reviewer's claim could not be read.",
+                    self.decide("Write", file_path=self.result()),
+                )
+                (self.claims / f"{AGENT}.json").unlink()
+                # A new claim prunes claims whose run is gone; one it cannot read is not known to be gone.
+                stale.write_bytes(content)
+                self.claim()
+                self.assertEqual(content, stale.read_bytes())
+                (self.claims / f"{AGENT}.json").unlink()
 
     def test_a_claim_on_a_role_the_run_no_longer_has_denies(self) -> None:
         self.claim()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 import json
 import os
+import re
 import secrets
 import shutil
 import sys
@@ -24,6 +25,14 @@ from process_identity import ProcessStatus, process_status
 from review_process import same_process
 from skill_roots import skills_directory_holding
 from typed_fields import FieldError, FieldReader
+
+# What a standard-library parser (json, tomllib) raises on content it refuses: ValueError covers its decode error,
+# a decoding fault, and an integer past the int-to-string digit limit, and RecursionError nesting past the
+# interpreter's recursion limit. A reader of a file it did not just write catches all of them around the parse alone,
+# since most of this package's own errors are ValueErrors too.
+CONTENT_ERRORS = (ValueError, RecursionError)
+# A JSON escape of a UTF-16 surrogate, paired or not.
+SURROGATE_ESCAPE = re.compile(r"\\u[dD][89a-fA-F]")
 
 # Concurrent GitHub and git network calls; small enough to stay clear of GitHub's secondary rate limits.
 NETWORK_WORKERS = 4
@@ -96,15 +105,25 @@ def map_in_order(
             raise
 
 
+def parse_json(text: str) -> Any:
+    """The value JSON text holds, once it can be written back as UTF-8. json accepts an escaped lone surrogate, which
+    no UTF-8 file can hold, so a value holding one would otherwise fail only when a later step writes it. Raises one
+    of CONTENT_ERRORS."""
+    value = json.loads(text)
+    if SURROGATE_ESCAPE.search(text):  # only an escape spells a surrogate, so text without one needs no second pass
+        json.dumps(value, ensure_ascii=False).encode("utf-8")
+    return value
+
+
 def read_json(path: Path, *, maximum_bytes: int = 4 * 1024 * 1024) -> Any:
     try:
         size = path.stat().st_size
         if size > maximum_bytes:
             raise PersistenceError(f"JSON file exceeds {maximum_bytes} bytes: {path}")
-        return json.loads(path.read_text(encoding="utf-8-sig"))
+        return parse_json(path.read_text(encoding="utf-8-sig"))
     except PersistenceError:
         raise
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+    except (OSError, *CONTENT_ERRORS) as exc:
         raise PersistenceError(f"Cannot read valid JSON from {path}: {exc}") from exc
 
 
@@ -312,7 +331,7 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
                 json.loads(content.decode("utf-8-sig")) if len(content) <= OWNER_MAXIMUM_BYTES else None, "lock owner"
             )
             token = READ.string(owner.get("token"), "lock owner.token", empty=True)
-        except (UnicodeError, ValueError):  # undecodable, not JSON, too large, or not an owner record
+        except CONTENT_ERRORS:  # undecodable, not JSON, too large or deep, or not an owner record
             token = ""
         if token:
             return LockIdentity(token=token), owner

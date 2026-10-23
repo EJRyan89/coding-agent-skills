@@ -11,7 +11,6 @@ The Copilot CLI host runs detached from the command that starts it. Its run dire
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import re
 import secrets
@@ -29,7 +28,15 @@ from executable_locator import find_executables
 from job_tree import JobRefused, process_tree
 from process_identity import ProcessStatus
 from review_config import REVIEWER_EFFORTS
-from review_io import ResourceLock, atomic_write_json, atomic_write_text, read_diff, read_json
+from review_io import (
+    CONTENT_ERRORS,
+    ResourceLock,
+    atomic_write_json,
+    atomic_write_text,
+    parse_json,
+    read_diff,
+    read_json,
+)
 from review_process import same_process, shell_script
 from review_runtime import (
     READ,
@@ -300,8 +307,8 @@ def isolated_copilot_environment(
 def materialized_reviewer_entrypoint(materialized_root: Path) -> Path:
     metadata_path = materialized_root / "materialization.json"
     try:
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8-sig"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        metadata = parse_json(metadata_path.read_text(encoding="utf-8-sig"))
+    except (OSError, *CONTENT_ERRORS) as exc:
         raise RuntimeContractError(f"Copilot reviewer materialization metadata is invalid: {exc}") from exc
     READ.json_object(
         metadata,
@@ -502,7 +509,7 @@ class _CopilotRequest:
 
 def _read_copilot_request(request_path: Path) -> _CopilotRequest:
     try:
-        request = json.loads(request_path.read_text(encoding="utf-8-sig"))
+        request = parse_json(request_path.read_text(encoding="utf-8-sig"))
         pull_request = request["pull_request"]
         source_snapshot = request["source_snapshot"]
         source_root = Path(source_snapshot["root"])
@@ -510,7 +517,7 @@ def _read_copilot_request(request_path: Path) -> _CopilotRequest:
         diff_path = Path(request["diff_path"])
         repository = request["repository"]
         head_sha = pull_request["head_sha"]
-    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
+    except (OSError, *CONTENT_ERRORS, KeyError, TypeError) as exc:
         raise RuntimeContractError(f"Copilot request source snapshot is invalid: {exc}") from exc
     return _CopilotRequest(request, source_snapshot, source_root, source_manifest, diff_path, repository, head_sha)
 
@@ -597,7 +604,7 @@ def _require_copilot_result(result: ProcessResult, staging_path: Path, diagnosti
     if not staging_path.is_file():
         raise RuntimeContractError("GitHub Copilot CLI did not produce the result file")
     try:
-        parsed = json.loads(staging_path.read_text(encoding="utf-8-sig"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        parsed = parse_json(staging_path.read_text(encoding="utf-8-sig"))
+    except (OSError, *CONTENT_ERRORS) as exc:
         raise RuntimeContractError(f"GitHub Copilot CLI result is not valid JSON: {exc}") from exc
     READ.json_object(parsed, "adapter-result")

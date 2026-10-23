@@ -30,7 +30,16 @@ from job_tree import TreeNotEnded, process_tree
 from review_analyzers import inventory, tool_names
 from review_config import safe_repository_path
 from review_documents import LINE_UNSAFE
-from review_io import PersistenceError, atomic_write_bytes, atomic_write_json, atomic_write_text, read_diff, read_json
+from review_io import (
+    CONTENT_ERRORS,
+    PersistenceError,
+    atomic_write_bytes,
+    atomic_write_json,
+    atomic_write_text,
+    parse_json,
+    read_diff,
+    read_json,
+)
 from review_records import (
     TITLE_MAXIMUM_LENGTH,
     RecordError,
@@ -1638,8 +1647,8 @@ def load_role_result(
     if not path.is_file():
         raise SpecialistError(f"{name}: result file is missing")
     try:
-        value = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (UnicodeError, json.JSONDecodeError) as exc:
+        value = parse_json(path.read_text(encoding="utf-8-sig"))
+    except CONTENT_ERRORS as exc:
         raise SpecialistError(f"{name}: result file is not valid JSON: {exc}") from exc
     root = f"{name}: specialist-result"
     result = READ.json_object(value, root)

@@ -18,7 +18,43 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import review_io
 import skill_roots
 from atomic_file import UnfinishedCopyError
-from review_io import PersistenceError, map_in_order, working_path
+from review_io import CONTENT_ERRORS, PersistenceError, map_in_order, parse_json, read_json, working_path
+
+# JSON a reviewer, adapter, or earlier step might leave in a file the pipeline reads, each refused by json itself for
+# its own reason. The other suites import it for their readers.
+UNPARSEABLE_JSON = {
+    "nested past the recursion limit": b'{"x": ' + b"[" * 100_000 + b"]" * 100_000 + b"}",
+    "an over-long integer": b'{"x": ' + b"9" * (sys.get_int_max_str_digits() + 1) + b"}",
+    "not UTF-8": b'{"x": "\xff"}',
+    "not JSON": b'{"x": [',
+}
+# Valid JSON whose text no UTF-8 file can hold.
+LONE_SURROGATE = b'{"x": "\\ud800"}'
+
+
+class ReadJsonTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.path = Path(temporary.name) / "value.json"
+
+    def test_content_the_parser_refuses_or_utf8_cannot_hold_is_a_persistence_error(self) -> None:
+        for reason, content in {**UNPARSEABLE_JSON, "a lone surrogate": LONE_SURROGATE}.items():
+            with self.subTest(reason=reason):
+                self.path.write_bytes(content)
+                with self.assertRaisesRegex(
+                    PersistenceError, rf"\ACannot read valid JSON from {re.escape(str(self.path))}: "
+                ):
+                    read_json(self.path)
+                if reason != "not UTF-8":  # decoding is the caller's; parse_json is handed text
+                    with self.assertRaises(CONTENT_ERRORS):
+                        parse_json(content.decode("utf-8"))
+
+    def test_a_surrogate_pair_and_an_escaped_backslash_before_a_surrogate_escape_are_read(self) -> None:
+        for text, value in (('{"x": "\\ud83d\\ude00"}', {"x": "\U0001f600"}), ('{"x": "\\\\ud800"}', {"x": "\\ud800"})):
+            with self.subTest(text=text):
+                self.path.write_text(text, encoding="utf-8")
+                self.assertEqual(value, read_json(self.path))
 
 
 class ParallelCallTests(unittest.TestCase):
