@@ -218,6 +218,18 @@ class PolicyLinesTests(Fixture):
         self.assertEqual(0, code, reported)
         self.assertEqual(used, reported[: len(used)])
 
+    def test_lists_joined_to_their_options_read_as_the_skill_renders_them_empty_or_set(self) -> None:
+        # SKILL.md joins each list to its option, so an empty setting arrives as --regenerable= in every shell.
+        code, lines = self.sweep("--regenerable=", "--protected=")
+        self.assertEqual(0, code, lines)
+        self.assertEqual(f"POLICY\tdefaults\t{cleanup_policy.POLICY_FILE.as_posix()}", lines[1])
+        self.assertEqual({"regenerable": "", "protected": ""}, rc.load_plan(self.plan_file)["policy"])
+        code, lines = self.sweep("--regenerable=.venv .tox=tox.ini", "--protected=hotfix/")
+        self.assertEqual(0, code, lines)
+        self.assertEqual(
+            ["ADDED\tregenerable\t.venv", "ADDED\tregenerable\t.tox=tox.ini", "ADDED\tprotected\thotfix/"], lines[2:5]
+        )
+
     def test_a_broken_shipped_policy_stops_the_sweep_before_anything_runs(self) -> None:
         broken = self.root / "cleanup-policy.json"
         broken.write_text('{"schema_version": 2}\n', encoding="utf-8")
