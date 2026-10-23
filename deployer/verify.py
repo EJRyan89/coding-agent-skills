@@ -28,6 +28,9 @@ FSOPS_ALLOWED = {
 VERIFY_ACTIONS = ("NOT FOUND", "DISABLED", "SHADOWED", "EXPOSED", "FOUND")
 # What an adapter only the user may start is, where Codex offers it to the model anyway.
 EXPOSED_DETAIL = f"Codex offers it to the model, though only the user starts it; check its {CODEX_METADATA}"
+# The lines of an adapter Copilot CLI did not list: it lists one copy per name, the one it will use, so a SHADOWED
+# adapter is one it listed another copy in place of, as it does for a same-named skill under COPILOT_HOME.
+UNLISTED = ("NOT FOUND", "SHADOWED")
 SUPPORT = {"codex": "docs/codex-support.md", "copilot": "docs/copilot-support.md"}
 # The line that names each runtime verify failed for, which the deployable workflow's report reads back.
 FAILED_FOR = "Verification failed for "
@@ -102,12 +105,13 @@ def expose(lines: list[ReportLine], hidden: list[str], catalog: Listing, adapter
 
 
 def unlisted_note(runtime: str, lines: list[ReportLine], paths: Paths, environment: Mapping[str, str]) -> str | None:
-    """Why Copilot CLI listed none of the adapters, when the COPILOT_HOME it ran with is the reason: Copilot then reads
-    personal skills from that directory's skills folder alone, unless the variable names its default."""
+    """Why Copilot CLI listed none of the adapters, whether it listed nothing or a same-named skill in place of one,
+    when the COPILOT_HOME it ran with is the reason: Copilot then reads personal skills from that directory's skills
+    folder alone, unless the variable names its default."""
     copilot = dataclasses.replace(paths, copilot_home=copilot_home(environment))
     if runtime != "copilot" or copilot.copilot_home is None or copilot.copilot_reads_adapters:
         return None
-    if any(line.action != "NOT FOUND" for line in lines):
+    if any(line.action not in UNLISTED for line in lines):
         return None
     return copilot_home_note(copilot.copilot_home, paths.adapter_dest_dir, paths.default_copilot_dir)
 
