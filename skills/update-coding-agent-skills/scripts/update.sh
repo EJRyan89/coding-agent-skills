@@ -36,8 +36,9 @@
 #                    which deployed <commit>, that check did not name: the clone was updated, and nothing was
 #                    deployed
 #   FAILED <reason>  alone: the clone is not a repository with deploy.py, no ejryan89-skill-core is deployed beside
-#                    this skill, a step failed outright, or a release tag the stop compares has a version component too
-#                    long to compare
+#                    this skill, `deploy.py check` named no deployed commit and pin the update can read, so whether
+#                    the installation is pinned is unknown, a step failed outright, or a release tag the stop compares
+#                    has a version component too long to compare
 # A stop leaves the clone on the branch it was found on unless a "still on main:" line says otherwise; an update
 # switches it to main and leaves it there.
 # Exit: 0 deployed; 1 any other status line, or FAILED; 2 usage (the wrong arguments, on stderr).
@@ -120,8 +121,13 @@ fi
 # `git -C "$CLONE"` below at another repository, index, or object store: those git clears itself before it works in
 # another repository, but for the command-scope settings in its list, and GIT_NAMESPACE. Each is unset in any case, as
 # Windows reads a name, so git there takes git_dir as GIT_DIR. ejryan89-skill-core's bounded_process.py leaves the same out of
-# every command a skill's Python starts. awk's ENVIRON names each exported variable in the case it was given.
-for NAME in $(git rev-parse --local-env-vars 2>/dev/null | awk '
+# every command a skill's Python starts. awk's ENVIRON names each exported variable in the case it was given. A list git
+# cannot give would leave every variable in place, so it stops the update.
+if ! LOCAL_ENV_VARS=$(git rev-parse --local-env-vars 2>&1); then
+  echo "FAILED cannot list git's repository-selecting variables: $(one_line "$LOCAL_ENV_VARS")"
+  exit 1
+fi
+for NAME in $(printf '%s\n' "$LOCAL_ENV_VARS" | awk '
   { sub(/\r$/, ""); wanted[$0] = 1 }
   END {
     wanted["GIT_NAMESPACE"] = 1
@@ -201,11 +207,23 @@ breaking_component() {
 }
 
 # check names the deployed commit as "<name> (<commit>)", the commit alone, or unknown, followed by the pin when the
-# deployment was made with `deploy.py --at <ref>`. Its exit status is not read: a check that reports a missing tool
-# still names the commit. DEPLOYED_COMMIT is the commit's full name, or empty when check names none, so it is never
-# taken for an option.
+# deployment was made with `deploy.py --at <ref>`. Its exit status alone does not stop the update: a check that reports
+# a missing tool exits 1 and still names the commit. That line is the only word on whether the installation is pinned,
+# so a check that prints none, or one the update cannot read, stops the update rather than deploy over a pin it could
+# not see. DEPLOYED_COMMIT is the commit's full name, or empty when check names none, so it is never taken for an option.
 PIN_MARK=", pinned with --at "
-DEPLOYED_LINE=$("$PYTHON" "$CLONE/deploy.py" check </dev/null 2>/dev/null | tr -d '\r' | grep -m 1 -e "^Deployed commit: ")
+PIN_UNKNOWN="FAILED cannot read whether the installation is pinned:"
+CHECK_CODE=0
+CHECK_OUTPUT=$("$PYTHON" "$CLONE/deploy.py" check </dev/null 2>&1) || CHECK_CODE=$?
+CHECK_OUTPUT=$(printf '%s' "$CHECK_OUTPUT" | tr -d '\r')
+DEPLOYED_LINE=$(grep -m 1 -e "^Deployed commit: " <<<"$CHECK_OUTPUT")
+if [ -z "$DEPLOYED_LINE" ] && [ -z "$CHECK_OUTPUT" ]; then
+  echo "$PIN_UNKNOWN deploy.py check exited $CHECK_CODE and printed nothing"
+  exit 1
+elif [ -z "$DEPLOYED_LINE" ]; then
+  echo "$PIN_UNKNOWN deploy.py check exited $CHECK_CODE without naming the deployed commit: $(one_line "$CHECK_OUTPUT")"
+  exit 1
+fi
 DEPLOYED=${DEPLOYED_LINE#Deployed commit: }
 PIN_REF=
 case "$DEPLOYED" in
@@ -220,8 +238,15 @@ commit_named() {
   printf '%s' "$named"
 }
 DEPLOYED=$(commit_named "$DEPLOYED")
+# A commit that is neither a full name nor unknown, or a pin mark with no ref after it or a ref holding a space, which
+# no ref the deployer records can, is a line the update cannot read.
+if ! [[ "$DEPLOYED" =~ ^([0-9a-f]{40}|[0-9a-f]{64}|unknown)$ ]] ||
+  { [[ "$DEPLOYED_LINE" == *"$PIN_MARK"* ]] && ! [[ "$PIN_REF" =~ ^[^[:space:]]+$ ]]; }; then
+  echo "$PIN_UNKNOWN deploy.py check printed: $(one_line "$DEPLOYED_LINE")"
+  exit 1
+fi
 DEPLOYED_COMMIT=
-if [[ "$DEPLOYED" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+if [ "$DEPLOYED" != unknown ]; then
   DEPLOYED_COMMIT=$DEPLOYED
 fi
 
@@ -242,10 +267,10 @@ if [ -n "$PIN_REF" ] && [ -z "$OWN_PIN" ] && [ -z "$UNPIN" ]; then
   USER_PIN=1
 fi
 
-# On the main channel a user's pin would be replaced by main, so the update stops before the fetch. A check that fails
-# or names no pin does not stop the update here; the deployer itself refuses to replace a pin without --unpin, which
-# ends the update with DEPLOY_PINNED below. The release channel stops at a user's pin after the fetch, once it knows
-# the release it would deploy.
+# On the main channel a user's pin would be replaced by main, so the update stops before the fetch. The release channel
+# stops at a user's pin after the fetch, once it knows the release it would deploy. A pin check did not name, as when
+# the manifest changed after it ran, does not stop the update here; on either channel the deployer itself refuses to
+# replace a user's pin without --unpin, which ends the update with DEPLOY_PINNED below.
 if [ "$CHANNEL" = main ] && [ -n "$USER_PIN" ]; then
   echo "PINNED $PIN_REF $DEPLOYED"
   exit 1
@@ -266,11 +291,15 @@ if ! OUTPUT=$(git -C "$CLONE" ls-remote --tags --refs origin "refs/tags/main" "r
 fi
 SHADOWS=$(printf '%s\n' "$OUTPUT" | tr -d '\r' |
   awk -F '\t' '$2 == "refs/tags/main" || $2 == "refs/tags/origin/main" { print $2 " on origin" }')
-for TAG in refs/tags/main refs/tags/origin/main; do
-  if git -C "$CLONE" show-ref --verify --quiet "$TAG"; then
-    SHADOWS+="${SHADOWS:+$'\n'}$TAG in the clone"
-  fi
-done
+# The clone's own tags are listed rather than probed one by one, so tags git cannot read stop the update instead of
+# reading as none.
+if ! OUTPUT=$(git -C "$CLONE" for-each-ref --format='%(refname)' refs/tags/main refs/tags/origin/main 2>&1); then
+  echo "FAILED cannot read the clone's tags: $(one_line "$OUTPUT")"
+  exit 1
+fi
+LOCAL_SHADOWS=$(printf '%s\n' "$OUTPUT" | tr -d '\r' |
+  awk '$0 == "refs/tags/main" || $0 == "refs/tags/origin/main" { print $0 " in the clone" }')
+SHADOWS+="${SHADOWS:+${LOCAL_SHADOWS:+$'\n'}}$LOCAL_SHADOWS"
 if [ -n "$SHADOWS" ]; then
   echo "TAG_SHADOWS_BRANCH"
   printf '%s\n' "$SHADOWS"
@@ -408,14 +437,16 @@ if [ -n "$CROSSED" ]; then
 fi
 
 # A fresh process runs the deployer exactly as it now is on main. On the release channel it deploys the release's tree
-# with --at, which moves any pin without --unpin. On the main channel it refuses to replace a pin without --unpin,
-# which it is given for the release channel's own pin, so a pin check could not read stops there too: it exits 1 with
-# the line below, which names the ref the deployment was pinned with and its commit as check does, and which the
-# deployer's tests hold.
+# with --at, which moves the release channel's own pin and refuses to replace any other without --unpin. On the main
+# channel it refuses to replace any pin without --unpin, which it is given for the release channel's own pin. Either
+# way --unpin is given when the user passed it, and a pin check did not name stops there: the deployer exits 1 with the
+# line below, which names the ref the deployment was pinned with and its commit as check does, and which the deployer's
+# tests hold.
 DEPLOY_OPTIONS=(--all)
 if [ "$CHANNEL" = release ]; then
   DEPLOY_OPTIONS+=(--at "$RELEASE_REF")
-elif [ -n "$UNPIN" ] || [ -n "$OWN_PIN" ]; then
+fi
+if [ -n "$UNPIN" ] || { [ "$CHANNEL" = main ] && [ -n "$OWN_PIN" ]; }; then
   DEPLOY_OPTIONS+=(--unpin)
 fi
 "$PYTHON" "$CLONE/deploy.py" "${DEPLOY_OPTIONS[@]}" </dev/null 2>"$DEPLOY_ERRORS"

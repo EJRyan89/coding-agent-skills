@@ -208,18 +208,33 @@ def _replaced_pin(context: Context) -> str | None:
 
 
 def _refuse_unpinning(context: Context, replaced_pin: str | None) -> None:
-    """Refuse a run without --at that would replace a deployment made with --at, unless it passes --unpin.
+    """Refuse a run that would replace a deployment made with --at, unless it passes --unpin.
 
     The deployer always runs from the checkout's HEAD, so this keeps a pin whichever commit's update-coding-agent-skills
-    started the run: one deployed from a commit before that skill stopped at a pin itself runs `--all` alone. Another
-    --at names the commit it deploys, and the uninstall removes the pinned deployment as asked, so neither needs it.
+    started the run: one deployed from a commit before that skill stopped at a pin itself runs `--all` alone, or, on
+    the release channel, `--all --at refs/tags/<tag>`, even when it could not read the pin. So another --at is refused
+    too, except over update-coding-agent-skills' own pin at a release, which its release channel moves to each later
+    release. The uninstall removes the pinned deployment as asked, so it needs no --unpin.
     """
-    if replaced_pin is None or context.pin is not None or context.options.unpin or context.selection.deselect_all:
+    if replaced_pin is None or context.options.unpin or context.selection.deselect_all:
         return
+    if context.pin is None:
+        advice = (
+            f"To move it to this checkout's HEAD, rerun with --unpin, as in '{PROG} --all --unpin'; to keep the pin, "
+            "change nothing, or deploy another commit with --at."
+        )
+    else:
+        ref = context.manifest.source_ref(context.source_id)
+        commit = context.manifest.source_commit(context.source_id)
+        if ref is not None and commit is not None and source_ref.is_release_pin(context.paths.source_dir, ref, commit):
+            return
+        advice = (
+            f"To move it to {context.pin.ref}, rerun with --unpin, as in '{PROG} --all --at {context.pin.ref} "
+            "--unpin'; to keep the pin, change nothing."
+        )
     raise DeployError(
         f"ERROR: Refusing to replace {replaced_pin} without --unpin.",
-        f"To move it to this checkout's HEAD, rerun with --unpin, as in '{PROG} --all --unpin'; to keep the pin, "
-        "change nothing, or deploy another commit with --at.",
+        advice,
         see_recovery(source_ref.EARLIER_COMMIT),
     )
 

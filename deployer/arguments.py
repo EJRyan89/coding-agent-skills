@@ -118,7 +118,7 @@ def parser() -> _Parser:
         top.add_argument(
             "--at", default=None, metavar="REF", help="deploy this commit, tag, or branch instead of the checkout"
         ),
-        top.add_argument("--unpin", action="store_true", help="let a deployment without --at replace a pinned one"),
+        top.add_argument("--unpin", action="store_true", help="let a deployment replace one you pinned with --at"),
     ]
     _add_debug(top)
     commands = top.add_subparsers(
@@ -185,7 +185,7 @@ _EXCLUSIVE = (
     ("--take-over-source", ("--dry-run",)),
     ("--canary-home", ("--dry-run", "--migrate-from", "--take-over-source")),
     ("--at", ("--migrate-from",)),
-    ("--unpin", ("--at", "--migrate-from")),
+    ("--unpin", ("--migrate-from",)),
 )
 
 

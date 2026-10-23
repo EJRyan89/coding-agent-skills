@@ -83,7 +83,7 @@ class SingleEntryPointTests(DeployerTestCase):
             "  --take-over-source  deploy from this checkout in place of the recorded one\n"
             "  --canary-home DIR   deploy into a throwaway home under the temp directory\n"
             "  --at REF            deploy this commit, tag, or branch instead of the checkout\n"
-            "  --unpin             let a deployment without --at replace a pinned one\n"
+            "  --unpin             let a deployment replace one you pinned with --at\n"
             "  --debug             print the traceback when it fails; or set DEPLOYER_DEBUG=1\n"
             "\n"
             "commands:\n"
