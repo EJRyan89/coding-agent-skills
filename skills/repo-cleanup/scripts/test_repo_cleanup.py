@@ -60,6 +60,14 @@ def build_template() -> None:
 class CleanupTestCase(unittest.TestCase):
     git_config = GIT_CONFIG
 
+    def setUp(self) -> None:
+        # The seals a plan's save writes go to a throwaway folder of the test's, never the user's temporary directory.
+        seals = Path(tempfile.mkdtemp(prefix="repo cleanup seals ")).resolve()
+        self.addCleanup(remove_tree, seals)
+        patcher = mock.patch.object(rc, "SEALS", seals)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
 
 def remove_tree(path: Path) -> None:
     def writable(function: Callable[..., object], target: str, *_: object) -> None:
@@ -122,6 +130,26 @@ def copy_fixture(root: Path) -> None:
     remote, other, clone = fixture_paths(root)
     git(other, "remote", "set-url", "origin", str(remote))
     git(clone, "config", "--rename-section", f"url.{template_remote.as_posix()}", f"url.{remote.as_posix()}")
+
+
+def written_plan(**fields: Any) -> dict[str, Any]:
+    """A plan holding every field build_plan writes, for a repository at a folder that need not exist, with `fields`
+    in place of its own."""
+    return {
+        "schema_version": 1,
+        "repo_root": "/repos/my repo",
+        "repo_name": "my repo",
+        "worktree_area": "/repos/Worktrees",
+        "orphan_areas": ["/repos/Worktrees/my repo", "/repos/my repo/.claude/worktrees"],
+        "default": {"name": "main", "status": "up to date"},
+        "branches": [],
+        "worktrees": [],
+        "fastforward": [],
+        "diverged": [],
+        "applied": True,
+        "events": [],
+        **fields,
+    }
 
 
 def facts(lines: list[str], kind: str) -> list[list[str]]:
@@ -224,6 +252,7 @@ class Fixture(CleanupTestCase):
     """A clone under a REPOS_ROOT with spaces, whose github.com origin is rewritten to a local bare remote."""
 
     def setUp(self) -> None:
+        super().setUp()
         self.root = Path(tempfile.mkdtemp(prefix="repo cleanup ")).resolve()
         self.addCleanup(remove_tree, self.root)
         self.repos = self.root / "Repos Root"
@@ -1623,8 +1652,7 @@ class SweepTests(Fixture):
                     facts(lines, "FAILED"),
                 )
         record = self.root / "plans" / rc.SWEEP_RECORD
-        record.parent.mkdir()
-        record.write_text('{"schema_version": 1, "repositories": [{"root": 3}]}\n', encoding="utf-8")
+        rc.save_plan(record, {"schema_version": 1, "repositories": [{"root": 3}]})
         code, lines = self.report()
         self.assertEqual((1, [[f"{record} is not a repo-cleanup sweep record"]]), (code, facts(lines, "FAILED")), lines)
 
@@ -1924,6 +1952,7 @@ class WorktreeTestCase(CleanupTestCase):
     """A repository whose worktrees a test adds, fills, and removes as apply removes a stale one."""
 
     def setUp(self) -> None:
+        super().setUp()
         self.root = Path(tempfile.mkdtemp(prefix="repo cleanup remove ")).resolve()
         self.addCleanup(remove_tree, self.root)
         self.repo = self.root / "repo"
@@ -2426,35 +2455,45 @@ class UnitTests(CleanupTestCase):
 
 
 class ConsoleTests(CleanupTestCase):
+    def sealed_in(self, root: Path) -> dict[str, str]:
+        """The environment of a script run whose temporary directory, and so whose seals, lie under `root`, where
+        this test's saves write them too."""
+        temporary = root / "temp"
+        temporary.mkdir()
+        patcher = mock.patch.object(rc, "SEALS", temporary / "repo-cleanup-seals")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return {**os.environ, "TMPDIR": str(temporary), "TEMP": str(temporary), "TMP": str(temporary)}
+
     def test_output_a_cp1252_console_cannot_encode_is_written_as_utf_8(self) -> None:
         root = Path(tempfile.mkdtemp(prefix="repo cleanup console ")).resolve()
         self.addCleanup(remove_tree, root)
+        environment = self.sealed_in(root)
         plan = root / "plan → ✓.json"
-        plan.write_text(json.dumps({"schema_version": 0}), encoding="utf-8")
+        rc.save_plan(plan, written_plan(schema_version=0))
         result = subprocess.run(
             [sys.executable, "-B", rc.__file__, "summary", "--plan", str(plan)],
             capture_output=True,
-            env={**os.environ, "PYTHONIOENCODING": "cp1252"},
+            env={**environment, "PYTHONIOENCODING": "cp1252"},
             check=False,
         )
         self.assertEqual(1, result.returncode, result.stderr.decode("utf-8", "replace"))
-        self.assertEqual([f"FAILED\t{plan} is not a repo-cleanup plan"], result.stdout.decode("utf-8").splitlines())
+        self.assertEqual(
+            [f"FAILED\t{plan} is not a repo-cleanup plan: schema_version must be one of 1, found integer 0"],
+            result.stdout.decode("utf-8").splitlines(),
+        )
 
     def test_a_branch_name_git_gave_as_bytes_that_are_not_utf_8_is_printed(self) -> None:
         root = Path(tempfile.mkdtemp(prefix="repo cleanup console ")).resolve()
         self.addCleanup(remove_tree, root)
+        environment = self.sealed_in(root)
         plan = root / "plan.json"
-        recorded = {
-            "schema_version": rc.PLAN_SCHEMA_VERSION,
-            "repo_name": "my repo",
-            "default": {"name": "main", "status": "up to date"},
-            "branches": [],
-            "worktrees": [],
-            "events": [["CONFIRM_LOCAL", "caf\udce9"]],
-        }
-        plan.write_text(json.dumps(recorded), encoding="utf-8")
+        rc.save_plan(plan, written_plan(events=[["CONFIRM_LOCAL", "caf\udce9"]]))
         result = subprocess.run(
-            [sys.executable, "-B", rc.__file__, "summary", "--plan", str(plan)], capture_output=True, check=False
+            [sys.executable, "-B", rc.__file__, "summary", "--plan", str(plan)],
+            capture_output=True,
+            env=environment,
+            check=False,
         )
         self.assertEqual(0, result.returncode, result.stdout.decode("utf-8", "replace"))
         self.assertIn("SUMMARY\t  Local-only (kept):       1 — caf�", result.stdout.decode("utf-8").splitlines())
@@ -2466,23 +2505,20 @@ class PlanVersionTests(CleanupTestCase):
         root = Path(tempfile.mkdtemp(prefix="repo cleanup plan ")).resolve()
         self.addCleanup(remove_tree, root)
         plan = root / "plan.json"
-        recorded = {
-            "repo_name": "my repo",
-            "default": {"name": "main", "status": "up to date"},
-            "branches": [],
-            "worktrees": [],
-            "events": [],
-        }
-        plan.write_text(json.dumps({"schema_version": 1, **recorded}), encoding="utf-8")
+        rc.save_plan(plan, written_plan())
         self.assertEqual(1, rc.load_plan(plan)["schema_version"])
         for version in (True, 1.0, "1", [1], {"version": 1}, None, 0, 2):
             with self.subTest(version=version):
-                plan.write_text(json.dumps({"schema_version": version, **recorded}), encoding="utf-8")
+                rc.save_plan(plan, written_plan(schema_version=version))
                 with self.assertRaisesRegex(rc.CleanupError, "is not a repo-cleanup plan"):
                     rc.load_plan(plan)
                 out = io.StringIO()
                 with contextlib.redirect_stdout(out):
                     code = rc.main(["summary", "--plan", str(plan)], rc.Services())
-                self.assertEqual(
-                    (1, [f"FAILED\t{plan} is not a repo-cleanup plan"]), (code, out.getvalue().splitlines())
+                lines = out.getvalue().splitlines()
+                self.assertEqual(1, code, lines)
+                self.assertEqual(1, len(lines), lines)
+                self.assertTrue(
+                    lines[0].startswith(f"FAILED\t{plan} is not a repo-cleanup plan: schema_version must be one of 1"),
+                    lines,
                 )

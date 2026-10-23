@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import contextlib
 import io
-import json
 import sys
 import tempfile
 from pathlib import Path
@@ -26,6 +25,7 @@ from test_repo_cleanup import (
     facts,
     git,
     remove_tree,
+    written_plan,
 )
 
 # The settings conftest.py adds to the global configuration of every home this suite's git runs in.
@@ -252,15 +252,15 @@ class RecordedPolicyTests(CleanupTestCase):
         root = Path(tempfile.mkdtemp(prefix="repo cleanup plan ")).resolve()
         self.addCleanup(remove_tree, root)
         plan = root / "plan.json"
-        recorded = {"schema_version": 1, "repo_name": "my repo", "events": []}
+        recorded = written_plan()
         for policy in ({}, {"regenerable": ".venv"}, {"regenerable": ".venv", "protected": "hotfix/"}):
             with self.subTest(policy=policy):
-                plan.write_text(json.dumps({**recorded, "policy": policy}), encoding="utf-8")
+                rc.save_plan(plan, {**recorded, "policy": policy})
                 self.assertEqual(policy, rc.load_plan(plan)["policy"])
         malformed_policies: list[object] = [[], "x", {"regenerable": 1}, {"regenerable": None}, {"other": ""}]
         for malformed in malformed_policies:
             with self.subTest(policy=malformed):
-                plan.write_text(json.dumps({**recorded, "policy": malformed}), encoding="utf-8")
+                rc.save_plan(plan, {**recorded, "policy": malformed})
                 with self.assertRaisesRegex(rc.CleanupError, "is not a repo-cleanup plan"):
                     rc.load_plan(plan)
         self.assertEqual(cleanup_policy.configured(), rc.policy_of({}), "a plan an earlier version wrote")
