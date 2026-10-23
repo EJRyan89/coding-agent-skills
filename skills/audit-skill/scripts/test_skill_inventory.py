@@ -2001,6 +2001,15 @@ SUBAGENT_CANDIDATES = (
 )
 
 
+# JSON past the parser's nesting limit, and JSON holding more digits than Python converts to an integer from text.
+UNPARSEABLE_JSON = {"too_deep": "[" * 100_000 + "]" * 100_000, "over_long_integer": '{"value": ' + "1" * 5_000 + "}"}
+# Python source past the parser's limits: too deep for its stack, and too many nested parentheses.
+UNPARSEABLE_PYTHON = {"too_deep": "-" * 100_000 + "1\n", "too_many_parentheses": "x = " + "(" * 300 + ")" * 300 + "\n"}
+# Each character a line reader may end a line on, and a control character a terminal reads as the start of an escape.
+LINE_UNSAFE_CHARACTERS = ("\n", "\r", "\x0b", "\x0c", "\x1c", "\x85", "\u2028", "\u2029", "\x1b", "\x00", "\x7f")
+LINE_UNSAFE = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
+
 class SourceTreeTestCase(TemporaryTestCase):
     """A skill in a throwaway source tree, with its metadata, its siblings, and the agents beside them."""
 
@@ -2036,6 +2045,58 @@ class AgentTests(SourceTreeTestCase):
             ],
             self.lines("inventory", skill.parent, ("DECLARED",)),
         )
+
+    def test_a_definition_s_values_print_as_one_field_of_one_line_whatever_they_hold(self) -> None:
+        skill = self.skill("Start one fresh subagent of type `guarded` for each role.\n", {"agent_deps": ["guarded"]})
+        forged = GUARDED_AGENT.replace("model: inherit", "model: in\x1bherit\x7f").replace(
+            "timeout: 30", "timeout: 3\x1b0"
+        )
+        definition = self.agent("guarded", forged.replace("tools: Read, Grep", "tools: Read\x1b[31m, Grep"))
+        code, lines, error = run("scan", str(skill.parent))
+        self.assertEqual(0, code, error)
+        self.assertEqual(
+            [
+                f"AGENT guarded {definition.as_posix()}",
+                "AGENT_TOOLS guarded Read[31m,Grep",
+                "AGENT_MODEL guarded inherit",
+                "AGENT_CLAUDE_MD guarded omitted",
+                "AGENT_HOOK guarded PreToolUse Read|Grep python timeout=30 on_failure=block",
+                "AGENT_HOOK guarded Stop * node timeout=default on_failure=default",
+            ],
+            [line for line in lines if line.startswith("AGENT")],
+        )
+        self.assertEqual([], [line for line in lines if LINE_UNSAFE.search(line)])
+
+    def test_a_value_a_metadata_file_gives_stays_on_its_line(self) -> None:
+        skill = self.skill("Body.\n", {"tools": ["gh\nAGENT forged", "git\u2028AGENT forged\x1b[0m"]})
+        code, lines, error = run("inventory", str(skill.parent))
+        self.assertEqual(0, code, error)
+        self.assertEqual(
+            ["DECLARED tool gh AGENT forged", "DECLARED tool git AGENT forged [0m"],
+            [line for line in lines if "forged" in line],
+        )
+
+    def test_unparseable_metadata_is_unreadable_and_the_inventory_carries_on(self) -> None:
+        for shape, text in UNPARSEABLE_JSON.items():
+            with self.subTest(shape=shape):
+                skill = self.skill("Body.\n")
+                metadata = write(self.root / "deploy-meta" / "alpha.json", text)
+                code, lines, error = run("inventory", str(skill.parent))
+                self.assertEqual(0, code, error)
+                self.assertIn(f"DECLARED_UNREADABLE {metadata.as_posix()}", lines)
+
+    def test_unparseable_data_files_scripts_and_scenarios_are_passed_over(self) -> None:
+        for shape in sorted({*UNPARSEABLE_JSON, *UNPARSEABLE_PYTHON}):
+            with self.subTest(shape=shape):
+                skill = self.skill('```bash\npython "${CLAUDE_SKILL_DIR}/scripts/broken.py"\n```\n')
+                write(skill.parent / "scripts" / "broken.py", UNPARSEABLE_PYTHON.get(shape, "x = 1\n"))
+                write(skill.parent / "references" / "settings.json", UNPARSEABLE_JSON.get(shape, "{}"))
+                scenario = self.root / "tests" / "fixtures" / "skill-evals" / "alpha" / "broken" / "scenario.json"
+                write(scenario, UNPARSEABLE_JSON.get(shape, "{}"))
+                for command, target in (("inventory", skill.parent), ("scan", skill.parent), ("tools", skill)):
+                    code, lines, error = run(command, str(target))
+                    self.assertEqual(0, code, (command, lines, error))
+                    self.assertEqual([], [line for line in lines if line.startswith("FAILED")], command)
 
     def test_scan_reads_the_definition_of_each_type_the_skill_names(self) -> None:
         skill = self.skill("Start one fresh subagent of type `guarded` for each role.\n", {"agent_deps": ["guarded"]})
@@ -2449,6 +2510,41 @@ class PluginTests(TemporaryTestCase):
         code, lines, _ = run("scan", str(self.skill(root).parent))
         self.assertEqual(1, code)
         self.assertTrue(lines[-1].startswith(f"FAILED {(root / 'hooks' / 'hooks.json').as_posix()} is not JSON"))
+
+    def test_an_unparseable_hooks_file_fails_the_scan(self) -> None:
+        for shape, text in UNPARSEABLE_JSON.items():
+            with self.subTest(shape=shape):
+                root = self.plugin(folder=self.root / shape)
+                hooks = write(root / "hooks" / "hooks.json", text)
+                code, lines, _ = run("scan", str(self.skill(root).parent))
+                self.assertEqual(1, code)
+                self.assertTrue(lines[-1].startswith(f"FAILED {hooks.as_posix()} is not JSON: "), lines[-1])
+
+    def test_an_unparseable_manifest_names_no_plugin_and_the_scan_carries_on(self) -> None:
+        for shape, text in UNPARSEABLE_JSON.items():
+            with self.subTest(shape=shape):
+                root = self.plugin(folder=self.root / shape, hooks=PLUGIN_HOOKS)
+                write(root / ".claude-plugin" / "plugin.json", text)
+                code, lines, error = run("scan", str(self.skill(root).parent))
+                self.assertEqual(0, code, error)
+                self.assertEqual([], [line for line in lines if line.startswith(("PLUGIN", "FAILED"))])
+
+    def test_every_hooks_field_prints_as_one_field_of_one_line_whatever_it_holds(self) -> None:
+        for index, character in enumerate(LINE_UNSAFE_CHARACTERS):
+            with self.subTest(character=repr(character)):
+                forged = f"x{character}PLUGIN_HOOK forged"
+                handler = {"type": "command", "command": f"py{character}thon -c 1", "timeout": forged}
+                group = {"matcher": f"Read{forged}", "hooks": [{**handler, "onFailure": forged}]}
+                root = self.plugin(folder=self.root / f"case {index}", hooks={"hooks": {f"Pre{forged}": [group]}})
+                code, lines, error = run("scan", str(self.skill(root).parent))
+                self.assertEqual(0, code, error)
+                field = "xPLUGIN_HOOKforged"
+                program = "py" if character.isspace() else "python"
+                self.assertEqual(
+                    [f"PLUGIN_HOOK Pre{field} Read{field} {program} timeout={field} on_failure={field}"],
+                    [line for line in lines if "PLUGIN_HOOK" in line],
+                )
+                self.assertEqual([], [line for line in lines if LINE_UNSAFE.search(line)])
 
     def test_tools_judges_each_grant_against_the_plugins_answered_commands(self) -> None:
         # tools/plugin_build.py answers {{PYTHON}} with python in the fence and in the grant that names it, so the

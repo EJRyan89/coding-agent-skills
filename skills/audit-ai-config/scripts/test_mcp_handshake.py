@@ -90,6 +90,9 @@ for line in sys.stdin.buffer:
             reply = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32600, "message": "nope"}}
         else:
             capabilities = {} if mode == "notools" else {"tools": {}}
+            if mode == "unparseable":
+                print('{"id": ' + "1" * 5000 + "}", flush=True)
+                print("[" * 100000 + "]" * 100000, flush=True)
             print("not json", flush=True)
             print(json.dumps({"jsonrpc": "2.0", "method": "notifications/message"}), flush=True)
             result = INITIALIZE.get(mode, {"protocolVersion": "2025-06-18", "capabilities": capabilities,
@@ -153,6 +156,10 @@ class HandshakeTests(unittest.TestCase):
         self.assertEqual(["HANDSHAKE_OK docs source=.mcp.json protocol=2025-06-18 tools=2"], lines)
         self.assertFalse((self.root / "tools" / "called.txt").exists())
         self.assertTrue((self.root / "tools" / "initialized.txt").exists())
+
+    def test_a_line_too_deep_or_holding_an_over_long_integer_is_skipped_as_one_that_is_not_json(self) -> None:
+        self._write(".mcp.json", "mcpServers", {"docs": self._stdio("unparseable")})
+        self.assertEqual((0, ["HANDSHAKE_OK docs source=.mcp.json protocol=2025-06-18 tools=2"]), self._run())
 
     def test_server_without_tools_capability_is_not_asked_for_tools(self) -> None:
         self._write(".mcp.json", "mcpServers", {"docs": self._stdio("notools")})
