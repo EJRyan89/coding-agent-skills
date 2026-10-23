@@ -330,6 +330,11 @@ def recorded_job_seconds() -> dict[str, dict[str, float]]:
     return job_seconds()
 
 
+def host_job_seconds() -> dict[str, float]:
+    """The recorded seconds of the platform this process runs on, by which its legs are dealt."""
+    return recorded_job_seconds()[platform_support.PLATFORM_NAME]
+
+
 def leg_cost(job: Job, shards: int, seconds: Mapping[str, float]) -> float:
     """What a job counts for, dealt to a leg, in seconds: its suite's measured seconds shared among the suite's
     `shards`, or without a measurement its count at TYPICAL_TEST_SECONDS a test."""
@@ -351,7 +356,7 @@ def leg_jobs(jobs: list[Job], index: int, count: int, seconds: Mapping[str, floa
     onto the leg with the least so far, by label on a tie, each weighed by leg_cost from `seconds` (when None, the
     host platform's table in JOB_SECONDS). The legs run every job exactly once between them, and each leg's share
     depends only on the jobs and the table, never on their order, so legs that select alike deal alike."""
-    measured = recorded_job_seconds()[platform_support.PLATFORM_NAME] if seconds is None else seconds
+    measured = host_job_seconds() if seconds is None else seconds
     shards = Counter(job.name for job in jobs)
     costs = {job.label: leg_cost(job, shards[job.name], measured) for job in jobs}
     legs = deal([job.label for job in jobs], count, costs)

@@ -286,7 +286,10 @@ class TerminationFixtures(unittest.TestCase):
     def test_the_line_a_retried_job_passes_with_is_recorded_under_the_job_s_name(self) -> None:
         # The seconds recorder reads this line from a leg's log: the retry note stays out of the name it records, so
         # the refreshed table names a job validation runs.
-        job, _ = job_running("tests/test_a.py [shard 1/2]", ENDED, PASSES)
+        # The retry takes long enough that its seconds round above zero, which a recorded job's always are.
+        job, _ = job_running(
+            "tests/test_a.py [shard 1/2]", ENDED, [sys.executable, "-c", "import time; time.sleep(0.3)"]
+        )
         with contextlib.redirect_stdout(io.StringIO()) as printed:
             run_jobs([job], verbose=True, workers=1)
         leg = "Validation on Linux, shard 1/2\tRun repository validation\t2026-10-23T06:17:04.0000000Z "

@@ -127,6 +127,15 @@ class LegFixtures(unittest.TestCase):
         recorded = job_selection.recorded_job_seconds()
         self.assertEqual(sorted(platform_support.SUPPORTED_PLATFORMS.values()), sorted(recorded))
         self.assertIn(platform_support.PLATFORM_NAME, recorded)
+        self.assertEqual(recorded[platform_support.PLATFORM_NAME], job_selection.host_job_seconds())
+        table = {"Windows": {"tests/test_a.py": 9.0}, "Linux": {"tests/test_a.py": 1.0}}
+        for platform, expected in (("Windows", 9.0), ("Linux", 1.0)):
+            with (
+                self.subTest(platform=platform),
+                mock.patch.object(job_selection, "recorded_job_seconds", return_value=table),
+                mock.patch.object(platform_support, "PLATFORM_NAME", platform),
+            ):
+                self.assertEqual({"tests/test_a.py": expected}, job_selection.host_job_seconds())
 
     def test_a_measured_cost_moves_a_job_to_a_lighter_leg(self) -> None:
         jobs = [
