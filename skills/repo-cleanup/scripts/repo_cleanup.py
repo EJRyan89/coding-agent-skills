@@ -792,18 +792,23 @@ def seal_file(path: str | Path) -> Path:
 
 def read_sealed(path: str | Path, what: str) -> bytes:
     """The bytes of the plan or record at `path`, named `what` in a refusal: refused unless they match the seal this
-    script wrote when it last saved one there, so what they name is what a sweep recorded."""
+    script wrote when it last saved one there, so what they name is what a sweep recorded. A path with no seal, which
+    the script never saved one at, and one whose bytes changed since are refused apart."""
     try:
         data = Path(path).read_bytes()
     except OSError as exc:
         raise CleanupError(f"cannot read {what} {path}: {exc}") from exc
     try:
         seal = seal_file(path).read_text(encoding="utf-8").strip()
-    except OSError:
-        seal = ""
+    except OSError as exc:
+        raise CleanupError(
+            f"{path} is not a {what} repo-cleanup saved at this path, so it may name what no sweep offered; "
+            f"{SWEEP_AGAIN}"
+        ) from exc
     if seal != hashlib.sha256(data).hexdigest():
         raise CleanupError(
-            f"{path} is not a {what} as repo-cleanup last saved it, so it may name what no sweep offered; {SWEEP_AGAIN}"
+            f"{path} changed since repo-cleanup last saved this {what} there, so it may name what no sweep offered; "
+            f"{SWEEP_AGAIN}"
         )
     return data
 

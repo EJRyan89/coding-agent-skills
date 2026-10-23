@@ -34,7 +34,10 @@ from test_repo_cleanup import (
 git_config = GIT_CONFIG
 
 # The refusals, by what they name after the plan's path; independent of the script's own wording constants.
-NOT_SAVED = "is not a plan as repo-cleanup last saved it, so it may name what no sweep offered; run the sweep again"
+NOT_SAVED = "is not a plan repo-cleanup saved at this path, so it may name what no sweep offered; run the sweep again"
+CHANGED = (
+    "changed since repo-cleanup last saved this plan there, so it may name what no sweep offered; run the sweep again"
+)
 OTHER_AREAS = "names worktree areas other than the ones a sweep derives for"
 NOT_A_PLAN = "is not a repo-cleanup plan: "
 
@@ -149,7 +152,7 @@ class PlanSealTests(Fixture):
         }
         for name, change in tampers.items():
             with self.subTest(name):
-                self.assert_refused(self.rewrite(change), NOT_SAVED, printing=True)
+                self.assert_refused(self.rewrite(change), CHANGED, printing=True)
         self.plan_file.write_bytes(self.swept)
         code, lines = self.invoke("delete-local", "--plan", str(self.plan_file), "--branch", "scratch")
         self.assertEqual((0, [["scratch"]]), (code, facts(lines, "DELETED")), "the plan as saved still works")
@@ -273,8 +276,8 @@ class PlanSealTests(Fixture):
         changed = json.loads(saved)
         changed["repositories"][0]["lines"] = ["SUMMARY\tmy repo cleanup complete:"]
         refusal = (
-            f"FAILED\t{record} is not a sweep record as repo-cleanup last saved it, so it may name what no sweep "
-            "offered; run the sweep again"
+            f"FAILED\t{record} changed since repo-cleanup last saved this sweep record there, so it may name what no "
+            "sweep offered; run the sweep again"
         )
         for name, data in {
             "changed": json.dumps(changed).encode("utf-8"),
@@ -301,7 +304,7 @@ class PlanSealTests(Fixture):
         code, lines = self.invoke("report", "--record", str(self.root / "plans"))
         self.assertEqual(1, code, lines)
         self.assertEqual(1, len(lines), lines)
-        self.assertTrue(lines[0].startswith(f"FAILED\t{self.plan_file.as_posix()} {NOT_SAVED}"), lines)
+        self.assertTrue(lines[0].startswith(f"FAILED\t{self.plan_file.as_posix()} {CHANGED}"), lines)
 
     def test_a_branch_named_only_by_unicode_whitespace_is_preserved_and_the_rest_cleaned(self) -> None:
         # Git accepts a name of a no-break space; its flattened form names nothing, so it is never offered.
@@ -495,3 +498,119 @@ class PlanFieldTests(CleanupTestCase):
         for name, (value, detail) in cases.items():
             with self.subTest(name):
                 self.refused(value, detail)
+
+    def test_a_path_with_no_seal_is_refused_as_never_saved_there_and_a_changed_one_as_changed(self) -> None:
+        rc.save_plan(self.plan, written_plan())
+        rc.seal_file(self.plan).unlink()
+        with self.assertRaises(rc.CleanupError) as raised:
+            rc.load_plan(self.plan)
+        self.assertEqual(
+            f"{self.plan} is not a plan repo-cleanup saved at this path, so it may name what no sweep offered; "
+            "run the sweep again for a new plan",
+            str(raised.exception),
+        )
+        rc.save_plan(self.plan, written_plan())
+        self.plan.write_bytes(self.plan.read_bytes() + b" ")
+        with self.assertRaises(rc.CleanupError) as raised:
+            rc.load_plan(self.plan)
+        self.assertEqual(
+            f"{self.plan} changed since repo-cleanup last saved this plan there, so it may name what no sweep "
+            "offered; run the sweep again for a new plan",
+            str(raised.exception),
+        )
+
+    def test_a_plan_path_holding_a_lone_surrogate_is_sealed_and_read_back(self) -> None:
+        # A name of bytes that are not UTF-8 reaches Python as a lone surrogate, which the seal's name must hash.
+        plan = self.plan.with_name("plan \udce9.json")
+        rc.save_plan(plan, written_plan())
+        self.assertEqual(written_plan(), rc.load_plan(plan))
+        self.assertNotEqual(rc.seal_file(plan), rc.seal_file(self.plan))
+
+    def test_each_refusal_names_the_field_it_refuses_and_what_it_found(self) -> None:
+        branch = {
+            "name": "topic",
+            "category": "gone",
+            "pr": "MERGED",
+            "sha": "a" * 40,
+            "action": "delete",
+            "detail": "",
+            "worktree": None,
+        }
+        tree = {"path": "/repos/Worktrees/my repo/wt", "branch": "topic", "action": "keep", "detail": ""}
+        move = {"branch": "topic", "sha": "a" * 40, "target": "b" * 40, "worktree": None}
+        synced = {"default": {"name": "main"}, "checkout": "current", "fast_forward": ["current"], "behind": 0}
+        cases: list[tuple[dict[str, Any], str]] = [
+            (written_plan(branches=[{**branch, "name": 1}]), "branches[0].name must be a string, found integer 1"),
+            (
+                written_plan(branches=[{**branch, "detail": 1}]),
+                "branches[0].detail must be a string, found integer 1",
+            ),
+            (written_plan(worktrees=[{**tree, "branch": 1}]), "worktrees[0].branch must be a string, found integer 1"),
+            (
+                written_plan(worktrees=[{**tree, "action": 1}]),
+                "worktrees[0].action must be a non-empty string, found integer 1",
+            ),
+            (written_plan(worktrees=[{**tree, "detail": 1}]), "worktrees[0].detail must be a string, found integer 1"),
+            (
+                written_plan(fastforward=[{**move, "branch": 1}]),
+                "fastforward[0].branch must be a string, found integer 1",
+            ),
+            (
+                written_plan(fastforward=[{**move, "target": 1}]),
+                "fastforward[0].target must be a non-empty string, found integer 1",
+            ),
+            (
+                written_plan(fastforward=[{**move, "worktree": 1}]),
+                "fastforward[0].worktree must be a non-empty string or null, found integer 1",
+            ),
+            (
+                written_plan(diverged=[{"ahead": 1, "behind": 2}]),
+                "diverged[0] must be an object with field branch, found an object without it",
+            ),
+            (
+                written_plan(diverged=[{"branch": 1, "ahead": 1, "behind": 2}]),
+                "diverged[0].branch must be a string, found integer 1",
+            ),
+            (
+                written_plan(fastforward_skipped=[{"branch": "topic", "behind": 1, "reason": 1}]),
+                "fastforward_skipped[0].reason must be a non-empty string, found integer 1",
+            ),
+            (
+                written_plan(sync={**synced, "default": {"name": 1}}),
+                "sync.default.name must be a string, found integer 1",
+            ),
+            (written_plan(sync={**synced, "checkout": 1}), "sync.checkout must be a non-empty string, found integer 1"),
+            (
+                written_plan(sync={**synced, "fast_forward": [1]}),
+                "sync.fast_forward[0] must be a non-empty string, found integer 1",
+            ),
+            (
+                written_plan(sync={**synced, "fast_forward": ["failed"]}),
+                "sync.fast_forward must be a failed outcome with its reason, found no reason",
+            ),
+        ]
+        for plan, detail in cases:
+            with self.subTest(detail):
+                rc.save_plan(self.plan, plan)
+                with self.assertRaises(rc.CleanupError) as raised:
+                    rc.load_plan(self.plan)
+                self.assertEqual(f"{self.plan} {NOT_A_PLAN}{detail}", str(raised.exception))
+
+    def test_an_event_is_refused_when_empty_or_of_the_wrong_count_or_kind_of_field(self) -> None:
+        cases: list[tuple[list[Any], str]] = [
+            ([], "events[0] must be a non-empty array, found an empty array"),
+            (["UNMERGED", "topic"], "events[0] must be a UNMERGED event with 2 fields, found 1 field"),
+            (["DELETED"], "events[0] must be a DELETED event with 1 fields, found 0 fields"),
+            (
+                ["CONFIRM_LOCAL", "topic", "/repos/Worktrees/my repo/wt", "extra"],
+                "events[0] must be a CONFIRM_LOCAL event with 1 to 2 fields, found 3 fields",
+            ),
+            (["PRESERVED", 1, "why"], "events[0][1] must be a string, found integer 1"),
+            (["PRESERVED", "topic", None], "events[0][2] must be a string, found null"),
+        ]
+        for event, detail in cases:
+            with self.subTest(detail):
+                rc.save_plan(self.plan, written_plan(events=[event]))
+                with self.assertRaises(rc.CleanupError) as raised:
+                    rc.load_plan(self.plan)
+                self.assertEqual(f"{self.plan} {NOT_A_PLAN}{detail}", str(raised.exception))
